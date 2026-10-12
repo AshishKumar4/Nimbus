@@ -94,6 +94,8 @@ export interface ResidentNamespace {
         pages: Uint8Array[];
         fetched: number;
     } | null>;
+    /** Fetch these files' bytes (each at its entry's revision) into the store in batched round trips. */
+    fillMany(files: ReadonlyArray<readonly [string, ResidentEntry]>): Promise<void>;
     /** The ACQUIRE barrier. */
     barrier(): Promise<boolean>;
     /** The same provenance cursor and ACQUIRE admission used by the normal barrier. */
@@ -147,6 +149,8 @@ export interface ResidentFilesystem extends RuntimeFsBridge {
     settle(): Promise<UnsettledWrite[]>;
     /** What the process has asked so far, and who answered: a run's filesystem cost, in calls. */
     stats(): ResidentFilesystemStats;
+    /** The directories this process opened, in order (bounded): the next run's in the same facet (ResidentDelegation.walked). */
+    walked(): readonly string[];
 }
 /** A held file the session refused part of: what a run reports, naming the file. */
 export interface UnsettledWrite {
@@ -166,9 +170,10 @@ export interface ResidentFilesystemStats {
     lookups: number;
     listings: number;
     treeListings: number;
-    /** Files fetched into the store, and their bytes. */
+    /** Files fetched into the store, and their bytes; of those, fetched ahead of their reads (and with the read that asked). */
     fills: number;
     filledBytes: number;
+    readAhead: number;
     /** Reads of files too big to hold whole answered through the store's pages, and the pages the session was asked for. */
     pagedReads: number;
     pagesFetched: number;
@@ -197,6 +202,13 @@ export interface ResidentDelegation {
     /** The process's own store's write log (HolderOptions.journal). */
     readonly journal?: ProcessFsJournal;
     readonly readDirectories?: ReadDirectorySupervisor['fsReadDirectories'];
+    /**
+     * The directories the last process in this facet opened, in order (its
+     * walked()): a run that repeats it (git status, again) opens them again,
+     * so the batch prefetches them first. A guess: each prefetched
+     * description is admitted only if the namespace still vouches for it.
+     */
+    readonly walked?: readonly string[];
 }
 export declare function residentFilesystem(session: RuntimeFsBridge, resident: ResidentNamespace, delegation?: ResidentDelegation): ResidentFilesystem;
 //# sourceMappingURL=resident-filesystem.d.ts.map

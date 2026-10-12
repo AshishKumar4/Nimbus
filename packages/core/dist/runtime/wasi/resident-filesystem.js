@@ -35,7 +35,7 @@
  *     absent: the adapter lists the directory and walks again.
  */
 import { fsError, modeAllows, walkBeneath } from '../beneath-walk.js';
-import { WASI_RESIDENT_FILE_CAP_BYTES, DIRECTORY_BATCH_LIMIT } from '../../constants.js';
+import { WASI_RESIDENT_FILE_CAP_BYTES, DIRECTORY_BATCH_LIMIT, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES } from '../../constants.js';
 import { RESIDENT_PAGE_BYTES } from '@nimbus-sh/platform/limits.js';
 import { delegationHolder } from './delegation-holder.js';
 import { readDirectoryPool } from './read-directory-pool.js';
@@ -43,6 +43,29 @@ import { readDirectoryPool } from './read-directory-pool.js';
 const WRITE_PIECE_BYTES = 1024 * 1024;
 /** Listings one call may take before it gives the question to the authority. */
 const MAX_LISTINGS_PER_CALL = 64;
+/** Directory opens a run records for the next run in its facet (ResidentFilesystem.walked). */
+const WALKED_DIRECTORIES = 1024;
+/**
+ * Read-ahead of a directory's files, earned by its misses. A program that
+ * reads a directory's files one after another (rolldown loading modules,
+ * an interpreter importing) pays a round trip for each it does not hold:
+ * Vite 8 pre-bundling lucide-react read 2,145 modules in 30.5 s, and in
+ * 8.3 s with the same files fetched ahead (throwaway, 2026-10-07). From a
+ * directory's second miss, a fill brings with it the directory's next files
+ * of the missed file's extension (in descriptor order after it, then from
+ * the directory's first), a window that doubles with each further miss there. A program that reads one file
+ * of a directory fetches only that file. Bounded per file, per batch (one
+ * fsReadBatch) and per process.
+ */
+const READ_AHEAD_FIRST = 8;
+const READ_AHEAD_FILE_BYTES = 256 * 1024;
+const READ_AHEAD_PROCESS_BYTES = 32 * 1024 * 1024;
+/** A name's extension, with its dot ('.mjs'), or '' when it has none. */
+function extensionOf(name) {
+    const base = name.slice(name.lastIndexOf('/') + 1);
+    const dot = base.lastIndexOf('.');
+    return dot > 0 ? base.slice(dot) : '';
+}
 /** What this adapter answers itself is decided here: anything else is the authority's. */
 const DELEGATE = Symbol('delegate');
 /** The root of the namespace as the walk asks about it (the authority's rootStat, for what the walk reads). */
@@ -98,7 +121,7 @@ function statOf(entry) {
 const identity = (dev, ino) => `${dev}:${ino}`;
 export function residentFilesystem(session, resident, delegation) {
     let directoryPool = null;
-    const counts = { local: 0, delegated: {}, lookups: 0, listings: 0, treeListings: 0, fills: 0, filledBytes: 0, barriers: 0, waitMs: 0, pinnedBytes: 0, pins: 0, pagedReads: 0, pagesFetched: 0 };
+    const counts = { local: 0, delegated: {}, lookups: 0, listings: 0, treeListings: 0, fills: 0, filledBytes: 0, readAhead: 0, barriers: 0, waitMs: 0, pinnedBytes: 0, pins: 0, pagedReads: 0, pagesFetched: 0 };
     // Every wait on the session is timed where it leaves: the authority's calls
     // and the store's listings, fills and barriers. A facet's clock moves only
     // across I/O, so this is the part of a run's wall time the filesystem cost.
@@ -152,6 +175,7 @@ export function residentFilesystem(session, resident, delegation) {
         content: (key) => resident.content(key),
         fill: (key, entry) => timed(resident.fill(key, entry)),
         pages: (key, revision, size, first, last) => timed(resident.pages(key, revision, size, first, last)),
+        fillMany: (files) => timed(resident.fillMany(files)),
         barrier: () => timed(resident.barrier()),
         cursor: () => resident.cursor(),
         admit: (answer) => resident.admit(answer),
@@ -277,9 +301,86 @@ export function residentFilesystem(session, resident, delegation) {
     };
     /** Where the walk the last directory open belongs to began: `walkAfter`'s bound. */
     let walkRoot = null;
-    /** Unlisted directories a walk has missed a name in, and how often; and those whose subtree is past the listing's bound. */
+    /** The directories opened so far, in order; and the last run's, as its walk goes on. */
+    const opening = [];
+    const previous = delegation?.walked ?? [];
+    let along = 0;
+    /**
+     * The directories the last run opened after `key`, from where this run has
+     * got to in its walk: what it opens next, if it repeats it.
+     */
+    const repeated = (key, limit) => {
+        const at = previous.indexOf(key, along);
+        if (at < 0)
+            return [];
+        along = at + 1;
+        return previous.slice(at + 1, at + 1 + limit);
+    };
+    /**
+     * Misses by directory: names the store did not know there, and bytes it
+     * did not hold. From a directory's second, a walk of it is assumed: its
+     * subtree is listed in one answer (unless past the listing's bound), and
+     * its files are fetched ahead (READ_AHEAD_*).
+     */
     const missesIn = new Map();
+    const miss = (dir) => {
+        const misses = (missesIn.get(dir) ?? 0) + 1;
+        missesIn.set(dir, misses);
+        return misses;
+    };
     const unlistable = new Set();
+    /** Files a read-ahead batch is fetching, and the batch; and the bytes read ahead so far. */
+    const fetchingAhead = new Map();
+    let readAheadBytes = 0;
+    /**
+     * A fill of `key` (`entry`), with the files of its directory read ahead
+     * when its misses earned it: the batch, which includes `key`, or undefined
+     * when `key` is filled alone.
+     */
+    const readAhead = (key, entry) => {
+        const dir = parentKey(key);
+        const misses = miss(dir);
+        const ext = extensionOf(key);
+        const children = store.children(dir);
+        if (misses < 2 || ext === '' || children === undefined)
+            return undefined;
+        const window = READ_AHEAD_FIRST * 2 ** Math.min(misses - 2, 7);
+        const name = key.slice(key.lastIndexOf('/') + 1);
+        const batch = [[key, entry]];
+        let bytes = entry.size;
+        const ordered = byCodeUnit(children.filter((child) => child.type === 'file' && child.name !== name && extensionOf(child.name) === ext));
+        const at = ordered.findIndex((child) => child.name > name);
+        for (const child of at < 0 ? ordered : [...ordered.slice(at), ...ordered.slice(0, at)]) {
+            if (batch.length > window || batch.length >= FS_READ_BATCH_PATH_LIMIT)
+                break;
+            const sibling = dir === '' ? child.name : `${dir}/${child.name}`;
+            if (fetchingAhead.has(sibling) || store.content(sibling) !== undefined)
+                continue;
+            const found = entryAt(sibling);
+            if (!found || found.type !== 'file' || found.size > READ_AHEAD_FILE_BYTES)
+                continue;
+            // What this process decided or writes through is its own to read.
+            if (holder?.content(found) !== undefined || holder?.writing(found.ino) !== undefined)
+                continue;
+            if (bytes + found.size > FS_READ_BATCH_REQUEST_BYTES || readAheadBytes + bytes + found.size > READ_AHEAD_PROCESS_BYTES)
+                break;
+            batch.push([sibling, found]);
+            bytes += found.size;
+        }
+        if (batch.length === 1)
+            return undefined;
+        readAheadBytes += bytes - entry.size;
+        counts.fills += batch.length;
+        counts.filledBytes += bytes;
+        counts.readAhead += batch.length - 1;
+        const fetched = store.fillMany(batch).catch(() => { });
+        for (const [path] of batch)
+            fetchingAhead.set(path, fetched);
+        void fetched.then(() => { for (const [path] of batch)
+            if (fetchingAhead.get(path) === fetched)
+                fetchingAhead.delete(path); });
+        return fetched;
+    };
     /** Where a path leads (its key), listing what the walk needs; DELEGATE for what this adapter does not answer. */
     const resolve = (path, follow, content = false) => {
         let root;
@@ -315,15 +416,18 @@ export function residentFilesystem(session, resident, delegation) {
             if (asked >= MAX_LISTINGS_PER_CALL)
                 return DELEGATE;
             const parent = parentKey(walked.missing);
-            const misses = (missesIn.get(parent) ?? 0) + 1;
-            missesIn.set(parent, misses);
-            if (misses >= 2 && parent !== '' && !unlistable.has(parent)) {
-                counts.treeListings++;
-                return store.listTree(parent).then((whole) => {
-                    if (!whole)
-                        unlistable.add(parent);
-                    return attempt(asked + 1);
-                });
+            if (miss(parent) >= 2 && parent !== '' && store.children(parent) === undefined) {
+                // The subtree in one answer; past its bound, the directory alone.
+                const whole = unlistable.has(parent) ? Promise.resolve(false) : (counts.treeListings++, store.listTree(parent));
+                return whole
+                    .then((listed) => {
+                    if (listed)
+                        return true;
+                    unlistable.add(parent);
+                    counts.listings++;
+                    return store.list(parent);
+                })
+                    .then((listed) => (listed ? attempt(asked + 1) : DELEGATE));
             }
             if (!looked.has(walked.missing)) {
                 const spelled = prefixes(root, name).filter((key) => !looked.has(key) && store.entry(key) === undefined);
@@ -369,9 +473,19 @@ export function residentFilesystem(session, resident, delegation) {
         const held = store.content(key);
         if (held !== undefined && held.byteLength === entry.size)
             return held;
-        counts.fills++;
-        counts.filledBytes += entry.size;
-        return store.fill(key, entry).then(keep);
+        const fill = () => {
+            counts.fills++;
+            counts.filledBytes += entry.size;
+            return store.fill(key, entry).then(keep);
+        };
+        // A batch fetching it (read-ahead) is waited on, not repeated.
+        const batch = fetchingAhead.get(key) ?? readAhead(key, entry);
+        if (batch === undefined)
+            return fill();
+        return batch.then(() => {
+            const fetched = store.content(key);
+            return fetched !== undefined && fetched.byteLength === entry.size ? fetched : fill();
+        });
     };
     /**
      * Answer from the store when it can, else from the authority: the barrier
@@ -469,9 +583,9 @@ export function residentFilesystem(session, resident, delegation) {
     Reflect.set(fs, 'synchronous', authority.synchronous);
     fs.inbound = () => { owed = true; directoryPool?.invalidate(); };
     fs.cancelPendingDirectories = () => { owed = true; directoryPool?.cancelPending(); };
-    fs.holding = () => (holder?.pending() ?? false) || (directoryPool?.pending() ?? false);
+    fs.holding = () => holder?.pending() ?? false;
     // What leaves the process is preceded by everything it logged.
-    fs.flush = async () => { await holder?.flush(); await directoryPool?.flush(); };
+    fs.flush = async () => { await holder?.flush(); };
     fs.settle = async () => {
         const failures = [];
         if (directoryPool) {
@@ -496,6 +610,7 @@ export function residentFilesystem(session, resident, delegation) {
     // A sync of a file through any descriptor: everything this process logged
     // is answered first, and a refusal it recorded is this sync's answer.
     fs.syncInode = () => holder?.flush();
+    fs.walked = () => opening;
     fs.stats = () => ({
         ...counts,
         delegated: { ...counts.delegated },
@@ -664,24 +779,28 @@ export function residentFilesystem(session, resident, delegation) {
                 if (walkRoot === null || (key !== walkRoot && !key.startsWith(walkRoot + '/')))
                     walkRoot = key;
                 const within = walkRoot;
+                if (opening.length < WALKED_DIRECTORIES)
+                    opening.push(key);
                 const handle = await directoryPool.open(path, key, async () => {
                     // The existing bounded namespace listing owns these names. Walk
                     // only directories it actually reported; no invented path/prefix.
                     await listingOf(key);
+                    // What the last run opened next comes first; then the walk on from here.
+                    const next = [...new Set([...repeated(key, DIRECTORY_BATCH_LIMIT - 1), ...walkAfter(key, within, DIRECTORY_BATCH_LIMIT - 1)])];
                     // Carry the caller's confinement/descriptor root to the authority;
                     // never replace a beneath lookup with an absolute one. A
                     // descriptor-relative open names only what is beneath its directory.
+                    const beneath = (base) => next.filter((candidate) => base === '' || candidate.startsWith(base + '/'));
                     if (typeof path === 'string')
-                        return walkAfter(key, within, DIRECTORY_BATCH_LIMIT - 1).map((next) => '/' + next);
+                        return next.slice(0, DIRECTORY_BATCH_LIMIT - 1).map((candidate) => '/' + candidate);
                     if ('directory' in path) {
                         const base = path.path.replace(/\/$/, '');
-                        return walkAfter(key, key, DIRECTORY_BATCH_LIMIT - 1)
-                            .map((next) => ({ ...path, path: (base === '' ? '' : base + '/') + next.slice(key.length + 1) }));
+                        return beneath(key).slice(0, DIRECTORY_BATCH_LIMIT - 1)
+                            .map((candidate) => ({ ...path, path: (base === '' ? '' : base + '/') + candidate.slice(key.length + 1) }));
                     }
                     const root = keyOf(path.root);
-                    return walkAfter(key, within, DIRECTORY_BATCH_LIMIT - 1)
-                        .filter((next) => root === '' || next.startsWith(root + '/'))
-                        .map((next) => ({ ...path, path: root === '' ? next : next.slice(root.length + 1) }));
+                    return beneath(root).slice(0, DIRECTORY_BATCH_LIMIT - 1)
+                        .map((candidate) => ({ ...path, path: root === '' ? candidate : candidate.slice(root.length + 1) }));
                 });
                 return handle ?? DELEGATE;
             }), () => openOnSession(path, flags));

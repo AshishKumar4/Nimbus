@@ -2267,6 +2267,12 @@ function __residentNamespaceView(supervisor, device, cred) {
       return bytes === undefined ? null : bytes;
     },
     pages: (k, rev, size, first, last) => __residentPages(supervisor, k, rev, size, first, last),
+    // Many files in batched round trips (read-ahead, wasi/resident-filesystem.ts).
+    async fillMany(files) {
+      const cursor = __residentCursor();
+      if (cursor === null || files.length === 0) return;
+      await __residentFetchFiles(supervisor, files.map(([k, entry]) => ({ path: k, size: entry.size, rev: entry.revision, epoch: cursor.epoch, ckey: null })));
+    },
     barrier: () => __residentLazyBarrier(supervisor),
     cursor: () => __residentCursor(),
     async admit(answer) {

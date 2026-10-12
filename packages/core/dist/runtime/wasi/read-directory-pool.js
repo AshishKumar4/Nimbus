@@ -181,17 +181,14 @@ export function readDirectoryPool({ call, store, client, before }) {
         },
         invalidate,
         cancelPending() { cancelled++; invalidate(); },
-        pending: () => retiring.size > 0 || unused.size > 0 || claiming.size > 0 || uncertain > 0,
-        flush: () => serial(drain),
         async dispose() {
             ended = true;
             cancelled++;
             await serial(async () => {
-                for (const id of owned.keys())
-                    retiring.add(id);
+                invalidate();
                 owned.clear();
                 claiming.clear();
-                await drain();
+                retiring.clear();
             });
         },
     };

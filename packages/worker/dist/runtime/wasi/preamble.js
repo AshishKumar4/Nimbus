@@ -153,18 +153,22 @@ let __wasiProcessGone = null;
 // takes the ACQUIRE barrier first, the causal rule a node process keeps.
 let __wasiResident = null;
 /**
- * The store the last process of this facet left (a warm facet, FacetSpec.warm):
- * whose names it holds, and the device the session's filesystem reports. The
- * next process of the same credential continues it.
+ * The store the last process of this facet left at the end of its run (a
+ * warm facet, FacetSpec.warm): whose names it holds, the device the session's
+ * filesystem reports, and the directories it opened. The next process of the
+ * same credential continues it.
  */
 let __wasiKept = null;
+/** Who a store's names were walked as. */
+function __wasiWho(cred) {
+    return `${cred.uid}:${cred.gid}:${[...cred.groups].sort((a, b) => a - b).join(',')}`;
+}
 /** The resident filesystem over `sup`, booting its store; its calls go to the session until the boot lands. */
 function __wasiStartResident(sup, cred) {
     const supervisor = answeringSupervisor(sup);
     const authority = supervisorFilesystem(sup);
     const store = __wasiResidentStore;
-    const who = `${cred.uid}:${cred.gid}:${[...cred.groups].sort((a, b) => a - b).join(',')}`;
-    const kept = __wasiKept !== null && __wasiKept.who === who ? __wasiKept : null;
+    const kept = __wasiKept !== null && __wasiKept.who === __wasiWho(cred) ? __wasiKept : null;
     __wasiKept = null;
     store.__residentSetStorage(undefined, supervisor);
     // A kept store answers as it stood at its cursor: the process's first
@@ -195,6 +199,7 @@ function __wasiStartResident(sup, cred) {
         content: (key) => (view === null ? undefined : view.content(key)),
         fill: (key, entry) => (view === null ? Promise.resolve(null) : view.fill(key, entry)),
         pages: (key, revision, size, first, last) => (view === null ? Promise.resolve(null) : view.pages(key, revision, size, first, last)),
+        fillMany: (files) => (view === null ? Promise.resolve() : view.fillMany(files)),
         barrier: () => (view === null ? Promise.resolve(false) : view.barrier()),
         cursor: () => view?.cursor() ?? null,
         admit: (answer) => view === null ? Promise.resolve(false) : view.admit(answer),
@@ -227,11 +232,10 @@ function __wasiStartResident(sup, cred) {
         } : {}),
         isHomeRoot: isHomeDirectory,
         ...(journalSql === undefined ? {} : { journal: sqlJournal(journalSql) }),
+        ...(kept === null || view === null ? {} : { walked: kept.walked }),
     });
     if (kept !== null && view !== null)
         fs.inbound();
-    void ready.then((booted) => { if (booted !== null)
-        __wasiKept = { who, device: booted.device }; });
     return { fs, ready };
 }
 /** Whether `key` is a home directory itself (`home/<name>`): never held, so the editor and shell there recall nothing. */
@@ -253,7 +257,7 @@ function __wasiFilesystem(parking) {
     if (cred === null || !canPark)
         return supervisorFilesystem(sup);
     if (__wasiResident === null || __wasiResident.sup !== sup)
-        __wasiResident = { sup, ...__wasiStartResident(sup, cred) };
+        __wasiResident = { sup, who: __wasiWho(cred), ...__wasiStartResident(sup, cred) };
     return __wasiResident.fs;
 }
 export async function __wasiPrepareFilesystem(roots) {
@@ -285,11 +289,16 @@ export async function __wasiSettleWrites() {
     let failed = null;
     try {
         if (__wasiResident !== null) {
-            const failures = await __wasiResident.fs.settle();
+            const resident = __wasiResident;
+            const failures = await resident.fs.settle();
             if (failures.length > 0)
                 failed = failures
                     .map((f) => `${f.path}: not written (${f.error instanceof Error ? f.error.message : String(f.error)})`)
                     .join('; ');
+            // A run that ended with its store answering leaves it to the next process in this facet.
+            const view = await resident.ready;
+            if (view !== null && view.ready())
+                __wasiKept = { who: resident.who, device: view.device, walked: resident.fs.walked() };
         }
     }
     catch (error) {

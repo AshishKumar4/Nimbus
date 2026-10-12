@@ -32,8 +32,11 @@ export interface ReadDirectoryPool {
     invalidate(): void;
     /** A park timed out: late, not-yet-delivered descriptions are abandoned, never installed into the guest fd table. */
     cancelPending(): void;
-    pending(): boolean;
-    flush(): Promise<void>;
+    /**
+     * The process's run ended: nothing more is opened or sent. Its scope's
+     * release closes every description the pool still accounts for, so
+     * retiring them first would only cost the run a round trip.
+     */
     dispose(): Promise<void>;
 }
 export declare function readDirectoryPool({ call, store, client, before }: Options): ReadDirectoryPool;
