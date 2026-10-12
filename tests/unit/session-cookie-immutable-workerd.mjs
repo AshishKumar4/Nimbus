@@ -44,7 +44,11 @@ try {
     assert.equal(opened, true);
     const echoed = await new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('echo timed out')), 30_000);
-      ws.onmessage = (event) => { clearTimeout(timer); resolve(String(event.data)); };
+      ws.onmessage = (event) => {
+        // The session greets the socket first; our ping's echo arrives after.
+        if (!String(event.data).includes('cookie-migration')) return;
+        clearTimeout(timer); resolve(String(event.data));
+      };
       ws.onerror = (e) => { clearTimeout(timer); reject(new Error(`socket error: ${e?.message ?? e}`)); };
       ws.send(JSON.stringify({ type: 'ping', id: 'cookie-migration' }));
     });
