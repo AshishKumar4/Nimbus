@@ -85,7 +85,9 @@ export async function residentGuest({ refuse = () => false, of, after, cred = US
   }
   // What session/rpc.ts answers itself rather than through the op table.
   supervisor.fsAcquire = async (epoch, cursor, options) => session.bridge.bridge(pid).acquire(epoch, cursor, options);
-  supervisor.fsReadDirectories = async (request) => session.dispatch({ op: 'fsReadDirectories', args: [request], pid });
+  /** The directory batches the guest asked for (fsReadDirectories requests). */
+  const batches = [];
+  supervisor.fsReadDirectories = async (request) => { batches.push(request); return session.dispatch({ op: 'fsReadDirectories', args: [request], pid }); };
   // The process's waves (its filesystem client's), fenced as SupervisorRPC fences them.
   supervisor.openWaveWriter = async () => /** @type {{ writer: string | null }} */ (await session.dispatch({ op: 'openWaveWriter', args: [], pid })).writer;
   supervisor.retireWaveWriter = async (writer) => { await session.dispatch({ op: 'retireWaveWriter', args: [writer], pid }); };
@@ -125,7 +127,7 @@ export async function residentGuest({ refuse = () => false, of, after, cred = US
   const RIGHTS_ALL = 0x1fffffffn;
 
   const guest = {
-    P, kernel, raw, session, pid, wasiImport, fsImport, memory, stats: () => P.__wasiFsStats(),
+    P, kernel, raw, session, pid, wasiImport, fsImport, memory, batches, stats: () => P.__wasiFsStats(),
     /**
      * The session's isolate is replaced under the running guest: its calls
      * reach a fresh process table, of the next generation, that never held it.

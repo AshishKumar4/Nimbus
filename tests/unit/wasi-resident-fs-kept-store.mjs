@@ -89,6 +89,21 @@ assert.equal((await run(elsewhere)).stats.pagesFetched, 3, 'a process in a facet
 
 await elsewhere.dispose();
 
+// A run that lists one directory opens that one alone: a walk is earned by
+// the run's second directory open (or by the last run's walk in the facet).
+{
+  const lister = await residentGuest({ of: first });
+  for (let i = 0; i < 6; i++) { kernel.mkdir(`home/user/sub${i}`, { mode: 0o755 }); kernel.chown(`home/user/sub${i}`, USER.uid, USER.gid); }
+  const before = lister.batches.length;
+  assert.ok((await lister.listdir('home/user')).includes('sub0'));
+  const asked = lister.batches.slice(before).flatMap((request) => request.open);
+  assert.equal(asked.length, 1, `one listing opens one directory: ${JSON.stringify(asked)}`);
+  await lister.listdir('home/user/sub0');
+  const walked = lister.batches.slice(before).flatMap((request) => request.open);
+  assert.ok(walked.length > 2, 'a second directory open is a walk: the rest of it is prefetched');
+  await lister.end();
+}
+
 // A run whose writes were refused leaves nothing to the next one.
 const refusing = await residentGuest({ refuse: (path) => path.endsWith('refused.txt') });
 refusing.kernel.writeFile('home/user/pack.bin', big, { mode: 0o644 });
