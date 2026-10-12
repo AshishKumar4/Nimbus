@@ -446,10 +446,14 @@ class PeerProcessHost implements ProcessHost {
         handleHttpRequest: (request: Request, scope: ResponseScope) => loss.route(async () => {
           const lease = observation.acquire();
           void scope.settled.then(lease.release);
+          const sending = sent.send(scope, abandon);
           try {
-            const sending = sent.send(scope, abandon);
             return await peered((stub) => routeThroughPeer(stub, params.workerKey, webSocketCapability, request, sending));
-          } catch (error) { lease.release(); throw error; }
+          } catch (error) {
+            sent.unsent(sending);
+            lease.release();
+            throw error;
+          }
         }),
         // An upgrade hands its socket to the caller at the handshake.
         handleWebSocketRequest: (request: Request) => loss.route(async () => {

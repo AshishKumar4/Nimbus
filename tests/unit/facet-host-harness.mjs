@@ -14,9 +14,23 @@
 // One EVALUATION of a program is one boot: `world.boots` is the ledger a ghost
 // process would show up in, because a second boot means the user's module
 // scope ran twice.
-import { hostActivity, HOST_WATCH_HEADER, HOST_INCARNATION_HEADER, HOST_REQUEST_HEADER } from '../../packages/fabric/src/host-activity.ts';
+import { hostActivity, observeResidentConfig, HOST_WATCH_HEADER, HOST_INCARNATION_HEADER, HOST_REQUEST_HEADER } from '../../packages/fabric/src/host-activity.ts';
+import { importModuleSet } from './lib/module-map-bundle.mjs';
 import { installHostWatchSocket } from './lib/host-watch-socket.mjs';
 installHostWatchSocket();
+
+/** A guest the generated adapter extends, forwarding to the harness's instance. */
+const GUEST_FORWARDER = `export class NimbusProcess {
+  constructor(ctx) { this.guest = ctx.guest; }
+  startProcess(args) { return this.guest.startProcess(args); }
+  handleHttpRequest(request) { return this.guest.handleHttpRequest(request); }
+  fetch(request) { return this.guest.fetch(request); }
+}`;
+/** The generated adapter class for `capability`, over GUEST_FORWARDER. */
+async function adapterFor(capability) {
+  const config = observeResidentConfig({ compatibilityDate: '2026-09-26', mainModule: 'guest.js', modules: { 'guest.js': GUEST_FORWARDER } }, capability);
+  return (await importModuleSet(config.modules, config.mainModule)).NimbusProcess;
+}
 
 /**
  * @param {(config: unknown, info: { loaderId: string, facetName: string, className: string })
@@ -95,34 +109,19 @@ export function createFacetWorld(evaluate, { resolveConfig = true, evaluatesAdap
     return instance;
   };
 
-  const incarnations = new WeakMap();
-  const incarnationOf = (instance) => {
-    let incarnation = incarnations.get(instance);
-    if (!incarnation) incarnations.set(instance, incarnation = crypto.randomUUID());
-    return incarnation;
-  };
-  // The generated adapter's table of its host's requests by id, per instance.
-  const tables = new WeakMap();
-  const requestOf = (instance, id, ended) => {
-    let table = tables.get(instance);
-    if (!table) tables.set(instance, table = new Map());
-    for (const done of ended) table.delete(done);
-    let request = table.get(id);
-    if (!request) table.set(id, request = new AbortController());
-    return request;
-  };
-  // The generated admission (observeResidentConfig): a request runs only on
-  // the instance its host pinned, without the transport that admitted it.
-  const admit = (instance, request, signal) => {
-    const capability = request.headers.get(HOST_REQUEST_HEADER);
-    if (!capability) return new Response('Not found', { status: 404 });
-    if (request.headers.get(HOST_INCARNATION_HEADER) !== incarnationOf(instance)) {
-      return new Response('the instance that ran this process was replaced', { status: 410, headers: { [HOST_REQUEST_HEADER]: capability } });
+  // The real generated adapter (observeResidentConfig) around each guest
+  // instance, for the capability its host opened it with: the harness models
+  // the facet transport, never the receiver.
+  const adapters = new Map();
+  const receivers = new WeakMap();
+  const receiverOf = (instance, capability) => {
+    let receiver = receivers.get(instance);
+    if (!receiver) {
+      let adapter = adapters.get(capability);
+      if (!adapter) adapters.set(capability, adapter = adapterFor(capability));
+      receivers.set(instance, receiver = adapter.then((Adapter) => new Adapter({ guest: instance }, {})));
     }
-    const headers = new Headers(request.headers);
-    headers.delete(HOST_REQUEST_HEADER);
-    headers.delete(HOST_INCARNATION_HEADER);
-    return new Request(request, { headers, ...(signal ? { signal } : {}) });
+    return receiver;
   };
   const watches = new Map();
   const die = (name, error) => {
@@ -136,31 +135,28 @@ export function createFacetWorld(evaluate, { resolveConfig = true, evaluatesAdap
         async startProcess(args) { return (await ensure(name, start)).startProcess(args); },
         async hostHttpRequest(request, key, pinned, id, ended, abandoned) {
           const instance = await ensure(name, start);
-          if (evaluatesAdapter) return instance.hostHttpRequest(request, key, pinned, id, ended, abandoned);
-          for (const gone of abandoned) { tables.get(instance)?.get(gone)?.abort(); tables.get(instance)?.delete(gone); }
-          if (!key) return new Response('Not found', { status: 404 });
-          if (pinned !== incarnationOf(instance)) return new Response('the instance that ran this process was replaced', { status: 410, headers: { [HOST_REQUEST_HEADER]: key } });
-          return instance.handleHttpRequest(new Request(request, { signal: requestOf(instance, id, ended).signal }));
+          const receiver = evaluatesAdapter ? instance : await receiverOf(instance, key);
+          return receiver.hostHttpRequest(request, key, pinned, id, ended, abandoned);
         },
         async abandonHttpRequest(key, id) {
           const instance = await ensure(name, start);
-          if (evaluatesAdapter) return instance.abandonHttpRequest(key, id);
-          requestOf(instance, id, []).abort();
+          const receiver = evaluatesAdapter ? instance : await receiverOf(instance, key);
+          return receiver.abandonHttpRequest(key, id);
         },
         // A resident's WebSocket entrypoint (ResidentFacet.handleWebSocketRequest).
         async fetch(request) {
           const instance = await ensure(name, start);
           if (evaluatesAdapter) return instance.fetch(request);
-          if (!request.headers.has(HOST_WATCH_HEADER)) {
-            const admitted = admit(instance, request);
-            return admitted instanceof Request ? instance.fetch(admitted) : admitted;
-          }
-          const incarnation = incarnationOf(instance);
+          const capability = request.headers.get(HOST_WATCH_HEADER) ?? request.headers.get(HOST_REQUEST_HEADER);
+          const response = await (await receiverOf(instance, capability)).fetch(request);
+          if (!request.headers.has(HOST_WATCH_HEADER) || response.status !== 200 || !response.body) return response;
+          // A watch rides a stream the platform can end: its death errors it.
           let active = watches.get(name);
           if (!active) watches.set(name, active = new Set());
           let held;
-          const body = new ReadableStream({ start(controller) { held = controller; active.add(controller); }, cancel() { active.delete(held); } });
-          return new Response(body, { headers: { [HOST_INCARNATION_HEADER]: incarnation } });
+          const relay = new TransformStream({ start(controller) { held = controller; active.add(controller); } });
+          void response.body.pipeTo(relay.writable).catch(() => {}).finally(() => active.delete(held));
+          return new Response(relay.readable, { headers: response.headers });
         },
         // The journal reader's (LOADER.load above).
         async numberings() { return (await ensure(name, start)).numberings(); },

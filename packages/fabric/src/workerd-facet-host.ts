@@ -631,10 +631,15 @@ function spawnResident(
     handleHttpRequest: async (request: Request, scope: ResponseScope, relayed?: HostRequest) => {
       const lease = observation.acquire();
       void scope.settled.then(lease.release);
+      // A peer relaying its coordinator's request leaves the numbering to it.
+      const sending = relayed ?? sent.send(scope, abandon);
       try {
-        const { id, ended, abandoned } = relayed ?? sent.send(scope, abandon);
-        return await checked(await facet.hostHttpRequest(request, watchCapability, await incarnation, id, ended, abandoned));
-      } catch (error) { lease.release(); throw error; }
+        return await checked(await facet.hostHttpRequest(request, watchCapability, await incarnation, sending.id, sending.ended, sending.abandoned));
+      } catch (error) {
+        if (!relayed) sent.unsent(sending);
+        lease.release();
+        throw error;
+      }
     },
     abandonHttpRequest: abandon,
     // An upgrade hands its socket to the caller at the handshake.

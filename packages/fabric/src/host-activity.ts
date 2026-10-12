@@ -193,6 +193,12 @@ export class SentRequests {
     });
     return { id, ended, abandoned };
   }
+
+  /** `request`'s call failed, so its leaf may not have seen what it carried: carry it again (each is idempotent there). */
+  unsent(request: HostRequest): void {
+    this.#ended.push(...request.ended);
+    this.#abandoned.push(...request.abandoned);
+  }
 }
 
 /** A request's id, and the earlier ones its leaf forgets (`ended`) or abandons first (`abandoned`). */

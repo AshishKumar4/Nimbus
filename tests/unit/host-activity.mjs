@@ -79,7 +79,12 @@ function setup() {
   sent.send(scope(false), async (id) => { abandons.push(id); });
   await turns();
   assert.deepEqual(abandons, [1, 2]);
-  assert.deepEqual(sent.send(scope(true), async () => {}), { id: 3, ended: [0, 2], abandoned: [1] });
+  const carrying = sent.send(scope(true), async () => {});
+  assert.deepEqual(carrying, { id: 3, ended: [0, 2], abandoned: [1] });
+  // The call that carried them failed: the next one carries them again.
+  sent.unsent(carrying);
+  await turns();
+  assert.deepEqual(sent.send(scope(true), async () => {}), { id: 4, ended: [0, 2, 3], abandoned: [1] });
 }
 console.log('host-activity: idle, shared active watches, abort, wake validation and host loss');
 
