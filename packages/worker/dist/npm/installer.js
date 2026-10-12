@@ -849,12 +849,16 @@ export class NpmInstaller {
             before.set(placement, await withRecall(() => identity(placement)));
         // A replacement whose marker already names it (the same name@version,
         // another tarball) is read back by its receipt instead, in this batch's
-        // own folder: one an install cut short left goes first.
+        // own folder: what an install cut short left there goes first.
         const receipts = `${nmDir}/${RECEIPTS_DIR}`;
-        if (await withRecall(() => engine.statIfPresent(receipts, false)) !== null)
-            await withRecall(() => engine.removeRecursive(receipts));
-        const acquisition = crypto.randomUUID();
-        const receiptOf = new Map(toFetch.flatMap((target, i) => (before.get(target.placement) === wanted(target) ? [[target.placement, `${receipts}/${acquisition}-${i}`]] : [])));
+        const receiptOf = new Map();
+        const unattributable = toFetch.filter((target) => before.get(target.placement) === wanted(target));
+        if (unattributable.length > 0) {
+            if (await withRecall(() => engine.statIfPresent(receipts, false)) !== null)
+                await withRecall(() => engine.removeRecursive(receipts));
+            const acquisition = crypto.randomUUID();
+            unattributable.forEach(({ placement }, i) => receiptOf.set(placement, `${receipts}/${acquisition}-${i}`));
+        }
         /** Whether this batch published `target`: its receipt landed, or its marker now names it and named another before. */
         const landedHere = (target) => {
             const receipt = receiptOf.get(target.placement);
