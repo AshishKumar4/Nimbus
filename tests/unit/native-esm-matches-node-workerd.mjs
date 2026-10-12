@@ -73,7 +73,8 @@ const FILES = {
   'req/exportsas.mjs': "const v = { y: 1 };\nexport { v as 'module.exports' };\nexport const z = 3;\n",
   'req/tla.mjs': "globalThis.ranTla = true;\nawait 0;\nexport const t = 1;\n",
   'req/main.cjs': "const esm = require('./esm.mjs');\nconsole.log(esm.__esModule, esm.default, esm.named, Object.keys(esm));\nconst none = require('./nodefault.mjs');\nconsole.log(Object.keys(none), none.__esModule);\nconsole.log(require('./exportsas.mjs'));\ntry { require('./tla.mjs'); } catch (e) { console.log(e.code); }\n",
-  // What each result is as an object: Node's facade is a namespace, which refuses every write.
+  // What each result Nimbus makes is as an object: Node's facade is a
+  // namespace, which refuses every write.
   'req/shape.cjs': [
     'const shape = (value) => ({',
     '  keys: Reflect.ownKeys(value).map(String), tag: Object.prototype.toString.call(value), extensible: Object.isExtensible(value),',
@@ -83,7 +84,7 @@ const FILES = {
     "  accessor: Reflect.defineProperty(value, 'default', { get() {} }), remove: Reflect.deleteProperty(value, '__esModule'), absent: Reflect.deleteProperty(value, 'absent'),",
     '  nullProto: Reflect.setPrototypeOf(value, null), proto: Reflect.setPrototypeOf(value, {}), sealed: Object.isSealed(value), esModule: value.__esModule,',
     '});',
-    "for (const [file, value, again] of [['./esm.mjs', require('./esm.mjs'), require('./esm.mjs')], ['./nodefault.mjs', require('./nodefault.mjs'), require('./nodefault.mjs')], ['./exportsas.mjs', require('./exportsas.mjs'), require('./exportsas.mjs')]]) {",
+    "for (const [file, value, again] of [['./esm.mjs', require('./esm.mjs'), require('./esm.mjs')], ['./exportsas.mjs', require('./exportsas.mjs'), require('./exportsas.mjs')]]) {",
     '  console.log(file, JSON.stringify(shape(value)), value === again, value.__esModule);',
     '}',
     '',

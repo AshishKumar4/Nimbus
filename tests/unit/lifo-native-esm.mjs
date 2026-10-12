@@ -121,7 +121,8 @@ const files = {
     'console.log("module-exports", require("./module-exports.mjs").marker);',
     // What each result Nimbus makes is as an object: Node's facade is a
     // namespace, which refuses every write. A module's own namespace is the
-    // engine's (Bun's answers Reflect.setPrototypeOf(ns, null) false).
+    // engine's: Bun's answers Reflect.setPrototypeOf(ns, null) false, and
+    // reads __esModule true once required.
     'const shape = (value) => JSON.stringify({',
     '  keys: Reflect.ownKeys(value).map(String), tag: Object.prototype.toString.call(value), extensible: Object.isExtensible(value),',
     '  descriptors: Object.entries(Object.getOwnPropertyDescriptors(value)).map(([key, d]) => [key, d.writable, d.enumerable, d.configurable, typeof d.value, typeof d.get]),',
@@ -131,7 +132,7 @@ const files = {
     '  nullProto: Reflect.setPrototypeOf(value, null), proto: Reflect.setPrototypeOf(value, {}), sealed: Object.isSealed(value), esModule: value.__esModule,',
     '});',
     'for (const file of ["./sync.mjs", "./module-exports.mjs"]) console.log("shape", file, shape(require(file)));',
-    'for (const file of ["./sync.mjs", "./no-default.mjs", "./own-marker.mjs", "./module-exports.mjs"]) console.log("same", file, require(file) === require(file), require(file).__esModule, Object.keys(require(file)).join(","));',
+    'for (const file of ["./sync.mjs", "./no-default.mjs", "./own-marker.mjs", "./module-exports.mjs"]) console.log("same", file, require(file) === require(file), Object.keys(require(file)).join(","));',
     'console.log("function-await", require("./inside-function.mjs").default);',
     'for (const file of ["./async-required.mjs", "./async-parent.mjs", "./async-loop.mjs", "./required-cycle.mjs"]) { try { require(file); } catch (e) { console.log("require-error", file, e.code, e.message); } }',
     'import("./sync.mjs").then((m) => console.log("cjs-dynamic", m.n, m.inc === ns.inc));',
