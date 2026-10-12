@@ -23,7 +23,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
-import { createRemoteEngine } from '../../packages/worker/src/git/engine.ts';
+import { createRemoteEngine, RemoteEngineError } from '../../packages/worker/src/git/engine.ts';
 import { startGitHttpServer } from './lib/git-http-server.mjs';
 import { createFacetSession, hostGit as hostGitIn, hostObjects as hostObjectsIn } from './lib/facet-session.mjs';
 
@@ -40,7 +40,7 @@ try {
   const stopped = new AbortController();
   stopped.abort();
   const cancelled = createRemoteEngine({ ctx: session.doCtx, env: session.doEnv, pid: 7, network: ISOLATE_NETWORK, signal: stopped.signal });
-  await assert.rejects(cancelled.listRefs({ url: 'http://127.0.0.1/stopped.git', forPush: false }), /cancel/i);
+  await assert.rejects(cancelled.listRefs({ url: 'http://127.0.0.1/stopped.git', forPush: false }), RemoteEngineError);
   assert.equal(session.requests.loads, 0, 'a stopped helper starts no network facet');
 
   const source = join(work, 'source');
