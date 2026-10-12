@@ -61,7 +61,12 @@ export interface FacetPayload {
   readonly parking: WasiParking;
   readonly preamble?: string;
   /** The supervisor's method names, and its synchronous view's when it has one; absent without syscalls. */
-  readonly supervisor?: { readonly methods: readonly string[]; readonly synchronous: readonly string[] | null };
+  readonly supervisor?: {
+    readonly methods: readonly string[];
+    readonly synchronous: readonly string[] | null;
+    /** Calls followed in the background, even when wasm itself cannot park. */
+    readonly asynchronous?: readonly string[];
+  };
   /** The workspace's network goes through an egress: the facet's fetch crosses to the host (realm-egress.ts). */
   readonly egress: boolean;
 }
@@ -94,7 +99,8 @@ export function isFacetPayload(value: unknown): value is FacetPayload {
   if (typeof value.egress !== 'boolean') return false;
   const supervisor = value.supervisor;
   return supervisor === undefined
-    || (record(supervisor) && strings(supervisor.methods) && (supervisor.synchronous === null || strings(supervisor.synchronous)));
+    || (record(supervisor) && strings(supervisor.methods) && (supervisor.synchronous === null || strings(supervisor.synchronous))
+      && (supervisor.asynchronous === undefined || strings(supervisor.asynchronous)));
 }
 
 export function isFacetSubmit(value: unknown): value is FacetSubmit {
@@ -220,6 +226,7 @@ class RealmFacet implements Facet {
   private over: Error | null = null;
   private readonly supervisor: object | null;
   private readonly supervisorMethods: readonly string[];
+  private readonly asynchronousMethods: readonly string[] = [];
   private readonly synchronous: RuntimeFsBridge['synchronous'];
   private readonly isolation = facetIsolation();
 
@@ -243,6 +250,10 @@ class RealmFacet implements Facet {
         const childCalls = createChildProcessSupervisor(children, pid);
         Object.assign(this.supervisor, childCalls);
         this.supervisorMethods = [...SUPERVISOR_METHODS, 'stdout', 'stderr', ...Object.keys(childCalls)];
+        // The WASI process layer follows children in background pumps. A
+        // synchronous long-poll would block the parent from writing stdin.
+        // Its own fd 0 still has to answer on a non-parking wasm stack.
+        this.asynchronousMethods = Object.keys(childCalls).filter(method => method !== 'cpReadStdin');
       }
     }
     this.synchronous = spec.syscalls?.vfs.synchronous;
@@ -265,7 +276,11 @@ class RealmFacet implements Facet {
       tag: this.spec.tag,
       parking: engineParks(),
       preamble: this.spec.preamble,
-      supervisor: this.supervisor ? { methods: this.supervisorMethods, synchronous: this.synchronous ? SYNCHRONOUS_METHODS : null } : undefined,
+      supervisor: this.supervisor ? {
+        methods: this.supervisorMethods,
+        synchronous: this.synchronous ? SYNCHRONOUS_METHODS : null,
+        asynchronous: this.asynchronousMethods,
+      } : undefined,
       egress: this.network.egress !== undefined,
     };
     let post: (event: unknown) => boolean = () => false;
