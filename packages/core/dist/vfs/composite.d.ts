@@ -543,7 +543,7 @@ export declare class CompositeVFS implements VFS {
     private judgeChanges;
     /**
      * Whether something is at `path` for this view (lstat, its own lookup), by awaiting where its mount does: on a
-     * backend that holds changes back, as they have been told (VFS.landed), its own lookup storing and recalling nothing.
+     * backend that holds changes back, as they have been told (VFS.landedAt), its own lookup storing and recalling nothing.
      */
     private presentAt;
     /**

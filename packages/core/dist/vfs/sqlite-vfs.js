@@ -565,7 +565,7 @@ const APPEND_RUN_LATENCY_MS = 100;
 const LEAF_READS = new Set([
     'exists', 'isDirectory', 'isFile', 'isSymlink', 'kind', 'access', 'readlink', 'resolveSymlink', 'resolveName',
     'readFile', 'readFileUncached', 'readRange', 'readRangeUncached', 'readFileString', 'stat', 'lstat', 'statIfPresent',
-    'landed', 'getDefaultAcl', 'readdir', 'contentKey', 'storageKey', 'subscribe',
+    'landedAt', 'getDefaultAcl', 'readdir', 'contentKey', 'storageKey', 'subscribe',
 ]);
 /**
  * The synchronous mutations of a credentialed view: a view bound to a
@@ -2171,7 +2171,7 @@ export class SqliteVFS {
             stat: (path) => this.stat(path, bound, true),
             lstat: (path) => this.stat(path, bound, false),
             statIfPresent: (path, followLeaf = true) => this.statIfPresent(path, bound, followLeaf),
-            landed: (path) => this.landed(path, bound),
+            landedAt: (path) => this.landedAt(path, bound),
             utimes: (path, atimeMs, mtimeMs, options) => this.utimes(path, atimeMs, mtimeMs, bound, options?.followSymlinks !== false),
             chmod: (path, mode) => this.chmod(path, mode, bound),
             setDefaultAcl: (path, perms) => this.setDefaultAcl(path, perms, bound),
@@ -2558,7 +2558,7 @@ export class SqliteVFS {
         return this.probeInode(path, cred) !== undefined;
     }
     /** probeInode's answer on the published tree, by its walk alone (resolvePath stores appends and recalls holders). */
-    landed(path, cred) {
+    landedAt(path, cred) {
         try {
             return this.walkPath(path, cred, false, true, this.inodes).inode !== undefined;
         }
@@ -5930,7 +5930,7 @@ export class SqliteVFS {
                 const inode = this.checkAccess(path, 0, bound, { followLeaf, allowMissingLeaf: true, tree }).inode;
                 return inode === undefined ? null : this.statOf(inode);
             },
-            landed: (path) => probe(path) !== undefined,
+            landedAt: (path) => probe(path) !== undefined,
             utimes: readOnly,
             chmod: readOnly,
             setDefaultAcl: readOnly,

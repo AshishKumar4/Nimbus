@@ -1126,7 +1126,7 @@ export class CompositeVFS {
     }
     /**
      * Whether something is at `path` for this view (lstat, its own lookup), by awaiting where its mount does: on a
-     * backend that holds changes back, as they have been told (VFS.landed), its own lookup storing and recalling nothing.
+     * backend that holds changes back, as they have been told (VFS.landedAt), its own lookup storing and recalling nothing.
      */
     presentAt(path) {
         const decide = (sync) => {
@@ -1139,8 +1139,8 @@ export class CompositeVFS {
                 if (!this.isStructural(path) && this.absentOn(path) === null) {
                     const route = this.locate(path);
                     const ops = this.ops(route, sync);
-                    if (typeof ops.landed === 'function') {
-                        const found = ops.landed(route.rel);
+                    if (typeof ops.landedAt === 'function') {
+                        const found = ops.landedAt(route.rel);
                         return isPromise(found) ? found.then((there) => there === true, refused) : found === true;
                     }
                 }

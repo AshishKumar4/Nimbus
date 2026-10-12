@@ -147,10 +147,10 @@ export class SqliteFiles {
             throw converted;
         }
     }
-    landed(path) {
+    landedAt(path) {
         if (path.replace(/\/+/g, '') === '')
             return true;
-        return this.run('lstat', path, () => this.view.landed(path));
+        return this.run('lstat', path, () => this.view.landedAt(path));
     }
     readFile(path) {
         return this.run('open', path, () => this.view.readFile(path));
