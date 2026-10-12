@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// @tier slow — runs independent local facet realms under Node and Bun.
+
 // The WASI process ABI reaches the workspace's broker through a real local
 // supervisor. A runtime child has its own realm and the broker's one stdin.
 import assert from 'node:assert/strict';
