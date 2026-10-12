@@ -3620,11 +3620,7 @@ export class SqliteVFS {
    */
   revision(path?: string, cred?: VfsCred): number {
     this.settleAppends();
-    if (path === undefined) return this._revision;
-    // A credentialed caller asks about its own view; a confined one asking
-    // after /tmp/x means its own file, so the counter must be that file's.
-    const p = cred === undefined ? normalizeVfsPath(path) : this.lexicalKey(path, cred).value;
-    if (p === '') return this._revision;
+    if (path === undefined || path === '' || path === '/') return this._revision;
     // Mutations stamp the path a name resolves to, so that is the counter.
     let resolved: { path: string; inode: INode | undefined };
     try {
@@ -3632,8 +3628,11 @@ export class SqliteVFS {
     } catch {
       // A name that does not resolve is the name's own counter. Read, not
       // admitted: no lookup of it will find it through that name.
+      const p = cred === undefined ? normalizeVfsPath(path) : this.lexicalKey(path, cred).value;
+      if (p === '') return this._revision;
       return this.pathRevision(p, this.inodes.peek(p) ?? this.loadInode(p) ?? null);
     }
+    if (resolved.path === '') return this._revision;
     // The walk's own lookup of the leaf: a second would read SQLite again for a missing one.
     return this.pathRevision(resolved.path, resolved.inode ?? null);
   }
