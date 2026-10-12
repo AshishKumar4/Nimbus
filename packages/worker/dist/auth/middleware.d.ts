@@ -1,7 +1,7 @@
 /**
  * auth/middleware.ts — Request-time extract + verify glue.
  *
- * `extractBearerToken(request)` pulls the token from one of three places,
+ * `extractBearerToken(request, sessionId?)` pulls the token from one of three places,
  * in order of precedence:
  *   1. `Authorization: Bearer <token>` header (canonical).
  *   2. `?nimbus_token=<token>` query parameter (for `<iframe src>`).
@@ -21,7 +21,7 @@
  *     previewed app owns the path space so the requested path is kept.
  */
 import { type NimbusAuthEnv } from './token.js';
-import { type VerifiedNimbusToken } from './types.js';
+import { type VerifiedNimbusToken, type VerifiedNimbusRequestToken } from './types.js';
 /**
  * Cookie name used for in-iframe token persistence.
  *
@@ -31,8 +31,22 @@ import { type VerifiedNimbusToken } from './types.js';
  * this registrable domain, and without the prefix that code could set
  * `nimbus_token=<its own>; Domain=<apex>; Path=/s/` and shadow the real
  * cookie for the whole app (first match wins in the Cookie header).
+ *
+ * One jar, many sessions: each session route owns exactly
+ * `__Host-nimbus_token-<sid>`, so two iframes on one page never overwrite
+ * each other's attach credential. The sid in the name is validated exactly
+ * like a route sid before the name is ever built; naming never replaces JWT
+ * verification plus the sid pin for authentication.
  */
 export declare const NIMBUS_TOKEN_COOKIE = "__Host-nimbus_token";
+/** Prefix of every per-session attach cookie name (`${PREFIX}<sid>`). */
+export declare const NIMBUS_TOKEN_COOKIE_PREFIX = "__Host-nimbus_token-";
+/**
+ * The cookie name for one already-validated session id. Callers must pass a
+ * sid this request's route already parsed and validated; the guard here only
+ * keeps a malformed value from ever becoming a cookie name.
+ */
+export declare function nimbusTokenCookieName(sessionId: string): string;
 /** Query parameter name. */
 export declare const NIMBUS_TOKEN_QUERY = "nimbus_token";
 /**
@@ -41,7 +55,13 @@ export declare const NIMBUS_TOKEN_QUERY = "nimbus_token";
  *
  * Precedence: Authorization header → query → cookie.
  */
-export declare function extractBearerToken(request: Request): string | null;
+/**
+ * Pull a token from a Request for a route that already parsed its sid.
+ * The route's own per-session cookie is the only cookie consulted; callers
+ * with no session address (token minting, health) keep passing no sid and
+ * consult no cookie at all.
+ */
+export declare function extractBearerToken(request: Request, sessionId?: string): string | null;
 /**
  * Verify a token from a Request. Convenience wrapper around
  * {@link extractBearerToken} + {@link verifyNimbusToken}.
@@ -50,10 +70,15 @@ export declare function extractBearerToken(request: Request): string | null;
  *         `requireToken` is true (default).
  * @throws Any error from {@link verifyNimbusToken}.
  */
-export declare function verifyRequestToken(request: Request, env: NimbusAuthEnv): Promise<VerifiedNimbusToken>;
+export declare function verifyRequestToken(request: Request, env: NimbusAuthEnv): Promise<VerifiedNimbusRequestToken>;
+export declare function verifyRequestToken(request: Request, env: NimbusAuthEnv, opts: {
+    requireToken: true;
+    sessionId?: string;
+}): Promise<VerifiedNimbusRequestToken>;
 export declare function verifyRequestToken(request: Request, env: NimbusAuthEnv, opts: {
     requireToken?: boolean;
-}): Promise<VerifiedNimbusToken | null>;
+    sessionId?: string;
+}): Promise<VerifiedNimbusRequestToken | null>;
 /**
  * Authorize a request for a route: verify its token, require every scope in
  * `scopes`, and, on a route that addresses a session, require the token's
@@ -63,7 +88,7 @@ export declare function verifyRequestToken(request: Request, env: NimbusAuthEnv,
 export declare function authorizeRequest(request: Request, env: NimbusAuthEnv, required: {
     scopes: readonly string[];
     sessionId?: string;
-}): Promise<VerifiedNimbusToken>;
+}): Promise<VerifiedNimbusRequestToken>;
 /**
  * Assert that the verified token carries every required scope.
  *
@@ -103,7 +128,45 @@ export declare function requireSessionPin(verified: VerifiedNimbusToken, attempt
  *     the session shell's own paths are all under the same host anyway.
  *   - Max-Age: matches the token's remaining lifetime.
  */
-export declare function setNimbusTokenCookie(token: string, expSec: number): string;
+export declare function setNimbusTokenCookie(token: string, expSec: number, sessionId: string): string;
+/**
+ * Expire the pre-per-session legacy cookie after a migration: once a route
+ * authenticates its own credential, the ambiguous global name must not linger
+ * to be selected again.
+ */
+export declare function expireLegacyNimbusTokenCookie(): string;
+/**
+ * Migration headers for a request that authenticated via the legacy global
+ * cookie: re-issue its verified token under the route-owned name and expire
+ * the legacy name, in the same response. Returns [] unless verification used
+ * the legacy name — headers, queries and route-owned cookies never
+ * cause this migration, even if a legacy name is present. The re-issued
+ * token keeps its verified expiry; this never mints, never extends, never
+ * consults anything but the already-verified claims.
+ */
+export declare function sessionCookieMigration(requestCookie: string | null, verified: VerifiedNimbusRequestToken, sessionId: string): string[];
+/**
+ * Largest attach-cookie jar an exchange will grow: at most this many
+ * per-session names, a separate request-header budget, and Chrome's CHIPS
+ * name/value storage quota. The proposed cookie is measured, never estimated
+ * from a fixed-size placeholder. Sessions
+ * accumulate (one name each, never evicted), so issuance stops before the
+ * jar would push a browser past its per-request header ceiling; the
+ * caller retries from a fresh profile or prunes dead sessions first.
+ */
+export declare const NIMBUS_TOKEN_COOKIE_LIMIT = 24;
+export declare const NIMBUS_TOKEN_COOKIE_HEADER_LIMIT: number;
+export declare const NIMBUS_TOKEN_SET_COOKIE_LIMIT = 4096;
+/** Chrome's name/value quota per CHIPS partition and registrable domain. */
+export declare const NIMBUS_TOKEN_PARTITION_BYTES_LIMIT = 10240;
+/**
+ * Refuse an exchange that would overflow the browser's cookie jar.
+ * Runs before any single-use bootstrap is consumed, so a refusal never
+ * burns a one-shot credential. Eviction is never an option: dropping a
+ * sibling session's credential to make room would be the same ownership
+ * bug in reverse.
+ */
+export declare function enforceSessionCookieCapacity(cookieHeader: string | null, proposedCookie: string, expireLegacy?: boolean): void;
 /**
  * Map a NimbusAuthError to a `Response` suitable for the embedder's
  * `fetch` handler to return. JSON body with `{ error, code }`.

@@ -33,6 +33,16 @@
  *     unreliable (no Referer for API fetches from the xterm shell).
  *   - Single source of truth: this module owns the `/s/<id>/` mapping.
  */
+/**
+ * Remove the browser's attach credentials on the forwarded edge. Behind this
+ * edge there is no browser and no second session, so a credential the
+ * browser selected for this route must not ride further into the session's
+ * own servers — the query is already deleted above, and every per-session
+ * (`__Host-nimbus_token-<sid>`) and legacy (`__Host-nimbus_token`) cookie
+ * goes here. Runs on exact names and the exact prefix only: a user's own
+ * cookie that merely mentions tokens is none of this function's business.
+ */
+export declare function stripNimbusAttachCookies(headers: Headers): void;
 /** Prefix for all session-scoped routes. Centralized for future refactors. */
 export declare const SESSION_ROUTE_PREFIX = "/s";
 /** Header the Worker sets on forwarded requests. The DO reads it. */
@@ -120,6 +130,8 @@ export interface ForwardOptions {
      * check them. Omitted in legacy mode or when the caller was not verified.
      */
     callerScopes?: readonly string[];
+    /** Precomputed legacy-migration Set-Cookie values for the outgoing response. */
+    migrateSessionCookies?: readonly string[];
 }
 /**
  * Forward a request to the session's DO.

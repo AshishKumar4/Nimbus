@@ -23,23 +23,35 @@ const { extractBearerToken } = await import('../../../../packages/worker/src/aut
   const r = new Request('https://x/y?nimbus_token=qtok');
   a.check('query → token', extractBearerToken(r) === 'qtok');
 }
-// 4. Cookie.
+// 4. Cookie: the route's own per-session name, then the legacy global name.
 {
-  const r = new Request('https://x/y', { headers: { Cookie: '__Host-nimbus_token=ctok; other=z' } });
-  a.check('cookie → token', extractBearerToken(r) === 'ctok');
+  const r = new Request('https://x/sid-1/', { headers: { Cookie: '__Host-nimbus_token-sid-1=ctok; other=z' } });
+  a.check('route cookie → token', extractBearerToken(r, 'sid-1') === 'ctok');
+}
+{
+  const r = new Request('https://x/sid-1/', { headers: { Cookie: '__Host-nimbus_token=legacy; other=z' } });
+  a.check('legacy cookie → token', extractBearerToken(r, 'sid-1') === 'legacy');
+}
+{
+  const r = new Request('https://x/sid-1/', { headers: { Cookie: '__Host-nimbus_token-sid-2=other; other=z' } });
+  a.check('another session cookie is not selected', extractBearerToken(r, 'sid-1') === null);
+}
+{
+  const r = new Request('https://x/y', { headers: { Cookie: '__Host-nimbus_token-sid-1=ctok' } });
+  a.check('no sid → no cookie consulted', extractBearerToken(r) === null);
 }
 // 5. Precedence: header beats query beats cookie.
 {
   const r = new Request('https://x/y?nimbus_token=qtok', {
-    headers: { Authorization: 'Bearer htok', Cookie: '__Host-nimbus_token=ctok' },
+    headers: { Authorization: 'Bearer htok', Cookie: '__Host-nimbus_token-sid-1=ctok' },
   });
-  a.check('header beats query+cookie', extractBearerToken(r) === 'htok');
+  a.check('header beats query+cookie', extractBearerToken(r, 'sid-1') === 'htok');
 }
 {
   const r = new Request('https://x/y?nimbus_token=qtok', {
-    headers: { Cookie: '__Host-nimbus_token=ctok' },
+    headers: { Cookie: '__Host-nimbus_token-sid-1=ctok' },
   });
-  a.check('query beats cookie', extractBearerToken(r) === 'qtok');
+  a.check('query beats cookie', extractBearerToken(r, 'sid-1') === 'qtok');
 }
 // 6. None present → null.
 {
@@ -48,8 +60,8 @@ const { extractBearerToken } = await import('../../../../packages/worker/src/aut
 }
 // 7. URL-encoded cookie value.
 {
-  const r = new Request('https://x/y', { headers: { Cookie: '__Host-nimbus_token=ab%2B%2Fcd' } });
-  a.check('url-encoded cookie decoded', extractBearerToken(r) === 'ab+/cd');
+  const r = new Request('https://x/sid-1/', { headers: { Cookie: '__Host-nimbus_token-sid-1=ab%2B%2Fcd' } });
+  a.check('url-encoded cookie decoded', extractBearerToken(r, 'sid-1') === 'ab+/cd');
 }
 // 8. Empty Authorization → fall through.
 {

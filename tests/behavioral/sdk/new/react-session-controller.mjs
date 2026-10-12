@@ -55,13 +55,38 @@ createRoot(document.getElementById('root')).render(<App />);
     if (url.origin === new URL(BASE).origin && match) sessions.add(match[1]);
   });
   const host = `${BASE}/__react-controller-probe`;
+  // Force both real attach exchanges to finish before either clean iframe
+  // document can boot. This preserves parallelism and makes a global-cookie
+  // ownership collision reproducible; no auth header or URL is replaced.
+  const documents = new Map();
+  let resolveOverlap;
+  const overlapped = new Promise(resolve => { resolveOverlap = resolve; });
+  let released = false;
   await page.setRequestInterception(true);
   page.on('request', (request) => {
     if (request.url() === host) return request.respond({ contentType: 'text/html', body: '<!doctype html><div id="root"></div><script src="/__react-controller.js"></script>' });
     if (request.url() === `${BASE}/__react-controller.js`) return request.respond({ contentType: 'text/javascript', body: bundled.outputFiles[0].text });
+    const url = new URL(request.url());
+    const match = /^\/s\/([^/]+)\/$/.exec(url.pathname);
+    if (url.origin === new URL(BASE).origin && match) sessions.add(match[1]);
+    if (!released && match && url.origin === new URL(BASE).origin && request.isNavigationRequest()
+      && request.frame()?.parentFrame() && !url.searchParams.has('nimbus_token')) {
+      documents.set(match[1], request);
+      if (documents.size === 2) {
+        released = true;
+        for (const held of documents.values()) void held.continue();
+        resolveOverlap();
+      }
+      return;
+    }
     return request.continue();
   });
   await page.goto(host, { waitUntil: 'domcontentloaded', timeout: 90_000 });
+  let overlapTimer;
+  try {
+    await Promise.race([overlapped, new Promise((_,reject) => { overlapTimer = setTimeout(() => reject(new Error('two attach redirects did not overlap')),30_000); })]);
+  } finally { clearTimeout(overlapTimer); }
+  a.check('two attach exchanges overlap before either iframe boots', documents.size === 2);
   await page.waitForFunction(() => document.getElementById('ready-count')?.textContent === '1'
     && document.getElementById('headless')?.dataset.ready === 'true'
     && document.getElementById('headless').dataset.sessionId, { timeout: 90_000 });
