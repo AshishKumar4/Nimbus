@@ -78,9 +78,7 @@ const DECODABLE_CONTENT_CODINGS = new Map([
  *
  * The pipe into the last stage is explicit, so its settlement is when the
  * body is done with: its end (`owner.settle`), or its failure, `owner.signal`
- * aborting it among them (`owner.fail`). Aborting it also ends a pipe whose
- * client left while its source is quiet: the stages before it are errored
- * through it.
+ * aborting it among them (`owner.fail`).
  */
 export function relayRpcBody(response, method, owner, gated = null) {
     if (response.body === null) {
@@ -90,7 +88,7 @@ export function relayRpcBody(response, method, owner, gated = null) {
     const declared = method === 'HEAD' ? null : response.headers.get('Content-Length');
     // RFC 9110 §8.6: 1*DIGIT. Joined duplicates ("5, 5") are not one length.
     const length = declared !== null && /^\d+$/.test(declared) ? Number(declared) : NaN;
-    const last = Number.isSafeInteger(length) ? new FixedLengthStream(length) : gated ?? new TransformStream();
+    const last = Number.isSafeInteger(length) ? new FixedLengthStream(length) : gated ?? abortableStage(owner.signal);
     settleWith(owner, last === gated || gated === null ? response.body : response.body.pipeThrough(gated), last.writable);
     return new Response(last.readable, {
         status: response.status,
@@ -120,12 +118,23 @@ function settleWith(owner, source, last) {
     void source.pipeTo(last, { signal: owner.signal }).then(owner.settle, owner.fail);
 }
 /**
+ * A JavaScript stage of the relay, errored when `signal` aborts. A pipe waits
+ * on a stage's read or write without looking at its signal, so this is what
+ * ends a pipe whose client is gone while its source is quiet or its sink full.
+ */
+function abortableStage(signal, transformer = {}) {
+    return new TransformStream({
+        ...transformer,
+        start: (controller) => { signal.addEventListener('abort', () => controller.error(signal.reason), { once: true }); },
+    });
+}
+/**
  * A process's answer body, each piece and its end let out as the rest of
  * its output is (ProcessOutput.releaseOutput): what it wrote while answering
  * is published before the piece after it, or its end, is seen.
  */
-function releasedBody(output, pid) {
-    return new TransformStream({
+function releasedBody(output, pid, signal) {
+    return abortableStage(signal, {
         transform: (chunk, controller) => output.releaseOutput(pid, () => controller.enqueue(chunk)),
         flush: () => output.releaseOutput(pid, () => { }),
     });
@@ -554,7 +563,7 @@ export class PortRegistry {
             // undone. We do NOT inject Access-Control-Allow-Origin — a port proxy
             // forwards whatever CORS policy the user's HTTP server chose (audit C3
             // discourages gratuitous wildcards on non-static routes).
-            const gate = output === null || response.body === null ? null : releasedBody(output, entry.pid);
+            const gate = output === null || response.body === null ? null : releasedBody(output, entry.pid, scope.signal);
             const answer = decodeContentCoding(response, port, request.method, owner, gate);
             relayed = true;
             return answer;

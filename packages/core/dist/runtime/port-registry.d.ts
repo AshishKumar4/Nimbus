@@ -90,9 +90,7 @@ export interface PortEntry {
  *
  * The pipe into the last stage is explicit, so its settlement is when the
  * body is done with: its end (`owner.settle`), or its failure, `owner.signal`
- * aborting it among them (`owner.fail`). Aborting it also ends a pipe whose
- * client left while its source is quiet: the stages before it are errored
- * through it.
+ * aborting it among them (`owner.fail`).
  */
 export declare function relayRpcBody(response: Response, method: string, owner: BodyOwner, gated?: TransformStream<Uint8Array, Uint8Array> | null): Response;
 /** Who owns work for a relayed body: it ends with `signal`, and says how the relay ended. */
