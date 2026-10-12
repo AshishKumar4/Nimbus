@@ -1,5 +1,5 @@
 import { type CredentialedVfs, type DelegationTerms, type SqliteVFS } from '../vfs/sqlite-vfs.js';
-import { type WriteStreamOptions } from './wave-contracts.js';
+import type { WriteStreamOptions } from './wave-contracts.js';
 import { WaveIngest } from './wave-ingest.js';
 import { type CompositeVFS } from '../vfs/composite.js';
 import { type Awaitable } from '../vfs/vfs.js';
