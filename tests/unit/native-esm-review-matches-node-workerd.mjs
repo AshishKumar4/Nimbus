@@ -196,6 +196,19 @@ const FILES = {
     "writeFileSync(new URL('./generated.mjs', import.meta.url), \"import './after.mjs';\\nimport './missing.mjs';\\n\");",
     "try { await import('./generated.mjs'); } catch (e) { console.log('rejected', e.code); }",
   ].join('\n') + '\n',
+  // The same where the module that does not link is staged (and a query's
+  // instance): its staged sibling runs no body either.
+  'late-link-staged/after.mjs': "console.log('after');\n",
+  'late-link-staged/bad.mjs': "import './missing.mjs';\nconsole.log('bad');\n",
+  'late-link-staged/variant.mjs': "import './missing-too.mjs';\nconsole.log('variant');\n",
+  'late-link-staged/main.mjs': [
+    "import { writeFileSync } from 'node:fs';",
+    "if (globalThis.never) { await import('./after.mjs'); await import('./bad.mjs'); }",
+    "writeFileSync(new URL('./generated.mjs', import.meta.url), \"import './after.mjs';\\nimport './bad.mjs';\\n\");",
+    "try { await import('./generated.mjs'); } catch (e) { console.log('rejected', e.code); }",
+    "writeFileSync(new URL('./generated-variant.mjs', import.meta.url), \"import './after.mjs?v';\\nimport './variant.mjs?v';\\n\");",
+    "try { await import('./generated-variant.mjs'); } catch (e) { console.log('rejected', e.code); }",
+  ].join('\n') + '\n',
   // JSON's __esModule/default are data, not CommonJS interop instructions.
   'json-query-esmodule/data.json': '{"__esModule":true,"default":7}\n',
   'json-query-esmodule/main.mjs': "import v from './data.json?q' with { type: 'json' };\nconsole.log(JSON.stringify(v));\n",
@@ -251,6 +264,7 @@ const COMMANDS = [
   'node cjs-query/main.mjs',
   'node js-query/main.mjs',
   'node late-link/main.mjs',
+  'node late-link-staged/main.mjs',
   'node adopted-tla/main.mjs',
   'node json-query-esmodule/main.mjs',
   'node prepopulated-cache/main.cjs',

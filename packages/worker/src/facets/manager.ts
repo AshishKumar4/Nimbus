@@ -3051,14 +3051,6 @@ export function assertStagedBundleFitsRpcPayload(
  * fold the (possibly large) entry code into a compact, collision-resistant
  * prefetch-bundle cache-key component — not a security primitive.
  */
-/** A text's SHA-256, hex: what a file with no revision (a mount's) is known by. */
-async function contentIdentity(text: string): Promise<string> {
-  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)));
-  let hex = '';
-  for (const byte of digest) hex += byte.toString(16).padStart(2, '0');
-  return hex;
-}
-
 function _fnv1a(s: string): string {
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) {
@@ -6637,8 +6629,8 @@ export class FacetManager {
     if (rev !== 0 && memo && memo.rev === rev) return memo.refs;
     let source: string;
     try { source = await filesOf(vfs).readFileString(path); } catch { return null; }
-    // A mounted file has no revision (0): its content is its identity.
-    const identity = rev !== 0 ? rev : await contentIdentity(source);
+    // A mounted file has no revision (0): its content's digest is its identity.
+    const identity = rev !== 0 ? rev : await sha256Hex(source);
     if (memo && memo.rev === identity) return memo.refs;
     await pacer?.spend(source.length);
     const refs = findStaticFsReferences(source, '/' + path);
