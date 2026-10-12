@@ -42,11 +42,14 @@ const supervisor = {
   async fsReadBatch(requests) {
     // Read now; answer once the gate opens (the answer is late, the bytes are not).
     const out = [];
+    let reads = false;
     for (const request of requests) {
-      try { out.push({ bytes: await authority.readRange(request.path, request.offset, request.length, { expectedEpoch: request.expectedEpoch, expectedRevision: request.expectedRevision }) }); }
-      catch (error) { out.push({ error }); }
+      try {
+        if (request.lstat) out.push({ stat: await authority.stat(request.path, { followSymlinks: false }) });
+        else { reads = true; out.push({ bytes: await authority.readRange(request.path, request.offset, request.length, { expectedEpoch: request.expectedEpoch, expectedRevision: request.expectedRevision }) }); }
+      } catch (error) { out.push({ error }); }
     }
-    if (gate) await gate;
+    if (reads && gate) await gate;
     return out;
   },
 };
