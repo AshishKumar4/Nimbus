@@ -461,7 +461,7 @@ function spawnResident(ctx, env, disk, supervisor, params) {
         acquireActivity: observation.acquire,
         // A request waits for the pinned incarnation, never for the boot.
         handleHttpRequest: async (request, scope, relayed) => {
-            const lease = observation.acquire(scope.signal);
+            const lease = observation.acquire();
             void scope.settled.then(lease.release);
             try {
                 const { id, ended } = relayed ?? sent.send(scope, abandon);

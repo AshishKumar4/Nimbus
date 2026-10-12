@@ -369,7 +369,7 @@ class PeerProcessHost {
                 started,
                 lost: loss.signal,
                 handleHttpRequest: (request, scope) => loss.route(async () => {
-                    const lease = observation.acquire(scope.signal);
+                    const lease = observation.acquire();
                     void scope.settled.then(lease.release);
                     try {
                         const sending = sent.send(scope, abandon);

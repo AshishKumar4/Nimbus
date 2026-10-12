@@ -77,8 +77,8 @@ const DECODABLE_CONTENT_CODINGS = new Map([
  * of, so it is not held to it.
  *
  * The pipe into the last stage is explicit, so its settlement is when the
- * body is done with: its end (`owner.settle`), its failure (`owner.fail`),
- * or `owner.signal` aborting it.
+ * body is done with: its end (`owner.settle`), or its failure, `owner.signal`
+ * aborting it among them (`owner.fail`).
  */
 export function relayRpcBody(response, method, owner, gated = null) {
     if (response.body === null) {
@@ -98,18 +98,21 @@ export function relayRpcBody(response, method, owner, gated = null) {
 }
 /**
  * One response's scope (RouteableFacetTarget), and the owner whose relay
- * settles it. Its signal is the caller's, or the relay failing, whichever
- * comes first: a client that resets is seen both ways, in either order.
+ * settles it: delivered, or not. A caller that leaves is done with the
+ * response whatever its relay still waits on; a client that resets is seen
+ * both ways (its signal, the relay failing), in either order, and the first
+ * says.
  */
 export function responseScope(caller) {
-    let settle = () => { };
-    const settled = new Promise((resolve) => { settle = resolve; });
-    const failed = new AbortController();
-    const signal = AbortSignal.any([caller, failed.signal]);
-    // A caller that leaves is done with the body, whatever its relay still waits on.
-    signal.addEventListener('abort', settle, { once: true });
-    const fail = (reason) => failed.abort(reason ?? new DOMException('The response was not delivered', 'AbortError'));
-    return { scope: { signal, settled }, owner: { signal, settle, fail } };
+    let resolve = (_delivered) => { };
+    const settled = new Promise((done) => { resolve = done; });
+    const left = () => resolve(false);
+    const end = (delivered) => { caller.removeEventListener('abort', left); resolve(delivered); };
+    if (caller.aborted)
+        left();
+    else
+        caller.addEventListener('abort', left, { once: true });
+    return { scope: { signal: caller, settled }, owner: { signal: caller, settle: () => end(true), fail: () => end(false) } };
 }
 function settleWith(owner, source, last) {
     void source.pipeTo(last, { signal: owner.signal }).then(owner.settle, owner.fail);

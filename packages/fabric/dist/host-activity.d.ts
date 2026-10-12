@@ -48,7 +48,7 @@ export declare class HostActivity {
  */
 export declare class SentRequests {
     #private;
-    /** An id for a request with `scope`, the ids to report, and abandon(id) sent if the scope aborts first. */
+    /** An id for a request with `scope`, the ids to report, and abandon(id) sent if it is not delivered. */
     send(scope: ResponseScope, abandon: (id: number) => Promise<unknown>): {
         id: number;
         ended: number[];
