@@ -80,7 +80,8 @@ for (const asynchronous of [false, true]) {
   const unreadOperand = await remove();
   assert.deepEqual(unreadOperand.kept, ['/tree']);
   assert.deepEqual(unreadOperand.removed, []);
-  assert.equal(unreadOperand.failures[0].error.syscall, 'scandir', 'a readable operand stat does not make its children readable');
+  assert.equal(unreadOperand.failures[0].error.code, 'EACCES');
+  assert.equal(unreadOperand.failures[0].error.syscall, 'rmdir', 'the final rmdir is also denied by the virtual root parent');
   root.chmod('tree', 0o755);
 
   if (!asynchronous) {
