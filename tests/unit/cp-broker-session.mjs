@@ -75,8 +75,9 @@ const decoder = new TextDecoder();
   const services = bindRuntimeServices(session, {
     ctx: session.ctx, env: session.env, notify() {}, async requestLaunchTurn() { return true; },
   });
-  Object.defineProperty(session, 'childProcessHost', { value: services.childProcessHost });
-  Object.assign(session, services);
+  const { childProcessHost, ...delegated } = services;
+  Object.defineProperty(session, 'childProcessHost', { value: childProcessHost });
+  Object.assign(session, delegated);
   session.processes = processes;
   session.filesystem = new SessionFilesystem(rawVfs, session);
   session.terminal = terminal;

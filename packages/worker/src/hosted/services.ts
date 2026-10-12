@@ -151,12 +151,13 @@ export function createChildProcessHost(self: RuntimeServiceHost, runtimeContext:
   return {
     async resolve(request, origin) {
       const workspace = self.runtimeWorkspace;
-      const registry = self._cpRegistry;
-      if (!workspace || !registry) return null;
+      if (!workspace) return null;
       bindProcessTable(runtimeContext.ctx, self.processes);
       const view = new ProcessView(workspace.filesystem.bind({ pid: origin.pid, cred: self.processes.cred(origin.pid) }));
       const shell = shellChildRunner(request, view, (child, line) => runChildShell(workspace, child, line));
       if (shell) return shell;
+      const registry = self._cpRegistry;
+      if (!registry) return null;
       const name = normalizeChildCommand(request.command);
       if (name.includes('/')) await view.access(name.startsWith('/') ? name : `${origin.cwd}/${name}`, X_OK);
       const from = resolveContext(origin.cwd, origin.env, view);
