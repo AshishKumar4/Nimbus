@@ -2374,22 +2374,6 @@ function __nimbusAwaitAncestorMutations(path) {
 }
 
 /**
- * Everything already queued strictly BELOW `path`, as of now. The
- * complement of the ancestor wait, for the two mutations that act on a
- * whole subtree: rmdir needs the children gone first, and a rename must
- * not carry the old name across while a mutation under it is still bound
- * for the old name.
- */
-function __nimbusAwaitSubtreeMutations(path) {
-  const prefix = __nimbusVfsPathKey(path) + "/";
-  const pending = [];
-  for (const [key, tail] of __vfsMutationTails) {
-    if (key.startsWith(prefix)) pending.push(tail);
-  }
-  return pending.length === 0 ? Promise.resolve() : Promise.all(pending).then(() => undefined);
-}
-
-/**
  * Order a mutation behind the others queued for the same path.
  *
  * A rejection is ALSO reported to the drain when it is durability-class. That

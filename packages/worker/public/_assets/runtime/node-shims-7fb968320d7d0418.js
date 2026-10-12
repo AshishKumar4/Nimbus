@@ -5123,8 +5123,7 @@ const __fsMod = (() => {
    * `null` when there is no authority to tell: standalone and unit contexts
    * keep today's local-only behaviour.
    */
-  function _queueStructuralMutation(absPath, syscall, displayPath, rpc, after, dest) {
-    void after;
+  function _queueStructuralMutation(absPath, syscall, displayPath, rpc, dest) {
     const settle = _nsTakeFresh();
     const supervisor = _supervisor();
     if (!supervisor) { settle(); return null; }
@@ -6167,7 +6166,6 @@ const __fsMod = (() => {
     return _queueStructuralMutation(
       absPath, syscall, p,
       (s) => _chownCall(s, absPath, nextUid, nextGid, followSymlinks),
-      () => _flushParkedWrite(absPath, supervisor),
     );
   }
 
@@ -6596,7 +6594,6 @@ const __fsMod = (() => {
     return _queueStructuralMutation(
       absPath, "rmdir", p,
       () => _vfsCall({ call: "rmdir", path: k }),
-      () => __nimbusAwaitSubtreeMutations(absPath),
     );
   }
   function rmdirSync(p) { _detachStructuralMutation(_rmdirQueued(p), "rmdir", p); }
@@ -6622,7 +6619,7 @@ const __fsMod = (() => {
     // A name renamed to itself is left as it is, as rename(2) leaves it.
     if (oldK === newK) {
       if (source !== undefined) return null;
-      return _queueStructuralMutation(oldAbs, "rename", oldP, () => _vfsOp({ type: "rename", from: oldK, to: newK }), undefined, newP);
+      return _queueStructuralMutation(oldAbs, "rename", oldP, () => _vfsOp({ type: "rename", from: oldK, to: newK }), newP);
     }
     // What rename(2) refuses before it moves anything, refused here before
     // the local tables move: the sync view applies a rename at once and the
@@ -6727,10 +6724,6 @@ const __fsMod = (() => {
     const queued = _queueStructuralMutation(
       oldAbs, "rename", oldP,
       () => _vfsOp({ type: "rename", from: oldK, to: newK }),
-      // The queue orders the move behind the source's ancestors; the move
-      // also needs the destination's ancestors to exist and every pending
-      // mutation beneath the source to have landed under the old name.
-      () => Promise.all([__nimbusAwaitAncestorMutations(newAbs), __nimbusAwaitSubtreeMutations(oldAbs)]),
       newP,
     );
     _fenceVfsMutation(newAbs, queued);
@@ -6861,7 +6854,6 @@ const __fsMod = (() => {
       absPath, "rm", p,
       // fs.rm as one call: the tree with it when recursive, an absent name no refusal when forced.
       () => _vfsCall({ call: "rm", path: k, ...(o.recursive ? { recursive: true } : {}), ...(o.force || parked ? { force: true } : {}) }),
-      () => __nimbusAwaitSubtreeMutations(absPath),
     );
   }
   function rmSync(p, opts) { _detachStructuralMutation(_rmQueued(p, opts, true), "rm", p); }
