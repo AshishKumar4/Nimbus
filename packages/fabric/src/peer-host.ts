@@ -26,7 +26,7 @@ import { ProcessHostLost, type ResidentBootSpec, type ResidentDiskReader, type R
 import { bindingSupervisor, supervisorBindingProps } from './supervisor-props.js';
 import { withResolvers } from './turn-budget.js';
 import { processes, abortFacet, deleteFacetStorage, type ResidentFacet, type ResidentFacetEnv } from './workerd-facet-host.js';
-import { HOST_INCARNATION_HEADER } from './host-activity.js';
+import { HOST_INCARNATION_HEADER, type Abandonable } from './host-activity.js';
 import { isHostReset } from '@nimbus-sh/platform/oom-classify.js';
 
 /**
@@ -90,13 +90,11 @@ export interface HostedHttpRequest {
   body: ReadableStream | null;
 }
 
-export interface HostedHttpResponse {
+export interface HostedHttpResponse extends Abandonable {
   status: number;
   statusText: string;
   headers: [string, string][];
   body: ReadableStream | null;
-  /** Ends this host's relay of `body`, for a caller that abandons the response. */
-  cancel(): void;
 }
 export type HostedReply<T> = T | { hostLost: string };
 export const HOSTED_WATCH_HEADER = 'x-nimbus-hosted-watch';

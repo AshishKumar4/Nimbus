@@ -69,7 +69,7 @@
 import { networkRef, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { ResponseScope } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { hostActivity, HOST_INCARNATION_HEADER } from './host-activity.js';
+import { cancelWhenAbandoned, hostActivity, HOST_INCARNATION_HEADER } from './host-activity.js';
 import { onColdStart } from './generation.js';
 import { peerRetryDelay } from './fanout.js';
 import { hostNamespaceBinding, hostOpDispatch, type HostNamespaceBinding } from './host-dispatch.js';
@@ -657,15 +657,7 @@ async function routeThroughPeer(
     headers: headerPairs(request.headers),
     body: request.method === 'GET' || request.method === 'HEAD' ? null : request.body,
   });
-  // The peer relays the body on a pipe of its own, which a caller that
-  // abandons the response ends through `cancel`: RPC carries no signal.
-  const cancel = () => { void Promise.resolve(result.cancel()).catch(() => {}); };
-  if (scope.signal.aborted) cancel();
-  else scope.signal.addEventListener('abort', cancel, { once: true });
-  void scope.settled.then(() => {
-    scope.signal.removeEventListener('abort', cancel);
-    disposeRpcResource(result.cancel);
-  });
+  cancelWhenAbandoned(scope, result.cancel);
   const responseHeaders = new Headers();
   for (const [key, value] of result.headers) responseHeaders.append(key, value);
   return new Response(result.body, {

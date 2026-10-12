@@ -17,6 +17,10 @@ published independently in the `@nimbus-sh` npm scope.
   caller is done with its body or its client leaves. `relayRpcBody` and
   `responseScope` (`@nimbus-sh/core/runtime/port-registry.js`) relay a body
   with that scope.
+- Fixed: a client that leaves a response a resident Node server is still
+  writing reaches that server as it does in Node: the response closes
+  unfinished and later writes are refused, on facet and peer hosts alike. The
+  process's work, and the session, are no longer held until it writes again.
 - Fixed: a resident's request is admitted by the instance its host opened,
   checked in the request itself; one the platform put in its place refuses it
   before any guest code runs, and the process reports its host lost once. A

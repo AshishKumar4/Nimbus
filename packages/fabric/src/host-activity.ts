@@ -1,4 +1,6 @@
 import type { WorkerCode } from '@nimbus-sh/platform/worker-code.js';
+import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
+import type { ResponseScope } from '@nimbus-sh/core/runtime/os-contracts.js';
 
 /** A host-loss watch exists only while somebody owns work on this actor. */
 export interface HostActivityLease {
@@ -150,6 +152,31 @@ export class HostActivity {
   }
 }
 
+/**
+ * A response relayed from another actor, which its caller can abandon.
+ * Workers RPC carries no signal, so the relay hands back `cancel`: an RPC stub
+ * the caller calls when its own caller leaves, and disposes once done.
+ */
+export interface Abandonable {
+  cancel(): void;
+}
+
+/** What a resident's leaf answers its host (the adapter's hostHttpRequest). */
+export interface HostedLeafResponse extends Abandonable {
+  response: Response;
+}
+
+/** Call `cancel` if `scope`'s caller leaves; dispose it once the caller is done, either way. */
+export function cancelWhenAbandoned(scope: ResponseScope, cancel: Abandonable['cancel']): void {
+  const abandon = () => { void Promise.resolve(cancel()).catch(() => {}); };
+  if (scope.signal.aborted) abandon();
+  else scope.signal.addEventListener('abort', abandon, { once: true });
+  void scope.settled.then(() => {
+    scope.signal.removeEventListener('abort', abandon);
+    disposeRpcResource(cancel);
+  });
+}
+
 const activities = new WeakMap<object, HostActivity>();
 export function hostActivity(host: object): HostActivity {
   let activity = activities.get(host);
@@ -192,7 +219,7 @@ export class NimbusProcess extends Base {
   #watchers = new Set();
   // A guest's fetch may hand its request on to its own handleHttpRequest.
   #admitted = new WeakSet();
-  #admit(request) {
+  #admit(request, signal) {
     if (this.#admitted.has(request)) return request;
     if (request.headers.get(${request}) !== ${key}) return new Response('Not found', { status: 404 });
     if (request.headers.get(${incarnation}) !== this.#incarnation) {
@@ -201,13 +228,21 @@ export class NimbusProcess extends Base {
     const headers = new Headers(request.headers);
     headers.delete(${request});
     headers.delete(${incarnation});
-    const admitted = new Request(request, { headers });
+    const admitted = new Request(request, { headers, ...(signal ? { signal } : {}) });
     this.#admitted.add(admitted);
     return admitted;
   }
   handleHttpRequest(request) {
     const admitted = this.#admit(request);
     return admitted instanceof Request ? super.handleHttpRequest(admitted) : admitted;
+  }
+  // The host's HTTP entry (HostedLeafResponse): the guest sees its caller
+  // leave as its request's signal, which cancel aborts.
+  async hostHttpRequest(request) {
+    const abandoned = new AbortController();
+    const admitted = this.#admit(request, abandoned.signal);
+    const cancel = () => abandoned.abort();
+    return { response: admitted instanceof Request ? await super.handleHttpRequest(admitted) : admitted, cancel };
   }
   fetch(request) {
     if (request.headers.get(${watch}) !== ${key}) {

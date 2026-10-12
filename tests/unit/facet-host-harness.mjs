@@ -103,7 +103,7 @@ export function createFacetWorld(evaluate, { resolveConfig = true, evaluatesAdap
   };
   // The generated admission (observeResidentConfig): a request runs only on
   // the instance its host pinned, without the transport that admitted it.
-  const admit = (instance, request) => {
+  const admit = (instance, request, signal) => {
     const capability = request.headers.get(HOST_REQUEST_HEADER);
     if (!capability) return new Response('Not found', { status: 404 });
     if (request.headers.get(HOST_INCARNATION_HEADER) !== incarnationOf(instance)) {
@@ -112,7 +112,7 @@ export function createFacetWorld(evaluate, { resolveConfig = true, evaluatesAdap
     const headers = new Headers(request.headers);
     headers.delete(HOST_REQUEST_HEADER);
     headers.delete(HOST_INCARNATION_HEADER);
-    return new Request(request, { headers });
+    return new Request(request, { headers, ...(signal ? { signal } : {}) });
   };
   const watches = new Map();
   const die = (name, error) => {
@@ -124,10 +124,12 @@ export function createFacetWorld(evaluate, { resolveConfig = true, evaluatesAdap
     get(name, start) {
       return {
         async startProcess(args) { return (await ensure(name, start)).startProcess(args); },
-        async handleHttpRequest(request) {
+        async hostHttpRequest(request) {
           const instance = await ensure(name, start);
-          const admitted = evaluatesAdapter ? request : admit(instance, request);
-          return admitted instanceof Request ? instance.handleHttpRequest(admitted) : admitted;
+          if (evaluatesAdapter) return instance.hostHttpRequest(request);
+          const abandoned = new AbortController();
+          const admitted = admit(instance, request, abandoned.signal);
+          return { response: admitted instanceof Request ? await instance.handleHttpRequest(admitted) : admitted, cancel: () => abandoned.abort() };
         },
         // A resident's WebSocket entrypoint (ResidentFacet.handleWebSocketRequest).
         async fetch(request) {

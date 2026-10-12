@@ -14,7 +14,16 @@
  */
 
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { hostActivity, HOST_INCARNATION_HEADER, HOST_REQUEST_HEADER, HOST_WATCH_HEADER, observeResidentConfig, type HostActivityLease } from './host-activity.js';
+import {
+  cancelWhenAbandoned,
+  hostActivity,
+  HOST_INCARNATION_HEADER,
+  HOST_REQUEST_HEADER,
+  HOST_WATCH_HEADER,
+  observeResidentConfig,
+  type HostActivityLease,
+  type HostedLeafResponse,
+} from './host-activity.js';
 import type { ModuleSourceEnv } from '@nimbus-sh/platform/module-source.js';
 import { readImmutableModuleSource } from '@nimbus-sh/core/_shared/staged-source.js';
 import { classifyError, describeError, isHostReset, isUnexplainedPlatformError } from '@nimbus-sh/platform/oom-classify.js';
@@ -90,7 +99,8 @@ async function stagedOneShot(key: string, stage: unknown, supervisor: Supervisor
 /** The subset of a facet stub a resident process exposes to whoever opened it. */
 interface ResidentFacetStub {
   startProcess(args?: unknown): Promise<unknown>;
-  handleHttpRequest(request: Request): Promise<Response>;
+  /** Inbound HTTP through the host adapter (observeResidentConfig). */
+  hostHttpRequest(request: Request): Promise<HostedLeafResponse>;
   /**
    * A facet stub is a Durable Object stub, so it fetches. That is the one path
    * an upgrade can take: a 101 owns a live socket, which the RPC
@@ -604,8 +614,13 @@ function spawnResident(
     handleHttpRequest: async (request: Request, scope: ResponseScope) => {
       const lease = observation.acquire(scope.signal);
       void scope.settled.then(lease.release);
-      try { return await admitted(request, (guarded) => facet.handleHttpRequest(guarded)); }
-      catch (error) { lease.release(); throw error; }
+      try {
+        return await admitted(request, async (guarded) => {
+          const { response, cancel } = await facet.hostHttpRequest(guarded);
+          cancelWhenAbandoned(scope, cancel);
+          return response;
+        });
+      } catch (error) { lease.release(); throw error; }
     },
     // An upgrade hands its socket to the caller at the handshake.
     handleWebSocketRequest: async (request: Request) => {

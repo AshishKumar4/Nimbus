@@ -13,6 +13,7 @@ export class NimbusProcess extends DurableObject {
   async fetch(request) { return this.answer(request, 'fetch'); }
   async answer(request, entry) {
     this.ctx.handlers++;
+    this.ctx.signal = request.signal;
     this.ctx.seen.push({ entry, method: request.method, headers: [...request.headers], body: await request.text() });
     if (request.headers.get('Upgrade') === 'websocket') {
       const [client, server] = Object.values(new WebSocketPair());
@@ -32,6 +33,10 @@ async function incarnation(process) {
   assert.ok(value, 'the initial authenticated watch pins the original instance');
   return value;
 }
+// The host's own entry answers the response with its cancel (HostedLeafResponse).
+async function call(process, entry, sent) {
+  return entry === 'hostHttpRequest' ? (await process.hostHttpRequest(sent)).response : process[entry](sent);
+}
 function request(nonce, token = capability, upgrade = false) {
   return new Request('https://leaf.invalid/user/path?kept=yes', {
     method: upgrade ? 'GET' : 'POST', body: upgrade ? undefined : 'request payload',
@@ -40,7 +45,7 @@ function request(nonce, token = capability, upgrade = false) {
   });
 }
 
-for (const entry of ['handleHttpRequest', 'fetch']) {
+for (const entry of ['hostHttpRequest', 'handleHttpRequest', 'fetch']) {
   const ctx = { starts: 0, handlers: 0, seen: [] };
   const old = new NimbusProcess(ctx, {}), pinned = await incarnation(old);
   // A new object models the platform replacing the leaf instance. Constructor
@@ -48,7 +53,7 @@ for (const entry of ['handleHttpRequest', 'fetch']) {
   const replacement = new NimbusProcess(ctx, {});
   assert.notEqual(await incarnation(replacement), pinned);
   for (let attempt = 0; attempt < 2; attempt++) {
-    const response = await replacement[entry](request(pinned));
+    const response = await call(replacement, entry, request(pinned));
     await response.body?.cancel();
     assert.equal(ctx.starts, 0, 'stale data never starts the replacement guest');
     assert.equal(ctx.handlers, 0, 'stale data is refused before either guest entrypoint');
@@ -56,14 +61,14 @@ for (const entry of ['handleHttpRequest', 'fetch']) {
     assert.equal(response.headers.get(REQUEST_GUARD), capability, 'only an authenticated guard refusal carries the per-open brand');
   }
 }
-for (const entry of ['handleHttpRequest', 'fetch']) {
+for (const entry of ['hostHttpRequest', 'handleHttpRequest', 'fetch']) {
   const ctx = { starts: 0, handlers: 0, seen: [] }, process = new NimbusProcess(ctx, {});
   const nonce = await incarnation(process);
-  const refused = await process[entry](request(nonce, 'wrong-capability'));
+  const refused = await call(process, entry, request(nonce, 'wrong-capability'));
   await refused.body?.cancel();
   assert.equal(ctx.handlers, 0, 'an incarnation nonce alone cannot authorize guest data');
   assert.equal(refused.status, 404);
-  const response = await process[entry](request(nonce));
+  const response = await call(process, entry, request(nonce));
   assert.equal(await response.text(), 'guest answer');
   assert.equal(response.headers.get('x-guest-answer'), 'kept');
   // What the client sent, as this runtime constructs it, without the private transport.
@@ -78,4 +83,12 @@ for (const entry of ['handleHttpRequest', 'fetch']) {
   assert.equal(ctx.handlers, 0, 'the WebSocket entrypoint refuses a replaced actor before upgrade');
   assert.equal(response.status, 410);
   assert.equal(response.webSocket, undefined);
+}
+{
+  const ctx = { starts: 0, handlers: 0, seen: [] }, process = new NimbusProcess(ctx, {});
+  const { response, cancel } = await process.hostHttpRequest(request(await incarnation(process)));
+  assert.equal(await response.text(), 'guest answer');
+  assert.equal(ctx.signal.aborted, false);
+  cancel();
+  assert.equal(ctx.signal.aborted, true, 'the guest sees its host abandon the response as its request signal');
 }

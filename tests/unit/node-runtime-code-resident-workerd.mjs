@@ -181,6 +181,54 @@ server.listen(Number(process.env.PORT || 0), '127.0.0.1', () => console.log('BOU
     const actualBefore = /BEFORE_RESULT ([^\r\n]+)/.exec(beforeLogs)?.[1];
     assert.ok(actualBefore, beforeLogs);
     assert.deepEqual(JSON.parse(actualBefore), expectedBefore, 'resident exception kind and continuation match Node');
+
+    // A client that leaves a response the server has gone quiet on: the
+    // guest hears it as Node's server does, its response closed unfinished
+    // and later writes refused.
+    const abandonSource = String.raw`
+const events = [];
+const server = require('http').createServer((request, response) => {
+  if (request.url === '/report') return response.end(JSON.stringify(events));
+  request.on('aborted', () => events.push('request aborted'));
+  request.on('close', () => events.push('request close'));
+  response.on('finish', () => events.push('response finish'));
+  response.on('error', (error) => events.push('response error ' + error.code));
+  response.on('close', () => {
+    events.push('response close ' + JSON.stringify({ destroyed: response.destroyed, finished: response.writableFinished }));
+    response.write('late', (error) => events.push('late write ' + (error?.code ?? 'written')));
+  });
+  response.writeHead(200);
+  response.write(Buffer.alloc(65536, 97));
+});
+server.listen(Number(process.env.PORT || 0), '127.0.0.1', () => console.log('BOUND:' + server.address().port));
+`;
+    const leave = async (url, headers = {}) => {
+      const client = new AbortController();
+      const response = await fetch(url + '/stall', { headers, signal: client.signal });
+      await response.body.getReader().read();
+      client.abort();
+      for (let i = 0; i < 100; i++) {
+        const report = JSON.parse(await (await fetch(url + '/report', { headers })).text());
+        if (report.some((event) => event.startsWith('late write'))) return report;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      throw new Error('the server never heard its client leave');
+    };
+    const hostAbandon = await new Promise((resolve, reject) => {
+      const child = spawn('node', ['-e', abandonSource], { env: { ...process.env, PORT: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
+      let output = '';
+      child.stdout.on('data', (part) => {
+        output += part;
+        const port = /BOUND:(\d+)/.exec(output)?.[1];
+        if (port) leave('http://127.0.0.1:' + port).then(resolve, reject).finally(() => child.kill());
+      });
+      child.on('error', reject);
+    });
+    await terminal.writeFile(W + '/abandon.js', abandonSource);
+    await terminal.run('cd ' + W + ' && PORT=7074 node abandon.js');
+    const { requestHeaders } = await import('../behavioral/_driver.mjs');
+    const nimbusAbandon = await leave(`${probe.base}/s/${terminal.sid}/port/7074`, requestHeaders());
+    assert.deepEqual(nimbusAbandon, hostAbandon, 'a client leaving mid-response reaches the resident server as it reaches Node\'s');
   } finally {
     await terminal.close().catch(() => {});
   }
