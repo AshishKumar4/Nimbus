@@ -25,9 +25,12 @@ import { verifyNimbusToken, type NimbusAuthEnv } from './token.js';
 import {
   NimbusAuthError,
   NimbusTokenMalformedError,
+  NimbusTokenClaimsError,
   NimbusScopeError,
   NimbusSessionPinError,
-  type VerifiedNimbusToken,
+  type VerifiedNimbusRequestToken,
+  type NimbusCredentialSource,
+  isNimbusIdComponent,
 } from './types.js';
 
 /**
@@ -51,25 +54,16 @@ export const NIMBUS_TOKEN_COOKIE = '__Host-nimbus_token';
 /** Prefix of every per-session attach cookie name (`${PREFIX}<sid>`). */
 export const NIMBUS_TOKEN_COOKIE_PREFIX = '__Host-nimbus_token-';
 
-/** Largest sid accepted into a cookie name (matches {@link ID_COMPONENT_RE}). */
-export const NIMBUS_TOKEN_COOKIE_SID_MAX = 128;
-
 /**
  * The cookie name for one already-validated session id. Callers must pass a
  * sid this request's route already parsed and validated; the guard here only
  * keeps a malformed value from ever becoming a cookie name.
  */
 export function nimbusTokenCookieName(sessionId: string): string {
-  if (!isValidNimbusTokenCookieSid(sessionId)) {
+  if (!isNimbusIdComponent(sessionId)) {
     throw new NimbusTokenMalformedError(`refusing to name an attach cookie from ${JSON.stringify(sessionId)}`);
   }
   return `${NIMBUS_TOKEN_COOKIE_PREFIX}${sessionId}`;
-}
-
-/** Whether a value may appear in an attach cookie name: same alphabet as a route sid. */
-export function isValidNimbusTokenCookieSid(value: unknown): value is string {
-  return typeof value === 'string' && value.length >= 1 && value.length <= NIMBUS_TOKEN_COOKIE_SID_MAX
-    && /^[A-Za-z0-9._-]+$/.test(value);
 }
 
 /** Query parameter name. */
@@ -88,16 +82,20 @@ export const NIMBUS_TOKEN_QUERY = 'nimbus_token';
  * consult no cookie at all.
  */
 export function extractBearerToken(request: Request, sessionId?: string): string | null {
+  return selectRequestCredential(request, sessionId)?.token ?? null;
+}
+
+function selectRequestCredential(request: Request, sessionId?: string): { token: string; source: NimbusCredentialSource } | null {
   // 1. Authorization header.
   const auth = request.headers.get('Authorization');
   if (auth) {
     const m = auth.match(/^Bearer\s+(.+)$/i);
-    if (m) return m[1];
+    if (m) return { token: m[1], source: 'authorization' };
   }
   // 2. Query parameter.
   const url = new URL(request.url);
   const q = url.searchParams.get(NIMBUS_TOKEN_QUERY);
-  if (q && q.length > 0) return q;
+  if (q && q.length > 0) return { token: q, source: 'query' };
   // 3. Cookie: the route's own per-session name, then the pre-per-session
   // legacy name. The legacy cookie authenticates only its pinned session:
   // `authorizeRequest` still requires the pin to equal the route sid, so a
@@ -119,7 +117,7 @@ export function extractBearerToken(request: Request, sessionId?: string): string
     const pick = selected ?? legacy;
     if (pick) {
       try {
-        return decodeURIComponent(pick);
+        return { token: decodeURIComponent(pick), source: selected !== null ? 'session-cookie' : 'legacy-cookie' };
       } catch {
         return null;
       }
@@ -136,26 +134,30 @@ export function extractBearerToken(request: Request, sessionId?: string): string
  *         `requireToken` is true (default).
  * @throws Any error from {@link verifyNimbusToken}.
  */
-export function verifyRequestToken(request: Request, env: NimbusAuthEnv): Promise<VerifiedNimbusToken>;
-export function verifyRequestToken(request: Request, env: NimbusAuthEnv, opts: { requireToken: true; sessionId?: string }): Promise<VerifiedNimbusToken>;
+export function verifyRequestToken(request: Request, env: NimbusAuthEnv): Promise<VerifiedNimbusRequestToken>;
+export function verifyRequestToken(request: Request, env: NimbusAuthEnv, opts: { requireToken: true; sessionId?: string }): Promise<VerifiedNimbusRequestToken>;
 export function verifyRequestToken(
   request: Request,
   env: NimbusAuthEnv,
   opts: { requireToken?: boolean; sessionId?: string },
-): Promise<VerifiedNimbusToken | null>;
+): Promise<VerifiedNimbusRequestToken | null>;
 export async function verifyRequestToken(
   request: Request,
   env: NimbusAuthEnv,
   opts: { requireToken?: boolean; sessionId?: string } = {},
-): Promise<VerifiedNimbusToken | null> {
-  const token = extractBearerToken(request, opts.sessionId);
-  if (!token) {
+): Promise<VerifiedNimbusRequestToken | null> {
+  const selected = selectRequestCredential(request, opts.sessionId);
+  if (!selected) {
     if (opts.requireToken === false) return null;
     throw new NimbusTokenMalformedError(
       'no Bearer token in Authorization header, nimbus_token query, or cookie',
     );
   }
-  return verifyNimbusToken(env, token);
+  const verified = await verifyNimbusToken(env, selected.token);
+  if (selected.source === 'legacy-cookie' && verified.claims.sid === undefined) {
+    throw new NimbusTokenClaimsError('legacy attach cookie must be session-pinned');
+  }
+  return { ...verified, credentialSource: selected.source };
 }
 
 /**
@@ -168,7 +170,7 @@ export async function authorizeRequest(
   request: Request,
   env: NimbusAuthEnv,
   required: { scopes: readonly string[]; sessionId?: string },
-): Promise<VerifiedNimbusToken> {
+): Promise<VerifiedNimbusRequestToken> {
   const verified = await verifyRequestToken(request, env, { requireToken: true, sessionId: required.sessionId });
   requireScopes(verified, required.scopes);
   if (required.sessionId !== undefined) requireSessionPin(verified, required.sessionId);
@@ -269,23 +271,16 @@ export function expireLegacyNimbusTokenCookie(): string {
  */
 export function sessionCookieMigration(
   requestCookie: string | null,
-  verified: VerifiedNimbusToken,
+  verified: VerifiedNimbusRequestToken,
   sessionId: string,
 ): string[] {
   if (!requestCookie) return [];
-  let hasRoute = false;
-  let hasLegacy = false;
-  const wanted = `${NIMBUS_TOKEN_COOKIE_PREFIX}${sessionId}=`;
-  for (const c of requestCookie.split(';')) {
-    const pair = c.trim();
-    if (pair.startsWith(wanted)) hasRoute = true;
-    else if (pair === NIMBUS_TOKEN_COOKIE || pair.startsWith(`${NIMBUS_TOKEN_COOKIE}=`)) hasLegacy = true;
-    if (hasRoute && hasLegacy) break;
-  }
-  if (!hasLegacy || hasRoute) return [];
+  if (verified.credentialSource !== 'legacy-cookie') return [];
   if (verified.claims.sid !== sessionId || verified.claims.exp === undefined) return [];
+  const cookie = setNimbusTokenCookie(verified.raw, verified.claims.exp, sessionId);
+  enforceSessionCookieCapacity(requestCookie, cookie, true);
   return [
-    setNimbusTokenCookie(verified.raw, verified.claims.exp, sessionId),
+    cookie,
     expireLegacyNimbusTokenCookie(),
   ];
 }
@@ -301,6 +296,8 @@ export function sessionCookieMigration(
 export const NIMBUS_TOKEN_COOKIE_LIMIT = 24;
 export const NIMBUS_TOKEN_COOKIE_HEADER_LIMIT = 16 * 1024;
 export const NIMBUS_TOKEN_SET_COOKIE_LIMIT = 4096;
+/** Chrome's name/value quota per CHIPS partition and registrable domain. */
+export const NIMBUS_TOKEN_PARTITION_BYTES_LIMIT = 10_240;
 
 /**
  * Refuse an exchange that would overflow the browser's cookie jar.
@@ -309,27 +306,33 @@ export const NIMBUS_TOKEN_SET_COOKIE_LIMIT = 4096;
  * sibling session's credential to make room would be the same ownership
  * bug in reverse.
  */
-export function enforceSessionCookieCapacity(cookieHeader: string | null, sessionId: string): void {
+export function enforceSessionCookieCapacity(cookieHeader: string | null, proposedCookie: string, expireLegacy = false): void {
   const cookie = cookieHeader ?? '';
   let names = 0;
-  let sessionBytes = 0;
+  let partitionBytes = 0;
+  let headerBytes = 0;
+  const proposedPair = proposedCookie.split(';', 1)[0];
+  const proposedName = proposedPair.slice(0, proposedPair.indexOf('='));
+  const byteLength = (value: string): number => new TextEncoder().encode(value).length;
   for (const c of cookie.split(';')) {
     const pair = c.trim();
     const at = pair.indexOf('=');
     if (at <= 0) continue;
-    if (pair.startsWith(NIMBUS_TOKEN_COOKIE_PREFIX)) {
-      names += 1;
-      sessionBytes += pair.length + 2;
-    } else if (pair === NIMBUS_TOKEN_COOKIE || pair.startsWith(`${NIMBUS_TOKEN_COOKIE}=`)) {
-      sessionBytes += pair.length + 2;
-    }
+    const name = pair.slice(0, at);
+    if (name.startsWith(NIMBUS_TOKEN_COOKIE_PREFIX)) names += 1;
+    // Cookie does not reveal partitioning, so count every visible pair
+    // conservatively. Chrome counts name + value, excluding attributes.
+    if (name === proposedName || (expireLegacy && name === NIMBUS_TOKEN_COOKIE)) continue;
+    partitionBytes += byteLength(name) + byteLength(pair.slice(at + 1));
+    headerBytes += byteLength(pair) + 2;
   }
-  const fresh = `${NIMBUS_TOKEN_COOKIE_PREFIX}${sessionId}=`.length + 1024;
-  if (names >= NIMBUS_TOKEN_COOKIE_LIMIT || sessionBytes + fresh > NIMBUS_TOKEN_COOKIE_HEADER_LIMIT) {
+  partitionBytes += byteLength(proposedPair) - 1;
+  headerBytes += byteLength(proposedPair);
+  if (names >= NIMBUS_TOKEN_COOKIE_LIMIT || partitionBytes > NIMBUS_TOKEN_PARTITION_BYTES_LIMIT
+    || headerBytes > NIMBUS_TOKEN_COOKIE_HEADER_LIMIT) {
     throw new NimbusTokenMalformedError('too many session attach credentials for one browser jar');
   }
-  const setCookie = `${NIMBUS_TOKEN_COOKIE_PREFIX}${sessionId}=${'x'.repeat(1024)}; Path=/; Max-Age=0; SameSite=None; HttpOnly; Secure; Partitioned`;
-  if (new TextEncoder().encode(setCookie).length > NIMBUS_TOKEN_SET_COOKIE_LIMIT) {
+  if (byteLength(proposedCookie) > NIMBUS_TOKEN_SET_COOKIE_LIMIT) {
     throw new NimbusTokenMalformedError('a session attach credential does not fit one Set-Cookie');
   }
 }

@@ -60,8 +60,6 @@ import {
   requireSessionPin,
   authErrorResponse,
   setNimbusTokenCookie,
-  NIMBUS_TOKEN_COOKIE,
-  expireLegacyNimbusTokenCookie,
   enforceSessionCookieCapacity,
   sessionCookieMigration,
   NIMBUS_TOKEN_QUERY,
@@ -72,6 +70,7 @@ import {
   ATTACH_BOOTSTRAP_TTL_MS,
   type NimbusAuthEnv,
   type VerifiedNimbusToken,
+  type VerifiedNimbusRequestToken,
 } from '../auth/index.js';
 import { authorizeRequest } from '../auth/middleware.js';
 import { hasJwtSecret } from '../auth/token.js';
@@ -696,7 +695,7 @@ function isLegacyRootPath(pathname: string): boolean {
  */
 interface ResolvedNimbusRouteAuth {
   tenantSegment: string;
-  verified: VerifiedNimbusToken | null;
+  verified: VerifiedNimbusRequestToken | null;
 }
 
 /** Resolve the effective auth mode. Single source of truth for the
@@ -811,8 +810,6 @@ async function handleAttachExchange(
       if (verified.claims.sid === undefined) {
         throw new NimbusTokenClaimsError('single-use attach token missing sid');
       }
-      const fresh = await consumeAttachBootstrap(env, verified.doInstanceName, sessionId, verified.claims.jti);
-      if (!fresh) throw new NimbusBootstrapConsumedError();
       cookieTtlMs = DEFAULT_TOKEN_TTL_MS;
     } else {
       if (options.reusableScope === null) {
@@ -826,17 +823,21 @@ async function handleAttachExchange(
       singleUse: false,
     });
     const cookieExpSec = Math.floor(Date.now() / 1000) + Math.floor(cookieTtlMs / 1000);
+    const cookie = setNimbusTokenCookie(cookieToken, cookieExpSec, sessionId);
+    // Signing is pure. Every issuance limit runs before the only mutating
+    // step, so a refused exchange leaves its single-use URL retryable.
+    enforceSessionCookieCapacity(cookieHeader, cookie);
+    if (verified.claims.jti !== undefined) {
+      const fresh = await consumeAttachBootstrap(env, verified.doInstanceName, sessionId, verified.claims.jti);
+      if (!fresh) throw new NimbusBootstrapConsumedError();
+    }
 
     const clean = new URL(url);
     clean.searchParams.delete(NIMBUS_TOKEN_QUERY);
     clean.pathname = options.redirectPath;
-    enforceSessionCookieCapacity(cookieHeader, sessionId);
-    const setCookies = [setNimbusTokenCookie(cookieToken, cookieExpSec, sessionId)];
-    if (cookieHeader?.includes(`${NIMBUS_TOKEN_COOKIE}=`)) {
-      // Migrating: the legacy global credential stops being selected the
-      // moment the route-owned one lands.
-      setCookies.push(expireLegacyNimbusTokenCookie());
-    }
+    // An exchange authenticates by its query, not by the legacy cookie.
+    // Only actual legacy-cookie use expires that credential (and its sid).
+    const setCookies = [cookie];
     const headers = new Headers({
       Location: clean.pathname + clean.search,
       'Cache-Control': 'no-store',
