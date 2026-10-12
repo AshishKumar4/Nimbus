@@ -32,7 +32,8 @@ import { hostNamespaceBinding, hostOpDispatch, type HostOpDispatch } from './hos
 import { innerDoIdFromName } from './inner-do-env.js';
 import { assertModuleMapWithinCodeLimit } from './budgets.js';
 import { applyFacetLimits, facetLimits, guestFacetPolicy, effectiveFacetLimits, facetLoaderKey, FACET_LIMITS, type FacetCodePolicy, type FacetKind } from './facet-limits.js';
-import { bindingSupervisor, type SupervisorBindingProps } from './supervisor-props.js';
+import { bindingSupervisor, egressMarker, workspaceOutbound, type SupervisorBindingProps } from './supervisor-props.js';
+import type { WorkspaceEgress } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { EntrypointLoopbackFactory } from './composition.js';
 import type { WorkerCode, EntrypointOptions } from './vendor/types.js';
 
@@ -338,6 +339,8 @@ const NimbusLoadedEntrypointPropsSchema = z.object({
   stage: z.unknown().optional(),
   /** The staged run's SUPERVISOR binding props, minted into its program here. */
   supervisor: z.custom<SupervisorBindingProps>((value) => typeof value === 'object' && value !== null).optional(),
+  /** A nested load's network (NimbusLoaderDepthProps.egress). */
+  egress: z.custom<WorkspaceEgress>((value) => (typeof value === 'object' && value !== null) || typeof value === 'function').optional(),
 }).passthrough();
 
 type NimbusLoadedEntrypointProps = z.infer<typeof NimbusLoadedEntrypointPropsSchema>;
@@ -409,13 +412,14 @@ function _genStubId(): string {
 function _resolveStubInCurrentContext(
   outerLoader: OuterWorkerLoader,
   key: string | undefined,
+  network: Pick<NimbusLoaderDepthProps, 'egress'>,
   policy?: FacetCodePolicy,
 ): LoadedWorker | null {
   if (key === undefined) return null;
   const code = _loadedCodesGet(key);
   if (!code) return null;
   const carried = policy ?? guestFacetPolicy(code);
-  return outerLoader.get(facetLoaderKey(carried.kind, key, carried.limits), async () => applyFacetLimits(carried.kind, code, carried.limits));
+  return outerLoader.get(facetLoaderKey(carried.kind, key, carried.limits), async () => applyFacetLimits(carried.kind, workspaceOutbound(code, network), carried.limits));
 }
 
 /**
@@ -439,9 +443,22 @@ function startOptions(policy: FacetCodePolicy, options?: EntrypointOptions): Ent
   } };
 }
 
-/** Props every Worker-Loader hop carries: how deep this Nimbus already is. */
+/** Props every Worker-Loader hop carries: how deep this Nimbus already is, and whose network it loads into. */
 interface NimbusLoaderDepthProps {
   depth?: number;
+  /**
+   * The egress of the process whose Worker holds this loader, when it has
+   * one: every Worker loaded through it goes out through it too
+   * (workspaceOutbound). With its network's id, so a keyed load under one
+   * egress is never served under another.
+   */
+  egress?: WorkspaceEgress;
+  networkId?: string;
+}
+
+/** The network part of `props`, to carry to the next hop. */
+function loaderNetwork(props: NimbusLoaderDepthProps | undefined): Pick<NimbusLoaderDepthProps, 'egress'> {
+  return props?.egress === undefined ? {} : { egress: props.egress };
 }
 
 /** Hop 1: env.LOADER.{load,get} forwarded to the outer loader. */
@@ -482,7 +499,7 @@ export class NimbusLoaderRPC extends WorkerEntrypoint<NimbusLoaderShimEnv, Nimbu
     // The stub is discarded; downstream calls re-load fresh in their
     // own context.
     const policy = guestFacetPolicy(code);
-    outerLoader.load(applyFacetLimits(policy.kind, code, policy.limits));
+    outerLoader.load(applyFacetLimits(policy.kind, workspaceOutbound(code, loaderNetwork(this.ctx.props)), policy.limits));
     const key = _genStubId();
     _loadedCodesPut(key, code);
     const ctxExports = shimCtxExports(this.ctx);
@@ -490,7 +507,7 @@ export class NimbusLoaderRPC extends WorkerEntrypoint<NimbusLoaderShimEnv, Nimbu
       throw new Error('Nimbus: ctx.exports.NimbusLoadedWorker unavailable');
     }
     return ctxExports.NimbusLoadedWorker({
-      props: { key, policy, depth: this.ctx.props?.depth || 0 },
+      props: { key, policy, depth: this.ctx.props?.depth || 0, ...loaderNetwork(this.ctx.props) },
     });
   }
 
@@ -503,7 +520,8 @@ export class NimbusLoaderRPC extends WorkerEntrypoint<NimbusLoaderShimEnv, Nimbu
     this._assertDepthOk();
     const outerLoader = this.env?.LOADER;
     if (!outerLoader) throw new Error('Nimbus: outer env.LOADER missing');
-    const key = 'get:' + id;
+    const networkId = this.ctx.props?.networkId;
+    const key = 'get:' + id + (networkId === undefined ? '' : '@' + networkId);
     if (_loadedCodesGet(key) === undefined) {
       const code = await callback();
       _loadedCodesPut(key, code);
@@ -513,7 +531,7 @@ export class NimbusLoaderRPC extends WorkerEntrypoint<NimbusLoaderShimEnv, Nimbu
       throw new Error('Nimbus: ctx.exports.NimbusLoadedWorker unavailable');
     }
     return ctxExports.NimbusLoadedWorker({
-      props: { key, policy: guestFacetPolicy(_loadedCodesGet(key)!), depth: this.ctx.props?.depth || 0 },
+      props: { key, policy: guestFacetPolicy(_loadedCodesGet(key)!), depth: this.ctx.props?.depth || 0, ...loaderNetwork(this.ctx.props) },
     });
   }
 }
@@ -540,7 +558,7 @@ export class NimbusLoadedWorker extends WorkerEntrypoint<NimbusLoaderShimEnv, Ni
       throw new Error('Nimbus: ctx.exports.NimbusLoadedEntrypoint unavailable');
     }
     return ctxExports.NimbusLoadedEntrypoint({
-      props: { key: props.key, name: name || null, depth: props.depth, policy: props.policy, options },
+      props: { key: props.key, name: name || null, depth: props.depth, policy: props.policy, options, ...loaderNetwork(props) },
     });
   }
 
@@ -557,7 +575,7 @@ export class NimbusLoadedWorker extends WorkerEntrypoint<NimbusLoaderShimEnv, Ni
     const props: NimbusLoadedWorkerProps = this.ctx.props || {};
     const outerLoader = this.env?.LOADER;
     if (!outerLoader) throw new Error('Nimbus: outer env.LOADER missing');
-    const outer = _resolveStubInCurrentContext(outerLoader, props.key, props.policy);
+    const outer = _resolveStubInCurrentContext(outerLoader, props.key, loaderNetwork(props), props.policy);
     if (!outer) throw new Error('Nimbus: loaded worker code missing (key=' + props.key + ')');
     const code = _loadedCodesGet(props.key!);
     const policy = props.policy ?? guestFacetPolicy(code!);
@@ -589,7 +607,7 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint<NimbusLoaderShimEnv
         assertModuleMapWithinCodeLimit(assembled.modules);
         if (!supervisor) return applyFacetLimits(policy.kind, assembled, policy.limits);
         const SUPERVISOR = bindingSupervisor(supervisor, ctxExportsOf(this.ctx));
-        return applyFacetLimits(policy.kind, { ...assembled, env: { ...assembled.env, SUPERVISOR } }, policy.limits);
+        return applyFacetLimits(policy.kind, workspaceOutbound({ ...assembled, env: { ...assembled.env, SUPERVISOR, ...egressMarker(supervisor) } }, supervisor), policy.limits);
       });
     } else {
       // No spec in props: resolve the ALREADY-LOADED worker. First the inner
@@ -597,7 +615,7 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint<NimbusLoaderShimEnv
       // loader's own cache. The cache-miss callback fails loud: a spec-free
       // stub is a handle on a worker someone else loaded — re-loading it from
       // code would boot an empty isolate, a silent wrong answer.
-      outerStub = _resolveStubInCurrentContext(outerLoader, props.key, policy)
+      outerStub = _resolveStubInCurrentContext(outerLoader, props.key, loaderNetwork(props), policy)
         ?? outerLoader.get(facetLoaderKey(policy.kind, props.key, policy.limits), async () => {
           throw new Error(`Nimbus: dynamic worker '${props.key}' is no longer loaded (evicted?)`);
         });

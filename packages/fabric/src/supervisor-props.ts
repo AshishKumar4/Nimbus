@@ -33,10 +33,10 @@ export interface SupervisorBindingProps {
   bindingKind: 'process';
   writerId: string;
   /**
-   * The workspace's egress (NimbusWorkspaceOptions.egress), when its host
-   * supplied one: the process's network, its packument reads and its sockets
-   * go out through it, from the binding (SupervisorRPC). With its id, so a
-   * cache this binding fills is the egress's own.
+   * The process's egress (NimbusWorkspaceOptions.egressFor, else .egress),
+   * when its host supplied one: the process's network, its packument reads
+   * and its sockets go out through it, from the binding (SupervisorRPC).
+   * With its id, so a cache this binding fills is the egress's own.
    */
   egress?: WorkspaceEgress;
   networkId?: string;
@@ -62,8 +62,31 @@ export function supervisorBindingProps(
   const doId = options.doId ?? own;
   const route = options.route ?? hostRoute() ?? undefined;
   const delivery = pid > 0 && doId === own ? supervisorDeliveryProps(ctx, pid) : {};
-  const egress = options.network.egress === undefined ? {} : { egress: options.network.egress, networkId: options.network.id };
+  // The process's own network (WorkspaceNetwork.forProcess): the egress its host minted for it, when one did.
+  const network = options.network.forProcess(pid);
+  const egress = network.egress === undefined ? {} : { egress: network.egress, networkId: network.id };
   return { doId, pid, route, ...delivery, bindingKind: 'process', writerId: options.writerId, ...egress };
+}
+
+/**
+ * `config` with a process's network: its egress (SupervisorBindingProps.egress)
+ * as its globalOutbound when the config names none. A process inherits its
+ * workspace's network, and so does a Worker it loads; an explicit one (a
+ * binding that mediates, or null that denies) stands. Every config a
+ * process's worker is loaded from goes through here: resident, one-shot,
+ * staged, and nested (env.LOADER).
+ */
+export function workspaceOutbound<C extends object>(config: C, network: Pick<SupervisorBindingProps, 'egress'>): C {
+  if (network.egress === undefined || ('globalOutbound' in config && config.globalOutbound !== undefined)) return config;
+  return { ...config, globalOutbound: network.egress };
+}
+
+/**
+ * What tells a process its network goes through an egress (`NIMBUS_EGRESS`):
+ * its node:tls goes to the egress's connectTls, or refuses by name.
+ */
+export function egressMarker(network: Pick<SupervisorBindingProps, 'egress'>): { NIMBUS_EGRESS?: true } {
+  return network.egress === undefined ? {} : { NIMBUS_EGRESS: true };
 }
 
 /** The one mint for SUPERVISOR/outbound capabilities handed to a process. */

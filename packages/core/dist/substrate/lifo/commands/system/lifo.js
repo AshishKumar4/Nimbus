@@ -10,6 +10,7 @@
  *   link    <path>       dev-link a local package directory
  *   unlink  <name>       remove a dev link
  */
+import { ISOLATE_NETWORK } from '../../../../_shared/workspace-network.js';
 import { npmInstallGlobal, getBinEntries, packagesIn, registerBinCommand } from './npm.js';
 import { RegistrySearchResponseSchema, renderSearchTable } from './registry-schemas.js';
 import { resolve, join } from '../../utils/path.js';
@@ -134,7 +135,7 @@ async function lifoList(ctx) {
     return 0;
 }
 // ─── search ───
-async function lifoSearch(ctx) {
+async function lifoSearch(ctx, kernel) {
     const term = ctx.args.slice(1).join(' ');
     if (!term) {
         await ctx.stderr.write('Usage: lifo search <term>\n');
@@ -144,7 +145,8 @@ async function lifoSearch(ctx) {
     const query = `lifo-pkg-${term}`;
     const url = `${registry}/-/v1/search?text=${encodeURIComponent(query)}&size=20`;
     try {
-        const response = await fetch(url, { signal: ctx.signal });
+        // Through the command's process's network (its host's egress, when it supplied one).
+        const response = await (kernel?.network ?? ISOLATE_NETWORK).forProcess(ctx.pid).fetch(url, { signal: ctx.signal });
         if (!response.ok)
             throw new Error(`Registry returned ${response.status}`);
         const data = RegistrySearchResponseSchema.parse(await response.json());
@@ -325,7 +327,7 @@ deps) {
             case 'ls':
                 return (await lifoList(ctx));
             case 'search':
-                return (await lifoSearch(ctx));
+                return (await lifoSearch(ctx, kernel));
             case 'init':
                 return await lifoInit(ctx);
             case 'link':

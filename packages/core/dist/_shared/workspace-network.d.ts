@@ -16,6 +16,7 @@
  * globalOutbound. The key is omitted when there is no egress, which keeps
  * the loader's default: the parent's network.
  */
+import type { ProcessEntry } from '../runtime/process-table.js';
 /**
  * What a host supplies: a Fetcher (a service binding, a `ctx.exports`
  * entrypoint), or on a host without one an object with the same two methods.
@@ -26,15 +27,44 @@
  * An egress that carries no TCP at all refuses in its `connect`.
  */
 export interface WorkspaceEgressTls {
-    connectTls(target: {
-        hostname: string;
-        port: number;
-    }): Promise<{
-        readable: ReadableStream<Uint8Array>;
-        writable: WritableStream<Uint8Array>;
-    }>;
+    connectTls(target: EgressTlsTarget): Promise<EgressStreams>;
+}
+/** Where a program's TLS socket goes. */
+export interface EgressTlsTarget {
+    hostname: string;
+    port: number;
+    /**
+     * The name the session presents (SNI) and checks the server's certificate
+     * by, when the program named one other than `hostname`
+     * (`tls.connect({ servername })`). Absent, `hostname` for both. Only the
+     * certificate check matches Node there: an empty servername is not
+     * forwarded, so the egress presents `hostname` as SNI where Node sends none.
+     */
+    servername?: string;
+}
+/** The plaintext of a connection the egress made. */
+export interface EgressStreams {
+    readable: ReadableStream<Uint8Array>;
+    writable: WritableStream<Uint8Array>;
 }
 export type WorkspaceEgress = Pick<Fetcher, 'fetch' | 'connect'> & Partial<WorkspaceEgressTls>;
+/** A process the host may mint an egress for (NimbusWorkspaceOptions.egressFor). */
+export interface EgressProcess {
+    readonly pid: number;
+    /** The exec that started it (`ProcessEntry.execId`), when the caller named one. */
+    readonly execId?: string;
+}
+/**
+ * The host's egress for one process: typically a `ctx.exports` entrypoint
+ * minted with the process's identity in its props, so each request, socket
+ * and TLS session it sees names the exec that made it. Undefined keeps the
+ * workspace's egress for that process.
+ */
+export type EgressFor = (process: EgressProcess) => WorkspaceEgress | undefined;
+/** The live processes a network selects for: their entries, by pid. */
+export interface EgressProcesses {
+    get(pid: number): ProcessEntry | undefined;
+}
 export interface WorkspaceNetwork {
     /** The host's egress, or undefined for the isolate's own network. */
     readonly egress: WorkspaceEgress | undefined;
@@ -47,9 +77,30 @@ export interface WorkspaceNetwork {
     readonly id: string;
     /** `fetch` for code that runs in the host's isolate on the workspace's behalf. */
     fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
+    /**
+     * The network process `pid` goes out through: the egress its host minted
+     * for it (`selectProcessEgress`), selected once while its process-table
+     * entry lives, so its binding, its Dynamic Worker's globalOutbound, a peer
+     * hosting it and the commands it runs all hold the same one. This network
+     * itself when it was not made to select (`workspaceNetwork`), when the
+     * host mints none for the process, and for pid 0 (no process: Nimbus's own
+     * work, or work already selected for).
+     */
+    forProcess(pid: number): WorkspaceNetwork;
 }
 /** The isolate's own network: what a kernel or command holds before a workspace gives it one. */
 export declare const ISOLATE_NETWORK: WorkspaceNetwork;
+/**
+ * A workspace's network over `egress` that gives each process of
+ * `processes` the egress `egressFor` mints for it, asked once per live
+ * entry, the source of its exec id (NimbusWorkspaceOptions.egressFor).
+ * Each call makes a network of the caller's own: another workspace over the
+ * same egress, with or without its own `egressFor`, never selects through
+ * this one. Its id is `workspaceNetwork(egress)`'s, the egress's, for what
+ * Nimbus does on the workspace's behalf. `processes` is read as the process
+ * asks, so a table its host replaces is the one read.
+ */
+export declare function selectProcessEgress(egress: WorkspaceEgress, egressFor: EgressFor, processes: EgressProcesses): WorkspaceNetwork;
 /**
  * The workspace network over `egress`, or the isolate's own network when
  * there is none. One per egress object: whatever asks for it (the workspace,

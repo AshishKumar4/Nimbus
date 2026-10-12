@@ -12,6 +12,36 @@ published independently in the `@nimbus-sh` npm scope.
   as Linux does. It keeps busy mount points and their ancestors.
 - Fixed: credentialed SQLite paths follow links before `..`, matching the
   namespace while keeping plain lookups on their indexed fast path.
+- Added: an egress per process (Kinu ask 45). `NimbusWorkspaceOptions.egressFor`
+  and `NimbusSession.egressFor` take `{ pid, execId }` and return the egress
+  for that process, or undefined to keep the workspace's. Nimbus asks once
+  per process while it lives (`WorkspaceNetwork.forProcess`), and everything
+  the process does goes through that one egress: its fetch, sockets and TLS,
+  its Dynamic Worker's outbound, a peer hosting it, and the commands it runs
+  (curl, wget, dig, ping, npm, pip, gem, lifo, git, wrangler dev and the
+  Workers it loads, opencode, the inline node). An embedder that mints it
+  with the exec in its props can tell which exec made each request. Each
+  workspace selects for its own processes, so two workspaces over one egress
+  object never share a selection, and a session destroyed and made again
+  selects for its new processes. Without `egressFor`, nothing changes.
+- Fixed: under an egress, three kinds of traffic went around it: a one-shot
+  opencode run (`opencode run`, `opencode models`), a Worker that a
+  `wrangler dev` Worker loads through `worker_loaders`, and `lifo search`.
+  Each now goes through the egress of the process that makes it.
+- Added: under an egress, a program's `tls.connect({ servername })` with a
+  name other than the host reaches the egress as `connectTls`'s optional
+  `servername`, which the egress presents and checks the server by, as Node
+  does. It used to fail with `ERR_OPTION_NOT_IMPLEMENTED`. A servername that
+  is not a string throws `ERR_INVALID_ARG_TYPE`, as in Node. An egress that
+  ignores the field connects as before (Kinu ask 44).
+- Changed: under an egress, `tls.connect({ socket })` (STARTTLS) fails with
+  `ERR_NIMBUS_EGRESS_STARTTLS`: "Nimbus: TLS over a socket the program
+  opened (tls.connect({ socket }), as STARTTLS does) is not available when
+  the workspace's network goes through an egress: the egress carries that
+  connection, and workerd starts no TLS on a connection through a service
+  binding". It used to close the program's socket and make TLS on a new
+  connection to the same host, which a STARTTLS server answers as plaintext.
+  A new connection is not the same connection (Kinu ask 46).
 
 ## 2026-10-12: core 0.18.0, fabric 0.13.0, worker 0.16.0, loom 0.2.5, sdk 0.13.1, react 0.3.1, cli 0.2.5, create-nimbus-app 0.2.2
 
