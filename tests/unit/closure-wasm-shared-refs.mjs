@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import { collectClosureWasmImages, FacetManager } from '../../packages/worker/src/facets/manager.ts';
 import { wasmImageDigest } from '../../packages/worker/src/facets/wasm-image-digest.ts';
 import { launchFs } from './lib/launch-fs.mjs';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 
 const PKG = 'home/user/app/node_modules/bindgen';
 const image = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
@@ -27,7 +28,7 @@ const { fs, reads } = launchFs({
 });
 const manager = Object.assign(Object.create(FacetManager.prototype), { staticRefsMemo: new Map() });
 const pacer = { spend: async () => {} };
-const staticRefs = (path) => manager._staticRefsOf(fs, path, pacer);
+const staticRefs = (path) => manager._staticRefsOf(fs, CRED_KERNEL, path, pacer);
 const glueReads = () => reads.filter((path) => path === glue).length;
 
 const alone = await collectClosureWasmImages(fs, { [glue]: source }, []);
@@ -43,9 +44,13 @@ assert.equal(glueReads(), 1, 'its first use reads the file once');
 
 await collectClosureWasmImages(fs, { [glue]: source }, [], staticRefs);
 assert.equal(glueReads(), 1, 'the next launch\'s collector neither reads nor parses it again');
-const planned = await manager._closureStaticRefs(fs, [glue], pacer);
+const planned = await manager._closureStaticRefs(fs, CRED_KERNEL, [glue], pacer);
 assert.equal(glueReads(), 1, 'and the data plan reads the same analysis');
 assert.ok(planned[0].exact.some((ref) => ref.path === `/${PKG}/bindgen_bg.wasm` && ref.sync), 'which names the image as a synchronous read');
+
+// Another credential's analysis is its own: it reads the file itself.
+await manager._staticRefsOf(fs, { ...CRED_KERNEL, uid: 1000, gid: 1000, groups: [] }, glue, pacer);
+assert.equal(glueReads(), 2, 'another credential reads the file for its own analysis');
 
 // A cell the shared analysis cannot answer (no file at its path) is analyzed itself.
 const unfiled = `${PKG}/unfiled.js`;

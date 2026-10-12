@@ -106,7 +106,7 @@ import {
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { rewriteProvidedCommonJsModules } from '@nimbus-sh/core/runtime/provided-packages.js';
 import {
-  bundleTypescriptLoader,
+  bundleCompiledLoader,
   esbuildDiagnosticShim,
   isBundleModuleCandidate,
   looksLikeEsm,
@@ -4186,7 +4186,7 @@ function _isLoadableModuleCell(path: string): boolean {
   if (isTypescriptDeclarationFile(path)) return false;
   const ext = vfsPathExtension(path);
   return ext === '.js' || ext === '.mjs' || ext === '.cjs' || ext === '.json'
-    || ext === '.wasm' || ext === '' || bundleTypescriptLoader(path) !== null;
+    || ext === '.wasm' || ext === '' || bundleCompiledLoader(path) !== null;
 }
 
 /**
@@ -4427,7 +4427,7 @@ function _markBundleEsmAsFailed(
     if (typeof src !== 'string') continue;
     // A TypeScript source is never runnable as staged, so it always needs
     // the emit it cannot get; a JavaScript file only if it is ESM.
-    if (bundleTypescriptLoader(path) !== null || looksLikeEsm(path, src, packageTypeOf(path))) placeEmit(path, esbuildDiagnosticShim(path, reason));
+    if (bundleCompiledLoader(path) !== null || looksLikeEsm(path, src, packageTypeOf(path))) placeEmit(path, esbuildDiagnosticShim(path, reason));
   }
 }
 
@@ -4860,7 +4860,7 @@ async function _buildPrefetchBundle(
   // TypeScript source never is). A file that changes has the result as its emit.
   for (const path of Object.keys(bundle)) {
     const cell = bundle[path];
-    const code = emits.get(path) ?? (isBundleModuleCandidate(path) && bundleTypescriptLoader(path) === null ? cell : undefined);
+    const code = emits.get(path) ?? (isBundleModuleCandidate(path) && bundleCompiledLoader(path) === null ? cell : undefined);
     // An ES module was bound before it was read (esbuild-service.ts preparedTransformSource).
     if (typeof code !== 'string' || esModules.has(path)) continue;
     await pacer?.spend(code.length);
@@ -5659,7 +5659,7 @@ export class FacetManager {
   private readProfile: ReadProfile | null = null;
   /** Read-profile changes dropped after losing every write race. */
   private readProfileConflicts = 0;
-  /** Per module path: its static references at a revision (see _closureStaticRefs). */
+  /** Per credential and module path: its static references at a revision (see _staticRefsOf). */
   private staticRefsMemo = new Map<string, { rev: number; refs: StaticFsRefs }>();
   /** Modules whose references are remembered: a few programs' closures. */
   private static readonly STATIC_REFS_MEMO_MAX = 16_384;
@@ -6360,7 +6360,7 @@ export class FacetManager {
     const lazy = new Set(vfsState.lazyModules ?? []);
     const syncReadsOf = new Map<string, string[]>();
     const refs: StaticFsRefs[] = [];
-    await this._closureStaticRefs(vfs, vfsState.bundlePaths ?? [], pacer, (path, moduleRefs) => {
+    await this._closureStaticRefs(vfs, entry.cred, vfsState.bundlePaths ?? [], pacer, (path, moduleRefs) => {
       const reads = lazy.has(path) ? moduleRefs.exact.filter((ref) => ref.sync).map((ref) => stripLeadingSlashes(ref.path)) : [];
       if (reads.length === 0) { refs.push(moduleRefs); return; }
       syncReadsOf.set(path, reads);
@@ -6369,7 +6369,7 @@ export class FacetManager {
     const lazyReads = lazyReadsByTarget(syncReadsOf, vfsState.lazyImporters ?? {});
     // An evicted module's reads, under its own path: the import() whose
     // closure walk reaches it fetches them (node-shims.ts __nimbusStageImport).
-    await this._closureStaticRefs(vfs, vfsState.evictedReaders ?? [], pacer, (path, moduleRefs) => {
+    await this._closureStaticRefs(vfs, entry.cred, vfsState.evictedReaders ?? [], pacer, (path, moduleRefs) => {
       const reads = moduleRefs.exact.filter((ref) => ref.sync).map((ref) => stripLeadingSlashes(ref.path));
       if (reads.length > 0) lazyReads[path] = [...new Set([...(lazyReads[path] ?? []), ...reads])];
     });
@@ -6436,7 +6436,7 @@ export class FacetManager {
     for (const path of vfsState.codeOnly ?? []) held.delete(path);
     const dir = stripLeadingSlashes(cwd).replace(/\/+$/, '');
     const reads = new Set<string>();
-    for (const refs of await this._closureStaticRefs(vfs, vfsState.bundlePaths ?? [], pacer)) {
+    for (const refs of await this._closureStaticRefs(vfs, entry.cred, vfsState.bundlePaths ?? [], pacer)) {
       for (const ref of refs.exact) if (ref.sync) reads.add(stripLeadingSlashes(ref.path));
       for (const ref of refs.cwdRelative) if (ref.sync) reads.add(normalizeVfsPath((dir ? dir + '/' : '') + ref.path));
     }
@@ -6594,6 +6594,8 @@ export class FacetManager {
    */
   private async _closureStaticRefs(
     vfs: LaunchFs,
+    /** Whose reads these are: the analysis of a file is kept per credential that read it. */
+    cred: Readonly<VfsCred>,
     paths: readonly string[],
     pacer: TurnBudget,
     /** Called with each module that names paths, and what it names. */
@@ -6602,7 +6604,7 @@ export class FacetManager {
     const out: StaticFsRefs[] = [];
     for (const path of paths) {
       if (!/\.(?:c|m)?js$/.test(path)) continue;
-      const refs = await this._staticRefsOf(vfs, path, pacer);
+      const refs = await this._staticRefsOf(vfs, cred, path, pacer);
       if (refs === null) continue;
       if (refs.exact.length + refs.listed.length + refs.patterns.length + refs.cwdRelative.length + refs.resolves.length > 0) {
         out.push(refs);
@@ -6618,10 +6620,12 @@ export class FacetManager {
    * revision or cannot be read. The launch's image collector reads the same
    * analysis (collectClosureWasmImages).
    */
-  private async _staticRefsOf(vfs: LaunchFs, path: string, pacer?: TurnBudget): Promise<StaticFsRefs | null> {
+  private async _staticRefsOf(vfs: LaunchFs, cred: Readonly<VfsCred>, path: string, pacer?: TurnBudget): Promise<StaticFsRefs | null> {
     let rev: number;
     try { rev = await vfs.revision(path); } catch { return null; }
-    const memo = this.staticRefsMemo.get(path);
+    // A credential's own: one that could not read the file never learns what it names.
+    const key = `${cred.uid}:${cred.gid}:${cred.groups.join(',')}\0${path}`;
+    const memo = this.staticRefsMemo.get(key);
     if (memo && memo.rev === rev) return memo.refs;
     let source: string;
     try { source = await filesOf(vfs).readFileString(path); } catch { return null; }
@@ -6636,8 +6640,8 @@ export class FacetManager {
       if (existing) existing.sync = true;
       else refs.exact.push({ path: name, sync: true });
     }
-    this.staticRefsMemo.delete(path);
-    this.staticRefsMemo.set(path, { rev, refs });
+    this.staticRefsMemo.delete(key);
+    this.staticRefsMemo.set(key, { rev, refs });
     for (const oldest of this.staticRefsMemo.keys()) {
       if (this.staticRefsMemo.size <= FacetManager.STATIC_REFS_MEMO_MAX) break;
       this.staticRefsMemo.delete(oldest);
@@ -6723,7 +6727,7 @@ export class FacetManager {
       cwd: spec.cwd,
       entryCode: spec.entryCode,
       esbuild: this.esbuild ?? undefined,
-      staticRefs: (path) => this._staticRefsOf(vfs, path, pacer),
+      staticRefs: (path) => this._staticRefsOf(vfs, cred, path, pacer),
       bundleProfile: profile,
       moduleScope,
       observedReads: new Set(learning.dataReads),

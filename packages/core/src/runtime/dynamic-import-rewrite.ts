@@ -98,6 +98,19 @@ export interface StaticSpecifierSite {
   readonly specifier: string;
   /** Its `with { … }` attributes, as written. */
   readonly attributes: Readonly<Record<string, string>>;
+  /** Where its attributes clause is, from the specifier's end to the clause's `}`: present with attributes. */
+  readonly clause?: Span;
+}
+
+/**
+ * A static specifier's attributes clause, in its statement (which ends at
+ * `statementEnd`): from the specifier's end through the clause's closing
+ * brace, the last brace of the statement. What lies between is the clause
+ * and trivia.
+ */
+function attributesClause(source: string, site: Span, statementEnd: number): Span | undefined {
+  const close = source.lastIndexOf('}', statementEnd - 1);
+  return close >= site.end ? { start: site.end, end: close + 1 } : undefined;
 }
 
 /** Where a module's text has module syntax a loader reads: import() calls, import.meta, static specifiers. */
@@ -139,7 +152,10 @@ function lexedImportSites(code: string): ImportSites | null {
     else if (entry.t === STATIC_IMPORT) {
       // A specifier with escapes the lexer cannot unquote is the grammar's to read.
       if (entry.n === undefined) return null;
-      statics.push({ start: entry.s - 1, end: entry.e + 1, specifier: entry.n, attributes: Object.fromEntries(entry.at ?? []) });
+      const site = { start: entry.s - 1, end: entry.e + 1 };
+      const attributes = Object.fromEntries(entry.at ?? []);
+      const clause = Object.keys(attributes).length > 0 ? attributesClause(source, site, entry.se) : undefined;
+      statics.push({ ...site, specifier: entry.n, attributes, ...(clause ? { clause } : {}) });
     } else {
       // A phase import (`import source`, `import defer`): the grammar's to refuse or read.
       return null;
@@ -211,7 +227,8 @@ export function readModuleImportSites(code: string): ImportSites {
         const key = attribute.key.type === 'Identifier' ? attribute.key.name : String(attribute.key.value);
         if (typeof attribute.value.value === 'string') attributes[key] = attribute.value.value;
       }
-      statics.push({ start: source.start, end: source.end, specifier: source.value, attributes });
+      const clause = Object.keys(attributes).length > 0 ? attributesClause(code, source, statement.end) : undefined;
+      statics.push({ start: source.start, end: source.end, specifier: source.value, attributes, ...(clause ? { clause } : {}) });
     },
   });
   calls.sort((a, b) => a.start - b.start);

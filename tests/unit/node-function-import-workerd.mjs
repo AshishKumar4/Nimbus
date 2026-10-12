@@ -20,16 +20,17 @@
 //   HYGIENE  code that names the runtime's own capture still imports;
 //   FNDELETE code that deletes its free Function (node deletes the global;
 //            here the module's own Function stays, in every launch);
-//   FNWRITE  code that assigns its free Function reads what it assigned.
+//   FNWRITE  code that assigns its free Function reads what it assigned;
+//   ASYNC    code a constructor reached through a prototype (AsyncFunction)
+//            built: its caller, read from the stack, is the importer;
+//   ESMFN    a native ES module's code built by the global Function, as it
+//            evaluates (bin/entry.mjs), and ESMLATER from a timer: the
+//            module is the importer.
 // FNDELETE and FNWRITE change node's global Function, so they build their
 // code with F, the module's Function taken as it loads, and run last.
 // STAGED says where the code ran: the first launch interprets it, and the
 // next runs it natively from the module the first staged, resolving against
 // the same importer.
-//
-// The one deliberate difference from Node: code built by a constructor
-// reached through a prototype (AsyncFunction here) is not its module's own
-// `Function`, so it has no importer, and its import() is refused by name.
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -79,6 +80,12 @@ const FILES = {
     '  .then(() => console.log("FNDELETE " + new F("return [delete Function, typeof Function, typeof globalThis.Function].join()")()))',
     '  .then(() => console.log("FNWRITE " + new F("Function = 123; return typeof Function")()));',
   ].join('\n'),
+  'pkg/bin/entry.mjs': [
+    'const { where } = await new Function("return import(\"../lib/cli.mjs\")")();',
+    'console.log("ESMFN " + where);',
+    'const later = await new Promise((resolve) => setTimeout(() => resolve(new Function("m", "return import(m)")("../lib/cli.mjs")), 0));',
+    'console.log("ESMLATER " + later.where);',
+  ].join('\n'),
   'pkg/bin/hooked.cjs': [
     'Object.defineProperty(Error, "prepareStackTrace", {',
     '  configurable: true,',
@@ -101,7 +108,9 @@ try {
   assert.equal(host.status, 0, host.stderr);
   const hooked = spawnSync('node', [join(hostDir, 'pkg/bin/hooked.cjs')], { encoding: 'utf8' });
   assert.equal(hooked.status, 0, hooked.stderr);
-  expected = host.stdout + hooked.stdout;
+  const entry = spawnSync('node', [join(hostDir, 'pkg/bin/entry.mjs')], { encoding: 'utf8' });
+  assert.equal(entry.status, 0, entry.stderr);
+  expected = host.stdout + hooked.stdout + entry.stdout;
 } finally {
   rmSync(hostDir, { recursive: true, force: true });
 }
@@ -118,9 +127,11 @@ assert.equal(expected, [
   'FNDELETE true,undefined,undefined',
   'FNWRITE number',
   'HOOKED lib/cli.mjs',
+  'ESMFN lib/cli.mjs',
+  'ESMLATER lib/cli.mjs',
   '',
 ].join('\n'), 'the host node this test compares with');
-const asNode = expected.trim().split('\n').filter((line) => !/^(ASYNC|STAGED|FNDELETE) /.test(line));
+const asNode = expected.trim().split('\n').filter((line) => !/^(STAGED|FNDELETE) /.test(line));
 
 console.log('node-function-import-workerd: starting local workerd');
 const probe = await startLocalProbe();
@@ -133,12 +144,11 @@ try {
     );
     assert.match(setup.stdout, /SETUP/, setup.stdout);
     for (const [launch, where] of [['first', 'interpreted'], ['next', 'native']]) {
-      const run = await terminal.run(`cd ${W} && node pkg/bin/tool.cjs && node pkg/bin/hooked.cjs`);
+      const run = await terminal.run(`cd ${W} && node pkg/bin/tool.cjs && node pkg/bin/hooked.cjs && node pkg/bin/entry.mjs`);
       assert.equal(run.status, 0, `${launch} launch: ${run.stdout}`);
       for (const line of asNode) {
         assert.ok(run.stdout.includes(line), `${launch} launch prints ${JSON.stringify(line)}:\n${run.stdout}`);
       }
-      assert.ok(run.stdout.includes('ASYNC ERR_NIMBUS_IMPORT_NO_IMPORTER'), `${launch} launch refuses the prototype's constructor by name:\n${run.stdout}`);
       assert.ok(run.stdout.includes(`STAGED lib/cli.mjs ${where}`), `${launch} launch runs the code ${where}:\n${run.stdout}`);
       // Node deletes the global (true, then undefined twice); a module's own
       // Function is a binding no delete removes, in either launch.

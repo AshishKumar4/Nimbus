@@ -7578,7 +7578,7 @@ const __nimbusDecodeStringLiteral = ${DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE};
         const params = args.slice(0, -1).map(String);
         const body = args.length > 0 ? String(args[args.length - 1]) : "";
         try {
-          const fn = service.compileFunction(kind, params, body, origin());
+          const fn = service.compileFunction(kind, params, body, origin(routed));
           // A subclass's \`new\` (\`class F extends Function\`) makes an instance of the subclass.
           if (new.target !== undefined && new.target !== routed) {
             const proto = new.target.prototype;
@@ -7615,22 +7615,21 @@ const __nimbusDecodeStringLiteral = ${DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE};
   const nativeFunction = Function.__nimbusNative ?? Function;
   for (const [kind, Native] of kinds) {
     if (Native.__nimbusNative) continue;
-    const routed = routedConstructor(kind, Native, () => unbound);
+    const routed = routedConstructor(kind, Native, (constructor) => callerOrigin(constructor));
     Object.defineProperty(Native.prototype, "constructor", { value: routed, writable: true, configurable: true, enumerable: false });
     if (kind === "function") globalThis.Function = routed;
   }
   // A refusing origin: code whose import() Node refuses (vm's), or whose
-  // importer only its module's own Function carries. Its Function is
-  // undefined, its own property, so its code reads and assigns the global's.
+  // caller is no module of the program. Its Function is undefined, its own
+  // property, so its code reads and assigns the global's.
   const refusingOrigin = (code, message) => Object.freeze({
     import: () => Promise.reject(Object.assign(new TypeError(message), { code })),
     Function: undefined,
   });
   const unbound = refusingOrigin("ERR_NIMBUS_IMPORT_NO_IMPORTER",
-    "import() in code built by a function constructor that is not its module's own Function (one reached through a "
-    + "prototype, such as AsyncFunction, or through globalThis) has no importer here: Node resolves it against the "
-    + "module that called the constructor, which only that module's own Function carries in a Worker. Build the "
-    + "code with the module's Function, or import outside it.");
+    "import() in code built by a function constructor that no module of the program called (the stack names none) "
+    + "has no importer here: Node resolves it against the module that called the constructor. Build the code from "
+    + "a module, or import outside it.");
   // Each module's origin (THE WRAPPER): import() against its URL, and a
   // Function of its own whose code keeps the origin. One per URL, so a
   // module's Function is one object for as long as the process runs.
@@ -7643,6 +7642,21 @@ const __nimbusDecodeStringLiteral = ${DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE};
       origins.set(importer, origin);
     }
     return origin;
+  };
+  // The module whose code called a constructor that is not its own (the
+  // global Function, or one reached through a prototype): Node resolves the
+  // built code's import() against it, as V8 hands its host the caller's
+  // script. The innermost frame in a module of the program, above the
+  // constructor; none (runtime code's, or no module's) is unbound.
+  const callerOrigin = (constructor) => {
+    try {
+      for (const site of __nimbusStackSites({}, Infinity, constructor)) {
+        const file = site.getFileName();
+        const module = typeof file === "string" ? __nimbusModuleOfFile(file) : null;
+        if (module !== null && module.path !== null) return globalThis.__nimbusCodeOrigin(__nimbusModuleImporterUrl(module.path.replace(/^\\/+/, "")));
+      }
+    } catch {}
+    return unbound;
   };
   globalThis.__nimbusUnboundOrigin = unbound;
   globalThis.__nimbusVmOrigin = refusingOrigin("ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING", "A dynamic import callback was not specified.");
@@ -12306,12 +12320,10 @@ function __nimbusEsmRequire(id, required, parent = undefined) {
   if (record.state === __ESM_ADOPTED && record.namespace === null) {
     throw nodeError(Error, "ERR_REQUIRE_CYCLE_MODULE", "Cannot require() ES Module " + filename + " in a cycle." + (record.requirer ? " (from " + record.requirer + ")" : ""));
   }
-  // A require() refuses a graph with top-level await before any of it runs, as Node's does.
-  if (required && record.state !== __ESM_ADOPTED) {
-    for (const at of __nimbusEsmPending(id)) {
-      if (__nimbusEsmSuspends(__nimbusEsmRecord(at))) throw __nimbusRequireAsync(parent, filename);
-    }
-  }
+  // A require() refuses a graph with top-level await before any of it runs,
+  // as Node's does: its modules evaluated or not (an import() may have
+  // completed one already).
+  if (required && record.state !== __ESM_ADOPTED && __nimbusEsmGraphAwaits(id)) throw __nimbusRequireAsync(parent, filename);
   // Linked into an evaluation that has not reached it: that evaluation is
   // cancelled (each body yet to begin stops), and the module is the interpreter's.
   if (record.state === __ESM_LINKED && record.batch.stop === null) record.batch.stop = __nimbusEsmStop();
@@ -12462,7 +12474,10 @@ async function __nimbusEsmInterpret(id) {
     if (evaluation !== undefined) {
       try { await evaluation; } catch (e) { __nimbusExplainCommonJSGlobalLike(e, url, true); throw e; }
     }
-    // The registry's own namespace, where a static import found it evaluated.
+    // One namespace per module: a require()'s adoption's, or the registry's
+    // own where a static import found it evaluated (Node's D1).
+    const record = __nimbusEsmRecords[id];
+    if (record !== undefined && record.namespace !== null) return record.namespace;
     if (exports !== null && typeof exports === "object" && Object.getPrototypeOf(exports) === null && exports[Symbol.toStringTag] === "Module" && !("__esModule" in exports)) return exports;
     const names = exports && typeof exports === "object" ? Object.keys(exports).filter((name) => name !== "__esModule") : [];
     return __esmNamespaceOf(names, (name) => exports[name]);
@@ -12497,14 +12512,6 @@ function __nimbusEsmLinkError(error, id) {
   } catch {}
   return error;
 }
-// Where the last \`name\` standing alone as an identifier is in \`text\`, or -1.
-function __nimbusLastIdentifier(text, name) {
-  const part = (c) => c !== undefined && (c === "$" || c === "_" || (c >= "0" && c <= "9") || (c >= "a" && c <= "z") || (c >= "A" && c <= "Z"));
-  for (let at = text.lastIndexOf(name); at !== -1; at = at === 0 ? -1 : text.lastIndexOf(name, at - 1)) {
-    if (!part(text[at - 1]) && !part(text[at + name.length])) return at;
-  }
-  return -1;
-}
 // The unevaluated modules of \`id\`'s graph, in link order.
 function __nimbusEsmPending(id) {
   const seen = new Set();
@@ -12535,29 +12542,40 @@ function __nimbusEsmCompileError(error, id) {
 }
 // A missing export, as Node words it for the specifier the importing module
 // wrote (a CommonJS module's in Node's words for one), its arrow under the
-// imported name.
+// imported name: the declaration that imports \`name\` from \`requested\`,
+// as the parser reads the staged module, its places the source's.
 function __nimbusEsmExportError(error, id, requested, name) {
+  const { parse } = __nimbusRegistryRequire("./${RUNTIME_PARSER_MODULE}");
   for (const at of __nimbusEsmPending(id)) {
     const module = __nimbusModuleAtPath(__nimbusEsm.table[at][1]);
-    const staged = __nimbusReadBundleFile(__NIMBUS_BUNDLE_FILES + module.name, "utf8");
-    const quoted = JSON.stringify(requested);
-    const offset = staged.indexOf(quoted, module.head);
-    // As written: an edit's source text at the place its specifier is.
-    let line = 1;
-    let lineStart = 0;
-    for (let i = staged.indexOf("\\n"); i !== -1 && i < offset; i = staged.indexOf("\\n", i + 1)) { line++; lineStart = i + 1; }
-    let specifier = requested;
-    // Where the specifier is in the module's source: before it, the imported name.
-    let sourceColumn = -1;
-    if (offset !== -1) {
-      const column = offset - lineStart - (line === 1 ? module.head : 0);
-      let delta = 0;
-      for (const [, at, length, text] of __nimbusColumnEdits(module)?.get(line) ?? []) {
-        if (at + delta === column && length === quoted.length) { specifier = text.slice(1, -1); sourceColumn = at; break; }
-        delta += length - text.length;
+    const text = __nimbusReadBundleFile(__NIMBUS_BUNDLE_FILES + module.name, "utf8");
+    let program;
+    try { program = parse(text, { ecmaVersion: "latest", sourceType: "module" }); } catch { continue; }
+    let declaration = null;
+    let imported = null;
+    for (const statement of program.body) {
+      if (statement.type !== "ImportDeclaration" && statement.type !== "ExportNamedDeclaration") continue;
+      if (statement.source?.value !== requested) continue;
+      for (const specifier of statement.specifiers) {
+        // An import's imported name (a default import's binding), an export-from's local one.
+        const node = specifier.type === "ImportSpecifier" ? specifier.imported
+          : specifier.type === "ImportDefaultSpecifier" ? specifier.local
+          : specifier.type === "ExportSpecifier" ? specifier.local : null;
+        const named = specifier.type === "ImportDefaultSpecifier" ? "default" : node?.type === "Identifier" ? node.name : node?.value;
+        if (node !== null && named === name) { declaration = statement; imported = node; break; }
       }
-    } else if (!staged.includes("'" + requested + "'") && !staged.includes(JSON.stringify(requested))) {
-      continue;
+      if (declaration !== null) break;
+    }
+    if (declaration === null) continue;
+    // The specifier as written: staging's edit at its place, else as it is.
+    let specifier = requested;
+    const lines = text.slice(0, declaration.source.start).split(/\\r\\n|[\\n\\r\\u2028\\u2029]/);
+    const line = lines.length;
+    const column = lines[line - 1].length - (line === 1 ? module.head : 0);
+    let delta = 0;
+    for (const [, place, length, written] of __nimbusColumnEdits(module)?.get(line) ?? []) {
+      if (place + delta === column && length === declaration.source.end - declaration.source.start) { specifier = written.slice(1, -1); break; }
+      delta += length - written.length;
     }
     // The module the importer's specifier names, as the registry resolved it.
     let requestedUrl = null;
@@ -12568,19 +12586,7 @@ function __nimbusEsmExportError(error, id, requested, name) {
       ? "Named export '" + name + "' not found. The requested module '" + specifier + "' is a CommonJS module, which may not support all module.exports as named exports.\\nCommonJS modules can always be imported via the default export, for example using:\\n\\nimport pkg from '" + specifier + "';\\nconst { " + name + " } = pkg;\\n"
       : "The requested module '" + specifier + "' does not provide an export named '" + name + "'";
     // Node's arrow: the imported name, on the declaration's line.
-    const source = __nimbusModuleSourceText(module);
-    const end = sourceColumn === -1 ? source.length : __nimbusTextOffset(source, line, sourceColumn + 1);
-    const before = source.slice(0, end);
-    const found = __nimbusLastIdentifier(before, name);
-    let arrow = null;
-    if (found !== -1) {
-      const at = found;
-      const lineOf = before.slice(0, at).split(/\\r\\n|[\\n\\r\\u2028\\u2029]/);
-      const fromLine = lineOf.length;
-      const text = __nimbusReadBundleFile(__NIMBUS_BUNDLE_FILES + module.name, "utf8");
-      const generated = __nimbusTextOffset(text, fromLine, __nimbusGeneratedColumn(module, fromLine, lineOf[lineOf.length - 1].length + 1)) + (fromLine === 1 ? module.head : 0);
-      arrow = __nimbusArrowOf(module, text, generated, generated + name.length);
-    }
+    const arrow = __nimbusArrowOf(module, text, imported.start, imported.end);
     // Its frames as they were, under the message as Node words it.
     const frames = typeof error.stack === "string" ? error.stack.split("\\n").filter((frame) => frame.startsWith("    at ")) : [];
     error.stack = (arrow === null ? "" : arrow) + "SyntaxError: " + error.message + (frames.length > 0 ? "\\n" + frames.join("\\n") : "");
@@ -13183,6 +13189,12 @@ function __requireFrom(id, fromDir, parent, required = true) {
     if (resolution.format === "builtin") return builtins[resolution.builtin];
     const key = resolution.path.replace(/^\\/+/, "");
     const esModule = resolution.format === "module" || (resolution.format === "detect" && __nimbusEsmId("module", key) !== -1);
+    // A CommonJS module still loading is one whose require() of an ES
+    // module led here: Node's loader refuses the cycle (require(esm)).
+    const loading = esModule ? undefined : __NodeModule._cache["/" + key];
+    if (loading !== undefined && loading.loaded === false) {
+      throw nodeError(Error, "ERR_REQUIRE_CYCLE_MODULE", "Cannot import CommonJS Module " + id + " in a cycle." + (parent?.filename ? " (from " + parent.filename + ")" : ""));
+    }
     return __loadModule(key, key, false, parent, esModule);
   }
   const resolved = __resolveFrom(id, fromDir, parent?.filename);
