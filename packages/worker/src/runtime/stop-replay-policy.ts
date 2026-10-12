@@ -105,7 +105,7 @@ export const REPLAY_OPERATION_POLICY = {
   fsPublished: control,
   innerDoFetch: effect, innerDoCall: effect, fanoutExecute: effect, processHostProbe: effect,
   hostProcess: effect, awaitHostedBoot: effect,
-  routeHostedHttp: effect, cancelHostProcess: effect, hmrRelay: effect,
+  routeHostedHttp: effect, abandonHostedHttp: effect, cancelHostProcess: effect, hmrRelay: effect,
   hmrNextEvent: effect, replayBoundary: control, netTls: effect, outbound: control,
 } satisfies Record<SupervisorOpName, ReplayPolicy>;
 

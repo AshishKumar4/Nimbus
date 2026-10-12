@@ -344,6 +344,7 @@ export const SUPERVISOR_OP_ROUTES: Readonly<Record<Exclude<SupervisorOpName, Nat
   hostProcess: { method: '_rpcHostProcess', args: [0,1] },
   awaitHostedBoot: { method: '_rpcAwaitHostedBoot', args: [0] },
   routeHostedHttp: { method: '_rpcRouteHostedHttp', args: [0,1] },
+  abandonHostedHttp: { method: '_rpcAbandonHostedHttp', args: [0,1,2] },
   cancelHostProcess: { method: '_rpcCancelHostProcess', args: [0] },
   hmrRelay: { method: '_rpcHmrRelay', args: [0,1] },
   hmrNextEvent: { method: '_rpcHmrNextEvent', args: [0] },

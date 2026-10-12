@@ -71,7 +71,7 @@ for (const kind of ['cold', 'failed', 'closed', 'capability']) {
   if (kind === 'cold') current.peerHost.records.delete(key);
   else if (kind === 'failed') open.failure = new Error('the recorded facet was lost');
   else if (kind === 'closed') open.closed = true;
-  const answer = await current.peerHost.routeHttp(key, { method: 'GET', url: 'https://app.invalid/', headers: [], left: () => new Promise(() => {}), capability: kind === 'capability' ? 'wrong' : open.webSocketCapability })
+  const answer = await current.peerHost.routeHttp(key, { method: 'GET', url: 'https://app.invalid/', headers: [], id: 0, ended: [], capability: kind === 'capability' ? 'wrong' : open.webSocketCapability })
     .then(reply => ({ reply }), error => ({ error }));
   assert.ok(answer.error || answer.reply.hostLost, kind + ' cannot yield a guest answer');
   assert.equal(guestCalls, before, kind + ' is rejected before guest dispatch');

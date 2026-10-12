@@ -955,6 +955,9 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   async _rpcAwaitHostedBoot(workerKey: string): ReturnType<typeof _rpc._rpcAwaitHostedBoot> {
     return _rpc._rpcAwaitHostedBoot(this, workerKey);
   }
+  async _rpcAbandonHostedHttp(workerKey: string, capability: string, id: number): Promise<void> {
+    _rpc._rpcAbandonHostedHttp(this, workerKey, capability, id);
+  }
   async _rpcRouteHostedHttp(workerKey: string, request: HostedHttpRequest): ReturnType<typeof _rpc._rpcRouteHostedHttp> {
     return _rpc._rpcRouteHostedHttp(this, workerKey, request);
   }

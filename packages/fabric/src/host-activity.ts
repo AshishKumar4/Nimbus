@@ -1,5 +1,4 @@
 import type { WorkerCode } from '@nimbus-sh/platform/worker-code.js';
-import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import type { ResponseScope } from '@nimbus-sh/core/runtime/os-contracts.js';
 
 /** A host-loss watch exists only while somebody owns work on this actor. */
@@ -153,45 +152,52 @@ export class HostActivity {
 }
 
 /**
- * Whether a request's caller left it, asked by its handler on another actor:
- * true once the caller has left the response, false once it is done with it.
- * Minted with the request and passed beside it (a function crosses Workers
- * RPC as a stub, a signal does not), so the handler hears a caller that
- * leaves before any header as well as after one.
+ * The requests a host sent a handler on another actor, by id, so it can
+ * abandon one: before its response's headers as well as after. Workers RPC
+ * carries no signal, and asking per request costs a round trip; abandoning is
+ * the rare path, so only it sends anything. Each call carries the ids that
+ * ended since the last (`ended`), which the handler then forgets; an abandon
+ * that overtakes its request is kept until its request, or its end, arrives.
  */
-export type CallerLeft = () => Promise<boolean>;
-
-/** The caller of a request with `scope`, for its handler on another actor. */
-export function callerLeft(scope: ResponseScope): CallerLeft {
-  const left = new Promise<boolean>((resolve) => {
-    if (scope.signal.aborted) resolve(true);
-    else scope.signal.addEventListener('abort', () => resolve(true), { once: true });
-    void scope.settled.then(() => resolve(false));
-  });
-  return () => left;
+export class HandledRequests {
+  #requests = new Map<number, AbortController>();
+  /** The signal of request `id`, its own if it was abandoned first; `ended` are forgotten first. */
+  admit(id: number, ended: readonly number[]): AbortSignal {
+    for (const done of ended) this.#requests.delete(done);
+    let request = this.#requests.get(id);
+    if (!request) this.#requests.set(id, request = new AbortController());
+    return request.signal;
+  }
+  abandon(id: number): void {
+    let request = this.#requests.get(id);
+    if (!request) this.#requests.set(id, request = new AbortController());
+    request.abort(new DOMException('The caller left the request', 'AbortError'));
+  }
 }
 
-/**
- * The handler's side: the scope of a request whose caller is on another
- * actor. Only that caller sees whether the response was delivered, so the
- * scope ends as the caller answers: settled when it was, aborted when it left
- * or can no longer be asked (its actor is gone), or aborted here first
- * (`fail`) when the relay to it fails. A stub received as a call's argument
- * is the call's; its `dup` is held until the answer.
- */
-export function callerScope(left: CallerLeft): { scope: ResponseScope; fail(reason?: unknown): void } {
-  const abandoned = new AbortController();
-  const fail = (reason?: unknown) => abandoned.abort(reason ?? new DOMException('The caller left the request', 'AbortError'));
-  let settle = (): void => {};
-  const settled = new Promise<void>((resolve) => { settle = resolve; });
-  abandoned.signal.addEventListener('abort', () => settle(), { once: true });
-  const dup: unknown = Reflect.get(left, 'dup');
-  const held: unknown = typeof dup === 'function' ? Reflect.apply(dup, left, []) : left;
-  const ask = typeof held === 'function' ? held : left;
-  void Promise.resolve(Reflect.apply(ask, undefined, []))
-    .then((gone: unknown) => { if (gone === true) fail(); else settle(); }, fail)
-    .finally(() => disposeRpcResource(held));
-  return { scope: { signal: abandoned.signal, settled }, fail };
+/** The sending host's side: ids for its requests, the ended ones to report, and an abandon on `scope`'s abort. */
+export class SentRequests {
+  #next = 0;
+  #ended: number[] = [];
+  /** An id for a request with `scope`, the ids to report, and abandon(id) sent if the scope aborts first. */
+  send(scope: ResponseScope, abandon: (id: number) => Promise<unknown>): { id: number; ended: number[] } {
+    const id = this.#next++;
+    const ended = this.#ended;
+    this.#ended = [];
+    // Reported as ended only once any abandon was delivered: a report that
+    // overtook it would leave the handler holding the late abandon for good.
+    const end = () => { this.#ended.push(id); };
+    const left = () => { void abandon(id).then(end, end); };
+    if (scope.signal.aborted) left();
+    else {
+      scope.signal.addEventListener('abort', left, { once: true });
+      void scope.settled.then(() => {
+        scope.signal.removeEventListener('abort', left);
+        if (!scope.signal.aborted) end();
+      });
+    }
+    return { id, ended };
+  }
 }
 
 const activities = new WeakMap<object, HostActivity>();
@@ -234,37 +240,43 @@ function hostAdapter(mainModule: string, capability: string): string {
   return `import { NimbusProcess as Base } from ${JSON.stringify('./' + mainModule)};
 export * from ${JSON.stringify('./' + mainModule)};
 const capability = ${key};
+const HandledRequests = ${HandledRequests.toString()};
 export class NimbusProcess extends Base {
   #incarnation = crypto.randomUUID();
   #watchers = new Set();
   // A guest's fetch may hand its request on to its own handleHttpRequest.
   #admitted = new WeakSet();
-  #admit(request, signal) {
+  #requests = new HandledRequests();
+  #admit(request) {
     if (this.#admitted.has(request)) return request;
     if (request.headers.get(${request}) !== capability) return new Response('Not found', { status: 404 });
-    if (request.headers.get(${incarnation}) !== this.#incarnation) {
-      return new Response('the instance that ran this process was replaced', { status: 410, headers: { [${request}]: capability } });
-    }
+    if (request.headers.get(${incarnation}) !== this.#incarnation) return this.#replaced();
     const headers = new Headers(request.headers);
     headers.delete(${request});
     headers.delete(${incarnation});
-    const admitted = new Request(request, { headers, ...(signal ? { signal } : {}) });
+    const admitted = new Request(request, { headers });
     this.#admitted.add(admitted);
     return admitted;
+  }
+  #replaced() {
+    return new Response('the instance that ran this process was replaced', { status: 410, headers: { [${request}]: capability } });
   }
   handleHttpRequest(request) {
     const admitted = this.#admit(request);
     return admitted instanceof Request ? super.handleHttpRequest(admitted) : admitted;
   }
-  // The host's HTTP entry: the guest sees its caller leave (CallerLeft) as its
-  // request's signal, before its headers as well as after.
-  hostHttpRequest(request, left) {
-    const abandoned = new AbortController();
-    const held = typeof left.dup === 'function' ? left.dup() : left;
-    const leave = () => abandoned.abort();
-    Promise.resolve(held()).then((gone) => { if (gone) leave(); }, leave).finally(() => held[Symbol.dispose]?.());
-    const admitted = this.#admit(request, abandoned.signal);
-    return admitted instanceof Request ? super.handleHttpRequest(admitted) : admitted;
+  // The host's HTTP entry. Its admission travels as arguments, and request
+  // \`id\` is one its host can abandon (HandledRequests): the guest sees its
+  // caller leave as its request's signal.
+  hostHttpRequest(request, key, pinned, id, ended) {
+    if (key !== capability) return new Response('Not found', { status: 404 });
+    if (pinned !== this.#incarnation) return this.#replaced();
+    const admitted = new Request(request, { signal: this.#requests.admit(id, ended) });
+    this.#admitted.add(admitted);
+    return super.handleHttpRequest(admitted);
+  }
+  abandonHttpRequest(key, id) {
+    if (key === capability) this.#requests.abandon(id);
   }
   fetch(request) {
     if (request.headers.get(${watch}) !== capability) {

@@ -65,7 +65,7 @@ for (const mode of ['facet', 'peer']) for (const route of ['port', 'direct']) fo
       assert.equal(heard, true, `${label}: the handler hears its caller leave before any header`);
       assert.ok(outcome === 502 || /left before any header/.test(outcome), `${label}: ${outcome}`);
       assert.equal(watching, 0, `${label}: and the work is released`);
-      assert.ok(peers === null || (peers.lefts.length === 1 && peers.lefts[0].dups === peers.lefts[0].disposed), `${label}: the peer disposes its caller stub`);
+      assert.ok(peers === null || peers.abandoned.join() === peers.routed.join(), `${label}: the coordinator abandons the peer's request`);
       continue;
     }
     if (ending === 'throw') {
@@ -74,7 +74,6 @@ for (const mode of ['facet', 'peer']) for (const route of ['port', 'direct']) fo
       assert.ok(outcome === 502 || /the handler failed/.test(outcome), `${label}: ${outcome}`);
       assert.equal(handled.signal.aborted, true, `${label}: a handler whose request failed hears its caller is gone`);
       assert.equal(watching, 0, `${label}: and the work is released`);
-      assert.ok(peers === null || (peers.lefts.length === 1 && peers.lefts[0].dups === peers.lefts[0].disposed), `${label}: the peer disposes its caller stub`);
       continue;
     }
     response = await answered;
@@ -83,7 +82,7 @@ for (const mode of ['facet', 'peer']) for (const route of ['port', 'direct']) fo
       assert.equal(response.status, 204);
       assert.equal(watching, 0, `${label}: a response without a body owns nothing past its headers`);
       assert.equal(handled.signal.aborted, false, `${label}: a delivered response is not one its caller left`);
-      assert.ok(peers?.lefts.every((left) => left.dups === left.disposed) ?? true, `${label}: the peer disposes its copy of the caller stub`);
+      assert.deepEqual(peers?.abandoned ?? [], [], `${label}: nothing is sent for a delivered response`);
       continue;
     }
     assert.equal(watching, 1, `${label}: the process owns its work after the response headers`);
@@ -116,8 +115,12 @@ for (const mode of ['facet', 'peer']) for (const route of ['port', 'direct']) fo
     assert.equal(watching, 0, `${label}: EOF, error, mismatch and a leaving client release the work`);
     await turns();
     // A body that will not reach its caller, for whatever reason, is one its handler hears was left.
-    assert.equal(handled.signal.aborted, ending !== 'eof', `${label}: the handler hears whether its body was delivered`);
-    assert.ok(peers === null || (peers.lefts.length === 1 && peers.lefts[0].dups === 1 && peers.lefts[0].disposed === 1), `${label}: the peer holds the caller stub for this response only`);
+    // A body that will not reach its caller is one its handler hears was left;
+    // a peer's relay that ended before the coordinator's framing check failed
+    // carried a body its guest had already ended, so there is no one to tell.
+    const settledAtPeer = mode === 'peer' && (ending === 'short' || ending === 'long');
+    assert.equal(handled.signal.aborted, ending !== 'eof' && !settledAtPeer, `${label}: the handler hears whether its body was delivered`);
+    assert.deepEqual(peers?.abandoned ?? [], ending === 'eof' || peers === null ? [] : peers.routed, `${label}: only an undelivered response is abandoned, once`);
   } finally { if (response?.body && !response.body.locked) await response.body.cancel().catch(() => {}); neighbor.close(); await process.release(); }
 }
 assert.ok(published.length > 0, 'the port relay published the process output before its body');

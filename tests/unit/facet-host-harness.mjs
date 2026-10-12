@@ -14,7 +14,7 @@
 // One EVALUATION of a program is one boot: `world.boots` is the ledger a ghost
 // process would show up in, because a second boot means the user's module
 // scope ran twice.
-import { callerScope, hostActivity, HOST_WATCH_HEADER, HOST_INCARNATION_HEADER, HOST_REQUEST_HEADER } from '../../packages/fabric/src/host-activity.ts';
+import { HandledRequests, hostActivity, HOST_WATCH_HEADER, HOST_INCARNATION_HEADER, HOST_REQUEST_HEADER } from '../../packages/fabric/src/host-activity.ts';
 import { installHostWatchSocket } from './lib/host-watch-socket.mjs';
 installHostWatchSocket();
 
@@ -101,6 +101,13 @@ export function createFacetWorld(evaluate, { resolveConfig = true, evaluatesAdap
     if (!incarnation) incarnations.set(instance, incarnation = crypto.randomUUID());
     return incarnation;
   };
+  // The generated adapter's requests by id (HandledRequests), per instance.
+  const handled = new WeakMap();
+  const handledOf = (instance) => {
+    let requests = handled.get(instance);
+    if (!requests) handled.set(instance, requests = new HandledRequests());
+    return requests;
+  };
   // The generated admission (observeResidentConfig): a request runs only on
   // the instance its host pinned, without the transport that admitted it.
   const admit = (instance, request, signal) => {
@@ -124,11 +131,17 @@ export function createFacetWorld(evaluate, { resolveConfig = true, evaluatesAdap
     get(name, start) {
       return {
         async startProcess(args) { return (await ensure(name, start)).startProcess(args); },
-        async hostHttpRequest(request, left) {
+        async hostHttpRequest(request, key, pinned, id, ended) {
           const instance = await ensure(name, start);
-          if (evaluatesAdapter) return instance.hostHttpRequest(request, left);
-          const admitted = admit(instance, request, callerScope(left).scope.signal);
-          return admitted instanceof Request ? instance.handleHttpRequest(admitted) : admitted;
+          if (evaluatesAdapter) return instance.hostHttpRequest(request, key, pinned, id, ended);
+          if (!key) return new Response('Not found', { status: 404 });
+          if (pinned !== incarnationOf(instance)) return new Response('the instance that ran this process was replaced', { status: 410, headers: { [HOST_REQUEST_HEADER]: key } });
+          return instance.handleHttpRequest(new Request(request, { signal: handledOf(instance).admit(id, ended) }));
+        },
+        async abandonHttpRequest(key, id) {
+          const instance = await ensure(name, start);
+          if (evaluatesAdapter) return instance.abandonHttpRequest(key, id);
+          handledOf(instance).abandon(id);
         },
         // A resident's WebSocket entrypoint (ResidentFacet.handleWebSocketRequest).
         async fetch(request) {
@@ -287,6 +300,7 @@ export function createFacetCtx(world, doId = 'do-test', storage = new Map(), { c
 // under test on that arm is the shipped code.
 
 import {
+  _rpcAbandonHostedHttp,
   _rpcAwaitHostedBoot,
   _rpcCancelHostProcess,
   _rpcHostProcess,
@@ -371,8 +385,8 @@ export function createProcessHost(mode, world, disk, {
 export function createPeerNamespace(world, hostEnv, { colocated = false, peerWithoutFacets = false, onPeer } = {}) {
   const calls = [];
   const stubs = [];
-  /** Each request's caller stub a peer was handed: how often it kept a copy, and disposed one. */
-  const lefts = [];
+  /** Each request a coordinator routed to a peer, and the ones it abandoned, by id. */
+  const routed = [], abandoned = [];
   // Every `ns.get()` for one name reaches one peer, exactly as a DO namespace
   // does; a second stub for the same name must see the same hosted records.
   const peers = new Map();
@@ -443,14 +457,8 @@ export function createPeerNamespace(world, hostEnv, { colocated = false, peerWit
             case 'processHostProbe': return Promise.resolve({ isolateToken: peer.isolateToken });
             case 'hostProcess': return Promise.race([_rpcHostProcess(peer, args[0], args[1]), peer.death]);
             case 'awaitHostedBoot': return Promise.race([_rpcAwaitHostedBoot(peer, args[0]), peer.death]);
-            case 'routeHostedHttp': {
-              // RPC hands the callee a stub for the caller's function, which it dups to keep past the call.
-              const record = { dups: 0, disposed: 0 };
-              lefts.push(record);
-              const left = args[1].left;
-              const stub = Object.assign(() => left(), { dup: () => { record.dups++; return Object.assign(() => left(), { [Symbol.dispose]() { record.disposed++; } }); } });
-              return _rpcRouteHostedHttp(peer, args[0], { ...args[1], left: stub });
-            }
+            case 'routeHostedHttp': routed.push(args[1].id); return _rpcRouteHostedHttp(peer, args[0], args[1]);
+            case 'abandonHostedHttp': abandoned.push(args[2]); return Promise.resolve(_rpcAbandonHostedHttp(peer, args[0], args[1], args[2]));
             case 'cancelHostProcess': return _rpcCancelHostProcess(peer, args[0]);
             default: return Promise.reject(new Error(`peer stub: unserved op ${op}`));
           }
@@ -458,7 +466,7 @@ export function createPeerNamespace(world, hostEnv, { colocated = false, peerWit
       };
     },
   };
-  return { ns, peers, calls, stubs, lefts };
+  return { ns, peers, calls, stubs, routed, abandoned };
 }
 
 /**

@@ -15,14 +15,13 @@
 
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import {
-  callerLeft,
   hostActivity,
   HOST_INCARNATION_HEADER,
   HOST_REQUEST_HEADER,
   HOST_WATCH_HEADER,
   observeResidentConfig,
-  type CallerLeft,
   type HostActivityLease,
+  SentRequests,
 } from './host-activity.js';
 import type { ModuleSourceEnv } from '@nimbus-sh/platform/module-source.js';
 import { readImmutableModuleSource } from '@nimbus-sh/core/_shared/staged-source.js';
@@ -99,8 +98,9 @@ async function stagedOneShot(key: string, stage: unknown, supervisor: Supervisor
 /** The subset of a facet stub a resident process exposes to whoever opened it. */
 interface ResidentFacetStub {
   startProcess(args?: unknown): Promise<unknown>;
-  /** Inbound HTTP through the host adapter (observeResidentConfig), whose caller can leave it. */
-  hostHttpRequest(request: Request, left: CallerLeft): Promise<Response>;
+  /** Inbound HTTP through the host adapter (observeResidentConfig): admission as arguments, and a request id it can abandon. */
+  hostHttpRequest(request: Request, capability: string, incarnation: string, id: number, ended: readonly number[]): Promise<Response>;
+  abandonHttpRequest(capability: string, id: number): Promise<void>;
   /**
    * A facet stub is a Durable Object stub, so it fetches. That is the one path
    * an upgrade can take: a 101 owns a live socket, which the RPC
@@ -596,16 +596,21 @@ function spawnResident(
   stopObserving = observation.close;
   // A request runs only on the instance pinned at open. An instance that
   // refuses it as replaced is this process's host lost, never a guest answer.
-  const admitted = async (request: Request, send: (request: Request) => Promise<Response>): Promise<Response> => {
-    const headers = new Headers(request.headers);
-    headers.set(HOST_REQUEST_HEADER, watchCapability);
-    headers.set(HOST_INCARNATION_HEADER, await incarnation);
-    const response = await send(new Request(request, { headers }));
+  const checked = async (response: Response): Promise<Response> => {
     if (response.status !== 410 || response.headers.get(HOST_REQUEST_HEADER) !== watchCapability) return response;
     const gone = new Error(await response.text());
     if (!released) markLost(gone);
     throw new ProcessHostLost(gone);
   };
+  // An upgrade's admission rides its headers: fetch takes a Request alone.
+  const admitted = async (request: Request): Promise<Request> => {
+    const headers = new Headers(request.headers);
+    headers.set(HOST_REQUEST_HEADER, watchCapability);
+    headers.set(HOST_INCARNATION_HEADER, await incarnation);
+    return new Request(request, { headers });
+  };
+  const sent = new SentRequests();
+  const abandon = (id: number) => facet.abandonHttpRequest(watchCapability, id);
   return {
     started,
     lost,
@@ -615,13 +620,14 @@ function spawnResident(
       const lease = observation.acquire(scope.signal);
       void scope.settled.then(lease.release);
       try {
-        return await admitted(request, (guarded) => facet.hostHttpRequest(guarded, callerLeft(scope)));
+        const { id, ended } = sent.send(scope, abandon);
+        return await checked(await facet.hostHttpRequest(request, watchCapability, await incarnation, id, ended));
       } catch (error) { lease.release(); throw error; }
     },
     // An upgrade hands its socket to the caller at the handshake.
     handleWebSocketRequest: async (request: Request) => {
       const lease = observation.acquire();
-      try { return await admitted(request, (guarded) => facet.fetch(guarded)); }
+      try { return await checked(await facet.fetch(await admitted(request))); }
       finally { lease.release(); }
     },
     release,

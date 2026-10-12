@@ -33,10 +33,15 @@ async function incarnation(process) {
   assert.ok(value, 'the initial authenticated watch pins the original instance');
   return value;
 }
-// The host's own entry takes the request's caller (CallerLeft) beside it.
-const staying = () => new Promise(() => {});
+// The host's own entry takes its admission as arguments, and a request id its host can abandon.
+let nextId = 0;
 async function call(process, entry, sent) {
-  return entry === 'hostHttpRequest' ? process.hostHttpRequest(sent, staying) : process[entry](sent);
+  if (entry !== 'hostHttpRequest') return process[entry](sent);
+  const headers = new Headers(sent.headers);
+  const [token, nonce] = [headers.get(REQUEST_GUARD), headers.get(HOST_INCARNATION_HEADER)];
+  headers.delete(REQUEST_GUARD);
+  headers.delete(HOST_INCARNATION_HEADER);
+  return process.hostHttpRequest(new Request(sent, { headers }), token, nonce, nextId++, []);
 }
 function request(nonce, token = capability, upgrade = false) {
   return new Request('https://leaf.invalid/user/path?kept=yes', {
@@ -87,15 +92,18 @@ for (const entry of ['hostHttpRequest', 'handleHttpRequest', 'fetch']) {
 }
 {
   const ctx = { starts: 0, handlers: 0, seen: [] }, process = new NimbusProcess(ctx, {});
-  const leaving = Promise.withResolvers();
-  let dups = 0, disposed = 0;
-  const left = Object.assign(() => leaving.promise, { dup: () => { dups++; return Object.assign(() => leaving.promise, { [Symbol.dispose]() { disposed++; } }); } });
-  const response = await process.hostHttpRequest(request(await incarnation(process)), left);
+  const pinned = await incarnation(process);
+  const response = await call(process, 'hostHttpRequest', request(pinned));
   assert.equal(await response.text(), 'guest answer');
   assert.equal(ctx.signal.aborted, false);
-  leaving.resolve(true); await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.equal(ctx.signal.aborted, true, 'the guest sees its caller leave as its request signal');
-  assert.deepEqual([dups, disposed], [1, 1], 'the leaf keeps its own copy of the caller stub until the answer, then disposes it');
+  await process.abandonHttpRequest('wrong-capability', nextId - 1);
+  assert.equal(ctx.signal.aborted, false, 'only its host can abandon a request');
+  await process.abandonHttpRequest(capability, nextId - 1);
+  assert.equal(ctx.signal.aborted, true, 'the guest sees its host abandon the request as its signal');
+  // An abandon that overtakes its request is kept for it.
+  await process.abandonHttpRequest(capability, nextId);
+  await (await call(process, 'hostHttpRequest', request(pinned))).text();
+  assert.equal(ctx.signal.aborted, true, 'an abandon that arrived first still reaches its request');
 }
 {
   // A guest that reflects on its own class cannot learn the capability, so
@@ -114,7 +122,7 @@ export class NimbusProcess extends DurableObject {
   }, capability);
   const { NimbusProcess: Forging } = await importModuleSet(forging.modules, forging.mainModule);
   const process = new Forging({}, {});
-  const response = await process.hostHttpRequest(request(await incarnation(process)), staying);
+  const response = await call(process, 'hostHttpRequest', request(await incarnation(process)));
   assert.equal(response.status, 410);
   assert.equal(JSON.parse(await response.text()).includes(capability), false, 'the capability is not in any class source a guest can read');
 }

@@ -25,7 +25,8 @@ import { ProcessHostLost, type ResidentBootSpec, type ResidentDiskReader, type R
 import { bindingSupervisor, supervisorBindingProps } from './supervisor-props.js';
 import { withResolvers } from './turn-budget.js';
 import { processes, abortFacet, deleteFacetStorage, type ResidentFacet, type ResidentFacetEnv } from './workerd-facet-host.js';
-import { callerScope, HOST_INCARNATION_HEADER, type CallerLeft } from './host-activity.js';
+import { HandledRequests, HOST_INCARNATION_HEADER } from './host-activity.js';
+import { responseScope } from '@nimbus-sh/core/runtime/port-registry.js';
 import { isHostReset } from '@nimbus-sh/platform/oom-classify.js';
 
 /**
@@ -87,8 +88,9 @@ export interface HostedHttpRequest {
   url: string;
   headers: [string, string][];
   body: ReadableStream | null;
-  /** Its caller, who can leave it before or after its headers. */
-  left: CallerLeft;
+  /** Its id, by which its coordinator can abandon it (HandledRequests), and the ids that ended since the last. */
+  id: number;
+  ended: number[];
 }
 
 export interface HostedHttpResponse {
@@ -152,6 +154,8 @@ interface HostedProcessRecord {
   failure?: Error;
   watchers: Map<WebSocket, () => void>;
   residencies: Map<WebSocket, () => void>;
+  /** The coordinator's requests this record serves, by id. */
+  requests: HandledRequests;
   release(): Promise<void>;
 }
 
@@ -299,6 +303,7 @@ export class PeerHost {
       closed: false,
       watchers: new Map(),
       residencies: new Map(),
+      requests: new HandledRequests(),
       release: () => {
         record.closed = true;
         return releasing ??= (async () => {
@@ -376,6 +381,12 @@ export class PeerHost {
     });
   }
 
+  /** The coordinator abandons request `id` of a process this peer hosts (HandledRequests). */
+  abandonHttp(workerKey: string, capability: string, id: number): void {
+    const record = this.records.get(workerKey);
+    if (record && record.webSocketCapability === capability) record.requests.abandon(id);
+  }
+
   /**
    * Inbound HTTP for a port owned by a process this peer hosts.
    *
@@ -389,10 +400,10 @@ export class PeerHost {
    *
    * The response body is re-piped through an identity stream owned by THIS
    * isolate before it is returned, for the same reason the parts exist at all:
-   * what leaves here must not be an object the loaded worker owns. Only the
-   * coordinator's caller (`wire.left`) sees the response delivered or left,
-   * before its headers or after, so the request's scope ends as it answers;
-   * a pipe that fails here ends it first.
+   * what leaves here must not be an object the loaded worker owns. That
+   * pipe's end is when this host's work for the response is done; the
+   * coordinator abandons the request by its id (abandonHttp), before its
+   * headers or after.
    */
   async routeHttp(workerKey: string, wire: HostedHttpRequest): Promise<HostedReply<HostedHttpResponse>> {
     return this.answer(workerKey, async () => {
@@ -403,17 +414,16 @@ export class PeerHost {
       for (const [k, v] of wire.headers) headers.append(k, v);
       const init: RequestInit & { duplex?: 'half' } = { method: wire.method, headers };
       if (wire.body) { init.body = wire.body; init.duplex = 'half'; }
-      const { scope, fail } = callerScope(wire.left);
+      const { scope, owner } = responseScope(record.requests.admit(wire.id, wire.ended));
       let response: Response;
       try { response = await facet.handleHttpRequest(new Request(wire.url, init), scope); }
-      catch (error) { fail(error); throw error; }
+      catch (error) { owner.fail(error); throw error; }
       let body: ReadableStream | null = null;
       if (response.body) {
-        // Its end here is not delivery: the coordinator's caller says when the body arrived.
         const { readable, writable } = new IdentityTransformStream();
-        this.ctx.waitUntil(response.body.pipeTo(writable, { signal: scope.signal }).catch(fail));
+        this.ctx.waitUntil(response.body.pipeTo(writable, { signal: scope.signal }).then(owner.settle, owner.fail));
         body = readable;
-      }
+      } else owner.settle();
       return {
         status: response.status,
         statusText: response.statusText,

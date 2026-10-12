@@ -69,7 +69,7 @@
 import { networkRef, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { ResponseScope } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { callerLeft, hostActivity, HOST_INCARNATION_HEADER } from './host-activity.js';
+import { hostActivity, HOST_INCARNATION_HEADER, SentRequests } from './host-activity.js';
 import { onColdStart } from './generation.js';
 import { peerRetryDelay } from './fanout.js';
 import { hostNamespaceBinding, hostOpDispatch, type HostNamespaceBinding } from './host-dispatch.js';
@@ -227,6 +227,7 @@ interface ProcessPeerStub {
   _rpcHostProcess(boot: ResidentBootSpec, opts: HostProcessOpts): Promise<{ ok: boolean; incarnation: string }>;
   _rpcAwaitHostedBoot(workerKey: string): Promise<{ payload: unknown }>;
   _rpcRouteHostedHttp(workerKey: string, request: HostedHttpRequest): Promise<HostedHttpResponse>;
+  _rpcAbandonHostedHttp(workerKey: string, capability: string, id: number): Promise<void>;
   _rpcCancelHostProcess(workerKey: string): Promise<{ cancelled: boolean }>;
   fetch(request: Request): Promise<Response>;
 }
@@ -291,6 +292,7 @@ function processPeerStub(value: object, peerName: string): ProcessPeerStub {
       return { payload: result.payload };
     },
     _rpcRouteHostedHttp: async (key, request) => parsePeerAnswer(PeerHttpResult, await dispatch({ op: 'routeHostedHttp', args: [key, request] })),
+    _rpcAbandonHostedHttp: async (key, capability, id) => { await dispatch({ op: 'abandonHostedHttp', args: [key, capability, id] }); },
     _rpcCancelHostProcess: async (key) => peerAnswer(PeerCancelResult, await dispatch({ op: 'cancelHostProcess', args: [key] })),
     fetch: async (request) => {
       const response = await Reflect.apply(fetchFn, value, [request]);
@@ -435,6 +437,9 @@ class PeerProcessHost implements ProcessHost {
       const started = loss.route(() => this.withPeer(placement.peerName, (stub) => stub._rpcAwaitHostedBoot(params.workerKey).then((r) => r.payload))).finally(starting.release);
       started.catch(() => {});
       let released = false;
+      const sent = new SentRequests();
+      const peered = <T>(call: (stub: ProcessPeerStub) => Promise<T>) => link.stub ? call(link.stub) : this.withPeer(placement.peerName, call);
+      const abandon = (id: number) => peered((stub) => stub._rpcAbandonHostedHttp(params.workerKey, webSocketCapability, id));
       return {
         started,
         lost: loss.signal,
@@ -442,8 +447,8 @@ class PeerProcessHost implements ProcessHost {
           const lease = observation.acquire(scope.signal);
           void scope.settled.then(lease.release);
           try {
-            const route = (stub: ProcessPeerStub) => routeThroughPeer(stub, params.workerKey, webSocketCapability, request, scope);
-            return await (link.stub ? route(link.stub) : this.withPeer(placement.peerName, route));
+            const sending = sent.send(scope, abandon);
+            return await peered((stub) => routeThroughPeer(stub, params.workerKey, webSocketCapability, request, sending));
           } catch (error) { lease.release(); throw error; }
         }),
         // An upgrade hands its socket to the caller at the handshake.
@@ -658,7 +663,7 @@ async function routeThroughPeer(
   workerKey: string,
   capability: string,
   request: Request,
-  scope: ResponseScope,
+  sending: { id: number; ended: number[] },
 ): Promise<Response> {
   const result = await stub._rpcRouteHostedHttp(workerKey, {
     capability,
@@ -666,7 +671,7 @@ async function routeThroughPeer(
     url: request.url,
     headers: headerPairs(request.headers),
     body: request.method === 'GET' || request.method === 'HEAD' ? null : request.body,
-    left: callerLeft(scope),
+    ...sending,
   });
   const responseHeaders = new Headers();
   for (const [key, value] of result.headers) responseHeaders.append(key, value);

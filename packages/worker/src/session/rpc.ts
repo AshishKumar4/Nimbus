@@ -1572,6 +1572,9 @@ export function _rpcAwaitHostedBoot(self: PeerHostRpcHost, workerKey: string): P
 export function _rpcRouteHostedHttp(self: PeerHostRpcHost, workerKey: string, wire: HostedHttpRequest): Promise<HostedReply<HostedHttpResponse>> {
   return self.peerHost.routeHttp(workerKey, wire);
 }
+export function _rpcAbandonHostedHttp(self: PeerHostRpcHost, workerKey: string, capability: string, id: number): void {
+  self.peerHost.abandonHttp(workerKey, capability, id);
+}
 export function _rpcCancelHostProcess(self: PeerHostRpcHost, workerKey: string): Promise<{ cancelled: boolean }> {
   return self.peerHost.cancel(workerKey);
 }
