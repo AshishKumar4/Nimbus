@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "f4daa99b328c0fa4e412c54071b8042536020a142adafed7ddbd5184cc9fd908",
+  "fingerprint": "4616c56595ec8b5fb8e18ecb6923be233c8e914cbf57a650fe47cf9df48c8a14",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1685,7 +1685,7 @@
     "packages/fabric/dist/generation.js": "f34cd1ffe981b9d1a3e0e91720f547f427b279fcf94eba3fabe988971d09dfc4",
     "packages/fabric/dist/host-activity.d.ts": "945a73908e6c113df5b22740205cb4133fda9a5cb8327c0b3eefcd3abad9c081",
     "packages/fabric/dist/host-activity.d.ts.map": "c39a147d799cdf8bebc92e4ce54f66d0766f942ff4811da33159b42bb60bd90d",
-    "packages/fabric/dist/host-activity.js": "8084587e89e707d9b27f47be17288628c89f2abbdfda9fc0fd5fba4e20723b75",
+    "packages/fabric/dist/host-activity.js": "2dce664084e51670b7b17f3d7561125192fe704b79171fa561ebc5a755340331",
     "packages/fabric/dist/host-dispatch.d.ts": "4f89c1ada81cbab54148c90f986cacbf229e7e068c6bbeec522a416cfa7fa4da",
     "packages/fabric/dist/host-dispatch.d.ts.map": "6fe1522e91b3a5b5cfdc1920d309a401c8ceff3aec2dc5b951ab9b6dfbc146d3",
     "packages/fabric/dist/host-dispatch.js": "ed1e07fa3e0b75877177d0189e1b00aee35fea3676ab0b2ffb2fdbb0c65591a8",
@@ -1769,7 +1769,7 @@
     "packages/fabric/src/fanout.ts": "d48642631b090856e05fcbf3209503c20e5073c3c7618191be25d9d64a16c711",
     "packages/fabric/src/fenced-work.ts": "01ed8f9e309369f15cc653171eae6a303779497cf23acb8611b79ebce36ef2c3",
     "packages/fabric/src/generation.ts": "320efc02fb7cb0d378dcf6872e7ba81a7d54ac3f27b322e8a776414d3296ee66",
-    "packages/fabric/src/host-activity.ts": "88a031c54d680541295406c420666393862d001259be0c58cc798159aadf6f4d",
+    "packages/fabric/src/host-activity.ts": "eaee361fa8db1f5c4f2cc0de09c75a9075e870d8de4cfe02e19ae129720eb3e4",
     "packages/fabric/src/host-dispatch.ts": "2514327e1650eb8ca851eb4bcb1315dc20e67f12ed50e067ee144deab95a05cc",
     "packages/fabric/src/host-wasm.ts": "2413e13d4a7255f5bb451eb670146870e93e636a939615672c87ade15f684bc8",
     "packages/fabric/src/image-store.ts": "303267ee6f2c903cc9f4d49e57abf5bd9e5aea831f83cb604d468d8affd83034",
