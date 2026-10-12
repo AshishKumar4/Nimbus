@@ -10,11 +10,15 @@ published independently in the `@nimbus-sh` npm scope.
   mount, as batches of `VfsEvent`s (paths in the namespace), by one rule for
   every watch (`projectChange` in `vfs/events.js`): each end of a change told
   where the view shows that file and may search every directory above it; a
-  rename seen at one end only is that end's `add` or `unlink`; a watched path
-  renamed is followed; a rename of a directory above a watched path is that
-  path's `unlink` or `add`. It is told to the watches registered when it
+  rename seen at one end only is that end's `add` or `unlink`; the watched
+  path renamed away, or a directory above it, is its `unlink`, and a watch
+  that follows its target (`watchChanges`' and `RuntimeFsBridge.subscribe`'s
+  new `follow` option, which Node's `fs.watch` uses) is told that move, a
+  `rename`, and moves with it. It is told to the watches registered when it
   landed, at every mount of the store it landed in (the new optional
-  `VFS.fileStore`); a recursive copy or removal tells each entry as it lands.
+  `VFS.fileStore`); a recursive copy or removal tells each entry as it lands;
+  `mkdir -p` on a mount that resolves its own paths looks first, and tells
+  only a directory it made.
   A backend may tell its own (the new optional `VFS.watchChanges`, which
   `SqliteFiles` implements, without storing any held write); any other
   mount's changes are told as they land through the namespace, typed by the
