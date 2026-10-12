@@ -13,6 +13,8 @@ export declare const HOST_WATCH_HEADER = "x-nimbus-host-watch";
 export declare const HOST_INCARNATION_HEADER = "x-nimbus-host-incarnation";
 /** A data request's per-open capability; with the pinned incarnation, it admits the request at the leaf. */
 export declare const HOST_REQUEST_HEADER = "x-nimbus-host-request";
+/** On a leaf's 500, its capability: the guest's handler failed, and the call arrived. */
+export declare const HOST_FAILED_HEADER = "x-nimbus-host-failed";
 export declare const HOST_WATCH_MODULE = "__nimbus_host_watch.js";
 interface Observation {
     readonly open: (signal: AbortSignal) => Promise<Response>;
@@ -54,12 +56,6 @@ export declare class SentRequests {
     /** `request`'s call failed before its leaf saw what it carried (leafReceived): carry it again (each is idempotent there). */
     unsent(request: HostRequest): void;
 }
-/** A leaf's answer to its host's HTTP call: its guest's response, or its guest's failure; either way the call arrived. */
-export type LeafReply = {
-    response: Response;
-} | {
-    failure: Error;
-};
 /**
  * The property a host sets on a guest failure its leaf answered: the call
  * arrived, and what it carried was seen; any other failure may not have
