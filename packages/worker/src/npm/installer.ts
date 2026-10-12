@@ -46,7 +46,7 @@ import {
   canonicalTreePath, holdTree, namedPackages, packageJsonDocument, projectRoots, readPackageJson, saveNamed,
   type NamedPackage, type TreeRoot,
 } from '@nimbus-sh/core/_shared/npm-tree.js';
-import { planTree, type InstalledPackage, type TreePlan, type TreeResolution } from '@nimbus-sh/core/_shared/npm-arborist/plan.js';
+import { planTree, type InstalledPackage, type OmitTypes, type TreePlan, type TreeResolution } from '@nimbus-sh/core/_shared/npm-arborist/plan.js';
 import { packageLockMismatches, parsePackageLock, stringList, stringRecord } from './package-lock.js';
 import { npmRegistryOrigin, packumentUrl } from './r2-cache.js';
 import {
@@ -175,6 +175,47 @@ interface FetchOutcome {
   filesWritten: number;
 }
 
+export interface NpmInstallOptions {
+  /** Explicit packages (`npm install react`). */
+  packages?: string[];
+  /** `--omit=dev` (`--production`): what only devDependencies reach is planned, not installed. */
+  production?: boolean;
+  /** `--omit=optional` / `--omit=peer`: likewise for what only optional, or only peer, dependencies reach. */
+  omitOptional?: boolean;
+  omitPeer?: boolean;
+  /** npm ci: install exactly the tree package-lock.json records. */
+  fromLockfile?: boolean;
+  /** The invoking process: authorizes the batch facet's writes. */
+  pid: number;
+  /** Its credential: what the project is read and written as. */
+  cred: VfsCred;
+  /** npm-protocol log sink (see --loglevel). */
+  npmLog?: NpmLogEmitter;
+  /** Per-invocation progress: overrides the constructor's sink. */
+  onProgress?: (msg: string) => void;
+  /** The command's NPM_REGISTRY; default registry.npmjs.org. */
+  registry?: string;
+  /** `--save-dev` / `--save-optional`: where what is named is saved. */
+  saveDev?: boolean;
+  saveOptional?: boolean;
+  /** False for `--no-save`: package.json is left as it is. */
+  save?: boolean;
+  /** What a saved range starts with ('' for `--save-exact`); '^' when not given. */
+  savePrefix?: string;
+  /** `--force`: a peer conflict the project owns is a warning. */
+  force?: boolean;
+  /** `--legacy-peer-deps`: peers are neither installed nor checked. */
+  legacyPeerDeps?: boolean;
+  /** `--prefer-dedupe`: one copy serves every edge it can, an older one included. */
+  preferDedupe?: boolean;
+  /** A global prefix's install: npm's shallow layout, and its installed packages are its roots. */
+  global?: boolean;
+  /** The command's: an install it stops before publication changes nothing; one waiting for the tree never starts. */
+  signal?: AbortSignal;
+  /** Run under the install's hold, once it has installed; answers the bins it linked. */
+  whileHeld?: (result: NpmInstallResult) => Promise<number>;
+}
+
 export interface NpmInstallResult {
   installed: string[];
   failed: string[];
@@ -245,32 +286,7 @@ export class NpmInstaller {
    * - Full resolution + fetch + write pipeline
    * - Incremental: only fetches/writes what changed
    */
-  async install(
-    projectDir: string,
-    opts: {
-      packages?: string[];       // explicit packages (npm install react)
-      production?: boolean;      // skip devDependencies
-      fromLockfile?: boolean;    // npm ci: place exactly what package-lock.json records
-      pid: number;               // invoking process pid — authorizes batch-facet writes
-      cred: VfsCred;             // its credential: what the project is read and written as
-      npmLog?: NpmLogEmitter;    // npm-protocol log sink (see --loglevel)
-      onProgress?: (msg: string) => void;  // per-invocation progress — overrides the ctor sink
-      registry?: string;         // the command's NPM_REGISTRY; default registry.npmjs.org
-      /** `--save-dev` / `--save-optional`: where what is named is saved. */
-      saveDev?: boolean;
-      saveOptional?: boolean;
-      /** `--force`: a peer conflict the project owns is a warning. */
-      force?: boolean;
-      /** `--legacy-peer-deps`: peers are neither installed nor checked. */
-      legacyPeerDeps?: boolean;
-      /** A global prefix's install: npm's shallow layout, and its installed packages are its roots. */
-      global?: boolean;
-      /** The command's: an install it stops before publication changes nothing; one waiting for the tree never starts. */
-      signal?: AbortSignal;
-      /** Run under the install's hold, once it has installed; answers the bins it linked. */
-      whileHeld?: (result: NpmInstallResult) => Promise<number>;
-    },
-  ): Promise<NpmInstallResult> {
+  async install(projectDir: string, opts: NpmInstallOptions): Promise<NpmInstallResult> {
     const start = Date.now();
     const projDir = projectDir.replace(/^\/+/, '').replace(/\/+$/, '');
     const nmDir = projDir + '/node_modules';
@@ -326,21 +342,7 @@ export class NpmInstaller {
   private async _installInner(
     projDir: string,
     nmDir: string,
-    opts: {
-      packages?: string[];
-      production?: boolean;
-      fromLockfile?: boolean;
-      pid: number;
-      cred: VfsCred;
-      npmLog?: NpmLogEmitter;
-      registry?: string;
-      saveDev?: boolean;
-      saveOptional?: boolean;
-      force?: boolean;
-      legacyPeerDeps?: boolean;
-      global?: boolean;
-      signal?: AbortSignal;
-    },
+    opts: NpmInstallOptions,
     log: (msg: string) => void,
     start: number,
     view: ProcessView,
@@ -367,7 +369,8 @@ export class NpmInstaller {
     const principal = { pid: opts.pid, cred: opts.cred, view, tmp };
     const lockfile = this.cache.readLockfile(projDir);
     const { roots, named, devOnly, advised } = await this.buildRoots(projDir, project, opts, lockfile);
-    const engine = { devOnly, advised, registry, global: opts.global === true, force: opts.force === true, legacyPeerDeps: opts.legacyPeerDeps === true, omitDev: opts.production === true };
+    const omit = { dev: opts.production === true, optional: opts.omitOptional === true, peer: opts.omitPeer === true };
+    const engine = { devOnly, advised, registry, global: opts.global === true, force: opts.force === true, legacyPeerDeps: opts.legacyPeerDeps === true, preferDedupe: opts.preferDedupe === true, omit };
 
     // ── Phase 1: Resolve ──────────────────────────────────────────
     // The one engine's plan (core _shared/npm-arborist) over the tree installed
@@ -429,7 +432,7 @@ export class NpmInstaller {
     const resolved = new Map<string, ResolvedPackage>();
     const nested = new Map<string, ResolvedPackage>();
     for (const [at, node] of plan.nodes) {
-      if (plan.skipped.has(at) || (opts.production && plan.dev.has(at))) continue;
+      if (plan.skipped.has(at) || plan.omits(at, omit)) continue;
       (at.includes('/node_modules/') ? nested : resolved).set(at, node.pkg);
     }
     const hoistPlan: HoistPlan = { root: resolved, nested };
@@ -579,8 +582,8 @@ export class NpmInstaller {
     const installed = [...installedAt.values()];
 
     // ── Update package.json if explicit packages were added ─────────
-    if (named.length > 0 && failed.length === 0) {
-      await this.updatePackageJson(projDir, project, principal, named, (name) => (plan.skipped.has(name) ? null : plan.nodes.get(name)?.pkg.version ?? null));
+    if (named.length > 0 && failed.length === 0 && opts.save !== false) {
+      await this.updatePackageJson(projDir, project, principal, named, (name) => (plan.skipped.has(name) ? null : plan.nodes.get(name)?.pkg.version ?? null), opts.savePrefix);
     }
 
     // ── Phase 7: Pre-bundle (TRULY fire-and-forget) ─────────────────
@@ -722,7 +725,8 @@ export class NpmInstaller {
       /** npm ci: `installed` is the lock's tree, which the plan must be. */
       locked?: boolean;
       /** `--omit=dev`: what only devDependencies reach is planned, not installed, and not announced. */
-      omitDev?: boolean;
+      omit?: OmitTypes;
+      preferDedupe?: boolean;
     } = {},
   ): Promise<PlannedTree> {
     const t0 = Date.now();
@@ -914,11 +918,11 @@ export class NpmInstaller {
         // A peer conflict npm lets through: said the way npm does.
         warn: (message) => log(`npm WARN ${message}`),
       },
-      { global: opts.global === true, force: opts.force === true, legacyPeerDeps: opts.legacyPeerDeps === true, locked: opts.locked === true },
+      { global: opts.global === true, force: opts.force === true, legacyPeerDeps: opts.legacyPeerDeps === true, locked: opts.locked === true, preferDedupe: opts.preferDedupe === true },
     );
 
     // What the tree installs that cannot run here is said once.
-    const installing = (at: string) => !plan.skipped.has(at) && !(opts.omitDev && plan.dev.has(at));
+    const installing = (at: string) => !plan.skipped.has(at) && !plan.omits(at, opts.omit ?? {});
     for (const [at, node] of plan.nodes) {
       if (!installing(at)) continue;
       const advisory = advisories.get(node.pkg.registryName ?? node.pkg.name) ?? advisories.get(node.pkg.name);
@@ -939,7 +943,7 @@ export class NpmInstaller {
     }
     for (const [at, reason] of plan.reasons) {
       const node = plan.nodes.get(at);
-      if (!node || (opts.omitDev && plan.dev.has(at))) continue;
+      if (!node || plan.omits(at, opts.omit ?? {})) continue;
       log(`[resolve-fanout] [skip] ${node.pkg.name} — ${reason}${refusalHints.get(node.pkg.name) ?? ''}`);
       emitRegistryEvent({ type: 'transitive-skip', from: node.pkg.name, reason });
     }
@@ -1491,6 +1495,8 @@ export class NpmInstaller {
       let record = read.get(key);
       if (record === undefined) {
         record = this.cache.getRegistryEntry(registryName, entry.resolvedVer);
+        // A row from before records kept their registry identity may be another package's.
+        if (record !== null && record.registryName !== registryName) record = null;
         read.set(key, record);
       }
       return record !== null && record.integrity === entry.integrity ? record : null;
@@ -1766,6 +1772,7 @@ export class NpmInstaller {
     principal: { cred: VfsCred; view: ProcessView },
     named: readonly NamedPackage[],
     version: (name: string) => string | null,
+    savePrefix?: string,
   ): Promise<void> {
     const pkgJsonPath = projDir + '/package.json';
     if (!await fs.exists(pkgJsonPath)) return;
@@ -1776,7 +1783,7 @@ export class NpmInstaller {
     // A document that is not an object cannot take a field.
     const document = packageJsonDocument(parsed);
     if (document === null) throw new TypeError('package.json is not an object');
-    const saved = saveNamed(document.json, named, version);
+    const saved = saveNamed(document.json, named, version, savePrefix);
     // `npm init` and npm-fast before 0.13.2 wrote package.json as root.
     await this.handKernelArtifact(principal, `/${pkgJsonPath}`);
     await fs.writeFile(pkgJsonPath, JSON.stringify(saved, null, 2) + '\n');

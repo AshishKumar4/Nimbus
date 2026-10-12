@@ -88,8 +88,10 @@ export interface TreePackage extends TreeManifest {
   /** The name it is installed under (an alias's). */
   readonly name: string;
   readonly version: string;
-  /** The registry package it is, where the host knows it (an alias's target): only that package meets an edge naming another. */
+  /** The registry package it is, where the host knows it (npm's packageName: an alias's target). */
   readonly registryName?: string;
+  /** Its content's integrity, where the host knows it: two copies with it are the same package (Node.matches). */
+  readonly integrity?: string;
 }
 
 /** npm's edge types: what a dependency is to the package that asks for it. */
@@ -135,10 +137,12 @@ export function manifestEdges(manifest: TreeManifest, { legacyPeerDeps = false }
   return [...byName.values()];
 }
 
-/** What an edge's spec asks for: the registry package (an `npm:` alias's target), and its semver range, or null for a spec that is not one (a tag, `*`, a URL). */
+/** What an edge's spec asks for: the registry package (an `npm:` alias's target), and its semver range, or null for a spec that is not one (a tag, `*`). */
 export interface EdgeRequest {
   readonly registryName: string;
   readonly range: string | null;
+  /** Whether a registry answers it; a git, file, directory or URL spec is not installed here. */
+  readonly registry: boolean;
 }
 
 /** Each spec parsed once, by `name\0spec`. */
@@ -148,8 +152,9 @@ export function edgeRequest(name: string, spec: string): EdgeRequest {
   const key = `${name}\0${spec}`;
   let request = edgeRequests.get(key);
   if (request === undefined) {
-    const { registryName, range } = parseRegistryRequest(name, spec);
-    request = { registryName, range: isSemverRange(range) && range !== '*' && range !== '' ? range : null };
+    const { registryName, range, registry } = parseRegistryRequest(name, spec);
+    const trimmed = range.trim();
+    request = { registryName, range: isSemverRange(trimmed) && trimmed !== '*' && trimmed !== '' ? trimmed : null, registry };
     edgeRequests.set(key, request);
   }
   return request;
@@ -311,6 +316,8 @@ export function saveNamed(
   json: Readonly<Record<string, unknown>>,
   named: readonly NamedPackage[],
   installed: (name: string) => string | null,
+  /** npm's save-prefix: '' for `--save-exact`. */
+  savePrefix = '^',
 ): Record<string, unknown> {
   const declared = ProjectManifestSchema.parse(json);
   const fields = new Map<DependencyField, Record<string, string>>();
@@ -339,10 +346,11 @@ export function saveNamed(
     const version = installed(name);
     if (version === null) continue;
     const { range: requested, alias, registryName } = parseRegistryRequest(name, spec);
-    const prefixed = `^${version}`;
+    const prefixed = `${savePrefix}${version}`;
     const isRange = isSemverRange(requested) && !isExactVersion(requested) && requested !== '*' && requested !== '' && requested !== 'latest';
     const savedRange = isRange && !rangeSubset(prefixed, requested) ? requested : prefixed;
-    const saved = alias ? `npm:${registryName}@${savedRange}` : savedRange;
+    // Alias syntax where the package is another's (reify #saveIdealTree reads the child's packageName).
+    const saved = alias && registryName !== name ? `npm:${registryName}@${savedRange}` : savedRange;
     if (explicit) {
       target[name] = saved;
       if (saveType === 'prod' && has('optionalDependencies', name)) delete field('optionalDependencies')[name];

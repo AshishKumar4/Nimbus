@@ -13,7 +13,7 @@ import {
 	canonicalTreePath, depthOf, holdTree, namedPackages, placementName, projectRoots, readPackageJson, saveNamed,
 	type PackageJsonDocument, type TreePackage, type TreeRoot,
 } from '../../../../_shared/npm-tree.js';
-import { planTree, requiredFailures, type TreeNode, type TreeResolution } from '../../../../_shared/npm-arborist/plan.js';
+import { planTree, requiredFailures, type OmitTypes, type TreeNode, type TreeResolution } from '../../../../_shared/npm-arborist/plan.js';
 import { InstallJournal } from './npm-journal.js';
 import { sriDigestOf, sriDigestsEqual, strongestSriEntry } from '../../../../_shared/tarball-integrity.js';
 import {
@@ -79,6 +79,15 @@ export interface NpmInstallPort {
     force?: boolean;
     /** `--legacy-peer-deps`: peers are not installed, nor checked. */
     legacyPeerDeps?: boolean;
+    /** `--omit=optional` / `--omit=peer`: what only optional or only peer dependencies need is planned, and not installed. */
+    omitOptional?: boolean;
+    omitPeer?: boolean;
+    /** `--prefer-dedupe`: one copy serves every edge it can, an older one included. */
+    preferDedupe?: boolean;
+    /** False for `--no-save`: package.json is left as it is. */
+    save?: boolean;
+    /** What a saved range starts with ('' for `--save-exact`); '^' when not given. */
+    savePrefix?: string;
     /** The command's: an install it stops before publication changes nothing, and one waiting for the tree never starts. */
     signal?: AbortSignal;
     /** Registry origin from the command's env (`NPM_REGISTRY`), else the default. */
@@ -298,8 +307,9 @@ interface TreeInstall {
 	globalBinDir?: string;
 	force?: boolean;
 	legacyPeerDeps?: boolean;
-	/** `--omit=dev`: what only devDependencies reach is planned, and not installed. */
-	production?: boolean;
+	/** What `--omit` leaves out: planned, and not installed. */
+	omit: OmitTypes;
+	preferDedupe?: boolean;
 }
 
 /** A package the shell resolved, by the name it installs under (an alias's), with its registry version to fetch. */
@@ -391,7 +401,7 @@ async function installTree(roots: readonly TreeRoot[], install: TreeInstall): Pr
 				await stdout.write(`  ${name}${range ? '@' + range : ''}...\n`);
 				try {
 					const info = await fetchPackageInfo(network, npmRegistry, name, range || null, signal);
-					answers.push({ package: { ...info, name, registryName: info.name, bundleDependencies: info.bundleDependencies ?? info.bundledDependencies, info } });
+					answers.push({ package: { ...info, name, registryName: info.name, integrity: info.dist.integrity, bundleDependencies: info.bundleDependencies ?? info.bundledDependencies, info } });
 				} catch (error) {
 					answers.push({ failed: describeError(error) });
 				}
@@ -399,7 +409,7 @@ async function installTree(roots: readonly TreeRoot[], install: TreeInstall): Pr
 			return answers;
 		},
 		warn: async (message) => { await stderr.write(`npm WARN ${message}\n`); },
-	}, { global: install.globalBinDir !== undefined, force: install.force, legacyPeerDeps: install.legacyPeerDeps });
+	}, { global: install.globalBinDir !== undefined, force: install.force, legacyPeerDeps: install.legacyPeerDeps, preferDedupe: install.preferDedupe });
 	const [requiredFailure] = requiredFailures(plan);
 	if (requiredFailure) return await fail(requiredFailure.edge.name, requiredFailure.reason);
 	for (const { id, edge } of plan.failures) {
@@ -411,7 +421,7 @@ async function installTree(roots: readonly TreeRoot[], install: TreeInstall): Pr
 	const run = Math.random().toString(36).slice(2, 10);
 	const staging = join(targetBase, `.nimbus-staging-${run}`);
 	// The tree to publish: what the plan holds, but what it leaves out and, with --omit=dev, what only devDependencies reach.
-	const inTree = (at: string) => plan.nodes.has(at) && !plan.skipped.has(at) && !(install.production && plan.dev.has(at));
+	const inTree = (at: string) => plan.nodes.has(at) && !plan.skipped.has(at) && !plan.omits(at, install.omit);
 	const plannedVersion = (name: string) => (plan.skipped.has(name) ? null : plan.nodes.get(name)?.pkg.version ?? null);
 	// What the plan places is fetched, but where that package is installed already.
 	const installedAt = new Map(installed.map(({ at, pkg }) => [at, pkg]));
@@ -539,6 +549,10 @@ async function npmInstall(
 	const args = ctx.args.slice(1);
 	const invocation = parseNpmInstallInvocation(args);
 	const packages = invocation.packages;
+	if (invocation.unsupported.length > 0) {
+		for (const line of invocation.unsupported) await ctx.stderr.write(`npm ERR! ${line}\n`);
+		return 1;
+	}
 
 	// ── Pre-checks the host used to do behind a wrapper ────────────────
 	// `npm install -g` needs names (npm says the same); `npm install` needs a
@@ -584,6 +598,11 @@ async function npmInstall(
 			saveOptional: invocation.saveOptional,
 			force: invocation.force,
 			legacyPeerDeps: invocation.legacyPeerDeps,
+			omitOptional: invocation.omitOptional,
+			omitPeer: invocation.omitPeer,
+			preferDedupe: invocation.preferDedupe,
+			save: invocation.save,
+			savePrefix: invocation.savePrefix,
 			signal: ctx.signal,
 			npmLog,
 			onProgress: async (line) => await ctx.stdout.write(`[npm] ${line}\n`),
@@ -621,7 +640,8 @@ function shellInstallPort(ctx: CommandContext, registry: CommandRegistry, kernel
 			const tree: TreeInstall = {
 				targetBase, vfs, network: kernel?.network ?? ISOLATE_NETWORK, npmRegistry: spec.registry, signal,
 				stdout: ctx.stdout, stderr: ctx.stderr, registry, kernel,
-				force: spec.force === true, legacyPeerDeps: spec.legacyPeerDeps === true, production: spec.production === true,
+				force: spec.force === true, legacyPeerDeps: spec.legacyPeerDeps === true, preferDedupe: spec.preferDedupe === true,
+				omit: { dev: spec.production === true, optional: spec.omitOptional === true, peer: spec.omitPeer === true },
 				...(globalBinDir ? { globalBinDir } : {}),
 			};
 			// The project's package.json is read and written under the tree's
@@ -641,11 +661,11 @@ function shellInstallPort(ctx: CommandContext, registry: CommandRegistry, kernel
 				const roots = projectRoots(project?.manifest ?? null, named, { implicit, legacyPeerDeps: spec.legacyPeerDeps === true });
 				await ctx.stdout.write(spec.packages.length === 0 ? 'Installing dependencies...\n' : 'Installing packages...\n');
 				const result = await installTree(roots, tree);
-				if (result.failed.length > 0 || project === null || named.length === 0) return result;
+				if (result.failed.length > 0 || project === null || named.length === 0 || spec.save === false) return result;
 				// What the command line named is saved to package.json, at the version the tree holds, once it installed.
 				try {
 					const saved = (await packageJsonIn(vfs, spec.projectDir)) ?? project;
-					await writeProjectPackageJson(vfs, spec.projectDir, saveNamed(saved.json, named, (name) => result.plannedVersion?.(name) ?? null));
+					await writeProjectPackageJson(vfs, spec.projectDir, saveNamed(saved.json, named, (name) => result.plannedVersion?.(name) ?? null, spec.savePrefix));
 					return result;
 				} catch (error) {
 					await ctx.stderr.write(`npm ERR! ${describeError(error)}\n`);
@@ -1019,6 +1039,10 @@ export function createNpmCommand(
  */
 async function npmCi(ctx: CommandContext, deps?: NpmCommandDeps): Promise<number> {
 	const invocation = parseNpmInstallInvocation(ctx.args.slice(1));
+	if (invocation.unsupported.length > 0) {
+		for (const line of invocation.unsupported) await ctx.stderr.write(`npm ERR! ${line}\n`);
+		return 1;
+	}
 	if (invocation.global) {
 		await ctx.stderr.write('npm ERR! `npm ci` does not work for global packages\n');
 		return 1;
@@ -1055,6 +1079,8 @@ async function npmCi(ctx: CommandContext, deps?: NpmCommandDeps): Promise<number
 			signal: ctx.signal,
 			registry: getRegistry(ctx.env),
 			production: invocation.production,
+			omitOptional: invocation.omitOptional,
+			omitPeer: invocation.omitPeer,
 			fromLockfile: true,
 			npmLog,
 			onProgress: async (line) => await ctx.stdout.write(`[npm] ${line}\n`),

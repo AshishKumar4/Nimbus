@@ -7,7 +7,7 @@
  * what a placement leaves unmet is queued again.
  */
 
-import { bundledNames, isPeer, manifestEdges, type TreePackage } from '../npm-tree.js';
+import { bundledNames, edgeRequest, isPeer, manifestEdges, type TreePackage } from '../npm-tree.js';
 import { localeCompare, Node, Tree, type Edge, type EdgeDefinition, type HostPackages } from './model.js';
 import { Placer, PeerConflict, type Placement } from './place-dep.js';
 import type { PlanOptions, TreeHost, TreeResolution } from './plan.js';
@@ -69,10 +69,23 @@ export class Builder<H extends HostPackages> {
 
   private requestKey(name: string, range: string): string { return `${name}\0${range}`; }
 
-  /** Resolve every request not yet answered, together. */
+  /**
+   * Resolve every request not yet answered, together. One no registry
+   * answers (a git, file, directory or URL spec) fails here, without asking:
+   * npm installs it from where it points, which this engine does not.
+   */
   private async resolve(requests: ReadonlyArray<{ name: string; range: string }>): Promise<void> {
-    const missing = [...new Map(requests.filter(({ name, range }) => !this.resolutions.has(this.requestKey(name, range)))
-      .map((request) => [this.requestKey(request.name, request.range), request])).values()];
+    const missing: Array<{ name: string; range: string }> = [];
+    for (const request of requests) {
+      const key = this.requestKey(request.name, request.range);
+      if (this.resolutions.has(key)) continue;
+      if (edgeRequest(request.name, request.range).registry) {
+        missing.push(request);
+        this.resolutions.set(key, { failed: 'the resolver returned no answer' });
+      } else {
+        this.resolutions.set(key, { failed: `${request.name}@${request.range} is not a registry package (a git, file, directory or URL spec), which is not supported here` });
+      }
+    }
     if (missing.length === 0) return;
     const answers = await this.host.resolve(missing);
     missing.forEach(({ name, range }, i) => this.resolutions.set(this.requestKey(name, range), answers[i] ?? { failed: 'the resolver returned no answer' }));

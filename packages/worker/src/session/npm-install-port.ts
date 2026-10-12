@@ -43,6 +43,11 @@ export function createNpmInstallPort(self: InstallHost): NpmInstallPort {
         saveOptional: spec.saveOptional,
         force: spec.force,
         legacyPeerDeps: spec.legacyPeerDeps,
+        omitOptional: spec.omitOptional,
+        omitPeer: spec.omitPeer,
+        preferDedupe: spec.preferDedupe,
+        save: spec.save,
+        savePrefix: spec.savePrefix,
         global: globalPrefix !== undefined,
         signal: spec.signal,
         // On-PATH bin shims, under the install's hold: even for a partial

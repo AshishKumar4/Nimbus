@@ -50,7 +50,7 @@ export class Placer<H extends HostPackages> {
 
   constructor(
     private readonly tree: Tree<H>,
-    private readonly options: { readonly force?: boolean; readonly global?: boolean },
+    private readonly options: { readonly force?: boolean; readonly global?: boolean; readonly preferDedupe?: boolean },
     private readonly edgesOf: (pkg: TreePackage | null) => EdgeDefinition[],
   ) {}
 
@@ -65,7 +65,7 @@ export class Placer<H extends HostPackages> {
     for (let target: Node<H> | null = placement.start; target; target = target.parent) {
       const targetEdge = target.edgesOut.get(edge.name);
       if (!target.isTop && targetEdge && targetEdge.peer) continue;
-      const check = new CanPlace(dep, target, edge, parent?.canPlace ?? null, [], false, explicit);
+      const check = new CanPlace(dep, target, edge, parent?.canPlace ?? null, [], this.options.preferDedupe === true, explicit);
       if (check.self !== 'CONFLICT') placement.canPlaceSelf = check;
       if (check.verdict === 'CONFLICT') break;
       placement.canPlace = check;
@@ -162,7 +162,7 @@ export class Placer<H extends HostPackages> {
 
   private pruneDedupable(node: Node<H>, descend: boolean): void {
     if (node.tree !== this.tree) return;
-    if (node.canDedupe(false)) {
+    if (node.canDedupe(this.options.preferDedupe === true)) {
       for (const dep of gatherDepSet([node], (e) => e.to !== node && e.valid)) this.tree.detach(dep);
       return;
     }

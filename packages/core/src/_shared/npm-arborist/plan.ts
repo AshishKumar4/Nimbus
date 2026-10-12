@@ -28,7 +28,15 @@ export interface LockFlags {
   readonly dev?: boolean;
   readonly optional?: boolean;
   readonly devOptional?: boolean;
+  readonly peer?: boolean;
   readonly extraneous?: boolean;
+}
+
+/** The dependency types `--omit` names. */
+export interface OmitTypes {
+  readonly dev?: boolean;
+  readonly optional?: boolean;
+  readonly peer?: boolean;
 }
 
 /** What a host answers for a request it resolves. */
@@ -69,6 +77,8 @@ export interface PlanOptions {
   readonly legacyPeerDeps?: boolean;
   /** npm ci: `installed` is the lock's tree, which the plan must be. */
   readonly locked?: boolean;
+  /** `--prefer-dedupe`: an installed copy is replaced by an older one that meets every edge too. */
+  readonly preferDedupe?: boolean;
 }
 
 /** What the plan could not meet: a package at `id` (its placement) that failed or is refused, or the project's peer conflict. */
@@ -95,8 +105,8 @@ export interface TreePlan<P extends TreePackage, I extends TreePackage> {
   readonly lockMismatches: readonly string[];
   /** Placements (and failure ids) a path of required edges reaches from the project. */
   readonly required: ReadonlySet<string>;
-  /** Placements only devDependencies reach (calc-dep-flags' dev): what `--omit=dev` leaves out at reification. */
-  readonly dev: ReadonlySet<string>;
+  /** Whether `--omit` leaves `at` out at reification (reify's filter over calc-dep-flags' flags). */
+  omits(at: string, omit: OmitTypes): boolean;
   /** Placements (and failure ids) left out: optional failures and refusals, what the host leaves out, and their optional sets. */
   readonly skipped: ReadonlySet<string>;
   /** Why each one left out is (by placement or failure id). */
@@ -165,15 +175,14 @@ export async function planTree<P extends TreePackage, I extends TreePackage>(
   }
 
   // ── calc-dep-flags; a lock's own flags where the build changed nothing (npm ci) ──
-  const { reached, required, prod } = calcDepFlags(project);
+  const { reached, required, prod, prodRequired, nonPeer } = calcDepFlags(project);
   const lockFlags = options.locked && !builder.mutated;
+  const lockOf = (each: Node<H>) => (each.payload.kind === 'installed' && lockFlags ? each.payload.lock : undefined);
+  const flagsOf = (each: Node<H>): LockFlags =>
+    lockOf(each) ?? { dev: !prod.has(each), optional: !required.has(each), devOptional: !prodRequired.has(each), peer: !nonPeer.has(each) };
   const isRequired = (each: Node<H>) => {
-    const lock = each.payload.kind === 'installed' && lockFlags ? each.payload.lock : undefined;
+    const lock = lockOf(each);
     return lock ? !lock.optional && !lock.devOptional : required.has(each);
-  };
-  const isDev = (each: Node<H>) => {
-    const lock = each.payload.kind === 'installed' && lockFlags ? each.payload.lock : undefined;
-    return lock ? lock.dev === true : !prod.has(each);
   };
 
   // What the project does not reach is extraneous: it goes from a tree
@@ -185,11 +194,11 @@ export async function planTree<P extends TreePackage, I extends TreePackage>(
   // The tree, as the hosts get it, before anything is left out of it.
   const nodes = new Map<string, TreeNode<P, I>>();
   const requiredAt = new Set<string>();
-  const dev = new Set<string>();
+  const flagsAt = new Map<string, LockFlags>();
   for (const each of tree.nodes()) {
     const at = each.location;
     if (isRequired(each)) requiredAt.add(at);
-    if (isDev(each)) dev.add(at);
+    flagsAt.set(at, flagsOf(each));
     const { payload } = each;
     if (payload.kind === 'placed') nodes.set(at, { at, planned: true, pkg: payload.pkg, edge: payload.placedFor });
     else if (payload.kind === 'installed') nodes.set(at, { at, planned: false, pkg: payload.pkg });
@@ -236,7 +245,13 @@ export async function planTree<P extends TreePackage, I extends TreePackage>(
     failures: [...failures.values()],
     lockMismatches,
     required: requiredAt,
-    dev,
+    omits: (at, omit) => {
+      const flags = flagsAt.get(at);
+      // A global prefix's top-level packages are what it installs: never omitted (reify).
+      if (!flags || (options.global && !at.includes('/node_modules/'))) return false;
+      return (omit.dev === true && flags.dev === true) || (omit.optional === true && flags.optional === true)
+        || (omit.dev === true && omit.optional === true && flags.devOptional === true) || (omit.peer === true && flags.peer === true);
+    },
     skipped,
     reasons,
     extraneous,

@@ -57,9 +57,9 @@ export class Edge<H extends HostPackages> {
     this.request = edgeRequest(name, spec);
   }
 
-  /** Whether the registry package `registryName` (where known) at `version` meets it (dep-valid). */
-  accepts(registryName: string | undefined, version: string): boolean {
-    if (registryName !== undefined && registryName !== this.request.registryName) return false;
+  /** Whether a package at `version` meets it (dep-valid: an alias by its target's range, whatever package fills it); none meets a spec no registry answers. */
+  accepts(version: string): boolean {
+    if (!this.request.registry) return false;
     let answer = this.accepted.get(version);
     if (answer === undefined) {
       answer = meets(version, { name: this.name, range: this.spec });
@@ -148,15 +148,16 @@ export class Node<H extends HostPackages> {
 
   satisfies(edge: Edge<H>): boolean {
     const { pkg } = this;
-    return pkg !== null && edge.name === this.name && edge.accepts(pkg.registryName, pkg.version);
+    return pkg !== null && edge.name === this.name && edge.accepts(pkg.version);
   }
 
-  /** The same package at the same version. */
+  /** The same package (Node.matches): by integrity where both know it, else the same package at the same version. */
   matches(other: Node<H>): boolean {
     const mine = this.pkg;
     const theirs = other.pkg;
-    if (mine === null || theirs === null || this.name !== other.name || mine.version !== theirs.version) return false;
-    return mine.registryName === undefined || theirs.registryName === undefined || mine.registryName === theirs.registryName;
+    if (mine === null || theirs === null || this.name !== other.name) return false;
+    if (mine.integrity && theirs.integrity) return mine.integrity === theirs.integrity;
+    return (mine.registryName ?? this.name) === (theirs.registryName ?? other.name) && mine.version === theirs.version;
   }
 
   /** Whether `this` may stand in for `old`: every edge into `old` from outside what only `old` needs accepts it (canReplaceWith). */
