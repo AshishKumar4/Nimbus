@@ -90,6 +90,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     mkdir(path: RuntimeFsPath, options?: {
         recursive?: boolean;
         mode?: number;
+        umask?: number;
     } & RuntimeMutationOwner): void;
     /**
      * Whether anything may be at `located`: a mounted name (its mount

@@ -11,6 +11,7 @@
 #undef chmod
 #undef fchmod
 #undef fchmodat
+#undef umask
 #undef open
 #undef access
 #undef faccessat
@@ -40,6 +41,7 @@ NIMBUS_FS_IMPORT("path_stat") int __nimbus_path_stat(int fd, int lookupflags, co
 NIMBUS_FS_IMPORT("fd_stat") int __nimbus_fd_stat(int fd, struct nimbus_stat_record *out);
 NIMBUS_FS_IMPORT("path_chmod") int __nimbus_path_chmod(int fd, int lookupflags, const char *path, size_t len, uint32_t mode);
 NIMBUS_FS_IMPORT("fd_chmod") int __nimbus_fd_chmod(int fd, uint32_t mode);
+NIMBUS_FS_IMPORT("umask") int __nimbus_umask(uint32_t mask, uint32_t *previous);
 NIMBUS_FS_IMPORT("path_access") int __nimbus_path_access(int fd, int lookupflags, const char *path, size_t len, uint32_t mode);
 NIMBUS_PROC_IMPORT("ids") int __nimbus_ids(uint32_t *ids);
 
@@ -132,6 +134,12 @@ int nimbus_fchmodat(int dirfd, const char *path, mode_t mode, int flags) {
 int nimbus_chmod(const char *path, mode_t mode) { return nimbus_fchmodat(AT_FDCWD, path, mode, 0); }
 int nimbus_fchmod(int fd, mode_t mode) { return answered(__nimbus_fd_chmod(fd, mode)); }
 
+mode_t nimbus_umask(mode_t mask) {
+  uint32_t previous;
+  if (answered(__nimbus_umask(mask, &previous))) return (mode_t)-1;
+  return (mode_t)previous;
+}
+
 int nimbus_faccessat(int dirfd, const char *path, int mode, int flags) {
   (void)flags;
   if (path[0] == '\0') { errno = ENOENT; return -1; }
@@ -152,12 +160,18 @@ int nimbus_open(const char *path, int flags, ...) {
     mode = (mode_t)va_arg(ap, int);
     va_end(ap);
   }
+  mode_t mask = 0;
+  if (flags & O_CREAT) {
+    mask = nimbus_umask(0);
+    nimbus_umask(mask | (~mode & 0777));
+  }
   int fd = open(path, flags, mode);
-  if (fd < 0 || !(flags & O_CREAT) || !(flags & O_EXCL) || !(mode & 0111)) return fd;
+  if (flags & O_CREAT) nimbus_umask(mask);
+  mode_t execute = mode & 0111 & ~mask;
+  if (fd < 0 || !(flags & O_CREAT) || !(flags & O_EXCL) || !execute) return fd;
   struct stat st;
   if (nimbus_fstat(fd, &st) == 0) {
-    mode_t readable = st.st_mode & 0444;
-    if (nimbus_fchmod(fd, (st.st_mode & 07777) | ((readable >> 2) & mode & 0111)) == 0) return fd;
+    if (nimbus_fchmod(fd, (st.st_mode & 07777) | execute) == 0) return fd;
   }
   int error = errno;
   close(fd);

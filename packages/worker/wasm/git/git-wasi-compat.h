@@ -22,7 +22,6 @@ int execve(const char *, char *const[], char *const[]);
 int execvp(const char *, char *const[]);
 int execl(const char *, const char *, ...);
 int execlp(const char *, const char *, ...);
-mode_t umask(mode_t);
 unsigned alarm(unsigned);
 char *getpass(const char *);
 pid_t tcgetpgrp(int);
@@ -68,6 +67,7 @@ int setsockopt(int, int, int, const void *, unsigned int);
 #define fstat nimbus_fstat
 #define chmod nimbus_chmod
 #define fchmod nimbus_fchmod
+#define umask nimbus_umask
 #define open(...) nimbus_open(__VA_ARGS__)
 #define access nimbus_access
 #endif

@@ -421,8 +421,8 @@ export interface CredentialedVfs {
   /** What `path` itself is (a link is not followed), or null when absent: one lookup for the four questions above. */
   kind(path: string): VfsInodeKind | null;
   access(path: string, mode: number): void;
-  mkdir(path: string, options?: { recursive?: boolean; mode?: number }): void;
-  writeFile(path: string, content: string | Uint8Array, options?: { mode?: number }): void;
+  mkdir(path: string, options?: { recursive?: boolean; mode?: number; umask?: number }): void;
+  writeFile(path: string, content: string | Uint8Array, options?: { mode?: number; umask?: number }): void;
   /**
    * writeFile of a file whose `size` bytes arrive over time from `source`,
    * published whole once they have (see SqliteVFS.writeFileFrom). Answers
@@ -3052,8 +3052,8 @@ export class SqliteVFS {
       isSymlink: (path) => this.isSymlink(path, bound),
       kind: (path) => this.probeInode(path, bound)?.kind ?? null,
       access: (path, mode) => { this.checkAccess(path, mode, bound); },
-      mkdir: (path, options) => this.mkdir(path, options, bound),
-      writeFile: (path, content, options) => this.writeFile(path, content, options, bound),
+      mkdir: (path, options) => this.mkdir(path, options, withUmask(bound, options?.umask)),
+      writeFile: (path, content, options) => this.writeFile(path, content, options, withUmask(bound, options?.umask)),
       writeFileFrom: (path, size, source, options) => this.spanning(
         () => this.writeFileFrom(path, size, source, options, bound, mutationOwner, origin),
         mutationOwner,

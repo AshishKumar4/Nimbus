@@ -21,15 +21,15 @@ int nimbus_fstat(int fd, struct stat *st);
 int nimbus_fstatat(int dirfd, const char *path, struct stat *st, int flags);
 int nimbus_chmod(const char *path, mode_t mode);
 int nimbus_fchmod(int fd, mode_t mode);
+mode_t nimbus_umask(mode_t mask);
 /* AT_SYMLINK_NOFOLLOW is ENOTSUP, as Linux has no lchmod. */
 int nimbus_fchmodat(int dirfd, const char *path, mode_t mode, int flags);
 /* access(2) as the session's credential may; AT_SYMLINK_NOFOLLOW is ignored, as on Linux. */
 int nimbus_faccessat(int dirfd, const char *path, int mode, int flags);
 int nimbus_access(const char *path, int mode);
 /*
- * open(2): a file it creates (O_CREAT with O_EXCL, so certainly new) with
- * execute bits in `mode` gets them, which preview1's create cannot carry:
- * execute wherever the umask let read through.
+ * open(2): O_CREAT applies the requested mode under the live umask. An
+ * exclusive create adds unmasked execute bits, which preview1 cannot carry.
  */
 int nimbus_open(const char *path, int flags, ...);
 

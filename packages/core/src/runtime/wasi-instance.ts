@@ -151,7 +151,7 @@ export interface WasiFsSnapshot {
   /** Preopen list (order matters; preopens are assigned to fd 3, 4, …). */
   preopens: Array<{ wasiPath: string; vfsPath: string }>;
   /** The credential the process runs as: with it, its filesystem is its resident one (WasiInitOptions.cred). */
-  cred?: { uid: number; gid: number; groups: number[] };
+  cred?: import('./os-contracts.js').VfsCred;
 }
 
 

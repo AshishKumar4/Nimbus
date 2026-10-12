@@ -179,9 +179,11 @@ export interface CredentialedVfs {
     mkdir(path: string, options?: {
         recursive?: boolean;
         mode?: number;
+        umask?: number;
     }): void;
     writeFile(path: string, content: string | Uint8Array, options?: {
         mode?: number;
+        umask?: number;
     }): void;
     /**
      * writeFile of a file whose `size` bytes arrive over time from `source`,
