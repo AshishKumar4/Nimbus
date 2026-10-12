@@ -16,8 +16,8 @@ const repo = git('rev-parse', '--show-toplevel').trim();
 const sha = git('rev-parse', `${revision}^{commit}`).trim();
 const base = git('rev-parse', `${baseline}^{commit}`).trim();
 const baselineDir = '.ci-vfs-baseline';
-const files = ['sqlite-vfs.ts', 'path.ts', 'composite.ts'].map((name) => ({
-  path: `${baselineDir}/${name}`, bytes: git('show', `${base}:packages/core/src/vfs/${name}`),
+const files = ['vfs/sqlite-vfs.ts', 'vfs/path.ts', 'vfs/composite.ts', 'vfs/sqlite-files.ts', 'runtime/process-files.ts', 'runtime/sqlite-runtime-fs-bridge.ts'].map((name) => ({
+  path: `${baselineDir}/${name}`, bytes: git('show', `${base}:packages/core/src/${name}`),
 }));
 const measured = overlayCommit(repo, sha, files);
 const run = await mapOnArmada({

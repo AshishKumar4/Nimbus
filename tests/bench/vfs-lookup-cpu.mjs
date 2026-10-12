@@ -8,6 +8,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CompositeVFS } from '../../packages/core/src/vfs/composite.ts';
 import { sqliteFiles } from '../../packages/core/src/vfs/sqlite-files.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { hostSqlite } from '../unit/lib/host-sqlite.mjs';
 
 const args = process.argv.slice(2);
@@ -30,60 +31,105 @@ const ITERATIONS = 24_000;
 const PAIRS = 36;
 let checksum = 0;
 const results = [];
+const failures = [];
 
 try {
   mkdirSync(join(fixture, 'vfs'));
+  mkdirSync(join(fixture, 'runtime'));
   for (const entry of readdirSync(source)) {
-    if (entry === 'vfs' || entry.startsWith('.vfs-cpu-')) continue;
+    if (entry === 'vfs' || entry === 'runtime' || entry.startsWith('.vfs-cpu-')) continue;
     symlinkSync(join(source, entry), join(fixture, entry));
   }
   for (const entry of readdirSync(join(source, 'vfs'))) {
     const target = join(fixture, 'vfs', entry);
     if (['sqlite-vfs.ts', 'path.ts', 'composite.ts'].includes(entry)) {
-      writeFileSync(target, readFileSync(join(baseline, entry)));
+      writeFileSync(target, readFileSync(join(baseline, 'vfs', entry)));
     } else symlinkSync(join(source, 'vfs', entry), target);
+  }
+  for (const entry of readdirSync(join(source, 'runtime'))) {
+    const target = join(fixture, 'runtime', entry);
+    if (['process-files.ts', 'sqlite-runtime-fs-bridge.ts'].includes(entry)) writeFileSync(target, readFileSync(join(baseline, 'runtime', entry)));
+    else symlinkSync(join(source, 'runtime', entry), target);
   }
   const { SqliteVFS: Before } = await import(pathToFileURL(join(fixture, 'vfs', 'sqlite-vfs.ts')).href);
   const { CompositeVFS: NamespaceBefore } = await import(pathToFileURL(join(fixture, 'vfs', 'composite.ts')).href);
-  const make = async (Store, Namespace) => {
+  const { sqliteFiles: FilesBefore, SqliteFiles: FilesClassBefore } = await import(pathToFileURL(join(fixture, 'vfs', 'sqlite-files.ts')).href);
+  const { ProcessFiles: ProcessesBefore } = await import(pathToFileURL(join(fixture, 'runtime', 'process-files.ts')).href);
+  const make = async (Store, Namespace, files, FilesClass, Processes) => {
     const host = await hostSqlite();
     const engine = new Store(host.sql, host.transactions);
     const root = engine.as(CRED_KERNEL);
     root.mkdir('home/user/a/b/c/d', { recursive: true });
+    root.chown('home/user', USER.uid, USER.gid);
     root.symlink('a/b/c/d', 'home/user/link');
     const paths = Array.from({ length: 96 }, (_, i) => `/home/user/a/b/c/d/f${i}`);
     for (const path of paths) root.writeFile(path, `file-${path}`);
+    root.mkdir('home/user/node_modules/.pnpm/x@1/node_modules/x/lib', { recursive: true });
+    root.symlink('.pnpm/x@1/node_modules/x', 'home/user/node_modules/x');
+    root.symlink('x', 'home/user/node_modules/chain');
+    const packagePaths = Array.from({ length: 96 }, (_, i) => `/home/user/node_modules/x/lib/f${i}`);
+    const chainPaths = Array.from({ length: 96 }, (_, i) => `/home/user/node_modules/chain/lib/f${i}`);
+    for (let i = 0; i < packagePaths.length; i++) root.writeFile(`home/user/node_modules/.pnpm/x@1/node_modules/x/lib/f${i}`, `pkg-${i}`);
+    root.writeFile('home/user/f', 'same');
+    root.writeFile('home/user/a/b/c/f', 'same');
+    root.mkdir('lease');
     const store = engine.as(USER);
-    const namespace = new Namespace(sqliteFiles(engine, USER)).sync;
-    return { store, namespace, paths };
+    const namespace = new Namespace(files(engine, CRED_KERNEL)).as(USER).sync;
+    const authority = new Processes(engine);
+    const process = authority.view({ pid: 71, cred: USER });
+    class Walked extends FilesClass {
+      removeRecursive = undefined;
+      as(cred, actor, options) { return new Walked(engine, engine.as(cred, { ...options, actor })); }
+    }
+    const removal = new Namespace(new Walked(engine, engine.as(USER))).as(USER).sync;
+    const seedRemoval = () => {
+      root.mkdir('home/user/tree');
+      root.chown('home/user/tree', USER.uid, USER.gid);
+      root.writeBatch({ inodes: Array.from({ length: 2000 }, (_, i) => ({ path: `home/user/tree/f${i}`, parentPath: 'home/user/tree', isDir: false, size: 0, mtime: 1, mode: 0o644, chunkCount: 0, uid: USER.uid, gid: USER.gid })), chunks: [] });
+    };
+    return { engine, root, store, namespace, process, paths, packagePaths, chainPaths, removal, seedRemoval };
   };
-  const arms = [await make(Before, NamespaceBefore), await make(SqliteVFS, CompositeVFS)];
-  const run = ({ store, namespace, paths }, kind) => {
+  const { SqliteFiles } = await import('../../packages/core/src/vfs/sqlite-files.ts');
+  const arms = [await make(Before, NamespaceBefore, FilesBefore, FilesClassBefore, ProcessesBefore), await make(SqliteVFS, CompositeVFS, sqliteFiles, SqliteFiles, ProcessFiles)];
+  const run = async ({ store, namespace, process, paths, packagePaths, chainPaths, removal }, kind) => {
+    if (kind === 'walked-removal') {
+      const report = removal.removeRecursive('/home/user/tree');
+      assert.equal(report.failures.length, 0);
+      checksum += report.removed.length;
+      return;
+    }
     for (let i = 0; i < ITERATIONS; i++) {
       const path = paths[(i * 17) % paths.length];
       if (kind === 'namespace') checksum += namespace.stat(path).size;
       else if (kind === 'namespace-walk') checksum += namespace.stat(`/home/user/link/../d/f${(i * 17) % paths.length}`).size;
+      else if (kind === 'process-view') checksum += (await process.stat(path)).size;
+      else if (kind === 'process-linked') checksum += (await process.stat(chainPaths[(i * 17) % chainPaths.length])).size;
       else switch (i % 4) {
-        case 0: checksum += store.stat(path).size; break;
-        case 1: checksum += store.readFile(path).byteLength; break;
-        case 2: checksum += store.exists(path) ? 1 : 0; break;
-        default: checksum += store.statIfPresent(path, false).size; break;
+        case 0: checksum += store.stat(lookupPath(kind, i, path, packagePaths, chainPaths)).size; break;
+        case 1: checksum += store.readFile(lookupPath(kind, i, path, packagePaths, chainPaths)).byteLength; break;
+        case 2: checksum += store.exists(lookupPath(kind, i, path, packagePaths, chainPaths)) ? 1 : 0; break;
+        default: checksum += store.statIfPresent(lookupPath(kind, i, path, packagePaths, chainPaths), false).size; break;
       }
     }
   };
-  const cpu = (arm, kind) => {
+  const cpu = async (arm, kind) => {
+    if (kind === 'walked-removal') arm.seedRemoval();
     const before = process.cpuUsage();
-    run(arm, kind);
+    await run(arm, kind);
     const used = process.cpuUsage(before);
     return (used.user + used.system) / 1000;
   };
-  for (const kind of ['store', 'namespace', 'namespace-walk']) {
-    for (let warm = 0; warm < 12; warm++) for (const arm of arms) run(arm, kind);
+  for (const kind of ['store', 'namespace', 'namespace-walk', 'store-linked', 'store-pnpm-chain', 'store-dot', 'store-link-parent', 'store-dot-lease', 'process-view', 'process-linked', 'walked-removal']) {
+    const leases = kind === 'store-dot-lease' ? arms.map((arm) => arm.engine.acquireExclusiveMutation('lease')) : [];
+    for (let warm = 0; warm < (kind === 'walked-removal' ? 2 : 12); warm++) for (const arm of arms) {
+      if (kind === 'walked-removal') arm.seedRemoval();
+      await run(arm, kind);
+    }
     const pairs = [];
     for (let pair = 0; pair < PAIRS; pair++) {
       const samples = {};
       const order = pair % 3 === 0 ? ['A1', 'B', 'A2'] : pair % 3 === 1 ? ['B', 'A2', 'A1'] : ['A2', 'A1', 'B'];
-      for (const label of order) samples[label] = cpu(arms[label === 'B' ? 1 : 0], kind);
+      for (const label of order) samples[label] = await cpu(arms[label === 'B' ? 1 : 0], kind);
       pairs.push({ ...samples, delta: samples.B - (samples.A1 + samples.A2) / 2 });
     }
     const deltas = pairs.map((pair) => pair.delta);
@@ -105,10 +151,20 @@ try {
     writeFileSync(output, `${JSON.stringify(results, null, 2)}\n`);
     const { samples, ...summary } = result;
     console.log(JSON.stringify(summary));
-    assert.ok(result.medianDelta <= 0, `${kind}: median paired CPU delta ${result.medianDelta} ms is positive`);
-    assert.ok(interval[0] >= spread[0] && interval[1] <= spread[1], `${kind}: confidence interval is outside A/A spread`);
+    if (result.medianDelta > 0) failures.push(`${kind}: median paired CPU delta ${result.medianDelta} ms is positive`);
+    if (interval[0] < spread[0] || interval[1] > spread[1]) failures.push(`${kind}: confidence interval is outside A/A spread`);
+    for (let i = 0; i < leases.length; i++) arms[i].engine.releaseExclusiveMutation(leases[i].owner);
   }
   assert.ok(checksum > 0);
+  assert.deepEqual(failures, [], failures.join('\n'));
 } finally {
   rmSync(fixture, { recursive: true, force: true });
+}
+
+function lookupPath(kind, index, plain, packagePaths, chainPaths) {
+  if (kind === 'store-linked') return packagePaths[(index * 17) % packagePaths.length];
+  if (kind === 'store-pnpm-chain') return chainPaths[(index * 17) % chainPaths.length];
+  if (kind === 'store-dot' || kind === 'store-dot-lease') return index % 2 ? './home/user/a/b/c/d/f0' : 'home/user/a/b/c/d/./f0';
+  if (kind === 'store-link-parent') return '/home/user/link/../f';
+  return plain;
 }

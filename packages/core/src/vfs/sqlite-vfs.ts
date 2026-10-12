@@ -2978,7 +2978,12 @@ export class SqliteVFS {
    * that derive a key before handing it on cannot stack the rewrite.
    */
   private storageKey(path: string, cred: VfsCred, tree: InodeLookup = this.inodes, creating = false): PhysicalVfsKey {
-    return this.physicalKey(this.resolvePath(path, cred, false, true, tree, creating).path);
+    const plain = normalizeVfsLookupPath(path);
+    if (plain === null) return this.physicalKey(this.walkComponents(path, cred, false, creating, tree, true).path);
+    const parent = parentKey(plain);
+    const leaf = plain.slice(parent === '' ? 0 : parent.length + 1);
+    const placed = parent === '' ? '' : this.resolvePath(parent, cred, true, true, tree, creating).path;
+    return this.physicalKey(this.keyOfName(placed === '' ? leaf : `${placed}/${leaf}`, this.confinedTmpRoots.get(cred.uid)));
   }
 
   private physicalKey(value: string): PhysicalVfsKey {
@@ -3314,6 +3319,13 @@ export class SqliteVFS {
       if (inode === undefined) return { path: key, inode: undefined, name: current };
       if (!(followLeaf && inode.kind === 'symlink')) return this.walked(key, inode, current, cred, tree);
     }
+    const parentEnd = current.lastIndexOf('/');
+    if (reusable && parentEnd >= 0 && parentEnd === last.name.lastIndexOf('/')
+      && current.slice(0, parentEnd) === last.name.slice(0, parentEnd)) {
+      const inode = tree.get(key);
+      if (inode === undefined) return { path: key, inode: undefined, name: current };
+      if (!(followLeaf && inode.kind === 'symlink')) return this.walked(key, inode, current, cred, tree);
+    }
     // Plain paths keep the indexed walk; only a followed link needs component expansion.
     const parts = current === '' ? [] : current.split('/');
     let prefix = '';
@@ -3340,6 +3352,7 @@ export class SqliteVFS {
   /** The namespace's component walk, looking up this tree in the caller's names. */
   private walkComponents(
     path: string, cred: VfsCred, followLeaf: boolean, creating: boolean, tree: InodeLookup,
+    keyOnly = false,
   ): { path: string; inode: INode | undefined; name: string } {
     const root = this.confinedTmpRoots.get(cred.uid);
     const spelling = stripLeadingSlashes(path);
@@ -3353,6 +3366,7 @@ export class SqliteVFS {
     let hops = start?.hops ?? 0;
     let leafLink = false;
     const name = walkVfsPath(suffix, (prefix, final) => {
+      if (final && keyOnly && !followLeaf) return null;
       const key = this.keyOfName(prefix.slice(1), root);
       if (tree === this.inodes && this.exclusiveMutationLeases.size > 0) this.recallReads(key);
       const inode = tree.get(key);
@@ -3379,7 +3393,7 @@ export class SqliteVFS {
       },
     }).slice(1);
     const key = this.keyOfName(name, root);
-    const inode = tree.get(key);
+    const inode = keyOnly ? undefined : tree.get(key);
     if (hops > 0 && tree === this.inodes) {
       const directory = inode?.kind === 'directory';
       const leaf = input.slice(input.lastIndexOf('/') + 1);
