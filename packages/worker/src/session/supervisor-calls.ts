@@ -929,7 +929,7 @@ export function supervisorCalls<Base extends Class>(base: Base) {
     //
     // The parent facet's `child_process.spawn` shim (node-shims.ts) calls
     // these methods. They delegate to NimbusSession._rpcCp* methods which
-    // route through the shared FacetProcessManager.
+    // route through the shared ChildProcessManager.
     //
 
     async cpSpawn(req: any): Promise<{ childPid: number }> {

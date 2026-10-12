@@ -613,8 +613,9 @@ async function applyOps(ctx, ops, sparse) {
                 await writer.symlink(new TextDecoder().decode(data), file(op.path));
             }
             else {
-                await writer.writeFile(file(op.path), data);
-                await writer.chmod(file(op.path), op.mode === 0o100755 ? 0o755 : 0o644);
+                const fileMode = op.mode === 0o100755 ? 0o755 : 0o644;
+                await writer.writeFile(file(op.path), data, fileMode);
+                await writer.chmod(file(op.path), fileMode);
             }
         }
         added.add({ path: op.path, mode: op.mode, oid: op.oid, stat: await tree.fs.lstat(op.path) });

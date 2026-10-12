@@ -14,7 +14,8 @@
  * answer is waited for first, so the guest parks on a settled promise). On
  * one that cannot, they wait for the answer, holding this thread, as the
  * same-isolate supervisor answered at once; its synchronous view's methods
- * always wait.
+ * always wait. Background child-process calls use promises on either host,
+ * so following a child's output cannot hold the parent before it writes stdin.
  */
 export {};
 //# sourceMappingURL=facet-guest.d.ts.map

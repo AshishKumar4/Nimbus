@@ -102,6 +102,8 @@ export interface ProcessHostOptions {
         uid: number;
         gid: number;
     } | null;
+    /** Whether the guest can be suspended in an import (JSPI), so that an import may answer by promise. */
+    parks: boolean;
 }
 /** What a poll of a pipe end finds: bytes waiting (or room), whether the other end is gone; null once it gave up. */
 export interface PipeReadiness {

@@ -20,7 +20,7 @@ import { buildSessionSupervisorOps, type SessionSupervisorHost, type SessionSupe
 /** The session a filesystem serves: whose processes it stops, and whose supervisor ops it answers. */
 export type SessionFilesystemHost = SessionSupervisorHost & {
   readonly processes: SessionProcessSupervisor;
-  readonly facetManager?: (Pick<FacetManager, 'journalCall' | 'kill'>) | null;
+  readonly facetManager?: (Pick<FacetManager, 'kill'>) | null;
 };
 
 export class SessionFilesystem {

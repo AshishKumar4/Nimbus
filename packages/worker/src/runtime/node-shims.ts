@@ -1844,17 +1844,18 @@ const __fsMod = (() => {
     return _fsRpc(promise, syscall, p, use);
   }
 
-  const _localTimes = globalThis.__nimbusVfsTimes || (globalThis.__nimbusVfsTimes = Object.create(null));
-  const _localModes = globalThis.__nimbusVfsModes || (globalThis.__nimbusVfsModes = Object.create(null));
+  // This process's own: what it set on each path, until the namespace says so.
+  const _localTimes = Object.create(null);
+  const _localModes = Object.create(null);
   // When this process last changed each path's content: the mtime its own
   // writes carry until the namespace describes them. Reading the clock at
   // each stat instead gave a file a new mtime on every stat, which a
   // watcher polling mtimeMs reads as an edit.
-  const _ownWriteTimes = globalThis.__nimbusVfsWriteTimes || (globalThis.__nimbusVfsWriteTimes = Object.create(null));
+  const _ownWriteTimes = Object.create(null);
   // Modes set locally that the authority has not received yet. Delivered once:
   // re-sending on every flush made each read of the path a chmod, which bumped
   // its revision and evicted the process's own cell (create-astro EAGAIN).
-  const _pendingModes = globalThis.__nimbusVfsPendingModes || (globalThis.__nimbusVfsPendingModes = new Set());
+  const _pendingModes = new Set();
 
   function _coerceMode(value, syscall, p) {
     const n = typeof value === "string" ? parseInt(value, 8) : Number(value);
@@ -1968,15 +1969,15 @@ const __fsMod = (() => {
       : typeMode | (isDir ? 0o755 : 0o644);
   }
 
-  // \`own\`: the path is this process's own (the namespace's overlay of its
-  // effects), so a first stat fixes its time once. Any other path's times
-  // come from its metadata (_statObject), and recording one per stat grew a
-  // map entry for every file a program ever stats.
-  function _localStatObject(k, isDir, isSymlink, size, mode, uid, gid, own = false) {
+  // A path that is this process's own (the namespace's overlay of its
+  // effects): a first stat fixes its time once. Any other path's times come
+  // from its metadata (_statObject), which records nothing: one record per
+  // stat grew a map entry for every file a program ever stats.
+  function _localStatObject(k, isDir, isSymlink, size, mode, uid, gid) {
     const time = _localTimes[k];
     const mtimeMs = Number.isFinite(time?.mtimeMs) ? time.mtimeMs
       : Number.isFinite(_ownWriteTimes[k]) ? _ownWriteTimes[k]
-      : own ? (_ownWriteTimes[k] = Date.now()) : Date.now();
+      : (_ownWriteTimes[k] = Date.now());
     const atimeMs = Number.isFinite(time?.atimeMs) ? time.atimeMs : mtimeMs;
     return _newStats(_statMode(k, isDir, isSymlink, mode), uid, gid, undefined, size, atimeMs, mtimeMs, mtimeMs);
   }
@@ -3017,8 +3018,7 @@ const __fsMod = (() => {
    * \`null\` when there is no authority to tell: standalone and unit contexts
    * keep today's local-only behaviour.
    */
-  function _queueStructuralMutation(absPath, syscall, displayPath, rpc, after, dest) {
-    void after;
+  function _queueStructuralMutation(absPath, syscall, displayPath, rpc, dest) {
     const settle = _nsTakeFresh();
     const supervisor = _supervisor();
     if (!supervisor) { settle(); return null; }
@@ -3895,13 +3895,26 @@ const __fsMod = (() => {
   function utimesSync(p, atime, mtime) {
     if (!existsSync(p)) throw _absentErr(_resolve(p), "utimes", p, "fs.promises.utimes");
     const absPath = _resolveFollow(p, "utimes");
-    _recordLocalTimes(absPath, atime, mtime, "utimes", p);
+    _detachStructuralMutation(_utimesQueued(absPath, _recordLocalTimes(absPath, atime, mtime, "utimes", p), true, "utimes", p), "utimes", p);
   }
 
   function lutimesSync(p, atime, mtime) {
     if (!existsSync(p)) throw _absentErr(_resolve(p), "lutimes", p, "fs.promises.lutimes", false);
     const absPath = _resolve(p);
-    _recordLocalTimes(absPath, atime, mtime, "lutimes", p);
+    _detachStructuralMutation(_utimesQueued(absPath, _recordLocalTimes(absPath, atime, mtime, "lutimes", p), false, "lutimes", p), "lutimes", p);
+  }
+
+  // A sync utimes' effect: the local times at once (statSync's overlay), and
+  // the change logged now, in program order, as chmod's is: the attribute
+  // record, or for a link's own times (\`follow\` false) the call of that name.
+  function _utimesQueued(absPath, time, follow, syscall, p) {
+    const k = _strip(absPath);
+    return _queueStructuralMutation(
+      absPath, syscall, p,
+      () => (follow
+        ? _vfsOp({ type: "setattr", path: k, attrs: { atime: time.atimeMs, mtime: time.mtimeMs } })
+        : _vfsCall({ call: "lutimes", path: k, atime: time.atimeMs, mtime: time.mtimeMs })),
+    );
   }
 
   async function _utimesAsync(p, atime, mtime, opts, syscallOverride) {
@@ -3962,12 +3975,7 @@ const __fsMod = (() => {
   function _chmodQueued(absPath, mode, syscall, p) {
     const k = _strip(absPath);
     _localModes[k] = mode;
-    const supervisor = _supervisor();
-    return _queueStructuralMutation(
-      absPath, syscall, p,
-      () => _vfsOp({ type: "setattr", path: k, attrs: { mode } }),
-      () => _flushParkedWrite(absPath, supervisor),
-    );
+    return _queueStructuralMutation(absPath, syscall, p, () => _vfsOp({ type: "setattr", path: k, attrs: { mode } }));
   }
 
   async function _chmodAsync(p, mode) {
@@ -4053,7 +4061,6 @@ const __fsMod = (() => {
     return _queueStructuralMutation(
       absPath, syscall, p,
       (s) => _chownCall(s, absPath, nextUid, nextGid, followSymlinks),
-      () => _flushParkedWrite(absPath, supervisor),
     );
   }
 
@@ -4359,7 +4366,7 @@ const __fsMod = (() => {
     // own mode and times for it are kept under that name.
     const key = noFollow ? k : (_nsLandingKey(k) ?? k);
     return meta.own
-      ? _localStatObject(key, meta.type === "directory", false, meta.size, meta.mode & 0o7777, meta.uid, meta.gid, true)
+      ? _localStatObject(key, meta.type === "directory", false, meta.size, meta.mode & 0o7777, meta.uid, meta.gid)
       : _statObject(meta, key);
   }
 
@@ -4482,7 +4489,6 @@ const __fsMod = (() => {
     return _queueStructuralMutation(
       absPath, "rmdir", p,
       () => _vfsCall({ call: "rmdir", path: k }),
-      () => __nimbusAwaitSubtreeMutations(absPath),
     );
   }
   function rmdirSync(p) { _detachStructuralMutation(_rmdirQueued(p), "rmdir", p); }
@@ -4508,7 +4514,7 @@ const __fsMod = (() => {
     // A name renamed to itself is left as it is, as rename(2) leaves it.
     if (oldK === newK) {
       if (source !== undefined) return null;
-      return _queueStructuralMutation(oldAbs, "rename", oldP, () => _vfsOp({ type: "rename", from: oldK, to: newK }), undefined, newP);
+      return _queueStructuralMutation(oldAbs, "rename", oldP, () => _vfsOp({ type: "rename", from: oldK, to: newK }), newP);
     }
     // What rename(2) refuses before it moves anything, refused here before
     // the local tables move: the sync view applies a rename at once and the
@@ -4613,10 +4619,6 @@ const __fsMod = (() => {
     const queued = _queueStructuralMutation(
       oldAbs, "rename", oldP,
       () => _vfsOp({ type: "rename", from: oldK, to: newK }),
-      // The queue orders the move behind the source's ancestors; the move
-      // also needs the destination's ancestors to exist and every pending
-      // mutation beneath the source to have landed under the old name.
-      () => Promise.all([__nimbusAwaitAncestorMutations(newAbs), __nimbusAwaitSubtreeMutations(oldAbs)]),
       newP,
     );
     _fenceVfsMutation(newAbs, queued);
@@ -4747,7 +4749,6 @@ const __fsMod = (() => {
       absPath, "rm", p,
       // fs.rm as one call: the tree with it when recursive, an absent name no refusal when forced.
       () => _vfsCall({ call: "rm", path: k, ...(o.recursive ? { recursive: true } : {}), ...(o.force || parked ? { force: true } : {}) }),
-      () => __nimbusAwaitSubtreeMutations(absPath),
     );
   }
   function rmSync(p, opts) { _detachStructuralMutation(_rmQueued(p, opts, true), "rm", p); }
@@ -5399,7 +5400,7 @@ const __fsMod = (() => {
   function futimesSync(fd, atime, mtime) {
     if (_isStdioFd(fd)) throw _fsErr("EINVAL", "futimes", fd);
     const handle = _fdHandle(fd, "futimes");
-    _recordLocalTimes(handle._abs, atime, mtime, "futimes", handle._path);
+    _detachStructuralMutation(_utimesQueued(handle._abs, _recordLocalTimes(handle._abs, atime, mtime, "futimes", handle._path), true, "futimes", handle._path), "futimes", handle._path);
   }
   function fchmodSync(fd, mode) {
     if (_isStdioFd(fd)) throw _fsErr("EINVAL", "fchmod", fd);

@@ -26,7 +26,7 @@
 
 import assert from 'node:assert/strict';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { FacetProcessManager } from '../../packages/worker/src/facets/process.ts';
+import { ChildProcessManager } from '../../packages/core/src/runtime/child-process-manager.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { DynamicWorkerDeadlockError } from '../../packages/fabric/src/budgets.ts';
 
@@ -61,15 +61,15 @@ const supervisorFor = (answer) => ({
   const root = processes.spawn('node root', [], '/');
   let refuse;
   const pending = new Promise((resolve) => { refuse = resolve; });
-  const broker = new FacetProcessManager({
-    processes, vfsForProcess() { throw new Error('no file'); },
-    commandRegistry: { async resolve() { return { kind: 'facet-direct' }; } },
-    facetMgr: { async execStream(payload, _opts, hooks) {
-      const { processPid } = JSON.parse(payload);
-      hooks.onStarted(); hooks.onStdout(new TextEncoder().encode('READY\n'));
+  const broker = new ChildProcessManager({
+    processes, terminate(pid) { return processes.kill(pid, 143); },
+    async resolve() { return { async run({ pid: processPid, output: hooks, onStarted }) {
+      onStarted(); hooks.onStdout(new TextEncoder().encode('READY\n'));
       await pending;
-      throw new DynamicWorkerDeadlockError(processPid, [root.pid]);
-    } },
+      const error = new DynamicWorkerDeadlockError(processPid, [root.pid]);
+      hooks.onStderr(new TextEncoder().encode(`facet error: ${error.code}: ${error.message}\n`));
+      return 1;
+    } }; },
   });
   const { cp } = make({
     cpSpawn: (req) => broker.spawn({ ...req, parentPid: root.pid }),

@@ -30,6 +30,11 @@ published independently in the `@nimbus-sh` npm scope.
   -c 'import sys; print(sys.stdin.read())'`). The WASI layer now reads every
   runtime's fd 0 from its process's input channel; before, only the generic
   wasm runner wired it, and the others read an empty stdin.
+- Fixed: `utimesSync`, `lutimesSync` and `futimesSync` in a Node program reach
+  the session; they changed only what the program itself saw.
+- Fixed: a file JS git checks out, and a loose object it writes, is made with
+  its final mode (0644 or 0755, 0444); it was made 0666 less the umask and
+  changed after, so under a permissive umask others could write it meanwhile.
 
 ## 2026-10-12: platform 0.8.2, core 0.18.0, fabric 0.13.0, worker 0.16.0, loom 0.2.5, sdk 0.13.1, react 0.3.1, cli 0.2.5, create-nimbus-app 0.2.2
 

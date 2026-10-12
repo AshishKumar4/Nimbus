@@ -816,7 +816,10 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
   // pipe descriptors they make, answered ahead of every other kind (below,
   // after the watchdog) and polled with the rest (poll_oneoff). A wait on a
   // child or a pipe is bounded there (EINTR at PROCESS_PARK_MS), so the guest
-  // retries instead of being handed the watchdog's EAGAIN.
+  // retries instead of being handed the watchdog's EAGAIN. Its imports are
+  // Suspending where the guest parks; elsewhere one that has to wait is
+  // refused by name (processes.ts mustWait).
+  const procParks = opts.parking !== 'none' && typeof WebAssembly !== 'undefined' && typeof WebAssembly.Suspending === 'function';
   const proc = processHost({
     fds: fdTable,
     // The guest's stdin is its process's input channel, read through the
@@ -836,6 +839,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     inbound: () => { __wasiResident?.fs.inbound(); },
     news: __wasiChildNews(),
     cred: () => __wasiFS.cred ?? null,
+    parks: procParks,
   });
 
   const imports: WasiImports = {
@@ -1895,7 +1899,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
   if (opts.parking !== 'none' && typeof WebAssembly !== 'undefined' && typeof WebAssembly.Suspending === 'function') {
     for (const name of Object.keys(fsTable)) fsTable[name] = new WebAssembly.Suspending(fsTable[name]) as unknown as WasiSyscallFn;
   }
-  if (opts.parking !== 'none' && typeof WebAssembly !== 'undefined' && typeof WebAssembly.Suspending === 'function') {
+  if (procParks) {
     for (const name of Object.keys(procImport)) {
       procImport[name] = new WebAssembly.Suspending(procImport[name]) as unknown as (...args: number[]) => SyscallResult;
     }

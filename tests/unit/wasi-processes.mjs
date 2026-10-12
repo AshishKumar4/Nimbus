@@ -30,7 +30,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { WASI_INSTANCE_PREAMBLE_SRC } from '../../packages/core/src/runtime/wasi-instance.ts';
-import { makeImportsWithoutJSPI } from './lib/wasi-imports.mjs';
+import { makeParkingImports } from './lib/wasi-imports.mjs';
 import { acrossRpc } from './lib/rpc-error.mjs';
 
 const enc = new TextEncoder();
@@ -160,7 +160,7 @@ async function guest({ stdin } = {}) {
   const stdout = [];
   P.__wasiInitFS({ root: '', preopens: [{ wasiPath: '/', vfsPath: '' }], pid: GUEST_PID });
   P.__wasiAdoptSupervisor(sup);
-  const bundle = makeImportsWithoutJSPI(P, {
+  const bundle = makeParkingImports(P, {
     argv: ['guest'], env: {}, getMemory: () => memory,
     stdoutBytes: (bytes) => stdout.push(dec.decode(bytes)), stderrBytes: () => {},
   });

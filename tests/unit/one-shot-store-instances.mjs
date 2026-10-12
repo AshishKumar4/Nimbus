@@ -11,6 +11,7 @@ import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.
 import { nodeFacetSources } from './lib/node-facet-sources.mjs';
 import { generatedModuleSet, writeModuleSet } from './lib/module-map-bundle.mjs';
 import { createAuthority } from './lib/resident-body.mjs';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { processInstanceSupervisor } from './lib/process-instance-supervisor.mjs';
 
 const realProcess = globalThis.process;
@@ -20,6 +21,8 @@ const firstCred = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 const secondCred = { uid: 2000, gid: 2000, groups: [2000], umask: 0o077 };
 const authority = createAuthority();
 authority.kfs.writeFile('home/user/memory-only.txt', 'authority bytes');
+authority.kfs.writeFile('home/user/shared-meta.txt', 'shared');
+authority.kfs.chmod('home/user/shared-meta.txt', 0o644);
 const sources = nodeFacetSources(generateShimsCode() + `
 globalThis.__instanceTestOwnCell = (path, value) => { __resident.bundle[path] = value; };
 `);
@@ -27,6 +30,9 @@ const program = `
 const fs = require('fs');
 if (process.argv.includes('first')) {
   fs.writeFileSync('/home/user/secret.txt', 'private', { mode: 0o600 });
+  // What it sets on a file the session then changes back.
+  fs.chmodSync('/home/user/shared-meta.txt', 0o600);
+  fs.utimesSync('/home/user/shared-meta.txt', 1000, 1000);
   globalThis.__instanceTestOwnCell('home/user/memory-only.txt', 'only in the first process');
   console.log('memory=' + fs.readFileSync('/home/user/memory-only.txt', 'utf8'));
   console.log('ok');
@@ -37,6 +43,7 @@ if (process.argv.includes('first')) {
     denied,
     exists: fs.existsSync('/home/user/secret.txt'),
     memory: fs.readFileSync('/home/user/memory-only.txt', 'utf8'),
+    meta: { mode: fs.statSync('/home/user/shared-meta.txt').mode & 0o777, mtimeMs: fs.statSync('/home/user/shared-meta.txt').mtimeMs },
     uid: process.getuid(),
   }));
 }
@@ -72,6 +79,10 @@ assert.equal(stat.uid, 1000, 'the first write reached the authority as its own p
 assert.equal(stat.mode & 0o7777, 0o600, 'the first write made the file with the mode it asked for');
 assert.equal(authority.read('home/user/secret.txt'), 'private');
 assert.equal(authority.read('home/user/memory-only.txt'), 'authority bytes', 'the injected cell never reached the authority');
+// The session changes back what the first process set.
+const kernel = authority.rawVfs.as(CRED_KERNEL);
+kernel.chmod('home/user/shared-meta.txt', 0o644);
+kernel.utimes('home/user/shared-meta.txt', 5_000_000, 5_000_000);
 const secondAuthority = authority.rawVfs.as(secondCred);
 assert.throws(() => secondAuthority.readFile('home/user/secret.txt'), { code: 'EACCES' });
 
@@ -82,8 +93,9 @@ assert.deepEqual(JSON.parse(second.stdout), {
   denied: 'EACCES',
   exists: secondAuthority.exists('home/user/secret.txt'),
   memory: 'authority bytes',
+  meta: { mode: 0o644, mtimeMs: 5_000_000 },
   uid: 2000,
-}, 'the second fetch has its own namespace, credential and own-write cells');
+}, "the second fetch has its own namespace, credential, own-write cells, and modes and times: the session's, not the first's");
 delete globalThis.__instanceTestOwnCell;
 realProcess.stdout.write('one-shot-store-instances: PASS\n');
 realProcess.exit(0);
