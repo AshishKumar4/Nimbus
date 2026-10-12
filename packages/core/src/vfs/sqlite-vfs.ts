@@ -6221,7 +6221,9 @@ export class SqliteVFS {
   /**
    * Copy a file by reference: one inode row naming the source's chunk or
    * manifest. No byte is read or written; a later write to either side
-   * copies on write (rewriteFile's sharing probes).
+   * copies on write (rewriteFile's sharing probes). A new file has the
+   * source's permission bits less the copier's umask, as cp(1) makes it; a
+   * file there keeps its own mode.
    */
   private copyFile(src: string, dest: string, cred: VfsCred): void {
     const source = this.checkAccess(src, 0o4, cred);
@@ -6237,6 +6239,7 @@ export class SqliteVFS {
     if (prior && !this.accessInode(prior, 0o2, cred)) throw vfsKeyError('EACCES', target.path);
     if (!prior) this.checkParentAccess(target.path, cred);
     const now = this.now();
+    const made = prior ? undefined : this.creationAttrs(target.path, inode.mode & 0o777, cred, false);
     const builder = this.newPlan();
     builder.addInode({
       path: target.path,
@@ -6246,9 +6249,9 @@ export class SqliteVFS {
       size: inode.size,
       atime: now,
       mtime: now,
-      mode: prior ? prior.mode : this.creationAttrs(target.path, 0o666, cred, false).mode,
+      mode: prior ? prior.mode : made!.mode,
       uid: prior?.uid ?? cred.uid,
-      gid: prior?.gid ?? this.creationAttrs(target.path, 0o666, cred, false).gid,
+      gid: prior?.gid ?? made!.gid,
       content: { type: 'ref', chunkId: inode.chunkId, contentId: inode.contentId },
     });
     this._writeBatchOnce({ plan: builder.build(), deletedInodes: [] }, { source: 'strict-batch', limitMode: 'bounded' });

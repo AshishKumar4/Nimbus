@@ -14,6 +14,12 @@ published independently in the `@nimbus-sh` npm scope.
   `writeFileSync(p, secret, { mode: 0o600 })` made a file others could read.
   `chmodSync` and `fchmodSync` reach the session when nothing touches the
   path after them; before, such a change was kept only in the process.
+  A directory `cp` makes is its owner's alone until it is filled, and a file
+  copied over another is closed to others before the bytes go in, so no one
+  reads a private copy while it is made or after it fails partway.
+- Fixed: `VFS.copy` of a file to a new name (the shell's `cp`) makes it with
+  the source's permission bits less the umask, as cp(1) does; it was made
+  0666 less the umask, so a copy of a private file was readable by others.
 
 ## 2026-10-12: core 0.18.0, fabric 0.13.0, worker 0.16.0, loom 0.2.5, sdk 0.13.1, react 0.3.1, cli 0.2.5, create-nimbus-app 0.2.2
 
