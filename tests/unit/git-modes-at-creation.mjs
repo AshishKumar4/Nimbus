@@ -59,13 +59,13 @@ await git('commit', '-q', '-m', 'one');
 user.unlink(`${REPO}/a.txt`);
 user.unlink(`${REPO}/run.sh`);
 await git('checkout', '--', '.');
-await git('switch', '-q', '-c', 'side');
+await git('checkout', '-q', '-b', 'side');
 user.writeFile(`${REPO}/c.txt`, 'c\n', { mode: 0o644 });
 user.writeFile(`${REPO}/c.sh`, 'echo c\n', { mode: 0o755 });
 await git('add', '-A');
 await git('commit', '-q', '-m', 'two');
-await git('switch', '-q', 'master');
-await git('switch', '-q', 'side');
+await git('checkout', '-q', 'master');
+await git('checkout', '-q', 'side');
 stopWatching();
 
 const modeOf = (path) => kernel.lstat(`${REPO}/${path}`).mode & 0o777;
