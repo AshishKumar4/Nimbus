@@ -213,7 +213,7 @@ export class NpmInstaller {
             log(`Lockfile ${locked.lockName}: ${tree.plan.nodes.size} packages to place.`);
         }
         else {
-            const recordOf = this.lockRecords();
+            const recordOf = this.lockRecords(lockfile?.values() ?? []);
             // Each placement's package from its registry package's record, under the name it installs as.
             const installed = opts.global ? [] : [...lockfile ?? []].flatMap(([at, entry]) => {
                 const record = recordOf(entry);
@@ -396,9 +396,9 @@ export class NpmInstaller {
         // disk: the tree, or, after a required failure, what it held before with
         // what this install published over it.
         if (failed.length > 0)
-            this.writeLockfile(projDir, published, nmDir, opts.fromLockfile ? null : lockfile);
+            this.writeLockfile(projDir, published, nmDir, lockfile, opts.fromLockfile ? null : lockfile);
         else if (!usedLockfile || pruned > 0)
-            this.writeLockfile(projDir, hoistPlacements(hoistPlan), nmDir, opts.global ? new Map([...lockfile ?? []].filter(([at]) => !inScope(at))) : null);
+            this.writeLockfile(projDir, hoistPlacements(hoistPlan), nmDir, lockfile, opts.global ? new Map([...lockfile ?? []].filter(([at]) => !inScope(at))) : null);
         const installed = [...installedAt.values()];
         // ── Update package.json if explicit packages were added ─────────
         if (named.length > 0 && failed.length === 0 && opts.save !== false && !opts.global) {
@@ -1274,10 +1274,11 @@ export class NpmInstaller {
     /**
      * A lockfile entry's record: its registry package's (the stable identity
      * an alias names), read once however often one install asks for it; null
-     * where the cache holds none of that exact package.
+     * where the cache holds none of that exact package. `entries`' records
+     * are read together, up front.
      */
-    lockRecords() {
-        const read = new Map();
+    lockRecords(entries = []) {
+        const read = this.cache.getRegistryEntries([...entries].map((entry) => [entry.registryName || entry.name, entry.resolvedVer]));
         return (entry) => {
             const registryName = entry.registryName || entry.name;
             const key = `${registryName}@${entry.resolvedVer}`;
@@ -1488,7 +1489,9 @@ export class NpmInstaller {
     /**
      * Write lockfile to SQLite.
      */
-    writeLockfile(projDir, placements, nmDir, base = null) {
+    writeLockfile(projDir, placements, nmDir, 
+    /** What the table holds for the project now: only what changes is written. */
+    previous, base = null) {
         const entries = new Map(base ?? []);
         for (const { placement, pkg } of placements) {
             entries.set(placement, {
@@ -1500,14 +1503,16 @@ export class NpmInstaller {
                 hoistedPath: nmDir + '/' + placement,
             });
         }
-        this.cache.writeLockfile(projDir, entries, this.ctx);
+        this.cache.writeLockfile(projDir, entries, this.ctx, previous);
     }
     // ── Bin linking ───────────────────────────────────────────────────────
     /**
      * Create node_modules/.bin/ entries for packages with "bin" fields: one
      * streamed batch through the engine as the invoking principal (`engine`,
      * at the project's engine key), or written one by one through the
-     * principal's view (`fs`) for a mounted project.
+     * principal's view (`fs`) for a mounted project. A shim the bin manifest
+     * already records as it is, and that is there, is not written again; nor
+     * is a manifest that does not change.
      */
     async linkBins(resolved, target, 
     /** Bins linked before, which the manifest keeps beside these. */
@@ -1522,14 +1527,28 @@ export class NpmInstaller {
         }
         if (manifestEntries.length === 0)
             return;
+        const read = 'fs' in target
+            ? { exists: (path) => target.fs.exists(path), text: (path) => target.fs.readFileString(path) }
+            : { exists: async (path) => target.engine.exists(path), text: async (path) => target.engine.readFileString(path) };
+        const manifestPath = npmBinManifestPath(nmDir);
+        const priorText = await read.exists(manifestPath) ? await read.text(manifestPath) : null;
+        const prior = priorText === null ? null : parseNpmBinManifest(priorText);
         const linked = createNpmBinManifest(manifestEntries);
         const manifest = createNpmBinManifest([...kept, ...manifestEntries]);
-        const files = Object.values(linked.bins).map((binEntry) => ({
-            path: binDir + '/' + binEntry.name,
-            data: enc.encode(createNpmBinShim(binEntry, binDir)),
-            mode: 0o755,
-        }));
-        files.push({ path: npmBinManifestPath(nmDir), data: enc.encode(JSON.stringify(manifest, null, 2) + '\n'), mode: 0o644 });
+        const files = [];
+        for (const binEntry of Object.values(linked.bins)) {
+            const path = binDir + '/' + binEntry.name;
+            const before = prior?.bins[binEntry.name];
+            const unchanged = before !== undefined && before.packageName === binEntry.packageName && before.packageVersion === binEntry.packageVersion
+                && before.packagePath === binEntry.packagePath && before.targetPath === binEntry.targetPath && await read.exists(path);
+            if (!unchanged)
+                files.push({ path, data: enc.encode(createNpmBinShim(binEntry, binDir)), mode: 0o755 });
+        }
+        const manifestText = JSON.stringify(manifest, null, 2) + '\n';
+        if (manifestText !== priorText)
+            files.push({ path: manifestPath, data: enc.encode(manifestText), mode: 0o644 });
+        if (files.length === 0)
+            return;
         if ('fs' in target) {
             await target.fs.mkdir(binDir, { recursive: true });
             for (const file of files)

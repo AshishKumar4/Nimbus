@@ -429,7 +429,9 @@ export class IsolatePool {
      * the attempt index lets a fetch invoke mint a fresh clone for retries,
      * since a Request's body is consumed once.
      */
-    async #dispatchSlot(fnSource, fnHash, slotIndex, invoke, resilience, perCallWasm, signal) {
+    async #dispatchSlot(fnSource, fnHash, slotIndex, invoke, resilience, perCallWasm, signal, 
+    /** Collects this dispatch's tail: it settles once every execution the dispatch started has. */
+    tails) {
         // A warm slot executes one dispatch at a time: queue behind the
         // previous owner, then record this dispatch as the new tail. The
         // tail outlives the caller's outcome: a timeout rejects the
@@ -438,7 +440,9 @@ export class IsolatePool {
         // settle — never the caller's settle alone.
         const previous = this.slotTails.get(slotIndex) ?? Promise.resolve();
         let release;
-        this.slotTails.set(slotIndex, new Promise((resolve) => { release = resolve; }));
+        const tail = new Promise((resolve) => { release = resolve; });
+        this.slotTails.set(slotIndex, tail);
+        tails?.push(tail);
         await previous;
         if (this.disposed) {
             release();
@@ -743,6 +747,7 @@ export class IsolatePool {
         const resilience = this.#resolve(opts);
         const concurrency = Math.max(1, Math.min(opts?.concurrency ?? this.concurrency, items.length));
         const settled = new Array(items.length);
+        const tails = [];
         let cursor = 0;
         let failed = false;
         const runSlot = async (slotIndex) => {
@@ -751,7 +756,7 @@ export class IsolatePool {
                 if (idx >= items.length)
                     return;
                 try {
-                    const value = (await this.#dispatchSlot(fnSource, fnHash, slotIndex, (entrypoint) => entrypoint.execute(items[idx]), resilience, opts?.wasmModules));
+                    const value = (await this.#dispatchSlot(fnSource, fnHash, slotIndex, (entrypoint) => entrypoint.execute(items[idx]), resilience, opts?.wasmModules, undefined, tails));
                     settled[idx] = { ok: true, value };
                 }
                 catch (err) {
@@ -763,8 +768,9 @@ export class IsolatePool {
         await Promise.all(Array.from({ length: concurrency }, (_, slotIndex) => runSlot(slotIndex)));
         // An item that timed out answered its caller, but its execution may
         // still be live on the Worker (#dispatchSlot's tail): the map returns
-        // once every execution it started has settled, so none outlives it.
-        await Promise.all(Array.from({ length: concurrency }, (_, slotIndex) => this.slotTails.get(slotIndex)));
+        // once every execution it started has settled, so none outlives it,
+        // and waits for nothing else that shares its slots.
+        await Promise.all(tails);
         for (let idx = 0; idx < items.length; idx++) {
             settled[idx] ??= { ok: false, error: new Error('not started: an earlier item failed') };
         }

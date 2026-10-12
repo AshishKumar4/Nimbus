@@ -241,7 +241,8 @@ export declare class NpmInstaller {
     /**
      * A lockfile entry's record: its registry package's (the stable identity
      * an alias names), read once however often one install asks for it; null
-     * where the cache holds none of that exact package.
+     * where the cache holds none of that exact package. `entries`' records
+     * are read together, up front.
      */
     private lockRecords;
     /**
@@ -274,7 +275,9 @@ export declare class NpmInstaller {
      * Create node_modules/.bin/ entries for packages with "bin" fields: one
      * streamed batch through the engine as the invoking principal (`engine`,
      * at the project's engine key), or written one by one through the
-     * principal's view (`fs`) for a mounted project.
+     * principal's view (`fs`) for a mounted project. A shim the bin manifest
+     * already records as it is, and that is there, is not written again; nor
+     * is a manifest that does not change.
      */
     private linkBins;
     /**

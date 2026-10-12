@@ -204,6 +204,30 @@ export class NpmCache {
         _l1RecordHit('L1', 'packument', bytes);
         return entry;
     }
+    /**
+     * getRegistryEntry for each `[name, version]`, read together: the record
+     * by `name@version`, or null; each counted as getRegistryEntry counts it.
+     */
+    getRegistryEntries(keys) {
+        this.ensureSchema();
+        const out = new Map(keys.map(([name, version]) => [`${name}@${version}`, null]));
+        const unique = [...new Map(keys.map((key) => [`${key[0]}@${key[1]}`, key])).values()];
+        // DO SQLite binds at most 100 values a statement: 49 pairs.
+        for (let i = 0; i < unique.length; i += 49) {
+            const batch = unique.slice(i, i + 49);
+            for (const r of this.sql.exec(`SELECT ${NpmCache.REGISTRY_COLUMNS} FROM pkg_registry_cache WHERE (name, version) IN (VALUES ${batch.map(() => '(?,?)').join(',')})`, ...batch.flat())) {
+                const entry = this.rowToRegistryEntry(r);
+                out.set(`${entry.name}@${entry.version}`, entry);
+            }
+        }
+        for (const entry of out.values()) {
+            if (entry === null)
+                _l1RecordMiss('L1', 'packument');
+            else
+                _l1RecordHit('L1', 'packument', entry.depsJson.length + entry.peerDepsJson.length + entry.exportsJson.length + entry.binJson.length);
+        }
+        return out;
+    }
     /** Get all cached versions for a package name. */
     getRegistryVersions(name) {
         this.ensureSchema();
@@ -295,8 +319,12 @@ export class NpmCache {
         }
         return `${rows}:${(hash >>> 0).toString(16)}`;
     }
-    /** Write/overwrite the lockfile for a project. Atomic via transaction. */
-    writeLockfile(projectPath, entries, ctx) {
+    /**
+     * Write/overwrite the lockfile for a project. Atomic via transaction.
+     * `previous`: what the table holds for it now (readLockfile's answer),
+     * so only the rows that change are written.
+     */
+    writeLockfile(projectPath, entries, ctx, previous = null) {
         this.ensureSchema();
         const doTx = (fn) => {
             if (ctx?.storage?.transactionSync) {
@@ -306,11 +334,24 @@ export class NpmCache {
                 fn();
             }
         };
+        const same = (a, b) => a.resolvedVer === b.resolvedVer && a.integrity === b.integrity
+            && a.depsJson === b.depsJson && a.hoistedPath === b.hoistedPath && a.registryName === b.registryName;
         doTx(() => {
-            // Clear existing lockfile for this project
-            this.sql.exec(`DELETE FROM pkg_lockfile WHERE project_path = ?`, projectPath);
+            if (previous === null) {
+                this.sql.exec(`DELETE FROM pkg_lockfile WHERE project_path = ?`, projectPath);
+            }
+            else {
+                for (const [placement, entry] of previous) {
+                    const next = entries.get(placement);
+                    if (next === undefined || !same(entry, next))
+                        this.sql.exec(`DELETE FROM pkg_lockfile WHERE project_path = ? AND name = ?`, projectPath, placement);
+                }
+            }
             // Batch insert: DO SQLite ~100 var limit. 7 cols → max 14 rows (14×7=98).
-            const entryList = [...entries];
+            const entryList = [...entries].filter(([placement, entry]) => {
+                const before = previous?.get(placement);
+                return before === undefined || !same(before, entry);
+            });
             const BATCH = 14;
             for (let i = 0; i < entryList.length; i += BATCH) {
                 const batch = entryList.slice(i, i + BATCH);
