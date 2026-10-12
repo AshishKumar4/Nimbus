@@ -221,6 +221,41 @@ const FILES = {
     "await import('./generated.mjs');",
     "console.log('done');",
   ].join('\n') + '\n',
+  // A late graph whose staged module imports a name its target does not
+  // export links no body either: Node's SyntaxError, before a.mjs runs.
+  'late-link-export/a.mjs': "console.log('A');\n",
+  'late-link-export/bad.mjs': "import { absent } from './empty.mjs';\nconsole.log('bad', absent);\n",
+  'late-link-export/empty.mjs': 'export {};\n',
+  'late-link-export/main.mjs': [
+    "import { writeFileSync } from 'node:fs';",
+    "if (globalThis.never) { await import('./a.mjs'); await import('./bad.mjs'); }",
+    "writeFileSync(new URL('./generated.mjs', import.meta.url), \"import './a.mjs';\\nimport './bad.mjs';\\n\");",
+    "try { await import('./generated.mjs'); } catch (e) { console.log('rejected', e.name, e.message); }",
+    // The runtime-written module's own import of a missing name: no body runs before its SyntaxError.
+    "writeFileSync(new URL('./generated-own.mjs', import.meta.url), \"import './a.mjs';\\nimport { absent } from './empty.mjs';\\n\");",
+    "try { await import('./generated-own.mjs'); } catch (e) { console.log('rejected', e.name, e.message); }",
+  ].join('\n') + '\n',
+  // A late module's named imports link by the names their targets export:
+  // through `export *` (never its default), from a CommonJS module by its
+  // names, from another late module; a namespace needs none.
+  'late-link-names/named.mjs': "export const x = 1;\nexport default 2;\n",
+  'late-link-names/star.mjs': "export * from './named.mjs';\n",
+  'late-link-names/plain.mjs': "export const y = 1;\n",
+  'late-link-names/cjs.cjs': "exports.k = 1;\n",
+  'late-link-names/main.mjs': [
+    "import { writeFileSync } from 'node:fs';",
+    "if (globalThis.never) { await import('./named.mjs'); await import('./star.mjs'); await import('./plain.mjs'); await import('./cjs.cjs'); }",
+    'const late = async (name, text) => {',
+    '  writeFileSync(new URL(name, import.meta.url), text);',
+    "  try { await import(name); } catch (e) { console.log(name, 'rejected', e.name, e.message); }",
+    '};',
+    "await late('./ok.mjs', \"import { x } from './star.mjs';\\nimport d from './named.mjs';\\nimport * as ns from './plain.mjs';\\nimport { k } from './cjs.cjs';\\nconsole.log('ok', x, d, Object.keys(ns), k);\\n\");",
+    "await late('./no-default.mjs', \"import d from './plain.mjs';\\nconsole.log('no-default ran', d);\\n\");",
+    "await late('./star-default.mjs', \"import s from './star.mjs';\\nconsole.log('star-default ran', s);\\n\");",
+    "await late('./cjs-name.mjs', \"import { nope } from './cjs.cjs';\\nconsole.log('cjs-name ran', nope);\\n\");",
+    "writeFileSync(new URL('./dep.mjs', import.meta.url), \"export const here = 1;\\n\");",
+    "await late('./late-dep.mjs', \"import { absent } from './dep.mjs';\\nconsole.log('late-dep ran', absent);\\n\");",
+  ].join('\n') + '\n',
   // A late graph with a module that does not parse links no body: the
   // import() rejects with its SyntaxError.
   'late-link-syntax/a.mjs': "console.log('A');\n",
@@ -294,6 +329,8 @@ const COMMANDS = [
   'node late-link-staged/main.mjs',
   'node late-link-soft/main.mjs',
   'node late-link-syntax/main.mjs',
+  'node late-link-export/main.mjs',
+  'node late-link-names/main.mjs',
   'node adopted-tla/main.mjs',
   'node json-query-esmodule/main.mjs',
   'node prepopulated-cache/main.cjs',
