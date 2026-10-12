@@ -5,7 +5,8 @@
 // evaluation, require/import namespace identity, transitive top-level
 // await, Function's import origin, query identity, CommonJS/ESM cycles,
 // link-error attribution beside suspended evaluation, cached imports,
-// missing-export source arrows, and commented JSON import attributes.
+// missing-export source arrows, commented JSON import attributes, CommonJS
+// query/cache semantics, and constructor origins across module kinds and paths.
 // stdout, stderr and the exit code are host Node's (lib/node-differential.mjs).
 
 import { matchNodeInWorkerd } from './lib/node-differential.mjs';
@@ -158,6 +159,49 @@ const FILES = {
   // CommonJS missing named exports have their own message and suggestion.
   'missing-cjs-export/lib.cjs': 'exports.present = 1;\n',
   'missing-cjs-export/main.mjs': "import { nope } from './lib.cjs';\nconst text = 'nope';\nconsole.log(text);\n",
+  // Queries distinguish ES namespaces, not the underlying CommonJS module.
+  'cjs-query/dep.cjs': "globalThis.evaluations = (globalThis.evaluations ?? 0) + 1;\nmodule.exports = { marker: 'cjs' };\n",
+  'cjs-query/main.mjs': [
+    "import a from './dep.cjs?a';",
+    "import b from './dep.cjs?b';",
+    "import { createRequire } from 'node:module';",
+    "const required = createRequire(import.meta.url)('./dep.cjs');",
+    'console.log(a === b, a === required, globalThis.evaluations);',
+  ].join('\n') + '\n',
+  // JSON's __esModule/default are data, not CommonJS interop instructions.
+  'json-query-esmodule/data.json': '{"__esModule":true,"default":7}\n',
+  'json-query-esmodule/main.mjs': "import v from './data.json?q' with { type: 'json' };\nconsole.log(JSON.stringify(v));\n",
+  // A user-prepopulated, unloaded require.cache record is not evidence of
+  // an active require(esm) cycle. Node uses its exports without evaluating.
+  'prepopulated-cache/dep.cjs': "globalThis.evaluations = (globalThis.evaluations ?? 0) + 1;\nmodule.exports = { marker: 'evaluated' };\n",
+  'prepopulated-cache/esm.mjs': "import dep from './dep.cjs';\nexport const value = dep;\n",
+  'prepopulated-cache/main.cjs': [
+    "const Module = require('module');",
+    "const filename = require.resolve('./dep.cjs');",
+    'const cached = new Module(filename);',
+    'require.cache[filename] = cached;',
+    "const esm = require('./esm.mjs');",
+    'console.log(esm.value === cached.exports, globalThis.evaluations ?? 0, cached.loaded);',
+  ].join('\n') + '\n',
+  // A regexp after a block forces the grammar path, not a token scanner's
+  // guess about division; its attributes clause still excludes the comment.
+  'clause-comment-fallback/data.json': '{"n":1}\n',
+  'clause-comment-fallback/main.mjs': "if (true) {} /import(\"node:fs\")/.test('');\nimport data from './data.json' with { type: 'json' } /* } */;\nconsole.log(data);\n",
+  // The constructor's caller is an interpreted, runtime-written module,
+  // not the main module that later invokes the exported factory.
+  'interpreted-caller/lib/sub/x.mjs': "export default 'lib';\n",
+  'interpreted-caller/sub/x.mjs': "export default 'main';\n",
+  'interpreted-caller/main.mjs': [
+    "import { writeFileSync } from 'node:fs';",
+    `writeFileSync(new URL('./lib/b.mjs', import.meta.url), ${JSON.stringify("export const make = () => new (Object.getPrototypeOf(async function() {}).constructor)('return import(\"./sub/x.mjs\")');\n")});`,
+    "const { make } = await import('./lib/b.mjs');",
+    'console.log((await make()()).default);',
+  ].join('\n') + '\n',
+  // A literal question mark in a directory is a path character, not a URL
+  // search delimiter. The shell command must preserve it as a literal.
+  'odd-dir/a?b/dep.mjs': "export default 'odd-dir';\n",
+  'odd-dir/dep.mjs': "export default 'parent';\n",
+  'odd-dir/a?b/m.mjs': 'console.log((await new Function(\'return import("./dep.mjs")\')()).default);\n',
 };
 const COMMANDS = [
   'node failed-require/main.cjs',
@@ -176,6 +220,12 @@ const COMMANDS = [
   'node missing-esm-export/main.mjs',
   'node commented-json/main.mjs',
   'node missing-cjs-export/main.mjs',
+  'node cjs-query/main.mjs',
+  'node json-query-esmodule/main.mjs',
+  'node prepopulated-cache/main.cjs',
+  'node clause-comment-fallback/main.mjs',
+  'node interpreted-caller/main.mjs',
+  "node 'odd-dir/a?b/m.mjs'",
 ];
 
 await matchNodeInWorkerd('native-esm-review-matches-node-workerd', W, FILES, COMMANDS);
