@@ -1128,7 +1128,7 @@ export class CompositeVFS {
      * Whether something is at `path` for this view (lstat, its own lookup), by awaiting where its mount does: on a
      * backend that holds changes back, as they have been told (VFS.landedAt), its own lookup storing and recalling nothing.
      */
-    presentAt(path) {
+    presentAt(path, canWait = true) {
         const decide = (sync) => {
             const refused = (error) => {
                 if (isVfsError(error))
@@ -1148,8 +1148,11 @@ export class CompositeVFS {
                 return isPromise(stat) ? stat.then((found) => found !== null, refused) : stat !== null;
             }
             catch (error) {
-                if (sync && isAsyncMountRefusal(error))
-                    return decide(false);
+                if (sync && isAsyncMountRefusal(error)) {
+                    if (canWait)
+                        return decide(false);
+                    throw error;
+                }
                 return refused(error);
             }
         };
@@ -2988,6 +2991,10 @@ export class CompositeVFS {
     async stat(path, options) {
         return awaited({ syscall: options?.follow === false ? 'lstat' : 'stat', path }, () => this.statAt(path, options?.follow !== false, false));
     }
+    /** VFS.landedAt, as this view's watches judge it (presentAt). */
+    async landedAt(path) {
+        return this.presentAt(normalizePath(path));
+    }
     async readFile(path) {
         return awaited({ syscall: 'open', path }, () => this.onFile(path, true, false, (ops, rel) => ops.readFile(rel)));
     }
@@ -3095,6 +3102,7 @@ export class CompositeVFS {
     makeSync() {
         return {
             stat: (path, options) => syncValue(reported({ syscall: options?.follow === false ? 'lstat' : 'stat', path }, () => this.statAt(path, options?.follow !== false, true))),
+            landedAt: (path) => syncValue(this.presentAt(normalizePath(path), false)),
             readFile: (path) => syncValue(reported({ syscall: 'open', path }, () => this.onFile(path, true, true, (ops, rel) => ops.readFile(rel)))),
             readRange: (path, offset, length) => syncValue(reported({ syscall: 'open', path }, () => this.onCapability(path, true, 'readRange', false, (fn, rel) => fn(rel, offset, length)))),
             writeFile: (path, data, options) => syncValue(reported({ syscall: 'open', path }, () => this.onMutation(path, true, true, 'written', (ops, rel) => ops.writeFile(rel, data, options), { written: data }))),

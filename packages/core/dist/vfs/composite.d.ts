@@ -919,6 +919,8 @@ export declare class CompositeVFS implements VFS {
     stat(path: string, options?: {
         follow?: boolean;
     }): Promise<VfsStat | null>;
+    /** VFS.landedAt, as this view's watches judge it (presentAt). */
+    landedAt(path: string): Promise<boolean>;
     readFile(path: string): Promise<Uint8Array>;
     readRange(path: string, offset: number, length: number): Promise<Uint8Array>;
     /** `parents`: make the missing directories above where the write lands first (mkdir -p), as the write's own lookup resolves it. */
