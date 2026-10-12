@@ -276,7 +276,9 @@ theorem unreadable_empty_removed (base : St) (P : Principal) (composed : Bool)
       (localPath base composed operand e.path) = []) :
     attempt cfg base P composed S e = .ok
       (erase S (owner base composed operand e.path).backend (localPath base composed operand e.path)) := by
-  simp [attempt, backendError, hd, hs, hro, hf, hp, he, hc]
+  have hp' : localPath base composed operand e.path ∉ (cfg (owner base composed operand e.path).backend).pins := by
+    simpa using hp
+  simp [attempt, backendError, hd, hs, hro, hf, hp', he, hc]
 
 theorem readonly_child_refused (base : St) (P : Principal) (composed : Bool)
     {operand : Path} (S : St) (e : Entry operand)
