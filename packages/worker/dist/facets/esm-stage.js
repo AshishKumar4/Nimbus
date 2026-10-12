@@ -200,7 +200,8 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
         cjsResolve: requireResolve,
     }, { conditions, cwd: () => cwd, stripTypes: typeScript });
     const exportNames = async (path) => [...await cjsModuleExportNamesAsync(path, { source: readText, resolve: requireResolve }, names)];
-    const notStaged = (path) => Object.assign(new Error(`Cannot find module '${path}': it was resolved, and this launch did not stage it`), { code: ESM_NOT_STAGED });
+    // A valid module the registry does not carry: its url is what the interpreter loads in its place.
+    const notStaged = (path, url) => Object.assign(new Error(`Cannot find module '${path}': it was resolved, and this launch did not stage it`), { code: ESM_NOT_STAGED, url });
     /** The row an import with `attributes` of what `resolution` names loads. */
     const target = async (resolution, attributes) => {
         resolver.validateAttributes(resolution.url, resolution.format, attributes);
@@ -220,7 +221,7 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
         // is the interpreter's, which keeps each URL's instance.
         const { search, hash } = new URL(resolution.url);
         if (search !== '' || hash !== '')
-            throw notStaged(resolution.url);
+            throw notStaged(resolution.url, resolution.url);
         const key = stripLeadingSlashes(resolution.path);
         // Node's loader refuses to strip a TypeScript file under node_modules when it loads it.
         if (stripsTypes && stripsTypeScript(key) && typeScriptUnderNodeModules(key)) {
@@ -233,14 +234,14 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
         if (resolution.format === 'json') {
             const text = await readText(resolution.path);
             if (text === null)
-                throw notStaged(resolution.path);
+                throw notStaged(resolution.path, resolution.url);
             // Node's JSON translator: the object require() gives for the same
             // file, one in require.cache whichever loads it first.
             return member('json', key, (id, name) => jsonFacadeModule(name, id));
         }
         // CommonJS by Node's format for it, loaded by require().
         if (!isCode(key))
-            throw notStaged(resolution.path);
+            throw notStaged(resolution.path, resolution.url);
         const exported = await exportNames(resolution.path);
         return member('commonjs', key, (id, name) => commonJsFacadeModule(name, id, exported));
     };
@@ -286,7 +287,7 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
                 targets.push(esmRowName(table[row], row));
             }
             catch (error) {
-                rowTargets.push(-1);
+                rowTargets.push(-2 - missing.length);
                 targets.push(`${ESM_MISSING_DIR}${missing.length}.js`);
                 missing.push(refusal(error));
             }

@@ -19,7 +19,8 @@ import { type ModuleScope } from '@nimbus-sh/core/runtime/module-format.js';
 /**
  * One row of a launch's ES module table, by id (a meta instance's query):
  * a staged ES module (the cell at a VFS key) with the ids of the rows its
- * static imports load (-1 for a refused one), the facade of the CommonJS
+ * static imports load (for a refused one, -2 less the number of its refusal
+ * in EsmStage.missing: every negative is no row), the facade of the CommonJS
  * cell at a key, the facade of a builtin or a package the process provides,
  * or the JSON module of the file at a key. A row's map module is its name
  * (esmRowName): its cell's module for a staged module, else its facade by id.

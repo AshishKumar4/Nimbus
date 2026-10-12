@@ -12513,6 +12513,13 @@ async function __nimbusEsmInterpret(id) {
   pending.then((namespace) => { __esmNamespaces.set(url, namespace); }, () => { __esmNamespaces.delete(url); });
   return pending;
 }
+// A refusal staging recorded (EsmStage.missing), as the error Node's loader throws.
+function __nimbusEsmRefusal(missing) {
+  const Type = missing.name === "TypeError" ? TypeError : missing.name === "SyntaxError" ? SyntaxError : missing.name === "RangeError" ? RangeError : Error;
+  const refused = missing.code ? nodeError(Type, missing.code, missing.message) : new Type(missing.message);
+  if (missing.url !== undefined) refused.url = missing.url;
+  return refused;
+}
 // The refusal a link error names (a specifier staging refused), or null.
 function __nimbusEsmMissingOf(error) {
   const message = error && typeof error.message === "string" ? error.message : "";
@@ -12525,12 +12532,7 @@ function __nimbusEsmMissingOf(error) {
 // compile, with its arrow; else the program's error as it threw it.
 function __nimbusEsmLinkError(error, id) {
   const missing = __nimbusEsmMissingOf(error);
-  if (missing !== null) {
-    const Type = missing.name === "TypeError" ? TypeError : missing.name === "SyntaxError" ? SyntaxError : missing.name === "RangeError" ? RangeError : Error;
-    const refused = missing.code ? nodeError(Type, missing.code, missing.message) : new Type(missing.message);
-    if (missing.url !== undefined) refused.url = missing.url;
-    return refused;
-  }
+  if (missing !== null) return __nimbusEsmRefusal(missing);
   if (!(error instanceof SyntaxError) || __nimbusDecorated.has(error)) return error;
   try {
     const exported = /^The requested module '([^']*)' does not provide an export named '([^']*)'$/.exec(error.message);
@@ -12711,10 +12713,7 @@ function __esmLoad(resolution) {
 // bodies, as Node's does: its import() rejects with the first refusal.
 async function __nimbusEsmLinkStaged(key) {
   const order = [];
-  const unlinkable = __nimbusEsmLinkPlan(key, __nimbusEsmUrl("/" + key), new Set(), order, new Set());
-  // A staged module whose graph does not link: the registry's import of it
-  // rejects with its refusal before any of its graph runs.
-  if (unlinkable !== -1) await __nimbusEsmImport(unlinkable);
+  __nimbusEsmLinkPlan(key, __nimbusEsmUrl("/" + key), new Set(), order, new Set());
   // What one throws ends the evaluation of what imports it, as Node's
   // does: no later import of it evaluates, and the import() rejects.
   for (const id of order) {
@@ -12722,16 +12721,16 @@ async function __nimbusEsmLinkStaged(key) {
   }
 }
 // The staged modules a late graph imports, in import order (into
-// \`order\`); the first of them whose graph does not link, or -1; throws
-// the refusal of a static import of an unstaged module that does not
-// resolve or load. Each module once by its URL (a query's or a fragment's
-// instance is its own).
+// \`order\`); throws the refusal of a static import anywhere in its closure
+// that does not resolve or load. Each module once by its URL (a query's or
+// a fragment's instance is its own); \`checked\`, the staged rows whose
+// graphs link.
 function __nimbusEsmLinkPlan(key, url, seen, order, checked) {
-  if (seen.has(url)) return -1;
+  if (seen.has(url)) return;
   seen.add(url);
   const staged = __nimbusEsmId("module", key);
   const text = staged === -1 ? __readFileOr(key, null) : __nimbusEsmSourceText(staged);
-  if (text === null) return -1;
+  if (text === null) return;
   for (const request of __nimbusModuleRequests(key, text)) {
     if (request.kind !== "static") continue;
     let resolution;
@@ -12750,29 +12749,38 @@ function __nimbusEsmLinkPlan(key, url, seen, order, checked) {
     // An unstaged module, or a query's or fragment's instance (the
     // interpreter's own): its closure is the late graph's too.
     if (id === -1 || search !== "" || hash !== "") {
-      const found = __nimbusEsmLinkPlan(target, resolution.url, seen, order, checked);
-      if (found !== -1) return found;
+      __nimbusEsmLinkPlan(target, resolution.url, seen, order, checked);
       continue;
     }
-    if (__nimbusEsmRefuses(id, checked)) return id;
+    __nimbusEsmCheckLinks(id, seen, checked);
     if (!order.includes(id)) order.push(id);
   }
-  return -1;
 }
-// Whether staged module \`id\`'s graph, what of it is unevaluated, holds a
-// static import staging refused (a missing module, ESM_MISSING_DIR): its
-// link fails. \`checked\` holds the rows already found to link.
-function __nimbusEsmRefuses(id, checked) {
+// Throws the refusal of a static import staged module \`id\`'s graph (what
+// of it is unevaluated) makes that staging refused for good. One staging
+// handed on (ERR_NIMBUS_NOT_STAGED: a query's or a fragment's instance,
+// which the interpreter evaluates where it is imported) is checked as the
+// late graph's own, and runs no body here.
+function __nimbusEsmCheckLinks(id, seen, checked) {
   const visit = (at) => {
-    if (checked.has(at)) return false;
+    if (checked.has(at)) return;
     checked.add(at);
     const row = __nimbusEsm.table[at];
     const state = __nimbusEsmRecords[at]?.state;
-    if (row[0] !== "module" || state === __ESM_DONE || state === __ESM_ADOPTED) return false;
-    for (const target of row[2]) if (target === -1 || visit(target)) return true;
-    return false;
+    if (row[0] !== "module" || state === __ESM_DONE || state === __ESM_ADOPTED) return;
+    for (const target of row[2]) {
+      if (target >= 0) { visit(target); continue; }
+      const missing = __nimbusEsm.missing[-2 - target];
+      if (missing === undefined) continue;
+      if (missing.code === "ERR_NIMBUS_NOT_STAGED" && typeof missing.url === "string") {
+        const handed = new URL(missing.url);
+        __nimbusEsmLinkPlan(decodeURIComponent(handed.pathname).replace(/^\\/+/, ""), missing.url, seen, [], checked);
+        continue;
+      }
+      throw __nimbusEsmRefusal(missing);
+    }
   };
-  return visit(id);
+  visit(id);
 }
 function __esmLoadInterpreted(resolution, key, evaluationKey, esm) {
   let ns;
