@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "a31180eff6355576034a274b4dddb7f7dceaa0640874c1a664ec619131a6e6da",
+  "fingerprint": "2852ff632fd458e8b5ac5c45db9379c5387e84769be79527b3be050e1eca84ae",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2027,8 +2027,8 @@
     "packages/worker/dist/auth/index.d.ts": "37726d5a7f14bab27cf1276faef39ea301e37cee31bbe7405394fb7a9a58b4ae",
     "packages/worker/dist/auth/index.d.ts.map": "f6977f028144d5e6df56dcf5549a995786e416869c04bb3277e05c7662d599f3",
     "packages/worker/dist/auth/index.js": "975338d28eb410d297569fe8214f51be6810f7011579d09997f5ff683f057754",
-    "packages/worker/dist/auth/middleware.d.ts": "10ec61206cf3bad2b3aa799e024bc85f1f741c13a620756173efa124963eccc9",
-    "packages/worker/dist/auth/middleware.d.ts.map": "846c6bce6efa5016f8b42d8f76f19d0221ec59724be77caa6ecc645aa7f09570",
+    "packages/worker/dist/auth/middleware.d.ts": "0ed8c9044424f5348306fd3156de478b2065a4ce018772f1717536270a247f02",
+    "packages/worker/dist/auth/middleware.d.ts.map": "e52d8069e0ff5d753d963ba6104ad00b486d69208265d07610a809647896c332",
     "packages/worker/dist/auth/middleware.js": "2c873b17ec46a27daee88fc446750926ade03133810c9b297e62367521a975d4",
     "packages/worker/dist/auth/token.d.ts": "5feed85797431cd1fdd1f804d318c875590aabffaf9d313a53018f0a04e54ffb",
     "packages/worker/dist/auth/token.d.ts.map": "9ef0635f8922b62869d1100f6b50d6d07b5945e2efbde277f5e0a6eb5262b6c1",
@@ -2847,7 +2847,7 @@
     "packages/worker/src/_shared/session-router.ts": "5c440b2f2f808468de9145b711432682dea5510775b88de2124f97703e288f2a",
     "packages/worker/src/amaro-wasm-artifact.generated.ts": "c2c6459ea2fcec19900f16889091b1d02f05c2149c4ecaa920656ec90cddda23",
     "packages/worker/src/auth/index.ts": "5d88dbc364daa4e2802d2744de81e42d22d432c6f2f425bab65bcb2bdcc790a5",
-    "packages/worker/src/auth/middleware.ts": "5a02c9fc733837bbc7ad3ef794cf47ff2251aa9d3e980d265078fca3c4663bd6",
+    "packages/worker/src/auth/middleware.ts": "305b9f9c9a7a706ace32bb34e8f7069b754dc5699929ec901490c42577b100c6",
     "packages/worker/src/auth/token.ts": "1508686fdc934253906d0709446df5e23cba05bc4de8dceae8508d31ba32f39c",
     "packages/worker/src/auth/types.ts": "68387a1a13bff748e2a88ce57b177c6c6f32d6654fc9ae6ea8921054f69ca463",
     "packages/worker/src/bindings/body.ts": "686e3ccfcf99b8062d9f62cb7f399b87865c8b8e3c299896e321734def422878",
