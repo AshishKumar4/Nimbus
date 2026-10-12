@@ -28,11 +28,11 @@ made('setuid', 0o755);
 kernel.chmod('home/user/setuid', 0o4755);
 made('over', 0o644);
 
-user.copy('home/user/secret', 'home/user/secret-copy');
-user.copy('home/user/script', 'home/user/script-copy');
-user.copy('home/user/shared', 'home/user/shared-copy');
-user.copy('home/user/setuid', 'home/user/setuid-copy');
-user.copy('home/user/secret', 'home/user/over');
+user.copyFile('home/user/secret', 'home/user/secret-copy');
+user.copyFile('home/user/script', 'home/user/script-copy');
+user.copyFile('home/user/shared', 'home/user/shared-copy');
+user.copyFile('home/user/setuid', 'home/user/setuid-copy');
+user.copyFile('home/user/secret', 'home/user/over');
 const modeOf = (name) => user.stat(`home/user/${name}`).mode & 0o7777;
 assert.deepEqual(
   Object.fromEntries(['secret-copy', 'script-copy', 'shared-copy', 'setuid-copy', 'over'].map((name) => [name, modeOf(name)])),

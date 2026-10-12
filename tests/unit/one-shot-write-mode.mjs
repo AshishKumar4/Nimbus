@@ -90,7 +90,7 @@ const expected = {
   'team-copy': 0o050,
   'promise-team-copy': 0o050,
 };
-// Beneath a directory closed to its owner, only the session can look.
+// Beneath a directory closed to its owner, only the kernel can look.
 const teamBelow = { 'sub': 0o050, 'sub/file': 0o040, 'top': 0o040 };
 const program = `
 const fs = require('fs');
@@ -179,7 +179,8 @@ const atSession = (name) => authority.kfs.stat('home/user/' + name).mode & 0o777
 assert.deepEqual(Object.fromEntries(Object.keys(expected).map((name) => [name, atSession(name)])), expected, 'the session holds each path with the mode it was made with');
 assert.equal(atSession(seen.temp), 0o700, "the session holds mkdtemp's directory 0700");
 for (const copy of ['team-copy', 'promise-team-copy']) {
-  assert.deepEqual(Object.fromEntries(Object.keys(teamBelow).map((name) => [name, atSession(`${copy}/${name}`)])), teamBelow, `the session holds ${copy}'s entries with their source's modes`);
+  const below = Object.keys(teamBelow).map((name) => [name, kernel.stat(`home/user/${copy}/${name}`).mode & 0o777]);
+  assert.deepEqual(Object.fromEntries(below), teamBelow, `the session holds ${copy}'s entries with their source's modes`);
 }
 assert.deepEqual(exposures, [], 'another principal was refused every private copy while it was made');
 // A copy that failed partway leaves what it made its owner's alone.
