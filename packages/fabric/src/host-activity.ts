@@ -194,11 +194,21 @@ export class SentRequests {
     return { id, ended, abandoned };
   }
 
-  /** `request`'s call failed, so its leaf may not have seen what it carried: carry it again (each is idempotent there). */
+  /** `request`'s call failed before its leaf saw what it carried (leafReceived): carry it again (each is idempotent there). */
   unsent(request: HostRequest): void {
     this.#ended.push(...request.ended);
     this.#abandoned.push(...request.abandoned);
   }
+}
+
+/**
+ * The property a leaf sets on its guest's failure, crossing RPC with it
+ * (enhanced_error_serialization): the call arrived, and what it carried was
+ * seen. Any other failure may not have reached the leaf.
+ */
+export const LEAF_RECEIVED = 'nimbusLeafReceived';
+export function leafReceived(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && Reflect.get(error, LEAF_RECEIVED) === true;
 }
 
 /** A request's id, and the earlier ones its leaf forgets (`ended`) or abandons first (`abandoned`). */
@@ -242,7 +252,7 @@ export function hostAdapterBytes(mainModule: string): number {
 }
 
 function hostAdapter(mainModule: string, capability: string): string {
-  const [watch, request, incarnation, key] = [HOST_WATCH_HEADER, HOST_REQUEST_HEADER, HOST_INCARNATION_HEADER, capability].map((value) => JSON.stringify(value));
+  const [watch, request, incarnation, key, received] = [HOST_WATCH_HEADER, HOST_REQUEST_HEADER, HOST_INCARNATION_HEADER, capability, LEAF_RECEIVED].map((value) => JSON.stringify(value));
   // Module scope, not the class's text: a guest reads its class's source
   // (this.constructor.toString()), and with the capability could forge a refusal.
   return `import { NimbusProcess as Base } from ${JSON.stringify('./' + mainModule)};
@@ -286,12 +296,18 @@ export class NimbusProcess extends Base {
   // The host's HTTP entry. Its admission travels as arguments, and request
   // \`id\` is one its host can abandon (SentRequests): the guest sees its
   // caller leave as its request's signal.
-  hostHttpRequest(request, key, pinned, id, ended, abandoned) {
+  async hostHttpRequest(request, key, pinned, id, ended, abandoned) {
     if (key !== capability) return new Response('Not found', { status: 404 });
     if (pinned !== this.#incarnation) return this.#replaced();
     const admitted = new Request(request, { signal: this.#request(id, ended, abandoned).signal });
     this.#admitted.add(admitted);
-    return super.handleHttpRequest(admitted);
+    // The call arrived, whatever its guest does: its host need not carry its ids again.
+    try { return await super.handleHttpRequest(admitted); }
+    catch (error) {
+      const failure = error instanceof Error ? error : new Error(String(error));
+      try { failure[${received}] = true; return Promise.reject(failure); }
+      catch { return Promise.reject(Object.assign(new Error(failure.message, { cause: failure }), { [${received}]: true })); }
+    }
   }
   abandonHttpRequest(key, id) {
     if (key === capability) this.#request(id, []).abort(new DOMException('The caller left the request', 'AbortError'));

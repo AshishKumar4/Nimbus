@@ -119,5 +119,20 @@ for (const mode of ['facet', 'peer']) for (const route of ['port', 'direct']) fo
     assert.deepEqual(peers?.abandoned ?? [], ending === 'eof' || peers === null ? [] : peers.routed, `${label}: only an undelivered response is abandoned, once`);
   } finally { if (response?.body && !response.body.locked) await response.body.cancel().catch(() => {}); neighbor.close(); await process.release(); }
 }
+{
+  // A guest whose handler throws took the call: what it carried is not carried again.
+  const world = createFacetWorld(() => ({ startProcess: async () => ({}), handleHttpRequest: async () => { throw new Error('the handler failed'); } }), { resolveConfig: false });
+  const ctx = createFacetCtx(world, 'throwing');
+  const host = processHostFor(ctx, { LOADER: world.loader, NIMBUS_PROCESS_HOST: 'facet' }, () => { throw new Error('no disk reads'); });
+  const process = await host.open({ pid: 12, workerKey: 'throwing', writerId: crypto.randomUUID(), boot });
+  await process.started; await turns();
+  for (let i = 0; i < 3; i++) {
+    const { scope, owner } = responseScope(new AbortController().signal);
+    await assert.rejects(process.handleHttpRequest(new Request('https://app.invalid/'), scope).catch((error) => { owner.fail(); throw error; }), /the handler failed/);
+    await turns();
+  }
+  assert.deepEqual(world.carried.map(({ ended, abandoned }) => [ended, abandoned]), [[[], []], [[0], []], [[1], []]], 'each id is carried once, once its abandon arrived');
+  await process.release();
+}
 assert.ok(published.length > 0, 'the port relay published the process output before its body');
 console.log('process-host-response-ownership: port and direct relays own work until EOF, error, mismatch or a leaving client, on both hosts');

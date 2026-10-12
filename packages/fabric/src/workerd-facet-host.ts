@@ -22,6 +22,7 @@ import {
   observeResidentConfig,
   type HostActivityLease,
   type HostRequest,
+  leafReceived,
   SentRequests,
 } from './host-activity.js';
 import type { ModuleSourceEnv } from '@nimbus-sh/platform/module-source.js';
@@ -636,7 +637,7 @@ function spawnResident(
       try {
         return await checked(await facet.hostHttpRequest(request, watchCapability, await incarnation, sending.id, sending.ended, sending.abandoned));
       } catch (error) {
-        if (!relayed) sent.unsent(sending);
+        if (!relayed && !leafReceived(error)) sent.unsent(sending);
         lease.release();
         throw error;
       }
