@@ -91,7 +91,7 @@ try {
   const after = host(source, 'rev-parse', 'HEAD');
   host(source, 'push', '-q', bare, 'HEAD:refs/heads/after');
   await run('NIMBUS_GIT_WASI=1 git -C linked fetch origin after');
-  assert.equal(await run('git -C linked rev-parse FETCH_HEAD'), after, 'a linked worktree fetched into common objects');
+  assert.equal(await run('NIMBUS_GIT_WASI=1 git -C linked rev-parse FETCH_HEAD'), after, 'a linked worktree fetched into common objects');
   assert.equal(await run(`NIMBUS_GIT_WASI=1 git -C repo cat-file -t ${after}`), 'commit', 'the common repository sees fetched objects');
 
   const denied = await terminal.run(`GIT_TOKEN=ENV-SECRET git ls-remote 'http://user:URL-SECRET@127.0.0.1:${new URL(url).port}/denied.git'`, 300_000);
