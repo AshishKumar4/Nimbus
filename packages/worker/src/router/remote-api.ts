@@ -63,6 +63,8 @@ interface RemoteContext {
   profile: NimbusSandboxProfile;
   root: string;
   verified: VerifiedNimbusToken | null;
+  outbox?: NimbusRemoteApiOutbox;
+  sandboxId: string;
 }
 
 interface RemoteAuthResult {
@@ -72,10 +74,15 @@ interface RemoteAuthResult {
 
 const DEFAULT_REMOTE_BASE_PATH = '/api/nimbus/v1';
 
+export interface NimbusRemoteApiOutbox {
+  /** The sid whose destroy this call proved, if any. Set by dispatch. */
+  destroyedSessionId: string | null;
+}
 export async function handleNimbusRemoteApi(
   request: Request,
   env: NimbusRemoteEnv,
   sdk: NimbusSdkRouterConfig | undefined,
+  outbox?: NimbusRemoteApiOutbox,
 ): Promise<Response | null> {
   const remote = normalizeRemoteConfig(sdk?.remote);
   if (!remote.enabled) return null;
@@ -138,6 +145,8 @@ export async function handleNimbusRemoteApi(
     profile,
     root,
     verified: remoteAuth.verified,
+    outbox,
+    sandboxId: match.sandboxId,
   };
 
   try {
@@ -388,7 +397,16 @@ async function dispatchRemoteRpc(ctx: RemoteContext): Promise<unknown> {
       return ctx.stub._rpcUnexposePort(numberArg(args[0], 'port'));
     case 'destroy':
       requireAnyScope(ctx, ['session:destroy', 'session:admin']);
-      return ctx.stub._rpcDestroy(objectArg(args[0]));
+      return ctx.stub._rpcDestroy(objectArg(args[0])).then((result) => {
+        // Proven destroy, reported as internal metadata for the caller's
+        // response policy — no JSON re-parse needed to rediscover it.
+        const outcome = result as { ok?: unknown; destroyedAt?: unknown } | undefined;
+        if (ctx.outbox !== undefined && outcome?.ok === true && typeof outcome?.destroyedAt === 'number'
+          && isValidSessionId(ctx.sandboxId)) {
+          ctx.outbox.destroyedSessionId = ctx.sandboxId;
+        }
+        return result;
+      });
     default:
       throw apiError(`Unknown Nimbus sandbox operation: ${String(op)}`, 'E_REMOTE_OP', 400);
   }

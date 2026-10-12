@@ -29,7 +29,11 @@ interface NimbusSessionNamespace {
 interface NimbusRemoteEnv extends Partial<NimbusAuthEnv> {
     NIMBUS_SESSION?: NimbusSessionNamespace;
 }
-export declare function handleNimbusRemoteApi(request: Request, env: NimbusRemoteEnv, sdk: NimbusSdkRouterConfig | undefined): Promise<Response | null>;
+export interface NimbusRemoteApiOutbox {
+    /** The sid whose destroy this call proved, if any. Set by dispatch. */
+    destroyedSessionId: string | null;
+}
+export declare function handleNimbusRemoteApi(request: Request, env: NimbusRemoteEnv, sdk: NimbusSdkRouterConfig | undefined, outbox?: NimbusRemoteApiOutbox): Promise<Response | null>;
 /** Whether the remote API (and with it `DELETE /s/<id>/`) is served. */
 export declare function remoteApiEnabled(sdk: NimbusSdkRouterConfig | undefined): boolean;
 //# sourceMappingURL=remote-api.d.ts.map
