@@ -1,5 +1,5 @@
 // The node-shims under test, over the store and namespace every embedding
-// boots on (vfs/facet-resident-store.ts).
+// boots on (vfs/resident/index.ts).
 //
 // A test that evaluates the shims on its own (`new Function('__vfsBundle',
 // '__vfsDirs', '__supervisor', 'cred', ...)`) splices SHIMS_STORE_PRELUDE in
@@ -24,18 +24,24 @@
 // it, with its real stats, as a launch's is.
 
 import { CRED_KERNEL } from '../../../packages/core/src/runtime/os-contracts.ts';
-import { FACET_RESIDENT_STORE_SOURCE } from '../../../packages/worker/src/vfs/facet-resident-store.ts';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { RESIDENT_STORE_ENTRY } from '../../../packages/worker/src/node-shims-artifact.generated.ts';
 import { RUNTIME_NODE_DNS_MODULE, RUNTIME_NODE_LIB_MODULE, RUNTIME_NODE_LIB_REST_MODULE, declaresWrapperBinding, wrapCommonJsCell } from '../../../packages/core/src/_shared/commonjs-cell.ts';
 import { generateNodeDnsModule, generateNodeLibModule, generateNodeLibRestModule } from '../../../packages/worker/src/runtime/node-lib-module.ts';
 import { moduleImporterUrl } from '../../../packages/core/src/_shared/module-importer.ts';
 
+const PUBLIC = fileURLToPath(new URL('../../../packages/worker/public', import.meta.url));
+const RESIDENT_STORE = readFileSync(join(PUBLIC, RESIDENT_STORE_ENTRY), 'utf8');
+
 const SEED = `
 ;(function __nimbusTestSeedNamespace() {
-  __residentBindInMemory(1 << 30);
-  __residentSetStorage(undefined, typeof __supervisor === "undefined" ? null : __supervisor);
+  __resident.bindInMemory(1 << 30);
+  __resident.admission.setStorage(undefined, typeof __supervisor === "undefined" ? null : __supervisor);
   const __cred = (typeof cred !== "undefined" && cred) || { uid: 1000, gid: 1000, groups: [1000] };
-  __nsSetCred(__cred);
-  __residentSetPlan([]);
+  __resident.namespace.setCred(__cred);
+  __resident.sync.setPlan([]);
   const cursor = (globalThis.__nimbusVfsCursor && globalThis.__nimbusVfsCursor.epoch != null)
     ? globalThis.__nimbusVfsCursor : { epoch: "test-epoch", rev: 1 };
   const bundle = (typeof __vfsBundle !== "undefined" && __vfsBundle) || {};
@@ -47,7 +53,7 @@ const SEED = `
   const dirs = (typeof __vfsDirs !== "undefined" && __vfsDirs) || {};
   const cells = {};
   for (const [k, v] of Object.entries(bundle)) cells[String(k).replace(/^\\/+/, "")] = v;
-  __residentAdoptModuleBundle(cells, cursor);
+  __resident.sync.adoptModuleBundle(cells, cursor);
   const owner = { uid: Number(__cred.uid), gid: Number(__cred.gid) };
   const names = new Map();
   const root = { uid: 0, gid: 0 };
@@ -95,10 +101,10 @@ const SEED = `
     const base = type === "directory" ? dir(owner) : file(Number(record.size) || 0);
     names.set(k, { ...base, ...record, type });
   }
-  const t = __residentT;
-  for (const [k, stat] of names) __nsPut(t, k, stat, cursor.rev, stat.linkTarget ?? stat.target);
-  __nsMarkReady(t, true);
-  if (typeof __vfsBundle !== "undefined") __vfsBundle = __nimbusResidentBundle;
+  const t = __resident.coherence.tables("test");
+  for (const [k, stat] of names) __resident.namespace.put(t, k, stat, cursor.rev, stat.linkTarget ?? stat.target);
+  __resident.namespace.markReady(t, true);
+  if (typeof __vfsBundle !== "undefined") __vfsBundle = __resident.bundle;
 })();
 `;
 
@@ -172,7 +178,11 @@ function __nimbusRegistryRequire(id) {
 `;
 
 /** Splice ahead of generateShimsCode() in a standalone shims factory. */
-export const SHIMS_STORE_PRELUDE = `\n${FACET_RESIDENT_STORE_SOURCE}\n${SEED}\n${MODULE_CELLS}\n${RUNTIME_MODULES}\n`;
+export const SHIMS_STORE_PRELUDE = `\n${RESIDENT_STORE}\nconst __resident = __nimbusResidentModule.createResidentStore({
+  observeRead: (path) => {
+    if (globalThis.__nimbusProfileStaged) globalThis.__nimbusProfileStaged.delete(path);
+  },
+});\n${SEED}\n${MODULE_CELLS}\n${RUNTIME_MODULES}\n`;
 
 /**
  * List a test authority (a SqliteVFS) as the session would for a launch, into

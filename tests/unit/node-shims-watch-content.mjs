@@ -38,7 +38,7 @@ assert.equal(events.length, 2, 'a closed watcher observes nothing');
 const namespaceTicks = [];
 const namespace = new Function('__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname', 'setInterval', 'clearInterval',
   '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode()
-    + '\nreturn { fs: builtins.fs, ready: value => __nsMarkReady(__residentT, value), change: () => __nsPut(__residentT, "home/user/config.js", { type: "file", size: 21, mode: 0o100644, uid: 0, gid: 0, atime: 0, mtime: 2, ctime: 2, ino: 0 }, 2), relist: () => __nsPut(__residentT, "home/user/config.js", { type: "file", size: 18, mode: 0o100644, uid: 0, gid: 0, atime: 0, mtime: 0, ctime: 0, ino: 0 }, 9) };',
+    + '\nreturn { fs: builtins.fs, ready: value => __resident.namespace.markReady(__resident.coherence.tables("test"), value), change: () => __resident.namespace.put(__resident.coherence.tables("test"), "home/user/config.js", { type: "file", size: 21, mode: 0o100644, uid: 0, gid: 0, atime: 0, mtime: 2, ctime: 2, ino: 0 }, 2), relist: () => __resident.namespace.put(__resident.coherence.tables("test"), "home/user/config.js", { type: "file", size: 18, mode: 0o100644, uid: 0, gid: 0, atime: 0, mtime: 0, ctime: 0, ino: 0 }, 9) };',
 )(
   { 'home/user/config.js': 'export default {};' }, {}, {}, null,
   { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
