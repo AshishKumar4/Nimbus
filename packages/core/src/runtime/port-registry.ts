@@ -106,8 +106,8 @@ const DECODABLE_CONTENT_CODINGS = new Map<string, 'gzip' | 'deflate'>([
  * of, so it is not held to it.
  *
  * The pipe into the last stage is explicit, so its settlement is when the
- * body is done with (`owner.settle`): its end, its error, or `owner.signal`
- * aborting it.
+ * body is done with: its end (`owner.settle`), its failure (`owner.fail`),
+ * or `owner.signal` aborting it.
  */
 export function relayRpcBody(response: Response, method: string, owner: BodyOwner, gated: TransformStream<Uint8Array, Uint8Array> | null = null): Response {
   if (response.body === null) {
@@ -129,20 +129,30 @@ export function relayRpcBody(response: Response, method: string, owner: BodyOwne
 /** Who owns work for a relayed body: it ends with `signal`, and hears once the relay settles. */
 export interface BodyOwner {
   readonly signal: AbortSignal;
+  /** The body was delivered whole, or there was none to deliver. */
   settle(): void;
+  /** The body will not be delivered: to its handler, the caller has left. */
+  fail(reason?: unknown): void;
 }
 
-/** One response's scope (RouteableFacetTarget), and the owner whose relay settles it. */
-export function responseScope(signal: AbortSignal): { scope: ResponseScope; owner: BodyOwner } {
+/**
+ * One response's scope (RouteableFacetTarget), and the owner whose relay
+ * settles it. Its signal is the caller's, or the relay failing, whichever
+ * comes first: a client that resets is seen both ways, in either order.
+ */
+export function responseScope(caller: AbortSignal): { scope: ResponseScope; owner: BodyOwner } {
   let settle = (): void => {};
   const settled = new Promise<void>((resolve) => { settle = resolve; });
+  const failed = new AbortController();
+  const signal = AbortSignal.any([caller, failed.signal]);
   // A caller that leaves is done with the body, whatever its relay still waits on.
   signal.addEventListener('abort', settle, { once: true });
-  return { scope: { signal, settled }, owner: { signal, settle } };
+  const fail = (reason?: unknown) => failed.abort(reason ?? new DOMException('The response was not delivered', 'AbortError'));
+  return { scope: { signal, settled }, owner: { signal, settle, fail } };
 }
 
 function settleWith(owner: BodyOwner, source: ReadableStream<Uint8Array>, last: WritableStream<Uint8Array>): void {
-  void source.pipeTo(last, { signal: owner.signal }).then(owner.settle, owner.settle);
+  void source.pipeTo(last, { signal: owner.signal }).then(owner.settle, owner.fail);
 }
 
 /**
@@ -175,7 +185,7 @@ function decodeContentCoding(response: Response, port: number, method: string, o
 
   const format = DECODABLE_CONTENT_CODINGS.get(coding);
   if (!format) {
-    owner.settle();
+    owner.fail();
     void response.body.cancel().catch(() => {});
     return new Response(
       JSON.stringify({

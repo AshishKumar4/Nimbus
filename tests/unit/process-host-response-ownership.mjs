@@ -20,11 +20,12 @@ const output = {
 };
 
 for (const mode of ['facet', 'peer']) for (const route of ['port', 'direct']) for (const ending of ['eof', 'leave', 'partial-leave', 'error', 'short', 'long', 'no-body', 'leave-before-headers']) {
-  let source, cancelled = false, watching = 0, heard = false;
+  let source, cancelled = false, watching = 0, heard = false, handled;
   const handling = Promise.withResolvers();
   const world = createFacetWorld(() => ({
     startProcess: async () => ({}),
     handleHttpRequest: async (request) => {
+      handled = request;
       if (ending === 'leave-before-headers') {
         // A handler that never answers headers hears its caller leave through its request.
         handling.resolve();
@@ -103,6 +104,8 @@ for (const mode of ['facet', 'peer']) for (const route of ['port', 'direct']) fo
     reader.releaseLock();
     assert.equal(watching, 0, `${label}: EOF, error, mismatch and a leaving client release the work`);
     await turns();
+    // A body that will not reach its caller, for whatever reason, is one its handler hears was left.
+    assert.equal(handled.signal.aborted, ending !== 'eof', `${label}: the handler hears whether its body was delivered`);
     assert.ok(peers === null || (peers.lefts.length === 1 && peers.lefts[0].dups === 1 && peers.lefts[0].disposed === 1), `${label}: the peer holds the caller stub for this response only`);
   } finally { if (response?.body && !response.body.locked) await response.body.cancel().catch(() => {}); neighbor.close(); await process.release(); }
 }

@@ -210,7 +210,7 @@ server.listen(Number(process.env.PORT || 0), '127.0.0.1', () => console.log('BOU
       client.abort();
       for (let i = 0; i < 100; i++) {
         const report = JSON.parse(await (await fetch(url + '/report', { headers })).text());
-        if (report.some((event) => event.startsWith('late write'))) return report;
+        if (report.some((event) => event.startsWith('late write')) && report.includes('request close')) return report;
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
       throw new Error('the server never heard its client leave');
@@ -229,11 +229,15 @@ server.listen(Number(process.env.PORT || 0), '127.0.0.1', () => console.log('BOU
     await terminal.run('cd ' + W + ' && PORT=7074 node abandon.js');
     const { requestHeaders } = await import('../behavioral/_driver.mjs');
     const nimbusAbandon = await leave(`${probe.base}/s/${terminal.sid}/port/7074`, requestHeaders());
-    // The same events, the request aborted before its response closed; the
-    // late write's callback and the request's 'close' are each a later tick,
-    // which workerd's IncomingMessage and Node's order differently.
-    assert.deepEqual([...nimbusAbandon].sort(), [...hostAbandon].sort(), 'a client leaving mid-response reaches the resident server as it reaches Node\'s');
-    assert.deepEqual(nimbusAbandon.slice(0, 2), hostAbandon.slice(0, 2), 'the request is aborted before its response closes, as in Node');
+    // Every event Node's server sees, the resident's sees, and nothing more
+    // but one event of workerd's own: a write that fails after the client
+    // left cancels the body with a reason, and workerd's ServerResponse
+    // (src/node/internal/internal_http_server.ts, body cancel →
+    // destroy(reason)) emits it as 'error', which Node's never does.
+    for (const event of hostAbandon) assert.ok(nimbusAbandon.includes(event), `a client leaving mid-response reaches the resident server as it reaches Node's: ${event} in ${JSON.stringify(nimbusAbandon)}`);
+    assert.deepEqual(nimbusAbandon.filter((event) => !hostAbandon.includes(event) && !event.startsWith('response error')), [], JSON.stringify({ nimbusAbandon, hostAbandon }));
+    // Heard as the caller leaving (not as that failed write), the request is aborted before its response closes, as in Node.
+    if (!nimbusAbandon.some((event) => event.startsWith('response error'))) assert.deepEqual(nimbusAbandon.slice(0, 2), hostAbandon.slice(0, 2));
   } finally {
     await terminal.close().catch(() => {});
   }

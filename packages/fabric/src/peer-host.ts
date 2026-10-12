@@ -411,7 +411,7 @@ export class PeerHost {
       let body: ReadableStream | null = null;
       if (response.body) {
         const { readable, writable } = new IdentityTransformStream();
-        this.ctx.waitUntil(response.body.pipeTo(writable, { signal: scope.signal }).catch(() => {}).finally(owner.settle));
+        this.ctx.waitUntil(response.body.pipeTo(writable, { signal: scope.signal }).then(owner.settle, owner.fail));
         body = readable;
       } else owner.settle();
       return {
