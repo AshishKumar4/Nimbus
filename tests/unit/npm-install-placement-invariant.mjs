@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // npm-install-placement-invariant — seeded random registries, each installed
 // by npm 10 itself and by the worker's NpmInstaller (the one engine, core
-// _shared/npm-arborist.ts, through the real installer over a fake fanout):
+// _shared/npm-arborist, through the real installer over a fake fanout):
 // both give the same tree, placement for placement and version for version,
 // and fail alike.
 //

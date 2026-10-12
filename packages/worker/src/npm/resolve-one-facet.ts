@@ -365,7 +365,6 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     // Platform constraints + optionalDependencies round-trip so the ABI
     // policy makes the same decisions on warm-cache hits.
     const pkgFromCache = { ...resolvedFromRecord(cached), name: request.installName, registryName: request.registryName };
-    if (request.alias) cacheWrites.push(registryRecord(pkgFromCache, Date.now()));
     adviseStagedBindingVersion(pkgFromCache);
     return outNativeExecutable(pkgFromCache, 0, 'cache-hit') ?? out(pkgFromCache, 0, 'cache-hit');
   }
@@ -588,11 +587,9 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   const native = outNativeExecutable(pkg, bytes, packumentSource);
   if (native?.error) return native;
 
-  // 5. Stage cache writes: the registry package's, under its name; an
-  //    alias's version also under the alias, which is what its lockfile
-  //    entries read.
+  // 5. Stage cache writes: the registry package's, under its name, the one
+  //    key a record has (an alias's lockfile entry names it too).
   cacheWrites.push(registryRecord({ ...pkg, name: request.registryName }, Date.now()));
-  if (request.alias) cacheWrites.push(registryRecord(pkg, Date.now()));
   // Top-5 sibling versions.
   const sorted = Object.keys(data.versions)
     .map((v) => ({ v, p: PARSE_SEMVER(v) }))

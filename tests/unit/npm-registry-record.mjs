@@ -72,7 +72,7 @@ console.log('  ok  a warm resolve answers what the cold one did');
   const ctx = { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage };
   const installer = kernelInstaller(vfs, harness.sql, { env, ctx });
   installer.npmCache.putRegistryEntries(cold.cacheWrites);
-  const entry = { name: 'pkg', resolvedVer: '2.1.0', integrity: 'sha512-pkg', depsJson: '{"dep":"^1.0.0"}', hoistedPath: 'app/node_modules/pkg' };
+  const entry = { name: 'pkg', registryName: 'pkg', resolvedVer: '2.1.0', integrity: 'sha512-pkg', depsJson: '{"dep":"^1.0.0"}', hoistedPath: 'app/node_modules/pkg' };
   const recordOf = installer.lockRecords();
   assert.deepEqual(plain(resolvedFromRecord(recordOf(entry))), plain(cold.pkg), "a lockfile's package is the one its resolve answered");
   // Another package's record under the name (an alias retargeted) is not this placement's.
@@ -115,7 +115,7 @@ console.log('  ok  a warm resolve answers what the cold one did');
   root.writeFile('app/package.json', JSON.stringify({ name: 'app', dependencies: { odd: '1.0.0' } }));
   root.mkdir('app/node_modules/odd', { recursive: true });
   root.writeFile('app/node_modules/odd/package.json', JSON.stringify({ name: 'odd', version: '1.0.0' }));
-  installer.npmCache.writeLockfile('app', new Map([['odd', { name: 'odd', resolvedVer: '1.0.0', integrity: 'sha512-odd', depsJson: '{}', hoistedPath: 'app/node_modules/odd' }]]), { storage: harness.ctx.storage });
+  installer.npmCache.writeLockfile('app', new Map([['odd', { name: 'odd', registryName: 'odd', resolvedVer: '1.0.0', integrity: 'sha512-odd', depsJson: '{}', hoistedPath: 'app/node_modules/odd' }]]), { storage: harness.ctx.storage });
   const log = [];
   const result = await installer.install('app', { onProgress: (line) => log.push(line) });
   assert.deepEqual(result.failed, [], log.join('\n'));

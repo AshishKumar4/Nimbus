@@ -30,7 +30,10 @@ import { recordHit as _l1RecordHit, recordMiss as _l1RecordMiss } from '@nimbus-
  * `name` column of `pkg_lockfile` holds, whose primary key predates nesting.
  */
 export interface LockfileEntry {
+  /** The name it installs under (its folder's). */
   name: string;
+  /** The registry package it is (an alias's target): its record's key. '' for rows written before it was kept. */
+  registryName: string;
   resolvedVer: string;
   integrity: string;
   depsJson: string;
@@ -137,8 +140,13 @@ export class NpmCache {
       integrity    TEXT NOT NULL DEFAULT '',
       deps_json    TEXT NOT NULL DEFAULT '{}',
       hoisted_path TEXT NOT NULL DEFAULT '',
+      registry_name TEXT NOT NULL DEFAULT '',
       PRIMARY KEY (project_path, name)
     )`);
+    try {
+      const cols = new Set([...this.sql.exec(`PRAGMA table_info(pkg_lockfile)`)].map((r) => String((r as { name?: unknown }).name)));
+      if (!cols.has('registry_name')) this.sql.exec(`ALTER TABLE pkg_lockfile ADD COLUMN registry_name TEXT NOT NULL DEFAULT ''`);
+    } catch { /* the table was just created with it */ }
 
     // A bundle is served only to a principal who may read what it was built
     // from, so a row that does not say is of no use: a table predating the
@@ -307,7 +315,7 @@ export class NpmCache {
   readLockfile(projectPath: string): Map<string, LockfileEntry> | null {
     this.ensureSchema();
     const rows = [...this.sql.exec(
-      `SELECT name, resolved_ver, integrity, deps_json, hoisted_path
+      `SELECT name, resolved_ver, integrity, deps_json, hoisted_path, registry_name
        FROM pkg_lockfile WHERE project_path = ?`,
       projectPath,
     )];
@@ -317,6 +325,7 @@ export class NpmCache {
       const placement = String(r.name);
       result.set(placement, {
         name: placementName(placement),
+        registryName: String(r.registry_name ?? ''),
         resolvedVer: String(r.resolved_ver),
         integrity: String(r.integrity),
         depsJson: String(r.deps_json),
@@ -378,21 +387,21 @@ export class NpmCache {
       // Clear existing lockfile for this project
       this.sql.exec(`DELETE FROM pkg_lockfile WHERE project_path = ?`, projectPath);
 
-      // Batch insert: DO SQLite ~100 var limit. 6 cols → max 16 rows (16×6=96).
+      // Batch insert: DO SQLite ~100 var limit. 7 cols → max 14 rows (14×7=98).
       const entryList = [...entries];
-      const BATCH = 16;
+      const BATCH = 14;
       for (let i = 0; i < entryList.length; i += BATCH) {
         const batch = entryList.slice(i, i + BATCH);
-        const placeholders = batch.map(() => '(?,?,?,?,?,?)').join(',');
+        const placeholders = batch.map(() => '(?,?,?,?,?,?,?)').join(',');
         const values: any[] = [];
         for (const [placement, e] of batch) {
           values.push(
             projectPath, placement, e.resolvedVer,
-            e.integrity, e.depsJson, e.hoistedPath,
+            e.integrity, e.depsJson, e.hoistedPath, e.registryName,
           );
         }
         this.sql.exec(
-          `INSERT INTO pkg_lockfile (project_path, name, resolved_ver, integrity, deps_json, hoisted_path) VALUES ${placeholders}`,
+          `INSERT INTO pkg_lockfile (project_path, name, resolved_ver, integrity, deps_json, hoisted_path, registry_name) VALUES ${placeholders}`,
           ...values,
         );
       }

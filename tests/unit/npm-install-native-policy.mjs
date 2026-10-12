@@ -739,11 +739,11 @@ function makeInstaller(pkgJson, resultFor) {
     const entries = new Map();
     for (const name of ['ok-a', 'ok-b', 'ok-c', 'ok-d']) {
       installer.npmCache.putRegistryEntries([cw(name, '1.0.0')]);
-      entries.set(name, { name, resolvedVer: '1.0.0', integrity: 'sha512-fixture', depsJson: '{}', hoistedPath: `${NM}/${name}` });
+      entries.set(name, { name, registryName: name, resolvedVer: '1.0.0', integrity: 'sha512-fixture', depsJson: '{}', hoistedPath: `${NM}/${name}` });
     }
     installer.npmCache.putRegistryEntries([cw('gitpkg', '0.0.0-abc123')]);
     entries.set('gitpkg', {
-      name: 'gitpkg', resolvedVer: '0.0.0-abc123', integrity: 'sha512-fixture',
+      name: 'gitpkg', registryName: 'gitpkg', resolvedVer: '0.0.0-abc123', integrity: 'sha512-fixture',
       depsJson: '{}', hoistedPath: `${NM}/gitpkg`,
     });
     installer.npmCache.writeLockfile(PROJ, entries, { storage: harness.ctx.storage });

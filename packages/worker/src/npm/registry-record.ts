@@ -70,9 +70,10 @@ const isAnyJson = (value: unknown): value is unknown => true;
 function decoded<T>(json: string | undefined, shape: (value: unknown) => value is T, fallback: T): T {
   if (!json) return fallback;
   // Most of a record's maps are empty: no parse for those.
-  if (json === '{}') return {} as T;
-  let value: unknown;
-  try { value = JSON.parse(json); } catch { return fallback; }
+  let value: unknown = {};
+  if (json !== '{}') {
+    try { value = JSON.parse(json); } catch { return fallback; }
+  }
   return shape(value) ? value : fallback;
 }
 

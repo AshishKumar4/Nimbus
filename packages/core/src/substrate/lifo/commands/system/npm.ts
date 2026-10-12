@@ -13,7 +13,7 @@ import {
 	canonicalTreePath, depthOf, holdTree, namedPackages, placementName, projectRoots, readPackageJson, saveNamed,
 	type PackageJsonDocument, type TreePackage, type TreeRoot,
 } from '../../../../_shared/npm-tree.js';
-import { planTree, requiredFailures, type TreeNode, type TreeResolution } from '../../../../_shared/npm-arborist.js';
+import { planTree, requiredFailures, type TreeNode, type TreeResolution } from '../../../../_shared/npm-arborist/plan.js';
 import { InstallJournal } from './npm-journal.js';
 import { sriDigestOf, sriDigestsEqual, strongestSriEntry } from '../../../../_shared/tarball-integrity.js';
 import {
@@ -332,7 +332,7 @@ async function installedPlacements(vfs: VFS, modulesDir: string, prefix = '', ou
  *
  * Recover: an install the journal records as unfinished is undone first.
  *
- * Plan: the one engine's (core _shared/npm-arborist.ts planTree), over the
+ * Plan: the one engine's (core _shared/npm-arborist planTree), over the
  * tree node_modules holds, reading versions and manifests from the registry
  * one package at a time. A required failure fails the install before it
  * changes anything. A stop (the command's signal) after the plan changes
@@ -399,7 +399,7 @@ async function installTree(roots: readonly TreeRoot[], install: TreeInstall): Pr
 			return answers;
 		},
 		warn: async (message) => { await stderr.write(`npm WARN ${message}\n`); },
-	}, { shallow: install.globalBinDir !== undefined, force: install.force, legacyPeerDeps: install.legacyPeerDeps });
+	}, { global: install.globalBinDir !== undefined, force: install.force, legacyPeerDeps: install.legacyPeerDeps });
 	const [requiredFailure] = requiredFailures(plan);
 	if (requiredFailure) return await fail(requiredFailure.edge.name, requiredFailure.reason);
 	for (const { id, edge } of plan.failures) {

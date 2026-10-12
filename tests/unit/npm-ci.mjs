@@ -297,7 +297,7 @@ const versionAt = (root, dir) => JSON.parse(root.readFileString(`${NM}/${dir}/pa
   };
   const { installer, root } = makeInstaller(pkgJson, lock, null, (p) => (p.name === 'r' ? 'integrity mismatch' : null));
   // What an earlier install recorded, in the tree npm ci clears.
-  installer.npmCache.writeLockfile(PROJ, new Map([['old', { name: 'old', resolvedVer: '1.0.0', integrity: 'sha512-old', depsJson: '{}', hoistedPath: `${NM}/old` }]]), { storage: null });
+  installer.npmCache.writeLockfile(PROJ, new Map([['old', { name: 'old', registryName: 'old', resolvedVer: '1.0.0', integrity: 'sha512-old', depsJson: '{}', hoistedPath: `${NM}/old` }]]), { storage: null });
   const result = await installer.install(PROJ, { pid: 1, fromLockfile: true });
   assert.ok(result.failed.length > 0);
   assert.deepEqual([...installer.npmCache.readLockfile(PROJ).keys()], ['q'], 'the inventory is what this npm ci left on disk');
