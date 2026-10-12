@@ -1621,7 +1621,9 @@ export declare class SqliteVFS {
     /**
      * Copy a file by reference: one inode row naming the source's chunk or
      * manifest. No byte is read or written; a later write to either side
-     * copies on write (rewriteFile's sharing probes).
+     * copies on write (rewriteFile's sharing probes). A new file has the
+     * source's permission bits less the copier's umask, as cp(1) makes it; a
+     * file there keeps its own mode.
      */
     private copyFile;
     /**

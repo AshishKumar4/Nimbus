@@ -12,6 +12,24 @@ published independently in the `@nimbus-sh` npm scope.
   as Linux does. It keeps busy mount points and their ancestors.
 - Fixed: credentialed SQLite paths follow links before `..`, matching the
   namespace while keeping plain lookups on their indexed fast path.
+
+## 2026-10-12: platform 0.8.2, core 0.18.0, fabric 0.13.0, worker 0.16.0, loom 0.2.5, sdk 0.13.1, react 0.3.1, cli 0.2.5, create-nimbus-app 0.2.2
+
+- Fixed: a file or directory a Node program creates has the mode it asked
+  for, as Node's does. `writeFile` and `appendFile` (sync, callback and
+  promise forms), `open` and write streams honour `mode`, less the umask, and
+  a file already there keeps its own. `mkdir` shows its `mode` to the
+  program's own `stat`. `mkdtemp` makes 0700. `copyFile` and `cp` leave the
+  source's mode. Before, such files were made 0666 less the umask, so
+  `writeFileSync(p, secret, { mode: 0o600 })` made a file others could read.
+  `chmodSync` and `fchmodSync` reach the session when nothing touches the
+  path after them; before, such a change was kept only in the process.
+  A directory `cp` makes is its owner's alone until it is filled, and a file
+  copied over another is closed to others before the bytes go in, so no one
+  reads a private copy while it is made or after it fails partway.
+- Fixed: `VFS.copy` of a file to a new name (the shell's `cp`) makes it with
+  the source's permission bits less the umask, as cp(1) does; it was made
+  0666 less the umask, so a copy of a private file was readable by others.
 - Added: an egress per process (Kinu ask 45). `NimbusWorkspaceOptions.egressFor`
   and `NimbusSession.egressFor` take `{ pid, execId }` and return the egress
   for that process, or undefined to keep the workspace's. Nimbus asks once
@@ -42,9 +60,6 @@ published independently in the `@nimbus-sh` npm scope.
   binding". It used to close the program's socket and make TLS on a new
   connection to the same host, which a STARTTLS server answers as plaintext.
   A new connection is not the same connection (Kinu ask 46).
-
-## 2026-10-12: core 0.18.0, fabric 0.13.0, worker 0.16.0, loom 0.2.5, sdk 0.13.1, react 0.3.1, cli 0.2.5, create-nimbus-app 0.2.2
-
 - Breaking: node runs ES modules natively. A program's ES modules (`.mjs`,
   `type: module`, a typeless `.js` with module syntax, `-e`/stdin under
   `--input-type=module`) are staged as the Worker's own modules and

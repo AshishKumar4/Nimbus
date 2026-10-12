@@ -7,6 +7,7 @@ import { WASI_RESIDENT_STORE_BYTES } from '@nimbus-sh/platform/limits.js';
 import { processHost } from '@nimbus-sh/core/runtime/wasi/processes.js';
 import { wasiOutputRelay } from '@nimbus-sh/core/runtime/wasi/stdio.js';
 import { outputControlReader } from '@nimbus-sh/core/runtime/wasi/output-control.js';
+import { createResidentStore } from '../../vfs/resident/index.js';
 // errno constants
 const __WASI_ESUCCESS = 0;
 const __WASI_EAGAIN = 6;
@@ -156,16 +157,18 @@ let __wasiResident = null;
 function __wasiStartResident(sup, cred) {
     const supervisor = answeringSupervisor(sup);
     const authority = supervisorFilesystem(sup);
-    const store = __wasiResidentStore;
-    store.__residentBindInMemory(WASI_RESIDENT_STORE_BYTES);
-    store.__residentSetStorage(undefined, supervisor);
+    // The store a node process reads its synchronous calls from, here listed on
+    // demand: this process's own (vfs/resident).
+    const store = createResidentStore();
+    store.bindInMemory(WASI_RESIDENT_STORE_BYTES);
+    store.admission.setStorage(undefined, supervisor);
     let view = null;
     const ready = (async () => {
         // The session's own filesystem is the one the store answers for: its root reports its device.
         const root = await authority.stat('/');
-        if (root === null || !(await store.__residentBootLazy(supervisor)))
+        if (root === null || !(await store.lazy.bootLazy(supervisor)))
             return null;
-        view = store.__residentNamespaceView(supervisor, root.dev, cred);
+        view = store.lazy.namespaceView(supervisor, root.dev, cred);
         return view;
     })().catch(() => { view = null; return null; });
     const booting = {

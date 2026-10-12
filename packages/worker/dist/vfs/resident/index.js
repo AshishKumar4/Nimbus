@@ -1,6 +1,6 @@
 /**
- * facet-resident-store.ts — the resident set, held in the process facet's own
- * SQLite instead of its isolate heap.
+ * A process's resident store: the resident set held in the process facet's
+ * own SQLite, or a one-shot's heap, instead of being fetched as it is read.
  *
  * A Nimbus process is a DO Facet whose class comes from the Worker Loader, and
  * a facet has its own SQLite (`loaders/process-fabric.ts`). That storage is
@@ -42,8 +42,8 @@
  * numbers, and they happen to land within 0.5% of each other by coincidence of
  * magnitude.
  *
- * Re-measured on this tree against a real 16,357-file pi install through the
- * real `buildPrefetchBundle` / `generateEntrypointCode` path:
+ * Re-measured against a real 16,357-file pi install through the real
+ * `buildPrefetchBundle` / `generateEntrypointCode` path:
  *
  *   facet module map (main module)        12.50 MiB
  *   parsed __MODULE_VFS_BUNDLE             8.22 MiB
@@ -66,7 +66,7 @@
  *      can be filled straight into SQLite from the supervisor. That is what can
  *      take the 12.50 MiB main module down toward the size of the require
  *      closure alone — a far larger win than releasing the parsed object, and
- *      the one the filler below exists for.
+ *      the one the filler exists for.
  *
  * A related mechanism, confirmed rather than refuted: an entry larger than the
  * whole `PREFETCH_CACHE_MAX_BYTES` bound is admitted anyway and evicts every
@@ -135,105 +135,65 @@
  * `lib/lib.*.d.ts`, cowsay's `cows/*.cow`, create-vite's templates. Those are
  * the reads this store answers.
  *
- * THE MISS RATE IN THAT PROFILE IS NOT USABLE AS A SIZING INPUT, and this store
- * deliberately does not use it. The profile's per-workload residue figures are
- * path-dependent: only `generateEntrypointCode` seeded the VFS coherence
- * cursor, so any resident or long-running workload in the set asked its first
- * `fsAcquire` about a null epoch, which `invalidatedSince` can only answer with
- * a poison. Such a workload lost its entire staged filesystem on its first
- * async fs call and then read every staged path as a miss — so it measured the
- * poison, not admission. Re-measure on top of the shared-cursor-seed fix before
- * treating any residue number as real.
- *
- * It does not matter here, and that is the point rather than a lucky escape:
- * this store admits the whole filesystem, so there is no admission decision for
- * a fault rate to inform. `RESIDENT_CHUNK_BYTES` comes from the measured
- * single-value ceiling and `RESIDENT_MATERIALISE_BATCH_ROWS` from the observed
- * turn reset; neither is a function of how often a read misses. A design whose
- * correctness depends on predicting the miss set is the design this one exists
- * to replace.
- *
- * TWO CONSTRAINTS THIS STORE INHERITS FROM THAT BUG, both structural here
- * ──────────────────────────────────────────────────────────────────────
- * The cursor-seed defect was a coherence preamble hand-copied into three
- * generators, two of which drifted. So: this store is ONE exported source
- * constant, spliced wherever it is needed, with no second implementation to
- * drift — the posture `VFS_WRITE_LEDGER_SOURCE` already takes.
- *
- * And nothing per-spawn is in its text. Both node bodies are content-addressed
- * (one-shot by hash(code+bundle+manifest), resident by facet-image digest), and
- * baking a per-spawn cursor into the generated source broke image dedup when it
- * was tried. `FACET_RESIDENT_STORE_SOURCE` carries only the two constants
- * above; the cursor arrives at runtime through `__residentAdmit`, so the text
- * stays identical across spawns and the digest keeps deduping.
- *
- * One cost this store pays that the heap version does not: LOSING the rows
- * means repopulating them, not lazily refetching on a miss. That is why the
- * cursor is PERSISTED beside the rows — a fresh incarnation resumes from a real
- * cursor instead of a null epoch, so it asks for a delta rather than inviting a
- * poison — and why a poison RECONCILES the rows against absolute per-path
- * revisions instead of dropping them. The invalidation log a delta rides on is
- * deliberately small (sqlite-vfs.ts, INVALIDATION_LOG_MAX_BYTES) and ordinary
- * write churn trims it past a live cursor as a matter of course, so "poison ⇒
- * full repopulation" made an npm install re-buy the whole filesystem over and
- * over — measured past the DO CPU limit at pi scale. See
- * \`__residentSynchronizeFromSupervisor\`.
+ * The store is one module (this one, and the components it composes), built
+ * once into the asset a process loads and evaluated once per isolate; each
+ * process (each one-shot run, each resident, each WASI process) creates its
+ * own instance. Nothing per-spawn is in its text: both node bodies are
+ * content-addressed (one-shot by hash(code+bundle+manifest), resident by
+ * facet-image digest), and the cursor arrives at runtime through the admitted
+ * delta, so the text stays identical across spawns and the digest keeps
+ * deduping.
  */
-/**
- * Rows written before the materialiser yields.
- *
- * Not a throughput knob: a single turn that wrote 45.7 MB reset the object once
- * with "Internal error in Durable Object storage caused object to be reset",
- * and the same write then succeeded 12 times out of 12 on retry. So the size
- * alone does not predict it and the reset is not something to catch — it
- * destroys the destination. Yielding bounds what any one turn has outstanding
- * rather than betting on the threshold.
- */
-export declare const RESIDENT_MATERIALISE_BATCH_ROWS = 512;
-/**
- * The `fsReadBatch` bounds, as the filler must respect them.
- *
- * These are not this module's to choose — they belong to the supervisor, and a
- * filler that guessed at them does not degrade gracefully: `_rpcFsReadBatch`
- * validates with zod and rejects the WHOLE call, so one over-packed batch
- * loses every path in it. Imported rather than restated as fresh literals so
- * the generated source cannot drift from the endpoint it calls.
- */
-export declare const RESIDENT_FILL_BATCH_PATHS = 1024;
-export declare const RESIDENT_FILL_BATCH_BYTES: number;
-/**
- * The in-facet store. Spliced into the generated module ahead of the shims, in
- * the same way `VFS_WRITE_LEDGER_SOURCE` is (`facets/manager.ts`), because it
- * has to close over the same module scope the shims read `__vfsBundle` from.
- * Like the ledger and the shims it reaches the facet as a staged asset
- * (scripts/bundle-node-shims.mjs), not through the Worker bundle.
- *
- * It presents a Proxy rather than a new API on purpose. `_bundleLookup`,
- * `_writtenCell`, `__readFileOr`, `__fileExists` and the directory scans all
- * reach the resident set as a plain object — `k in b`, `b[k]`, `Object.keys(b)`,
- * `delete b[k]` — across a dozen call sites in `runtime/node-shims.ts`. A Proxy
- * keeps every one of them correct with no edit, and it is the shape the ledger
- * already uses for `__vfsWrites`, so this is the codebase's existing idiom
- * rather than a new one.
- */
-export declare const FACET_RESIDENT_STORE_SOURCE: string;
-/** A cell as the facet holds it — the shape `__vfsBundle` has always carried. */
-export type ResidentCell = string | Uint8Array | {
-    error: 'EACCES';
-};
-/**
- * The store as its filler sees it. Deliberately says nothing about WHERE the
- * bytes come from: the materialiser streams them over the supervisor RPC today,
- * and `ctx.facets.clone` would hand the same rows over by reflink if the
- * decoupled-clone work lands. Neither is visible here, so neither is a rewrite.
- */
-export interface ResidentStoreFiller {
-    put(path: string, cell: ResidentCell, rev?: number): void;
-    clear(): void;
-    stats(): {
-        files: number;
-        bytes: number;
-        databaseSize: number;
+import { createAdmission } from './admission.js';
+import { createCells } from './cells.js';
+import { createCoherence } from './coherence.js';
+import { createLazy } from './lazy.js';
+import { createNamespace } from './namespace.js';
+import { createSync } from './sync.js';
+import { createTransport } from './transport.js';
+import { heapTables, sqlTables } from './tables.js';
+export { posixAccess } from '@nimbus-sh/core/vfs/posix-access.js';
+export { namespaceRowBytes, residentFileCost } from './cell-cost.js';
+export { NS_DIR, NS_FILE, NS_LINK } from './tables.js';
+export function createResidentStore(options = {}) {
+    const coherence = createCoherence();
+    const admission = createAdmission(coherence);
+    const namespace = createNamespace(coherence, admission);
+    const observeRead = options.observeRead ?? null;
+    const cells = createCells(coherence, admission, namespace, observeRead);
+    const transport = createTransport(coherence, admission, namespace, cells);
+    const sync = createSync(coherence, admission, namespace, cells, transport);
+    const lazy = createLazy(coherence, admission, namespace, cells, transport, sync);
+    const bindTables = (t, heap) => {
+        // A store can outlive its process. Own rows left by an earlier one are
+        // writes that never reached the authority or cells whose acknowledgement it
+        // never saw: neither can be dated, so neither is a file.
+        t.dropOwn();
+        coherence.bind(t, heap);
+        namespace.bind(t);
+    };
+    return {
+        bundle: cells.bundle,
+        bind(ctx) {
+            const sql = ctx?.storage?.sql;
+            if (!sql || typeof sql.exec !== 'function') {
+                throw new Error('Nimbus: this facet has no synchronous SQLite (ctx.storage.sql); '
+                    + 'the resident set cannot be served and every sync read would raise EAGAIN');
+            }
+            bindTables(sqlTables(sql), null);
+        },
+        bindInMemory(budget) {
+            const t = heapTables();
+            bindTables(t, t);
+            admission.bindHeap(budget);
+        },
+        observeRead,
+        coherence,
+        admission,
+        namespace,
+        cells,
+        transport,
+        sync,
+        lazy,
     };
 }
-//# sourceMappingURL=facet-resident-store.d.ts.map

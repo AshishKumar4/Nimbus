@@ -91,7 +91,6 @@ import { stageEsModules, type EsmStage } from './esm-stage.js';
 import { ESM_HOST_MODULE, readEsModule } from '@nimbus-sh/core/runtime/native-esm.js';
 import { relativeWasmPaths } from '@nimbus-sh/core/_shared/relative-wasm-paths.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/platform/oom-discriminator.js';
-import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { TurnBudget, PacedWork, turnChunkMaxBytes, withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
 import { generation, onColdStart } from '@nimbus-sh/fabric/generation.js';
@@ -209,6 +208,7 @@ import {
 } from '@nimbus-sh/core/constants.js';
 import { LEDGER_ROW_BYTES } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { ONE_SHOT_STORE_MEMORY_BYTES, RESIDENT_CHUNK_BYTES } from '../vfs/facet-resident-limits.js';
+import { residentCellCost } from '../vfs/resident/cell-cost.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { CRED_KERNEL, isNativeBinPath, launchNamedPaths } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
@@ -1073,7 +1073,7 @@ ${runtime.code}
  */
 function nodeProgramRuntime(sources: NodeFacetSources, esModule: boolean): ModuleSource {
   return moduleSource`
-    const __vfsBundle = __nimbusResidentBundle;
+    const __vfsBundle = __resident.bundle;
     const __pendingIO = [];
     let __rpcDrops = 0;
     let __rpcDropBytes = 0;
@@ -1286,25 +1286,25 @@ ${VFS_CURSOR_SEED_SOURCE}
     // Its network goes through its workspace's egress: node:tls refuses a TLS socket by name.
     globalThis.__nimbusEgress = workerEnv?.NIMBUS_EGRESS === true;
     // The same store, namespace and data plan a resident boots on, backed by
-    // this run's heap (runOnce hosts no SQLite; vfs/facet-resident-store.ts).
-    // Declared inside the request, beside the shims, so a loader that reuses
-    // this isolate for another run starts it from an empty store.
-${nodeFacetSource(sources, "residentStore")}
-    __residentBindInMemory(${ONE_SHOT_STORE_MEMORY_BYTES});
-    __residentSetStorage(undefined, __supervisor);
-    __nsSetCred(cred);
-    __residentSetPlan(dataPlan);
-    __residentSetManifests(manifests);
-    __residentSetPushRoots([_cwd || "/home/user", "/tmp"]);
+    // this run's heap (runOnce hosts no SQLite; vfs/resident). This run's own,
+    // so a loader that reuses this isolate for another run starts it from an
+    // empty store.
+    const __resident = __nimbusResidentModule.createResidentStore();
+    __resident.bindInMemory(${ONE_SHOT_STORE_MEMORY_BYTES});
+    __resident.admission.setStorage(undefined, __supervisor);
+    __resident.namespace.setCred(cred);
+    __resident.sync.setPlan(dataPlan);
+    __resident.sync.setManifests(manifests);
+    __resident.sync.setPushRoots([_cwd || "/home/user", "/tmp"]);
     // The module bundle stays at module scope: a reused isolate adopts it
     // again on its next run, and its text cells are shared, not copied.
-    const __residentBooted = await __residentBoot(() => __MODULE_VFS_BUNDLE, __MODULE_VFS_CURSOR, __supervisor, ${bundleSource.storageBytes});
+    const __residentBooted = await __resident.sync.boot(() => __MODULE_VFS_BUNDLE, __MODULE_VFS_CURSOR, __supervisor, ${bundleSource.storageBytes});
     if (__residentBooted.cursor) {
       globalThis.__nimbusVfsCursor = { epoch: __residentBooted.cursor.epoch, rev: __residentBooted.cursor.rev };
     }
     // No user code runs before the namespace answers: it is the view every
     // synchronous stat, exists and readdir reads (CUTOVER #13).
-    const __namespaceFailure = await __residentRequireNamespace(__supervisor, __residentBooted.failure);
+    const __namespaceFailure = await __resident.sync.requireNamespace(__supervisor, __residentBooted.failure);
     if (__namespaceFailure) {
       return __NimbusHostResponse.json({ exitCode: 1, stdout: "", stderr: __namespaceFailure + "\\n", residencyMisses: [] });
     }
@@ -1607,7 +1607,13 @@ const __NIMBUS_ARGS = ${safeArgs};
 // are getters over the map's own module text.
 let __MODULE_VFS_BUNDLE = __nimbusWithCodeCells(${bundleSource.expression});
 
-${nodeFacetSource(sources, "residentStore")}
+// The shared read profile's files this launch staged; each is struck off
+// when read, and what is left at exit is reported unread (read-profile.ts).
+let __nimbusProfileStaged = null;
+// This facet's store: one process, one store, for the life of the isolate.
+const __resident = __nimbusResidentModule.createResidentStore({
+  observeRead: (path) => { if (__nimbusProfileStaged !== null) __nimbusProfileStaged.delete(path); },
+});
 
 let __nimbusStarted = false;
 let __nimbusStarting = null;
@@ -1723,19 +1729,17 @@ ${VFS_CURSOR_SEED_SOURCE}
     // A synchronous read cannot block and no JS stack here can be suspended, so
     // the bytes have to sit somewhere a synchronous call can already reach;
     // \`ctx.storage.sql.exec\` returns a Cursor, not a Promise. See
-    // vfs/facet-resident-store.ts.
-    __residentBind(workerCtx);
-    __residentSetStorage(__startArgs && __startArgs.storage, __supervisor);
-    __nsSetCred(cred);
-    __residentSetPlan(__startArgs && __startArgs.dataPlan);
+    // vfs/resident.
+    __resident.bind(workerCtx);
+    __resident.admission.setStorage(__startArgs && __startArgs.storage, __supervisor);
+    __resident.namespace.setCred(cred);
+    __resident.sync.setPlan(__startArgs && __startArgs.dataPlan);
     // What an import() of a module only an import() reaches reads
     // synchronously, fetched when that import() runs (node-shims.ts
     // __nimbusStageImport; the planner's lazyReadsByTarget).
     globalThis.__nimbusLazyReads = new Map(Object.entries((__startArgs && __startArgs.lazyReads) || {}));
-    // The shared read profile's files this launch staged; each is struck off
-    // when read, and what is left at exit is reported unread (read-profile.ts).
-    globalThis.__nimbusProfileStaged = new Set((__startArgs && __startArgs.profileStaged) || []);
-    __residentSetPushRoots([_cwd || "/home/user", "/tmp"]);
+    __nimbusProfileStaged = new Set((__startArgs && __startArgs.profileStaged) || []);
+    __resident.sync.setPushRoots([_cwd || "/home/user", "/tmp"]);
     // Bring the store to the authority's current state before the program's
     // first instruction. This is what makes a first synchronous read of an
     // untouched file succeed, and it is the ONLY blocking step: the waiting is
@@ -1747,13 +1751,13 @@ ${VFS_CURSOR_SEED_SOURCE}
     // current are kept, and only what changed is fetched. It is SERVED only
     // once that listing has vouched for it: rows it cannot vouch for are a
     // previous process's, of unknown age, so the kept store is emptied and
-    // this launch boots as a cold one does. See __residentBoot.
+    // this launch boots as a cold one does. See vfs/resident sync.boot.
     //
     // The thunk hands the parsed bundle over and drops this scope's reference,
     // so a cold boot frees it the moment it is adopted rather than holding it
     // through the fill. A kept store that reconciles never takes it.
     const __residentBootStarted = Date.now();
-    const __residentBooted = await __residentBoot(
+    const __residentBooted = await __resident.sync.boot(
       () => { const __bundle = __MODULE_VFS_BUNDLE; __MODULE_VFS_BUNDLE = null; return __bundle; },
       __MODULE_VFS_CURSOR,
       __supervisor,
@@ -1762,7 +1766,7 @@ ${VFS_CURSOR_SEED_SOURCE}
     if (__startArgs && __startArgs.diag && __supervisor) {
       // NIMBUS_DEBUG only: what this process holds, for per-process storage measurement.
       try {
-        const __stats = __residentStats();
+        const __stats = __resident.cells.stats();
         await __supervisor.stderr(new TextEncoder().encode("[nimbus-debug] resident boot " + JSON.stringify({
           ms: Date.now() - __residentBootStarted, ...__stats, failure: __residentBooted.failure || null,
         }) + "\\n"));
@@ -1778,7 +1782,7 @@ ${VFS_CURSOR_SEED_SOURCE}
     // No user code runs before the namespace answers: it is the view every
     // synchronous stat, exists and readdir reads (CUTOVER #13). A launch whose
     // namespace cannot be listed fails here, naming why.
-    const __namespaceFailure = await __residentRequireNamespace(__supervisor, __residentBooted.failure);
+    const __namespaceFailure = await __resident.sync.requireNamespace(__supervisor, __residentBooted.failure);
     if (__namespaceFailure) throw new Error(__namespaceFailure);
 ${nodeProgramRuntime(sources, entry.esModule)}
     if (attachedTty) {
@@ -1883,7 +1887,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
         code = 1;
         await __nimbusReleaseStderr(__replayShort);
       }
-      await __supervisor.reportExit(code, reason || "", __nimbusDataReadMisses(), [...(globalThis.__nimbusProfileStaged || [])], __nimbusRuntimeCodeLedger(), __nimbusExecutedModuleMisses());
+      await __supervisor.reportExit(code, reason || "", __nimbusDataReadMisses(), [...(__nimbusProfileStaged || [])], __nimbusRuntimeCodeLedger(), __nimbusExecutedModuleMisses());
       __nimbusProcessExitReported = true;
     };
     const __nimbusReportLifecycleFailure = async (e) => {
@@ -2001,7 +2005,7 @@ export class NimbusProcess extends DurableObject {
     let databaseSize;
     try { databaseSize = this.ctx.storage.sql.databaseSize; } catch {}
     let storageCap = null;
-    try { storageCap = __residentStorageCap(); } catch {}
+    try { storageCap = __resident.admission.storageCap(); } catch {}
     return { ok: true, databaseSize, storageCap };
   }
   async fetch(req) { return __nimbusDispatchHttp(req, this.env, this.ctx); }
@@ -2029,16 +2033,11 @@ export class NimbusProcess extends DurableObject {
  *
 
  * The process's view of names and stats is the namespace its store boots on
- * (vfs/facet-resident-store.ts), never a spawn-time table.
+ * (vfs/resident), never a spawn-time table.
  */
 type FacetVfsDenial = { error: 'EACCES' };
 type FacetVfsBundle = Record<string, string | Uint8Array | FacetVfsDenial>;
 
-/**
- * What the facet store charges itself to hold one cell (facet-resident-store's
- * __residentCellCost, which this must match): its bytes (a text cell's UTF-8
- * length) plus 1%, a row per chunk and head, and a page of slack.
- */
 /** A launch's staged ES modules in numbers, for its debug line: counts, and characters of each part. */
 function esmStageSize(esm: EsmStage): Record<string, number> {
   // Counted, not serialized: every build takes it, a launch over pi's 1074 modules included.
@@ -2066,7 +2065,11 @@ function execBreakdown(state: { cacheHit?: boolean; transforms?: BundleCellTrans
   };
 }
 
-/** What a module map costs the facet's store that adopts it (N18). A denial is a head row only; a code-only file is none. */
+/**
+ * What a module map costs the facet's store that adopts it (N18), as the store
+ * charges itself (vfs/resident cell-cost.ts). A denial is a head row only; a
+ * code-only file is none.
+ */
 function moduleMapStorageBytes(bundle: FacetVfsBundle, codeOnly?: ReadonlySet<string>): number {
   let bytes = 0;
   for (const [path, cell] of Object.entries(bundle)) {
@@ -2074,15 +2077,6 @@ function moduleMapStorageBytes(bundle: FacetVfsBundle, codeOnly?: ReadonlySet<st
     bytes += typeof cell === 'string' || cell instanceof Uint8Array ? residentCellCost(cell) : 2 * LEDGER_ROW_BYTES;
   }
   return bytes;
-}
-
-function residentCellCost(cell: string | Uint8Array): number {
-  const isText = typeof cell === 'string';
-  const size = isText ? cell.length : cell.byteLength;
-  const limit = isText ? Math.floor(RESIDENT_CHUNK_BYTES / 3) : RESIDENT_CHUNK_BYTES;
-  const chunks = Math.max(1, Math.ceil(size / limit));
-  const bytes = isText ? utf8Length(cell) : size;
-  return Math.ceil(bytes * 1.01) + (chunks + 1) * LEDGER_ROW_BYTES + 4096;
 }
 
 interface FacetVfsState {
@@ -2442,7 +2436,7 @@ interface FacetVfsBundleSource {
   runtimeCode: string;
   /**
    * What the process's store charges itself to adopt the data cells and the
-   * code cells it reads back (facet-resident-store's __residentCellCost).
+   * code cells it reads back (vfs/resident residentCellCost).
    */
   storageBytes: number;
 }
@@ -6407,7 +6401,7 @@ export class FacetManager {
     });
     trace(`planned ${plan.paths.length}`);
     // What the facet's store will hold (N18), in the cost its store charges
-    // itself (facet-resident-store's __residentCellCost): the planned bytes on
+    // itself (vfs/resident residentCellCost): the planned bytes on
     // overflow pages (1% over), a head and chunk rows per file, a namespace
     // row per name, and slack for the last write's page.
     const rows = plan.paths.length * 2 + Math.ceil(plan.bytes / RESIDENT_CHUNK_BYTES) + names;
@@ -6462,7 +6456,7 @@ export class FacetManager {
    * Every package.json the process's credential can see (data-plan.ts's
    * `package-json` rule, which a resident's plan applies itself), as copies a
    * one-shot is handed beside its plan: its store holds each manifest its own
-   * listing names from boot (facet-resident-store's __residentSetManifests).
+   * listing names from boot (vfs/resident sync.setManifests).
    * A program resolves package names its closure never named, and reads each
    * manifest synchronously to do it: vite's config load, for every import of
    * the config it decides whether to externalize.

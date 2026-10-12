@@ -378,7 +378,8 @@ requirements:
       - Nimbus.Coherence.Store.flush_rows
     tsRefs:
       - packages/worker/src/runtime/node-shims.ts#generateShimsCode
-      - packages/worker/src/vfs/facet-resident-store.ts#FACET_RESIDENT_STORE_SOURCE
+      - packages/worker/src/vfs/resident/cells.ts#createCells
+      - packages/worker/src/vfs/resident/coherence.ts#createCoherence
       - packages/core/src/_shared/vfs-write-ledger.ts#VFS_WRITE_LEDGER_SOURCE
       - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.invalidatedSince
     remainingEvidence:
@@ -411,7 +412,8 @@ requirements:
       - Nimbus.Coherence.Store.valAt_two
       - Nimbus.Coherence.Store.valAt_five
     tsRefs:
-      - packages/worker/src/vfs/facet-resident-store.ts#FACET_RESIDENT_STORE_SOURCE
+      - packages/worker/src/vfs/resident/cells.ts#createCells
+      - packages/worker/src/vfs/resident/sync.ts#createSync
     remainingEvidence:
       - NodeNoMirrorBuild reproduced the out-of-order push as tests/unit/resident-pushed-content.mjs
   COH-004:
@@ -445,7 +447,7 @@ requirements:
     theorems:
       - Nimbus.Coherence.Store.admitPush_inv
     tsRefs:
-      - packages/worker/src/vfs/facet-resident-store.ts#FACET_RESIDENT_STORE_SOURCE
+      - packages/worker/src/vfs/resident/cells.ts#createCells
     remainingEvidence:
       - The per-answer byte budget is any subset of the named paths; a file over budget is simply not pushed
       - The repair's fetch of push-root files changed during a poison window (a coverage property, not staleness) is not modeled
@@ -460,7 +462,7 @@ requirements:
       - Nimbus.Coherence.Namespace.nothing_below
       - Nimbus.Coherence.Namespace.a_log_naming_only_the_removed_root_leaves_a_ghost
     tsRefs:
-      - packages/worker/src/vfs/facet-resident-store.ts#FACET_RESIDENT_STORE_SOURCE
+      - packages/worker/src/vfs/resident/namespace.ts#createNamespace
       - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.invalidatedSince
     refinement:
       - lean/fixtures/node-namespace.json :: tests/unit/node-namespace-refinement.mjs
@@ -574,7 +576,8 @@ requirements:
       - Nimbus.Coherence.ContentKey.step_inv
       - Nimbus.Coherence.ContentKey.reachable_inv
     tsRefs:
-      - packages/worker/src/vfs/facet-resident-store.ts#FACET_RESIDENT_STORE_SOURCE
+      - packages/worker/src/vfs/resident/cells.ts#createCells
+      - packages/worker/src/vfs/resident/sync.ts#createSync
     remainingEvidence:
       - Built by NodeNoMirrorBuild at 04cb9dd9 (work/node-nomirror, schema 2); ACQUIRE is served and admitted in one step and a repair lists and reconciles in one step here, the finer interleavings being Nimbus.Coherence.Store's
       - Equal key implies equal bytes is content-store P1's property, taken as a hypothesis
@@ -591,7 +594,8 @@ requirements:
       - Nimbus.Coherence.ContentKeyAsync.step_inv
       - Nimbus.Coherence.ContentKeyAsync.reachable_inv
     tsRefs:
-      - packages/worker/src/vfs/facet-resident-store.ts#FACET_RESIDENT_STORE_SOURCE
+      - packages/worker/src/vfs/resident/cells.ts#createCells
+      - packages/worker/src/vfs/resident/sync.ts#createSync
     remainingEvidence:
       - Equal key implies equal bytes is content-store P1's property, taken as a hypothesis
       - An answer arriving while a repair runs is dropped (the barrier joins the repair), as the code does
@@ -626,7 +630,7 @@ requirements:
       - Nimbus.Coherence.Store.exec_reach
       - Nimbus.Coherence.Store.run_reach
     tsRefs:
-      - packages/worker/src/vfs/facet-resident-store.ts#FACET_RESIDENT_STORE_SOURCE
+      - packages/worker/src/vfs/resident/cells.ts#createCells
     refinement:
       - lean/fixtures/resident-poison-reconcile.json :: tests/unit/resident-poison-reconcile.mjs
     remainingEvidence:
@@ -641,7 +645,8 @@ requirements:
       - Nimbus.Coherence.Store.overlay_no_stale
       - Nimbus.Coherence.Relist.tv_below_none
     tsRefs:
-      - packages/worker/src/vfs/facet-resident-store.ts#FACET_RESIDENT_STORE_SOURCE
+      - packages/worker/src/vfs/resident/namespace.ts#createNamespace
+      - packages/worker/src/vfs/resident/sync.ts#createSync
       - packages/worker/src/runtime/node-shims.ts#generateShimsCode
     refinement:
       - lean/fixtures/node-visible-namespace.json :: tests/unit/node-visible-namespace-refinement.mjs
@@ -689,7 +694,7 @@ requirements:
       - Nimbus.Vfs.CompositeCache.never_cached
       - Nimbus.Vfs.CompositeCache.a_path_keyed_cache_serves_the_old_backend
     tsRefs:
-      - packages/worker/src/vfs/facet-resident-store.ts#FACET_RESIDENT_STORE_SOURCE
+      - packages/worker/src/vfs/resident/index.ts#createResidentStore
     remainingEvidence:
       - Each backend's own guarantee is a hypothesis (Coherence.Store.no_stale_read proves it for SqliteVFS); a barrier is taken to advance every changes-backend's horizon to its instant
   VFS-PF-001:
