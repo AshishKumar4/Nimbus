@@ -14,6 +14,9 @@ try {
   const bash = await run('nimbus install bash', 240_000);
   a.check('bash runtime installed', bash.status === 0, bash.stdout.slice(-300));
   const cases = [
+    // Controls: the same stdin, read as the program's own fd 0.
+    ["printf 'control\\n' | python3 -c \"import sys; print(sys.stdin.read().strip())\"", /^control$/m],
+    ["printf 'control\\n' | bash -c 'read -r x; echo \"got $x\"'", /^got control$/m],
     ["printf 'piped\\n' | python3 -c \"print(open('/dev/stdin').read().strip())\"", /^piped$/m],
     ["printf 'numbered\\n' | python3 -c \"print(open('/dev/fd/0').read().strip())\"", /^numbered$/m],
     ["python3 -c \"open('/dev/stderr', 'w').write('to-stderr\\\\n')\" 2>&1", /^to-stderr$/m],
