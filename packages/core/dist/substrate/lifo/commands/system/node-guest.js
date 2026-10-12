@@ -83,6 +83,7 @@ const filesystem = {
     isDirectory: (path) => flagOf(call({ op: 'fs', method: 'isDirectory', args: [path] }), 'isDirectory'),
     stat: (path) => stat(call({ op: 'fs', method: 'stat', args: [path] }), 'stat'),
     lstat: (path) => stat(call({ op: 'fs', method: 'lstat', args: [path] }), 'lstat'),
+    realpath: (path) => text(call({ op: 'fs', method: 'realpath', args: [path] }), 'realpath'),
     mkdir: (path, options) => { call({ op: 'fs', method: 'mkdir', args: [path, options] }); },
     readdir: (path) => {
         const entries = call({ op: 'fs', method: 'readdir', args: [path] });
@@ -103,19 +104,35 @@ const filesystem = {
     close: (fd) => { call({ op: 'fs', method: 'close', args: [fd] }); },
     watch: (path, listener, options) => {
         const id = nextWatch++;
-        const persistent = options?.persistent !== false;
+        const watch = { listener, persistent: options?.persistent !== false };
         call({ op: 'watch', id, path });
-        watches.set(id, { listener, persistent });
-        if (persistent)
+        watches.set(id, watch);
+        if (watch.persistent)
             persistentWatches++;
         holdWhileBusy();
-        return () => {
-            if (!watches.delete(id))
-                return;
-            if (persistent)
+        return {
+            close() {
+                if (!watches.delete(id))
+                    return;
+                if (watch.persistent)
+                    persistentWatches--;
+                call({ op: 'watch', id, path: null });
+                holdWhileBusy();
+            },
+            ref() {
+                if (!watches.has(id) || watch.persistent)
+                    return;
+                watch.persistent = true;
+                persistentWatches++;
+                holdWhileBusy();
+            },
+            unref() {
+                if (!watches.has(id) || !watch.persistent)
+                    return;
+                watch.persistent = false;
                 persistentWatches--;
-            call({ op: 'watch', id, path: null });
-            holdWhileBusy();
+                holdWhileBusy();
+            },
         };
     },
 };

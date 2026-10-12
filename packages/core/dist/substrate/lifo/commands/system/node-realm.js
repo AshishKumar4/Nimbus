@@ -61,7 +61,13 @@ export function isHostEvent(value) {
     switch (value.type) {
         case 'fetched': return typeof value.id === 'number' && isResponse(value.response);
         case 'serve': return typeof value.id === 'number' && typeof value.port === 'number' && record(value.request);
-        case 'changed': return typeof value.id === 'number' && record(value.event) && typeof value.event.type === 'string' && typeof value.event.path === 'string';
+        case 'changed':
+            return Number.isSafeInteger(value.id) && record(value.event)
+                && (value.event.type === 'add' || value.event.type === 'change' || value.event.type === 'unlink'
+                    || value.event.type === 'addDir' || value.event.type === 'unlinkDir' || value.event.type === 'rename')
+                && typeof value.event.path === 'string'
+                && (value.event.oldPath === undefined || typeof value.event.oldPath === 'string')
+                && typeof value.event.timestamp === 'number';
         default: return false;
     }
 }
@@ -160,6 +166,7 @@ function callFilesystem(fs, method, args) {
         case 'isDirectory': return fs.isDirectory(pathArg(a));
         case 'stat': return fs.stat(pathArg(a));
         case 'lstat': return fs.lstat(pathArg(a));
+        case 'realpath': return fs.realpath(pathArg(a));
         case 'mkdir': return fs.mkdir(pathArg(a), mkdirArg(b));
         case 'readdir': return fs.readdir(pathArg(a));
         case 'unlink': return fs.unlink(pathArg(a));
@@ -271,7 +278,7 @@ export async function runNodeInRealm(program, ctx, kernel) {
                 kernel?.portRegistry.delete(port);
         },
         watch: (id, path) => {
-            watches.get(id)?.();
+            watches.get(id)?.close();
             watches.delete(id);
             if (path === null)
                 return;
@@ -334,8 +341,8 @@ export async function runNodeInRealm(program, ctx, kernel) {
     for (const respond of pending.values())
         respond(null);
     egress?.close();
-    for (const stop of watches.values())
-        stop();
+    for (const watch of watches.values())
+        watch.close();
     await written;
     if (end.terminated)
         return exitCodeForAbortSignal(ctx.signal);
