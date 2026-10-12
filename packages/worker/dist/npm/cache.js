@@ -360,7 +360,7 @@ export class NpmCache {
                 for (const [placement, e] of batch) {
                     values.push(projectPath, placement, e.resolvedVer, e.integrity, e.depsJson, e.hoistedPath, e.registryName);
                 }
-                this.sql.exec(`INSERT INTO pkg_lockfile (project_path, name, resolved_ver, integrity, deps_json, hoisted_path, registry_name) VALUES ${placeholders}`, ...values);
+                this.sql.exec(`INSERT OR REPLACE INTO pkg_lockfile (project_path, name, resolved_ver, integrity, deps_json, hoisted_path, registry_name) VALUES ${placeholders}`, ...values);
             }
         });
     }

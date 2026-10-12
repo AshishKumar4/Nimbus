@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "7479a251a6cca4e4a77772837400a04dd3a7ef9b055d1093c1fe4bbfc910a22b",
+  "fingerprint": "3453acb83983685ba1680a37ffa90a3089e5ed74493f4af0726c14d26594da3f",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2320,7 +2320,7 @@
     "packages/worker/dist/npm/cache-keys.js": "cc6d00023d9eb2e47a30e86d1118ac549f3504f10f1d98449e46c91fe8278bee",
     "packages/worker/dist/npm/cache.d.ts": "8032cba32e6ea7f2cbdd59c023b76523eeb7bc900bdcaadf4e03851b058ee675",
     "packages/worker/dist/npm/cache.d.ts.map": "2e581abc36d76a34a35ef243716b9f95f68fca0d5ac6fd7d4fa3f62dca62e964",
-    "packages/worker/dist/npm/cache.js": "b3798d90d79abcfa7fc5146f1e21b2932a6201f875b6c2520693ada2b885751e",
+    "packages/worker/dist/npm/cache.js": "73fc1f7148c552d88833925650fb893310819dbee27f933abc94ffc976bf6c57",
     "packages/worker/dist/npm/install-batch-facet.d.ts": "2d6ffef44b1abf3b42d89284ec574ae412a9624298976150bf4eaab3cc9aa317",
     "packages/worker/dist/npm/install-batch-facet.d.ts.map": "7ccab777e5a4e672e46b7a80b6f3566cce330ba22e41270fb3fbbf817fe93a3c",
     "packages/worker/dist/npm/install-batch-facet.js": "2d99afee084ef35023372c984badb955b66cc0e72c5e950c8b788606fecee5ed",
@@ -2945,7 +2945,7 @@
     "packages/worker/src/node-shims-artifact.generated.ts": "a5cb885e606468e21b59cbb36e69e6fee6f781af881c41ffd1b254209c7be128",
     "packages/worker/src/npm/bin-links.ts": "a04fcb20d727bb7aeec7e734f33a65e1a288b2f3b88c35debf7399402e0ffb2c",
     "packages/worker/src/npm/cache-keys.ts": "b3e8fc3ac7a98d381f3ec8efb072f54087b699e9f0a29b685a72e3871a1a6130",
-    "packages/worker/src/npm/cache.ts": "32489ed475e3085aa5320f77b1bcd62611918f446a495fe9d5f05684530cdb3c",
+    "packages/worker/src/npm/cache.ts": "0f4719e3b7b758a31b89a209e54cce56f3f17e56e779ae25b3fb7efac55ce92f",
     "packages/worker/src/npm/install-batch-facet.ts": "5f7a1ee5baabd1e7e83f7e0f903762ff3ad1a9bf117f3ba6f13df5cb6e720673",
     "packages/worker/src/npm/install-facet.ts": "4541dacf209bf41f4083ca8281afe2eff15dbff62e37f96a4f9646b3d0a09e03",
     "packages/worker/src/npm/installer.ts": "cb82d88f8c8dc1444cfc05cbb72b5e4937c1d18b2d43b869398fb966980dd911",
