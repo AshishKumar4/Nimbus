@@ -1986,6 +1986,8 @@ function parseTagArgs(args) {
             }
         }
     }
+    if (messageFile === '-')
+        unsupportedOption('tag', '--file=-');
     return { annotate, force, del, list, lines, messages, messageFile, operands };
 }
 async function tagCommand(ctx, git, fs, vfs, parsed) {
@@ -2607,6 +2609,7 @@ const DIFF_USAGE = 'usage: git diff [--cached] [<commit>] [--] [<path>...]\n'
 function parseDiffArgs(args, columns) {
     let cached = false;
     let noIndex = false;
+    let patch = false;
     let dashdash = false;
     // Renames are on by default, as with git's diff.renames; null turns them off.
     let minimumScore = DEFAULT_RENAME_SCORE;
@@ -2663,6 +2666,8 @@ function parseDiffArgs(args, columns) {
             case '-p':
             case '-u':
             case '--patch':
+                patch = true;
+                continue;
             case '--no-ext-diff':
             case '--no-color': continue;
             case '--stat':
@@ -2670,7 +2675,7 @@ function parseDiffArgs(args, columns) {
             case '--name-status': {
                 const format = arg === '--stat' ? 'stat' : arg === '--name-only' ? 'name-only' : 'name-status';
                 if (output.format !== 'patch' && output.format !== format) {
-                    throw new GitGlobalsError(`fatal: options '--${output.format}' and '${arg}' cannot be used together\n`, 128);
+                    throw new UnsupportedGitOperation(`fatal: options '--${output.format}' and '${arg}' cannot be used together\n`, 128);
                 }
                 output.format = format;
                 continue;
@@ -2680,6 +2685,8 @@ function parseDiffArgs(args, columns) {
     }
     if (noIndex && cached)
         throw new GitGlobalsError("fatal: options '--cached' and '--no-index' cannot be used together\n", 128);
+    if (patch && output.format === 'stat')
+        unsupportedOption('diff', 'combined patch and diffstat');
     if (!noIndex)
         for (const revision of positionals)
             validateRevision(revision);
