@@ -226,6 +226,85 @@ theorem child_failure_skips_ancestors (base : St) (P : Principal) (composed stri
   simp only [refused, keep, mem_mergePaths]
   exact Or.inr ((ancestors_exact _ _ _).mpr ⟨e.under, hp⟩)
 
+theorem gone_kept_mono (operand q p : Path) (vanished strict : Bool) (S' : St)
+    (r : Result) (hp : p ∈ r.kept) : p ∈ (gone operand q vanished strict S' r).kept := by
+  unfold gone
+  split
+  · simp only [keep, mem_mergePaths]
+    exact Or.inl hp
+  · exact hp
+
+theorem step_kept_mono (base : St) (P : Principal) (composed strict : Bool) {operand : Path}
+    (r : Result) (e : Entry operand) (p : Path) (hp : p ∈ r.kept) :
+    p ∈ (step cfg base P composed strict r e).kept := by
+  unfold step
+  split
+  · exact hp
+  · split
+    · exact gone_kept_mono _ _ _ _ _ _ _ hp
+    · split
+      · exact gone_kept_mono _ _ _ _ _ _ _ hp
+      · split
+        · exact gone_kept_mono _ _ _ _ _ _ _ hp
+        · simp only [refused, keep, mem_mergePaths]
+          exact Or.inl hp
+
+theorem fold_kept_mono (base : St) (P : Principal) (composed strict : Bool) {operand : Path}
+    (entries : List (Entry operand)) (r : Result) (p : Path) (hp : p ∈ r.kept) :
+    p ∈ (entries.foldl (step cfg base P composed strict) r).kept := by
+  induction entries generalizing r with
+  | nil => exact hp
+  | cons e es ih => exact ih _ (step_kept_mono cfg base P composed strict r e p hp)
+
+/-- Siblings processed between a child's refusal and its parent's postorder slot
+    cannot undo the guard: the parent is still skipped, with no new failure line. -/
+theorem failed_ancestor_skipped_after_siblings (base : St) (P : Principal) (composed strict : Bool)
+    {operand : Path} (r : Result) (f : Failure) (entries : List (Entry operand))
+    (parent : Entry operand) (hp : parent.path <+: f.path) :
+    let after := entries.foldl (step cfg base P composed strict) (refused operand f r)
+    step cfg base P composed strict after parent = after := by
+  apply kept_skips
+  apply fold_kept_mono
+  simp only [refused, keep, mem_mergePaths]
+  exact Or.inr ((ancestors_exact _ _ _).mpr ⟨parent.under, hp⟩)
+
+theorem gone_failures (operand q : Path) (vanished strict : Bool) (S' : St) (r : Result) :
+    (gone operand q vanished strict S' r).failures = r.failures := by
+  unfold gone
+  split <;> rfl
+
+theorem attempt_failure_path (base : St) (P : Principal) (composed : Bool) {operand : Path}
+    (S : St) (e : Entry operand) (f : Failure) (h : attempt cfg base P composed S e = .error f) :
+    f.path = e.path := by
+  unfold attempt at h
+  split at h
+  · cases h; rfl
+  · split at h
+    · cases h; rfl
+    · split at h
+      · contradiction
+      · cases h; rfl
+
+/-- Failures are exact call refusals, not directory-retention notifications:
+    each step adds either no failure or its one non-ENOENT removal failure. -/
+theorem step_failures_exact (base : St) (P : Principal) (composed strict : Bool) {operand : Path}
+    (r : Result) (e : Entry operand) :
+    (step cfg base P composed strict r e).failures = r.failures ∨
+    ∃ f, (step cfg base P composed strict r e).failures = r.failures ++ [f] ∧
+      attempt cfg base P composed r.state e = .error f ∧ f.code ≠ "ENOENT" ∧ f.path = e.path := by
+  unfold step
+  split
+  · exact Or.inl rfl
+  · split
+    · exact Or.inl (gone_failures _ _ _ _ _ _)
+    · split
+      · exact Or.inl (gone_failures _ _ _ _ _ _)
+      · rename_i f hf
+        split
+        · exact Or.inl (gone_failures _ _ _ _ _ _)
+        · rename_i hne
+          exact Or.inr ⟨f, rfl, hf, hne, attempt_failure_path cfg base P composed r.state e f hf⟩
+
 /-- Strict ENOENT retains ancestors but never the vanished child and never adds a
     refusal: rm -r prints its vanished list, while API/Node/rm -rf count it gone. -/
 theorem vanished_policy (operand q : Path) (S' : St) (r : Result) :

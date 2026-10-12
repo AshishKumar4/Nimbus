@@ -654,6 +654,13 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.CompositeRemoval.kept_skips
 #print axioms Nimbus.Vfs.CompositeRemoval.ancestors_exact
 #print axioms Nimbus.Vfs.CompositeRemoval.child_failure_skips_ancestors
+#print axioms Nimbus.Vfs.CompositeRemoval.gone_kept_mono
+#print axioms Nimbus.Vfs.CompositeRemoval.step_kept_mono
+#print axioms Nimbus.Vfs.CompositeRemoval.fold_kept_mono
+#print axioms Nimbus.Vfs.CompositeRemoval.failed_ancestor_skipped_after_siblings
+#print axioms Nimbus.Vfs.CompositeRemoval.gone_failures
+#print axioms Nimbus.Vfs.CompositeRemoval.attempt_failure_path
+#print axioms Nimbus.Vfs.CompositeRemoval.step_failures_exact
 #print axioms Nimbus.Vfs.CompositeRemoval.vanished_policy
 #print axioms Nimbus.Vfs.CompositeRemoval.lstat_failure_unlinks
 #print axioms Nimbus.Vfs.CompositeRemoval.unreadable_still_rmdir

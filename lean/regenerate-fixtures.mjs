@@ -37,7 +37,8 @@ if (container) {
     ok = run('fixture-build', 'lake', ['build', 'fixtures']);
     if (ok) ok = run('fixture-generation', '.lake/build/bin/fixtures', ['fixtures']);
   }
-  const patch = git(['diff', '--binary', '--', 'lean/fixtures']);
+  const diff = git(['diff', '--binary', '--', 'lean/fixtures']);
+  const patch = diff ? `${diff}\n` : '';
   const paths = git(['diff', '--name-only', '--', 'lean/fixtures']).split('\n').filter(Boolean);
   const blobs = Object.fromEntries(paths.map((path) => [path, git(['hash-object', path])]));
   writeFileSync(out, JSON.stringify({ head, rows, patch, blobs }));

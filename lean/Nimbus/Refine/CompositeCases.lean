@@ -189,6 +189,25 @@ def touchesPin (S : St) (caps : Backend → Caps) (P : Principal) (op : Op) : Bo
   | .rename a _ => pinned a true
   | _ => false
 
+/-- Preserve every original seeded input trace, not only its initial trees. The
+    sampler keeps the old namespace shape above mounts so the contract change
+    cannot silently replace later operands or omit old steps. This is solely a
+    choice of test inputs; every expected answer and final tree uses execX's new
+    contract on the independent refined state below. -/
+def samplingState (caps : Backend → Caps) (S : St) (P : Principal) : X → St
+  | .removeRecursive raw _ =>
+    match reach S P false raw with
+    | .error _ => S
+    | .ok p =>
+      if p = [] ∨ synth S.mounts P p then S else
+      let b := (route S.mounts p).backend
+      let t := S.trees b
+      let rp := rel S.mounts p
+      if (look t rp).isNone then S
+      else if (caps b).removeRecursive then setTree S b (cut t rp)
+      else setTree S b (fallbackRemove t (caps b).pins rp).1
+  | x => (execX caps S P x).2
+
 def genCase : Gen (Option Json) := do
   let mut ms : List Mount := []
   for pt in points do
@@ -216,18 +235,21 @@ def genCase : Gen (Option Json) := do
       capList := capList ++ [(b, ⟨rr, (← below 2) == 0, (← below 2) == 0,
         if mode == 0 then none else some 511, pins, false, {}⟩)]
   let caps : Backend → Caps := fun b => ((capList.find? (·.1 == b)).map (·.2)).getD (fullCaps b)
+  let mut sampler := S
   let mut steps : Array Json := #[]
   let n := (← below 16) + 6
   for i in [0:n] do
     let P ← below 2
     if (← below 4) == 0 then
-      let x ← genX S
+      let x ← genX sampler
+      sampler := samplingState caps sampler P x
       let (o, S') := execX caps S P x
       S := S'
       steps := steps.push (xJson P x o)
     else
-      let op ← genOp S (i + 20)
-      if touchesPin S caps P op then continue
+      let op ← genOp sampler (i + 20)
+      if touchesPin sampler caps P op then continue
+      sampler := (execC caps sampler P op).2
       let (o, S') := execC caps S P op
       S := S'
       steps := steps.push (opJson P op o)

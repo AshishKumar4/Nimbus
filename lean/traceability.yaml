@@ -742,6 +742,13 @@ requirements:
       - Nimbus.Vfs.CompositeRemoval.kept_skips
       - Nimbus.Vfs.CompositeRemoval.ancestors_exact
       - Nimbus.Vfs.CompositeRemoval.child_failure_skips_ancestors
+      - Nimbus.Vfs.CompositeRemoval.gone_kept_mono
+      - Nimbus.Vfs.CompositeRemoval.step_kept_mono
+      - Nimbus.Vfs.CompositeRemoval.fold_kept_mono
+      - Nimbus.Vfs.CompositeRemoval.failed_ancestor_skipped_after_siblings
+      - Nimbus.Vfs.CompositeRemoval.gone_failures
+      - Nimbus.Vfs.CompositeRemoval.attempt_failure_path
+      - Nimbus.Vfs.CompositeRemoval.step_failures_exact
       - Nimbus.Vfs.CompositeRemoval.vanished_policy
       - Nimbus.Vfs.CompositeRemoval.lstat_failure_unlinks
       - Nimbus.Vfs.CompositeRemoval.unreadable_still_rmdir
