@@ -623,10 +623,11 @@ function blockTarget(s, proc, fd) {
 function requestSharedInput(s) {
     if (!s.sharedInput || s.inputPending || s.stdin.closed || s.stdin.queued)
         return;
-    const read = inputSupervisor?.cpReadStdin;
-    if (!read)
+    const supervisor = inputSupervisor;
+    if (!supervisor?.cpReadStdin)
         throw new Error('bash requires the shared process stdin capability');
-    const pending = Promise.resolve(read.call(inputSupervisor, s.processPid, 5000, undefined, 64 * 1024)).then(packet => {
+    // Called on its receiver: on a workerd RPC stub, Function.prototype.call is itself a remote method name.
+    const pending = Promise.resolve(supervisor.cpReadStdin(s.processPid, 5000, undefined, 64 * 1024)).then(packet => {
         if (packet.data?.length) {
             s.stdin.chunks.push(packet.data);
             s.stdin.queued += packet.data.length;

@@ -127,7 +127,14 @@ export interface WasiInitOptions {
 }
 /** What a live stat answers with. */
 export type WasiStatResult = RuntimeVfsStat;
-export type WasiSupervisorStub = FilesystemSupervisor;
+/**
+ * The supervisor a WASI guest adopts: the filesystem, and, where the guest is
+ * a session process, its stdin channel (SupervisorRPC.cpReadStdin), which the
+ * WASI layer reads as the guest's fd 0.
+ */
+export type WasiSupervisorStub = FilesystemSupervisor & {
+    cpReadStdin?(pid: number, waitMs: number, acquire: undefined, maxBytes: number): WasiInputPacket | Promise<WasiInputPacket>;
+};
 /**
  * The two hooks the WASI layer has into the green-thread scheduler.
  * `wasi-threads.ts` owns everything else about it.
@@ -164,8 +171,6 @@ export interface WasiMakeImportsOptions {
      */
     stdoutBytes?: (bytes: Uint8Array) => void | Promise<void>;
     stderrBytes?: (bytes: Uint8Array) => void | Promise<void>;
-    /** Read at most maxBytes from one process channel; excess stays there. */
-    stdinRead?: (maxBytes: number) => WasiInputPacket | Promise<WasiInputPacket>;
 }
 /**
  * The WASI import table, exhaustively.
