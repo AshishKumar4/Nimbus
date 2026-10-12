@@ -32,8 +32,21 @@ export interface ReadDirectoryDescription {
     /** Identity only: local fstat must use the final admitted namespace, not a stat taken earlier in the batch. */
     readonly dev: number;
     readonly ino: number;
-    /** The name's metadata version before the authority checked open access; null if it changed identity. */
-    readonly openedRevision: number | null;
+    /**
+     * What the authority's access check saw of the directory before it opened
+     * it (its mode, owner, group and ctime: a chmod, chown or ACL change moves
+     * ctime too); null if the name changed identity meanwhile. A store entry
+     * showing the same identity and the same of these would be granted the
+     * same open now. (Not a revision: a directory's revision is its subtree's,
+     * which a change anywhere below it moves.)
+     */
+    readonly opened: OpenedAs | null;
+}
+export interface OpenedAs {
+    readonly mode: number;
+    readonly uid: number;
+    readonly gid: number;
+    readonly ctime: number;
 }
 export interface ReadDirectoryBatchResult {
     readonly channel: string;

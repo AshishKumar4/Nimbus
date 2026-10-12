@@ -148,7 +148,8 @@ export async function readDirectoryBatch(fs, input) {
                     }
                     budget.tracked.set(handle.id, { channel: request.channel, claimed: false });
                     opened.push({ key, handle, dev: stat.dev, ino: stat.ino,
-                        openedRevision: before?.dev === stat.dev && before.ino === stat.ino ? before.revision : null });
+                        opened: before?.dev === stat.dev && before.ino === stat.ino
+                            ? { mode: before.mode ?? 0, uid: before.uid ?? 0, gid: before.gid ?? 0, ctime: before.ctime ?? 0 } : null });
                 }
                 catch (error) {
                     if (handle) {

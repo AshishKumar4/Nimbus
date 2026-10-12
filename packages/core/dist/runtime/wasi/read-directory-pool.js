@@ -1,6 +1,11 @@
 /** Guest-side bookkeeping for real, single-use directory descriptions. It owns no filesystem authority. */
 import { DIRECTORY_BATCH_LIMIT, DIRECTORY_PREFETCH_LIMIT } from '../../constants.js';
 function failure(code, message) { return Object.assign(new Error(`${code}: ${message}`), { code }); }
+/** Whether the store's entry shows the directory as the authority's access check saw it when it opened it. */
+function asOpened(entry, current) {
+    const seen = entry.opened;
+    return seen !== null && current.mode === seen.mode && current.uid === seen.uid && current.gid === seen.gid && current.ctime === seen.ctime;
+}
 /** A candidate's key as the batch reports it (no leading or trailing `/`), for one already prefetched; a descriptor-relative one never matches. */
 function keyOfPath(path) {
     const named = typeof path === 'string' ? path : 'root' in path ? `${path.root}/${path.path}` : '';
@@ -151,7 +156,7 @@ export function readDirectoryPool({ call, store, client, before }) {
                 }
                 const hit = unused.get(key);
                 const current = hit ? local(hit) : null;
-                if (hit && current && hit.openedRevision !== null && current.entry.revision === hit.openedRevision)
+                if (hit && current && asOpened(hit, current.entry))
                     return claim(hit);
                 // Only a hit that no longer holds is retired; the rest of what the
                 // walk was guessed to open stays, validated when it is claimed. The
@@ -181,7 +186,7 @@ export function readDirectoryPool({ call, store, client, before }) {
                     return null;
                 for (const entry of opened.slice(1)) {
                     const current = local(entry);
-                    if (entry.key !== null && entry.key !== required.key && current && current.entry.revision === entry.openedRevision && !unused.has(entry.key)) {
+                    if (entry.key !== null && entry.key !== required.key && current && asOpened(entry, current.entry) && !unused.has(entry.key)) {
                         retiring.delete(entry.handle.id);
                         unused.set(entry.key, entry);
                     }
