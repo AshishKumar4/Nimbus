@@ -11,6 +11,7 @@
  */
 import { ROOT_DIRECTORY_MODE, ROOT_INODE } from './sqlite-vfs.js';
 import { syscallError, toVfsError, VfsError } from './vfs-error.js';
+import { normalizeVfsPath } from './path.js';
 function absolute(key) {
     return key.startsWith('/') ? key : `/${key}`;
 }
@@ -91,10 +92,38 @@ export class SqliteFiles {
             ...(event.oldPath !== undefined ? { oldPath: absolute(event.oldPath) } : {}),
         }));
     }
-    /** Every mutation that lands at `path` or under it, through any view, as this view's watch hears it (CredentialedVfs.subscribe); paths absolute. */
+    /**
+     * Every mutation that lands at `path` or under it, through any view;
+     * paths absolute. The kernel's watch is the engine's own stream, batched
+     * as it publishes (SqliteVFS.events): it may look everywhere, and its
+     * names are the database's. Any other principal's is judged as each
+     * change is published, under its names (CredentialedVfs.subscribe).
+     */
     watchChanges(path, listener) {
-        return this.view.subscribe(path, (event) => {
-            listener({ ...event, path: absolute(event.path), ...(event.oldPath !== undefined ? { oldPath: absolute(event.oldPath) } : {}) });
+        if (this.view.cred.uid !== 0) {
+            return this.view.subscribe(path, (event) => {
+                listener([event.oldPath === undefined
+                        ? { type: event.type, path: absolute(event.path), timestamp: event.timestamp }
+                        : { type: event.type, path: absolute(event.path), oldPath: absolute(event.oldPath), timestamp: event.timestamp }]);
+            });
+        }
+        const tree = normalizeVfsPath(path);
+        const inTree = (key) => tree === '' || key === tree || (key.startsWith(tree) && key.charCodeAt(tree.length) === 47);
+        return this.engine.events.on((batch) => {
+            const told = [];
+            for (const event of batch) {
+                const oldPath = event.oldPath;
+                if (inTree(event.path)) {
+                    told.push(oldPath === undefined
+                        ? { type: event.type, path: absolute(event.path), timestamp: event.timestamp }
+                        : { type: event.type, path: absolute(event.path), oldPath: absolute(oldPath), timestamp: event.timestamp });
+                }
+                else if (oldPath !== undefined && inTree(oldPath)) {
+                    told.push({ type: event.type, path: absolute(event.path), oldPath: absolute(oldPath), timestamp: event.timestamp });
+                }
+            }
+            if (told.length > 0)
+                listener(told);
         });
     }
     /** `op`, its engine errors as Node's for `syscall` on `path` (and `dest`). */

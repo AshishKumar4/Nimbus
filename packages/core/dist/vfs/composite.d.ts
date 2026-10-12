@@ -261,7 +261,7 @@ interface ChangeWatch {
     readonly view: CompositeVFS;
     /** The namespace path watched, and everything under it. */
     readonly path: string;
-    readonly listener: (event: VfsEvent) => void;
+    readonly listener: (events: readonly VfsEvent[]) => void;
     readonly subscribed: Map<Mount, () => void>;
 }
 /** observeWrites: who is told, the mounts whose backends report their own writes, and the namespace's own reports in flight. */
@@ -429,9 +429,9 @@ export declare class CompositeVFS implements VFS {
     private deliverWrite;
     /**
      * Every change this view shows at `path` or under it, on any mount, told
-     * once it landed (VfsEvent, paths in this namespace): what it is and
-     * where, nothing read, held or waited for. The returned function stops
-     * it.
+     * once it landed (VfsEvent, paths in this namespace), in the batches its
+     * backend makes of them: what it is and where, nothing read, held or
+     * waited for. The returned function stops it.
      *
      * A backend that tells its own changes (VFS.watchChanges: SQLite) is
      * watched per mount, as this view's principal sees it, so its every
@@ -444,15 +444,23 @@ export declare class CompositeVFS implements VFS {
      * of a whole file or a range made its file, and what kind of entry rm -r
      * removed, is not looked up: those are change and unlink.
      */
-    watchChanges(path: string, listener: (event: VfsEvent) => void): () => void;
+    watchChanges(path: string, listener: (events: readonly VfsEvent[]) => void): () => void;
     /** Watch `mount`'s backend, as this view sees it, where it tells its own changes and holds part of `watch`'s tree. */
     private subscribeChanges;
-    /** `event`, a change on `mount` (namespace paths), told to `watch` as far as this view shows it there. */
-    private hearChange;
+    /** `events`, changes on `mount` (namespace paths), told to `watch` as far as this view shows them there. */
+    private hearChanges;
+    /** `event` as `watch` is told it from `mount`: itself, a rename's shown half (add, or unlink), or nothing. */
+    private shownChange;
+    /**
+     * Whether `path` is in `watch`'s tree and shown there from `mount`
+     * (feedShows): looked up only where another mount covers that tree or
+     * lies in it, as only one can hide it.
+     */
+    private showsChange;
     /**
      * `run`, and once it lands, its change told to each watcher whose
      * backend there does not tell its own (watchChanges): `run` itself when
-     * no one watches.
+     * none is to be told.
      */
     private telling;
     /**

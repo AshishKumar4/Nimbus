@@ -2894,8 +2894,9 @@ export class SqliteVFS {
             if (name === null)
                 return;
             const oldPath = event.oldPath === undefined ? null : this.watchedName(event.oldPath, cred);
-            const { oldPath: _stored, ...rest } = event;
-            listener(oldPath === null ? { ...rest, path: name } : { ...rest, path: name, oldPath });
+            listener(oldPath === null
+                ? { type: event.type, path: name, timestamp: event.timestamp }
+                : { type: event.type, path: name, oldPath, timestamp: event.timestamp });
         });
     }
     /**
@@ -2909,12 +2910,10 @@ export class SqliteVFS {
         if (name === null)
             return null;
         const root = this.confinedTmpRoots.get(cred.uid);
-        const parts = name.split('/');
-        let dir = '';
-        for (let index = 0; index < parts.length - 1; index++) {
-            dir = dir === '' ? parts[index] : `${dir}/${parts[index]}`;
-            const dirKey = this.keyOfName(dir, root);
-            const inode = this.inodes.get(dirKey) ?? this.removedForEvents?.get(dirKey);
+        const removed = this.removedForEvents;
+        for (let slash = name.indexOf('/'); slash !== -1; slash = name.indexOf('/', slash + 1)) {
+            const dirKey = this.keyOfName(name.slice(0, slash), root);
+            const inode = this.inodes.get(dirKey) ?? removed?.get(dirKey);
             if (inode === undefined || inode.kind !== 'directory' || !this.accessInode(inode, 0o1, cred))
                 return null;
         }

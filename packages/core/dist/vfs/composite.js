@@ -158,7 +158,9 @@ function relativeTo(point, path) {
 }
 /** Whether `path` is `tree` or under it. */
 function under(tree, path) {
-    return tree === ROOT_POINT || path === tree || path.startsWith(`${tree}/`);
+    if (tree === ROOT_POINT || path === tree)
+        return true;
+    return path.length > tree.length && path.charCodeAt(tree.length) === 47 && path.startsWith(tree);
 }
 /** An rm -r report (VfsRemoval). */
 function isRemoval(value) {
@@ -718,9 +720,9 @@ export class CompositeVFS {
     // ── change notification ───────────────────────────────────────────────
     /**
      * Every change this view shows at `path` or under it, on any mount, told
-     * once it landed (VfsEvent, paths in this namespace): what it is and
-     * where, nothing read, held or waited for. The returned function stops
-     * it.
+     * once it landed (VfsEvent, paths in this namespace), in the batches its
+     * backend makes of them: what it is and where, nothing read, held or
+     * waited for. The returned function stops it.
      *
      * A backend that tells its own changes (VFS.watchChanges: SQLite) is
      * watched per mount, as this view's principal sees it, so its every
@@ -759,57 +761,85 @@ export class CompositeVFS {
         const backend = this.backend(mount);
         if (backend === null || typeof backend.watchChanges !== 'function')
             return;
-        watch.subscribed.set(mount, backend.watchChanges(rel, (event) => this.hearChange(watch, mount, {
-            ...event,
-            path: CompositeVFS.reroot(mount.point, event.path),
-            ...(event.oldPath !== undefined ? { oldPath: CompositeVFS.reroot(mount.point, event.oldPath) } : {}),
-        })));
+        const { point } = mount;
+        const reroot = (event) => (event.oldPath === undefined
+            ? { type: event.type, path: CompositeVFS.reroot(point, event.path), timestamp: event.timestamp }
+            : { type: event.type, path: CompositeVFS.reroot(point, event.path), oldPath: CompositeVFS.reroot(point, event.oldPath), timestamp: event.timestamp });
+        watch.subscribed.set(mount, backend.watchChanges(rel, (events) => this.hearChanges(watch, mount, point === ROOT_POINT ? events : events.map(reroot))));
     }
-    /** `event`, a change on `mount` (namespace paths), told to `watch` as far as this view shows it there. */
-    hearChange(watch, mount, event) {
-        const shown = (path) => under(watch.path, path) && this.feedShows(path, mount);
-        let told = event;
-        if (event.oldPath === undefined) {
-            if (!shown(event.path))
-                told = null;
+    /** `events`, changes on `mount` (namespace paths), told to `watch` as far as this view shows them there. */
+    hearChanges(watch, mount, events) {
+        // The batch as it came, unless one of its changes is told otherwise (or not).
+        let told = null;
+        for (let i = 0; i < events.length; i++) {
+            const event = events[i];
+            const shown = this.shownChange(watch, mount, event);
+            if (shown !== event && told === null)
+                told = events.slice(0, i);
+            if (told !== null && shown !== null)
+                told.push(shown);
         }
-        else {
-            const path = shown(event.path);
-            const oldPath = shown(event.oldPath);
-            if (!path || !oldPath) {
-                told = path ? { type: 'add', path: event.path, timestamp: event.timestamp }
-                    : oldPath ? { type: 'unlink', path: event.oldPath, timestamp: event.timestamp }
-                        : null;
-            }
-        }
-        if (told === null)
+        const out = told ?? events;
+        if (out.length === 0)
             return;
         try {
-            watch.listener(told);
+            watch.listener(out);
         }
         catch (error) {
             console.error('[composite-vfs] a change watcher failed:', error instanceof Error ? error.message : String(error));
         }
     }
+    /** `event` as `watch` is told it from `mount`: itself, a rename's shown half (add, or unlink), or nothing. */
+    shownChange(watch, mount, event) {
+        const path = this.showsChange(watch, mount, event.path);
+        if (event.oldPath === undefined)
+            return path ? event : null;
+        const oldPath = this.showsChange(watch, mount, event.oldPath);
+        if (path && oldPath)
+            return event;
+        return path ? { type: 'add', path: event.path, timestamp: event.timestamp }
+            : oldPath ? { type: 'unlink', path: event.oldPath, timestamp: event.timestamp }
+                : null;
+    }
+    /**
+     * Whether `path` is in `watch`'s tree and shown there from `mount`
+     * (feedShows): looked up only where another mount covers that tree or
+     * lies in it, as only one can hide it.
+     */
+    showsChange(watch, mount, path) {
+        if (!under(watch.path, path))
+            return false;
+        for (const other of this.table.mounts.values()) {
+            if (other === mount)
+                continue;
+            if (under(watch.path, other.point) || (under(other.point, watch.path) && other.point.length > mount.point.length))
+                return this.feedShows(path, mount);
+        }
+        return true;
+    }
     /**
      * `run`, and once it lands, its change told to each watcher whose
      * backend there does not tell its own (watchChanges): `run` itself when
-     * no one watches.
+     * none is to be told.
      */
     telling(spec, run) {
         const watches = this.table.changes;
         if (watches === undefined)
             return run;
+        const { mount } = spec.route;
+        let told = false;
+        for (const watch of watches)
+            told ||= !watch.subscribed.has(mount);
+        if (!told)
+            return run;
         return () => andThen(run(), (result) => {
-            const { route: { mount }, oldPath } = spec;
+            const { oldPath } = spec;
             const type = spec.told ?? (oldPath !== undefined ? 'rename' : spec.kind === 'create' ? 'addDir' : spec.kind === 'remove' ? 'unlink' : 'change');
             const timestamp = Date.now();
-            for (const path of spec.landed?.(result) ?? [spec.path]) {
-                const event = { type, path, timestamp, ...(oldPath !== undefined ? { oldPath } : {}) };
-                for (const watch of watches)
-                    if (!watch.subscribed.has(mount))
-                        watch.view.hearChange(watch, mount, event);
-            }
+            const events = (spec.landed?.(result) ?? [spec.path]).map((path) => (oldPath === undefined ? { type, path, timestamp } : { type, path, oldPath, timestamp }));
+            for (const watch of watches)
+                if (!watch.subscribed.has(mount))
+                    watch.view.hearChanges(watch, mount, events);
             return result;
         });
     }

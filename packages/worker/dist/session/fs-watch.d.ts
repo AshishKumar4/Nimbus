@@ -29,7 +29,7 @@
  *
  * Coalescing strategy
  * -------------------
- * The namespace tells each change as it lands. We add a ~50 ms
+ * The namespace tells changes as their filesystem batches them. We add a ~50 ms
  * debounce so a 1000-file npm install doesn't produce 1000 WS
  * frames. 50 ms absorbs
  * the typical burst pattern and stays well under the user-perceptible

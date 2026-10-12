@@ -220,10 +220,11 @@ export interface VFS {
     /**
      * Every mutation that lands at `path` or under it on this backend,
      * whoever made it, by path (VfsEvent, paths absolute), in this view's
-     * names and only where this view may look, once it landed: nothing read,
-     * held or waited for. The returned function stops it.
+     * names and only where this view may look, once it landed, told in the
+     * batches the backend makes of them: nothing read, held or waited for.
+     * The returned function stops it.
      */
-    watchChanges?(path: string, listener: (event: VfsEvent) => void): () => void;
+    watchChanges?(path: string, listener: (events: readonly VfsEvent[]) => void): () => void;
     /** The same operations, completing without waiting. Present only when every call can. */
     readonly sync?: SyncVFS;
     /**

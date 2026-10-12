@@ -846,10 +846,11 @@ export class CirrusReal {
         // Wire the session's changes into the HMR bridge so the facet's
         // chokidar shim actually sees file changes.
         if (this.watchChanges) {
-            this._vfsUnsub = this.watchChanges((ev) => {
+            this._vfsUnsub = this.watchChanges((events) => {
                 // chokidar uses 'addDir'/'unlinkDir' for directory events; the
                 // namespace tells the same strings, so they pass through as-is.
-                this.hmr.pushVfsEvent(ev.type, ev.path, ev.oldPath);
+                for (const ev of events)
+                    this.hmr.pushVfsEvent(ev.type, ev.path, ev.oldPath);
             });
         }
     }

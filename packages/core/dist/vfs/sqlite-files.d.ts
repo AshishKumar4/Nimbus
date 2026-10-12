@@ -28,8 +28,14 @@ export declare class SqliteFiles implements VFS {
     as(cred: VfsCred, actor?: string, options?: VfsViewOptions): SqliteFiles;
     /** Every mutation that lands on the database, through any view (SqliteVFS.observeWrites); paths absolute. */
     observeWrites(observer: VfsWriteObserver): () => void;
-    /** Every mutation that lands at `path` or under it, through any view, as this view's watch hears it (CredentialedVfs.subscribe); paths absolute. */
-    watchChanges(path: string, listener: (event: VfsEvent) => void): () => void;
+    /**
+     * Every mutation that lands at `path` or under it, through any view;
+     * paths absolute. The kernel's watch is the engine's own stream, batched
+     * as it publishes (SqliteVFS.events): it may look everywhere, and its
+     * names are the database's. Any other principal's is judged as each
+     * change is published, under its names (CredentialedVfs.subscribe).
+     */
+    watchChanges(path: string, listener: (events: readonly VfsEvent[]) => void): () => void;
     /** `op`, its engine errors as Node's for `syscall` on `path` (and `dest`). */
     private run;
     stat(path: string, options?: {

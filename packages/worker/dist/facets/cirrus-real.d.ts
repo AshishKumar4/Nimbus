@@ -115,7 +115,7 @@ export declare class CirrusReal {
         /** Who the server reads its project as: the credential of the process it runs under. */
         cred: VfsCred;
         /** Watches the session's changes (CompositeVFS.watchChanges), for the facet's chokidar. */
-        watchChanges?: ((listener: (event: VfsEvent) => void) => () => void) | null;
+        watchChanges?: ((listener: (events: readonly VfsEvent[]) => void) => () => void) | null;
         userConfigBundle?: string | null;
         extraSyntheticFiles?: Record<string, string>;
         /** The workspace's network: the dev server (the user's config included) goes out through its egress. */
