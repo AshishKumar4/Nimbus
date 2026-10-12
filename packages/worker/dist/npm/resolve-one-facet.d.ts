@@ -175,6 +175,7 @@ export declare const resolveOnePackumentInFacet: (spec: ResolveOneSpec, env: {
             retries: number;
             timeoutMs: number;
             registry: string;
+            revalidate?: boolean;
         }) => Promise<{
             json: string | null;
             source: "r2-cache" | "network";
