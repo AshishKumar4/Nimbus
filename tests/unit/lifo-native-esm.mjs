@@ -119,7 +119,9 @@ const files = {
     'console.log("no-default", Object.keys(require("./no-default.mjs")).join(","), require("./no-default.mjs").value);',
     'console.log("own-marker", require("./own-marker.mjs").__esModule);',
     'console.log("module-exports", require("./module-exports.mjs").marker);',
-    // What each result is as an object: Node's facade is a namespace, which refuses every write.
+    // What each result Nimbus makes is as an object: Node's facade is a
+    // namespace, which refuses every write. A module's own namespace is the
+    // engine's (Bun's answers Reflect.setPrototypeOf(ns, null) false).
     'const shape = (value) => JSON.stringify({',
     '  keys: Reflect.ownKeys(value).map(String), tag: Object.prototype.toString.call(value), extensible: Object.isExtensible(value),',
     '  descriptors: Object.entries(Object.getOwnPropertyDescriptors(value)).map(([key, d]) => [key, d.writable, d.enumerable, d.configurable, typeof d.value, typeof d.get]),',
@@ -128,7 +130,8 @@ const files = {
     '  accessor: Reflect.defineProperty(value, "default", { get() {} }), remove: Reflect.deleteProperty(value, "__esModule"), absent: Reflect.deleteProperty(value, "absent"),',
     '  nullProto: Reflect.setPrototypeOf(value, null), proto: Reflect.setPrototypeOf(value, {}), sealed: Object.isSealed(value), esModule: value.__esModule,',
     '});',
-    'for (const file of ["./sync.mjs", "./no-default.mjs", "./own-marker.mjs", "./module-exports.mjs"]) console.log("shape", file, shape(require(file)), require(file) === require(file), require(file).__esModule);',
+    'for (const file of ["./sync.mjs", "./module-exports.mjs"]) console.log("shape", file, shape(require(file)));',
+    'for (const file of ["./sync.mjs", "./no-default.mjs", "./own-marker.mjs", "./module-exports.mjs"]) console.log("same", file, require(file) === require(file), require(file).__esModule, Object.keys(require(file)).join(","));',
     'console.log("function-await", require("./inside-function.mjs").default);',
     'for (const file of ["./async-required.mjs", "./async-parent.mjs", "./async-loop.mjs", "./required-cycle.mjs"]) { try { require(file); } catch (e) { console.log("require-error", file, e.code, e.message); } }',
     'import("./sync.mjs").then((m) => console.log("cjs-dynamic", m.n, m.inc === ns.inc));',
