@@ -11,6 +11,7 @@ import { opencodeInputs } from '../../packages/worker/scripts/opencode/inputs.mj
 import { pythonInputs } from '../../packages/worker/wasm/python/inputs.mjs';
 import { oxcWasmInputs } from '../../packages/worker/scripts/oxc-wasm/inputs.mjs';
 import { SPECS } from '../../packages/worker/scripts/napi-wasm/specs.mjs';
+import { SPECS as RUNTIME_SPECS } from '../../packages/worker/scripts/runtime-specs.mjs';
 
 const repo = fileURLToPath(new URL('../../', import.meta.url));
 const { applyEdits, modify } = createRequire(new URL('../../packages/worker/package.json', import.meta.url))('jsonc-parser');
@@ -37,6 +38,8 @@ try {
     'bun.lock', 'packages/worker/scripts/bundle-napi-wasm.mjs',
     'packages/worker/scripts/bundle-opencode.mjs', 'packages/worker/scripts/bundle-oxc-wasm.mjs',
     'packages/worker/scripts/build-opencode-attach-entry.mjs',
+    'packages/worker/scripts/bundle-runtime.mjs', 'packages/worker/scripts/runtime-specs.mjs',
+    'packages/worker/runtime-contracts/pyodide-workerd-adapter.json',
     ...Object.keys(await loaderInputs(provenance.source.graph)),
     ...Object.keys(await opencodeInputs()),
     ...Object.keys(await pythonInputs()).map(name => path.join('packages/worker/wasm/python', name)),
@@ -102,6 +105,11 @@ try {
   await writeFile(path.join(root, python), await readFile(path.join(root, python), 'utf8') + '\n');
   const result = spawnSync('node', ['packages/worker/wasm/python/inputs.mjs', '--check'], { cwd: root, encoding: 'utf8' });
   refused(result, 'nimbus-py.c', 'bun scripts/ci/remote-python-build.mjs');
+  const pythonSpec = Object.keys(RUNTIME_SPECS).find(key => key.startsWith('cpython/'));
+  assert.ok(pythonSpec, 'a local CPython runtime is published');
+  const publication = spawnSync('node', ['packages/worker/scripts/bundle-runtime.mjs',
+    ...pythonSpec.split('/'), '--npm-package', path.join(root, 'runtime-package')], { cwd: root, encoding: 'utf8' });
+  refused(publication, 'nimbus-py.c', 'bun scripts/ci/remote-python-build.mjs');
   console.log('staged-artifact-inputs OK: current sources stage; edits, deletion and a new wrapper module refuse; the dist gate rolls back');
 } finally {
   await rm(root, { recursive: true, force: true });
