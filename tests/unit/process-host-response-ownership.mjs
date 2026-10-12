@@ -55,7 +55,7 @@ for (const mode of ['facet', 'peer']) for (const route of ['port', 'direct']) fo
   try {
     const answered = route === 'port'
       ? (() => { const ports = new PortRegistry(); ports.setOutput(output); ports.bindFacetStub(11, process); ports.register(3011, 11); return ports.routeRequest(3011, new Request('https://app.invalid/', { signal: client.signal }), '/'); })()
-      : (async () => { const { scope, owner } = responseScope(client.signal); try { return relayRpcBody(await process.handleHttpRequest(new Request('https://app.invalid/'), scope), 'GET', owner); } catch (error) { owner.settle(); throw error; } })();
+      : (async () => { const { scope, owner } = responseScope(client.signal); try { return relayRpcBody(await process.handleHttpRequest(new Request('https://app.invalid/'), scope), 'GET', owner); } catch (error) { owner.fail(error); throw error; } })();
     if (ending === 'leave-before-headers') {
       await handling.promise; await turns();
       assert.equal(watching, 1, `${label}: the process owns its work while its handler runs`);
