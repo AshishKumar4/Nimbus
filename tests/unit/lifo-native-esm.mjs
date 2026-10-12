@@ -151,7 +151,10 @@ try {
     await workspace.fs.mkdir(dirname(`${vfsDirectory}/${name}`), { recursive: true });
     await workspace.fs.writeFile(`${vfsDirectory}/${name}`, source);
   }
-  for (const entry of ['main.mjs', 'require-main.cjs', 'syntax.js', 'reexports.mjs', 'frames.mjs']) {
+  // Frames under a Node host only: JSC places a `new` expression's frame at
+  // its callee (`throw new Error(` reads column 11 where V8 reads 7), so no
+  // Bun-hosted column can equal Node's.
+  for (const entry of ['main.mjs', 'require-main.cjs', 'syntax.js', 'reexports.mjs', ...underBun ? [] : ['frames.mjs']]) {
     const reference = spawnSync('node', ['--no-warnings', entry], { cwd: directory, encoding: 'utf8', timeout: 30_000 });
     assert.equal(reference.status, 0, `${entry} reference: ${reference.stderr}`);
     assert.equal(reference.stderr, '', `${entry} reference stderr`);
