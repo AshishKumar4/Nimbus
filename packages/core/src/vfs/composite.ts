@@ -1363,6 +1363,7 @@ export class CompositeVFS implements VFS {
    */
   private judgeChanges(watch: ChangeWatch, batch: Changes): Awaitable<VfsEvent[]> {
     const { mount, events, judged } = batch;
+    if (this.table.mounts.get(mount.point) !== mount) return [];
     // The path the namespace looks up for an end its backend told: on a mount whose backend judged it, its first name there.
     const lookedUp = (path: string): string => {
       if (!judged || path === mount.point) return path;
@@ -1434,6 +1435,7 @@ export class CompositeVFS implements VFS {
     };
     const told: VfsEvent[] = [];
     const judgeFrom = (start: number): Awaitable<VfsEvent[]> => {
+      // A wait may outlast the mount.
       if (this.table.mounts.get(mount.point) !== mount) return told;
       let routed = routedFrom(watch.path);
       for (let i = start; i < events.length; i++) {
