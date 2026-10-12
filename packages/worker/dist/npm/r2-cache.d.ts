@@ -72,16 +72,36 @@ import type { CacheStatEvent } from '@nimbus-sh/core/_shared/cache-stats.js';
  *  planted bytes. `v1/` objects are orphaned and safe to delete
  *  out-of-band. */
 export declare const R2_CACHE_PREFIX = "v2";
-/**
- * The longest a cached packument is fresh: the bound on what the registry's
- * own freshness (Cache-Control) allows, and what an answer that states none
- * gets. registry.npmjs.org says `max-age=300`, so its packuments are fresh
- * for five minutes; then the next read revalidates with the registry's
- * ETag (If-None-Match), which answers 304, and costs no body, while nothing
- * was published. A cached packument that cannot satisfy what a resolve asks
- * is revalidated at once, whatever its age (readThroughPackument's
- * `revalidate`): cached absence is no proof that no version is published.
- */
+/** Packument TTL — 60 min (cache metrics support; was 5 min pre-wave).
+ *
+ *  Rationale for the bump (~12× longer than pre-wave):
+ *
+ *  - npm registry packuments change ONLY when a new version of the
+ *    package is published. For >99% of packages this is sub-weekly.
+ *  - The 5-min TTL fired roughly once per minute on a long install
+ *    session (resolver re-fetches as dep BFS re-encounters cached
+ *    names with new range constraints). 12× fewer re-fetches at
+ *    60 min TTL means ~12× lower registry roundtrip count for an
+ *    equivalent workload.
+ *  - npm registry origin is shared across all Nimbus users; lower
+ *    aggregate load is good citizenship and lowers our risk of being
+ *    rate-limited at the L4 boundary.
+ *
+ *  Trade-off (the cost of the bump):
+ *
+ *  - A package version published less than 60 min ago may not be
+ *    resolvable from a Nimbus session whose colo's L2 cache has a
+ *    pre-publish entry. Worst case: a user `npm i my-fresh@1.0.1`
+ *    seconds after publishing my-fresh@1.0.1 sees the cached 1.0.0
+ *    entry for up to 60 min.
+ *  - Workaround for users hitting freshness issues: open a new
+ *    session in a different colo (cold L2), OR wait for the TTL,
+ *    OR (future) add `NIMBUS_CACHE_TTL_MS` env override.
+ *
+ *  Reversibility: redeploy with this constant restored to 5*60_000
+ *  reverts the behavior instantly (next request reads the new TTL).
+ *  No data migration; existing R2 packument entries' customMetadata
+ *  .expiresAt stamps remain valid against either TTL. */
 export declare const PACKUMENT_TTL_MS: number;
 export { NPM_REGISTRY_ORIGIN, npmRegistryOrigin };
 /** The registry URL a packument is read from — also what `npm http` lines report. */
@@ -92,15 +112,15 @@ export declare function packumentUrl(name: string, registry?: string): string;
  *  the R2 path and go straight to the network — they're the long tail
  *  for which W7 (streams over RPC) will close the gap. */
 export declare const MAX_R2_TARBALL_BYTES: number;
-/** Outcome of `R2CacheClient.readThroughPackument`. */
-/** How a packument is read: through the cache, or (`revalidate`) past it to the registry, whatever the cached copy's age. */
+/** How a packument is read: through the cache, or (`revalidate`) past it to the registry, however fresh the cached copy. */
 export interface PackumentReadOptions {
     retries?: number;
     timeoutMs?: number;
     registry?: string;
-    /** The cached copy cannot satisfy what is asked: ask the registry (conditionally, past its CDN) before saying nothing does. */
+    /** The cached copy cannot answer what is asked: ask the registry (past its CDN) before saying nothing does. */
     revalidate?: boolean;
 }
+/** Outcome of `R2CacheClient.readThroughPackument`. */
 export interface PackumentReadThrough {
     /** Corgi packument JSON text, or null when `status`/`failure` is set. */
     json: string | null;
@@ -119,20 +139,12 @@ export interface CachedPackument {
     /** Approximate age in ms based on R2's `uploaded` timestamp. May be
      *  slightly skewed if customMetadata.expiresAt is set. */
     ageMs: number;
-    /** Whether this entry has passed its freshness. Caller MUST honour this:
-     *  an expired entry is revalidated, never served as a hit. An entry
-     *  cached before the registry's validators were kept is expired. */
+    /** Whether this entry has passed its TTL. Caller MUST honour this:
+     *  expired entries are returned only as a stale-while-error fallback,
+     *  never as a hot-path hit. */
     expired: boolean;
-    /** The registry's ETag for this body, to revalidate it with; absent where the registry gave none. */
+    /** The registry's ETag for this body, which a refetch is made conditional on; absent where none was kept. */
     etag?: string;
-    /** The Cache-Control the registry stored it with: what a 304 that states none keeps (RFC 9111 §4.3.4). */
-    cacheControl?: string;
-}
-/** What a packument is stored with: until when it is fresh, the registry's ETag, and the Cache-Control that freshness came from. */
-interface PackumentValidators {
-    readonly expiresAt: number;
-    readonly etag: string | null;
-    readonly cacheControl: string | null;
 }
 /** Optional R2 binding shape (we treat null as "not provisioned"). */
 type R2BucketLike = {
@@ -348,13 +360,10 @@ export declare class R2CacheClient {
      * answered is the workspace's, never every tenant's).
      */
     network?: WorkspaceNetwork): Promise<PackumentReadThrough>;
-    /** A packument the registry answered, in R2 and this colo's L2, with its validators. */
-    private storePackument;
     /**
-     * Write a packument JSON to R2 with the registry's validators in
-     * customMetadata: until when it is fresh (`expiresAt`; by default the
-     * packument bound from now) and its ETag. No-op if the bucket binding is
-     * missing.
+     * Write a packument JSON to R2 with a TTL stamp (`expiresAt`, by default
+     * the packument TTL from now) and the registry's ETag in customMetadata.
+     * No-op if the bucket binding is missing.
      *
      * Only `readThroughPackument` (and the debug bench seeder) call this:
      * it is a storage primitive, never an RPC. See readThroughPackument
@@ -363,7 +372,7 @@ export declare class R2CacheClient {
      * Returns true on success, false on failure (same best-effort posture
      * as putTarball).
      */
-    putPackument(name: string, json: string, registry?: string, { expiresAt, etag, cacheControl }?: PackumentValidators): Promise<boolean>;
+    putPackument(name: string, json: string, registry?: string, expiresAt?: number, etag?: string): Promise<boolean>;
     /** Lightweight feature-detection for callers that want to log path. */
     hasTarballBucket(): boolean;
     /** Lightweight feature-detection for callers that want to log path. */

@@ -328,14 +328,21 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         return 'failed' in again ? loaded : again;
     };
     const stagedVersion = stagedBindingVersion();
-    let packument = await revalidated(effName, await loadPackument(effName), (data) => (stagedVersion !== null
-        ? readProperty(data.versions, stagedVersion) !== undefined
-        : pickVersion(data) !== null));
+    const choose = (data) => (stagedVersion !== null && readProperty(data.versions, stagedVersion) !== undefined
+        ? stagedVersion
+        : pickVersion(data));
+    let packument = await loadPackument(effName);
     if ('failed' in packument)
         return packument.failed;
-    let version = stagedVersion !== null && readProperty(packument.data.versions, stagedVersion) !== undefined
-        ? stagedVersion
-        : pickVersion(packument.data);
+    // One pick; a cached packument asked again only where it answered nothing (or not the staged version).
+    let version = choose(packument.data);
+    if (packument.source === 'r2-cache' && (stagedVersion !== null ? version !== stagedVersion : version === null)) {
+        const again = await loadPackument(effName, true);
+        if (!('failed' in again)) {
+            packument = again;
+            version = choose(again.data);
+        }
+    }
     if (__swap && __swap.since) {
         const own = version;
         let covered = false;
