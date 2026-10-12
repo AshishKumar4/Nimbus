@@ -14,6 +14,7 @@
  * that (ENOTSUP) and decides.
  */
 import type { RuntimeDirentType, VfsAcquireOptions, VfsAcquireResult, VfsListPage } from '../runtime/os-contracts.js';
+import type { VfsEvent } from './events.js';
 import { type VfsError } from './vfs-error.js';
 export type Awaitable<T> = T | Promise<T>;
 export declare function isPromise<T>(value: Awaitable<T>): value is Promise<T>;
@@ -216,6 +217,13 @@ export interface VFS {
      * it replaced (VfsWriteEvent); the returned function stops the reports.
      */
     observeWrites?(observer: VfsWriteObserver): () => void;
+    /**
+     * Every mutation that lands at `path` or under it on this backend,
+     * whoever made it, by path (VfsEvent, paths absolute), in this view's
+     * names and only where this view may look, once it landed: nothing read,
+     * held or waited for. The returned function stops it.
+     */
+    watchChanges?(path: string, listener: (event: VfsEvent) => void): () => void;
     /** The same operations, completing without waiting. Present only when every call can. */
     readonly sync?: SyncVFS;
     /**

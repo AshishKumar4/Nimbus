@@ -184,13 +184,6 @@ class GuardedProcessBridge {
         return lease === null ? answer : { ...answer, readLease: lease };
     }
     list(after, limit) { this.guard(); return this.target.list(after, limit); }
-    subscribe(path, listener) {
-        this.guard();
-        const unsubscribe = this.target.subscribe(path, listener);
-        const dispose = () => { unsubscribe(); this.scope.subscriptions.delete(dispose); };
-        this.scope.subscriptions.add(dispose);
-        return dispose;
-    }
     realpath(path) { this.guard(); return this.target.realpath(path); }
     remove(path, options) { this.guard(); return this.target.remove(path, options); }
     copyFile(from, to) { this.guard(); return this.target.copyFile(from, to); }
@@ -675,7 +668,16 @@ class AwaitingProcessBridge {
     get synchronous() { return this.bridge; }
     gateLaunch(named) { return this.bridge.gateLaunch(named); }
     revision(path) { return this.bridge.revision(path); }
-    subscribe(path, listener) { return this.bridge.subscribe(path, listener); }
+    /** The process's namespace's changes at `path` and under it (CompositeVFS.watchChanges), named as its listings name them; stopped with its scope. */
+    subscribe(path, listener) {
+        this.live();
+        const stop = this.namespace.watchChanges(path, (event) => {
+            listener(event.oldPath === undefined ? { ...event, path: event.path.slice(1) } : { ...event, path: event.path.slice(1), oldPath: event.oldPath.slice(1) });
+        });
+        const dispose = () => { stop(); this.scope.subscriptions.delete(dispose); };
+        this.scope.subscriptions.add(dispose);
+        return dispose;
+    }
     writeBatch(payload, options) { return this.bridge.writeBatch(payload, options); }
     writeStream(stream, options) { return this.bridge.writeStream(stream, options); }
     acquireExclusiveMutation(path, options) {

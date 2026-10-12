@@ -91,6 +91,12 @@ export class SqliteFiles {
             ...(event.oldPath !== undefined ? { oldPath: absolute(event.oldPath) } : {}),
         }));
     }
+    /** Every mutation that lands at `path` or under it, through any view, as this view's watch hears it (CredentialedVfs.subscribe); paths absolute. */
+    watchChanges(path, listener) {
+        return this.view.subscribe(path, (event) => {
+            listener({ ...event, path: absolute(event.path), ...(event.oldPath !== undefined ? { oldPath: absolute(event.oldPath) } : {}) });
+        });
+    }
     /** `op`, its engine errors as Node's for `syscall` on `path` (and `dest`). */
     run(syscall, path, op, dest) {
         try {

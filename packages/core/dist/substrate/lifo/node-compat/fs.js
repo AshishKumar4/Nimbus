@@ -484,23 +484,37 @@ export function createFs(vfs, cwd, stdin) {
         return stream;
     }
     // ─── Watch API ───
+    /**
+     * Node's fs.watch: 'rename' when an entry appears or goes, 'change' when
+     * one changes, named from the watched directory (its direct entries,
+     * any depth when recursive), or as the watched file itself.
+     */
     function watch(filename, optionsOrListener, listener) {
         const abs = resolvePath(cwd, filename);
+        const options = typeof optionsOrListener === 'object' && optionsOrListener !== null ? optionsOrListener : {};
         const cb = typeof optionsOrListener === 'function' ? optionsOrListener : listener;
         const watcher = new EventEmitter();
-        // Use VFS onChange to detect changes (coarse-grained)
-        const origOnChange = vfs.onChange;
-        vfs.onChange = () => {
-            origOnChange?.();
-            const eventType = 'change';
-            const name = basename(abs);
-            if (cb)
-                cb(eventType, name);
+        if (cb)
+            watcher.on('change', (eventType, name) => cb(String(eventType), String(name)));
+        const inside = (path) => path === abs || path.startsWith(abs === '/' ? '/' : `${abs}/`);
+        const told = (path, eventType) => {
+            if (!inside(path))
+                return;
+            const name = path === abs ? basename(abs) : path.slice(abs === '/' ? 1 : abs.length + 1);
+            if (path !== abs && options.recursive !== true && name.includes('/'))
+                return;
             watcher.emit('change', eventType, name);
         };
-        watcher.close = () => {
-            vfs.onChange = origOnChange;
-        };
+        const stop = vfs.watch(abs, (event) => {
+            if (event.type === 'change') {
+                told(event.path, 'change');
+                return;
+            }
+            if (event.oldPath !== undefined)
+                told(event.oldPath, 'rename');
+            told(event.path, 'rename');
+        }, { persistent: options.persistent !== false });
+        watcher.close = stop;
         return watcher;
     }
     // ─── Promises API ───

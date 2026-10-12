@@ -1,4 +1,5 @@
 import type { RuntimeFsBridge, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat } from '../../../runtime/os-contracts.js';
+import type { VfsEvent } from '../../../vfs/events.js';
 /** The synchronous filesystem the in-process Node interpreter's `fs` and `require` read. */
 export interface NodeFilesystem {
     readFile(path: string): Uint8Array;
@@ -32,7 +33,15 @@ export interface NodeFilesystem {
     ftruncate(fd: number, size: number): void;
     fsync(fd: number): void;
     close(fd: number): void;
-    onChange: (() => void) | undefined;
+    /**
+     * Each change at `path` or under it the process's namespace shows
+     * (RuntimeFsBridge.subscribe), its paths absolute; the returned function
+     * stops it. `persistent` (default true): a guest stays while it is open,
+     * as Node's fs.watch keeps its process.
+     */
+    watch(path: string, listener: (event: VfsEvent) => void, options?: {
+        persistent?: boolean;
+    }): () => void;
 }
 /**
  * The in-process Node interpreter runs `require` synchronously, so it demands

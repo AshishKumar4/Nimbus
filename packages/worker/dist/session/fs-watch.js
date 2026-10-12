@@ -1,18 +1,14 @@
 /**
  * session/fs-watch.ts — server-side `fs-watch-*` WS protocol.
  *
- * The VFS event bus (`src/vfs/events.ts`) already fires
- * `add`/`addDir`/`change`/`unlink`/`unlinkDir`/`rename` on every
- * SqliteVFS mutation (sqlite-vfs.ts:934, 1020, 1147, 1168, 1253,
- * 1654-1659). Three consumers already subscribe: cirrus-real HMR
- * (facets/cirrus-real.ts:894), in-supervisor vite-dev-server
- * (facets/vite-dev-server.ts:1524), and wrangler-dev
- * (wrangler/nimbus-wrangler.ts:245, 977).
- *
- * This module exposes that bus to browser clients (the FileTree
- * sidebar in public/s/index.html) over the existing shell WebSocket,
- * closing the user-reported gap: "file editor doesnt auto load any
- * new files/folders".
+ * The session's namespace tells every change it shows
+ * (`CompositeVFS.watchChanges`: `add`/`addDir`/`change`/`unlink`/
+ * `unlinkDir`/`rename`), on SQLite and on any mount, as the kernel sees
+ * it. This module exposes that to browser clients (the FileTree sidebar
+ * in public/s/index.html) over the existing shell WebSocket, closing the
+ * user-reported gap: "file editor doesnt auto load any new
+ * files/folders". An event's paths are sent as SQLite names them, without
+ * the leading slash.
  *
  * Protocol (additive; coexists with fs-read/fs-write/fs-list at
  * session/init.ts:260):
@@ -33,9 +29,9 @@
  *
  * Coalescing strategy
  * -------------------
- * The bus delivers global-batched events once per microtask. We add an
- * additional ~50 ms debounce so a 1000-file npm install doesn't
- * produce 1000 WS frames (or ~1000 microtask-batches). 50 ms absorbs
+ * The namespace tells each change as it lands. We add a ~50 ms
+ * debounce so a 1000-file npm install doesn't produce 1000 WS
+ * frames. 50 ms absorbs
  * the typical burst pattern and stays well under the user-perceptible
  * 100 ms threshold.
  *
@@ -48,7 +44,7 @@
  * Lifecycle
  * ---------
  *   - One Map<WebSocket, Sub[]> per session DO on the WsHost.
- *   - On `fs-watch-subscribe`: append a Sub + register the bus listener.
+ *   - On `fs-watch-subscribe`: append a Sub + watch each of its paths.
  *   - On `fs-watch-unsubscribe`: invoke unsub closures + remove entries.
  *   - On WS close / error (ws.ts:wsClose / wsError): unconditionally
  *     drop all subs for the dying WS.
@@ -77,25 +73,35 @@ function genSubId() {
     return 'sub-' + Math.random().toString(36).slice(2, 10) + '-' + Date.now().toString(36);
 }
 /**
- * Handle `fs-watch-subscribe`. Registers a bus listener; the listener
- * captures `ws` and pushes events (debounced + coalesced) over it.
+ * The trees `paths` names, each once: absolute, and none under another
+ * (whose changes it would tell twice). None: the whole namespace.
+ */
+function watchedTrees(paths) {
+    const trees = [...new Set(paths.map((p) => `/${p.replace(/^\/+|\/+$/g, '')}`))].sort();
+    if (trees.length === 0 || trees.includes('/'))
+        return ['/'];
+    return trees.filter((tree, i) => !trees.slice(0, i).some((outer) => tree.startsWith(`${outer}/`)));
+}
+/**
+ * Handle `fs-watch-subscribe`. Watches each path the client names in the
+ * session's namespace; the watch captures `ws` and pushes events
+ * (debounced + coalesced) over it.
  *
  * Returns the structured result for the caller to forward as the
  * `fs-watch-subscribe-result` frame.
  */
 export function handleFsWatchSubscribe(host, ws, msg) {
-    const vfs = host.sqliteFs;
-    if (!vfs)
+    if (!host.sqliteFs)
         return { ok: false, error: 'VFS not initialised' };
-    // Normalise paths to a string[]. Empty array means match-all
-    // (the global bus listener delivers every event).
-    const paths = [];
+    const namespace = host.getFilesystemAuthority().vfs;
+    const named = [];
     if (Array.isArray(msg.paths)) {
         for (const p of msg.paths) {
             if (typeof p === 'string' && p.length > 0)
-                paths.push(p);
+                named.push(p);
         }
     }
+    const paths = watchedTrees(named);
     if (!host._fsWatchSubs)
         host._fsWatchSubs = new Map();
     let list = host._fsWatchSubs.get(ws);
@@ -130,48 +136,29 @@ export function handleFsWatchSubscribe(host, ws, msg) {
             // WS closed mid-flush; wsClose cleanup handles unsub. Silent drop.
         }
     };
-    /**
-     * Filter event against this subscription's path prefixes. SqliteVFS
-     * paths in events are bare (no leading slash, e.g. 'home/user/x.txt');
-     * client may send absolute paths (e.g. '/home/user'). Strip leading
-     * slashes on both sides before prefix-match.
-     */
-    const matches = (eventPath) => {
-        if (paths.length === 0)
-            return true;
-        const ep = eventPath.replace(/^\/+/, '');
-        for (const p of paths) {
-            const norm = p.replace(/^\/+/, '');
-            if (ep === norm || ep.startsWith(norm + '/'))
-                return true;
+    /** A change in one of its trees, queued as SQLite names its paths. */
+    const onChange = (ev) => {
+        if (sub.pending.length >= SUB_MAX_QUEUE) {
+            // Drop-oldest: shift instead of unbounded growth.
+            sub.pending.shift();
+            sub.dropped++;
         }
-        return false;
-    };
-    /** Bus listener — global-batched per microtask. */
-    const onBatch = (batch) => {
-        for (const ev of batch) {
-            if (!matches(ev.path))
-                continue;
-            if (sub.pending.length >= SUB_MAX_QUEUE) {
-                // Drop-oldest: shift instead of unbounded growth.
-                sub.pending.shift();
-                sub.dropped++;
-            }
-            sub.pending.push(ev);
-        }
-        if (sub.pending.length === 0 && sub.dropped === 0)
-            return;
+        sub.pending.push(ev.oldPath === undefined
+            ? { type: ev.type, path: ev.path.slice(1), timestamp: ev.timestamp }
+            : { type: ev.type, path: ev.path.slice(1), oldPath: ev.oldPath.slice(1), timestamp: ev.timestamp });
         // One-shot debounce: re-arm if no flush scheduled.
         if (!sub.flushTimer) {
             sub.flushTimer = setTimeout(flush, COALESCE_MS);
         }
     };
-    const busUnsub = vfs.events.on(onBatch);
+    const stops = paths.map((path) => namespace.watchChanges(path, onChange));
     sub.unsub = () => {
-        try {
-            busUnsub();
+        for (const stop of stops) {
+            try {
+                stop();
+            }
+            catch { }
         }
-        catch { }
         if (sub.flushTimer) {
             try {
                 clearTimeout(sub.flushTimer);

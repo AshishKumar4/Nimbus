@@ -533,7 +533,7 @@ export class CirrusReal {
     root;
     basePath;
     vfs;
-    vfsEvents;
+    watchChanges;
     userConfigBundle;
     extraSyntheticFiles;
     facetStub = null;
@@ -574,7 +574,7 @@ export class CirrusReal {
         this.root = opts.root;
         this.basePath = opts.basePath;
         this.vfs = opts.vfs.as(opts.cred);
-        this.vfsEvents = opts.vfsEvents || null;
+        this.watchChanges = opts.watchChanges || null;
         this.userConfigBundle = opts.userConfigBundle || null;
         this.extraSyntheticFiles = opts.extraSyntheticFiles || {};
     }
@@ -843,16 +843,13 @@ export class CirrusReal {
         catch (e) {
             this.bootError = e?.stack || e?.message || String(e);
         }
-        // Wire the VFS event stream into the HMR bridge so the facet's
+        // Wire the session's changes into the HMR bridge so the facet's
         // chokidar shim actually sees file changes.
-        if (this.vfsEvents) {
-            this._vfsUnsub = this.vfsEvents.on((batch) => {
-                for (const ev of batch) {
-                    const absPath = '/' + stripLeadingSlashes(ev.path);
-                    // chokidar uses 'addDir'/'unlinkDir' for directory events;
-                    // VFS emits the same strings, so we can pass through as-is.
-                    this.hmr.pushVfsEvent(ev.type, absPath, ev.oldPath);
-                }
+        if (this.watchChanges) {
+            this._vfsUnsub = this.watchChanges((ev) => {
+                // chokidar uses 'addDir'/'unlinkDir' for directory events; the
+                // namespace tells the same strings, so they pass through as-is.
+                this.hmr.pushVfsEvent(ev.type, ev.path, ev.oldPath);
             });
         }
     }

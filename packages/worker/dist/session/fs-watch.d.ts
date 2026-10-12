@@ -1,18 +1,14 @@
 /**
  * session/fs-watch.ts — server-side `fs-watch-*` WS protocol.
  *
- * The VFS event bus (`src/vfs/events.ts`) already fires
- * `add`/`addDir`/`change`/`unlink`/`unlinkDir`/`rename` on every
- * SqliteVFS mutation (sqlite-vfs.ts:934, 1020, 1147, 1168, 1253,
- * 1654-1659). Three consumers already subscribe: cirrus-real HMR
- * (facets/cirrus-real.ts:894), in-supervisor vite-dev-server
- * (facets/vite-dev-server.ts:1524), and wrangler-dev
- * (wrangler/nimbus-wrangler.ts:245, 977).
- *
- * This module exposes that bus to browser clients (the FileTree
- * sidebar in public/s/index.html) over the existing shell WebSocket,
- * closing the user-reported gap: "file editor doesnt auto load any
- * new files/folders".
+ * The session's namespace tells every change it shows
+ * (`CompositeVFS.watchChanges`: `add`/`addDir`/`change`/`unlink`/
+ * `unlinkDir`/`rename`), on SQLite and on any mount, as the kernel sees
+ * it. This module exposes that to browser clients (the FileTree sidebar
+ * in public/s/index.html) over the existing shell WebSocket, closing the
+ * user-reported gap: "file editor doesnt auto load any new
+ * files/folders". An event's paths are sent as SQLite names them, without
+ * the leading slash.
  *
  * Protocol (additive; coexists with fs-read/fs-write/fs-list at
  * session/init.ts:260):
@@ -33,9 +29,9 @@
  *
  * Coalescing strategy
  * -------------------
- * The bus delivers global-batched events once per microtask. We add an
- * additional ~50 ms debounce so a 1000-file npm install doesn't
- * produce 1000 WS frames (or ~1000 microtask-batches). 50 ms absorbs
+ * The namespace tells each change as it lands. We add a ~50 ms
+ * debounce so a 1000-file npm install doesn't produce 1000 WS
+ * frames. 50 ms absorbs
  * the typical burst pattern and stays well under the user-perceptible
  * 100 ms threshold.
  *
@@ -48,7 +44,7 @@
  * Lifecycle
  * ---------
  *   - One Map<WebSocket, Sub[]> per session DO on the WsHost.
- *   - On `fs-watch-subscribe`: append a Sub + register the bus listener.
+ *   - On `fs-watch-subscribe`: append a Sub + watch each of its paths.
  *   - On `fs-watch-unsubscribe`: invoke unsub closures + remove entries.
  *   - On WS close / error (ws.ts:wsClose / wsError): unconditionally
  *     drop all subs for the dying WS.
@@ -64,15 +60,16 @@
  * acceptable and matches the W9 flush debounce pattern at
  * hibernation.ts:236-256).
  */
+import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import type { VfsEvent } from '@nimbus-sh/core/vfs/events.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 /** Per-subscription state. Closed over a single WebSocket. */
 export interface FsWatchSub {
     /** Stable id for client-side correlation. */
     subId: string;
-    /** Path-prefixes the client cares about. Empty = match-all. */
+    /** The trees the client watches, as the namespace names them. */
     paths: string[];
-    /** Bus unsubscribe closure. */
+    /** Stops its watches. */
     unsub: () => void;
     /** Pending events to flush in the next debounce window. */
     pending: VfsEvent[];
@@ -84,11 +81,13 @@ export interface FsWatchSub {
 /** Minimal host shape needed by this module. */
 export interface FsWatchHost {
     sqliteFs: SqliteVFS | null;
+    getFilesystemAuthority(): ProcessFiles;
     _fsWatchSubs?: Map<WebSocket, FsWatchSub[]>;
 }
 /**
- * Handle `fs-watch-subscribe`. Registers a bus listener; the listener
- * captures `ws` and pushes events (debounced + coalesced) over it.
+ * Handle `fs-watch-subscribe`. Watches each path the client names in the
+ * session's namespace; the watch captures `ws` and pushes events
+ * (debounced + coalesced) over it.
  *
  * Returns the structured result for the caller to forward as the
  * `fs-watch-subscribe-result` frame.

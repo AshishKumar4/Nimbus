@@ -22,6 +22,7 @@
  */
 import type { Awaitable, Principal, SyncVFS, VFS, VfsCasResult, VfsCred, VfsDirent, VfsMountDescription, VfsRemoval, VfsRevision, VfsStat, VfsUsage, VfsViewOptions, VfsWriteObserver, VfsWriteWants } from './vfs.js';
 import type { RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
+import type { VfsEvent } from './events.js';
 import { type VfsErrorCode } from './vfs-error.js';
 /**
  * Where a reader of a namespace's feed stands: the mount table as its
@@ -255,6 +256,14 @@ interface WriteWatch {
     observer: VfsWriteObserver;
     wants: (path: string, principal: Principal) => VfsWriteWants;
 }
+/** One watchChanges registration: its view, the tree it watches, and the mounts whose backends tell it their own changes. */
+interface ChangeWatch {
+    readonly view: CompositeVFS;
+    /** The namespace path watched, and everything under it. */
+    readonly path: string;
+    readonly listener: (event: VfsEvent) => void;
+    readonly subscribed: Map<Mount, () => void>;
+}
 /** observeWrites: who is told, the mounts whose backends report their own writes, and the namespace's own reports in flight. */
 interface WriteWatches {
     watches: Set<WriteWatch>;
@@ -278,6 +287,8 @@ interface Table {
     generation: number;
     /** observeWrites: who is told, and the mounts whose backends report their own writes, subscribed. */
     writes?: WriteWatches;
+    /** watchChanges: who is told. */
+    changes?: Set<ChangeWatch>;
     /** Directory → names of mount points (or their missing ancestors) directly in it. */
     synthesized: Map<string, Set<string>>;
     /** Asked before a credentialed view's mutation reaches a backend (guardMutations). */
@@ -417,6 +428,34 @@ export declare class CompositeVFS implements VFS {
      */
     private deliverWrite;
     /**
+     * Every change this view shows at `path` or under it, on any mount, told
+     * once it landed (VfsEvent, paths in this namespace): what it is and
+     * where, nothing read, held or waited for. The returned function stops
+     * it.
+     *
+     * A backend that tells its own changes (VFS.watchChanges: SQLite) is
+     * watched per mount, as this view's principal sees it, so its every
+     * change is told, whoever made it; one the namespace does not show there
+     * (a mount covers it) is not, and a rename half shown is the add, or the
+     * unlink, its shown half is. Any other backend's changes are told as they
+     * are made through this namespace, by what the operation is: a directory
+     * made addDir, a file or link made add, rmdir unlinkDir, any other
+     * removal unlink, a rename rename, anything else change. Whether a write
+     * of a whole file or a range made its file, and what kind of entry rm -r
+     * removed, is not looked up: those are change and unlink.
+     */
+    watchChanges(path: string, listener: (event: VfsEvent) => void): () => void;
+    /** Watch `mount`'s backend, as this view sees it, where it tells its own changes and holds part of `watch`'s tree. */
+    private subscribeChanges;
+    /** `event`, a change on `mount` (namespace paths), told to `watch` as far as this view shows it there. */
+    private hearChange;
+    /**
+     * `run`, and once it lands, its change told to each watcher whose
+     * backend there does not tell its own (watchChanges): `run` itself when
+     * no one watches.
+     */
+    private telling;
+    /**
      * `run`, a mutation landing at `spec.path` on `spec.route`'s backend,
      * reported once it landed: by the backend itself when it reports its own
      * writes (subscribed), else here. Here, what the path held before and
@@ -500,7 +539,8 @@ export declare class CompositeVFS implements VFS {
      * backend, observed there while `still`. `held(at)`: the held file's own
      * refusal (it is not the file at `at` now), asked after the before-image is
      * read, before the guard. A file with no name (unlinked, held open) is no
-     * name's change: only the view's own check is asked.
+     * name's change: only the view's own check is asked. `told`: what its
+     * change is told as (WriteSpec.told).
      */
     private changingOn;
     /** A name an open found on a backend (pin). */

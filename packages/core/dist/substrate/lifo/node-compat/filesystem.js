@@ -21,8 +21,6 @@ function bridgeFilesystem(bridge) {
             throw syscallError('ENOENT', 'open', path);
         return data;
     };
-    let listener;
-    let unsubscribe;
     return {
         readFile: read,
         readFileString: path => new TextDecoder().decode(read(path)),
@@ -73,11 +71,8 @@ function bridgeFilesystem(bridge) {
         ftruncate: (fd, size) => fs.ftruncate(fd, size),
         fsync: (fd) => fs.fsync(fd),
         close: (fd) => fs.close(fd),
-        get onChange() { return listener; },
-        set onChange(next) {
-            unsubscribe?.();
-            listener = next;
-            unsubscribe = next ? bridge.subscribe?.('/', next) : undefined;
-        },
+        watch: (path, listener) => bridge.subscribe?.(path, (event) => listener(event.oldPath === undefined
+            ? { ...event, path: `/${event.path}` }
+            : { ...event, path: `/${event.path}`, oldPath: `/${event.oldPath}` })) ?? (() => { }),
     };
 }
