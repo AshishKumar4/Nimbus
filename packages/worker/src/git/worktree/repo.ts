@@ -52,7 +52,7 @@ export interface ObjectEngine {
 
 /** Objects written by one command: each `write`'s object is there once `flush` has settled. */
 export interface ObjectWriter {
-  write(type: 'blob' | 'tree' | 'commit', data: Uint8Array): Promise<string>;
+  write(type: 'blob' | 'tree' | 'commit' | 'tag', data: Uint8Array): Promise<string>;
   flush(): Promise<void>;
 }
 
@@ -179,7 +179,7 @@ export class WorktreeRepo {
    * repository lacks it (and `sink` holds it back for no wave), its loose
    * bytes put into `sink`.
    */
-  private async writeObject(sink: ObjectSink, type: 'blob' | 'tree' | 'commit', data: Uint8Array): Promise<string> {
+  private async writeObject(sink: ObjectSink, type: 'blob' | 'tree' | 'commit' | 'tag', data: Uint8Array): Promise<string> {
     const oid = objectId(type, data);
     if (sink.pending(oid) || await this.store.has(oid)) return oid;
     await sink.put(oid, looseBytes(type, data));

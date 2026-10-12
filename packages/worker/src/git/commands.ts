@@ -1432,7 +1432,7 @@ function tagPattern(pattern: string): RegExp {
  * a tag object as git writes it), replace (-f) and delete (-d), with git's
  * messages and exit codes.
  */
-async function tagCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: ProjectFs, args: readonly string[]): Promise<number> {
+async function tagCommand(ctx: Ctx, git: CfGit, fs: GitFs, vfs: ProjectFs, args: readonly string[]): Promise<number> {
   let annotate = false;
   let force = false;
   let del = false;
@@ -1582,7 +1582,10 @@ async function tagCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: ProjectFs, arg
     // must not have, and its parser then misreads the listing.
     const { type } = await git.readObject({ fs, dir, oid: object, cache: {}, format: 'parsed' });
     const body = `object ${object}\ntype ${type}\ntag ${name}\ntagger ${tagger}\n\n${cleanupMessage(messages.join('\n\n'))}`;
-    value = await git.writeObject({ fs, dir, type: 'tag', object: new TextEncoder().encode(body), format: 'content' });
+    // Written as every object a command makes is: 0444 from its creation.
+    const objects = await worktreeRepo(ctx, git, vfs, fs, gitdir, dir).objectWriter();
+    value = await objects.write('tag', new TextEncoder().encode(body));
+    await objects.flush();
     await git.writeRef({ fs, dir, ref: `refs/tags/${name}`, value, force: true });
   } else {
     await git.tag({ fs, dir, ref: name, object, force: true });
