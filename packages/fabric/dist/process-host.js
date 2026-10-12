@@ -67,7 +67,7 @@
  */
 import { networkRef } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { cancelWhenAbandoned, hostActivity, HOST_INCARNATION_HEADER } from './host-activity.js';
+import { callerLeft, hostActivity, HOST_INCARNATION_HEADER } from './host-activity.js';
 import { onColdStart } from './generation.js';
 import { peerRetryDelay } from './fanout.js';
 import { hostNamespaceBinding, hostOpDispatch } from './host-dispatch.js';
@@ -199,7 +199,6 @@ const PeerHttpResult = z.object({
     statusText: z.string(),
     headers: z.array(z.tuple([z.string(), z.string()])),
     body: z.instanceof(ReadableStream).nullable(),
-    cancel: z.custom((value) => typeof value === 'function'),
 });
 const PeerFailure = z.object({ hostLost: z.string() });
 function peerAnswer(schema, value) {
@@ -600,8 +599,8 @@ async function routeThroughPeer(stub, workerKey, capability, request, scope) {
         url: request.url,
         headers: headerPairs(request.headers),
         body: request.method === 'GET' || request.method === 'HEAD' ? null : request.body,
+        left: callerLeft(scope),
     });
-    cancelWhenAbandoned(scope, result.cancel);
     const responseHeaders = new Headers();
     for (const [key, value] of result.headers)
         responseHeaders.append(key, value);

@@ -14,7 +14,7 @@
 import { type WorkspaceEgress } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { z } from 'zod/v4';
 import { type ResidentBootSpec } from './process-fabric.js';
-import { type Abandonable } from './host-activity.js';
+import { type CallerLeft } from './host-activity.js';
 export declare function isolateToken(): string;
 /**
  * Options the coordinator hands a hosting peer. Parsed on the peer, because a
@@ -52,8 +52,10 @@ export interface HostedHttpRequest {
     url: string;
     headers: [string, string][];
     body: ReadableStream | null;
+    /** Its caller, who can leave it before or after its headers. */
+    left: CallerLeft;
 }
-export interface HostedHttpResponse extends Abandonable {
+export interface HostedHttpResponse {
     status: number;
     statusText: string;
     headers: [string, string][];
@@ -154,8 +156,9 @@ export declare class PeerHost {
      * The response body is re-piped through an identity stream owned by THIS
      * isolate before it is returned, for the same reason the parts exist at all:
      * what leaves here must not be an object the loaded worker owns. That pipe's
-     * settlement is when the process's work for the response is done, and the
-     * coordinator ends it through `cancel` when its caller abandons the response.
+     * settlement is when the process's work for the response is done; the
+     * coordinator's caller leaving (`wire.left`) ends the request, before its
+     * headers or after.
      */
     routeHttp(workerKey: string, wire: HostedHttpRequest): Promise<HostedReply<HostedHttpResponse>>;
     /**

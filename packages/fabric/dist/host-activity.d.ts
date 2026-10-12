@@ -38,19 +38,21 @@ export declare class HostActivity {
     private failed;
 }
 /**
- * A response relayed from another actor, which its caller can abandon.
- * Workers RPC carries no signal, so the relay hands back `cancel`: an RPC stub
- * the caller calls when its own caller leaves, and disposes once done.
+ * Whether a request's caller left it, asked by its handler on another actor:
+ * true once the caller has left the response, false once it is done with it.
+ * Minted with the request and passed beside it (a function crosses Workers
+ * RPC as a stub, a signal does not), so the handler hears a caller that
+ * leaves before any header as well as after one.
  */
-export interface Abandonable {
-    cancel(): void;
-}
-/** What a resident's leaf answers its host (the adapter's hostHttpRequest). */
-export interface HostedLeafResponse extends Abandonable {
-    response: Response;
-}
-/** Call `cancel` if `scope`'s caller leaves; dispose it once the caller is done, either way. */
-export declare function cancelWhenAbandoned(scope: ResponseScope, cancel: Abandonable['cancel']): void;
+export type CallerLeft = () => Promise<boolean>;
+/** The caller of a request with `scope`, for its handler on another actor. */
+export declare function callerLeft(scope: ResponseScope): CallerLeft;
+/**
+ * The handler's side: a signal that aborts when the caller leaves, or when
+ * the caller can no longer be asked (its actor is gone). A stub received as
+ * a call's argument is the call's; its `dup` is held until the answer.
+ */
+export declare function callerLeftSignal(left: CallerLeft): AbortSignal;
 export declare function hostActivity(host: object): HostActivity;
 /**
  * One native fetch endpoint, outside the guest's HTTP handler, on every

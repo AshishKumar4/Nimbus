@@ -20,7 +20,7 @@ import { ProcessHostLost } from './process-fabric.js';
 import { bindingSupervisor, supervisorBindingProps } from './supervisor-props.js';
 import { withResolvers } from './turn-budget.js';
 import { processes, abortFacet, deleteFacetStorage } from './workerd-facet-host.js';
-import { HOST_INCARNATION_HEADER } from './host-activity.js';
+import { callerLeftSignal, HOST_INCARNATION_HEADER } from './host-activity.js';
 import { isHostReset } from '@nimbus-sh/platform/oom-classify.js';
 /**
  * This workerd process's identity. Module scope, so two Durable Objects
@@ -314,8 +314,9 @@ export class PeerHost {
      * The response body is re-piped through an identity stream owned by THIS
      * isolate before it is returned, for the same reason the parts exist at all:
      * what leaves here must not be an object the loaded worker owns. That pipe's
-     * settlement is when the process's work for the response is done, and the
-     * coordinator ends it through `cancel` when its caller abandons the response.
+     * settlement is when the process's work for the response is done; the
+     * coordinator's caller leaving (`wire.left`) ends the request, before its
+     * headers or after.
      */
     async routeHttp(workerKey, wire) {
         return this.answer(workerKey, async () => {
@@ -331,13 +332,19 @@ export class PeerHost {
                 init.body = wire.body;
                 init.duplex = 'half';
             }
-            const abandoned = new AbortController();
-            const { scope, owner } = responseScope(abandoned.signal);
-            const response = await facet.handleHttpRequest(new Request(wire.url, init), scope);
+            const { scope, owner } = responseScope(callerLeftSignal(wire.left));
+            let response;
+            try {
+                response = await facet.handleHttpRequest(new Request(wire.url, init), scope);
+            }
+            catch (error) {
+                owner.settle();
+                throw error;
+            }
             let body = null;
             if (response.body) {
                 const { readable, writable } = new IdentityTransformStream();
-                this.ctx.waitUntil(response.body.pipeTo(writable, { signal: abandoned.signal }).catch(() => { }).finally(owner.settle));
+                this.ctx.waitUntil(response.body.pipeTo(writable, { signal: scope.signal }).catch(() => { }).finally(owner.settle));
                 body = readable;
             }
             else
@@ -347,7 +354,6 @@ export class PeerHost {
                 statusText: response.statusText,
                 headers: headerPairs(response.headers),
                 body,
-                cancel: () => abandoned.abort(new DOMException('The response was abandoned', 'AbortError')),
             };
         });
     }
