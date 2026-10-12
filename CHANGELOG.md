@@ -14,6 +14,10 @@ published independently in the `@nimbus-sh` npm scope.
   `source <(...)`, `done < <(...)`, `diff <(...) <(...)`. Before, `/dev/fd/N`
   was not found, `/dev/stdin` read as empty, and writes to `/dev/stdout` and
   `/dev/stderr` were silently discarded.
+- Fixed: in the wasm bash, `exec 3<file; read a <&3; read b <&3` read the
+  first line twice for a small file, and a subshell's read did not move its
+  parent's offset. A duplicate (`<&3`, `dup2`) and a child now share their
+  descriptor's offset, as on Linux.
 - Fixed: a bash run whose non-local jump lost its target (an `exit` or
   `return` inside `eval`, a sourced file, or an EXIT trap) now fails with
   "bash-runner: pid N returned from _start mid-rewind, its longjmp or resume

@@ -25,13 +25,29 @@ export interface ResidentFd {
   bytes: Uint8Array;
   /** The file's name, which a path naming this descriptor opens again (descriptorNamed). */
   name: RuntimeFsPath;
-  /** Given back when the descriptor goes, when the filesystem pinned the bytes for it (pinContent). */
+  /** Given back when the last descriptor on it goes, when the filesystem pinned the bytes for it (pinContent). */
   release?: () => void;
+  /**
+   * Descriptors on this open: dup(2), dup2(2) and a fork's copy share it,
+   * and with it its offset (shareResident, closeResident).
+   */
+  opens: number;
   position: number;
   rights: bigint;
   rightsInheriting: bigint;
   fdflags: number;
 }
+/** Another descriptor on a resident open, as dup(2) makes one: the same offset, the same pin. */
+export function shareResident(open: ResidentFd): ResidentFd {
+  open.opens++;
+  return open;
+}
+
+/** One descriptor on a resident open closed; the last gives its pin back. */
+export function closeResident(open: ResidentFd): void {
+  if (--open.opens === 0) open.release?.();
+}
+
 export interface AuthorityPreopen {
   kind: 'preopen';
   vfsPath: string;
@@ -489,13 +505,13 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
         return after(Reflect.apply(pinContent, fs, [target, st]) as Awaitable<PinnedContent | null>, (pinned) => {
           if (pinned === null) return open();
           const id = options.allocateFd();
-          fds.set(id, { kind: 'resident', stat: st, bytes: pinned.bytes, name, release: pinned.release, position: 0, rights: requested, rightsInheriting: childRights, fdflags: status });
+          fds.set(id, { kind: 'resident', stat: st, bytes: pinned.bytes, name, release: pinned.release, opens: 1, position: 0, rights: requested, rightsInheriting: childRights, fdflags: status });
           u32(out, id); return 0;
         });
       }
       return after(residentContent(fs, target, st), bytes => {
         const id = options.allocateFd();
-        fds.set(id, { kind: 'resident', stat: st, bytes, name, position: 0, rights: requested, rightsInheriting: childRights, fdflags: status });
+        fds.set(id, { kind: 'resident', stat: st, bytes, name, opens: 1, position: 0, rights: requested, rightsInheriting: childRights, fdflags: status });
         u32(out, id); return 0;
       });
     });
@@ -518,7 +534,7 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     // the guest nothing to open, so it survives the close, as in the host body.
     if (preopen(fd)) return 0;
     const e = entry(fd);
-    if (e.kind === 'resident') { e.release?.(); fds.delete(fd); return 0; }
+    if (e.kind === 'resident') { closeResident(e); fds.delete(fd); return 0; }
     return after(fs.close(e.handle.id), () => { fds.delete(fd); return 0; });
   }, owns);
   imports.fd_renumber = guard(imports.fd_renumber, (fs: RuntimeFsBridge | RuntimeSynchronousFs, from: number, to: number) => {
@@ -529,7 +545,7 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     if (target?.kind === 'preopen') fail('ENOTCAPABLE');
     // dup2 closes what it lands on, and only the owner of that fd knows how:
     // a socket's stream and a pipe's writer count are the host's to release.
-    if (target?.kind === 'resident') target.release?.();
+    if (target?.kind === 'resident') closeResident(target);
     const released = !target || target.kind === 'resident' ? undefined
       : target.kind === 'authority' ? fs.close(target.handle.id)
       : hostClose?.(to);
