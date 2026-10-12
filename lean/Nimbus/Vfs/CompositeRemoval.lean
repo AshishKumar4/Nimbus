@@ -228,11 +228,8 @@ theorem child_failure_skips_ancestors (base : St) (P : Principal) (composed stri
 
 theorem gone_kept_mono (operand q p : Path) (vanished strict : Bool) (S' : St)
     (r : Result) (hp : p ∈ r.kept) : p ∈ (gone operand q vanished strict S' r).kept := by
-  unfold gone
-  split
-  · simp only [keep, mem_mergePaths]
-    exact Or.inl hp
-  · exact hp
+  cases vanished <;> cases strict <;> by_cases h : q = operand <;>
+    simp [gone, keep, mem_mergePaths, h, hp]
 
 theorem step_kept_mono (base : St) (P : Principal) (composed strict : Bool) {operand : Path}
     (r : Result) (e : Entry operand) (p : Path) (hp : p ∈ r.kept) :
@@ -270,8 +267,7 @@ theorem failed_ancestor_skipped_after_siblings (base : St) (P : Principal) (comp
 
 theorem gone_failures (operand q : Path) (vanished strict : Bool) (S' : St) (r : Result) :
     (gone operand q vanished strict S' r).failures = r.failures := by
-  unfold gone
-  split <;> rfl
+  cases vanished <;> cases strict <;> by_cases h : q = operand <;> simp [gone, keep, h]
 
 theorem attempt_failure_path (base : St) (P : Principal) (composed : Bool) {operand : Path}
     (S : St) (e : Entry operand) (f : Failure) (h : attempt cfg base P composed S e = .error f) :
