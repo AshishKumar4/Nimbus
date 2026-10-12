@@ -46,7 +46,7 @@
       "bun.lock#esbuild": "add5ecc823d2dd6f81362b09025f25d76ab708b382ff33103bd0314cb655dee7",
       "package.json": "ad4e12d103ff459ecf586c4121377f48f238a4dc8e59823a8afb711438e424d8",
       "packages/core/package.json": "4870c4d3f0592e6d6b10ee5b10dc849756ba0a5821cdbb0cb6700ef8a91b0579",
-      "packages/worker/package.json": "6c362b6fdbb8b4b1dc88e25875d0bdcddafd45186e7e5e07c9fe19b8d855eed9"
+      "packages/worker/package.json": "d29db6392a5dda65f1e77654584fd9f4ee219e8f1a3cdc4c52a1d879f8a59f75"
     },
     "graph": [
       "packages/core/src/runtime/wasi/filesystem.ts",
