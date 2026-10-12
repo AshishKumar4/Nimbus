@@ -983,6 +983,8 @@ export class CompositeVFS {
      */
     judgeChanges(watch, batch) {
         const { mount, events, judged } = batch;
+        if (this.table.mounts.get(mount.point) !== mount)
+            return [];
         // The path the namespace looks up for an end its backend told: on a mount whose backend judged it, its first name there.
         const lookedUp = (path) => {
             if (!judged || path === mount.point)
@@ -1064,6 +1066,7 @@ export class CompositeVFS {
         };
         const told = [];
         const judgeFrom = (start) => {
+            // A wait may outlast the mount.
             if (this.table.mounts.get(mount.point) !== mount)
                 return told;
             let routed = routedFrom(watch.path);
