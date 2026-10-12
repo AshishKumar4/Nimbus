@@ -28,7 +28,8 @@ if [ ! -d "$WORK/wasi-sdk-25.0-x86_64-linux" ]; then
 	tar xzf "$WORK/wasi-sdk.tgz" -C "$WORK"
 	rm "$WORK/wasi-sdk.tgz"
 fi
-[ $# -gt 0 ] || set -- fetch deps nimbus hostpy wasi extenv ext sci assets
+# The default is the complete build (inputs.mjs PYTHON_COMPLETE_STAGES).
+[ $# -gt 0 ] || set -- $(node "$HERE/inputs.mjs" --stages)
 
 node "$HERE/inputs.mjs" --snapshot "$WORK/inputs.json"
 bwrap --unshare-user --tmpfs / \

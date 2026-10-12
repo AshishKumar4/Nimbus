@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { BuildFailure, runBuildFixpoint } from '../../scripts/dist-integrity.mjs';
 import { bindingInputs, loaderInputs } from '../../packages/worker/scripts/napi-wasm/inputs.mjs';
 import { opencodeInputs } from '../../packages/worker/scripts/opencode/inputs.mjs';
-import { PYTHON_COMPLETE_STAGES, pythonInputs } from '../../packages/worker/wasm/python/inputs.mjs';
+import { pythonInputs } from '../../packages/worker/wasm/python/inputs.mjs';
 import { oxcWasmInputs } from '../../packages/worker/scripts/oxc-wasm/inputs.mjs';
 import { SPECS } from '../../packages/worker/scripts/napi-wasm/specs.mjs';
 import { SPECS as RUNTIME_SPECS } from '../../packages/worker/scripts/runtime-specs.mjs';
@@ -124,8 +124,6 @@ try {
   }
   // A partial build (assets alone repacks an earlier build's interpreters)
   // records no provenance over sources it did not compile; a complete one does.
-  const wrapper = await readFile(path.join(root, 'packages/worker/wasm/python/build-in-bwrap.sh'), 'utf8');
-  assert.match(wrapper, new RegExp(`set -- ${PYTHON_COMPLETE_STAGES.join(' ')}\\n`), "the wrapper's default is the complete build");
   const python = 'packages/worker/wasm/python/nimbus-py.c';
   await writeFile(path.join(root, python), await readFile(path.join(root, python), 'utf8') + '\n');
   const pythonProvenance = path.join(root, 'packages/worker/wasm/python/provenance.json');

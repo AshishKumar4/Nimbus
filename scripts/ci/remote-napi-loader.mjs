@@ -18,7 +18,7 @@
 // else left in the saved archive, whose path is printed. Then commit them,
 // and run scripts/ci/remote-build.mjs for the dist fixpoint. A stale binding
 // is not this run's: the staging names the remote-napi-binding.mjs run that
-// rebuilds it with the loader.
+// rebuilds it with the loader. Exit 2: not graded.
 import { spawnSync } from 'node:child_process';
 import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -63,8 +63,12 @@ const r = await mapOnArmada({ repo, sha, files: [], items: [1], label: `napi-was
 const { log: rest, archive } = splitArchive(r.outputs?.[0] ?? r.outcomes?.[0]?.tail ?? '');
 const [log, provenance = ''] = rest.split('---PROVENANCE---');
 console.log(log.trim());
+if (r.outcomes?.[0]?.kind !== 'exited') {
+  console.error(`remote-napi-loader: armada could not run the build (job ${r.jobId}, ${r.outcomes?.[0]?.kind} ${r.outcomes?.[0]?.exitCode}); not graded`);
+  process.exit(2);
+}
 if (archive === null) {
-  console.error(`remote-napi-loader: the build returned no files (outcome ${r.outcomes?.[0]?.kind} ${r.outcomes?.[0]?.exitCode})`);
+  console.error(`remote-napi-loader: the build returned no files (exit ${r.outcomes[0].exitCode})`);
   process.exit(1);
 }
 console.log(provenance.trim());

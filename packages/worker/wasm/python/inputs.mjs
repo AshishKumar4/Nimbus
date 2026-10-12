@@ -7,8 +7,8 @@ const HERE = fileURLToPath(new URL('./', import.meta.url));
 export const PYTHON_OUTPUTS = ['python.wasm', 'python-sci.wasm', 'python313.zip', 'sci-packages.zip'];
 export const PYTHON_REGENERATE = 'bun scripts/ci/remote-python-build.mjs';
 /**
- * The stages of a complete build (build-in-bwrap.sh's default): every one
- * that compiles what the artifacts hold, then assets. Only such a run
+ * The stages of a complete build, build-in-bwrap.sh's default (`--stages`
+ * prints them): every one that compiles what the artifacts hold, then assets. Only such a run
  * records provenance. A run of some of them (assets alone repacks the
  * interpreters an earlier build linked) cannot say what its cached objects
  * were built from, so the provenance stays as it was, and the gate refuses
@@ -49,7 +49,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     await fs.writeFile(path.join(HERE, 'provenance.json'), JSON.stringify({
       artifact: 'cpython', source: { inputs }, outputs: await digestInputs(HERE, PYTHON_OUTPUTS),
     }, null, 2) + '\n');
+  } else if (mode === '--stages' && !snapshot) {
+    console.log(PYTHON_COMPLETE_STAGES.join(' '));
   } else if (mode === '--check' && !snapshot) {
     await checkPythonInputs();
-  } else throw new Error('usage: node wasm/python/inputs.mjs --check | --snapshot <file> | --record <file> <stage>...');
+  } else throw new Error('usage: node wasm/python/inputs.mjs --check | --stages | --snapshot <file> | --record <file> <stage>...');
 }
