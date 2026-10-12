@@ -90,7 +90,7 @@ export function relayRpcBody(response, method, owner, gated = null) {
     const length = declared !== null && /^\d+$/.test(declared) ? Number(declared) : NaN;
     const last = Number.isSafeInteger(length) ? new FixedLengthStream(length) : gated ?? ownedStage(owner);
     // An owned stage in the chain ends it when the caller leaves (RelayScope); a chain without one, the pipe's signal.
-    settleWith(owner, last === gated || gated === null ? response.body : response.body.pipeThrough(gated), last.writable, gated === null && last instanceof FixedLengthStream);
+    settleWith(owner, last === gated || gated === null ? response.body : response.body.pipeThrough(gated), last.writable, gated === null && Number.isSafeInteger(length));
     return new Response(last.readable, {
         status: response.status,
         statusText: response.statusText,
