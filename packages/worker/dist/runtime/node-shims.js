@@ -12697,7 +12697,7 @@ function __esmLoad(resolution) {
     const evaluationKey = variant ? resolution.url : key;
     // An interpreted ES module links through its require(): the staged
     // modules it imports are the registry's to evaluate, first.
-    if (esm) return __nimbusEsmLinkStaged(key, new Set()).then(() => __esmLoadInterpreted(resolution, key, evaluationKey, esm));
+    if (esm) return __nimbusEsmLinkStaged(key).then(() => __esmLoadInterpreted(resolution, key, evaluationKey, esm));
     return __esmLoadInterpreted(resolution, key, evaluationKey, esm);
   }
   __esmNamespaces.set(resolution.url, ns);
@@ -12705,8 +12705,22 @@ function __esmLoad(resolution) {
 }
 // Evaluate, in import order, the staged ES modules the interpreted module at
 // \`key\` statically imports, and those its unstaged imports do, so the
-// interpreter finds them evaluated rather than evaluating them itself.
-async function __nimbusEsmLinkStaged(key, seen) {
+// interpreter finds them evaluated rather than evaluating them itself: once
+// every static import of the late graph resolves and loads. A graph that
+// does not link runs none of its bodies, as Node's does: its import()
+// rejects with the first refusal, as the interpreter's own import gives it.
+async function __nimbusEsmLinkStaged(key) {
+  const order = [];
+  __nimbusEsmLinkPlan(key, new Set(), order);
+  // What one throws ends the evaluation of what imports it, as Node's
+  // does: no later import of it evaluates, and the import() rejects.
+  for (const id of order) {
+    if (__nimbusEsmRecord(id).state !== __ESM_DONE && !__nimbusEsmTainted(id)) await __nimbusEsmImport(id);
+  }
+}
+// The staged modules a late graph links to, in import order (into
+// \`order\`); throws the refusal of a static import that does not resolve or load.
+function __nimbusEsmLinkPlan(key, seen, order) {
   if (seen.has(key)) return;
   seen.add(key);
   const staged = __nimbusEsmId("module", key);
@@ -12716,17 +12730,22 @@ async function __nimbusEsmLinkStaged(key, seen) {
   for (const request of __nimbusModuleRequests(key, text)) {
     if (request.kind !== "static") continue;
     let resolution;
-    try { resolution = __esmResolver.resolveSync(request.specifier, parentUrl); } catch { continue; }
+    try {
+      resolution = __esmResolver.resolveSync(request.specifier, parentUrl);
+      __nimbusAssertLoadable(resolution, undefined);
+    } catch (error) {
+      // As the interpreter's static import refuses it: before the importer runs, with no arrow of its.
+      __nimbusDecorated.add(error);
+      throw error;
+    }
     if (!resolution.path) continue;
     // A query's or fragment's instance is the interpreter's own, linked where it is imported.
     const { search, hash } = new URL(resolution.url);
     if (search !== "" || hash !== "") continue;
     const target = resolution.path.replace(/^\\/+/, "");
     const id = __nimbusEsmId("module", target);
-    if (id === -1) await __nimbusEsmLinkStaged(target, seen);
-    // What one throws ends the evaluation of what imports it, as Node's
-    // does: no later import of it evaluates, and the import() rejects.
-    else if (__nimbusEsmRecord(id).state !== __ESM_DONE && !__nimbusEsmTainted(id)) await __nimbusEsmImport(id);
+    if (id === -1) __nimbusEsmLinkPlan(target, seen, order);
+    else if (!order.includes(id)) order.push(id);
   }
 }
 function __esmLoadInterpreted(resolution, key, evaluationKey, esm) {
