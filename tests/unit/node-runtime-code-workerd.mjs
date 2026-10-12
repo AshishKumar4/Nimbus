@@ -50,6 +50,20 @@ import { localTerminal, startLocalProbe } from './lib/workerd-probe.mjs';
 
 const W = '/home/user/w';
 const FILES = {
+  'identity.js': [
+    'const locale = new Intl.DateTimeFormat().resolvedOptions().locale;',
+    'const identity = { userAgent: navigator.userAgent, platform: navigator.platform, language: navigator.language, languages: navigator.languages };',
+    'if (identity.userAgent !== "Node.js/" + process.version.slice(1).split(".")[0]) throw new Error("navigator does not identify this Node version");',
+    'if (identity.language !== locale || identity.languages.length !== 1 || identity.languages[0] !== locale) throw new Error("navigator does not use this process ICU locale");',
+    'if (!Object.isFrozen(navigator.languages) || navigator.languages !== navigator.languages) throw new Error("navigator languages must be a stable frozen list");',
+    'console.log("IDENTITY " + JSON.stringify(identity));',
+  ].join('\n'),
+  'pg-transport.js': [
+    'const { getStream } = require("pg/lib/stream");',
+    'const stream = getStream(false);',
+    'console.log("PGTRANSPORT " + (stream instanceof require("net").Socket));',
+    'stream.destroy();',
+  ].join('\n'),
   'legacy.js': 'var f = 1;\nfunction f() {}\nmodule.exports = typeof f;\n',
   'strictdup.js': '"use strict";\nfunction g() { return 1; }\nfunction g() { return 2; }\nmodule.exports = g();\n',
   'esm.mjs': 'import { createRequire } from "node:module";\nconst require = createRequire(import.meta.url);\nconst __dirname = "/own";\nexport const v = typeof require("path").join + ":" + __dirname;\n',
@@ -366,6 +380,20 @@ try {
       `mkdir -p ${W} && node -e "const f = JSON.parse(Buffer.from('${payload}', 'base64').toString()); for (const [n, t] of Object.entries(f)) require('fs').writeFileSync('${W}/' + n, t); console.log('SETUP')"`,
     );
     assert.match(setup.stdout, /SETUP/, setup.stdout);
+
+    const hostIdentity = spawnSync('node', ['-e', FILES['identity.js']], { encoding: 'utf8' });
+    assert.equal(hostIdentity.status, 0, hostIdentity.stderr);
+    for (const launch of ['first', 'next']) {
+      const identity = await terminal.run(`cd ${W} && node identity.js`);
+      assert.equal(identity.status, 0, identity.stdout);
+      assert.equal(identity.stdout.split('\n').find((line) => line.startsWith('IDENTITY ')), hostIdentity.stdout.trim(),
+        `navigator identifies Node with the process ICU locale in the ${launch} launch`);
+    }
+    const pgInstall = await terminal.run(`cd ${W} && npm install pg@8.16.3`);
+    assert.equal(pgInstall.status, 0, pgInstall.stdout);
+    const pgTransport = await terminal.run(`cd ${W} && node pg-transport.js`);
+    assert.equal(pgTransport.status, 0, pgTransport.stdout);
+    assert.ok(pgTransport.stdout.split('\n').includes('PGTRANSPORT true'), 'standard pg uses its Node socket transport');
 
     const cells = await terminal.run(`cd ${W} && node cells.js`);
     assert.match(cells.stdout, /CELLS number,2,tr,tr-space,tab,tabx function:\/own\n/, cells.stdout);

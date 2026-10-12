@@ -1162,6 +1162,14 @@ ${RESIDENCY_MISS_REPORT}
     try { globalThis.process = __processMod; } catch {}
     try { globalThis.Buffer = __BufferMod; } catch {}
     try { globalThis.global = globalThis; } catch {}
+    let __nimbusNodeLanguages;
+    const __nimbusNodeLanguageList = () => __nimbusNodeLanguages ??= Object.freeze([new Intl.DateTimeFormat().resolvedOptions().locale]);
+    Object.defineProperties(globalThis.navigator, {
+      userAgent: { get: () => 'Node.js/' + __processMod.version.slice(1).split('.')[0], enumerable: true, configurable: true },
+      platform: { get: () => 'Linux x86_64', enumerable: true, configurable: true },
+      language: { get: () => __nimbusNodeLanguageList()[0], enumerable: true, configurable: true },
+      languages: { get: __nimbusNodeLanguageList, enumerable: true, configurable: true },
+    });
     // undici's fetch (bundled by e.g. create-cloudflare) detaches
     // performance.markResourceTiming and calls it with no receiver,
     // which workerd rejects with "Illegal invocation" and crashes the
