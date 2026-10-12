@@ -28,6 +28,12 @@ interface ConfigReader {
         path: string;
     }): Promise<unknown[]>;
 }
+/** The global files in git's order, read by cf-git's canonical config parser. */
+export declare function withGlobalConfig<G extends ConfigReader>(git: G, fs: {
+    promises: {
+        readFile(path: string, options?: unknown): Promise<Uint8Array | string>;
+    };
+}, env: Record<string, string>): G;
 /**
  * `git` with `overrides` over every file's: a key `-c` set reads as its last
  * value, and all of them after the files' for a read of every value.

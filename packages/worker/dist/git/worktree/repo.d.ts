@@ -7,8 +7,8 @@
  * object, by one flow (objectWriter): one at a time, or for a command that
  * writes many (add's blobs) in the shared wave writer's waves, straight into
  * the engine. The worktree goes through the command's view of the
- * namespace. Configuration is cf-git's reading of .git/config, and for
- * core.excludesFile the global files git reads as well.
+ * namespace. Configuration is cf-git's reading of .git/config, with the
+ * global files and command overrides supplied by the command.
  */
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/runtime/wave-contracts.js';
 import type { ProjectFs } from '../../runtime/project-fs.js';
@@ -86,6 +86,8 @@ export declare class WorktreeRepo {
     private readonly engine;
     /** This command holds its repository's index lock. */
     private locked;
+    private indexWritten;
+    private preparedIndex;
     readonly store: ObjectStore;
     readonly fs: WorktreeFs;
     private readonly cache;
@@ -151,6 +153,8 @@ export declare class WorktreeRepo {
     worktree(): Promise<Worktree>;
     /** The index, as git's repo_read_index leaves it: see clearPresentSkips. */
     readIndex(): Promise<DirCache>;
+    /** Capability is checked before branch creation, staging, fetch or checkout. Reuse the index read there. */
+    prepare(): Promise<void>;
     /**
      * clear_skip_worktree_from_present_files, as git does on every index read:
      * in a sparse checkout (but with sparse.expectFilesOutsideOfPatterns), a
@@ -174,8 +178,6 @@ export declare class WorktreeRepo {
     headTree(): Promise<string>;
     /** A pattern file's list, or none when it cannot be read. */
     private patternFile;
-    /** A global config value: ~/.gitconfig over $XDG_CONFIG_HOME/git/config, as git reads them. */
-    private globalConfig;
     /**
      * setup_standard_excludes: core.excludesFile (or $XDG_CONFIG_HOME/git/ignore,
      * else ~/.config/git/ignore), then $GIT_DIR/info/exclude, then each

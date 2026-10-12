@@ -231,6 +231,7 @@ export declare class ProcessView implements VFS {
      */
     writeFile(path: string, data: Uint8Array | string, options?: {
         mode?: number;
+        exclusive?: boolean;
     }): Promise<void>;
     readdir(path: string): Promise<VfsDirent[]>;
     mkdir(path: string, options?: {

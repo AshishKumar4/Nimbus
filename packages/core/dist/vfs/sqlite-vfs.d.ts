@@ -182,6 +182,7 @@ export interface CredentialedVfs {
     }): void;
     writeFile(path: string, content: string | Uint8Array, options?: {
         mode?: number;
+        exclusive?: boolean;
     }): void;
     /**
      * writeFile of a file whose `size` bytes arrive over time from `source`,
