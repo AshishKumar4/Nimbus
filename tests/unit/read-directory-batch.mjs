@@ -3,7 +3,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { readDirectoryBatch } from '../../packages/core/src/runtime/read-directory-batch.ts';
-import { DIRECTORY_PREFETCH_LIMIT } from '../../packages/core/src/constants.ts';
+import { DIRECTORY_PREFETCH_LIMIT, DIRECTORY_SEQUENCE_WINDOW } from '../../packages/core/src/constants.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
@@ -97,6 +97,12 @@ try {
     const again = await readDirectoryBatch(fs, { ...request([`${root}/d3`]), channel: late, sequence: 1 });
     assert.equal(again.opened.length, 1, 'remembered only while one of its requests was outstanding');
     await readDirectoryBatch(fs, { ...request([], { retire: [again.opened[0].handle.id] }), channel: late, sequence: 2, end: true });
+    // What the session keeps of a channel's requests is bounded: a request numbered far past those that arrived is refused.
+    const far = crypto.randomUUID();
+    await assert.rejects(() => readDirectoryBatch(fs, { ...request([]), channel: far, sequence: Number.MAX_SAFE_INTEGER, end: true }), { code: 'ESTALE' });
+    const opened = await readDirectoryBatch(fs, { ...request([`${root}/d4`]), channel: far, sequence: 1 });
+    await assert.rejects(() => readDirectoryBatch(fs, { ...request([]), channel: far, sequence: 1 + DIRECTORY_SEQUENCE_WINDOW }), { code: 'ESTALE' });
+    await readDirectoryBatch(fs, { ...request([], { retire: opened.opened.map((entry) => entry.handle.id) }), channel: far, sequence: 2, end: true });
   }
 
   // Rewinding creates another descriptor scope: an old channel must not

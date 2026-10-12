@@ -157,6 +157,14 @@ export const DIRECTORY_BATCH_LIMIT = 64;
  * answer's descriptions are. The WASI park deadline's length.
  */
 export const DIRECTORY_END_WAIT_MS = 10_000;
+/**
+ * How far ahead of the first request of a directory channel that has not
+ * reached the session a request may be numbered: a run sends one exchange
+ * at a time, and its end beside at most one unanswered, so a few is plenty;
+ * a request past it is refused. It bounds what the session keeps of a
+ * channel's requests in flight, live or ended.
+ */
+export const DIRECTORY_SEQUENCE_WINDOW = 8;
 
 // Entries one subtree listing (fsListTree) carries before it is refused
 // (E2BIG): two list pages' worth, in one round trip and one revision.

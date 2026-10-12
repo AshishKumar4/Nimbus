@@ -7,7 +7,7 @@
  * worker's transform store keys every stored result by it, so no build
  * serves a result another build's pipeline produced.
  *
- * Closure: 198.41 KiB
+ * Closure: 198.40 KiB
  */
 
-export const TRANSFORM_PIPELINE_ID: string = "e6665a5dc142beee3d6111e6f43bc8d23f79c883fcc416fd23915f69be9e0620";
+export const TRANSFORM_PIPELINE_ID: string = "2baaa19ded64415e1bd1f91c943a25b3f9fd8b1fd3feb93fa689caa34b1e8339";

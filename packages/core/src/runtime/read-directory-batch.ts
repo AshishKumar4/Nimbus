@@ -6,7 +6,7 @@
 import { z } from 'zod';
 import { RuntimeFsPathSchema } from './filesystem-path.js';
 import { withRecall } from '../vfs/recall.js';
-import { DIRECTORY_PREFETCH_LIMIT, DIRECTORY_BATCH_LIMIT } from '../constants.js';
+import { DIRECTORY_PREFETCH_LIMIT, DIRECTORY_BATCH_LIMIT, DIRECTORY_SEQUENCE_WINDOW } from '../constants.js';
 import type { Awaitable, RuntimeFileHandle, RuntimeFsBridge, RuntimeFsPath, VfsAcquireResult } from './os-contracts.js';
 
 export const DIRECTORY_READ_RPC = 'fsReadDirectories' as const;
@@ -63,8 +63,12 @@ export interface ReadDirectorySupervisor {
 
 /** The process's DescriptorScope (descriptors.ts), as far as this account needs it. */
 interface Scope { readonly closed: boolean; readonly subscriptions: Set<() => void> }
-/** A live channel: the last sequence it took, and every sequence that has reached the session. */
-interface Channel { sequence: number; readonly seen: Set<number> }
+/**
+ * A live channel: the last sequence it took; the first that has not reached
+ * the session (every one below it has), and those above it that have, at
+ * most DIRECTORY_SEQUENCE_WINDOW past it.
+ */
+interface Channel { sequence: number; missing: number; readonly ahead: Set<number> }
 interface Tracked { readonly channel: string; claimed: boolean }
 interface Budget {
   ended: boolean;
@@ -72,10 +76,11 @@ interface Budget {
   readonly channels: Map<string, Channel>;
   /**
    * Channels a run ended (`end`) while some of their earlier requests had
-   * not reached the session, with those requests' sequences: such a request
-   * is refused when it arrives (never a channel again), and the channel is
-   * forgotten once all have. A channel whose requests all arrived is
-   * forgotten at its end.
+   * not reached the session, with those requests' sequences (fewer than
+   * DIRECTORY_SEQUENCE_WINDOW): such a request is refused when it arrives
+   * (never a channel again), and the channel is forgotten once all have. A
+   * channel whose requests all arrived is forgotten at its end. Each counts
+   * toward DIRECTORY_PREFETCH_LIMIT's channels until it is forgotten.
    */
   readonly endedChannels: Map<string, Set<number>>;
   readonly tracked: Map<number, Tracked>;
@@ -143,11 +148,16 @@ export async function readDirectoryBatch(fs: RuntimeFsBridge, input: unknown): P
       // its first request never arrived. A late first request is then
       // superseded, and cannot allocate after that recovery acknowledged.
       if (request.retire.length || request.claim.length || (request.sequence !== 1 && request.open.length > 0)) throw refusal('ESTALE', 'unknown directory prefetch channel');
-      if (budget.channels.size >= DIRECTORY_PREFETCH_LIMIT) throw refusal('ENOSPC', 'too many directory prefetch channels');
-      channel = { sequence: 0, seen: new Set() };
+      if (budget.channels.size + budget.endedChannels.size >= DIRECTORY_PREFETCH_LIMIT) throw refusal('ENOSPC', 'too many directory prefetch channels');
+      if (request.sequence > DIRECTORY_SEQUENCE_WINDOW) throw refusal('ESTALE', 'directory batch numbered past the channel\'s window');
+      channel = { sequence: 0, missing: 1, ahead: new Set() };
       budget.channels.set(request.channel, channel);
     }
-    channel.seen.add(request.sequence);
+    if (request.sequence >= channel.missing + DIRECTORY_SEQUENCE_WINDOW) throw refusal('ESTALE', 'directory batch numbered past the channel\'s window');
+    if (request.sequence === channel.missing) {
+      channel.missing++;
+      while (channel.ahead.delete(channel.missing)) channel.missing++;
+    } else if (request.sequence > channel.missing) channel.ahead.add(request.sequence);
     if (request.sequence <= channel.sequence) throw refusal('ESTALE', 'directory batch was already superseded');
     channel.sequence = request.sequence;
 
@@ -177,9 +187,9 @@ export async function readDirectoryBatch(fs: RuntimeFsBridge, input: unknown): P
       }
       budget.channels.delete(request.channel);
       // The run's requests are numbered from 1 without gaps: those that have
-      // not arrived are refused when they do.
+      // not arrived (within the window) are refused when they do.
       const missing = new Set<number>();
-      for (let sequence = 1; sequence < request.sequence; sequence++) if (!channel.seen.has(sequence)) missing.add(sequence);
+      for (let sequence = channel.missing; sequence < request.sequence; sequence++) if (!channel.ahead.has(sequence)) missing.add(sequence);
       if (missing.size > 0) budget.endedChannels.set(request.channel, missing);
     }
     if (closeErrors.length) throw closeErrors[0];
