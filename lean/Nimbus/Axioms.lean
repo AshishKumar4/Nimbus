@@ -712,6 +712,7 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.Hydration.async_failed_eio
 #print axioms Nimbus.Vfs.Hydration.sync_failed_eio
 #print axioms Nimbus.Vfs.Hydration.pick_mem
+#print axioms Nimbus.Vfs.Hydration.complete_frame
 #print axioms Nimbus.Vfs.Hydration.jobStep_frame
 #print axioms Nimbus.Vfs.Hydration.raw_frame
 #print axioms Nimbus.Vfs.Hydration.hLocal_mono
@@ -719,6 +720,7 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.Hydration.hyd_mono
 #print axioms Nimbus.Vfs.Hydration.prio_mem
 #print axioms Nimbus.Vfs.Hydration.prio_sub
+#print axioms Nimbus.Vfs.Hydration.complete_covers
 #print axioms Nimbus.Vfs.Hydration.jobStep_covers
 #print axioms Nimbus.Vfs.Hydration.step_covers
 #print axioms Nimbus.Vfs.Hydration.queue_covers
@@ -779,9 +781,9 @@ import Nimbus.Refine
 
 /-! ## Nimbus/Vfs/HydrationAsync.lean -/
 
-#print axioms Nimbus.Vfs.Hydration.doneId_keeps
-#print axioms Nimbus.Vfs.Hydration.covers_doneId
+#print axioms Nimbus.Vfs.Hydration.complete_keeps
 #print axioms Nimbus.Vfs.Hydration.covers_async
+#print axioms Nimbus.Vfs.Hydration.a_failed_fetch_after_a_reprioritization
 #print axioms Nimbus.Vfs.Hydration.removal_by_position_loses_a_chunk
 
 /-! ## Nimbus/Vfs/ProcessFiles.lean -/

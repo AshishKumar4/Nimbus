@@ -3,17 +3,14 @@
   park: any process on a local host).
 
   A writer that exits while a pipe it writes holds more than `C` unread bytes, with a
-  reader left, would on Linux still be blocked writing. Its exit status is held. It
-  settles once every such pipe's read ends are all gone: 141 if any of them still held
-  more than `C` unread bytes when its last reader left, else the writer's own status.
-  The hold is an overlay on the run: the scheduler, the pipes and every other process
-  run exactly as without it.
-
-  Settling (amended after ReviewGitParity0924's `seq | { cat; sleep 3 & }`): a pipe
-  releases the hold at the first step after which it holds at most `C` unread (a read
-  drained it; on Linux the blocked write completes then), or loses its last read end
-  (SIGPIPE if more than `C` was unread at that close). The hold settles once every pipe
-  has released it: 141 if any released it by SIGPIPE, else the writer's own status.
+  reader left, would on Linux still be blocked writing. Its exit status is held. Each
+  such pipe releases the hold at the first step after which it holds at most `C` unread
+  (a read drained it; on Linux the blocked write completes then), or loses its last
+  read end (SIGPIPE if more than `C` was unread at that close, which the hold
+  remembers). The hold settles once every pipe has released it: 141 if any released it
+  by SIGPIPE, else the writer's own status (pipe-rules heldExitSettles). The hold is an
+  overlay on the run: the scheduler, the pipes and every other process run exactly as
+  without it.
 
   Proved:
   - `hstep_core` (a): a step with the rule runs exactly the step without it (same

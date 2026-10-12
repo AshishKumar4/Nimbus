@@ -885,9 +885,9 @@ requirements:
       - Nimbus.Vfs.Hydration.jobs_frame
       - Nimbus.Vfs.Hydration.named_local_within
       - Nimbus.Vfs.Hydration.a_shared_chunk
-      - Nimbus.Vfs.Hydration.doneId_keeps
-      - Nimbus.Vfs.Hydration.covers_doneId
+      - Nimbus.Vfs.Hydration.complete_keeps
       - Nimbus.Vfs.Hydration.covers_async
+      - Nimbus.Vfs.Hydration.a_failed_fetch_after_a_reprioritization
       - Nimbus.Vfs.Hydration.removal_by_position_loses_a_chunk
       - Nimbus.Vfs.Hydration.settle_files
       - Nimbus.Vfs.Hydration.settle_remote
@@ -906,8 +906,10 @@ requirements:
       - Nimbus.Vfs.Hydration.async_failed_eio
       - Nimbus.Vfs.Hydration.sync_failed_eio
       - Nimbus.Vfs.Hydration.pick_mem
+      - Nimbus.Vfs.Hydration.complete_frame
       - Nimbus.Vfs.Hydration.jobStep_frame
       - Nimbus.Vfs.Hydration.prio_sub
+      - Nimbus.Vfs.Hydration.complete_covers
       - Nimbus.Vfs.Hydration.jobStep_covers
       - Nimbus.Vfs.Hydration.jobStep_core
       - Nimbus.Vfs.Hydration.raw_core
@@ -936,7 +938,7 @@ requirements:
     remainingEvidence:
       - One job event hydrates one hash; the embedder's hydrate(hashes) batches are sequences of these
       - Liveness of the job itself (that hydrate eventually resolves) is the embedder's; the model proves only the deadline bound and the priority bound
-      - The fixture's job event is atomic; the engine's split job (a fetch in flight while reads reprioritize, completion removing its entry by identity, Hydrator.step) is proved in Nimbus.Vfs.HydrationAsync (covers_async, and removal by position shown to lose a chunk), not driven by the fixture
+      - The fixture's job event is atomic; the engine's split job (Hydrator.step: a fetch in flight while other events reorder the queue, ended with any outcome for the hash it took, its entry removed by identity) is proved in Nimbus.Vfs.HydrationAsync (covers_async over every outcome, a failed fetch after a reprioritization, and removal by position shown to lose a chunk), not driven by the fixture. Its fetch takes one hash; the engine's takes a batch of the first ready ones, each ended as one completion
   CS-008:
     statement: The quiesced snapshot (SqliteVFS quiesced/spanning) - from every reachable state in which every job a lease holder awaits carries its lease's owner and no spanning job awaits another, the environment's own moves (streams ending, jobs running out, leases released) pin every pending snapshot and start every gated job; a snapshot pins only with no spanning work running and no lease held, and holds exactly the jobs done then; a gated job waits only on the snapshot newest when it arrived and starts as that one pins; a lease never waits; an owned stream ending after its lease's release is refused (ESTALE), writes nothing, settles and is in no snapshot. Without the owner bypass the clone deadlocks; a lease holder awaiting a copyTree, or a job awaiting a stream it starts, deadlocks under the rule.
     status: proved-and-refined
@@ -1009,7 +1011,7 @@ requirements:
     remainingEvidence:
       - The root is resolved by name from / (every directory above it must grant search, as Nimbus re-resolves a descriptor root), stricter than Linux; per-principal sources and mount-point refusals are not modeled here
   RT-PIPE-001:
-    statement: The wasm bash's pipes and pipeline scheduler (the approved design after the 5bdfec12 review, per-pipe budget) - every byte a writer handed over is read, still in flight, or discarded when its pipe's last reader closed, and none is lost; SIGPIPE or EPIPE only on a pipe with no read end, EPIPE when SIGPIPE is ignored; a read ends only when no write end is left; the bytes in flight in a pipe never exceed the budget; a fork leaves a parked operation as it was and its child starts with none; the scheduler runs a process that can progress whenever one exists, every scheduler step lowers a well-founded measure (no spin; every run ends), and when nothing can run and nothing is suspended every live process waits as it would on Linux; a command stopped because a reader would wait on writers suspended beneath it, or nothing could run while a frame was suspended, has a named error and a non-zero status. The review's findings (held-exit SIGPIPE, a fork dropping a parked write, silent truncation past the spill, an ignored SIGPIPE still killing) and the rejected global budget are rule variants, each shown by a decided trace to lose output or kill wrongly; a writer on a local host that exits with more than the capacity unread in a pipe it writes has its exit status held, which changes no step of the run (no byte, read, EOF or other status), settles only once every such pipe has no read end, to 141 exactly when one of them had more than the capacity unread then, and always settles once no process is alive.
+    statement: The wasm bash's pipes and pipeline scheduler (the approved design after the 5bdfec12 review, per-pipe budget) - every byte a writer handed over is read, still in flight, or discarded when its pipe's last reader closed, and none is lost; SIGPIPE or EPIPE only on a pipe with no read end, EPIPE when SIGPIPE is ignored; a read ends only when no write end is left; the bytes in flight in a pipe never exceed the budget; a fork leaves a parked operation as it was and its child starts with none; the scheduler runs a process that can progress whenever one exists, every scheduler step lowers a well-founded measure (no spin; every run ends), and when nothing can run and nothing is suspended every live process waits as it would on Linux; a command stopped because a reader would wait on writers suspended beneath it, or nothing could run while a frame was suspended, has a named error and a non-zero status. The review's findings (held-exit SIGPIPE, a fork dropping a parked write, silent truncation past the spill, an ignored SIGPIPE still killing) and the rejected global budget are rule variants, each shown by a decided trace to lose output or kill wrongly; a writer on a local host that exits with more than the capacity unread in a pipe it writes has its exit status held, which changes no step of the run (no byte, read, EOF or other status), is released by each such pipe at the first step after which it holds at most the capacity unread (a read drained it) or has lost its last read end, settles once every one has released it, to 141 only when one of them lost its last reader with more than the capacity unread (remembered from that close), else to the writer's own status, and always settles once no process is alive.
     status: proved-and-refined
     theorems:
       - Nimbus.Runtime.Pipes.upd_same
