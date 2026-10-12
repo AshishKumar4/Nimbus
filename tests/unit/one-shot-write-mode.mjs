@@ -43,12 +43,13 @@ authority.kfs.writeFile('home/user/private/key', 'k');
 own('home/user/private/key', 0o600);
 authority.kfs.writeFile('home/user/private/notes', 'n');
 own('home/user/private/notes', 0o644);
-// A tree another principal owns and shares with the copier's group, its
-// directories closed to writes: the copy's own directories end as closed.
+// A tree another principal owns and shares with the copier's group alone: its
+// copy ends with the same modes, its directories closed even to their owner,
+// so each is given its final mode only once everything beneath it has its own.
 kernel.mkdir('home/user/team/sub', { recursive: true });
 kernel.writeFile('home/user/team/top', 't');
 kernel.writeFile('home/user/team/sub/file', 'f');
-for (const [path, mode] of [['home/user/team/sub/file', 0o440], ['home/user/team/top', 0o440], ['home/user/team/sub', 0o550], ['home/user/team', 0o550]]) {
+for (const [path, mode] of [['home/user/team/sub/file', 0o040], ['home/user/team/top', 0o040], ['home/user/team/sub', 0o050], ['home/user/team', 0o050]]) {
   kernel.chown(path, 3000, 1000);
   kernel.chmod(path, mode);
 }
@@ -86,15 +87,11 @@ const expected = {
   'promise-copied-dir/notes': 0o644,
   'chmod-sync.txt': 0o600,
   'fchmod-sync.txt': 0o600,
-  'team-copy': 0o550,
-  'team-copy/sub': 0o550,
-  'team-copy/sub/file': 0o440,
-  'team-copy/top': 0o440,
-  'promise-team-copy': 0o550,
-  'promise-team-copy/sub': 0o550,
-  'promise-team-copy/sub/file': 0o440,
-  'promise-team-copy/top': 0o440,
+  'team-copy': 0o050,
+  'promise-team-copy': 0o050,
 };
+// Beneath a directory closed to its owner, only the session can look.
+const teamBelow = { 'sub': 0o050, 'sub/file': 0o040, 'top': 0o040 };
 const program = `
 const fs = require('fs');
 (async () => {
@@ -181,6 +178,9 @@ assert.deepEqual([seen.madeNow, seen.tempNow], [0o700, 0o700], 'the stat straigh
 const atSession = (name) => authority.kfs.stat('home/user/' + name).mode & 0o777;
 assert.deepEqual(Object.fromEntries(Object.keys(expected).map((name) => [name, atSession(name)])), expected, 'the session holds each path with the mode it was made with');
 assert.equal(atSession(seen.temp), 0o700, "the session holds mkdtemp's directory 0700");
+for (const copy of ['team-copy', 'promise-team-copy']) {
+  assert.deepEqual(Object.fromEntries(Object.keys(teamBelow).map((name) => [name, atSession(`${copy}/${name}`)])), teamBelow, `the session holds ${copy}'s entries with their source's modes`);
+}
 assert.deepEqual(exposures, [], 'another principal was refused every private copy while it was made');
 // A copy that failed partway leaves what it made its owner's alone.
 assert.deepEqual(seen.failed, ['EACCES', 'EACCES'], 'both copies of the tree with an unreadable entry fail');
