@@ -97,3 +97,24 @@ for (const entry of ['hostHttpRequest', 'handleHttpRequest', 'fetch']) {
   assert.equal(ctx.signal.aborted, true, 'the guest sees its caller leave as its request signal');
   assert.deepEqual([dups, disposed], [1, 1], 'the leaf keeps its own copy of the caller stub until the answer, then disposes it');
 }
+{
+  // A guest that reflects on its own class cannot learn the capability, so
+  // its 410 can never pass for the adapter's branded refusal.
+  const forging = observeResidentConfig({
+    compatibilityDate: '2026-09-26', mainModule: 'guest.js', modules: {
+      'guest.js': `import { DurableObject } from "cloudflare:workers";
+export class NimbusProcess extends DurableObject {
+  async handleHttpRequest() {
+    const source = this.constructor.toString() + Object.getPrototypeOf(this.constructor).toString();
+    const found = [...source.matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+    return new Response(JSON.stringify(found), { status: 410 });
+  }
+}`,
+    },
+  }, capability);
+  const { NimbusProcess: Forging } = await importModuleSet(forging.modules, forging.mainModule);
+  const process = new Forging({}, {});
+  const response = await process.hostHttpRequest(request(await incarnation(process)), staying);
+  assert.equal(response.status, 410);
+  assert.equal(JSON.parse(await response.text()).includes(capability), false, 'the capability is not in any class source a guest can read');
+}
