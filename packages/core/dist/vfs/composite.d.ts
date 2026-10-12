@@ -22,7 +22,7 @@
  */
 import type { Awaitable, Principal, SyncVFS, VFS, VfsCasResult, VfsCred, VfsDirent, VfsMountDescription, VfsRemoval, VfsRevision, VfsStat, VfsUsage, VfsViewOptions, VfsWriteObserver, VfsWriteWants } from './vfs.js';
 import type { RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
-import type { VfsEvent } from './events.js';
+import { type VfsEvent } from './events.js';
 import { type VfsErrorCode } from './vfs-error.js';
 /**
  * Where a reader of a namespace's feed stands: the mount table as its
@@ -263,6 +263,22 @@ interface ChangeWatch {
     readonly path: string;
     readonly listener: (events: readonly VfsEvent[]) => void;
     readonly subscribed: Map<Mount, () => void>;
+    /** Batches published to it and not yet told, in landing order (judgeChanges judges each as it is told). */
+    readonly queue: Change[][];
+    /** An earlier batch's judgment awaits: the ones after it wait behind it. */
+    waiting: boolean;
+    stopped: boolean;
+}
+/** A change published to a watch: in namespace names, from the mount its ends are on. */
+interface Change {
+    readonly event: VfsEvent;
+    readonly mount: Mount;
+}
+/** watchChanges: who is told, and the watches with batches to tell (drainChanges). */
+interface ChangeWatches {
+    readonly watches: Set<ChangeWatch>;
+    readonly ready: ChangeWatch[];
+    draining: boolean;
 }
 /** observeWrites: who is told, the mounts whose backends report their own writes, and the namespace's own reports in flight. */
 interface WriteWatches {
@@ -288,7 +304,7 @@ interface Table {
     /** observeWrites: who is told, and the mounts whose backends report their own writes, subscribed. */
     writes?: WriteWatches;
     /** watchChanges: who is told. */
-    changes?: Set<ChangeWatch>;
+    changes?: ChangeWatches;
     /** Directory → names of mount points (or their missing ancestors) directly in it. */
     synthesized: Map<string, Set<string>>;
     /** Asked before a credentialed view's mutation reaches a backend (guardMutations). */
@@ -428,23 +444,34 @@ export declare class CompositeVFS implements VFS {
      */
     private deliverWrite;
     /**
-     * Every change this view shows at `path` or under it, on any mount, told
-     * once it landed (VfsEvent, paths in this namespace), in the batches its
-     * backend makes of them, in order on each mount: what it is and where,
-     * nothing read, held or waited for. The returned function stops it.
+     * Every change this view may see at `path` or under it, on any mount,
+     * told once it landed (VfsEvent, paths in this namespace), as the one
+     * rule tells a watch (projectChange): each end of a change told where
+     * this view shows that file (routed to its store from the mount it is on,
+     * not covered, its source present for this principal) and may search
+     * every directory above it, judged through this view's own lookup. In
+     * landing order, in the batches its backend makes of them; to the watches
+     * registered when it landed; a watch let go hears nothing more. No write
+     * waits for it, and nothing is read for it but whether the directory a
+     * backend makes whole (mkdir -p on a mount that resolves its own paths)
+     * was there; a judgment through a backend that awaits is waited for by
+     * that watch alone, its later changes behind it. The returned function
+     * stops it.
      *
      * A backend that tells its own changes (VFS.watchChanges: SQLite) is
      * watched per mount, as this view's principal sees it, so its every
-     * change is told, whoever made it; one the namespace does not show there
-     * (a mount covers it) is not, and a rename half shown is the add, or the
-     * unlink, its shown half is. Any other backend's changes are told as they
-     * are made through this namespace, by what the operation is: a directory
-     * made addDir, a file or link made add, rmdir unlinkDir, any other
-     * removal unlink, a rename rename, anything else change. Whether a write
-     * of a whole file or a range made its file, and what kind of entry rm -r
-     * removed, is not looked up: those are change and unlink.
+     * change is told, whoever made it. Any other backend's changes are told
+     * as they land through this namespace, at every mount of the same store
+     * (VFS.fileStore), by what the operation is: a directory made addDir, a
+     * file or link made add (a copy, each entry it made), rmdir unlinkDir,
+     * any other removal unlink at the root of what it removed, a rename
+     * rename, anything else change. Whether a write of a whole file or a
+     * range made its file, and what kind of entry rm -r removed, is not
+     * looked up: those are change and unlink.
      */
     watchChanges(path: string, listener: (events: readonly VfsEvent[]) => void): () => void;
+    /** `watch` let go: nothing more told, each backend subscription stopped (all of them, whichever throws). */
+    private stopWatch;
     /**
      * Watch `mount`'s backend, as this view sees it, where it tells its own
      * changes and holds part of `watch`'s tree: a source fixed for every
@@ -452,22 +479,44 @@ export declare class CompositeVFS implements VFS {
      * told as the namespace changes it).
      */
     private subscribeChanges;
-    /** `events`, changes on `mount` (namespace paths), told to `watch` as far as this view shows them there. */
-    private hearChanges;
-    /** `event` as `watch` is told it from `mount`: itself, a rename's shown half (add, or unlink), or nothing. */
-    private shownChange;
     /**
-     * Whether `path` is in `watch`'s tree and shown there from `mount`
-     * (feedShows): looked up only where another mount covers that tree or
-     * lies in it, as only one can hide it.
+     * `result`, `spec`'s mutation's answer, once it landed: its change told,
+     * then, to the watches registered now (tellLanded). One that awaits is
+     * told when it lands.
      */
-    private showsChange;
+    private landing;
     /**
-     * `run`, and once it lands, its change told to each watcher whose
-     * backend there does not tell its own (watchChanges): `run` itself when
-     * none is to be told.
+     * A change of `type` that landed at `paths` (and from `oldPath`) through
+     * `mount`, on `source` (by default what the mount gives this view), to
+     * each watch registered now: at every mount through which that watch's
+     * view sees the same store, unless that mount's backend tells the watch
+     * its own.
      */
-    private telling;
+    private tellLanded;
+    private publishChanges;
+    /**
+     * Each published batch told, in order, one drain at a time: a change a
+     * listener makes is published behind the ones being told, and told after
+     * them.
+     */
+    private drainChanges;
+    /** `watch`'s queued batches, judged and told in order; one judged by awaiting holds the rest until it is told. */
+    private tellQueued;
+    private tellWatch;
+    /**
+     * `batch` as `watch` is told it (projectChange): each end shown from the
+     * mount it is on (that mount still at its point, the namespace routing
+     * the path to it, its source present: feedShows), and, for a watch that
+     * is not root's, under directories it may search (searchable).
+     */
+    private judgeChanges;
+    /**
+     * Whether this view may search every directory above `path`, by its own
+     * lookup (resolve, the last component not looked at). A directory gone
+     * (a removed tree, its entries told after it) is judged by the nearest
+     * one left above it.
+     */
+    private searchable;
     /**
      * `run`, a mutation landing at `spec.path` on `spec.route`'s backend,
      * reported once it landed: by the backend itself when it reports its own
@@ -810,9 +859,11 @@ export declare class CompositeVFS implements VFS {
      * Copy an entry (a tree when it is a directory) between backends, links as
      * links. `toAt` is the namespace path `toRel` names: each write, link and
      * directory is guarded there (guardMutation) right before it is made,
-     * after the reads it waited on. `made` is the copy's own root: a tree
-     * copied into itself (two mounts of one backend) meets it on the way and
-     * passes it by, as it was not there when the copy began.
+     * after the reads it waited on, and told once it lands (watchChanges):
+     * the root as `made.told` says, each entry under it as made. `made` is
+     * the copy's own root: a tree copied into itself (two mounts of one
+     * backend) meets it on the way and passes it by, as it was not there when
+     * the copy began.
      */
     private copyBytes;
     /** rmdir, or on a backend without it, an emptiness check and unlink. */

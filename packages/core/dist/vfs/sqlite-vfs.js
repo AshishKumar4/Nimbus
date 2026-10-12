@@ -26,7 +26,7 @@
  * its transaction commits. Large writes stage bounded transactions into a
  * state-0 content and publish it atomically.
  */
-import { VfsEventEmitter } from './events.js';
+import { projectChange, VfsEventEmitter } from './events.js';
 import { normalizeVfsPath, parentKey, parentVfsPath, pathsOverlap } from './path.js';
 import { PathRevisions } from './path-revisions.js';
 import { z } from 'zod/v4';
@@ -565,7 +565,7 @@ const APPEND_RUN_LATENCY_MS = 100;
 const LEAF_READS = new Set([
     'exists', 'isDirectory', 'isFile', 'isSymlink', 'kind', 'access', 'readlink', 'resolveSymlink', 'resolveName',
     'readFile', 'readFileUncached', 'readRange', 'readRangeUncached', 'readFileString', 'stat', 'lstat', 'statIfPresent',
-    'getDefaultAcl', 'readdir', 'contentKey', 'storageKey',
+    'getDefaultAcl', 'readdir', 'contentKey', 'storageKey', 'subscribe',
 ]);
 /**
  * The synchronous mutations of a credentialed view: a view bound to a
@@ -2885,18 +2885,18 @@ export class SqliteVFS {
         return closed;
     }
     /**
-     * A watch in `cred`'s view (CredentialedVfs.subscribe). A watch is not a
-     * cache, so an event it may not see is simply not delivered.
+     * A watch in `cred`'s view (CredentialedVfs.subscribe), each change told
+     * as the one rule tells a watch (projectChange), each end judged here
+     * (watchedName). A watch is not a cache, so an end it may not see is
+     * simply not told.
      */
     subscribe(path, cred, listener) {
-        return this.events.onPath(this.storageKey(path, cred), (event) => {
-            const name = this.watchedName(event.path, cred);
-            if (name === null)
-                return;
-            const oldPath = event.oldPath === undefined ? null : this.watchedName(event.oldPath, cred);
-            listener(oldPath === null
-                ? { type: event.type, path: name, timestamp: event.timestamp }
-                : { type: event.type, path: name, oldPath, timestamp: event.timestamp });
+        const key = this.storageKey(path, cred);
+        const name = normalizeVfsPath(path);
+        return this.events.onPath(key, (event) => {
+            const told = projectChange(event, key, (at) => this.watchedName(at, cred), name);
+            if (told !== null)
+                listener(told);
         });
     }
     /**
@@ -5514,15 +5514,18 @@ export class SqliteVFS {
             this._gen = gen;
             this.touchedDirectoriesCommitted(touched, now, gen);
             const published = [];
+            const made = [];
             for (const row of page) {
                 const path = job.dst + String(row.path).slice(job.src.length);
                 if (!inserted.has(path))
                     continue;
+                const dir = Number(row.kind) === INODE_KIND_DIRECTORY;
                 published.push(path);
-                this.committedRows.set(path, { gen, file: Number(row.kind) !== INODE_KIND_DIRECTORY });
+                made.push({ type: dir ? 'addDir' : 'add', path });
+                this.committedRows.set(path, { gen, file: !dir });
                 if (!this._countersLoaded)
                     continue;
-                if (Number(row.kind) === INODE_KIND_DIRECTORY)
+                if (dir)
                     this._totalDirs++;
                 else {
                     this._totalFiles++;
@@ -5532,19 +5535,14 @@ export class SqliteVFS {
             copied += published.length;
             if (published.length > 0)
                 this.bumpRevision(published);
-            // One event for the tree, as rename emits: events queue until the
-            // turn ends, and one per copied row would hold the whole tree.
-            // Nothing stood at any path it copies to (planCopyTree refuses an
-            // existing target). The bus hears of the tree once, at its root; a
-            // write observer of every entry, a page as it commits.
+            // Each entry it made, a page as it commits, as a removal tells each
+            // entry it removed (a watch of any path in the tree hears its own):
+            // nothing stood at any path it copies to (planCopyTree refuses an
+            // existing target).
             const observed = this.writeObservers.size > 0;
-            const copiedEntry = (path) => ({ before: null, after: this.inodes.get(path) ?? null });
-            this.emitMutations([
-                ...(cursor === null && inserted.has(job.dst)
-                    ? [{ type: Number(page[0]?.kind) === INODE_KIND_DIRECTORY ? 'addDir' : 'add', path: job.dst, change: copiedEntry(job.dst) }]
-                    : []),
-                ...(observed ? published.filter((path) => path !== job.dst).map((path) => ({ type: null, path, change: copiedEntry(path) })) : []),
-            ]);
+            this.emitMutations(made.map(({ type, path }) => ({
+                type, path, ...(observed ? { change: { before: null, after: this.inodes.get(path) ?? null } } : {}),
+            })));
             if (cursor === null) {
                 cursor = job.src === '' ? '' : `${job.src}/`;
                 if (Number(page[0]?.kind) !== INODE_KIND_DIRECTORY) {
@@ -8767,8 +8765,7 @@ export class SqliteVFS {
      * One commit's mutations, in order. Every write event among them holds its
      * content before any observer hears of the first: an observer's callback
      * (or a write or collection it makes) runs between deliveries, and must not
-     * take what a later event of the same commit names. `type` null is heard by
-     * the write observers alone (a copy's entries; the bus has the tree's one).
+     * take what a later event of the same commit names.
      */
     emitMutations(mutations) {
         const observed = this.writeObservers.size > 0;
@@ -8790,8 +8787,7 @@ export class SqliteVFS {
         const owner = this.activeMutationOwner;
         this.activeMutationOwner = null;
         try {
-            if (type !== null)
-                this.events.emit(type, path, oldPath);
+            this.events.emit(type, path, oldPath);
             if (write !== undefined)
                 write.deliver([...this.writeObservers]);
         }

@@ -1111,8 +1111,10 @@ export declare class SqliteVFS {
     /** The highest directory at or above `dir` that the caller may not enter now, or null. */
     private closedAbove;
     /**
-     * A watch in `cred`'s view (CredentialedVfs.subscribe). A watch is not a
-     * cache, so an event it may not see is simply not delivered.
+     * A watch in `cred`'s view (CredentialedVfs.subscribe), each change told
+     * as the one rule tells a watch (projectChange), each end judged here
+     * (watchedName). A watch is not a cache, so an end it may not see is
+     * simply not told.
      */
     private subscribe;
     /**
@@ -2179,8 +2181,7 @@ export declare class SqliteVFS {
      * One commit's mutations, in order. Every write event among them holds its
      * content before any observer hears of the first: an observer's callback
      * (or a write or collection it makes) runs between deliveries, and must not
-     * take what a later event of the same commit names. `type` null is heard by
-     * the write observers alone (a copy's entries; the bus has the tree's one).
+     * take what a later event of the same commit names.
      */
     private emitMutations;
     private deliverMutation;
