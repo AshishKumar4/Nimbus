@@ -25,7 +25,7 @@ import { ProcessHostLost, type ResidentBootSpec, type ResidentDiskReader, type R
 import { bindingSupervisor, supervisorBindingProps } from './supervisor-props.js';
 import { withResolvers } from './turn-budget.js';
 import { processes, abortFacet, deleteFacetStorage, type ResidentFacet, type ResidentFacetEnv } from './workerd-facet-host.js';
-import { HandledRequests, HOST_INCARNATION_HEADER } from './host-activity.js';
+import { HOST_INCARNATION_HEADER } from './host-activity.js';
 import { responseScope } from '@nimbus-sh/core/runtime/port-registry.js';
 import { isHostReset } from '@nimbus-sh/platform/oom-classify.js';
 
@@ -88,7 +88,7 @@ export interface HostedHttpRequest {
   url: string;
   headers: [string, string][];
   body: ReadableStream | null;
-  /** Its id, by which its coordinator can abandon it (HandledRequests), and the ids that ended since the last. */
+  /** Its id, by which its coordinator can abandon it, and the ids that ended since the last (SentRequests). */
   id: number;
   ended: number[];
 }
@@ -154,8 +154,6 @@ interface HostedProcessRecord {
   failure?: Error;
   watchers: Map<WebSocket, () => void>;
   residencies: Map<WebSocket, () => void>;
-  /** The coordinator's requests this record serves, by id. */
-  requests: HandledRequests;
   release(): Promise<void>;
 }
 
@@ -303,7 +301,6 @@ export class PeerHost {
       closed: false,
       watchers: new Map(),
       residencies: new Map(),
-      requests: new HandledRequests(),
       release: () => {
         record.closed = true;
         return releasing ??= (async () => {
@@ -381,10 +378,10 @@ export class PeerHost {
     });
   }
 
-  /** The coordinator abandons request `id` of a process this peer hosts (HandledRequests). */
-  abandonHttp(workerKey: string, capability: string, id: number): void {
+  /** The coordinator abandons request `id` of a process this peer hosts, at its leaf (SentRequests). */
+  async abandonHttp(workerKey: string, capability: string, id: number): Promise<void> {
     const record = this.records.get(workerKey);
-    if (record && record.webSocketCapability === capability) record.requests.abandon(id);
+    if (record && !record.closed && record.webSocketCapability === capability) await (await record.facet).abandonHttpRequest(id);
   }
 
   /**
@@ -402,8 +399,9 @@ export class PeerHost {
    * isolate before it is returned, for the same reason the parts exist at all:
    * what leaves here must not be an object the loaded worker owns. That
    * pipe's end is when this host's work for the response is done; the
-   * coordinator abandons the request by its id (abandonHttp), before its
-   * headers or after.
+   * coordinator abandons the request at its leaf by its id (abandonHttp),
+   * before its headers or after, and the leaf's guest ending its body ends
+   * the pipe.
    */
   async routeHttp(workerKey: string, wire: HostedHttpRequest): Promise<HostedReply<HostedHttpResponse>> {
     return this.answer(workerKey, async () => {
@@ -414,9 +412,11 @@ export class PeerHost {
       for (const [k, v] of wire.headers) headers.append(k, v);
       const init: RequestInit & { duplex?: 'half' } = { method: wire.method, headers };
       if (wire.body) { init.body = wire.body; init.duplex = 'half'; }
-      const { scope, owner } = responseScope(record.requests.admit(wire.id, wire.ended));
+      // The request keeps its coordinator's numbering on to the leaf, which
+      // its coordinator abandons it by. This relay's own end is its pipe's.
+      const { scope, owner } = responseScope(new AbortController().signal);
       let response: Response;
-      try { response = await facet.handleHttpRequest(new Request(wire.url, init), scope); }
+      try { response = await facet.handleHttpRequest(new Request(wire.url, init), scope, { id: wire.id, ended: wire.ended }); }
       catch (error) { owner.fail(error); throw error; }
       let body: ReadableStream | null = null;
       if (response.body) {

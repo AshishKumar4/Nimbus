@@ -14,7 +14,7 @@
 // One EVALUATION of a program is one boot: `world.boots` is the ledger a ghost
 // process would show up in, because a second boot means the user's module
 // scope ran twice.
-import { HandledRequests, hostActivity, HOST_WATCH_HEADER, HOST_INCARNATION_HEADER, HOST_REQUEST_HEADER } from '../../packages/fabric/src/host-activity.ts';
+import { hostActivity, HOST_WATCH_HEADER, HOST_INCARNATION_HEADER, HOST_REQUEST_HEADER } from '../../packages/fabric/src/host-activity.ts';
 import { installHostWatchSocket } from './lib/host-watch-socket.mjs';
 installHostWatchSocket();
 
@@ -101,12 +101,15 @@ export function createFacetWorld(evaluate, { resolveConfig = true, evaluatesAdap
     if (!incarnation) incarnations.set(instance, incarnation = crypto.randomUUID());
     return incarnation;
   };
-  // The generated adapter's requests by id (HandledRequests), per instance.
-  const handled = new WeakMap();
-  const handledOf = (instance) => {
-    let requests = handled.get(instance);
-    if (!requests) handled.set(instance, requests = new HandledRequests());
-    return requests;
+  // The generated adapter's table of its host's requests by id, per instance.
+  const tables = new WeakMap();
+  const requestOf = (instance, id, ended) => {
+    let table = tables.get(instance);
+    if (!table) tables.set(instance, table = new Map());
+    for (const done of ended) table.delete(done);
+    let request = table.get(id);
+    if (!request) table.set(id, request = new AbortController());
+    return request;
   };
   // The generated admission (observeResidentConfig): a request runs only on
   // the instance its host pinned, without the transport that admitted it.
@@ -136,12 +139,12 @@ export function createFacetWorld(evaluate, { resolveConfig = true, evaluatesAdap
           if (evaluatesAdapter) return instance.hostHttpRequest(request, key, pinned, id, ended);
           if (!key) return new Response('Not found', { status: 404 });
           if (pinned !== incarnationOf(instance)) return new Response('the instance that ran this process was replaced', { status: 410, headers: { [HOST_REQUEST_HEADER]: key } });
-          return instance.handleHttpRequest(new Request(request, { signal: handledOf(instance).admit(id, ended) }));
+          return instance.handleHttpRequest(new Request(request, { signal: requestOf(instance, id, ended).signal }));
         },
         async abandonHttpRequest(key, id) {
           const instance = await ensure(name, start);
           if (evaluatesAdapter) return instance.abandonHttpRequest(key, id);
-          handledOf(instance).abandon(id);
+          requestOf(instance, id, []).abort();
         },
         // A resident's WebSocket entrypoint (ResidentFacet.handleWebSocketRequest).
         async fetch(request) {

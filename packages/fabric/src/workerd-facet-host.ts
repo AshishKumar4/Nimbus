@@ -378,7 +378,18 @@ export function abortFacet(ctx: DurableObjectState, name: string, reason: Error)
  * derivable from the pid — reading a slot back out of the book would race the
  * release that empties it.
  */
-export type ResidentFacet = Omit<HostedProcess, 'describe'> & { name: string; slot?: number; acquireActivity(signal?: AbortSignal): HostActivityLease };
+export type ResidentFacet = Omit<HostedProcess, 'describe' | 'handleHttpRequest'> & {
+  name: string;
+  slot?: number;
+  acquireActivity(signal?: AbortSignal): HostActivityLease;
+  /**
+   * HostedProcess.handleHttpRequest; a peer relaying its coordinator's
+   * request passes that request's numbering (SentRequests) instead of its
+   * own, and its coordinator abandons it through abandonHttpRequest.
+   */
+  handleHttpRequest(request: Request, scope: ResponseScope, relayed?: { id: number; ended: number[] }): Promise<Response>;
+  abandonHttpRequest(id: number): Promise<void>;
+};
 
 /**
  * The process surface of one hosting actor: how a resident process comes
@@ -616,14 +627,15 @@ function spawnResident(
     lost,
     acquireActivity: observation.acquire,
     // A request waits for the pinned incarnation, never for the boot.
-    handleHttpRequest: async (request: Request, scope: ResponseScope) => {
+    handleHttpRequest: async (request: Request, scope: ResponseScope, relayed?: { id: number; ended: number[] }) => {
       const lease = observation.acquire(scope.signal);
       void scope.settled.then(lease.release);
       try {
-        const { id, ended } = sent.send(scope, abandon);
+        const { id, ended } = relayed ?? sent.send(scope, abandon);
         return await checked(await facet.hostHttpRequest(request, watchCapability, await incarnation, id, ended));
       } catch (error) { lease.release(); throw error; }
     },
+    abandonHttpRequest: abandon,
     // An upgrade hands its socket to the caller at the handshake.
     handleWebSocketRequest: async (request: Request) => {
       const lease = observation.acquire();
