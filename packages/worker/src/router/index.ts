@@ -62,7 +62,7 @@ import {
   setNimbusTokenCookie,
   expireSessionCookie,
   enforceSessionCookieCapacity,
-  sessionCookieMigration,
+  planSessionCookieMigration,
   NIMBUS_TOKEN_QUERY,
   NimbusAuthError,
   NimbusBootstrapConsumedError,
@@ -78,6 +78,7 @@ import { hasJwtSecret } from '../auth/token.js';
 import { adoptCtxExports } from '@nimbus-sh/fabric/composition.js';
 import {
   handleNimbusRemoteApi,
+  type NimbusRemoteApiOutbox,
   remoteApiEnabled,
   type NimbusSdkRouterConfig,
 } from './remote-api.js';
@@ -294,15 +295,17 @@ export function createNimbusHandler(
     // HTML, local JSON, destroy results — passes through here, so no branch
     // can leave migration or destroy-expiry out. Sites below only record
     // which session authenticated; this wrapper applies the headers.
-    let sessionContext: { verified: VerifiedNimbusRequestToken; sessionId: string } | null = null;
+    let plannedMigration: readonly string[] = [];
     let destroyedSession: string | null = null;
+    // Plan at authentication, before any dispatch: the capacity check throws
+    // here, so a refusal always precedes the session DO's side effects.
+    const planMigration = (verified: VerifiedNimbusRequestToken | null, sessionId: string): void => {
+      plannedMigration = verified === null ? [] : planSessionCookieMigration(
+        request.headers.get('Cookie'), verified, sessionId);
+    };
     const applySessionResponsePolicy = async (response: Promise<Response> | Response): Promise<Response> => {
       const answered = await response;
-      const setCookies: string[] = [];
-      if (sessionContext !== null) {
-        setCookies.push(...sessionCookieMigration(
-          request.headers.get('Cookie'), sessionContext.verified, sessionContext.sessionId));
-      }
+      const setCookies: string[] = [...plannedMigration];
       if (destroyedSession !== null) setCookies.push(expireSessionCookie(destroyedSession));
       if (setCookies.length === 0) return answered;
       // Fetched answers (ASSETS shell, the session DO's upgrade) arrive with
@@ -424,7 +427,7 @@ export function createNimbusHandler(
       const scopedInner = preview.name !== undefined
         ? `/app/${preview.name}`
         : `/port/${preview.port}`;
-      if (auth.verified) sessionContext = { verified: auth.verified, sessionId: preview.sid };
+      if (auth.verified) planMigration(auth.verified, preview.sid);
       return answered(forwardToSession(
         request,
         {
@@ -448,26 +451,14 @@ export function createNimbusHandler(
       }
     }
 
-    const sdkResponse = await handleNimbusRemoteApi(request, env, options.sdk);
+    const remoteOutbox: NimbusRemoteApiOutbox = { destroyedSessionId: null };
+    const sdkResponse = await handleNimbusRemoteApi(request, env, options.sdk, remoteOutbox);
     if (sdkResponse) {
-      // A successful browser DELETE frees its jar slot through the one
-      // policy below: expire exactly the destroyed sid's cookie, nothing
-      // else. Auth failures, unknown sids, and failed destroys leave the
-      // jar untouched — expiry needs a proven destroy answer.
-      if (request.method === 'DELETE') {
-        const destroyed = parseSessionRoute(url.pathname);
-        if (destroyed !== null && destroyed.innerPath === '/' && isValidSessionId(destroyed.sessionId)) {
-          try {
-            const body = await sdkResponse.clone().json() as unknown;
-            const result = (body as { result?: unknown }).result as { ok?: unknown; destroyedAt?: unknown } | undefined;
-            if (result?.ok === true && typeof result?.destroyedAt === 'number') {
-              destroyedSession = destroyed.sessionId;
-            }
-          } catch {
-            // Unparseable answer: not a proven destroy; jar untouched.
-          }
-        }
-      }
+      // A proven destroy frees its jar slot through the one policy below:
+      // remote-api reports the disposition as internal metadata, so no JSON
+      // re-parse or path rediscovery happens here. Anything else leaves the
+      // jar untouched.
+      if (remoteOutbox.destroyedSessionId !== null) destroyedSession = remoteOutbox.destroyedSessionId;
       return answered(sdkResponse);
     }
 
@@ -569,7 +560,7 @@ export function createNimbusHandler(
       );
       if (auth instanceof Response) return auth;
       const tenantSegment = auth.tenantSegment;
-      if (auth.verified) sessionContext = { verified: auth.verified, sessionId: route.sessionId };
+      planMigration(auth.verified, route.sessionId);
 
       if (route.innerPath === '/api/preview-url' && request.method === 'GET') {
         const rawPort = url.searchParams.get('port');
@@ -615,13 +606,13 @@ export function createNimbusHandler(
       // handleNimbusRemoteApi above when the remote API is enabled.
       if (route.innerPath === '/' || route.innerPath === '') {
         if (request.method !== 'GET' && request.method !== 'HEAD') {
-          return new Response('Method not allowed', {
+          return answered(Promise.resolve(new Response('Method not allowed', {
             status: 405,
             headers: {
               Allow: remoteApiEnabled(options.sdk) ? 'GET, HEAD, DELETE' : 'GET, HEAD',
               'Cache-Control': 'no-store',
             },
-          });
+          })));
         }
         if (env.ASSETS) {
           const shellUrl = new URL('/s/index.html', url.origin);

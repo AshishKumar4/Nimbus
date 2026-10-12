@@ -28,6 +28,7 @@ export {
   enforceSessionCookieCapacity,
   nimbusTokenCookieName,
   sessionCookieMigration,
+  planSessionCookieMigration,
   authErrorResponse,
   NIMBUS_TOKEN_COOKIE,
   NIMBUS_TOKEN_COOKIE_PREFIX,
