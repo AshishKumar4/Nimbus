@@ -30,6 +30,7 @@ const manager = Object.assign(Object.create(FacetManager.prototype), { staticRef
 const pacer = { spend: async () => {} };
 const staticRefs = (path) => manager._staticRefsOf(fs, CRED_KERNEL, path, pacer);
 const glueReads = () => reads.filter((path) => path === glue).length;
+const stripSlash = (path) => String(path).replace(/^\/+/, '');
 
 const alone = await collectClosureWasmImages(fs, { [glue]: source }, []);
 assert.equal(glueReads(), 0, 'without the shared analysis the collector reads only its cell');
@@ -51,6 +52,25 @@ assert.ok(planned[0].exact.some((ref) => ref.path === `/${PKG}/bindgen_bg.wasm` 
 // Another credential's analysis is its own: it reads the file itself.
 await manager._staticRefsOf(fs, { ...CRED_KERNEL, uid: 1000, gid: 1000, groups: [] }, glue, pacer);
 assert.equal(glueReads(), 2, 'another credential reads the file for its own analysis');
+
+// A mounted file reports no revision (0): it is known by its content, so an
+// edit between launches is read anew, never answered from the last analysis.
+{
+  let text = source;
+  const mounted = new Proxy(fs, {
+    get(target, prop) {
+      if (prop === 'revision') return async () => 0;
+      if (prop === 'readFile') return async (path, ...rest) => stripSlash(path) === glue ? new TextEncoder().encode(text) : target.readFile(path, ...rest);
+      const value = Reflect.get(target, prop, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  const named = async () => ((await manager._staticRefsOf(mounted, { ...CRED_KERNEL, uid: 7, gid: 7, groups: [] }, glue, pacer))?.exact ?? [])
+    .map((ref) => ref.path).filter((path) => path.endsWith('.wasm')).sort();
+  assert.deepEqual(await named(), [`/${PKG}/bindgen_bg.wasm`, `/${PKG}/other.wasm`]);
+  text = source.replace('bindgen_bg.wasm', 'edited_bg.wasm').replace('./other.wasm', './edited.wasm');
+  assert.deepEqual(await named(), [`/${PKG}/edited.wasm`, `/${PKG}/edited_bg.wasm`], 'an edited mounted file names what it names now');
+}
 
 // A cell the shared analysis cannot answer (no file at its path) is analyzed itself.
 const unfiled = `${PKG}/unfiled.js`;

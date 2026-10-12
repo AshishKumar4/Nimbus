@@ -3051,6 +3051,14 @@ export function assertStagedBundleFitsRpcPayload(
  * fold the (possibly large) entry code into a compact, collision-resistant
  * prefetch-bundle cache-key component — not a security primitive.
  */
+/** A text's SHA-256, hex: what a file with no revision (a mount's) is known by. */
+async function contentIdentity(text: string): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)));
+  let hex = '';
+  for (const byte of digest) hex += byte.toString(16).padStart(2, '0');
+  return hex;
+}
+
 function _fnv1a(s: string): string {
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) {
@@ -5660,7 +5668,7 @@ export class FacetManager {
   /** Read-profile changes dropped after losing every write race. */
   private readProfileConflicts = 0;
   /** Per credential and module path: its static references at a revision (see _staticRefsOf). */
-  private staticRefsMemo = new Map<string, { rev: number; refs: StaticFsRefs }>();
+  private staticRefsMemo = new Map<string, { rev: number | string; refs: StaticFsRefs }>();
   /** Modules whose references are remembered: a few programs' closures. */
   private static readonly STATIC_REFS_MEMO_MAX = 16_384;
 
@@ -6626,9 +6634,12 @@ export class FacetManager {
     // A credential's own: one that could not read the file never learns what it names.
     const key = `${cred.uid}:${cred.gid}:${cred.groups.join(',')}\0${path}`;
     const memo = this.staticRefsMemo.get(key);
-    if (memo && memo.rev === rev) return memo.refs;
+    if (rev !== 0 && memo && memo.rev === rev) return memo.refs;
     let source: string;
     try { source = await filesOf(vfs).readFileString(path); } catch { return null; }
+    // A mounted file has no revision (0): its content is its identity.
+    const identity = rev !== 0 ? rev : await contentIdentity(source);
+    if (memo && memo.rev === identity) return memo.refs;
     await pacer?.spend(source.length);
     const refs = findStaticFsReferences(source, '/' + path);
     // A registered sibling image is also bytes its loader may read.
@@ -6641,7 +6652,7 @@ export class FacetManager {
       else refs.exact.push({ path: name, sync: true });
     }
     this.staticRefsMemo.delete(key);
-    this.staticRefsMemo.set(key, { rev, refs });
+    this.staticRefsMemo.set(key, { rev: identity, refs });
     for (const oldest of this.staticRefsMemo.keys()) {
       if (this.staticRefsMemo.size <= FacetManager.STATIC_REFS_MEMO_MAX) break;
       this.staticRefsMemo.delete(oldest);

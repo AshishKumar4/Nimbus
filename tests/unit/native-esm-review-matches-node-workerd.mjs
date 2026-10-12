@@ -187,6 +187,15 @@ const FILES = {
     'console.log("imported", x);',
     "try { console.log('required', createRequire(import.meta.url)('./parent.mjs').x); } catch (e) { console.log('required', e.code); }",
   ].join('\n') + '\n',
+  // A late graph that does not link runs none of its bodies: after.mjs is
+  // staged (a literal import() names it) but never evaluates.
+  'late-link/after.mjs': "console.log('after');\n",
+  'late-link/main.mjs': [
+    "import { writeFileSync } from 'node:fs';",
+    "if (globalThis.never) await import('./after.mjs');",
+    "writeFileSync(new URL('./generated.mjs', import.meta.url), \"import './after.mjs';\\nimport './missing.mjs';\\n\");",
+    "try { await import('./generated.mjs'); } catch (e) { console.log('rejected', e.code); }",
+  ].join('\n') + '\n',
   // JSON's __esModule/default are data, not CommonJS interop instructions.
   'json-query-esmodule/data.json': '{"__esModule":true,"default":7}\n',
   'json-query-esmodule/main.mjs': "import v from './data.json?q' with { type: 'json' };\nconsole.log(JSON.stringify(v));\n",
@@ -241,6 +250,7 @@ const COMMANDS = [
   'node missing-cjs-export/main.mjs',
   'node cjs-query/main.mjs',
   'node js-query/main.mjs',
+  'node late-link/main.mjs',
   'node adopted-tla/main.mjs',
   'node json-query-esmodule/main.mjs',
   'node prepopulated-cache/main.cjs',
