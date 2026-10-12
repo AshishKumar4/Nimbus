@@ -19,7 +19,8 @@ import { applyFacetLimits, facetLimits, type FacetResourceLimits } from '@nimbus
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
-import type { VfsEvent, VfsEventEmitter } from '@nimbus-sh/core/vfs/events.js';
+import type { VfsEvent } from '@nimbus-sh/core/vfs/events.js';
+import type { CompositeVFS } from '@nimbus-sh/core/vfs/composite.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { registerInnerDoClass, clearInnerDoClasses, abortInnerDoFacets } from '@nimbus-sh/fabric/inner-do-registry.js';
@@ -36,7 +37,8 @@ export interface NimbusWranglerOptions {
   /** The workspace's network: the worker under development goes out through its egress. */
   network: WorkspaceNetwork;
   vfs: CredentialedVfs;
-  vfsEvents: VfsEventEmitter;
+  /** The session's namespace, whose changes rebuild the worker (CompositeVFS.watchChanges). */
+  namespace: Pick<CompositeVFS, 'watchChanges'>;
   esbuild: EsbuildService;
   env: any; // Worker env with LOADER binding
   /**
@@ -167,7 +169,7 @@ function renderWorkerRunningHtml(opts: { workerName: string; outerWorkerBase: st
 export class NimbusWrangler {
   private readonly network: WorkspaceNetwork;
   private vfs: CredentialedVfs;
-  private vfsEvents: VfsEventEmitter;
+  private namespace: Pick<CompositeVFS, 'watchChanges'>;
   private esbuild: EsbuildService;
   private loaderEnv: any;
   private supervisorCtx: any; // ctx.facets for DO facets, ctx.exports for bindings
@@ -186,7 +188,7 @@ export class NimbusWrangler {
 
   constructor(opts: NimbusWranglerOptions) {
     this.vfs = opts.vfs;
-    this.vfsEvents = opts.vfsEvents;
+    this.namespace = opts.namespace;
     this.esbuild = opts.esbuild;
     this.loaderEnv = opts.env;
     this.network = opts.network;
@@ -211,7 +213,7 @@ export class NimbusWrangler {
 
     // 3. Watch for file changes
     this.running = true;
-    this.unsubVfs = this.vfsEvents.on((events) => {
+    this.unsubVfs = this.namespace.watchChanges('/', (events) => {
       this.handleVfsEvents(events);
     });
 
@@ -717,16 +719,18 @@ export class NimbusWrangler {
 
   // ── VFS event handling (hot reload) ───────────────────────────────────
 
-  private handleVfsEvents(events: VfsEvent[]): void {
+  /** The session's changes (CompositeVFS.watchChanges), each named as SQLite names it (no leading slash). */
+  private handleVfsEvents(events: readonly VfsEvent[]): void {
     if (!this.running) return;
 
     // Check if any changed file is under our project root
     let needsRebuild = false;
     for (const event of events) {
       if (event.type !== 'change' && event.type !== 'add' && event.type !== 'unlink') continue;
-      if (event.path.startsWith(this.root) &&
-          !event.path.includes('node_modules/') &&
-          !event.path.includes('/.nimbus/')) {
+      const path = event.path.slice(1);
+      if (path.startsWith(this.root) &&
+          !path.includes('node_modules/') &&
+          !path.includes('/.nimbus/')) {
         // W10: skip writes by KV/D1/R2 emulators (they live under
         // <root>/.nimbus/{kv,r2}/...) — otherwise every emulator put
         // triggers a rebuild and the system feedback-loops itself.

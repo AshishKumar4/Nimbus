@@ -5,6 +5,107 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- One change notification for the namespace: `CompositeVFS.watchChanges(path,
+  listener)` tells every change a view may see at a path or under it, on any
+  mount, as batches of `VfsEvent`s (paths in the namespace), by one rule for
+  every watch (`projectChange` in `vfs/events.js`): each end of a change told
+  where the view shows that file and may search every directory above it; a
+  rename seen at one end only is that end's `add` or `unlink`; the watched
+  path renamed away, or a directory above it, is its `unlink`, and a watch
+  that follows its target (`watchChanges`' and `RuntimeFsBridge.subscribe`'s
+  new `follow` option, which Node's `fs.watch` uses) is told that move, a
+  `rename`, and moves with it. It is told to the watches registered when it
+  landed, at every mount of the store it landed in (the new optional
+  `VFS.fileStore`); a recursive copy or removal tells each entry as it lands;
+  `mkdir -p` on a mount that resolves its own paths tells the directories its
+  backend says it made (`VFS.mkdir` may now answer them; `MemoryVFS`'s does).
+  Whether a directory renamed above a watched path took it along is judged
+  by a look when the watch began and the changes told since; a backend that
+  holds changes back answers that look as they were told, storing and
+  recalling nothing (the new optional `VFS.landedAt`, which `SqliteFiles`
+  implements).
+  A backend may tell its own (the new optional `VFS.watchChanges`, which
+  `SqliteFiles` implements, without storing any held write); any other
+  mount's changes are told as they land through the namespace, typed by the
+  operation (whether a whole-file or range write made its file is not looked
+  up: those are `change`). SQLite now tells every entry a copy made, as it
+  tells every entry a removal removed. Nothing reads the engine's bus besides:
+  the file tree's `fs-watch`, the in-supervisor Vite dev server, wrangler
+  dev, the real Vite facet's chokidar (`ViteDevServer`, `NimbusWrangler` and
+  `CirrusReal` take the session's `namespace` where they took `vfs.events` or
+  `vfsEvents`) and a process's `RuntimeFsBridge.subscribe` hear the
+  namespace, so they see changes on mounts too, and not a write SQLite takes
+  under a mount point; a rename's `oldPath` reaches chokidar absolute. The
+  shell's built-in `node` has a working `fs.watch` (`NodeFilesystem.watch`
+  replaces `onChange`): Node's `rename`/`change` events and filename
+  encodings, the watched target resolved through links and followed across
+  renames, `ENOENT` for a missing one, `close` (one `close` event) and
+  `ref`/`unref` as Node's, a referenced watch keeping the program; it watched
+  the root, which never fired. `VfsEventEmitter.on` hears only what is
+  published after it registers, listeners let go during a delivery are not
+  told, a path listener hears either end of a rename and a rename of a
+  directory above it, and a path listener on the root (`''`) hears every path.
+- Changed: `npm install` has one engine. The Worker's installer and the
+  shell's own npm (a library workspace with no installer of its own) plan
+  every install with core `_shared/npm-arborist/`, npm 10's arborist
+  build: a conflict goes to the highest ancestor it fits, a package's peers
+  are placed with it, an optional peer only constrains, and what a package
+  bundles is its own. A package named on the command line is resolved even
+  where an installed copy meets it (`pkg@latest`, an alias retargeted).
+  Installs are checked against npm 10.9.8 itself, on both hosts. A cycle of
+  incompatible ranges, which npm breaks with a link, fails past 16 levels.
+- Breaking: options npm has that change the tree, and that are not
+  implemented here, are refused with `npm ERR!` instead of ignored:
+  `--install-strategy` other than hoisted (and `--global-style`,
+  `--legacy-bundling`), workspaces, `--dry-run`, `--package-lock-only`,
+  `--no-bin-links`, `--before`, `--cpu`/`--os`/`--libc` and
+  `--engine-strict`. So are git, file, directory and URL specs, which no
+  host installs. New: `--omit=optional`, `--omit=peer`, `--include`,
+  `--strict-peer-deps`, `--prefer-dedupe`, `--no-save`, `--save-exact` and
+  `--save-prefix`, as npm reads them.
+- Breaking: `npm ci` builds npm's ideal tree over the lock and fails, before
+  it removes anything, where that tree is not the lock's: a package the lock
+  lacks, or holds at another version. A lock whose root declares other
+  dependencies than package.json is no longer refused for that alone; its
+  flags are found again and what nothing reaches is left out, as npm does.
+  `npm ci` keeps the lock's dev, optional and peer flags, honours `--omit`,
+  `--force`, `--legacy-peer-deps` and `--strict-peer-deps`.
+- Breaking: a required failure changes nothing, as in npm. An install with
+  a required dependency that cannot be resolved, or that is refused for its
+  platform (EBADPLATFORM), now installs nothing and exits 1; before, it
+  installed everything else. When a required tarball fails partway through
+  a Worker install, the install exits 1 and names what it published and
+  what failed. It removes nothing, leaves package.json unchanged, and
+  records in the lockfile only what is on disk.
+- Breaking: a peer dependency that conflicts with one of the project's own
+  dependencies is npm's ERESOLVE, and the install fails. `--force` lets it
+  through with a warning; `--legacy-peer-deps` installs no peers at all.
+- Changed: `npm install <pkg>` plans with the project's whole tree, and
+  prunes what the tree no longer needs. It saves where npm saves: `-D`,
+  `-O`, otherwise where the project already declares the package. A bare
+  name keeps its declared range. The saved range is `^version` unless the
+  range given is narrower.
+- Changed: an optional dependency that fails, whether at resolution, by a
+  platform refusal or at download, is left out with every package only it
+  needed. The decision is made per placement, over the whole graph. A
+  dependency that is in both `dependencies` and `devDependencies` takes its
+  `devDependencies` range. The project's own `peerDependencies` install.
+  `--omit=dev` plans the whole tree and leaves out what only
+  devDependencies reach, as npm does.
+- Changed: `npm install -g` uses npm's global layout, where each package's
+  dependencies, and its peers, sit beneath it. It builds what it names
+  afresh and changes nothing else in the prefix; `<prefix>/lib/package.json`
+  is neither read nor written.
+- Changed: the shell's own npm publishes under a journal in `node_modules`.
+  If an install is interrupted, the next one undoes it before planning.
+  Ctrl-C before publication changes nothing. Installs into one tree, in
+  either host, run one at a time. A stopped install that is waiting for the
+  tree never starts.
+- Changed: registry cache records belong to the registry package, and are
+  kept only under its name; an alias's lockfile entry names the package it
+  installed. A record cached before this release does not say which package
+  it is, so it is not used: the first install after upgrading resolves its
+  tree from the registry once.
 - A file on a mount is opened by one rule, and its open description is one
   implementation (`vfs/mounted-description.js`), for a process's synchronous
   face, its asynchronous one, and a wave's `open`; one descriptor numbering per

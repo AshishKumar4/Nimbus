@@ -64,7 +64,10 @@ declare module 'semver' {
     clean(version: string, options?: Options): string | null;
     parse(version: string, options?: Options): SemVer | null;
     compare(a: string, b: string, options?: Options): number;
+    gte(a: string, b: string, options?: Options): boolean;
     satisfies(version: string, range: string, options?: Options): boolean;
+    subset(inner: string, outer: string, options?: Options): boolean;
+    intersects(a: string, b: string, options?: Options): boolean;
     validRange(range: string, options?: Options): string | null;
     maxSatisfying(versions: string[], range: string, options?: Options): string | null;
   };

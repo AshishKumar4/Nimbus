@@ -11,7 +11,6 @@
  * running command's pid — it authorizes the batch-facet writes.
  */
 import type { NpmInstallPort } from '@nimbus-sh/core/substrate/lifo/commands/system/npm.js';
-import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { materializeNpmBinShims } from '../npm/bin-links.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
@@ -40,28 +39,34 @@ export function createNpmInstallPort(self: InstallHost): NpmInstallPort {
         registry: spec.registry,
         npmLog: spec.npmLog ?? undefined,
         onProgress: spec.onProgress,
-      });
-
-      let linkedBins = 0;
-      if (globalPrefix && globalBinDir) {
-        // Materialise on-PATH bin shims even for partial installs — the
-        // bin linker already skips entries whose target never landed, so
-        // a partial tree safely exposes exactly the bins that installed.
-        const vfs: Pick<CredentialedVfs, 'exists' | 'isDirectory' | 'readFileString' | 'readdir' | 'lstat' | 'mkdir' | 'writeFile' | 'chmod'> =
-          sqliteFs.as(CRED_KERNEL);
-        linkedBins = await withRecall(() => materializeNpmBinShims(
-          vfs,
+        saveDev: spec.saveDev,
+        saveOptional: spec.saveOptional,
+        force: spec.force,
+        strictPeerDeps: spec.strictPeerDeps,
+        legacyPeerDeps: spec.legacyPeerDeps,
+        omitOptional: spec.omitOptional,
+        omitPeer: spec.omitPeer,
+        preferDedupe: spec.preferDedupe,
+        save: spec.save,
+        savePrefix: spec.savePrefix,
+        global: globalPrefix !== undefined,
+        signal: spec.signal,
+        // On-PATH bin shims, under the install's hold: even for a partial
+        // install the linker skips what never landed, so a partial tree
+        // exposes exactly the bins that installed.
+        whileHeld: globalBinDir === undefined ? undefined : () => withRecall(() => materializeNpmBinShims(
+          sqliteFs.as(CRED_KERNEL),
           `${installCwd}/node_modules`,
           globalBinDir,
-        ));
-      }
+        )),
+      });
 
       return {
         installed: result.installed,
         failed: result.failed,
         totalFiles: result.totalFiles,
         fromCacheHits: result.cachedHits,
-        linkedBins,
+        linkedBins: result.linkedBins ?? 0,
       };
     },
   };

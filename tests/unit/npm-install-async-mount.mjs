@@ -6,7 +6,8 @@
 // mounted node_modules whole: copied beside its place and renamed there (on
 // a mount with no rename, package.json last). A package that cannot be put
 // there fails alone and the next install repairs it; what an install cut
-// short left behind is swept by the next. Before, the installer read
+// short left behind is swept by the next. A shard that fails costs only
+// what it did not finish. Before, the installer read
 // package.json from the engine ("No dependencies to install") and would have
 // written node_modules there. A project on SQLite, or one a mount's link
 // names, takes the engine's bulk path. Real NpmInstaller; the fan-out RPC is
@@ -29,7 +30,6 @@ const resolved = (name, version) => ({
     name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
     dependencies: {}, exports: null, main: 'index.js', module: '', bin: { [name]: 'cli.js' },
   },
-  deps: {}, peerDeps: {}, optionalDeps: {},
   cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
 });
 
@@ -61,7 +61,9 @@ const pkgJson = JSON.stringify({ name: 'p', version: '1.0.0', dependencies: { 'i
 const log = [];
 const shardsSeen = [];
 // The shards' batch writes are authorized as the invoking process, so they write as the user.
-const env = makeFanoutEnv({ root: vfs.as(CRED_SESSION_USER), NM: 'unused', resultFor: (name) => resolved(name, '7.0.0'), shardsSeen });
+// A shard that fails at the package `crash.at` names, as `crash.when` says (npm-fanout-test-env crashFor).
+const crash = { at: null, when: null };
+const env = makeFanoutEnv({ root: vfs.as(CRED_SESSION_USER), NM: 'unused', resultFor: (name) => resolved(name, '7.0.0'), shardsSeen, crashFor: (p) => (p.name === crash.at ? crash.when : null) });
 const ctx = { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage };
 const installer = new NpmInstaller(files, harness.sql, { env, ctx, onProgress: (msg) => log.push(msg) });
 const install = (dir) => installer.install(dir, { pid: PID, cred: CRED_SESSION_USER });
@@ -183,4 +185,47 @@ const install = (dir) => installer.install(dir, { pid: PID, cred: CRED_SESSION_U
 }
 
 await harness.close?.();
+// ── a shard that fails: what it published is put on the mount, a part of a package is not ──
+for (const [when, landed] of [['after', true], ['partial', false]]) {
+  const dir = `/m/crash-${when}`;
+  await view.mkdir(dir, { recursive: true });
+  await view.writeFile(`${dir}/package.json`, pkgJson);
+  Object.assign(crash, { at: 'is-number', when });
+  const result = await install(dir);
+  Object.assign(crash, { at: null, when: null });
+  if (landed) {
+    assert.deepEqual(result.failed, [], `a package the failed shard published is installed: ${log.join('\n')}`);
+    assert.equal(JSON.parse(await view.readFileString(`${dir}/node_modules/is-number/package.json`)).version, '7.0.0', 'and put on the mount');
+  } else {
+    assert.deepEqual(result.failed, ['is-number@7.0.0'], 'a package the shard did not finish fails');
+    assert.equal(await view.exists(`${dir}/node_modules/is-number`), false, 'and nothing of it is put on the mount');
+  }
+}
+
+// ── a package that fails takes what was staged beneath it: those fail too ──
+// a@1 nests x@2 below it (the project has x@1). a's shard fails partway,
+// x@2's lands in a's staged folder: it is not on the mount, and is not
+// reported installed.
+{
+  const nestedCrash = { at: null };
+  const nestedEnv = makeFanoutEnv({
+    root: vfs.as(CRED_SESSION_USER), NM: 'unused',
+    resultFor: (name, spec) => {
+      const answer = resolved(name, name === 'a' ? '1.0.0' : spec.range);
+      answer.pkg.integrity = `sha512-${name}-${answer.pkg.version}`;
+      if (name === 'a') answer.pkg.dependencies = { x: '2.0.0' };
+      return answer;
+    },
+    crashFor: (p) => (p.name === nestedCrash.at ? 'partial' : null),
+  });
+  const nested = new NpmInstaller(files, harness.sql, { env: nestedEnv, ctx, onProgress: (msg) => log.push(msg) });
+  await view.mkdir('/m/nested', { recursive: true });
+  await view.writeFile('/m/nested/package.json', JSON.stringify({ name: 'n', version: '1.0.0', dependencies: { a: '1.0.0', x: '1.0.0' } }));
+  nestedCrash.at = 'a';
+  const result = await nested.install('/m/nested', { pid: PID, cred: CRED_SESSION_USER });
+  assert.deepEqual([...result.failed].sort(), ['a@1.0.0', 'x@2.0.0'], `what was staged beneath a failed package fails with it: ${log.join('\n')}`);
+  assert.ok(!result.installed.includes('x@2.0.0'), 'and is not reported installed');
+  assert.equal(await view.exists('/m/nested/node_modules/a'), false, 'nothing of a is on the mount');
+}
+
 console.log('npm-install-async-mount: ok');

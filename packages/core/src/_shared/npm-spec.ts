@@ -13,6 +13,8 @@ export interface RegistryRequest {
   registryName: string;
   range: string;
   alias: boolean;
+  /** Whether a registry answers it: a version, range or dist-tag (an alias's too). A git, file, directory or URL spec is not. */
+  registry: boolean;
 }
 
 /**
@@ -50,6 +52,8 @@ export function parseRegistryRequest(name: string, range: string): RegistryReque
     parsed = null;
   }
   const target = parsed?.type === 'alias' ? parsed.subSpec : undefined;
-  if (target?.name) return { installName: name, registryName: target.name, range: target.rawSpec, alias: true };
-  return { installName: name, registryName: name, range: text, alias: false };
+  const kind = (target ?? parsed)?.type;
+  const registry = kind === 'version' || kind === 'range' || kind === 'tag';
+  if (target?.name) return { installName: name, registryName: target.name, range: target.rawSpec, alias: true, registry };
+  return { installName: name, registryName: name, range: text, alias: false, registry };
 }

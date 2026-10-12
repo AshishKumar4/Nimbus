@@ -31,7 +31,6 @@ const spec = (overrides = {}) => ({
   range: '^0.20.0',
   cachedEntries: [],
   topLevel: false,
-  isOptional: false,
   frameworkAware: false,
   fetchTimeoutMs: 1_000,
   retries: 0,
@@ -84,10 +83,11 @@ const REGISTRY = {
   assert.equal(res.error, undefined);
   assert.ok(!res.messages.some((m) => m.includes('[swap]')), `no second swap notice — the supervisor announced it (messages=${JSON.stringify(res.messages)})`);
   assert.ok(!res.events.some((e) => e.type === 'swap'), 'no second swap event');
-  // Cache writes are keyed by the install name: that is the key the next
-  // install's cache read uses.
-  assert.ok(res.cacheWrites.length > 0);
-  assert.ok(res.cacheWrites.every((w) => w.name === 'esbuild'), 'cache entries are keyed by the requested name');
+  // Cache writes are the registry package's, by its name (what the next
+  // resolve of any alias to it reads), and the resolved version under the
+  // alias too (what the next install's lockfile entry reads).
+  assert.ok(res.cacheWrites.some((w) => w.name === 'esbuild-wasm' && w.version === '0.20.1'), 'the registry package is cached by its own name');
+  assert.ok(res.cacheWrites.every((w) => w.name === 'esbuild-wasm' || (w.name === 'esbuild' && w.version === '0.20.1')), 'and the resolved version under the alias');
   console.log('  top-level alias spec → target packument under the requested name, announced once');
 }
 
@@ -112,6 +112,20 @@ const REGISTRY = {
   assert.equal(res.pkg?.version, '1.0.0');
   assert.ok(!res.events.some((e) => e.type === 'swap'));
   console.log('  explicit alias to another package → no swap');
+}
+
+// ── An alias retargeted is answered by its new target, never its old ────
+//
+// `slot@npm:ra` then `slot@npm:rb`, each at 1.0.0: the cache the first
+// resolve wrote is ra's, so it cannot answer rb.
+{
+  const { env, asked } = registry({ ra: packument('ra', { '1.0.0': {} }), rb: packument('rb', { '1.0.0': {} }) });
+  const first = await resolveOnePackumentInFacet(spec({ name: 'slot', range: 'npm:ra@1.0.0' }), env);
+  const second = await resolveOnePackumentInFacet(spec({ name: 'slot', range: 'npm:rb@1.0.0', cachedEntries: first.cacheWrites }), env);
+  assert.deepEqual(asked, ['ra', 'rb'], 'the new target is fetched');
+  assert.equal(second.pkg?.name, 'slot');
+  assert.match(second.pkg.tarballUrl, /\/rb-1\.0\.0\.tgz$/, "the alias installs rb, not the cached ra");
+  console.log('  a retargeted alias resolves its new target');
 }
 
 // ── Policy applies to the registry identity, placement to the name ───────
@@ -160,7 +174,7 @@ const REGISTRY = {
   assert.equal(second.pkg?.name, 'esbuild');
   assert.equal(second.pkg?.version, '0.20.1');
   assert.match(second.pkg.tarballUrl, /esbuild-wasm-0\.20\.1\.tgz$/);
-  console.log('  warm cache → esbuild answered from the entry keyed by its install name');
+  console.log('  warm cache → esbuild answered from the registry package\'s entry, under its install name');
 }
 
 // ── rollup: only rollup 4 has native shards ──────────────────────────────
@@ -233,7 +247,7 @@ const REGISTRY = {
   const note = pinned.events.find((e) => e.type === 'advisory' && e.from === 'rolldown');
   assert.ok(note && note.reason.includes(staged.versions.join(', ')) && note.suggest === `rolldown@${newest}`,
     `with the note that it will not load, naming the staged versions: ${JSON.stringify(note)}`);
-  const cachedNewer = { name: 'rolldown', version: newer, tarballUrl: `https://registry.invalid/rolldown/-/rolldown-${newer}.tgz`, integrity: 'sha512-x', depsJson: '{}', exportsJson: 'null', main: '', moduleField: '', binJson: '{}', fetchedAt: 0 };
+  const cachedNewer = { name: 'rolldown', registryName: 'rolldown', version: newer, tarballUrl: `https://registry.invalid/rolldown/-/rolldown-${newer}.tgz`, integrity: 'sha512-x', depsJson: '{}', exportsJson: 'null', main: '', moduleField: '', binJson: '{}', fetchedAt: 0 };
   const fromCache = registry(ROLLDOWN);
   const skipped = await resolveOnePackumentInFacet(spec({ name: 'rolldown', range: `^${major}.${minor}.0`, cachedEntries: [cachedNewer] }), fromCache.env);
   assert.deepEqual(fromCache.asked, ['rolldown'], 'a cache holding only a newer rolldown is not taken for the staged one');

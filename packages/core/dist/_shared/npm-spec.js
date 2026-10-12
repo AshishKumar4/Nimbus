@@ -36,7 +36,9 @@ export function parseRegistryRequest(name, range) {
         parsed = null;
     }
     const target = parsed?.type === 'alias' ? parsed.subSpec : undefined;
+    const kind = (target ?? parsed)?.type;
+    const registry = kind === 'version' || kind === 'range' || kind === 'tag';
     if (target?.name)
-        return { installName: name, registryName: target.name, range: target.rawSpec, alias: true };
-    return { installName: name, registryName: name, range: text, alias: false };
+        return { installName: name, registryName: target.name, range: target.rawSpec, alias: true, registry };
+    return { installName: name, registryName: name, range: text, alias: false, registry };
 }

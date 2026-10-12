@@ -181,7 +181,9 @@ vfs,
 /** The caller's credential: what the npx cache install is written as. */
 cred, cwd, rawArgs, log, pid, 
 /** The command's `NPM_REGISTRY`; the npx cache install reads from it too. */
-registry) {
+registry, 
+/** The command's: an install it stops changes nothing, and one waiting for the cache never starts. */
+signal) {
     const parsed = parseNpxArgs(rawArgs);
     if ('error' in parsed) {
         return { ok: false, error: parsed.error };
@@ -212,6 +214,7 @@ registry) {
             pid,
             cred,
             registry,
+            signal,
         });
         if ((result.failed?.length || 0) > 0) {
             // Partial install — some package failed to resolve. The fix is

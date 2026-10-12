@@ -15,6 +15,7 @@
  */
 
 import type { RuntimeDirentType, VfsAcquireOptions, VfsAcquireResult, VfsListPage } from '../runtime/os-contracts.js';
+import type { VfsEvent } from './events.js';
 
 import { isVfsError, syscallError, type VfsError } from './vfs-error.js';
 
@@ -173,7 +174,14 @@ export interface VFS {
   readFile(path: string): Awaitable<Uint8Array>;
   writeFile(path: string, data: Uint8Array, options?: { mode?: number }): Awaitable<void>;
   readdir(path: string): Awaitable<VfsDirent[]>;
-  mkdir(path: string, options?: { recursive?: boolean; mode?: number }): Awaitable<void>;
+  /**
+   * With `recursive`, it may answer the directories it made, top down
+   * (none: they were all there), as Node's answers the first of them;
+   * nothing: it does not say, and on a mount that resolves its own paths
+   * (MountOptions.resolvesPaths) nothing it made is told
+   * (CompositeVFS.watchChanges), unless its backend tells its own changes.
+   */
+  mkdir(path: string, options?: { recursive?: boolean; mode?: number }): Awaitable<readonly string[] | void>;
   /** Removes a file; on backends without `rmdir`, also an empty directory. */
   unlink(path: string): Awaitable<void>;
 
@@ -197,6 +205,13 @@ export interface VFS {
    * of one identity, which refuses no one at open.
    */
   access?(path: string, mode: number): Awaitable<void>;
+  /**
+   * Whether something is at `path` (itself: a link is not followed) as its
+   * changes have been told (watchChanges), storing nothing it holds back and
+   * asking nothing of another holder; a backend that holds nothing back
+   * need not have it (stat answers). EACCES where it may not look.
+   */
+  landedAt?(path: string): Awaitable<boolean>;
   /**
    * The regular file at `path`, held open with `rights` (its access decided
    * by the open that asks, VFS.access): its operations reach that file
@@ -236,6 +251,14 @@ export interface VFS {
    * it replaced (VfsWriteEvent); the returned function stops the reports.
    */
   observeWrites?(observer: VfsWriteObserver): () => void;
+  /**
+   * Every mutation that lands at `path` or under it on this backend,
+   * whoever made it, by path (VfsEvent, paths absolute), in this view's
+   * names and only where this view may look, once it landed, told in the
+   * batches the backend makes of them: nothing read, held or waited for.
+   * The returned function stops it.
+   */
+  watchChanges?(path: string, listener: (events: readonly VfsEvent[]) => void): () => void;
   /** The same operations, completing without waiting. Present only when every call can. */
   readonly sync?: SyncVFS;
   /**
@@ -275,11 +298,13 @@ export interface VfsRange { offset: number; length: number }
  * watches or descriptions.
  */
 export interface SyncVFS {
+  /** VFS.fileStore: the same store as the face it is of. */
+  readonly fileStore?: object;
   stat(path: string, options?: { follow?: boolean }): VfsStat | null;
   readFile(path: string): Uint8Array;
   writeFile(path: string, data: Uint8Array, options?: { mode?: number }): void;
   readdir(path: string): VfsDirent[];
-  mkdir(path: string, options?: { recursive?: boolean; mode?: number }): void;
+  mkdir(path: string, options?: { recursive?: boolean; mode?: number }): readonly string[] | void;
   unlink(path: string): void;
   rmdir?(path: string): void;
   rename?(from: string, to: string): void;
@@ -287,6 +312,7 @@ export interface SyncVFS {
   writeRange?(path: string, offset: number, bytes: Uint8Array): void;
   truncate?(path: string, size: number): void;
   access?(path: string, mode: number): void;
+  landedAt?(path: string): boolean;
   openFile?(path: string, rights: { read: boolean; write: boolean }): VfsOpenFile;
   removeRecursive?(path: string): VfsRemoval | void;
   symlink?(target: string, path: string): void;

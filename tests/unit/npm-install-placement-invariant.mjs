@@ -1,29 +1,32 @@
 #!/usr/bin/env bun
-// npm-install-placement-invariant — every dependency edge in an installed
-// tree is met by the copy Node's walk from the dependent finds first.
+// npm-install-placement-invariant — seeded random registries, each installed
+// by npm 10 itself and by the worker's NpmInstaller (the one engine, core
+// _shared/npm-arborist, through the real installer over a fake fanout):
+// both give the same tree, placement for placement and version for version,
+// and fail alike.
 //
-// The nested-placement rule (npm-install-nested-conflict.mjs) is only
-// correct if a copy nested under a package can never shadow, for something
-// beneath that package, a higher copy that thing was decided against. The
-// walk makes that structurally impossible: a copy nested under P is decided
-// in the layer right after P resolves, before anything beneath P can
-// resolve, so a descendant's edge always sees it pending (and waits) or
-// placed. Rather than trust the argument, this runs seeded random
-// registries through the real NpmInstaller and checks the invariant on the
-// lockfile it wrote: for every placement Q and every edge (name, range) of
-// the package at Q that some registry version could satisfy, the nearest
-// placement of `name` visible from Q exists and satisfies `range`. A
-// violation prints the registry that produced it so it can be pinned.
+// npm's tree is not "every edge met by its nearest copy": a later placement
+// can prune what an earlier one nested, leaving an edge npm itself does not
+// meet. What holds is npm's own result. A tree for which npm makes a link
+// (a cycle of incompatible ranges, which it breaks with a symlink to the
+// earlier copy) is counted, not compared: the engine nests no deeper than
+// MAX_NEST_DEPTH and fails instead. A mismatch prints the registry that
+// produced it, so it can be pinned.
 
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Database } from 'bun:sqlite';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { visiblePlacements } from '../../packages/worker/src/npm/placement.ts';
-import { resolveVersion, satisfiesRange } from '../../packages/core/src/_shared/npm-semver.ts';
+import { pickPackumentVersion, satisfiesRange } from '../../packages/core/src/_shared/npm-semver.ts';
 import { kernelInstaller, makeFanoutEnv } from './npm-fanout-test-env.mjs';
 import { registryRecord } from '../../packages/worker/src/npm/registry-record.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { packageTarball, sriOf } from './lib/tarball-fixture.mjs';
 
 const PROJ = 'app';
 const NM = `${PROJ}/node_modules`;
@@ -35,79 +38,140 @@ let seed = 20260921;
 const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
 const pick = (list) => list[Math.floor(rnd() * list.length)];
 
+/** A range some published version of `name` meets. */
+const pickRange = (registry, name) => pick(RANGES.filter((range) => Object.keys(registry[name]).some((v) => satisfiesRange(v, range))));
+
 function genRegistry() {
   const registry = {};
   for (const name of NAMES) {
     registry[name] = {};
-    for (const version of VERSIONS) {
-      if (rnd() < 0.3) continue;
-      const deps = {};
-      for (const dep of NAMES) if (dep !== name && rnd() < 0.3) deps[dep] = pick(RANGES);
-      registry[name][version] = deps;
-    }
+    for (const version of VERSIONS) if (rnd() >= 0.3) registry[name][version] = {};
     if (Object.keys(registry[name]).length === 0) registry[name]['1.0.0'] = {};
+  }
+  for (const name of NAMES) {
+    for (const version of Object.keys(registry[name])) {
+      for (const dep of NAMES) if (dep !== name && rnd() < 0.3) registry[name][version][dep] = pickRange(registry, dep);
+    }
   }
   return registry;
 }
 
-async function install(registry, deps) {
+// The registry npm reads: the run's packuments, and every tarball any run can name.
+let current = {};
+const tarballs = new Map();
+const integrity = new Map();
+const server = createServer((request, response) => {
+  const path = decodeURIComponent(new URL(request.url, 'http://registry').pathname.slice(1));
+  const tarball = /^([a-h])-(\d\.0\.0)\.tgz$/.exec(path);
+  if (tarball) {
+    response.writeHead(200, { 'content-type': 'application/octet-stream' });
+    response.end(tarballs.get(path));
+    return;
+  }
+  const versions = current[path];
+  if (!versions) {
+    response.writeHead(404, { 'content-type': 'application/json' });
+    response.end('{"error":"not found"}');
+    return;
+  }
+  const names = Object.keys(versions);
+  response.writeHead(200, { 'content-type': 'application/json' });
+  response.end(JSON.stringify({
+    name: path,
+    'dist-tags': { latest: names.at(-1) },
+    versions: Object.fromEntries(names.map((version) => [version, {
+      name: path, version, dependencies: versions[version],
+      dist: { tarball: `${base}/${path}-${version}.tgz`, integrity: integrity.get(`${path}-${version}.tgz`) },
+    }])),
+  }));
+});
+await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+const base = `http://127.0.0.1:${server.address().port}`;
+for (const name of NAMES) {
+  for (const version of VERSIONS) {
+    const bytes = packageTarball({ 'package/package.json': JSON.stringify({ name, version }) });
+    tarballs.set(`${name}-${version}.tgz`, bytes);
+    integrity.set(`${name}-${version}.tgz`, await sriOf(bytes));
+  }
+}
+
+/** npm's tree for `deps` over `registry`: placement → version, or null where npm makes a link; and whether it succeeded. */
+async function npmTree(registry, deps) {
+  current = registry;
+  const dir = mkdtempSync(join(tmpdir(), 'npm-fuzz-'));
+  try {
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'fuzz', version: '1.0.0', dependencies: deps }));
+    const status = await new Promise((resolve) => {
+      const child = spawn('npm', ['install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund', '--prefer-online',
+        `--registry=${base}/`, `--cache=${join(dir, '.cache')}`], { cwd: dir });
+      child.stderr.resume();
+      child.on('close', resolve);
+    });
+    if (status !== 0) return { ok: false, tree: null };
+    const lock = JSON.parse(readFileSync(join(dir, 'package-lock.json'), 'utf8'));
+    const entries = Object.entries(lock.packages).filter(([path]) => path !== '');
+    if (entries.some(([, entry]) => entry.link === true)) return { ok: true, tree: null };
+    return { ok: true, tree: Object.fromEntries(entries.map(([path, entry]) => [path.replace(/^node_modules\//, ''), entry.version]).sort()) };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** The worker's tree for `deps` over `registry`, as its lockfile records it. */
+async function workerTree(registry, deps) {
   const resultFor = (name, spec) => {
     const versions = registry[name] ?? {};
-    const version = resolveVersion(Object.keys(versions), spec?.range ?? 'latest');
-    const base = { deps: {}, peerDeps: {}, optionalDeps: {}, cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [] };
-    if (!version) return { ...base, pkg: null, error: { type: 'unresolved', reason: `no version of ${name} satisfies ${spec?.range}` } };
+    const version = pickPackumentVersion(versions, { latest: Object.keys(versions).at(-1) }, spec?.range ?? 'latest');
+    const empty = { cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [] };
+    if (!version) return { ...empty, pkg: null, error: { type: 'unresolved', reason: `no version of ${name} satisfies ${spec?.range}` } };
     const pkg = {
       name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: `sha512-${name}-${version}`,
       dependencies: versions[version], exports: null, main: 'index.js', module: '', bin: {},
     };
-    return { ...base, pkg, deps: pkg.dependencies, cacheWrites: [registryRecord(pkg, Date.now())] };
+    return { ...empty, pkg, cacheWrites: [registryRecord(pkg, Date.now())] };
   };
   const harness = createSqliteVfsTestHarness(new Database(':memory:'));
-  const vfs = new SqliteVFS(harness.sql, harness.ctx);
-  const root = vfs.as(CRED_KERNEL);
-  root.mkdir(NM, { recursive: true });
-  root.writeFile(`${PROJ}/package.json`, JSON.stringify({ name: 'fuzz', dependencies: deps }));
-  const env = makeFanoutEnv({ root, NM, resultFor });
-  const ctx = { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage };
-  const installer = kernelInstaller(vfs, harness.sql, { env, ctx, onProgress: () => {} });
-  const result = await installer.install(PROJ, { pid: 1 });
-  return { result, lock: installer.npmCache.readLockfile(PROJ) };
+  try {
+    const vfs = new SqliteVFS(harness.sql, harness.ctx);
+    const root = vfs.as(CRED_KERNEL);
+    root.mkdir(NM, { recursive: true });
+    root.writeFile(`${PROJ}/package.json`, JSON.stringify({ name: 'fuzz', dependencies: deps }));
+    const env = makeFanoutEnv({ root, NM, resultFor });
+    const ctx = { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage };
+    const installer = kernelInstaller(vfs, harness.sql, { env, ctx, onProgress: () => {} });
+    const result = await installer.install(PROJ, { pid: 1 });
+    const lock = installer.npmCache.readLockfile(PROJ);
+    if (result.failed.length > 0) return { ok: false, tree: null };
+    return { ok: true, tree: Object.fromEntries([...lock ?? []].map(([placement, entry]) => [placement, entry.resolvedVer]).sort()) };
+  } finally {
+    harness.db.close();
+  }
 }
 
 const RUNS = 120;
 let nestedTrees = 0;
-let edgesChecked = 0;
-for (let run = 0; run < RUNS; run++) {
-  const registry = genRegistry();
-  const deps = {};
-  for (const name of NAMES) if (rnd() < 0.5) deps[name] = pick(RANGES);
-  if (Object.keys(deps).length === 0) deps.a = '*';
-  const { result, lock } = await install(registry, deps);
-  if (!lock) {
-    // A tree that resolved nothing writes no lockfile; that is a failure the
-    // install must have reported, and there are no placements to check.
-    assert.ok(result.failed.length > 0, `run ${run}: no lockfile and no failure`);
-    continue;
-  }
-  const placed = new Map([...lock].map(([placement, entry]) => [placement, entry]));
-  if ([...placed.keys()].some((p) => p.includes('/node_modules/'))) nestedTrees++;
-  for (const [placement, entry] of placed) {
-    for (const [depName, range] of Object.entries(registry[entry.name][entry.resolvedVer])) {
-      if (!Object.keys(registry[depName]).some((v) => satisfiesRange(v, range))) continue;
-      edgesChecked++;
-      const near = visiblePlacements(placement, depName).find((p) => placed.has(p));
-      const detail = () => `run ${run}: ${placement} → ${depName}@${range}\nregistry=${JSON.stringify(registry)}\ndeps=${JSON.stringify(deps)}`;
-      if (!near) {
-        assert.ok(result.failed.length > 0, `a satisfiable edge with no visible copy must fail the install: ${detail()}`);
-        continue;
-      }
-      assert.ok(
-        satisfiesRange(placed.get(near).resolvedVer, range),
-        `nearest visible copy ${near}@${placed.get(near).resolvedVer} does not satisfy: ${detail()}`,
-      );
+let linkedTrees = 0;
+let compared = 0;
+try {
+  for (let run = 0; run < RUNS; run++) {
+    const registry = genRegistry();
+    const deps = {};
+    for (const name of NAMES) if (rnd() < 0.5) deps[name] = pickRange(registry, name);
+    if (Object.keys(deps).length === 0) deps.a = '*';
+    const npm = await npmTree(registry, deps);
+    if (npm.ok && npm.tree === null) {
+      linkedTrees++;
+      continue;
     }
+    const engine = await workerTree(registry, deps);
+    const detail = `run ${run}\nregistry=${JSON.stringify(registry)}\ndeps=${JSON.stringify(deps)}`;
+    assert.equal(engine.ok, npm.ok, `the install succeeds where npm's does: ${detail}`);
+    assert.deepEqual(engine.tree, npm.tree, `the tree is npm's: ${detail}`);
+    compared++;
+    if (Object.keys(npm.tree ?? {}).some((placement) => placement.includes('/node_modules/'))) nestedTrees++;
   }
+} finally {
+  server.close();
 }
-assert.ok(nestedTrees > RUNS / 4, `the fuzz exercises nesting (${nestedTrees}/${RUNS} trees nested)`);
-console.log(`  ${RUNS} trees (${nestedTrees} with nesting), ${edgesChecked} edges met by their nearest visible copy`);
-console.log('npm-install-placement-invariant: ok');
+assert.ok(nestedTrees > RUNS / 4, `the fuzz exercises nesting (${nestedTrees}/${compared} compared trees nested)`);
+console.log(`npm-install-placement-invariant: ${compared} trees as npm's (${nestedTrees} with nesting); ${linkedTrees} npm links a cycle in, not compared`);

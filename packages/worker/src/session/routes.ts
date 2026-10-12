@@ -219,7 +219,7 @@ export async function restorePersistedDevServer(self: RoutesHost, onlyPort?: num
     );
 
     self.viteDevServer = new ViteDevServer({
-      vfs: self.sqliteFs!, cred: entry.cred, esbuild: self.esbuildService!, root: config.root,
+      vfs: self.sqliteFs!, cred: entry.cred, namespace: self.getFilesystemAuthority().vfs, esbuild: self.esbuildService!, root: config.root,
       aliases: config.aliases, define: config.define,
       // What its vite.config sets for Vite's esbuild plugin, as `vite` read it (none before this was kept).
       ...(isViteEsbuildSettings(config.viteEsbuild) ? { viteEsbuild: config.viteEsbuild } : {}),
@@ -1286,7 +1286,7 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
           { longRunning: true, cred: CRED_SESSION_USER },
         );
         self.viteDevServer = new ViteDevServer({
-          vfs: self.sqliteFs!, cred: apiViteEntry.cred, esbuild: self.esbuildService!, root,
+          vfs: self.sqliteFs!, cred: apiViteEntry.cred, namespace: self.getFilesystemAuthority().vfs, esbuild: self.esbuildService!, root,
           aliases: body.aliases, define: body.define,
           onHmrMessage: () => {},
           sql: self.ctx.storage.sql,
