@@ -3704,17 +3704,22 @@ const __fsMod = (() => {
 
   // fs.promises.copyFile, and fs.promises.cp of a file: the source read as
   // fs.promises.readFile reads it, the copy written as writeFile writes it.
-  async function _copyFileAsync(src, dest, mode) {
+  // \`fresh\`: \`dest\` is in a directory this copy just made, so nothing is there.
+  async function _copyFileAsync(src, dest, mode, fresh = false) {
     if ((Number(mode) & __fsConstants.COPYFILE_EXCL) !== 0 && await _existsAsync(dest)) {
       throw _fsErr("EEXIST", "copyfile", src, dest);
     }
     try {
       const data = await _readFileAsync(src);
       const from = (await _statAsync(src)).mode & 0o7777;
+      let there;
+      if (!fresh) {
+        try { there = await _statAsync(dest); }
+        catch (error) { if (error?.code !== "ENOENT") throw error; }
+      }
+      const left = _copyLeaves(there, from);
+      if (there !== undefined && !there.isDirectory() && left !== (there.mode & 0o7777)) await _chmodAsync(dest, left);
       await _writeFileAsync(dest, data, { mode: from });
-      // Made here: what its create asked for, less the umask; else as it is.
-      const created = _createdHere.get(_strip(_resolveFollow(dest, "open")));
-      const left = created !== undefined ? created & ~__processUmask : (await _statAsync(dest)).mode & 0o7777;
       if (left !== from) await _chmodAsync(dest, from);
     } catch (error) { throw _asCallError(error, "copyfile", src, dest); }
   }
@@ -4641,7 +4646,9 @@ const __fsMod = (() => {
   // Bytes, not utf8: a utf8 round trip replaces every byte ≥ 0x80 with
   // U+FFFD, which is how a copied .png or .woff2 arrived corrupted.
   // The copy is left as copyfile leaves it: the source's mode, exactly (over
-  // a file that was there, and past the umask), the bytes made with it first.
+  // a file that was there, and past the umask). Others never hold more of the
+  // bytes than the source gives them: a file made for them is made with its
+  // mode, and one there is narrowed for others before they go in.
   function copyFileSync(src, dest, mode) {
     if ((Number(mode) & __fsConstants.COPYFILE_EXCL) !== 0 && existsSync(dest)) {
       throw _fsErr("EEXIST", "copyfile", src, dest);
@@ -4649,9 +4656,19 @@ const __fsMod = (() => {
     try {
       const data = readFileSync(src);
       const from = statSync(src).mode & 0o7777;
+      const there = statSync(dest, { throwIfNoEntry: false });
+      const left = _copyLeaves(there, from);
+      if (there !== undefined && !there.isDirectory() && left !== (there.mode & 0o7777)) chmodSync(dest, left);
       writeFileSync(dest, data, { mode: from });
-      if ((statSync(dest).mode & 0o7777) !== from) chmodSync(dest, from);
+      if (left !== from) chmodSync(dest, from);
     } catch (error) { throw _asCallError(error, "copyfile", src, dest); }
+  }
+
+  // The mode a copy's target has while its bytes go in: one made for them, the
+  // source's less the umask; one there (\`there\`, its stat), its own, with
+  // nothing for others the source does not give them.
+  function _copyLeaves(there, from) {
+    return there === undefined ? from & ~__processUmask : (there.mode & 0o7777) & ~(0o077 & ~from);
   }
 
   /**
@@ -4759,13 +4776,17 @@ const __fsMod = (() => {
       const named = String(src).endsWith("/") ? String(src) : String(src) + "/";
       throw Object.assign(new Error("Recursive option not enabled, cannot copy a directory: " + named), { code: "ERR_FS_EISDIR" });
     }
-    // A directory it makes takes the source's mode once its entries are in, as Node's cp leaves it.
+    // A directory it makes is its owner's alone until its entries are in, as
+    // GNU cp makes it, then takes the source's mode, as Node's cp leaves it.
     const made = statSync(dest, { throwIfNoEntry: false }) === undefined;
-    mkdirSync(dest, { recursive: true });
+    if (made) {
+      mkdirSync(__pathMod.dirname(String(dest)), { recursive: true });
+      mkdirSync(dest, { mode: 0o700 });
+    }
     for (const ent of readdirSync(src, { withFileTypes: true })) {
       cpSync(__pathMod.join(String(src), ent.name), __pathMod.join(String(dest), ent.name), o);
     }
-    if (made && (st.mode & 0o7777) !== (0o777 & ~__processUmask)) chmodSync(dest, st.mode & 0o7777);
+    if (made && (st.mode & 0o7777) !== (0o700 & ~__processUmask)) chmodSync(dest, st.mode & 0o7777);
   }
 
   // ── mkdtemp ──
@@ -6281,33 +6302,35 @@ const __fsMod = (() => {
       // does for __dot__gitignore) sees the copy in the VFS instead of
       // ENOENT. Each directory is made as mkdir makes it, so the namespace's
       // overlay lists it for the writes beneath it.
-      // Each file is copied as copyFile copies it; a directory made here (0777
-      // less the umask) takes the source's mode once its entries are in, as
-      // Node's cp leaves it.
+      // Each file is copied as copyFile copies it; a directory made here is
+      // its owner's alone until its entries are in, as GNU cp makes it, then
+      // takes the source's mode, as Node's cp leaves it. In a directory this
+      // copy made nothing is there, and nothing is looked for.
       const made = [];
-      const makeDir = async (rel) => {
+      const makeDir = async (rel, fresh) => {
         const at = rel ? "/" + destK + "/" + rel : "/" + destK;
-        if (!(await _existsAsync(at))) made.push([at, rel ? srcAbs + "/" + rel : srcAbs]);
-        await _mkdirAsync(at, { recursive: true });
+        if (!fresh && await _existsAsync(at)) return false;
+        if (!rel) await _mkdirAsync(__pathMod.dirname(at), { recursive: true });
+        await _mkdirAsync(at, { mode: 0o700 });
+        made.push([at, rel ? srcAbs + "/" + rel : srcAbs]);
+        return true;
       };
-      await makeDir("");
-      const walk = async (relDir) => {
+      const walk = async (relDir, fresh) => {
         const absDir = relDir ? srcAbs + "/" + relDir : srcAbs;
         const ents = await _readdirAsync(absDir, { withFileTypes: true });
         for (const ent of ents) {
           const rel = relDir ? relDir + "/" + ent.name : ent.name;
           if (ent.isDirectory && ent.isDirectory()) {
-            await makeDir(rel);
-            await walk(rel);
+            await walk(rel, await makeDir(rel, fresh));
           } else {
-            await _copyFileAsync(srcAbs + "/" + rel, "/" + destK + "/" + rel);
+            await _copyFileAsync(srcAbs + "/" + rel, "/" + destK + "/" + rel, undefined, fresh);
           }
         }
       };
-      await walk("");
-      for (const [at, from] of made) {
+      await walk("", await makeDir("", false));
+      for (const [at, from] of made.reverse()) {
         const mode = (await _statAsync(from)).mode & 0o7777;
-        if (mode !== (0o777 & ~__processUmask)) await _chmodAsync(at, mode);
+        if (mode !== (0o700 & ~__processUmask)) await _chmodAsync(at, mode);
       }
     },
     copyFile: (src, dest, mode) => _copyFileAsync(src, dest, mode),
