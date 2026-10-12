@@ -83,8 +83,9 @@ export function readDirectoryPool({ call, store, client, before }: Options): Rea
       && store.ready() && store.cursor()?.epoch === epoch;
     if (!yes) {
       trustedAtIo = false;
-      // Another incarnation's store: no description of the old one is worth keeping.
-      if (store.cursor()?.epoch !== epoch) discardUnused();
+      // Another incarnation's store: no description of the old one is worth
+      // keeping. (Before a lease was applied there is no incarnation to compare.)
+      if (epoch !== null && store.cursor()?.epoch !== epoch) discardUnused();
     }
     return yes;
   };
