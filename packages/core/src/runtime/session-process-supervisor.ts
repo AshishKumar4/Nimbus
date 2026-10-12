@@ -39,10 +39,9 @@ import type { VfsCred } from './os-contracts.js';
 import { DELEGATION_RECALL_TIMEOUT_MS } from './delegations.js';
 
 export interface ProcessWorkObservation {
-  readonly ready?: Promise<void>;
   release(): void;
 }
-export type HeldProcessWork = (() => void) & Pick<ProcessWorkObservation, 'ready'> & { readonly signal?: AbortSignal };
+export type HeldProcessWork = (() => void) & { readonly signal?: AbortSignal };
 
 /**
  * How long work still held for an ended process (holdWork) has to stop: the
@@ -362,39 +361,18 @@ export class SessionProcessSupervisor implements ProcessOutput {
     if (!pieces) this.held.set(pid, pieces = new Set());
     pieces.add(work);
     let done = false;
-    let cancelValidation: (() => void) | undefined;
     const release = () => {
       if (done) return;
       done = true;
       signal?.removeEventListener('abort', abort);
       owner.signal.removeEventListener('abort', stopObserving);
-      cancelValidation?.();
       stopObserving();
       const now = this.held.get(pid);
       now?.delete(work);
       if (now?.size === 0) this.held.delete(pid);
       this.releaseEnded(pid);
     };
-    let source: Promise<void> | undefined, ready: Promise<void> | undefined;
-    return Object.defineProperty(Object.assign(release, { signal: owner.signal }), 'ready', { get: () => {
-      const validation = work.observation?.ready;
-      if (!validation) return undefined;
-      if (source !== validation) {
-        source = validation;
-        ready = new Promise<void>((resolve, reject) => {
-          const cancelled = () => {
-            owner.signal.removeEventListener('abort', cancelled);
-            reject(owner.signal.aborted ? owner.signal.reason : new DOMException('Work validation aborted', 'AbortError'));
-          };
-          cancelValidation = cancelled;
-          if (done || owner.signal.aborted) { cancelled(); return; }
-          owner.signal.addEventListener('abort', cancelled, { once: true });
-          validation.then(resolve, reject).finally(() => owner.signal.removeEventListener('abort', cancelled));
-        });
-        ready.catch(() => {});
-      }
-      return ready;
-    } });
+    return Object.assign(release, { signal: owner.signal });
   }
 
   /** Stop the work behind `pid`: its terminator, and every piece held for it, once each, for `reason`. */
