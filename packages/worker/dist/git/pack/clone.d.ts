@@ -198,7 +198,7 @@ export interface PendingPack {
 }
 export type StoredPack = {
     result: PackProcessResult;
-    summary: PackSummary;
+    summary: PackSummary | null;
 } | {
     pending: PendingPack;
 };

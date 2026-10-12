@@ -155,11 +155,11 @@ async function finished(context, summary, shallow, before) {
     const wrote = await updateShallow(context, shallow, before);
     return {
         pending: null,
-        packName: 'pack-' + summary.packSha,
-        objects: summary.objects,
-        bytes: summary.packBytes,
+        packName: summary === null ? null : 'pack-' + summary.packSha,
+        objects: summary?.objects ?? 0,
+        bytes: summary?.packBytes ?? 0,
         shallow: wrote,
-        promisor: shallow.filtered,
+        promisor: summary !== null && shallow.filtered,
         // What the wants reach is here when the repository was complete and the pack is neither filtered nor shallow.
         selfContained: shallow.complete && !shallow.filtered && !wrote,
     };

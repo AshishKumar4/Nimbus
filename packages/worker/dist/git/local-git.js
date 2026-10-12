@@ -1,3 +1,4 @@
+import { GIT_WASI_ENV } from '@nimbus-sh/core/runtime/os-contracts.js';
 const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const encoder = new TextEncoder();
 /** Git's object and ref operations, as children of the remote helper on the session's byte pipes. */
@@ -38,7 +39,7 @@ export function createLocalGit(manager, from) {
                         throw cancelled();
                     const child = await manager.spawn({
                         command: 'git', args, parentPid: from.pid, cwd: from.cwd,
-                        env: { ...from.env, GIT_DIR: gitDir, NIMBUS_GIT_WASI: '1' },
+                        env: { ...from.env, GIT_DIR: gitDir, [GIT_WASI_ENV]: '1' },
                         stdio: ['pipe', 'pipe', 'pipe'],
                     });
                     pid = child.childPid;
