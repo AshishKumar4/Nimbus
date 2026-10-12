@@ -655,8 +655,10 @@ export class R2CacheClient {
       const expired = expiresAt > 0
         ? now >= expiresAt
         : ageMs >= PACKUMENT_TTL_MS;
+      const hit: CachedPackument = { json, ageMs, expired };
       const etag = l2Hit.headers.get('x-nimbus-etag');
-      return { json, ageMs, expired, ...(etag ? { etag } : {}) };
+      if (etag) hit.etag = etag;
+      return hit;
     }
     this._recordMiss('L2', 'packument');
     // ── L3 path (cross-tenant) ────────────────────────────────────
@@ -688,7 +690,10 @@ export class R2CacheClient {
     if (!expired && !this.readOnly) {
       await this.fillPackumentL2(l2Key, json, expiresAt > 0 ? expiresAt : now + PACKUMENT_TTL_MS, etag);
     }
-    return { json, ageMs, expired, ...(etag ? { etag } : {}), ...(obj.etag ? { stored: obj.etag } : {}) };
+    const hit: CachedPackument = { json, ageMs, expired };
+    if (etag) hit.etag = etag;
+    if (obj.etag) hit.stored = obj.etag;
+    return hit;
   }
 
   /**
