@@ -29,7 +29,6 @@ import { PACKAGE_ABI_POLICY } from '../../packages/worker/src/facets/wasm-swap-r
 
 const spec = (overrides = {}) => ({
   cachedEntries: [],
-  isOptional: false,
   fetchTimeoutMs: 1_000,
   retries: 0,
   ...overrides,
@@ -41,7 +40,7 @@ const versionEntry = (name, version, dependencies = {}) => ({
 });
 const packument = (name, versions, distTags = {}) => JSON.stringify({ name, 'dist-tags': distTags, versions });
 const cacheEntry = (name, version) => ({
-  name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: `sha512-${version}`,
+  name, registryName: name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: `sha512-${version}`,
   depsJson: '{}', peerDepsJson: '{}', exportsJson: 'null', main: 'index.js', moduleField: '', binJson: '{}',
   platformJson: '{}', optionalDepsJson: '{}', fetchedAt: 0,
 });

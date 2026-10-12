@@ -29,7 +29,7 @@ import {
 import { djb2 } from './vendor/serialize.js';
 import { requireFacetTaskSource, type FacetTaskSource } from '@nimbus-sh/core/runtime/facet-task.js';
 import { BindingError } from './vendor/errors.js';
-import { IsolatePool } from './isolate-pool.js';
+import { IsolatePool, valuesOf, type Settled } from './isolate-pool.js';
 import { claimDynamicWorkers, dynamicWorkerHeadroom, type DynamicWorkerClaim } from './budgets.js';
 import { hostRoute, type HostRoute } from './composition.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
@@ -209,8 +209,9 @@ export interface FanoutOptions {
   maxPeers?: number;
 }
 
+/** A peer shard's outcome per task, in bucket order: what crosses the RPC, so a failure is its message. */
 interface FanoutPeerResult<R> {
-  results: R[];
+  results: Array<{ ok: true; value: R } | { ok: false; message: string }>;
 }
 
 // Task values retain the submitted function's type; validate the wire envelope.
@@ -268,7 +269,9 @@ export class Fanout {
    * Peer shards: tasks hash onto min(tasks, maxPeers ?? MAX_PEER_FANOUT)
    * peers and each peer runs its bucket through its own IsolatePool, as
    * wide as that peer's headroom allows. A single submitMany call returns
-   * when ALL tasks complete (or any throws).
+   * when ALL tasks complete; after one fails no more are dispatched, and it
+   * rejects with that failure once everything dispatched has settled, so no
+   * task it started is still running when it returns.
    *
    * `fn` is the user function executed per task. It runs INSIDE a
    * Worker Loader isolate (in the in-DO path) or inside a peer DO's
@@ -280,14 +283,30 @@ export class Fanout {
     tasks: FanoutTask<A>[],
     fn: FacetTaskSource<A, R>,
   ): Promise<R[]> {
+    return valuesOf(await this.dispatch(tasks, fn, true));
+  }
+
+  /** `submitMany`, where every task is dispatched whatever the others do: each task's outcome, once all have settled. */
+  async submitManySettled<A, R>(
+    tasks: FanoutTask<A>[],
+    fn: FacetTaskSource<A, R>,
+  ): Promise<Array<Settled<R>>> {
+    return this.dispatch(tasks, fn, false);
+  }
+
+  private async dispatch<A, R>(
+    tasks: FanoutTask<A>[],
+    fn: FacetTaskSource<A, R>,
+    stopOnFailure: boolean,
+  ): Promise<Array<Settled<R>>> {
     if (tasks.length === 0) return [];
 
     const headroom = dynamicWorkerHeadroom(this.ctx);
     const claim = claimDynamicWorkers(this.ctx, tasks.length);
     this.opts.onRoute?.({ topology: claim ? 'in-do' : 'peer-do', tasks: tasks.length, headroom });
-    if (!claim) return this._dispatchPeerDo<A, R>(tasks, fn);
+    if (!claim) return this._dispatchPeerDo<A, R>(tasks, fn, stopOnFailure);
     try {
-      return await this._dispatchInDo<A, R>(tasks, fn, claim);
+      return await this._dispatchInDo<A, R>(tasks, fn, claim, stopOnFailure);
     } finally {
       claim.release();
     }
@@ -317,7 +336,8 @@ export class Fanout {
     tasks: FanoutTask<A>[],
     fn: FacetTaskSource<A, R>,
     claim: DynamicWorkerClaim,
-  ): Promise<R[]> {
+    stopOnFailure: boolean,
+  ): Promise<Array<Settled<R>>> {
     // One slot — one Dynamic Worker — per task; submitMany has claimed
     // that width on the ledger, and the pool's dispatches are held inside it.
     const pool = new IsolatePool(this.env, this.ctx, {
@@ -335,11 +355,8 @@ export class Fanout {
     });
     try {
       const items = tasks.map((t) => t.args);
-      const results = await pool.map<A, R>(fn, items);
-      // pool.map returns Array<R | null> (null on per-item failure with
-      // onError='null'/'skip'). Default onError='throw' rejects on
-      // first failure, so successful settle here implies all R values.
-      return results as R[];
+      if (!stopOnFailure) return await pool.mapSettled<A, R>(fn, items);
+      return (await pool.map<A, R>(fn, items)).map((value) => ({ ok: true, value }));
     } finally {
       try { pool.dispose(); } catch { /* best-effort */ }
     }
@@ -350,7 +367,8 @@ export class Fanout {
   private async _dispatchPeerDo<A, R>(
     tasks: FanoutTask<A>[],
     fn: FacetTaskSource<A, R>,
-  ): Promise<R[]> {
+    stopOnFailure: boolean,
+  ): Promise<Array<Settled<R>>> {
     // The peer-DO topology routes through the composed host namespace —
     // a workspace host names its own binding, and its stub forwards one
     // supervisorOp entrypoint, not private _rpc* methods.
@@ -386,18 +404,18 @@ export class Fanout {
     tasks.forEach((t, i) => {
       taskIndex.set(t, i);
     });
-    const results: R[] = new Array(tasks.length);
+    const results: Array<Settled<R>> = new Array(tasks.length);
 
     // Build one async dispatcher per shard (closure capturing siblingName,
     // bucket). NOT eagerly-started — wrapped in a thunk so we can stagger
     // dispatch via Promise chains without forcing all shards to start
     // simultaneously.
-    const dispatchers: (() => Promise<void>)[] = [];
+    const dispatchers: Array<{ bucket: FanoutTask<A>[]; run: () => Promise<void> }> = [];
     for (const [shard, bucket] of shards) {
       const siblingName = `nbf:${this.opts.tag}:${this.coordDoIdShort}:${shard}`;
       const id = ns.idFromName(siblingName);
       const peerArgs = bucket.map((t) => t.args);
-      dispatchers.push(async () => {
+      dispatchers.push({ bucket, run: async () => {
         for (let attempt = 0; ; attempt++) {
           // Fresh stub per attempt: after a transient reset the previous
           // stub points at a torn-down object, so a retry re-resolves the
@@ -430,6 +448,7 @@ export class Fanout {
               // invoking process pid, so package writes are authorized
               // as the user (not rejected as pid:0).
               supervisorPid: this.opts.supervisorPid,
+              stopOnFailure,
             };
             const rpcResp = await dispatch({ op: 'fanoutExecute', args: [fnSource, peerArgs, shardOpts] });
             try {
@@ -447,7 +466,8 @@ export class Fanout {
                 if (origIdx === undefined) {
                   throw new Error(`peer DO result had no original task index (siblingName=${siblingName})`);
                 }
-                results[origIdx] = peerResults[i];
+                const outcome = peerResults[i];
+                results[origIdx] = outcome.ok ? { ok: true, value: outcome.value } : { ok: false, error: new Error(outcome.message) };
               }
             } finally {
               disposeRpcResource(rpcResp);
@@ -476,7 +496,7 @@ export class Fanout {
             disposeRpcResource(peerStub);
           }
         }
-      });
+      } });
     }
 
     // Dispatch peer shards in bounded phases. A single Promise.all across all
@@ -487,11 +507,24 @@ export class Fanout {
     // A phase is a hard barrier: no shard in phase N+1 starts until every
     // shard in phase N returns, so `width@ms` per phase is what separates
     // "the shards are slow" from "there are too many barriers".
+    //
+    // A phase settles whole before the next starts, so a shard that fails
+    // leaves none of its phase running; after one fails, submitMany starts
+    // no more.
     for (let i = 0; i < dispatchers.length; i += FANOUT_PHASE_SIZE) {
       const phase = dispatchers.slice(i, i + FANOUT_PHASE_SIZE);
       const phaseStartedAt = Date.now();
-      await Promise.all(phase.map((d) => d()));
+      const outcomes = await Promise.allSettled(phase.map((d) => d.run()));
       this.opts.onDispatchPhase?.(phase.length, Date.now() - phaseStartedAt);
+      outcomes.forEach((outcome, at) => {
+        if (outcome.status === 'fulfilled') return;
+        const error = outcome.reason instanceof Error ? outcome.reason : new Error(String(outcome.reason));
+        for (const task of phase[at].bucket) results[taskIndex.get(task) ?? -1] = { ok: false, error };
+      });
+      if (stopOnFailure && phase.some(({ bucket }) => bucket.some((task) => results[taskIndex.get(task) ?? -1]?.ok === false))) break;
+    }
+    for (let i = 0; i < results.length; i++) {
+      results[i] ??= { ok: false, error: new Error('not dispatched: an earlier shard failed') };
     }
     return results;
   }
@@ -519,6 +552,8 @@ export interface FanoutShardOptions {
   supervisorPid?: number;
   /** The coordinator workspace's egress (FanoutOptions.network): the peer's facets go out through it. */
   network?: WorkspaceNetworkRef;
+  /** submitMany's: no task starts after one fails. Otherwise (submitManySettled) each runs, whatever the others do. */
+  stopOnFailure?: boolean;
 }
 
 /**
@@ -570,8 +605,8 @@ export async function executeFanoutShard(
   });
   try {
     // The coordinator already validated and serialized the function.
-    const results = await pool.mapSource(fnSource, args);
-    return { results };
+    const settled = await pool.mapSource(fnSource, args, opts.stopOnFailure !== false);
+    return { results: settled.map((outcome) => (outcome.ok ? outcome : { ok: false, message: describeError(outcome.error) })) };
   } finally {
     try { pool.dispose(); } catch { /* best-effort */ }
     claim?.release();

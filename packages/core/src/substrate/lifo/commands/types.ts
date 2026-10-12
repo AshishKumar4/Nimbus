@@ -72,6 +72,13 @@ export interface CommandContext {
   env: Record<string, string>;
   cwd: string;
   vfs: ProcessView;
+  /**
+   * The command's view of the filesystem as `vfs` is, but not revoked by its
+   * signal: for work it must finish once started, whatever stops the
+   * command (an install's publication, and its undo). Absent where the
+   * command runs with no process identity of its own.
+   */
+  vfsUntilExit?: () => ProcessView;
   stdout: CommandOutputStream;
   stderr: CommandOutputStream;
   signal: AbortSignal;

@@ -136,7 +136,7 @@ for (const swap of PACKAGE_ABI_POLICY.swaps) {
 {
   const { specs } = applySwaps({ esbuild: '^0.20.0' });
   assert.deepEqual(parseRegistryRequest('esbuild', specs.esbuild), {
-    installName: 'esbuild', registryName: 'esbuild-wasm', range: '^0.20.0', alias: true,
+    installName: 'esbuild', registryName: 'esbuild-wasm', range: '^0.20.0', alias: true, registry: true,
   });
 }
 

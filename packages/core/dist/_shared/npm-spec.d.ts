@@ -4,6 +4,8 @@ export interface RegistryRequest {
     registryName: string;
     range: string;
     alias: boolean;
+    /** Whether a registry answers it: a version, range or dist-tag (an alias's too). A git, file, directory or URL spec is not. */
+    registry: boolean;
 }
 /**
  * The package a command-line spec names and the range it asks for, as npa

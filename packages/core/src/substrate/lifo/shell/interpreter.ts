@@ -1161,6 +1161,7 @@ export class Interpreter {
       env: spec.env,
       cwd: spec.cwd,
       vfs: spec.vfs,
+      vfsUntilExit: () => bindProcessView(this.config.filesystem, { pid: identity.pid, cred: identity.cred }),
       stdout: spec.stdout,
       stderr,
       signal: abortController.signal,

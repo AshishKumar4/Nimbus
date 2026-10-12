@@ -74,7 +74,7 @@ const TASKS = Array.from({ length: 8 }, (_, i) => ({ key: `pkg-${i}`, args: i })
       const n = (calls.get(name) ?? 0) + 1;
       calls.set(name, n);
       if (n === 1) throw new Error('Durable Object reset because its code was updated.');
-      return { results: args }; // echo — peer would run fn; plumbing is what we test
+      return { results: args.map((value) => ({ ok: true, value })) }; // echo — peer would run fn; plumbing is what we test
     },
   }));
   const pool = new Fanout(env, ctx, { network: ISOLATE_NETWORK, tag: 'reset-retry-test', omitSupervisor: true });
@@ -130,7 +130,7 @@ const TASKS = Array.from({ length: 8 }, (_, i) => ({ key: `pkg-${i}`, args: i })
       const n = (calls.get(name) ?? 0) + 1;
       calls.set(name, n);
       if (n === 1) throw new Error('Durable Object is overloaded.');
-      return { results: args };
+      return { results: args.map((value) => ({ ok: true, value })) };
     },
   }));
   const pool = new Fanout(env, ctx, { network: ISOLATE_NETWORK, tag: 'overload-retry-test', omitSupervisor: true });
@@ -174,7 +174,7 @@ for (const make of [
       const n = (calls.get(name) ?? 0) + 1;
       calls.set(name, n);
       if (n === 1) throw make();
-      return { results: args };
+      return { results: args.map((value) => ({ ok: true, value })) };
     },
   }));
   const pool = new Fanout(env, ctx, { network: ISOLATE_NETWORK, tag: 'retryable-test', omitSupervisor: true });
@@ -199,5 +199,27 @@ assert.equal(
   describeError(Object.assign(new Error('wrapped'), { name: 'ExecutionError', remoteMessage: 'boom in the facet' })),
   'ExecutionError: boom in the facet (remote)',
 );
+
+// ── Settled dispatch on the peer route: a failed task is that task's own ──
+//
+// submitManySettled asks each peer for every task's outcome, so one task
+// that fails costs only itself, not the others its shard carries; the peer
+// is told to run them all. submitMany still fails on it.
+{
+  const asked = [];
+  const env = makeEnv(() => ({
+    async fanoutExecute(_fnSource, args, opts) {
+      asked.push(opts?.stopOnFailure);
+      return { results: args.map((value) => (value === 3 ? { ok: false, message: 'registry said 500 for pkg-3' } : { ok: true, value })) };
+    },
+  }));
+  const pool = new Fanout(env, ctx, { network: ISOLATE_NETWORK, tag: 'settled-test', omitSupervisor: true, maxPeers: 2 });
+  const settled = await pool.submitManySettled(TASKS, facetTaskSource("(x) => x"));
+  assert.deepEqual(settled.map((outcome) => (outcome.ok ? outcome.value : `failed: ${outcome.error.message}`)),
+    TASKS.map((t) => (t.args === 3 ? 'failed: registry said 500 for pkg-3' : t.args)), 'every other task of the shard answers');
+  assert.ok(asked.length > 0 && asked.every((stop) => stop === false), 'each peer is told to run every task');
+  await assert.rejects(pool.submitMany(TASKS, facetTaskSource("(x) => x")), /registry said 500 for pkg-3/, 'submitMany fails on it');
+  console.log('  settled: one failed task costs only itself on the peer route');
+}
 
 console.log('fanout-peer-reset-retry: ok');

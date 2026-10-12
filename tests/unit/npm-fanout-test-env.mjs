@@ -9,7 +9,14 @@
 // (`spec.range` is the edge's range, for registries with more than one
 // version of a name); `shardsSeen` records package names the write shard
 // was asked to install. Each package is written to the placement the
-// supervisor chose (`pkgDir`), root or nested.
+// supervisor chose (`pkgDir`), root or nested: `manifestFor(p)`, its
+// package.json (by default its name and version), and `filesFor(p)`'s other
+// files (path in the package → content: what its archive bundles), unless
+// `failFor(p)` names why it fails there. `crashFor(p)` makes the shard
+// itself fail when it reaches p: 'before' writing it, 'partial' (a file of
+// it written, not its package.json, which the writer writes last), or
+// 'after' (its outcome lost, as a timed-out execution's). Each task
+// settles on its own, as the peer shard settles each.
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { NpmInstaller } from '../../packages/worker/src/npm/installer.ts';
@@ -23,20 +30,38 @@ export function kernelInstaller(vfs, sql, opts) {
   return installer;
 }
 
-export function makeFanoutEnv({ root, NM, resultFor, shardsSeen = [], log = [] }) {
+export function makeFanoutEnv({ root, NM, resultFor, shardsSeen = [], log = [], failFor = () => null, crashFor = () => null, manifestFor = (p) => ({ name: p.name, version: p.version }), filesFor = () => ({}) }) {
   const fanoutReply = (args) => {
     if (args[0] && Array.isArray(args[0].packages)) {
       // The install shard: write each package's package.json so the
       // tree is real for on-disk assertions.
       return { results: args.map((shard) => {
         shardsSeen.push(...shard.packages.map((p) => p.name));
-        for (const p of shard.packages) {
+        const perPackage = shard.packages.map((p) => {
+          if (crashFor(p) === 'before') throw new Error(`shard crashed before ${p.name}`);
+          const errorText = failFor(p);
+          if (errorText) return { name: p.name, version: p.version, pkgDir: p.pkgDir, fileCount: 0, bytesWritten: 0, elapsed: 1, warnings: [], errorText };
           const dir = p.pkgDir ?? `${NM}/${p.name}`;
           root.mkdir(dir, { recursive: true });
-          root.writeFile(`${dir}/package.json`, JSON.stringify({ name: p.name, version: p.version }));
-        }
+          if (crashFor(p) === 'partial') {
+            root.writeFile(`${dir}/part.js`, '');
+            throw new Error(`shard crashed writing ${p.name}`);
+          }
+          // As the batch writer does: every file stamped with the batch's mtime.
+          const write = (path, content) => {
+            root.writeFile(path, content);
+            if (p.mtime !== undefined) root.utimes(path, p.mtime, p.mtime);
+          };
+          write(`${dir}/package.json`, JSON.stringify(manifestFor(p)));
+          for (const [path, content] of Object.entries(filesFor(p))) {
+            root.mkdir(`${dir}/${path.slice(0, path.lastIndexOf('/'))}`, { recursive: true });
+            write(`${dir}/${path}`, content);
+          }
+          if (crashFor(p) === 'after') throw new Error(`shard crashed after ${p.name}`);
+          return { name: p.name, version: p.version, pkgDir: p.pkgDir, fileCount: 1, bytesWritten: 40, elapsed: 1, warnings: [] };
+        });
         return {
-          perPackage: shard.packages.map((p) => ({ name: p.name, version: p.version, pkgDir: p.pkgDir, fileCount: 1, bytesWritten: 40, elapsed: 1, warnings: [] })),
+          perPackage,
           elapsed: 1,
           facetCounters: { tarballsCompleted: 0, cumulativeBytesDecoded: 0, peakInFlight: 1, pipelinedTarballRaceWins: 0, pipelinedTarballRaceLosses: 0 },
           cacheStatEvents: [],
@@ -55,7 +80,15 @@ export function makeFanoutEnv({ root, NM, resultFor, shardsSeen = [], log = [] }
         return {
           async supervisorOp(envelope) {
             const [_fnSource, args] = envelope.args;
-            return fanoutReply(args);
+            return {
+              results: args.map((arg) => {
+                try {
+                  return { ok: true, value: fanoutReply([arg]).results[0] };
+                } catch (error) {
+                  return { ok: false, message: error.message };
+                }
+              }),
+            };
           },
         };
       },
