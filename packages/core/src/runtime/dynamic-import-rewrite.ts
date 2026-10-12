@@ -104,13 +104,20 @@ export interface StaticSpecifierSite {
 
 /**
  * A static specifier's attributes clause, in its statement (which ends at
- * `statementEnd`): from the specifier's end through the clause's closing
- * brace, the last brace of the statement. What lies between is the clause
- * and trivia.
+ * `statementEnd`, as the lexer reports it: just past the clause): from the
+ * specifier's end through the clause's closing brace, the last brace of the
+ * statement. What lies between is the clause and trivia.
  */
 function attributesClause(source: string, site: Span, statementEnd: number): Span | undefined {
   const close = source.lastIndexOf('}', statementEnd - 1);
   return close >= site.end ? { start: site.end, end: close + 1 } : undefined;
+}
+
+/** The same clause as the grammar reads it: through the brace after its last attribute (`lastEnd`), past trivia and a trailing comma. */
+function attributesClauseAfter(source: string, site: Span, lastEnd: number): Span | undefined {
+  let at = skipTrivia(source, lastEnd).at;
+  if (source[at] === ',') at = skipTrivia(source, at + 1).at;
+  return source[at] === '}' ? { start: site.end, end: at + 1 } : undefined;
 }
 
 /** Where a module's text has module syntax a loader reads: import() calls, import.meta, static specifiers. */
@@ -227,7 +234,8 @@ export function readModuleImportSites(code: string): ImportSites {
         const key = attribute.key.type === 'Identifier' ? attribute.key.name : String(attribute.key.value);
         if (typeof attribute.value.value === 'string') attributes[key] = attribute.value.value;
       }
-      const clause = Object.keys(attributes).length > 0 ? attributesClause(code, source, statement.end) : undefined;
+      const last = statement.attributes?.[statement.attributes.length - 1];
+      const clause = last === undefined ? undefined : attributesClauseAfter(code, source, last.end);
       statics.push({ start: source.start, end: source.end, specifier: source.value, attributes, ...(clause ? { clause } : {}) });
     },
   });

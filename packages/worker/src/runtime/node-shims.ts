@@ -7651,12 +7651,19 @@ const __nimbusDecodeStringLiteral = ${DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE};
   // constructor; none (runtime code's, or no module's) is unbound.
   const callerOrigin = (constructor) => {
     try {
-      for (const site of __nimbusStackSites({}, Infinity, constructor)) {
+      // The interpreter's frames too: a module it evaluates may be the caller.
+      const holder = {};
+      if (__nimbusInterpreter !== null) {
+        __nimbusInterpreter.captureStack(holder, constructor);
+        const stamp = __nimbusInterpretedStacks.get(holder);
+        if (stamp !== undefined) stamp.sites = __nimbusStackSites({}, Infinity, constructor);
+      }
+      for (const site of __nimbusStackSites(holder, Infinity, constructor)) {
         const file = site.getFileName();
         const module = typeof file === "string" ? __nimbusModuleOfFile(file) : null;
         // A map module's path, or the program's entry's file (the stack entry has no map path).
         const path = module === null ? null : module.path ?? (typeof module.file === "string" && module.file.startsWith("/") ? module.file : null);
-        if (path !== null) return globalThis.__nimbusCodeOrigin(__nimbusModuleImporterUrl(path.replace(/^\\/+/, "")));
+        if (path !== null) return globalThis.__nimbusCodeOrigin(__nimbusFileUrl(path));
       }
     } catch {}
     return unbound;
@@ -11837,6 +11844,9 @@ function __nimbusFileImportMeta(filename, url = builtins.url.pathToFileURL(filen
 
 // Errors a known Workers-incompatible package's load threw, advised once.
 const __nimbusAdvised = new WeakSet();
+// The CommonJS modules whose bodies are running now (Node's kIsExecuting):
+// an ES module that imports one is in a require(esm) cycle.
+const __nimbusExecutingCommonJs = new WeakSet();
 // An ES module's import of a JSON file (esm-stage.ts's member): Node's JSON
 // translator, whose value is require()'s for the same file. One object, in
 // require.cache, whichever loads it first.
@@ -11977,7 +11987,13 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
     __nimbusCompiling("/" + normalizedPath, () => compiledText ?? __nimbusModuleSourceText(__nimbusModuleAtPath(normalizedPath)));
     const scopedRequire = __nimbusMakeRequire(mod, modDir);
     // A CommonJS module's \`this\` is its exports, as Node calls its wrapper.
-    const evaluation = __nimbusReflectApply(cell, mod.exports, [mod.exports, scopedRequire, mod, filename, modDir]);
+    if (!adopted) __nimbusExecutingCommonJs.add(mod);
+    let evaluation;
+    try {
+      evaluation = __nimbusReflectApply(cell, mod.exports, [mod.exports, scopedRequire, mod, filename, modDir]);
+    } finally {
+      __nimbusExecutingCommonJs.delete(mod);
+    }
     // A module with top-level await completes later: an import() waits for
     // it (__esmLoad); require() refuses it, as Node's does.
     if (evaluation && typeof evaluation.then === "function") {
@@ -12170,7 +12186,7 @@ let __nimbusEsmOpenBatch = null;
 // How many evaluations have opened: an import() knows which began after it.
 let __nimbusEsmBatches = 0;
 // What each import() in flight resolves once its graph has loaded (__nimbusEsmImport).
-const __nimbusEsmLoading = [];
+const __nimbusEsmLoading = new Set();
 const __nimbusEsmResolved = Promise.resolve();
 const __nimbusEsmThen = Promise.prototype.then;
 // A builtin facade's reads again of its builtin's names (module.syncBuiltinESMExports).
@@ -12190,7 +12206,9 @@ function __nimbusEsmEnter(metaUrl) {
   const record = __nimbusEsmRecord(id);
   if (__nimbusEsmOpenBatch === null) {
     // An evaluation begins: the graphs it loads are loaded.
-    for (const loaded of __nimbusEsmLoading.splice(0)) loaded();
+    const loading = [...__nimbusEsmLoading];
+    __nimbusEsmLoading.clear();
+    for (const loaded of loading) loaded();
     __nimbusEsmOpenBatch = { running: new Set(), stop: null, thrower: null, seq: ++__nimbusEsmBatches };
     __nimbusReflectApply(__nimbusEsmThen, __nimbusEsmResolved, [() => { __nimbusEsmOpenBatch = null; }]);
   }
@@ -12429,11 +12447,10 @@ async function __nimbusEsmImport(id) {
     // Settled once, by whichever comes first; never left waiting in the
     // list (a cached module's import() enters no meta instance to empty it).
     const loaded = () => {
-      const at = __nimbusEsmLoading.indexOf(loaded);
-      if (at !== -1) __nimbusEsmLoading.splice(at, 1);
+      __nimbusEsmLoading.delete(loaded);
       resolve();
     };
-    __nimbusEsmLoading.push(loaded);
+    __nimbusEsmLoading.add(loaded);
     since = __nimbusEsmBatches;
     const evaluation = import(__NIMBUS_BUNDLE_URL + __nimbusEsmName(id));
     // The evaluation it began, when it began within the call (workerd's).
@@ -12714,6 +12731,9 @@ async function __nimbusEsmLinkStaged(key, seen) {
     let resolution;
     try { resolution = __esmResolver.resolveSync(request.specifier, parentUrl); } catch { continue; }
     if (!resolution.path) continue;
+    // A query's or fragment's instance is the interpreter's own, linked where it is imported.
+    const { search, hash } = new URL(resolution.url);
+    if (search !== "" || hash !== "") continue;
     const target = resolution.path.replace(/^\\/+/, "");
     const id = __nimbusEsmId("module", target);
     if (id === -1) await __nimbusEsmLinkStaged(target, seen);
@@ -13200,13 +13220,17 @@ function __requireFrom(id, fromDir, parent, required = true) {
     // A CommonJS module still loading is one whose require() of an ES
     // module led here: Node's loader refuses the cycle (require(esm)).
     const loading = esModule ? undefined : __NodeModule._cache["/" + key];
-    if (loading !== undefined && loading.loaded === false) {
+    if (loading !== undefined && __nimbusExecutingCommonJs.has(loading)) {
       throw nodeError(Error, "ERR_REQUIRE_CYCLE_MODULE", "Cannot import CommonJS Module " + id + " in a cycle." + (parent?.filename ? " (from " + parent.filename + ")" : ""));
     }
-    // A query's or fragment's module is its own instance, by its URL.
+    // A query's or fragment's ES module or JSON is its own instance, by its
+    // URL; a CommonJS module is one module by its file, whatever the URL
+    // (Node's CommonJS translator keys its cache by filename).
     const { search, hash } = new URL(resolution.url);
-    const instance = search !== "" || hash !== "" ? resolution.url : key;
-    return __loadModule(key, instance, false, parent, esModule);
+    const instance = (search !== "" || hash !== "") && resolution.format !== "commonjs" ? resolution.url : key;
+    const exports = __loadModule(key, instance, false, parent, esModule);
+    // A JSON module's namespace has its value as default alone, whatever it holds.
+    return resolution.format === "json" ? __esmNamespaceOf(["default"], () => exports) : exports;
   }
   const resolved = __resolveFrom(id, fromDir, parent?.filename);
   if (!resolved) throw __nimbusModuleNotFound(id, parent);
@@ -13263,11 +13287,13 @@ function __nimbusEvaluateEntry(load, mod, filename, dirname) {
   }
   const self = evaluated ? globalThis : mod.exports;
   let threw = true;
+  __nimbusExecutingCommonJs.add(mod);
   try {
     const result = __nimbusReflectApply(wrapper, self, [mod.exports, __nimbusMakeRequire(mod), mod, evaluated ? mod.id : filename, evaluated ? "." : dirname]);
     threw = false;
     return result;
   } finally {
+    __nimbusExecutingCommonJs.delete(mod);
     // Module._load: a module whose load threw leaves the cache.
     if (!evaluated && threw) delete __NodeModule._cache[mod.filename];
     else if (!evaluated) mod.loaded = true;
