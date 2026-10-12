@@ -31,6 +31,7 @@ import { type PortVisibility } from '../session/port-capability.js';
 import { type PreloadModuleRoot, type RequiredModuleRoot } from '@nimbus-sh/core/runtime/require-resolver.js';
 import { type NodeLaunch } from '@nimbus-sh/core/runtime/node-cli.js';
 import type { NodeTypeScript } from '@nimbus-sh/core/runtime/typescript-strip.js';
+import { type StaticFsRefs } from '@nimbus-sh/core/runtime/static-fs-refs.js';
 import type { ModuleScope } from '@nimbus-sh/core/runtime/module-format.js';
 import { type StagedProfileEntry } from './read-profile.js';
 import { type EsmStage } from './esm-stage.js';
@@ -827,7 +828,13 @@ export declare function lazyReadsByTarget(syncReadsOf: ReadonlyMap<string, reado
  * the bytes by path or carried them inline. A file that cannot be read is
  * left out; the seam's refusal names the module later.
  */
-export declare function collectClosureWasmImages(vfs: LaunchFs, bundle: Record<string, string | Uint8Array | FacetVfsDenial>, unstagedPaths: readonly string[]): Promise<WasmImageRecord[]>;
+export declare function collectClosureWasmImages(vfs: LaunchFs, bundle: Record<string, string | Uint8Array | FacetVfsDenial>, unstagedPaths: readonly string[], 
+/**
+ * A module's analysis as the data plan reads it (FacetManager
+ * _staticRefsOf: its file, once per revision), or null: then its cell is
+ * analyzed here.
+ */
+staticRefs?: (path: string) => Promise<StaticFsRefs | null>): Promise<WasmImageRecord[]>;
 /**
  * Stage the paths an earlier run of the same entry read synchronously and did
  * not have.
@@ -888,6 +895,8 @@ export interface PrefetchBundleOptions {
     preloads?: readonly PreloadModuleRoot[];
     /** `entryCode` is an ES module (`-e` or stdin, entryEsModuleKey): the VFS key it is staged at. */
     entryEsModule?: string;
+    /** A module's static filesystem references, as the data plan reads them (collectClosureWasmImages). */
+    staticRefs?: (path: string) => Promise<StaticFsRefs | null>;
 }
 /**
  * The working dir's config files of the tool a launch runs. The tool
@@ -1653,6 +1662,13 @@ export declare class FacetManager {
      * per revision of it, in this session.
      */
     private _closureStaticRefs;
+    /**
+     * One module's static filesystem references (_closureStaticRefs), parsed
+     * once per revision of its file in this session; null if it has no
+     * revision or cannot be read. The launch's image collector reads the same
+     * analysis (collectClosureWasmImages).
+     */
+    private _staticRefsOf;
     private _buildProcessBundle;
     /**
      * Generate a launch's map under the ceiling on it. `others` is what the rest
