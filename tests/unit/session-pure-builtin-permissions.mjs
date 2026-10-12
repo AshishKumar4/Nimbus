@@ -19,7 +19,7 @@ import { importWorkerBundle } from './lib/worker-bundle.mjs';
     'packages/worker/src/session/supervisor-rpc.ts': ['SupervisorRPC'],
     'packages/worker/src/hosted/services.ts': ['bindRuntimeServices'],
     'packages/core/src/workspace/nimbus-workspace.ts': ['NimbusWorkspace'],
-  });
+  }, { stubs: [{ filter: /^cloudflare:sockets$/, contents: 'export function connect() { throw new Error("unexpected socket"); }' }] });
 
   const harness = createSqliteVfsTestHarness();
   const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
