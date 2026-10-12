@@ -11,7 +11,8 @@
  *     the next process's first answer takes the barrier from the store's
  *     cursor, which drops it, and the new bytes are read;
  *   - a process of another credential, or in a facet of its own, keeps
- *     nothing of it.
+ *     nothing of it; nor does the next process after a run whose writes
+ *     were not all answered.
  */
 
 import assert from 'node:assert/strict';
@@ -87,4 +88,19 @@ const elsewhere = await residentGuest({ of: first });
 assert.equal((await run(elsewhere)).stats.pagesFetched, 3, 'a process in a facet of its own keeps nothing');
 
 await elsewhere.dispose();
+
+// A run whose writes were refused leaves nothing to the next one.
+const refusing = await residentGuest({ refuse: (path) => path.endsWith('refused.txt') });
+refusing.kernel.writeFile('home/user/pack.bin', big, { mode: 0o644 });
+refusing.kernel.chown('home/user/pack.bin', USER.uid, USER.gid);
+refusing.kernel.writeFile('home/user/notes.txt', 'one', { mode: 0o644 });
+refusing.kernel.chown('home/user/notes.txt', USER.uid, USER.gid);
+assert.equal((await run(refusing)).stats.pagesFetched, 3);
+const fdRefused = await refusing.open('home/user/refused.txt', { create: true, write: true, truncate: true });
+await refusing.write(fdRefused, 'not stored');
+await refusing.close(fdRefused);
+assert.notEqual(await refusing.end(), null, 'the run reports the write the session refused');
+const afterRefused = await residentGuest({ after: refusing });
+assert.equal((await run(afterRefused)).stats.pagesFetched, 3, 'and the next process in its facet starts afresh');
+await afterRefused.dispose();
 console.log('wasi-resident-fs-kept-store: ok');

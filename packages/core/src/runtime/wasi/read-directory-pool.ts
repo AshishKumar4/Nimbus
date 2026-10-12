@@ -108,7 +108,7 @@ export function readDirectoryPool({ call, store, client, before }: Options): Rea
     claiming.add(entry.handle.id);
     return entry.handle;
   };
-  const exchange = async (open: readonly RuntimeFsPath[], wantLease: boolean): Promise<readonly ReadDirectoryDescription[]> => {
+  const exchange = async (open: readonly RuntimeFsPath[], wantLease: boolean, end = false): Promise<readonly ReadDirectoryDescription[]> => {
     await before();
     const cursor = store.cursor() ?? { epoch: null, rev: 0 };
     // Captured ONCE outside the retried RPC. A cached once-delivery answer
@@ -123,7 +123,7 @@ export function readDirectoryPool({ call, store, client, before }: Options): Rea
     let result: ReadDirectoryBatchResult;
     try {
       result = await call({ channel, sequence: sentSequence, epoch: cursor.epoch, cursor: cursor.rev,
-        open: [...open], retire: sentRetire, claim: sentClaim, lease: ask !== null });
+        open: [...open], retire: sentRetire, claim: sentClaim, lease: ask !== null, ...(end ? { end } : {}) });
     } catch (error) {
       uncertain += open.length;
       invalidate();
@@ -226,7 +226,9 @@ export function readDirectoryPool({ call, store, client, before }: Options): Rea
       await serial(async () => {
         for (const id of owned.keys()) retiring.add(id);
         owned.clear(); claiming.clear();
-        await drain();
+        invalidate();
+        // The channel's last exchange: it retires the rest and ends the channel.
+        if (sequence > 0) await exchange([], false, true);
       });
     },
   };

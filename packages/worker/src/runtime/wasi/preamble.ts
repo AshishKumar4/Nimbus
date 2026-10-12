@@ -377,9 +377,10 @@ export async function __wasiSettleWrites(): Promise<string | null> {
       if (failures.length > 0) failed = failures
         .map((f) => `${f.path}: not written (${f.error instanceof Error ? f.error.message : String(f.error)})`)
         .join('; ');
-      // A run that ended with its store answering leaves it to the next process in this facet.
+      // A run that ended with its store answering, and everything it wrote
+      // answered, leaves the store to the next process in this facet.
       const view = await resident.ready;
-      if (view !== null && view.ready()) __wasiKept = { who: resident.who, device: view.device, walked: resident.fs.walked() };
+      if (failed === null && view !== null && view.ready()) __wasiKept = { who: resident.who, device: view.device, walked: resident.fs.walked() };
     }
   } catch (error) {
     if (__wasiProcessGone === null) throw error;
@@ -449,6 +450,9 @@ export function __wasiInitFS(opts: WasiInitOptions): void {
   // are handed this Map, and a swap would leave half of them writing into a
   // table nothing reads.
   __wasiPreopens = [];
+  // A descriptor the last process left open gives its pinned bytes back to
+  // the store (a warm facet's store outlives the process).
+  for (const entry of fdTable.values()) if (entry.kind === 'resident') entry.release?.();
   fdTable.clear();
   fdTable.set(0, { kind: 'stdin' });
   fdTable.set(1, { kind: 'stdout' });

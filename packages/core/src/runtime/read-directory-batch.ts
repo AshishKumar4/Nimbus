@@ -20,6 +20,13 @@ const Request = z.object({
   retire: Ids,
   claim: Ids,
   lease: z.boolean(),
+  /**
+   * The run's last exchange on the channel: what it retires is closed, and
+   * so is every other description of the channel, and the channel is gone.
+   * A shell's commands share its pid and descriptor scope, which would
+   * otherwise keep each run's channel until the shell ends.
+   */
+  end: z.boolean().optional(),
 });
 export type ReadDirectoryBatchRequest = z.infer<typeof Request>;
 
@@ -146,6 +153,12 @@ export async function readDirectoryBatch(fs: RuntimeFsBridge, input: unknown): P
       if (record.channel === request.channel && !record.claimed) {
         try { await close(id); } catch (error) { closeErrors.push(error); }
       }
+    }
+    if (request.end === true) {
+      for (const [id, record] of [...budget.tracked]) {
+        if (record.channel === request.channel) { try { await close(id); } catch (error) { closeErrors.push(error); } }
+      }
+      budget.channels.delete(request.channel);
     }
     if (closeErrors.length) throw closeErrors[0];
     live();

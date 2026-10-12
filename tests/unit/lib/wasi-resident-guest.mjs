@@ -232,7 +232,8 @@ export async function residentGuest({ refuse = () => false, of, after, cred = US
     },
     async dispose() { for (const b of [...session.retired, session.bridge]) await b.dispose(); await authority.releaseProcess(pid); harness.db.close(); },
     /** This process ends (its writes settled, its grants given back); the session goes on for another. */
-    async end() { await P.__wasiSettleWrites(); await authority.releaseProcess(pid); },
+    /** What the run's settle reported (null: everything it wrote was answered). */
+    async end() { const failed = await P.__wasiSettleWrites(); await authority.releaseProcess(pid); return failed; },
   };
   // The store boots on the first call; wait until it answers.
   await guest.open('home/user', { directory: true }).then((fd) => guest.close(fd));

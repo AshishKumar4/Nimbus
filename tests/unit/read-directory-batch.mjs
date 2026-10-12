@@ -78,6 +78,16 @@ try {
     assert.equal(answer.opened[0].key, null, 'canonical placement excludes root, composed ancestors and mounts even with the same reported dev');
   }
 
+  // A shell's commands share its pid and scope: each run's last exchange ends
+  // its channel, so more runs than the channel bound keep their prefetch.
+  for (let run = 0; run < DIRECTORY_PREFETCH_LIMIT + 5; run++) {
+    const runChannel = crypto.randomUUID();
+    const first = await readDirectoryBatch(fs, { ...request([`${root}/d1`, `${root}/d2`]), channel: runChannel, sequence: 1 });
+    assert.equal(first.opened.length, 2, `run ${run} still prefetches`);
+    await readDirectoryBatch(fs, { ...request([], { retire: [first.opened[0].handle.id] }), channel: runChannel, sequence: 2, end: true });
+    for (const opened of first.opened) await assert.rejects(async () => fs.fstat(opened.handle.id), { code: 'EBADF' }, 'its end closes every description of the channel');
+  }
+
   // Rewinding creates another descriptor scope: an old channel must not
   // retire numbers the new run might already have reused.
   await files.rewindProcess(1);

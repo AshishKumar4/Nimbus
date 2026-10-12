@@ -60,6 +60,7 @@ function fixture() {
     await client.settle();
     for (const finish of recalls.values()) finish(null);
     assert.equal(held.size, 0, 'the run left no description open');
+    if (calls.length > 0) assert.equal(calls[calls.length - 1].end, true, 'and its last exchange ended the channel');
   };
   /** The ids the next exchange retires: what the pool still owes the session. */
   s.retiredNext = async () => {
