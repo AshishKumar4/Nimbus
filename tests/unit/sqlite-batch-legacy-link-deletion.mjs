@@ -51,3 +51,21 @@ for (const writable of [true, false]) {
   assert.equal(root.exists('home/user/gone'), false);
   harness.db.close();
 }
+
+{
+  const harness = createSqliteVfsTestHarness();
+  const engine = new SqliteVFS(harness.sql, harness.ctx);
+  const root = engine.as(CRED_KERNEL);
+  root.mkdir('var/agents/a/tmp', { recursive: true });
+  root.chown('var/agents/a/tmp', USER.uid, USER.gid);
+  root.chmod('var/agents/a/tmp', 0o700);
+  root.writeFile('var/agents/a/tmp/f', 'private');
+  engine.confinePrincipal(USER.uid, 'var/agents/a/tmp');
+  root.chmod('var/agents/a', 0);
+  const user = engine.as(USER);
+  assert.equal(user.readFileString('/tmp/f'), 'private');
+  user.writeBatch({ inodes: [], chunks: [], deletePaths: ['/tmp/f'] });
+  assert.equal(user.exists('/tmp/f'), false, 'ordinary private deletion uses logical, not hidden holding parents');
+  assert.equal(harness.db.query("SELECT path FROM vfs_inodes WHERE path = 'var/agents/a/tmp/f'").get(), null);
+  harness.db.close();
+}
