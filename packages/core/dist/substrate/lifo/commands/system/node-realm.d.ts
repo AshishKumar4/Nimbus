@@ -30,12 +30,13 @@ import { type RealmOutcome } from '../../../../runtime/realm.js';
 import type { CommandContext } from '../types.js';
 import type { Kernel, VirtualRequest } from '../../kernel/index.js';
 import type { NodeFilesystem } from '../../node-compat/filesystem.js';
+import type { VfsEvent } from '../../../../vfs/events.js';
 import { type EgressGuestEvent, type EgressHostEvent } from '../../../../runtime/realm-egress.js';
 import type { NodeProgram } from './node.js';
 /** The session services a run reaches: the kernel's ports and loopback, where the host has them. */
 export type NodeRealmKernel = Pick<Kernel, 'portRegistry'> & Partial<Pick<Kernel, 'routeLoopback' | 'dns' | 'network'>>;
-/** The filesystem methods a call names: NodeFilesystem's, but its change listener. */
-export type FsMethod = Exclude<keyof NodeFilesystem, 'onChange'>;
+/** The filesystem methods a call names: NodeFilesystem's, but its watch (a call of its own). */
+export type FsMethod = Exclude<keyof NodeFilesystem, 'watch'>;
 /** A synchronous call the guest makes. */
 export type NodeCall = {
     readonly op: 'fs';
@@ -49,9 +50,12 @@ export type NodeCall = {
 } | {
     readonly op: 'unlisten';
     readonly port: number;
-} | {
+}
+/** Watch `path` as watch `id` (NodeFilesystem.watch); a null path stops it. */
+ | {
     readonly op: 'watch';
-    readonly on: boolean;
+    readonly id: number;
+    readonly path: string | null;
 };
 /** A response to a request that stayed on the box, as data, either way across. */
 export interface RealmResponse {
@@ -90,8 +94,12 @@ export type HostEvent = {
     readonly id: number;
     readonly port: number;
     readonly request: VirtualRequest;
-} | {
+}
+/** A change watch `id` was told. */
+ | {
     readonly type: 'changed';
+    readonly id: number;
+    readonly event: VfsEvent;
 } | EgressHostEvent;
 /**
  * What the realm starts with: the program, the kernel's /etc/hosts its
@@ -119,7 +127,8 @@ export interface RealmServices {
     stdin(): Promise<Uint8Array>;
     listen(port: number): void;
     unlisten(port: number): void;
-    watch(on: boolean): void;
+    /** Watch `path` as watch `id`, or stop it (null). */
+    watch(id: number, path: string | null): void;
 }
 /**
  * The answer to `call`, whatever the guest sent: the value of one of the calls

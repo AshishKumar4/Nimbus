@@ -39,10 +39,11 @@ export declare class MemoryVFS implements VFS {
     writeRange(path: string, offset: number, bytes: Uint8Array): void;
     truncate(path: string, size: number): void;
     readdir(path: string): VfsDirent[];
+    /** With `recursive`, the directories it made, top down (VFS.mkdir). */
     mkdir(path: string, options?: {
         recursive?: boolean;
         mode?: number;
-    }): void;
+    }): readonly string[] | void;
     unlink(path: string): void;
     rmdir(path: string): void;
     removeRecursive(path: string): void;

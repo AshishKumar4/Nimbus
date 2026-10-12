@@ -691,7 +691,7 @@ export async function registerHostedCommands(self, workspace) {
         self.nimbusWrangler = new NimbusWrangler({
             network: workspace.network,
             vfs: kernelFs,
-            vfsEvents: sqliteFs.events,
+            namespace: workspace.filesystem.vfs,
             esbuild: self.esbuildService,
             env: self.env,
             // Supervisor DO ctx — required for ctx.facets.get() when

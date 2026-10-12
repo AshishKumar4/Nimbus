@@ -22,6 +22,7 @@
  *       messages through the DO WebSocket → frontend dispatches to iframe.
  */
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { CompositeVFS } from '@nimbus-sh/core/vfs/composite.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { type ViteEsbuildSettings } from '@nimbus-sh/core/runtime/vite-esbuild-options.js';
@@ -35,6 +36,8 @@ export interface ViteDevServerOptions {
      * or synthesizes goes through the VFS as this principal.
      */
     cred: VfsCred;
+    /** The session's namespace, whose changes the server hears (CompositeVFS.watchChanges). */
+    namespace: Pick<CompositeVFS, 'watchChanges'>;
     esbuild: EsbuildService;
     /** Root directory in VFS (e.g. "home/user/projects") */
     root: string;
@@ -212,7 +215,7 @@ interface HashImportCtx {
 export declare function rewriteAllImports(code: string, aliases?: Record<string, string>, basePath?: string, importerCtx?: HashImportCtx): string;
 export declare class ViteDevServer {
     private vfs;
-    private vfsEvents;
+    private namespace;
     private esbuild;
     private root;
     private onHmrMessage;
@@ -391,6 +394,7 @@ export declare class ViteDevServer {
      */
     readConfigAgain(): Promise<void>;
     /** Handle VFS change events → trigger HMR. */
+    /** The session's changes (CompositeVFS.watchChanges), each named as SQLite names it (no leading slash). */
     private handleVfsEvents;
     /** Normalize and sanitize a preview pathname to prevent traversal. */
     private sanitizePath;
