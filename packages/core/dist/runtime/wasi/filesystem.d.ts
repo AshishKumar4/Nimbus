@@ -1,4 +1,4 @@
-import type { Awaitable, RuntimeFileHandle, RuntimeFsBridge, RuntimeVfsStat } from '../os-contracts.js';
+import type { Awaitable, RuntimeFileHandle, RuntimeFsBridge, RuntimeFsPath, RuntimeVfsStat } from '../os-contracts.js';
 import type { Errno, NimbusFsImports, WasiImports } from './types.js';
 /** WASI encoding only. Paths, permissions, inode identity and storage belong to fs. */
 export interface AuthorityFd {
@@ -22,6 +22,8 @@ export interface ResidentFd {
     kind: 'resident';
     stat: RuntimeVfsStat;
     bytes: Uint8Array;
+    /** The file's name, which a path naming this descriptor opens again (descriptorNamed). */
+    name: RuntimeFsPath;
     /** Given back when the descriptor goes, when the filesystem pinned the bytes for it (pinContent). */
     release?: () => void;
     position: number;
@@ -122,19 +124,27 @@ export interface AuthorityFilesystemOptions {
     /**
      * A new descriptor, at the next free number, on what the host's own
      * descriptor `fd` holds (a standard stream, a pipe end), as dup(2) makes
-     * one; null when that kind cannot be shared (a socket). Opening a path
-     * that names a descriptor (namedDescriptor) duplicates it: the codec's own
-     * kinds itself, the host's through this. Without it, those paths are the
-     * filesystem's.
+     * one; null when that kind cannot be shared (a socket). A path naming a
+     * descriptor (descriptorNamed) opens a stream the host holds through this;
+     * without it, those paths are the filesystem's.
      */
     duplicate?(fd: number): number | null;
 }
 /**
- * The descriptor an absolute guest path names, as Linux's /dev/fd/N,
- * /proc/self/fd/N and /dev/std{in,out,err} do; null for any other path. No
- * filesystem holds what these name: each is the process's own descriptor.
+ * The descriptor `path` names, as Linux's /dev/fd/N, /proc/self/fd/N and
+ * /dev/std{in,out,err} do; null for any other path. No filesystem holds what
+ * these name: each is the process's own descriptor. A relative `path` is
+ * relative to descriptor `fd` of `fds` (a preopen, or a directory the codec
+ * holds), or to `cwd` for AT_FDCWD (-1). Every call that takes a path asks
+ * this one question: path_open, path_filestat_get, the extension's path_stat
+ * and bash's stat_metadata.
+ *
+ * Linux's answer to what such a path opens: a file or directory is opened
+ * again by its name, with the new open's flags (a new description, its own
+ * offset, O_TRUNC and O_APPEND honored); a stream or a pipe end is shared.
+ * Stat'd, it is that descriptor's stat.
  */
-export declare function namedDescriptor(path: string): number | null;
+export declare function descriptorNamed(fds: ReadonlyMap<number, FilesystemFd>, fd: number, path: string, cwd?: string): number | null;
 /**
  * st_mode of a stat: its type's format bits, and its permission bits, or
  * Node's defaults (0755 for a directory, 0644 otherwise) where the backend

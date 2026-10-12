@@ -1,4 +1,4 @@
-import { after, installAuthorityFilesystem, namedDescriptor, processGoneMessage, refusalErrno } from '../wasi/filesystem.js';
+import { after, descriptorNamed, installAuthorityFilesystem, processGoneMessage, refusalErrno } from '../wasi/filesystem.js';
 import { supervisorFilesystem } from '../vfs-supervisor.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
 import { PIPE_CAPACITY, decideRead, decideWrite, heldExitSettles, holdsExit, pipeBudget, pipeLimitMessage, readerStops } from './pipe-rules.js';
@@ -1445,14 +1445,27 @@ async function doExec(s, proc) {
     };
     const descriptor = (fd) => { const entry = proc.fds.get(fd); if (entry?.kind !== 'authority')
         throw Object.assign(new Error('EBADF'), { code: 'EBADF' }); return entry.handle.id; };
-    // The descriptor stat_metadata is asked about: its own, or the one its path names (/dev/fd/N), as path_filestat_get answers.
-    const statTarget = (fd, ptr, length) => {
-        if (!ptr)
-            return fd;
-        const path = readPath(ptr, length);
-        const base = proc.fds.get(proc.preopenMoved.get(fd) ?? fd);
-        const guest = path.startsWith('/') ? path : base?.kind === 'preopen' ? base.wasiPath.replace(/\/?$/, '/') + path : null;
-        return guest === null ? null : namedDescriptor(guest);
+    const metadata = (out, mode, uid, gid) => {
+        DV().setUint32(out, mode, true);
+        DV().setUint32(out + 4, uid, true);
+        DV().setUint32(out + 8, gid, true);
+        return 0;
+    };
+    // fstat's: a file's own, a stream's or a pipe's by its kind (no inode: a terminal's or a FIFO's mode, the session's owner).
+    const descriptorMetadata = (fd, out) => {
+        const entry = proc.fds.get(fd);
+        if (entry === undefined)
+            return E.BADF;
+        if (entry.kind === 'resident')
+            return metadata(out, entry.stat.mode ?? 0, entry.stat.uid, entry.stat.gid);
+        if (entry.kind === 'pipe')
+            return metadata(out, 0o010600, s.cred.uid, s.cred.gid);
+        if (entry.kind === 'stdin' || entry.kind === 'stdout' || entry.kind === 'stderr')
+            return metadata(out, 0o020620, s.cred.uid, s.cred.gid);
+        const stat = entry.kind === 'authority' ? () => fs.fstat(entry.handle.id) : entry.kind === 'preopen' ? () => fs.stat(entry.vfsPath) : null;
+        if (stat === null)
+            return E.BADF;
+        return result(stat, st => st ? metadata(out, st.mode ?? 0, st.uid, st.gid) : E.NOENT);
     };
     // The call is produced inside the guard, not handed to it: resolving the fd
     // is itself a syscall step that can fail, and an EBADF raised while building
@@ -1477,25 +1490,14 @@ async function doExec(s, proc) {
             return previous;
         } return [s.cred.uid, s.cred.gid, proc.pid, proc.ppid][field] ?? 0; },
         stat_metadata: (fd, ptr, length, follow, out) => {
-            const target = statTarget(fd, ptr, length);
-            const stream = target === null ? undefined : proc.fds.get(target);
-            if (target !== null && stream === undefined)
-                return ptr ? E.NOENT : E.BADF;
-            // A stream or a pipe has no inode: a FIFO's or a terminal's mode, the session's owner.
-            if (stream !== undefined && stream.kind !== 'authority' && stream.kind !== 'preopen') {
-                DV().setUint32(out, stream.kind === 'pipe' ? 0o010600 : 0o020620, true);
-                DV().setUint32(out + 4, s.cred.uid, true);
-                DV().setUint32(out + 8, s.cred.gid, true);
-                return 0;
-            }
-            return result(() => target !== null ? fs.fstat(descriptor(target)) : fs.stat(at(fd, readPath(ptr, length)), { followSymlinks: !!follow }), stat => {
-                if (!stat)
-                    return E.NOENT;
-                DV().setUint32(out, stat.mode, true);
-                DV().setUint32(out + 4, stat.uid, true);
-                DV().setUint32(out + 8, stat.gid, true);
-                return 0;
-            });
+            if (!ptr)
+                return descriptorMetadata(fd, out);
+            const path = readPath(ptr, length);
+            // A path naming a descriptor (/dev/fd/N) is that descriptor's, resolved as path_filestat_get resolves it.
+            const named = descriptorNamed(proc.fds, fd === -1 ? -1 : proc.preopenMoved.get(fd) ?? fd, path, proc.cwd);
+            if (named !== null)
+                return proc.fds.has(named) ? descriptorMetadata(named, out) : E.NOENT;
+            return result(() => fs.stat(at(fd, path), { followSymlinks: !!follow }), st => st ? metadata(out, st.mode ?? 0, st.uid, st.gid) : E.NOENT);
         },
         chmod: (ptr, length, mode) => result(() => fs.chmod(at(-1, readPath(ptr, length)), mode), () => 0),
         fchmod: (fd, mode) => result(() => fs.fchmod(descriptor(fd), mode), () => 0),
