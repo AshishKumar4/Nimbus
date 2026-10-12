@@ -420,6 +420,11 @@ export interface RuntimeFsBridge {
    * hold a path that was not already staged.
    */
   list(after?: string | null, limit?: number): Awaitable<VfsListPage>;
+  /**
+   * Watch `path` and everything under it: each change the caller's
+   * namespace shows there (CompositeVFS.watchChanges), named as `list`
+   * names it, only where the caller may look.
+   */
   subscribe?(path: string, listener: (event: VfsEvent) => void): () => void;
   realpath(path: RuntimeFsPath): Awaitable<string>;
   remove(path: RuntimeFsPath, options?: { recursive?: boolean; force?: boolean }): Awaitable<void>;

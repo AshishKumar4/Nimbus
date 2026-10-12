@@ -595,25 +595,32 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array) {
 
   // ─── Watch API ───
 
+  /**
+   * Node's fs.watch: 'rename' when an entry appears or goes, 'change' when
+   * one changes, named from the watched directory (its direct entries,
+   * any depth when recursive), or as the watched file itself.
+   */
   function watch(filename: string | URL, optionsOrListener?: { persistent?: boolean; recursive?: boolean; encoding?: string } | ((eventType: string, filename: string) => void), listener?: (eventType: string, filename: string) => void): EventEmitter {
     const abs = resolvePath(cwd, filename);
+    const options = typeof optionsOrListener === 'object' && optionsOrListener !== null ? optionsOrListener : {};
     const cb = typeof optionsOrListener === 'function' ? optionsOrListener : listener;
 
     const watcher = new EventEmitter();
-
-    // Use VFS onChange to detect changes (coarse-grained)
-    const origOnChange = vfs.onChange;
-    vfs.onChange = () => {
-      origOnChange?.();
-      const eventType = 'change';
-      const name = basename(abs);
-      if (cb) cb(eventType, name);
+    if (cb) watcher.on('change', cb);
+    const inside = (path: string): boolean => path === abs || path.startsWith(abs === '/' ? '/' : `${abs}/`);
+    const told = (path: string, eventType: 'rename' | 'change'): void => {
+      if (!inside(path)) return;
+      const name = path === abs ? basename(abs) : path.slice(abs === '/' ? 1 : abs.length + 1);
+      if (path !== abs && options.recursive !== true && name.includes('/')) return;
       watcher.emit('change', eventType, name);
     };
+    const stop = vfs.watch(abs, (event) => {
+      if (event.type === 'change') { told(event.path, 'change'); return; }
+      if (event.oldPath !== undefined) told(event.oldPath, 'rename');
+      told(event.path, 'rename');
+    }, { persistent: options.persistent !== false });
 
-    (watcher as unknown as Record<string, unknown>).close = () => {
-      vfs.onChange = origOnChange;
-    };
+    (watcher as unknown as Record<string, unknown>).close = stop;
 
     return watcher;
   }

@@ -203,13 +203,6 @@ class GuardedProcessBridge implements RuntimeFsBridge {
     return lease === null ? answer : { ...answer, readLease: lease };
   }
   list(after?: string | null, limit?: number): VfsListPage { this.guard(); return this.target.list(after, limit); }
-  subscribe(path: string, listener: (event: VfsEvent) => void): () => void {
-    this.guard();
-    const unsubscribe = this.target.subscribe(path, listener);
-    const dispose = (): void => { unsubscribe(); this.scope.subscriptions.delete(dispose); };
-    this.scope.subscriptions.add(dispose);
-    return dispose;
-  }
   realpath(path: RuntimeFsPath): string { this.guard(); return this.target.realpath(path); }
   remove(path: RuntimeFsPath, options?: { recursive?: boolean; force?: boolean }): void { this.guard(); return this.target.remove(path, options); }
   copyFile(from: RuntimeFsPath, to: RuntimeFsPath): void { this.guard(); return this.target.copyFile(from, to); }
@@ -713,7 +706,16 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
 
   gateLaunch(named: readonly string[]): Promise<void> { return this.bridge.gateLaunch(named); }
   revision(path?: RuntimeFsPath): number { return this.bridge.revision(path); }
-  subscribe(path: string, listener: (event: VfsEvent) => void): () => void { return this.bridge.subscribe(path, listener); }
+  /** The process's namespace's changes at `path` and under it (CompositeVFS.watchChanges), named as its listings name them; stopped with its scope. */
+  subscribe(path: string, listener: (event: VfsEvent) => void): () => void {
+    this.live();
+    const stop = this.namespace.watchChanges(path, (event) => {
+      listener(event.oldPath === undefined ? { ...event, path: event.path.slice(1) } : { ...event, path: event.path.slice(1), oldPath: event.oldPath.slice(1) });
+    });
+    const dispose = (): void => { stop(); this.scope.subscriptions.delete(dispose); };
+    this.scope.subscriptions.add(dispose);
+    return dispose;
+  }
   writeBatch(payload: BatchWritePayload, options?: { signal?: AbortSignal }) { return this.bridge.writeBatch(payload, options); }
   writeStream(
     stream: ReadableStream<Uint8Array>,

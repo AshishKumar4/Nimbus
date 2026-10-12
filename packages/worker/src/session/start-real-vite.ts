@@ -19,6 +19,7 @@
 import { CRED_KERNEL, isVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { execIdField, type ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { VfsEvent } from '@nimbus-sh/core/vfs/events.js';
 import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { rewriteCirrusViteConfigBundle } from '@nimbus-sh/core/runtime/cirrus-vite-config-rewriter.js';
 import { CirrusReal } from '../facets/cirrus-real.js';
@@ -173,7 +174,7 @@ export async function startRealVite(self: any, opts: StartRealViteOptions): Prom
       basePath: opts.basePath,
       vfs: self.sqliteFs!,
       cred: opts.identity.cred,
-      vfsEvents: self.sqliteFs!.events,
+      watchChanges: (listener: (event: VfsEvent) => void) => self.getFilesystemAuthority().vfs.watchChanges('/', listener),
       userConfigBundle,
       extraSyntheticFiles,
       network: self.runtimeWorkspace!.network,

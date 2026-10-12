@@ -87,10 +87,12 @@ export class VfsEventEmitter {
         try { listener(event); } catch (e) { console.error('[vfs-events] path listener error:', e); }
       }
     }
-    // Parent directory listeners (recursive watching)
+    // Parent directory listeners (recursive watching), the root's ('') last: it holds every path.
+    if (event.path === '') return;
     let dir = event.path;
-    while (dir.includes('/')) {
-      dir = dir.substring(0, dir.lastIndexOf('/'));
+    while (dir !== '') {
+      const slash = dir.lastIndexOf('/');
+      dir = slash === -1 ? '' : dir.substring(0, slash);
       const parent = this._pathListeners.get(dir);
       if (parent) {
         for (const listener of parent) {

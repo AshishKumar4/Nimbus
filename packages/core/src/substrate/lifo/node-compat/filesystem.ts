@@ -1,4 +1,5 @@
 import type { RuntimeFsBridge, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat } from '../../../runtime/os-contracts.js';
+import type { VfsEvent } from '../../../vfs/events.js';
 import { syscallError } from '../../../vfs/vfs-error.js';
 
 /** The synchronous filesystem the in-process Node interpreter's `fs` and `require` read. */
@@ -31,7 +32,13 @@ export interface NodeFilesystem {
   ftruncate(fd: number, size: number): void;
   fsync(fd: number): void;
   close(fd: number): void;
-  onChange: (() => void) | undefined;
+  /**
+   * Each change at `path` or under it the process's namespace shows
+   * (RuntimeFsBridge.subscribe), its paths absolute; the returned function
+   * stops it. `persistent` (default true): a guest stays while it is open,
+   * as Node's fs.watch keeps its process.
+   */
+  watch(path: string, listener: (event: VfsEvent) => void, options?: { persistent?: boolean }): () => void;
 }
 
 /**
@@ -55,8 +62,6 @@ function bridgeFilesystem(bridge: RuntimeFsBridge): NodeFilesystem {
     if (data === null) throw syscallError('ENOENT', 'open', path);
     return data;
   };
-  let listener: (() => void) | undefined;
-  let unsubscribe: (() => void) | undefined;
   return {
     readFile: read,
     readFileString: path => new TextDecoder().decode(read(path)),
@@ -101,11 +106,8 @@ function bridgeFilesystem(bridge: RuntimeFsBridge): NodeFilesystem {
     ftruncate: (fd, size) => fs.ftruncate(fd, size),
     fsync: (fd) => fs.fsync(fd),
     close: (fd) => fs.close(fd),
-    get onChange() { return listener; },
-    set onChange(next) {
-      unsubscribe?.();
-      listener = next;
-      unsubscribe = next ? bridge.subscribe?.('/', next) : undefined;
-    },
+    watch: (path, listener) => bridge.subscribe?.(path, (event) => listener(event.oldPath === undefined
+      ? { ...event, path: `/${event.path}` }
+      : { ...event, path: `/${event.path}`, oldPath: `/${event.oldPath}` })) ?? (() => {}),
   };
 }

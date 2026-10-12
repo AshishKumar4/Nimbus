@@ -12,6 +12,7 @@
 import { ROOT_DIRECTORY_MODE, ROOT_INODE, type CredentialedVfs, type SqliteVFS, type VfsStat as SqliteStat } from './sqlite-vfs.js';
 import type { SyncVFS, VFS, VfsCasResult, VfsChanges, VfsCred, VfsDirent, VfsOpenFile, VfsRevision, VfsStat, VfsViewOptions, VfsWriteObserver } from './vfs.js';
 import { syscallError, toVfsError, VfsError, VFS_ERRNO, type VfsErrorCode } from './vfs-error.js';
+import type { VfsEvent } from './events.js';
 
 function absolute(key: string): string {
   return key.startsWith('/') ? key : `/${key}`;
@@ -94,6 +95,13 @@ export class SqliteFiles implements VFS {
       path: absolute(event.path),
       ...(event.oldPath !== undefined ? { oldPath: absolute(event.oldPath) } : {}),
     }));
+  }
+
+  /** Every mutation that lands at `path` or under it, through any view, as this view's watch hears it (CredentialedVfs.subscribe); paths absolute. */
+  watchChanges(path: string, listener: (event: VfsEvent) => void): () => void {
+    return this.view.subscribe(path, (event) => {
+      listener({ ...event, path: absolute(event.path), ...(event.oldPath !== undefined ? { oldPath: absolute(event.oldPath) } : {}) });
+    });
   }
 
   /** `op`, its engine errors as Node's for `syscall` on `path` (and `dest`). */
