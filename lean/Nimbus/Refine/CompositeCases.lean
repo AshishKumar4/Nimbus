@@ -130,8 +130,7 @@ def sortedPaths (ps : List Path) : Json :=
 def xoutJson : XOut → Json
   | .err c => .obj [("error", .str c)]
   | .report r k fs vanished =>
-    let failures := (fs.mergeSort fun a b => decide
-      ((key a.path, a.code, a.syscall) ≤ (key b.path, b.code, b.syscall))).map fun f =>
+    let failures := (fs.mergeSort fun a b => decide (key a.path ≤ key b.path)).map fun f =>
         Json.obj [("path", pathJson f.path), ("code", .str f.code), ("syscall", .str f.syscall)]
     .obj ([("removed", sortedPaths r), ("kept", sortedPaths k), ("failures", .arr failures)] ++
       if vanished.isEmpty then [] else [("vanished", sortedPaths vanished)])
@@ -319,10 +318,88 @@ def directed : List Json :=
        (0, .stat "/missing/../b"), (0, .readdir "/missing/.."), (0, .stat "/pc/nope/.."),
        (0, .writeFile "/proc/b2/x" 1), (0, .rename "/missing/x" "/proc/b2/y"), (0, .rename "/proc/b2/x" "/missing/y")] ]
 
+/-- The original 204 cases retain their indices. Additional cases isolate each
+    GNU rule, including the one walk's strict/non-strict ENOENT policy. -/
+def removalCase (name : String) (ms : List Mount) (trees : List (Backend × Tree))
+    (capList : List (Backend × Caps)) (steps : List (Principal × X)) : Json := Id.run do
+  let caps : Backend → Caps := fun b => ((capList.find? (·.1 == b)).map (·.2)).getD (fullCaps b)
+  let mut S : St := { mounts := ms, trees := fun b => ((trees.find? (·.1 == b)).map (·.2)).getD [] }
+  let mut out : Array Json := #[]
+  for (P, op) in steps do
+    let (o, S') := execX caps S P op
+    S := S'; out := out.push (xJson P op o)
+  let mountsJson := ms.map fun m => Json.obj
+    ([("point", pathJson m.point), ("backend", .str (backendName m.backend)),
+      ("only", match m.only with | none => .null | some ps => .arr (ps.map fun P => .ofNat (uidOf P)))] ++
+      if (caps m.backend).readOnly then [("readOnly", .bool true)] else [])
+  return .obj [("name", .str name), ("mounts", .arr mountsJson),
+    ("backends", .obj (trees.map fun (b, t) => (backendName b, treeJson t))),
+    ("caps", .obj (capList.map fun (b, c) => (backendName b, capsJson c))),
+    ("steps", .arr out.toList), ("final", .obj (trees.map fun (b, _) => (backendName b, treeJson (S.trees b))))]
+
+def walkedCaps : Caps := { fullCaps 0 with removeRecursive := false }
+
+def directedRemoval : List Json :=
+  let tree : Tree := [(["tree"], .dir), (["tree", "free"], .file 1),
+    (["tree", "bad"], .dir), (["tree", "bad", "child"], .file 2)]
+  let empty : Tree := [(["tree"], .dir), (["tree", "free"], .file 1), (["tree", "bad"], .dir)]
+  let mountRoot : Tree := [(["tree"], .dir), (["tree", "free"], .file 1)]
+  let mounted : Tree := [(["a"], .file 2), (["d"], .dir), (["d", "x"], .file 3)]
+  let ms : List Mount := [⟨["tree", "mounted"], 1, none⟩]
+  let rm (strict : Bool := false) : List (Principal × X) := [(0, .removeRecursive "/tree" strict)]
+  let plain (name : String) (t : Tree) (f : CompositeRemoval.Faults) (strict : Bool := false) : Json :=
+    removalCase name [] [(0, t)] [(0, { walkedCaps with faults := f })] (rm strict)
+  let statGone : CompositeRemoval.Faults := { stat := [(["tree", "bad", "child"], "ENOENT")] }
+  let unlinkGone : CompositeRemoval.Faults := { remove := [(["tree", "bad", "child"], "ENOENT")] }
+  let scandirGone : CompositeRemoval.Faults := { readdir := [(["tree", "bad"], "ENOENT")] }
+  [ removalCase "gnu-writable-mount" ms [(0, mountRoot), (1, mounted)]
+      [(0, fullCaps 0), (1, fullCaps 1)] (rm),
+    removalCase "gnu-readonly-mount" ms [(0, mountRoot), (1, mounted)]
+      [(0, fullCaps 0), (1, { fullCaps 1 with readOnly := true })] (rm),
+    removalCase "gnu-empty-readonly-mount" ms [(0, mountRoot), (1, [])]
+      [(0, fullCaps 0), (1, { fullCaps 1 with readOnly := true })] (rm),
+    removalCase "gnu-nested-writable-mounts"
+      [⟨["tree", "mounted"], 1, none⟩, ⟨["tree", "mounted", "nested"], 2, none⟩]
+      [(0, mountRoot), (1, mounted), (2, [(["leaf"], .file 4)])]
+      [(0, fullCaps 0), (1, fullCaps 1), (2, fullCaps 2)] (rm),
+    plain "gnu-child-lstat-fails-unlink-succeeds" tree
+      { stat := [(["tree", "bad", "child"], "EACCES")] },
+    plain "gnu-child-lstat-fails-directory-unlink" tree
+      { stat := [(["tree", "bad"], "EACCES")] },
+    plain "gnu-unreadable-empty-directory-removed" empty
+      { readdir := [(["tree", "bad"], "EACCES")] },
+    plain "gnu-unreadable-nonempty-scandir-only" tree
+      { readdir := [(["tree", "bad"], "EACCES")] },
+    plain "gnu-operand-lstat-error-aborts" tree
+      { stat := [(["tree"], "EACCES")] },
+    plain "gnu-unreadable-empty-operand-removed" [(["tree"], .dir)]
+      { readdir := [(["tree"], "EACCES")] },
+    plain "gnu-unreadable-nonempty-operand-scandir-only" tree
+      { readdir := [(["tree"], "EACCES")] },
+    plain "gnu-two-refused-children-no-parent-errors"
+      (tree ++ [(["tree", "worse"], .dir), (["tree", "worse", "child"], .file 4)])
+      { remove := [(["tree", "bad", "child"], "EIO"), (["tree", "worse", "child"], "EIO")] },
+    plain "api-child-lstat-enoent-gone" tree statGone,
+    plain "rm-r-child-lstat-enoent-keeps-ancestors" tree statGone true,
+    plain "api-child-unlink-enoent-gone" tree unlinkGone,
+    plain "rm-r-child-unlink-enoent-keeps-ancestors" tree unlinkGone true,
+    plain "api-child-scandir-enoent-gone" tree scandirGone,
+    plain "rm-r-child-scandir-enoent-keeps-ancestors" tree scandirGone true,
+    plain "gnu-unreadable-rmdir-eio-not-scandir" tree
+      { readdir := [(["tree", "bad"], "EACCES")], remove := [(["tree", "bad"], "EIO")] },
+    plain "gnu-unreadable-rmdir-eacces-not-scandir" tree
+      { readdir := [(["tree", "bad"], "EIO")], remove := [(["tree", "bad"], "EACCES")] },
+    removalCase "gnu-link-is-leaf" []
+      [(0, [(["tree"], .dir), (["tree", "link"], .link "/outside"),
+        (["outside"], .dir), (["outside", "secret"], .file 9)])]
+      [(0, walkedCaps)] (rm),
+    removalCase "gnu-root-whole-call-busy" ms [(0, mountRoot), (1, mounted)]
+      [(0, fullCaps 0), (1, fullCaps 1)] [(0, .removeRecursive "/" false)] ]
+
 def fixture : String :=
   fixtureText [("fixture", .str "composite-vfs"), ("model", .str "Nimbus.Vfs.Composite.exec"),
       ("principals", .arr [.obj [("uid", .ofNat 0), ("gid", .ofNat 0)], .obj [("uid", .ofNat 1000), ("gid", .ofNat 1000)]]),
       ("note", .str "backends: fresh in-memory VFSes holding the entries (paths relative to the backend root, parents listed); a mount's source answers its backend to uids in `only`, null otherwise (only null = everyone); each step runs on composite.as(cred of `as`); `final` is every backend's tree after the steps; readdir names sorted")]
-    (directed ++ [directedX] ++ runGen 0x434F4D50 (casesOf 200 genCase))
+    (directed ++ [directedX] ++ runGen 0x434F4D50 (casesOf 200 genCase) ++ directedRemoval)
 
 end Nimbus.Refine.CompositeCases

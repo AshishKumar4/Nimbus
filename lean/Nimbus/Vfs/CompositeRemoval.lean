@@ -123,8 +123,7 @@ def mergePaths (ps qs : List Path) : List Path :=
 
 theorem mem_mergePaths (p : Path) (ps qs : List Path) :
     p ∈ mergePaths ps qs ↔ p ∈ ps ∨ p ∈ qs := by
-  simp [mergePaths, List.contains_iff_mem]
-  tauto
+  by_cases hp : p ∈ ps <;> simp [mergePaths, List.contains_iff_mem, hp]
 
 def keep (operand q : Path) (r : Result) : Result :=
   { r with kept := mergePaths r.kept (ancestors operand q) }
@@ -236,10 +235,10 @@ theorem vanished_policy (operand q : Path) (S' : St) (r : Result) :
     (q ≠ operand → ∀ p, pfx operand p = true → p <+: q.dropLast →
       p ∈ (gone operand q true true S' r).kept) := by
   refine ⟨by simp [gone], by simp [gone], ?_, ?_⟩
-  · simp [gone, keep]
+  · by_cases h : q = operand <;> simp [gone, keep, h]
   · intro hq p hp hpar
-    simp only [gone, hq, bne_iff_ne, decide_true, Bool.and_self, ite_true,
-      keep, mem_mergePaths]
+    have hne : (q != operand) = true := by simpa using hq
+    simp only [gone, hne, Bool.and_self, ite_true, keep, mem_mergePaths]
     exact Or.inr ((ancestors_exact _ _ _).mpr ⟨hp, hpar⟩)
 
 theorem lstat_failure_unlinks (S : St) (P : Principal) (composed : Bool)
@@ -260,6 +259,39 @@ theorem unreadable_still_rmdir (S : St) (P : Principal) (composed : Bool)
     discover cfg S P composed operand (n + 1) q hq false =
       .ok [⟨q, hq, true, false, some code⟩] := by
   simp [discover, hs, hd, hr, hne]
+
+/-- An unreadable directory's failed scandir is not itself a refusal. When its
+    rmdir succeeds (notably an empty unreadable directory), no error is emitted. -/
+theorem unreadable_empty_removed (base : St) (P : Principal) (composed : Bool)
+    {operand : Path} (S : St) (e : Entry operand)
+    (hd : e.dir = true) (hs : (composed && isStructural base P e.path) = false)
+    (hro : (cfg (owner base composed operand e.path).backend).readOnly = false)
+    (hf : fault (cfg (owner base composed operand e.path).backend).faults.remove
+      (localPath base composed operand e.path) = none)
+    (hp : (cfg (owner base composed operand e.path).backend).pins.contains
+      (localPath base composed operand e.path) = false)
+    (he : look (S.trees (owner base composed operand e.path).backend)
+      (localPath base composed operand e.path) = some .dir)
+    (hc : children (S.trees (owner base composed operand e.path).backend)
+      (localPath base composed operand e.path) = []) :
+    attempt cfg base P composed S e = .ok
+      (erase S (owner base composed operand e.path).backend (localPath base composed operand e.path)) := by
+  simp [attempt, backendError, hd, hs, hro, hf, hp, he, hc]
+
+theorem readonly_child_refused (base : St) (P : Principal) (composed : Bool)
+    {operand : Path} (S : St) (e : Entry operand)
+    (hs : (composed && isStructural base P e.path) = false)
+    (hro : (cfg (owner base composed operand e.path).backend).readOnly = true) :
+    attempt cfg base P composed S e = .error ⟨e.path, "EROFS", syscall e⟩ := by
+  simp [attempt, hs, hro]
+
+/-- This is an attempted mount rmdir, not a whole-call refusal: step invokes it
+    only after the kept-child guard passed. Even an empty read-only mount is busy. -/
+theorem mount_rmdir_busy (base : St) (P : Principal) {operand : Path}
+    (S : St) (e : Entry operand) (hd : e.dir = true)
+    (hs : isStructural base P e.path = true) :
+    attempt cfg base P true S e = .error ⟨e.path, "EBUSY", "rmdir"⟩ := by
+  simp [attempt, hs, hd, busyCode, syscall]
 
 theorem erase_mounts (S : St) (b : Backend) (rp : Path) (vanished : Bool) :
     (erase S b rp vanished).mounts = S.mounts := rfl
