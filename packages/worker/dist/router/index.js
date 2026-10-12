@@ -159,7 +159,7 @@ export function createNimbusHandler(options = {}) {
                 status: answered.status,
                 statusText: answered.statusText,
                 headers,
-                ...(socket === undefined ? {} : { webSocket: socket }),
+                ...(socket == null ? {} : { webSocket: socket }),
             });
         };
         const answered = (response) => applySessionResponsePolicy(response);
