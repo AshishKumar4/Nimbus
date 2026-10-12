@@ -142,7 +142,7 @@ export interface EdgeRequest {
 }
 
 /** Each spec parsed once, by `name\0spec`. */
-const edgeRequests = new LruMap<string, EdgeRequest>(4096);
+const edgeRequests = new LruMap<string, EdgeRequest>(8192);
 
 export function edgeRequest(name: string, spec: string): EdgeRequest {
   const key = `${name}\0${spec}`;
@@ -155,10 +155,20 @@ export function edgeRequest(name: string, spec: string): EdgeRequest {
   return request;
 }
 
+/** Each version tested against each range once, by `version\0range`. */
+const satisfied = new LruMap<string, boolean>(65536);
+
 /** Whether `version` meets an edge's range, as npm's dep-valid reckons it: any version, for a spec that is not a range. */
 export function meets(version: string, edge: Pick<TreeEdge, 'name' | 'range'>): boolean {
   const { range } = edgeRequest(edge.name, edge.range);
-  return range === null || satisfiesRange(version, range);
+  if (range === null) return true;
+  const key = `${version}\0${range}`;
+  let answer = satisfied.get(key);
+  if (answer === undefined) {
+    answer = satisfiesRange(version, range);
+    satisfied.set(key, answer);
+  }
+  return answer;
 }
 
 // ── The project's manifest ───────────────────────────────────────────────────

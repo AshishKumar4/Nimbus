@@ -579,8 +579,16 @@ class Builder<P extends TreePackage> {
 
   constructor(readonly tree: Tree, private readonly host: TreeHost<P>, private readonly options: PlanOptions) {}
 
+  /** A package's edges, read from its manifest once. */
+  private readonly edgeDefinitions = new WeakMap<TreePackage, EdgeDefinition[]>();
   edgesOf(pkg: TreePackage | null): EdgeDefinition[] {
-    return pkg === null ? [] : manifestEdges(pkg, { legacyPeerDeps: this.options.legacyPeerDeps === true });
+    if (pkg === null) return [];
+    let edges = this.edgeDefinitions.get(pkg);
+    if (edges === undefined) {
+      edges = manifestEdges(pkg, { legacyPeerDeps: this.options.legacyPeerDeps === true });
+      this.edgeDefinitions.set(pkg, edges);
+    }
+    return edges;
   }
 
   // ── The queue (DepsQueue): the shallowest first, then by placement ──
