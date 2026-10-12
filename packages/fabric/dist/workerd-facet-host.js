@@ -460,11 +460,11 @@ function spawnResident(ctx, env, disk, supervisor, params) {
         lost,
         acquireActivity: observation.acquire,
         // A request waits for the pinned incarnation, never for the boot.
-        handleHttpRequest: async (request, scope) => {
+        handleHttpRequest: async (request, scope, relayed) => {
             const lease = observation.acquire(scope.signal);
             void scope.settled.then(lease.release);
             try {
-                const { id, ended } = sent.send(scope, abandon);
+                const { id, ended } = relayed ?? sent.send(scope, abandon);
                 return await checked(await facet.hostHttpRequest(request, watchCapability, await incarnation, id, ended));
             }
             catch (error) {
@@ -472,6 +472,7 @@ function spawnResident(ctx, env, disk, supervisor, params) {
                 throw error;
             }
         },
+        abandonHttpRequest: abandon,
         // An upgrade hands its socket to the caller at the handshake.
         handleWebSocketRequest: async (request) => {
             const lease = observation.acquire();

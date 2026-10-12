@@ -146,32 +146,14 @@ export class HostActivity {
     }
 }
 /**
- * The requests a host sent a handler on another actor, by id, so it can
- * abandon one: before its response's headers as well as after. Workers RPC
- * carries no signal, and asking per request costs a round trip; abandoning is
- * the rare path, so only it sends anything. Each call carries the ids that
- * ended since the last (`ended`), which the handler then forgets; an abandon
- * that overtakes its request is kept until its request, or its end, arrives.
+ * The requests a host sends a resident's leaf, by id, so it can abandon one:
+ * before its response's headers as well as after. Workers RPC carries no
+ * signal, and asking per request costs a round trip; abandoning is the rare
+ * path, so only it sends anything (the leaf's abandonHttpRequest). Each call
+ * carries the ids that ended since the last (`ended`), which the leaf then
+ * forgets; it keeps an abandon that overtakes its request until its request,
+ * or its end, arrives (observeResidentConfig).
  */
-export class HandledRequests {
-    #requests = new Map();
-    /** The signal of request `id`, its own if it was abandoned first; `ended` are forgotten first. */
-    admit(id, ended) {
-        for (const done of ended)
-            this.#requests.delete(done);
-        let request = this.#requests.get(id);
-        if (!request)
-            this.#requests.set(id, request = new AbortController());
-        return request.signal;
-    }
-    abandon(id) {
-        let request = this.#requests.get(id);
-        if (!request)
-            this.#requests.set(id, request = new AbortController());
-        request.abort(new DOMException('The caller left the request', 'AbortError'));
-    }
-}
-/** The sending host's side: ids for its requests, the ended ones to report, and an abandon on `scope`'s abort. */
 export class SentRequests {
     #next = 0;
     #ended = [];
@@ -243,7 +225,7 @@ export class NimbusProcess extends Base {
   #watchers = new Set();
   // A guest's fetch may hand its request on to its own handleHttpRequest.
   #admitted = new WeakSet();
-  // Its host's requests by id, as HandledRequests keeps them.
+  // Its host's requests by id (SentRequests).
   #requests = new Map();
   #request(id, ended) {
     for (const done of ended) this.#requests.delete(done);
@@ -270,7 +252,7 @@ export class NimbusProcess extends Base {
     return admitted instanceof Request ? super.handleHttpRequest(admitted) : admitted;
   }
   // The host's HTTP entry. Its admission travels as arguments, and request
-  // \`id\` is one its host can abandon (HandledRequests): the guest sees its
+  // \`id\` is one its host can abandon (SentRequests): the guest sees its
   // caller leave as its request's signal.
   hostHttpRequest(request, key, pinned, id, ended) {
     if (key !== capability) return new Response('Not found', { status: 404 });

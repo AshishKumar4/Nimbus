@@ -1351,7 +1351,7 @@ export function _rpcRouteHostedHttp(self, workerKey, wire) {
     return self.peerHost.routeHttp(workerKey, wire);
 }
 export function _rpcAbandonHostedHttp(self, workerKey, capability, id) {
-    self.peerHost.abandonHttp(workerKey, capability, id);
+    return self.peerHost.abandonHttp(workerKey, capability, id);
 }
 export function _rpcCancelHostProcess(self, workerKey) {
     return self.peerHost.cancel(workerKey);

@@ -14,6 +14,7 @@
  */
 import { type HostActivityLease } from './host-activity.js';
 import type { ModuleSourceEnv } from '@nimbus-sh/platform/module-source.js';
+import type { ResponseScope } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type HostedProcess, type OneShotParams, type ProcessHostParams, type ResidentBootSpec, type ResidentDiskReader, type ResidentSupervisorProps, type Supervise } from './process-fabric.js';
 import type { ProcessFsJournalSource } from '@nimbus-sh/core/_shared/process-fs-journal.js';
 import { type FacetResourceLimits } from './facet-limits.js';
@@ -136,10 +137,20 @@ export declare function abortFacet(ctx: DurableObjectState, name: string, reason
  * derivable from the pid — reading a slot back out of the book would race the
  * release that empties it.
  */
-export type ResidentFacet = Omit<HostedProcess, 'describe'> & {
+export type ResidentFacet = Omit<HostedProcess, 'describe' | 'handleHttpRequest'> & {
     name: string;
     slot?: number;
     acquireActivity(signal?: AbortSignal): HostActivityLease;
+    /**
+     * HostedProcess.handleHttpRequest; a peer relaying its coordinator's
+     * request passes that request's numbering (SentRequests) instead of its
+     * own, and its coordinator abandons it through abandonHttpRequest.
+     */
+    handleHttpRequest(request: Request, scope: ResponseScope, relayed?: {
+        id: number;
+        ended: number[];
+    }): Promise<Response>;
+    abandonHttpRequest(id: number): Promise<void>;
 };
 /**
  * The process surface of one hosting actor: how a resident process comes

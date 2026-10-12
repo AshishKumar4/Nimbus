@@ -19,7 +19,7 @@ import { ProcessHostLost } from './process-fabric.js';
 import { bindingSupervisor, supervisorBindingProps } from './supervisor-props.js';
 import { withResolvers } from './turn-budget.js';
 import { processes, abortFacet, deleteFacetStorage } from './workerd-facet-host.js';
-import { HandledRequests, HOST_INCARNATION_HEADER } from './host-activity.js';
+import { HOST_INCARNATION_HEADER } from './host-activity.js';
 import { responseScope } from '@nimbus-sh/core/runtime/port-registry.js';
 import { isHostReset } from '@nimbus-sh/platform/oom-classify.js';
 /**
@@ -210,7 +210,6 @@ export class PeerHost {
             closed: false,
             watchers: new Map(),
             residencies: new Map(),
-            requests: new HandledRequests(),
             release: () => {
                 record.closed = true;
                 return releasing ??= (async () => {
@@ -301,11 +300,11 @@ export class PeerHost {
             return { payload: await record.started };
         });
     }
-    /** The coordinator abandons request `id` of a process this peer hosts (HandledRequests). */
-    abandonHttp(workerKey, capability, id) {
+    /** The coordinator abandons request `id` of a process this peer hosts, at its leaf (SentRequests). */
+    async abandonHttp(workerKey, capability, id) {
         const record = this.records.get(workerKey);
-        if (record && record.webSocketCapability === capability)
-            record.requests.abandon(id);
+        if (record && !record.closed && record.webSocketCapability === capability)
+            await (await record.facet).abandonHttpRequest(id);
     }
     /**
      * Inbound HTTP for a port owned by a process this peer hosts.
@@ -322,8 +321,9 @@ export class PeerHost {
      * isolate before it is returned, for the same reason the parts exist at all:
      * what leaves here must not be an object the loaded worker owns. That
      * pipe's end is when this host's work for the response is done; the
-     * coordinator abandons the request by its id (abandonHttp), before its
-     * headers or after.
+     * coordinator abandons the request at its leaf by its id (abandonHttp),
+     * before its headers or after, and the leaf's guest ending its body ends
+     * the pipe.
      */
     async routeHttp(workerKey, wire) {
         return this.answer(workerKey, async () => {
@@ -339,10 +339,12 @@ export class PeerHost {
                 init.body = wire.body;
                 init.duplex = 'half';
             }
-            const { scope, owner } = responseScope(record.requests.admit(wire.id, wire.ended));
+            // The request keeps its coordinator's numbering on to the leaf, which
+            // its coordinator abandons it by. This relay's own end is its pipe's.
+            const { scope, owner } = responseScope(new AbortController().signal);
             let response;
             try {
-                response = await facet.handleHttpRequest(new Request(wire.url, init), scope);
+                response = await facet.handleHttpRequest(new Request(wire.url, init), scope, { id: wire.id, ended: wire.ended });
             }
             catch (error) {
                 owner.fail(error);

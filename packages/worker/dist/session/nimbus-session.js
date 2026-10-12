@@ -842,7 +842,7 @@ export class NimbusSession extends CloudflareDurableObject {
         return _rpc._rpcAwaitHostedBoot(this, workerKey);
     }
     async _rpcAbandonHostedHttp(workerKey, capability, id) {
-        _rpc._rpcAbandonHostedHttp(this, workerKey, capability, id);
+        return _rpc._rpcAbandonHostedHttp(this, workerKey, capability, id);
     }
     async _rpcRouteHostedHttp(workerKey, request) {
         return _rpc._rpcRouteHostedHttp(this, workerKey, request);

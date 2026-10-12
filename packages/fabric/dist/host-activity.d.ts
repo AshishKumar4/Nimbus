@@ -38,20 +38,14 @@ export declare class HostActivity {
     private failed;
 }
 /**
- * The requests a host sent a handler on another actor, by id, so it can
- * abandon one: before its response's headers as well as after. Workers RPC
- * carries no signal, and asking per request costs a round trip; abandoning is
- * the rare path, so only it sends anything. Each call carries the ids that
- * ended since the last (`ended`), which the handler then forgets; an abandon
- * that overtakes its request is kept until its request, or its end, arrives.
+ * The requests a host sends a resident's leaf, by id, so it can abandon one:
+ * before its response's headers as well as after. Workers RPC carries no
+ * signal, and asking per request costs a round trip; abandoning is the rare
+ * path, so only it sends anything (the leaf's abandonHttpRequest). Each call
+ * carries the ids that ended since the last (`ended`), which the leaf then
+ * forgets; it keeps an abandon that overtakes its request until its request,
+ * or its end, arrives (observeResidentConfig).
  */
-export declare class HandledRequests {
-    #private;
-    /** The signal of request `id`, its own if it was abandoned first; `ended` are forgotten first. */
-    admit(id: number, ended: readonly number[]): AbortSignal;
-    abandon(id: number): void;
-}
-/** The sending host's side: ids for its requests, the ended ones to report, and an abandon on `scope`'s abort. */
 export declare class SentRequests {
     #private;
     /** An id for a request with `scope`, the ids to report, and abandon(id) sent if the scope aborts first. */
