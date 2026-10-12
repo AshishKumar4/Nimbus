@@ -87,7 +87,7 @@ check('wave dispatch leaves mounted aliases to the namespace', ({ user, engine }
   const files = new ProcessFiles(engine);
   files.vfs.mount('/m', new MemoryVFS(USER));
   user.symlink('/m', 'home/user/alias');
-  for (const path of ['home/user/alias/f', 'home/user/alias//f', 'home/user/alias/./f']) {
+  for (const path of ['home/user/alias/f', 'home/user/alias//f', 'home/user/alias/./f', 'home/user/alias/dir/f', 'home/user/alias/dir/./f']) {
     assert.equal(files.waves.placesHere(user, [path]), false, `${path} belongs to the mount`);
   }
   assert.equal(files.waves.placesHere(user, ['home/user/physical/new']), true);
