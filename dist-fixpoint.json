@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "e5b61299b1cbdf892498405aa2f9492186005a1f5383e53f22e9e54880f058ec",
+  "fingerprint": "3568d08e457caa4ab65d4318ec0c7065fef53d8187029f3da871200ec269285e",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1955,7 +1955,7 @@
     "packages/platform/dist/weighted-credit-pool.d.ts": "238c2ce0b5d48dd1c4ac8cb6b7d051bea2715ca2aee948e2a9e2a48a4d2bff12",
     "packages/platform/dist/weighted-credit-pool.d.ts.map": "9d04043fd3fc734aad0d118998d7f78be481dcd25a8d2d6ee15228b59aebf2dd",
     "packages/platform/dist/weighted-credit-pool.js": "0cb56af6a614bad2ecba7d590e9f0e819659f563892e88dbafe8a655f0cc22a3",
-    "packages/platform/package.json": "2e754f7c8872257f99fcecba78069a257c82e40ac667c6890865e3d0630f3de5",
+    "packages/platform/package.json": "78828a63408427fc742f80d7be60bef1d024acea8e935363a29a6c3602baacd9",
     "packages/platform/src/composition.ts": "21cd3a106bf96102d3475b7b855d94cfd9503767fd1425347751269c99c03af6",
     "packages/platform/src/crc32.ts": "803eedeacaa6c5d4aebec6c13924438498d6ac0419b3db106f4a1700899f792f",
     "packages/platform/src/diag-counters.ts": "4f89f42034775f8cb201fe62b9ea71072a7e6067fc1a5b4fb1c1674c95908f3d",
