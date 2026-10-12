@@ -30,9 +30,17 @@ export interface ReadDirectoryDescription {
   /** Identity only: local fstat must use the final admitted namespace, not a stat taken earlier in the batch. */
   readonly dev: number;
   readonly ino: number;
-  /** The name's metadata version before the authority checked open access; null if it changed identity. */
-  readonly openedRevision: number | null;
+  /**
+   * What the authority's access check saw of the directory before it opened
+   * it (its mode, owner, group and ctime: a chmod, chown or ACL change moves
+   * ctime too); null if the name changed identity meanwhile. A store entry
+   * showing the same identity and the same of these would be granted the
+   * same open now. (Not a revision: a directory's revision is its subtree's,
+   * which a change anywhere below it moves.)
+   */
+  readonly opened: OpenedAs | null;
 }
+export interface OpenedAs { readonly mode: number; readonly uid: number; readonly gid: number; readonly ctime: number }
 export interface ReadDirectoryBatchResult {
   readonly channel: string;
   readonly sequence: number;
@@ -162,7 +170,8 @@ export async function readDirectoryBatch(fs: RuntimeFsBridge, input: unknown): P
           if (key === null && opened.length > 0) { await close(handle.id); continue; }
           budget.tracked.set(handle.id, { channel: request.channel, claimed: false });
           opened.push({ key, handle, dev: stat.dev, ino: stat.ino,
-            openedRevision: before?.dev === stat.dev && before.ino === stat.ino ? before.revision : null });
+            opened: before?.dev === stat.dev && before.ino === stat.ino
+              ? { mode: before.mode ?? 0, uid: before.uid ?? 0, gid: before.gid ?? 0, ctime: before.ctime ?? 0 } : null });
         } catch (error) {
           if (handle) { try { await close(handle.id); } catch {} }
           live();

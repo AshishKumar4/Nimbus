@@ -43,7 +43,7 @@ function fixture() {
         if (!entry || entry.mode === 0) throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
         const handle = { id: ++next, path: key, position: 0, closed: false, flags: { read: true, write: false, directory: true } };
         held.set(handle.id, { claimed: false, handle });
-        return { key, handle, dev: entry.dev, ino: entry.ino, openedRevision: entry.revision };
+        return { key, handle, dev: entry.dev, ino: entry.ino, opened: { mode: entry.mode, uid: entry.uid, gid: entry.gid, ctime: entry.ctime } };
       });
       const answer = { channel: request.channel, sequence: request.sequence, opened, retired: request.retire, claimed: request.claim,
         outstanding: held.size, acquire: { epoch: 'E', rev: cursor.rev, paths: [], poison: false, namespace: true,
@@ -89,6 +89,17 @@ function fixture() {
   } finally { await s.close(); }
 }
 
+// A change below a predicted directory (its subtree's revision moves) leaves the prediction good.
+{
+  const s = fixture();
+  await s.pool.open('/d0', 'd0', async () => ['/d1']);
+  s.nodes.set('d1', { ...s.nodes.get('d1'), revision: 40 });
+  const sent = s.calls.length;
+  await s.pool.open('/d1', 'd1', async () => { throw new Error('served from the batch'); });
+  assert.equal(s.calls.length, sent, 'claimed: same identity, mode, owner and ctime');
+  await s.close();
+}
+
 // A walk that opens what was not guessed keeps what was: a miss is no invalidation.
 {
   const s = fixture();
@@ -110,7 +121,7 @@ function fixture() {
   await s.pool.open('/d0', 'd0', async () => ['/d1', '/d2']);
   const predicted = [...s.held].find(([, item]) => item.handle.path === 'd1')[0];
   s.pool.invalidate();
-  s.nodes.set('d1', { ...s.nodes.get('d1'), revision: 9 });
+  s.nodes.set('d1', { ...s.nodes.get('d1'), ctime: 9 });
   await s.pool.open('/d2', 'd2', async () => []);
   assert.equal(s.calls.length, 2, 'distrusted: the open asks the session');
   assert.equal(s.calls[1].retire.includes(predicted), false, 'and keeps the other predictions');
