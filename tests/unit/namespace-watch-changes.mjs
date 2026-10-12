@@ -189,9 +189,10 @@ await check('a mount whose source gives the watcher nothing, or another store, t
   const storeA = new MemoryVFS({ uid: 0, gid: 0 });
   const storeB = new MemoryVFS({ uid: 0, gid: 0 });
   const storeD = new MemoryVFS({ uid: 0, gid: 0 });
+  const [actorA, actorB] = [new MemoryVFS({ uid: 0, gid: 0 }), new MemoryVFS({ uid: 0, gid: 0 })];
   ns.mount('/device', (principal) => (principal.cred?.uid === 1000 ? null : storeD));
   ns.mount('/pc', (principal) => (principal.cred?.uid === 2000 ? storeB : storeA));
-  ns.mount('/actors', (principal) => (principal.actor === 'b' ? storeB : storeA));
+  ns.mount('/actors', (principal) => (principal.actor === 'b' ? actorB : actorA));
   const none = watching('/device', ns.as(PUBLIC));
   const b = watching('/pc', ns.as(OTHER));
   const sameUid = watching('/actors', ns.as(PUBLIC, 'b'));
