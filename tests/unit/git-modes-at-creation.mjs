@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // What git makes in a worktree and in its object store has its final mode
 // from its creation, whatever the umask: a checked-out file 0644 (0755 when
-// executable), a loose object 0444. Red before: each was made 0666 less the
+// executable), a loose object 0444 (an annotated tag's too). Red before: each was made 0666 less the
 // umask and changed after, so under umask 0 another principal could write it
 // in between.
 
@@ -66,6 +66,7 @@ await git('add', '-A');
 await git('commit', '-q', '-m', 'two');
 await git('checkout', '-q', 'master');
 await git('checkout', '-q', 'side');
+await git('tag', '-a', 'v1', '-m', 'one');
 stopWatching();
 
 const modeOf = (path) => kernel.lstat(`${REPO}/${path}`).mode & 0o777;
@@ -80,6 +81,8 @@ for (const dir of kernel.readdir(`${REPO}/.git/objects`)) {
   for (const object of kernel.readdir(`${REPO}/.git/objects/${dir.name}`)) objects.push(`${dir.name}/${object.name}`);
 }
 assert.ok(objects.length > 0, 'the commits wrote loose objects');
+const tagObject = new TextDecoder().decode(kernel.readFile(`${REPO}/.git/refs/tags/v1`)).trim();
+assert.ok(objects.includes(`${tagObject.slice(0, 2)}/${tagObject.slice(2)}`), 'the annotated tag is a loose object');
 assert.deepEqual(objects.filter((object) => modeOf(`.git/objects/${object}`) !== 0o444), [], 'every loose object is 0444');
 assert.deepEqual(writableByOthers, [], 'no worktree file or loose object was writable by others at any point');
 console.log(`git-modes-at-creation: ok (${objects.length} loose objects)`);

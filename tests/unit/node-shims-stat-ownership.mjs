@@ -83,14 +83,17 @@ assert.deepEqual(own(`/${APP}/mine-dir`), { uid: 1000, gid: 1000, mode: '755' })
 fs.writeFileSync(`/${APP}/mine-already.txt`, 'rewritten');
 assert.deepEqual(own(`/${APP}/mine-already.txt`), { uid: 1000, gid: 1000, mode: '600' });
 
-// A file the process did not write has the namespace's times, however
-// often it is stated: a stat records no time of its own for it.
+// Stating files the process did not write records nothing: a program that
+// stats every file it can see (pi stats ~20k) must not grow a record per
+// file. A record fixes a file's time at the stat that made it; with none, a
+// file whose metadata gives no time is stated at the time of each stat.
 {
-  const times = (path) => { const st = fs.statSync(path); return [st.mtimeMs, st.atimeMs]; };
-  const first = [`/${APP}/root-owned.json`, `/${APP}/etc-like`, '/tmp/theirs.txt'].map(times);
-  for (let i = 0; i < 50; i++) {
-    assert.deepEqual([`/${APP}/root-owned.json`, `/${APP}/etc-like`, '/tmp/theirs.txt'].map(times), first, 'stats of existing files answer the same times each time');
-  }
+  const untimed = [`/${APP}/etc-like`, '/tmp/theirs.txt'];
+  const first = untimed.map((path) => fs.statSync(path).mtimeMs);
+  for (let i = 0; i < 50; i++) for (const path of [`/${APP}/root-owned.json`, ...untimed]) fs.statSync(path);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  untimed.forEach((path, i) => assert.ok(fs.statSync(path).mtimeMs > first[i], `${path} keeps the time an earlier stat gave it: a stat recorded one`));
+  assert.equal(fs.statSync(`/${APP}/root-owned.json`).mtimeMs, 1234, "a file whose metadata gives its time keeps the metadata's");
 }
 
 // Its own write has one mtime until it writes again: a watcher polling
