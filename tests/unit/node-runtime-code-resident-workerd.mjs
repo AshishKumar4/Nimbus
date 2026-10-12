@@ -208,13 +208,8 @@ server.listen(Number(process.env.PORT || 0), '127.0.0.1', () => console.log('BOU
     const RESET_CLIENT = String.raw`
 const url = new URL(process.argv[1]);
 const socket = require('node:net').connect(Number(url.port), url.hostname, () => {
-  const fields = Object.entries(JSON.parse(process.env.HEADERS)).map(([name, value]) => name + ': ' + value + '
-').join('');
-  socket.write('GET ' + url.pathname + ' HTTP/1.1
-Host: ' + url.host + '
-' + fields + 'Accept-Encoding: identity
-
-');
+  const fields = Object.entries(JSON.parse(process.env.HEADERS)).map(([name, value]) => name + ': ' + value + '\r\n').join('');
+  socket.write('GET ' + url.pathname + ' HTTP/1.1\r\nHost: ' + url.host + '\r\n' + fields + 'Accept-Encoding: identity\r\n\r\n');
 });
 let received = 0;
 socket.on('data', (data) => { received += data.length; if (received > 1024) socket.resetAndDestroy(); });
