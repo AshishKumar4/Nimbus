@@ -112,8 +112,8 @@ const ProjectManifestSchema = z.object({
     optionalDependencies: DependencyMapSchema.optional().catch(undefined),
     peerDependencies: DependencyMapSchema.optional().catch(undefined),
     peerDependenciesMeta: z.record(z.string(), z.object({ optional: z.boolean().optional().catch(undefined) }).catch({})).optional().catch(undefined),
-    bundleDependencies: z.unknown(),
-    bundledDependencies: z.unknown(),
+    bundleDependencies: z.unknown().optional(),
+    bundledDependencies: z.unknown().optional(),
 }).transform(({ bundleDependencies, bundledDependencies, ...manifest }) => {
     const bundle = bundleDependencies ?? bundledDependencies;
     return bundle === undefined ? manifest : { ...manifest, bundleDependencies: bundle };

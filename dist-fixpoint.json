@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "973c592c9c73c2214a91373c755dab1454373bd34acbc65bc8e944af01f86d11",
+  "fingerprint": "fdf029b538f7d3386e19eb8ed6827e12496b1b52eed14ed3c2002c4c3fb57be9",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -153,7 +153,7 @@
     "packages/core/dist/_shared/npm-spec.js": "44eaa82850708e620261f454daaceb05fb916f5e00103e094f5e5704e67a7591",
     "packages/core/dist/_shared/npm-tree.d.ts": "b8531270df14f9507dae15f8c66cf66f3b8b9af9c8636022e4a4efeedda784df",
     "packages/core/dist/_shared/npm-tree.d.ts.map": "1497aca8f2cfdbe76ef65c136534a7264c4b446022ed31f5d54fd38046ba23e0",
-    "packages/core/dist/_shared/npm-tree.js": "8517d52b4690b4666bdc479c6794dca5b69d438a85523c118c8fc9e3cb53606a",
+    "packages/core/dist/_shared/npm-tree.js": "b614640a8609115de58aa6d6c5e9d2298b0b9f3b6fc25e1214f5dbc62866ada7",
     "packages/core/dist/_shared/oauth.d.ts": "88de5c439a22aa316b7fefd906feff57ce5d06e8b201638d2be567507d76762e",
     "packages/core/dist/_shared/oauth.d.ts.map": "df5379a220e20408bdf29f69ef8919613d7a8207b9002a99efb4de40e8b2f23b",
     "packages/core/dist/_shared/oauth.js": "a56cf4cf12ea88765b6b220e292580544712dcbc3f12b17363c8d9508a730005",
@@ -1281,7 +1281,7 @@
     "packages/core/src/_shared/npm-libs.ts": "31e8b15eee669602a62c3fe35208e53365757a6bd44f0c4890d94b085039ae82",
     "packages/core/src/_shared/npm-semver.ts": "57b31efad9bfccc48c0364495e6d584e1f263a4d3a349433f969b3a45ca0bb7d",
     "packages/core/src/_shared/npm-spec.ts": "34f7ecff5ed1050ecce69b23157deb792f69e0e9d28a59de694da43152fa3366",
-    "packages/core/src/_shared/npm-tree.ts": "ac97a89407e74c69479fe025bc451a410344b6fc472a7c0adbf57db651acfe8d",
+    "packages/core/src/_shared/npm-tree.ts": "584ca313f6a643bbcb6aec50119ffea9a8d6c1d79749345174d46dad5099f585",
     "packages/core/src/_shared/oauth.ts": "b39e2a63741b37319fa56a96bc83740e973197d323a55d3db4e4d805c8618054",
     "packages/core/src/_shared/process-fs-client-source.generated.ts": "b791beef4f99e2b01451b5f771a52d933750d9feedf540b1930553965748d62f",
     "packages/core/src/_shared/process-fs-client.ts": "b6461a74e7b0aa8653ea15c96293e6bf20cdf927e832f3a59fa39b77e94d0af7",
