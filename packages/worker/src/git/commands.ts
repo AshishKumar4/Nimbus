@@ -1013,9 +1013,11 @@ const V1_EXTENSIONS: Readonly<Record<string, (value: string) => boolean>> = {
   relativeworktrees: () => true,
 };
 
+type GitLibrary = Awaited<ReturnType<typeof getGit>>;
+
 async function assertRepositoryImplemented(
-  git: { getConfig(args: { fs: unknown; gitdir: string; path: string }): Promise<unknown> },
-  fs: unknown,
+  git: Pick<GitLibrary, 'getConfig'>,
+  fs: Parameters<GitLibrary['getConfig']>[0]['fs'],
   repo: GitRepo,
 ): Promise<void> {
   const where = repo.worktree ?? repo.gitdir;
