@@ -368,19 +368,8 @@ export class NpmInstaller {
         const published = [];
         if (toFetch.length > 0) {
             log(`Fetching ${toFetch.length} packages... (path: batch-facet)`);
-            // A placement's completion marker, its package.json: the version it names, and when it was written.
-            const marker = async (placement) => {
-                const path = `${nmDir}/${placement}/package.json`;
-                try {
-                    const { version } = JSON.parse(await project.readFileString(path));
-                    return typeof version === 'string' ? { version, mtime: (await project.lstat(path)).mtime } : null;
-                }
-                catch {
-                    return null;
-                }
-            };
             const batchResult = engineDir !== null
-                ? await this.fetchViaBatchFacet(toFetch, `${engineDir}/node_modules`, marker, opts.pid)
+                ? await this.fetchViaBatchFacet(toFetch, `${engineDir}/node_modules`, this.store.as(opts.cred), opts.pid)
                 : await this.fetchIntoMount(toFetch, nmDir, principal);
             totalFiles += batchResult.filesWritten;
             published.push(...batchResult.installed);
@@ -831,8 +820,8 @@ export class NpmInstaller {
      *   placement).
      */
     async fetchViaBatchFacet(toFetch, nmDir, 
-    /** A placement's completion marker: its package.json's version, and its mtime (the batch writer stamps every file it writes with the batch's). */
-    marker, pid) {
+    /** The engine as the invoking principal, which reads back what a failed shard published under `nmDir`. */
+    engine, pid) {
         const log = (msg) => this.onProgress?.(msg);
         const installed = [];
         const failed = [];
@@ -923,6 +912,25 @@ export class NpmInstaller {
             key: `shard-${shardIdx}`,
             args: { packages: shardSpecs, concurrency: 3 },
         }));
+        // Each placement's completion marker, its package.json, as it is before
+        // the dispatch: what the batch writes there is a newer generation of it.
+        const markerOf = (placement) => `${nmDir}/${placement}/package.json`;
+        const before = new Map();
+        for (const { placement } of toFetch)
+            before.set(placement, (await withRecall(() => engine.statIfPresent(markerOf(placement), false)))?.gen);
+        /** The version this batch wrote at `placement`, by its marker; undefined where it wrote none. */
+        const written = (placement) => {
+            const stat = engine.statIfPresent(markerOf(placement), false);
+            if (stat?.gen === undefined || stat.gen === before.get(placement))
+                return undefined;
+            try {
+                const { version } = JSON.parse(engine.readFileString(markerOf(placement)));
+                return typeof version === 'string' ? version : undefined;
+            }
+            catch {
+                return undefined;
+            }
+        };
         try {
             // Every shard settles on its own: one that fails costs its packages,
             // never what the others published.
@@ -931,9 +939,9 @@ export class NpmInstaller {
             const readBack = [];
             // A shard that failed (or timed out, its writes perhaps landed) is
             // read back from disk: a package whose package.json, written last, is
-            // in place at its version and was written by this batch (its mtime
-            // the batch's) is installed; the rest failed with it, a copy that was
-            // there before included.
+            // in place at its version and was written by this batch (a newer
+            // generation of it than before the dispatch) is installed; the rest
+            // failed with it, a copy that was there before included.
             for (const [index, outcome] of settled.entries()) {
                 if (outcome.ok)
                     continue;
@@ -943,8 +951,7 @@ export class NpmInstaller {
                 for (const target of toFetch) {
                     if (!dirs.has(`${nmDir}/${target.placement}`))
                         continue;
-                    const written = await marker(target.placement);
-                    const landed = written !== null && written.version === target.pkg.version && written.mtime === mtime;
+                    const landed = await withRecall(() => written(target.placement)) === target.pkg.version;
                     readBack.push({ name: target.pkg.name, version: target.pkg.version, pkgDir: `${nmDir}/${target.placement}`, fileCount: 0, bytesWritten: 0, elapsed: 0, warnings: [], ...(landed ? {} : { errorText: reason }) });
                 }
             }
@@ -1070,18 +1077,16 @@ export class NpmInstaller {
         await withRecall(() => staging.mkdir(stage, { recursive: true }));
         this.placing.add(stage);
         try {
-            const stagedVersion = async (placement) => {
-                try {
-                    const { version } = JSON.parse(await staging.readFileString(`${stage}/node_modules/${placement}/package.json`));
-                    return typeof version === 'string' ? version : undefined;
-                }
-                catch {
-                    return undefined;
-                }
-            };
-            const result = await this.fetchViaBatchFacet(toFetch, `${stage}/node_modules`, stagedVersion, principal.pid);
+            const result = await this.fetchViaBatchFacet(toFetch, `${stage}/node_modules`, staging, principal.pid);
             const installed = [...result.installed];
             const failed = [...result.failed];
+            // What failed is not put on the mount: its staged files (part of a
+            // package, perhaps) go, also where they sit beneath one that landed.
+            for (const { target } of failed) {
+                const path = `${stage}/node_modules/${target.placement}`;
+                if (await withRecall(() => staging.exists(path)))
+                    await withRecall(() => staging.removeRecursive(path));
+            }
             const placed = new Set(toFetch.map(({ placement }) => placement));
             // A nested placement is put there with the package that holds it, when that is placed too.
             const tops = [...placed].filter((placement) => {
