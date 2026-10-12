@@ -446,6 +446,7 @@ async function runSubcommand(ctx, args) {
             case undefined:
                 await ctx.stderr(`error: need a subcommand\n${USAGE}\n`);
                 return 129;
+            default: throw new Error('internal error: git sparse-checkout command not dispatched');
         }
     }
     catch (error) {

@@ -774,11 +774,12 @@ function parseMergeArgs(args) {
 }
 function parseConfigArgs(args) {
     let get = false;
+    let unset = false;
     let dashdash = false;
     const operands = [];
     for (const arg of args) {
         // A set's value is opaque, even if it spells a scope or another action.
-        if (operands.length === 1 && !get) {
+        if (operands.length === 1 && !get && !unset) {
             operands.push(arg);
             continue;
         }
@@ -792,6 +793,8 @@ function parseConfigArgs(args) {
         }
         if (arg === '--get')
             get = true;
+        else if (arg === '--unset')
+            unset = true;
         else
             unsupportedOption('config', arg);
     }
@@ -799,9 +802,11 @@ function parseConfigArgs(args) {
         throw new GitGlobalsError('usage: git config <key> [value]\n', 1);
     if (!operands[0].includes('.'))
         unsupportedOption('config', operands[0]);
-    if (operands.length > (get ? 1 : 2))
+    if (get && unset)
+        throw new GitGlobalsError('error: only one action at a time\n', 129);
+    if (operands.length > (get || unset ? 1 : 2))
         unsupportedOption('config', 'value patterns or multiple values');
-    return { key: operands[0], value: get ? undefined : operands[1] };
+    return { key: operands[0], value: get || unset ? undefined : operands[1], unset };
 }
 function parseCommandArgs(sub, args, env) {
     switch (sub) {
@@ -3353,6 +3358,7 @@ realGit) {
             return true;
         };
         const fs = sessionGitFs(repoVfs, null, promisor);
+        const fileGit = git;
         git = withConfigOverrides(withGlobalConfig(git, fs, ctx.env), globals.config);
         commandFs = fs;
         // The engine, as this command's principal: a repository on it takes its objects in waves (WorktreeRepo.objectWriter).
@@ -3985,8 +3991,18 @@ realGit) {
             case 'tag':
                 return await tagCommand(ctx, git, fs, repoVfs, command.parsed);
             case 'config': {
-                const { key, value } = command.parsed;
-                if (value !== undefined) {
+                const { key, value, unset } = command.parsed;
+                if (unset) {
+                    const values = await fileGit.getConfigAll({ fs, dir, path: key });
+                    if (values.length === 0)
+                        return 5;
+                    if (values.length > 1) {
+                        await ctx.stderr.write(`warning: ${key} has multiple values\n`);
+                        return 5;
+                    }
+                    await fileGit.setConfig({ fs, dir, path: key, value: undefined });
+                }
+                else if (value !== undefined) {
                     // Set: git says nothing.
                     await git.setConfig({ fs, dir, path: key, value });
                 }
@@ -4005,6 +4021,7 @@ realGit) {
                 }
                 return 0;
             }
+            default: throw new Error('internal error: git command not dispatched');
         }
     }
     catch (e) {

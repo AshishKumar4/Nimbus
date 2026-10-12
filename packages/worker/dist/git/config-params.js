@@ -111,14 +111,14 @@ export function withGlobalConfig(git, fs, env) {
     const reads = {
         async getConfig(args) {
             const local = await git.getConfig(args);
-            if (local !== undefined || ('gitdir' in args && typeof args.gitdir === 'string' && args.gitdir.endsWith('.nimbus')))
+            if (local !== undefined || ('fs' in args && args.fs !== fs))
                 return local;
             const all = await globals(args.path);
             return all[all.length - 1];
         },
         async getConfigAll(args) {
             const local = await git.getConfigAll(args);
-            if ('gitdir' in args && typeof args.gitdir === 'string' && args.gitdir.endsWith('.nimbus'))
+            if ('fs' in args && args.fs !== fs)
                 return local;
             return [...await globals(args.path), ...local];
         },
