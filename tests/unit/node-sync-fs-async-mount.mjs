@@ -34,7 +34,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { MOUNT_LIST_NAME_LIMIT } from '../../packages/core/src/constants.ts';
 import { createSupervisorBridgeStore, SUPERVISOR_OP_ROUTES } from '../../packages/core/src/workspace/supervisor-op.ts';
 import { buildSessionSupervisorOps } from '../../packages/worker/src/session/supervisor-op.ts';
-import { FACET_RESIDENT_STORE_SOURCE } from '../../packages/worker/src/vfs/facet-resident-store.ts';
+import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
 import * as rpc from '../../packages/worker/src/session/rpc.ts';
 import { createFacetCtx, createFacetWorld, createProcessFacetCtx } from './facet-host-harness.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
@@ -264,18 +264,17 @@ console.log(JSON.stringify({
   await ws.exec('mkdir -p /m/kept && echo old > /m/kept/data.txt');
   const { pid } = ws.processes.spawn('node main.js', [], '/m/kept', { longRunning: true });
   ws.filesystem.nameLaunch({ pid, cred: ws.processes.cred(pid) }, () => ['/m/kept']);
-  const store = new Function(`${FACET_RESIDENT_STORE_SOURCE}
-return { __residentBind, __residentAdoptModuleBundle, __residentSynchronizeFromSupervisor, __residentSetPlan, __residentGet };`)();
-  store.__residentBind({ storage: { sql: facetSql() } });
-  store.__residentSetPlan(['m/kept/data.txt']);
-  store.__residentAdoptModuleBundle({}, { epoch: ws.vfs.epoch, rev: ws.vfs.revision() });
+  const store = createResidentStore();
+  store.bind({ storage: { sql: facetSql() } });
+  store.sync.setPlan(['m/kept/data.txt']);
+  store.sync.adoptModuleBundle({}, { epoch: ws.vfs.epoch, rev: ws.vfs.revision() });
   const supervisor = supervisorFor(pid);
-  await store.__residentSynchronizeFromSupervisor(supervisor);
-  assert.equal(dec.decode(store.__residentGet('m/kept/data.txt')), 'old\n', 'the launch held the mounted file');
+  await store.sync.synchronize(supervisor);
+  assert.equal(dec.decode(/** @type {Uint8Array} */ (store.cells.get('m/kept/data.txt'))), 'old\n', 'the launch held the mounted file');
   await backing.writeFile('/kept/data.txt', enc.encode('new\n'));
   // A relaunch on the kept store reconciles it against a fresh listing.
-  await store.__residentSynchronizeFromSupervisor(supervisor);
-  assert.equal(dec.decode(store.__residentGet('m/kept/data.txt')), 'new\n', 'a relaunch reads what the mount holds now');
+  await store.sync.synchronize(supervisor);
+  assert.equal(dec.decode(/** @type {Uint8Array} */ (store.cells.get('m/kept/data.txt'))), 'new\n', 'a relaunch reads what the mount holds now');
   await ws.filesystem.releaseProcess(pid);
 }
 

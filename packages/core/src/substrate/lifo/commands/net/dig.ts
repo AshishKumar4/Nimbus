@@ -50,7 +50,7 @@ function createDigImpl(network: () => WorkspaceNetwork): Command {
   const url = `https://dns.google/resolve?name=${encodeURIComponent(domain)}&type=${queryType}`;
 
   try {
-    const response = await network().fetch(url, {
+    const response = await network().forProcess(ctx.pid).fetch(url, {
       headers: { Accept: 'application/dns-json' },
       signal: ctx.signal,
     });

@@ -18,6 +18,7 @@ import { processHostFor } from '../../packages/worker/src/loaders/process-host.t
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { VFS_BUNDLE_MAX_BYTES } from '../../packages/core/src/constants.ts';
+import { RESIDENT_STORE_GLOBAL } from '../../packages/worker/scripts/resident-store-bundle.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { processFiles } from './lib/process-bridge.mjs';
 import { createAuthority } from './lib/resident-body.mjs';
@@ -39,7 +40,19 @@ const loader = runnerLoader('one-shot-ns', {
   rewrite(config) {
     if (injectedStoreBudget === null) return config;
     const modules = { ...config.modules };
-    modules['runner.js'] = modules['runner.js'].replace(/__residentBindInMemory\(\d+\)/, `__residentBindInMemory(${injectedStoreBudget})`);
+    // Inject the allowance through the store API; the runner still creates
+    // and binds its own instance for each request.
+    modules['runner.js'] += `
+${RESIDENT_STORE_GLOBAL} = ((library) => ({
+  ...library,
+  createResidentStore(options) {
+    const store = library.createResidentStore(options);
+    const bind = store.bindInMemory;
+    store.bindInMemory = () => bind(${injectedStoreBudget});
+    return store;
+  },
+}))(${RESIDENT_STORE_GLOBAL});
+`;
     return { ...config, modules };
   },
 });

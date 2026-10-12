@@ -20,7 +20,7 @@ import { StorageLedger, forgetFacetStorage } from '@nimbus-sh/core/runtime/stora
 import { getCtxExports, stagedBootAssembler, } from './composition.js';
 import { assertModuleMapWithinCodeLimit, beginLoaderFetch, beginLoaderFetchWhenFree, claimAdmission, launchWorkerKey, readmitRefused, withDynamicWorkerCapNamed, } from './budgets.js';
 import { RESIDENT_PROCESS_CLASS, residentLoaderConfig, } from './process-fabric.js';
-import { bindingSupervisor, supervisorLoaderKey } from './supervisor-props.js';
+import { bindingSupervisor, egressMarker, supervisorLoaderKey, workspaceOutbound } from './supervisor-props.js';
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { PROCESS_FS_JOURNAL_READER_SOURCE } from '@nimbus-sh/core/_shared/process-fs-journal-reader-source.generated.js';
 import { applyFacetLimits, facetLimits, facetLoaderKey } from './facet-limits.js';
@@ -522,14 +522,11 @@ async function runOneShot(ctx, env, supervisor, supervise, params, consume) {
             // binding's: a globalOutbound is a service binding, never a capability.
             if (params.outbound)
                 supervisorBinding = bindingSupervisor(supervisor);
-            worker = loader.load(applyFacetLimits('process', {
+            worker = loader.load(applyFacetLimits('process', workspaceOutbound({
                 ...enteredByRun(code),
                 env: egressMarker(supervisor),
-                // Else out through the workspace's egress, when there is one.
-                ...(supervisorBinding
-                    ? { globalOutbound: supervisorBinding }
-                    : supervisor.egress !== undefined ? { globalOutbound: supervisor.egress } : {}),
-            }));
+                ...(supervisorBinding ? { globalOutbound: supervisorBinding } : {}),
+            }, supervisor)));
             const ep = worker.getEntrypoint(undefined, { limits: facetLimits('process') });
             entrypoint = ep;
             if (typeof ep.run !== 'function')
@@ -672,25 +669,6 @@ export async function residentWorkerConfig(env, disk, supervisor, boot) {
     assertModuleMapWithinCodeLimit(configModules(config));
     // The binding, not its host's capability (Supervise): a resident's calls each go one hop below its own request, at a fixed depth.
     return { ...workspaceOutbound(config, supervisor), env: { SUPERVISOR: bindingSupervisor(supervisor), ...egressMarker(supervisor) } };
-}
-/**
- * What tells a process its network goes through an egress (`NIMBUS_EGRESS`):
- * its node:tls refuses a TLS socket by name (EGRESS_TLS_REFUSAL), since the
- * egress's connect carries plain TCP only.
- */
-function egressMarker(supervisor) {
-    return supervisor.egress === undefined ? {} : { NIMBUS_EGRESS: true };
-}
-/**
- * `config` with the workspace's egress as its network when it states none:
- * a process inherits its workspace's network, and under an egress
- * (SupervisorBindingProps.egress) that is the egress. An explicit
- * globalOutbound (a binding that mediates, or null that denies) stands.
- */
-function workspaceOutbound(config, supervisor) {
-    if (supervisor.egress === undefined || 'globalOutbound' in config)
-        return config;
-    return { ...config, globalOutbound: supervisor.egress };
 }
 /** The module map a loader config assembled, or empty when it named none. */
 function configModules(config) {

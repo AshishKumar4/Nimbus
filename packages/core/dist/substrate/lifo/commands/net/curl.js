@@ -392,7 +392,7 @@ async function executeCurlRequest(kernel, ctx, options, startUrl, headers, signa
                 if (gateway.kind !== 'refused')
                     return gateway;
             }
-            return await sendHop(kernel, hop.url, hopInit(hop, signal));
+            return await sendHop(kernel, ctx.pid, hop.url, hopInit(hop, signal));
         },
     });
     switch (walk.kind) {

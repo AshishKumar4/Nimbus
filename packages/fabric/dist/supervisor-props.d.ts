@@ -30,10 +30,10 @@ export interface SupervisorBindingProps {
     bindingKind: 'process';
     writerId: string;
     /**
-     * The workspace's egress (NimbusWorkspaceOptions.egress), when its host
-     * supplied one: the process's network, its packument reads and its sockets
-     * go out through it, from the binding (SupervisorRPC). With its id, so a
-     * cache this binding fills is the egress's own.
+     * The process's egress (NimbusWorkspaceOptions.egressFor, else .egress),
+     * when its host supplied one: the process's network, its packument reads
+     * and its sockets go out through it, from the binding (SupervisorRPC).
+     * With its id, so a cache this binding fills is the egress's own.
      */
     egress?: WorkspaceEgress;
     networkId?: string;
@@ -59,6 +59,22 @@ options: {
     doId?: string;
     route?: HostRoute;
 }): SupervisorBindingProps;
+/**
+ * `config` with a process's network: its egress (SupervisorBindingProps.egress)
+ * as its globalOutbound when the config names none. A process inherits its
+ * workspace's network, and so does a Worker it loads; an explicit one (a
+ * binding that mediates, or null that denies) stands. Every config a
+ * process's worker is loaded from goes through here: resident, one-shot,
+ * staged, and nested (env.LOADER).
+ */
+export declare function workspaceOutbound<C extends object>(config: C, network: Pick<SupervisorBindingProps, 'egress'>): C;
+/**
+ * What tells a process its network goes through an egress (`NIMBUS_EGRESS`):
+ * its node:tls goes to the egress's connectTls, or refuses by name.
+ */
+export declare function egressMarker(network: Pick<SupervisorBindingProps, 'egress'>): {
+    NIMBUS_EGRESS?: true;
+};
 /** The one mint for SUPERVISOR/outbound capabilities handed to a process. */
 export declare function mintProcessSupervisor<T>(mint: (options: {
     props: SupervisorBindingProps;

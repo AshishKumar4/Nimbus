@@ -433,8 +433,8 @@ export class Fanout {
               wasmModules: this.opts.wasmModules,
               extraBindings: this.opts.extraBindings,
               omitSupervisor: this.opts.omitSupervisor,
-              // The workspace's egress: the peer's facets go out through it too.
-              network: networkRef(this.opts.network),
+              // The invoking process's egress: the peer's facets go out through it too.
+              network: networkRef(this.opts.network.forProcess(this.opts.supervisorPid ?? 0)),
               // INSTALL-HONESTY: forward the COORDINATOR's full doId so
               // the peer's IsolatePool can mint a SUPERVISOR
               // binding that routes back HERE (the user's session DO),

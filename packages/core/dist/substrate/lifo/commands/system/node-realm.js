@@ -290,8 +290,9 @@ export async function runNodeInRealm(program, ctx, kernel) {
         },
     };
     let code = null;
-    const payload = { program, hosts: kernel?.dns?.hostsFile(), egress: kernel?.network?.egress !== undefined };
-    const network = kernel?.network;
+    // The program's process's network (WorkspaceNetwork.forProcess).
+    const network = kernel?.network?.forProcess(ctx.pid);
+    const payload = { program, hosts: kernel?.dns?.hostsFile(), egress: network?.egress !== undefined };
     const egress = network?.egress === undefined ? null : new RealmEgress(network, (event) => { post(event); });
     const realm = await startRealm({
         entry: new URL('./node-guest.js', import.meta.url),

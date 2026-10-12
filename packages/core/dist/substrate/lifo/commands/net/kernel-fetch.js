@@ -107,14 +107,15 @@ export function hopInit(hop, signal) {
  * One hop as a kernel serves it: a loopback URL (by name through its
  * resolver) from its port registry or loopback router, refused there if
  * nothing listens, never fetched; any other off the box through the
- * workspace's network (its host's egress, when it supplied one). With no
- * kernel, every hop goes through the isolate's own network.
+ * network of the command's process `pid` (its host's egress, when it
+ * supplied one). With no kernel, every hop goes through the isolate's own
+ * network.
  */
-export async function sendHop(kernel, url, init) {
+export async function sendHop(kernel, pid, url, init) {
     const port = kernel ? workspaceRequestPort(kernel, url) : null;
     if (kernel && port !== null)
         return await dispatchWorkspaceRequest(kernel, port, new Request(url, init));
-    return { kind: 'response', response: await (kernel?.network ?? ISOLATE_NETWORK).fetch(url, init) };
+    return { kind: 'response', response: await (kernel?.network ?? ISOLATE_NETWORK).forProcess(pid).fetch(url, init) };
 }
 /**
  * Send `start`, and while `follow` holds and the answer is a 3xx with a

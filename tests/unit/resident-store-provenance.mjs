@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // Every row the resident store serves must be one the ACQUIRE barrier can
-// evict, and -1 (__RK_OWN_WRITE) is the one revision it never evicts. So -1
+// evict, and -1 (RK_OWN_WRITE) is the one revision it never evicts. So -1
 // has to mean exactly "this process's own bytes that the authority has not
 // acknowledged yet", and every other row has to carry the revision the
 // authority assigned it:
