@@ -47,7 +47,8 @@ try {
     ...Object.keys(await oxcWasmInputs()).map(name => path.join('packages/worker/scripts/oxc-wasm', name)),
   ]);
   for (const key of Object.keys(SPECS)) for (const name of Object.keys(await bindingInputs(key))) names.add(name);
-  for (const name of names) if (!name.includes('#')) await copy(name);
+  const files = new Set([...names].filter(name => !name.startsWith('toolchain#')).map(name => name.split('#')[0]));
+  for (const name of files) await copy(name);
   await mkdir(path.join(root, 'packages/worker/public/_assets'), { recursive: true });
   for (const family of ['napi-wasm', 'opencode', 'oxc']) {
     await symlink(path.join(repo, 'packages/worker/public/_assets', family), path.join(root, 'packages/worker/public/_assets', family), 'dir');
@@ -58,9 +59,6 @@ try {
   await symlink(path.join(repo, 'node_modules'), path.join(root, 'node_modules'), 'dir');
   await symlink(path.join(repo, 'packages/worker/node_modules'), path.join(root, 'packages/worker/node_modules'), 'dir');
   await writeFile(path.join(root, 'package.json'), '{"type":"module"}');
-  await writeFile(path.join(root, 'packages/worker/package.json'), JSON.stringify({
-    scripts: { 'bundle:napi-wasm': 'node scripts/bundle-napi-wasm.mjs' },
-  }));
   await mkdir(path.join(root, 'packages/worker/src'), { recursive: true });
   assert.equal(spawnSync('git', ['init', '-q'], { cwd: root }).status, 0);
   assert.equal(run('packages/worker/scripts/bundle-napi-wasm.mjs').status, 0, 'current loader and bindings stage');
@@ -88,6 +86,14 @@ try {
   await writeFile(path.join(root, 'bun.lock'), applyEdits(lock, modify(lock, ['packages', 'esbuild', 0], 'esbuild@0.0.0', {})));
   refused(run('packages/worker/scripts/bundle-napi-wasm.mjs'), 'bun.lock#esbuild', 'bun scripts/ci/remote-napi-loader.mjs');
   await copy('bun.lock');
+
+  const coreManifest = 'packages/core/package.json';
+  const corePackage = await readFile(path.join(root, coreManifest), 'utf8');
+  await writeFile(path.join(root, coreManifest), applyEdits(corePackage, modify(corePackage, ['sideEffects'], true, {})));
+  refused(run('packages/worker/scripts/bundle-napi-wasm.mjs'), `${coreManifest}#esbuild`, 'bun scripts/ci/remote-napi-loader.mjs');
+  await writeFile(path.join(root, coreManifest), applyEdits(corePackage, modify(corePackage, ['version'], '0.0.0', {})));
+  assert.equal(run('packages/worker/scripts/bundle-napi-wasm.mjs').status, 0, 'a package release version is not a loader input');
+  await copy(coreManifest);
 
   const added = 'packages/worker/scripts/napi-wasm/rolldown/binding/src/new.rs';
   await writeFile(path.join(root, added), 'pub const NEW: u32 = 1;\n');

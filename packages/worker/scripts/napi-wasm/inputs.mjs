@@ -12,20 +12,30 @@ const RECIPE = [`${HERE}/build.mjs`, `${HERE}/inputs.mjs`, 'packages/worker/scri
 /** Repository inputs plus every repository module the loader's esbuild metafile names. */
 export async function loaderInputs(graph, root = REPO) {
   const configs = new Set(['tsconfig.base.json']);
+  const manifests = new Set();
   for (const file of graph) {
     let dir = path.dirname(file);
     for (;;) {
-      for (const name of ['tsconfig.json']) {
+      for (const name of ['tsconfig.json', 'package.json']) {
         const relative = path.join(dir, name);
-        if (await fs.stat(path.join(root, relative)).then(stat => stat.isFile(), () => false)) configs.add(relative);
+        if (await fs.stat(path.join(root, relative)).then(stat => stat.isFile(), () => false)) {
+          (name === 'package.json' ? manifests : configs).add(relative);
+        }
       }
       if (dir === '.') break;
       dir = path.dirname(dir);
     }
   }
+  const resolution = ['type', 'sideEffects', 'main', 'module', 'exports', 'imports', 'browser'];
+  const manifestInputs = Object.fromEntries(await Promise.all([...manifests].sort().map(async file => {
+    const manifest = JSON.parse(await fs.readFile(path.join(root, file), 'utf8'));
+    const fields = Object.fromEntries(resolution.filter(key => key in manifest).map(key => [key, manifest[key]]));
+    return [`${file}#esbuild`, sha256Hex(JSON.stringify(fields))];
+  })));
   return {
     ...await digestInputs(root, [...RECIPE, `${HERE}/specs.mjs`, `${HERE}/loader/napi-wasm-loader.ts`, `${HERE}/loader/wasi-trampoline.mjs`, ...configs, ...graph]),
     ...await lockfileInputs(root, 'bun.lock', ['esbuild']),
+    ...manifestInputs,
   };
 }
 
