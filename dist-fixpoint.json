@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "858ffcab0d195e1bcc837f7299b435fd11e894f0f1259eac66e9b8846d16c1b3",
+  "fingerprint": "cafce34a794929185d731864d211d151a7c8346473aaf6d7283c28a97b17a9c3",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2175,8 +2175,8 @@
     "packages/worker/dist/git/clone-job.d.ts.map": "a3e426cb8913860c0cadab6793706545bb1d86dde0d67a002073e26bf8be7bbd",
     "packages/worker/dist/git/clone-job.js": "9baa9d4579e09ef5c432f39a5667321ce6ca2a32d444e0a862e2b07fa5627c05",
     "packages/worker/dist/git/commands.d.ts": "74ad31733bb1c215dd602f7ddb7f8ac31d436086444854cc08373f4db493a1e6",
-    "packages/worker/dist/git/commands.d.ts.map": "7b6f99a399d523308dce4eca3dbfe7fa9ed0e6a59ad56a1765074c0680247ff4",
-    "packages/worker/dist/git/commands.js": "5d6bc6e86734eaa92b2d614eb4b487c2e2935c0f83e6fa0621f2bf0aba61b64a",
+    "packages/worker/dist/git/commands.d.ts.map": "e319aa0114ebd9e2489bc9f988c1bf86f21bc9c2cb5505e0c9ed9100668478a1",
+    "packages/worker/dist/git/commands.js": "05606aa9451db593345dcf78dfe2aee97efdc2436876eec963c9c15d811963ed",
     "packages/worker/dist/git/config-params.d.ts": "d30427d613149c2c85099f685827ce6648d2b2c9c7f85ac2522d939be45a5699",
     "packages/worker/dist/git/config-params.d.ts.map": "9101148d62a6d56e75814d05fe1fa1858dad966c4b5a4d6c9d5c02833d7a728e",
     "packages/worker/dist/git/config-params.js": "c98468b47a2cadb32a7c13b47718431f3227764eb05073eb703ee937ca57da0e",
@@ -2937,7 +2937,7 @@
     "packages/worker/src/facets/ws-terminal.ts": "6dcc7b57bcca477a9e61d8544e3eea2b9628fc0ff6cefda0fd05c76c4f8de4ca",
     "packages/worker/src/git-bundle.generated.ts": "dce3ec2291df52ec1d76a7c24c02ccd897881c52f61095f28e63f45c0dd2cf30",
     "packages/worker/src/git/clone-job.ts": "088b70b9aa889cc5097e2d52223eaded56ee0ddd28af59b33abac57145004c91",
-    "packages/worker/src/git/commands.ts": "463973211910e5c0fb22a47b68b8fcc16564e7a818bfdf05ff4e68ee9e13aaec",
+    "packages/worker/src/git/commands.ts": "776a19c8d52e288dfcff5e8dc93dfbca8b84c5d30beb9570afc82c6d93ea57a3",
     "packages/worker/src/git/config-params.ts": "6116350aa80bbb58d52dcd83f0d179aec543b669d7a34e7bcb653e28dd6f23b4",
     "packages/worker/src/git/engine.ts": "fd2ca54dbb2c312f858c58c8578569e21a2f033b7f09ee6aef8ac33106dd84eb",
     "packages/worker/src/git/git-fs.ts": "9671f18334b1fb7273efaf2fea6063a005a890576a3689d31a34512e3727afa1",

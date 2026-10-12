@@ -1074,35 +1074,43 @@ function validateRevision(rev) {
     }
 }
 function parseRevParseArgs(args) {
-    const words = [];
+    const actions = [];
     let paths = false;
     for (const arg of args) {
-        if (arg === '--' && !paths) {
+        if (arg === '--')
             paths = true;
-            words.push({ arg, path: true });
-            continue;
-        }
         if (paths) {
-            words.push({ arg, path: true });
+            actions.push({ kind: 'path', value: arg });
             continue;
         }
-        if (arg.startsWith('-')) {
-            switch (arg) {
-                case '--verify':
-                case '-q':
-                case '--quiet':
-                case '--abbrev-ref':
-                case '--show-toplevel':
-                case '--git-dir':
-                case '--is-inside-work-tree': break;
-                default: throw new UnsupportedGitOperation(`fatal: rev-parse: unsupported option '${arg}'\n`, 129);
-            }
+        switch (arg) {
+            case '--verify':
+                actions.push({ kind: 'verify' });
+                break;
+            case '-q':
+            case '--quiet':
+                actions.push({ kind: 'quiet' });
+                break;
+            case '--abbrev-ref':
+                actions.push({ kind: 'abbrev-ref' });
+                break;
+            case '--show-toplevel':
+                actions.push({ kind: 'toplevel' });
+                break;
+            case '--git-dir':
+                actions.push({ kind: 'gitdir' });
+                break;
+            case '--is-inside-work-tree':
+                actions.push({ kind: 'inside-work-tree' });
+                break;
+            default:
+                if (arg.startsWith('-'))
+                    throw new UnsupportedGitOperation(`fatal: rev-parse: unsupported option '${arg}'\n`, 129);
+                validateRevision(arg);
+                actions.push({ kind: 'revision', value: arg });
         }
-        else
-            validateRevision(arg);
-        words.push({ arg, path: false });
     }
-    return words;
+    return actions;
 }
 async function revParse(ctx, git, fs, vfs, args) {
     const repo = await discoverRepo(vfs, ctx.cwd);
@@ -1130,35 +1138,34 @@ async function revParse(ctx, git, fs, vfs, args) {
         return code;
     };
     const noSingleRevision = () => (quiet ? fail('', 1) : fail('fatal: Needed a single revision\n', 128));
-    for (const { arg, path } of args) {
-        if (path) {
-            out += `${arg}\n`;
-            continue;
-        }
-        switch (arg) {
-            case '--verify':
+    for (const action of args) {
+        switch (action.kind) {
+            case 'path':
+                out += `${action.value}\n`;
+                continue;
+            case 'verify':
                 verify = true;
                 continue;
-            case '-q':
-            case '--quiet':
+            case 'quiet':
                 quiet = true;
                 continue;
-            case '--abbrev-ref':
+            case 'abbrev-ref':
                 abbrevRef = true;
                 continue;
-            case '--show-toplevel':
+            case 'toplevel':
                 if (!repo.worktree)
                     return fail(NOT_A_WORK_TREE, 128);
                 out += `${repo.worktree}\n`;
                 continue;
-            case '--git-dir':
+            case 'gitdir':
                 // rev-parse names the git directory relative to the cwd only from the top.
                 out += `${repo.prefix ? repo.gitdir : repo.worktree ? '.git' : '.'}\n`;
                 continue;
-            case '--is-inside-work-tree':
+            case 'inside-work-tree':
                 out += `${repo.worktree ? 'true' : 'false'}\n`;
                 continue;
         }
+        const arg = action.value;
         const oid = await resolveRevision(git, fs, repo.gitdir, arg, cache);
         if (oid === null) {
             if (verify)

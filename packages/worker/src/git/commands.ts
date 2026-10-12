@@ -2415,7 +2415,6 @@ async function prepareDiff(ctx: Ctx, git: CfGit, fs: GitFs, vfs: ProjectFs, pars
   const repo = await discoverRepo(vfs, ctx.cwd);
   if (!repo) throw new GitGlobalsError(NOT_A_REPOSITORY, 128);
   const root = repo.worktree;
-  if (!root) throw new GitGlobalsError(NOT_A_WORK_TREE, 128);
   const cache = {};
   const revs: string[] = [];
   for (const arg of positionals) {
@@ -2436,6 +2435,7 @@ async function prepareDiff(ctx: Ctx, git: CfGit, fs: GitFs, vfs: ProjectFs, pars
   if (revs.length > 1) {
     throw new UnsupportedGitOperation('fatal: diff between two commits is not supported; compare one commit with the worktree or the index\n', 128);
   }
+  if (!root) throw new GitGlobalsError(NOT_A_WORK_TREE, 128);
   parsed.comparison = { gitdir: repo.gitdir, root, revs };
 }
 
