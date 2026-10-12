@@ -464,8 +464,8 @@ function spawnResident(ctx, env, disk, supervisor, params) {
             const lease = observation.acquire();
             void scope.settled.then(lease.release);
             try {
-                const { id, ended } = relayed ?? sent.send(scope, abandon);
-                return await checked(await facet.hostHttpRequest(request, watchCapability, await incarnation, id, ended));
+                const { id, ended, abandoned } = relayed ?? sent.send(scope, abandon);
+                return await checked(await facet.hostHttpRequest(request, watchCapability, await incarnation, id, ended, abandoned));
             }
             catch (error) {
                 lease.release();

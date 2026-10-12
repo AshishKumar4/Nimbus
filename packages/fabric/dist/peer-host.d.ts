@@ -51,9 +51,10 @@ export interface HostedHttpRequest {
     url: string;
     headers: [string, string][];
     body: ReadableStream | null;
-    /** Its id, by which its coordinator can abandon it, and the ids that ended since the last (SentRequests). */
+    /** Its id, by which its coordinator can abandon it, and the earlier ids the leaf forgets or abandons (SentRequests). */
     id: number;
     ended: number[];
+    abandoned: number[];
 }
 export interface HostedHttpResponse {
     status: number;

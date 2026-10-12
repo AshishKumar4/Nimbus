@@ -344,7 +344,7 @@ export class PeerHost {
             const { scope, owner } = responseScope(new AbortController().signal);
             let response;
             try {
-                response = await facet.handleHttpRequest(new Request(wire.url, init), scope, { id: wire.id, ended: wire.ended });
+                response = await facet.handleHttpRequest(new Request(wire.url, init), scope, { id: wire.id, ended: wire.ended, abandoned: wire.abandoned });
             }
             catch (error) {
                 owner.fail();

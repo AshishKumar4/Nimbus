@@ -43,16 +43,20 @@ export declare class HostActivity {
  * signal, and asking per request costs a round trip; abandoning is the rare
  * path, so only it sends anything (the leaf's abandonHttpRequest). Each call
  * carries the ids that ended since the last (`ended`), which the leaf then
- * forgets; it keeps an abandon that overtakes its request until its request,
- * or its end, arrives (observeResidentConfig).
+ * forgets, and those whose abandon did not arrive (`abandoned`), which it
+ * abandons and forgets; it keeps an abandon that overtakes its request until
+ * its request, or its end, arrives (observeResidentConfig).
  */
 export declare class SentRequests {
     #private;
     /** An id for a request with `scope`, the ids to report, and abandon(id) sent if it is not delivered. */
-    send(scope: ResponseScope, abandon: (id: number) => Promise<unknown>): {
-        id: number;
-        ended: number[];
-    };
+    send(scope: ResponseScope, abandon: (id: number) => Promise<unknown>): HostRequest;
+}
+/** A request's id, and the earlier ones its leaf forgets (`ended`) or abandons first (`abandoned`). */
+export interface HostRequest {
+    id: number;
+    ended: number[];
+    abandoned: number[];
 }
 export declare function hostActivity(host: object): HostActivity;
 /**
