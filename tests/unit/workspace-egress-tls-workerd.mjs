@@ -48,13 +48,14 @@ const fixture = spawn('node', ['-e', `
     socket.on('error', () => {});
     socket.end('name ' + (socket.servername || '-') + '\\n');
   });
-  server.on('tlsClientError', () => {});
+  // A client that refused the server's certificate ends the handshake with an alert.
+  server.on('tlsClientError', (error, socket) => console.log('REFUSED ' + (socket.servername || '-')));
   server.listen(0, ${JSON.stringify(lan)}, () => console.log('PORT ' + server.address().port));
 `], { stdio: ['ignore', 'pipe', 'inherit'] });
 try {
+let fixtureOut = '';
 const fixturePort = await new Promise((resolve, reject) => {
-  let out = '';
-  fixture.stdout.on('data', (d) => { out += d; const m = /PORT (\d+)/.exec(out); if (m) resolve(Number(m[1])); });
+  fixture.stdout.on('data', (d) => { fixtureOut += d; const m = /PORT (\d+)/.exec(fixtureOut); if (m) resolve(Number(m[1])); });
   fixture.on('exit', (code) => reject(new Error('fixture exited ' + code)));
 });
 const probe = await startLocalProbe({ runtimes: [], vars: { NIMBUS_TEST_EGRESS: '1', NIMBUS_TEST_EGRESS_TLS: '1' } });
@@ -173,23 +174,33 @@ try {
       assert.match(refused.stdout, /plain destroyed true/);
       assert.doesNotMatch(refused.stdout, /unexpected/);
     }
-    // The name the program gives is the one presented and checked: the right one connects, a wrong one fails verification.
+    // The name the program gives is the one presented and checked: the right one connects and is
+    // the server's SNI; with a wrong one the session refuses the server's certificate, and nothing
+    // the program sends or the server answers crosses. (workerd's startTls reports the failure at
+    // the first write, as an internal error, so the program writes first, as most protocols do.)
     const names = await run(`
       const tls = require('tls');
       const ask = (servername) => new Promise((resolve) => {
         const socket = tls.connect({ host: ${JSON.stringify(lan)}, port: ${fixturePort}, servername });
+        socket.write('hello\\n');
         socket.setEncoding('utf8');
         let body = '';
         socket.on('data', (part) => { body += part; });
-        socket.on('end', () => { console.log(servername, 'answer', body.trim()); resolve(); });
-        socket.on('error', (error) => { console.log(servername, 'failed', error.message); resolve(); });
+        socket.on('error', (error) => console.log(servername, 'failed', error.message));
+        socket.on('close', () => { console.log(servername, 'answer', JSON.stringify(body.trim())); resolve(); });
       });
       ask('fixture.nimbus.test').then(() => ask('wrong.nimbus.test'));
     `);
     assert.equal(names.status, 0, names.stdout);
-    assert.match(names.stdout, /fixture\.nimbus\.test answer name fixture\.nimbus\.test/);
+    assert.match(names.stdout, /fixture\.nimbus\.test answer "name fixture\.nimbus\.test"/);
+    assert.doesNotMatch(names.stdout, /fixture\.nimbus\.test failed/);
     assert.match(names.stdout, /wrong\.nimbus\.test failed /);
-    assert.doesNotMatch(names.stdout, /wrong\.nimbus\.test answer/);
+    assert.match(names.stdout, /wrong\.nimbus\.test answer ""/);
+    for (const deadline = Date.now() + 5000; !/REFUSED wrong\.nimbus\.test/.test(fixtureOut) && Date.now() < deadline;) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assert.match(fixtureOut, /REFUSED wrong\.nimbus\.test/);
+    assert.doesNotMatch(fixtureOut, /REFUSED fixture\.nimbus\.test/);
   } finally { await terminal.close(); }
 } finally { await probe.stop(); }
 } finally { fixture.kill(); rmSync(dir, { recursive: true, force: true }); delete process.env.NODE_EXTRA_CA_CERTS; }
