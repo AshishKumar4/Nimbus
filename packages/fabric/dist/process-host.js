@@ -67,7 +67,7 @@
  */
 import { networkRef } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { hostActivity, HOST_INCARNATION_HEADER, SentRequests } from './host-activity.js';
+import { hostActivity, HOST_INCARNATION_HEADER, leafReceived, SentRequests } from './host-activity.js';
 import { onColdStart } from './generation.js';
 import { peerRetryDelay } from './fanout.js';
 import { hostNamespaceBinding, hostOpDispatch } from './host-dispatch.js';
@@ -376,7 +376,8 @@ class PeerProcessHost {
                         return await peered((stub) => routeThroughPeer(stub, params.workerKey, webSocketCapability, request, sending));
                     }
                     catch (error) {
-                        sent.unsent(sending);
+                        if (!leafReceived(error))
+                            sent.unsent(sending);
                         lease.release();
                         throw error;
                     }

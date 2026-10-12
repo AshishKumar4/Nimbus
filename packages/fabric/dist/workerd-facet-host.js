@@ -13,7 +13,7 @@
  * `HostedProcess` and never imports this file.
  */
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { hostActivity, HOST_INCARNATION_HEADER, HOST_REQUEST_HEADER, HOST_WATCH_HEADER, observeResidentConfig, SentRequests, } from './host-activity.js';
+import { hostActivity, HOST_INCARNATION_HEADER, HOST_REQUEST_HEADER, HOST_WATCH_HEADER, observeResidentConfig, leafReceived, SentRequests, } from './host-activity.js';
 import { readImmutableModuleSource } from '@nimbus-sh/core/_shared/staged-source.js';
 import { classifyError, describeError, isUnexplainedPlatformError } from '@nimbus-sh/platform/oom-classify.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
@@ -469,7 +469,7 @@ function spawnResident(ctx, env, disk, supervisor, params) {
                 return await checked(await facet.hostHttpRequest(request, watchCapability, await incarnation, sending.id, sending.ended, sending.abandoned));
             }
             catch (error) {
-                if (!relayed)
+                if (!relayed && !leafReceived(error))
                     sent.unsent(sending);
                 lease.release();
                 throw error;

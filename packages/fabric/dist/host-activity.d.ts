@@ -51,9 +51,16 @@ export declare class SentRequests {
     #private;
     /** An id for a request with `scope`, the ids to report, and abandon(id) sent if it is not delivered. */
     send(scope: ResponseScope, abandon: (id: number) => Promise<unknown>): HostRequest;
-    /** `request`'s call failed, so its leaf may not have seen what it carried: carry it again (each is idempotent there). */
+    /** `request`'s call failed before its leaf saw what it carried (leafReceived): carry it again (each is idempotent there). */
     unsent(request: HostRequest): void;
 }
+/**
+ * The property a leaf sets on its guest's failure, crossing RPC with it
+ * (enhanced_error_serialization): the call arrived, and what it carried was
+ * seen. Any other failure may not have reached the leaf.
+ */
+export declare const LEAF_RECEIVED = "nimbusLeafReceived";
+export declare function leafReceived(error: unknown): boolean;
 /** A request's id, and the earlier ones its leaf forgets (`ended`) or abandons first (`abandoned`). */
 export interface HostRequest {
     id: number;
