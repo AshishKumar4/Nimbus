@@ -578,6 +578,8 @@ await check('a watch whose judgment awaits holds the batches after it: none judg
   const user = watching('/', ns.as(PUBLIC));
   const heardFollowing = [];
   const stopFollowing = ns.as(PUBLIC).watchChanges('/held/a/f', (events) => heardFollowing.push(...events.map(said)), { follow: true });
+  const heardMade = [];
+  const stopMade = ns.as(PUBLIC).watchChanges('/held/a/g', (events) => heardMade.push(...events.map(said)), { follow: true });
   try {
     await ns.mkdir('/held/d');
     await g.entering;
@@ -587,6 +589,7 @@ await check('a watch whose judgment awaits holds the batches after it: none judg
     await ns.writeFile('/quick/b', enc.encode('b'));
     await ns.rename('/held/a', '/held/b');
     await ns.unlink('/held/b/f');
+    await ns.writeFile('/held/b/g', enc.encode('g'));
     await settled();
     assert.equal(asked, judging, 'the batches after it wait to be judged');
     assert.deepEqual(user.take().filter(ours), [], 'nothing told before it');
@@ -594,12 +597,13 @@ await check('a watch whose judgment awaits holds the batches after it: none judg
     g.release();
     await settled();
     assert.deepEqual(user.take().filter(ours), [
-      'addDir /held/d', 'addDir /held/e', 'change /quick/b', 'rename /held/a -> /held/b', 'unlink /held/b/f',
+      'addDir /held/d', 'addDir /held/e', 'change /quick/b', 'rename /held/a -> /held/b', 'unlink /held/b/f', 'change /held/b/g',
     ]);
     assert.deepEqual(heardFollowing, ['rename /held/a/f -> /held/b/f', 'unlink /held/b/f'], 'a move judged by what followed it');
+    assert.deepEqual(heardMade, [], 'a write after the move may have made it: it is not taken to have been there');
   } finally {
     g.release();
-    user.stop(); stopFollowing();
+    user.stop(); stopFollowing(); stopMade();
     ns.unmount('/held'); ns.unmount('/quick');
   }
 });
