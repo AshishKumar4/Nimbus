@@ -17,6 +17,9 @@ import { Database } from 'bun:sqlite';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { registryRecord } from '../../packages/worker/src/npm/registry-record.ts';
+import { NpmInstaller } from '../../packages/worker/src/npm/installer.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
+import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { parseRegistryRequest } from '../../packages/core/src/_shared/npm-spec.ts';
 import { kernelInstaller, makeFanoutEnv } from './npm-fanout-test-env.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
@@ -176,6 +179,43 @@ for (const [when, touched] of [['after', false], ['after', true], ['before', tru
   assert.equal(JSON.parse(root.readFileString(`${NM}/x/package.json`)).integrity, landed ? 'sha512-x-republished' : 'sha512-x', label);
   assert.equal(installer.npmCache.readLockfile(PROJ).get('x').integrity, landed ? 'sha512-x-republished' : 'sha512-x', `${label}: the lockfile records what is on disk`);
   assert.equal(root.exists(`${NM}/.nimbus-receipts`), false, `${label}: no receipt is left`);
+}
+
+// ── receipts go through the namespace: one mounted where they go is read there ──
+// The waves write through the invoking principal's namespace, so a mount at
+// the receipts folder holds them; read back and removed through the same
+// namespace, the replacement is known to have landed, and the mount is left
+// with nothing of the batch.
+{
+  const harness = createSqliteVfsTestHarness(new Database(':memory:'));
+  const vfs = new SqliteVFS(harness.sql, harness.ctx);
+  const root = vfs.as(CRED_KERNEL);
+  root.mkdir(`${NM}/.nimbus-receipts`, { recursive: true });
+  root.writeFile(`${PROJ}/package.json`, JSON.stringify({ name: 'app', version: '1.0.0' }));
+  const files = new ProcessFiles(vfs);
+  const mounted = new MemoryVFS({ uid: 0, gid: 0 });
+  files.vfs.mount(`/${NM}/.nimbus-receipts`, mounted);
+  let integrity = 'sha512-x';
+  const crash = { at: null };
+  const env = makeFanoutEnv({
+    root, NM,
+    resultFor: (name) => {
+      const pkg = { name, registryName: name, version: '1.0.0', tarballUrl: `https://registry.invalid/${name}-1.0.0.tgz`, integrity, dependencies: {}, exports: null, main: 'index.js', module: '', bin: {} };
+      return { pkg, cacheWrites: [registryRecord(pkg, Date.now())], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [] };
+    },
+    manifestFor: (p) => ({ name: p.name, version: p.version, integrity: p.integrity }),
+    crashFor: (p) => (p.name === crash.at ? 'after' : null),
+    writeReceipt: (path) => mounted.writeFile(path.slice(`${NM}/.nimbus-receipts`.length), new Uint8Array(0)),
+  });
+  const ctx = { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage };
+  const installer = new NpmInstaller(files, harness.sql, { env, ctx, onProgress: () => {} });
+  const install = (options) => installer.install(PROJ, { pid: 1, cred: CRED_KERNEL, ...options });
+  assert.deepEqual((await install({ packages: ['x@1.0.0'] })).failed, []);
+  integrity = 'sha512-x-republished';
+  crash.at = 'x';
+  assert.deepEqual((await install({ packages: ['x@1.0.0'] })).failed, [], 'the receipt the namespace holds says it landed');
+  assert.equal(installer.npmCache.readLockfile(PROJ).get('x').integrity, 'sha512-x-republished');
+  assert.deepEqual(mounted.readdir('/').map(({ name }) => name), [], 'and nothing of the batch is left in the mount');
 }
 
 console.log('npm-install-shard-crash: ok');
