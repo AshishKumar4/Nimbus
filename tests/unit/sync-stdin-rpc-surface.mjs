@@ -38,7 +38,7 @@ function bound(journal, bucket) {
 tests.cache = async () => {
   const j = new ReplayJournal(() => {}); j.start('a');
   let json = '{"name":"pkg","v":1}';
-  const bucket = { get: async () => ({ text: async () => json, uploaded: new Date(), customMetadata: { expiresAt: String(Date.now() + 3600000) } }) };
+  const bucket = { get: async () => ({ text: async () => json, uploaded: new Date(), customMetadata: { v: '2', expiresAt: String(Date.now() + 3600000) } }) };
   const { rpc, ctx } = bound(j, bucket);
   assert.equal((await rpc.getPackument('pkg')).json, json);
   j.stopped(); j.start('b'); ctx.props.writerId = 'b'; json = '{"name":"pkg","v":2}';
@@ -94,7 +94,7 @@ tests.readOnlyParity = async () => {
         } };
         const bucket = {
           get: async () => mode === 'network' ? null : ({ arrayBuffer: async () => bytes.slice().buffer, text: async () => json,
-            uploaded: new Date(), customMetadata: { expiresAt: String(Date.now() + 3600000) } }),
+            uploaded: new Date(), customMetadata: { v: '2', expiresAt: String(Date.now() + 3600000) } }),
           put: async () => { writes++; },
         };
         globalThis.fetch = async () => new Response(json);
