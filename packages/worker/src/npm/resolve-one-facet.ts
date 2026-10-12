@@ -488,10 +488,15 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   // registry once more, past the cache: cached absence is no proof that
   // nothing is published (a version published since it was cached). Once,
   // and where that fails, the cached answer stands.
-  const revalidated = async (name: string, loaded: Loaded, answers: (data: Packument) => boolean): Promise<Loaded> => {
-    if ('failed' in loaded || loaded.source !== 'r2-cache' || answers(loaded.data)) return loaded;
-    const again = await loadPackument(name, true);
-    return 'failed' in again ? loaded : again;
+  // Its answer, or null where that read fails in any way (a rejected
+  // call included): the cached answer then stands, as it was.
+  const askAgain = async (name: string): Promise<Extract<Loaded, { data: Packument }> | null> => {
+    try {
+      const again = await loadPackument(name, true);
+      return 'failed' in again ? null : again;
+    } catch {
+      return null;
+    }
   };
   const stagedVersion = stagedBindingVersion();
   const choose = (data: Packument) => (stagedVersion !== null && readProperty(data.versions, stagedVersion) !== undefined
@@ -502,8 +507,8 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   // One pick; a cached packument asked again only where it answered nothing (or not the staged version).
   let version = choose(packument.data);
   if (packument.source === 'r2-cache' && (stagedVersion !== null ? version !== stagedVersion : version === null)) {
-    const again = await loadPackument(effName, true);
-    if (!('failed' in again)) {
+    const again = await askAgain(effName);
+    if (again) {
       packument = again;
       version = choose(again.data);
     }
@@ -519,7 +524,10 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
       covered = COMPARE_SEMVER(ownSemver, since) >= 0;
     }
     if (covered) {
-      const target = await revalidated(__swap.to, await loadPackument(__swap.to), (data) => readProperty(data.versions, String(own)) !== undefined);
+      let target: Loaded = await loadPackument(__swap.to);
+      if (!('failed' in target) && target.source === 'r2-cache' && readProperty(target.data.versions, String(own)) === undefined) {
+        target = await askAgain(__swap.to) ?? target;
+      }
       if ('failed' in target) return target.failed;
       if (readProperty(target.data.versions, String(own)) !== undefined) {
         announceSwap(__swap);

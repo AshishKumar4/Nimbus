@@ -26,22 +26,30 @@ const originalCaches = Object.getOwnPropertyDescriptor(globalThis, 'caches');
 let now = START;
 Date.now = () => now;
 
+// R2 as it stores an object: each put a new version (`etag`), and a put
+// `onlyIf` another version writes nothing. `gate`, where set, holds a
+// conditional put until it is opened.
 function fakeBucket() {
   const entries = new Map();
   let reads = 0;
   let writes = 0;
-  return {
+  let version = 0;
+  const bucket = {
     entries,
+    gate: null,
     get reads() { return reads; },
     get writes() { return writes; },
     async get(key) {
       reads++;
       const entry = entries.get(key);
-      return entry ? { text: async () => entry.json, uploaded: entry.uploaded, customMetadata: entry.customMetadata } : null;
+      return entry ? { text: async () => entry.json, uploaded: entry.uploaded, customMetadata: entry.customMetadata, etag: entry.etag } : null;
     },
     async put(key, body, options) {
+      if (options?.onlyIf && bucket.gate) await bucket.gate.held();
+      if (options?.onlyIf && entries.get(key)?.etag !== options.onlyIf.etagMatches) return null;
       writes++;
-      entries.set(key, { json: String(body), uploaded: new Date(now), customMetadata: options?.customMetadata });
+      entries.set(key, { json: String(body), uploaded: new Date(now), customMetadata: options?.customMetadata, etag: `r2-${++version}` });
+      return {};
     },
     async delete() { throw new Error('no cache eviction is part of freshness'); },
   };
@@ -212,6 +220,45 @@ if (!expiredControl) {
     assert.match(missing.error?.reason ?? '', /no published version/);
     assert.equal(registry.requests.length, asked + 1, 'asked once');
     assert.equal(registry.requests.at(-1).ifNoneMatch, '"fixture-1"');
+
+    // A 304 renews an entry only where it still holds what was validated.
+    // A reads revision 1 expired and is told it is unchanged; before A's
+    // renewal lands, revision 2 is published and B caches it: A's renewal
+    // writes nothing over it, in R2 or in the colo.
+    for (const colo of [false, true]) {
+      const race = async () => {
+        now = START;
+        const raced = fakeBucket();
+        const published = fakeRegistry();
+        const readRaced = () => new R2CacheClient(null, raced).readThroughPackument(NAME, { registry: REGISTRY, retries: 0 });
+        await readRaced();
+        if (colo) globalThis.caches.default.entries.clear();
+        now = START + PACKUMENT_TTL_MS + 1_000;
+        let entered;
+        let open;
+        const held = new Promise((resolve) => { open = resolve; });
+        const reached = new Promise((resolve) => { entered = resolve; });
+        raced.gate = { held: () => { entered(); return held; } };
+        const a = readRaced();
+        await reached;
+        assert.equal(published.requests.at(-1).ifNoneMatch, '"fixture-1"');
+        published.publish('2.0.0');
+        raced.gate = null;
+        const b = await readRaced();
+        assert.equal(b.source, 'network');
+        open();
+        assert.equal((await a).source, 'r2-cache');
+        const stored = raced.entries.get(packumentKey(NAME, REGISTRY));
+        assert.ok(JSON.parse(stored.json).versions['2.0.0'], `${colo ? 'colo' : 'R2'}: the newer body stays in R2`);
+        assert.equal(stored.customMetadata.etag, '"fixture-2"');
+        if (colo) {
+          const copy = globalThis.caches.default.entries.get(packumentL2Url(NAME, REGISTRY));
+          assert.equal(copy.headers['x-nimbus-etag'], '"fixture-2"', 'and in the colo');
+        }
+      };
+      if (colo) await withColoCache(race);
+      else await race();
+    }
   } finally {
     globalThis.fetch = originalFetch;
     Date.now = originalNow;
