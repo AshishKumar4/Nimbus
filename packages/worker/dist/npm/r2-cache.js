@@ -567,13 +567,13 @@ export class R2CacheClient {
         // two callers reading the same key back-to-back during the fill
         // window do not both miss L2 and double-fetch L3; the cost (~1-3 ms
         // in workerd local, sub-ms at edge) is paid only on cold reads.
+        const etag = obj.customMetadata?.etag;
         if (!expired && !this.readOnly) {
-            await this.fillPackumentL2(l2Key, json, expiresAt > 0 ? expiresAt : now + PACKUMENT_TTL_MS);
+            await this.fillPackumentL2(l2Key, json, expiresAt > 0 ? expiresAt : now + PACKUMENT_TTL_MS, etag);
         }
         if (!expired && !validators)
             return { json, ageMs, expired };
         const hit = { json, ageMs, expired };
-        const etag = obj.customMetadata?.etag;
         if (etag)
             hit.etag = etag;
         if (obj.etag)
@@ -626,32 +626,27 @@ export class R2CacheClient {
     network = ISOLATE_NETWORK) {
         const registry = options?.registry ?? NPM_REGISTRY_ORIGIN;
         const shared = network.egress === undefined;
-        const cached = shared ? await this.getPackument(name, registry) : null;
-        if (cached && !cached.expired && cached.json) {
+        const revalidate = options?.revalidate === true;
+        const cached = shared ? await this.getPackument(name, registry, revalidate) : null;
+        if (cached && !cached.expired && cached.json && !revalidate) {
             return { json: cached.json, source: 'r2-cache' };
         }
         return this.fetchPackument(name, registry, cached, options, network);
     }
     /**
-     * A packument read past the cache, however fresh its copy: one a resolve
-     * could not answer from what the cache holds (cached absence is no proof
-     * that nothing is published). Past the registry's CDN as well, and
-     * conditional on the cached copy's ETag.
+     * The registry's answer for a packument the cache did not answer
+     * (`cached`: its copy, expired, or one a resolve could not answer, whose
+     * ETag the request is conditional on; `revalidate`: past the registry's
+     * CDN as well), and the cache filled with it.
      */
-    async revalidatePackument(name, options, network = ISOLATE_NETWORK) {
-        const registry = options?.registry ?? NPM_REGISTRY_ORIGIN;
-        const cached = network.egress === undefined ? await this.getPackument(name, registry, true) : null;
-        return this.fetchPackument(name, registry, cached, options, network, true);
-    }
-    /** The registry's answer for a packument the cache did not answer (`cached`: its copy, expired or not, whose ETag the request is conditional on), and the cache filled with it. */
-    async fetchPackument(name, registry, cached, options, network, pastCdn = false) {
+    async fetchPackument(name, registry, cached, options, network) {
         const shared = network.egress === undefined;
         const url = packumentUrl(name, registry);
         const timeoutMs = options?.timeoutMs ?? 15_000;
         const headers = { Accept: 'application/vnd.npm.install-v1+json' };
         if (cached?.etag)
             headers['If-None-Match'] = cached.etag;
-        if (pastCdn)
+        if (options?.revalidate)
             headers['Cache-Control'] = 'no-cache';
         let resp;
         try {

@@ -371,13 +371,11 @@ export declare class R2CacheClient {
      */
     network?: WorkspaceNetwork): Promise<PackumentReadThrough>;
     /**
-     * A packument read past the cache, however fresh its copy: one a resolve
-     * could not answer from what the cache holds (cached absence is no proof
-     * that nothing is published). Past the registry's CDN as well, and
-     * conditional on the cached copy's ETag.
+     * The registry's answer for a packument the cache did not answer
+     * (`cached`: its copy, expired, or one a resolve could not answer, whose
+     * ETag the request is conditional on; `revalidate`: past the registry's
+     * CDN as well), and the cache filled with it.
      */
-    revalidatePackument(name: string, options?: PackumentReadOptions, network?: WorkspaceNetwork): Promise<PackumentReadThrough>;
-    /** The registry's answer for a packument the cache did not answer (`cached`: its copy, expired or not, whose ETag the request is conditional on), and the cache filled with it. */
     private fetchPackument;
     /**
      * Write a packument JSON to R2 with a TTL stamp (`expiresAt`, by default
