@@ -54,7 +54,7 @@ import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network
 import { HmrBridge } from './real-vite-hmr.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
-import type { VfsEvent } from '@nimbus-sh/core/vfs/events.js';
+import type { CompositeVFS } from '@nimbus-sh/core/vfs/composite.js';
 import type { ParsedViteConfig } from '@nimbus-sh/core/runtime/vite-config-parser.js';
 /**
  * Resolve opt-in mode.
@@ -72,7 +72,7 @@ export declare class CirrusReal {
     private root;
     private basePath;
     private vfs;
-    private watchChanges;
+    private namespace;
     private userConfigBundle;
     private extraSyntheticFiles;
     private facetStub;
@@ -114,8 +114,8 @@ export declare class CirrusReal {
         vfs: SqliteVFS;
         /** Who the server reads its project as: the credential of the process it runs under. */
         cred: VfsCred;
-        /** Watches the session's changes (CompositeVFS.watchChanges), for the facet's chokidar. */
-        watchChanges?: ((listener: (events: readonly VfsEvent[]) => void) => () => void) | null;
+        /** The session's namespace, whose changes the facet's chokidar hears (CompositeVFS.watchChanges). */
+        namespace: Pick<CompositeVFS, 'watchChanges'>;
         userConfigBundle?: string | null;
         extraSyntheticFiles?: Record<string, string>;
         /** The workspace's network: the dev server (the user's config included) goes out through its egress. */

@@ -533,7 +533,7 @@ export class CirrusReal {
     root;
     basePath;
     vfs;
-    watchChanges;
+    namespace;
     userConfigBundle;
     extraSyntheticFiles;
     facetStub = null;
@@ -574,7 +574,7 @@ export class CirrusReal {
         this.root = opts.root;
         this.basePath = opts.basePath;
         this.vfs = opts.vfs.as(opts.cred);
-        this.watchChanges = opts.watchChanges || null;
+        this.namespace = opts.namespace;
         this.userConfigBundle = opts.userConfigBundle || null;
         this.extraSyntheticFiles = opts.extraSyntheticFiles || {};
     }
@@ -845,14 +845,12 @@ export class CirrusReal {
         }
         // Wire the session's changes into the HMR bridge so the facet's
         // chokidar shim actually sees file changes.
-        if (this.watchChanges) {
-            this._vfsUnsub = this.watchChanges((events) => {
-                // chokidar uses 'addDir'/'unlinkDir' for directory events; the
-                // namespace tells the same strings, so they pass through as-is.
-                for (const ev of events)
-                    this.hmr.pushVfsEvent(ev.type, ev.path, ev.oldPath);
-            });
-        }
+        this._vfsUnsub = this.namespace.watchChanges('/', (events) => {
+            // chokidar uses 'addDir'/'unlinkDir' for directory events; the
+            // namespace tells the same strings, so they pass through as-is.
+            for (const ev of events)
+                this.hmr.pushVfsEvent(ev.type, ev.path, ev.oldPath);
+        });
     }
     stop(ctx) {
         // [D'.1] Tear down the DO Facet via ctx.facets.delete so its own
