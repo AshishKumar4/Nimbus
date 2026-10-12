@@ -1,4 +1,4 @@
-import { andThen, isPromise, type Awaitable } from './vfs.js';
+import { andThen, type Awaitable } from './vfs.js';
 
 type Link = () => Awaitable<string>;
 type Lookup = (path: string, final: boolean, components: readonly string[], index: number) => Awaitable<Link | null>;
@@ -10,14 +10,6 @@ export function walkVfsPath(input: string, lookup: Lookup, loop: () => never): A
 export function walkVfsPath(input: string, lookup: Lookup, loop: () => never): Awaitable<string> {
   const walk = (components: readonly string[], hops: number): Awaitable<string> => {
     const resolved: string[] = [];
-    const expand = (link: Link, at: number): Awaitable<string> => {
-      if (hops >= 40) return loop();
-      return andThen(link(), (target) => walk([
-        ...(target.startsWith('/') ? [] : resolved.slice(0, -1)),
-        ...target.split('/'),
-        ...components.slice(at + 1),
-      ], hops + 1));
-    };
     const step = (index: number): Awaitable<string> => {
       for (; index < components.length; index++) {
         const component = components[index];
@@ -26,8 +18,18 @@ export function walkVfsPath(input: string, lookup: Lookup, loop: () => never): A
         resolved.push(component);
         const at = index;
         const link = lookup(`/${resolved.join('/')}`, at === components.length - 1, components, at);
-        if (isPromise(link)) return link.then((follow) => follow === null ? step(at + 1) : expand(follow, at));
-        if (link !== null) return expand(link, at);
+        if (link !== null) {
+          const expand = (read: Link): Awaitable<string> => {
+            if (hops >= 40) return loop();
+            return andThen(read(), (target) => walk([
+              ...(target.startsWith('/') ? [] : resolved.slice(0, -1)),
+              ...target.split('/'),
+              ...components.slice(at + 1),
+            ], hops + 1));
+          };
+          return typeof link === 'function' ? expand(link)
+            : link.then((follow) => follow === null ? step(at + 1) : expand(follow));
+        }
       }
       return `/${resolved.join('/')}`;
     };
