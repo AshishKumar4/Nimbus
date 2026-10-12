@@ -20,11 +20,6 @@ import { z } from 'zod/v4';
 
 const NM = '/node_modules/';
 
-/** `name` under `parent`; `''` is the project itself. */
-export function nestedPlacement(parent: string, name: string): string {
-  return parent ? `${parent}${NM}${name}` : name;
-}
-
 /** The containing placement, `''` at root. */
 export function parentPlacement(placement: string): string {
   const i = placement.lastIndexOf(NM);
@@ -40,18 +35,6 @@ export function placementName(placement: string): string {
 /** How deep a placement is: 1 at root. */
 export function depthOf(placement: string): number {
   return placement === '' ? 0 : placement.split(NM).length;
-}
-
-/** Placements Node's walk visits for `name` from inside `from`, nearest first, root last. */
-export function visiblePlacements(from: string, name: string): string[] {
-  const out: string[] = [];
-  let dir = from;
-  while (dir) {
-    out.push(`${dir}${NM}${name}`);
-    dir = parentPlacement(dir);
-  }
-  out.push(name);
-  return out;
 }
 
 /**

@@ -95,7 +95,7 @@ export interface NpmInstallPort {
     /** Registry origin from the command's env (`NPM_REGISTRY`), else the default. */
     registry: string;
     production?: boolean;
-    /** `npm ci`: validate package-lock.json, remove node_modules, place exactly what the lock records. */
+    /** `npm ci`: build npm's tree over package-lock.json, fail unless it is the lock's, then remove node_modules and install it. */
     fromLockfile?: boolean;
     npmLog?: NpmLogEmitter | null;
     onProgress?: (line: string) => void;
@@ -1043,10 +1043,10 @@ export function createNpmCommand(
 }
 
 /**
- * `npm ci`: a clean install of exactly the tree package-lock.json (or
- * npm-shrinkwrap.json) records. The host validates the lock and only then
- * removes node_modules: a lock that disagrees with package.json fails the
- * install with the project untouched, instead of being re-resolved.
+ * `npm ci`: a clean install of the tree package-lock.json (or
+ * npm-shrinkwrap.json) records. The host builds npm's tree over the lock
+ * and only then removes node_modules: a lock that is not that tree fails
+ * the install with the project untouched.
  */
 async function npmCi(ctx: CommandContext, deps?: NpmCommandDeps): Promise<number> {
 	const invocation = parseNpmInstallInvocation(ctx.args.slice(1));

@@ -43,7 +43,7 @@ import {
   type ResolvedPackage, type HoistPlan, type PackagePlacement,
 } from './resolver.js';
 import {
-  bundledNames, canonicalTreePath, holdTree, lockRootMatches, namedPackages, packageJsonDocument, projectRoots, readPackageJson, saveNamed,
+  bundledNames, canonicalTreePath, holdTree, lockRootMatches, namedPackages, packageJsonDocument, parentPlacement, placementName, projectRoots, readPackageJson, saveNamed,
   type NamedPackage, type TreeRoot,
 } from '@nimbus-sh/core/_shared/npm-tree.js';
 import { planTree, type InstalledPackage, type OmitTypes, type PlanOptions, type TreePlan, type TreeResolution } from '@nimbus-sh/core/_shared/npm-arborist/plan.js';
@@ -1603,17 +1603,18 @@ export class NpmInstaller {
     const swapPlacements: { placement: string; folderName: string; spec: string }[] = [];
     // What a package (not the project) bundles comes in its archive: a name
     // its parent, or an ancestor between, bundles (inDepBundle).
-    const inDepBundle = (key: string): boolean => {
-      for (let child = key, cut = child.lastIndexOf('/node_modules/'); cut > 0; child = child.slice(0, cut), cut = child.lastIndexOf('/node_modules/')) {
-        const parent = packageJsonDocument(lock.packages[child.slice(0, cut)] ?? {})?.manifest ?? {};
-        if (bundledNames(parent).includes(child.slice(cut + '/node_modules/'.length))) return true;
+    const inDepBundle = (placement: string): boolean => {
+      for (let child = placement; child.includes('/node_modules/'); child = parentPlacement(child)) {
+        const parent = packageJsonDocument(lock.packages[`node_modules/${parentPlacement(child)}`] ?? {})?.manifest ?? {};
+        if (bundledNames(parent).includes(placementName(child))) return true;
       }
       return false;
     };
     for (const [key, entry] of Object.entries(lock.packages)) {
-      if (key === '' || inDepBundle(key)) continue;
+      if (key === '') continue;
       const placement = key.slice('node_modules/'.length);
-      const folderName = placement.split('/node_modules/').pop() ?? placement;
+      if (inDepBundle(placement)) continue;
+      const folderName = placementName(placement);
       const name = typeof entry.name === 'string' ? entry.name : folderName;
       const version = typeof entry.version === 'string' ? entry.version : '';
       const platform = {
@@ -1677,7 +1678,7 @@ export class NpmInstaller {
     // placed that path.
     for (const { placement, folderName, spec } of swapPlacements) {
       const swapped = await this.resolveTreeViaFanout([{ name: folderName, range: spec, type: 'prod' }], [], log, { registry });
-      const parent = placement.includes('/node_modules/') ? placement.slice(0, placement.length - folderName.length - '/node_modules/'.length) : null;
+      const parent = placement.includes('/node_modules/') ? parentPlacement(placement) : null;
       const rebase = (path: string) => (parent === null ? path : `${parent}/node_modules/${path}`);
       const failed = new Map(swapped.plan.failures.map((failure) => [failure.id, failure]));
       for (const [path, node] of swapped.plan.nodes) {
