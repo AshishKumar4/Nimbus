@@ -696,20 +696,23 @@ function parseMergeArgs(args: readonly string[]) {
 
 function parseConfigArgs(args: readonly string[]) {
   let get = false;
+  let unset = false;
   let dashdash = false;
   const operands: string[] = [];
   for (const arg of args) {
     // A set's value is opaque, even if it spells a scope or another action.
-    if (operands.length === 1 && !get) { operands.push(arg); continue; }
+    if (operands.length === 1 && !get && !unset) { operands.push(arg); continue; }
     if (dashdash || arg === '-' || !arg.startsWith('-')) { operands.push(arg); continue; }
     if (arg === '--') { dashdash = true; continue; }
     if (arg === '--get') get = true;
+    else if (arg === '--unset') unset = true;
     else unsupportedOption('config', arg);
   }
   if (operands.length === 0) throw new GitGlobalsError('usage: git config <key> [value]\n', 1);
   if (!operands[0].includes('.')) unsupportedOption('config', operands[0]);
-  if (operands.length > (get ? 1 : 2)) unsupportedOption('config', 'value patterns or multiple values');
-  return { key: operands[0], value: get ? undefined : operands[1] };
+  if (get && unset) throw new GitGlobalsError('error: only one action at a time\n', 129);
+  if (operands.length > (get || unset ? 1 : 2)) unsupportedOption('config', 'value patterns or multiple values');
+  return { key: operands[0], value: get || unset ? undefined : operands[1], unset };
 }
 
 type ParsedCommand =
@@ -2492,7 +2495,10 @@ const STATUS_UNSUPPORTED = new Set(['b', 'v', '--branch', '--long', '--verbose',
  * working tree clean" when there is nothing to show. Like git, it writes the
  * index back when it refreshed stat data or the index has racy entries.
  */
-function parseStatusArgs(args: readonly string[]) {
+function parseStatusArgs(args: readonly string[]): {
+  format: 'nimbus' | 'short' | 'porcelain'; z: boolean;
+  untracked: 'no' | 'normal' | 'all' | null; renames: boolean | null; pathArgs: string[];
+} {
   let format: 'nimbus' | 'short' | 'porcelain' = 'nimbus';
   let z = false;
   let untracked: 'no' | 'normal' | 'all' | null = null;
@@ -3038,6 +3044,7 @@ export async function runGitCommand(
       return true;
     };
     const fs = sessionGitFs(repoVfs, null, promisor);
+    const fileGit = git;
     git = withConfigOverrides(withGlobalConfig(git, fs, ctx.env), globals.config);
     commandFs = fs;
     // The engine, as this command's principal: a repository on it takes its objects in waves (WorktreeRepo.objectWriter).
@@ -3605,8 +3612,13 @@ export async function runGitCommand(
         return await tagCommand(ctx, git, fs, repoVfs, command.parsed);
 
       case 'config': {
-        const { key, value } = command.parsed;
-        if (value !== undefined) {
+        const { key, value, unset } = command.parsed;
+        if (unset) {
+          const values = await fileGit.getConfigAll({ fs, dir, path: key });
+          if (values.length === 0) return 5;
+          if (values.length > 1) { await ctx.stderr.write(`warning: ${key} has multiple values\n`); return 5; }
+          await fileGit.setConfig({ fs, dir, path: key, value: undefined });
+        } else if (value !== undefined) {
           // Set: git says nothing.
           await git.setConfig({ fs, dir, path: key, value });
         } else {
@@ -3618,7 +3630,7 @@ export async function runGitCommand(
         }
         return 0;
       }
-
+      default: throw new Error('internal error: git command not dispatched');
     }
   } catch (e: any) {
     if (e instanceof UnsupportedGitOperation) {

@@ -73,7 +73,7 @@ interface ConfigReader {
 
 /** The global files in git's order, read by cf-git's canonical config parser. */
 export function withGlobalConfig<G extends ConfigReader>(git: G, fs: {
-  promises: { readFile(path: string, options?: unknown): Promise<Uint8Array | string> };
+  promises: { readFile(path: string, options?: 'utf8' | { encoding: 'utf8' }): Promise<Uint8Array | string> };
 }, env: Record<string, string>): G {
   const home = env.HOME;
   const xdg = env.XDG_CONFIG_HOME || (home ? `${home}/.config` : '');
@@ -81,7 +81,7 @@ export function withGlobalConfig<G extends ConfigReader>(git: G, fs: {
     : [...(xdg ? [`${xdg}/git/config`] : []), ...(home ? [`${home}/.gitconfig`] : [])];
   if (files.length === 0) return git;
   const contents = new Map<string, ReturnType<typeof fs.promises.readFile>>();
-  const read = (file: string, options?: unknown) => {
+  const read = (file: string, options?: 'utf8' | { encoding: 'utf8' }) => {
     let content = contents.get(file);
     if (content === undefined) { content = fs.promises.readFile(file, options); contents.set(file, content); }
     return content;
@@ -98,7 +98,7 @@ export function withGlobalConfig<G extends ConfigReader>(git: G, fs: {
           const request = {
             path,
             gitdir,
-            fs: { promises: { ...fs.promises, readFile: (name: string, options?: unknown) => read(name === `${gitdir}/config` ? file : name, options) } },
+            fs: { promises: { ...fs.promises, readFile: (name: string, options?: 'utf8' | { encoding: 'utf8' }) => read(name === `${gitdir}/config` ? file : name, options) } },
           };
           all.push(...await git.getConfigAll(request));
         }
@@ -111,13 +111,13 @@ export function withGlobalConfig<G extends ConfigReader>(git: G, fs: {
   const reads: ConfigReader = {
     async getConfig(args) {
       const local = await git.getConfig(args);
-      if (local !== undefined || ('gitdir' in args && typeof args.gitdir === 'string' && args.gitdir.endsWith('.nimbus'))) return local;
+      if (local !== undefined || ('fs' in args && args.fs !== fs)) return local;
       const all = await globals(args.path);
       return all[all.length - 1];
     },
     async getConfigAll(args) {
       const local = await git.getConfigAll(args);
-      if ('gitdir' in args && typeof args.gitdir === 'string' && args.gitdir.endsWith('.nimbus')) return local;
+      if ('fs' in args && args.fs !== fs) return local;
       return [...await globals(args.path), ...local];
     },
   };
