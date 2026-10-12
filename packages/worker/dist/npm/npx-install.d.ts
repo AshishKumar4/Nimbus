@@ -90,5 +90,7 @@ vfs: Pick<ProjectFs, 'exists' | 'isDirectory' | 'readFileString' | 'mkdir' | 'wr
 /** The caller's credential: what the npx cache install is written as. */
 cred: VfsCred, cwd: string, rawArgs: string[], log: (msg: string) => void, pid: number, 
 /** The command's `NPM_REGISTRY`; the npx cache install reads from it too. */
-registry?: string): Promise<NpxResolveResult>;
+registry?: string, 
+/** The command's: an install it stops changes nothing, and one waiting for the cache never starts. */
+signal?: AbortSignal): Promise<NpxResolveResult>;
 //# sourceMappingURL=npx-install.d.ts.map

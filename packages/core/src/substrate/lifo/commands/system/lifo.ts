@@ -15,7 +15,7 @@ import type { Command, CommandContext, CommandOutputStream } from '../types.js';
 import type { CommandRegistry } from '../registry.js';
 import { ProcessView } from '../../../../runtime/process-files.js';
 import type { Kernel } from '../../kernel/index.js';
-import type { ShellExecuteFn } from './npm.js';
+import type { NpmCommandDeps, ShellExecuteFn } from './npm.js';
 import { npmInstallGlobal, getBinEntries, packagesIn, registerBinCommand } from './npm.js';
 import { RegistrySearchResponseSchema, renderSearchTable } from './registry-schemas.js';
 import { resolve, join } from '../../utils/path.js';
@@ -53,6 +53,7 @@ async function lifoInstall(
   ctx: CommandContext,
   registry: CommandRegistry,
   kernel?: Kernel,
+  deps?: NpmCommandDeps,
 ): Promise<number> {
   const name = ctx.args[1];
   if (!name) {
@@ -66,7 +67,7 @@ async function lifoInstall(
   await ctx.stdout.write(`Installing ${npmName} globally...\n`);
 
   // Install directly (no shell.execute round-trip)
-  const exitCode = await npmInstallGlobal(npmName, ctx, registry, kernel);
+  const exitCode = await npmInstallGlobal(npmName, ctx, registry, kernel, deps);
   if (exitCode !== 0) return exitCode;
 
   // After npm install, check for lifo manifest and re-register with lifo runtime
@@ -373,6 +374,8 @@ export function createLifoPkgCommand(
   registry: CommandRegistry,
   _shellExecute?: ShellExecuteFn,
   kernel?: Kernel,
+  /** Its install port: the host's, else the shell's own. */
+  deps?: NpmCommandDeps,
 ): Command {
   return async (ctx) => {
     const subcommand = ctx.args[0];
@@ -386,7 +389,7 @@ export function createLifoPkgCommand(
       case 'install':
       case 'i':
       case 'add':
-        return (await lifoInstall(ctx, registry, kernel));
+        return (await lifoInstall(ctx, registry, kernel, deps));
       case 'remove':
       case 'rm':
       case 'uninstall':

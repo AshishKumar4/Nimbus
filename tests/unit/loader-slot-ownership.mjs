@@ -149,6 +149,43 @@ const deferred = () => {
   console.log('  a timed-out dispatch holds the slot tail until its execute settles');
 }
 
+// ── a map that times out returns once the execution it started settles ──
+//
+// A timed-out item answers the map's caller with its failure, but its
+// execute is still live; the map does not return (and its caller does not
+// release what the execution writes into) until it has settled.
+{
+  const barrier = deferred();
+  const record = { started: 0, finished: 0 };
+  const loader = {
+    get() {
+      return {
+        getEntrypoint: () => ({
+          async execute(value) {
+            record.started++;
+            await barrier.gate;
+            record.finished++;
+            return value;
+          },
+        }),
+      };
+    },
+  };
+  const ctx = { id: { toString: () => 'slot-owner-map-timeout' } };
+  const pool = new IsolatePool({ LOADER: loader }, ctx, { network: ISOLATE_NETWORK, omitSupervisor: true, concurrency: 1 });
+  let returned = false;
+  const mapped = pool.mapSettled(facetTaskSource("(value) => value"), ['only'], { timeoutMs: 20 }).finally(() => { returned = true; });
+  await new Promise((r) => setTimeout(r, 80));
+  assert.equal(returned, false, 'the map has not returned while the timed-out execute is live');
+  barrier.release();
+  const [outcome] = await mapped;
+  assert.equal(outcome.ok, false, 'the item failed on its timeout');
+  assert.equal(outcome.error.constructor.name, 'TimeoutError');
+  assert.equal(record.finished, 1, 'and the map returned only after the execute settled');
+  pool.dispose();
+  console.log('  a map joins its timed-out executions before it returns');
+}
+
 // ── dispose() rejects a queued dispatch, never interrupts the active ────
 {
   const barrier = deferred();

@@ -173,7 +173,7 @@ function recordingFetch(responder) {
   globalThis.fetch = async () => { throw new Error('the resolve facet must not perform network I/O'); };
 
   const result = await resolveOnePackumentInFacet(
-    { name: 'react', range: '19.0.0', cachedEntries: [], isOptional: false, fetchTimeoutMs: 15_000, retries: 3, registry: 'http://npm-registry.invalid' },
+    { name: 'react', range: '19.0.0', cachedEntries: [], fetchTimeoutMs: 15_000, retries: 3, registry: 'http://npm-registry.invalid' },
     { SUPERVISOR: supervisor },
   );
 
