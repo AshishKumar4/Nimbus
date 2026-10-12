@@ -18,7 +18,7 @@
  *      composition.ts) and forwards it as `env.SUPERVISOR` to every facet,
  *      same pattern as git/network-facet.ts. Callers can add more bindings
  *      via `extraBindings`.
- *   4. **Fail-loud defaults**: timeout 60s, retries 0, onError 'throw'.
+ *   4. **Fail-loud defaults**: timeout 60s, retries 0, a map rejects on its first failure, once all it started have settled.
  *      Caller opts in to leniency.
  *
  * The vendored directory contains only the upstream serialization, error,
@@ -440,7 +440,9 @@ export class IsolatePool {
      * the attempt index lets a fetch invoke mint a fresh clone for retries,
      * since a Request's body is consumed once.
      */
-    async #dispatchSlot(fnSource, fnHash, slotIndex, invoke, resilience, perCallWasm, signal) {
+    async #dispatchSlot(fnSource, fnHash, slotIndex, invoke, resilience, perCallWasm, signal, 
+    /** Collects this dispatch's tail: it settles once every execution the dispatch started has. */
+    tails) {
         // A warm slot executes one dispatch at a time: queue behind the
         // previous owner, then record this dispatch as the new tail. The
         // tail outlives the caller's outcome: a timeout rejects the
@@ -449,7 +451,9 @@ export class IsolatePool {
         // settle — never the caller's settle alone.
         const previous = this.slotTails.get(slotIndex) ?? Promise.resolve();
         let release;
-        this.slotTails.set(slotIndex, new Promise((resolve) => { release = resolve; }));
+        const tail = new Promise((resolve) => { release = resolve; });
+        this.slotTails.set(slotIndex, tail);
+        tails?.push(tail);
         await previous;
         if (this.disposed) {
             release();
@@ -725,60 +729,66 @@ export class IsolatePool {
     }
     /**
      * Run `fn` on every item in `items`, at most `concurrency` at a time,
-     * pinned to stable slots so warm isolates are reused.
-     *
-     * Results are returned in input order. Failure handling per `onError`.
+     * pinned to stable slots so warm isolates are reused. Results are in input
+     * order. After an item fails no item starts, and the map rejects with the
+     * first failure once every execution it started has settled, a timed-out
+     * one included: nothing it dispatched is still running when it returns.
      */
     async map(fn, items, opts) {
         if (items.length === 0)
             return [];
         const { fnSource, fnHash } = this.#prepare(fn);
-        return this.#mapInternal(fnSource, fnHash, items, opts);
+        return valuesOf(await this.#mapInternal(fnSource, fnHash, items, opts, true));
     }
-    /**
-     * The peer-DO transport of `map`: the coordinator forwards the task's
-     * already compiled expression. Its exact bytes key the same warm slots.
-     */
-    async mapSource(fnSource, items, opts) {
+    /** `map`, where every item runs whatever the others do: each item's outcome. */
+    async mapSettled(fn, items, opts) {
         if (items.length === 0)
             return [];
-        const fnHash = hashSource(fnSource);
-        return this.#mapInternal(fnSource, fnHash, items, opts);
+        const { fnSource, fnHash } = this.#prepare(fn);
+        return this.#mapInternal(fnSource, fnHash, items, opts, false);
     }
-    async #mapInternal(fnSource, fnHash, items, opts) {
+    /**
+     * The peer-DO transport of `map` (`stopOnFailure`) and `mapSettled`: the
+     * coordinator forwards the task's already compiled expression, whose exact
+     * bytes key the same warm slots. Each item's outcome.
+     */
+    async mapSource(fnSource, items, stopOnFailure, opts) {
+        if (items.length === 0)
+            return [];
+        return this.#mapInternal(fnSource, hashSource(fnSource), items, opts, stopOnFailure);
+    }
+    async #mapInternal(fnSource, fnHash, items, opts, stopOnFailure) {
         const resilience = this.#resolve(opts);
         const concurrency = Math.max(1, Math.min(opts?.concurrency ?? this.concurrency, items.length));
-        const onError = opts?.onError ?? 'throw';
         const settled = new Array(items.length);
+        const tails = [];
         let cursor = 0;
+        let failed = false;
         const runSlot = async (slotIndex) => {
-            while (true) {
+            while (!(stopOnFailure && failed)) {
                 const idx = cursor++;
                 if (idx >= items.length)
                     return;
                 try {
-                    const value = (await this.#dispatchSlot(fnSource, fnHash, slotIndex, (entrypoint) => this.#execute(entrypoint, items[idx]), resilience, opts?.wasmModules));
+                    const value = (await this.#dispatchSlot(fnSource, fnHash, slotIndex, (entrypoint) => this.#execute(entrypoint, items[idx]), resilience, opts?.wasmModules, undefined, tails));
                     settled[idx] = { ok: true, value };
                 }
                 catch (err) {
-                    const error = err instanceof Error ? err : new Error(String(err));
-                    if (onError === 'throw')
-                        throw error;
-                    settled[idx] = { ok: false, error };
+                    settled[idx] = { ok: false, error: err instanceof Error ? err : new Error(String(err)) };
+                    failed = true;
                 }
             }
         };
         await Promise.all(Array.from({ length: concurrency }, (_, slotIndex) => runSlot(slotIndex)));
-        if (onError === 'null') {
-            return settled.map((s) => (s.ok ? s.value : null));
+        // An item that timed out answered its caller, but its execution may
+        // still be live on the Worker (#dispatchSlot's tail): the map returns
+        // once every execution it started has settled, so none outlives it,
+        // and waits for nothing else that shares its slots.
+        await Promise.all(tails);
+        for (let idx = 0; idx < items.length; idx++) {
+            settled[idx] ??= { ok: false, error: new Error('not started: an earlier item failed') };
         }
-        if (onError === 'skip') {
-            return settled
-                .filter((s) => s.ok)
-                .map((s) => s.value);
-        }
-        // onError === 'throw' — all slots succeeded.
-        return settled.map((s) => s.value);
+        return settled;
     }
     /**
      * Release any RPC stubs held by the pool. Call this once the caller
@@ -811,4 +821,11 @@ export class IsolatePool {
     #execute(entrypoint, arg) {
         return this.callBindings === undefined ? entrypoint.execute(arg) : entrypoint.execute(arg, this.callBindings);
     }
+}
+/** Every value of `settled`, or (once all have settled) the first failure. */
+export function valuesOf(settled) {
+    const failure = settled.find((outcome) => !outcome.ok);
+    if (failure && !failure.ok)
+        throw failure.error;
+    return settled.flatMap((outcome) => (outcome.ok ? [outcome.value] : []));
 }
