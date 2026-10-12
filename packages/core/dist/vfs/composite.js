@@ -752,9 +752,12 @@ export class CompositeVFS {
      * alone, its later changes behind it. The returned function stops it.
      *
      * A watch is of `path` wherever it leads: the path renamed away, or a
-     * directory above it, is its unlink. One that follows its target
-     * (`follow`, as Node's fs.watch does, an inode's watch) is told that move
-     * instead, a rename, and is then of the path its target has.
+     * directory above it, is its unlink; a directory above it took it along
+     * only if it was there, as the changes told after say (a change this
+     * namespace tells may have made it: no proof), else as it is now. One
+     * that follows its target (`follow`, as Node's fs.watch does, an inode's
+     * watch) is told that move instead, a rename, and is then of the path its
+     * target has.
      *
      * A backend that tells its own changes (VFS.watchChanges: SQLite) is
      * watched per mount, as this view's principal sees it, so its every
@@ -766,9 +769,9 @@ export class CompositeVFS {
      * it removed), a rename rename, anything else change. Whether a write of a
      * whole file or a range made its file, and what kind of entry a backend's
      * rm -r removed, is not looked up: those are change and unlink. mkdir -p
-     * on a mount that resolves its own paths is one call to its backend: it
-     * looks whether the directory is there first only while a watch is
-     * registered, and is told only then, and only for a directory it made.
+     * on a mount that resolves its own paths is one call to its backend: the
+     * directories it answers it made are told (VFS.mkdir); one that does not
+     * say has nothing told.
      */
     watchChanges(path, listener, options) {
         const changes = this.table.changes ??= { watches: new Set(), ready: [], draining: false };
@@ -1032,32 +1035,32 @@ export class CompositeVFS {
             }
         }
         // Where the watched path a directory above it took to `moved` (event i) is after what this watch has been
-        // published since, and whether it was there to take, as that says: moved on, changed or removed there, or
-        // anything at or from under it, it was; made or replaced there or above it, it was not; null: not said.
+        // published since, and whether it was there to take, as that says: moved on, changed (as its backend tells it:
+        // the namespace's own change may have made it) or removed there, or anything at or from under it, it was;
+        // anything else there or made, replaced or removed above it, it was not; null: not said.
         const carriedOn = (i, moved) => {
             let at = moved;
             let was = null;
-            const rest = [events.slice(i + 1), ...watch.queue.map((later) => later.events)];
-            for (const list of rest) {
-                for (const later of list) {
-                    const from = later.oldPath;
+            for (const later of [{ events: events.slice(i + 1), judged }, ...watch.queue]) {
+                for (const event of later.events) {
+                    const from = event.oldPath;
                     if (from !== undefined && inWatchedTree(from, at)) {
                         if (from === at)
                             was ??= true;
-                        at = later.path + at.slice(from.length);
+                        at = event.path + at.slice(from.length);
                     }
-                    else if (later.path === at) {
-                        const gone = later.type === 'unlink' || later.type === 'unlinkDir';
-                        was ??= gone || later.type === 'change';
+                    else if (event.path === at) {
+                        const gone = event.type === 'unlink' || event.type === 'unlinkDir';
+                        was ??= gone || (event.type === 'change' && later.judged);
                         if (gone)
                             return { at, was };
                     }
-                    else if (inWatchedTree(at, later.path) || (from !== undefined && inWatchedTree(at, from))) {
+                    else if (inWatchedTree(at, event.path) || (from !== undefined && inWatchedTree(at, from))) {
                         was ??= true;
                     }
-                    else if (inWatchedTree(later.path, at) && later.type !== 'change') {
+                    else if (inWatchedTree(event.path, at) && event.type !== 'change') {
                         was ??= false;
-                        if (later.type === 'unlink' || later.type === 'unlinkDir')
+                        if (event.type === 'unlink' || event.type === 'unlinkDir')
                             return { at, was };
                     }
                 }

@@ -464,9 +464,12 @@ export declare class CompositeVFS implements VFS {
      * alone, its later changes behind it. The returned function stops it.
      *
      * A watch is of `path` wherever it leads: the path renamed away, or a
-     * directory above it, is its unlink. One that follows its target
-     * (`follow`, as Node's fs.watch does, an inode's watch) is told that move
-     * instead, a rename, and is then of the path its target has.
+     * directory above it, is its unlink; a directory above it took it along
+     * only if it was there, as the changes told after say (a change this
+     * namespace tells may have made it: no proof), else as it is now. One
+     * that follows its target (`follow`, as Node's fs.watch does, an inode's
+     * watch) is told that move instead, a rename, and is then of the path its
+     * target has.
      *
      * A backend that tells its own changes (VFS.watchChanges: SQLite) is
      * watched per mount, as this view's principal sees it, so its every
@@ -478,9 +481,9 @@ export declare class CompositeVFS implements VFS {
      * it removed), a rename rename, anything else change. Whether a write of a
      * whole file or a range made its file, and what kind of entry a backend's
      * rm -r removed, is not looked up: those are change and unlink. mkdir -p
-     * on a mount that resolves its own paths is one call to its backend: it
-     * looks whether the directory is there first only while a watch is
-     * registered, and is told only then, and only for a directory it made.
+     * on a mount that resolves its own paths is one call to its backend: the
+     * directories it answers it made are told (VFS.mkdir); one that does not
+     * say has nothing told.
      */
     watchChanges(path: string, listener: (events: readonly VfsEvent[]) => void, options?: {
         follow?: boolean;
