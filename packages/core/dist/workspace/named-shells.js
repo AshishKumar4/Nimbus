@@ -32,6 +32,8 @@ export class NamedShells {
     shellFor;
     /** One queue per name: the last call made on it, settled when that call is. */
     queues = new Map();
+    idle = Promise.resolve();
+    parsedName;
     constructor(sql, 
     /** Where a name with no saved state and no `start` begins. */
     home, 
@@ -56,11 +58,14 @@ export class NamedShells {
         return this.run(id);
     }
     async run(id, options, body) {
-        const name = ShellIdSchema.parse(id);
-        const previous = this.queues.get(name) ?? Promise.resolve();
+        // Cache only name syntax; reload its saved state on every turn.
+        const name = this.parsedName !== undefined && id === this.parsedName ? id : ShellIdSchema.parse(id);
+        this.parsedName = name;
+        const queued = this.queues.get(name);
+        const previous = queued ?? this.idle;
         let release = () => { };
         const gate = new Promise((resolve) => { release = resolve; });
-        const tail = previous.then(() => gate);
+        const tail = queued === undefined ? gate : previous.then(() => gate);
         this.queues.set(name, tail);
         await previous;
         let detached = false;

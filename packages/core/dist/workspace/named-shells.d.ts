@@ -59,6 +59,8 @@ export declare class NamedShells {
     private readonly shellFor;
     /** One queue per name: the last call made on it, settled when that call is. */
     private readonly queues;
+    private readonly idle;
+    private parsedName;
     constructor(sql: SqlDatabase, 
     /** Where a name with no saved state and no `start` begins. */
     home: string, 

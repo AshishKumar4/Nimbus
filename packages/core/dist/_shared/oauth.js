@@ -72,7 +72,7 @@ export async function requestNimbusCloudflareOAuthToken(config, fields) {
     const response = await fetch(NIMBUS_CF_OAUTH_TOKEN_URL, { method: 'POST', headers, body });
     const payload = await responseJson(response);
     if (!response.ok)
-        throw new Error(`Cloudflare token exchange failed: ${cloudflareErrorDetail(payload, response.statusText)}`);
+        throw new Error(`Cloudflare token exchange failed: ${cloudflareErrorDetail(payload, response.statusText).detail}`);
     const parsed = CloudflareOAuthTokenResponseSchema.safeParse(payload);
     if (!parsed.success)
         throw new Error('Cloudflare token exchange returned an invalid OAuth token payload');
@@ -82,14 +82,16 @@ export async function fetchNimbusCloudflareUserInfo(accessToken) {
     const response = await fetch(NIMBUS_CF_OAUTH_USERINFO_URL, { headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' } });
     const payload = await responseJson(response);
     if (!response.ok)
-        throw new Error(cloudflareErrorDetail(payload, 'userinfo request failed'));
+        throw new Error(cloudflareErrorDetail(payload, 'userinfo request failed').detail);
     return payload;
 }
 export async function fetchNimbusCloudflareAccounts(accessToken) {
     const response = await fetch(`${NIMBUS_CLOUDFLARE_API}/accounts`, { headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' } });
     const parsed = await response.json().then((payload) => {
-        if (!response.ok)
-            throw new CloudflareAccountLookupError(response.status, cloudflareErrorDetail(payload, response.statusText || 'accounts request failed'));
+        if (!response.ok) {
+            const failure = cloudflareErrorDetail(payload, response.statusText || 'accounts request failed');
+            throw new CloudflareAccountLookupError(response.status, failure.detail, { cause: failure.cause });
+        }
         return CloudflareAccountsResponseSchema.safeParse(payload);
     }, (cause) => {
         throw new CloudflareAccountLookupError(response.status, 'response is not valid JSON', { cause });
@@ -126,5 +128,8 @@ async function responseJson(response) {
 }
 function cloudflareErrorDetail(payload, fallback) {
     const parsed = CloudflareErrorPayloadSchema.safeParse(payload);
-    return parsed.success ? parsed.data.error_description || parsed.data.error || parsed.data.errors?.find((error) => error.message)?.message || fallback : fallback;
+    return {
+        detail: parsed.success ? parsed.data.error_description || parsed.data.error || parsed.data.errors?.find((error) => error.message)?.message || fallback : fallback,
+        cause: parsed.success ? undefined : parsed.error,
+    };
 }

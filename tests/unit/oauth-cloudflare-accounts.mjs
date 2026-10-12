@@ -28,8 +28,12 @@ try {
   response = Response.json({ result: [{ id: accountId }] });
   assert.deepEqual(await fetchNimbusCloudflareAccounts('account-token'), [{ id: accountId, name: accountId }]);
 
-  for (const body of ['not JSON', 'null', '[]', '42', '"accounts"', '{}', '{"result":null}', '{"result":{}}', '{"result":[{"id":7}]}']) {
-    for (const status of [200, 206]) {
+  const invalid = [
+    ...['not JSON', 'null', '[]', '42', '"accounts"'].map((body) => ({ body, statuses: [200, 206, 403] })),
+    ...['{}', '{"result":null}', '{"result":{}}', '{"result":[{"id":7}]}'].map((body) => ({ body, statuses: [200, 206] })),
+  ];
+  for (const { body, statuses } of invalid) {
+    for (const status of statuses) {
       response = new Response(body, { status });
       await assert.rejects(() => fetchNimbusCloudflareAccounts('account-token'), (error) => {
         assert.ok(error instanceof Error);
