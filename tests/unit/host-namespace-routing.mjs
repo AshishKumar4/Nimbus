@@ -41,7 +41,7 @@ const ctx = { id: { toString: () => 'host-namespace-test-do' }, waitUntil() {} }
           async supervisorOp(envelope) {
             const [_fnSource, args] = envelope.args;
             seen.push({ peer: id.name, count: args.length });
-            return { results: args };
+            return { results: args.map((value) => ({ ok: true, value })) };
           },
         };
       },

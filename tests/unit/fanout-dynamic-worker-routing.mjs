@@ -64,7 +64,7 @@ function makeWorld({ gate } = {}) {
           async supervisorOp(envelope) {
             const [, args] = envelope.args;
             world.peerTasks += args.length;
-            return { results: args };
+            return { results: args.map((value) => ({ ok: true, value })) };
           },
         };
       },
