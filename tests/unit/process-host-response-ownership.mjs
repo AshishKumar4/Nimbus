@@ -114,13 +114,8 @@ for (const mode of ['facet', 'peer']) for (const route of ['port', 'direct']) fo
     reader.releaseLock();
     assert.equal(watching, 0, `${label}: EOF, error, mismatch and a leaving client release the work`);
     await turns();
-    // A body that will not reach its caller, for whatever reason, is one its
-    // handler hears was left. Under a peer, a framing failure can come after
-    // the peer's relay ended with the body its guest had ended: whether the
-    // guest still hears it races that end, and either is right.
-    if (!(mode === 'peer' && (ending === 'short' || ending === 'long'))) {
-      assert.equal(handled.signal.aborted, ending !== 'eof', `${label}: the handler hears whether its body was delivered`);
-    }
+    // A body that will not reach its caller, for whatever reason, is one its handler hears was left.
+    assert.equal(handled.signal.aborted, ending !== 'eof', `${label}: the handler hears whether its body was delivered`);
     assert.deepEqual(peers?.abandoned ?? [], ending === 'eof' || peers === null ? [] : peers.routed, `${label}: only an undelivered response is abandoned, once`);
   } finally { if (response?.body && !response.body.locked) await response.body.cancel().catch(() => {}); neighbor.close(); await process.release(); }
 }
