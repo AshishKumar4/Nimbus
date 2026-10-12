@@ -12,6 +12,8 @@ published independently in the `@nimbus-sh` npm scope.
   program's own `stat`. `mkdtemp` makes 0700. `copyFile` and `cp` leave the
   source's mode. Before, such files were made 0666 less the umask, so
   `writeFileSync(p, secret, { mode: 0o600 })` made a file others could read.
+  `chmodSync` and `fchmodSync` reach the session when nothing touches the
+  path after them; before, such a change was kept only in the process.
 
 ## 2026-10-12: core 0.18.0, fabric 0.13.0, worker 0.16.0, loom 0.2.5, sdk 0.13.1, react 0.3.1, cli 0.2.5, create-nimbus-app 0.2.2
 
