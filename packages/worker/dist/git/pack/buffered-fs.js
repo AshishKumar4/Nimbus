@@ -357,7 +357,7 @@ export function createBufferedFs(supervisor, stats, authoritativeRoot, authorita
                 return null;
             return readSupervisorFile(resolved.path, p, resolved.entry && resolved.entry.kind === 'file' ? resolved.entry.size : null);
         },
-        async writeFile(p, data, executable) {
+        async writeFile(p, data, requested) {
             assertFlushHealthy();
             // Every buffered record owns its ArrayBuffer: the W7 stream transfers
             // what it enqueues, and isomorphic-git hands writeFile subarray views
@@ -376,7 +376,7 @@ export function createBufferedFs(supervisor, stats, authoritativeRoot, authorita
             return bufferMutation(async () => {
                 const now = Date.now();
                 ensureMetadataParents(p, now);
-                const mode = executable ? 0o755 : 0o644;
+                const mode = ((requested ?? 0) & 0o111) !== 0 ? 0o755 : 0o644;
                 const fileMetadata = { kind: 'file', size: buf.length, mode, mtimeMs: now, ctimeMs: now, atimeMs: now };
                 setMetadata(p, fileMetadata);
                 if (fileApi !== null && buf.length > ROUTED_FILE_MAX) {

@@ -1827,17 +1827,18 @@ const __fsMod = (() => {
     return _fsRpc(promise, syscall, p, use);
   }
 
-  const _localTimes = globalThis.__nimbusVfsTimes || (globalThis.__nimbusVfsTimes = Object.create(null));
-  const _localModes = globalThis.__nimbusVfsModes || (globalThis.__nimbusVfsModes = Object.create(null));
+  // This process's own: what it set on each path, until the namespace says so.
+  const _localTimes = Object.create(null);
+  const _localModes = Object.create(null);
   // When this process last changed each path's content: the mtime its own
   // writes carry until the namespace describes them. Reading the clock at
   // each stat instead gave a file a new mtime on every stat, which a
   // watcher polling mtimeMs reads as an edit.
-  const _ownWriteTimes = globalThis.__nimbusVfsWriteTimes || (globalThis.__nimbusVfsWriteTimes = Object.create(null));
+  const _ownWriteTimes = Object.create(null);
   // Modes set locally that the authority has not received yet. Delivered once:
   // re-sending on every flush made each read of the path a chmod, which bumped
   // its revision and evicted the process's own cell (create-astro EAGAIN).
-  const _pendingModes = globalThis.__nimbusVfsPendingModes || (globalThis.__nimbusVfsPendingModes = new Set());
+  const _pendingModes = new Set();
 
   function _coerceMode(value, syscall, p) {
     const n = typeof value === "string" ? parseInt(value, 8) : Number(value);
@@ -3878,13 +3879,28 @@ const __fsMod = (() => {
   function utimesSync(p, atime, mtime) {
     if (!existsSync(p)) throw _absentErr(_resolve(p), "utimes", p, "fs.promises.utimes");
     const absPath = _resolveFollow(p, "utimes");
-    _recordLocalTimes(absPath, atime, mtime, "utimes", p);
+    _detachStructuralMutation(_utimesQueued(absPath, _recordLocalTimes(absPath, atime, mtime, "utimes", p), true, "utimes", p), "utimes", p);
   }
 
   function lutimesSync(p, atime, mtime) {
     if (!existsSync(p)) throw _absentErr(_resolve(p), "lutimes", p, "fs.promises.lutimes", false);
     const absPath = _resolve(p);
-    _recordLocalTimes(absPath, atime, mtime, "lutimes", p);
+    _detachStructuralMutation(_utimesQueued(absPath, _recordLocalTimes(absPath, atime, mtime, "lutimes", p), false, "lutimes", p), "lutimes", p);
+  }
+
+  // A sync utimes' effect: the local times at once (statSync's overlay), and
+  // the change logged now, in program order, as chmod's is: the attribute
+  // record, or for a link's own times (\`follow\` false) the call of that name.
+  function _utimesQueued(absPath, time, follow, syscall, p) {
+    const k = _strip(absPath);
+    const supervisor = _supervisor();
+    return _queueStructuralMutation(
+      absPath, syscall, p,
+      () => (follow
+        ? _vfsOp({ type: "setattr", path: k, attrs: { atime: time.atimeMs, mtime: time.mtimeMs } })
+        : _vfsCall({ call: "lutimes", path: k, atime: time.atimeMs, mtime: time.mtimeMs })),
+      () => _flushParkedWrite(absPath, supervisor),
+    );
   }
 
   async function _utimesAsync(p, atime, mtime, opts, syscallOverride) {
@@ -5382,7 +5398,7 @@ const __fsMod = (() => {
   function futimesSync(fd, atime, mtime) {
     if (_isStdioFd(fd)) throw _fsErr("EINVAL", "futimes", fd);
     const handle = _fdHandle(fd, "futimes");
-    _recordLocalTimes(handle._abs, atime, mtime, "futimes", handle._path);
+    _detachStructuralMutation(_utimesQueued(handle._abs, _recordLocalTimes(handle._abs, atime, mtime, "futimes", handle._path), true, "futimes", handle._path), "futimes", handle._path);
   }
   function fchmodSync(fd, mode) {
     if (_isStdioFd(fd)) throw _fsErr("EINVAL", "fchmod", fd);

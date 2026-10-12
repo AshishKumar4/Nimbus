@@ -23,8 +23,8 @@ export interface GitFsBackend {
     stat(path: string, follow: boolean): Promise<GitFsStat | null>;
     /** `path`'s bytes; null when there is no file. */
     readFile(path: string): Promise<Uint8Array | null>;
-    /** `executable` when the caller's mode has an execute bit. */
-    writeFile(path: string, data: Uint8Array | string, executable: boolean): Promise<void>;
+    /** `mode`: the permission bits the caller asked for, when it did (a checkout's file, a loose object). */
+    writeFile(path: string, data: Uint8Array | string, mode: number | undefined): Promise<void>;
     unlink(path: string, filepath: string): Promise<void>;
     readdir(path: string, filepath: string): Promise<string[]>;
     mkdir(path: string): Promise<void>;
