@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "aaada0cacdc52a2963313162048786ac84df7afdd5aa312015a2b185c86b53e5",
+  "fingerprint": "20b842eafe251c4644d553190a59b4754e39f63656bc5e1f07ba0a847530f12e",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2815,7 +2815,7 @@
     "packages/worker/scripts/bundle-tailwind-play.mjs": "6fb9efce9fe8228354053163fbd5a042e7e3709a9553c251d82b4ba9f2bea1e2",
     "packages/worker/scripts/cf-git-patch.mjs": "f4539f526a13bd975e0120c92074597178dcac014f7880a9ed454a07aab98675",
     "packages/worker/scripts/cirrus-bundle-shared.mjs": "a11f865af9da5dab8294fbfc3d1ff0deeb3dcdda10874298e14289597927cd04",
-    "packages/worker/scripts/free-names.mjs": "b8771847cc9a54afc440e9007502fd14fbd0dd0c078f9a2f6a8003426d878101",
+    "packages/worker/scripts/free-names.mjs": "bb1246f00a1d9ba9b6fec036d4eb51d7dab47b32c4683bff198013da5e64d08d",
     "packages/worker/scripts/interpreter-bundle.mjs": "20dc1ed26ae6013d6ec713a3155e659acd485eabbf3985b9dadfcfb7046a3e2a",
     "packages/worker/scripts/napi-wasm/astro-compiler/Cargo.lock": "090a5d238c8dbd6a5428d00e9648ad276e79e30210f5307e2c69e1775aca22fc",
     "packages/worker/scripts/napi-wasm/build.mjs": "0771382d391206c2da1baf948ddd928215f0df75f15bf0b52130d203a425b27f",
