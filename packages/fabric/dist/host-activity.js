@@ -191,6 +191,11 @@ export class SentRequests {
         });
         return { id, ended, abandoned };
     }
+    /** `request`'s call failed, so its leaf may not have seen what it carried: carry it again (each is idempotent there). */
+    unsent(request) {
+        this.#ended.push(...request.ended);
+        this.#abandoned.push(...request.abandoned);
+    }
 }
 const activities = new WeakMap();
 export function hostActivity(host) {

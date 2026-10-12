@@ -371,11 +371,12 @@ class PeerProcessHost {
                 handleHttpRequest: (request, scope) => loss.route(async () => {
                     const lease = observation.acquire();
                     void scope.settled.then(lease.release);
+                    const sending = sent.send(scope, abandon);
                     try {
-                        const sending = sent.send(scope, abandon);
                         return await peered((stub) => routeThroughPeer(stub, params.workerKey, webSocketCapability, request, sending));
                     }
                     catch (error) {
+                        sent.unsent(sending);
                         lease.release();
                         throw error;
                     }
