@@ -264,8 +264,8 @@ export function expireLegacyNimbusTokenCookie(): string {
 /**
  * Migration headers for a request that authenticated via the legacy global
  * cookie: re-issue its verified token under the route-owned name and expire
- * the legacy name, in the same response. Returns [] unless the jar holds the
- * the selected legacy name — headers, queries and route-owned cookies never
+ * the legacy name, in the same response. Returns [] unless verification used
+ * the legacy name — headers, queries and route-owned cookies never
  * cause this migration, even if a legacy name is present. The re-issued
  * token keeps its verified expiry; this never mints, never extends, never
  * consults anything but the already-verified claims.
