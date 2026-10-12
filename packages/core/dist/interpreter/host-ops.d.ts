@@ -27,7 +27,7 @@ export interface FunctionRuntime<F, E, R> {
     /** Run a plain function, method, getter or setter body. */
     call(fi: F, scope: E, fn: Function, thisArg: unknown, args: IArguments, newTarget: Function | undefined, home: object | undefined): unknown;
     /** Run an arrow function body. */
-    arrow(fi: F, scope: E, args: unknown[]): unknown;
+    arrow(fi: F, scope: E, fn: Function, args: unknown[]): unknown;
     /** Bind a call's environment: the function's frame with its parameters bound. */
     enter(fi: F, scope: E, fn: Function | undefined, thisArg: unknown, args: ArrayLike<unknown>, newTarget: Function | undefined, home: object | undefined): E;
     /**
@@ -40,6 +40,12 @@ export interface FunctionRuntime<F, E, R> {
     takeFrame(args: IArguments): E;
     /** A body's completion as the function's return value. */
     finish(fi: F, result: unknown): unknown;
+    /** Run a non-suspending body with its interpreted activation. */
+    run(fi: F, env: E): unknown;
+    /** Drive a suspending body for one step, restoring the native caller on suspension. */
+    step(env: E, it: Generator<unknown, unknown, unknown>, kind: 'next' | 'throw' | 'return', value: unknown): IteratorResult<unknown, unknown>;
+    /** A sync body iterator whose native delegation runs each step in its activation. */
+    generator(fi: F, env: E): Generator<unknown, unknown, unknown>;
     /** Run a base class constructor: fields, then the body. */
     construct(fi: F, scope: E, ctor: Function, record: R, thisArg: object, args: IArguments, newTarget: Function): unknown;
     /** Run a derived class constructor, whose `this` comes from super(). */

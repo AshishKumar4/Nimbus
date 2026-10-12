@@ -77,6 +77,7 @@ const ArrayPrototypeWith = method(primordials.ArrayPrototypeWith, 'Array.prototy
 const ArrayPrototypeToSpliced = method(primordials.ArrayPrototypeToSpliced, 'Array.prototype.toSpliced');
 const GeneratorPrototypeNext = method(primordials.GeneratorPrototypeNext, '%GeneratorPrototype%.next');
 const GeneratorPrototypeThrow = method(primordials.GeneratorPrototypeThrow, '%GeneratorPrototype%.throw');
+const GeneratorPrototypeReturn = method(primordials.GeneratorPrototypeReturn, '%GeneratorPrototype%.return');
 const SymbolPrototypeDescription = method(primordials.SymbolPrototypeDescription, 'Symbol.prototype.description');
 const StringPrototypeSlice = primordials.StringPrototypeSlice;
 const StringPrototypeLastIndexOf = primordials.StringPrototypeLastIndexOf;
@@ -118,6 +119,9 @@ export function resume(it, value) {
 /** Throw into one of the interpreter's own generators. */
 export function resumeThrowing(it, error) {
     return reflectApply(GeneratorPrototypeThrow, it, [error]);
+}
+export function resumeReturning(it, value) {
+    return reflectApply(GeneratorPrototypeReturn, it, [value]);
 }
 /**
  * `fn`, a generator function of the interpreter's own, made to create

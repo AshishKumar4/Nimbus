@@ -87,7 +87,8 @@ const runtime = await bundle.composeHostedRuntime({
 async function both(line) {
   const home = await runtime.exec(line.replaceAll('{dir}', '/home/user'));
   const mount = await runtime.exec(line.replaceAll('{dir}', '/m'));
-  const spelled = (text) => text.replaceAll('/m/', '/home/user/').replaceAll('/m\n', '/home/user\n').replaceAll('Wrote to m/', 'Wrote to home/user/');
+  // A launch names a staged file by its key, without the leading slash: `for m/b/s.ts`.
+  const spelled = (text) => text.replaceAll('/m/', '/home/user/').replaceAll('/m\n', '/home/user\n').replaceAll('Wrote to m/', 'Wrote to home/user/').replaceAll(' for m/', ' for home/user/');
   return { home, mount: { ...mount, stdout: spelled(mount.stdout), stderr: spelled(mount.stderr) } };
 }
 

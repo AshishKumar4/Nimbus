@@ -3,12 +3,11 @@
  * doc/api/packages.md "Determining module system" defines it (Node 22, with
  * syntax detection on by default from v22.7.0).
  *
- * The answer decides whether a source is lowered to CommonJS before it runs
- * (every runtime here runs CommonJS: commonjs-cell.ts says why), so the shell's
- * `node`, the facet's entry and the lifo substrate's loader all ask it here.
+ * The answer decides whether a source runs as an ES module (native-esm.ts)
+ * or as CommonJS, so the shell's `node`, the facet's entry and the lifo
+ * substrate's loader all ask it here.
  */
-import type { AnyNode } from 'acorn';
-import { COMMONJS_WRAPPER_NAMES, MODULE_PARSE_OPTIONS, applySourceEdits, containsModuleSyntax, parseStatements, type SourceEdit } from './javascript-ast.js';
+import { containsModuleSyntax } from './javascript-ast.js';
 import { vfsPathExtension } from '../vfs/path.js';
 import { stripsTypeScript } from '../_shared/typescript-specifiers.js';
 
@@ -83,84 +82,8 @@ export function isEsModuleInput(source: string, inputType: string | undefined): 
 
 /**
  * Whose scope a runtime runs an ES module in. Node's binds none of
- * CommonJS's wrapper names, and is strict with `this` undefined at the top
- * (ES_MODULE_UNBOUND_NAMES, esModuleScopeTypeofs: async-module-lowering.ts
- * lowerEsModule). Bun's binds `require`,
- * `__filename` and `__dirname` in every module (bun.sh/docs/runtime/modules),
- * and a module is lowered as CommonJS, all of whose names it keeps.
+ * CommonJS's wrapper names. Bun's binds `require`, `__filename` and
+ * `__dirname` in every module (bun.sh/docs/runtime/modules), which a staged
+ * module imports from its meta instance (native-esm.ts EsModuleLink).
  */
 export type ModuleScope = 'node' | 'bun';
-
-/**
- * The global the guest defines (node-shims.ts) with an accessor for each
- * CommonJS wrapper name, which throws the ReferenceError V8 throws for a name
- * bound nowhere ("require is not defined"), from the frame that named it.
- */
-export const ES_MODULE_SCOPE_GLOBAL = '__nimbusEsmScope';
-
-/**
- * What a free reference to each CommonJS wrapper name becomes in an ES module
- * lowered to the CommonJS a facet runs (commonjs-cell.ts): its accessor on
- * ES_MODULE_SCOPE_GLOBAL, so reading, calling or assigning it throws as in
- * Node's ES module scope, which binds none of them, while the lowering's own
- * require and module.exports still reach the wrapper's. `typeof` of one is
- * 'undefined' (esModuleScopeTypeofs).
- */
-export const ES_MODULE_UNBOUND_NAMES: Readonly<Record<string, string>> = Object.fromEntries(
-  [...COMMONJS_WRAPPER_NAMES].map((name) => [name, `${ES_MODULE_SCOPE_GLOBAL}.${name}`]),
-);
-
-/**
- * A lowered ES module's code with `typeof` of each wrapper name 'undefined',
- * as `typeof` of a name bound nowhere is, where the define made the name an
- * accessor that throws when read: each `typeof` whose operand is one of
- * ES_MODULE_UNBOUND_NAMES' accessors, found in the code's syntax tree (not
- * one read further, as `typeof require.cache` reads require and throws; and
- * never text in a string, template, comment or regular expression).
- */
-export function esModuleScopeTypeofs(code: string): string {
-  if (!code.includes(ES_MODULE_SCOPE_GLOBAL)) return code;
-  const edits: SourceEdit[] = [];
-  // The lowering binds import.meta after this (dynamic-import-rewrite.ts).
-  parseStatements(code, { ecmaVersion: 'latest', sourceType: 'commonjs', allowHashBang: true, allowImportExportEverywhere: true }, {
-    onNode: (node) => {
-      const operand = node.type === 'UnaryExpression' && node.operator === 'typeof' ? node.argument : null;
-      if (operand !== null && isUnboundNameAccessor(operand)) edits.push({ start: operand.start, end: operand.end, text: '(void 0)' });
-    },
-  });
-  return applySourceEdits(code, edits);
-}
-
-/** `__nimbusEsmScope.<name>` for a CommonJS wrapper name: what the define made a free reference to one. */
-function isUnboundNameAccessor(node: AnyNode): boolean {
-  return node.type === 'MemberExpression' && !node.computed && !node.optional
-    && node.object.type === 'Identifier' && node.object.name === ES_MODULE_SCOPE_GLOBAL
-    && node.property.type === 'Identifier' && COMMONJS_WRAPPER_NAMES.has(node.property.name);
-}
-
-/** An ES module, as the lowering reads it: one, whatever its syntax (async-module-lowering.ts lowerEsModule). */
-export function esModuleSource(source: string): string {
-  return source + '\nexport {};\n';
-}
-
-/**
- * Code that throws, when the process evaluates it, the SyntaxError an ES
- * module's `source` at `url` has (acorn's, at its line and column), or null
- * when it parses. Node reports a module's syntax error as it evaluates the
- * entry, after `-r`'s modules have run and `--import`'s have loaded, so the
- * process runs this in the module's place.
- */
-export function esModuleSyntaxError(source: string, url: string): string | null {
-  try {
-    parseStatements(source, MODULE_PARSE_OPTIONS, {});
-    return null;
-  } catch (error) {
-    if (!(error instanceof SyntaxError)) throw error;
-    const loc: unknown = Reflect.get(error, 'loc');
-    const line: unknown = loc !== null && typeof loc === 'object' ? Reflect.get(loc, 'line') : undefined;
-    const column: unknown = loc !== null && typeof loc === 'object' ? Reflect.get(loc, 'column') : undefined;
-    const message = error.message.replace(/ \(\d+:\d+\)$/, '');
-    const at = typeof line === 'number' && typeof column === 'number' ? `${url}:${line}:${column + 1}` : url;
-    return `const e = new SyntaxError(${JSON.stringify(message)}); e.stack = ${JSON.stringify(`SyntaxError: ${message}\n    at ${at}`)}; throw e;`;
-  }
-}

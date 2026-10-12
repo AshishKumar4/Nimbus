@@ -1,31 +1,8 @@
-/**
- * The interpreter for code a program produces after its launch.
- *
- * A Worker compiles code only from the module map it was launched with, so
- * text handed to a Function constructor, or a module file written while the
- * program runs, cannot be compiled natively in that launch (see RUNTIME CODE
- * in _shared/commonjs-cell.ts, which records such code so the next launch
- * compiles it into its map). This runs it in the meantime, in the same realm
- * as the program: values, objects, prototypes and functions are the
- * program's own, never copies or proxies.
- *
- * The code is parsed once (acorn, bundled to reach only the built-ins the
- * launch captured at its start: parser-realm.ts), analyzed once (scope.ts)
- * and compiled once into closures (compile.ts); calling an interpreted
- * function runs those closures. host-ops.ts supplies the operators and the
- * native function objects interpreted functions are.
- *
- * Not supported, refused with UnsupportedSyntax before any of the code runs:
- * `using` declarations, TypeScript and JSX, and the bodies of `with`
- * statements in strict code (a SyntaxError anyway). A direct `eval(...)` is
- * an ordinary call of the global eval, which a Worker refuses at request time
- * natively too.
- */
-import { Parser, type Options } from 'acorn';
 import { type RuntimeFunctionKind } from '../_shared/runtime-function-source.js';
 import { type ModuleCell, type ModuleHelpers } from './modules.js';
 import type { HostOps, NativeFunction } from './host-ops.js';
 import { type ModuleRequest } from './module-requests.js';
+import { type InterpretedFrame } from './stack.js';
 export type { HostOps } from './host-ops.js';
 export { INTERPRETER_UNSUPPORTED, UnsupportedSyntax } from './unsupported.js';
 export { replLineBody } from './repl-line.js';
@@ -42,6 +19,10 @@ export interface InterpreterHost {
     readonly primordials: object;
     /** esm-interop.ts's helpers (ESM_MODULE_HELPERS), compiled with the launch's map as a lowered cell's are. */
     readonly moduleHelpers: ModuleHelpers;
+    /** The launch's single stack path; absent in hosts with no Node stack formatter. */
+    readonly stackCapture?: (error: object, frames: readonly InterpretedFrame[]) => void;
+    readonly stackIsProxy?: (value: unknown) => boolean;
+    readonly stackIsError?: (value: unknown) => boolean;
 }
 /**
  * Where compiled code comes from (commonjs-cell.ts, RUNTIME CODE): what its
@@ -56,15 +37,32 @@ export interface CodeOrigin {
     readonly Function: unknown;
 }
 export interface Interpreter {
+    captureStack(error: object, above?: unknown): void;
+    stackFrames(error: object): readonly InterpretedFrame[] | null;
     /** The function `new <kind>Function(...params, body)` builds, from `origin`. */
     compileFunction(kind: RuntimeFunctionKind, params: readonly string[], body: string, origin?: CodeOrigin): NativeFunction;
     /**
      * The module cell for a file's text: Node's wrapper function of
      * (exports, require, module, __filename, __dirname). CommonJS text runs as
-     * that function's body; an ES module linked as the next launch's lowering
-     * links it (runtime/esm-interop.ts), with the host's moduleHelpers.
+     * that function's body; an ES module is linked as runtime/esm-interop.ts
+     * says, with the host's moduleHelpers. Which one the text is, is
+     * `format` where the loader knows it (an `.mjs`, a "type"), else its
+     * syntax (Node's detection). `javaScript`: the text is JavaScript
+     * whatever the path's extension (a TypeScript file's emit).
      */
-    compileModule(path: string, text: string, origin?: CodeOrigin): ModuleCell;
+    compileModule(path: string, text: string, origin?: CodeOrigin, javaScript?: boolean, format?: 'module' | 'commonjs'): ModuleCell;
+    /**
+     * Whether compileModule made `cell` an ES module by its syntax alone, given
+     * no format: Node's detection, which warns of a package.json with no
+     * "type" (node-shims' MODULE_TYPELESS_PACKAGE_JSON).
+     */
+    detectedModule(cell: unknown): boolean;
+    /**
+     * Whether compileModule made `cell` an ES module whose body awaits at its
+     * top level: a require() refuses a graph that holds one, before any of it
+     * runs (node-shims' require(esm)). False for any other cell.
+     */
+    moduleAwaits(cell: unknown): boolean;
     /**
      * A function returning the value of the script `code` when it is one
      * expression (scriptExpression): vm.runInThisContext's code, as node-shims
@@ -79,23 +77,22 @@ export interface Interpreter {
 /**
  * The modules a file's text asks for, as this parser reads it
  * (module-requests.ts programRequests: imports, import() and require() of a
- * string, a createRequire binding's calls, and a require wrapper's). Text the
- * parser cannot read (TypeScript, JSX, a syntax error) asks for nothing. The
- * import() prefetch (node-shims.ts) finds what to fetch with it.
+ * string, a createRequire binding's calls, and a require wrapper's), or why
+ * it read none: the text does not parse ('syntax'), or is TypeScript or JSX,
+ * which it does not read ('unparsed'). The import() prefetch (node-shims.ts)
+ * finds what to fetch with the requests, reading what it can; a late
+ * graph's link plan reads with the loader's parse goal (`goal`: the format
+ * the loader gives the module, or 'detect' where its syntax decides, as
+ * compileModule parses it), and loads a module it could not read as the
+ * interpreter does, for its error. `javaScript`: the text is JavaScript
+ * whatever the path's extension (a staged module's, as compileModule's).
  */
-export declare function moduleRequests(path: string, text: string): ModuleRequest[];
-/**
- * Where V8 would place a fatal error's report in `text`, a module's whole
- * text (a `{ cjs }` cell's wrapper included) as `goal` parses it, for the
- * process's fatal report (node-shims.ts __nimbusFatalArrow), which has a
- * frame's offset and not V8's message:
- *   - `offset` given: the innermost `throw` statement whose argument holds
- *     it, as [start, start + 1], V8's location of a throw; null for none;
- *   - `offset` -1: the syntax error that stops the parse, as [start, end]
- *     of the token it stops at; null when the text parses.
- */
-/** acorn's tokenizer, which Node's error_source.js reads an assert.ok() call's expression with. */
-export declare function tokenizer(code: string, options: Options): ReturnType<typeof Parser.tokenizer>;
-export declare function fatalLocation(text: string, goal: 'script' | 'module', offset: number): [number, number] | null;
+export declare function moduleRequests(path: string, text: string, javaScript?: boolean, goal?: 'module' | 'commonjs' | 'detect'): ModuleRequests;
+/** moduleRequests' answer. */
+export interface ModuleRequests {
+    readonly requests: ModuleRequest[];
+    /** Why the text asks for nothing that was read: absent where it was read. */
+    readonly unread?: 'syntax' | 'unparsed';
+}
 export declare function createInterpreter(hostOps: HostOps, host: InterpreterHost): Interpreter;
 //# sourceMappingURL=index.d.ts.map

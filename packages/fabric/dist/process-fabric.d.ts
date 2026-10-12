@@ -126,7 +126,7 @@ export declare const ResidentCodeSpecSchema: z.ZodObject<{
             sha256: z.ZodString;
         }, z.core.$strip>;
     }, z.core.$strip>>>;
-    vfsCommonJsPacks: z.ZodOptional<z.ZodArray<z.ZodString>>;
+    vfsCodePacks: z.ZodOptional<z.ZodArray<z.ZodString>>;
     env: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
     globalOutbound: z.ZodOptional<z.ZodNullable<z.ZodCustom<ServiceStub, ServiceStub>>>;
 }, z.core.$strip>;
@@ -165,7 +165,7 @@ export declare function residentBootSpecSchema<Stage extends z.ZodType>(stageSch
                 sha256: z.ZodString;
             }, z.core.$strip>;
         }, z.core.$strip>>>;
-        vfsCommonJsPacks: z.ZodOptional<z.ZodArray<z.ZodString>>;
+        vfsCodePacks: z.ZodOptional<z.ZodArray<z.ZodString>>;
         env: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
         globalOutbound: z.ZodOptional<z.ZodNullable<z.ZodCustom<ServiceStub, ServiceStub>>>;
     }, z.core.$strip>;
@@ -245,16 +245,17 @@ export interface ResidentDiskReader {
  */
 export declare function residentLoaderConfig(spec: ResidentCodeSpec, disk: ResidentDiskReader, readAsset?: (source: z.infer<typeof ModuleSourceAssetSchema>) => Promise<string>): Promise<Record<string, unknown>>;
 /**
- * One image holding many `{ cjs }` modules: a JSON index of `[name, length]`
- * rows, a newline, and the module texts back to back. Lengths are UTF-16 code
- * units, each module's length as a string (decodeCommonJsPackBytes reads the
- * bytes they end at).
+ * One image holding many code modules: a JSON index of `[name, length]` rows
+ * for `{ cjs }` modules and `[name, length, "js"]` rows for ES modules, a
+ * newline, and the module texts back to back. Lengths are UTF-16 code units,
+ * each module's length as a string (decodeCodePackBytes reads the bytes they
+ * end at).
  *
  * Encoded as its parts, in order, never joined: the image store encodes them
  * straight into the image's bytes, and a joined copy would be a second full
  * copy of the program's code on the coordinator.
  */
-export declare function encodeCommonJsPack(modules: Record<string, string>): string[];
+export declare function encodeCodePack(commonJs: Record<string, string>, esModules?: Record<string, string>): string[];
 /**
  * A pack's modules decoded from its UTF-8 bytes, each from its own: decoded
  * whole, one non-Latin-1 character makes the pack's string two-byte
@@ -263,8 +264,10 @@ export declare function encodeCommonJsPack(modules: Record<string, string>): str
  * counts UTF-16 units, so each module's bytes end where its units do: a
  * four-byte sequence is two units, any other lead byte one.
  */
-export declare function decodeCommonJsPackBytes(pack: Uint8Array): Record<string, {
+export declare function decodeCodePackBytes(pack: Uint8Array): Record<string, {
     cjs: string;
+} | {
+    js: string;
 }>;
 /**
  * Read a content-addressed blob (image-store.ts storeContentBlob) and verify

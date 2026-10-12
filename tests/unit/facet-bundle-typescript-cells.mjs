@@ -17,8 +17,8 @@
 //     file is empty by construction.
 //
 // Now the source stays verbatim as the file the store holds, the emit is the
-// path's `{ cjs }` module (and never also data), declaration files are never
-// transformed, and a JavaScript file no transform changed is its own module's
+// path's CommonJS or native ES module (and never also data). Declaration files
+// are never transformed, and an unchanged JavaScript file is its own module's
 // text (one-shot-module-file-reads covers one that a transform did change).
 
 import assert from 'node:assert/strict';
@@ -31,12 +31,13 @@ import {
   generateEntrypointCode,
 } from '../../packages/worker/src/facets/manager.ts';
 import {
-  bundleTypescriptLoader,
+  bundleCompiledLoader,
   isBundleModuleCandidate,
 } from '../../packages/core/src/runtime/bundle-cell-transform.ts';
 import { isTypescriptDeclarationFile } from '../../packages/core/src/_shared/typescript-specifiers.ts';
 import { commonJsCellModuleName } from '../../packages/core/src/_shared/commonjs-cell.ts';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
+import { readModuleImportSites } from '../../packages/core/src/runtime/dynamic-import-rewrite.ts';
 import { nodeFacetSources } from './lib/node-facet-sources.mjs';
 import { launchFs } from './lib/launch-fs.mjs';
 import { generatedModuleSet, moduleMapBundle, moduleMapCodeCells, writeModuleSet } from './lib/module-map-bundle.mjs';
@@ -50,7 +51,7 @@ for (const path of [
   'lib/lib.es5.d.ts', 'lib/lib.dom.d.ts', 'lib/typescript.d.ts', 'dist/index.d.mts', 'dist/index.d.cts', 'x.d.ts',
 ]) {
   assert.ok(isTypescriptDeclarationFile(path), `${path} is a declaration file`);
-  assert.equal(bundleTypescriptLoader(path), null, `${path} gets no esbuild loader`);
+  assert.equal(bundleCompiledLoader(path), null, `${path} gets no esbuild loader`);
   assert.equal(isBundleModuleCandidate(path), false, `${path} never reaches the transform`);
 }
 // Sources keep their loader: the rule is the `.d.` infix, not the extension.
@@ -59,7 +60,7 @@ for (const [path, loader] of [
   ['src/d.ts', 'ts'], ['src/dts.ts', 'ts'], ['src/module.d/index.ts', 'ts'], ['src/a.d.ts.ts', 'ts'],
 ]) {
   assert.equal(isTypescriptDeclarationFile(path), false, `${path} is a source`);
-  assert.equal(bundleTypescriptLoader(path), loader, `loader for ${path}`);
+  assert.equal(bundleCompiledLoader(path), loader, `loader for ${path}`);
   assert.ok(isBundleModuleCandidate(path), `${path} reaches the transform`);
 }
 
@@ -94,14 +95,14 @@ const files = {
   [`${TS}/lib/typescript.d.ts`]: TYPESCRIPT_DTS,
 };
 
-// Stands in for esbuild's CJS emit, as the transform host the session's
-// esbuild uses: strips the type annotation and marks the output, so the
-// bundle shows what the pass produced and from what.
+// A transform host that emits CommonJS: its output format is decided from
+// that emit, not forced by the session's TypeScript request.
 const touched = [];
 const cjsEsbuild = new EsbuildService(undefined, {
   transformHost: async (requests) => requests.map(({ options }) => {
     touched.push(options.loader);
-    assert.equal(options.format, 'cjs');
+    assert.equal(options.esModule, 'node');
+    assert.equal(options.format, undefined, 'the TypeScript request keeps the emit\'s module format');
     return {
       code: `/* emit:${options.loader} */\nexports.greet = function (who) { return "NIMBUS-TSC-EMIT:" + who; };\n`,
       map: '',
@@ -131,25 +132,59 @@ assert.equal(bundle[`${TS}/lib/_tsc.js`], files[`${TS}/lib/_tsc.js`]);
 assert.equal(bundle[`${TS}/bin/tsc`], files[`${TS}/bin/tsc`]);
 
 // Under Node's strip options a source is Node's: one strip request, its
-// emit the host's result (lowered: an ES module), the file kept as written,
+// native module the host's stripped result, the file kept as written,
 // and a declaration file never sent.
 {
   const asked = [];
   const stripping = new EsbuildService(undefined, {
     transformHost: async (requests) => requests.map(({ code, options }) => {
       asked.push(options);
-      return { code: code.replace(/: string/g, (types) => ' '.repeat(types.length)), map: '{"head":0,"columns":[]}', warnings: [], esModule: true };
+      const stripped = code.replace(/: string/g, (types) => ' '.repeat(types.length));
+      return { code: stripped, map: JSON.stringify(readModuleImportSites(stripped)), warnings: [], esModule: 'node' };
     }),
   });
   const stripTypes = { mode: 'strip-only', sourceMap: false };
-  const node = await buildPrefetchBundle(
+  // Run by tsc, the source is a file tsc reads: no module of the map, of either kind.
+  const read = await buildPrefetchBundle(
     vfs, { scriptPath: `${TS}/bin/tsc`, cwd: `/${PROJ}`, entryCode: files[`${TS}/bin/tsc`], esbuild: stripping, stripTypes },
   );
   assert.deepEqual(asked.map(({ stripTypes: strip, sourcefile }) => [strip, sourcefile]), [[stripTypes, `/${PROJ}/src/index.ts`]], 'one strip, for the one source');
+  assert.equal(read.bundle[`${PROJ}/src/index.ts`], INDEX_TS, 'the file is kept as written');
+  assert.equal(read.esm?.modules.has(`${PROJ}/src/index.ts`) ?? false, false, 'a working-tree module no code reaches is not staged');
+  const readSet = generatedModuleSet(await generateEntrypointCode('', read, false, nodeFacetSources('/* read-ts */')), 'runner.js');
+  assert.equal(readSet[commonJsCellModuleName(`${PROJ}/src/index.ts`)], undefined, 'nor carried as a { cjs } module');
+  assert.equal(moduleMapBundle(readSet)[`${PROJ}/src/index.ts`], INDEX_TS, 'the store holds it as written');
+  // Run as the program, it is a module of the map.
+  const node = await buildPrefetchBundle(
+    vfs, { scriptPath: `/${PROJ}/src/index.ts`, cwd: `/${PROJ}`, entryCode: INDEX_TS, esbuild: stripping, stripTypes },
+  );
   assert.equal(node.bundle[`${PROJ}/src/index.ts`], INDEX_TS, 'the file is kept as written');
-  assert.equal(node.emits?.get(`${PROJ}/src/index.ts`), INDEX_TS.replace(/: string/g, (types) => ' '.repeat(types.length)), 'its emit is the host\'s');
-  assert.ok(node.lowered?.has(`${PROJ}/src/index.ts`), 'an ES module is lowered');
-  assert.equal(node.bundle[`${TS}/lib/lib.es5.d.ts`], LIB_ES5, 'a declaration file is staged verbatim');
+  const native = node.esm?.modules.get(`${PROJ}/src/index.ts`);
+  assert.ok(native, 'the stripped ES module is staged natively');
+  assert.equal(native.text.slice(native.head, native.text.length - native.tail), INDEX_TS.replace(/: string/g, (types) => ' '.repeat(types.length)), 'its native module is the host\'s stripped code');
+  assert.equal(node.emits?.has(`${PROJ}/src/index.ts`) ?? false, false, 'native staging supersedes the intermediate emit');
+  const nodeSet = generatedModuleSet(await generateEntrypointCode('', node, false, nodeFacetSources('/* native-ts */')), 'runner.js');
+  assert.equal(typeof nodeSet[commonJsCellModuleName(`${PROJ}/src/index.ts`)]?.js, 'string', 'the stripped module is a { js } map member');
+  assert.equal(read.bundle[`${TS}/lib/lib.es5.d.ts`], LIB_ES5, 'a declaration file tsc reads is staged verbatim');
+}
+
+// A JSX entry (`node app.jsx`, `bun app.jsx`) is compiled as TypeScript is:
+// the launch's request names the jsx loader and the file stays as written
+// (node-runtime-code-workerd.mjs runs one).
+{
+  const APP = 'home/user/jsx';
+  const SOURCE = 'globalThis.React = { createElement: (type) => ({ type }) };\nconsole.log((<b/>).type);\n';
+  const loaders = [];
+  const jsxEsbuild = new EsbuildService(undefined, {
+    transformHost: async (requests) => requests.map(({ code, options }) => {
+      loaders.push(options.loader);
+      return { code, map: '', warnings: [] };
+    }),
+  });
+  const jsx = await buildPrefetchBundle(launchFs({ [`${APP}/app.jsx`]: SOURCE }).fs,
+    { scriptPath: `/${APP}/app.jsx`, cwd: `/${APP}`, entryCode: SOURCE, esbuild: jsxEsbuild });
+  assert.deepEqual(loaders, ['jsx'], 'the entry is compiled with the jsx loader');
+  assert.equal(jsx.bundle[`${APP}/app.jsx`], SOURCE, 'the file is kept as written');
 }
 
 // ── The facet's module map, as a launch generates it ─────────────────────
@@ -178,17 +213,16 @@ const call = (key, require = () => { throw new Error('no require expected'); }) 
 assert.equal(call(`${PROJ}/src/index.ts`).greet('ok'), 'NIMBUS-TSC-EMIT:ok', 'the source runs its emit, under its own path');
 assert.deepEqual(call(`${TS}/lib/tsc.js`, (id) => `required:${id}`), 'required:./_tsc.js', 'a JavaScript cell runs its own bytes');
 
-// A required module lowered from ESM that keeps its shebang and declares its
-// own `require` (pi 0.87.0's cli-runtime.js, loaded through createRequire
-// from the bin) runs; a CommonJS module with a var and a function of one name
+// A CommonJS module's shebang becomes a comment in its wrapper; a CommonJS
+// module with a var and a function of one name
 // runs, as Node runs it; a non-JavaScript extensionless file is a module
 // nothing compiles until something requires it, and still reads as the file
 // it is.
 const extra = await buildFacetVfsBundleSource({
-  [`${TS}/lib/runtime.js`]: '#!/usr/bin/env node\nconst require = () => 1;\nmodule.exports = { shebang: "stripped" };\n',
+  [`${TS}/lib/runtime.js`]: '#!/usr/bin/env node\nmodule.exports = { shebang: "stripped" };\n',
   [`${TS}/lib/legacy.js`]: 'var helper = 1;\nfunction helper() {}\nmodule.exports = typeof helper;\n',
   [`${TS}/LICENSE`]: 'Apache License 2.0\n',
-}, false, undefined, { lowered: new Map([[`${TS}/lib/runtime.js`, false]]) });
+});
 const extraSet = { 'runner.js': `const __NIMBUS_CODE_CELLS = ${extra.codeCells};\nconst __MODULE_VFS_BUNDLE = __nimbusWithCodeCells(${extra.expression});\n` };
 for (const [name, text] of Object.entries(extra.codeModules)) extraSet[name] = { cjs: text };
 const extraMain = writeModuleSet(join(dir, 'extra'), extraSet, 'runner.js');
@@ -196,7 +230,7 @@ const extraRequire = globalThis.__nimbusTestCreateRequire(new URL(`file://${extr
 {
   const m = { exports: {} };
   extraRequire('./' + commonJsCellModuleName(`${TS}/lib/runtime.js`))(Function)(m.exports, () => { throw new Error('the wrapper require'); }, m, '/x', '/');
-  assert.deepEqual(m.exports, { shebang: 'stripped' }, 'the module\'s own `require` declaration wins over the parameter');
+  assert.deepEqual(m.exports, { shebang: 'stripped' }, 'the CommonJS hashbang compiles as a comment inside the cell');
   const legacy = { exports: {} };
   extraRequire('./' + commonJsCellModuleName(`${TS}/lib/legacy.js`))(Function)(legacy.exports, () => {}, legacy, '/x', '/');
   assert.equal(legacy.exports, 'number', 'a CommonJS var and function of one name compile, as in Node');

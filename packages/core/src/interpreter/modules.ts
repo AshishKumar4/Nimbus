@@ -1,15 +1,19 @@
 /**
- * modules.ts — an ES module as a launch's map runs one: Node's CommonJS
- * wrapper function, linked as runtime/esm-interop.ts says, the way the next
- * launch's cell (async-module-lowering.ts) links the same text. Its imports
- * are requires and its exports the getters of module.exports. compile.ts
- * makes the plan (Compiler.modulePlan); this runs it, with the interop
- * helpers the launch compiled from esm-interop.ts's text (InterpreterHost).
+ * modules.ts — an ES module the interpreter evaluates (one a program produced
+ * after its launch began, or a staged one the registry could not evaluate
+ * with Node's semantics: node-shims' adoption), as Node's CommonJS wrapper
+ * function, linked as runtime/esm-interop.ts says. Its imports are calls of
+ * the require it is given, told each is an import (ESM_LOAD_HELPER), which
+ * the loader resolves as Node's ESM loader does,
+ * and its exports the getters of module.exports. compile.ts makes the plan
+ * (Compiler.modulePlan); this runs it, with the interop helpers the launch
+ * compiled from esm-interop.ts's text (InterpreterHost).
  */
 import type { Code } from './code.js';
 import { reflectApply, resume, resumeThrowing, withElement } from './intrinsics.js';
 import type { HostOperators, NativeFunction } from './host-ops.js';
 import { type Env, ROOT_ENV, TDZ, tdzError } from './runtime.js';
+import { type StackInfo, initializeStack, popStack, pushStack, stampStack, suspendedStack } from './stack.js';
 
 /** A module cell: Node's CommonJS wrapper function. */
 export type ModuleCell = (exports: unknown, require: unknown, module: unknown, filename: unknown, dirname: unknown) => unknown;
@@ -20,6 +24,7 @@ export interface ModuleHelpers {
   readonly interop: NativeFunction;
   readonly namespace: NativeFunction;
   readonly star: NativeFunction;
+  readonly load: NativeFunction;
 }
 
 /**
@@ -33,6 +38,7 @@ export type ModuleExport =
 
 /** A module, compiled. */
 export interface ModulePlan {
+  readonly stack: StackInfo;
   /** The module scope's frame (runtime.ts frameTemplate). */
   readonly frame: Env;
   /** Slots of the wrapper's arguments. */
@@ -67,8 +73,7 @@ export function moduleCell(plan: ModulePlan, ops: HostOperators, helpers: Module
     env[moduleSlot] = moduleArg;
     env[filenameSlot] = filename;
     env[dirnameSlot] = dirname;
-    // A cell's module is always an ES module's: the next launch lowers
-    // esModuleSource's text, which declares an export.
+    initializeStack(env, plan.stack, undefined, undefined, false);
     const exportsObject: unknown = ops.get(moduleArg, 'exports');
     const define = reflectApply(helpers.exports, undefined, [exportsObject]) as NativeFunction;
     // Instantiation, before any import is evaluated: an import that
@@ -76,14 +81,20 @@ export function moduleCell(plan: ModulePlan, ops: HostOperators, helpers: Module
     // made, as a module's linking provides, and its exports published (link).
     if (instantiate !== null) instantiate(env);
     // The module is linked where the body runs: a module that suspends
-    // (top-level await) rejects for a failure linking it, as its lowered
-    // cell's async body does, rather than throwing.
+    // (top-level await) rejects for a failure linking it, rather than
+    // throwing.
     if (bg === null) {
-      link(plan, env, requireArg, helpers, exportsObject, define);
-      bs(env);
-      return undefined;
+      const previous = pushStack(env);
+      try {
+        link(plan, env, requireArg, helpers, exportsObject, define);
+        bs(env);
+        return undefined;
+      } catch (error) {
+        stampStack(error);
+        throw error;
+      } finally { popStack(previous); }
     }
-    return drive(() => {
+    return drive(env, () => {
       link(plan, env, requireArg, helpers, exportsObject, define);
       return bg(env);
     });
@@ -96,7 +107,7 @@ function link(plan: ModulePlan, env: Env, requireArg: unknown, helpers: ModuleHe
   for (let i = 0; i < exports.length; i++) reflectApply(define, undefined, [exports[i].name, exportGetter(env, exports[i], helpers)]);
   for (let i = 0; i < requests.length; i++) {
     const { source, module, interop } = requests[i];
-    const m: unknown = reflectApply(requireArg as NativeFunction, undefined, [source]);
+    const m: unknown = reflectApply(helpers.load, undefined, [requireArg, source]);
     if (module >= 0) env[module] = m;
     if (interop >= 0) env[interop] = reflectApply(helpers.interop, undefined, [m]);
   }
@@ -121,9 +132,17 @@ function exportGetter(env: Env, entry: ModuleExport, helpers: ModuleHelpers): ()
 }
 
 /** Runs a module body's generator, made by `start`, as an async function would: one await per yielded value. */
-async function drive(start: () => Generator<unknown, unknown, unknown>): Promise<unknown> {
-  const it = start();
-  let r = resume(it, undefined);
+async function drive(env: Env, start: () => Generator<unknown, unknown, unknown>): Promise<unknown> {
+  let it: Generator<unknown, unknown, unknown>;
+  let r: IteratorResult<unknown, unknown>;
+  let previous = pushStack(env);
+  try {
+    it = start();
+    r = resume(it, undefined);
+  } catch (error) {
+    stampStack(error);
+    throw error;
+  } finally { suspendedStack(env); popStack(previous); }
   while (!r.done) {
     let value: unknown;
     let ok = true;
@@ -133,7 +152,10 @@ async function drive(start: () => Generator<unknown, unknown, unknown>): Promise
       ok = false;
       value = error;
     }
-    r = ok ? resume(it, value) : resumeThrowing(it, value);
+    previous = pushStack(env);
+    try { r = ok ? resume(it, value) : resumeThrowing(it, value); }
+    catch (error) { stampStack(error); throw error; }
+    finally { suspendedStack(env); popStack(previous); }
   }
   return undefined;
 }

@@ -50,6 +50,16 @@ try {
   const ours = await ws.exec('cd /home/user/rx && node main.js');
   assert.equal(ours.stderr, '');
   assert.equal(ours.stdout, WANT);
+  // Node's entry classification uses the same scope boundary as require:
+  // a file directly in node_modules must not inherit its parent's type.
+  writeFileSync(join(disk, 'package.json'), JSON.stringify({ type: 'module' }));
+  writeFileSync(join(disk, 'node_modules/direct.js'), 'console.log(typeof require);');
+  await ws.fs.writeFile('/home/user/rx/package.json', JSON.stringify({ type: 'module' }));
+  await ws.fs.writeFile('/home/user/rx/node_modules/direct.js', 'console.log(typeof require);');
+  if (node?.startsWith('v22')) assert.equal(spawnSync('node', ['node_modules/direct.js'], { cwd: disk, encoding: 'utf8' }).stdout, 'function\n');
+  const direct = await ws.exec('cd /home/user/rx && node node_modules/direct.js');
+  assert.equal(direct.stderr, '');
+  assert.equal(direct.stdout, 'function\n', 'a node_modules entry has no enclosing project package scope');
 } finally {
   await ws.close();
   rmSync(disk, { recursive: true, force: true });

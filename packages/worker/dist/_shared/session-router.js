@@ -207,20 +207,7 @@ export function forwardToSession(request, route, env, opts) {
     const doName = `${opts.tenantSegment}:${route.sessionId}`;
     const id = env.NIMBUS_SESSION.idFromName(doName);
     const stub = env.NIMBUS_SESSION.get(id);
-    const migrate = opts.migrateSessionCookies;
-    if (migrate === undefined || migrate.length === 0)
-        return stub.fetch(inner);
-    // Legacy migration on use: a jar that authenticated via the pre-per-session
-    // global cookie gets its verified credential re-issued under the
-    // route-owned name, and the global name expired, in this same response.
-    // Forwarded auth (Authorization/query) never holds the legacy name, so this
-    // is a no-op for every request but a legacy-cookie reconnect.
-    return stub.fetch(inner).then((response) => {
-        const migrated = new Response(response.body, response);
-        for (const value of migrate)
-            migrated.headers.append('Set-Cookie', value);
-        return migrated;
-    });
+    return stub.fetch(inner);
 }
 /**
  * The card every session-facing error/status page shares: dark, centered,

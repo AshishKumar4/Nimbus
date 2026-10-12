@@ -29,7 +29,7 @@
  *
  * Caller-controlled `conditions` lets the same impl serve:
  *   - install/ESM/browser  →  ['import', 'module', 'browser', 'default']
- *   - runtime CJS          →  ['require', 'node', 'default'], and the
+ *   - runtime CJS          →  ['require', 'node', 'module-sync'], and the
  *     program's own (`node --conditions`), as Node adds them
  *
  * `conditions` is the set of active conditions, not an order: a condition
@@ -37,10 +37,12 @@
  * `default`) whose target resolves wins, as Node's PACKAGE_TARGET_RESOLVE
  * (and every bundler's) takes it.
  */
-/** Default conditions for ESM/install/browser resolution. */
+/** Node 22.12+ defaults. `default` is always active, not a user condition. */
 export declare const DEFAULT_ESM_CONDITIONS: string[];
 /** Default conditions for CJS runtime resolution (user-shell node). */
 export declare const DEFAULT_CJS_CONDITIONS: string[];
+/** The install/bundler/browser policy, deliberately not Node's conditions. */
+export declare const DEFAULT_BUILD_CONDITIONS: string[];
 /**
  * A `package.json#exports` / `#imports` value: a target path, an ordered list
  * of fallbacks to try in turn, or a map keyed by subpath (`"./client"`) or by
@@ -64,22 +66,50 @@ export interface ResolvablePackageJson {
  * declared entry" instead of throwing inside the resolver.
  */
 export declare function parseResolvablePackageJson(text: string): ResolvablePackageJson | null;
+/** Host-independent package-map traversal; only leaves and errors are policy. */
+export type PackageMapSteps<T> = Generator<unknown, T, unknown>;
+export interface PackageTargetMatch {
+    key: string;
+    subpath: string;
+    pattern: boolean;
+    internal: boolean;
+    isPathMap: boolean;
+}
+export interface PackageMapPolicy<T> {
+    readonly name: string;
+    readonly internal: boolean;
+    /** Build/browser compatibility only: permissive leaves and historical fallbacks. */
+    readonly permissive?: boolean;
+    target(value: string, match: PackageTargetMatch): PackageMapSteps<T>;
+    invalidTarget(value: unknown, match: PackageTargetMatch): Error;
+    invalidConfig(reason: 'mixed' | 'numeric'): Error;
+}
+/** Node's PATTERN_KEY_COMPARE: prefix first, then trailer, not total length. */
+export declare function patternKeyCompare(a: string, b: string): number;
 /**
- * Resolve `package.json#exports` (or `#imports`) per Node spec.
- *
- * @param exportsField  Raw value from package.json#exports or #imports
- * @param subpath       '.' for root, './foo' for subpath, '#name' for imports
- * @param conditions    The active conditions (the map's key order decides among them)
- * @returns             Relative path target string, or null if not found / forbidden
+ * One exact/sugar/pattern selection and target traversal for exports/imports.
+ * undefined is unmatched; null is blocked. A blocked condition or best pattern
+ * never falls back to a sibling. Arrays retain Node's last-null/invalid-target
+ * rule (a null array element is not a conditional fallback).
  */
-export declare function resolveExports(exportsField: ExportsField | undefined, subpath?: string, conditions?: string[]): string | null;
+export declare function selectPackageMap<T>(field: unknown, name: string, conditions: ReadonlySet<string> | readonly string[], policy: PackageMapPolicy<T>): PackageMapSteps<T | null | undefined>;
+/** Old build/browser tolerance is explicit, and never used by Node resolution. */
+export declare const BUILD_BROWSER_PACKAGE_MAP_POLICY: PackageMapPolicy<string>;
+/** Compatibility surface for install/bundler/browser callers. */
+export declare function resolveExports(exportsField: ExportsField | undefined, subpath?: string, conditions?: string[], policy?: PackageMapPolicy<string>): string | null;
+/**
+ * Node's leaf validation and error construction, shared by CJS and ESM.
+ * A bare imports target is delegated to the caller's package resolver; any
+ * host questions it yields remain inside the same array traversal.
+ */
+export declare function createNodePackageMapPolicy(packageJsonUrl: URL, base: string, internal: boolean, resolveBare: (specifier: string) => PackageMapSteps<URL>): PackageMapPolicy<URL>;
 /**
  * Resolve a package's entry-point file relative to its directory.
  * Priority: exports → module (only under the `module` condition) → main → null.
  * For non-root subpaths without an `exports` field, returns the subpath
  * itself (caller probes filesystem with extension-list).
  */
-export declare function resolvePackageEntry(pkg: ResolvablePackageJson, subpath?: string, conditions?: string[]): string | null;
+export declare function resolvePackageEntry(pkg: ResolvablePackageJson, subpath?: string, conditions?: string[], policy?: PackageMapPolicy<string>): string | null;
 /** The package.json fields Node's self-reference rule reads. */
 export interface SelfReferencingPackageJson {
     name?: string;

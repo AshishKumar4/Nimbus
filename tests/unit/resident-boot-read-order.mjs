@@ -15,7 +15,7 @@
 // reads, and the size of what is decoded at once.
 
 import assert from 'node:assert/strict';
-import { encodeCommonJsPack, facetImageDigest, facetImagePath, residentLoaderConfig } from '../../packages/fabric/src/process-fabric.ts';
+import { encodeCodePack, facetImageDigest, facetImagePath, residentLoaderConfig } from '../../packages/fabric/src/process-fabric.ts';
 
 const encoder = new TextEncoder();
 const images = new Map();
@@ -27,7 +27,7 @@ for (let i = 0; i < 40; i++) {
 }
 // A module that opens with a byte order mark keeps it: it is part of the text the index counts.
 modules['node_modules/pkg/bom.js'] = '\ufeffmodule.exports = "bom";\n';
-const packPath = await store(encoder.encode(encodeCommonJsPack(modules).join('')));
+const packPath = await store(encoder.encode(encodeCodePack(modules).join('')));
 const mainPath = await store(encoder.encode('export default {};'));
 const wasm = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
 const wasmPath = '/home/user/app/node_modules/pkg/pkg.wasm';
@@ -50,7 +50,7 @@ try {
     compatibilityDate: '2026-01-01', compatibilityFlags: [], mainModule: 'worker.js', modules: {},
     vfsTextModules: { 'worker.js': mainPath },
     vfsWasmModules: { 'pkg.wasm': wasmPath },
-    vfsCommonJsPacks: [packPath],
+    vfsCodePacks: [packPath],
   }, disk);
 } finally {
   TextDecoder.prototype.decode = nativeDecode;
@@ -67,10 +67,10 @@ assert.ok(largestDecode < packBytes / 4 && largestDecode <= largestModule + 4096
 console.log('  a pack is read first, and decoded a module at a time');
 
 // A pack whose index names fewer or more bytes than it holds is refused.
-const short = encoder.encode(encodeCommonJsPack(modules).join('').slice(0, -1));
+const short = encoder.encode(encodeCodePack(modules).join('').slice(0, -1));
 const shortPath = await store(short);
 await assert.rejects(
-  residentLoaderConfig({ compatibilityDate: '2026-01-01', compatibilityFlags: [], mainModule: 'worker.js', modules: {}, vfsCommonJsPacks: [shortPath] }, disk),
+  residentLoaderConfig({ compatibilityDate: '2026-01-01', compatibilityFlags: [], mainModule: 'worker.js', modules: {}, vfsCodePacks: [shortPath] }, disk),
   /pack/,
   'a pack its index does not describe is refused',
 );
