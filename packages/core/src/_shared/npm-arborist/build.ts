@@ -12,6 +12,9 @@ import { localeCompare, Node, Tree, type Edge, type EdgeDefinition, type HostPac
 import { Placer, PeerConflict, type Placement } from './place-dep.js';
 import type { PlanOptions, TreeHost, TreeResolution } from './plan.js';
 
+/** A package's edges, read from its manifest once, with peers and without (`--legacy-peer-deps`): a package object is the same across plans. */
+const edgeDefinitions = { peers: new WeakMap<TreePackage, EdgeDefinition[]>(), legacy: new WeakMap<TreePackage, EdgeDefinition[]>() };
+
 export class Builder<H extends HostPackages> {
   /** Nodes that failed to load: their edges are no problem to solve. */
   readonly loadFailures = new Set<Node<H>>();
@@ -26,8 +29,6 @@ export class Builder<H extends HostPackages> {
   private readonly expanded = new Set<string>();
   private readonly seen = new Set<Node<H>>();
   private readonly virtualRoots = new Map<Node<H>, Node<H>>();
-  /** A package's edges, read from its manifest once. */
-  private readonly edgeDefinitions = new WeakMap<TreePackage, EdgeDefinition[]>();
 
   constructor(readonly tree: Tree<H>, private readonly host: TreeHost<H['resolved']>, private readonly options: PlanOptions) {
     this.placer = new Placer(tree, options, (pkg) => this.edgesOf(pkg));
@@ -35,10 +36,12 @@ export class Builder<H extends HostPackages> {
 
   edgesOf(pkg: TreePackage | null): EdgeDefinition[] {
     if (pkg === null) return [];
-    let edges = this.edgeDefinitions.get(pkg);
+    const legacyPeerDeps = this.options.legacyPeerDeps === true;
+    const memo = legacyPeerDeps ? edgeDefinitions.legacy : edgeDefinitions.peers;
+    let edges = memo.get(pkg);
     if (edges === undefined) {
-      edges = manifestEdges(pkg, { legacyPeerDeps: this.options.legacyPeerDeps === true });
-      this.edgeDefinitions.set(pkg, edges);
+      edges = manifestEdges(pkg, { legacyPeerDeps });
+      memo.set(pkg, edges);
     }
     return edges;
   }
@@ -103,11 +106,22 @@ export class Builder<H extends HostPackages> {
     return node;
   }
 
-  /** A root outside the tree with `source`'s edges, where a package and its peer set are loaded (#virtualRoot). */
-  private virtualRoot(source: Node<H>, reuse: boolean): Node<H> {
+  /** Whether the package `name@spec` resolves to has peers. */
+  private async hasPeers(name: string, spec: string): Promise<boolean> {
+    await this.resolve([{ name, range: spec }]);
+    const answer = this.resolutions.get(this.requestKey(name, spec));
+    return answer !== undefined && 'package' in answer && this.edgesOf(answer.package).some((edge) => isPeer(edge.type));
+  }
+
+  /**
+   * A root outside the tree with `source`'s edges, where a package and its
+   * peer set are loaded (#virtualRoot). `bare`: for a package with no peers,
+   * where no peer set loads and the edges would go unread: none.
+   */
+  private virtualRoot(source: Node<H>, reuse: boolean, bare = false): Node<H> {
     const existing = reuse ? this.virtualRoots.get(source) : undefined;
     if (existing) return existing;
-    const root = new Node<H>('', { kind: 'virtual-root', source }, [...source.edgesOut.values()].map((edge) => edge.definition));
+    const root = new Node<H>('', { kind: 'virtual-root', source }, bare ? [] : [...source.edgesOut.values()].map((edge) => edge.definition));
     new Tree(root, false);
     this.virtualRoots.set(source, root);
     return root;
@@ -115,7 +129,7 @@ export class Builder<H extends HostPackages> {
 
   /** The package for `edge`, loaded with its peer set into a virtual root (#nodeFromEdge). */
   private async nodeFromEdge(edge: Edge<H>, parent: Node<H> | null, secondEdge: Edge<H> | null, required: Set<Node<H>>): Promise<Node<H>> {
-    const root = parent ?? this.virtualRoot(edge.from, false);
+    const root = parent ?? this.virtualRoot(edge.from, false, !(await this.hasPeers(edge.name, edge.spec)));
     const first = await this.nodeFromSpec(edge.name, edge.spec, root);
     // A second spec, where the first does not meet it: taken when it meets the first edge too.
     const second = secondEdge && !secondEdge.valid ? await this.nodeFromSpec(edge.name, secondEdge.spec, root) : null;
