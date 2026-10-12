@@ -117,7 +117,7 @@ export function relayRpcBody(response: Response, method: string, owner: BodyOwne
   const declared = method === 'HEAD' ? null : response.headers.get('Content-Length');
   // RFC 9110 §8.6: 1*DIGIT. Joined duplicates ("5, 5") are not one length.
   const length = declared !== null && /^\d+$/.test(declared) ? Number(declared) : NaN;
-  const last = Number.isSafeInteger(length) ? new FixedLengthStream(length) : gated ?? abortableStage(owner.signal);
+  const last = Number.isSafeInteger(length) ? new FixedLengthStream(length) : gated ?? ownedStage(owner);
   settleWith(owner, last === gated || gated === null ? response.body : response.body.pipeThrough(gated), last.writable);
   return new Response(last.readable, {
     status: response.status,
@@ -133,39 +133,59 @@ export interface BodyOwner {
   settle(): void;
   /** The response will not be delivered, for any reason: to its handler, the caller has left. */
   fail(): void;
+  /** The relay's JavaScript stage, errored if the caller leaves while it waits. */
+  stage(controller: TransformStreamDefaultController<Uint8Array>): void;
 }
 
 /**
- * One response's scope (RouteableFacetTarget), and the owner whose relay
- * settles it: delivered, or not. A caller that leaves is done with the
- * response whatever its relay still waits on; a client that resets is seen
- * both ways (its signal, the relay failing), in either order, and the first
- * says.
+ * One response's scope (RouteableFacetTarget) and the owner whose relay
+ * settles it: delivered, or not. It listens on the caller's signal once, for
+ * all of it: a caller that leaves before any header, a stage a pipe waits on
+ * without looking at its signal, the scope's end. Delivery costs no more than
+ * that one listener; only leaving does anything.
  */
+class RelayScope implements ResponseScope, BodyOwner {
+  #listener: ((delivered: boolean) => void) | undefined;
+  #outcome: boolean | undefined;
+  #stage: TransformStreamDefaultController<Uint8Array> | undefined;
+  constructor(readonly signal: AbortSignal) {
+    if (signal.aborted) this.#outcome = false;
+    else signal.addEventListener('abort', this, { once: true });
+  }
+  settled(listener: (delivered: boolean) => void): void {
+    if (this.#outcome === undefined) this.#listener = listener;
+    else listener(this.#outcome);
+  }
+  settle(): void { this.#end(true); }
+  fail(): void { this.#end(false); }
+  stage(controller: TransformStreamDefaultController<Uint8Array>): void { this.#stage = controller; }
+  /** The caller left: a pipe waiting on the stage ends, and so does the response. */
+  handleEvent(): void {
+    this.#stage?.error(this.signal.reason);
+    this.#end(false);
+  }
+  #end(delivered: boolean): void {
+    if (this.#outcome !== undefined) return;
+    this.#outcome = delivered;
+    this.signal.removeEventListener('abort', this);
+    const listener = this.#listener;
+    this.#listener = undefined;
+    listener?.(delivered);
+  }
+}
+
 export function responseScope(caller: AbortSignal): { scope: ResponseScope; owner: BodyOwner } {
-  let resolve = (_delivered: boolean): void => {};
-  const settled = new Promise<boolean>((done) => { resolve = done; });
-  const left = () => resolve(false);
-  const end = (delivered: boolean) => { caller.removeEventListener('abort', left); resolve(delivered); };
-  if (caller.aborted) left();
-  else caller.addEventListener('abort', left, { once: true });
-  return { scope: { signal: caller, settled }, owner: { signal: caller, settle: () => end(true), fail: () => end(false) } };
+  const scope = new RelayScope(caller);
+  return { scope, owner: scope };
 }
 
 function settleWith(owner: BodyOwner, source: ReadableStream<Uint8Array>, last: WritableStream<Uint8Array>): void {
-  void source.pipeTo(last, { signal: owner.signal }).then(owner.settle, owner.fail);
+  void source.pipeTo(last, { signal: owner.signal }).then(() => owner.settle(), () => owner.fail());
 }
 
-/**
- * A JavaScript stage of the relay, errored when `signal` aborts. A pipe waits
- * on a stage's read or write without looking at its signal, so this is what
- * ends a pipe whose client is gone while its source is quiet or its sink full.
- */
-function abortableStage(signal: AbortSignal, transformer: Transformer<Uint8Array, Uint8Array> = {}): TransformStream<Uint8Array, Uint8Array> {
-  return new TransformStream({
-    ...transformer,
-    start: (controller) => { signal.addEventListener('abort', () => controller.error(signal.reason), { once: true }); },
-  });
+/** A JavaScript stage of the relay, which its owner errors if the caller leaves (RelayScope). */
+function ownedStage(owner: BodyOwner, transformer: Transformer<Uint8Array, Uint8Array> = {}): TransformStream<Uint8Array, Uint8Array> {
+  return new TransformStream({ ...transformer, start: (controller) => owner.stage(controller) });
 }
 
 /**
@@ -173,8 +193,8 @@ function abortableStage(signal: AbortSignal, transformer: Transformer<Uint8Array
  * its output is (ProcessOutput.releaseOutput): what it wrote while answering
  * is published before the piece after it, or its end, is seen.
  */
-function releasedBody(output: ProcessOutput, pid: number, signal: AbortSignal): TransformStream<Uint8Array, Uint8Array> {
-  return abortableStage(signal, {
+function releasedBody(output: ProcessOutput, pid: number, owner: BodyOwner): TransformStream<Uint8Array, Uint8Array> {
+  return ownedStage(owner, {
     transform: (chunk, controller) => output.releaseOutput(pid, () => controller.enqueue(chunk)),
     flush: () => output.releaseOutput(pid, () => {}),
   });
@@ -611,7 +631,7 @@ export class PortRegistry {
       // undone. We do NOT inject Access-Control-Allow-Origin — a port proxy
       // forwards whatever CORS policy the user's HTTP server chose (audit C3
       // discourages gratuitous wildcards on non-static routes).
-      const gate = output === null || response.body === null ? null : releasedBody(output, entry.pid, scope.signal);
+      const gate = output === null || response.body === null ? null : releasedBody(output, entry.pid, owner);
       const answer = decodeContentCoding(response, port, request.method, owner, gate);
       relayed = true;
       return answer;

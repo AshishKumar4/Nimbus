@@ -38,7 +38,7 @@ export class Session extends DurableObject {
     const row = { aborted: null, settled: null, cancelled: false, controller: null };
     this.rows.set(key, row);
     scope.signal.addEventListener('abort', () => { row.aborted = Date.now(); });
-    scope.settled.then(() => { row.settled = Date.now(); });
+    scope.settled(() => { row.settled = Date.now(); });
     const cancel = () => { row.cancelled = true; };
     if (url.pathname === '/bulk') {
       let remaining = 8 * MIB;

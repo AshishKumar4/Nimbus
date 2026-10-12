@@ -633,9 +633,12 @@ function spawnResident(
     // A request waits for the pinned incarnation, never for the boot.
     handleHttpRequest: async (request: Request, scope: ResponseScope, relayed?: HostRequest) => {
       const lease = observation.acquire();
-      void scope.settled.then(lease.release);
       // A peer relaying its coordinator's request leaves the numbering to it.
-      const sending = relayed ?? sent.send(scope, abandon);
+      const sending = relayed ?? sent.send();
+      scope.settled((delivered) => {
+        lease.release();
+        if (!relayed) sent.settled(sending.id, delivered, abandon);
+      });
       try {
         // A live watch that found the pinned instance admits the request; without one it carries its admission.
         const admission = observation.validated() ? undefined : [watchCapability, await incarnation] as const;

@@ -1,5 +1,4 @@
 import type { WorkerCode } from '@nimbus-sh/platform/worker-code.js';
-import type { ResponseScope } from '@nimbus-sh/core/runtime/os-contracts.js';
 
 /** A host-loss watch exists only while somebody owns work on this actor. */
 export interface HostActivityLease {
@@ -184,20 +183,22 @@ export class SentRequests {
   #next = 0;
   #ended: number[] = [];
   #abandoned: number[] = [];
-  /** An id for a request with `scope`, the ids to report, and abandon(id) sent if it is not delivered. */
-  send(scope: ResponseScope, abandon: (id: number) => Promise<unknown>): HostRequest {
-    const id = this.#next++;
-    const { ended, abandoned } = { ended: this.#ended, abandoned: this.#abandoned };
+  /** An id for a request, and the earlier ids its leaf forgets or abandons first. */
+  send(): HostRequest {
+    const request = { id: this.#next++, ended: this.#ended, abandoned: this.#abandoned };
     this.#ended = [];
     this.#abandoned = [];
-    // Reported as ended only once its abandon arrived: a report that overtook
-    // it would leave the leaf holding the late abandon for good. One that did
-    // not arrive rides the next request instead.
-    void scope.settled.then((delivered) => {
-      if (delivered) this.#ended.push(id);
-      else void abandon(id).then(() => this.#ended.push(id), () => this.#abandoned.push(id));
-    });
-    return { id, ended, abandoned };
+    return request;
+  }
+
+  /**
+   * Request `id` ended: reported as ended when delivered, else once its
+   * abandon arrived. A report that overtook the abandon would leave the leaf
+   * holding it for good; one that does not arrive rides the next request.
+   */
+  settled(id: number, delivered: boolean, abandon: (id: number) => Promise<unknown>): void {
+    if (delivered) this.#ended.push(id);
+    else void abandon(id).then(() => this.#ended.push(id), () => this.#abandoned.push(id));
   }
 
   /** `request`'s call failed before its leaf saw what it carried (leafReceived): carry it again (each is idempotent there). */

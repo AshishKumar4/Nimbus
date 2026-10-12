@@ -72,19 +72,20 @@ function setup() {
   // arrive (its target busy, not gone) rides the next request instead of
   // being reported ended, which would make the leaf forget it unabandoned.
   const sent = new SentRequests(), abandons = [];
-  const scope = (delivered) => ({ signal: new AbortController().signal, settled: Promise.resolve(delivered) });
-  const first = sent.send(scope(true), async () => {});
+  const first = sent.send();
   assert.deepEqual(first, { id: 0, ended: [], abandoned: [] });
-  sent.send(scope(false), async (id) => { abandons.push(id); throw new Error('overloaded'); });
-  sent.send(scope(false), async (id) => { abandons.push(id); });
+  sent.settled(first.id, true, async () => {});
+  const second = sent.send(), third = sent.send();
+  sent.settled(second.id, false, async (id) => { abandons.push(id); throw new Error('overloaded'); });
+  sent.settled(third.id, false, async (id) => { abandons.push(id); });
   await turns();
   assert.deepEqual(abandons, [1, 2]);
-  const carrying = sent.send(scope(true), async () => {});
+  const carrying = sent.send();
   assert.deepEqual(carrying, { id: 3, ended: [0, 2], abandoned: [1] });
+  sent.settled(carrying.id, true, async () => {});
   // The call that carried them failed: the next one carries them again.
   sent.unsent(carrying);
-  await turns();
-  assert.deepEqual(sent.send(scope(true), async () => {}), { id: 4, ended: [0, 2, 3], abandoned: [1] });
+  assert.deepEqual(sent.send(), { id: 4, ended: [3, 0, 2], abandoned: [1] });
 }
 console.log('host-activity: idle, shared active watches, abort, wake validation and host loss');
 
