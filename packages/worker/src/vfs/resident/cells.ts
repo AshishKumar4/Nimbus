@@ -47,6 +47,13 @@ export interface Admitted {
 }
 
 export interface Cells {
+  /**
+   * The resident set, as the shims have always seen it: `k in b`, `b[k]`,
+   * `Object.keys(b)`, `delete b[k]` across a dozen call sites in
+   * runtime/node-shims.ts, the shape the ledger uses for `__vfsWrites`. Every
+   * trap is synchronous, because every reader of __vfsBundle is.
+   */
+  readonly bundle: Record<string, unknown>;
   /** Apply one authority delta and unseal (see admit below). */
   admit(result: AcquireAnswer | null | undefined): Admitted;
   dropDated(): void;
@@ -344,7 +351,57 @@ export function createCells(
     return out;
   };
 
+  const deleteCell = (t: ResidentTables, path: string): boolean => {
+    const had = head(path) !== undefined || held.has(path);
+    forgetHeld(path);
+    t.chunkDelete(path);
+    t.fileDelete(path);
+    return had;
+  };
+
+  const keys = (): string[] => coherence.require().fileAllPaths();
+
+  const bundle = new Proxy(Object.create(null) as Record<string, unknown>, {
+    get(_t, path) {
+      if (typeof path !== 'string') return undefined;
+      return get(path);
+    },
+    has(_t, path) {
+      if (typeof path !== 'string') return false;
+      return head(path) !== undefined || held.has(path);
+    },
+    set(_t, path, cell) {
+      // The program's own write, stamped RK_OWN_WRITE: not the authority's
+      // yet, newer than anything it could report, and replaced with a real
+      // revision by the ledger when the write-back lands.
+      if (typeof path !== 'string') return true;
+      put(coherence.require(), path, cell, undefined);
+      return true;
+    },
+    deleteProperty(_t, path) {
+      if (typeof path === 'string') deleteCell(coherence.require(), path);
+      return true;
+    },
+    ownKeys() { return keys(); },
+    getOwnPropertyDescriptor(_t, path) {
+      if (typeof path !== 'string') return undefined;
+      if (head(path) === undefined) return undefined;
+      // Configurable so 'delete' is legal and enumerable so for-in and
+      // Object.keys see it — the two things every scan site depends on.
+      //
+      // An ACCESSOR, not a data descriptor, and that is the whole point: a
+      // for-in or Object.keys over a Proxy asks this trap about every key, so a
+      // data descriptor had to produce `value` — reading every file's bytes out
+      // of SQLite to answer a question about NAMES. Measured at pi scale, one
+      // such scan read 87 MiB and threw all of it away. A getter answers the
+      // name question for free and still returns the bytes to anything that
+      // genuinely reads the property.
+      return { configurable: true, enumerable: true, get() { return get(path); } };
+    },
+  });
+
   return {
+    bundle,
     /**
      * Apply one authority delta and unseal.
      *
@@ -409,13 +466,7 @@ export function createCells(
       t.filePut(path, source.kind, source.size, source.chunks, rev, String(ckey));
       return true;
     },
-    delete(t, path) {
-      const had = head(path) !== undefined || held.has(path);
-      forgetHeld(path);
-      t.chunkDelete(path);
-      t.fileDelete(path);
-      return had;
-    },
+    delete: deleteCell,
     /**
      * What a row is dated at: its revision, RK_OWN_WRITE for this facet's own
      * unacknowledged bytes, or undefined when the path is not held.
@@ -488,7 +539,7 @@ export function createCells(
       return put(t, path, cell, rev);
     },
     /** Every held path. Backs the Object.keys / for-in scans in the shims. */
-    keys: () => coherence.require().fileAllPaths(),
+    keys,
     /**
      * Every path held as this facet's own unacknowledged bytes: the rows a
      * poison's repair keeps without a revision to vouch for them, whose reports
