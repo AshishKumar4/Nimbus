@@ -55,7 +55,7 @@ const fetched = new Map();
 let offTheBox = null;
 /** `events` holds the realm open while anything of the program's waits on it. */
 function holdWhileBusy() {
-    joined.hold(fetched.size > 0 || ports.size > 0 || (offTheBox?.awaited ?? 0) > 0);
+    joined.hold(fetched.size > 0 || ports.size > 0 || persistentWatches > 0 || (offTheBox?.awaited ?? 0) > 0);
 }
 /** End the process now with `code`, as process.exit() and a fatal error do. */
 function exitNow(code) {
@@ -69,7 +69,10 @@ const text = (value, method) => typeof value === 'string' ? value : malformed(me
 const flagOf = (value, method) => typeof value === 'boolean' ? value : malformed(method);
 const stat = (value, method) => isStat(value) ? value : malformed(method);
 const count = (value, method) => Number.isSafeInteger(value) && typeof value === 'number' && value >= 0 ? value : malformed(method);
-let changed;
+/** The program's watches (NodeFilesystem.watch), by id: the host tells each its changes. */
+const watches = new Map();
+let nextWatch = 1;
+let persistentWatches = 0;
 const filesystem = {
     readFile: (path) => bytes(call({ op: 'fs', method: 'readFile', args: [path] }), 'readFile'),
     readFileString: (path) => text(call({ op: 'fs', method: 'readFileString', args: [path] }), 'readFileString'),
@@ -99,10 +102,38 @@ const filesystem = {
     ftruncate: (fd, size) => { call({ op: 'fs', method: 'ftruncate', args: [fd, size] }); },
     fsync: (fd) => { call({ op: 'fs', method: 'fsync', args: [fd] }); },
     close: (fd) => { call({ op: 'fs', method: 'close', args: [fd] }); },
-    get onChange() { return changed; },
-    set onChange(listener) {
-        changed = listener;
-        call({ op: 'watch', on: listener !== undefined });
+    watch: (path, listener, options) => {
+        const id = nextWatch++;
+        const watch = { listener, persistent: options?.persistent !== false };
+        call({ op: 'watch', id, path });
+        watches.set(id, watch);
+        if (watch.persistent)
+            persistentWatches++;
+        holdWhileBusy();
+        return {
+            close() {
+                if (!watches.delete(id))
+                    return;
+                if (watch.persistent)
+                    persistentWatches--;
+                call({ op: 'watch', id, path: null });
+                holdWhileBusy();
+            },
+            ref() {
+                if (!watches.has(id) || watch.persistent)
+                    return;
+                watch.persistent = true;
+                persistentWatches++;
+                holdWhileBusy();
+            },
+            unref() {
+                if (!watches.has(id) || !watch.persistent)
+                    return;
+                watch.persistent = false;
+                persistentWatches--;
+                holdWhileBusy();
+            },
+        };
     },
 };
 const output = (fd) => ({
@@ -176,7 +207,7 @@ events.on('message', (event) => {
             void serve(event.id, event.port, event.request);
             return;
         case 'changed':
-            changed?.();
+            watches.get(event.id)?.listener(event.event);
             return;
     }
 });

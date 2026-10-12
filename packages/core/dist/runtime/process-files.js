@@ -184,13 +184,6 @@ class GuardedProcessBridge {
         return lease === null ? answer : { ...answer, readLease: lease };
     }
     list(after, limit) { this.guard(); return this.target.list(after, limit); }
-    subscribe(path, listener) {
-        this.guard();
-        const unsubscribe = this.target.subscribe(path, listener);
-        const dispose = () => { unsubscribe(); this.scope.subscriptions.delete(dispose); };
-        this.scope.subscriptions.add(dispose);
-        return dispose;
-    }
     realpath(path) { this.guard(); return this.target.realpath(path); }
     remove(path, options) { this.guard(); return this.target.remove(path, options); }
     copyFile(from, to) { this.guard(); return this.target.copyFile(from, to); }
@@ -569,9 +562,7 @@ export class ProcessFiles {
         scope.waveDescriptions.clear();
         scope.closed = true;
         scope.abort.abort();
-        for (const unsubscribe of scope.subscriptions)
-            unsubscribe();
-        scope.subscriptions.clear();
+        this.stopSubscriptions(scope);
         return { lost };
     }
     /** The mounts `cred` sees, root first: what df, mount and `/proc/mounts` list. */
@@ -597,13 +588,23 @@ export class ProcessFiles {
      * bridge on it). A flush that fails (an aborted binding's, a mount's
      * refusal) loses its bytes and is reported after the scope is closed.
      */
+    /** Every subscription of `scope` stopped, whichever of them fails to. */
+    stopSubscriptions(scope) {
+        for (const dispose of [...scope.subscriptions]) {
+            try {
+                dispose();
+            }
+            catch (error) {
+                console.error('[process-files] a subscription could not be stopped:', error instanceof Error ? error.message : String(error));
+            }
+        }
+        scope.subscriptions.clear();
+    }
     closeScope(scope) {
         if (scope.closed)
             return;
         const lost = closeDescriptions(scope);
-        for (const dispose of scope.subscriptions)
-            dispose();
-        scope.subscriptions.clear();
+        this.stopSubscriptions(scope);
         scope.closed = true;
         scope.abort.abort();
         return andThen(lost, reportLost);
@@ -675,7 +676,29 @@ class AwaitingProcessBridge {
     get synchronous() { return this.bridge; }
     gateLaunch(named) { return this.bridge.gateLaunch(named); }
     revision(path) { return this.bridge.revision(path); }
-    subscribe(path, listener) { return this.bridge.subscribe(path, listener); }
+    /** The process's namespace's changes at `path` and under it (CompositeVFS.watchChanges), named as its listings name them; stopped with its scope. */
+    subscribe(path, listener, options) {
+        this.live();
+        let stopped = false;
+        const stop = this.namespace.watchChanges(path, (events) => {
+            for (const event of events) {
+                if (stopped)
+                    break;
+                listener(event.oldPath === undefined
+                    ? { type: event.type, path: event.path.slice(1), timestamp: event.timestamp }
+                    : { type: event.type, path: event.path.slice(1), oldPath: event.oldPath.slice(1), timestamp: event.timestamp });
+            }
+        }, options);
+        const dispose = () => {
+            if (stopped)
+                return;
+            stopped = true;
+            this.scope.subscriptions.delete(dispose);
+            stop();
+        };
+        this.scope.subscriptions.add(dispose);
+        return dispose;
+    }
     writeBatch(payload, options) { return this.bridge.writeBatch(payload, options); }
     writeStream(stream, options) { return this.bridge.writeStream(stream, options); }
     acquireExclusiveMutation(path, options) {

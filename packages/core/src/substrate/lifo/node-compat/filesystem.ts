@@ -1,5 +1,12 @@
 import type { RuntimeFsBridge, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat } from '../../../runtime/os-contracts.js';
+import type { VfsEvent } from '../../../vfs/events.js';
 import { syscallError } from '../../../vfs/vfs-error.js';
+
+export interface NodeWatch {
+  close(): void;
+  ref(): void;
+  unref(): void;
+}
 
 /** The synchronous filesystem the in-process Node interpreter's `fs` and `require` read. */
 export interface NodeFilesystem {
@@ -33,7 +40,12 @@ export interface NodeFilesystem {
   ftruncate(fd: number, size: number): void;
   fsync(fd: number): void;
   close(fd: number): void;
-  onChange: (() => void) | undefined;
+  /**
+   * Each change at `path` or under it the process's namespace shows
+   * (RuntimeFsBridge.subscribe), its paths absolute. `persistent` (default
+   * true): a guest stays while the watch is open and ref'd, as Node's does.
+   */
+  watch(path: string, listener: (event: VfsEvent) => void, options?: { persistent?: boolean }): NodeWatch;
 }
 
 /**
@@ -57,8 +69,6 @@ function bridgeFilesystem(bridge: RuntimeFsBridge): NodeFilesystem {
     if (data === null) throw syscallError('ENOENT', 'open', path);
     return data;
   };
-  let listener: (() => void) | undefined;
-  let unsubscribe: (() => void) | undefined;
   return {
     readFile: read,
     readFileString: path => new TextDecoder().decode(read(path)),
@@ -88,7 +98,7 @@ function bridgeFilesystem(bridge: RuntimeFsBridge): NodeFilesystem {
       if (!stat) throw syscallError('ENOENT', 'lstat', path);
       return stat;
     },
-    realpath: (path) => fs.realpath(path),
+    realpath: path => fs.realpath(path),
     mkdir: (path, options) => fs.mkdir(path, options),
     readdir: path => fs.readdir(path) as RuntimeVfsDirEntry[],
     unlink: path => fs.unlink(path),
@@ -104,11 +114,12 @@ function bridgeFilesystem(bridge: RuntimeFsBridge): NodeFilesystem {
     ftruncate: (fd, size) => fs.ftruncate(fd, size),
     fsync: (fd) => fs.fsync(fd),
     close: (fd) => fs.close(fd),
-    get onChange() { return listener; },
-    set onChange(next) {
-      unsubscribe?.();
-      listener = next;
-      unsubscribe = next ? bridge.subscribe?.('/', next) : undefined;
+    watch(path, listener) {
+      // A Node watch is of its target, as an inode's is: it follows it across renames.
+      const stop = bridge.subscribe?.(path, (event) => listener(event.oldPath === undefined
+        ? { ...event, path: `/${event.path}` }
+        : { ...event, path: `/${event.path}`, oldPath: `/${event.oldPath}` }), { follow: true });
+      return { close: () => stop?.(), ref() {}, unref() {} };
     },
   };
 }

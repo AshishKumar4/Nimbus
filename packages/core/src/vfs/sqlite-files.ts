@@ -12,6 +12,8 @@
 import { ROOT_DIRECTORY_MODE, ROOT_INODE, type CredentialedVfs, type SqliteVFS, type VfsStat as SqliteStat } from './sqlite-vfs.js';
 import type { SyncVFS, VFS, VfsCasResult, VfsChanges, VfsCred, VfsDirent, VfsOpenFile, VfsRevision, VfsStat, VfsViewOptions, VfsWriteObserver } from './vfs.js';
 import { syscallError, toVfsError, VfsError, VFS_ERRNO, type VfsErrorCode } from './vfs-error.js';
+import { projectChange, type VfsEvent } from './events.js';
+import { normalizeVfsPath } from './path.js';
 
 function absolute(key: string): string {
   return key.startsWith('/') ? key : `/${key}`;
@@ -96,6 +98,33 @@ export class SqliteFiles implements VFS {
     }));
   }
 
+  /**
+   * Every mutation that lands at `path` or under it, through any view, as
+   * the one rule tells a watch (projectChange); paths absolute. The kernel
+   * sees everywhere, and its names are the database's: its watch is the
+   * engine's own stream, batched as it publishes (SqliteVFS.events). Any
+   * other principal's is judged as each change is published, under its names
+   * (CredentialedVfs.subscribe).
+   */
+  watchChanges(path: string, listener: (events: readonly VfsEvent[]) => void): () => void {
+    if (this.view.cred.uid !== 0) {
+      return this.view.subscribe(path, (event) => {
+        listener([event.oldPath === undefined
+          ? { type: event.type, path: absolute(event.path), timestamp: event.timestamp }
+          : { type: event.type, path: absolute(event.path), oldPath: absolute(event.oldPath), timestamp: event.timestamp }]);
+      });
+    }
+    const tree = normalizeVfsPath(path);
+    return this.engine.events.on((batch) => {
+      const told: VfsEvent[] = [];
+      for (const event of batch) {
+        const projected = projectChange(event, tree, absolute);
+        if (projected !== null) told.push(projected);
+      }
+      if (told.length > 0) listener(told);
+    });
+  }
+
   /** `op`, its engine errors as Node's for `syscall` on `path` (and `dest`). */
   private run<T>(syscall: string, path: string, op: () => T, dest?: string): T {
     try {
@@ -119,6 +148,11 @@ export class SqliteFiles implements VFS {
       if (converted instanceof VfsError && converted.code === 'ENOENT') return null;
       throw converted;
     }
+  }
+
+  landedAt(path: string): boolean {
+    if (path.replace(/\/+/g, '') === '') return true;
+    return this.run('lstat', path, () => this.view.landedAt(path));
   }
 
   readFile(path: string): Uint8Array {

@@ -118,8 +118,11 @@ function seed(vfs, root, dirs, files) {
   assert.equal(delta.poison, false);
   const paths = new Set(delta.paths.map((entry) => entry.path));
   for (const path of ['dst', 'dst/d0', 'dst/d1/f2.js', 'dst/big.bin', 'dst/link']) assert.ok(paths.has(path), path);
-  // One event for the tree, as a rename emits one: the log above carries every path.
-  assert.deepEqual(events, ['addDir dst']);
+  // Every entry it made, as a removal tells every entry it removed: a watch of any path in the tree hears its own.
+  assert.deepEqual(events.sort(), [
+    'add dst/big.bin', 'add dst/d0/f0.js', 'add dst/d0/f1.js', 'add dst/d0/f2.js', 'add dst/d1/f0.js', 'add dst/d1/f1.js', 'add dst/d1/f2.js',
+    'add dst/link', 'addDir dst', 'addDir dst/d0', 'addDir dst/d1',
+  ]);
 }
 
 // ── Credentials: read access is required; the copy belongs to the caller ──
