@@ -191,7 +191,7 @@ import {
 } from '../runtime/opencode-facet-runner.js';
 import { parsePortFromArgv, resolveLongRunningPort } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
-import { hostActivity } from '@nimbus-sh/fabric/host-activity.js';
+import { hostActivity, hostAdapterBytes } from '@nimbus-sh/fabric/host-activity.js';
 import {
   DEFAULT_FACET_BUNDLE_PROFILE,
   type FacetBundleProfile,
@@ -6706,15 +6706,16 @@ export class FacetManager {
 
   /**
    * What a resident's map holds beside its generated text: its sidecars, its
-   * staged bindings' loader and trampoline, and the wasm images and bindings
-   * it reads by path at boot, at their size on the session's disk.
+   * staged bindings' loader and trampoline, the host's adapter around its
+   * worker.js, and the wasm images and bindings it reads by path at boot, at
+   * their size on the session's disk.
    */
   private _residentMemberBytes(
     sqliteModules: Readonly<Record<string, { wasm: ArrayBuffer }>>,
     staged: ResidentStagedBindings | null,
     wasmImports: readonly FacetWasmImport[],
   ): number {
-    let bytes = moduleMemberBytes(sqliteModules);
+    let bytes = moduleMemberBytes(sqliteModules) + hostAdapterBytes('worker.js');
     if (staged) bytes += mapTextBytes(staged.loader) + staged.trampoline.byteLength;
     const fs = this.vfs?.as(CRED_KERNEL);
     for (const path of [...wasmImports.map((image) => image.vfsPath), ...Object.values(staged?.bindingPaths ?? {})]) {
