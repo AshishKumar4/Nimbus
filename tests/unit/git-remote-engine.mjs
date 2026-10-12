@@ -129,6 +129,29 @@ try {
     assert.ok(slow.selfContained, 'a complete repository\'s full fetch is self-contained: ' + JSON.stringify(slow));
     console.log(`  ok  fetchPack past its decoding budget: ${steps} steps in one facet; host git's objects`);
 
+    // Git directories are not necessarily a worktree's .git. A linked
+    // worktree uses its common directory for refs, shallow and objects.
+    for (const layout of [
+      { name: 'bare', gitDir: '/home/user/bare.git' },
+      { name: 'module', gitDir: '/home/user/super/.git/modules/child' },
+      { name: 'linked', gitDir: '/home/user/common.git/worktrees/linked', commonDir: '/home/user/common.git' },
+      { name: 'objects', gitDir: '/home/user/elsewhere.git', objectDir: '/home/user/object-store' },
+    ]) {
+      const common = layout.commonDir ?? layout.gitDir;
+      session.kernel.mkdir(common.slice(1) + '/refs/heads', { recursive: true });
+      session.kernel.mkdir(layout.gitDir.slice(1), { recursive: true });
+      const result = await budgeted.fetchPack({ url, ...layout, wants: [c4], depth: 1, includeTag: false, updateShallow: true });
+      const objects = layout.objectDir ?? common + '/objects';
+      const files = session.kernel.readdir(objects.slice(1) + '/pack').map(({ name }) => name);
+      assert.ok(files.includes(result.packName + '.pack') && files.includes(result.packName + '.idx') && files.includes(result.packName + '.rev'), layout.name);
+      assert.equal(session.kernel.readFileString(common.slice(1) + '/shallow'), c4 + '\n', layout.name + ': common shallow boundary');
+      assert.ok(!session.kernel.exists(layout.gitDir.slice(1) + '/.git'), layout.name + ': no synthesized .git');
+      session.kernel.writeFile(common.slice(1) + '/refs/heads/main', c4 + '\n');
+      const incremental = await engine.fetchPack({ url, ...layout, wants: [c4], includeTag: false, updateShallow: false });
+      assert.equal(incremental.packName, null, layout.name + ': common ref tips are haves');
+    }
+    console.log('  ok  fetchPack: bare, submodule, linked and external object directories, including resumed packs');
+
     // ── fetchPack: filtered, and include-tag ──
     assert.equal((await session.git('/home/user', ['init', '-q', 'p'])).code, 0);
     const hostPartial = join(work, 'host-partial');

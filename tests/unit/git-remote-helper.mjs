@@ -16,7 +16,7 @@ const A = 'a'.repeat(40);
 const B = 'b'.repeat(40);
 
 /** Run the helper on `input` (git's lines): its exit, what it wrote, and what the engine was asked. */
-async function converse(input, { env = { GIT_DIR: '.git' }, engine: override = {} } = {}) {
+async function converse(input, { env = { GIT_DIR: '.git' }, url = 'https://example.com/r.git', engine: override = {} } = {}) {
   const lines = input.split('\n');
   const asked = [];
   let out = '';
@@ -37,7 +37,7 @@ async function converse(input, { env = { GIT_DIR: '.git' }, engine: override = {
     ...override,
   };
   const code = await runRemoteHelper({
-    args: ['origin', 'https://example.com/r.git'],
+    args: ['origin', url],
     env: { GIT_TOKEN: 't0k', ...env },
     cwd: '/home/user/repo',
     readLine: async () => (lines.length > 0 ? lines.shift() : null),
@@ -104,6 +104,17 @@ assert.equal(unquoteC('"open'), null);
 {
   const r = await converse(`fetch ${A} refs/heads/main\n\n`, { env: {} });
   assert.equal(r.code, 128, 'a fetch needs the repository git names');
+}
+
+{
+  const url = 'https://user:URL-SECRET@example.com/private.git';
+  const r = await converse('list\n', {
+    url, env: { GIT_TOKEN: 'ENV-SECRET' },
+    engine: { async listRefs() { throw new Error(`denied ${url} URL-SECRET ENV-SECRET`); } },
+  });
+  assert.equal(r.code, 128);
+  assert.ok(!r.err.includes('URL-SECRET') && !r.err.includes('ENV-SECRET') && !r.err.includes('user:'), r.err);
+  assert.match(r.err, /example\.com\/private\.git/, 'the failed destination remains identifiable');
 }
 
 console.log('git-remote-helper: ok');
