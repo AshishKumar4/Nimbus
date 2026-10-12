@@ -61,7 +61,7 @@ try {
 
   const filesystem = 'packages/core/src/runtime/wasi/filesystem.ts';
   const source = await readFile(path.join(root, filesystem), 'utf8');
-  await writeFile(path.join(root, filesystem), source.replace('st.type === \'directory\' ? 0o755', 'st.type === \'directory\' ? 0o700'));
+  await writeFile(path.join(root, filesystem), source + '\n');
   refused(run('packages/worker/scripts/bundle-napi-wasm.mjs'), filesystem, 'bun scripts/ci/remote-napi-loader.mjs');
   const manifest = await readFile(path.join(root, 'packages/worker/src/napi-wasm-artifacts.generated.ts'));
   assert.throws(() => runBuildFixpoint({
