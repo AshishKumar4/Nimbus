@@ -10,6 +10,7 @@ published independently in the `@nimbus-sh` npm scope.
 - Fixed: a file JS git checks out, and a loose object it writes, is made with
   its final mode (0644 or 0755, 0444); it was made 0666 less the umask and
   changed after, so under a permissive umask others could write it meanwhile.
+## 2026-10-12: platform 0.8.2, core 0.18.0, fabric 0.13.0, worker 0.16.0, loom 0.2.5, sdk 0.13.1, react 0.3.1, cli 0.2.5, create-nimbus-app 0.2.2
 
 - Fixed: a file or directory a Node program creates has the mode it asked
   for, as Node's does. `writeFile` and `appendFile` (sync, callback and
@@ -56,9 +57,6 @@ published independently in the `@nimbus-sh` npm scope.
   binding". It used to close the program's socket and make TLS on a new
   connection to the same host, which a STARTTLS server answers as plaintext.
   A new connection is not the same connection (Kinu ask 46).
-
-## 2026-10-12: core 0.18.0, fabric 0.13.0, worker 0.16.0, loom 0.2.5, sdk 0.13.1, react 0.3.1, cli 0.2.5, create-nimbus-app 0.2.2
-
 - Breaking: node runs ES modules natively. A program's ES modules (`.mjs`,
   `type: module`, a typeless `.js` with module syntax, `-e`/stdin under
   `--input-type=module`) are staged as the Worker's own modules and
