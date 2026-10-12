@@ -1012,21 +1012,83 @@ const NOT_A_REPOSITORY = 'fatal: not a git repository (or any of the parent dire
 const NOT_A_WORK_TREE = 'fatal: this operation must be run in a work tree\n';
 /** setup_git_directory's walk: from the cwd up, a `.git` inside each level, else the level itself as a git directory. */
 async function discoverRepo(vfs, cwd) {
+    // git's is_git_directory: HEAD, and objects and refs here or in the common directory it names.
     const isGitDir = async (key) => {
         const sub = (name) => (key ? `${key}/${name}` : name);
-        return await vfs.isFile(sub('HEAD')) && await vfs.isDirectory(sub('objects')) && await vfs.isDirectory(sub('refs'));
+        if (!await vfs.isFile(sub('HEAD')))
+            return false;
+        return await vfs.isFile(sub('commondir')) || (await vfs.isDirectory(sub('objects')) && await vfs.isDirectory(sub('refs')));
     };
     const segments = normalizeVfsPath(cwd).split('/').filter(Boolean);
+    const shared = async (gitdir) => await vfs.isFile(`${gitdir}/commondir`);
     for (let depth = segments.length; depth >= 0; depth--) {
         const dir = segments.slice(0, depth).join('/');
         const prefix = segments.slice(depth).join('/');
         const dotGit = dir ? `${dir}/.git` : '.git';
         if (await isGitDir(dotGit))
-            return { gitdir: `/${dotGit}`, worktree: `/${dir}`, prefix };
+            return { gitdir: `/${dotGit}`, worktree: `/${dir}`, prefix, linked: await shared(dotGit) };
+        // A .git file (gitdir: ...): git's repository is where it points, never an enclosing one's.
+        if (await vfs.isFile(dotGit))
+            return { gitdir: `/${dotGit}`, worktree: `/${dir}`, prefix, linked: true };
         if (await isGitDir(dir))
-            return { gitdir: `/${dir}`, worktree: null, prefix };
+            return { gitdir: `/${dir}`, worktree: null, prefix, linked: await shared(dir) };
     }
     return null;
+}
+/**
+ * The repository formats the built-in implements, as git 2.53's setup.c
+ * check_repository_format_gently reads them: format version 0 or 1;
+ * extensions it honors (sha1 objects, files refs, worktreeConfig, a partial
+ * clone's promisor, precious objects: it deletes none) or that change
+ * nothing (noop, relativeWorktrees: it makes no linked worktree). Any
+ * other, or a v1-only extension in a version 0 repository (git refuses
+ * that), and a layout it does not implement (GitRepo.linked) are real
+ * git's: refused before anything is read or written, so the front door
+ * hands the invocation over, or names the refusal without real git.
+ */
+const V0_EXTENSIONS = {
+    noop: () => true,
+    preciousobjects: () => true,
+    partialclone: () => true,
+    worktreeconfig: () => true,
+};
+const V1_EXTENSIONS = {
+    'noop-v1': () => true,
+    objectformat: (value) => value.toLowerCase() === 'sha1',
+    compatobjectformat: () => false,
+    refstorage: (value) => value.toLowerCase() === 'files',
+    relativeworktrees: () => true,
+};
+async function assertRepositoryImplemented(git, fs, repo) {
+    const where = repo.worktree ?? repo.gitdir;
+    if (repo.linked) {
+        throw new UnsupportedGitOperation(`fatal: '${where}' is a linked worktree or submodule checkout, which is not supported here\n`, 128);
+    }
+    // The repository's own configuration: git reads its format nowhere else.
+    const value = async (path) => {
+        try {
+            const got = await git.getConfig({ fs, gitdir: repo.gitdir, path });
+            return got === undefined || got === null ? undefined : String(got);
+        }
+        catch {
+            return undefined;
+        }
+    };
+    const version = Number(await value('core.repositoryformatversion') ?? 0);
+    if (!(version === 0 || version === 1)) {
+        throw new UnsupportedGitOperation(`fatal: repository format version ${version} is not supported here\n`, 128);
+    }
+    for (const [name, honored] of Object.entries({ ...V0_EXTENSIONS, ...V1_EXTENSIONS })) {
+        const set = await value(`extensions.${name}`);
+        if (set === undefined)
+            continue;
+        const v1Only = Object.hasOwn(V1_EXTENSIONS, name);
+        if (v1Only && version === 0) {
+            throw new UnsupportedGitOperation(`fatal: extensions.${name} in a version 0 repository is not supported here\n`, 128);
+        }
+        if (!honored(set))
+            throw new UnsupportedGitOperation(`fatal: a repository with extensions.${name} = ${set} is not supported here\n`, 128);
+    }
 }
 function ambiguousArgument(arg) {
     return `fatal: ambiguous argument '${arg}': unknown revision or path not in the working tree.\n`
@@ -3393,6 +3455,8 @@ realGit) {
         // partial state for the finished clone's.
         if (sub !== 'init' && sub !== 'clone') {
             const repo = await discoverRepo(repoVfs, dir);
+            if (repo !== null)
+                await assertRepositoryImplemented(git, fs, repo);
             if (repo !== null && await repoVfs.exists(`${repo.gitdir}/${GIT_CLONE_JOB_MARKER}`)) {
                 await ctx.stderr.write(`fatal: '${repo.worktree ?? repo.gitdir}' is still being cloned\n`);
                 return 128;
