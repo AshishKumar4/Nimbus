@@ -204,15 +204,12 @@ server.listen(Number(process.env.PORT || 0), '127.0.0.1', () => console.log('BOU
 `;
     const leave = async (url, headers = {}) => {
       const client = new AbortController();
-      console.error('DEBUG leave stall ' + url);
-      const response = await fetch(url + '/stall', { headers, signal: client.signal });
-      console.error('DEBUG leave headers ' + response.status);
+      // Identity: a compressing hop holds a small first chunk back.
+      const response = await fetch(url + '/stall', { headers: { ...headers, 'Accept-Encoding': 'identity' }, signal: client.signal });
       await response.body.getReader().read();
-      console.error('DEBUG leave first chunk');
       client.abort();
       for (let i = 0; i < 100; i++) {
         const report = JSON.parse(await (await fetch(url + '/report', { headers })).text());
-        console.error('DEBUG report ' + JSON.stringify(report));
         if (report.some((event) => event.startsWith('late write'))) return report;
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
@@ -228,7 +225,6 @@ server.listen(Number(process.env.PORT || 0), '127.0.0.1', () => console.log('BOU
       });
       child.on('error', reject);
     });
-    console.error('DEBUG host ' + JSON.stringify(hostAbandon));
     await terminal.writeFile(W + '/abandon.js', abandonSource);
     await terminal.run('cd ' + W + ' && PORT=7074 node abandon.js');
     const { requestHeaders } = await import('../behavioral/_driver.mjs');
