@@ -19,7 +19,6 @@
 import assert from 'node:assert/strict';
 
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
 import { createDefaultRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
@@ -34,10 +33,11 @@ import { importWorkerBundle } from './lib/worker-bundle.mjs';
 const decoder = new TextDecoder();
 
 {
-  const { NimbusSession, SessionFilesystem, bindRuntimeServices } = await importWorkerBundle({
+  const { NimbusSession, SessionFilesystem, bindRuntimeServices, NimbusWorkspace } = await importWorkerBundle({
     'packages/worker/src/session/nimbus-session.ts': ['NimbusSession'],
     'packages/worker/src/session/session-filesystem.ts': ['SessionFilesystem'],
     'packages/worker/src/hosted/services.ts': ['bindRuntimeServices'],
+    'packages/core/src/workspace/nimbus-workspace.ts': ['NimbusWorkspace'],
   });
 
   const harness = createSqliteVfsTestHarness();
@@ -51,7 +51,7 @@ const decoder = new TextDecoder();
     rootVfs.chown(dir, 1000, 1000);
   }
 
-  const registry = createDefaultRegistry();
+  let registry = createDefaultRegistry();
   registerUnixCommands(registry, rawVfs);
   const launched = [];
   const node = async (ctx) => {
@@ -114,6 +114,7 @@ const decoder = new TextDecoder();
   session.runtimeWorkspace = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx,
     vfs: rawVfs, filesystem: session.getFilesystemAuthority(), processes, cwd: '/home/user' });
   session.runtimeWorkspace.registry.register('node', node);
+  registry = session.runtimeWorkspace.registry;
   session._setCpRegistry(session.runtimeWorkspace.registry);
   session.shell = session.runtimeWorkspace.shell;
   assert.equal(session._ensureChildProcessManager(), session.runtimeWorkspace.children, 'the session delegates to the workspace-owned broker');
