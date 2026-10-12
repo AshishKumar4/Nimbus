@@ -144,10 +144,20 @@ assert.equal(bundle[`${TS}/bin/tsc`], files[`${TS}/bin/tsc`]);
     }),
   });
   const stripTypes = { mode: 'strip-only', sourceMap: false };
-  const node = await buildPrefetchBundle(
+  // Run by tsc, the source is a file tsc reads: no module of the map, of either kind.
+  const read = await buildPrefetchBundle(
     vfs, { scriptPath: `${TS}/bin/tsc`, cwd: `/${PROJ}`, entryCode: files[`${TS}/bin/tsc`], esbuild: stripping, stripTypes },
   );
   assert.deepEqual(asked.map(({ stripTypes: strip, sourcefile }) => [strip, sourcefile]), [[stripTypes, `/${PROJ}/src/index.ts`]], 'one strip, for the one source');
+  assert.equal(read.bundle[`${PROJ}/src/index.ts`], INDEX_TS, 'the file is kept as written');
+  assert.equal(read.esm?.modules.has(`${PROJ}/src/index.ts`) ?? false, false, 'a working-tree module no code reaches is not staged');
+  const readSet = generatedModuleSet(await generateEntrypointCode('', read, false, nodeFacetSources('/* read-ts */')), 'runner.js');
+  assert.equal(readSet[commonJsCellModuleName(`${PROJ}/src/index.ts`)], undefined, 'nor carried as a { cjs } module');
+  assert.equal(moduleMapBundle(readSet)[`${PROJ}/src/index.ts`], INDEX_TS, 'the store holds it as written');
+  // Run as the program, it is a module of the map.
+  const node = await buildPrefetchBundle(
+    vfs, { scriptPath: `/${PROJ}/src/index.ts`, cwd: `/${PROJ}`, entryCode: INDEX_TS, esbuild: stripping, stripTypes },
+  );
   assert.equal(node.bundle[`${PROJ}/src/index.ts`], INDEX_TS, 'the file is kept as written');
   const native = node.esm?.modules.get(`${PROJ}/src/index.ts`);
   assert.ok(native, 'the stripped ES module is staged natively');
