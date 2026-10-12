@@ -10,6 +10,11 @@ export interface VfsWalkOptions {
     /** Interpret every link target in the caller's view before expanding it. */
     readonly target?: (target: string) => string;
 }
+/** Mutations name an entry first; a final slash constrains its type without following it. */
+export declare function entryVfsPath(input: string): {
+    path: string;
+    directory: boolean;
+};
 /** Physical component order: a link expands before a following `..`; the root cannot be left. */
 export declare function walkVfsPath(input: string, lookup: SyncLookup, loop: () => never, options?: VfsWalkOptions): string;
 export declare function walkVfsPath(input: string, lookup: Lookup, loop: () => never, options?: VfsWalkOptions): Awaitable<string>;

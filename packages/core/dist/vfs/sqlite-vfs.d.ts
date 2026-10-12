@@ -995,6 +995,7 @@ export declare class SqliteVFS {
      * the mode said one thing and the filesystem did another.
      */
     private checkStickyParentMutation;
+    private checkStickyParent;
     /**
      * Shared resolver for the boolean probes (exists/isDirectory/isFile/
      * isSymlink). Resolution-structure failures — a missing or non-directory
@@ -1993,6 +1994,9 @@ export declare class SqliteVFS {
      */
     private createdPath;
     private directoryPlacement;
+    /** Legacy rows under a link remain data at their stored key, not at the link's destination. */
+    private deletionKey;
+    private checkStoredDeletion;
     private normalizeBatchInode;
     private authorizeBatch;
     private authorizeBatchNow;

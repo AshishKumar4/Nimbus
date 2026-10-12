@@ -1,7 +1,7 @@
 import { inWatchedTree, projectChange } from './events.js';
 import { VfsError, VFS_DESCRIPTION, isVfsError, syscallError } from './vfs-error.js';
 import { normalizeVfsPath } from './path.js';
-import { walkVfsPath } from './path-walk.js';
+import { entryVfsPath, walkVfsPath } from './path-walk.js';
 import { posixAccess } from './posix-access.js';
 import { recallOf, withRecall } from './recall.js';
 import { DIRENT_TYPES } from './dirent-type.js';
@@ -2570,7 +2570,7 @@ export class CompositeVFS {
         }
     }
     mkdirAt(input, options, sync) {
-        return andThen(this.resolve(input, false, sync, options?.recursive === true), (path) => {
+        return andThen(this.resolve(entryVfsPath(input).path, false, sync, options?.recursive === true), (path) => {
             this.present(path);
             if (this.isStructural(path)) {
                 // mkdir -p of a live mount point (or a directory above one) has nothing to do.
@@ -2651,7 +2651,9 @@ export class CompositeVFS {
         return make(1);
     }
     renameAt(fromInput, toInput, sync) {
-        return andThen(this.resolve(fromInput, false, sync), (from) => andThen(this.resolve(toInput, false, sync), (to) => {
+        const fromEntry = entryVfsPath(fromInput);
+        const toEntry = entryVfsPath(toInput);
+        return andThen(this.resolve(fromEntry.path, false, sync), (from) => andThen(this.resolve(toEntry.path, false, sync), (to) => {
             this.present(from);
             this.present(to);
             const source = this.locate(from);
@@ -2668,6 +2670,19 @@ export class CompositeVFS {
             return andThen(this.reachable(from, sync), () => andThen(this.reachable(to, sync), () => {
                 const move = () => {
                     this.guardMutation([fromInput, from, toInput, to]);
+                    if (fromEntry.directory || toEntry.directory) {
+                        return andThen(this.softStat(this.ops(source, sync), source.rel, false), (stat) => {
+                            if (stat === null)
+                                throw new Refusal('ENOENT', from);
+                            if (stat.type !== 'directory')
+                                throw new Refusal('ENOTDIR', from);
+                            return andThen(this.softStat(this.ops(target, sync), target.rel, false), (end) => {
+                                if (toEntry.directory && end !== null && end.type !== 'directory')
+                                    throw new Refusal('ENOTDIR', to);
+                                return this.renameIn(source, target, from, sync);
+                            });
+                        });
+                    }
                     return this.renameIn(source, target, from, sync);
                 };
                 // A name renamed onto itself changes nothing.
@@ -2831,7 +2846,7 @@ export class CompositeVFS {
     }
     /** rmdir, or on a backend without it, an emptiness check and unlink. */
     rmdirAt(input, sync) {
-        return this.onMutation(input, false, sync, 'removed', (ops, rel, path) => {
+        return this.onMutation(entryVfsPath(input).path, false, sync, 'removed', (ops, rel, path) => {
             const backend = ops;
             if (typeof backend.rmdir === 'function')
                 return backend.rmdir(rel);
@@ -2859,33 +2874,45 @@ export class CompositeVFS {
      */
     removeAt(input, sync, keepVanishedAncestors = false) {
         // Each removal is told as it lands (watchChanges): a backend's own rm -r at the roots of what it removed, a walked one entry by entry.
-        return this.onMutation(input, false, sync, 'removed', (ops, rel, path) => {
-            const { mount } = this.locate(path);
-            const composed = this.hasLiveBelow(path) || this.isStructural(path) || mount.options.readOnly === true;
-            if (composed)
-                return this.walkRemove(ops, rel, path, mount, sync, true, keepVanishedAncestors);
-            const backend = ops;
-            if (typeof backend.removeRecursive === 'function') {
-                const at = (r) => (r === rel ? path : path + r.slice(rel === '/' ? 0 : rel.length));
-                return andThen(backend.removeRecursive(rel), (report) => {
-                    const removal = report
-                        ? {
-                            removed: report.removed.map(at),
-                            kept: report.kept.map(at),
-                            ...(report.vanished === undefined ? {} : { vanished: report.vanished.map(at) }),
-                            // Each failure named as Node names the call that met it, on the namespace's path.
-                            failures: report.failures.map((f) => ({
-                                path: at(f.path),
-                                error: syscallError(f.error.code, f.error.syscall ?? 'rm', at(f.path), { detail: f.error.detail, cause: f.error }),
-                            })),
-                        }
-                        : { removed: [path], kept: [], failures: [] };
-                    if (this.table.changes !== undefined)
-                        this.tellLanded(mount, storeBehind(this.table, backend), 'unlink', removal.removed);
-                    return removal;
-                });
-            }
-            return this.walkRemove(backend, rel, path, mount, sync, false, keepVanishedAncestors);
+        const entry = entryVfsPath(input);
+        return this.onMutation(entry.path, false, sync, 'removed', (ops, rel, path) => {
+            const remove = () => {
+                const { mount } = this.locate(path);
+                const composed = this.hasLiveBelow(path) || this.isStructural(path) || mount.options.readOnly === true;
+                if (composed)
+                    return this.walkRemove(ops, rel, path, mount, sync, true, keepVanishedAncestors);
+                const backend = ops;
+                if (typeof backend.removeRecursive === 'function') {
+                    const at = (r) => (r === rel ? path : path + r.slice(rel === '/' ? 0 : rel.length));
+                    return andThen(backend.removeRecursive(rel), (report) => {
+                        const removal = report
+                            ? {
+                                removed: report.removed.map(at),
+                                kept: report.kept.map(at),
+                                ...(report.vanished === undefined ? {} : { vanished: report.vanished.map(at) }),
+                                // Each failure named as Node names the call that met it, on the namespace's path.
+                                failures: report.failures.map((f) => ({
+                                    path: at(f.path),
+                                    error: syscallError(f.error.code, f.error.syscall ?? 'rm', at(f.path), { detail: f.error.detail, cause: f.error }),
+                                })),
+                            }
+                            : { removed: [path], kept: [], failures: [] };
+                        if (this.table.changes !== undefined)
+                            this.tellLanded(mount, storeBehind(this.table, backend), 'unlink', removal.removed);
+                        return removal;
+                    });
+                }
+                return this.walkRemove(backend, rel, path, mount, sync, false, keepVanishedAncestors);
+            };
+            if (!entry.directory)
+                return remove();
+            return andThen(ops.stat(rel, { follow: false }), (stat) => {
+                if (stat === null)
+                    throw new Refusal('ENOENT', path);
+                if (stat.type !== 'directory')
+                    throw new Refusal('ENOTDIR', path);
+                return remove();
+            });
         }, { told: null, children: true });
     }
     walkRemove(ops, rel, path, mount, sync, composed = false, keepVanishedAncestors = false) {
