@@ -158,19 +158,26 @@ def backoffAfter (c : Cfg) (k : Nat) : Nat := min c.maxBackoff (c.backoff * 2 ^ 
 /-- The first queued hash whose backoff has passed. -/
 def pick (s : H) : Option Nat := s.queue.find? fun x => decide (s.notBefore x ≤ s.now)
 
+/-- A fetch of `x` ended with `outcome` (0: its bytes, stored; else it failed): its entry
+    leaves the queue, and a failed hash goes to the back with its backoff, or after
+    `maxA` failures into `failed`. A hash already local is only dropped from the queue.
+    The atomic job makes it of the hash it picks; the split job (HydrationAsync) of the
+    one it took, wherever the queue has it by then. -/
+def complete (s : H) (x : Nat) (outcome : Nat) : Out × H :=
+  if hLocal s x then (.skipped x, { s with queue := s.queue.erase x })
+  else if outcome = 0 then (.fetched x, { s with hyd := s.hyd ++ [x], queue := s.queue.erase x })
+  else if s.cfg.maxA ≤ s.attempts x + 1 then
+    (.failedHard x, { s with queue := s.queue.filter (· != x), failed := s.failed ++ [x],
+                             attempts := upd s.attempts x (s.attempts x + 1) })
+  else
+    (.failedOnce x, { s with queue := s.queue.filter (· != x) ++ [x],
+                             attempts := upd s.attempts x (s.attempts x + 1),
+                             notBefore := upd s.notBefore x (s.now + backoffAfter s.cfg (s.attempts x + 1)) })
+
 def jobStep (s : H) (outcome : Nat) : Out × H :=
   match pick s with
   | none => (.idle, s)
-  | some x =>
-    if hLocal s x then (.skipped x, { s with queue := s.queue.erase x })
-    else if outcome = 0 then (.fetched x, { s with hyd := s.hyd ++ [x], queue := s.queue.erase x })
-    else if s.cfg.maxA ≤ s.attempts x + 1 then
-      (.failedHard x, { s with queue := s.queue.filter (· != x), failed := s.failed ++ [x],
-                               attempts := upd s.attempts x (s.attempts x + 1) })
-    else
-      (.failedOnce x, { s with queue := s.queue.filter (· != x) ++ [x],
-                               attempts := upd s.attempts x (s.attempts x + 1),
-                               notBefore := upd s.notBefore x (s.now + backoffAfter s.cfg (s.attempts x + 1)) })
+  | some x => complete s x outcome
 
 def raw (s : H) : Ev → Out × H
   | .tick => (.ok, { s with now := s.now + 1 })
@@ -251,17 +258,23 @@ theorem sync_failed_eio (s : H) (p c : Nat) (hl : isLocal s p = false) (hf : fai
 
 theorem pick_mem {s : H} {x : Nat} (h : pick s = some x) : x ∈ s.queue := List.mem_of_find?_eq_some h
 
+theorem complete_frame (s : H) (x o : Nat) : (complete s x o).2.files = s.files ∧ (complete s x o).2.remote = s.remote ∧
+    (complete s x o).2.cfg = s.cfg ∧ (∀ c ∈ s.hyd, c ∈ (complete s x o).2.hyd) ∧ (complete s x o).2.now = s.now ∧
+    (complete s x o).2.readers = s.readers ∧ (complete s x o).2.gates = s.gates := by
+  unfold complete
+  split
+  · exact ⟨rfl, rfl, rfl, fun _ h => h, rfl, rfl, rfl⟩
+  · split
+    · exact ⟨rfl, rfl, rfl, fun _ h => List.mem_append_left _ h, rfl, rfl, rfl⟩
+    · split <;> exact ⟨rfl, rfl, rfl, fun _ h => h, rfl, rfl, rfl⟩
+
 theorem jobStep_frame (s : H) (o : Nat) : (jobStep s o).2.files = s.files ∧ (jobStep s o).2.remote = s.remote ∧
     (jobStep s o).2.cfg = s.cfg ∧ (∀ c ∈ s.hyd, c ∈ (jobStep s o).2.hyd) ∧ (jobStep s o).2.now = s.now ∧
     (jobStep s o).2.readers = s.readers ∧ (jobStep s o).2.gates = s.gates := by
   unfold jobStep
   split
   · exact ⟨rfl, rfl, rfl, fun _ h => h, rfl, rfl, rfl⟩
-  · split
-    · exact ⟨rfl, rfl, rfl, fun _ h => h, rfl, rfl, rfl⟩
-    · split
-      · exact ⟨rfl, rfl, rfl, fun _ h => List.mem_append_left _ h, rfl, rfl, rfl⟩
-      · split <;> exact ⟨rfl, rfl, rfl, fun _ h => h, rfl, rfl, rfl⟩
+  · exact complete_frame s _ o
 
 theorem raw_frame (s : H) (e : Ev) : (raw s e).2.files = s.files ∧ (raw s e).2.remote = s.remote ∧
     (raw s e).2.cfg = s.cfg ∧ (∀ c ∈ s.hyd, c ∈ (raw s e).2.hyd) ∧ s.now ≤ (raw s e).2.now := by
@@ -321,37 +334,41 @@ theorem prio_sub {q hs : List Nat} {c : Nat} (h : c ∈ prio q hs) : c ∈ q := 
   · exact List.contains_iff_mem.mp (List.mem_filter.mp h).2
   · exact (List.mem_filter.mp h).1
 
-theorem jobStep_covers (s : H) (hs : Covers s) (o : Nat) : Covers (jobStep s o).2 := by
+/-- A completion keeps every remote chunk neither stored nor failed queued: the hash it
+    ends is stored, failed for good, or back in the queue. -/
+theorem complete_covers (s : H) (hs : Covers s) (x o : Nat) : Covers (complete s x o).2 := by
   intro c hc hn hf
-  have hc' : c ∈ s.remote := by rw [← (jobStep_frame s o).2.1]; exact hc
-  unfold jobStep at hn hf ⊢
-  cases hp : pick s with
-  | none => simp only [hp] at hn hf ⊢; exact hs c hc' hn hf
-  | some x =>
-    simp only [hp] at hn hf ⊢
-    by_cases hl : hLocal s x = true
-    · simp only [hl, if_true] at hn hf ⊢
-      have hcx : c ≠ x := by
-        rintro rfl
-        simp only [hLocal, Bool.or_eq_true, Bool.not_eq_true', List.contains_iff_mem] at hl
-        rcases hl with h | h
-        · simp at h; exact h hc'
-        · exact hn h
-      exact (List.mem_erase_of_ne hcx).mpr (hs c hc' hn hf)
-    · simp only [hl, Bool.false_eq_true, if_false] at hn hf ⊢
-      by_cases ho : o = 0
-      · simp only [ho, if_true] at hn hf ⊢
-        simp only [List.mem_append, List.mem_singleton, not_or] at hn
-        exact (List.mem_erase_of_ne hn.2).mpr (hs c hc' hn.1 hf)
-      · simp only [ho, if_false] at hn hf ⊢
-        by_cases hm : s.cfg.maxA ≤ s.attempts x + 1
-        · simp only [hm, if_true] at hn hf ⊢
-          simp only [List.mem_append, List.mem_singleton, not_or] at hf
-          exact List.mem_filter.mpr ⟨hs c hc' hn hf.1, by simpa using hf.2⟩
-        · simp only [hm, if_false] at hn hf ⊢
-          by_cases e : c = x
-          · subst e; exact List.mem_append_right _ (List.mem_singleton_self _)
-          · exact List.mem_append_left _ (List.mem_filter.mpr ⟨hs c hc' hn hf, by simpa using e⟩)
+  have hc' : c ∈ s.remote := by rw [← (complete_frame s x o).2.1]; exact hc
+  unfold complete at hn hf ⊢
+  by_cases hl : hLocal s x = true
+  · simp only [hl, if_true] at hn hf ⊢
+    have hcx : c ≠ x := by
+      rintro rfl
+      simp only [hLocal, Bool.or_eq_true, Bool.not_eq_true', List.contains_iff_mem] at hl
+      rcases hl with h | h
+      · simp at h; exact h hc'
+      · exact hn h
+    exact (List.mem_erase_of_ne hcx).mpr (hs c hc' hn hf)
+  · simp only [hl, Bool.false_eq_true, if_false] at hn hf ⊢
+    by_cases ho : o = 0
+    · simp only [ho, if_true] at hn hf ⊢
+      simp only [List.mem_append, List.mem_singleton, not_or] at hn
+      exact (List.mem_erase_of_ne hn.2).mpr (hs c hc' hn.1 hf)
+    · simp only [ho, if_false] at hn hf ⊢
+      by_cases hm : s.cfg.maxA ≤ s.attempts x + 1
+      · simp only [hm, if_true] at hn hf ⊢
+        simp only [List.mem_append, List.mem_singleton, not_or] at hf
+        exact List.mem_filter.mpr ⟨hs c hc' hn hf.1, by simpa using hf.2⟩
+      · simp only [hm, if_false] at hn hf ⊢
+        by_cases e : c = x
+        · subst e; exact List.mem_append_right _ (List.mem_singleton_self _)
+        · exact List.mem_append_left _ (List.mem_filter.mpr ⟨hs c hc' hn hf, by simpa using e⟩)
+
+theorem jobStep_covers (s : H) (hs : Covers s) (o : Nat) : Covers (jobStep s o).2 := by
+  unfold jobStep
+  split
+  · exact hs
+  · exact complete_covers s hs _ o
 
 theorem step_covers (s : H) (hs : Covers s) (e : Ev) : Covers (step s e).2 := by
   show Covers (raw s e).2
@@ -390,7 +407,7 @@ structure Core (s : H) : Prop where
   fNotHyd : ∀ x ∈ s.failed, x ∉ s.hyd
 
 theorem jobStep_core (s : H) (hs : Core s) (o : Nat) : Core (jobStep s o).2 := by
-  unfold jobStep
+  unfold jobStep complete
   split
   · exact hs
   · rename_i x hx
@@ -659,7 +676,7 @@ theorem job_head (s : H) (x : Nat) (r : List Nat) (hq : s.queue = x :: r) (hrd :
   have hp : pick s = some x := by
     unfold pick; rw [hq]; exact List.find?_cons_of_pos _ (by simpa using hrd x (by rw [hq]; exact List.mem_cons_self _ _))
   have hrd' : ∀ y ∈ r, s.notBefore y ≤ s.now := fun y hy => hrd y (by rw [hq]; exact List.mem_cons_of_mem _ hy)
-  simp only [step, raw, jobStep, hp]
+  simp only [step, raw, jobStep, complete, hp]
   split
   · rename_i hl
     refine ⟨hl, by simp [hq], fun y hy => ?_⟩
