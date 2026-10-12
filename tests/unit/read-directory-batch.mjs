@@ -101,7 +101,8 @@ try {
     const far = crypto.randomUUID();
     await assert.rejects(() => readDirectoryBatch(fs, { ...request([]), channel: far, sequence: Number.MAX_SAFE_INTEGER, end: true }), { code: 'ESTALE' });
     const opened = await readDirectoryBatch(fs, { ...request([`${root}/d4`]), channel: far, sequence: 1 });
-    await assert.rejects(() => readDirectoryBatch(fs, { ...request([]), channel: far, sequence: 1 + DIRECTORY_SEQUENCE_WINDOW }), { code: 'ESTALE' });
+    // Sequence 1 arrived, so 2 is the first that has not: the window ends DIRECTORY_SEQUENCE_WINDOW past it.
+    await assert.rejects(() => readDirectoryBatch(fs, { ...request([]), channel: far, sequence: 2 + DIRECTORY_SEQUENCE_WINDOW }), { code: 'ESTALE' });
     await readDirectoryBatch(fs, { ...request([], { retire: opened.opened.map((entry) => entry.handle.id) }), channel: far, sequence: 2, end: true });
   }
 
