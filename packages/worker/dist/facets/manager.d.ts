@@ -325,6 +325,8 @@ interface FacetVfsState {
     esm?: EsmStage;
     /** Its size and time in numbers (esmStageSize), kept past its release: the launch's debug line. */
     esmSize?: Record<string, number>;
+    /** ES modules carried as files only, never as modules of the map: only the passes that carry files to be read staged them. */
+    dataModules?: Set<string>;
     /** Where its build's time went, by phase, in ms (the walk, enrichment, transforms, fitting, staging, the rest, serialization). */
     phases?: Record<string, number>;
     /**
@@ -556,7 +558,7 @@ export declare function encodedBundleSize(bundle: FacetVfsBundle): {
  * split into ordered fragments; the merge expression concatenates those
  * fragments back to the original string or Uint8Array.
  */
-export declare function buildFacetVfsBundleSource(bundle: FacetVfsBundle, forceSideModules?: boolean, pacer?: TurnBudget, { consume, emits, esm, codeOnly, runtimeCode, }?: {
+export declare function buildFacetVfsBundleSource(bundle: FacetVfsBundle, forceSideModules?: boolean, pacer?: TurnBudget, { consume, emits, esm, codeOnly, dataModules, runtimeCode, }?: {
     consume?: boolean;
     /** The module of each cell a transform changed (FacetVfsState.emits). */
     emits?: ReadonlyMap<string, string>;
@@ -564,6 +566,8 @@ export declare function buildFacetVfsBundleSource(bundle: FacetVfsBundle, forceS
     esm?: EsmStage;
     /** Files whose emit the map carries and not the file (FacetVfsState.codeOnly). */
     codeOnly?: ReadonlySet<string>;
+    /** ES modules carried as files only (FacetVfsState.dataModules): never a `{ cjs }` module. */
+    dataModules?: ReadonlySet<string>;
     /** Runtime code staged for this launch: `{ cjs }` module text by key. */
     runtimeCode?: ReadonlyMap<string, string>;
 }): Promise<FacetVfsBundleSource>;
