@@ -30,3 +30,24 @@ for (const path of ['home/user/l/f', 'home/user/l/d/../f']) {
   harness.db.close();
 }
 console.log('sqlite-batch-legacy-link-deletion: ok');
+
+for (const writable of [true, false]) {
+  const harness = createSqliteVfsTestHarness();
+  const engine = new SqliteVFS(harness.sql, harness.ctx);
+  const root = engine.as(CRED_KERNEL);
+  root.mkdir('home/user', { recursive: true });
+  root.chown('home/user', USER.uid, USER.gid);
+  root.symlink('gone', 'home/user/l');
+  harness.db.query(
+    `INSERT INTO vfs_inodes (path, parent_path, kind, size, atime, mtime, ctime, mode, uid, gid, ino, gen)
+     VALUES ('home/user/l/f', 'home/user/l', 0, 0, 1, 1, 1, ?, 1000, 1000, 999999, 1)`,
+  ).run(0o644);
+  if (!writable) root.chmod('home/user', 0o555);
+  const remove = () => engine.as(USER).writeBatch({ inodes: [], chunks: [], deletePaths: ['home/user/l/f'] });
+  if (writable) remove();
+  else assert.throws(remove, { code: 'EACCES' }, 'legacy cleanup still needs its literal directory authority');
+  const row = harness.db.query("SELECT path FROM vfs_inodes WHERE path = 'home/user/l/f'").get();
+  assert.equal(row === null, writable, 'a dangling link does not redirect or prevent authorized legacy cleanup');
+  assert.equal(root.exists('home/user/gone'), false);
+  harness.db.close();
+}
