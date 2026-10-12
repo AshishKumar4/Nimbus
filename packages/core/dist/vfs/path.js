@@ -29,12 +29,17 @@
  * trailing slash, an empty segment, or a `.`/`..` segment.
  */
 const NOT_NORMAL = /\/$|\/\/|(?:^|\/)\.\.?(?:\/|$)/;
+/** A plain lookup key, or null when components must be walked before normalization. */
+export function plainVfsPath(path) {
+    return NOT_NORMAL.test(path) ? null : path.charCodeAt(0) === 47 ? path.slice(1) : path;
+}
 export function normalizeVfsPath(p) {
     const text = String(p ?? '');
     // A key already in canonical form, or an absolute path that is one past
     // its leading slash, as most lookups pass, is returned without the split.
-    if (!NOT_NORMAL.test(text))
-        return text.charCodeAt(0) === 47 ? text.slice(1) : text;
+    const plain = plainVfsPath(text);
+    if (plain !== null)
+        return plain;
     const segments = text.split('/');
     const out = [];
     // `..` at the root stays at the root, as POSIX resolves `/..`.

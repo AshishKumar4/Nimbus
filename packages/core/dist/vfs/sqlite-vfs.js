@@ -27,7 +27,8 @@
  * state-0 content and publish it atomically.
  */
 import { projectChange, VfsEventEmitter } from './events.js';
-import { normalizeVfsPath, parentKey, parentVfsPath, pathsOverlap } from './path.js';
+import { normalizeVfsPath, parentKey, parentVfsPath, pathsOverlap, plainVfsPath, stripLeadingSlashes } from './path.js';
+import { walkVfsPath } from './path-walk.js';
 import { PathRevisions } from './path-revisions.js';
 import { z } from 'zod/v4';
 import { LRU_MAX_ENTRIES, FS_LIST_PAGE_LIMIT, MAX_RPC_SAFE_PAYLOAD_BYTES, FS_READ_BATCH_REQUEST_BYTES, INODE_CACHE_MAX_ENTRIES, } from '../constants.js';
@@ -2069,8 +2070,10 @@ export class SqliteVFS {
      * key already inside that root is returned untouched, so the several methods
      * that derive a key before handing it on cannot stack the rewrite.
      */
-    storageKey(path, cred) {
-        return this.keyOfName(normalizeVfsPath(path), this.confinedTmpRoots.get(cred.uid));
+    storageKey(path, cred, tree = this.inodes, creating = false) {
+        const plain = plainVfsPath(path);
+        return plain === null ? this.walkComponents(path, cred, false, creating, tree).path
+            : this.keyOfName(plain, this.confinedTmpRoots.get(cred.uid));
     }
     /** {@link storageKey} of a name already normalized, under a principal's private root. */
     keyOfName(name, root) {
@@ -2090,10 +2093,14 @@ export class SqliteVFS {
      * root's storage key. One name per file is what lets resolution walk the
      * caller's view rather than storage.
      */
-    nameOf(path, cred) {
-        const key = this.storageKey(path, cred);
-        // Never null: storageKey never yields a key this caller has no name for.
-        return this.logicalPath(key, cred) ?? key;
+    nameOf(path, cred, tree = this.inodes, root = this.confinedTmpRoots.get(cred.uid)) {
+        const plain = plainVfsPath(path);
+        if (plain === null)
+            return this.walkComponents(path, cred, false, false, tree).name;
+        if (root === undefined)
+            return plain;
+        const key = this.keyOfName(plain, root);
+        return this.logicalPath(key, cred, root) ?? key;
     }
     /**
      * Storage key -> the name this credential knows it by, or `null` when it has
@@ -2108,8 +2115,7 @@ export class SqliteVFS {
      * unconfined caller sees storage as it is, which is what the kernel and the
      * session user need.
      */
-    logicalPath(key, cred) {
-        const root = this.confinedTmpRoots.get(cred.uid);
+    logicalPath(key, cred, root = this.confinedTmpRoots.get(cred.uid)) {
         if (root === undefined)
             return key;
         if (key === root)
@@ -2335,7 +2341,11 @@ export class SqliteVFS {
     /** resolvePath's walk. */
     walkPath(path, cred, followLeaf, allowMissing, tree) {
         const root = this.confinedTmpRoots.get(cred.uid);
-        let current = this.nameOf(path, cred);
+        const plain = plainVfsPath(path);
+        if (plain === null)
+            return this.walkComponents(path, cred, followLeaf, false, tree);
+        const key = this.keyOfName(plain, root);
+        const current = root === undefined ? key : this.logicalPath(key, cred, root) ?? key;
         // The last walk (see lastResolution), when nothing since could have
         // changed where it leads: for this name, its answer.
         const last = this.lastResolution;
@@ -2357,47 +2367,59 @@ export class SqliteVFS {
             if (!(followLeaf && inode.kind === 'symlink'))
                 return this.walked(key, inode, current, cred, tree);
         }
-        // Hops are counted, never deduplicated (Linux, MAXSYMLINKS 40): a link
-        // met again on a longer path (`loop -> .`) is one more hop, not a cycle.
-        for (let hops = 0; hops <= 40; hops++) {
-            const parts = current.split('/').filter(Boolean);
-            let prefix = '';
-            let restarted = false;
-            let reached;
-            for (let index = 0; index < parts.length; index++) {
-                prefix = prefix ? `${prefix}/${parts[index]}` : parts[index];
-                const inode = tree.get(this.keyOfName(prefix, root));
-                reached = inode;
-                const leaf = index === parts.length - 1;
-                if (!inode) {
-                    if (leaf || allowMissing)
-                        return { path: this.keyOfName(current, root), inode: undefined, name: current };
-                    throw vfsKeyError('ENOENT', prefix);
-                }
-                if (inode.kind === 'symlink' && (!leaf || followLeaf)) {
-                    if (hops === 40)
-                        throw vfsKeyError('ELOOP', path);
-                    const target = dec.decode(this.readWhole(inode));
-                    const suffix = parts.slice(index + 1).join('/');
-                    const base = target.startsWith('/') ? target : `${parentKey(prefix)}/${target}`;
-                    current = this.nameOf(suffix ? `${base}/${suffix}` : base, cred);
-                    restarted = true;
-                    break;
-                }
-                if (!leaf) {
-                    if (inode.kind !== 'directory')
-                        throw vfsKeyError('ENOTDIR', prefix);
-                    if (!this.accessInode(inode, 0o1, cred))
-                        throw vfsKeyError('EACCES', prefix);
-                }
+        // Plain paths keep the indexed walk; only a followed link needs component expansion.
+        const parts = current === '' ? [] : current.split('/');
+        let prefix = '';
+        let reached;
+        for (let index = 0; index < parts.length; index++) {
+            prefix = prefix ? `${prefix}/${parts[index]}` : parts[index];
+            const inode = tree.get(this.keyOfName(prefix, root));
+            reached = inode;
+            const leaf = index === parts.length - 1;
+            if (!inode) {
+                if (leaf || allowMissing)
+                    return { path: this.keyOfName(current, root), inode: undefined, name: current };
+                throw vfsKeyError('ENOENT', prefix);
             }
-            if (restarted)
-                continue;
-            const key = this.keyOfName(current, root);
-            // The leaf was looked up last, under the same name.
-            return this.walked(key, prefix === current ? reached : tree.get(key), current, cred, tree);
+            if (inode.kind === 'symlink' && (!leaf || followLeaf))
+                return this.walkComponents(current, cred, followLeaf, false, tree);
+            if (!leaf) {
+                if (inode.kind !== 'directory')
+                    throw vfsKeyError('ENOTDIR', prefix);
+                if (!this.accessInode(inode, 0o1, cred))
+                    throw vfsKeyError('EACCES', prefix);
+            }
         }
-        throw vfsKeyError('ELOOP', path);
+        const resolvedKey = this.keyOfName(current, root);
+        return this.walked(resolvedKey, prefix === current ? reached : tree.get(resolvedKey), current, cred, tree);
+    }
+    /** The namespace's component walk, looking up this tree in the caller's names. */
+    walkComponents(path, cred, followLeaf, creating, tree) {
+        const root = this.confinedTmpRoots.get(cred.uid);
+        const spelling = stripLeadingSlashes(path);
+        const input = this.logicalPath(spelling, cred, root) ?? spelling;
+        const name = walkVfsPath(input, (prefix, final) => {
+            const key = this.keyOfName(prefix.slice(1), root);
+            if (tree === this.inodes && this.exclusiveMutationLeases.size > 0)
+                this.recallReads(key);
+            const inode = tree.get(key);
+            if (inode === undefined) {
+                if (!final && !creating)
+                    throw vfsKeyError('ENOENT', prefix);
+                return null;
+            }
+            if (inode.kind === 'symlink' && (!final || followLeaf))
+                return () => dec.decode(this.readWhole(inode));
+            if (!final) {
+                if (inode.kind !== 'directory')
+                    throw vfsKeyError('ENOTDIR', prefix);
+                if (!this.accessInode(inode, 0o1, cred))
+                    throw vfsKeyError('EACCES', prefix);
+            }
+            return null;
+        }, () => { throw vfsKeyError('ELOOP', path); }).slice(1);
+        const key = this.keyOfName(name, root);
+        return this.walked(key, tree.get(key), name, cred, tree);
     }
     /** A walk's answer, kept as lastResolution when it found something on the live tree. */
     walked(key, inode, name, cred, tree) {
@@ -2435,7 +2457,7 @@ export class SqliteVFS {
      */
     resolveName(path, cred, followLeaf, stop, tree = this.inodes) {
         const root = this.confinedTmpRoots.get(cred.uid);
-        const current = this.nameOf(path, cred);
+        const current = this.nameOf(path, cred, tree, root);
         // As resolvePath: a lookup into a delegated subtree recalls it first.
         // A walk that follows a link answers null below (the caller walks it by
         // components, through resolvePath, which recalls where the link leads).
@@ -3625,7 +3647,7 @@ export class SqliteVFS {
     }
     /** `ino`: the number a delegation's holder gave the directory it made (askedIno), for a lone mkdir. */
     mkdir(path, options, cred) {
-        const normalized = this.storageKey(path, cred);
+        const normalized = this.storageKey(path, cred, this.inodes, options?.recursive === true);
         // A directory that is there is made already: no mutation, so no lease
         // refuses it (a session's mkdir -p of its home while a lease holds a
         // repository under it). Each one made is checked as it is made.
@@ -4461,9 +4483,17 @@ export class SqliteVFS {
         return this.statOf(inode);
     }
     /** stat, with a name that is not there (or a directory on its way that is not) answered null: an answer, not an error. */
-    statIfPresent(path, cred, followLeaf) {
-        const inode = this.checkAccess(path, 0, cred, { followLeaf, allowMissingLeaf: true }).inode;
-        return inode === undefined ? null : this.statOf(inode);
+    statIfPresent(path, cred, followLeaf, tree = this.inodes) {
+        try {
+            const inode = this.checkAccess(path, 0, cred, { followLeaf, allowMissingLeaf: true, tree }).inode;
+            return inode === undefined ? null : this.statOf(inode);
+        }
+        catch (error) {
+            const code = errnoCodeOf(error);
+            if (code === 'ENOENT' || code === 'ENOTDIR')
+                return null;
+            throw error;
+        }
     }
     /** A linked inode's stat, for `stat` and for the entries `list` reports. */
     statOf(inode) {
@@ -5927,8 +5957,7 @@ export class SqliteVFS {
             lstat: (path) => this.statOf(resolve(path, 0, false).inode),
             statIfPresent: (path, followLeaf = true) => {
                 pinned();
-                const inode = this.checkAccess(path, 0, bound, { followLeaf, allowMissingLeaf: true, tree }).inode;
-                return inode === undefined ? null : this.statOf(inode);
+                return this.statIfPresent(path, bound, followLeaf, tree);
             },
             landedAt: (path) => probe(path) !== undefined,
             utimes: readOnly,
@@ -5937,7 +5966,7 @@ export class SqliteVFS {
             getDefaultAcl: (path) => { const inode = resolve(path, 0).inode; return inode.isDir ? inode.defaultAcl : null; },
             chown: readOnly,
             readdir: (path) => {
-                const np = this.storageKey(path, bound);
+                const np = this.storageKey(path, bound, tree);
                 if (np !== '') {
                     const inode = resolve(np, 0o4).inode;
                     if (inode.kind !== 'directory')
@@ -5953,7 +5982,7 @@ export class SqliteVFS {
             list: (after, limit) => {
                 pinned();
                 const pageLimit = Math.min(Math.max(1, Math.trunc(limit ?? FS_LIST_PAGE_LIMIT)), FS_LIST_PAGE_LIMIT);
-                const from = after === null || after === undefined ? '' : this.storageKey(after, bound);
+                const from = after === null || after === undefined ? '' : this.storageKey(after, bound, tree);
                 const entries = [];
                 const searchableDirs = new Map();
                 let cursor = from;
@@ -6003,7 +6032,7 @@ export class SqliteVFS {
             invalidatedSince: (epoch, cursor) => ({
                 epoch: this._epoch, rev: g, paths: [], poison: epoch !== this._epoch || cursor !== g,
             }),
-            storageKey: (path) => this.storageKey(path, bound),
+            storageKey: (path) => this.storageKey(path, bound, tree),
             // Nothing under a snapshot ever changes, so a watch never fires.
             subscribe: () => () => { },
             acquireExclusiveMutation: readOnly,
@@ -7465,10 +7494,10 @@ export class SqliteVFS {
         return placed;
     }
     normalizeBatchInode(entry, cred, memo, staged, priors) {
-        const literal = this.storageKey(entry.path, cred);
+        const literal = this.storageKey(entry.path, cred, this.inodes, true);
         // The entry must name its own parent, as the caller wrote it; placement
         // (links followed) comes after.
-        const namedParent = this.storageKey(entry.parentPath, cred);
+        const namedParent = this.storageKey(entry.parentPath, cred, this.inodes, true);
         if (namedParent !== parentKey(literal)) {
             throw vfsError('EINVAL', literal, `parentPath ${namedParent} does not match ${parentKey(literal)}`);
         }
@@ -7506,11 +7535,11 @@ export class SqliteVFS {
         const placed = new Map();
         const staged = new Map();
         this.readAlong([
-            ...payload.inodes.map((entry) => this.storageKey(entry.path, cred)),
+            ...payload.inodes.map((entry) => this.storageKey(entry.path, cred, this.inodes, true)),
             ...(payload.deletePaths ?? []).map((path) => this.storageKey(path, cred)),
         ]);
         // What stands at every place the batch writes, in one read rather than one per row.
-        this.readPriors(payload.inodes.map((entry) => this.createdPath(this.storageKey(entry.path, cred), cred, placed)), priors);
+        this.readPriors(payload.inodes.map((entry) => this.createdPath(this.storageKey(entry.path, cred, this.inodes, true), cred, placed)), priors);
         const inodes = payload.inodes.map((entry) => this.normalizeBatchInode(entry, cred, placed, staged, priors));
         const pending = new Map(inodes.map((entry) => [entry.path, entry]));
         // A batch writes each row at its literal key, so the permission it checks
@@ -7581,7 +7610,7 @@ export class SqliteVFS {
         }
         // Chunks name their inode by path, so they take the inodes' storage keys.
         const chunks = payload.chunks.map((chunk) => {
-            const key = this.storageKey(chunk.path, cred);
+            const key = this.storageKey(chunk.path, cred, this.inodes, true);
             const path = this.inodes.get(key) ? key : this.createdPath(key, cred, placed);
             if (!pending.has(path))
                 replaced(path);
@@ -7889,14 +7918,14 @@ export class SqliteVFS {
             // a symbolic link they do not remove refuses the wave with nothing
             // committed (linkReplacedByDirectory).
             checkLeading: (directories, deletes) => asCaller(() => this.inodes.lookingUp(() => {
-                const keys = [...directories.map((inode) => this.storageKey(inode.path, cred)), ...deletes.map((path) => this.storageKey(path, cred))];
+                const keys = [...directories.map((inode) => this.storageKey(inode.path, cred, this.inodes, true)), ...deletes.map((path) => this.storageKey(path, cred))];
                 this.readAlong(keys);
                 const placed = new Map();
                 const placedAt = (path) => {
                     const key = this.storageKey(path, cred);
                     return this.inodes.get(key) ? key : this.createdPath(key, cred, placed);
                 };
-                const linked = this.linkReplacedByDirectory(directories.map((inode) => this.createdPath(this.storageKey(inode.path, cred), cred, placed)), deletes.map(placedAt));
+                const linked = this.linkReplacedByDirectory(directories.map((inode) => this.createdPath(this.storageKey(inode.path, cred, this.inodes, true), cred, placed)), deletes.map(placedAt));
                 if (linked !== null)
                     throw linkedDirectoryRefusal(linked);
             })),
@@ -8223,7 +8252,7 @@ export class SqliteVFS {
                 let placedPrior = null;
                 if (whole) {
                     // Held whole until its group commits, and authorised there.
-                    const path = this.createdPath(this.storageKey(inode.path, cred), cred, placement.placed);
+                    const path = this.createdPath(this.storageKey(inode.path, cred, this.inodes, true), cred, placement.placed);
                     asCaller(() => this.assertMutationsAllowed([path]));
                     placedInode = { ...inode, path, parentPath: parentKey(path) };
                 }
@@ -10161,13 +10190,13 @@ export class SqliteVFS {
      * per-file mkdir overhead.
      */
     mkdirBatch(paths, cred) {
-        this.assertMutationsAllowed(paths.map((path) => this.storageKey(path, cred)));
+        this.assertMutationsAllowed(paths.map((path) => this.storageKey(path, cred, this.inodes, true)));
         const mtime = Date.now();
         const toCreate = [];
         const seen = new Set();
         const placed = new Map();
         for (const path of paths) {
-            const parts = this.storageKey(path, cred).split('/').filter(Boolean);
+            const parts = this.storageKey(path, cred, this.inodes, true).split('/').filter(Boolean);
             let current = '';
             for (const part of parts) {
                 current = this.createdPath(current ? current + '/' + part : part, cred, placed);

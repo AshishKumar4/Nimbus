@@ -15946,9 +15946,13 @@ function resolvePackageEntry(pkg, subpath = ".", conditions = DEFAULT_ESM_CONDIT
 
 // ../core/src/vfs/path.ts
 var NOT_NORMAL = /\/$|\/\/|(?:^|\/)\.\.?(?:\/|$)/;
+function plainVfsPath(path3) {
+  return NOT_NORMAL.test(path3) ? null : path3.charCodeAt(0) === 47 ? path3.slice(1) : path3;
+}
 function normalizeVfsPath(p) {
   const text = String(p ?? "");
-  if (!NOT_NORMAL.test(text)) return text.charCodeAt(0) === 47 ? text.slice(1) : text;
+  const plain = plainVfsPath(text);
+  if (plain !== null) return plain;
   const segments = text.split("/");
   const out = [];
   for (const seg of segments) {

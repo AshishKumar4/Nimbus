@@ -1,6 +1,7 @@
 import { inWatchedTree, projectChange } from './events.js';
 import { VfsError, VFS_DESCRIPTION, isVfsError, syscallError } from './vfs-error.js';
 import { normalizeVfsPath } from './path.js';
+import { walkVfsPath } from './path-walk.js';
 import { posixAccess } from './posix-access.js';
 import { withRecall } from './recall.js';
 import { DIRENT_TYPES } from './dirent-type.js';
@@ -133,8 +134,6 @@ export function isAsyncMountRefusal(error) {
     return typeof error === 'object' && error !== null && error.asyncMount === true;
 }
 const ROOT_POINT = '/';
-/** Links followed before ELOOP (Linux MAXSYMLINKS). */
-const MAX_LINK_HOPS = 40;
 /** An absolute path's first component when it is spelled plainly (not empty, `.` or `..`). */
 function firstComponent(path) {
     if (path.charCodeAt(0) !== 47)
@@ -2140,7 +2139,7 @@ export class CompositeVFS {
      * `input` with every root link on it followed (the last only when
      * `follow`), normalized in this namespace. A mount point or a directory
      * above one is never a link (rule 2); a component inside a mount is left to
-     * that backend. ELOOP past MAX_LINK_HOPS.
+     * that backend. ELOOP past 40 link hops.
      */
     /** `creating`: absent non-final components are allowed (mkdir -p makes them); a file among them is still ENOTDIR. */
     resolve(input, follow, sync, creating = false, trace) {
@@ -2155,103 +2154,72 @@ export class CompositeVFS {
         // an absolute target from this view's root, a relative one from the
         // link's directory, so `..` at a mount root reaches the mount point's
         // parent. Every hop is walked again with this view's credential.
-        const walk = (components, hops) => {
-            const resolved = [];
-            const lastIndex = components.length - 1;
-            // Set after a structural directory its holder does not hold as a
-            // directory: its other children are absent (they would be under a file).
-            let shadowParent = false;
-            const step = (i) => {
-                for (; i < components.length; i++) {
-                    const component = components[i];
-                    if (component === '' || component === '.')
-                        continue;
-                    if (component === '..') {
-                        resolved.pop();
-                        continue;
-                    }
-                    resolved.push(component);
-                    const prefix = `/${resolved.join('/')}`;
-                    if (trace !== undefined)
-                        trace.at = prefix;
-                    const final = i === lastIndex;
-                    const at = i;
-                    if (this.isStructural(prefix)) {
-                        // Lookup through a mount point, or a directory above one, needs
-                        // search permission on what is there, as on Linux: the mounted
-                        // root, or the directory a backend holds at that path. A
-                        // backend that resolves its own paths checks its own, its root
-                        // included, when the path ends in it; on the way to a mount
-                        // nested in it, they are checked here, as any other backend's.
-                        shadowParent = false;
-                        if (final)
-                            continue;
-                        // `..` inside such a backend is lexical, so where the path ends is too.
-                        const holder = this.locate(prefix).mount;
-                        if (holder.options.resolvesPaths && this.locate(normalizePath(`${prefix}/${components.slice(at + 1).join('/')}`)).mount === holder)
-                            continue;
-                        const mount = this.table.mounts.get(prefix);
-                        return andThen(mount === undefined ? this.heldDirectory(prefix, sync) : this.mountRoot(mount, prefix, sync), (held) => {
-                            if (held !== null && !this.permits(held, 1))
-                                throw new Refusal('EACCES', input);
-                            shadowParent = mount === undefined && held === null;
-                            return step(at + 1);
-                        });
-                    }
-                    if (shadowParent) {
-                        shadowParent = false;
-                        if (!final)
-                            throw new Refusal('ENOENT', input);
-                        continue;
-                    }
-                    if (this.absentOn(prefix) !== null)
-                        continue;
-                    const route = this.locate(prefix);
-                    if (final && !follow)
-                        continue;
-                    if (route.mount.options.resolvesPaths)
-                        continue;
-                    const ops = this.ops(route, sync);
-                    const canLink = typeof ops.readlink === 'function';
-                    const look = () => {
-                        try {
-                            const out = ops.stat(route.rel, { follow: !canLink });
-                            return isPromise(out) ? out.catch((e) => this.walkMiss(e, prefix)) : out;
-                        }
-                        catch (e) {
-                            return this.walkMiss(e, prefix);
-                        }
-                    };
-                    return andThen(look(), (stat) => {
-                        if (stat !== null && stat.type === 'symlink' && canLink) {
-                            if (hops >= MAX_LINK_HOPS)
-                                throw new Refusal('ELOOP', input);
-                            trace?.links.push(prefix);
-                            return andThen(ops.readlink(route.rel), (target) => walk([
-                                ...(target.startsWith('/') ? [] : resolved.slice(0, -1)),
-                                ...target.split('/'),
-                                ...components.slice(at + 1),
-                            ], hops + 1));
-                        }
-                        if (!final) {
-                            if (stat === null) {
-                                if (creating)
-                                    return step(at + 1);
-                                throw new Refusal('ENOENT', input);
-                            }
-                            if (stat.type !== 'directory')
-                                throw new Refusal('ENOTDIR', input);
-                            if (!this.permits(stat, 1))
-                                throw new Refusal('EACCES', input);
-                        }
-                        return step(at + 1);
-                    });
+        // A structural directory its holder lacks hides its other children.
+        let shadowParent = false;
+        return walkVfsPath(input, (prefix, final, components, at) => {
+            if (trace !== undefined)
+                trace.at = prefix;
+            if (this.isStructural(prefix)) {
+                shadowParent = false;
+                if (final)
+                    return null;
+                const holder = this.locate(prefix).mount;
+                if (holder.options.resolvesPaths && this.locate(normalizePath(`${prefix}/${components.slice(at + 1).join('/')}`)).mount === holder)
+                    return null;
+                const mount = this.table.mounts.get(prefix);
+                return andThen(mount === undefined ? this.heldDirectory(prefix, sync) : this.mountRoot(mount, prefix, sync), (held) => {
+                    if (held !== null && !this.permits(held, 1))
+                        throw new Refusal('EACCES', input);
+                    shadowParent = mount === undefined && held === null;
+                    return null;
+                });
+            }
+            if (shadowParent) {
+                shadowParent = false;
+                if (!final)
+                    throw new Refusal('ENOENT', input);
+                return null;
+            }
+            if (this.absentOn(prefix) !== null)
+                return null;
+            const route = this.locate(prefix);
+            if (final && !follow)
+                return null;
+            if (route.mount.options.resolvesPaths)
+                return null;
+            const ops = this.ops(route, sync);
+            const readlink = ops.readlink;
+            const look = () => {
+                try {
+                    const out = ops.stat(route.rel, { follow: readlink === undefined });
+                    return isPromise(out) ? out.catch((error) => this.walkMiss(error, prefix)) : out;
                 }
-                return `/${resolved.join('/')}`;
+                catch (error) {
+                    return this.walkMiss(error, prefix);
+                }
             };
-            return step(0);
-        };
-        return walk(String(input).split('/'), 0);
+            return andThen(look(), (stat) => {
+                if (stat !== null && stat.type === 'symlink' && readlink !== undefined) {
+                    shadowParent = false;
+                    return () => {
+                        trace?.links.push(prefix);
+                        return readlink.call(ops, route.rel);
+                    };
+                }
+                if (!final) {
+                    if (stat === null) {
+                        if (creating)
+                            return null;
+                        throw new Refusal('ENOENT', input);
+                    }
+                    if (stat.type !== 'directory')
+                        throw new Refusal('ENOTDIR', input);
+                    if (!this.permits(stat, 1))
+                        throw new Refusal('EACCES', input);
+                }
+                return null;
+            });
+        }, () => { throw new Refusal('ELOOP', input); });
     }
     /**
      * The directory a backend holds at a path above a mount point, or null
@@ -2920,31 +2888,59 @@ export class CompositeVFS {
     walkRemove(ops, rel, path, mount) {
         const at = (r) => (r === rel ? path : path + r.slice(rel === '/' ? 0 : rel.length));
         const order = [];
-        const visit = (r) => andThen(ops.stat(r, { follow: false }), (stat) => {
+        const kept = new Set();
+        const gone = new Set();
+        const failures = [];
+        const keepWithAncestors = (r) => {
+            for (let k = r;; k = parentOf(k)) {
+                kept.add(k);
+                if (k === rel || k === '/')
+                    break;
+            }
+        };
+        const unread = (r, error) => {
+            if (error.code === 'ENOENT') {
+                gone.add(r);
+                return;
+            }
+            keepWithAncestors(r);
+            failures.push({ path: at(r), error });
+        };
+        const reading = (r, syscall, read, next) => {
+            const fail = (cause) => unread(r, syscallError(isVfsError(cause) ? cause.code : 'EIO', syscall, at(r), {
+                detail: isVfsError(cause) ? cause.detail : String(cause), cause,
+            }));
+            let out;
+            try {
+                out = read();
+            }
+            catch (cause) {
+                unread(r, syscallError(isVfsError(cause) ? cause.code : 'EIO', syscall, at(r), {
+                    detail: isVfsError(cause) ? cause.detail : String(cause), cause,
+                }));
+                return undefined;
+            }
+            return isPromise(out) ? out.then(next, fail) : next(out);
+        };
+        const visit = (r) => r === rel
+            ? andThen(ops.stat(r, { follow: false }), (stat) => entered(r, stat))
+            : reading(r, 'lstat', () => ops.stat(r, { follow: false }), (stat) => entered(r, stat));
+        const entered = (r, stat) => {
             if (stat === null) {
                 if (r === rel)
                     throw new Refusal('ENOENT', path);
+                gone.add(r);
                 return undefined;
             }
             order.push({ rel: r, dir: stat.type === 'directory' });
             if (stat.type !== 'directory')
                 return undefined;
-            return andThen(ops.readdir(r), (entries) => entries.reduce((chain, entry) => andThen(chain, () => visit(r === '/' ? `/${entry.name}` : `${r}/${entry.name}`)), undefined));
-        });
+            return reading(r, 'scandir', () => ops.readdir(r), (entries) => entries.reduce((chain, entry) => andThen(chain, () => visit(r === '/' ? `/${entry.name}` : `${r}/${entry.name}`)), undefined));
+        };
         return andThen(visit(rel), () => {
             order.reverse();
-            const kept = new Set();
-            const gone = new Set();
-            const failures = [];
-            const keepWithAncestors = (r) => {
-                for (let k = r;; k = parentOf(k)) {
-                    kept.add(k);
-                    if (k === rel || k === '/')
-                        break;
-                }
-            };
             return andThen(order.reduce((chain, entry) => andThen(chain, () => {
-                if (kept.has(entry.rel))
+                if (kept.has(entry.rel) || gone.has(entry.rel))
                     return undefined;
                 const fail = (cause) => {
                     if (isVfsError(cause, 'ENOENT')) {

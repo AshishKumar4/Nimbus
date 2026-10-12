@@ -798,7 +798,7 @@ export declare class CompositeVFS implements VFS {
      * `input` with every root link on it followed (the last only when
      * `follow`), normalized in this namespace. A mount point or a directory
      * above one is never a link (rule 2); a component inside a mount is left to
-     * that backend. ELOOP past MAX_LINK_HOPS.
+     * that backend. ELOOP past 40 link hops.
      */
     /** `creating`: absent non-final components are allowed (mkdir -p makes them); a file among them is still ENOTDIR. */
     private resolve;

@@ -954,6 +954,8 @@ export declare class SqliteVFS {
     private resolvePath;
     /** resolvePath's walk. */
     private walkPath;
+    /** The namespace's component walk, looking up this tree in the caller's names. */
+    private walkComponents;
     /** A walk's answer, kept as lastResolution when it found something on the live tree. */
     private walked;
     /** Keep a walk as lastResolution, in the one record (a walk's turn reads it before anything replaces it). */

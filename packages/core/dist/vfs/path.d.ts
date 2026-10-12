@@ -1,3 +1,5 @@
+/** A plain lookup key, or null when components must be walked before normalization. */
+export declare function plainVfsPath(path: string): string | null;
 export declare function normalizeVfsPath(p: string): string;
 /** Resolve a user path against a VFS cwd and return a canonical VFS key. */
 export declare function resolveVfsPath(path: string, cwd: string): string;
