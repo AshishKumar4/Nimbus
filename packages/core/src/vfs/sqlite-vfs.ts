@@ -3818,8 +3818,9 @@ export class SqliteVFS {
       const name = this.watchedName(event.path, cred);
       if (name === null) return;
       const oldPath = event.oldPath === undefined ? null : this.watchedName(event.oldPath, cred);
-      const { oldPath: _stored, ...rest } = event;
-      listener(oldPath === null ? { ...rest, path: name } : { ...rest, path: name, oldPath });
+      listener(oldPath === null
+        ? { type: event.type, path: name, timestamp: event.timestamp }
+        : { type: event.type, path: name, oldPath, timestamp: event.timestamp });
     });
   }
 

@@ -100,7 +100,9 @@ export class SqliteFiles implements VFS {
   /** Every mutation that lands at `path` or under it, through any view, as this view's watch hears it (CredentialedVfs.subscribe); paths absolute. */
   watchChanges(path: string, listener: (event: VfsEvent) => void): () => void {
     return this.view.subscribe(path, (event) => {
-      listener({ ...event, path: absolute(event.path), ...(event.oldPath !== undefined ? { oldPath: absolute(event.oldPath) } : {}) });
+      listener(event.oldPath === undefined
+        ? { type: event.type, path: absolute(event.path), timestamp: event.timestamp }
+        : { type: event.type, path: absolute(event.path), oldPath: absolute(event.oldPath), timestamp: event.timestamp });
     });
   }
 

@@ -526,7 +526,8 @@ function relativeTo(point: string, path: string): string {
 
 /** Whether `path` is `tree` or under it. */
 function under(tree: string, path: string): boolean {
-  return tree === ROOT_POINT || path === tree || path.startsWith(`${tree}/`);
+  if (tree === ROOT_POINT || path === tree) return true;
+  return path.length > tree.length && path.charCodeAt(tree.length) === 47 && path.startsWith(tree);
 }
 
 /** An rm -r report (VfsRemoval). */
@@ -1121,22 +1122,22 @@ export class CompositeVFS implements VFS {
     if (rel === null) return;
     const backend = this.backend(mount);
     if (backend === null || typeof backend.watchChanges !== 'function') return;
-    watch.subscribed.set(mount, backend.watchChanges(rel, (event) => this.hearChange(watch, mount, {
-      ...event,
-      path: CompositeVFS.reroot(mount.point, event.path),
-      ...(event.oldPath !== undefined ? { oldPath: CompositeVFS.reroot(mount.point, event.oldPath) } : {}),
-    })));
+    const { point } = mount;
+    watch.subscribed.set(mount, backend.watchChanges(rel, point === ROOT_POINT
+      ? (event) => this.hearChange(watch, mount, event)
+      : (event) => this.hearChange(watch, mount, event.oldPath === undefined
+        ? { type: event.type, path: CompositeVFS.reroot(point, event.path), timestamp: event.timestamp }
+        : { type: event.type, path: CompositeVFS.reroot(point, event.path), oldPath: CompositeVFS.reroot(point, event.oldPath), timestamp: event.timestamp })));
   }
 
   /** `event`, a change on `mount` (namespace paths), told to `watch` as far as this view shows it there. */
   private hearChange(watch: ChangeWatch, mount: Mount, event: VfsEvent): void {
-    const shown = (path: string): boolean => under(watch.path, path) && this.feedShows(path, mount);
     let told: VfsEvent | null = event;
     if (event.oldPath === undefined) {
-      if (!shown(event.path)) told = null;
+      if (!this.showsChange(watch, mount, event.path)) told = null;
     } else {
-      const path = shown(event.path);
-      const oldPath = shown(event.oldPath);
+      const path = this.showsChange(watch, mount, event.path);
+      const oldPath = this.showsChange(watch, mount, event.oldPath);
       if (!path || !oldPath) {
         told = path ? { type: 'add', path: event.path, timestamp: event.timestamp }
           : oldPath ? { type: 'unlink', path: event.oldPath, timestamp: event.timestamp }
@@ -1152,15 +1153,33 @@ export class CompositeVFS implements VFS {
   }
 
   /**
+   * Whether `path` is in `watch`'s tree and shown there from `mount`
+   * (feedShows): looked up only where another mount covers that tree or
+   * lies in it, as only one can hide it.
+   */
+  private showsChange(watch: ChangeWatch, mount: Mount, path: string): boolean {
+    if (!under(watch.path, path)) return false;
+    for (const other of this.table.mounts.values()) {
+      if (other === mount) continue;
+      if (under(watch.path, other.point) || (under(other.point, watch.path) && other.point.length > mount.point.length)) return this.feedShows(path, mount);
+    }
+    return true;
+  }
+
+  /**
    * `run`, and once it lands, its change told to each watcher whose
    * backend there does not tell its own (watchChanges): `run` itself when
-   * no one watches.
+   * none is to be told.
    */
   private telling<T>(spec: WriteSpec<T>, run: () => Awaitable<T>): () => Awaitable<T> {
     const watches = this.table.changes;
     if (watches === undefined) return run;
+    const { mount } = spec.route;
+    let told = false;
+    for (const watch of watches) told ||= !watch.subscribed.has(mount);
+    if (!told) return run;
     return () => andThen(run(), (result) => {
-      const { route: { mount }, oldPath } = spec;
+      const { oldPath } = spec;
       const type = spec.told ?? (oldPath !== undefined ? 'rename' : spec.kind === 'create' ? 'addDir' : spec.kind === 'remove' ? 'unlink' : 'change');
       const timestamp = Date.now();
       for (const path of spec.landed?.(result) ?? [spec.path]) {
