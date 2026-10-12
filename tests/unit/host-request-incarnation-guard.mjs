@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict';
 import './facet-host-harness.mjs';
-import { observeResidentConfig, HOST_WATCH_HEADER, HOST_INCARNATION_HEADER } from '../../packages/fabric/src/host-activity.ts';
+import { observeResidentConfig, HOST_WATCH_HEADER, HOST_INCARNATION_HEADER, HOST_REQUEST_HEADER as REQUEST_GUARD } from '../../packages/fabric/src/host-activity.ts';
 import { importModuleSet } from './lib/module-map-bundle.mjs';
 
-const REQUEST_GUARD = 'x-nimbus-host-request';
 const capability = 'test-host-request-capability';
 const config = observeResidentConfig({
   compatibilityDate: '2026-09-26', mainModule: 'guest.js', modules: {

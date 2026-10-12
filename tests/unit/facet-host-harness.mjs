@@ -14,7 +14,7 @@
 // One EVALUATION of a program is one boot: `world.boots` is the ledger a ghost
 // process would show up in, because a second boot means the user's module
 // scope ran twice.
-import { hostActivity, HOST_WATCH_HEADER, HOST_INCARNATION_HEADER } from '../../packages/fabric/src/host-activity.ts';
+import { hostActivity, HOST_WATCH_HEADER, HOST_INCARNATION_HEADER, HOST_REQUEST_HEADER } from '../../packages/fabric/src/host-activity.ts';
 import { installHostWatchSocket } from './lib/host-watch-socket.mjs';
 installHostWatchSocket();
 
@@ -23,12 +23,15 @@ installHostWatchSocket();
  *          => unknown} evaluate
  *   Stands in for the program: called once per module evaluation, returns the
  *   object whose `startProcess` / `handleHttpRequest` the facet stub exposes.
- * @param {{ resolveConfig?: boolean }} [options]
+ * @param {{ resolveConfig?: boolean, evaluatesAdapter?: boolean }} [options]
  *   `resolveConfig: false` leaves the module map unbuilt — for tests whose
  *   subject is routing or readiness rather than what the map contains, so they
  *   need not stand up the artifact the assembler fetches.
+ *   `evaluatesAdapter: true` says `evaluate` returns the generated host
+ *   adapter itself (observeResidentConfig's entry), which answers watches and
+ *   admits requests; otherwise the stub models that adapter around a guest.
  */
-export function createFacetWorld(evaluate, { resolveConfig = true } = {}) {
+export function createFacetWorld(evaluate, { resolveConfig = true, evaluatesAdapter = false } = {}) {
   /** One entry per module evaluation — the ledger a ghost boot lands in. */
   const boots = [];
   const bootSpecs = [];
@@ -75,10 +78,16 @@ export function createFacetWorld(evaluate, { resolveConfig = true } = {}) {
     },
   };
 
+  /** facetName → the class its start returned, which the platform can instantiate again. */
+  const classes = new Map();
   const ensure = (name, start) => {
     let instance = live.get(name);
     if (!instance) {
-      instance = (async () => (await start()).class.instantiate(name))();
+      instance = (async () => {
+        const started = (await start()).class;
+        classes.set(name, started);
+        return started.instantiate(name);
+      })();
       // A failed start must not be remembered as a live facet.
       instance.catch(() => { if (live.get(name) === instance) live.delete(name); });
       live.set(name, instance);
@@ -87,6 +96,24 @@ export function createFacetWorld(evaluate, { resolveConfig = true } = {}) {
   };
 
   const incarnations = new WeakMap();
+  const incarnationOf = (instance) => {
+    let incarnation = incarnations.get(instance);
+    if (!incarnation) incarnations.set(instance, incarnation = crypto.randomUUID());
+    return incarnation;
+  };
+  // The generated admission (observeResidentConfig): a request runs only on
+  // the instance its host pinned, without the transport that admitted it.
+  const admit = (instance, request) => {
+    const capability = request.headers.get(HOST_REQUEST_HEADER);
+    if (!capability) return new Response('Not found', { status: 404 });
+    if (request.headers.get(HOST_INCARNATION_HEADER) !== incarnationOf(instance)) {
+      return new Response('the instance that ran this process was replaced', { status: 410, headers: { [HOST_REQUEST_HEADER]: capability } });
+    }
+    const headers = new Headers(request.headers);
+    headers.delete(HOST_REQUEST_HEADER);
+    headers.delete(HOST_INCARNATION_HEADER);
+    return new Request(request, { headers });
+  };
   const watches = new Map();
   const die = (name, error) => {
     for (const controller of watches.get(name) ?? []) controller.error(error);
@@ -97,13 +124,20 @@ export function createFacetWorld(evaluate, { resolveConfig = true } = {}) {
     get(name, start) {
       return {
         async startProcess(args) { return (await ensure(name, start)).startProcess(args); },
-        async handleHttpRequest(request) { return (await ensure(name, start)).handleHttpRequest(request); },
+        async handleHttpRequest(request) {
+          const instance = await ensure(name, start);
+          const admitted = evaluatesAdapter ? request : admit(instance, request);
+          return admitted instanceof Request ? instance.handleHttpRequest(admitted) : admitted;
+        },
         // A resident's WebSocket entrypoint (ResidentFacet.handleWebSocketRequest).
         async fetch(request) {
           const instance = await ensure(name, start);
-          if (!request.headers.has(HOST_WATCH_HEADER)) return instance.fetch(request);
-          let incarnation = incarnations.get(instance);
-          if (!incarnation) incarnations.set(instance, incarnation = crypto.randomUUID());
+          if (evaluatesAdapter) return instance.fetch(request);
+          if (!request.headers.has(HOST_WATCH_HEADER)) {
+            const admitted = admit(instance, request);
+            return admitted instanceof Request ? instance.fetch(admitted) : admitted;
+          }
+          const incarnation = incarnationOf(instance);
           let active = watches.get(name);
           if (!active) watches.set(name, active = new Set());
           let held;
@@ -135,6 +169,8 @@ export function createFacetWorld(evaluate, { resolveConfig = true } = {}) {
     liveFacets: () => [...live.keys()],
     /** Drop a running facet the way a platform reset would, without releasing it. */
     lose: (name) => live.delete(name),
+    /** The platform puts a fresh instance of the facet's class in its place, without its host's start. */
+    replace: (name) => live.set(name, classes.get(name).instantiate(name)),
     /** The facet dies on its own; every active native observation rejects. */
     die: (name, error = new Error('Worker exceeded memory limit.')) => { live.delete(name); die(name, error); },
   };

@@ -27,6 +27,7 @@
 // Behavior is asserted through the public ProcessFabric surface only.
 
 import assert from 'node:assert/strict';
+import { settledScope } from './lib/response-scope.mjs';
 import { facetLoaderKey } from '../../packages/fabric/src/facet-limits.ts';
 import {
   ProcessFabric,
@@ -209,7 +210,7 @@ for (const mode of PROCESS_HOST_MODES) {
     assert.match(boot.config.modules[boot.config.mainModule], /from "\.\/worker\.js"/, 'the host adapter imports the generated main');
 
     // (4) one handle surface: the route target reaches the running facet.
-    const routed = await handle.routeTarget.handleHttpRequest(new Request('http://x/hi'));
+    const routed = await handle.routeTarget.handleHttpRequest(new Request('http://x/hi'), settledScope());
     assert.equal(await routed.text(), `served /hi by ${residentFacetName(0)}`);
     // A `boot` runner stays resident after its payload: `done` must not settle.
     let settled = false;
@@ -252,7 +253,7 @@ for (const mode of PROCESS_HOST_MODES) {
     });
     await handle.booted();
     for (let i = 0; i < 20; i++) {
-      const res = await handle.routeTarget.handleHttpRequest(new Request(`http://x/p${i}`));
+      const res = await handle.routeTarget.handleHttpRequest(new Request(`http://x/p${i}`), settledScope());
       assert.equal(await res.text(), `served /p${i} by ${residentFacetName(0)}`);
     }
     assert.equal(world.boots.length, 1, '20 routed requests booted nothing');
@@ -263,7 +264,7 @@ for (const mode of PROCESS_HOST_MODES) {
     handle.kill();
     await handle.done.catch(() => {});
     await assert.rejects(
-      handle.routeTarget.handleHttpRequest(new Request('http://x/dead')),
+      handle.routeTarget.handleHttpRequest(new Request('http://x/dead'), settledScope()),
       /no longer running/,
       'a killed process fails loud, and says the same thing wherever it ran',
     );
@@ -278,7 +279,7 @@ for (const mode of PROCESS_HOST_MODES) {
     await second.booted();
     world.lose(world.boots.at(-1).facetName);
     await assert.rejects(
-      second.routeTarget.handleHttpRequest(new Request('http://x/after')),
+      second.routeTarget.handleHttpRequest(new Request('http://x/after'), settledScope()),
       /no longer loaded/,
       'a lost facet fails loud',
     );
@@ -325,7 +326,7 @@ for (const mode of PROCESS_HOST_MODES) {
       method: 'POST',
       headers: { 'X-Probe': 'kept', Cookie: 'session=abc' },
       body: 'payload',
-    }));
+    }), settledScope());
 
     assert.equal(seen.method, 'POST', 'the method reaches the process');
     assert.equal(seen.url, 'http://x/echo?q=1', 'the URL and its query reach the process');
@@ -382,7 +383,7 @@ for (const mode of PROCESS_HOST_MODES) {
       onWriterActivated() {},
       onWriterRetired: (writerId) => retired.push(writerId),
     });
-    await handle.routeTarget.handleHttpRequest(new Request('http://x/up'));
+    await handle.routeTarget.handleHttpRequest(new Request('http://x/up'), settledScope());
     assert.deepEqual(world.liveFacets(), [residentFacetName(0)]);
     handle.kill();
     handle.kill();

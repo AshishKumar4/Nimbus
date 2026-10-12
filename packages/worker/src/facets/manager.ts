@@ -54,7 +54,7 @@ import { normalizeVfsPath, stripLeadingSlashes, vfsPathExtension } from '@nimbus
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 import { direntTypeOf, type KnownDirentType } from '@nimbus-sh/core/vfs/dirent-type.js';
-import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
+import { relayRpcBody, responseScope, type PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import {
   clearPortCapability,
   listPortReservations,
@@ -9510,7 +9510,12 @@ export class FacetManager {
         pid: entry.pid,
         boot,
         facet: {
-          fetch: (request) => target.handleHttpRequest(request),
+          // The caller reads the body across RPC; the process's work for it ends with the relay.
+          fetch: async (request) => {
+            const { scope, owner } = responseScope(request.signal);
+            try { return relayRpcBody(await target.handleHttpRequest(request, scope), request.method, owner); }
+            catch (error) { owner.settle(); throw error; }
+          },
           connect: async (request) => {
             if (typeof target.handleWebSocketRequest !== 'function') {
               throw new Error(`Nimbus: worker pid ${entry.pid} accepts no WebSocket upgrades`);

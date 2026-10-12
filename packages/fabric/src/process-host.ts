@@ -67,8 +67,9 @@
  */
 
 import { networkRef, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
+import type { ResponseScope } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { hostActivity, hostResponse, HOST_INCARNATION_HEADER } from './host-activity.js';
+import { hostActivity, HOST_INCARNATION_HEADER } from './host-activity.js';
 import { onColdStart } from './generation.js';
 import { peerRetryDelay } from './fanout.js';
 import { hostNamespaceBinding, hostOpDispatch, type HostNamespaceBinding } from './host-dispatch.js';
@@ -180,7 +181,7 @@ class FacetProcessHost implements ProcessHost {
       ...facet,
       started: loss.route(() => facet.started).finally(starting.release),
       lost: loss.signal,
-      handleHttpRequest: (request: Request) => loss.route(() => facet.handleHttpRequest(request)),
+      handleHttpRequest: (request: Request, scope: ResponseScope) => loss.route(() => facet.handleHttpRequest(request, scope)),
       handleWebSocketRequest: (request: Request) => loss.route(() => facet.handleWebSocketRequest(request)),
       release: () => {
         loss.release();
@@ -258,6 +259,7 @@ const PeerHttpResult = z.object({
   statusText: z.string(),
   headers: z.array(z.tuple([z.string(), z.string()])),
   body: z.instanceof(ReadableStream).nullable(),
+  cancel: z.custom<() => unknown>((value) => typeof value === 'function'),
 });
 const PeerFailure = z.object({ hostLost: z.string() });
 function peerAnswer<T>(schema: z.ZodType<T>, value: unknown): T {
@@ -430,10 +432,18 @@ class PeerProcessHost implements ProcessHost {
       return {
         started,
         lost: loss.signal,
-        handleHttpRequest: (request: Request) =>
-          loss.route(() => hostResponse(this.ctx, observation, request, () => this.withPeer(placement.peerName, (stub) => routeThroughPeer(stub, params.workerKey, webSocketCapability, request)))),
-        handleWebSocketRequest: (request: Request) =>
-          loss.route(() => hostResponse(this.ctx, observation, request, () => this.withPeer(placement.peerName, (stub) => routeWebSocketThroughPeer(stub, params.workerKey, webSocketCapability, request)))),
+        handleHttpRequest: (request: Request, scope: ResponseScope) => loss.route(async () => {
+          const lease = observation.acquire(scope.signal);
+          void scope.settled.then(lease.release);
+          try { return await this.withPeer(placement.peerName, (stub) => routeThroughPeer(stub, params.workerKey, webSocketCapability, request, scope)); }
+          catch (error) { lease.release(); throw error; }
+        }),
+        // An upgrade hands its socket to the caller at the handshake.
+        handleWebSocketRequest: (request: Request) => loss.route(async () => {
+          const lease = observation.acquire();
+          try { return await this.withPeer(placement.peerName, (stub) => routeWebSocketThroughPeer(stub, params.workerKey, webSocketCapability, request)); }
+          finally { lease.release(); }
+        }),
         release: async () => {
           if (released) return;
           released = true;
@@ -638,6 +648,7 @@ async function routeThroughPeer(
   workerKey: string,
   capability: string,
   request: Request,
+  scope: ResponseScope,
 ): Promise<Response> {
   const result = await stub._rpcRouteHostedHttp(workerKey, {
     capability,
@@ -645,6 +656,15 @@ async function routeThroughPeer(
     url: request.url,
     headers: headerPairs(request.headers),
     body: request.method === 'GET' || request.method === 'HEAD' ? null : request.body,
+  });
+  // The peer relays the body on a pipe of its own, which a caller that
+  // abandons the response ends through `cancel`: RPC carries no signal.
+  const cancel = () => { void Promise.resolve(result.cancel()).catch(() => {}); };
+  if (scope.signal.aborted) cancel();
+  else scope.signal.addEventListener('abort', cancel, { once: true });
+  void scope.settled.then(() => {
+    scope.signal.removeEventListener('abort', cancel);
+    disposeRpcResource(result.cancel);
   });
   const responseHeaders = new Headers();
   for (const [key, value] of result.headers) responseHeaders.append(key, value);

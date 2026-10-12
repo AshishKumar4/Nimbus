@@ -14,13 +14,13 @@
  */
 
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { hostActivity, hostResponse, HOST_WATCH_HEADER, observeResidentConfig, type HostActivityLease } from './host-activity.js';
+import { hostActivity, HOST_INCARNATION_HEADER, HOST_REQUEST_HEADER, HOST_WATCH_HEADER, observeResidentConfig, type HostActivityLease } from './host-activity.js';
 import type { ModuleSourceEnv } from '@nimbus-sh/platform/module-source.js';
 import { readImmutableModuleSource } from '@nimbus-sh/core/_shared/staged-source.js';
 import { classifyError, describeError, isHostReset, isUnexplainedPlatformError } from '@nimbus-sh/platform/oom-classify.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { StorageLedger, forgetFacetStorage } from '@nimbus-sh/core/runtime/storage-ledger.js';
-import type { SqlDatabase } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { ResponseScope, SqlDatabase } from '@nimbus-sh/core/runtime/os-contracts.js';
 import {
   getCtxExports,
   stagedBootAssembler,
@@ -35,6 +35,7 @@ import {
   withDynamicWorkerCapNamed,
 } from './budgets.js';
 import {
+  ProcessHostLost,
   RESIDENT_PROCESS_CLASS,
   residentLoaderConfig,
   type HostedProcess,
@@ -541,6 +542,16 @@ function spawnResident(
     if (slot !== undefined) releaseSlot(ctx, params.pid);
   };
 
+  const watch = (signal?: AbortSignal) => facet.fetch(new Request('https://nimbus-process.invalid/', { signal, headers: { [HOST_WATCH_HEADER]: watchCapability } }));
+  // The first instance's own incarnation, pinned before any request is routed
+  // to it and never learned again from a reply.
+  const incarnation = watch().then(async (response) => {
+    const pinned = response.headers.get(HOST_INCARNATION_HEADER);
+    await response.body?.cancel();
+    if (!pinned) throw new Error(`Nimbus: resident process ${params.pid} reported no incarnation`);
+    return pinned;
+  });
+  incarnation.catch(() => {});
   let started: Promise<unknown>;
   try {
     // The allowance the ledger admitted, for the facet's store to keep under.
@@ -571,18 +582,37 @@ function spawnResident(
   // A caller reads whichever of `started` and the lifecycle it needs, so keep
   // the runtime from reporting the other as an unhandled rejection.
   started.catch(() => {});
-  const observation = hostActivity(ctx).observe(
-    (signal) => facet.fetch(new Request('https://nimbus-process.invalid/', { signal, headers: { [HOST_WATCH_HEADER]: watchCapability } })),
-    (error) => { if (!released) markLost(error); },
-  );
+  const observation = hostActivity(ctx).observe(watch, (error) => { if (!released) markLost(error); }, incarnation);
   stopObserving = observation.close;
+  // A request runs only on the instance pinned at open. An instance that
+  // refuses it as replaced is this process's host lost, never a guest answer.
+  const admitted = async (request: Request, send: (request: Request) => Promise<Response>): Promise<Response> => {
+    const headers = new Headers(request.headers);
+    headers.set(HOST_REQUEST_HEADER, watchCapability);
+    headers.set(HOST_INCARNATION_HEADER, await incarnation);
+    const response = await send(new Request(request, { headers }));
+    if (response.status !== 410 || response.headers.get(HOST_REQUEST_HEADER) !== watchCapability) return response;
+    const gone = new Error(await response.text());
+    if (!released) markLost(gone);
+    throw new ProcessHostLost(gone);
+  };
   return {
     started,
     lost,
     acquireActivity: observation.acquire,
-    // A request can arrive before the boot call; it creates the facet as that call would.
-    handleHttpRequest: (request: Request) => hostResponse(ctx, observation, request, () => facet.handleHttpRequest(request)),
-    handleWebSocketRequest: (request: Request) => hostResponse(ctx, observation, request, () => facet.fetch(request)),
+    // A request waits for the pinned incarnation, never for the boot.
+    handleHttpRequest: async (request: Request, scope: ResponseScope) => {
+      const lease = observation.acquire(scope.signal);
+      void scope.settled.then(lease.release);
+      try { return await admitted(request, (guarded) => facet.handleHttpRequest(guarded)); }
+      catch (error) { lease.release(); throw error; }
+    },
+    // An upgrade hands its socket to the caller at the handshake.
+    handleWebSocketRequest: async (request: Request) => {
+      const lease = observation.acquire();
+      try { return await admitted(request, (guarded) => facet.fetch(guarded)); }
+      finally { lease.release(); }
+    },
     release,
     name,
     slot,

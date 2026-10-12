@@ -40,7 +40,7 @@ const createSession = () => launchSession();
 function createInstance(session, generation, label) {
   const notices = [];
   const { ctx, world, processes, manager } = launchManager(label, {
-    evaluate, session, generation,
+    evaluate, session, generation, evaluatesAdapter: true,
     hooks: {
       notify: (line) => { notices.push(line); },
       resolveWorkerLaunchFallback: (recipe) => resolveDurableWorkerImage(session.vfs, recipe),

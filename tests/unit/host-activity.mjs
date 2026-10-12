@@ -14,7 +14,7 @@ function setup() {
     return new Response(new ReadableStream({ start(controller) { call.controller = controller; }, cancel() { call.cancelled = true; } }), {
       headers: { [HOST_INCARNATION_HEADER]: incarnation },
     });
-  }, (error) => failures.push(error));
+  }, (error) => failures.push(error), 'one');
   return { activity, target, calls, failures, remove: target.close, change() { incarnation = 'two'; } };
 }
 
@@ -53,7 +53,8 @@ function setup() {
   processes.setWorkObservation(() => t.target.acquire());
   const abort = new AbortController();
   const work = processes.holdWork(100, () => {}, abort.signal);
-  await work.ready;
+  await turns();
+  assert.equal(t.calls.length, 1, 'held work observes its residents');
   abort.abort(); await turns();
   assert.equal(t.calls[0].signal.aborted, true, 'cancelled work releases observation before uncooperative cleanup');
   work(); t.remove();
@@ -69,26 +70,6 @@ function setup() {
 console.log('host-activity: idle, shared active watches, abort, wake validation and host loss');
 
 {
-  const activity = new HostActivity(), pending = Promise.withResolvers(), processes = new SessionProcessSupervisor();
-  let transport;
-  const target = activity.observe((signal) => { transport = signal; return pending.promise; }, () => assert.fail('owner cancellation is not host loss'));
-  processes.setWorkObservation(() => target.acquire());
-  const abort = new AbortController();
-  const one = processes.holdWork(100, () => {}, abort.signal);
-  const two = processes.holdWork(101, () => {});
-  const cancelled = one.ready.then(() => 'admitted', () => 'cancelled');
-  await turns(); abort.abort();
-  try {
-    assert.equal(await Promise.race([cancelled, new Promise(resolve => setTimeout(() => resolve('hung'), 100))]), 'cancelled', 'one owner stops without waiting for another owner\'s validation');
-    assert.equal(transport.aborted, false, 'the other owner retains the shared transport');
-  } finally {
-    pending.resolve(new Response(new ReadableStream(), { headers: { [HOST_INCARNATION_HEADER]: 'shared' } }));
-    await two.ready;
-    one(); two();
-  }
-}
-
-{
   const t = setup(), processes = new SessionProcessSupervisor();
   const abort = new AbortController();
   const work = processes.holdWork(100, () => {}, abort.signal);
@@ -100,7 +81,7 @@ console.log('host-activity: idle, shared active watches, abort, wake validation 
 }
 {
   const activity = new HostActivity(), response = Promise.withResolvers();
-  const target = activity.observe(() => response.promise, () => assert.fail('closure is not host loss'));
+  const target = activity.observe(() => response.promise, () => assert.fail('closure is not host loss'), 'late');
   let admitted = false;
   const lease = target.acquire();
   const work = lease.ready.then(() => { admitted = true; });

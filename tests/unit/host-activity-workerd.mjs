@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const main = `import {DurableObject} from 'cloudflare:workers';
-import {HostActivity,hostResponse,observeResidentConfig,HOST_WATCH_HEADER} from './activity.js';
+import {HostActivity,observeResidentConfig,HOST_WATCH_HEADER,HOST_REQUEST_HEADER,HOST_INCARNATION_HEADER} from './activity.js';
 export class Peer extends DurableObject {
   watches=new Set();
   codes=[];
@@ -36,7 +36,7 @@ export class Peer extends DurableObject {
   }
 }
 const CODE={compatibilityDate:'2026-09-26',mainModule:'leaf.js',modules:{'leaf.js':\`import {DurableObject} from 'cloudflare:workers';
-export class NimbusProcess extends DurableObject { startProcess(){return 'booted';} fetch(){return new Response('user response');} }\`}};
+export class NimbusProcess extends DurableObject { startProcess(){return 'booted';} handleHttpRequest(){return new Response('user response');} fetch(){return new Response('user response');} }\`}};
 export class Host extends DurableObject {
   activity;
   lease;
@@ -45,7 +45,7 @@ export class Host extends DurableObject {
   losses=[];
   async startWatch(name){
     this.activity=new HostActivity();
-    const target=this.activity.observe(signal=>this.env.PEER.get(this.env.PEER.idFromName(name)).fetch(new Request('https://peer.invalid/',{signal,headers:{Upgrade:'websocket'}})),error=>this.losses.push(error.message));
+    const target=this.activity.observe(signal=>this.env.PEER.get(this.env.PEER.idFromName(name)).fetch(new Request('https://peer.invalid/',{signal,headers:{Upgrade:'websocket'}})),error=>this.losses.push(error.message),'peer');
     this.lease=target.acquire();await this.lease.ready;
   }
   watchStatus(){return this.losses;}
@@ -69,23 +69,33 @@ export class Host extends DurableObject {
       const key='watch-'+name;
       const leaf=this.env.LOADER.get(name,()=>observeResidentConfig(structuredClone(CODE),key)).getDurableObjectClass('NimbusProcess');
       const facet=this.ctx.facets.get(name,async()=>({class:leaf}));
+      const pin=await facet.fetch(new Request('https://watch.invalid/',{headers:{[HOST_WATCH_HEADER]:key}}));
+      const pinned=pin.headers.get(HOST_INCARNATION_HEADER);await pin.body.cancel();
       await facet.startProcess();
       let opens=0;
-      const target=activity.observe(signal=>{opens++;return facet.fetch(new Request('https://watch.invalid/',{signal,headers:{[HOST_WATCH_HEADER]:key}}));},error=>lost.push(error.message));
-      return {activity,target,lost,facet,opens:()=>opens};
+      const target=activity.observe(signal=>{opens++;return facet.fetch(new Request('https://watch.invalid/',{signal,headers:{[HOST_WATCH_HEADER]:key}}));},error=>lost.push(error.message),pinned);
+      const data=()=>new Request('https://user.invalid/',{headers:{[HOST_REQUEST_HEADER]:key,[HOST_INCARNATION_HEADER]:pinned}});
+      return {activity,target,lost,facet,data,key,opens:()=>opens};
     };
     const active=await make('active');
     const a=active.target.acquire(),b=active.target.acquire();
     await Promise.all([a.ready,b.ready]);
     const shared=active.opens();a.release();b.release();
     await new Promise(r=>setTimeout(r,20));
-    const afterCancel=await(await active.facet.fetch(new Request('https://user.invalid/'))).text();
+    const afterCancel=await(await active.facet.fetch(active.data())).text();
     const wrong=await active.facet.fetch(new Request('https://watch.invalid/',{headers:{[HOST_WATCH_HEADER]:'wrong-capability'}}));
     const rejectedCapability={body:await wrong.text(),incarnation:wrong.headers.get('x-nimbus-host-incarnation')};
     const c=active.target.acquire();await c.ready;
     this.ctx.facets.abort('active',new Error('platform reset active actor'));
     for(let i=0;i<100&&!active.lost.length;i++)await new Promise(r=>setTimeout(r,10));
     c.release();
+    // The facet's next call starts a fresh instance of the same class: the
+    // original's pinned incarnation is refused there before any guest code.
+    const stale=[];
+    for(const entry of ['handleHttpRequest','fetch']){
+      const refused=await active.facet[entry](active.data());
+      stale.push({entry,status:refused.status,brand:refused.headers.get(HOST_REQUEST_HEADER)===active.key,body:await refused.text()});
+    }
     const idle=await make('idle');
     const first=idle.target.acquire();await first.ready;first.release();
     await new Promise(r=>setTimeout(r,20));
@@ -111,7 +121,7 @@ export class Host extends DurableObject {
         const response=await stub.fetch(new Request('https://peer.invalid/'+(options.badReply?'?badReply':''),{signal,headers:{Upgrade:'websocket'}}));
         socket=response.webSocket;return response;
       };
-      if(options.activity){const target=activity.observe(open,error=>losses.push(error.message));lease=target.acquire();await lease.ready;}
+      if(options.activity){const target=activity.observe(open,error=>losses.push(error.message),'peer');lease=target.acquire();await lease.ready;}
       else{await open();socket.accept();}
       if(options.echo){
         const echo=new Promise((resolve,reject)=>{socket.addEventListener('message',resolve,{once:true});socket.addEventListener('error',reject,{once:true});});
@@ -148,26 +158,6 @@ export class Host extends DurableObject {
       }
       resetCases.push({cause,resetError,remote,losses});
     }
-    // Upstream native cancellation is tracked by the standalone conformance
-    // reproduction; this fixture gates the terminal's activity ownership.
-    const streamCases=[];
-    for(const ending of ['eof','cancel','partial-cancel','error']){
-      const activity=new HostActivity();let watches=0,output,sourceCancelled=false,settled=false;
-      const target=activity.observe(async()=>new Response(new ReadableStream({start(){watches++;},cancel(){watches--;}}),{headers:{'x-nimbus-host-incarnation':'stream'}}),()=>{});
-      const ctx={waitUntil:task=>this.ctx.waitUntil(task.finally(()=>{settled=true;}))};
-      const response=await hostResponse(ctx,target,new Request('https://stream.invalid/'),async()=>new Response(new ReadableStream({start(controller){output=controller;},cancel(){sourceCancelled=true;}}),{headers:{'Content-Length':'3'}}));
-      const atHeaders=watches,reader=response.body.getReader();
-      if(ending==='cancel')await reader.cancel();
-      else if(ending==='partial-cancel'){output.enqueue(new Uint8Array([1]));await reader.read();await reader.cancel();}
-      else{
-        output.enqueue(new Uint8Array([1,2,3]));await reader.read();
-        if(ending==='eof'){output.close();await reader.read();}
-        else{output.error(new Error('source failed'));await reader.read().catch(()=>{});}
-      }
-      reader.releaseLock();
-      for(let i=0;i<100&&(watches||!settled);i++)await new Promise(resolve=>setTimeout(resolve,1));
-      streamCases.push({ending,atHeaders,after:watches,sourceCancelled,settled,length:response.headers.get('Content-Length')});target.close();
-    }
     const passiveCases=[];
     for(const cause of ['release','coordinator-reset','peer-reset','pending-release']){
       const name='passive-'+cause,owner=this.env.HOST.get(this.env.HOST.idFromName(name)),peer=this.env.PEER.get(this.env.PEER.idFromName(name));
@@ -178,7 +168,7 @@ export class Host extends DurableObject {
       for(let i=0;i<100;i++){after=await this.env.PEER.get(this.env.PEER.idFromName(name)).status();if(after.watches===0)break;await new Promise(resolve=>setTimeout(resolve,10));}
       passiveCases.push({cause,state,before:before.watches,after:after.watches});
     }
-    return {shared,afterCancel,rejectedCapability,activeLost:active.lost,idleLost:idle.lost,admitted,error,experiments,resetCases,streamCases,passiveCases};
+    return {shared,afterCancel,rejectedCapability,stale,activeLost:active.lost,idleLost:idle.lost,admitted,error,experiments,resetCases,passiveCases};
   }
 }
 export default {fetch(request,env){return new URL(request.url).pathname==='/ready'?new Response('ready'):env.HOST.get(env.HOST.idFromName('proof')).run().then(value=>Response.json(value));}};`;
@@ -208,7 +198,8 @@ try{
   const result=JSON.parse(body);
   assert.equal(result.shared,1);
   assert.equal(result.afterCancel,'user response','releasing the watch leaves the program alive');
-  assert.deepEqual(result.rejectedCapability,{body:'user response',incarnation:null},'a wrong capability cannot enter the native observation endpoint');
+  assert.deepEqual(result.rejectedCapability,{body:'Not found',incarnation:null},'a wrong capability enters neither the native observation endpoint nor the guest');
+  assert.deepEqual(result.stale,['handleHttpRequest','fetch'].map(entry=>({entry,status:410,brand:true,body:'the instance that ran this process was replaced'})),'a replaced instance refuses the pinned incarnation on both entrypoints before its guest runs');
   assert.equal(result.activeLost.length,1,JSON.stringify(result)+'\n'+logs);
   assert.equal(result.admitted,false,'a reset while idle is rejected before work');
   assert.match(result.error,/restarted|reset/i);
@@ -225,15 +216,9 @@ try{
     assert.equal(test.remote.watches,0,JSON.stringify(test)+'\n'+logs);
     assert.equal(test.losses.length,test.cause==='peer-reset'||test.cause==='peer-close'?1:0,JSON.stringify(test));
   }
-  for(const test of result.streamCases){
-    assert.equal(test.atHeaders,1,JSON.stringify(test));
-    assert.equal(test.after,0,JSON.stringify(test));
-    assert.equal(test.settled,true,JSON.stringify(test));
-    assert.equal(test.length,'3','native ownership preserves declared length');
-  }
   for(const test of result.passiveCases){
     if(test.cause!=='pending-release')assert.equal(test.before,1,JSON.stringify(test));
     assert.equal(test.after,0,JSON.stringify(test));
   }
-  console.log('host-activity-workerd: native abort, shared watch, active reset and idle incarnation change');
+  console.log('host-activity-workerd: native abort, shared watch, active reset, idle incarnation change and stale data refusal');
 }finally{child.kill('SIGKILL');rmSync(dir,{recursive:true,force:true});}

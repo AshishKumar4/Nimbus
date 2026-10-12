@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { settledScope } from './lib/response-scope.mjs';
 import { createFacetCtx, createFacetWorld, createPeerNamespace } from './facet-host-harness.mjs';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
@@ -92,7 +93,7 @@ for (const reset of [false, true]) {
   assert.equal(t.stubs.filter(stub => !stub.disposed).length, 1, 'only the active fetch watch owns a stub');
   lease.release(); await turns();
   assert.equal(t.stubs.filter(stub => !stub.disposed).length, 0);
-  assert.equal(await (await process.handleHttpRequest(new Request('http://process/'))).text(), 'ok');
+  assert.equal(await (await process.handleHttpRequest(new Request('http://process/'), settledScope())).text(), 'ok');
   await turns();
   assert.equal(t.stubs.filter(stub => !stub.disposed).length, 0, 'a data call does not retain its routing stub');
   await process.release();

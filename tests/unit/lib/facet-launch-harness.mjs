@@ -40,9 +40,9 @@ export function launchSession({ disk = createSqliteVfsTestHarness() } = {}) {
  */
 export function launchManager(label, {
   evaluate = idleProgram, session = launchSession(), env = {}, hooks = {}, generation,
-  processes = new SessionProcessSupervisor(), ports = new PortRegistry(), crashable = false,
+  processes = new SessionProcessSupervisor(), ports = new PortRegistry(), crashable = false, evaluatesAdapter = false,
 } = {}) {
-  const world = createFacetWorld(evaluate);
+  const world = createFacetWorld(evaluate, { evaluatesAdapter });
   if (generation !== undefined) processes.setPidBase(generation * PID_GEN_STRIDE);
   const ctx = createFacetCtx(world, label, session.storage, { crashable });
   const manager = new FacetManager(

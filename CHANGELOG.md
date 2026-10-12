@@ -5,6 +5,16 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Breaking: `RouteableFacetTarget.handleHttpRequest(request, scope)` and
+  `HostedProcess.handleHttpRequest(request, scope)` take a `ResponseScope`
+  (`signal`, `settled`): the process owns work for the response until the
+  caller is done with its body or its client leaves. `relayRpcBody` and
+  `responseScope` (`@nimbus-sh/core/runtime/port-registry.js`) relay a body
+  with that scope.
+- Fixed: a resident's request is admitted by the instance its host opened,
+  checked in the request itself; one the platform put in its place refuses it
+  before any guest code runs, and the process reports its host lost once. A
+  request no longer waits for a separate host validation first.
 - Fixed: a quiet client WebSocket routed through a port remains resident
   interest until it closes; unrelated embedder sockets and idle terminals keep
   their bounded traffic rule. Closing a preview begins that bounded idle grace.
