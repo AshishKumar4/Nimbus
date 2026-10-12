@@ -107,9 +107,7 @@ const DECODABLE_CONTENT_CODINGS = new Map<string, 'gzip' | 'deflate'>([
  *
  * The pipe into the last stage is explicit, so its settlement is when the
  * body is done with: its end (`owner.settle`), or its failure, `owner.signal`
- * aborting it among them (`owner.fail`). Aborting it also ends a pipe whose
- * client left while its source is quiet: the stages before it are errored
- * through it.
+ * aborting it among them (`owner.fail`).
  */
 export function relayRpcBody(response: Response, method: string, owner: BodyOwner, gated: TransformStream<Uint8Array, Uint8Array> | null = null): Response {
   if (response.body === null) {
@@ -119,7 +117,7 @@ export function relayRpcBody(response: Response, method: string, owner: BodyOwne
   const declared = method === 'HEAD' ? null : response.headers.get('Content-Length');
   // RFC 9110 §8.6: 1*DIGIT. Joined duplicates ("5, 5") are not one length.
   const length = declared !== null && /^\d+$/.test(declared) ? Number(declared) : NaN;
-  const last = Number.isSafeInteger(length) ? new FixedLengthStream(length) : gated ?? new TransformStream<Uint8Array, Uint8Array>();
+  const last = Number.isSafeInteger(length) ? new FixedLengthStream(length) : gated ?? abortableStage(owner.signal);
   settleWith(owner, last === gated || gated === null ? response.body : response.body.pipeThrough(gated), last.writable);
   return new Response(last.readable, {
     status: response.status,
@@ -158,14 +156,25 @@ function settleWith(owner: BodyOwner, source: ReadableStream<Uint8Array>, last: 
   void source.pipeTo(last, { signal: owner.signal }).then(owner.settle, owner.fail);
 }
 
+/**
+ * A JavaScript stage of the relay, errored when `signal` aborts. A pipe waits
+ * on a stage's read or write without looking at its signal, so this is what
+ * ends a pipe whose client is gone while its source is quiet or its sink full.
+ */
+function abortableStage(signal: AbortSignal, transformer: Transformer<Uint8Array, Uint8Array> = {}): TransformStream<Uint8Array, Uint8Array> {
+  return new TransformStream({
+    ...transformer,
+    start: (controller) => { signal.addEventListener('abort', () => controller.error(signal.reason), { once: true }); },
+  });
+}
 
 /**
  * A process's answer body, each piece and its end let out as the rest of
  * its output is (ProcessOutput.releaseOutput): what it wrote while answering
  * is published before the piece after it, or its end, is seen.
  */
-function releasedBody(output: ProcessOutput, pid: number): TransformStream<Uint8Array, Uint8Array> {
-  return new TransformStream({
+function releasedBody(output: ProcessOutput, pid: number, signal: AbortSignal): TransformStream<Uint8Array, Uint8Array> {
+  return abortableStage(signal, {
     transform: (chunk, controller) => output.releaseOutput(pid, () => controller.enqueue(chunk)),
     flush: () => output.releaseOutput(pid, () => {}),
   });
@@ -602,7 +611,7 @@ export class PortRegistry {
       // undone. We do NOT inject Access-Control-Allow-Origin — a port proxy
       // forwards whatever CORS policy the user's HTTP server chose (audit C3
       // discourages gratuitous wildcards on non-static routes).
-      const gate = output === null || response.body === null ? null : releasedBody(output, entry.pid);
+      const gate = output === null || response.body === null ? null : releasedBody(output, entry.pid, scope.signal);
       const answer = decodeContentCoding(response, port, request.method, owner, gate);
       relayed = true;
       return answer;
