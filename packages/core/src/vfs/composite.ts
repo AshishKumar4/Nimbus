@@ -2895,7 +2895,7 @@ export class CompositeVFS implements VFS {
   private onMutation<T>(
     input: string, follow: boolean, sync: boolean, what: string,
     run: (ops: Ops, rel: string, path: string) => Awaitable<T>,
-    { parents = false, written, told, children = false }: { parents?: boolean; written?: Uint8Array; told?: VfsEventType | null; children?: boolean } = {},
+    { parents = false, written, told, children = false, recursiveEntry = false }: { parents?: boolean; written?: Uint8Array; told?: VfsEventType | null; children?: boolean; recursiveEntry?: boolean } = {},
   ): Awaitable<T> {
     return andThen(this.resolve(input, follow, sync, parents), (path) => {
       this.present(path);
@@ -2914,8 +2914,8 @@ export class CompositeVFS implements VFS {
       // on Linux; only a directory above a mount point has no backend to ask.
       const metadataOnly = what === 'changed' && (path === ROOT_POINT || this.table.mounts.get(path) !== undefined);
       const walkingChildren = what === 'removed' && children && path !== ROOT_POINT;
-      if (this.isStructural(path) && !metadataOnly && !walkingChildren) throw new Refusal('EBUSY', path, what === 'removed' ? undefined : `a mount point cannot be ${what}`);
-      if (route.mount.options.readOnly && !walkingChildren) throw new Refusal('EROFS', path, what === 'removed' || what === 'unlinked' ? undefined : `${route.mount.point} is mounted read-only`);
+      if (this.isStructural(path) && !metadataOnly && !walkingChildren) throw new Refusal('EBUSY', path, recursiveEntry ? undefined : `a mount point cannot be ${what}`);
+      if (route.mount.options.readOnly && !walkingChildren) throw new Refusal('EROFS', path, recursiveEntry ? undefined : `${route.mount.point} is mounted read-only`);
       return andThen(this.reachable(path, sync), () => andThen(parents ? this.makeTree(parentOf(path), undefined, sync) : undefined, () => {
         const ops = this.ops(route, sync);
         const removes = what === 'unlinked' || what === 'removed';
@@ -3326,7 +3326,7 @@ export class CompositeVFS implements VFS {
             });
           };
           const out = composed ? this.onMutation(at(entry.rel), false, sync, entry.dir ? 'removed' : 'unlinked',
-            (backend, r, named) => remove(backend, r, this.locate(named).mount, named), { told: null }) : remove(ops, entry.rel, mount, at(entry.rel));
+            (backend, r, named) => remove(backend, r, this.locate(named).mount, named), { told: null, recursiveEntry: true }) : remove(ops, entry.rel, mount, at(entry.rel));
           if (isPromise(out)) return out.then(() => undefined, fail);
           return undefined;
         } catch (cause) {
