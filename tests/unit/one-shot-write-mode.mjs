@@ -3,7 +3,8 @@
 // Node's does, at the session and in the program's own stat:
 // - writeFile's, appendFile's, open's and a write stream's `mode` (in each of
 //   their forms), less the process's umask; a file already there keeps its own;
-// - mkdir's `mode`, less the umask; mkdtemp's 0700;
+// - mkdir's `mode`, less the umask; mkdtemp's 0700 (at once, as the next stat
+//   sees it, and as the session holds it);
 // - copyFile and cp: the source's mode exactly, over a file already there too,
 //   and while it is made another principal can read no more of it than the
 //   source lets it: a directory made is its owner's alone until it is filled,
@@ -42,6 +43,15 @@ authority.kfs.writeFile('home/user/private/key', 'k');
 own('home/user/private/key', 0o600);
 authority.kfs.writeFile('home/user/private/notes', 'n');
 own('home/user/private/notes', 0o644);
+// A tree another principal owns and shares with the copier's group, its
+// directories closed to writes: the copy's own directories end as closed.
+kernel.mkdir('home/user/team/sub', { recursive: true });
+kernel.writeFile('home/user/team/top', 't');
+kernel.writeFile('home/user/team/sub/file', 'f');
+for (const [path, mode] of [['home/user/team/sub/file', 0o440], ['home/user/team/top', 0o440], ['home/user/team/sub', 0o550], ['home/user/team', 0o550]]) {
+  kernel.chown(path, 3000, 1000);
+  kernel.chmod(path, mode);
+}
 // A private tree whose copy fails partway: a readable entry, then one its owner may not read.
 kernel.mkdir('home/user/broken');
 own('home/user/broken', 0o700);
@@ -76,6 +86,14 @@ const expected = {
   'promise-copied-dir/notes': 0o644,
   'chmod-sync.txt': 0o600,
   'fchmod-sync.txt': 0o600,
+  'team-copy': 0o550,
+  'team-copy/sub': 0o550,
+  'team-copy/sub/file': 0o440,
+  'team-copy/top': 0o440,
+  'promise-team-copy': 0o550,
+  'promise-team-copy/sub': 0o550,
+  'promise-team-copy/sub/file': 0o440,
+  'promise-team-copy/top': 0o440,
 };
 const program = `
 const fs = require('fs');
@@ -95,7 +113,9 @@ const fs = require('fs');
   await (await fs.promises.open(at('promise-open.txt'), 'w', 0o600)).close();
   await new Promise((resolve, reject) => fs.createWriteStream(at('stream.txt'), { mode: 0o600 }).on('error', reject).on('close', resolve).end('a'));
   fs.mkdirSync(at('made-dir'), { mode: 0o700 });
+  const madeNow = fs.statSync(at('made-dir')).mode & 0o777;
   const temp = fs.mkdtempSync(at('temp-'));
+  const tempNow = fs.statSync(temp).mode & 0o777;
   fs.copyFileSync(at('secret.txt'), at('copy-new.txt'));
   fs.copyFileSync(at('secret.txt'), at('copy-over.txt'));
   await fs.promises.copyFile(at('secret.txt'), at('promise-copy.txt'));
@@ -104,6 +124,8 @@ const fs = require('fs');
   const failed = [];
   try { fs.cpSync(at('broken'), at('broken-copy'), { recursive: true }); } catch (error) { failed.push(error.code); }
   try { await fs.promises.cp(at('broken'), at('promise-broken-copy'), { recursive: true }); } catch (error) { failed.push(error.code); }
+  fs.cpSync(at('team'), at('team-copy'), { recursive: true });
+  await fs.promises.cp(at('team'), at('promise-team-copy'), { recursive: true });
   fs.writeFileSync(at('chmod-sync.txt'), 'a');
   fs.chmodSync(at('chmod-sync.txt'), 0o600);
   const fd = fs.openSync(at('fchmod-sync.txt'), 'w');
@@ -111,7 +133,7 @@ const fs = require('fs');
   fs.closeSync(fd);
   const modes = {};
   for (const name of ${JSON.stringify(Object.keys(expected))}) modes[name] = fs.statSync(at(name)).mode & 0o777;
-  console.log(JSON.stringify({ modes, temp: temp.slice('/home/user/'.length), tempMode: fs.statSync(temp).mode & 0o777, failed }));
+  console.log(JSON.stringify({ modes, temp: temp.slice('/home/user/'.length), tempMode: fs.statSync(temp).mode & 0o777, madeNow, tempNow, failed }));
 })();
 `;
 const generated = await generateEntrypointCode(program, { bundle: {} }, false, nodeFacetSources(generateShimsCode()));
@@ -155,6 +177,7 @@ assert.equal(body.stderr, '');
 const seen = JSON.parse(body.stdout);
 assert.deepEqual(seen.modes, expected, 'the program stats each path with the mode it was made with');
 assert.equal(seen.tempMode, 0o700, "the program stats mkdtemp's directory 0700");
+assert.deepEqual([seen.madeNow, seen.tempNow], [0o700, 0o700], 'the stat straight after mkdir and mkdtemp sees the mode each made');
 const atSession = (name) => authority.kfs.stat('home/user/' + name).mode & 0o777;
 assert.deepEqual(Object.fromEntries(Object.keys(expected).map((name) => [name, atSession(name)])), expected, 'the session holds each path with the mode it was made with');
 assert.equal(atSession(seen.temp), 0o700, "the session holds mkdtemp's directory 0700");

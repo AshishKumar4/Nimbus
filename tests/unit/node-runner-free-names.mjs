@@ -52,15 +52,15 @@ const guarded = [
 for (const source of guarded) assert.deepEqual(free(source), [], source);
 // Anywhere else the read may throw: the other branch, the test's own reads before its typeof, after the guard.
 const unguarded = [
-  'export default typeof missing === "undefined" ? missing : 0;',
-  'export default typeof missing === "number" ? 0 : missing;',
-  'if (typeof missing === "undefined") missing(); export default 0;',
-  'if (typeof missing !== "undefined") {} else missing(); export default 0;',
-  'export default missing === 1 && typeof missing === "number" ? missing : 0;',
-  'export default typeof missing === "number" || missing;',
-  'if (typeof missing === "number") f(missing); export default missing;',
+  ['export default typeof missing === "undefined" ? missing : 0;', ['missing']],
+  ['export default typeof missing === "number" ? 0 : missing;', ['missing']],
+  ['if (typeof missing === "undefined") missing(); export default 0;', ['missing']],
+  ['if (typeof missing !== "undefined") {} else missing(); export default 0;', ['missing']],
+  ['export default missing === 1 && typeof missing === "number" ? missing : 0;', ['missing']],
+  ['export default typeof missing === "number" || missing;', ['missing']],
+  ['if (typeof missing === "number") f(missing); export default missing;', ['f', 'missing']],
 ];
-for (const source of unguarded) assert.ok(free(source).includes('missing'), source);
+for (const [source, names] of unguarded) assert.deepEqual(free(source), names, source);
 // A name some code puts on globalThis is still not declared: a read of it may run before the
 // install, or the install never run (it is read as globalThis's property where that is meant).
 const installed = [
