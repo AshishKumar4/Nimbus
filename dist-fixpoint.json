@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "6a0b9fecac576121dc0350cdb84693aa09ad1a51997364e6e39c292f08bc09f5",
+  "fingerprint": "b4c697c7bc1c128c82a2d01bd4bc7b7642ca0ba82312efff27bb2893bd622428",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2339,9 +2339,9 @@
     "packages/worker/dist/npm/pre-bundle-facet.d.ts": "4fcf909038034d80082fc626918bc564d0c9970ceb1ee1ba2f2fda1ee7ce36ba",
     "packages/worker/dist/npm/pre-bundle-facet.d.ts.map": "75c3d215c4588bb76c05c3746085a542a87ef38c3cc7c83afcd1549b1e164313",
     "packages/worker/dist/npm/pre-bundle-facet.js": "8cf0b0392c84ef7cd11d40853cb3b8fc4a17074d226d19a5e527fd0132e9b893",
-    "packages/worker/dist/npm/r2-cache.d.ts": "5bce10da9bc9b645b58590f3d323f1aee7c8ac4c599553d8d15ffd07daafa360",
-    "packages/worker/dist/npm/r2-cache.d.ts.map": "92118609a45be28fadfdafcccba81235d10410ec9b95a0a07afde69b9f5aa20d",
-    "packages/worker/dist/npm/r2-cache.js": "08b88da2ac3d92ebf7e985db4f8a6b72e462111a37fb1ff5824c65a750b97f8f",
+    "packages/worker/dist/npm/r2-cache.d.ts": "4f41a7d983a0d4a7c9efd2d1b44b6b3cf717f3e1e74af023ee2a43b3d0cad3bc",
+    "packages/worker/dist/npm/r2-cache.d.ts.map": "59322e933dfde9a237c57d2688fcf13e877ebab0c440e3617886d0eacb6ff846",
+    "packages/worker/dist/npm/r2-cache.js": "8f1118fbdf4f26ac15849ff0214bccc11b75abe8750188d8b674f2493116ed63",
     "packages/worker/dist/npm/registry-record.d.ts": "521c5571caa6660008cc69106e0047b9637a611c27a7fb55be67bd2cc1ff9f0c",
     "packages/worker/dist/npm/registry-record.d.ts.map": "3cd6f7abdb34f6b215a1ee600595e7f7ee307515803bcbf66d394bd7f2caaa09",
     "packages/worker/dist/npm/registry-record.js": "55aa13dc42b34416f1c197a66463862d5eeeafa7f09a99d1a4639dedd08c4e74",
@@ -2956,7 +2956,7 @@
     "packages/worker/src/npm/npx-install.ts": "38b812ef62c9b5bf5d6a070f261b9a2a90e736e18d384f809ec3cf73d73e473c",
     "packages/worker/src/npm/package-lock.ts": "cad4d3cb2dba964b043f11302a9c52b834ac016632567e34213aee5c6e73f324",
     "packages/worker/src/npm/pre-bundle-facet.ts": "3248498b2f74b99c20efd1cdc687347ed27bea2bd83559164144afef28af9b20",
-    "packages/worker/src/npm/r2-cache.ts": "34ea616bf30a7e2c0741b45f71bc18c7446f04dd1c75ff4eb403c065f478ac92",
+    "packages/worker/src/npm/r2-cache.ts": "a725a56c5adf51293e91e0b495d0076e30b3bc8b8454573cb99b3b947db2c8b3",
     "packages/worker/src/npm/registry-record.ts": "a6a6dfb4c2ace63d1988c4381f9ebf15e00d11ea4b2737934f8feba2774b5551",
     "packages/worker/src/npm/registry-retry.ts": "3d847d820535c4df51fe70f86be79196107a20c08b6425376fb110136a0b151e",
     "packages/worker/src/npm/resolve-facet.ts": "20371a8aee226be4960fbc7ddd533d262ca36807879f9db200774589687513fa",

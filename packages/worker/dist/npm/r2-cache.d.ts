@@ -125,11 +125,14 @@ export interface CachedPackument {
     expired: boolean;
     /** The registry's ETag for this body, to revalidate it with; absent where the registry gave none. */
     etag?: string;
+    /** The Cache-Control the registry stored it with: what a 304 that states none keeps (RFC 9111 §4.3.4). */
+    cacheControl?: string;
 }
-/** What a packument is stored with: until when it is fresh, and the registry's ETag. */
+/** What a packument is stored with: until when it is fresh, the registry's ETag, and the Cache-Control that freshness came from. */
 interface PackumentValidators {
     readonly expiresAt: number;
     readonly etag: string | null;
+    readonly cacheControl: string | null;
 }
 /** Optional R2 binding shape (we treat null as "not provisioned"). */
 type R2BucketLike = {
@@ -360,7 +363,7 @@ export declare class R2CacheClient {
      * Returns true on success, false on failure (same best-effort posture
      * as putTarball).
      */
-    putPackument(name: string, json: string, registry?: string, { expiresAt, etag }?: PackumentValidators): Promise<boolean>;
+    putPackument(name: string, json: string, registry?: string, { expiresAt, etag, cacheControl }?: PackumentValidators): Promise<boolean>;
     /** Lightweight feature-detection for callers that want to log path. */
     hasTarballBucket(): boolean;
     /** Lightweight feature-detection for callers that want to log path. */

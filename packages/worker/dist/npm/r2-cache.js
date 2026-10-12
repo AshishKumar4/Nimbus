@@ -120,8 +120,8 @@ export const MAX_R2_TARBALL_BYTES = 30 * 1024 * 1024;
  */
 const PACKUMENT_VALIDATED = '2';
 /** How long the registry says an answer stays fresh: Cache-Control s-maxage, else max-age, less Age; within PACKUMENT_TTL_MS, which is also what an answer stating none gets. */
-function freshForMs(headers) {
-    const directives = (headers.get('cache-control') ?? '').toLowerCase().split(',').map((directive) => directive.trim());
+function freshForMs(cacheControl, ageHeader) {
+    const directives = (cacheControl ?? '').toLowerCase().split(',').map((directive) => directive.trim());
     if (directives.includes('no-cache') || directives.includes('no-store'))
         return 0;
     const seconds = (name) => {
@@ -132,8 +132,21 @@ function freshForMs(headers) {
     const maxAge = seconds('s-maxage') ?? seconds('max-age');
     if (maxAge === undefined)
         return PACKUMENT_TTL_MS;
-    const age = Number(headers.get('age') ?? 0);
+    const age = Number(ageHeader ?? 0);
     return Math.min(PACKUMENT_TTL_MS, Math.max(0, (maxAge - (Number.isFinite(age) ? age : 0)) * 1000));
+}
+/**
+ * The validators of a registry answer: a 304's headers over what the
+ * stored copy kept, a field the 304 does not send keeping its stored value
+ * (RFC 9111 §4.3.4); freshness from the result.
+ */
+function validatorsOf(headers, stored) {
+    const cacheControl = headers.get('cache-control') ?? stored?.cacheControl ?? null;
+    return {
+        expiresAt: Date.now() + freshForMs(cacheControl, headers.get('age')),
+        etag: headers.get('etag') ?? stored?.etag ?? null,
+        cacheControl,
+    };
 }
 // One content-addressed local store per binding, shared by the fresh clients
 // each supervisor call creates. Native bindings are stable, and the weak key
@@ -534,7 +547,11 @@ export class R2CacheClient {
             const validated = l2Hit.headers.get('x-nimbus-v') === PACKUMENT_VALIDATED;
             const expiresAt = Number(l2Hit.headers.get('x-nimbus-expiresat') ?? 0);
             const etag = l2Hit.headers.get('x-nimbus-etag') ?? undefined;
-            return { json, ageMs, expired: !validated || !(now < expiresAt), ...(validated && etag ? { etag } : {}) };
+            const cacheControl = l2Hit.headers.get('x-nimbus-cache-control') ?? undefined;
+            return {
+                json, ageMs, expired: !validated || !(now < expiresAt),
+                ...(validated && etag ? { etag } : {}), ...(validated && cacheControl ? { cacheControl } : {}),
+            };
         }
         this._recordMiss('L2', 'packument');
         // ── L3 path (cross-tenant) ────────────────────────────────────
@@ -556,15 +573,16 @@ export class R2CacheClient {
         const validated = obj.customMetadata?.v === PACKUMENT_VALIDATED;
         const expiresAt = Number(obj.customMetadata?.expiresAt ?? 0);
         const etag = validated ? obj.customMetadata?.etag || undefined : undefined;
+        const cacheControl = validated ? obj.customMetadata?.cacheControl || undefined : undefined;
         const expired = !validated || !(now < expiresAt);
         // Write through to L2, good until the R2 entry expires. Awaited so
         // two callers reading the same key back-to-back during the fill
         // window do not both miss L2 and double-fetch L3; the cost (~1-3 ms
         // in workerd local, sub-ms at edge) is paid only on cold reads.
         if (!expired && !this.readOnly) {
-            await this.fillPackumentL2(l2Key, json, { expiresAt, etag: etag ?? null });
+            await this.fillPackumentL2(l2Key, json, { expiresAt, etag: etag ?? null, cacheControl: cacheControl ?? null });
         }
-        return { json, ageMs, expired, ...(etag ? { etag } : {}) };
+        return { json, ageMs, expired, ...(etag ? { etag } : {}), ...(cacheControl ? { cacheControl } : {}) };
     }
     /**
      * The colo copy of a packument, kept until `expiresAt`: the cache layer
@@ -572,7 +590,7 @@ export class R2CacheClient {
      * read can re-check the boundary even if the cache layer extends the
      * entry. Best-effort: a failed put is silent.
      */
-    async fillPackumentL2(l2Key, json, { expiresAt, etag }) {
+    async fillPackumentL2(l2Key, json, { expiresAt, etag, cacheControl }) {
         // Kept past its freshness, for as long as the cache allows at most: an expired copy is revalidated with its ETag, not refetched.
         const ttlSec = Math.max(1, Math.floor((Math.max(expiresAt, Date.now() + PACKUMENT_TTL_MS) - Date.now()) / 1000));
         await l2Put(l2Key, new Response(json, {
@@ -582,6 +600,7 @@ export class R2CacheClient {
                 'X-Nimbus-ExpiresAt': String(expiresAt),
                 'X-Nimbus-V': PACKUMENT_VALIDATED,
                 ...(etag ? { 'X-Nimbus-ETag': etag } : {}),
+                ...(cacheControl ? { 'X-Nimbus-Cache-Control': cacheControl } : {}),
             },
         }));
     }
@@ -661,14 +680,19 @@ export class R2CacheClient {
         catch (e) {
             return { json: null, source: 'network', failure: errorText(e) };
         }
-        const fill = !this.readOnly && shared && !(resp.headers.get('cache-control') ?? '').toLowerCase().includes('no-store');
-        const validators = (etag) => ({ expiresAt: Date.now() + freshForMs(resp.headers), etag });
         if (resp.status === 304 && cached && cached.etag) {
-            // Unchanged: the cached body stands, fresh again, in both tiers.
-            if (fill)
-                await this.storePackument(name, cached.json, registry, validators(resp.headers.get('etag') ?? cached.etag));
+            // Unchanged: the cached body stands, fresh again in this colo, by the
+            // 304's headers over what it was stored with. R2's copy keeps its
+            // body and validators (re-putting the body to renew a stamp would
+            // cost what the 304 saved); another colo that reads it expired
+            // revalidates it the same way.
+            const renewed = validatorsOf(resp.headers, cached);
+            if (!this.readOnly && !(renewed.cacheControl ?? '').toLowerCase().includes('no-store')) {
+                await this.fillPackumentL2(new Request(packumentL2Url(name, registry)), cached.json, renewed);
+            }
             return { json: cached.json, source: 'r2-cache' };
         }
+        const fill = !this.readOnly && shared && !(resp.headers.get('cache-control') ?? '').toLowerCase().includes('no-store');
         if (resp.ok) {
             const json = await resp.text();
             this._recordHit('L4', 'packument', json.length);
@@ -677,7 +701,7 @@ export class R2CacheClient {
             // egress answered. Filling R2 alone left the colo cold until a later
             // session read R2 back: a session each for registry, R2, then L2.
             if (fill)
-                await this.storePackument(name, json, registry, validators(resp.headers.get('etag')));
+                await this.storePackument(name, json, registry, validatorsOf(resp.headers));
             return { json, source: 'network' };
         }
         if (resp.status >= 400 && resp.status < 500) {
@@ -708,13 +732,16 @@ export class R2CacheClient {
      * Returns true on success, false on failure (same best-effort posture
      * as putTarball).
      */
-    async putPackument(name, json, registry = NPM_REGISTRY_ORIGIN, { expiresAt, etag } = { expiresAt: Date.now() + PACKUMENT_TTL_MS, etag: null }) {
+    async putPackument(name, json, registry = NPM_REGISTRY_ORIGIN, { expiresAt, etag, cacheControl } = { expiresAt: Date.now() + PACKUMENT_TTL_MS, etag: null, cacheControl: null }) {
         if (!this.packumentBucket)
             return false;
         try {
             await this.packumentBucket.put(packumentKey(name, registry), json, {
                 httpMetadata: { contentType: 'application/json' },
-                customMetadata: { v: PACKUMENT_VALIDATED, expiresAt: String(expiresAt), ...(etag ? { etag } : {}) },
+                customMetadata: {
+                    v: PACKUMENT_VALIDATED, expiresAt: String(expiresAt),
+                    ...(etag ? { etag } : {}), ...(cacheControl ? { cacheControl } : {}),
+                },
             });
             return true;
         }
