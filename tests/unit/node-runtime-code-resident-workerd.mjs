@@ -202,12 +202,28 @@ const server = require('http').createServer((request, response) => {
 });
 server.listen(Number(process.env.PORT || 0), '127.0.0.1', () => console.log('BOUND:' + server.address().port));
 `;
+    // The client resets its connection once the first bytes arrive, as a
+    // dropped connection does: a quiet server sees a reset at once, where a
+    // graceful close is seen only at its next write.
+    const RESET_CLIENT = String.raw`
+const url = new URL(process.argv[1]);
+const socket = require('node:net').connect(Number(url.port), url.hostname, () => {
+  const fields = Object.entries(JSON.parse(process.env.HEADERS)).map(([name, value]) => name + ': ' + value + '
+').join('');
+  socket.write('GET ' + url.pathname + ' HTTP/1.1
+Host: ' + url.host + '
+' + fields + 'Accept-Encoding: identity
+
+');
+});
+let received = 0;
+socket.on('data', (data) => { received += data.length; if (received > 1024) socket.resetAndDestroy(); });
+socket.on('close', () => process.exit(received > 1024 ? 0 : 2));
+socket.on('error', () => {});
+`;
     const leave = async (url, headers = {}) => {
-      const client = new AbortController();
-      // Identity: a compressing hop holds a small first chunk back.
-      const response = await fetch(url + '/stall', { headers: { ...headers, 'Accept-Encoding': 'identity' }, signal: client.signal });
-      await response.body.getReader().read();
-      client.abort();
+      const client = spawn('node', ['-e', RESET_CLIENT, url + '/stall'], { env: { ...process.env, HEADERS: JSON.stringify(headers) }, stdio: 'ignore' });
+      assert.equal(await new Promise((resolve) => client.on('close', resolve)), 0, 'the client read the first bytes, then reset');
       for (let i = 0; i < 100; i++) {
         const report = JSON.parse(await (await fetch(url + '/report', { headers })).text());
         if (report.some((event) => event.startsWith('late write')) && report.includes('request close')) return report;
