@@ -1416,7 +1416,7 @@ export async function _rpcTransform(self: RpcHost, code: string, loader: string)
   // (e.g., immediately after DO hibernation wake-up).
 
 export async function _rpcCpSpawn(self: RpcHost, req: any): Promise<{ childPid: number }> {
-    const fpm = self._ensureFacetProcessManager();
+    const fpm = self._ensureChildProcessManager();
     return fpm.spawn(req);
 }
 
@@ -1493,22 +1493,22 @@ export async function _rpcCpReadOutput(
   acquire?: unknown,
   pid?: number,
 ) {
-    const fpm = self._ensureFacetProcessManager();
+    const fpm = self._ensureChildProcessManager();
     const output = await fpm.readOutput(childPid, fd, sinceSeq, waitMs);
     return withDeliveredAcquire(self, output, output.chunks.length > 0 || output.closed, acquire, pid);
 }
 
 export async function _rpcCpDrainOutput(self: RpcHost, childPid: number) {
-    const fpm = self._ensureFacetProcessManager();
+    const fpm = self._ensureChildProcessManager();
     return fpm.drainOutput(childPid);
 }
 
 export async function _rpcCpCloseOutput(self: RpcHost, childPid: number, fd: 1 | 2): Promise<void> {
-    self._ensureFacetProcessManager().closeOutput(childPid, fd);
+    self._ensureChildProcessManager().closeOutput(childPid, fd);
 }
 
 export async function _rpcCpKill(self: RpcHost, childPid: number, signal: string): Promise<boolean> {
-    const fpm = self._ensureFacetProcessManager();
+    const fpm = self._ensureChildProcessManager();
     return fpm.kill(childPid, signal);
 }
 
@@ -1530,7 +1530,7 @@ export async function _rpcCpBlocked(self: RpcHost, pid: number, report: unknown)
 }
 
 export async function _rpcCpWait(self: RpcHost, childPid: number, waitMs: number, acquire?: unknown, pid?: number, knownStarted?: boolean) {
-    const fpm = self._ensureFacetProcessManager();
+    const fpm = self._ensureChildProcessManager();
     const status = await fpm.wait(childPid, waitMs, knownStarted !== false);
     return withDeliveredAcquire(self, status, status.done, acquire, pid);
 }

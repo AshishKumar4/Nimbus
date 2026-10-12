@@ -178,7 +178,7 @@ class RuntimeOwner {
   ensureFacetManager() { this.assertOpen(); return this.services.ensureFacetManager(); }
   ensureNpmInstaller(onProgress?: (message: string) => void) { this.assertOpen(); return this.services.ensureNpmInstaller(onProgress); }
   ensureGlobalPrefixDirs(prefix: string) { return this.services.ensureGlobalPrefixDirs(prefix); }
-  _ensureFacetProcessManager() { this.assertOpen(); return this.services._ensureFacetProcessManager(); }
+  _ensureChildProcessManager() { this.assertOpen(); return this.services._ensureChildProcessManager(); }
   _ensureWebSocketRelay() { this.assertOpen(); return this.services._ensureWebSocketRelay(); }
   _setCpRegistry(registry: CommandRegistry) {
     if (registry !== this._cpRegistry) throw new Error('Nimbus runtime cannot replace the workspace registry');

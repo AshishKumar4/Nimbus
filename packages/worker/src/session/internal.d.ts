@@ -168,7 +168,7 @@ export interface SessionInternal extends Pick<SessionRouterRpc,
   getFilesystemAuthority(): import('@nimbus-sh/core/runtime/process-files.js').ProcessFiles
   ensureFacetManager(): ComposedFacetManager;
   ensureBundlePool(): PrebundlePool;
-  _ensureFacetProcessManager(): ChildProcessManager;
+  _ensureChildProcessManager(): ChildProcessManager;
   ensureNpmInstaller(onProgress?: (msg: string) => void): Promise<NpmInstaller>;
   _setCpRegistry(r: CommandRegistry): void;
   hydrateSessionBasePath(request: Request): Promise<void>;
