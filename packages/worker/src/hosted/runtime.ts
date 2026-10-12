@@ -6,7 +6,6 @@ import type { NimbusHostFilesystemLease, VfsCred } from '@nimbus-sh/core/runtime
 import { requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { SUPERVISOR_OP_ROUTES, createSupervisorBridgeStore, type SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-op.js';
-import { SUPERVISOR_DELIVER_OP } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import { openSupervisorDeliveries, type SupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import type { FacetProcessManager } from '../facets/process.js';
 import type { ComposedFacetManager, FacetManagerHostHooks } from '../facets/compose.js';
@@ -256,12 +255,9 @@ class RuntimeOwner {
   }
   serveSupervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown> {
     this.assertOpen();
-    // A process that can stop at a read of stdin is answered through its
-    // journal (worker runtime/stop-replay.ts ReplayJournal).
-    const manager = this.facetManager;
-    if (!manager) return this.supervisorOps().dispatch(envelope);
-    const op = envelope.op === SUPERVISOR_DELIVER_OP ? (envelope.delivery?.op ?? envelope.op) : envelope.op;
-    return manager.journalCall(op, envelope.args, envelope.pid, envelope.run, () => this.supervisorOps().dispatch(envelope));
+    // A process that can stop is answered through its journal by the
+    // canonical handler's logical-answer seam (supervisor-op.ts observe).
+    return this.supervisorOps().dispatch(envelope);
   }
   supervisorBridge(pid?: number) { return this.supervisorOps().bridge(pid); }
   supervisorRewindBridge(pid: number) { return this.supervisorOps().rewind(pid); }

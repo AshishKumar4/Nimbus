@@ -88,7 +88,25 @@ try {
   const carried = await counted({ op: 'fsAcquired', args: [acquire(), 'fsReadBatch', batch] });
   assert.deepEqual([alone, carried], [SIZE, SIZE], '[2] a read is counted once, alone or carried by fsAcquired');
   console.log('  [2] what it hands over is counted once');
+
+  // ── [3] journaled once ────────────────────────────────────────────────
+  // A process that can stop is answered through its journal at one seam,
+  // the canonical handler's logical answer; a hosted answer is not wrapped
+  // in a second one (each would count an occurrence a replay must match).
+  const replay = runtime.facetManager?.replay;
+  assert.ok(replay, '[3] the hosted runtime composes the process manager');
+  const seen = [];
+  const call = replay.call;
+  replay.call = (op, ...rest) => { seen.push(op); return call.call(replay, op, ...rest); };
+  try {
+    await runtime.supervisorOp({ op: 'fsAcquired', args: [acquire(), 'stat', ['/home/user/data.bin']], pid });
+    await runtime.supervisorOp({ op: 'fsReadBatch', args: batch, pid });
+  } finally {
+    replay.call = call;
+  }
+  assert.deepEqual(seen, ['fsAcquired', 'fsReadBatch'], '[3] each answer passes the journal once');
+  console.log('  [3] each answer is journaled once');
 } finally {
   await runtime.close();
 }
-console.log('ok - hosted-fs-acquired (a hosted runtime answers fsAcquired and counts its read once)');
+console.log('ok - hosted-fs-acquired (a hosted runtime answers fsAcquired, counts its read once and journals it once)');

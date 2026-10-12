@@ -7,6 +7,7 @@
 //   - a resident that ended while it booted is that exit, not a server;
 //   - the command's abort during the hand-off ends the process.
 import assert from 'node:assert/strict';
+import { ReplaySessions } from '../../packages/worker/src/runtime/replay-session.ts';
 import { mock } from 'bun:test';
 import { ReadAheadBudget, STDIN_SYNC_READ_BYTES } from '../../packages/core/src/runtime/stdin-read.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
@@ -29,8 +30,8 @@ function handoff({ took = null, resident = async () => {}, signal, stdin, stdinF
       stdinChannel: () => ({ read: () => new Promise(() => {}), unread: (back) => unread.push(...back) }),
     },
     stdinReadAhead: new ReadAheadBudget(STDIN_SYNC_READ_BYTES + 1),
-    outputGates: new Map(), journals: new Map(), stdinTaken: new Map(),
-    netTargets: new Map(), fetchTickets: new Map(), launchBundles: new Map(), launching: new Map(),
+    outputGates: new Map(), replay: new ReplaySessions(), stdinTaken: new Map(),
+    launchBundles: new Map(), launching: new Map(),
     learnedServers: { learn: async (server) => { learned.push(server); } },
     _launchPacer: () => ({ settle() {}, chunks: 0 }),
     _buildProcessBundle: async () => ({ generatedSourcesReleased: false, bundleKey: 'test' }),
