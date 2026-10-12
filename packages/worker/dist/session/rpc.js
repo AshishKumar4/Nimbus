@@ -59,11 +59,11 @@ export async function _rpcPutCachedTarball(_self, _integrity, _bytes) { }
 export async function _rpcCacheResult(self, ticket, result, pid, run) {
     if (result.failed && result.failure)
         result = { ...result, failure: errorFromCacheFailure(result.failure) };
-    await self.facetManager?.cacheResult(pid, run, ticket, result);
+    await self.facetManager?.replay.cacheResult(pid, run, ticket, result);
 }
 export async function _rpcStdinPrepared(self, pid, run) {
     if (pid !== undefined)
-        self.facetManager?.stdinPrepared(pid, run);
+        self.facetManager?.replay.stdinPrepared(pid, run);
 }
 function queueExitNotice(self, notice) {
     return Boolean(self.terminal && self.shell?.queueProcessExitNotice(notice, self.processes, renderExitNotice));
@@ -726,17 +726,17 @@ export async function _rpcHmrNextEvent(self, timeoutMs = 25_000) {
 // connection it opens through the session; and its outbound's calls.
 export async function _rpcReplayBoundary(self, pid, run) {
     if (typeof pid === 'number')
-        await self.facetManager?.replayBoundary(pid, run);
+        await self.facetManager?.replay.boundary(pid, run);
 }
 export async function _rpcNetTls(self, action, token, payload, pid, run) {
     if (typeof pid !== 'number' || !self.facetManager)
         throw new Error('netTls: no such process');
-    return self.facetManager.netTls(pid, run, String(action), String(token), payload);
+    return self.facetManager.replay.netTls(pid, run, String(action), String(token), payload);
 }
 export async function _rpcOutbound(self, action, payload, pid, run) {
     if (typeof pid !== 'number' || !self.facetManager)
         throw new Error('outbound: no such process');
-    return self.facetManager.outboundCall(pid, run, String(action), payload);
+    return self.facetManager.replay.outbound(pid, run, String(action), payload);
 }
 /**
  * Bulk-write files and directories via one transactionSync().

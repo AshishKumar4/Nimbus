@@ -4,6 +4,7 @@
 // then reacquired before preparation or a run. The nested run hold ends
 // as runOneShot ends it after ctx.abort.
 import assert from 'node:assert/strict';
+import { ReplaySessions } from '../../packages/worker/src/runtime/replay-session.ts';
 import { mock } from 'bun:test';
 import { ReadAheadBudget, STDIN_SYNC_READ_BYTES } from '../../packages/core/src/runtime/stdin-read.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
@@ -46,8 +47,8 @@ function launch({ stops = 1, signal, ctx = {}, processes = new SessionProcessSup
       }),
     },
     stdinReadAhead: new ReadAheadBudget(STDIN_SYNC_READ_BYTES + 1),
-    outputGates: new Map(), journals: new Map(), stdinTaken: new Map(),
-    netTargets: new Map(), fetchTickets: new Map(), launchBundles: new Map(), launching: new Map(),
+    outputGates: new Map(), replay: new ReplaySessions(), stdinTaken: new Map(),
+    launchBundles: new Map(), launching: new Map(),
     _launchPacer: () => ({ settle() {}, chunks: 0 }),
     _buildProcessBundle: async () => {
       preparation.push(held());

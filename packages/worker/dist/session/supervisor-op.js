@@ -65,7 +65,7 @@ export function buildSessionSupervisorOps(host, store, methods) {
         // Joining is part of the canonical handler, BEFORE this logical-answer
         // seam. A transport hedge must not consume another journal occurrence.
         observe: (envelope, dispatch) => host.facetManager
-            ? host.facetManager.journalCall(envelope.op, envelope.args, envelope.pid, envelope.run, dispatch)
+            ? host.facetManager.replay.call(envelope.op, envelope.args, envelope.pid, envelope.run, dispatch)
             : dispatch(),
     });
     return { dispatch, bridge: store.bridge, rewind: async (pid) => {

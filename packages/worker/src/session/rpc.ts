@@ -101,10 +101,10 @@ export async function _rpcGetPackument(_self: RpcHost, _name: string, _options?:
 export async function _rpcPutCachedTarball(_self: RpcHost, _integrity: string, _bytes: Uint8Array | ArrayBuffer): Promise<void> {}
 export async function _rpcCacheResult(self: RpcHost, ticket: string, result: { value?: unknown; failure?: unknown; failed?: boolean }, pid?: number, run?: string): Promise<void> {
   if (result.failed && result.failure) result = { ...result, failure: errorFromCacheFailure(result.failure as ReplayFailure) };
-  await self.facetManager?.cacheResult(pid, run, ticket, result);
+  await self.facetManager?.replay.cacheResult(pid, run, ticket, result);
 }
 export async function _rpcStdinPrepared(self: RpcHost, pid?: number, run?: string): Promise<void> {
-  if (pid !== undefined) self.facetManager?.stdinPrepared(pid, run);
+  if (pid !== undefined) self.facetManager?.replay.stdinPrepared(pid, run);
 }
 
 type ProcessRpcHost = Pick<NimbusSession, 'processes'>;
@@ -938,17 +938,17 @@ export async function _rpcHmrNextEvent(self: Pick<NimbusSession, 'cirrusReal'>, 
 // its run after a stop reached the read the run before stopped at; a TLS
 // connection it opens through the session; and its outbound's calls.
 export async function _rpcReplayBoundary(self: RpcHost, pid?: number, run?: string): Promise<void> {
-  if (typeof pid === 'number') await self.facetManager?.replayBoundary(pid, run);
+  if (typeof pid === 'number') await self.facetManager?.replay.boundary(pid, run);
 }
 
 export async function _rpcNetTls(self: RpcHost, action: unknown, token: unknown, payload: unknown, pid?: number, run?: string): Promise<unknown> {
   if (typeof pid !== 'number' || !self.facetManager) throw new Error('netTls: no such process');
-  return self.facetManager.netTls(pid, run, String(action), String(token), payload as Record<string, unknown> | undefined);
+  return self.facetManager.replay.netTls(pid, run, String(action), String(token), payload as Record<string, unknown> | undefined);
 }
 
 export async function _rpcOutbound(self: RpcHost, action: unknown, payload: unknown, pid?: number, run?: string): Promise<unknown> {
   if (typeof pid !== 'number' || !self.facetManager) throw new Error('outbound: no such process');
-  return self.facetManager.outboundCall(pid, run, String(action), payload as Record<string, unknown> | undefined);
+  return self.facetManager.replay.outbound(pid, run, String(action), payload as Record<string, unknown> | undefined);
 }
 
 

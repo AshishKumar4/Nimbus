@@ -88,7 +88,42 @@ try {
   const carried = await counted({ op: 'fsAcquired', args: [acquire(), 'fsReadBatch', batch] });
   assert.deepEqual([alone, carried], [SIZE, SIZE], '[2] a read is counted once, alone or carried by fsAcquired');
   console.log('  [2] what it hands over is counted once');
+
+  // ── [3] journaled once ────────────────────────────────────────────────
+  // A process that can stop is answered through its journal at one seam,
+  // the canonical handler's logical answer: a hosted answer is journaled
+  // once, so a run after a stop replays it, and an answer that changed
+  // diverges.
+  const { replay } = (await runtime.facets()).manager;
+  const answer = (run) => Promise.all([
+    runtime.supervisorOp({ op: 'fsAcquired', args: [acquire(), 'stat', ['/home/user/data.bin']], pid, run }),
+    runtime.supervisorOp({ op: 'fsReadBatch', args: batch, pid, run }),
+  ].map((pending) => pending.then(() => undefined)));
+  /** A run answered, stopped, and the run after it answered (`between`: what changes in between); what diverged, if anything. */
+  const stopAndReplay = async (between) => {
+    let diverged = null;
+    const { journal } = replay.open(pid, () => { diverged = journal.diverged; });
+    try {
+      journal.start('run-1');
+      await answer('run-1');
+      journal.stopped();
+      const observations = journal.observations;
+      await between();
+      journal.start('run-2');
+      await answer('run-2').catch(() => {});
+      if (diverged === null) await replay.boundary(pid, 'run-2');
+      return { observations, diverged };
+    } finally {
+      replay.close(pid);
+    }
+  };
+  const same = await stopAndReplay(async () => {});
+  assert.deepEqual(same.observations, { fsAcquired: 1, fsReadBatch: 1 }, '[3] each answer journaled once (the stat fsAcquired carries is its)');
+  assert.equal(same.diverged, null, '[3] the run after the stop is answered the same, and passes its boundary');
+  const changed = await stopAndReplay(() => runtime.files.as(bundle.CRED_KERNEL).writeFile('/home/user/data.bin', new Uint8Array(SIZE).fill(8), { mode: 0o644 }));
+  assert.ok(typeof changed.diverged === 'string' && changed.diverged.length > 0, '[3] an answer that changed diverges');
+  console.log('  [3] each answer is journaled once');
 } finally {
   await runtime.close();
 }
-console.log('ok - hosted-fs-acquired (a hosted runtime answers fsAcquired and counts its read once)');
+console.log('ok - hosted-fs-acquired (a hosted runtime answers fsAcquired, counts its read once and journals it once)');
