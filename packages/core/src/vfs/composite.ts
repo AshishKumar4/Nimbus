@@ -3306,6 +3306,10 @@ export class CompositeVFS implements VFS {
       const visited = (entries: VfsDirent[]): Awaitable<void> => andThen(descend(entries), () => { order.push(entry); });
       return isPromise(entries) ? entries.then(visited, failed) : visited(entries);
     };
+    const landed = (r: string, dir: boolean, backend: Ops, holder: Mount, named: string): void => {
+      gone.add(r);
+      if (this.table.changes !== undefined) this.tellLanded(holder, storeBehind(this.table, backend), dir ? 'unlinkDir' : 'unlink', [named]);
+    };
     return andThen(visit(rel), () => {
       return andThen(order.reduce<Awaitable<void>>((chain, entry) => andThen(chain, () => {
         if (gone.has(entry.rel) || kept.has(entry.rel)) return undefined;
@@ -3317,16 +3321,21 @@ export class CompositeVFS implements VFS {
           failures.push({ path: at(entry.rel), error });
         };
         try {
+          if (!composed) {
+            const named = at(entry.rel);
+            this.guardMutation([named]);
+            const out = entry.dir && typeof ops.rmdir === 'function' ? ops.rmdir(entry.rel) : ops.unlink(entry.rel);
+            if (isPromise(out)) return out.then(() => landed(entry.rel, entry.dir, ops, mount, named), fail);
+            landed(entry.rel, entry.dir, ops, mount, named);
+            return undefined;
+          }
           const remove = (backend: Ops, r: string, holder: Mount, named: string): Awaitable<void> => {
             this.guardMutation([named]);
             const out = entry.dir && typeof backend.rmdir === 'function' ? backend.rmdir(r) : backend.unlink(r);
-            return andThen(out, () => {
-              gone.add(entry.rel);
-              if (this.table.changes !== undefined) this.tellLanded(holder, storeBehind(this.table, backend), entry.dir ? 'unlinkDir' : 'unlink', [named]);
-            });
+            return andThen(out, () => landed(entry.rel, entry.dir, backend, holder, named));
           };
-          const out = composed ? this.onMutation(at(entry.rel), false, sync, entry.dir ? 'removed' : 'unlinked',
-            (backend, r, named) => remove(backend, r, this.locate(named).mount, named), { told: null, recursiveEntry: true }) : remove(ops, entry.rel, mount, at(entry.rel));
+          const out = this.onMutation(at(entry.rel), false, sync, entry.dir ? 'removed' : 'unlinked',
+            (backend, r, named) => remove(backend, r, this.locate(named).mount, named), { told: null, recursiveEntry: true });
           if (isPromise(out)) return out.then(() => undefined, fail);
           return undefined;
         } catch (cause) {
