@@ -8,8 +8,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import net from 'node:net';
 
-const worker = `export default { async fetch(request) {
+const worker = `const stats=new Map();export default { async fetch(request) {
   const url=new URL(request.url);if(url.pathname==='/ready')return new Response('ready');
+  if(url.pathname==='/stats')return Response.json(Object.fromEntries(stats));
+  if(url.pathname.startsWith('/bulk-')){
+    const key=url.pathname,row={bytes:0,chunks:0,histogram:{}};stats.set(key,row);
+    const chunk=new Uint8Array(65536),size=8*1024*1024;let remaining=size;
+    const source=new ReadableStream({pull(controller){if(!remaining){controller.close();return;}remaining-=chunk.length;controller.enqueue(chunk);}});
+    const fixed=new FixedLengthStream(size);
+    const gate=new TransformStream({expectedLength:size,transform(value,controller){row.bytes+=value.byteLength;row.chunks++;row.histogram[value.byteLength]=(row.histogram[value.byteLength]??0)+1;controller.enqueue(value);}});
+    const body=key==='/bulk-main'?source.pipeThrough(gate).pipeThrough(fixed):source.pipeThrough(fixed).pipeThrough(gate);
+    return new Response(body,{headers:{'Content-Length':String(size)}});
+  }
   const size=Number(url.searchParams.get('size')??3);
   const source=new ReadableStream({start(controller){controller.enqueue(new Uint8Array(size).fill(42));controller.close();}});
   const fixed=new FixedLengthStream(3);
@@ -49,4 +59,12 @@ try {
       await response.arrayBuffer();
     }, 'upstream native count validation still rejects short and long bodies');
   }
+  for (const key of ['bulk-main', 'bulk-reordered']) {
+    const response = await fetch(base + '/' + key);
+    assert.equal(response.headers.get('content-length'), String(8 * 1024 * 1024));
+    assert.equal((await response.arrayBuffer()).byteLength, 8 * 1024 * 1024);
+  }
+  const stats = await (await fetch(base + '/stats')).json();
+  console.log(JSON.stringify({ nativeGateChunkHistograms: stats }));
+  assert.deepEqual(stats['/bulk-reordered'], stats['/bulk-main'], 'same stage count must preserve the producer chunk/backpressure topology');
 } finally { child.kill('SIGKILL'); rmSync(dir, { recursive: true, force: true }); }
