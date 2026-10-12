@@ -77,6 +77,8 @@ export interface NpmInstallPort {
     saveOptional?: boolean;
     /** `--force`: a peer conflict the project owns is a warning, not ERESOLVE. */
     force?: boolean;
+    /** `--strict-peer-deps`: any peer conflict is ERESOLVE unless forced. */
+    strictPeerDeps?: boolean;
     /** `--legacy-peer-deps`: peers are not installed, nor checked. */
     legacyPeerDeps?: boolean;
     /** `--omit=optional` / `--omit=peer`: what only optional or only peer dependencies need is planned, and not installed. */
@@ -303,9 +305,14 @@ interface TreeInstall {
 	stderr: CommandOutputStream;
 	registry: CommandRegistry;
 	kernel?: Kernel;
-	/** A global install: npm's shallow layout, and the roots' bins linked into this directory. */
+	/**
+	 * A global install: npm's shallow layout, and the roots' bins linked into
+	 * this directory. Its roots are built afresh, and nothing outside their
+	 * folders changes (reify's explicit requests).
+	 */
 	globalBinDir?: string;
 	force?: boolean;
+	strictPeerDeps?: boolean;
 	legacyPeerDeps?: boolean;
 	/** What `--omit` leaves out: planned, and not installed. */
 	omit: OmitTypes;
@@ -324,14 +331,16 @@ const NO_KERNEL = {};
 const describeError = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 /**
- * Every package installed under `modulesDir`'s tree, at its placement: a
- * linked package (a symlink) is the link's, and not walked into.
+ * Every package installed under `modulesDir`'s tree, at its placement, in
+ * the top-level folders `top` keeps: a linked package (a symlink) is the
+ * link's, and not walked into.
  */
-async function installedPlacements(vfs: VFS, modulesDir: string, prefix = '', out: string[] = []): Promise<string[]> {
+async function installedPlacements(vfs: VFS, modulesDir: string, top: (name: string) => boolean, prefix = '', out: string[] = []): Promise<string[]> {
 	for await (const name of packagesIn(vfs, modulesDir)) {
+		if (prefix === '' && !top(name)) continue;
 		const placement = prefix + name;
 		out.push(placement);
-		if (!(await vfs.isSymlink(join(modulesDir, name)))) await installedPlacements(vfs, join(modulesDir, name, 'node_modules'), `${placement}/node_modules/`, out);
+		if (!(await vfs.isSymlink(join(modulesDir, name)))) await installedPlacements(vfs, join(modulesDir, name, 'node_modules'), top, `${placement}/node_modules/`, out);
 	}
 	return out;
 }
@@ -389,12 +398,14 @@ async function installTree(roots: readonly TreeRoot[], install: TreeInstall): Pr
 	} catch { /* no node_modules yet */ }
 
 	// ── Plan ──
-	const onDisk = await installedPlacements(vfs, targetBase);
+	const global = install.globalBinDir !== undefined;
+	const named = new Set(roots.map(({ name }) => name));
+	const onDisk = await installedPlacements(vfs, targetBase, (name) => !global || named.has(name));
 	const installed = (await Promise.all(onDisk.map(async (at) => {
 		const pkg = await installedPackage(vfs, join(targetBase, at), placementName(at));
 		return pkg && { at, pkg };
 	}))).flatMap((entry) => (entry ? [entry] : []));
-	const plan = await planTree<ResolvedShellPackage, InstalledShellPackage>(roots, installed, {
+	const plan = await planTree<ResolvedShellPackage, InstalledShellPackage>(roots, global ? [] : installed, {
 		async resolve(requests) {
 			const answers: Array<TreeResolution<ResolvedShellPackage>> = [];
 			for (const { name, range } of requests) {
@@ -409,7 +420,7 @@ async function installTree(roots: readonly TreeRoot[], install: TreeInstall): Pr
 			return answers;
 		},
 		warn: async (message) => { await stderr.write(`npm WARN ${message}\n`); },
-	}, { global: install.globalBinDir !== undefined, force: install.force, legacyPeerDeps: install.legacyPeerDeps, preferDedupe: install.preferDedupe });
+	}, { global, force: install.force, strictPeerDeps: install.strictPeerDeps, legacyPeerDeps: install.legacyPeerDeps, preferDedupe: install.preferDedupe });
 	const [requiredFailure] = requiredFailures(plan);
 	if (requiredFailure) return await fail(requiredFailure.edge.name, requiredFailure.reason);
 	for (const { id, edge } of plan.failures) {
@@ -476,7 +487,8 @@ async function installTree(roots: readonly TreeRoot[], install: TreeInstall): Pr
 			// A kept package whose ancestor was retired (replaced, or bundling
 			// its own node_modules) went with it: it moves back into the tree,
 			// beside whatever the new ancestor bundles.
-			const kept = [...plan.nodes.values()].filter((node) => !node.planned && inTree(node.at)).sort((x, y) => depthOf(x.at) - depthOf(y.at));
+			const published = new Set(publish.map((node) => node.at));
+			const kept = [...plan.nodes.values()].filter((node) => inTree(node.at) && !published.has(node.at)).sort((x, y) => depthOf(x.at) - depthOf(y.at));
 			for (const node of kept) {
 				const target = join(targetBase, node.at);
 				if (await vfs.exists(target)) continue;
@@ -597,6 +609,7 @@ async function npmInstall(
 			saveDev: invocation.saveDev,
 			saveOptional: invocation.saveOptional,
 			force: invocation.force,
+			strictPeerDeps: invocation.strictPeerDeps,
 			legacyPeerDeps: invocation.legacyPeerDeps,
 			omitOptional: invocation.omitOptional,
 			omitPeer: invocation.omitPeer,
@@ -640,7 +653,7 @@ function shellInstallPort(ctx: CommandContext, registry: CommandRegistry, kernel
 			const tree: TreeInstall = {
 				targetBase, vfs, network: kernel?.network ?? ISOLATE_NETWORK, npmRegistry: spec.registry, signal,
 				stdout: ctx.stdout, stderr: ctx.stderr, registry, kernel,
-				force: spec.force === true, legacyPeerDeps: spec.legacyPeerDeps === true, preferDedupe: spec.preferDedupe === true,
+				force: spec.force === true, strictPeerDeps: spec.strictPeerDeps === true, legacyPeerDeps: spec.legacyPeerDeps === true, preferDedupe: spec.preferDedupe === true,
 				omit: { dev: spec.production === true, optional: spec.omitOptional === true, peer: spec.omitPeer === true },
 				...(globalBinDir ? { globalBinDir } : {}),
 			};
@@ -653,12 +666,10 @@ function shellInstallPort(ctx: CommandContext, registry: CommandRegistry, kernel
 				if (globalBinDir) {
 					for (const dir of [targetBase, globalBinDir]) await vfs.mkdir(dir, { recursive: true });
 				}
-				// A global prefix's packages are its roots: each kept as it is.
+				// A global prefix has no package.json: its roots are what is named.
 				const project = spec.global ? null : await packageJsonIn(vfs, spec.projectDir);
-				const implicit: string[] = [];
-				if (spec.global) for await (const name of packagesIn(vfs, targetBase)) implicit.push(name);
 				const named = namedPackages(project?.manifest ?? null, spec.packages, { saveDev: spec.saveDev, saveOptional: spec.saveOptional });
-				const roots = projectRoots(project?.manifest ?? null, named, { implicit, legacyPeerDeps: spec.legacyPeerDeps === true });
+				const roots = projectRoots(project?.manifest ?? null, named, { legacyPeerDeps: spec.legacyPeerDeps === true });
 				await ctx.stdout.write(spec.packages.length === 0 ? 'Installing dependencies...\n' : 'Installing packages...\n');
 				const result = await installTree(roots, tree);
 				if (result.failed.length > 0 || project === null || named.length === 0 || spec.save === false) return result;
@@ -1081,6 +1092,10 @@ async function npmCi(ctx: CommandContext, deps?: NpmCommandDeps): Promise<number
 			production: invocation.production,
 			omitOptional: invocation.omitOptional,
 			omitPeer: invocation.omitPeer,
+			force: invocation.force,
+			strictPeerDeps: invocation.strictPeerDeps,
+			legacyPeerDeps: invocation.legacyPeerDeps,
+			preferDedupe: invocation.preferDedupe,
 			fromLockfile: true,
 			npmLog,
 			onProgress: async (line) => await ctx.stdout.write(`[npm] ${line}\n`),

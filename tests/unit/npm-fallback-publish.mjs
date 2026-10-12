@@ -19,8 +19,14 @@
  *     install replays nothing the undo already made (the copy it put back
  *     stays);
  *   - a crash mid-carry (the carried copy complete where it was carried,
- *     residue where it was): recovery stops there, so the ancestor it was
- *     carried into is not undone over it; both are kept, and named;
+ *     residue where it was, its outcome unrecorded): recovery reads it back
+ *     as made from the two trees, and undoes it with what it was carried
+ *     into;
+ *   - an inverse that moves everything and then fails: the copy put back
+ *     is the one that was installed, and the next install keeps it;
+ *   - a crash while an inverse is made, before it moved anything, part of
+ *     the way, and after it moved everything: recovery finishes it, and
+ *     the copy put back is the one that was installed;
  *   - a replacement bundling its own node_modules: the kept nested package
  *     the old one held is carried into the new one;
  *   - Ctrl-C while the install fetches: nothing changes, and no staging
@@ -241,13 +247,13 @@ try {
     const ws = await workspace();
     assert.equal((await ws.npm('install bp@1.0.0 bc@2.0.0')).exitCode, 0);
     // As a crash leaves it: bp@1 retired, bp@2 published, and the kept
-    // bc@1 carried into it whole, residue left where it was.
+    // bc@1 carried into it whole, its source directory left behind as
+    // residue (a part of what moved), the carry's outcome unrecorded.
     ws.user.rename(`${ws.NM}/bp`, `${ws.NM}/.bp-retired-crash2`);
     ws.user.mkdir(`${ws.NM}/bp/node_modules`, { recursive: true });
     ws.user.writeFile(`${ws.NM}/bp/package.json`, '{"name":"bp","version":"2.0.0"}');
     ws.user.rename(`${ws.NM}/.bp-retired-crash2/node_modules/bc`, `${ws.NM}/bp/node_modules/bc`);
-    ws.user.mkdir(`${ws.NM}/.bp-retired-crash2/node_modules/bc/lib`, { recursive: true });
-    ws.user.writeFile(`${ws.NM}/.bp-retired-crash2/node_modules/bc/lib/residue.js`, '');
+    ws.user.mkdir(`${ws.NM}/.bp-retired-crash2/node_modules/bc`, { recursive: true });
     ws.user.writeFile(`${ws.NM}/.nimbus-install-journal`, JSON.stringify({
       run: 'crash2',
       committed: false,
@@ -258,11 +264,63 @@ try {
       ],
     }));
     const rerun = await ws.npm('install');
-    assert.notEqual(rerun.exitCode, 0, 'an install that cannot be undone safely fails');
-    assert.match(rerun.stderr, /could not tell whether .*node_modules\/bc.*nothing older is undone/);
-    assert.ok(ws.fs.exists(`${ws.NM}/bp/node_modules/bc/package.json`), 'the complete carried copy is kept: bp is not undone over it');
-    assert.ok(ws.fs.exists(`${ws.NM}/.bp-retired-crash2`), 'and so is the retired copy');
-    assert.ok(ws.dotEntries().includes('.nimbus-install-journal'), 'with the journal that names them');
+    assert.equal(rerun.exitCode, 0, rerun.stderr);
+    assert.deepEqual(ws.tree(), { bc: '2.0.0', bp: '1.0.0', 'bp/node_modules/bc': '1.0.0' },
+      'the carry is read back as made, and undone with what it was carried into');
+    assert.deepEqual(ws.dotEntries(), []);
+    ws.close();
+  }
+
+  // ── An inverse that moves everything and then fails ────────────────────
+  {
+    const ws = await workspace();
+    assert.equal((await ws.npm('install xc@1.0.0')).exitCode, 0);
+    ws.user.writeFile(`${ws.NM}/xc/local.txt`, 'mine');
+    fault = (from, to) => staged(from) && to.endsWith('/node_modules/xc');
+    moved = (from, to) => retired(from) && to.endsWith('/node_modules/xc');
+    assert.notEqual((await ws.npm('install xc@2.0.0')).exitCode, 0);
+    fault = null;
+    moved = null;
+    assert.deepEqual(ws.tree(), { xc: '1.0.0' }, 'the inverse put all of xc@1 back');
+    const rerun = await ws.npm('install');
+    assert.equal(rerun.exitCode, 0, rerun.stderr);
+    assert.deepEqual(ws.tree(), { xc: '1.0.0' }, 'and the next install keeps it');
+    assert.equal(ws.fs.readFileString(`${ws.NM}/xc/local.txt`), 'mine', 'the copy put back is the one that was there');
+    assert.deepEqual(ws.dotEntries(), []);
+    ws.close();
+  }
+
+  // ── A crash while an inverse is made, at each point it can stop ────────
+  for (const [point, crash] of [
+    ['before it moved anything', () => {}],
+    ['part of the way', (ws) => {
+      ws.user.mkdir(`${ws.NM}/xc`, { recursive: true });
+      ws.user.writeFile(`${ws.NM}/xc/package.json`, '{"name":"xc","version":"1.0.0"}');
+    }],
+    ['after it moved everything, residue left', (ws) => {
+      ws.user.rename(`${ws.NM}/.xc-retired-crash3`, `${ws.NM}/xc`);
+      ws.user.mkdir(`${ws.NM}/.xc-retired-crash3`, { recursive: true });
+    }],
+  ]) {
+    const ws = await workspace();
+    assert.equal((await ws.npm('install xc@1.0.0')).exitCode, 0);
+    ws.user.writeFile(`${ws.NM}/xc/local.txt`, 'mine');
+    // xc retired, xc@2's publication undone, and the inverse of the retirement begun.
+    ws.user.rename(`${ws.NM}/xc`, `${ws.NM}/.xc-retired-crash3`);
+    crash(ws);
+    ws.user.writeFile(`${ws.NM}/.nimbus-install-journal`, JSON.stringify({
+      run: 'crash3',
+      committed: false,
+      steps: [
+        { kind: 'retire', from: `${ws.NM}/xc`, to: `${ws.NM}/.xc-retired-crash3`, state: 'undoing' },
+        { kind: 'publish', from: `${ws.NM}/.nimbus-staging-crash3/0`, to: `${ws.NM}/xc`, state: 'undone' },
+      ],
+    }));
+    const rerun = await ws.npm('install');
+    assert.equal(rerun.exitCode, 0, `${point}: ${rerun.stderr}`);
+    assert.deepEqual(ws.tree(), { xc: '1.0.0' }, `${point}: xc@1 is back`);
+    assert.equal(ws.fs.readFileString(`${ws.NM}/xc/local.txt`), 'mine', `${point}: the very copy that was installed`);
+    assert.deepEqual(ws.dotEntries(), [], point);
     ws.close();
   }
 

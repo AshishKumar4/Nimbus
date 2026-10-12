@@ -34,7 +34,11 @@ export declare class Builder<H extends HostPackages> {
     private push;
     private pop;
     private requestKey;
-    /** Resolve every request not yet answered, together. */
+    /**
+     * Resolve every request not yet answered, together. One no registry
+     * answers (a git, file, directory or URL spec) fails here, without asking:
+     * npm installs it from where it points, which this engine does not.
+     */
     private resolve;
     /** The node `name@spec` resolves to, in `parent` (a virtual root): its package, or a load failure (#nodeFromSpec). */
     private nodeFromSpec;

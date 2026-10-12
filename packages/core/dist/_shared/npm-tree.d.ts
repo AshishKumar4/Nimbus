@@ -46,8 +46,10 @@ export interface TreePackage extends TreeManifest {
     /** The name it is installed under (an alias's). */
     readonly name: string;
     readonly version: string;
-    /** The registry package it is, where the host knows it (an alias's target): only that package meets an edge naming another. */
+    /** The registry package it is, where the host knows it (npm's packageName: an alias's target). */
     readonly registryName?: string;
+    /** Its content's integrity, where the host knows it: two copies with it are the same package (Node.matches). */
+    readonly integrity?: string;
 }
 /** npm's edge types: what a dependency is to the package that asks for it. */
 export type EdgeType = 'prod' | 'dev' | 'optional' | 'peer' | 'peerOptional';
@@ -74,10 +76,12 @@ export declare function isOptional(type: EdgeType): boolean;
 export declare function manifestEdges(manifest: TreeManifest, { legacyPeerDeps }?: {
     legacyPeerDeps?: boolean | undefined;
 }): Array<Pick<TreeEdge, 'name' | 'range' | 'type'>>;
-/** What an edge's spec asks for: the registry package (an `npm:` alias's target), and its semver range, or null for a spec that is not one (a tag, `*`, a URL). */
+/** What an edge's spec asks for: the registry package (an `npm:` alias's target), and its semver range, or null for a spec that is not one (a tag, `*`). */
 export interface EdgeRequest {
     readonly registryName: string;
     readonly range: string | null;
+    /** Whether a registry answers it; a git, file, directory or URL spec is not installed here. */
+    readonly registry: boolean;
 }
 export declare function edgeRequest(name: string, spec: string): EdgeRequest;
 /** Whether `version` meets an edge's range, as npm's dep-valid reckons it: any version, for a spec that is not a range. */
@@ -150,7 +154,9 @@ export declare function projectRoots(manifest: ProjectManifest | null, named: re
  * spec given. As npm writes package.json, a name in optionalDependencies is
  * not repeated in dependencies. Every other field is as it was.
  */
-export declare function saveNamed(json: Readonly<Record<string, unknown>>, named: readonly NamedPackage[], installed: (name: string) => string | null): Record<string, unknown>;
+export declare function saveNamed(json: Readonly<Record<string, unknown>>, named: readonly NamedPackage[], installed: (name: string) => string | null, 
+/** npm's save-prefix: '' for `--save-exact`. */
+savePrefix?: string): Record<string, unknown>;
 /**
  * Hold the tree at `canonical` in `namespace` for one install, and give it
  * back with the release this answers, once the install is done: at once

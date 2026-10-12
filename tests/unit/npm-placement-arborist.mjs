@@ -26,8 +26,15 @@
  * replacement pruning what it no longer needs; a bare name keeping its
  * declared range; devDependencies over dependencies; sibling order by
  * name; `--save-dev`; an optional-only project whose dependency is missing;
- * a package the lock records but disk has lost. And a global prefix,
- * shallow: each top-level package's dependencies beneath it.
+ * a package the lock records but disk has lost; `--omit=optional`,
+ * `--omit=peer`, `--no-save`, `--save-exact`, `--prefer-dedupe` (an older
+ * copy every edge accepts replacing a newer one), `--strict-peer-deps`; an
+ * alias edge met by another package at a version it accepts. And global
+ * prefixes, shallow: each top-level package's dependencies and peers
+ * beneath it, two packages whose peers conflict, `--omit` exempt, and an
+ * install that leaves the rest of the prefix as it is. A spec no registry
+ * answers, and an option that changes the tree and is not implemented, are
+ * refused on both hosts and change nothing.
  *
  * npm runs without a package-lock (the fallback keeps none), so it plans
  * from the tree on disk and the registry, as the hosts do.
@@ -132,6 +139,17 @@ const REGISTRY = {
   // A dependency reached through a version the tree replaces: pruned with the copy that needed it.
   rx: { '1.0.0': { dependencies: { ry: '1.0.0' } }, '2.0.0': {} },
   ry: { '1.0.0': {} },
+  // zc: one dependent takes any version, the other only the older one.
+  pd1: { '1.0.0': { dependencies: { zc: '>=1.0.0' } } },
+  pd2: { '1.0.0': { dependencies: { zc: '1.0.0' } } },
+  // An alias edge: met by any copy at a version its range accepts, whatever the package.
+  al: { '1.0.0': { dependencies: { xc: 'npm:ra@^1.0.0' } } },
+  // Two global packages whose peers conflict.
+  gpa: { '1.0.0': { peerDependencies: { gp: '1.0.0' } } },
+  gpb: { '1.0.0': { peerDependencies: { gp: '2.0.0' } } },
+  gp: { '1.0.0': {}, '2.0.0': {} },
+  // A peer conflict that is not the project's own: npm's warning, ERESOLVE with --strict-peer-deps.
+  sa: { '1.0.0': { dependencies: { ph: '1.0.0', pp: '2.0.0' } } },
 };
 // Tarballs whose bytes are not the ones their integrity names (and no
 // tarball's are, so npm's content-addressed cache cannot answer for them);
@@ -229,7 +247,7 @@ async function fallbackWorkspace() {
   return {
     write,
     run: async (args) => (await ws.exec(`NPM_REGISTRY=${base} npm ${args.map((arg) => `'${arg}'`).join(' ')}`)).exitCode === 0,
-    remove: async (name) => assert.equal((await ws.exec(`rm -rf node_modules/${name}`)).exitCode, 0),
+    remove: async (name, dir = '/home/user') => assert.equal((await ws.exec(`rm -rf ${dir}/node_modules/${name}`)).exitCode, 0),
     tree: (dir = '/home/user') => treeOf((at) => fs.readdir(at).map(({ name }) => name), (path) => fs.readFileString(path), (path) => fs.exists(path), dir),
     declared: () => declared(JSON.parse(fs.readFileString('/home/user/package.json'))),
     leftovers: () => (fs.exists('/home/user/node_modules') ? fs.readdir('/home/user/node_modules').map(({ name }) => name).filter((name) => name.startsWith('.nimbus-')) : []),
@@ -280,8 +298,10 @@ function workerProject(dir = 'app') {
       try {
         const result = await installer.install(dir, {
           packages: invocation.packages.length > 0 ? invocation.packages : undefined,
-          saveDev: invocation.saveDev, saveOptional: invocation.saveOptional,
-          force: invocation.force, legacyPeerDeps: invocation.legacyPeerDeps, production: invocation.production,
+          saveDev: invocation.saveDev, saveOptional: invocation.saveOptional, save: invocation.save, savePrefix: invocation.savePrefix,
+          force: invocation.force, strictPeerDeps: invocation.strictPeerDeps, legacyPeerDeps: invocation.legacyPeerDeps, preferDedupe: invocation.preferDedupe,
+          production: invocation.production, omitOptional: invocation.omitOptional, omitPeer: invocation.omitPeer,
+          global: invocation.global,
           ...options,
         });
         return result.failed.length === 0;
@@ -431,6 +451,15 @@ try {
     'an optional set takes its physical children': [[{ manifest: { dependencies: { 'pf-s': '2.0.0', 'pf-t': '2.0.0' }, optionalDependencies: { 'pf-o': '1.0.0' } } }, ['install']], { 'pf-s': '2.0.0', 'pf-t': '2.0.0' }],
     'a bundled dependency comes in its archive': [[['install', 'bun-a'], ['install']], { 'bun-a': '1.0.0', 'bun-a/node_modules/bun-b': '1.0.0' }],
     'a replaced copy takes what only it needed': [[['install', 'rx@1.0.0'], ['install', 'rx@2.0.0']], { rx: '2.0.0' }],
+    '--omit=optional': [[['install', 'host@1.0.0', '--omit=optional']], { host: '1.0.0', peer: '1.0.0' }],
+    '--omit=peer': [[['install', 'ph@1.0.0', '--omit=peer']], { ph: '1.0.0' }],
+    '--no-save': [[['install', 'xc@1.0.0', '--no-save']], { xc: '1.0.0' }],
+    '--save-exact': [[['install', 'xc@^1.0.0', '--save-exact']], { xc: '1.0.0' }],
+    'a newer copy one dependent needs, beside one that takes any': [[['install', 'pd1'], ['install', 'pd2']], { pd1: '1.0.0', pd2: '1.0.0', 'pd2/node_modules/zc': '1.0.0', zc: '2.0.0' }],
+    '--prefer-dedupe replaces it with the older copy both accept': [[['install', 'pd1'], ['install', 'pd2', '--prefer-dedupe']], { pd1: '1.0.0', pd2: '1.0.0', zc: '1.0.0' }],
+    "an alias edge met by another package's copy": [[['install', 'xc@1.0.0'], ['install', 'al']], { al: '1.0.0', xc: '1.0.0' }],
+    "another package's peer conflict is a warning": [[['install', 'sa']], { sa: '1.0.0', ph: '1.0.0', pp: '2.0.0' }],
+    "another package's peer conflict with --strict-peer-deps is ERESOLVE": [[['install', 'sa', '--strict-peer-deps']], {}],
   };
   for (const [label, [commands, expected]] of Object.entries(scenarios)) {
     const { npm: oracle, fallback: shell, worker: engine } = await sequence(commands);
@@ -439,38 +468,75 @@ try {
     assert.deepEqual(engine, oracle, `${label}: the worker's exit statuses, trees and package.json as npm's`);
   }
 
-  // ── A global prefix: npm's shallow layout ────────────────────────────────
-  {
+  // ── Global prefixes: npm's shallow layout ────────────────────────────────
+  // Each step `npm install -g <args>`, or `{ remove }` a placement under the
+  // prefix's node_modules; after each, the exit status and the prefix's tree.
+  const globals = {
+    "each package's dependencies beneath it": [[['ga'], ['gz']], { ga: '1.0.0', 'ga/node_modules/gb': '1.0.0', gz: '1.0.0', 'gz/node_modules/gb': '1.0.0' }],
+    'two packages whose peers conflict': [[['gpa'], ['gpb']], { gpa: '1.0.0', 'gpa/node_modules/gp': '1.0.0', gpb: '1.0.0', 'gpb/node_modules/gp': '2.0.0' }],
+    '--omit leaves out nothing': [[['host@1.0.0', '--omit=optional', '--omit=peer']], { host: '1.0.0', 'host/node_modules/opt': '1.0.0', 'host/node_modules/peer': '1.0.0' }],
+    'the rest of the prefix is as it was': [[['ga'], { remove: 'ga/node_modules/gb' }, ['gz']], { ga: '1.0.0', gz: '1.0.0', 'gz/node_modules/gb': '1.0.0' }],
+  };
+  for (const [label, [steps, expected]] of Object.entries(globals)) {
     const prefix = mkdtempSync(join(tmpdir(), 'npm-global-'));
     const oracle = [];
     try {
-      for (const name of ['ga', 'gz']) {
-        assert.equal((await npmIn(prefix, ['install', '-g', `--prefix=${prefix}`, name])).status, 0);
-        oracle.push(treeOf((at) => readdirSync(at), (path) => readFileSync(path, 'utf8'), existsSync, join(prefix, 'lib')));
+      for (const step of steps) {
+        if (!Array.isArray(step)) {
+          rmSync(join(prefix, 'lib/node_modules', step.remove), { recursive: true, force: true });
+          continue;
+        }
+        const { status } = await npmIn(prefix, ['install', '-g', `--prefix=${prefix}`, ...step]);
+        oracle.push({ ok: status === 0, tree: treeOf((at) => readdirSync(at), (path) => readFileSync(path, 'utf8'), existsSync, join(prefix, 'lib')) });
       }
     } finally {
       rmSync(prefix, { recursive: true, force: true });
     }
-    assert.deepEqual(oracle.at(-1), { ga: '1.0.0', 'ga/node_modules/gb': '1.0.0', gz: '1.0.0', 'gz/node_modules/gb': '1.0.0' }, "npm's own global layout");
+    assert.deepEqual(oracle.at(-1).tree, expected, `${label}: npm's own global layout`);
     const shell = await fallbackWorkspace();
     const engine = workerProject('g/lib');
     try {
-      const shellTrees = [];
-      const engineTrees = [];
-      for (const name of ['ga', 'gz']) {
-        assert.equal(await shell.run(['install', '-g', '--prefix=/home/user/g', name]), true);
-        shellTrees.push(shell.tree('/home/user/g/lib'));
-        assert.equal(await engine.run(['install', name], { global: true }), true);
-        engineTrees.push(engine.tree());
+      const shellSteps = [];
+      const engineSteps = [];
+      for (const step of steps) {
+        if (!Array.isArray(step)) {
+          await shell.remove(step.remove, '/home/user/g/lib');
+          await engine.remove(step.remove);
+          continue;
+        }
+        shellSteps.push({ ok: await shell.run(['install', '-g', '--prefix=/home/user/g', ...step]), tree: shell.tree('/home/user/g/lib') });
+        engineSteps.push({ ok: await engine.run(['install', '-g', ...step]), tree: engine.tree() });
       }
-      assert.deepEqual(shellTrees, oracle, "the fallback's global installs lay out as npm's");
-      assert.deepEqual(engineTrees, oracle, "the worker's global installs lay out as npm's");
+      assert.deepEqual(shellSteps, oracle, `${label}: the fallback's global installs as npm's`);
+      assert.deepEqual(engineSteps, oracle, `${label}: the worker's global installs as npm's`);
     } finally {
       shell.close();
       engine.close();
     }
   }
-  console.log(`npm-placement-arborist: ${Object.keys(npm).length} placements, both hosts, ${Object.keys(scenarios).length} install sequences and a global prefix, as npm ${spawnSync('npm', ['--version'], { encoding: 'utf8' }).stdout.trim()}`);
+
+  // ── What npm has and this does not: refused, and nothing changes ─────────
+  {
+    const shell = await fallbackWorkspace();
+    const engine = workerProject();
+    try {
+      for (const spec of ['git+https://example.invalid/x.git', 'file:../x', 'https://example.invalid/x.tgz']) {
+        assert.equal(await shell.run(['install', `x@${spec}`]), false, `the fallback refuses ${spec}`);
+        assert.equal(await engine.run(['install', `x@${spec}`]), false, `the worker refuses ${spec}`);
+      }
+      for (const option of ['--install-strategy=nested', '--global-style', '--dry-run', '--package-lock-only', '--before=2020-01-01', '--os=darwin']) {
+        assert.equal(await shell.run(['install', 'xc@1.0.0', option]), false, `${option} is refused`);
+      }
+      assert.deepEqual(shell.tree(), {}, 'nothing is installed');
+      assert.deepEqual(engine.tree(), {});
+      assert.deepEqual(shell.declared(), declared({}), 'nothing is saved');
+      assert.deepEqual(engine.declared(), declared({}));
+    } finally {
+      shell.close();
+      engine.close();
+    }
+  }
+  console.log(`npm-placement-arborist: ${Object.keys(npm).length} placements, both hosts, ${Object.keys(scenarios).length} install sequences and ${Object.keys(globals).length} global prefixes, as npm ${spawnSync('npm', ['--version'], { encoding: 'utf8' }).stdout.trim()}`);
 } finally {
   server.close();
 }

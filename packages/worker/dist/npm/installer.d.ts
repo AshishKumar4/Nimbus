@@ -42,6 +42,46 @@ export interface InstallProgress {
     cachedHits: number;
     elapsed: number;
 }
+export interface NpmInstallOptions {
+    /** Explicit packages (`npm install react`). */
+    packages?: string[];
+    /** `--omit=dev` (`--production`): what only devDependencies reach is planned, not installed. */
+    production?: boolean;
+    /** `--omit=optional` / `--omit=peer`: likewise for what only optional, or only peer, dependencies reach. */
+    omitOptional?: boolean;
+    omitPeer?: boolean;
+    /** npm ci: install exactly the tree package-lock.json records. */
+    fromLockfile?: boolean;
+    /** The invoking process: authorizes the batch facet's writes. */
+    pid: number;
+    /** Its credential: what the project is read and written as. */
+    cred: VfsCred;
+    /** npm-protocol log sink (see --loglevel). */
+    npmLog?: NpmLogEmitter;
+    /** Per-invocation progress: overrides the constructor's sink. */
+    onProgress?: (msg: string) => void;
+    /** The command's NPM_REGISTRY; default registry.npmjs.org. */
+    registry?: string;
+    /** `--save-dev` / `--save-optional`: where what is named is saved. */
+    saveDev?: boolean;
+    saveOptional?: boolean;
+    /** False for `--no-save`: package.json is left as it is. */
+    save?: boolean;
+    /** What a saved range starts with ('' for `--save-exact`); '^' when not given. */
+    savePrefix?: string;
+    /** `--force`: a peer conflict the project owns is a warning. */
+    force?: boolean;
+    /** `--legacy-peer-deps`: peers are neither installed nor checked. */
+    legacyPeerDeps?: boolean;
+    /** `--prefer-dedupe`: one copy serves every edge it can, an older one included. */
+    preferDedupe?: boolean;
+    /** A global prefix's install: npm's shallow layout, and its installed packages are its roots. */
+    global?: boolean;
+    /** The command's: an install it stops before publication changes nothing; one waiting for the tree never starts. */
+    signal?: AbortSignal;
+    /** Run under the install's hold, once it has installed; answers the bins it linked. */
+    whileHeld?: (result: NpmInstallResult) => Promise<number>;
+}
 export interface NpmInstallResult {
     installed: string[];
     failed: string[];
@@ -90,29 +130,7 @@ export declare class NpmInstaller {
      * - Full resolution + fetch + write pipeline
      * - Incremental: only fetches/writes what changed
      */
-    install(projectDir: string, opts: {
-        packages?: string[];
-        production?: boolean;
-        fromLockfile?: boolean;
-        pid: number;
-        cred: VfsCred;
-        npmLog?: NpmLogEmitter;
-        onProgress?: (msg: string) => void;
-        registry?: string;
-        /** `--save-dev` / `--save-optional`: where what is named is saved. */
-        saveDev?: boolean;
-        saveOptional?: boolean;
-        /** `--force`: a peer conflict the project owns is a warning. */
-        force?: boolean;
-        /** `--legacy-peer-deps`: peers are neither installed nor checked. */
-        legacyPeerDeps?: boolean;
-        /** A global prefix's install: npm's shallow layout, and its installed packages are its roots. */
-        global?: boolean;
-        /** The command's: an install it stops before publication changes nothing; one waiting for the tree never starts. */
-        signal?: AbortSignal;
-        /** Run under the install's hold, once it has installed; answers the bins it linked. */
-        whileHeld?: (result: NpmInstallResult) => Promise<number>;
-    }): Promise<NpmInstallResult>;
+    install(projectDir: string, opts: NpmInstallOptions): Promise<NpmInstallResult>;
     private _installInner;
     /**
      * F-2 frontier-coordinator path. Replaces the single-resolve-facet

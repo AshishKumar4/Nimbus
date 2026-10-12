@@ -7,13 +7,29 @@ published independently in the `@nimbus-sh` npm scope.
 
 - Changed: `npm install` has one engine. The Worker's installer and the
   shell's own npm (a library workspace with no installer of its own) plan
-  every install with core `_shared/npm-arborist.js`, npm 10's arborist
+  every install with core `_shared/npm-arborist/`, npm 10's arborist
   build: a conflict goes to the highest ancestor it fits, a package's peers
   are placed with it, an optional peer only constrains, and what a package
   bundles is its own. A package named on the command line is resolved even
   where an installed copy meets it (`pkg@latest`, an alias retargeted).
   Installs are checked against npm 10.9.8 itself, on both hosts. A cycle of
   incompatible ranges, which npm breaks with a link, fails past 16 levels.
+- Breaking: options npm has that change the tree, and that are not
+  implemented here, are refused with `npm ERR!` instead of ignored:
+  `--install-strategy` other than hoisted (and `--global-style`,
+  `--legacy-bundling`), workspaces, `--dry-run`, `--package-lock-only`,
+  `--no-bin-links`, `--before`, `--cpu`/`--os`/`--libc` and
+  `--engine-strict`. So are git, file, directory and URL specs, which no
+  host installs. New: `--omit=optional`, `--omit=peer`, `--include`,
+  `--strict-peer-deps`, `--prefer-dedupe`, `--no-save`, `--save-exact` and
+  `--save-prefix`, as npm reads them.
+- Breaking: `npm ci` builds npm's ideal tree over the lock and fails, before
+  it removes anything, where that tree is not the lock's: a package the lock
+  lacks, or holds at another version. A lock whose root declares other
+  dependencies than package.json is no longer refused for that alone; its
+  flags are found again and what nothing reaches is left out, as npm does.
+  `npm ci` keeps the lock's dev, optional and peer flags, honours `--omit`,
+  `--force`, `--legacy-peer-deps` and `--strict-peer-deps`.
 - Breaking: a required failure changes nothing, as in npm. An install with
   a required dependency that cannot be resolved, or that is refused for its
   platform (EBADPLATFORM), now installs nothing and exits 1; before, it
@@ -37,7 +53,9 @@ published independently in the `@nimbus-sh` npm scope.
   `--omit=dev` plans the whole tree and leaves out what only
   devDependencies reach, as npm does.
 - Changed: `npm install -g` uses npm's global layout, where each package's
-  dependencies sit beneath it.
+  dependencies, and its peers, sit beneath it. It builds what it names
+  afresh and changes nothing else in the prefix; `<prefix>/lib/package.json`
+  is neither read nor written.
 - Changed: the shell's own npm publishes under a journal in `node_modules`.
   If an install is interrupted, the next one undoes it before planning.
   Ctrl-C before publication changes nothing. Installs into one tree, in

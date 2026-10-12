@@ -7,8 +7,8 @@
 // npm semantics pinned here: lock versions win over what the ranges would
 // resolve today, nested placements are kept, --omit=dev drops dev entries,
 // platform-native optional shards are skipped, node_modules is removed
-// first, and a lock out of sync with package.json fails instead of
-// re-resolving. Real NpmInstaller over real SQLite; the fan-out RPC is the
+// first, and a lock that is not npm's ideal tree for package.json fails
+// before anything changes. Real NpmInstaller over real SQLite; the fan-out RPC is the
 // seam, as in npm-install-nested-conflict.
 
 import assert from 'node:assert/strict';
@@ -94,20 +94,42 @@ const versionAt = (root, dir) => JSON.parse(root.readFileString(`${NM}/${dir}/pa
   assert.equal(versionAt(root, 't'), '1.0.0');
 }
 
-// ── out of sync with package.json: fail, never re-resolve ─────────────────
+// ── out of sync with package.json: npm's ideal tree over the lock decides ──
+//
+// A lock whose root declares other dependencies than package.json is
+// suspect (load-virtual checkRootEdges): the tree is built over it, fails
+// before anything changes where it is not the lock's tree, and otherwise
+// installs with its flags found again and what nothing reaches left out.
 {
-  const bumped = { ...PACKAGE_JSON, dependencies: { a: '^2.0.0' } };
-  const { installer, root, resolveAsked } = makeInstaller(bumped);
-  await assert.rejects(installer.install(PROJ, { pid: 1, fromLockfile: true }), /in sync[\s\S]*a@\^2\.0\.0/);
-  assert.deepEqual(resolveAsked, []);
-  assert.equal(root.exists(`${NM}/a`), false, 'nothing installed from a stale lock');
-  assert.equal(root.exists(`${NM}/stale/index.js`), true, 'a rejected lock leaves the existing node_modules alone');
+  const leaf = (name, version) => ({
+    pkg: { name, version, tarballUrl: tgz(name, version), integrity: `sha512-${name}${version}`, dependencies: {}, exports: null, main: '', module: '', bin: {} },
+    cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
+  });
 
-  const removed = { ...PACKAGE_JSON, dependencies: {} };
-  await assert.rejects(makeInstaller(removed).installer.install(PROJ, { pid: 1, fromLockfile: true }), /in sync[\s\S]*\ba\b.*package\.json does not declare/);
+  const bumped = { ...PACKAGE_JSON, dependencies: { a: '^2.0.0' } };
+  const stale = makeInstaller(bumped, LOCK, (name) => leaf(name, '2.0.0'));
+  await assert.rejects(stale.installer.install(PROJ, { pid: 1, fromLockfile: true }), /in sync[\s\S]*Invalid: lock file's a@1\.0\.0 does not satisfy a@2\.0\.0/);
+  assert.equal(stale.root.exists(`${NM}/a`), false, 'nothing installed from a stale lock');
+  assert.equal(stale.root.exists(`${NM}/stale/index.js`), true, 'a rejected lock leaves the existing node_modules alone');
 
   const added = { ...PACKAGE_JSON, dependencies: { a: '^1.0.0', z: '^1.0.0' } };
-  await assert.rejects(makeInstaller(added).installer.install(PROJ, { pid: 1, fromLockfile: true }), /in sync[\s\S]*z@\^1\.0\.0/);
+  const missing = makeInstaller(added, LOCK, (name) => leaf(name, '1.0.0'));
+  await assert.rejects(missing.installer.install(PROJ, { pid: 1, fromLockfile: true }), /in sync[\s\S]*Missing: z@1\.0\.0 from lock file/);
+  assert.equal(missing.root.exists(`${NM}/stale/index.js`), true);
+
+  // A root range the locked version still meets, and a dependency dropped:
+  // the lock's tree, but for what nothing reaches any more.
+  for (const [label, pkgJson, kept, gone] of [
+    ['a narrowed range', { ...PACKAGE_JSON, dependencies: { a: '~1.0.0' } }, ['a', 'a/node_modules/b', 't'], ['b']],
+    ['a dropped dependency', { ...PACKAGE_JSON, dependencies: {} }, ['t'], ['a', 'a/node_modules/b', 'b']],
+  ]) {
+    const { installer, root, resolveAsked, log } = makeInstaller(pkgJson);
+    const result = await installer.install(PROJ, { pid: 1, fromLockfile: true });
+    assert.deepEqual(result.failed, [], `${label}: ${log.join('\n')}`);
+    assert.deepEqual(resolveAsked, [], `${label}: nothing is resolved`);
+    for (const at of kept) assert.ok(root.exists(`${NM}/${at}/package.json`), `${label}: ${at} installs`);
+    for (const at of gone) assert.equal(root.exists(`${NM}/${at}`), false, `${label}: ${at}, which nothing reaches, does not`);
+  }
 
   const v1 = { lockfileVersion: 1, dependencies: {} };
   await assert.rejects(makeInstaller(PACKAGE_JSON, v1).installer.install(PROJ, { pid: 1, fromLockfile: true }), /lockfileVersion 1/);
@@ -302,6 +324,34 @@ const versionAt = (root, dir) => JSON.parse(root.readFileString(`${NM}/${dir}/pa
   assert.ok(result.failed.length > 0);
   assert.deepEqual([...installer.npmCache.readLockfile(PROJ).keys()], ['q'], 'the inventory is what this npm ci left on disk');
   assert.equal(root.exists(`${NM}/old`), false);
+}
+
+// ── a lock that does not meet its own dependencies fails before anything changes ──
+//
+// npm ci builds the ideal tree over the lock and checks it is the lock's
+// (validate-lockfile): a package the lock lacks, or holds at a version an
+// edge does not accept, fails the command before node_modules is cleared.
+for (const [label, entries, line] of [
+  ['a dependency the lock lacks', {}, /Missing: b@1\.2\.0 from lock file/],
+  ['a dependency the lock holds at a version its dependent does not accept', {
+    'node_modules/b': { version: '2.0.0', resolved: tgz('b', '2.0.0'), integrity: 'sha512-b2' },
+  }, /Invalid: lock file's b@2\.0\.0 does not satisfy b@1\.\d\.\d/],
+]) {
+  const pkgJson = { name: 'unsound', version: '1.0.0', dependencies: { a: '1.0.0' } };
+  const lock = {
+    name: 'unsound', lockfileVersion: 3,
+    packages: {
+      '': { name: 'unsound', version: '1.0.0', dependencies: { a: '1.0.0' } },
+      'node_modules/a': { version: '1.0.0', resolved: tgz('a', '1.0.0'), integrity: 'sha512-a', dependencies: { b: '^1.0.0' } },
+      ...entries,
+    },
+  };
+  const { installer, root } = makeInstaller(pkgJson, lock, (name) => ({
+    pkg: { name, version: '1.2.0', tarballUrl: tgz(name, '1.2.0'), integrity: `sha512-${name}`, dependencies: {}, exports: null, main: '', module: '', bin: {} },
+    cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
+  }));
+  await assert.rejects(installer.install(PROJ, { pid: 1, fromLockfile: true }), line, label);
+  assert.ok(root.exists(`${NM}/stale/index.js`), `${label}: node_modules is left as it was`);
 }
 
 console.log('npm-ci: ok');

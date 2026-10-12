@@ -70,15 +70,13 @@ export async function planTree(roots, installed, host, options = {}) {
         }
     }
     // ── calc-dep-flags; a lock's own flags where the build changed nothing (npm ci) ──
-    const { reached, required, prod } = calcDepFlags(project);
+    const { reached, required, prod, prodRequired, nonPeer } = calcDepFlags(project);
     const lockFlags = options.locked && !builder.mutated;
+    const lockOf = (each) => (each.payload.kind === 'installed' && lockFlags ? each.payload.lock : undefined);
+    const flagsOf = (each) => lockOf(each) ?? { dev: !prod.has(each), optional: !required.has(each), devOptional: !prodRequired.has(each), peer: !nonPeer.has(each) };
     const isRequired = (each) => {
-        const lock = each.payload.kind === 'installed' && lockFlags ? each.payload.lock : undefined;
+        const lock = lockOf(each);
         return lock ? !lock.optional && !lock.devOptional : required.has(each);
-    };
-    const isDev = (each) => {
-        const lock = each.payload.kind === 'installed' && lockFlags ? each.payload.lock : undefined;
-        return lock ? lock.dev === true : !prod.has(each);
     };
     // What the project does not reach is extraneous: it goes from a tree
     // installed before, but a lock's tree npm ci installs as it is.
@@ -93,13 +91,12 @@ export async function planTree(roots, installed, host, options = {}) {
     // The tree, as the hosts get it, before anything is left out of it.
     const nodes = new Map();
     const requiredAt = new Set();
-    const dev = new Set();
+    const flagsAt = new Map();
     for (const each of tree.nodes()) {
         const at = each.location;
         if (isRequired(each))
             requiredAt.add(at);
-        if (isDev(each))
-            dev.add(at);
+        flagsAt.set(at, flagsOf(each));
         const { payload } = each;
         if (payload.kind === 'placed')
             nodes.set(at, { at, planned: true, pkg: payload.pkg, edge: payload.placedFor });
@@ -157,7 +154,14 @@ export async function planTree(roots, installed, host, options = {}) {
         failures: [...failures.values()],
         lockMismatches,
         required: requiredAt,
-        dev,
+        omits: (at, omit) => {
+            const flags = flagsAt.get(at);
+            // A global prefix's top-level packages are what it installs: never omitted (reify).
+            if (!flags || (options.global && !at.includes('/node_modules/')))
+                return false;
+            return (omit.dev === true && flags.dev === true) || (omit.optional === true && flags.optional === true)
+                || (omit.dev === true && omit.optional === true && flags.devOptional === true) || (omit.peer === true && flags.peer === true);
+        },
         skipped,
         reasons,
         extraneous,

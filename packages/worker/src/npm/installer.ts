@@ -43,11 +43,11 @@ import {
   type ResolvedPackage, type HoistPlan, type PackagePlacement,
 } from './resolver.js';
 import {
-  canonicalTreePath, holdTree, namedPackages, packageJsonDocument, projectRoots, readPackageJson, saveNamed,
+  canonicalTreePath, holdTree, lockRootMatches, namedPackages, packageJsonDocument, projectRoots, readPackageJson, saveNamed,
   type NamedPackage, type TreeRoot,
 } from '@nimbus-sh/core/_shared/npm-tree.js';
-import { planTree, type InstalledPackage, type OmitTypes, type TreePlan, type TreeResolution } from '@nimbus-sh/core/_shared/npm-arborist/plan.js';
-import { packageLockMismatches, parsePackageLock, stringList, stringRecord } from './package-lock.js';
+import { planTree, type InstalledPackage, type OmitTypes, type PlanOptions, type TreePlan, type TreeResolution } from '@nimbus-sh/core/_shared/npm-arborist/plan.js';
+import { parsePackageLock, stringList, stringRecord } from './package-lock.js';
 import { npmRegistryOrigin, packumentUrl } from './r2-cache.js';
 import {
   npmAddedLine, npmHttpCacheLine, npmHttpFetchLine, npmTitleLine,
@@ -204,11 +204,13 @@ export interface NpmInstallOptions {
   savePrefix?: string;
   /** `--force`: a peer conflict the project owns is a warning. */
   force?: boolean;
+  /** `--strict-peer-deps`: any peer conflict is ERESOLVE unless forced. */
+  strictPeerDeps?: boolean;
   /** `--legacy-peer-deps`: peers are neither installed nor checked. */
   legacyPeerDeps?: boolean;
   /** `--prefer-dedupe`: one copy serves every edge it can, an older one included. */
   preferDedupe?: boolean;
-  /** A global prefix's install: npm's shallow layout, and its installed packages are its roots. */
+  /** A global prefix's install: npm's shallow layout, and only what is named is built and changed. */
   global?: boolean;
   /** The command's: an install it stops before publication changes nothing; one waiting for the tree never starts. */
   signal?: AbortSignal;
@@ -368,9 +370,17 @@ export class NpmInstaller {
     if (tmp !== null) this.sweepStaging(tmp);
     const principal = { pid: opts.pid, cred: opts.cred, view, tmp };
     const lockfile = this.cache.readLockfile(projDir);
-    const { roots, named, devOnly, advised } = await this.buildRoots(projDir, project, opts, lockfile);
+    const { roots, named, devOnly, advised } = await this.buildRoots(projDir, project, opts);
     const omit = { dev: opts.production === true, optional: opts.omitOptional === true, peer: opts.omitPeer === true };
-    const engine = { devOnly, advised, registry, global: opts.global === true, force: opts.force === true, legacyPeerDeps: opts.legacyPeerDeps === true, preferDedupe: opts.preferDedupe === true, omit };
+    const engine = {
+      devOnly, advised, registry, omit,
+      global: opts.global === true, force: opts.force === true, strictPeerDeps: opts.strictPeerDeps === true,
+      legacyPeerDeps: opts.legacyPeerDeps === true, preferDedupe: opts.preferDedupe === true,
+    };
+    // A global install builds what it names afresh, and changes nothing
+    // outside their folders (reify's explicit requests): the rest of the
+    // prefix, and its inventory, are as they were.
+    const inScope = (at: string) => !opts.global || named.some(({ name }) => at === name || at.startsWith(`${name}/node_modules/`));
 
     // ── Phase 1: Resolve ──────────────────────────────────────────
     // The one engine's plan (core _shared/npm-arborist) over the tree installed
@@ -383,8 +393,8 @@ export class NpmInstaller {
     let tree: PlannedTree;
     let usedLockfile = false;
     if (opts.fromLockfile) {
-      const locked = await this.treeFromPackageLock(projDir, project, log, registry);
-      tree = await this.resolveTreeViaFanout(roots, locked.installed, log, { ...engine, locked: true });
+      const locked = await this.treeFromPackageLock(projDir, project, log, registry, opts.legacyPeerDeps === true);
+      tree = await this.resolveTreeViaFanout(roots, locked.installed, log, { ...engine, locked: locked.suspect ? 'suspect' : 'trusted' });
       if (tree.plan.lockMismatches.length > 0) {
         throw new Error(
           `\`npm ci\` can only install packages when your package.json and ${locked.lockName} are in sync. ` +
@@ -396,7 +406,7 @@ export class NpmInstaller {
     } else {
       const recordOf = this.lockRecords();
       // Each placement's package from its registry package's record, under the name it installs as.
-      const installed = [...lockfile ?? []].flatMap(([at, entry]) => {
+      const installed = opts.global ? [] : [...lockfile ?? []].flatMap(([at, entry]) => {
         const record = recordOf(entry);
         return record === null ? [] : [{ at, pkg: { ...resolvedFromRecord(record), name: entry.name, registryName: record.name } }];
       });
@@ -559,7 +569,7 @@ export class NpmInstaller {
     // longer needs), and npm removes it on install, with what an optional
     // failure left out. An install a required failure stopped removes nothing.
     const pruned = failed.length === 0
-      ? await withRecall(() => this.pruneExtraneous([...(lockfile?.keys() ?? []), ...leftOut], hoistPlan, nmDir, project, log))
+      ? await withRecall(() => this.pruneExtraneous([...(lockfile?.keys() ?? [])].filter(inScope).concat(leftOut), hoistPlan, nmDir, project, log))
       : 0;
 
     // ── Phase 6: Link bins ──────────────────────────────────────────
@@ -569,7 +579,12 @@ export class NpmInstaller {
     // them, but those of a package that failed.
     // Linking a bin again links it as before: repeatable, so it waits for a delegation it meets.
     const linked = failedAt.size === 0 ? resolved : new Map([...resolved].filter(([at]) => !failedAt.has(at)));
-    await withRecall(() => this.linkBins(linked, engineDir === null ? { fs: project, nmDir } : { engine: this.store.as(opts.cred), nmDir: `${engineDir}/node_modules` }));
+    // A global install's bins join those of the prefix's other packages.
+    const manifestPath = npmBinManifestPath(nmDir);
+    const keptBins = opts.global && await project.exists(manifestPath)
+      ? Object.values(parseNpmBinManifest(await project.readFileString(manifestPath))?.bins ?? {}).filter((bin) => !inScope(bin.packageName))
+      : [];
+    await withRecall(() => this.linkBins(linked, engineDir === null ? { fs: project, nmDir } : { engine: this.store.as(opts.cred), nmDir: `${engineDir}/node_modules` }, keptBins));
     phases['link-bins'] = Date.now() - phaseStart;
 
     // ── Write lockfile ──────────────────────────────────────────────
@@ -577,12 +592,12 @@ export class NpmInstaller {
     // disk: the tree, or, after a required failure, what it held before with
     // what this install published over it.
     if (failed.length > 0) this.writeLockfile(projDir, published, nmDir, opts.fromLockfile ? null : lockfile);
-    else if (!usedLockfile || pruned > 0) this.writeLockfile(projDir, hoistPlacements(hoistPlan), nmDir);
+    else if (!usedLockfile || pruned > 0) this.writeLockfile(projDir, hoistPlacements(hoistPlan), nmDir, opts.global ? new Map([...lockfile ?? []].filter(([at]) => !inScope(at))) : null);
 
     const installed = [...installedAt.values()];
 
     // ── Update package.json if explicit packages were added ─────────
-    if (named.length > 0 && failed.length === 0 && opts.save !== false) {
+    if (named.length > 0 && failed.length === 0 && opts.save !== false && !opts.global) {
       await this.updatePackageJson(projDir, project, principal, named, (name) => (plan.skipped.has(name) ? null : plan.nodes.get(name)?.pkg.version ?? null), opts.savePrefix);
     }
 
@@ -714,19 +729,12 @@ export class NpmInstaller {
     roots: readonly TreeRoot[],
     installed: ReadonlyArray<InstalledPackage<ResolvedPackage>>,
     log: (msg: string) => void,
-    opts: {
+    opts: PlanOptions & {
       devOnly?: ReadonlySet<string>;
       advised?: Set<string>;
       registry?: string;
-      /** A global prefix's install. */
-      global?: boolean;
-      force?: boolean;
-      legacyPeerDeps?: boolean;
-      /** npm ci: `installed` is the lock's tree, which the plan must be. */
-      locked?: boolean;
-      /** `--omit=dev`: what only devDependencies reach is planned, not installed, and not announced. */
+      /** What `--omit` leaves out is planned, not installed, and not announced. */
       omit?: OmitTypes;
-      preferDedupe?: boolean;
     } = {},
   ): Promise<PlannedTree> {
     const t0 = Date.now();
@@ -918,7 +926,7 @@ export class NpmInstaller {
         // A peer conflict npm lets through: said the way npm does.
         warn: (message) => log(`npm WARN ${message}`),
       },
-      { global: opts.global === true, force: opts.force === true, legacyPeerDeps: opts.legacyPeerDeps === true, locked: opts.locked === true, preferDedupe: opts.preferDedupe === true },
+      opts,
     );
 
     // What the tree installs that cannot run here is said once.
@@ -1400,8 +1408,8 @@ export class NpmInstaller {
    * The install's roots (core npm-tree.ts projectRoots): every declared
    * dependency, and the packages named on the command line (`npm install
    * react react-dom@18.2.0`), explicit requests saved where npm saves them
-   * (namedPackages); a global prefix's installed packages are its roots
-   * too. What cannot run here is named by the advisory pass below, and a
+   * (namedPackages); a global prefix's roots are only what is named.
+   * What cannot run here is named by the advisory pass below, and a
    * swap rewrites a root's range to its target (applyW6Registry); nothing a
    * project declares is quietly left out of node_modules.
    */
@@ -1409,7 +1417,6 @@ export class NpmInstaller {
     projDir: string,
     fs: ProjectFs,
     opts: { packages?: string[]; production?: boolean; saveDev?: boolean; saveOptional?: boolean; global?: boolean; legacyPeerDeps?: boolean },
-    lockfile: Map<string, LockfileEntry> | null,
   ): Promise<{ roots: TreeRoot[]; named: NamedPackage[]; devOnly: Set<string>; advised: Set<string> }> {
     // Which names only a devDependency asked for — diagnostics only, so an
     // advisory can say whether anything this project RUNS actually needs
@@ -1419,11 +1426,10 @@ export class NpmInstaller {
     // own advisories against it.
     const advised = new Set<string>();
     const pkgJsonPath = projDir + '/package.json';
-    // A package.json the install cannot read fails it; a corrupt one declares nothing.
-    const manifest = await fs.exists(pkgJsonPath) ? readPackageJson(await fs.readFileString(pkgJsonPath))?.manifest ?? null : null;
+    // A package.json the install cannot read fails it; a corrupt one declares nothing; a global prefix has none.
+    const manifest = !opts.global && await fs.exists(pkgJsonPath) ? readPackageJson(await fs.readFileString(pkgJsonPath))?.manifest ?? null : null;
     const named = namedPackages(manifest, opts.packages ?? [], opts);
-    const implicit = opts.global ? [...(lockfile?.keys() ?? [])].filter((at) => !at.includes('/node_modules/')) : [];
-    const roots = projectRoots(manifest, named, { implicit, legacyPeerDeps: opts.legacyPeerDeps === true });
+    const roots = projectRoots(manifest, named, { legacyPeerDeps: opts.legacyPeerDeps === true });
     const explicit = new Set(named.map(({ name }) => name));
     const rooted = new Set(roots.map(({ name }) => name));
     for (const name of Object.keys(manifest?.devDependencies ?? {})) {
@@ -1562,7 +1568,8 @@ export class NpmInstaller {
 
   /**
    * npm ci: the tree package-lock.json (or npm-shrinkwrap.json) records,
-   * checked against package.json first, each placement as it is locked.
+   * each placement as it is locked, and whether the lock is suspect: its
+   * root declares other dependencies than package.json (lockRootMatches).
    * The ABI policy the resolver applies still holds: what cannot run here
    * is left out where the plan finds it optional and refused where it is
    * required, and a swapped package resolves its swap target at the locked
@@ -1573,7 +1580,8 @@ export class NpmInstaller {
     fs: ProjectFs,
     log: (msg: string) => void,
     registry: string,
-  ): Promise<{ installed: Array<InstalledPackage<ResolvedPackage>>; lockName: string }> {
+    legacyPeerDeps: boolean,
+  ): Promise<{ installed: Array<InstalledPackage<ResolvedPackage>>; lockName: string; suspect: boolean }> {
     let lockName: string | undefined;
     for (const name of ['npm-shrinkwrap.json', 'package-lock.json']) {
       if (await fs.exists(`${projDir}/${name}`)) { lockName = name; break; }
@@ -1582,15 +1590,10 @@ export class NpmInstaller {
     const lock = parsePackageLock(await fs.readFileString(`${projDir}/${lockName}`), lockName);
     const pkgJsonPath = `${projDir}/package.json`;
     if (!await fs.exists(pkgJsonPath)) throw new Error('`npm ci` needs a package.json');
-    const pkgJson: unknown = JSON.parse(await fs.readFileString(pkgJsonPath));
-    const mismatches = packageLockMismatches(pkgJson, lock);
-    if (mismatches.length > 0) {
-      throw new Error(
-        `\`npm ci\` can only install packages when your package.json and ${lockName} are in sync. ` +
-        `Update the lock file with \`npm install\` before continuing.\n` +
-        mismatches.map((m) => `npm ERR! ${m}`).join('\n'),
-      );
-    }
+    const manifest = readPackageJson(await fs.readFileString(pkgJsonPath))?.manifest;
+    if (!manifest) throw new Error('`npm ci` needs a package.json that is a JSON object');
+    const lockRoot = packageJsonDocument(lock.packages[''] ?? {})?.manifest ?? {};
+    const suspect = !lockRootMatches(lockRoot, projectRoots(manifest, [], { legacyPeerDeps }));
     const unsupported = Object.keys(lock.packages).find((key) => key !== '' && !key.startsWith('node_modules/'));
     if (unsupported !== undefined) {
       throw new Error(`${lockName} entry "${unsupported}" is a workspace or linked package, which \`npm ci\` here does not install`);
@@ -1680,7 +1683,7 @@ export class NpmInstaller {
         if (!installed.has(at)) installed.set(at, { at, failed: failure.reason });
       }
     }
-    return { installed: [...installed.values()], lockName };
+    return { installed: [...installed.values()], lockName, suspect };
   }
 
   /**
@@ -1717,6 +1720,8 @@ export class NpmInstaller {
   private async linkBins(
     resolved: Map<string, ResolvedPackage>,
     target: { nmDir: string } & ({ engine: CredentialedVfs } | { fs: ProjectFs }),
+    /** Bins linked before, which the manifest keeps beside these. */
+    kept: readonly NpmBinEntry[] = [],
   ): Promise<void> {
     const { nmDir } = target;
     const binDir = nmDir + '/.bin';
@@ -1730,8 +1735,9 @@ export class NpmInstaller {
 
     if (manifestEntries.length === 0) return;
 
-    const manifest = createNpmBinManifest(manifestEntries);
-    const files = Object.values(manifest.bins).map((binEntry) => ({
+    const linked = createNpmBinManifest(manifestEntries);
+    const manifest = createNpmBinManifest([...kept, ...manifestEntries]);
+    const files = Object.values(linked.bins).map((binEntry) => ({
       path: binDir + '/' + binEntry.name,
       data: enc.encode(createNpmBinShim(binEntry, binDir)),
       mode: 0o755,

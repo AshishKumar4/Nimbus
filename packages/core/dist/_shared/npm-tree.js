@@ -93,8 +93,9 @@ export function edgeRequest(name, spec) {
     const key = `${name}\0${spec}`;
     let request = edgeRequests.get(key);
     if (request === undefined) {
-        const { registryName, range } = parseRegistryRequest(name, spec);
-        request = { registryName, range: isSemverRange(range) && range !== '*' && range !== '' ? range : null };
+        const { registryName, range, registry } = parseRegistryRequest(name, spec);
+        const trimmed = range.trim();
+        request = { registryName, range: isSemverRange(trimmed) && trimmed !== '*' && trimmed !== '' ? trimmed : null, registry };
         edgeRequests.set(key, request);
     }
     return request;
@@ -211,7 +212,9 @@ export function projectRoots(manifest, named, { implicit = [], legacyPeerDeps = 
  * spec given. As npm writes package.json, a name in optionalDependencies is
  * not repeated in dependencies. Every other field is as it was.
  */
-export function saveNamed(json, named, installed) {
+export function saveNamed(json, named, installed, 
+/** npm's save-prefix: '' for `--save-exact`. */
+savePrefix = '^') {
     const declared = ProjectManifestSchema.parse(json);
     const fields = new Map();
     const field = (key) => {
@@ -243,10 +246,11 @@ export function saveNamed(json, named, installed) {
         if (version === null)
             continue;
         const { range: requested, alias, registryName } = parseRegistryRequest(name, spec);
-        const prefixed = `^${version}`;
+        const prefixed = `${savePrefix}${version}`;
         const isRange = isSemverRange(requested) && !isExactVersion(requested) && requested !== '*' && requested !== '' && requested !== 'latest';
         const savedRange = isRange && !rangeSubset(prefixed, requested) ? requested : prefixed;
-        const saved = alias ? `npm:${registryName}@${savedRange}` : savedRange;
+        // Alias syntax where the package is another's (reify #saveIdealTree reads the child's packageName).
+        const saved = alias && registryName !== name ? `npm:${registryName}@${savedRange}` : savedRange;
         if (explicit) {
             target[name] = saved;
             if (saveType === 'prod' && has('optionalDependencies', name))

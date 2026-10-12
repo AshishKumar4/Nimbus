@@ -126,10 +126,10 @@ export class Node<H extends HostPackages> {
     return parent ? `${parent}/node_modules/${this.name}` : this.name;
   }
 
+  /** Folders below its top: a top (the project, a virtual root, a global prefix's package) is at 0. */
   get depth(): number {
-    let depth = 0;
-    for (let up = this.parent; up; up = up.parent) depth++;
-    return depth;
+    const { parent } = this;
+    return parent === null || this.globalTop ? 0 : parent.depth + 1;
   }
 
   isDescendantOf(ancestor: Node<H>): boolean {

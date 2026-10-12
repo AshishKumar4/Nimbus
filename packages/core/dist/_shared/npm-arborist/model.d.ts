@@ -69,8 +69,8 @@ export declare class Edge<H extends HostPackages> {
     /** Which versions it accepts, by version: a tree asks one edge of one version many times. */
     private readonly accepted;
     constructor(from: Node<H>, name: string, spec: string, type: EdgeType, explicit: boolean);
-    /** Whether the registry package `registryName` (where known) at `version` meets it (dep-valid). */
-    accepts(registryName: string | undefined, version: string): boolean;
+    /** Whether a package at `version` meets it (dep-valid: an alias by its target's range, whatever package fills it); none meets a spec no registry answers. */
+    accepts(version: string): boolean;
     get peer(): boolean;
     get optional(): boolean;
     /** Edge.error is null: met, or optional and absent; never a peer inside its own dependent (PEER LOCAL), but a top's. */
@@ -104,7 +104,7 @@ export declare class Node<H extends HostPackages> {
     /** The copy Node's walk finds for `name` from here. */
     resolve(name: string): Node<H> | null;
     satisfies(edge: Edge<H>): boolean;
-    /** The same package at the same version. */
+    /** The same package (Node.matches): by integrity where both know it, else the same package at the same version. */
     matches(other: Node<H>): boolean;
     /** Whether `this` may stand in for `old`: every edge into `old` from outside what only `old` needs accepts it (canReplaceWith). */
     canReplace(old: Node<H>, ignorePeers?: Iterable<string>): boolean;

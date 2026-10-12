@@ -645,17 +645,18 @@ function makeInstaller(pkgJson, resultFor) {
 // install. The second install must come back "Lockfile valid".
 {
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0' };
+  // A record is the registry package's: the alias's is react's, under react.
   const cw = (name, version) => ({
-    name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
+    name, registryName: name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
     depsJson: '{}', peerDepsJson: '{}', exportsJson: 'null', main: 'index.js', moduleField: '',
     binJson: '{}', platformJson: '{}', optionalDepsJson: '{}', fetchedAt: Date.now(),
   });
   const { installer, log } = makeInstaller(
     { name: 'alias-app', dependencies: { ...ok, vliw: 'npm:react@^19.0.0' } },
     (name) => {
-      const r = resolvedResult(name, name === 'vliw' ? '19.1.0' : '1.0.0');
-      r.cacheWrites = [cw(name, name === 'vliw' ? '19.1.0' : '1.0.0')];
-      return r;
+      if (name !== 'vliw') return { ...resolvedResult(name, '1.0.0'), cacheWrites: [cw(name, '1.0.0')] };
+      const r = resolvedResult(name, '19.1.0');
+      return { ...r, pkg: { ...r.pkg, registryName: 'react' }, cacheWrites: [cw('react', '19.1.0')] };
     },
   );
   const first = await installer.install(PROJ);

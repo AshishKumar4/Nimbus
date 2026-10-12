@@ -21,7 +21,14 @@ export interface LockFlags {
     readonly dev?: boolean;
     readonly optional?: boolean;
     readonly devOptional?: boolean;
+    readonly peer?: boolean;
     readonly extraneous?: boolean;
+}
+/** The dependency types `--omit` names. */
+export interface OmitTypes {
+    readonly dev?: boolean;
+    readonly optional?: boolean;
+    readonly peer?: boolean;
 }
 /** What a host answers for a request it resolves. */
 export type TreeResolution<P extends TreePackage> = 
@@ -74,6 +81,8 @@ export interface PlanOptions {
     readonly legacyPeerDeps?: boolean;
     /** npm ci: `installed` is the lock's tree, which the plan must be. */
     readonly locked?: boolean;
+    /** `--prefer-dedupe`: an installed copy is replaced by an older one that meets every edge too. */
+    readonly preferDedupe?: boolean;
 }
 /** What the plan could not meet: a package at `id` (its placement) that failed or is refused, or the project's peer conflict. */
 export interface TreeFailure {
@@ -104,8 +113,8 @@ export interface TreePlan<P extends TreePackage, I extends TreePackage> {
     readonly lockMismatches: readonly string[];
     /** Placements (and failure ids) a path of required edges reaches from the project. */
     readonly required: ReadonlySet<string>;
-    /** Placements only devDependencies reach (calc-dep-flags' dev): what `--omit=dev` leaves out at reification. */
-    readonly dev: ReadonlySet<string>;
+    /** Whether `--omit` leaves `at` out at reification (reify's filter over calc-dep-flags' flags). */
+    omits(at: string, omit: OmitTypes): boolean;
     /** Placements (and failure ids) left out: optional failures and refusals, what the host leaves out, and their optional sets. */
     readonly skipped: ReadonlySet<string>;
     /** Why each one left out is (by placement or failure id). */

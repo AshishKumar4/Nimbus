@@ -6,7 +6,7 @@
  * outside the tree) with the package's peer set, and placed (place-dep.ts);
  * what a placement leaves unmet is queued again.
  */
-import { bundledNames, isPeer, manifestEdges } from '../npm-tree.js';
+import { bundledNames, edgeRequest, isPeer, manifestEdges } from '../npm-tree.js';
 import { localeCompare, Node, Tree } from './model.js';
 import { Placer, PeerConflict } from './place-dep.js';
 export class Builder {
@@ -67,10 +67,25 @@ export class Builder {
     }
     // ── Resolution ──
     requestKey(name, range) { return `${name}\0${range}`; }
-    /** Resolve every request not yet answered, together. */
+    /**
+     * Resolve every request not yet answered, together. One no registry
+     * answers (a git, file, directory or URL spec) fails here, without asking:
+     * npm installs it from where it points, which this engine does not.
+     */
     async resolve(requests) {
-        const missing = [...new Map(requests.filter(({ name, range }) => !this.resolutions.has(this.requestKey(name, range)))
-                .map((request) => [this.requestKey(request.name, request.range), request])).values()];
+        const missing = [];
+        for (const request of requests) {
+            const key = this.requestKey(request.name, request.range);
+            if (this.resolutions.has(key))
+                continue;
+            if (edgeRequest(request.name, request.range).registry) {
+                missing.push(request);
+                this.resolutions.set(key, { failed: 'the resolver returned no answer' });
+            }
+            else {
+                this.resolutions.set(key, { failed: `${request.name}@${request.range} is not a registry package (a git, file, directory or URL spec), which is not supported here` });
+            }
+        }
         if (missing.length === 0)
             return;
         const answers = await this.host.resolve(missing);

@@ -13,7 +13,9 @@
  *
  * npm ci plans over the lock's tree as an install does, and the plan must
  * be the lock's (validate-lockfile): `lockMismatches` names what it is not.
- * The lock's own flags are kept.
+ * The lock's own flags are kept, unless the build changed the tree or the
+ * lock's root declares other dependencies than the project; then they are
+ * found again, and what the project does not reach goes.
  */
 
 import { depthOf, type TreeEdge, type TreePackage, type TreeRoot } from '../npm-tree.js';
@@ -73,10 +75,16 @@ export interface PlanOptions {
   readonly global?: boolean;
   /** `--force`: a peer conflict the project owns is a warning, not ERESOLVE. */
   readonly force?: boolean;
+  /** `--strict-peer-deps`: another's peer conflict is ERESOLVE too, unless forced. */
+  readonly strictPeerDeps?: boolean;
   /** `--legacy-peer-deps`: peers are not edges at all. */
   readonly legacyPeerDeps?: boolean;
-  /** npm ci: `installed` is the lock's tree, which the plan must be. */
-  readonly locked?: boolean;
+  /**
+   * npm ci: `installed` is the lock's tree, which the plan must be;
+   * 'suspect' where the lock's root declares other dependencies than the
+   * project does (load-virtual checkRootEdges, lockRootMatches).
+   */
+  readonly locked?: 'trusted' | 'suspect';
   /** `--prefer-dedupe`: an installed copy is replaced by an older one that meets every edge too. */
   readonly preferDedupe?: boolean;
 }
@@ -168,15 +176,14 @@ export async function planTree<P extends TreePackage, I extends TreePackage>(
     for (const each of tree.nodes()) {
       if (each.payload.kind !== 'placed') continue;
       const locked = installedAt.get(each.location)?.pkg;
-      lockMismatches.push(locked
-        ? `Invalid: lock file's ${each.name}@${locked.version} does not satisfy ${each.name}@${each.version}`
-        : `Missing: ${each.name}@${each.version} from lock file`);
+      if (!locked) lockMismatches.push(`Missing: ${each.name}@${each.version} from lock file`);
+      else if (locked.version !== each.version) lockMismatches.push(`Invalid: lock file's ${each.name}@${locked.version} does not satisfy ${each.name}@${each.version}`);
     }
   }
 
   // ── calc-dep-flags; a lock's own flags where the build changed nothing (npm ci) ──
   const { reached, required, prod, prodRequired, nonPeer } = calcDepFlags(project);
-  const lockFlags = options.locked && !builder.mutated;
+  const lockFlags = options.locked === 'trusted' && !builder.mutated;
   const lockOf = (each: Node<H>) => (each.payload.kind === 'installed' && lockFlags ? each.payload.lock : undefined);
   const flagsOf = (each: Node<H>): LockFlags =>
     lockOf(each) ?? { dev: !prod.has(each), optional: !required.has(each), devOptional: !prodRequired.has(each), peer: !nonPeer.has(each) };
@@ -247,8 +254,8 @@ export async function planTree<P extends TreePackage, I extends TreePackage>(
     required: requiredAt,
     omits: (at, omit) => {
       const flags = flagsAt.get(at);
-      // A global prefix's top-level packages are what it installs: never omitted (reify).
-      if (!flags || (options.global && !at.includes('/node_modules/'))) return false;
+      // Under a global prefix every node's top is a top-level package, not the project: nothing is omitted (reify's trash list).
+      if (!flags || options.global) return false;
       return (omit.dev === true && flags.dev === true) || (omit.optional === true && flags.optional === true)
         || (omit.dev === true && omit.optional === true && flags.devOptional === true) || (omit.peer === true && flags.peer === true);
     },

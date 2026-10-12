@@ -200,7 +200,8 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         const entries = spec.cachedEntries || [];
         if (entries.length === 0)
             return null;
-        const candidates = entries.filter((e) => e.name === request.registryName);
+        // A record is trusted as the package it names only where it says so: a row from before records kept their registry identity may be another package's.
+        const candidates = entries.filter((e) => e.name === request.registryName && e.registryName === request.registryName);
         if (candidates.length === 0)
             return null;
         // A staged version the cache lacks is fetched, never answered by another.
@@ -366,8 +367,9 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     const versionToResolved = (v) => {
         const packageName = request.installName || v.name;
         const binField = v.bin || {};
+        // A string bin is named for the package the manifest is (npm-normalize-package-bin), an alias's target.
         const bin = typeof binField === 'string'
-            ? { [String(packageName).split('/').pop()]: binField }
+            ? { [String(v.name || request.registryName).split('/').pop()]: binField }
             : binField;
         // Every peer, and which are optional (peerDependenciesMeta): an
         // optional one is never installed for the package, and constrains the

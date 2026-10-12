@@ -182,7 +182,8 @@ export class NpmInstaller {
         const principal = { pid: opts.pid, cred: opts.cred, view, tmp };
         const lockfile = this.cache.readLockfile(projDir);
         const { roots, named, devOnly, advised } = await this.buildRoots(projDir, project, opts, lockfile);
-        const engine = { devOnly, advised, registry, global: opts.global === true, force: opts.force === true, legacyPeerDeps: opts.legacyPeerDeps === true, omitDev: opts.production === true };
+        const omit = { dev: opts.production === true, optional: opts.omitOptional === true, peer: opts.omitPeer === true };
+        const engine = { devOnly, advised, registry, global: opts.global === true, force: opts.force === true, legacyPeerDeps: opts.legacyPeerDeps === true, preferDedupe: opts.preferDedupe === true, omit };
         // ── Phase 1: Resolve ──────────────────────────────────────────
         // The one engine's plan (core _shared/npm-arborist) over the tree installed
         // before: what the lockfile records (each placement's registry record),
@@ -241,7 +242,7 @@ export class NpmInstaller {
         const resolved = new Map();
         const nested = new Map();
         for (const [at, node] of plan.nodes) {
-            if (plan.skipped.has(at) || (opts.production && plan.dev.has(at)))
+            if (plan.skipped.has(at) || plan.omits(at, omit))
                 continue;
             (at.includes('/node_modules/') ? nested : resolved).set(at, node.pkg);
         }
@@ -387,8 +388,8 @@ export class NpmInstaller {
             this.writeLockfile(projDir, hoistPlacements(hoistPlan), nmDir);
         const installed = [...installedAt.values()];
         // ── Update package.json if explicit packages were added ─────────
-        if (named.length > 0 && failed.length === 0) {
-            await this.updatePackageJson(projDir, project, principal, named, (name) => (plan.skipped.has(name) ? null : plan.nodes.get(name)?.pkg.version ?? null));
+        if (named.length > 0 && failed.length === 0 && opts.save !== false) {
+            await this.updatePackageJson(projDir, project, principal, named, (name) => (plan.skipped.has(name) ? null : plan.nodes.get(name)?.pkg.version ?? null), opts.savePrefix);
         }
         // ── Phase 7: Pre-bundle (TRULY fire-and-forget) ─────────────────
         // The install command resolves IMMEDIATELY. Pre-bundle dispatches
@@ -701,9 +702,9 @@ export class NpmInstaller {
             },
             // A peer conflict npm lets through: said the way npm does.
             warn: (message) => log(`npm WARN ${message}`),
-        }, { global: opts.global === true, force: opts.force === true, legacyPeerDeps: opts.legacyPeerDeps === true, locked: opts.locked === true });
+        }, { global: opts.global === true, force: opts.force === true, legacyPeerDeps: opts.legacyPeerDeps === true, locked: opts.locked === true, preferDedupe: opts.preferDedupe === true });
         // What the tree installs that cannot run here is said once.
-        const installing = (at) => !plan.skipped.has(at) && !(opts.omitDev && plan.dev.has(at));
+        const installing = (at) => !plan.skipped.has(at) && !plan.omits(at, opts.omit ?? {});
         for (const [at, node] of plan.nodes) {
             if (!installing(at))
                 continue;
@@ -728,7 +729,7 @@ export class NpmInstaller {
         }
         for (const [at, reason] of plan.reasons) {
             const node = plan.nodes.get(at);
-            if (!node || (opts.omitDev && plan.dev.has(at)))
+            if (!node || plan.omits(at, opts.omit ?? {}))
                 continue;
             log(`[resolve-fanout] [skip] ${node.pkg.name} — ${reason}${refusalHints.get(node.pkg.name) ?? ''}`);
             emitRegistryEvent({ type: 'transitive-skip', from: node.pkg.name, reason });
@@ -1271,6 +1272,9 @@ export class NpmInstaller {
             let record = read.get(key);
             if (record === undefined) {
                 record = this.cache.getRegistryEntry(registryName, entry.resolvedVer);
+                // A row from before records kept their registry identity may be another package's.
+                if (record !== null && record.registryName !== registryName)
+                    record = null;
                 read.set(key, record);
             }
             return record !== null && record.integrity === entry.integrity ? record : null;
@@ -1528,7 +1532,7 @@ export class NpmInstaller {
      * that name (applySwaps), so `esbuild` is saved as `esbuild`, never the
      * swap target. `version`: the version the tree holds under a name.
      */
-    async updatePackageJson(projDir, fs, principal, named, version) {
+    async updatePackageJson(projDir, fs, principal, named, version, savePrefix) {
         const pkgJsonPath = projDir + '/package.json';
         if (!await fs.exists(pkgJsonPath))
             return;
@@ -1545,7 +1549,7 @@ export class NpmInstaller {
         const document = packageJsonDocument(parsed);
         if (document === null)
             throw new TypeError('package.json is not an object');
-        const saved = saveNamed(document.json, named, version);
+        const saved = saveNamed(document.json, named, version, savePrefix);
         // `npm init` and npm-fast before 0.13.2 wrote package.json as root.
         await this.handKernelArtifact(principal, `/${pkgJsonPath}`);
         await fs.writeFile(pkgJsonPath, JSON.stringify(saved, null, 2) + '\n');

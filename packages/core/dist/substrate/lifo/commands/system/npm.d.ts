@@ -45,6 +45,15 @@ export interface NpmInstallPort {
         force?: boolean;
         /** `--legacy-peer-deps`: peers are not installed, nor checked. */
         legacyPeerDeps?: boolean;
+        /** `--omit=optional` / `--omit=peer`: what only optional or only peer dependencies need is planned, and not installed. */
+        omitOptional?: boolean;
+        omitPeer?: boolean;
+        /** `--prefer-dedupe`: one copy serves every edge it can, an older one included. */
+        preferDedupe?: boolean;
+        /** False for `--no-save`: package.json is left as it is. */
+        save?: boolean;
+        /** What a saved range starts with ('' for `--save-exact`); '^' when not given. */
+        savePrefix?: string;
         /** The command's: an install it stops before publication changes nothing, and one waiting for the tree never starts. */
         signal?: AbortSignal;
         /** Registry origin from the command's env (`NPM_REGISTRY`), else the default. */
