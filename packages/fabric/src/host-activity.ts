@@ -240,13 +240,19 @@ function hostAdapter(mainModule: string, capability: string): string {
   return `import { NimbusProcess as Base } from ${JSON.stringify('./' + mainModule)};
 export * from ${JSON.stringify('./' + mainModule)};
 const capability = ${key};
-const HandledRequests = ${HandledRequests.toString()};
 export class NimbusProcess extends Base {
   #incarnation = crypto.randomUUID();
   #watchers = new Set();
   // A guest's fetch may hand its request on to its own handleHttpRequest.
   #admitted = new WeakSet();
-  #requests = new HandledRequests();
+  // Its host's requests by id, as HandledRequests keeps them.
+  #requests = new Map();
+  #request(id, ended) {
+    for (const done of ended) this.#requests.delete(done);
+    let request = this.#requests.get(id);
+    if (!request) this.#requests.set(id, request = new AbortController());
+    return request;
+  }
   #admit(request) {
     if (this.#admitted.has(request)) return request;
     if (request.headers.get(${request}) !== capability) return new Response('Not found', { status: 404 });
@@ -271,12 +277,12 @@ export class NimbusProcess extends Base {
   hostHttpRequest(request, key, pinned, id, ended) {
     if (key !== capability) return new Response('Not found', { status: 404 });
     if (pinned !== this.#incarnation) return this.#replaced();
-    const admitted = new Request(request, { signal: this.#requests.admit(id, ended) });
+    const admitted = new Request(request, { signal: this.#request(id, ended).signal });
     this.#admitted.add(admitted);
     return super.handleHttpRequest(admitted);
   }
   abandonHttpRequest(key, id) {
-    if (key === capability) this.#requests.abandon(id);
+    if (key === capability) this.#request(id, []).abort(new DOMException('The caller left the request', 'AbortError'));
   }
   fetch(request) {
     if (request.headers.get(${watch}) !== capability) {

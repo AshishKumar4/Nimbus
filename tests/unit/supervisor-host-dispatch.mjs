@@ -193,6 +193,7 @@ const INPUTS = {
   hostProcess: [{ entry: 'boot.js' }, { workerKey: 'wk' }],
   awaitHostedBoot: ['wk'],
   routeHostedHttp: ['wk', { method: 'GET', url: 'https://hosted.test/' }],
+  abandonHostedHttp: ['wk', 'capability', 0],
   cancelHostProcess: ['wk'],
   hmrRelay: ['client-1', 'hmr-message'],
   hmrNextEvent: [25_000],
