@@ -86,7 +86,7 @@ import { importWorkerBundle } from './lib/worker-bundle.mjs';
   };
   const node = await registry.resolve('node');
   session.runtimeWorkspace = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx,
-    vfs: rawVfs, filesystem: session.getFilesystemAuthority(), processes, terminal, cwd: '/home/user' });
+    vfs: rawVfs, filesystem: session.getFilesystemAuthority(), processes, childProcesses: childProcessHost, terminal, cwd: '/home/user' });
   registry = session.runtimeWorkspace.registry;
   registry.register('node', node);
   session._setCpRegistry(registry);

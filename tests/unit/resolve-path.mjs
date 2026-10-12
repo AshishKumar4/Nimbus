@@ -275,6 +275,8 @@ assert.equal((await run(main, 'printf %s "$PATH"'))[0], mainPath);
   Object.defineProperty(session, 'childProcessHost', { value: childProcessHost });
   Object.assign(session, delegated);
   session.runtimeWorkspace = main;
+  // A workspace made before its session's services takes their adapters as a hosted runtime's does.
+  main.children.bindHost(childProcessHost);
   session.processes = main.processes;
   session.filesystem = new SessionFilesystem(main.vfs, session);
   session.facetManagerComposed = { manager: { setVfs() {} }, apps: {}, pumpLaunches: async () => {} };

@@ -92,7 +92,7 @@ const decoder = new TextDecoder();
   session.childProcessManager = null;
   session.esbuildService = null;
   session.runtimeWorkspace = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx,
-    vfs: rawVfs, filesystem: session.getFilesystemAuthority(), processes, cwd: '/home/user' });
+    vfs: rawVfs, filesystem: session.getFilesystemAuthority(), processes, childProcesses: childProcessHost, cwd: '/home/user' });
   session.runtimeWorkspace.registry.register('node', node);
   const registry = session.runtimeWorkspace.registry;
   session._setCpRegistry(session.runtimeWorkspace.registry);
