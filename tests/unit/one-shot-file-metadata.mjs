@@ -9,7 +9,9 @@
 //   and while it is made another principal can read no more of it than the
 //   source lets it: a directory made is its owner's alone until it is filled,
 //   a file there is narrowed before the bytes go in;
-// - chmod and fchmod: the mode set, with nothing after it to carry it.
+// - chmod and fchmod: the mode set, with nothing after it to carry it;
+// - utimes, lutimes and futimes: the times set, at once in the program's own
+//   stat and at the session, with nothing after them to carry them.
 // Runs the real generated one-shot module. Red before: every such file was
 // created 0666 less the umask, mkdtemp 0777 less it, a copy as a new file.
 import assert from 'node:assert/strict';
@@ -25,7 +27,7 @@ import { createAuthority } from './lib/resident-body.mjs';
 import { processInstanceSupervisor } from './lib/process-instance-supervisor.mjs';
 
 const realProcess = globalThis.process;
-const dir = mkdtempSync(join(tmpdir(), 'one-shot-write-mode-'));
+const dir = mkdtempSync(join(tmpdir(), 'one-shot-file-metadata-'));
 realProcess.on('exit', () => rmSync(dir, { recursive: true, force: true }));
 const cred = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 const authority = createAuthority();
@@ -128,9 +130,18 @@ const fs = require('fs');
   const fd = fs.openSync(at('fchmod-sync.txt'), 'w');
   fs.fchmodSync(fd, 0o600);
   fs.closeSync(fd);
+  fs.writeFileSync(at('utimes-sync.txt'), 'a');
+  fs.utimesSync(at('utimes-sync.txt'), 1000, 2000);
+  const timedNow = fs.statSync(at('utimes-sync.txt')).mtimeMs;
+  fs.symlinkSync('utimes-sync.txt', at('lutimes-link'));
+  fs.lutimesSync(at('lutimes-link'), 1000, 3000);
+  const tfd = fs.openSync(at('futimes-sync.txt'), 'w');
+  fs.futimesSync(tfd, 1000, 4000);
+  fs.closeSync(tfd);
   const modes = {};
   for (const name of ${JSON.stringify(Object.keys(expected))}) modes[name] = fs.statSync(at(name)).mode & 0o777;
-  console.log(JSON.stringify({ modes, temp: temp.slice('/home/user/'.length), tempMode: fs.statSync(temp).mode & 0o777, madeNow, tempNow, failed }));
+  console.log(JSON.stringify({ modes, temp: temp.slice('/home/user/'.length), tempMode: fs.statSync(temp).mode & 0o777, madeNow, tempNow, failed,
+    timedNow, times: { utimes: fs.statSync(at('utimes-sync.txt')).mtimeMs, lutimes: fs.lstatSync(at('lutimes-link')).mtimeMs, futimes: fs.statSync(at('futimes-sync.txt')).mtimeMs } }));
 })();
 `;
 const generated = await generateEntrypointCode(program, { bundle: {} }, false, nodeFacetSources(generateShimsCode()));
@@ -178,6 +189,14 @@ assert.deepEqual([seen.madeNow, seen.tempNow], [0o700, 0o700], 'the stat straigh
 const atSession = (name) => authority.kfs.stat('home/user/' + name).mode & 0o777;
 assert.deepEqual(Object.fromEntries(Object.keys(expected).map((name) => [name, atSession(name)])), expected, 'the session holds each path with the mode it was made with');
 assert.equal(atSession(seen.temp), 0o700, "the session holds mkdtemp's directory 0700");
+const setTimes = { utimes: 2_000_000, lutimes: 3_000_000, futimes: 4_000_000 };
+assert.equal(seen.timedNow, setTimes.utimes, 'the stat straight after utimes sees the time it set');
+assert.deepEqual(seen.times, setTimes, 'the program stats each path with the time it set');
+assert.deepEqual({
+  utimes: kernel.stat('home/user/utimes-sync.txt').mtime,
+  lutimes: kernel.lstat('home/user/lutimes-link').mtime,
+  futimes: kernel.stat('home/user/futimes-sync.txt').mtime,
+}, setTimes, 'the session holds each path with the time it set');
 for (const copy of ['team-copy', 'promise-team-copy']) {
   const below = Object.keys(teamBelow).map((name) => [name, kernel.stat(`home/user/${copy}/${name}`).mode & 0o777]);
   assert.deepEqual(Object.fromEntries(below), teamBelow, `the session holds ${copy}'s entries with their source's modes`);
@@ -189,5 +208,5 @@ for (const path of ['home/user/broken-copy/a-notes', 'home/user/promise-broken-c
   assert.ok(present(path), `${path} was copied before the failure`);
   assert.throws(() => other.readFile(path), { code: 'EACCES' }, `after the failed copy another principal still cannot read ${path}`);
 }
-realProcess.stdout.write('one-shot-write-mode: PASS\n');
+realProcess.stdout.write('one-shot-file-metadata: PASS\n');
 realProcess.exit(0);
