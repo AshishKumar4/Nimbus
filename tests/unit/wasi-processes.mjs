@@ -248,6 +248,21 @@ async function guest({ stdin } = {}) {
       assert.equal(await bundle.fsImport.fd_stat(fd, at), E.SUCCESS);
       return view().getUint32(at + 64, true);
     },
+    /** A stat of `name` beneath the root preopen (fd 3), through the extension and through preview1: { errno, mode, filetype }. */
+    async pathStat(name) {
+      const at = scratch();
+      const b = enc.encode(name);
+      bytesAt().set(b, at + 2048);
+      const errno = await bundle.fsImport.path_stat(3, 1, at + 2048, b.length, at);
+      const filestat = await wasi.path_filestat_get(3, 1, at + 2048, b.length, at + 1024);
+      return { errno, mode: errno === E.SUCCESS ? view().getUint32(at + 64, true) : null, filestat, filetype: filestat === E.SUCCESS ? view().getUint8(at + 1024 + 16) : null };
+    },
+    /** preview1's fstat of `fd`: its filetype. */
+    async fdFiletype(fd) {
+      const at = scratch();
+      assert.equal(await wasi.fd_filestat_get(fd, at), E.SUCCESS);
+      return view().getUint8(at + 16);
+    },
     /** The guest exited: its host stops following its children. */
     dispose: () => bundle.procDispose(),
     /** poll_oneoff on one descriptor: { errno, events: [{ error, nbytes, hangup }] }. */
@@ -367,6 +382,9 @@ let checks = 0;
   assert.deepEqual((await g.poll(r)).events, [{ error: 0, nbytes: 0, hangup: true }], 'and a poll sees the hangup');
 
   assert.equal(await g.fdStatMode(r), 0o010600, 'fstat of a pipe: a FIFO');
+  // A path naming the pipe's descriptor is its stat, through either table.
+  assert.deepEqual(await g.pathStat(`dev/fd/${r}`), { errno: E.SUCCESS, mode: 0o010600, filestat: E.SUCCESS, filetype: await g.fdFiletype(r) }, '/dev/fd/N of a pipe: its fstat');
+  assert.deepEqual(await g.pathStat('dev/fd/99'), { errno: E.NOENT, mode: null, filestat: E.NOENT, filetype: null }, '/dev/fd/N of no descriptor: ENOENT');
   const [r3, w3] = g.pipe();
   await g.close(r3);
   assert.equal(await g.write(w3, 'x'), E.PIPE, 'EPIPE once every reader is gone');

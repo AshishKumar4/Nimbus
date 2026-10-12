@@ -58,6 +58,8 @@ const cases = [
   { command: `printf 'proc\\n' | ${py("print(open('/proc/self/fd/0').read().strip())")}`, stdout: 'proc\n' },
   { command: py("import os; fd = os.open('f.txt', os.O_RDONLY); print(open('/dev/fd/%d' % fd).read().strip())"), stdout: 'in a file\n' },
   { command: py("import os; fd = os.open('f.txt', os.O_RDONLY); print(open('/proc/self/fd/%d' % fd).read().strip())"), stdout: 'in a file\n' },
+  // Opened again, from its own start; the original reads on from where it was.
+  { command: py("import os; fd = os.open('f.txt', os.O_RDONLY); os.read(fd, 3); print(open('/dev/fd/%d' % fd).read().strip()); print(os.read(fd, 100).decode().strip())"), stdout: 'in a file\na file\n' },
   { command: py("f = open('/dev/stdout', 'w'); f.write('out\\n'); f.flush()"), stdout: 'out\n' },
   { command: `${py("f = open('/dev/stderr', 'w'); f.write('err\\n'); f.flush()")} 2>&1`, stdout: 'err\n' },
   { command: py("import os; print(os.path.exists('/dev/fd/1'), os.path.exists('/dev/fd/9'))"), stdout: 'True False\n' },

@@ -26,6 +26,14 @@ const cases = [
   { script: "exec 4<<<'four'; read -r y < /proc/self/fd/4; echo \"$y\"", stdout: 'four\n', exitCode: 0 },
   { script: '[ -e /dev/fd/0 ] && echo yes; [ -e /dev/fd/9 ] || echo no', stdout: 'yes\nno\n', exitCode: 0 },
   { script: 'cat /dev/fd/9', stdout: '', exitCode: 1 },
+  // A file a descriptor names is opened again, with the new open's flags: its
+  // own offset (the original's stays where it was), O_TRUNC honored.
+  { script: '{ printf old; printf new >/dev/stdout; } >/tmp/o; cat /tmp/o', stdout: 'new', exitCode: 0 },
+  { script: 'printf abc >/tmp/a; exec 5>>/tmp/a; printf x >/dev/fd/5; cat /tmp/a', stdout: 'x', exitCode: 0 },
+  { script: 'printf data >/tmp/f; exec 4</tmp/f; read -r -n 2 c <&4; cat /dev/fd/4; echo; read -r rest <&4; echo "rest=$rest"', stdout: 'data\nrest=ta\n', exitCode: 0 },
+  // Stat'd, it is that file's: its mode, by an absolute name or one relative to the cwd.
+  { script: 'printf data >/tmp/p; chmod 400 /tmp/p; exec 4</tmp/p; stat -Lc %a /dev/fd/4', stdout: '400\n', exitCode: 0 },
+  { script: 'cd /; printf d >/tmp/g; chmod 640 /tmp/g; exec 4</tmp/g; stat -Lc %a ./dev/fd/4', stdout: '640\n', exitCode: 0 },
   // The standard streams by name.
   { script: 'read -r x < /dev/stdin; echo "got $x"', stdin: 'line\n', stdout: 'got line\n', exitCode: 0 },
   { script: 'cat /dev/stdin', stdin: 'piped\n', stdout: 'piped\n', exitCode: 0 },
