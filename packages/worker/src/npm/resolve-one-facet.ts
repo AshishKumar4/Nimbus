@@ -54,6 +54,7 @@
 import type { ResolvedPackage } from './resolver.js';
 import type { CacheStatEvent } from '@nimbus-sh/core/_shared/cache-stats.js';
 import type { FacetRegistryEvent } from './resolve-facet.js';
+import type { PackumentReadOptions } from './r2-cache.js';
 import { registryRecord, resolvedFromRecord, type RegistryCacheEntry } from './registry-record.js';
 import type { PackageStagedArtifactEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { compareSemver, isSemverRange, ParsedSemver, parseSemver, pickPackumentVersion, resolveVersion } from '@nimbus-sh/core/_shared/npm-semver.js';
@@ -196,7 +197,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
        */
       getPackument: (
         name: string,
-        options: { retries: number; timeoutMs: number; registry: string },
+        options: PackumentReadOptions,
       ) => Promise<{
         json: string | null;
         source: 'r2-cache' | 'network';
@@ -384,7 +385,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   const readProperty = (value: unknown, key: string): unknown =>
     value === null || value === undefined ? undefined : Reflect.get(Object(value), key);
   type Loaded = { data: Packument; bytes: number; source: ResolveOneResult['packumentSource'] } | { failed: ResolveOneResult };
-  const loadPackument = async (name: string): Promise<Loaded> => {
+  const loadPackument = async (name: string, revalidate = false): Promise<Loaded> => {
   let packumentText: string | null = null;
   let packumentSource: ResolveOneResult['packumentSource'] = 'network';
   if (!env?.SUPERVISOR || typeof env.SUPERVISOR.getPackument !== 'function') {
@@ -401,6 +402,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         retries: Math.max(0, spec.retries ?? 3),
         timeoutMs: spec.fetchTimeoutMs ?? 15_000,
         registry: spec.registry,
+        ...(revalidate ? { revalidate: true } : {}),
       }),
       (r) => ({ json: r.json, source: r.source, events: r.events, status: r.status, failure: r.failure }),
     );
@@ -482,12 +484,35 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   // is published in lockstep, so it stands in with exactly that version; a
   // target that lacks it installs the package unswapped, with the note that
   // its native build cannot run here, never a target version out of range.
+  // A cached packument that cannot answer what is asked is asked of the
+  // registry once more, past the cache: cached absence is no proof that
+  // nothing is published (a version published since it was cached). Once,
+  // and where that fails, the cached answer stands.
+  // Its answer, or null where that read fails in any way (a rejected
+  // call included): the cached answer then stands, as it was.
+  const askAgain = async (name: string): Promise<Extract<Loaded, { data: Packument }> | null> => {
+    try {
+      const again = await loadPackument(name, true);
+      return 'failed' in again ? null : again;
+    } catch {
+      return null;
+    }
+  };
+  const stagedVersion = stagedBindingVersion();
+  const choose = (data: Packument) => (stagedVersion !== null && readProperty(data.versions, stagedVersion) !== undefined
+    ? stagedVersion
+    : pickVersion(data));
   let packument: Loaded = await loadPackument(effName);
   if ('failed' in packument) return packument.failed;
-  const stagedVersion = stagedBindingVersion();
-  let version = stagedVersion !== null && readProperty(packument.data.versions, stagedVersion) !== undefined
-    ? stagedVersion
-    : pickVersion(packument.data);
+  // One pick; a cached packument asked again only where it answered nothing (or not the staged version).
+  let version = choose(packument.data);
+  if (packument.source === 'r2-cache' && (stagedVersion !== null ? version !== stagedVersion : version === null)) {
+    const again = await askAgain(effName);
+    if (again) {
+      packument = again;
+      version = choose(again.data);
+    }
+  }
   if (__swap && __swap.since) {
     const own = version;
     let covered = false;
@@ -499,7 +524,10 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
       covered = COMPARE_SEMVER(ownSemver, since) >= 0;
     }
     if (covered) {
-      const target = await loadPackument(__swap.to);
+      let target: Loaded = await loadPackument(__swap.to);
+      if (!('failed' in target) && target.source === 'r2-cache' && readProperty(target.data.versions, String(own)) === undefined) {
+        target = await askAgain(__swap.to) ?? target;
+      }
       if ('failed' in target) return target.failed;
       if (readProperty(target.data.versions, String(own)) !== undefined) {
         announceSwap(__swap);
