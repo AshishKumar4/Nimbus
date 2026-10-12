@@ -4748,7 +4748,7 @@ const __fsMod = (() => {
     for (const ent of readdirSync(src, { withFileTypes: true })) {
       cpSync(__pathMod.join(String(src), ent.name), __pathMod.join(String(dest), ent.name), o);
     }
-    if (made) chmodSync(dest, st.mode & 0o7777);
+    if (made && (st.mode & 0o7777) !== (0o777 & ~__processUmask)) chmodSync(dest, st.mode & 0o7777);
   }
 
   // ── mkdtemp ──
@@ -6264,8 +6264,9 @@ const __fsMod = (() => {
       // does for __dot__gitignore) sees the copy in the VFS instead of
       // ENOENT. Each directory is made as mkdir makes it, so the namespace's
       // overlay lists it for the writes beneath it.
-      // Each file is copied as copyFile copies it; a directory made here takes
-      // the source's mode once its entries are in, as Node's cp leaves it.
+      // Each file is copied as copyFile copies it; a directory made here (0777
+      // less the umask) takes the source's mode once its entries are in, as
+      // Node's cp leaves it.
       const made = [];
       const makeDir = async (rel) => {
         const at = rel ? "/" + destK + "/" + rel : "/" + destK;
@@ -6287,7 +6288,10 @@ const __fsMod = (() => {
         }
       };
       await walk("");
-      for (const [at, from] of made) await _chmodAsync(at, (await _statAsync(from)).mode & 0o7777);
+      for (const [at, from] of made) {
+        const mode = (await _statAsync(from)).mode & 0o7777;
+        if (mode !== (0o777 & ~__processUmask)) await _chmodAsync(at, mode);
+      }
     },
     copyFile: (src, dest, mode) => _copyFileAsync(src, dest, mode),
     rename: async (oldP, newP) => { await _renameAsync(oldP, newP); },
