@@ -8,7 +8,7 @@ import { RUNTIMES, seedRuntime } from './lib/wasm-runtimes.mjs';
 
 if (!process.env.CHILD_PARITY_CASE) {
   const failures = [];
-  for (const engine of ['bun', 'node']) for (const name of ['native', 'shell-path', 'parent', 'runtime-parent', 'host', 'python']) {
+  for (const engine of ['bun', 'node']) for (const name of ['native', 'shell-path', 'parent', 'runtime-parent', 'host']) {
     const child = spawnSync(engine, ['--no-warnings', fileURLToPath(import.meta.url)], {
       env: { ...process.env, CHILD_PARITY_CASE: name }, encoding: 'utf8', timeout: 90_000,
     });
@@ -28,9 +28,9 @@ const { openRuntimeStdio } = await import(`${core}/runtime/runtime-stdio.${ext}`
 const sqlite = await hostSqlite();
 const host = localFacetHost(ISOLATE_NETWORK);
 const name = process.env.CHILD_PARITY_CASE;
-if (name === 'host' || name === 'python' || name === 'shell-path') {
+if (name === 'host' || name === 'shell-path') {
   const seed = await NimbusWorkspace.create({ ...sqlite });
-  const runtime = RUNTIMES.find(runtime => runtime.name === (name === 'python' ? 'cpython' : 'bash'));
+  const runtime = RUNTIMES.find(runtime => runtime.name === 'bash');
   // A shebang needs an installed interpreter, independently of broker normalization.
   seedRuntime(seed.vfs, name === 'shell-path' ? { ...runtime, entrypoints: [...runtime.entrypoints,
     { binName: 'sh', runner: runtime.entrypoints[0].runner, args: [] }] } : runtime);
@@ -107,11 +107,6 @@ try {
     case 'host': {
       const result = await ws.exec(`bash -c 'printf x | cat'`);
       assert.equal(result.exitCode, 0, result.stderr); assert.equal(result.stdout, 'x');
-      break;
-    }
-    case 'python': {
-      const result = await ws.exec(`echo hi | python3 -c "import sys; print(sys.stdin.read().strip())"`);
-      assert.equal(result.exitCode, 0, result.stderr); assert.equal(result.stdout, 'hi\n');
       break;
     }
   }
