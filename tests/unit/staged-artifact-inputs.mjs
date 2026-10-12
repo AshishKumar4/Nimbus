@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
-import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +13,7 @@ import { oxcWasmInputs } from '../../packages/worker/scripts/oxc-wasm/inputs.mjs
 import { SPECS } from '../../packages/worker/scripts/napi-wasm/specs.mjs';
 
 const repo = fileURLToPath(new URL('../../', import.meta.url));
+const { applyEdits, modify } = createRequire(new URL('../../packages/worker/package.json', import.meta.url))('jsonc-parser');
 const loaderDir = path.join(repo, 'packages/worker/public/_assets/napi-wasm/loader');
 const [loaderBuild] = await readdir(loaderDir);
 const provenance = JSON.parse(await readFile(path.join(loaderDir, loaderBuild, 'provenance.json'), 'utf8'));
@@ -61,6 +63,8 @@ try {
 
   const filesystem = 'packages/core/src/runtime/wasi/filesystem.ts';
   const source = await readFile(path.join(root, filesystem), 'utf8');
+  await utimes(path.join(root, filesystem), new Date('2000-01-01'), new Date('2000-01-01'));
+  assert.equal(run('packages/worker/scripts/bundle-napi-wasm.mjs').status, 0, 'a timestamp is not a source change');
   await writeFile(path.join(root, filesystem), source + '\n');
   refused(run('packages/worker/scripts/bundle-napi-wasm.mjs'), filesystem, 'bun scripts/ci/remote-napi-loader.mjs');
   const manifest = await readFile(path.join(root, 'packages/worker/src/napi-wasm-artifacts.generated.ts'));
@@ -75,6 +79,11 @@ try {
   await rm(path.join(root, dependency));
   refused(run('packages/worker/scripts/bundle-napi-wasm.mjs'), dependency, 'bun scripts/ci/remote-napi-loader.mjs');
   await copy(dependency);
+
+  const lock = await readFile(path.join(root, 'bun.lock'), 'utf8');
+  await writeFile(path.join(root, 'bun.lock'), applyEdits(lock, modify(lock, ['packages', 'esbuild', 0], 'esbuild@0.0.0', {})));
+  refused(run('packages/worker/scripts/bundle-napi-wasm.mjs'), 'bun.lock#esbuild', 'bun scripts/ci/remote-napi-loader.mjs');
+  await copy('bun.lock');
 
   const added = 'packages/worker/scripts/napi-wasm/rolldown/binding/src/new.rs';
   await writeFile(path.join(root, added), 'pub const NEW: u32 = 1;\n');
