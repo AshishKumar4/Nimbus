@@ -33,6 +33,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SPECS } from './napi-wasm/specs.mjs';
 import { sha256Hex as sha256 } from './stage-asset.mjs';
+import { assertCurrentInputs } from './artifact-inputs.mjs';
+import { bindingInputs, loaderInputs } from './napi-wasm/inputs.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -91,6 +93,8 @@ async function stage(sourceDir, targetDir, files, provenance, alone = false) {
 const src = await sources();
 
 const loaderProvenance = JSON.parse(await fs.readFile(path.join(src.loader, 'provenance.json'), 'utf8'));
+assertCurrentInputs('napi-wasm loader', loaderProvenance.source?.inputs,
+  await loaderInputs(loaderProvenance.source?.graph ?? []), 'bun scripts/ci/remote-napi-loader.mjs');
 const loaderDigests = LOADER_FILES.filter((f) => f !== 'provenance.json').map((f) => loaderProvenance.outputs[f]?.sha256);
 if (loaderDigests.some((d) => typeof d !== 'string')) fail(`${src.loader}/provenance.json lacks output digests`);
 const buildId = sha256(loaderDigests.join('\n')).slice(0, 16);
@@ -107,6 +111,8 @@ for (const spec of Object.values(SPECS)) {
   const sourceDir = src.binding(spec.name, spec.version);
   if (!existsSync(path.join(sourceDir, 'provenance.json'))) fail(`${sourceDir} has no provenance.json`);
   const provenance = JSON.parse(await fs.readFile(path.join(sourceDir, 'provenance.json'), 'utf8'));
+  const key = `${spec.name}@${spec.version}`;
+  assertCurrentInputs(key, provenance.source?.inputs, await bindingInputs(key), `bun scripts/ci/remote-napi-binding.mjs ${key}`);
   if (provenance.artifact !== spec.name || provenance.version !== spec.version) {
     fail(`${sourceDir} holds ${provenance.artifact}@${provenance.version}; specs.mjs pins ${spec.name}@${spec.version}`);
   }
