@@ -77,7 +77,7 @@ import { ProcessHostLost, } from './process-fabric.js';
 import { HOSTED_WEBSOCKET_CAPABILITY_HEADER, HOSTED_WEBSOCKET_KEY_HEADER, HOSTED_WATCH_HEADER, HOSTED_RESIDENCY_HEADER, HOSTED_FAILURE_HEADER, headerPairs, isolateToken, } from './peer-host.js';
 import { DYNAMIC_WORKER_CODE_LIMIT_BYTES } from './budgets.js';
 import { BindingError } from './vendor/errors.js';
-import { processes, } from './workerd-facet-host.js';
+import { hostOwnedResponse, processes, } from './workerd-facet-host.js';
 import { bindingSupervisor, supervisorBindingProps } from './supervisor-props.js';
 /**
  * The substrate for this deployment, resolved once. The mode arrives already
@@ -140,7 +140,7 @@ class FacetProcessHost {
             ...facet,
             started: loss.route(() => facet.started).finally(starting.release),
             lost: loss.signal,
-            handleHttpRequest: (request, scope) => loss.route(() => facet.handleHttpRequest(request, scope)),
+            handleHttpRequest: (request, scope) => loss.route(async () => hostOwnedResponse(this.ctx, await facet.handleHttpRequest(request, scope), scope.signal)),
             handleWebSocketRequest: (request) => loss.route(() => facet.handleWebSocketRequest(request)),
             release: () => {
                 loss.release();

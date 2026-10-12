@@ -87,7 +87,7 @@ import { acquireDurableFacetSlot, freeDurableFacetSlot, } from './durable-slots.
 import { persistDurableWorkerImage, purgeDurableWorkerImages, } from './durable-images.js';
 import { SQLITE_WASM_MODULE_NAME, } from '../runtime/opencode-facet-runner.js';
 import { parsePortFromArgv, resolveLongRunningPort } from '@nimbus-sh/core/runtime/long-running-handle.js';
-import { hostActivity } from '@nimbus-sh/fabric/host-activity.js';
+import { hostActivity, hostAdapterBytes } from '@nimbus-sh/fabric/host-activity.js';
 import { DEFAULT_FACET_BUNDLE_PROFILE, } from '@nimbus-sh/core/runtime/bundle-profile.js';
 import { CF_COMPAT_DATE, DEFAULT_HOME, GUEST_COMPAT_FLAGS, VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES, BUNDLE_MAX_ENCODED_BYTES, PREFETCH_CACHE_MAX_BYTES, FS_LIST_PAGE_LIMIT, CHUNK_SIZE, } from '@nimbus-sh/core/constants.js';
 import { LEDGER_ROW_BYTES } from '@nimbus-sh/core/runtime/storage-ledger.js';
@@ -5770,11 +5770,12 @@ export class FacetManager {
     }
     /**
      * What a resident's map holds beside its generated text: its sidecars, its
-     * staged bindings' loader and trampoline, and the wasm images and bindings
-     * it reads by path at boot, at their size on the session's disk.
+     * staged bindings' loader and trampoline, the host's adapter around its
+     * worker.js, and the wasm images and bindings it reads by path at boot, at
+     * their size on the session's disk.
      */
     _residentMemberBytes(sqliteModules, staged, wasmImports) {
-        let bytes = moduleMemberBytes(sqliteModules);
+        let bytes = moduleMemberBytes(sqliteModules) + hostAdapterBytes('worker.js');
         if (staged)
             bytes += mapTextBytes(staged.loader) + staged.trampoline.byteLength;
         const fs = this.vfs?.as(CRED_KERNEL);

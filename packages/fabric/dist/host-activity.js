@@ -168,9 +168,21 @@ export function observeResidentConfig(config, capability) {
     const entry = HOST_WATCH_MODULE;
     if (Object.hasOwn(modules, entry))
         throw new Error('resident worker uses a reserved module name');
+    modules[entry] = hostAdapter(config.mainModule, capability);
+    config.mainModule = entry;
+    return config;
+}
+/**
+ * The bytes observeResidentConfig adds to a resident's map whose main module
+ * is `mainModule`: part of what the map's ceiling holds beside its own text.
+ */
+export function hostAdapterBytes(mainModule) {
+    return new TextEncoder().encode(hostAdapter(mainModule, crypto.randomUUID())).byteLength;
+}
+function hostAdapter(mainModule, capability) {
     const [watch, request, incarnation, key] = [HOST_WATCH_HEADER, HOST_REQUEST_HEADER, HOST_INCARNATION_HEADER, capability].map((value) => JSON.stringify(value));
-    modules[entry] = `import { NimbusProcess as Base } from ${JSON.stringify('./' + config.mainModule)};
-export * from ${JSON.stringify('./' + config.mainModule)};
+    return `import { NimbusProcess as Base } from ${JSON.stringify('./' + mainModule)};
+export * from ${JSON.stringify('./' + mainModule)};
 export class NimbusProcess extends Base {
   #incarnation = crypto.randomUUID();
   #watchers = new Set();
@@ -204,6 +216,4 @@ export class NimbusProcess extends Base {
     return new Response(body, { headers: { [${incarnation}]: this.#incarnation } });
   }
 }`;
-    config.mainModule = entry;
-    return config;
 }

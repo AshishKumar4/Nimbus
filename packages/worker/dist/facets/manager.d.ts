@@ -1636,8 +1636,9 @@ export declare class FacetManager {
     private _rebuildUnderCeiling;
     /**
      * What a resident's map holds beside its generated text: its sidecars, its
-     * staged bindings' loader and trampoline, and the wasm images and bindings
-     * it reads by path at boot, at their size on the session's disk.
+     * staged bindings' loader and trampoline, the host's adapter around its
+     * worker.js, and the wasm images and bindings it reads by path at boot, at
+     * their size on the session's disk.
      */
     private _residentMemberBytes;
     /**

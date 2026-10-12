@@ -47,5 +47,10 @@ export declare function hostActivity(host: object): HostActivity;
  * The refusal carries the capability, which no guest answer can.
  */
 export declare function observeResidentConfig(config: WorkerCode, capability: string): WorkerCode;
+/**
+ * The bytes observeResidentConfig adds to a resident's map whose main module
+ * is `mainModule`: part of what the map's ceiling holds beside its own text.
+ */
+export declare function hostAdapterBytes(mainModule: string): number;
 export {};
 //# sourceMappingURL=host-activity.d.ts.map
