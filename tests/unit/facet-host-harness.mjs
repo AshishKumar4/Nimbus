@@ -370,6 +370,8 @@ export function createProcessHost(mode, world, disk, {
 export function createPeerNamespace(world, hostEnv, { colocated = false, peerWithoutFacets = false, onPeer } = {}) {
   const calls = [];
   const stubs = [];
+  /** Each response's cancel stub a peer handed back, and whether its caller disposed it. */
+  const cancels = [];
   // Every `ns.get()` for one name reaches one peer, exactly as a DO namespace
   // does; a second stub for the same name must see the same hosted records.
   const peers = new Map();
@@ -440,7 +442,13 @@ export function createPeerNamespace(world, hostEnv, { colocated = false, peerWit
             case 'processHostProbe': return Promise.resolve({ isolateToken: peer.isolateToken });
             case 'hostProcess': return Promise.race([_rpcHostProcess(peer, args[0], args[1]), peer.death]);
             case 'awaitHostedBoot': return Promise.race([_rpcAwaitHostedBoot(peer, args[0]), peer.death]);
-            case 'routeHostedHttp': return _rpcRouteHostedHttp(peer, args[0], args[1]);
+            case 'routeHostedHttp': return _rpcRouteHostedHttp(peer, args[0], args[1]).then((reply) => {
+              if (!('cancel' in reply)) return reply;
+              // RPC hands the caller a stub for the function, which it must dispose.
+              const record = { disposed: false };
+              cancels.push(record);
+              return { ...reply, cancel: Object.assign(() => reply.cancel(), { [Symbol.dispose]() { record.disposed = true; } }) };
+            });
             case 'cancelHostProcess': return _rpcCancelHostProcess(peer, args[0]);
             default: return Promise.reject(new Error(`peer stub: unserved op ${op}`));
           }
@@ -448,7 +456,7 @@ export function createPeerNamespace(world, hostEnv, { colocated = false, peerWit
       };
     },
   };
-  return { ns, peers, calls, stubs };
+  return { ns, peers, calls, stubs, cancels };
 }
 
 /**

@@ -28,7 +28,8 @@ for (const mode of ['facet', 'peer']) for (const route of ['port', 'direct']) fo
       : new Response(new ReadableStream({ start(controller) { source = controller; }, cancel() { cancelled = true; } }), { headers: { 'Content-Length': '3' } }),
   }), { resolveConfig: false });
   const ctx = createFacetCtx(world, `${mode}-${route}-${ending}`), env = { LOADER: world.loader };
-  if (mode === 'peer') env.NIMBUS_SESSION = createPeerNamespace(world, env).ns;
+  const peers = mode === 'peer' ? createPeerNamespace(world, env) : null;
+  if (peers) env.NIMBUS_SESSION = peers.ns;
   const host = processHostFor(ctx, { ...env, NIMBUS_PROCESS_HOST: mode }, () => { throw new Error('no disk reads'); });
   const process = await host.open({ pid: 11, workerKey: `body-${route}-${ending}`, writerId: crypto.randomUUID(), boot });
   await process.started; await turns();
@@ -51,6 +52,7 @@ for (const mode of ['facet', 'peer']) for (const route of ['port', 'direct']) fo
     if (ending === 'no-body') {
       assert.equal(response.status, 204);
       assert.equal(watching, 0, `${label}: a response without a body owns nothing past its headers`);
+      assert.ok(peers?.cancels.every((cancel) => cancel.disposed) ?? true, `${label}: the peer's cancel stub is disposed`);
       continue;
     }
     assert.equal(watching, 1, `${label}: the process owns its work after the response headers`);
@@ -81,6 +83,7 @@ for (const mode of ['facet', 'peer']) for (const route of ['port', 'direct']) fo
     }
     reader.releaseLock();
     assert.equal(watching, 0, `${label}: EOF, error, mismatch and a leaving client release the work`);
+    assert.ok(peers === null || (peers.cancels.length === 1 && peers.cancels[0].disposed), `${label}: the peer's cancel stub lives for this response only`);
   } finally { if (response?.body && !response.body.locked) await response.body.cancel().catch(() => {}); neighbor.close(); await process.release(); }
 }
 assert.ok(published.length > 0, 'the port relay published the process output before its body');
