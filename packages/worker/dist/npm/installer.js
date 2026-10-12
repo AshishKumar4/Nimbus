@@ -182,7 +182,7 @@ export class NpmInstaller {
         const principal = { pid: opts.pid, cred: opts.cred, view, tmp };
         const lockfile = this.cache.readLockfile(projDir);
         const { roots, named, devOnly, advised } = await this.buildRoots(projDir, project, opts, lockfile);
-        const engine = { devOnly, advised, registry, shallow: opts.global === true, force: opts.force === true, legacyPeerDeps: opts.legacyPeerDeps === true };
+        const engine = { devOnly, advised, registry, shallow: opts.global === true, force: opts.force === true, legacyPeerDeps: opts.legacyPeerDeps === true, omitDev: opts.production === true };
         // ── Phase 1: Resolve ──────────────────────────────────────────
         // The one engine's plan (core npm-arborist.ts) over the tree installed
         // before: what the lockfile records (each placement's registry record),
@@ -513,9 +513,12 @@ export class NpmInstaller {
         const __f2Diag = (globalThis.process?.env?.NIMBUS_DIAG_INSTALL_PIPELINE === '1');
         // Dependencies the plan could not resolve, name → reason.
         const unresolved = new Map();
-        // Native executables the policy names, by name@version: an advisory
-        // where the plan installs them, a skip where it leaves them out.
+        // What the policy says of a package, announced once the plan says it
+        // is installed: an advisory (no Workers-compatible build) by name, a
+        // native executable by name@version, a refusal's hint by name.
+        const advisories = new Map();
         const nativeExecutables = new Map();
+        const refusalHints = new Map();
         const cacheWritesPending = [];
         let totalPackumentBytes = 0;
         let totalPackumentsDecoded = 0;
@@ -625,7 +628,7 @@ export class NpmInstaller {
                         }
                         catch { /* swallow sink errors */ }
                         if (ev.type === 'advisory')
-                            noteAdvisory(ev);
+                            advisories.set(ev.from, ev);
                     }
                     // Accumulate cache writes for end-of-walk flush.
                     for (const cw of res.cacheWrites)
@@ -653,9 +656,8 @@ export class NpmInstaller {
                     // closure is final. Table rejects are advisories handled above and
                     // never reach this branch.
                     if (res.error && res.error.type === 'w6-reject') {
-                        const hint = res.error.suggest ? ` … try: ${res.error.suggest}` : '';
-                        log(`[resolve-fanout] [skip] ${taskName} — ${res.error.reason}${hint}`);
-                        emitRegistryEvent({ type: 'transitive-skip', from: taskName, reason: res.error.reason });
+                        if (res.error.suggest)
+                            refusalHints.set(taskName, ` … try: ${res.error.suggest}`);
                         if (!res.pkg)
                             return { failed: `the resolver refused ${taskName} without its package: ${res.error.reason}` };
                         return { package: res.pkg, refused: res.error.reason };
@@ -689,9 +691,13 @@ export class NpmInstaller {
             warn: (message) => log(`npm WARN ${message}`),
         }, { shallow: opts.shallow === true, force: opts.force === true, legacyPeerDeps: opts.legacyPeerDeps === true, frozen: opts.frozen === true });
         // What the tree installs that cannot run here is said once.
+        const installing = (at) => !plan.skipped.has(at) && !(opts.omitDev && plan.dev.has(at));
         for (const [at, node] of plan.nodes) {
-            if (plan.skipped.has(at))
+            if (!installing(at))
                 continue;
+            const advisory = advisories.get(node.pkg.registryName ?? node.pkg.name) ?? advisories.get(node.pkg.name);
+            if (advisory)
+                noteAdvisory(advisory);
             const native = nativeExecutables.get(`${node.pkg.name}@${node.pkg.version}`);
             if (native)
                 noteAdvisory(native);
@@ -710,15 +716,10 @@ export class NpmInstaller {
         }
         for (const [at, reason] of plan.reasons) {
             const node = plan.nodes.get(at);
-            if (!node)
+            if (!node || (opts.omitDev && plan.dev.has(at)))
                 continue;
-            log(`[resolve-fanout] [skip] ${node.pkg.name} — ${reason}`);
+            log(`[resolve-fanout] [skip] ${node.pkg.name} — ${reason}${refusalHints.get(node.pkg.name) ?? ''}`);
             emitRegistryEvent({ type: 'transitive-skip', from: node.pkg.name, reason });
-        }
-        for (const r of plan.failures) {
-            if (!r.refused || !plan.skipped.has(r.id))
-                continue;
-            log(`[resolve-fanout] [skip] ${r.edge.name} — ${r.reason}`);
         }
         // Refusals: npm's EBADPLATFORM, required when a required path reaches them.
         const rejected = plan.failures
@@ -1174,7 +1175,9 @@ export class NpmInstaller {
             if (rooted.has(name) && !explicit.has(name) && !Object.hasOwn(manifest?.dependencies ?? {}, name) && !Object.hasOwn(manifest?.optionalDependencies ?? {}, name))
                 devOnly.add(name);
         }
-        const swapped = this.applyW6Registry(Object.fromEntries(roots.map(({ name, range }) => [name, range])), { devOnly, advised });
+        // A devDependency `--omit=dev` leaves out is planned, and not announced.
+        const omitted = new Set(opts.production ? roots.filter(({ type }) => type === 'dev').map(({ name }) => name) : []);
+        const swapped = this.applyW6Registry(Object.fromEntries(roots.map(({ name, range }) => [name, range])), { devOnly, advised, omitted });
         return { roots: roots.map((root) => ({ ...root, range: swapped[root.name] ?? root.range })), named, devOnly, advised };
     }
     /**
@@ -1210,7 +1213,7 @@ export class NpmInstaller {
         }
         for (const r of findRejects(swapped, 'top')) {
             emitRegistryEvent({ type: 'advisory', from: r.from, reason: r.reason, suggest: r.suggest, ctx: 'top' });
-            if (options.advised?.has(r.from))
+            if (options.advised?.has(r.from) || options.omitted?.has(r.from))
                 continue;
             options.advised?.add(r.from);
             const hint = r.suggest ? ` … try: ${r.suggest}` : '';

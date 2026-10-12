@@ -1000,7 +1000,9 @@ export async function planTree(roots, installed, host, options = {}) {
         const at = each.location;
         if (required.has(each))
             requiredAt.add(at);
-        if (!prod.has(each))
+        // A node no prod edge reaches is dev, but a locked one nothing reaches,
+        // whose flags are the lock's (an extraneous entry is installed by ci).
+        if (!prod.has(each) && (reached.has(each) || !options.frozen))
             dev.add(at);
         if (each.pkg === null)
             continue;
