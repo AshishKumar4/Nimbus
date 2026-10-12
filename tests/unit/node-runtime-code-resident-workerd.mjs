@@ -222,8 +222,10 @@ socket.on('close', () => process.exit(received > 1024 ? 0 : 2));
 socket.on('error', () => {});
 `;
     const leave = async (url, headers = {}) => {
-      const client = spawn('node', ['-e', RESET_CLIENT, url + '/stall'], { env: { ...process.env, HEADERS: JSON.stringify(headers) }, stdio: 'ignore' });
-      assert.equal(await new Promise((resolve) => client.on('close', resolve)), 0, 'the client read the first bytes, then reset');
+      const client = spawn('node', ['-e', RESET_CLIENT, url + '/stall'], { env: { ...process.env, HEADERS: JSON.stringify(headers) }, stdio: ['ignore', 'ignore', 'pipe'] });
+      let stderr = '';
+      client.stderr.on('data', (part) => { stderr += part; });
+      assert.equal(await new Promise((resolve) => client.on('close', resolve)), 0, 'the client read the first bytes, then reset: ' + stderr);
       for (let i = 0; i < 100; i++) {
         const report = JSON.parse(await (await fetch(url + '/report', { headers })).text());
         if (report.some((event) => event.startsWith('late write')) && report.includes('request close')) return report;
