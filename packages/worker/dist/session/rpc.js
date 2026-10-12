@@ -1218,8 +1218,8 @@ export async function _rpcTransform(self, code, loader) {
 }
 // ── child_process RPC entrypoints [W8 Phase 1] ────────────────────────
 //
-// Delegate to the lazily-constructed FacetProcessManager. Defensive
-// ensureFacetProcessManager() handles cold-start cases where a child
+// Delegate to the lazily-constructed ChildProcessManager. Defensive
+// _ensureChildProcessManager() handles cold-start cases where a child
 // facet calls cp* before the supervisor has initialized the broker
 // (e.g., immediately after DO hibernation wake-up).
 export async function _rpcCpSpawn(self, req) {
