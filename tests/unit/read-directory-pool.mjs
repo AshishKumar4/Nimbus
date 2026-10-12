@@ -53,14 +53,13 @@ function fixture() {
   });
   s.pool = pool;
   s.recall = async () => { for (const finish of recalls.values()) finish('revoke'); await recalled.promise; };
-  // The run's end: the pool sends nothing more, and the process's scope
-  // release (the session's) closes every description it still accounts for.
+  // The run's end retires every description the pool accounts for: a shell's
+  // commands share its pid and descriptor scope, which outlives the run.
   s.close = async () => {
-    const sent = calls.length;
     await pool.dispose();
     await client.settle();
     for (const finish of recalls.values()) finish(null);
-    assert.equal(calls.length, sent, 'ending the run costs no round trip');
+    assert.equal(held.size, 0, 'the run left no description open');
   };
   /** The ids the next exchange retires: what the pool still owes the session. */
   s.retiredNext = async () => {

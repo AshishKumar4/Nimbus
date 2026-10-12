@@ -41,6 +41,19 @@ try {
     assert.equal(again.stats.lookups + again.stats.listings + again.stats.treeListings, 0, 'no name is looked up or listed again');
     assert.ok(again.stats.barriers >= 1, 'the kept store is brought forward by a barrier');
 
+    // Many runs from one shell share its pid and descriptor scope: each run
+    // retires the directory descriptions it took, so the tenth walks as the first did.
+    let last = again;
+    for (let run = 0; run < 8; run++) last = await statusOf();
+    assert.ok(last.stats.delegated.readDirectories <= 4 && (last.stats.delegated.open ?? 0) < 20,
+      `the tenth status in one shell still walks in batches: ${JSON.stringify(last.stats.delegated)}`);
+
+    // git opens /dev/null to write and closes it: nothing changed, so no barrier is owed for it.
+    const version = await terminal.run('NIMBUS_GIT_WASI=1 NIMBUS_WASI_FS_STATS=1 git --version', 120000);
+    const versionLine = version.stdout.split('\n').find((value) => value.includes('[wasi-fs] git '));
+    const versionStats = JSON.parse(versionLine.slice(versionLine.indexOf('[wasi-fs] git ') + '[wasi-fs] git '.length));
+    assert.ok(versionStats.barriers <= 1, `git --version takes one barrier at most: ${versionStats.barriers}`);
+
     // What changed between two gits is what the second one reads.
     assert.equal((await terminal.run('echo changed > tree/d3/file.txt && mkdir tree/fresh && echo new > tree/fresh/n.txt && rm -r tree/d7')).status, 0);
     const changed = await statusOf();
