@@ -3455,8 +3455,9 @@ realGit) {
         // partial state for the finished clone's.
         if (sub !== 'init' && sub !== 'clone') {
             const repo = await discoverRepo(repoVfs, dir);
+            // The repository's format is its own config file's, as git reads it: no -c or global value stands in.
             if (repo !== null)
-                await assertRepositoryImplemented(git, fs, repo);
+                await assertRepositoryImplemented(await getGit(), fs, repo);
             if (repo !== null && await repoVfs.exists(`${repo.gitdir}/${GIT_CLONE_JOB_MARKER}`)) {
                 await ctx.stderr.write(`fatal: '${repo.worktree ?? repo.gitdir}' is still being cloned\n`);
                 return 128;

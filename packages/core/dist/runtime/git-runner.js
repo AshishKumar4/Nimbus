@@ -221,10 +221,10 @@ globalThis.__gitRun = async function __gitRun(args) {
   // git waits for its children; one it left running runs on without it.
   wasi.procDispose();
   const lost = await output.drain();
-  // Its output's reader went away (\`git show | head\`): git dies of SIGPIPE, silently, as it does natively.
+  // Its output's reader went away (\`git show | head\`): git dies of SIGPIPE at its next write, silently, as it does natively.
   const piped = output.brokenPipe() && !run.error;
   return {
-    exitCode: piped ? run.exitCode || 141 : run.exitCode,
+    exitCode: piped ? 141 : run.exitCode,
     error: piped ? undefined : run.error || (lost ? 'output lost: ' + lost : undefined),
     fsStats: typeof __wasiFsStats === 'function' ? __wasiFsStats() : null,
     reusable: typeof __wasiReusable === 'function' && __wasiReusable(),
