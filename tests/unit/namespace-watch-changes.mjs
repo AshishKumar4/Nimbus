@@ -428,6 +428,45 @@ await check('a watch of a path hears it go when it, or a directory above it, is 
   for (const w of [file, deep, fixedFile, fixedDeep]) w.stop();
 });
 
+await check('a directory above a watched path renamed again, or its target then written or removed, in the same batch: followed to where it went', async () => {
+  const following = (path) => {
+    const heard = [];
+    const stop = ns.watchChanges(path, (events) => heard.push(...events.map(said)), { follow: true });
+    return { stop, take: () => heard.splice(0) };
+  };
+  const cases = [
+    ['twice, then written', (at) => { kernel.rename(`${at}1`, `${at}2`); kernel.rename(`${at}2`, `${at}3`); kernel.writeFile(`${at}3/sub/file`, 'two'); },
+      (at) => [`rename /${at}1/sub/file -> /${at}2/sub/file`, `rename /${at}2/sub/file -> /${at}3/sub/file`, `change /${at}3/sub/file`]],
+    ['then unlinked', (at) => { kernel.rename(`${at}1`, `${at}2`); kernel.unlink(`${at}2/sub/file`); },
+      (at) => [`rename /${at}1/sub/file -> /${at}2/sub/file`, `unlink /${at}2/sub/file`]],
+    ['then removed with its tree', (at) => { kernel.rename(`${at}1`, `${at}2`); kernel.removeRecursive(`${at}2`); },
+      (at) => [`rename /${at}1/sub/file -> /${at}2/sub/file`, `unlink /${at}2/sub/file`]],
+    ['twice, then removed', (at) => { kernel.rename(`${at}1`, `${at}2`); kernel.rename(`${at}2`, `${at}3`); kernel.unlink(`${at}3/sub/file`); },
+      (at) => [`rename /${at}1/sub/file -> /${at}2/sub/file`, `rename /${at}2/sub/file -> /${at}3/sub/file`, `unlink /${at}3/sub/file`]],
+  ];
+  for (const [what, change, followed] of cases) {
+    const at = `carried-${what.replace(/\W+/g, '-')}-`;
+    kernel.mkdir(`${at}1/sub`, { recursive: true });
+    kernel.writeFile(`${at}1/sub/file`, 'one');
+    const fixed = watching(`/${at}1/sub/file`);
+    const follows = following(`/${at}1/sub/file`);
+    change(at);
+    await settled();
+    assert.deepEqual(follows.take(), followed(at), `${what}: following`);
+    assert.deepEqual(fixed.take(), [`unlink /${at}1/sub/file`], `${what}: fixed`);
+    fixed.stop(); follows.stop();
+  }
+  // Made where it was taken to after the move: it was not there to take.
+  kernel.mkdir('carried-made-1', { recursive: true });
+  const made = watching('/carried-made-1/sub/file');
+  kernel.rename('carried-made-1', 'carried-made-2');
+  kernel.mkdir('carried-made-2/sub');
+  kernel.writeFile('carried-made-2/sub/file', 'new');
+  await settled();
+  assert.deepEqual(made.take(), [], 'made after the move');
+  made.stop();
+});
+
 await check('a directory above a watched path renamed: nothing told where the watcher could not look, and no path is made up', async () => {
   kernel.mkdir('before/secret', { recursive: true });
   kernel.writeFile('before/secret/token', 't');
@@ -521,6 +560,90 @@ await check('on a mount that resolves its own paths, a change under a directory 
   } finally {
     user.stop(); root.stop();
     ns.unmount('/rpm');
+  }
+});
+
+await check('a watch whose judgment awaits holds the batches after it: none judged or told before it is, and each is judged by what followed it', async () => {
+  const g = gated();
+  let asked = 0;
+  const held = new MemoryVFS({ uid: 0, gid: 0 });
+  held.mkdir('/a');
+  held.writeFile('/a/f', enc.encode('f'));
+  ns.mount('/held', asyncOnly(held, {
+    methods: { access: () => undefined },
+    beforeCall: (method) => (method === 'access' ? (asked++, g.enter(), g.gate) : undefined),
+  }), { resolvesPaths: true });
+  ns.mount('/quick', new MemoryVFS({ uid: 0, gid: 0 }));
+  const ours = (line) => line.includes('/held') || line.includes('/quick');
+  const user = watching('/', ns.as(PUBLIC));
+  const heardFollowing = [];
+  const stopFollowing = ns.as(PUBLIC).watchChanges('/held/a/f', (events) => heardFollowing.push(...events.map(said)), { follow: true });
+  try {
+    await ns.mkdir('/held/d');
+    await g.entering;
+    await settled();
+    const judging = asked;
+    await ns.mkdir('/held/e');
+    await ns.writeFile('/quick/b', enc.encode('b'));
+    await ns.rename('/held/a', '/held/b');
+    await ns.unlink('/held/b/f');
+    await settled();
+    assert.equal(asked, judging, 'the batches after it wait to be judged');
+    assert.deepEqual(user.take().filter(ours), [], 'nothing told before it');
+    assert.deepEqual(heardFollowing, []);
+    g.release();
+    await settled();
+    assert.deepEqual(user.take().filter(ours), [
+      'addDir /held/d', 'addDir /held/e', 'change /quick/b', 'rename /held/a -> /held/b', 'unlink /held/b/f',
+    ]);
+    assert.deepEqual(heardFollowing, ['rename /held/a/f -> /held/b/f', 'unlink /held/b/f'], 'a move judged by what followed it');
+  } finally {
+    g.release();
+    user.stop(); stopFollowing();
+    ns.unmount('/held'); ns.unmount('/quick');
+  }
+});
+
+await check('a source that fails one watcher\'s view as a change lands: every other watch is told, and the write stands', async () => {
+  const shared = new MemoryVFS({ uid: 0, gid: 0 });
+  ns.mount('/plain', shared);
+  ns.mount('/picky', (principal) => {
+    if (principal.cred?.uid === 1000) throw new Error('no source for this view');
+    return shared;
+  });
+  const user = watching('/plain', ns.as(PUBLIC));
+  const root = watching('/');
+  const errors = console.error;
+  console.error = () => {};
+  try {
+    await ns.writeFile('/plain/f', enc.encode('f'));
+  } finally {
+    console.error = errors;
+  }
+  assert.deepEqual(user.take(), ['change /plain/f']);
+  assert.deepEqual(root.take().filter((line) => !line.includes('/home')).sort(), ['change /picky/f', 'change /plain/f']);
+  user.stop(); root.stop();
+  ns.unmount('/plain'); ns.unmount('/picky');
+});
+
+await check('mkdir -p on a mount that resolves its own paths is one call to its backend, watched or not, and tells what that backend says it made', async () => {
+  const calls = [];
+  ns.mount('/rpa', asyncOnly(new MemoryVFS({ uid: 0, gid: 0 }), { beforeCall: (method) => { calls.push(method); } }), { resolvesPaths: true });
+  const silentCalls = [];
+  ns.mount('/rpq', asyncOnly(new MemoryVFS({ uid: 0, gid: 0 }), {
+    beforeCall: (method) => { silentCalls.push(method); },
+    methods: { mkdir(path, options) { this.mkdir(path, options); } },
+  }), { resolvesPaths: true });
+  const w = watching('/');
+  try {
+    await ns.mkdir('/rpa/x/y', { recursive: true });
+    await ns.mkdir('/rpq/x/y', { recursive: true });
+    assert.deepEqual(calls, ['mkdir']);
+    assert.deepEqual(silentCalls, ['mkdir']);
+    assert.deepEqual(w.take().filter((line) => line.includes('/rp')), ['addDir /rpa/x', 'addDir /rpa/x/y'], 'a backend that does not say what it made has nothing told');
+  } finally {
+    w.stop();
+    ns.unmount('/rpa'); ns.unmount('/rpq');
   }
 });
 

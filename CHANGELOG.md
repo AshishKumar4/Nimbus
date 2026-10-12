@@ -17,8 +17,8 @@ published independently in the `@nimbus-sh` npm scope.
   `rename`, and moves with it. It is told to the watches registered when it
   landed, at every mount of the store it landed in (the new optional
   `VFS.fileStore`); a recursive copy or removal tells each entry as it lands;
-  `mkdir -p` on a mount that resolves its own paths looks first, and tells
-  only a directory it made.
+  `mkdir -p` on a mount that resolves its own paths tells the directories its
+  backend says it made (`VFS.mkdir` may now answer them; `MemoryVFS`'s does).
   A backend may tell its own (the new optional `VFS.watchChanges`, which
   `SqliteFiles` implements, without storing any held write); any other
   mount's changes are told as they land through the namespace, typed by the

@@ -196,6 +196,20 @@ await check('renamed files and directories stay watched under their original nam
   } finally { file.watcher.close(); directory.watcher.close(); }
 });
 
+await check('a file stays watched through the directories above it renamed twice, then written and removed, in one turn', async () => {
+  kernel.mkdir('before/sub', { recursive: true });
+  kernel.writeFile('before/sub/file', 'one');
+  const file = hearing('/before/sub/file');
+  try {
+    kernel.rename('before', 'middle');
+    kernel.rename('middle', 'after');
+    kernel.writeFile('after/sub/file', 'two');
+    kernel.unlink('after/sub/file');
+    await settled();
+    assert.deepEqual(file.heard, ['rename file', 'rename file', 'change file', 'rename file']);
+  } finally { file.watcher.close(); }
+});
+
 await check('buffer encoding gives listeners and change events UTF-8 Buffers', async () => {
   for (const options of ['buffer', { encoding: 'buffer' }]) {
     const heard = [];
