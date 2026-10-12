@@ -157,7 +157,7 @@ pool and fanout takes a network; Nimbus's own work states `ISOLATE_NETWORK`.
 | a WebSocket server in the session (`ws`'s `WebSocketServer`, an `http` server's `'upgrade'`) | not available, egress or not: workerd's HTTP server emits `'request'`, never `'upgrade'`; a session's client connecting to one closes with 1006 (`Network connection lost`), measured with `ws` 8.22 and the global WebSocket |
 | a node program's TLS socket (`tls.connect`) | through the egress's optional `connectTls({ hostname, port, servername? })`, which makes the TLS session (`servername` when the program names one other than the host); without it, refused by name (`ERR_NIMBUS_EGRESS_TLS`) |
 | TLS over a socket the program opened (`tls.connect({ socket })`, STARTTLS) | refused by name (`ERR_NIMBUS_EGRESS_STARTTLS`): the egress carries that connection, and workerd starts no TLS on a connection through a service binding |
-| a worker or dev server a command starts (wrangler dev, vite) | yes |
+| a worker or dev server a command starts (wrangler dev, vite), and a Worker that one loads (`worker_loaders`) | yes |
 | an inline `node` program (a host without Dynamic Workers: Bun, Node): fetch, `http`/`https` | yes, as Node's fetch: the response streams, an unread body is not read, the program's redirect mode is honored and each hop is its own request through the egress |
 | an inline `node` program's WebSocket | refused by name: a WebSocket cannot cross the inline program's realm to the host |
 | a facet of `localFacetHost` (Bun, Node): its fetch | yes, as an inline `node` program's |
@@ -165,11 +165,19 @@ pool and fanout takes a network; Nimbus's own work states `ISOLATE_NETWORK`.
 | Nimbus's own traffic (R2, runtime catalog, OAuth, AI, static assets, its Durable Objects) | no |
 
 HTTPS made by fetch or `https` is unaffected by the TLS limit: it is a
-request, not a socket. With a `servername` other than the host, an egress on
-workerd makes the session with `startTls({ expectedServerHostname })`, which
-checks the certificate only after the handshake: a certificate that fails
-shows up at the program's first write, as an internal error, not before
-`secureConnect`. No byte the program writes reaches the server. A session's processes keep their network across an
+request, not a socket. How a TLS socket's name works under an egress:
+
+- `servername: ''` asks Node to send no SNI. It is not forwarded, so the
+  egress presents the host name. An egress on workerd cannot send no SNI:
+  its TLS always presents the name it checks.
+- With a `servername` other than the host, an egress on workerd makes the
+  session with `startTls({ expectedServerHostname })`, which checks the
+  certificate only after the handshake. A certificate that fails shows up
+  after `secureConnect`: as an internal error at the program's first write,
+  or as an end with no data at a read, not as a handshake error. No byte the
+  program writes reaches the server.
+- The name is checked as given. Node removes a trailing dot
+  (`example.com.`) before it checks; the egress does not. A session's processes keep their network across an
 instance reset: a launch the reset interrupted is re-driven through the same
 egress, before or without a reconnect.
 

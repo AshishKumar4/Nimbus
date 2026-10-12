@@ -11,13 +11,21 @@ published independently in the `@nimbus-sh` npm scope.
   per process while it lives (`WorkspaceNetwork.forProcess`), and everything
   the process does goes through that one egress: its fetch, sockets and TLS,
   its Dynamic Worker's outbound, a peer hosting it, and the commands it runs
-  (curl, wget, dig, ping, npm, pip, gem, git, wrangler dev, the inline node).
-  An embedder that mints it with the exec in its props can tell which exec
-  made each request. Without `egressFor`, nothing changes.
+  (curl, wget, dig, ping, npm, pip, gem, lifo, git, wrangler dev and the
+  Workers it loads, opencode, the inline node). An embedder that mints it
+  with the exec in its props can tell which exec made each request. Each
+  workspace selects for its own processes, so two workspaces over one egress
+  object never share a selection, and a session destroyed and made again
+  selects for its new processes. Without `egressFor`, nothing changes.
+- Fixed: under an egress, three kinds of traffic went around it: a one-shot
+  opencode run (`opencode run`, `opencode models`), a Worker that a
+  `wrangler dev` Worker loads through `worker_loaders`, and `lifo search`.
+  Each now goes through the egress of the process that makes it.
 - Added: under an egress, a program's `tls.connect({ servername })` with a
   name other than the host reaches the egress as `connectTls`'s optional
   `servername`, which the egress presents and checks the server by, as Node
-  does. It used to fail with `ERR_OPTION_NOT_IMPLEMENTED`. An egress that
+  does. It used to fail with `ERR_OPTION_NOT_IMPLEMENTED`. A servername that
+  is not a string throws `ERR_INVALID_ARG_TYPE`, as in Node. An egress that
   ignores the field connects as before (Kinu ask 44).
 - Changed: under an egress, `tls.connect({ socket })` (STARTTLS) fails with
   `ERR_NIMBUS_EGRESS_STARTTLS`: "Nimbus: TLS over a socket the program
