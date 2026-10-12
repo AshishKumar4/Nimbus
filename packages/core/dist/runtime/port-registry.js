@@ -88,7 +88,7 @@ export function relayRpcBody(response, method, owner, gated = null) {
     const declared = method === 'HEAD' ? null : response.headers.get('Content-Length');
     // RFC 9110 §8.6: 1*DIGIT. Joined duplicates ("5, 5") are not one length.
     const length = declared !== null && /^\d+$/.test(declared) ? Number(declared) : NaN;
-    const last = Number.isSafeInteger(length) ? new FixedLengthStream(length) : gated ?? abortableStage(owner.signal);
+    const last = Number.isSafeInteger(length) ? new FixedLengthStream(length) : gated ?? ownedStage(owner);
     settleWith(owner, last === gated || gated === null ? response.body : response.body.pipeThrough(gated), last.writable);
     return new Response(last.readable, {
         status: response.status,
@@ -97,44 +97,66 @@ export function relayRpcBody(response, method, owner, gated = null) {
     });
 }
 /**
- * One response's scope (RouteableFacetTarget), and the owner whose relay
- * settles it: delivered, or not. A caller that leaves is done with the
- * response whatever its relay still waits on; a client that resets is seen
- * both ways (its signal, the relay failing), in either order, and the first
- * says.
+ * One response's scope (RouteableFacetTarget) and the owner whose relay
+ * settles it: delivered, or not. It listens on the caller's signal once, for
+ * all of it: a caller that leaves before any header, a stage a pipe waits on
+ * without looking at its signal, the scope's end. Delivery costs no more than
+ * that one listener; only leaving does anything.
  */
+class RelayScope {
+    signal;
+    #listener;
+    #outcome;
+    #stage;
+    constructor(signal) {
+        this.signal = signal;
+        if (signal.aborted)
+            this.#outcome = false;
+        else
+            signal.addEventListener('abort', this, { once: true });
+    }
+    settled(listener) {
+        if (this.#outcome === undefined)
+            this.#listener = listener;
+        else
+            listener(this.#outcome);
+    }
+    settle() { this.#end(true); }
+    fail() { this.#end(false); }
+    stage(controller) { this.#stage = controller; }
+    /** The caller left: a pipe waiting on the stage ends, and so does the response. */
+    handleEvent() {
+        this.#stage?.error(this.signal.reason);
+        this.#end(false);
+    }
+    #end(delivered) {
+        if (this.#outcome !== undefined)
+            return;
+        this.#outcome = delivered;
+        this.signal.removeEventListener('abort', this);
+        const listener = this.#listener;
+        this.#listener = undefined;
+        listener?.(delivered);
+    }
+}
 export function responseScope(caller) {
-    let resolve = (_delivered) => { };
-    const settled = new Promise((done) => { resolve = done; });
-    const left = () => resolve(false);
-    const end = (delivered) => { caller.removeEventListener('abort', left); resolve(delivered); };
-    if (caller.aborted)
-        left();
-    else
-        caller.addEventListener('abort', left, { once: true });
-    return { scope: { signal: caller, settled }, owner: { signal: caller, settle: () => end(true), fail: () => end(false) } };
+    const scope = new RelayScope(caller);
+    return { scope, owner: scope };
 }
 function settleWith(owner, source, last) {
-    void source.pipeTo(last, { signal: owner.signal }).then(owner.settle, owner.fail);
+    void source.pipeTo(last, { signal: owner.signal }).then(() => owner.settle(), () => owner.fail());
 }
-/**
- * A JavaScript stage of the relay, errored when `signal` aborts. A pipe waits
- * on a stage's read or write without looking at its signal, so this is what
- * ends a pipe whose client is gone while its source is quiet or its sink full.
- */
-function abortableStage(signal, transformer = {}) {
-    return new TransformStream({
-        ...transformer,
-        start: (controller) => { signal.addEventListener('abort', () => controller.error(signal.reason), { once: true }); },
-    });
+/** A JavaScript stage of the relay, which its owner errors if the caller leaves (RelayScope). */
+function ownedStage(owner, transformer = {}) {
+    return new TransformStream({ ...transformer, start: (controller) => owner.stage(controller) });
 }
 /**
  * A process's answer body, each piece and its end let out as the rest of
  * its output is (ProcessOutput.releaseOutput): what it wrote while answering
  * is published before the piece after it, or its end, is seen.
  */
-function releasedBody(output, pid, signal) {
-    return abortableStage(signal, {
+function releasedBody(output, pid, owner) {
+    return ownedStage(owner, {
         transform: (chunk, controller) => output.releaseOutput(pid, () => controller.enqueue(chunk)),
         flush: () => output.releaseOutput(pid, () => { }),
     });
@@ -563,7 +585,7 @@ export class PortRegistry {
             // undone. We do NOT inject Access-Control-Allow-Origin — a port proxy
             // forwards whatever CORS policy the user's HTTP server chose (audit C3
             // discourages gratuitous wildcards on non-static routes).
-            const gate = output === null || response.body === null ? null : releasedBody(output, entry.pid, scope.signal);
+            const gate = output === null || response.body === null ? null : releasedBody(output, entry.pid, owner);
             const answer = decodeContentCoding(response, port, request.method, owner, gate);
             relayed = true;
             return answer;

@@ -1,5 +1,4 @@
 import type { WorkerCode } from '@nimbus-sh/platform/worker-code.js';
-import type { ResponseScope } from '@nimbus-sh/core/runtime/os-contracts.js';
 /** A host-loss watch exists only while somebody owns work on this actor. */
 export interface HostActivityLease {
     readonly ready?: Promise<void>;
@@ -54,8 +53,14 @@ export declare class HostActivity {
  */
 export declare class SentRequests {
     #private;
-    /** An id for a request with `scope`, the ids to report, and abandon(id) sent if it is not delivered. */
-    send(scope: ResponseScope, abandon: (id: number) => Promise<unknown>): HostRequest;
+    /** An id for a request, and the earlier ids its leaf forgets or abandons first. */
+    send(): HostRequest;
+    /**
+     * Request `id` ended: reported as ended when delivered, else once its
+     * abandon arrived. A report that overtook the abandon would leave the leaf
+     * holding it for good; one that does not arrive rides the next request.
+     */
+    settled(id: number, delivered: boolean, abandon: (id: number) => Promise<unknown>): void;
     /** `request`'s call failed before its leaf saw what it carried (leafReceived): carry it again (each is idempotent there). */
     unsent(request: HostRequest): void;
 }

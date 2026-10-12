@@ -673,11 +673,11 @@ export interface ResponseScope {
     /** The caller's own: aborts when its client goes away. */
     readonly signal: AbortSignal;
     /**
-     * Settles once the caller is done with the response: true when it was
-     * delivered whole, false when it was not (the client left, or the relay or
-     * the handler failed).
+     * Calls `listener` once the caller is done with the response: true when it
+     * was delivered whole, false when it was not (the client left, or the relay
+     * or the handler failed). One listener per scope, its target's.
      */
-    readonly settled: Promise<boolean>;
+    settled(listener: (delivered: boolean) => void): void;
 }
 export interface RuntimePortBridge {
     register(port: number, processId: number, handler: (request: Request) => Promise<Response>): Promise<void>;

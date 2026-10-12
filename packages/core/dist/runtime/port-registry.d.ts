@@ -100,14 +100,9 @@ export interface BodyOwner {
     settle(): void;
     /** The response will not be delivered, for any reason: to its handler, the caller has left. */
     fail(): void;
+    /** The relay's JavaScript stage, errored if the caller leaves while it waits. */
+    stage(controller: TransformStreamDefaultController<Uint8Array>): void;
 }
-/**
- * One response's scope (RouteableFacetTarget), and the owner whose relay
- * settles it: delivered, or not. A caller that leaves is done with the
- * response whatever its relay still waits on; a client that resets is seen
- * both ways (its signal, the relay failing), in either order, and the first
- * says.
- */
 export declare function responseScope(caller: AbortSignal): {
     scope: ResponseScope;
     owner: BodyOwner;
