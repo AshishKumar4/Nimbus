@@ -105,6 +105,7 @@ import { wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
 // the replication-bookmark stream.
 import { type TryEnableReplicasResult as _W12EnableResult } from '../replica/routing.js';
 import { wireReplicasOnConstruct as _w12WireReplicasOnConstruct, getReplicaState as _w12GetReplicaState } from './replica-routes.js';
+import type { HostActivityLease } from '@nimbus-sh/fabric/host-activity.js';
 import { wireHibernationOnConstruct as _w9WireHibernationOnConstruct, wireProcessLogPersist as _w9DoWireProcessLogPersist, ensureHibSchema as _w9DoEnsureHibSchema, scheduleHibFlush as _w9DoScheduleHibFlush, clearDestroyedTombstone as _w1ClearDestroyedTombstone, ensureResidentKeepalive as _w1EnsureResidentKeepalive, dispatchAlarm as _w9DoDispatchAlarm, flushOnClose as _w9DoFlushOnClose, noteClientActivity } from './hibernation.js';
 import { timers } from '@nimbus-sh/fabric/timers.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
@@ -418,10 +419,11 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
    *  CF DO docs). The alarm itself lives in DO storage at key
    *  `w1_next_alarm_reasons`. */
   _w1JanitorAt: number | null = null;
-  /** W1: idempotency flag for the resident keep-alive alarm cycle — the
-   *  recurring event that holds this object in memory for as long as a
-   *  resident process runs (hibernation.ts ensureResidentKeepalive). */
-  _w1KeepaliveArmed: boolean = false;
+  /** W1: the resident keep-alive alarm cycle while armed — the recurring
+   *  event that holds this object in memory for as long as a resident
+   *  process runs and its client is present — and the host activity it owns
+   *  (hibernation.ts armResidentKeepalive). */
+  _w1Keepalive: HostActivityLease | null = null;
   /** W1: when a runtime client last reached this session over HTTP/WS; the keep-alive
    *  holds the object only while traffic was observed within
    *  RESIDENT_KEEPALIVE_DETACHED_MS (hibernation.ts residentClientPresent). */

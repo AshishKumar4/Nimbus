@@ -313,6 +313,11 @@ interface PeerPlacement {
   isolateToken: string;
 }
 
+/** One process's stub to its peer while its host observation is open, or none while it is idle. */
+interface PeerLink {
+  stub?: ProcessPeerStub;
+}
+
 interface PeerResidency {
   abort: AbortController;
   socket: WebSocket | null;
@@ -420,8 +425,10 @@ class PeerProcessHost implements ProcessHost {
       // Its process-owned fetch signal, not a close handshake, releases residency.
       residency.socket = response.webSocket;
       if (this.closed) throw new Error('Nimbus: the process host is closed');
+      // The stub an open observation holds: data calls made while it is open share it.
+      const link: PeerLink = {};
       const observation = hostActivity(this.ctx).observe(
-        (signal) => this.watchPeer(placement.peerName, params.workerKey, webSocketCapability, signal),
+        (signal) => this.watchPeer(placement.peerName, params.workerKey, webSocketCapability, signal, link),
         (error) => loss.lose(error), opened.incarnation,
       );
       stopObserving = observation.close;
@@ -435,8 +442,10 @@ class PeerProcessHost implements ProcessHost {
         handleHttpRequest: (request: Request, scope: ResponseScope) => loss.route(async () => {
           const lease = observation.acquire(scope.signal);
           void scope.settled.then(lease.release);
-          try { return await this.withPeer(placement.peerName, (stub) => routeThroughPeer(stub, params.workerKey, webSocketCapability, request, scope)); }
-          catch (error) { lease.release(); throw error; }
+          try {
+            const route = (stub: ProcessPeerStub) => routeThroughPeer(stub, params.workerKey, webSocketCapability, request, scope);
+            return await (link.stub ? route(link.stub) : this.withPeer(placement.peerName, route));
+          } catch (error) { lease.release(); throw error; }
         }),
         // An upgrade hands its socket to the caller at the handshake.
         handleWebSocketRequest: (request: Request) => loss.route(async () => {
@@ -554,11 +563,13 @@ class PeerProcessHost implements ProcessHost {
     finally { disposeRpcResource(stub); }
   }
 
-  private async watchPeer(peerName: string, workerKey: string, capability: string, signal: AbortSignal): Promise<Response> {
+  private async watchPeer(peerName: string, workerKey: string, capability: string, signal: AbortSignal, link: PeerLink): Promise<Response> {
     signal.throwIfAborted();
     let stub: ProcessPeerStub | undefined = this.getPeer(peerName);
+    link.stub = stub;
     const release = () => {
       if (!stub) return;
+      if (link.stub === stub) link.stub = undefined;
       disposeRpcResource(stub);
       stub = undefined;
       signal.removeEventListener('abort', release);

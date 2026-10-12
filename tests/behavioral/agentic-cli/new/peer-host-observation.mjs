@@ -44,8 +44,14 @@ try {
 
     const second = await mintSession(); sessions.push(second);
     const idle = await server(second);
+    const watched = await probe(second, 'inspect', idle.pid);
+    a.check('a client present keeps one watch on its resident', watched.watchers === 1, JSON.stringify(watched));
     await idle.terminal.close();
-    await sleep(250);
+    // The client's interest lapses (RESIDENT_KEEPALIVE_DETACHED_MS, 60 s, and
+    // the keep-alive alarm that ends the cycle); probe RPC is no client.
+    for (let i = 0; i < 40; i++) { await sleep(2000); await probe(second, 'state', idle.pid); }
+    const unwatched = await probe(second, 'inspect', idle.pid);
+    a.check('idle owns no watch on its resident', unwatched.found && unwatched.watchers === 0, JSON.stringify(unwatched));
     const reset = await probe(second, 'host-reset', idle.pid);
     a.check('the idle hosting actor changed incarnation', reset.reset === true && reset.before !== reset.after, JSON.stringify(reset));
     const beforeUse = await probe(second, 'state', idle.pid);

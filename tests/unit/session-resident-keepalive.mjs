@@ -40,6 +40,7 @@ import { timers, TIMER_REASONS_KEY } from '../../packages/fabric/src/timers.ts';
 // @nimbus-sh/platform/limits — so this test cannot drift from the fix.
 import { RESIDENT_KEEPALIVE_DETACHED_MS, RESIDENT_KEEPALIVE_MS } from '../../packages/platform/src/limits.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
+import { hostActivity, HOST_INCARNATION_HEADER } from '../../packages/fabric/src/host-activity.ts';
 
 function makeStorage() {
   const map = new Map();
@@ -67,7 +68,7 @@ function makeHost() {
     _w9PersistWired: false,
     _w9FlushTimer: null,
     _w1JanitorAt: null,
-    _w1KeepaliveArmed: false,
+    _w1Keepalive: null,
     _w1LastClientActivityAt: Date.now(),
     _w1SessionDestroyed: false,
   };
@@ -81,10 +82,10 @@ function makeHost() {
   host._cirrusHmrWsClients.set(socket, 'hmr-client');
   ensureResidentKeepalive(host, ctx); await host._timerChain;
   expire(storage, 'resident-keepalive'); await dispatchAlarm(host, ctx);
-  assert.equal(host._w1KeepaliveArmed, true, 'the runtime-owned built-in HMR table also retains quiet preview interest');
+  assert.equal(host._w1Keepalive !== null, true, 'the runtime-owned built-in HMR table also retains quiet preview interest');
   host._cirrusHmrWsClients.delete(socket);
   expire(storage, 'resident-keepalive'); await dispatchAlarm(host, ctx);
-  assert.equal(host._w1KeepaliveArmed, false, 'a closed HMR table is not the embedder\'s unrelated socket interest');
+  assert.equal(host._w1Keepalive !== null, false, 'a closed HMR table is not the embedder\'s unrelated socket interest');
 }
 
 /** Pull a scheduled deadline into the past, as the firing alarm would. */
@@ -106,7 +107,7 @@ function expire(storage, reason) {
   await host._timerChain;
   const after = Date.now();
 
-  assert.equal(host._w1KeepaliveArmed, true, 'the resident spawn armed the cycle');
+  assert.equal(host._w1Keepalive !== null, true, 'the resident spawn armed the cycle');
   const map = storage.map.get(TIMER_REASONS_KEY);
   assert.ok(map && 'resident-keepalive' in map, `reason scheduled: ${JSON.stringify(map)}`);
   const at = map['resident-keepalive'];
@@ -148,7 +149,7 @@ function expire(storage, reason) {
     at >= before + RESIDENT_KEEPALIVE_MS && at <= Date.now() + RESIDENT_KEEPALIVE_MS,
     `re-armed one cadence out (got ${at - before}ms, cadence ${RESIDENT_KEEPALIVE_MS}ms)`,
   );
-  assert.equal(host._w1KeepaliveArmed, true, 'still believed armed after the re-arm');
+  assert.equal(host._w1Keepalive !== null, true, 'still believed armed after the re-arm');
   assert.equal(storage.alarm, at, 'the platform alarm follows the re-arm');
   console.log('  [2] dispatching while the resident runs re-arms at the same cadence');
 }
@@ -170,7 +171,7 @@ function expire(storage, reason) {
 
   const map = storage.map.get(TIMER_REASONS_KEY);
   assert.ok(!map || !('resident-keepalive' in map), `reason cleared: ${JSON.stringify(map)}`);
-  assert.equal(host._w1KeepaliveArmed, false, 'armed flag cleared so the next resident re-arms');
+  assert.equal(host._w1Keepalive !== null, false, 'armed flag cleared so the next resident re-arms');
 
   // And the next resident does re-arm it, on the same instance.
   host.processes.spawn('pi', [], '/home/user', { longRunning: true });
@@ -201,7 +202,7 @@ function expire(storage, reason) {
   await host._timerChain;
   const map = storage.map.get(TIMER_REASONS_KEY);
   assert.ok(!map || !('resident-keepalive' in map), `short process does not arm: ${JSON.stringify(map)}`);
-  assert.equal(host._w1KeepaliveArmed, false, 'and leaves nothing believed armed');
+  assert.equal(host._w1Keepalive !== null, false, 'and leaves nothing believed armed');
   console.log('  [4] a short process alone never keeps the cycle alive');
 }
 
@@ -218,7 +219,7 @@ function expire(storage, reason) {
 
   assert.equal(storage.alarm, null, 'destroyed session schedules nothing');
   assert.equal(storage.map.get(TIMER_REASONS_KEY), undefined, 'and writes no reason');
-  assert.equal(host._w1KeepaliveArmed, false, 'and is never believed armed');
+  assert.equal(host._w1Keepalive !== null, false, 'and is never believed armed');
   console.log('  [5] a destroyed session never arms the keep-alive');
 }
 
@@ -260,7 +261,7 @@ function expire(storage, reason) {
   await dispatchAlarm(host, ctx);
   assert.equal(host.processes.residentRunning, 1, 'the resident is still running');
   assert.ok(!('resident-keepalive' in (storage.map.get(TIMER_REASONS_KEY) ?? {})), 'past the grace the cycle stops');
-  assert.equal(host._w1KeepaliveArmed, false, 'and the flag clears so a client can re-arm it');
+  assert.equal(host._w1Keepalive !== null, false, 'and the flag clears so a client can re-arm it');
   // Neither an embedder's unrelated socket nor an idle socket of this
   // runtime is a reason to renew forever without client traffic.
   sockets = [{}];
@@ -268,20 +269,47 @@ function expire(storage, reason) {
   await host._timerChain;
   expire(storage, 'resident-keepalive');
   await dispatchAlarm(host, ctx);
-  assert.equal(host._w1KeepaliveArmed, false, 'an idle attached socket does not keep the cycle');
+  assert.equal(host._w1Keepalive !== null, false, 'an idle attached socket does not keep the cycle');
   sockets = [];
-  assert.equal(host._w1KeepaliveArmed, false, 'socket gone, grace long past: stopped again');
+  assert.equal(host._w1Keepalive !== null, false, 'socket gone, grace long past: stopped again');
   // The client comes back over HTTP: that alone re-arms, no spawn needed.
   noteClientActivity(host, ctx);
   await host._timerChain;
-  assert.equal(host._w1KeepaliveArmed, true, 'a request re-arms a lapsed cycle while the resident runs');
+  assert.equal(host._w1Keepalive !== null, true, 'a request re-arms a lapsed cycle while the resident runs');
   assert.ok('resident-keepalive' in storage.map.get(TIMER_REASONS_KEY));
   // Activity with no resident arms nothing.
   const quiet = makeHost();
   noteClientActivity(quiet, { storage: makeStorage(), getWebSockets: () => [] });
   await quiet._timerChain;
-  assert.equal(quiet._w1KeepaliveArmed, false, 'no resident, no keep-alive, whatever the client does');
+  assert.equal(quiet._w1Keepalive !== null, false, 'no resident, no keep-alive, whatever the client does');
   console.log('  [7] idle sockets cannot renew the cycle; runtime client traffic re-arms it');
+}
+
+// ── [8] the cycle owns its residents' host observation while it holds the host ─
+{
+  const host = makeHost(), storage = makeStorage(), ctx = { storage };
+  let open = 0;
+  const watch = hostActivity(ctx).observe(async (signal) => {
+    open++;
+    signal.addEventListener('abort', () => { open--; }, { once: true });
+    return new Response(new ReadableStream(), { headers: { [HOST_INCARNATION_HEADER]: 'one' } });
+  }, () => assert.fail('no host is lost'), 'one');
+  host.processes.spawn('vite dev', [], '/home/user', { longRunning: true });
+  noteClientActivity(host, ctx);
+  await host._timerChain; await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(open, 1, 'a client present: one watch per resident, shared by its requests');
+  const request = hostActivity(ctx).acquire();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(open, 1, 'a request inside the cycle opens no watch of its own');
+  request.release();
+  assert.equal(open, 1, 'nor does its end close the cycle\'s');
+  host._w1LastClientActivityAt = Date.now() - RESIDENT_KEEPALIVE_DETACHED_MS - 1;
+  expire(storage, 'resident-keepalive');
+  await dispatchAlarm(host, ctx);
+  assert.equal(open, 0, 'the cycle\'s end leaves its host observing nothing');
+  assert.equal(host._w1Keepalive, null);
+  watch.close();
+  console.log('  [8] the cycle owns the residents\' observation, and its end releases it');
 }
 
 console.log('session-resident-keepalive OK: arms on a resident, re-arms while it runs and a client is present, retires when either ends');

@@ -114,7 +114,7 @@ export interface SessionInternal extends Pick<SessionRouterRpc,
   processes: SessionProcessSupervisor;
   portRegistry: PortRegistry;
   _w1JanitorAt: number | null;
-  _w1KeepaliveArmed: boolean;
+  _w1Keepalive: import('@nimbus-sh/fabric/host-activity.js').HostActivityLease | null;
   _w1LastClientActivityAt: number;
   _w1SessionDestroyed: boolean;
 

@@ -89,8 +89,11 @@ for (const reset of [false, true]) {
   } }));
   assert.equal(unauthorized.status, 404, 'a derived worker key cannot claim coordinator residency');
   assert.equal(t.stubs.filter(stub => !stub.disposed).length, 0, 'idle owns no peer RPC stub');
-  const lease = hostActivity(t.ctx).acquire(); await lease.ready;
+  const lease = hostActivity(t.ctx).acquire(); await turns();
   assert.equal(t.stubs.filter(stub => !stub.disposed).length, 1, 'only the active fetch watch owns a stub');
+  const minted = t.stubs.length;
+  assert.equal(await (await process.handleHttpRequest(new Request('http://process/'), settledScope())).text(), 'ok');
+  assert.equal(t.stubs.length, minted, 'a data call while the host is observed shares the observation\'s stub');
   lease.release(); await turns();
   assert.equal(t.stubs.filter(stub => !stub.disposed).length, 0);
   assert.equal(await (await process.handleHttpRequest(new Request('http://process/'), settledScope())).text(), 'ok');

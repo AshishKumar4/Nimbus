@@ -46,6 +46,7 @@ import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-p
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { configureWsHibernation, type WsHibernationConfigResult } from '@nimbus-sh/fabric/ws-hibernation-config.js';
 import { timers, type TimerHost, type TimerContext } from '@nimbus-sh/fabric/timers.js';
+import { hostActivity, type HostActivityLease } from '@nimbus-sh/fabric/host-activity.js';
 import { RESIDENT_KEEPALIVE_DETACHED_MS, RESIDENT_KEEPALIVE_MS } from '@nimbus-sh/platform/limits.js';
 import { SESSION_DESTROYED_KEY, W9_FLUSH_DEBOUNCE_MS } from './keys.js';
 
@@ -67,8 +68,11 @@ export interface HibHost extends TimerHost {
   _w9FlushTimer: any;
   /** W1: the log-janitor deadline believed armed by this instance, or null (cheap guard). */
   _w1JanitorAt: number | null;
-  /** W1: resident keep-alive alarm believed armed for this instance. */
-  _w1KeepaliveArmed: boolean;
+  /**
+   * W1: the resident keep-alive cycle believed armed for this instance: the
+   * host activity it owns while it holds the host for a client, or null.
+   */
+  _w1Keepalive: HostActivityLease | null;
   /**
    * W1: when a client last reached this session over HTTP (an exec, a file
    * read, a port preview, a socket upgrade). Facet RPCs are not clients: a
@@ -346,10 +350,17 @@ export function ensureLogJanitor(host: HibHost, ctx: TimerContext): void {
 }
 
 /** The fields the keep-alive rule reads and keeps; both hosts carry them. */
-export type ResidentKeepaliveHost = Pick<HibHost, 'processes' | 'portRegistry' | '_cirrusHmrWsClients' | '_w1KeepaliveArmed' | '_w1LastClientActivityAt' | '_w1SessionDestroyed'>;
+export type ResidentKeepaliveHost = Pick<HibHost, 'processes' | 'portRegistry' | '_cirrusHmrWsClients' | '_w1Keepalive' | '_w1LastClientActivityAt' | '_w1SessionDestroyed'>;
 
-/** Arm the host's `resident-keepalive` alarm at `at`; resolves false when it could not. */
-export type ResidentKeepaliveSchedule = (at: number) => Promise<boolean>;
+/**
+ * How a host runs the keep-alive cycle: `schedule` arms its
+ * `resident-keepalive` alarm at `at` (false when it could not), and
+ * `observe` takes a lease on its residents' host activity (HostActivity).
+ */
+export interface ResidentKeepaliveCycle {
+  schedule(at: number): Promise<boolean>;
+  observe(): HostActivityLease;
+}
 
 /**
  * W1: arm the keep-alive alarm cycle for this instance, from the spawn hook
@@ -363,31 +374,42 @@ export type ResidentKeepaliveSchedule = (at: number) => Promise<boolean>;
  * pid namespace, dropping its attached terminal and its port. The alarm is
  * the event; its dispatch is the whole payload.
  *
+ * While the cycle holds the host for a client, it owns the residents' host
+ * activity: that client's requests share one open watch per resident (and a
+ * peer its data stub) rather than each opening its own. The cycle's end
+ * releases it, so a host with no client present observes nothing.
+ *
  * The one rule for both hosts: the session DO schedules through the fabric
  * timer mux, a hosted runtime through its embedder's lifecycle. Idempotent
- * per instance via `_w1KeepaliveArmed`; `residentKeepaliveFired` clears the
- * flag when the cycle ends, so the next resident spawn re-arms it.
+ * per instance via `_w1Keepalive`; `residentKeepaliveFired` ends the cycle,
+ * so the next resident spawn re-arms it.
  */
-export function armResidentKeepalive(host: ResidentKeepaliveHost, schedule: ResidentKeepaliveSchedule): void {
-  if (host._w1KeepaliveArmed) return;
+export function armResidentKeepalive(host: ResidentKeepaliveHost, cycle: ResidentKeepaliveCycle): void {
+  if (host._w1Keepalive) return;
   if (host.processes.residentRunning === 0) return;
   // Same zombie-alarm rule as the janitor: a destroyed session stays inert,
   // so a straggler facet RPC that wakes the dead DO and spawns cannot leave
   // an eternal keep-alive loop on a session that no longer exists.
   if (host._w1SessionDestroyed) return;
-  // Optimistic flag (dedupes same-turn spawns), CONFIRMED by the schedule
-  // outcome: a failure with the flag left set would mean no alarm AND
-  // nothing ever re-arming until the instance recycles.
-  host._w1KeepaliveArmed = true;
-  void schedule(Date.now() + RESIDENT_KEEPALIVE_MS).then((ok) => {
-    if (!ok) host._w1KeepaliveArmed = false;
+  // Optimistic (dedupes same-turn spawns), CONFIRMED by the schedule
+  // outcome: a failure left armed would mean no alarm AND nothing ever
+  // re-arming until the instance recycles.
+  const lease = host._w1Keepalive = cycle.observe();
+  void cycle.schedule(Date.now() + RESIDENT_KEEPALIVE_MS).then((ok) => {
+    if (!ok && host._w1Keepalive === lease) endResidentKeepalive(host);
   });
+}
+
+/** W1: the cycle is over: release what it owned, so the next spawn or client arms it again. */
+export function endResidentKeepalive(host: Pick<ResidentKeepaliveHost, '_w1Keepalive'>): void {
+  host._w1Keepalive?.release();
+  host._w1Keepalive = null;
 }
 
 /**
  * W1: the keep-alive alarm fired. Deliberately no work: the alarm exists so
  * the object HAS an event, and being dispatched is the entire payload.
- * Returns when to fire next, or null after clearing the armed flag.
+ * Returns when to fire next, or null after ending the cycle.
  *
  * Re-arms only while a resident process runs AND a client is present — the
  * rule the janitor learned the hard way (see dispatchAlarm): an
@@ -400,7 +422,7 @@ export function residentKeepaliveFired(host: ResidentKeepaliveHost, now: number)
   if (!host._w1SessionDestroyed && host.processes.residentRunning > 0 && residentClientPresent(host, now)) {
     return now + RESIDENT_KEEPALIVE_MS;
   }
-  host._w1KeepaliveArmed = false;
+  endResidentKeepalive(host);
   return null;
 }
 
@@ -410,13 +432,18 @@ export function residentKeepaliveFired(host: ResidentKeepaliveHost, now: number)
  * whose client came back before the platform evicted it still holds its
  * process, and the next quiet stretch must not idle it out mid-session.
  */
-export function noteResidentClient(host: ResidentKeepaliveHost, schedule: ResidentKeepaliveSchedule): void {
+export function noteResidentClient(host: ResidentKeepaliveHost, cycle: ResidentKeepaliveCycle): void {
   host._w1LastClientActivityAt = Date.now();
-  armResidentKeepalive(host, schedule);
+  armResidentKeepalive(host, cycle);
+}
+
+/** The session DO's cycle: the fabric timer mux, and the session's host activity. */
+function sessionKeepaliveCycle(host: HibHost, ctx: any): ResidentKeepaliveCycle {
+  return { schedule: (at) => timers(host, ctx).schedule('resident-keepalive', at), observe: () => hostActivity(ctx).acquire() };
 }
 
 export function ensureResidentKeepalive(host: HibHost, ctx: any): void {
-  armResidentKeepalive(host, (at) => timers(host, ctx).schedule('resident-keepalive', at));
+  armResidentKeepalive(host, sessionKeepaliveCycle(host, ctx));
 }
 
 /** W9: idempotent SQL schema bootstrap. */
@@ -457,7 +484,7 @@ export function residentClientPresent(host: ResidentKeepaliveHost, now: number):
 
 /** W1: a client reached the session DO (see noteResidentClient). */
 export function noteClientActivity(host: HibHost, ctx: any): void {
-  noteResidentClient(host, (at) => timers(host, ctx).schedule('resident-keepalive', at));
+  noteResidentClient(host, sessionKeepaliveCycle(host, ctx));
 }
 
 /**

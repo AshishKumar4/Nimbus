@@ -260,12 +260,12 @@ export class PeerHost {
   }
 
   /** A hosting record's current physical actor, without admitting guest work. */
-  async inspect(workerKey: string): Promise<{ found: boolean; incarnation: string; facet: string | null; coordinator: string | null; residencies: number }> {
+  async inspect(workerKey: string): Promise<{ found: boolean; incarnation: string; facet: string | null; coordinator: string | null; residencies: number; watchers: number }> {
     const record = this.records.get(workerKey);
     const stored = await this.ctx.storage.get<HostingRecord>(HOSTING_KEY_PREFIX + workerKey);
     const facet = record && !record.closed ? (await record.facet).name : null;
     return { found: facet !== null || stored !== undefined, incarnation: this.incarnation, facet,
-      coordinator: stored?.coordinatorDoId ?? null, residencies: record?.residencies.size ?? 0 };
+      coordinator: stored?.coordinatorDoId ?? null, residencies: record?.residencies.size ?? 0, watchers: record?.watchers.size ?? 0 };
   }
 
   /** Open once and answer. Observation and release are independently owned calls. */
