@@ -762,10 +762,13 @@ export class CompositeVFS {
      * as they land through this namespace, at every mount of the same store
      * (VFS.fileStore), by what the operation is: a directory made addDir, a
      * file or link made add (a copy, each entry it made), rmdir unlinkDir,
-     * any other removal unlink at the root of what it removed, a rename
-     * rename, anything else change. Whether a write of a whole file or a
-     * range made its file, and what kind of entry rm -r removed, is not
-     * looked up: those are change and unlink.
+     * a walked rm -r each entry it removed (a backend's own, the roots of what
+     * it removed), a rename rename, anything else change. Whether a write of a
+     * whole file or a range made its file, and what kind of entry a backend's
+     * rm -r removed, is not looked up: those are change and unlink. mkdir -p
+     * on a mount that resolves its own paths is one call to its backend: it
+     * looks whether the directory is there first only while a watch is
+     * registered, and is told only then, and only for a directory it made.
      */
     watchChanges(path, listener, options) {
         const changes = this.table.changes ??= { watches: new Set(), ready: [], draining: false };
@@ -2535,9 +2538,10 @@ export class CompositeVFS {
             // a backend that resolves its own paths makes the rest in one call.
             if (r.mount.options.resolvesPaths) {
                 const whole = this.locate(path);
-                // It looks first whether the directory is there, as the components on any other mount are looked at: only one it made is told.
-                return andThen(this.softStat(ops, whole.rel, true), (there) => this.reportWrite({
-                    path, route: whole, ops, follow: true, kind: 'create', existingIsNoop: true, ...(there?.type === 'directory' ? { told: null } : {}),
+                // One call makes it all: whether it made the directory is known only by looking first, which a watch
+                // there asks for. Unwatched when it begins, it is told to no watch (one registered meanwhile included).
+                return andThen(this.table.changes === undefined ? undefined : this.softStat(ops, whole.rel, true), (there) => this.reportWrite({
+                    path, route: whole, ops, follow: true, kind: 'create', existingIsNoop: true, ...(there === undefined || there?.type === 'directory' ? { told: null } : {}),
                 }, () => {
                     this.guardMutation([at, path]);
                     return ops.mkdir(whole.rel, { recursive: true, mode });

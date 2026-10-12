@@ -474,10 +474,13 @@ export declare class CompositeVFS implements VFS {
      * as they land through this namespace, at every mount of the same store
      * (VFS.fileStore), by what the operation is: a directory made addDir, a
      * file or link made add (a copy, each entry it made), rmdir unlinkDir,
-     * any other removal unlink at the root of what it removed, a rename
-     * rename, anything else change. Whether a write of a whole file or a
-     * range made its file, and what kind of entry rm -r removed, is not
-     * looked up: those are change and unlink.
+     * a walked rm -r each entry it removed (a backend's own, the roots of what
+     * it removed), a rename rename, anything else change. Whether a write of a
+     * whole file or a range made its file, and what kind of entry a backend's
+     * rm -r removed, is not looked up: those are change and unlink. mkdir -p
+     * on a mount that resolves its own paths is one call to its backend: it
+     * looks whether the directory is there first only while a watch is
+     * registered, and is told only then, and only for a directory it made.
      */
     watchChanges(path: string, listener: (events: readonly VfsEvent[]) => void, options?: {
         follow?: boolean;
