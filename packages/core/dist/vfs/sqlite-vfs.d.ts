@@ -213,6 +213,8 @@ export interface CredentialedVfs {
     lstat(path: string): VfsStat;
     /** stat (lstat when `followLeaf` is false), or null when the name is not there: no error made for an absence. */
     statIfPresent(path: string, followLeaf?: boolean): VfsStat | null;
+    /** Whether something is at `path` (a link not followed) as published: no append stored, no holder recalled (VFS.landed). */
+    landed(path: string): boolean;
     /**
      * utimensat(2): null is UTIME_NOW, undefined UTIME_OMIT (that time kept).
      * Only now/omit needs no more than write permission or ownership; an
@@ -996,6 +998,8 @@ export declare class SqliteVFS {
      */
     private probeInode;
     private exists;
+    /** probeInode's answer on the published tree, by its walk alone (resolvePath stores appends and recalls holders). */
+    private landed;
     private isDirectory;
     private isFile;
     private isSymlink;

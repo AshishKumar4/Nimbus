@@ -1124,7 +1124,10 @@ export class CompositeVFS {
         const asked = [...searched.values()].filter(isPromise);
         return asked.length === 0 ? judgeFrom(0) : Promise.all(asked).then(() => judgeFrom(0));
     }
-    /** Whether something is at `path` for this view (lstat, its own lookup), by awaiting where its mount does. */
+    /**
+     * Whether something is at `path` for this view (lstat, its own lookup), by awaiting where its mount does: on a
+     * backend that holds changes back, as they have been told (VFS.landed), its own lookup storing and recalling nothing.
+     */
     presentAt(path) {
         const decide = (sync) => {
             const refused = (error) => {
@@ -1133,6 +1136,14 @@ export class CompositeVFS {
                 throw error;
             };
             try {
+                if (!this.isStructural(path) && this.absentOn(path) === null) {
+                    const route = this.locate(path);
+                    const ops = this.ops(route, sync);
+                    if (typeof ops.landed === 'function') {
+                        const found = ops.landed(route.rel);
+                        return isPromise(found) ? found.then((there) => there === true, refused) : found === true;
+                    }
+                }
                 const stat = this.statAt(path, false, sync);
                 return isPromise(stat) ? stat.then((found) => found !== null, refused) : stat !== null;
             }

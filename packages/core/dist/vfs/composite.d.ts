@@ -541,7 +541,10 @@ export declare class CompositeVFS implements VFS {
      * not told. Judged event by event, a wait holding the rest.
      */
     private judgeChanges;
-    /** Whether something is at `path` for this view (lstat, its own lookup), by awaiting where its mount does. */
+    /**
+     * Whether something is at `path` for this view (lstat, its own lookup), by awaiting where its mount does: on a
+     * backend that holds changes back, as they have been told (VFS.landed), its own lookup storing and recalling nothing.
+     */
     private presentAt;
     /**
      * Whether this view may search every directory above `path`, by its own
