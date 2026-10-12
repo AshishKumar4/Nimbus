@@ -16,6 +16,8 @@ export const HOST_WATCH_HEADER = 'x-nimbus-host-watch';
 export const HOST_INCARNATION_HEADER = 'x-nimbus-host-incarnation';
 /** A data request's per-open capability; with the pinned incarnation, it admits the request at the leaf. */
 export const HOST_REQUEST_HEADER = 'x-nimbus-host-request';
+/** On a leaf's 500, its capability: the guest's handler failed, and the call arrived. */
+export const HOST_FAILED_HEADER = 'x-nimbus-host-failed';
 export const HOST_WATCH_MODULE = '__nimbus_host_watch.js';
 
 interface Observation {
@@ -201,9 +203,6 @@ export class SentRequests {
   }
 }
 
-/** A leaf's answer to its host's HTTP call: its guest's response, or its guest's failure; either way the call arrived. */
-export type LeafReply = { response: Response } | { failure: Error };
-
 /**
  * The property a host sets on a guest failure its leaf answered: the call
  * arrived, and what it carried was seen; any other failure may not have
@@ -260,7 +259,7 @@ export function hostAdapterBytes(mainModule: string): number {
 }
 
 function hostAdapter(mainModule: string, capability: string): string {
-  const [watch, request, incarnation, key] = [HOST_WATCH_HEADER, HOST_REQUEST_HEADER, HOST_INCARNATION_HEADER, capability].map((value) => JSON.stringify(value));
+  const [watch, request, incarnation, key, failed] = [HOST_WATCH_HEADER, HOST_REQUEST_HEADER, HOST_INCARNATION_HEADER, capability, HOST_FAILED_HEADER].map((value) => JSON.stringify(value));
   // Module scope, not the class's text: a guest reads its class's source
   // (this.constructor.toString()), and with the capability could forge a refusal.
   return `import { NimbusProcess as Base } from ${JSON.stringify('./' + mainModule)};
@@ -304,14 +303,15 @@ export class NimbusProcess extends Base {
   // The host's HTTP entry. Its admission travels as arguments, and request
   // \`id\` is one its host can abandon (SentRequests): the guest sees its
   // caller leave as its request's signal.
-  // Its answer says the call arrived, whatever its guest did (LEAF_RECEIVED).
+  // A guest that fails answers a capability-branded 500 (HOST_FAILED_HEADER):
+  // its host learns the call arrived, whatever the guest's compatibility date.
   async hostHttpRequest(request, key, pinned, id, ended, abandoned) {
-    if (key !== capability) return { response: new Response('Not found', { status: 404 }) };
-    if (pinned !== this.#incarnation) return { response: this.#replaced() };
+    if (key !== capability) return new Response('Not found', { status: 404 });
+    if (pinned !== this.#incarnation) return this.#replaced();
     const admitted = new Request(request, { signal: this.#request(id, ended, abandoned).signal });
     this.#admitted.add(admitted);
-    try { return { response: await super.handleHttpRequest(admitted) }; }
-    catch (error) { return { failure: error instanceof Error ? error : new Error(String(error)) }; }
+    try { return await super.handleHttpRequest(admitted); }
+    catch (error) { return new Response(error instanceof Error ? error.message : String(error), { status: 500, headers: { [${failed}]: capability } }); }
   }
   abandonHttpRequest(key, id) {
     if (key === capability) this.#request(id, []).abort(new DOMException('The caller left the request', 'AbortError'));

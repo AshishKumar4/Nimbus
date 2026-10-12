@@ -22,7 +22,7 @@ import {
   observeResidentConfig,
   type HostActivityLease,
   type HostRequest,
-  type LeafReply,
+  HOST_FAILED_HEADER,
   leafReceived,
   receivedFailure,
   SentRequests,
@@ -103,7 +103,7 @@ async function stagedOneShot(key: string, stage: unknown, supervisor: Supervisor
 interface ResidentFacetStub {
   startProcess(args?: unknown): Promise<unknown>;
   /** Inbound HTTP through the host adapter (observeResidentConfig): admission as arguments, and a request id it can abandon. */
-  hostHttpRequest(request: Request, capability: string, incarnation: string, id: number, ended: readonly number[], abandoned: readonly number[]): Promise<LeafReply>;
+  hostHttpRequest(request: Request, capability: string, incarnation: string, id: number, ended: readonly number[], abandoned: readonly number[]): Promise<Response>;
   abandonHttpRequest(capability: string, id: number): Promise<void>;
   /**
    * A facet stub is a Durable Object stub, so it fetches. That is the one path
@@ -637,9 +637,9 @@ function spawnResident(
       // A peer relaying its coordinator's request leaves the numbering to it.
       const sending = relayed ?? sent.send(scope, abandon);
       try {
-        const reply = await facet.hostHttpRequest(request, watchCapability, await incarnation, sending.id, sending.ended, sending.abandoned);
-        if ('failure' in reply) throw receivedFailure(reply.failure);
-        return await checked(reply.response);
+        const response = await facet.hostHttpRequest(request, watchCapability, await incarnation, sending.id, sending.ended, sending.abandoned);
+        if (response.status === 500 && response.headers.get(HOST_FAILED_HEADER) === watchCapability) throw receivedFailure(new Error(await response.text()));
+        return await checked(response);
       } catch (error) {
         if (!relayed && !leafReceived(error)) sent.unsent(sending);
         lease.release();
