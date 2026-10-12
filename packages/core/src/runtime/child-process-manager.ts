@@ -197,6 +197,16 @@ export interface ChildProcessManagerDeps extends ChildProcessHost {
   processes: SessionProcessSupervisor;
 }
 
+/** The host's adapters as calls on the host: a class or prototype adapter keeps its methods and their receiver. */
+function adapters(host: ChildProcessHost, processes: SessionProcessSupervisor): ChildProcessManagerDeps {
+  return {
+    processes,
+    resolve: (request, origin) => host.resolve(request, origin),
+    terminate: (pid, signal) => host.terminate(pid, signal),
+    issueNews: parentPid => host.issueNews?.(parentPid) ?? 0,
+  };
+}
+
 /** Cap recursion depth to defend against runaway spawn loops. */
 export const CHILD_PROCESS_MAX_DEPTH = 8;
 
@@ -328,12 +338,12 @@ export class ChildProcessManager {
   private deps: ChildProcessManagerDeps;
 
   constructor(deps: ChildProcessManagerDeps) {
-    this.deps = deps;
+    this.deps = adapters(deps, deps.processes);
   }
 
   /** Bind the platform's runner and cleanup to the workspace's existing broker. */
   bindHost(host: ChildProcessHost): void {
-    this.deps = { ...host, processes: this.deps.processes };
+    this.deps = adapters(host, this.deps.processes);
   }
 
   // ── spawn ───────────────────────────────────────────────────────────────
