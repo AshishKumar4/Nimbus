@@ -201,7 +201,8 @@ theorem fallback_failures_exact (t : Tree) (pins : List Path) (rp point : Path) 
   intro child hchild hne hpin'
   have hany : (subtree t q).any (fun child => child != q && pins.contains child) = true :=
     List.any_eq_true.mpr ⟨child, hchild, by simp [hne, List.contains_iff_mem, hpin']⟩
-  simp [hany] at hmin
+  rw [hany] at hmin
+  cases hmin
 
 def removalConfig (caps : Backend → Caps) (b : Backend) : CompositeRemoval.Config :=
   ⟨(caps b).readOnly, (caps b).pins, (caps b).faults⟩
