@@ -3929,11 +3929,21 @@ const __fsMod = (() => {
     if (!existsSync(p)) throw _absentErr(_resolve(p), "chmod", p, "fs.promises.chmod");
     const absPath = _resolveFollow(p, "chmod");
     _ensureModeOwner(absPath, "chmod", p);
-    // Local-visible immediately (statSync overlay); the live write-through
-    // rides the next flush of the same path — same fidelity as utimesSync.
+    _detachStructuralMutation(_chmodQueued(absPath, _coerceMode(mode, "chmod", p), "chmod", p), "chmod", p);
+  }
+
+  // A sync chmod's effect: the local mode at once (statSync's overlay), and the
+  // change logged now, in program order, as chown's is. Left for a later flush
+  // of the path to carry, it was never sent when none came.
+  function _chmodQueued(absPath, mode, syscall, p) {
     const k = _strip(absPath);
-    _localModes[k] = _coerceMode(mode, "chmod", p);
-    _pendingModes.add(k);
+    _localModes[k] = mode;
+    const supervisor = _supervisor();
+    return _queueStructuralMutation(
+      absPath, syscall, p,
+      () => _vfsOp({ type: "setattr", path: k, attrs: { mode } }),
+      () => _flushParkedWrite(absPath, supervisor),
+    );
   }
 
   async function _chmodAsync(p, mode) {
@@ -5354,10 +5364,8 @@ const __fsMod = (() => {
   function fchmodSync(fd, mode) {
     if (_isStdioFd(fd)) throw _fsErr("EINVAL", "fchmod", fd);
     const handle = _fdHandle(fd, "fchmod");
-    const k = _strip(handle._abs);
     _ensureModeOwner(handle._abs, "fchmod", handle._path);
-    _localModes[k] = _coerceMode(mode, "fchmod", handle._path);
-    _pendingModes.add(k);
+    _detachStructuralMutation(_chmodQueued(handle._abs, _coerceMode(mode, "fchmod", handle._path), "fchmod", handle._path), "fchmod", handle._path);
   }
   function fchownSync(fd, uid, gid) {
     if (_isStdioFd(fd)) throw _fsErr("EINVAL", "fchown", fd);
