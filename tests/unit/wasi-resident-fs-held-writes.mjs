@@ -24,7 +24,7 @@ import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { residentFilesystem } from '../../packages/core/src/runtime/wasi/resident-filesystem.ts';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../packages/core/src/constants.ts';
-import { FACET_RESIDENT_STORE_SOURCE } from '../../packages/worker/src/vfs/facet-resident-store.ts';
+import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const enc = new TextEncoder();
@@ -47,11 +47,8 @@ const twoMiB = new Uint8Array(2 * 1024 * 1024 + 5).fill(7);
 await kernel.writeFile(k('two.bin'), twoMiB);
 await kernel.chown(k('two.bin'), 1000, 1000);
 
-const storeSource = new Function(
-  FACET_RESIDENT_STORE_SOURCE
-    + '\nreturn { __residentBindInMemory, __residentSetStorage, __residentBootLazy, __residentNamespaceView };',
-)();
-storeSource.__residentBindInMemory(64 * 1024 * 1024);
+const storeSource = createResidentStore();
+storeSource.bindInMemory(64 * 1024 * 1024);
 const supervisor = {
   fsAcquire: (...args) => authority.acquire(...args),
   fsList: (...args) => authority.list(...args),
@@ -69,10 +66,10 @@ const supervisor = {
     return out;
   },
 };
-storeSource.__residentSetStorage(undefined, supervisor);
-assert.equal(await storeSource.__residentBootLazy(supervisor), true);
+storeSource.admission.setStorage(undefined, supervisor);
+assert.equal(await storeSource.sync.bootLazy(supervisor), true);
 const device = (await authority.stat('/')).dev;
-const view = storeSource.__residentNamespaceView(supervisor, device, USER);
+const view = storeSource.sync.namespaceView(supervisor, device, USER);
 
 /** A session that refuses every write with ENOSPC, as a full store does. */
 const refusing = new Proxy(authority, {

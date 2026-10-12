@@ -15,11 +15,11 @@
 
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
-import { FACET_RESIDENT_STORE_SOURCE } from '../../packages/worker/src/vfs/facet-resident-store.ts';
+import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
 import { RESIDENT_CHUNK_BYTES } from '../../packages/worker/src/vfs/facet-resident-limits.ts';
 
 /** workerd's `ctx.storage.sql`: exec(query, ...params) → synchronous cursor. */
-function sqlShim(meter) {
+function sqlShim(meter = undefined) {
   const db = new Database(':memory:');
   return {
     exec(query, ...params) {
@@ -47,16 +47,10 @@ function sqlShim(meter) {
   };
 }
 
-/** Evaluate the shipped source and hand back its internals. */
-function loadStore(meter) {
-  const factory = new Function(
-    FACET_RESIDENT_STORE_SOURCE
-      + '\nreturn { __residentBind, __residentAdmit, __residentFill, __residentClear,'
-      + ' __residentStamp, __residentCursor, __residentStats, __residentKeysUnder,'
-      + ' __residentHasUnder, __residentSeal, bundle: __nimbusResidentBundle };',
-  );
-  const store = factory();
-  store.__residentBind({ storage: { sql: sqlShim(meter) } });
+/** A fresh typed store over its own SQLite. */
+function loadStore(meter = undefined) {
+  const store = createResidentStore();
+  store.bind({ storage: { sql: sqlShim(meter) } });
   return store;
 }
 
@@ -73,7 +67,7 @@ const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
   );
   assert.throws(() => { s.bundle['a'] = 'x'; }, /sealed/, 'writes are sealed too');
   // …and the seal is genuinely liftable, so the check above is not vacuous.
-  s.__residentAdmit(CURSOR);
+  s.cells.admit(CURSOR);
   s.bundle['a'] = 'x';
   assert.equal(s.bundle['a'], 'x');
 }
@@ -81,7 +75,7 @@ const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
 {
   const s = loadStore();
   assert.throws(
-    () => s.__residentAdmit({ poison: false, paths: [] }),
+    () => s.cells.admit({ poison: false, paths: [] }),
     /no cursor/,
     'an acquire result with no cursor must leave the store sealed',
   );
@@ -92,13 +86,13 @@ const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
 
 {
   const s = loadStore();
-  s.__residentAdmit(CURSOR);
+  s.cells.admit(CURSOR);
   assert.throws(
-    () => s.__residentFill('a.txt', 'A', undefined),
+    () => s.cells.fill('a.txt', 'A', undefined),
     /no authority revision/,
     'an undated row cannot be invalidated, so it must not be writable',
   );
-  s.__residentFill('a.txt', 'A', 7);
+  s.cells.fill('a.txt', 'A', 7);
   assert.equal(s.bundle['a.txt'], 'A');
 }
 
@@ -106,11 +100,11 @@ const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
 
 {
   const s = loadStore();
-  s.__residentAdmit(CURSOR);
+  s.cells.admit(CURSOR);
   const bin = new Uint8Array([0, 1, 2, 250, 255]);
-  s.__residentFill('t.txt', 'café — 日本語', 7);
-  s.__residentFill('b.bin', bin, 7);
-  s.__residentFill('d', { error: 'EACCES' }, 7);
+  s.cells.fill('t.txt', 'café — 日本語', 7);
+  s.cells.fill('b.bin', bin, 7);
+  s.cells.fill('d', { error: 'EACCES' }, 7);
 
   assert.equal(s.bundle['t.txt'], 'café — 日本語', 'multi-byte text survives');
   assert.deepEqual(s.bundle['b.bin'], bin, 'binary stays binary');
@@ -128,16 +122,16 @@ const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
 
 {
   const s = loadStore();
-  s.__residentAdmit(CURSOR);
+  s.cells.admit(CURSOR);
   const big = new Uint8Array(RESIDENT_CHUNK_BYTES * 2 + 1234);
   for (let i = 0; i < big.length; i++) big[i] = (i * 7 + 3) & 0xff;
-  s.__residentFill('big.bin', big, 7);
-  const got = s.bundle['big.bin'];
+  s.cells.fill('big.bin', big, 7);
+  const got = /** @type {Uint8Array} */ (s.bundle['big.bin']);
   assert.equal(got.byteLength, big.length, 'a chunked file reassembles to its size');
   assert.deepEqual(got, big, 'and to its exact bytes');
 
   const bigText = 'ü'.repeat(RESIDENT_CHUNK_BYTES);
-  s.__residentFill('big.txt', bigText, 7);
+  s.cells.fill('big.txt', bigText, 7);
   assert.equal(s.bundle['big.txt'], bigText, 'chunked text reassembles exactly');
 }
 
@@ -145,16 +139,16 @@ const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
 
 {
   const s = loadStore();
-  s.__residentAdmit(CURSOR);
-  s.__residentFill('a.txt', 'A@7', 7);
-  s.__residentFill('b.txt', 'B@7', 7);
-  s.__residentFill('e.txt', 'E@7', 7);
+  s.cells.admit(CURSOR);
+  s.cells.fill('a.txt', 'A@7', 7);
+  s.cells.fill('b.txt', 'B@7', 7);
+  s.cells.fill('e.txt', 'E@7', 7);
   s.bundle['c.txt'] = 'C-mine'; // this facet's own write…
-  s.__residentStamp('c.txt', 9); // …flushed at the revision it produced
-  s.__residentStamp('b.txt', 99); // an acknowledgement dates own bytes, never a row it did not write
+  s.cells.stamp('c.txt', 9); // …flushed at the revision it produced
+  s.cells.stamp('b.txt', 99); // an acknowledgement dates own bytes, never a row it did not write
   s.bundle['d.txt'] = 'D-unflushed'; // own bytes the authority has not acknowledged
 
-  const applied = s.__residentAdmit({
+  const applied = s.cells.admit({
     poison: false,
     epoch: 'e1',
     rev: 10,
@@ -173,24 +167,24 @@ const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
   assert.equal(s.bundle['d.txt'], 'D-unflushed', 'unacknowledged own bytes survive any report');
   assert.deepEqual(applied.cursor, { epoch: 'e1', rev: 10 });
 
-  s.__residentAdmit({ poison: true, epoch: 'e2', rev: 0 });
+  s.cells.admit({ poison: true, epoch: 'e2', rev: 0 });
   assert.deepEqual(
     Object.keys(s.bundle),
     ['d.txt'],
     'a poison drops every row the authority dated, and none of the own bytes it never saw',
   );
-  assert.deepEqual(s.__residentCursor(), { epoch: 'e2', rev: 0 });
+  assert.deepEqual(s.coherence.cursor(), { epoch: 'e2', rev: 0 });
 }
 
 // ── slot handover ───────────────────────────────────────────────────────────
 
 {
   const s = loadStore();
-  s.__residentAdmit(CURSOR);
-  s.__residentFill('tenant/a.txt', 'previous tenant', 7);
-  s.__residentClear();
-  assert.equal(s.__residentStats().files, 0, 'a returned slot keeps no files');
-  assert.equal(s.__residentCursor(), null, 'and no cursor to vouch for them');
+  s.cells.admit(CURSOR);
+  s.cells.fill('tenant/a.txt', 'previous tenant', 7);
+  s.cells.clear();
+  assert.equal(s.cells.stats().files, 0, 'a returned slot keeps no files');
+  assert.equal(s.coherence.cursor(), null, 'and no cursor to vouch for them');
   assert.throws(
     () => s.bundle['tenant/a.txt'],
     /sealed/,
@@ -202,28 +196,28 @@ const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
 
 {
   const s = loadStore();
-  s.__residentAdmit(CURSOR);
+  s.cells.admit(CURSOR);
   for (const p of ['home/u/a.js', 'home/u/deep/b.js', 'home/user2/c.js', 'var/d.js']) {
-    s.__residentFill(p, 'x', 7);
+    s.cells.fill(p, 'x', 7);
   }
   assert.deepEqual(
-    s.__residentKeysUnder('home/u/').sort(),
+    s.cells.keysUnder('home/u/').sort(),
     ['home/u/a.js', 'home/u/deep/b.js'],
     'a prefix scan must not leak the sibling directory home/user2',
   );
-  assert.deepEqual(s.__residentKeysUnder('var/').sort(), ['var/d.js']);
-  assert.deepEqual(s.__residentKeysUnder('nothing/').sort(), []);
+  assert.deepEqual(s.cells.keysUnder('var/').sort(), ['var/d.js']);
+  assert.deepEqual(s.cells.keysUnder('nothing/').sort(), []);
 }
 
 // ── a path with SQL LIKE metacharacters ─────────────────────────────────────
 
 {
   const s = loadStore();
-  s.__residentAdmit(CURSOR);
-  s.__residentFill('od%d/a.js', 'x', 7);
-  s.__residentFill('odxd/b.js', 'y', 7);
+  s.cells.admit(CURSOR);
+  s.cells.fill('od%d/a.js', 'x', 7);
+  s.cells.fill('odxd/b.js', 'y', 7);
   assert.deepEqual(
-    s.__residentKeysUnder('od%d/').sort(),
+    s.cells.keysUnder('od%d/').sort(),
     ['od%d/a.js'],
     "'%' in a real path must be a literal, not a wildcard",
   );
@@ -243,22 +237,22 @@ const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
 {
   const meter = { selects: 0, contentReads: 0, contentBytes: 0 };
   const s = loadStore(meter);
-  s.__residentAdmit(CURSOR);
+  s.cells.admit(CURSOR);
   const body = 'x'.repeat(4096);
-  for (let i = 0; i < 400; i++) s.__residentFill(`usr/lib/node_modules/p${i % 20}/f${i}.js`, body, 7);
-  for (let i = 0; i < 400; i++) s.__residentFill(`var/other/f${i}.js`, body, 7);
+  for (let i = 0; i < 400; i++) s.cells.fill(`usr/lib/node_modules/p${i % 20}/f${i}.js`, body, 7);
+  for (let i = 0; i < 400; i++) s.cells.fill(`var/other/f${i}.js`, body, 7);
 
   meter.contentReads = 0; meter.contentBytes = 0; meter.selects = 0;
-  assert.equal(s.__residentHasUnder('usr/lib/node_modules/p3/'), true);
+  assert.equal(s.cells.hasUnder('usr/lib/node_modules/p3/'), true);
   assert.equal(meter.contentBytes, 0, 'a directory-existence question must read no file content');
   assert.equal(meter.selects, 1, 'and must be one query, not one per candidate path');
 
   meter.contentReads = 0; meter.contentBytes = 0;
-  assert.equal(s.__residentHasUnder('usr/lib/node_modules/nope/'), false);
+  assert.equal(s.cells.hasUnder('usr/lib/node_modules/nope/'), false);
   assert.equal(meter.contentBytes, 0, 'a negative answer must read no file content either');
 
   meter.contentReads = 0; meter.contentBytes = 0;
-  const under = s.__residentKeysUnder('usr/lib/node_modules/p3/');
+  const under = s.cells.keysUnder('usr/lib/node_modules/p3/');
   assert.equal(meter.contentBytes, 0, 'listing a subtree must read no file content');
   assert.ok(under.length > 0 && under.every((k) => k.startsWith('usr/lib/node_modules/p3/')),
     'and must return exactly that subtree');
@@ -285,19 +279,17 @@ const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
 // process's unflushed writes never reached the authority: they are not files.
 {
   const sql = sqlShim();
-  const make = () => new Function(
-    FACET_RESIDENT_STORE_SOURCE + '\nreturn { __residentBind, __residentAdmit, __residentFill, bundle: __nimbusResidentBundle };',
-  )();
+  const make = createResidentStore;
   const first = make();
-  first.__residentBind({ storage: { sql } });
-  first.__residentAdmit(CURSOR);
-  first.__residentFill('lib/x.js', 'X', 5);
+  first.bind({ storage: { sql } });
+  first.cells.admit(CURSOR);
+  first.cells.fill('lib/x.js', 'X', 5);
   first.bundle['tmp/unflushed.txt'] = 'never written back';
   const paths = () => sql.exec('SELECT path FROM file ORDER BY path').map((r) => r.path);
   assert.deepEqual(paths(), ['lib/x.js', 'tmp/unflushed.txt']);
 
   const next = make();
-  next.__residentBind({ storage: { sql } });
+  next.bind({ storage: { sql } });
   assert.deepEqual(paths(), ['lib/x.js'], 'the dead process\'s unflushed write is dropped; dated rows stay');
   assert.deepEqual(sql.exec("SELECT path FROM chunk WHERE path = 'tmp/unflushed.txt'"), [], 'with its bytes');
 }
@@ -305,17 +297,17 @@ const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
 // ── a subtree-scoped or structural report covers everything under it ───────
 {
   const s = loadStore();
-  s.__residentAdmit({ poison: false, paths: [], epoch: 'e1', rev: 5 });
-  s.__residentFill('d/a.txt', 'A', 4);
-  s.__residentFill('d/sub/b.txt', 'B', 6);
-  s.__residentFill('dx.txt', 'X', 4);
+  s.cells.admit({ poison: false, paths: [], epoch: 'e1', rev: 5 });
+  s.cells.fill('d/a.txt', 'A', 4);
+  s.cells.fill('d/sub/b.txt', 'B', 6);
+  s.cells.fill('dx.txt', 'X', 4);
   s.bundle['d/own.txt'] = 'mine';
-  const applied = s.__residentAdmit({ poison: false, paths: [{ path: 'd', rev: 6, subtree: true }], epoch: 'e1', rev: 6 });
+  const applied = s.cells.admit({ poison: false, paths: [{ path: 'd', rev: 6, subtree: true }], epoch: 'e1', rev: 6 });
   assert.deepEqual(applied.dropped.sort(), ['d/a.txt'], 'a row under it stamped below the report goes');
   assert.equal(s.bundle['d/sub/b.txt'], 'B', 'a row stamped at the report stays');
   assert.equal(s.bundle['d/own.txt'], 'mine', "the facet's own bytes stay");
   assert.equal(s.bundle['dx.txt'], 'X', 'a sibling that only shares the prefix is not covered');
-  s.__residentAdmit({ poison: false, paths: [{ path: 'd', rev: 7, structural: true }], epoch: 'e1', rev: 7 });
+  s.cells.admit({ poison: false, paths: [{ path: 'd', rev: 7, structural: true }], epoch: 'e1', rev: 7 });
   assert.equal(s.bundle['d/sub/b.txt'], undefined, 'a structural report covers the subtree too');
 }
 
