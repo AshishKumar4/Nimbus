@@ -326,6 +326,35 @@ const versionAt = (root, dir) => JSON.parse(root.readFileString(`${NM}/${dir}/pa
   assert.equal(root.exists(`${NM}/old`), false);
 }
 
+// ── a lock in step with package.json keeps its own flags ─────────────────
+//
+// load-virtual keeps what the lock says of each entry, and --omit reads
+// those flags: a devDependency the lock does not mark dev installs, a
+// dependency it marks dev does not, and an extraneous dev entry is kept but
+// omitted. Once the lock's root disagrees with package.json, the flags are
+// found again and what nothing reaches goes.
+{
+  const entry = (name, extra = {}) => ({ version: '1.0.0', resolved: tgz(name, '1.0.0'), integrity: `sha512-${name}`, ...extra });
+  const pkgJson = { name: 'flags', version: '1.0.0', dependencies: { p: '1.0.0' }, devDependencies: { d: '1.0.0' } };
+  const lock = {
+    name: 'flags', lockfileVersion: 3,
+    packages: {
+      '': { name: 'flags', version: '1.0.0', dependencies: { p: '1.0.0' }, devDependencies: { d: '1.0.0' } },
+      'node_modules/p': entry('p', { dev: true }),
+      'node_modules/d': entry('d'),
+      'node_modules/x': entry('x', { dev: true, extraneous: true }),
+      'node_modules/y': entry('y', { extraneous: true }),
+    },
+  };
+  const omitDev = makeInstaller(pkgJson, lock);
+  assert.deepEqual((await omitDev.installer.install(PROJ, { pid: 1, fromLockfile: true, production: true })).failed, [], omitDev.log.join('\n'));
+  assert.deepEqual(['p', 'd', 'x', 'y'].filter((name) => omitDev.root.exists(`${NM}/${name}`)), ['d', 'y'], 'the lock\'s dev flags decide what --omit=dev leaves out');
+
+  const suspect = makeInstaller({ ...pkgJson, dependencies: { p: '^1.0.0' } }, lock);
+  assert.deepEqual((await suspect.installer.install(PROJ, { pid: 1, fromLockfile: true, production: true })).failed, [], suspect.log.join('\n'));
+  assert.deepEqual(['p', 'd', 'x', 'y'].filter((name) => suspect.root.exists(`${NM}/${name}`)), ['p'], 'a suspect lock\'s flags are found again, and what nothing reaches goes');
+}
+
 // ── bundled entries: what a package bundles comes in its archive; what the project bundles installs ──
 //
 // npm records `inBundle` for both (node.inBundle); only a package's bundle
