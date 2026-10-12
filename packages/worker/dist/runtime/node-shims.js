@@ -1952,15 +1952,15 @@ const __fsMod = (() => {
       : typeMode | (isDir ? 0o755 : 0o644);
   }
 
-  // \`own\`: the path is this process's own (the namespace's overlay of its
-  // effects), so a first stat fixes its time once. Any other path's times
-  // come from its metadata (_statObject), and recording one per stat grew a
-  // map entry for every file a program ever stats.
-  function _localStatObject(k, isDir, isSymlink, size, mode, uid, gid, own = false) {
+  // A path that is this process's own (the namespace's overlay of its
+  // effects): a first stat fixes its time once. Any other path's times come
+  // from its metadata (_statObject), which records nothing: one record per
+  // stat grew a map entry for every file a program ever stats.
+  function _localStatObject(k, isDir, isSymlink, size, mode, uid, gid) {
     const time = _localTimes[k];
     const mtimeMs = Number.isFinite(time?.mtimeMs) ? time.mtimeMs
       : Number.isFinite(_ownWriteTimes[k]) ? _ownWriteTimes[k]
-      : own ? (_ownWriteTimes[k] = Date.now()) : Date.now();
+      : (_ownWriteTimes[k] = Date.now());
     const atimeMs = Number.isFinite(time?.atimeMs) ? time.atimeMs : mtimeMs;
     return _newStats(_statMode(k, isDir, isSymlink, mode), uid, gid, undefined, size, atimeMs, mtimeMs, mtimeMs);
   }
@@ -3893,13 +3893,11 @@ const __fsMod = (() => {
   // record, or for a link's own times (\`follow\` false) the call of that name.
   function _utimesQueued(absPath, time, follow, syscall, p) {
     const k = _strip(absPath);
-    const supervisor = _supervisor();
     return _queueStructuralMutation(
       absPath, syscall, p,
       () => (follow
         ? _vfsOp({ type: "setattr", path: k, attrs: { atime: time.atimeMs, mtime: time.mtimeMs } })
         : _vfsCall({ call: "lutimes", path: k, atime: time.atimeMs, mtime: time.mtimeMs })),
-      () => _flushParkedWrite(absPath, supervisor),
     );
   }
 
@@ -3961,12 +3959,7 @@ const __fsMod = (() => {
   function _chmodQueued(absPath, mode, syscall, p) {
     const k = _strip(absPath);
     _localModes[k] = mode;
-    const supervisor = _supervisor();
-    return _queueStructuralMutation(
-      absPath, syscall, p,
-      () => _vfsOp({ type: "setattr", path: k, attrs: { mode } }),
-      () => _flushParkedWrite(absPath, supervisor),
-    );
+    return _queueStructuralMutation(absPath, syscall, p, () => _vfsOp({ type: "setattr", path: k, attrs: { mode } }));
   }
 
   async function _chmodAsync(p, mode) {
@@ -4358,7 +4351,7 @@ const __fsMod = (() => {
     // own mode and times for it are kept under that name.
     const key = noFollow ? k : (_nsLandingKey(k) ?? k);
     return meta.own
-      ? _localStatObject(key, meta.type === "directory", false, meta.size, meta.mode & 0o7777, meta.uid, meta.gid, true)
+      ? _localStatObject(key, meta.type === "directory", false, meta.size, meta.mode & 0o7777, meta.uid, meta.gid)
       : _statObject(meta, key);
   }
 
