@@ -323,6 +323,8 @@ for (const words of [['add', 'f'], ['checkout', '-b', 'noncone'], ['commit', '-a
     ['[core]\n\trepositoryformatversion = 1\n[extensions]\n\tcompatobjectformat = sha256\n', 'compatobjectformat'],
     ['[core]\n\trepositoryformatversion = 2\n', 'version 2'],
     ['[core]\n\trepositoryformatversion = 0\n[extensions]\n\tobjectformat = sha256\n', 'a v1-only extension in a version 0 repository'],
+    ['[core]\n\trepositoryformatversion = 1\n[extensions]\n\tsomethingNew = true\n', 'an extension git 2.53 does not know'],
+    ['[core]\n\trepositoryformatversion = 1\n[Extensions]\n\tObjectFormat = sha256\n', 'objectformat, spelled in mixed case'],
   ];
   for (const [n, [config, what]] of formats.entries()) {
     const dir = `formatted${n}`;

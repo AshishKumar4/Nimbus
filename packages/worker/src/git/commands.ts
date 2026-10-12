@@ -994,10 +994,12 @@ async function discoverRepo(vfs: ProjectFs, cwd: string): Promise<GitRepo | null
  * extensions it honors (sha1 objects, files refs, worktreeConfig, a partial
  * clone's promisor, precious objects: it deletes none) or that change
  * nothing (noop, relativeWorktrees: it makes no linked worktree). Any
- * other, or a v1-only extension in a version 0 repository (git refuses
- * that), and a layout it does not implement (GitRepo.linked) are real
- * git's: refused before anything is read or written, so the front door
- * hands the invocation over, or names the refusal without real git.
+ * other extension a version 1 repository declares, a v1-only one in a
+ * version 0 repository (git refuses both), and a layout it does not
+ * implement (GitRepo.linked) are real git's: refused before anything is
+ * read or written, so the front door hands the invocation over, or names
+ * the refusal without real git. A version 0 repository's unknown
+ * extensions are ignored, as git ignores them.
  */
 const V0_EXTENSIONS: Readonly<Record<string, (value: string) => boolean>> = {
   noop: () => true,
@@ -1016,7 +1018,7 @@ const V1_EXTENSIONS: Readonly<Record<string, (value: string) => boolean>> = {
 type GitLibrary = Awaited<ReturnType<typeof getGit>>;
 
 async function assertRepositoryImplemented(
-  git: Pick<GitLibrary, 'getConfig'>,
+  git: Pick<GitLibrary, 'getConfig' | 'getConfigNames'>,
   fs: Parameters<GitLibrary['getConfig']>[0]['fs'],
   repo: GitRepo,
 ): Promise<void> {
@@ -1037,10 +1039,15 @@ async function assertRepositoryImplemented(
   if (!(version === 0 || version === 1)) {
     throw new UnsupportedGitOperation(`fatal: repository format version ${version} is not supported here\n`, 128);
   }
-  for (const [name, honored] of Object.entries({ ...V0_EXTENSIONS, ...V1_EXTENSIONS })) {
-    const set = await value(`extensions.${name}`);
-    if (set === undefined) continue;
+  // Every extension the repository declares: git 2.53 refuses an unknown one in a version 1 repository, and ignores it in version 0.
+  for (const name of await git.getConfigNames({ fs, gitdir: repo.gitdir, section: 'extensions' })) {
+    const set = await value(`extensions.${name}`) ?? '';
     const v1Only = Object.hasOwn(V1_EXTENSIONS, name);
+    const honored = V0_EXTENSIONS[name] ?? V1_EXTENSIONS[name];
+    if (honored === undefined) {
+      if (version === 0) continue;
+      throw new UnsupportedGitOperation(`fatal: a repository with extensions.${name} is not supported here\n`, 128);
+    }
     if (v1Only && version === 0) {
       throw new UnsupportedGitOperation(`fatal: extensions.${name} in a version 0 repository is not supported here\n`, 128);
     }
