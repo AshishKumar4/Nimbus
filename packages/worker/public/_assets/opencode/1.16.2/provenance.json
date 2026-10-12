@@ -1,0 +1,58 @@
+{
+  "artifact": "opencode",
+  "source": {
+    "version": "1.16.2",
+    "commit": "76c631d198f9ff620e15468e45f3457d50481b57",
+    "url": "https://github.com/sst/opencode",
+    "inputs": {
+      "packages/worker/scripts/artifact-inputs.mjs": "b0c9307e6f6f13bae05ccf99ab22cf7a715553b8c6f46dbbddfef0181a2f7115",
+      "packages/worker/scripts/opencode/build-node.ts": "1ec9e1a4653b06afad16e8902cc165739b57fc078e438c8b4549640396eb6a91",
+      "packages/worker/scripts/opencode/bundle-patches.ts": "091e620065cb87a938e238b5a52ebb672721e73434cfbbfc8d4ada8497649aca",
+      "packages/worker/scripts/opencode/inputs.mjs": "0dd15212e85188bd51b2970c1b0908b044aabfd4535970a4c8794fd7071db0cc",
+      "packages/worker/scripts/opencode/nimbus-defer-global-io.patch": "63caa2b2ae778a570b759fb7ec39d3c19ab8fbddbd8491aa34915eb3ae5523da",
+      "packages/worker/scripts/opencode/nimbus-tree-sitter-exports.patch": "63a643a0827e88630e88614e354ddcc963937285ed7a256a8174416850841361",
+      "packages/worker/scripts/opencode/stubs/bun-ffi-shim.ts": "51c25d480b4050b4291ddaf9a071224b19c1eec8a15a5b587020e4e4be062e55",
+      "packages/worker/scripts/opencode/stubs/bun-shim.ts": "1bb529f231d0f5d8fedb82a068ed658ee63e04faf290ff4ee9799ad006e44ffe",
+      "packages/worker/scripts/opencode/stubs/bun-sqlite-shim.ts": "7c7ee4688dfa1309cf8b074974a1aa5beaf018908f1a97f0cdc55011390be18b",
+      "packages/worker/scripts/opencode/stubs/opentui-native-stub.ts": "349055f996af793fc57a60450a60eea0e6aeae21308e0f73368ac38cfcfad969",
+      "packages/worker/scripts/opencode/stubs/pty-stub.ts": "b169c1ff0bd8cdfbacedb36bea2eedc8fec30e09bdbcd3eb8fd2647185fa8772",
+      "packages/worker/scripts/stage-asset.mjs": "2187cb40e0491884adea0ae5deb543205f431e995a4e1e3a726d93d4e1173929",
+      "scripts/ci/rebuild-opencode.mjs": "7e9e8fed7848dfe1fc23fa6d064157112dd5e5b13eea67c9e06cbd0d25eadcf5",
+      "toolchain#bun": "74b860b3270666137a4d543c3e3d1e4e473d54636f7593d1c17bf693e6540bbe"
+    },
+    "catalogSnapshotSha256": "47762e1d6c662e747ae6dc3eff4a1684e77e63bc897728795259523ce594cb8e",
+    "upstreamInputs": {
+      "bun.lock": "c15b26e504af4becd51da3455e5d5eccccb3fe249ffa13ccc0df001fbe8d089e",
+      "package.json": "ff39c5bde8c20f721b37b740de12a8187cef57cf4407bc53d8bcee46df443f77"
+    }
+  },
+  "toolchain": {
+    "bun": "1.4.0"
+  },
+  "outputs": {
+    "bip-bop-01-ga21wr3r.mp3": "129765d4203f92ecb36ba17553b037ebf4daf28ebb56013b3896d3e7e36f2d74",
+    "bip-bop-03-kgfd4rq4.mp3": "82b992e5dc5cfdc4d7206e0cd12d3132fa76ae30f8af51ec4cc216ba15f1afcd",
+    "chunks.json": "fe093c16fc909ae101dfcbee40b288ee14f18f8455d0afc0ffcb9d29b799eede",
+    "highlights-eq9cgrbb.scm": "8e823819058d480c450ca4ef377a05675f6ed6f7c0460a69b972cdbe940c0893",
+    "highlights-ghv9g403.scm": "c90e849891a3c8698992e10efdeaff7e7a8f98da47f941489566cb9e60f639b5",
+    "highlights-hk7bwhj4.scm": "f2232f0fde717543e4541cec871dd8633cb9bc6b5d1686a56b2d469c1dd9e6b6",
+    "highlights-r812a2qc.scm": "f3b02df1a9213cfecfb6936bce8db2f777edd523fc23ed890695e6cb4552d556",
+    "highlights-x6tmsnaa.scm": "ca9a109ddd21c5ffdc6b84f00c0a4b2eeb55ae36a0b8eeb9b02348269c5acd22",
+    "index.js": "9ba07e467067dd66fed29ec50a78e009d959804267a93464acec1a4839ca9c27",
+    "injections-73j83es3.scm": "a2bf8c052454acbe765970a4ad2706c60cad7b62a762b927e28f60af1a0ef516",
+    "nope-03-2z8weyjw.mp3": "9832805f84dcdb4a8ccb46a98cc75def72b52509610837938ed8343b2537df0c",
+    "parser.worker.js": "14f49fe137af83c419760459451a9bde63d745f8a10d94ccd71246909928124b",
+    "photon_rs_bg-bq08arze.wasm": "10468181565c56004c867f3a4af96f89a0ef5a63a72f2b5fb12c1f1992a3615c",
+    "staplebops-06-rz29m246.mp3": "eb87d63312ac11b1ceb1a8b348057dfe4d1166d5a85dc79778fe69d458f4c097",
+    "tree-sitter-3jzf13jk.wasm": "f38dcc4b43b818f9a0785bc1c6d5611a75ac4cdd428ff3f02757c34ca4e46d7f",
+    "tree-sitter-bash-hq5s6fxb.wasm": "364f0a2cd385c792239423026ef442dbd073d34c396b7bc9e5932426b8e4aa5d",
+    "tree-sitter-javascript-nd0q4pe9.wasm": "5fb488d0cabb4775a594bab85682de5ad6ce83c0d6ac997a9f82dd084d571240",
+    "tree-sitter-markdown_inline-j5349f42.wasm": "9bbd71a70a23f6d0193bb162a72eecf2a2bd9ce76910d7ad3da9c5f80f122671",
+    "tree-sitter-markdown-411r6y9b.wasm": "3e13182f21373634c40653f170e6f2d2790914eb2c243927086d79023c534f7a",
+    "tree-sitter-powershell-ryb2ffqs.wasm": "1d30b5a21866354aa2eb94845556f1e19126ff00e3335048719a0e6435b1c154",
+    "tree-sitter-typescript-zxjzwt75.wasm": "778025db5a8be0e70f8ccc3671e486dfeddd048c25d9e8a70c26de2e1bf6f97d",
+    "tree-sitter-zig-e78zbjpm.wasm": "54b3b83dd9c62da5815f06132bc3fc914d9dcc780370b32416446a0b7969e8c6",
+    "yoga.wasm": "7ba9c9483c8c38a468e9aef4a95ed72fad8a43594be8e5123eb3bdb6479edf5b",
+    "yup-01-30ecpeh9.mp3": "b227d0516dfa1eda3b250635cce19e040af3f9cee443a8bb4b5a80990bca3f58"
+  }
+}

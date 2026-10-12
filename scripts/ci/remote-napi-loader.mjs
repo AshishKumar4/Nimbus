@@ -11,15 +11,19 @@
 //   bun scripts/ci/remote-napi-loader.mjs [<commit>]
 //
 // Run it in the lane's worktree. <commit> defaults to HEAD; what is built is
-// the commit, never the working tree. The files are written into the worktree
-// only when <commit> is its HEAD and none of them has local changes;
-// otherwise the archive is saved and its path printed. Then commit them, and
-// run scripts/ci/remote-build.mjs for the dist fixpoint.
+// the commit, never the working tree. Exit 0: the build reproduces the
+// commit's staged files byte for byte, and nothing is written. Exit 1: the
+// build failed, or the staged files differ: they are written into the
+// worktree when <commit> is its HEAD and none of them has local changes,
+// else left in the saved archive, whose path is printed. Then commit them,
+// and run scripts/ci/remote-build.mjs for the dist fixpoint. A stale binding
+// is not this run's: the staging names the remote-napi-binding.mjs run that
+// rebuilds it with the loader. Exit 2: not graded.
 import { spawnSync } from 'node:child_process';
 import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { mapOnArmada } from './lib/armada.mjs';
-import { extract, FILES_MARK, keepArchive, keptAs, splitArchive, writeRefusal } from './lib/remote-artifacts.mjs';
+import { differences, extract, FILES_MARK, keepArchive, keptAs, splitArchive, writeRefusal } from './lib/remote-artifacts.mjs';
 
 const git = (args) => {
   const done = spawnSync('git', args, { encoding: 'utf8' });
@@ -59,13 +63,23 @@ const r = await mapOnArmada({ repo, sha, files: [], items: [1], label: `napi-was
 const { log: rest, archive } = splitArchive(r.outputs?.[0] ?? r.outcomes?.[0]?.tail ?? '');
 const [log, provenance = ''] = rest.split('---PROVENANCE---');
 console.log(log.trim());
+if (r.outcomes?.[0]?.kind !== 'exited') {
+  console.error(`remote-napi-loader: armada could not run the build (job ${r.jobId}, ${r.outcomes?.[0]?.kind} ${r.outcomes?.[0]?.exitCode}); not graded`);
+  process.exit(2);
+}
 if (archive === null) {
-  console.error(`remote-napi-loader: the build returned no files (outcome ${r.outcomes?.[0]?.kind} ${r.outcomes?.[0]?.exitCode})`);
+  console.error(`remote-napi-loader: the build returned no files (exit ${r.outcomes[0].exitCode})`);
   process.exit(1);
 }
 console.log(provenance.trim());
 const saved = `${keptAs('remote-napi-loader', sha.slice(0, 12))}.tar.xz`;
 const members = keepArchive(saved, archive);
+const differing = differences(repo, sha, saved, members, [STAGED[0]]);
+if (differing.length === 0) {
+  console.log(`remote-napi-loader: the loader rebuilds ${sha.slice(0, 12)}'s staged files byte for byte (archive ${saved})`);
+  process.exit(0);
+}
+for (const path of differing) console.log(`different ${path}`);
 // STAGED is repository-relative, whatever directory this runs from.
 const refusal = writeRefusal(repo, sha, STAGED);
 if (refusal !== null) {
@@ -76,3 +90,4 @@ const loaderDir = join(repo, STAGED[0]);
 if (existsSync(loaderDir)) rmSync(loaderDir, { recursive: true, force: true });
 extract(repo, saved, members);
 console.log(`remote-napi-loader: wrote the staged loader and napi-wasm-artifacts.generated.ts (archive ${saved}). Review and commit them, then run scripts/ci/remote-build.mjs.`);
+process.exit(1);

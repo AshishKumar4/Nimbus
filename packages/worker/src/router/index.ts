@@ -60,6 +60,8 @@ import {
   requireSessionPin,
   authErrorResponse,
   setNimbusTokenCookie,
+  enforceSessionCookieCapacity,
+  sessionCookieMigration,
   NIMBUS_TOKEN_QUERY,
   NimbusAuthError,
   NimbusBootstrapConsumedError,
@@ -68,6 +70,7 @@ import {
   ATTACH_BOOTSTRAP_TTL_MS,
   type NimbusAuthEnv,
   type VerifiedNimbusToken,
+  type VerifiedNimbusRequestToken,
 } from '../auth/index.js';
 import { authorizeRequest } from '../auth/middleware.js';
 import { hasJwtSecret } from '../auth/token.js';
@@ -362,7 +365,7 @@ export function createNimbusHandler(
       ) {
         // Land on the path that was actually requested — the app owns it;
         // the exchange only strips the token from the query.
-        return handleAttachExchange(url, preview.sid, env, {
+        return handleAttachExchange(url, preview.sid, env, request.headers.get('Cookie'), {
           redirectPath: url.pathname,
           singleUseScope: 'session:preview',
           reusableScope: null,
@@ -390,7 +393,11 @@ export function createNimbusHandler(
           basePath: '',
         },
         env,
-        { tenantSegment: auth.tenantSegment },
+        {
+          tenantSegment: auth.tenantSegment,
+          migrateSessionCookies: auth.verified ? sessionCookieMigration(
+            request.headers.get('Cookie'), auth.verified, preview.sid) : [],
+        },
       );
     }
 
@@ -484,7 +491,7 @@ export function createNimbusHandler(
         && url.searchParams.get(NIMBUS_TOKEN_QUERY)
         && resolveAuthMode(env, explicitMode) === 'enforce'
       ) {
-        return handleAttachExchange(url, route.sessionId, env, {
+        return handleAttachExchange(url, route.sessionId, env, request.headers.get('Cookie'), {
           redirectPath: `${SESSION_ROUTE_PREFIX}/${route.sessionId}/`,
           singleUseScope: 'session:bootstrap',
           reusableScope: 'session:attach',
@@ -606,6 +613,8 @@ export function createNimbusHandler(
         ...(auth.verified?.claims.scopes !== undefined
           ? { callerScopes: auth.verified.claims.scopes }
           : {}),
+        migrateSessionCookies: auth.verified ? sessionCookieMigration(
+          request.headers.get('Cookie'), auth.verified, route.sessionId) : [],
       });
     }
 
@@ -686,7 +695,7 @@ function isLegacyRootPath(pathname: string): boolean {
  */
 interface ResolvedNimbusRouteAuth {
   tenantSegment: string;
-  verified: VerifiedNimbusToken | null;
+  verified: VerifiedNimbusRequestToken | null;
 }
 
 /** Resolve the effective auth mode. Single source of truth for the
@@ -768,6 +777,7 @@ async function handleAttachExchange(
   url: URL,
   sessionId: string,
   env: any,
+  cookieHeader: string | null,
   options: {
     redirectPath: string;
     /** Scope a single-use (`jti`) token must carry at this entry point. */
@@ -800,8 +810,6 @@ async function handleAttachExchange(
       if (verified.claims.sid === undefined) {
         throw new NimbusTokenClaimsError('single-use attach token missing sid');
       }
-      const fresh = await consumeAttachBootstrap(env, verified.doInstanceName, sessionId, verified.claims.jti);
-      if (!fresh) throw new NimbusBootstrapConsumedError();
       cookieTtlMs = DEFAULT_TOKEN_TTL_MS;
     } else {
       if (options.reusableScope === null) {
@@ -815,15 +823,26 @@ async function handleAttachExchange(
       singleUse: false,
     });
     const cookieExpSec = Math.floor(Date.now() / 1000) + Math.floor(cookieTtlMs / 1000);
+    const cookie = setNimbusTokenCookie(cookieToken, cookieExpSec, sessionId);
+    // Signing is pure. Every issuance limit runs before the only mutating
+    // step, so a refused exchange leaves its single-use URL retryable.
+    enforceSessionCookieCapacity(cookieHeader, cookie);
+    if (verified.claims.jti !== undefined) {
+      const fresh = await consumeAttachBootstrap(env, verified.doInstanceName, sessionId, verified.claims.jti);
+      if (!fresh) throw new NimbusBootstrapConsumedError();
+    }
 
     const clean = new URL(url);
     clean.searchParams.delete(NIMBUS_TOKEN_QUERY);
     clean.pathname = options.redirectPath;
+    // An exchange authenticates by its query, not by the legacy cookie.
+    // Only actual legacy-cookie use expires that credential (and its sid).
+    const setCookies = [cookie];
     const headers = new Headers({
       Location: clean.pathname + clean.search,
-      'Set-Cookie': setNimbusTokenCookie(cookieToken, cookieExpSec),
       'Cache-Control': 'no-store',
     });
+    for (const value of setCookies) headers.append('Set-Cookie', value);
     if (options.embeddedNavigation) headers.set('Cross-Origin-Resource-Policy', 'cross-origin');
     return new Response(null, { status: 302, headers });
   } catch (e) {

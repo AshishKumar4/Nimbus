@@ -176,6 +176,7 @@ export async function verifyNimbusToken(env, token) {
     return {
         claims,
         doInstanceName: `${claims.tn}:${claims.sub ?? '_'}`,
+        raw: token,
     };
 }
 // ── Internal helpers ─────────────────────────────────────────────────────

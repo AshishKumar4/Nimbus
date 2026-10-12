@@ -29,7 +29,8 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { changedInputs, oxcWasmInputs } from './oxc-wasm/inputs.mjs';
+import { oxcWasmInputs } from './oxc-wasm/inputs.mjs';
+import { assertCurrentInputs } from './artifact-inputs.mjs';
 import { sha256Hex as sha256 } from './stage-asset.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -61,10 +62,8 @@ if (provenance.artifact !== 'nimbus-oxc') fail(`${src.provenance} describes ${pr
 if (provenance.outputs?.['nimbus-oxc.wasm']?.sha256 !== digest) {
   fail(`${src.wasm} sha256 ${digest} does not match its provenance.json (${provenance.outputs?.['nimbus-oxc.wasm']?.sha256})`);
 }
-const stale = changedInputs(provenance.source?.inputs, await oxcWasmInputs());
-if (stale.length) {
-  fail(`${src.wasm} was built from other inputs than this tree's (${stale.join(', ')}); rebuild it with scripts/oxc-wasm/build.mjs and stage that build`);
-}
+assertCurrentInputs('nimbus-oxc', provenance.source?.inputs, await oxcWasmInputs(),
+  'bun packages/worker/scripts/oxc-wasm/build.mjs --work <dir> --out <dir>, then NIMBUS_OXC_WASM_ARTIFACTS=<out> node packages/worker/scripts/bundle-oxc-wasm.mjs');
 const memoryPages = provenance.wasm?.memoryInitialPages;
 if (!Number.isInteger(memoryPages) || memoryPages <= 0) fail(`${src.provenance} records no memoryInitialPages`);
 
