@@ -177,12 +177,13 @@ try {
     }
     // The name the program gives is the one presented and checked: the right one connects and is
     // the server's SNI; a wrong one is refused at the session, and nothing the program sends
-    // reaches the server. (workerd's startTls checks the certificate once the handshake is done,
-    // and reports the refusal at the first write as an internal error.)
+    // reaches the server. As workerd's startTls stands, the certificate is checked once the
+    // handshake is done: the program sees secureConnect, then an internal error at its first
+    // write. Pinned as it is, so this fails when workerd checks before `opened`.
     const names = await run(`
       const tls = require('tls');
       const ask = (servername) => new Promise((resolve) => {
-        const socket = tls.connect({ host: ${JSON.stringify(lan)}, port: ${fixturePort}, servername });
+        const socket = tls.connect({ host: ${JSON.stringify(lan)}, port: ${fixturePort}, servername }, () => console.log(servername, 'secureConnect'));
         socket.write('hello\\n');
         socket.setEncoding('utf8');
         let body = '';
@@ -195,7 +196,8 @@ try {
     assert.equal(names.status, 0, names.stdout);
     assert.match(names.stdout, /fixture\.nimbus\.test answer "name fixture\.nimbus\.test"/);
     assert.doesNotMatch(names.stdout, /fixture\.nimbus\.test failed/);
-    assert.match(names.stdout, /wrong\.nimbus\.test failed /);
+    assert.match(names.stdout, /fixture\.nimbus\.test secureConnect/);
+    assert.match(names.stdout, /wrong\.nimbus\.test secureConnect[\s\S]*?wrong\.nimbus\.test failed internal error; reference = /);
     assert.match(names.stdout, /wrong\.nimbus\.test answer ""/);
     for (const deadline = Date.now() + 5000; !/GOT fixture\.nimbus\.test/.test(fixtureOut) && Date.now() < deadline;) {
       await new Promise((resolve) => setTimeout(resolve, 100));

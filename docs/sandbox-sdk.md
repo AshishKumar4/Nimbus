@@ -165,7 +165,11 @@ pool and fanout takes a network; Nimbus's own work states `ISOLATE_NETWORK`.
 | Nimbus's own traffic (R2, runtime catalog, OAuth, AI, static assets, its Durable Objects) | no |
 
 HTTPS made by fetch or `https` is unaffected by the TLS limit: it is a
-request, not a socket. A session's processes keep their network across an
+request, not a socket. With a `servername` other than the host, an egress on
+workerd makes the session with `startTls({ expectedServerHostname })`, which
+checks the certificate only after the handshake: a certificate that fails
+shows up at the program's first write, as an internal error, not before
+`secureConnect`. No byte the program writes reaches the server. A session's processes keep their network across an
 instance reset: a launch the reset interrupted is re-driven through the same
 egress, before or without a reconnect.
 
