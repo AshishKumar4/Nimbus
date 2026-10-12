@@ -43,6 +43,8 @@ export interface NpmInstallPort {
         saveOptional?: boolean;
         /** `--force`: a peer conflict the project owns is a warning, not ERESOLVE. */
         force?: boolean;
+        /** `--strict-peer-deps`: any peer conflict is ERESOLVE unless forced. */
+        strictPeerDeps?: boolean;
         /** `--legacy-peer-deps`: peers are not installed, nor checked. */
         legacyPeerDeps?: boolean;
         /** `--omit=optional` / `--omit=peer`: what only optional or only peer dependencies need is planned, and not installed. */

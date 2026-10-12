@@ -12,7 +12,10 @@
 // supervisor chose (`pkgDir`), root or nested: `manifestFor(p)`, its
 // package.json (by default its name and version), and `filesFor(p)`'s other
 // files (path in the package → content: what its archive bundles), unless
-// `failFor(p)` names why it fails there.
+// `failFor(p)` names why it fails there. `crashFor(p)` makes the shard
+// itself fail when it reaches p: 'before' writing it, or 'after' (its
+// outcome lost, as a timed-out execution's). Each task settles on its own,
+// as the peer shard settles each.
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { NpmInstaller } from '../../packages/worker/src/npm/installer.ts';
@@ -26,7 +29,7 @@ export function kernelInstaller(vfs, sql, opts) {
   return installer;
 }
 
-export function makeFanoutEnv({ root, NM, resultFor, shardsSeen = [], log = [], failFor = () => null, manifestFor = (p) => ({ name: p.name, version: p.version }), filesFor = () => ({}) }) {
+export function makeFanoutEnv({ root, NM, resultFor, shardsSeen = [], log = [], failFor = () => null, crashFor = () => null, manifestFor = (p) => ({ name: p.name, version: p.version }), filesFor = () => ({}) }) {
   const fanoutReply = (args) => {
     if (args[0] && Array.isArray(args[0].packages)) {
       // The install shard: write each package's package.json so the
@@ -34,6 +37,7 @@ export function makeFanoutEnv({ root, NM, resultFor, shardsSeen = [], log = [], 
       return { results: args.map((shard) => {
         shardsSeen.push(...shard.packages.map((p) => p.name));
         const perPackage = shard.packages.map((p) => {
+          if (crashFor(p) === 'before') throw new Error(`shard crashed before ${p.name}`);
           const errorText = failFor(p);
           if (errorText) return { name: p.name, version: p.version, pkgDir: p.pkgDir, fileCount: 0, bytesWritten: 0, elapsed: 1, warnings: [], errorText };
           const dir = p.pkgDir ?? `${NM}/${p.name}`;
@@ -43,6 +47,7 @@ export function makeFanoutEnv({ root, NM, resultFor, shardsSeen = [], log = [], 
             root.mkdir(`${dir}/${path.slice(0, path.lastIndexOf('/'))}`, { recursive: true });
             root.writeFile(`${dir}/${path}`, content);
           }
+          if (crashFor(p) === 'after') throw new Error(`shard crashed after ${p.name}`);
           return { name: p.name, version: p.version, pkgDir: p.pkgDir, fileCount: 1, bytesWritten: 40, elapsed: 1, warnings: [] };
         });
         return {
@@ -65,7 +70,15 @@ export function makeFanoutEnv({ root, NM, resultFor, shardsSeen = [], log = [], 
         return {
           async supervisorOp(envelope) {
             const [_fnSource, args] = envelope.args;
-            return { results: fanoutReply(args).results.map((value) => ({ ok: true, value })) };
+            return {
+              results: args.map((arg) => {
+                try {
+                  return { ok: true, value: fanoutReply([arg]).results[0] };
+                } catch (error) {
+                  return { ok: false, message: error.message };
+                }
+              }),
+            };
           },
         };
       },

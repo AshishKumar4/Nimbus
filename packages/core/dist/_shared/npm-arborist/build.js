@@ -140,7 +140,7 @@ export class Builder {
             if (edge.valid && edge.to)
                 continue;
             const parentEdge = root.edgesOut.get(edge.name);
-            const conflictOK = this.options.force === true || !source.isProjectRoot;
+            const conflictOK = this.options.force === true || (!source.isProjectRoot && this.options.strictPeerDeps !== true);
             if (!edge.to) {
                 if (!parentEdge) {
                     // An optional peer is never placed for its package: it only

@@ -25,6 +25,8 @@ export interface NpmInstallInvocation {
     saveOptional: boolean;
     /** `-f` / `--force`: a peer conflict the project owns is a warning, not ERESOLVE. */
     force: boolean;
+    /** `--strict-peer-deps`: any peer conflict is ERESOLVE unless forced, not only the project's. */
+    strictPeerDeps: boolean;
     /** `--legacy-peer-deps`: peers are neither installed nor checked, as npm 6 did. */
     legacyPeerDeps: boolean;
     /** `--omit=optional` (or `--no-optional`): what only optional dependencies need is not installed. */

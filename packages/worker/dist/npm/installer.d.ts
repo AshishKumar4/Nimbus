@@ -71,11 +71,13 @@ export interface NpmInstallOptions {
     savePrefix?: string;
     /** `--force`: a peer conflict the project owns is a warning. */
     force?: boolean;
+    /** `--strict-peer-deps`: any peer conflict is ERESOLVE unless forced. */
+    strictPeerDeps?: boolean;
     /** `--legacy-peer-deps`: peers are neither installed nor checked. */
     legacyPeerDeps?: boolean;
     /** `--prefer-dedupe`: one copy serves every edge it can, an older one included. */
     preferDedupe?: boolean;
-    /** A global prefix's install: npm's shallow layout, and its installed packages are its roots. */
+    /** A global prefix's install: npm's shallow layout, and only what is named is built and changed. */
     global?: boolean;
     /** The command's: an install it stops before publication changes nothing; one waiting for the tree never starts. */
     signal?: AbortSignal;
@@ -208,8 +210,8 @@ export declare class NpmInstaller {
      * The install's roots (core npm-tree.ts projectRoots): every declared
      * dependency, and the packages named on the command line (`npm install
      * react react-dom@18.2.0`), explicit requests saved where npm saves them
-     * (namedPackages); a global prefix's installed packages are its roots
-     * too. What cannot run here is named by the advisory pass below, and a
+     * (namedPackages); a global prefix's roots are only what is named.
+     * What cannot run here is named by the advisory pass below, and a
      * swap rewrites a root's range to its target (applyW6Registry); nothing a
      * project declares is quietly left out of node_modules.
      */
@@ -256,7 +258,8 @@ export declare class NpmInstaller {
     private removePlacements;
     /**
      * npm ci: the tree package-lock.json (or npm-shrinkwrap.json) records,
-     * checked against package.json first, each placement as it is locked.
+     * each placement as it is locked, and whether the lock is suspect: its
+     * root declares other dependencies than package.json (lockRootMatches).
      * The ABI policy the resolver applies still holds: what cannot run here
      * is left out where the plan finds it optional and refused where it is
      * required, and a swapped package resolves its swap target at the locked

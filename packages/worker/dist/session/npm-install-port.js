@@ -25,6 +25,7 @@ export function createNpmInstallPort(self) {
                 saveDev: spec.saveDev,
                 saveOptional: spec.saveOptional,
                 force: spec.force,
+                strictPeerDeps: spec.strictPeerDeps,
                 legacyPeerDeps: spec.legacyPeerDeps,
                 omitOptional: spec.omitOptional,
                 omitPeer: spec.omitPeer,

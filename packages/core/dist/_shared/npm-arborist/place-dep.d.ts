@@ -39,6 +39,7 @@ export declare class Placer<H extends HostPackages> {
         readonly force?: boolean;
         readonly global?: boolean;
         readonly preferDedupe?: boolean;
+        readonly strictPeerDeps?: boolean;
     }, edgesOf: (pkg: TreePackage | null) => EdgeDefinition[]);
     /** Place `dep` for `edge`, and its peers with it. */
     place(edge: Edge<H>, dep: Node<H>, parent: Placement<H> | null, explicit: boolean): Placement<H>;

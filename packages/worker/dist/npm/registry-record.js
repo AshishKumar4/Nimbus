@@ -43,7 +43,7 @@ export function registryRecord(pkg, fetchedAt) {
     return {
         name: pkg.name,
         version: pkg.version,
-        registryName: pkg.registryName ?? '',
+        registryName: pkg.registryName ?? pkg.name,
         tarballUrl: pkg.tarballUrl,
         integrity: pkg.integrity,
         depsJson: JSON.stringify(pkg.dependencies),

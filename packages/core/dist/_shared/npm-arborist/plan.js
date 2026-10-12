@@ -13,7 +13,9 @@
  *
  * npm ci plans over the lock's tree as an install does, and the plan must
  * be the lock's (validate-lockfile): `lockMismatches` names what it is not.
- * The lock's own flags are kept.
+ * The lock's own flags are kept, unless the build changed the tree or the
+ * lock's root declares other dependencies than the project; then they are
+ * found again, and what the project does not reach goes.
  */
 import { depthOf } from '../npm-tree.js';
 import { Builder } from './build.js';
@@ -64,14 +66,15 @@ export async function planTree(roots, installed, host, options = {}) {
             if (each.payload.kind !== 'placed')
                 continue;
             const locked = installedAt.get(each.location)?.pkg;
-            lockMismatches.push(locked
-                ? `Invalid: lock file's ${each.name}@${locked.version} does not satisfy ${each.name}@${each.version}`
-                : `Missing: ${each.name}@${each.version} from lock file`);
+            if (!locked)
+                lockMismatches.push(`Missing: ${each.name}@${each.version} from lock file`);
+            else if (locked.version !== each.version)
+                lockMismatches.push(`Invalid: lock file's ${each.name}@${locked.version} does not satisfy ${each.name}@${each.version}`);
         }
     }
     // ── calc-dep-flags; a lock's own flags where the build changed nothing (npm ci) ──
     const { reached, required, prod, prodRequired, nonPeer } = calcDepFlags(project);
-    const lockFlags = options.locked && !builder.mutated;
+    const lockFlags = options.locked === 'trusted' && !builder.mutated;
     const lockOf = (each) => (each.payload.kind === 'installed' && lockFlags ? each.payload.lock : undefined);
     const flagsOf = (each) => lockOf(each) ?? { dev: !prod.has(each), optional: !required.has(each), devOptional: !prodRequired.has(each), peer: !nonPeer.has(each) };
     const isRequired = (each) => {
@@ -156,8 +159,8 @@ export async function planTree(roots, installed, host, options = {}) {
         required: requiredAt,
         omits: (at, omit) => {
             const flags = flagsAt.get(at);
-            // A global prefix's top-level packages are what it installs: never omitted (reify).
-            if (!flags || (options.global && !at.includes('/node_modules/')))
+            // Under a global prefix every node's top is a top-level package, not the project: nothing is omitted (reify's trash list).
+            if (!flags || options.global)
                 return false;
             return (omit.dev === true && flags.dev === true) || (omit.optional === true && flags.optional === true)
                 || (omit.dev === true && omit.optional === true && flags.devOptional === true) || (omit.peer === true && flags.peer === true);

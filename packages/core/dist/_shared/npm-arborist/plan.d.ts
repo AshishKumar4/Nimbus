@@ -13,7 +13,9 @@
  *
  * npm ci plans over the lock's tree as an install does, and the plan must
  * be the lock's (validate-lockfile): `lockMismatches` names what it is not.
- * The lock's own flags are kept.
+ * The lock's own flags are kept, unless the build changed the tree or the
+ * lock's root declares other dependencies than the project; then they are
+ * found again, and what the project does not reach goes.
  */
 import { type TreeEdge, type TreePackage, type TreeRoot } from '../npm-tree.js';
 /** What a lock says of an entry (load-virtual keeps them): flags npm ci uses instead of computing them. */
@@ -77,10 +79,16 @@ export interface PlanOptions {
     readonly global?: boolean;
     /** `--force`: a peer conflict the project owns is a warning, not ERESOLVE. */
     readonly force?: boolean;
+    /** `--strict-peer-deps`: another's peer conflict is ERESOLVE too, unless forced. */
+    readonly strictPeerDeps?: boolean;
     /** `--legacy-peer-deps`: peers are not edges at all. */
     readonly legacyPeerDeps?: boolean;
-    /** npm ci: `installed` is the lock's tree, which the plan must be. */
-    readonly locked?: boolean;
+    /**
+     * npm ci: `installed` is the lock's tree, which the plan must be;
+     * 'suspect' where the lock's root declares other dependencies than the
+     * project does (load-virtual checkRootEdges, lockRootMatches).
+     */
+    readonly locked?: 'trusted' | 'suspect';
     /** `--prefer-dedupe`: an installed copy is replaced by an older one that meets every edge too. */
     readonly preferDedupe?: boolean;
 }

@@ -99,6 +99,7 @@ export declare class Node<H extends HostPackages> {
     get isTop(): boolean;
     get version(): string | null;
     get location(): string;
+    /** Folders below its top: a top (the project, a virtual root, a global prefix's package) is at 0. */
     get depth(): number;
     isDescendantOf(ancestor: Node<H>): boolean;
     /** The copy Node's walk finds for `name` from here. */

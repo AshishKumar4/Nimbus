@@ -66,7 +66,7 @@ export class Placer {
         }
         if (!placement.canPlace) {
             const top = topOf(placement);
-            if (!this.options.force && this.isMine(top.edge)) {
+            if (!this.options.force && (this.isMine(top.edge) || this.options.strictPeerDeps)) {
                 const current = top.edge.from.resolve(top.edge.name);
                 throw new PeerConflict(top.edge.public, `ERESOLVE could not resolve: ${top.dep.name}@${top.dep.version ?? top.edge.spec} for ${top.edge.from.location || 'the project'}${current?.version ? `, which has ${current.name}@${current.version}` : ''}`);
             }

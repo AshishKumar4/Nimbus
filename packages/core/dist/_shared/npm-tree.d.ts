@@ -134,14 +134,19 @@ export declare function namedPackages(manifest: ProjectManifest | null, specs: r
  * dependencies (manifestEdges), then its devDependencies; then the packages
  * named on the command line, explicit requests of their save type. The
  * tree is planned whole: `--omit=dev` leaves out at reification what only
- * devDependencies reach (TreePlan.dev). `implicit`: names the project needs
- * without declaring them (a global prefix's installed packages), each met
- * by what is there.
+ * devDependencies reach (TreePlan.omits). A global prefix has no manifest:
+ * its roots are what the command line names.
  */
-export declare function projectRoots(manifest: ProjectManifest | null, named: readonly NamedPackage[], { implicit, legacyPeerDeps }?: {
-    implicit?: readonly string[];
+export declare function projectRoots(manifest: ProjectManifest | null, named: readonly NamedPackage[], { legacyPeerDeps }?: {
     legacyPeerDeps?: boolean;
 }): TreeRoot[];
+/**
+ * Whether a lock's root (`lockRoot`, its package.json fields) declares what
+ * the project's `roots` are (load-virtual checkRootEdges): every dependency
+ * of every type it records is a root of that type at that spec, and there
+ * is no other root.
+ */
+export declare function lockRootMatches(lockRoot: ProjectManifest, roots: readonly TreeRoot[]): boolean;
 /**
  * package.json (`json`, as parsed) with what the command line named saved,
  * as npm saves it: first added where its save type goes and out of the

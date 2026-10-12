@@ -26,12 +26,21 @@ const INSTALL_ARG_SPEC = {
     'package-lock': { type: 'boolean' },
     'dry-run': { type: 'boolean' },
     force: { type: 'boolean', short: 'f' },
+    'strict-peer-deps': { type: 'boolean' },
     'legacy-peer-deps': { type: 'boolean' },
     workspaces: { type: 'boolean' },
     'no-save': { type: 'boolean' },
     'no-optional': { type: 'boolean' },
     'prefer-dedupe': { type: 'boolean' },
     'install-strategy': { type: 'string' },
+    'global-style': { type: 'boolean' },
+    'legacy-bundling': { type: 'boolean' },
+    'package-lock-only': { type: 'boolean' },
+    'no-bin-links': { type: 'boolean' },
+    before: { type: 'string' },
+    cpu: { type: 'string' },
+    os: { type: 'string' },
+    libc: { type: 'string' },
     'engine-strict': { type: 'boolean' },
     // bun spells it `-p`; npm's `-P` is --save-prod, and the short map is
     // case-sensitive, so both tools' spellings land where they should.
@@ -43,28 +52,37 @@ export function parseNpmInstallInvocation(args) {
     const included = repeatedValues(args, 'include');
     const omitted = repeatedValues(args, 'omit');
     const omits = (type) => omitted.has(type) && !included.has(type);
-    const strategy = stringFlag(parsed.flags['install-strategy']);
+    const global = parsed.flags.global === true;
+    // npm: --global-style is the shallow strategy, --legacy-bundling the nested one; a global install is always shallow.
+    const strategy = parsed.flags['legacy-bundling'] === true ? 'nested'
+        : parsed.flags['global-style'] === true ? 'shallow'
+            : stringFlag(parsed.flags['install-strategy']);
     const unsupported = [
-        ...(strategy !== null && strategy !== 'hoisted' ? [`--install-strategy=${strategy} is not supported here; only hoisted is`] : []),
+        ...(!global && strategy !== null && strategy !== 'hoisted' ? [`--install-strategy=${strategy} is not supported here; only hoisted is`] : []),
         ...(stringFlag(parsed.flags.workspace) !== null || parsed.flags.workspaces === true ? ['workspaces (-w, --workspace, --workspaces) are not supported here'] : []),
         ...(parsed.flags['dry-run'] === true ? ['--dry-run is not supported here'] : []),
+        ...(parsed.flags['package-lock-only'] === true ? ['--package-lock-only is not supported here: package-lock.json is not written'] : []),
+        ...(parsed.flags['no-bin-links'] === true ? ['--no-bin-links is not supported here'] : []),
+        ...(stringFlag(parsed.flags.before) !== null ? ['--before is not supported here'] : []),
+        ...['cpu', 'os', 'libc'].flatMap((name) => (stringFlag(parsed.flags[name]) !== null ? [`--${name} is not supported here: platforms are this runtime's`] : [])),
         ...(parsed.flags['engine-strict'] === true ? ['--engine-strict is not supported here: engines are not checked'] : []),
     ];
     const savePrefix = stringFlag(parsed.flags['save-prefix']);
     return {
         packages: parsed.positional,
-        global: parsed.flags.global === true,
+        global,
         prefix: stringFlag(parsed.flags.prefix),
         loglevel: parseNpmLogLevel(parsed.flags.loglevel),
         production: (parsed.flags.production === true || omitted.has('dev')) && !included.has('dev'),
         saveDev: parsed.flags['save-dev'] === true,
         saveOptional: parsed.flags['save-optional'] === true,
         force: parsed.flags.force === true,
+        strictPeerDeps: parsed.flags['strict-peer-deps'] === true,
         legacyPeerDeps: parsed.flags['legacy-peer-deps'] === true,
         omitOptional: (omits('optional') || parsed.flags['no-optional'] === true) && !included.has('optional'),
         omitPeer: omits('peer'),
         preferDedupe: parsed.flags['prefer-dedupe'] === true,
-        save: parsed.flags['no-save'] !== true && parsed.flags.save !== false,
+        save: parsed.flags['no-save'] !== true,
         savePrefix: parsed.flags['save-exact'] === true ? '' : savePrefix ?? '^',
         unsupported,
     };

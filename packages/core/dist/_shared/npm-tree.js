@@ -184,14 +184,11 @@ export function namedPackages(manifest, specs, flags = {}) {
  * dependencies (manifestEdges), then its devDependencies; then the packages
  * named on the command line, explicit requests of their save type. The
  * tree is planned whole: `--omit=dev` leaves out at reification what only
- * devDependencies reach (TreePlan.dev). `implicit`: names the project needs
- * without declaring them (a global prefix's installed packages), each met
- * by what is there.
+ * devDependencies reach (TreePlan.omits). A global prefix has no manifest:
+ * its roots are what the command line names.
  */
-export function projectRoots(manifest, named, { implicit = [], legacyPeerDeps = false } = {}) {
+export function projectRoots(manifest, named, { legacyPeerDeps = false } = {}) {
     const roots = new Map();
-    for (const name of implicit)
-        roots.set(name, { name, range: '*', type: 'prod' });
     for (const edge of manifestEdges(manifest ?? {}, { legacyPeerDeps }))
         roots.set(edge.name, edge);
     for (const [name, range] of Object.entries(manifest?.devDependencies ?? {}))
@@ -199,6 +196,35 @@ export function projectRoots(manifest, named, { implicit = [], legacyPeerDeps = 
     for (const { name, range, saveType } of named)
         roots.set(name, { name, range: range ?? 'latest', type: saveType, explicit: true });
     return [...roots.values()];
+}
+/**
+ * Whether a lock's root (`lockRoot`, its package.json fields) declares what
+ * the project's `roots` are (load-virtual checkRootEdges): every dependency
+ * of every type it records is a root of that type at that spec, and there
+ * is no other root.
+ */
+export function lockRootMatches(lockRoot, roots) {
+    const byName = new Map(roots.map((root) => [root.name, root]));
+    const optional = lockRoot.optionalDependencies ?? {};
+    const peers = Object.entries(lockRoot.peerDependencies ?? {});
+    const optionalPeer = ([name]) => lockRoot.peerDependenciesMeta?.[name]?.optional === true;
+    const declared = [
+        ['dev', Object.entries(lockRoot.devDependencies ?? {})],
+        ['optional', Object.entries(optional)],
+        ['peer', peers.filter((entry) => !optionalPeer(entry))],
+        ['peerOptional', peers.filter(optionalPeer)],
+        ['prod', Object.entries(lockRoot.dependencies ?? {}).filter(([name]) => !Object.hasOwn(optional, name))],
+    ];
+    const seen = new Set();
+    for (const [type, entries] of declared) {
+        for (const [name, spec] of entries) {
+            const root = byName.get(name);
+            if (root?.type !== type || root.range !== spec)
+                return false;
+            seen.add(name);
+        }
+    }
+    return seen.size === byName.size;
 }
 /**
  * package.json (`json`, as parsed) with what the command line named saved,
