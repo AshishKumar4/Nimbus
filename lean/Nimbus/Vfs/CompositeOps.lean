@@ -196,7 +196,7 @@ theorem fallback_failures_exact (t : Tree) (pins : List Path) (rp point : Path) 
   intro f hf
   obtain ⟨q, hq, rfl⟩ := List.mem_map.mp hf
   obtain ⟨hsub, hq⟩ := List.mem_filter.mp hq
-  obtain ⟨hpin, hmin⟩ := Bool.and_eq_true.mp hq
+  obtain ⟨hpin, hmin⟩ := Bool.and_eq_true_iff.mp hq
   refine ⟨rfl, q, hsub, rfl, List.contains_iff_mem.mp hpin, ?_⟩
   intro child hchild hne hpin'
   have hany : (subtree t q).any (fun child => child != q && pins.contains child) = true :=
