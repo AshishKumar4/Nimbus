@@ -177,17 +177,21 @@ export class MemoryVFS implements VFS {
     return [...entry.children!].map(([name, child]) => ({ name, type: child.type, stat: this.stats(child) }));
   }
 
-  mkdir(path: string, options?: { recursive?: boolean; mode?: number }): void {
+  /** With `recursive`, the directories it made, top down (VFS.mkdir). */
+  mkdir(path: string, options?: { recursive?: boolean; mode?: number }): readonly string[] | void {
     const call = { syscall: 'mkdir', path };
     if (options?.recursive) {
+      const made: string[] = [];
       let at = '';
       for (const part of segments(path)) {
         at += `/${part}`;
         const existing = this.find(at, call);
-        if (existing === null) this.mkdir(at, { mode: options.mode });
-        else if (existing.type !== 'directory') throw fail('ENOTDIR', call);
+        if (existing === null) {
+          this.mkdir(at, { mode: options.mode });
+          made.push(at);
+        } else if (existing.type !== 'directory') throw fail('ENOTDIR', call);
       }
-      return;
+      return made;
     }
     if (this.find(path, call, false) !== null) throw fail('EEXIST', call);
     const { dir, name } = this.parentOf(path, call);

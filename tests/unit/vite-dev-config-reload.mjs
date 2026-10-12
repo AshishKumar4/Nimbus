@@ -18,6 +18,7 @@ import assert from 'node:assert/strict';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { ViteDevServer } from '../../packages/worker/src/facets/vite-dev-server.ts';
 import { esbuildEngine, stopEsbuildEngine } from './lib/esbuild-engine.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
@@ -56,7 +57,7 @@ async function project({ sql = true } = {}) {
   const reloads = [];
   const configs = [];
   const server = new ViteDevServer({
-    vfs, cred: CRED_KERNEL, esbuild, root, ...(sql ? { sql: harness.sql } : {}), basePath: '/preview', port: 5173,
+    vfs, cred: CRED_KERNEL, namespace: new ProcessFiles(vfs).vfs, esbuild, root, ...(sql ? { sql: harness.sql } : {}), basePath: '/preview', port: 5173,
     // What `vite` read at start.
     aliases: { '@': './src' }, define: { __APP__: '"one"' },
     configDir: root,

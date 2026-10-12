@@ -5,6 +5,8 @@
 import { ISOLATE_NETWORK } from '../../../packages/core/src/_shared/workspace-network.ts';
 import { PortRegistry } from '../../../packages/core/src/runtime/port-registry.ts';
 import { CRED_SESSION_USER } from '../../../packages/core/src/runtime/os-contracts.ts';
+import { ProcessFiles } from '../../../packages/core/src/runtime/process-files.ts';
+import { SqliteVFS } from '../../../packages/core/src/vfs/sqlite-vfs.ts';
 
 export const SID = 'nimble-otter-4271';
 export const BASE_PATH = `/s/${SID}`;
@@ -36,7 +38,15 @@ export function readOnlyVfs(files) {
     readFileString: (p) => files.get(p),
     readFile: (p) => new TextEncoder().encode(files.get(p) ?? ''),
   };
-  return { as: () => view, events: { on: () => () => {} } };
+  return { as: () => view };
+}
+
+/** The session's namespace over `fs`: a database's own; a read-only stand-in tells no changes. */
+const namespaces = new WeakMap();
+function namespaceOf(fs) {
+  if (!(fs instanceof SqliteVFS)) return { watchChanges: () => () => {} };
+  if (!namespaces.has(fs)) namespaces.set(fs, new ProcessFiles(fs).vfs);
+  return namespaces.get(fs);
 }
 
 /**
@@ -55,7 +65,7 @@ export function makeWokenSession(storage, { vfs, routes, bundlePool = null, pidB
     sqliteFs: null,
     esbuildService: null,
     // The namespace as host code reads it: this fake session's one filesystem.
-    getFilesystemAuthority() { this.ensureSqliteFs(); return { namespaceFs: (cred) => this.sqliteFs.as(cred) }; },
+    getFilesystemAuthority() { this.ensureSqliteFs(); return { namespaceFs: (cred) => this.sqliteFs.as(cred), vfs: namespaceOf(this.sqliteFs) }; },
     bundlePool,
     viteDevServer: null,
     cirrusReal: null,

@@ -317,7 +317,7 @@ export function createViteCommand(self) {
             // build as the principal who ran it.
             const previewProcEntry = self.processes.spawn('vite preview (' + distRoot + ')', ['vite', ...args], distRoot, { longRunning: true, parentPid: ctx.pid });
             self.viteDevServer = new ViteDevServer({
-                vfs: self.sqliteFs, cred: previewProcEntry.cred, esbuild: self.esbuildService, root: servedDist,
+                vfs: self.sqliteFs, cred: previewProcEntry.cred, namespace: self.getFilesystemAuthority().vfs, esbuild: self.esbuildService, root: servedDist,
                 onHmrMessage: () => { },
                 sql: self.ctx.storage.sql,
                 basePath: previewBasePath,
@@ -558,6 +558,7 @@ export function createViteCommand(self) {
             vfs: self.sqliteFs,
             // The server reads and writes as the principal who ran the command.
             cred: viteProcEntry.cred,
+            namespace: self.getFilesystemAuthority().vfs,
             esbuild: self.esbuildService,
             root: servedRoot,
             port: resolvedPort,

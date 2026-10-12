@@ -20,7 +20,7 @@ async function read(text) {
   const files = new Map([[`${ROOT}/wrangler.jsonc`, text]]);
   const wrangler = new NimbusWrangler({
     vfs: { exists: (path) => files.has(`/${path}`), readFileString: (path) => files.get(`/${path}`) },
-    vfsEvents: { on: () => {} },
+    namespace: { watchChanges: () => () => {} },
     esbuild: {},
     env: {},
     ctx: {},

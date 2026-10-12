@@ -43,6 +43,46 @@ published independently in the `@nimbus-sh` npm scope.
   RPC or fire a five-second hosting-watch alarm. Cold cleanup drops legacy
   throwaway-only hosting records without a physical facet name, logs that the
   peer facet could not be named, and never guesses which facet to delete.
+- One change notification for the namespace: `CompositeVFS.watchChanges(path,
+  listener)` tells every change a view may see at a path or under it, on any
+  mount, as batches of `VfsEvent`s (paths in the namespace), by one rule for
+  every watch (`projectChange` in `vfs/events.js`): each end of a change told
+  where the view shows that file and may search every directory above it; a
+  rename seen at one end only is that end's `add` or `unlink`; the watched
+  path renamed away, or a directory above it, is its `unlink`, and a watch
+  that follows its target (`watchChanges`' and `RuntimeFsBridge.subscribe`'s
+  new `follow` option, which Node's `fs.watch` uses) is told that move, a
+  `rename`, and moves with it. It is told to the watches registered when it
+  landed, at every mount of the store it landed in (the new optional
+  `VFS.fileStore`); a recursive copy or removal tells each entry as it lands;
+  `mkdir -p` on a mount that resolves its own paths tells the directories its
+  backend says it made (`VFS.mkdir` may now answer them; `MemoryVFS`'s does).
+  Whether a directory renamed above a watched path took it along is judged
+  by a look when the watch began and the changes told since; a backend that
+  holds changes back answers that look as they were told, storing and
+  recalling nothing (the new optional `VFS.landedAt`, which `SqliteFiles`
+  implements).
+  A backend may tell its own (the new optional `VFS.watchChanges`, which
+  `SqliteFiles` implements, without storing any held write); any other
+  mount's changes are told as they land through the namespace, typed by the
+  operation (whether a whole-file or range write made its file is not looked
+  up: those are `change`). SQLite now tells every entry a copy made, as it
+  tells every entry a removal removed. Nothing reads the engine's bus besides:
+  the file tree's `fs-watch`, the in-supervisor Vite dev server, wrangler
+  dev, the real Vite facet's chokidar (`ViteDevServer`, `NimbusWrangler` and
+  `CirrusReal` take the session's `namespace` where they took `vfs.events` or
+  `vfsEvents`) and a process's `RuntimeFsBridge.subscribe` hear the
+  namespace, so they see changes on mounts too, and not a write SQLite takes
+  under a mount point; a rename's `oldPath` reaches chokidar absolute. The
+  shell's built-in `node` has a working `fs.watch` (`NodeFilesystem.watch`
+  replaces `onChange`): Node's `rename`/`change` events and filename
+  encodings, the watched target resolved through links and followed across
+  renames, `ENOENT` for a missing one, `close` (one `close` event) and
+  `ref`/`unref` as Node's, a referenced watch keeping the program; it watched
+  the root, which never fired. `VfsEventEmitter.on` hears only what is
+  published after it registers, listeners let go during a delivery are not
+  told, a path listener hears either end of a rename and a rename of a
+  directory above it, and a path listener on the root (`''`) hears every path.
 - Changed: `npm install` has one engine. The Worker's installer and the
   shell's own npm (a library workspace with no installer of its own) plan
   every install with core `_shared/npm-arborist/`, npm 10's arborist
