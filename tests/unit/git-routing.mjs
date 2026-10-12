@@ -312,4 +312,69 @@ for (const words of [['add', 'f'], ['checkout', '-b', 'noncone'], ['commit', '-a
   assert.equal(user.exists('home/user/repo/.git/refs/heads/noncone'), false);
 }
 
+// A repository whose format the built-in does not implement (real git made
+// it: `git init --object-format=sha256`) is real git's for every command,
+// before anything is read or written; without real git, the built-in names
+// the format and refuses. One it does implement stays built-in.
+{
+  const formats = [
+    ['[core]\n\trepositoryformatversion = 1\n[extensions]\n\tobjectformat = sha256\n', 'objectformat'],
+    ['[core]\n\trepositoryformatversion = 1\n[extensions]\n\trefstorage = reftable\n', 'refstorage'],
+    ['[core]\n\trepositoryformatversion = 1\n[extensions]\n\tcompatobjectformat = sha256\n', 'compatobjectformat'],
+    ['[core]\n\trepositoryformatversion = 2\n', 'version 2'],
+    ['[core]\n\trepositoryformatversion = 0\n[extensions]\n\tobjectformat = sha256\n', 'a v1-only extension in a version 0 repository'],
+  ];
+  for (const [n, [config, what]] of formats.entries()) {
+    const dir = `formatted${n}`;
+    assert.equal((await git(['init', '-q', dir])).code, 0);
+    user.writeFile(`home/user/${dir}/.git/config`, config);
+    user.writeFile(`home/user/${dir}/f`, 'x\n');
+    for (const words of [['status'], ['add', 'f'], ['commit', '-q', '-m', 'first'], ['log', '--oneline'], ['branch', 'b'], ['rev-parse', 'HEAD']]) {
+      const args = ['-C', dir, '-c', 'user.name=Ada', '-c', 'user.email=ada@example.com', ...words];
+      const ran = await git(args);
+      assert.deepEqual(ran.real, [args], `${what}: ${words[0]} is real git's`);
+      assert.equal(user.exists(`home/user/${dir}/.git/index`), false, `${what}: nothing written before the handoff`);
+      const alone = await git(args, { real: false });
+      assert.equal(alone.code, 128, `${what}: ${words[0]} refused without real git`);
+      assert.match(alone.stderr, /not supported here/);
+      assert.equal(user.exists(`home/user/${dir}/.git/index`), false);
+    }
+  }
+  // The formats it implements: sha1 objects, files refs, worktreeConfig, partial clones, precious objects.
+  assert.equal((await git(['init', '-q', 'formatted-ok'])).code, 0);
+  user.writeFile('home/user/formatted-ok/.git/config', '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tobjectformat = sha1\n\trefstorage = files\n\tworktreeconfig = true\n\tpartialclone = origin\n\tpreciousobjects = true\n\tnoop = x\n\tnoop-v1 = x\n');
+  user.writeFile('home/user/formatted-ok/f', 'x\n');
+  const ran = await git(['-C', 'formatted-ok', 'add', 'f']);
+  assert.deepEqual(ran.real, [], 'an implemented format stays built-in');
+  assert.equal(ran.code, 0, ran.stderr);
+}
+
+// A linked worktree (its .git a file naming a git directory under the main
+// repository's worktrees/), or a submodule's checkout: real git's, never the
+// enclosing repository's built-in answer.
+{
+  assert.equal((await git(['init', '-q', 'main-repo'])).code, 0);
+  user.mkdir('home/user/main-repo/.git/worktrees/linked', { recursive: true });
+  user.writeFile('home/user/main-repo/.git/worktrees/linked/HEAD', 'ref: refs/heads/linked\n');
+  user.writeFile('home/user/main-repo/.git/worktrees/linked/commondir', '../..\n');
+  user.writeFile('home/user/main-repo/.git/worktrees/linked/gitdir', '/home/user/linked/.git\n');
+  user.mkdir('home/user/linked', { recursive: true });
+  user.writeFile('home/user/linked/.git', 'gitdir: /home/user/main-repo/.git/worktrees/linked\n');
+  user.writeFile('home/user/linked/g', 'y\n');
+  user.mkdir('home/user/main-repo/sub', { recursive: true });
+  user.writeFile('home/user/main-repo/sub/.git', 'gitdir: ../.git/modules/sub\n');
+  for (const [where, words] of [['linked', ['status']], ['linked', ['add', 'g']], ['main-repo/sub', ['status']], ['main-repo/.git/worktrees/linked', ['rev-parse', '--git-dir']]]) {
+    const args = ['-C', where, ...words];
+    const ran = await git(args);
+    assert.deepEqual(ran.real, [args], `${where}: ${words[0]} is real git's`);
+    const alone = await git(args, { real: false });
+    assert.equal(alone.code, 128, `${where}: refused without real git`);
+    assert.match(alone.stderr, /not supported here/);
+  }
+  assert.equal(user.exists('home/user/main-repo/.git/worktrees/linked/index'), false, 'nothing written before the handoff');
+  const plain = await git(['-C', 'main-repo', 'status', '--porcelain']);
+  assert.deepEqual(plain.real, [], 'the main worktree stays built-in');
+}
+
+
 console.log('git-routing: built-in, real git, its children, and git alone');
