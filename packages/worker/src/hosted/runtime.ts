@@ -365,6 +365,8 @@ class RuntimeOwner {
 
   close(): Promise<void> {
     this.closing ??= Promise.resolve().then(async () => {
+      // The cycle is over with the runtime; the alarm that would end it is cancelled below.
+      endResidentKeepalive(this);
       const failures: Error[] = [];
       const clean = async (action: () => void | Promise<void>) => {
         try { await action(); }
