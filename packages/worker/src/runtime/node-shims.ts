@@ -61,6 +61,7 @@ import { STDIN_SYNC_READ_BYTES, STDIN_FILE_READ_PIECE_BYTES } from '@nimbus-sh/c
 import { COMMONJS_WRAPPER_NAMES } from '@nimbus-sh/core/runtime/javascript-ast.js';
 import { ESM_STATIC_IMPORT } from '@nimbus-sh/core/runtime/esm-interop.js';
 import { ESM_BUN_SCOPE, ESM_FACADE_DIR, ESM_TOP_LEVEL_AWAIT, ESM_TYPELESS } from '@nimbus-sh/core/runtime/native-esm.js';
+import { ESM_REQUIRED_SOURCE } from '@nimbus-sh/core/runtime/compiled-bodies.generated.js';
 import {
   FACET_PROVIDED_PACKAGES,
   FS_READ_BATCH_PATH_LIMIT,
@@ -12375,24 +12376,8 @@ function __nimbusEsmRequire(id, required, parent = undefined) {
   }
   return null;
 }
-// Node's require(esm): a module's "module.exports" export, else its
-// namespace, which has no default export or names __esModule itself, else
-// the namespace with __esModule true beside its names.
-function __nimbusEsmRequired(record) {
-  const namespace = record.namespace;
-  if ("module.exports" in namespace) return namespace["module.exports"];
-  if (!("default" in namespace) || "__esModule" in namespace) return namespace;
-  if (record.required === undefined) {
-    const facade = Object.create(null);
-    for (const name of [...Object.keys(namespace), "__esModule"].sort()) {
-      if (name === "__esModule") Object.defineProperty(facade, name, { value: true, enumerable: true, writable: true });
-      else Object.defineProperty(facade, name, { enumerable: true, get: () => namespace[name] });
-    }
-    Object.defineProperty(facade, Symbol.toStringTag, { value: "Module" });
-    record.required = Object.preventExtensions(facade);
-  }
-  return record.required;
-}
+// Node's require(esm) result of a record's namespace (core runtime/native-esm-runtime.ts requiredEsModule).
+const __nimbusEsmRequired = ${ESM_REQUIRED_SOURCE}.requiredEsModule;
 // The package.json files Node's loader has warned are typeless (MODULE_TYPELESS_PACKAGE_JSON).
 const __nimbusTypelessWarned = new Set();
 // Node's warning of an imported .js that is an ES module by its syntax alone

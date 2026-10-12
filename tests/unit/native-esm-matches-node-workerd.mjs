@@ -40,6 +40,14 @@ const FILES = {
   'cjs/reexport.cjs': "module.exports = require('./lib.cjs');\n",
   'cjs/main.mjs': "import * as lib from './lib.cjs';\nimport def, { a } from './lib.cjs';\nimport f, { x } from './fn.cjs';\nimport * as re from './reexport.cjs';\nconsole.log(Object.keys(lib), def.default, a, lib.default === def);\nconsole.log(f(), x, Object.keys(re));\nsetTimeout(() => console.log('later', lib.a, a, def.a), 5);\n",
   'cjs/missing.mjs': "import { nope } from './lib.cjs';\nconsole.log(nope);\n",
+  // Re-exports whose resolution require() refuses ("exports" hides the path) add no names.
+  'cjs/node_modules/guarded/package.json': json({ name: 'guarded', exports: { '.': './index.js' } }),
+  'cjs/node_modules/guarded/index.js': "exports.keep = 1;\nif (false) module.exports = require('guarded/private');\n",
+  'cjs/node_modules/guarded/private.js': 'exports.secret = 1;\n',
+  'cjs/node_modules/optional/package.json': json({ name: 'optional', exports: { '.': './index.js' } }),
+  'cjs/node_modules/optional/index.js': "try { module.exports = require('optional/private'); } catch { exports.ok = true; }\n",
+  'cjs/node_modules/optional/private.js': 'exports.secret = 2;\n',
+  'cjs/reexports.mjs': "import { keep } from 'guarded';\nimport * as optional from 'optional';\nconsole.log(keep, Object.keys(optional), optional.ok);\n",
   // Builtins: default and named, and syncBuiltinESMExports.
   'builtin/main.mjs': "import fs, { readFileSync } from 'node:fs';\nimport * as path from 'path';\nimport module from 'node:module';\nconsole.log(fs.readFileSync === readFileSync, typeof path.join, path.default === path.default, 'sep' in path);\nfs.readFileSync = () => 'patched';\nmodule.syncBuiltinESMExports();\nconst again = await import('node:fs');\nconsole.log(again.readFileSync(), readFileSync());\n",
   // JSON with its attribute, and without it.
@@ -65,6 +73,19 @@ const FILES = {
   'req/exportsas.mjs': "const v = { y: 1 };\nexport { v as 'module.exports' };\nexport const z = 3;\n",
   'req/tla.mjs': "globalThis.ranTla = true;\nawait 0;\nexport const t = 1;\n",
   'req/main.cjs': "const esm = require('./esm.mjs');\nconsole.log(esm.__esModule, esm.default, esm.named, Object.keys(esm));\nconst none = require('./nodefault.mjs');\nconsole.log(Object.keys(none), none.__esModule);\nconsole.log(require('./exportsas.mjs'));\ntry { require('./tla.mjs'); } catch (e) { console.log(e.code); }\n",
+  // What each result is as an object: Node's facade is a namespace, which refuses every write.
+  'req/shape.cjs': [
+    'const shape = (value) => ({',
+    '  keys: Reflect.ownKeys(value).map(String), tag: Object.prototype.toString.call(value), extensible: Object.isExtensible(value),',
+    '  descriptors: Object.entries(Object.getOwnPropertyDescriptors(value)).map(([key, d]) => [key, d.writable, d.enumerable, d.configurable, typeof d.value, typeof d.get]),',
+    "  set: Reflect.set(value, '__esModule', false), setDefault: Reflect.set(value, 'default', 0), add: Reflect.set(value, 'added', 1),",
+    "  define: Reflect.defineProperty(value, '__esModule', { value: false }), same: Reflect.defineProperty(value, '__esModule', { value: value.__esModule }),",
+    "  accessor: Reflect.defineProperty(value, 'default', { get() {} }), remove: Reflect.deleteProperty(value, '__esModule'), absent: Reflect.deleteProperty(value, 'absent'),",
+    '  nullProto: Reflect.setPrototypeOf(value, null), proto: Reflect.setPrototypeOf(value, {}), sealed: Object.isSealed(value), esModule: value.__esModule,',
+    '});',
+    "for (const file of ['./esm.mjs', './nodefault.mjs', './exportsas.mjs']) console.log(file, JSON.stringify(shape(require(file))), require(file) === require(file), require(file).__esModule);",
+    '',
+  ].join('\n'),
   'req/later.mjs': "import { createRequire } from 'node:module';\nconst ns = await import('./nodefault.mjs');\nconst required = createRequire(import.meta.url)('./nodefault.mjs');\nconsole.log(required === ns);\n",
   'req/cycle-a.mjs': "import './cycle-b.mjs';\nexport const a = 1;\n",
   'req/cycle-b.mjs': "import { createRequire } from 'node:module';\ntry { createRequire(import.meta.url)('./cycle-a.mjs'); } catch (e) { console.log(e.code); }\n",
@@ -136,7 +157,7 @@ const FILES = {
 const COMMANDS = [
   'node order/run.mjs', 'node live/main.mjs', 'node tla/main.mjs', 'node meta/sub/m.mjs', 'node cjs/main.mjs', 'node cjs/missing.mjs',
   'node builtin/main.mjs', 'node json/main.mjs', 'node json/bare.mjs', 'node res/main.mjs', 'node res/hidden.mjs', 'node res/absent.mjs',
-  'node res/noext.mjs', 'node res/dir.mjs', 'node res/dynamic.mjs', 'node req/main.cjs', 'node req/later.mjs', 'node req/cycle-a.mjs',
+  'node res/noext.mjs', 'node res/dir.mjs', 'node res/dynamic.mjs', 'node req/main.cjs', 'node req/shape.cjs', 'node cjs/reexports.mjs', 'node req/later.mjs', 'node req/cycle-a.mjs',
   'node hoist/bin.mjs', 'node hoist/observed.mjs', 'node hoist/pattern.mjs', 'node hoist/default.mjs', 'node hoist/heritage.mjs', 'node req/tla-after.mjs', 'node stop/run.mjs', 'node io/main.mjs', 'node scope/req.mjs', 'node ts/main.ts', 'node fatal/main.mjs', 'node fatal/syntax.mjs', 'node pjson/main.mjs', 'node detect/main.mjs', 'node dyncwd/main.mjs',
   `node --input-type=module -e "import { sep } from 'node:path'; console.log(sep, import.meta.url.endsWith('/[eval1]'), typeof await Promise.resolve(1));"`,
   `node --import ./live/counter.mjs -e "console.log('preloaded')"`,

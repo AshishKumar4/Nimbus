@@ -28,6 +28,30 @@ const files = {
   'node_modules/condition/package.json': JSON.stringify({ name: 'condition', exports: { '.': { import: './import.mjs', require: './require.cjs' } } }),
   'node_modules/condition/import.mjs': 'export default "package-import";\n',
   'node_modules/condition/require.cjs': 'module.exports = "package-require";\n',
+  // Re-exports whose resolution require() refuses ("exports" hides the path) add no names.
+  'node_modules/guarded/package.json': JSON.stringify({ name: 'guarded', exports: { '.': './index.js' } }),
+  'node_modules/guarded/index.js': 'exports.keep = 1;\nif (false) module.exports = require("guarded/private");\n',
+  'node_modules/guarded/private.js': 'exports.secret = 1;\n',
+  'node_modules/optional/package.json': JSON.stringify({ name: 'optional', exports: { '.': './index.js' } }),
+  'node_modules/optional/index.js': 'try { module.exports = require("optional/private"); } catch { exports.ok = true; }\n',
+  'node_modules/optional/private.js': 'exports.secret = 2;\n',
+  'reexports.mjs': 'import { keep } from "guarded";\nimport * as optional from "optional";\nconsole.log("reexports", keep, Object.keys(optional).join(","), optional.ok);\n',
+  // A frame's file and its source's line and column, where staging moved them:
+  // a first line's prologue, specifiers it rewrote, a caught error's stack.
+  'frames/one-line.mjs': 'throw new Error("boom");\n',
+  'frames/after-import.mjs': 'import fs from "fs"; import condition from "condition"; throw new Error(condition + typeof fs);\n',
+  'frames/function.mjs': 'import { sep } from "node:path";\nexport function inner() {\n  return new Error("inner" + sep);\n}\nexport const thrower = () => { throw inner(); };\n',
+  'frames.mjs': [
+    'import { sep } from "node:path"; const first = new Error("first" + sep); import { inner, thrower } from "./frames/function.mjs";',
+    'const at = (error, name) => error.stack.split("\\n").filter((line) => line.includes(`/${name}:`)).map((line) => /(\\S+:\\d+:\\d+)\\)?$/.exec(line)?.[1].replace(/^\\(/, "")).join(" ") + (error.stack.includes("__nimbus_lifo__") ? " private" : "");',
+    'console.log("first", at(first, "frames.mjs"));',
+    'for (const name of ["one-line.mjs", "after-import.mjs"]) {',
+    '  try { await import(`./frames/${name}`); } catch (e) { console.log("frame", at(e, name)); }',
+    '}',
+    'console.log("caught", at(inner(), "function.mjs"));',
+    'try { thrower(); } catch (e) { console.log("thrown", at(e, "function.mjs"), at(e, "frames.mjs")); }',
+    '',
+  ].join('\n'),
   'counter.mjs': 'export let n = 1; export function inc() { n++; } export default "counter";\n',
   'cjs.cjs': 'exports.value = 42; exports["odd-name"] = 7; if (false) exports.missing = 1;\n',
   'meta.mjs': 'export const meta = import.meta; export const scope = [typeof require, typeof __filename, typeof __dirname].join(",");\n',
@@ -95,6 +119,16 @@ const files = {
     'console.log("no-default", Object.keys(require("./no-default.mjs")).join(","), require("./no-default.mjs").value);',
     'console.log("own-marker", require("./own-marker.mjs").__esModule);',
     'console.log("module-exports", require("./module-exports.mjs").marker);',
+    // What each result is as an object: Node's facade is a namespace, which refuses every write.
+    'const shape = (value) => JSON.stringify({',
+    '  keys: Reflect.ownKeys(value).map(String), tag: Object.prototype.toString.call(value), extensible: Object.isExtensible(value),',
+    '  descriptors: Object.entries(Object.getOwnPropertyDescriptors(value)).map(([key, d]) => [key, d.writable, d.enumerable, d.configurable, typeof d.value, typeof d.get]),',
+    '  set: Reflect.set(value, "__esModule", false), setDefault: Reflect.set(value, "default", 0), add: Reflect.set(value, "added", 1),',
+    '  define: Reflect.defineProperty(value, "__esModule", { value: false }), same: Reflect.defineProperty(value, "__esModule", { value: value.__esModule }),',
+    '  accessor: Reflect.defineProperty(value, "default", { get() {} }), remove: Reflect.deleteProperty(value, "__esModule"), absent: Reflect.deleteProperty(value, "absent"),',
+    '  nullProto: Reflect.setPrototypeOf(value, null), proto: Reflect.setPrototypeOf(value, {}), sealed: Object.isSealed(value), esModule: value.__esModule,',
+    '});',
+    'for (const file of ["./sync.mjs", "./no-default.mjs", "./own-marker.mjs", "./module-exports.mjs"]) console.log("shape", file, shape(require(file)), require(file) === require(file), require(file).__esModule);',
     'console.log("function-await", require("./inside-function.mjs").default);',
     'for (const file of ["./async-required.mjs", "./async-parent.mjs", "./async-loop.mjs", "./required-cycle.mjs"]) { try { require(file); } catch (e) { console.log("require-error", file, e.code, e.message); } }',
     'import("./sync.mjs").then((m) => console.log("cjs-dynamic", m.n, m.inc === ns.inc));',
@@ -113,7 +147,7 @@ try {
     await workspace.fs.mkdir(dirname(`${vfsDirectory}/${name}`), { recursive: true });
     await workspace.fs.writeFile(`${vfsDirectory}/${name}`, source);
   }
-  for (const entry of ['main.mjs', 'require-main.cjs', 'syntax.js']) {
+  for (const entry of ['main.mjs', 'require-main.cjs', 'syntax.js', 'reexports.mjs', 'frames.mjs']) {
     const reference = spawnSync('node', ['--no-warnings', entry], { cwd: directory, encoding: 'utf8', timeout: 30_000 });
     assert.equal(reference.status, 0, `${entry} reference: ${reference.stderr}`);
     assert.equal(reference.stderr, '', `${entry} reference stderr`);
