@@ -5,6 +5,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Breaking: a Worker that composes the fabric needs the `enable_request_signal`
+  compatibility flag, which no compatibility date enables. Add
+  `"enable_request_signal"` to `compatibility_flags` in your wrangler config;
+  `buildNimbusWranglerConfig` lists it. Without it `composeFabric` refuses the
+  Worker at startup, naming the flag. A client that leaves a response a
+  process is serving is seen only through that flag.
 - Breaking: `RouteableFacetTarget.handleHttpRequest(request, scope)` and
   `HostedProcess.handleHttpRequest(request, scope)` take a `ResponseScope`
   (`signal`, `settled`): the process owns work for the response until the

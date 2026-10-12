@@ -127,8 +127,11 @@ The Worker needs `enhanced_error_serialization`. A process's filesystem errors
 reach it across workerd RPC, and only that flag carries their `code` across.
 A compatibility date of 2026-04-21 or later enables it; on an older date, add
 `"enhanced_error_serialization"` to `compatibility_flags`, which keeps every
-other behavior of that date. Without it the Worker fails at startup with
-that reason, since this package's entry composes the fabric at module scope.
+other behavior of that date. It also needs `"enable_request_signal"` in
+`compatibility_flags` on every date: it is how a process sees a client leave
+a response it is serving. Without either flag the Worker fails at startup
+with that reason, since this package's entry composes the fabric at module
+scope.
 From 2026-08-04 the date also enables
 `nodejs_compat`, so no flag is listed.
 
