@@ -1,0 +1,181 @@
+// @serial
+// @tier slow — drives a local workerd session through every scenario.
+// Native ES module review regressions, against host Node 22.22.3: failed
+// require(esm), JSON's shared CommonJS cache, a late graph's failed
+// evaluation, require/import namespace identity, transitive top-level
+// await, Function's import origin, query identity, CommonJS/ESM cycles,
+// link-error attribution beside suspended evaluation, cached imports,
+// missing-export source arrows, and commented JSON import attributes.
+// stdout, stderr and the exit code are host Node's (lib/node-differential.mjs).
+
+import { matchNodeInWorkerd } from './lib/node-differential.mjs';
+
+const W = '/home/user/nesm-review';
+const FILES = {
+  // A failed synchronous evaluation is cached as a failure, not as a
+  // partially evaluated namespace; subsequent import() sees it too.
+  'failed-require/bad.mjs': "globalThis.evaluations++;\nthrow new Error('boom');\n",
+  'failed-require/main.cjs': [
+    'globalThis.evaluations = 0;',
+    'for (let i = 0; i < 2; i++) {',
+    "  try { require('./bad.mjs'); console.log('require unexpectedly resolved'); }",
+    "  catch (e) { console.log('require', e.code, e.message); }",
+    '}',
+    "console.log('evaluations', globalThis.evaluations);",
+    "import('./bad.mjs').then(",
+    "  () => console.log('import unexpectedly resolved'),",
+    "  (e) => console.log('import', e.code, e.message, 'evaluations', globalThis.evaluations),",
+    ');',
+  ].join('\n') + '\n',
+  // Both orders share the parsed JSON object, including later mutations.
+  'json-import-first/data.json': '{"n":1}\n',
+  'json-import-first/main.mjs': [
+    "import data from './data.json' with { type: 'json' };",
+    "import { createRequire } from 'node:module';",
+    "const required = createRequire(import.meta.url)('./data.json');",
+    'console.log(data === required);',
+    'data.n = 2;',
+    'console.log(required.n);',
+    'required.n = 3;',
+    'console.log(data.n);',
+  ].join('\n') + '\n',
+  'json-require-first/data.json': '{"n":1}\n',
+  'json-require-first/main.mjs': [
+    "import { createRequire } from 'node:module';",
+    "const required = createRequire(import.meta.url)('./data.json');",
+    "const { default: data } = await import('./data.json', { with: { type: 'json' } });",
+    'console.log(data === required);',
+    'required.n = 2;',
+    'console.log(data.n);',
+    'data.n = 3;',
+    'console.log(required.n);',
+  ].join('\n') + '\n',
+  // generated.mjs does not exist until execution. Its dependencies do:
+  // a runtime-loaded graph must stop after the first throwing body.
+  'late-stop/thrower.mjs': "globalThis.log.push('thrower');\nthrow new Error('boom');\n",
+  'late-stop/after.mjs': "globalThis.log.push('after');\n",
+  'late-stop/main.mjs': [
+    "import { writeFileSync } from 'node:fs';",
+    'globalThis.log = [];',
+    'writeFileSync(new URL("./generated.mjs", import.meta.url), "import \'./thrower.mjs\';\\nimport \'./after.mjs\';\\n");',
+    "try { await import('./generated.mjs'); console.log('import unexpectedly resolved'); }",
+    "catch (e) { console.log('rejected', e.message); }",
+    'console.log(JSON.stringify(globalThis.log));',
+  ].join('\n') + '\n',
+  // With no default export, require(esm) returns the actual namespace,
+  // regardless of which loader first evaluated the module.
+  'namespace-require-first/dep.mjs': 'export const x = 1;\n',
+  'namespace-require-first/main.cjs': "const r = require('./dep.mjs');\nimport('./dep.mjs').then((i) => console.log(r === i));\n",
+  'namespace-import-first/dep.mjs': 'export const x = 1;\n',
+  'namespace-import-first/main.mjs': "import { createRequire } from 'node:module';\nconst i = await import('./dep.mjs');\nconst r = createRequire(import.meta.url)('./dep.mjs');\nconsole.log(r === i);\n",
+  // Finishing an asynchronous dependency does not make it (or its
+  // synchronous parent) eligible for require(esm).
+  'completed-tla/dep.mjs': 'await 0;\nexport const d = 1;\n',
+  'completed-tla/parent.mjs': "import { d } from './dep.mjs';\nexport { d };\n",
+  'completed-tla/main.mjs': [
+    "import { createRequire } from 'node:module';",
+    "await import('./dep.mjs');",
+    'const require = createRequire(import.meta.url);',
+    "for (const name of ['dep', 'parent']) {",
+    "  try { console.log(name, 'required', require(`./${name}.mjs`).d); }",
+    '  catch (e) { console.log(name, e.code); }',
+    '}',
+  ].join('\n') + '\n',
+  // Constructor-created imports retain the native entry's origin, even
+  // after startup and in an AsyncFunction. The parent is a deliberate decoy.
+  'function-origin/dep.mjs': "export default 'parent';\n",
+  'function-origin/sub/dep.mjs': "export default 'sub';\n",
+  'function-origin/sub/entry.mjs': [
+    'console.log("function", (await new Function(\'return import("./dep.mjs")\')()).default);',
+    'console.log("timer", await new Promise((resolve, reject) => {',
+    '  setTimeout(() => new Function(\'return import("./dep.mjs")\')().then((m) => resolve(m.default), reject), 0);',
+    '}));',
+    'const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;',
+    'console.log("async-function", await new AsyncFunction(\'return (await import("./dep.mjs")).default\')());',
+  ].join('\n') + '\n',
+  // Queries and fragments are part of a static import's identity and URL.
+  'static-query/counter.mjs': "export let n = 0;\nexport function inc() { n++; }\nexport const q = import.meta.url.split('?')[1];\nexport const f = import.meta.url.split('#')[1];\n",
+  'static-query/main.mjs': [
+    "import * as a from './counter.mjs?one';",
+    "import * as b from './counter.mjs?two';",
+    "import * as c from './counter.mjs#f';",
+    "import * as d from './counter.mjs#g';",
+    'a.inc();',
+    'console.log(a === b, a.n, b.n, a.q, b.q);',
+    'c.inc();',
+    "console.log('fragment', c === d, a === c, c.n, d.n, c.f, d.f);",
+  ].join('\n') + '\n',
+  // This cycle is forbidden, with Node's uncaught error report and exit.
+  'cjs-esm-cycle/entry.cjs': "require('./esm.mjs');\n",
+  'cjs-esm-cycle/esm.mjs': "import e from './entry.cjs';\nexport const value = e;\n",
+  // bad.mjs fails linking while a.mjs is suspended. The error belongs to
+  // bad, not to every loading module; main explicitly resumes and awaits a.
+  'suspended-link-error/a.mjs': [
+    'globalThis.aStarted = true;',
+    'globalThis.startA();',
+    'await new Promise((resolve) => { globalThis.resumeA = resolve; });',
+    "export const outcome = 'resolved';",
+  ].join('\n') + '\n',
+  'suspended-link-error/c.mjs': 'export const present = 1;\n',
+  'suspended-link-error/bad.mjs': "import { missing } from './c.mjs';\nexport const value = missing;\n",
+  'suspended-link-error/main.mjs': [
+    'const started = new Promise((resolve) => { globalThis.startA = resolve; });',
+    "const a = import('./a.mjs');",
+    'await started;',
+    "console.log('a started', globalThis.aStarted);",
+    "try { await import('./bad.mjs'); console.log('bad unexpectedly resolved'); }",
+    "catch (e) { console.log('bad', e.name, e.message); }",
+    'globalThis.resumeA();',
+    "try { console.log('a', (await a).outcome); }",
+    "catch (e) { console.log('a', e.name, e.message); }",
+  ].join('\n') + '\n',
+  // Cached non-native imports must release their evaluation callbacks and
+  // exit normally, without running the CommonJS body more than once.
+  'cached-cjs/lib.cjs': "globalThis.evaluations = (globalThis.evaluations ?? 0) + 1;\nmodule.exports = { n: 1 };\n",
+  'cached-cjs/main.mjs': [
+    "const first = await import('./lib.cjs');",
+    'for (let i = 0; i < 2000; i++) {',
+    "  if (await import('./lib.cjs') !== first) throw new Error('changed namespace');",
+    '}',
+    "if (globalThis.evaluations !== 1) throw new Error('repeated evaluation');",
+    "console.log('done');",
+  ].join('\n') + '\n',
+  'cached-json/data.json': '{"n":1}\n',
+  'cached-json/main.mjs': [
+    "const first = await import('./data.json', { with: { type: 'json' } });",
+    'for (let i = 0; i < 2000; i++) {',
+    "  if (await import('./data.json', { with: { type: 'json' } }) !== first) throw new Error('changed namespace');",
+    '}',
+    "console.log('done');",
+  ].join('\n') + '\n',
+  // The fatal source arrow belongs to the import's binding, not a later
+  // equal string; preserve the original single-quoted module specifier.
+  'missing-esm-export/dep.mjs': 'export const present = 1;\n',
+  'missing-esm-export/main.mjs': "import { absent } from './dep.mjs';\nconst text = 'absent';\nconsole.log(text);\n",
+  // Comments around the attributes clause are valid, including braces.
+  'commented-json/d.json': '{"n":1}\n',
+  'commented-json/main.mjs': "import d from './d.json' /* c */ with { type: 'json' } /* } */;\nconsole.log(d);\n",
+  // CommonJS missing named exports have their own message and suggestion.
+  'missing-cjs-export/lib.cjs': 'exports.present = 1;\n',
+  'missing-cjs-export/main.mjs': "import { nope } from './lib.cjs';\nconst text = 'nope';\nconsole.log(text);\n",
+};
+const COMMANDS = [
+  'node failed-require/main.cjs',
+  'node json-import-first/main.mjs',
+  'node json-require-first/main.mjs',
+  'node late-stop/main.mjs',
+  'node namespace-require-first/main.cjs',
+  'node namespace-import-first/main.mjs',
+  'node completed-tla/main.mjs',
+  'node function-origin/sub/entry.mjs',
+  'node static-query/main.mjs',
+  'node cjs-esm-cycle/entry.cjs',
+  'node suspended-link-error/main.mjs',
+  'node cached-cjs/main.mjs',
+  'node cached-json/main.mjs',
+  'node missing-esm-export/main.mjs',
+  'node commented-json/main.mjs',
+  'node missing-cjs-export/main.mjs',
+];
+
+await matchNodeInWorkerd('native-esm-review-matches-node-workerd', W, FILES, COMMANDS);
