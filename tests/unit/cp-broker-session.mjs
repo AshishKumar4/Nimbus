@@ -20,11 +20,6 @@ import assert from 'node:assert/strict';
 
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
-import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
-import { createDefaultRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
-import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
-import { ProcessRegistry } from '../../packages/core/src/substrate/lifo/shell/ProcessRegistry.ts';
-import { Shell } from '../../packages/core/src/substrate/lifo/shell/Shell.ts';
 import { exitCodeForSignal } from '../../packages/core/src/substrate/lifo/shell/signals.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
@@ -51,15 +46,12 @@ const decoder = new TextDecoder();
     rootVfs.chown(dir, 1000, 1000);
   }
 
-  let registry = createDefaultRegistry();
-  registerUnixCommands(registry, rawVfs);
   const launched = [];
   const node = async (ctx) => {
     launched.push(ctx.args.join(' '));
     ctx.stdout.write('node ran\n');
     return 0;
   };
-  registry.register('node', node);
 
   const processes = new SessionProcessSupervisor();
   const parent = processes.spawn('node', ['parent.js'], '/home/user');
@@ -99,25 +91,10 @@ const decoder = new TextDecoder();
   session.facetManagerComposed = { manager, apps: {}, pumpLaunches: async () => {} };
   session.childProcessManager = null;
   session.esbuildService = null;
-  session._setCpRegistry(registry);
-  const shellVfs = new ProcessFiles(rawVfs);
-  const sessionCred = processes.cred(parent.pid);
-  const shellFor = (pid, state) => {
-    const shell = new Shell(terminal, shellVfs, registry, { ...session.shell.getEnv(), ...state.env, $: String(pid) }, new ProcessRegistry(), {
-      pid, get cred() { return processes.cred(pid); }, setUmask: (mask) => processes.setUmask(pid, mask),
-    });
-    shell.setCwd(state.cwd);
-    return shell;
-  };
-  session.shell = new Shell(terminal, shellVfs, registry, { HOME: '/home/user', PATH: '/bin:/usr/bin' }, new ProcessRegistry(), {
-    pid: parent.pid, cred: sessionCred, setUmask: (mask) => { processes.setUmask(parent.pid, mask); },
-  });
-  session.shell.setCwd('/home/user');
-  // NimbusWorkspace.shellFor, over this harness's shell.
   session.runtimeWorkspace = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx,
     vfs: rawVfs, filesystem: session.getFilesystemAuthority(), processes, cwd: '/home/user' });
   session.runtimeWorkspace.registry.register('node', node);
-  registry = session.runtimeWorkspace.registry;
+  const registry = session.runtimeWorkspace.registry;
   session._setCpRegistry(session.runtimeWorkspace.registry);
   session.shell = session.runtimeWorkspace.shell;
   assert.equal(session._ensureChildProcessManager(), session.runtimeWorkspace.children, 'the session delegates to the workspace-owned broker');
@@ -132,6 +109,10 @@ const decoder = new TextDecoder();
     const output = await session._rpcCpDrainOutput(childPid);
     return { exitCode: waited.exitCode, signal: waited.signal, stdout: decoder.decode(output.stdout), stderr: decoder.decode(output.stderr) };
   };
+  session._setCpRegistry(null);
+  const earlyShell = await spawn('sh', ['-c', 'echo EARLY']);
+  assert.equal((await collect(earlyShell)).stdout, 'EARLY\n', 'a shell plan does not depend on the hosted registry being attached');
+  session._setCpRegistry(registry);
   await assert.rejects(spawn('does-not-exist-byte-test', []), error => error.code === 'ENOENT', 'command resolution fails the spawn, not a child exit 127');
   rootVfs.writeFile('home/user/no-exec-byte-test', '#!/bin/sh\ncat\n', { mode: 0o644 });
   await assert.rejects(spawn('/home/user/no-exec-byte-test', []), error => error.code === 'EACCES', 'a nonexecutable path fails the spawn');

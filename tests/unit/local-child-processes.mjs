@@ -163,6 +163,6 @@ try {
     return 0;
   });
   assert.equal((await ws.exec('leave-child')).exitCode, 0);
-  assert.equal((await broker.wait(leftBehind.childPid, 1000)).signal, 'SIGTERM', 'local exec publishes its log exit before reaping its tree');
+  assert.equal((await broker.wait(leftBehind.childPid, 1000)).signal, 'SIGTERM', 'local exec ends its parent before reaping its tree');
   console.log('local child processes ok');
 } finally { await ws.close(); }
