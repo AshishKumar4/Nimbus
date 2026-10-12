@@ -585,8 +585,6 @@ class Builder<P extends TreePackage> {
   private queueSorted = true;
   /** Requests whose package's edges prefetch has asked for. */
   private readonly expanded = new Set<string>();
-  /** The versions installed or resolved, by name. */
-  private readonly resolvedVersions = new Map<string, Set<string>>();
   private readonly seen = new Set<Node>();
   private readonly virtualRoots = new Map<Node, Node>();
   readonly resolutions = new Map<string, TreeResolution<P>>();
@@ -637,18 +635,7 @@ class Builder<P extends TreePackage> {
       .map((request) => [this.requestKey(request.name, request.range), request])).values()];
     if (missing.length === 0) return;
     const answers = await this.host.resolve(missing);
-    missing.forEach(({ name, range }, i) => {
-      const answer = answers[i] ?? { failed: 'the resolver returned no answer' };
-      this.resolutions.set(this.requestKey(name, range), answer);
-      if ('package' in answer) this.noteVersion(name, answer.package.version);
-    });
-  }
-
-  /** `version` of `name` is in the tree, or resolved: what prefetch takes to meet an edge. */
-  noteVersion(name: string, version: string): void {
-    const versions = this.resolvedVersions.get(name) ?? new Set<string>();
-    versions.add(version);
-    this.resolvedVersions.set(name, versions);
+    missing.forEach(({ name, range }, i) => this.resolutions.set(this.requestKey(name, range), answers[i] ?? { failed: 'the resolver returned no answer' }));
   }
 
   /** The node `name@spec` resolves to, in `parent` (a virtual root): its package, or a load failure (#nodeFromSpec). */
@@ -746,13 +733,10 @@ class Builder<P extends TreePackage> {
 
   /**
    * What the coming visits will ask, resolved ahead, a level at a time: the
-   * queue's problem edges, then the edges of what they resolve to (a peer
+   * queue's problem edges, then every edge of what they resolve to (a peer
    * also at its source's own spec, which its peer set prefers), and so on
-   * down. An edge a version already resolved for its name meets is not
-   * asked: that copy is placed where it meets it, as npm dedupes, and an
-   * edge it does not meet after all is asked when it is visited.
-   * Resolution is the host's round trip; this keeps the trips to the depth
-   * of the tree, not its width. A request is expanded once.
+   * down. Resolution is the host's round trip; this keeps the trips to the
+   * depth of the tree, not its width. A request is expanded once.
    */
   private async prefetch(node: Node): Promise<void> {
     type Request = { name: string; range: string; from: Node | null };
@@ -769,7 +753,6 @@ class Builder<P extends TreePackage> {
         if (!answer || 'failed' in answer) continue;
         for (const edge of this.edgesOf(answer.package)) {
           if (edge.type === 'peerOptional' && !this.tree.mentions(edge.name)) continue;
-          if ([...this.resolvedVersions.get(edge.name) ?? []].some((version) => meets(version, edge))) continue;
           const peer = isPeer(edge.type);
           next.push({ name: edge.name, range: edge.range, from: peer ? from : null });
           const own = peer ? from?.edgesOut.get(edge.name) : undefined;
@@ -1000,7 +983,6 @@ export async function planTree<P extends TreePackage, I extends TreePackage>(
       : new Node(name, entry.pkg, 'installed', { refused: entry.refused, skipIfOptional: entry.skipIfOptional }, builder.edgesOf(entry.pkg));
     tree.attach(node, parent);
     installedAt.set(entry.at, node);
-    if (node.pkg !== null) builder.noteVersion(name, node.pkg.version);
     if (node.marks.failed !== undefined) builder.loadFailures.add(node);
   }
 
