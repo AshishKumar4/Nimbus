@@ -28,7 +28,7 @@ if (policy) {
 // address of this machine that is not loopback (a program's loopback is its
 // session's ports), under a CA this workerd trusts (NODE_EXTRA_CA_CERTS, read
 // by miniflare at start). Its certificate names the address and fixture.nimbus.test;
-// it answers with the server name the client presented.
+// it answers a client's first line with the server name the client presented.
 const lan = Object.values(networkInterfaces()).flat().find((a) => a && a.family === 'IPv4' && !a.internal)?.address;
 assert.ok(lan, 'needs an IPv4 address other than loopback');
 const dir = mkdtempSync(join(tmpdir(), 'egress-tls-'));
@@ -46,10 +46,11 @@ const fixture = spawn('node', ['-e', `
   const fs = require('fs');
   const server = require('tls').createServer({ key: fs.readFileSync(${JSON.stringify(join(dir, 'server.key'))}), cert: fs.readFileSync(${JSON.stringify(join(dir, 'server.pem'))}) }, (socket) => {
     socket.on('error', () => {});
-    socket.end('name ' + (socket.servername || '-') + '\\n');
+    socket.once('data', (line) => {
+      console.log('GOT ' + (socket.servername || '-') + ' ' + String(line).trim());
+      socket.end('name ' + (socket.servername || '-') + '\\n');
+    });
   });
-  // A client that refused the server's certificate ends the handshake with an alert.
-  server.on('tlsClientError', (error, socket) => console.log('REFUSED ' + (socket.servername || '-')));
   server.listen(0, ${JSON.stringify(lan)}, () => console.log('PORT ' + server.address().port));
 `], { stdio: ['ignore', 'pipe', 'inherit'] });
 try {
@@ -175,9 +176,9 @@ try {
       assert.doesNotMatch(refused.stdout, /unexpected/);
     }
     // The name the program gives is the one presented and checked: the right one connects and is
-    // the server's SNI; with a wrong one the session refuses the server's certificate, and nothing
-    // the program sends or the server answers crosses. (workerd's startTls reports the failure at
-    // the first write, as an internal error, so the program writes first, as most protocols do.)
+    // the server's SNI; a wrong one is refused at the session, and nothing the program sends
+    // reaches the server. (workerd's startTls checks the certificate once the handshake is done,
+    // and reports the refusal at the first write as an internal error.)
     const names = await run(`
       const tls = require('tls');
       const ask = (servername) => new Promise((resolve) => {
@@ -196,11 +197,8 @@ try {
     assert.doesNotMatch(names.stdout, /fixture\.nimbus\.test failed/);
     assert.match(names.stdout, /wrong\.nimbus\.test failed /);
     assert.match(names.stdout, /wrong\.nimbus\.test answer ""/);
-    for (const deadline = Date.now() + 5000; !/REFUSED wrong\.nimbus\.test/.test(fixtureOut) && Date.now() < deadline;) {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-    assert.match(fixtureOut, /REFUSED wrong\.nimbus\.test/);
-    assert.doesNotMatch(fixtureOut, /REFUSED fixture\.nimbus\.test/);
+    assert.match(fixtureOut, /GOT fixture\.nimbus\.test hello/);
+    assert.doesNotMatch(fixtureOut, /GOT wrong/);
   } finally { await terminal.close(); }
 } finally { await probe.stop(); }
 } finally { fixture.kill(); rmSync(dir, { recursive: true, force: true }); delete process.env.NODE_EXTRA_CA_CERTS; }
