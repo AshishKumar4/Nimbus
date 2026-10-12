@@ -1,4 +1,4 @@
-import { after, installAuthorityFilesystem, processGoneMessage, refusalErrno } from '../wasi/filesystem.js';
+import { after, installAuthorityFilesystem, namedDescriptor, processGoneMessage, refusalErrno } from '../wasi/filesystem.js';
 import { supervisorFilesystem } from '../vfs-supervisor.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
 import { PIPE_CAPACITY, decideRead, decideWrite, heldExitSettles, holdsExit, pipeBudget, pipeLimitMessage, readerStops } from './pipe-rules.js';
@@ -161,6 +161,18 @@ function bumpPipe(s, e, d) { const pp = s.pipes.get(e.pipeId); if (e.end === 'r'
     pp.readers += d;
 else
     pp.writers += d; }
+/** A new descriptor on what `proc`'s stream or pipe descriptor `fd` holds, as dup(2); null for any other kind (AuthorityFilesystemOptions.duplicate). */
+function duplicateStream(s, proc, fd) {
+    const e = proc.fds.get(fd);
+    if (e === undefined || (e.kind !== 'pipe' && e.kind !== 'stdin' && e.kind !== 'stdout' && e.kind !== 'stderr'))
+        return null;
+    const copy = { ...e };
+    const next = lowestFd(proc);
+    proc.fds.set(next, copy);
+    if (copy.kind === 'pipe')
+        bumpPipe(s, copy, 1);
+    return next;
+}
 function closeFd(s, proc, fd) {
     const e = proc.fds.get(fd);
     if (!e)
@@ -391,7 +403,7 @@ function makeWasiFs(s, proc, DV, U8, io, memory, synchronous = false, resident) 
             crypto.getRandomValues(U8().subarray(p + i, p + Math.min(i + 65536, n))); return 0; },
         proc_exit(code) { throw new Exit(code); },
     };
-    installAuthorityFilesystem(imports, { fs: () => s.fs, memory, fds: proc.fds, allocateFd: () => lowestFd(proc), synchronous, umask: () => s.cred.umask, residentBytes: WASI_RESIDENT_FILE_CAP_BYTES, resident, processGone: s.gone });
+    installAuthorityFilesystem(imports, { fs: () => s.fs, memory, fds: proc.fds, allocateFd: () => lowestFd(proc), synchronous, umask: () => s.cred.umask, residentBytes: WASI_RESIDENT_FILE_CAP_BYTES, resident, processGone: s.gone, duplicate: (fd) => duplicateStream(s, proc, fd) });
     installPreopenRehoming(proc, imports);
     return imports;
 }
@@ -909,11 +921,12 @@ function makeProc(s, pid, ppid, fds) {
             const e = proc.fds.get(o);
             if (!e)
                 return -E.BADF;
+            const stream = duplicateStream(s, proc, o);
+            if (stream !== null)
+                return stream;
             try {
                 const nf = lowestFd(proc);
                 proc.fds.set(nf, e.kind === 'authority' ? { ...e, handle: await s.fs.dup(e.handle.id) } : { ...e });
-                if (e.kind === 'pipe')
-                    bumpPipe(s, e, 1);
                 return nf;
             }
             catch (error) {
@@ -1152,6 +1165,9 @@ function step(s, proc) {
         throw e;
     }
     if (c.reason === null) {
+        // A rewind that never reached its landing ran the guest off its end: not an exit.
+        if (c.rewinding)
+            throw new Error(`bash-runner: pid ${proc.pid} returned from _start mid-rewind, its longjmp or resume target lost`);
         finishProc(s, proc, 0);
         return;
     }
@@ -1428,6 +1444,15 @@ async function doExec(s, proc) {
     };
     const descriptor = (fd) => { const entry = proc.fds.get(fd); if (entry?.kind !== 'authority')
         throw Object.assign(new Error('EBADF'), { code: 'EBADF' }); return entry.handle.id; };
+    // The descriptor stat_metadata is asked about: its own, or the one its path names (/dev/fd/N), as path_filestat_get answers.
+    const statTarget = (fd, ptr, length) => {
+        if (!ptr)
+            return fd;
+        const path = readPath(ptr, length);
+        const base = proc.fds.get(proc.preopenMoved.get(fd) ?? fd);
+        const guest = path.startsWith('/') ? path : base?.kind === 'preopen' ? base.wasiPath.replace(/\/?$/, '/') + path : null;
+        return guest === null ? null : namedDescriptor(guest);
+    };
     // The call is produced inside the guard, not handed to it: resolving the fd
     // is itself a syscall step that can fail, and an EBADF raised while building
     // the arguments has to answer the guest as an errno rather than escape the
@@ -1450,14 +1475,27 @@ async function doExec(s, proc) {
             s.cred = { ...s.cred, umask: field >>> 3 };
             return previous;
         } return [s.cred.uid, s.cred.gid, proc.pid, proc.ppid][field] ?? 0; },
-        stat_metadata: (fd, ptr, length, follow, out) => result(() => ptr ? fs.stat(at(fd, readPath(ptr, length)), { followSymlinks: !!follow }) : fs.fstat(descriptor(fd)), stat => {
-            if (!stat)
-                return E.NOENT;
-            DV().setUint32(out, stat.mode, true);
-            DV().setUint32(out + 4, stat.uid, true);
-            DV().setUint32(out + 8, stat.gid, true);
-            return 0;
-        }),
+        stat_metadata: (fd, ptr, length, follow, out) => {
+            const target = statTarget(fd, ptr, length);
+            const stream = target === null ? undefined : proc.fds.get(target);
+            if (target !== null && stream === undefined)
+                return ptr ? E.NOENT : E.BADF;
+            // A stream or a pipe has no inode: a FIFO's or a terminal's mode, the session's owner.
+            if (stream !== undefined && stream.kind !== 'authority' && stream.kind !== 'preopen') {
+                DV().setUint32(out, stream.kind === 'pipe' ? 0o010600 : 0o020620, true);
+                DV().setUint32(out + 4, s.cred.uid, true);
+                DV().setUint32(out + 8, s.cred.gid, true);
+                return 0;
+            }
+            return result(() => target !== null ? fs.fstat(descriptor(target)) : fs.stat(at(fd, readPath(ptr, length)), { followSymlinks: !!follow }), stat => {
+                if (!stat)
+                    return E.NOENT;
+                DV().setUint32(out, stat.mode, true);
+                DV().setUint32(out + 4, stat.uid, true);
+                DV().setUint32(out + 8, stat.gid, true);
+                return 0;
+            });
+        },
         chmod: (ptr, length, mode) => result(() => fs.chmod(at(-1, readPath(ptr, length)), mode), () => 0),
         fchmod: (fd, mode) => result(() => fs.fchmod(descriptor(fd), mode), () => 0),
         chown: (fd, ptr, length, uid, gid, follow) => result(() => ptr ? fs.chown(at(fd, readPath(ptr, length)), uid, gid, { followSymlinks: !!follow }) : fs.fchown(descriptor(fd), uid, gid), () => 0),

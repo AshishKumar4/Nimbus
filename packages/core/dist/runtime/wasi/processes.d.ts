@@ -118,6 +118,8 @@ export interface ProcessHost {
     close(fd: number): SyscallResult | null;
     /** Whether `fd` is a pipe descriptor. */
     isPipe(fd: number): boolean;
+    /** A new descriptor on what pipe or stream descriptor `fd` holds, as dup(2); null for any other kind (AuthorityFilesystemOptions.duplicate). */
+    duplicate(fd: number): number | null;
     /**
      * When pipe descriptor `fd` (isPipe) is ready for `want`, for poll_oneoff:
      * at once when it is, else a wait that answers when it becomes so, or null

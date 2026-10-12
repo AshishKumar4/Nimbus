@@ -841,11 +841,13 @@ export function __wasiMakeImports(opts) {
             return __WASI_ESUCCESS;
         },
         fd_read(fd, iovsPtr, iovsLen, nreadPtr) {
-            if (fd === 0) {
+            const entry = fdTable.get(fd);
+            // The guest's stdin, under whatever number it dup'd it to: what the
+            // process host does not answer (no input channel) is at its end.
+            if (fd === 0 || entry?.kind === 'stdin') {
                 writeU32LE(nreadPtr, 0);
                 return __WASI_ESUCCESS;
             }
-            const entry = fdTable.get(fd);
             if (!entry)
                 return __WASI_EBADF;
             // wasi-libc maps read(2) to fd_read for every fd kind. A socket fd
@@ -1809,6 +1811,7 @@ export function __wasiMakeImports(opts) {
         residentBytes: __wasiFS.residentFileCap,
         extension: fsImport,
         processGone: (refusal) => { __wasiProcessGone ??= refusal; },
+        duplicate: (fd) => proc.duplicate(fd),
     });
     // fd_filestat_get as answered, before the guest's table is made Suspending:
     // a Suspending function called from JS is not a wasm call, and traps.

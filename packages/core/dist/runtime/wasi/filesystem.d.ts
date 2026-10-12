@@ -119,7 +119,22 @@ export interface AuthorityFilesystemOptions {
      * descriptor goes to what the table held.
      */
     extension?: Partial<NimbusFsImports>;
+    /**
+     * A new descriptor, at the next free number, on what the host's own
+     * descriptor `fd` holds (a standard stream, a pipe end), as dup(2) makes
+     * one; null when that kind cannot be shared (a socket). Opening a path
+     * that names a descriptor (namedDescriptor) duplicates it: the codec's own
+     * kinds itself, the host's through this. Without it, those paths are the
+     * filesystem's.
+     */
+    duplicate?(fd: number): number | null;
 }
+/**
+ * The descriptor an absolute guest path names, as Linux's /dev/fd/N,
+ * /proc/self/fd/N and /dev/std{in,out,err} do; null for any other path. No
+ * filesystem holds what these name: each is the process's own descriptor.
+ */
+export declare function namedDescriptor(path: string): number | null;
 /**
  * st_mode of a stat: its type's format bits, and its permission bits, or
  * Node's defaults (0755 for a directory, 0644 otherwise) where the backend

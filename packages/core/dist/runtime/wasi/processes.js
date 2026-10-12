@@ -276,17 +276,11 @@ export function processHost(opts) {
             return E.SUCCESS;
         },
         dup(fd, outPtr) {
-            const entry = opts.fds.get(fd);
-            if (!entry)
+            if (!opts.fds.has(fd))
                 return E.BADF;
-            // Pipes and the guest's own streams; a file's descriptor is the codec's, and not shared this way.
-            if (entry.kind !== 'pipe' && entry.kind !== 'stdin' && entry.kind !== 'stdout' && entry.kind !== 'stderr')
+            const next = duplicate(fd);
+            if (next === null)
                 return E.NOSYS;
-            const copy = { ...entry };
-            if (copy.kind === 'pipe')
-                hold(copy);
-            const next = opts.allocateFd();
-            opts.fds.set(next, copy);
             view().setInt32(outPtr, next, true);
             return E.SUCCESS;
         },
@@ -553,6 +547,18 @@ export function processHost(opts) {
             return E.AGAIN;
         return parkedWait((wake) => pipe.waiters.push(wake), answer).ready.then((read) => read ?? E.INTR);
     };
+    // Pipes and the guest's own streams; a file's descriptor is the codec's, and not shared this way.
+    const duplicate = (fd) => {
+        const entry = opts.fds.get(fd);
+        if (!entry || (entry.kind !== 'pipe' && entry.kind !== 'stdin' && entry.kind !== 'stdout' && entry.kind !== 'stderr'))
+            return null;
+        const copy = { ...entry };
+        if (copy.kind === 'pipe')
+            hold(copy);
+        const next = opts.allocateFd();
+        opts.fds.set(next, copy);
+        return next;
+    };
     const write = (fd, iovs, iovsLen, nwritten) => {
         const entry = pipeEntry(fd);
         if (!entry)
@@ -620,5 +626,5 @@ export function processHost(opts) {
         // A write end always has room: what is written to a child goes to the session.
         return check() ?? parkedWait((wake) => pipe.waiters.push(wake), check);
     };
-    return { imports, read, write, close, isPipe: (fd) => pipeEntry(fd) !== null, readiness, dispose: () => { disposed = true; } };
+    return { imports, read, write, close, isPipe: (fd) => pipeEntry(fd) !== null, duplicate, readiness, dispose: () => { disposed = true; } };
 }

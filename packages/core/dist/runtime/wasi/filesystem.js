@@ -71,6 +71,20 @@ const num = (value) => {
         fail('EINVAL');
     return n;
 };
+const STANDARD_STREAMS = { '/dev/stdin': 0, '/dev/stdout': 1, '/dev/stderr': 2 };
+/**
+ * The descriptor an absolute guest path names, as Linux's /dev/fd/N,
+ * /proc/self/fd/N and /dev/std{in,out,err} do; null for any other path. No
+ * filesystem holds what these name: each is the process's own descriptor.
+ */
+export function namedDescriptor(path) {
+    const normal = '/' + path.split('/').filter((segment) => segment !== '' && segment !== '.').join('/');
+    const stream = Object.hasOwn(STANDARD_STREAMS, normal) ? STANDARD_STREAMS[normal] : undefined;
+    if (stream !== undefined)
+        return stream;
+    const numbered = /^\/(?:dev\/fd|proc\/self\/fd)\/(\d{1,9})$/.exec(normal);
+    return numbered === null ? null : Number(numbered[1]);
+}
 /**
  * st_mode of a stat: its type's format bits, and its permission bits, or
  * Node's defaults (0755 for a directory, 0644 otherwise) where the backend
@@ -152,23 +166,51 @@ export function installAuthorityFilesystem(imports, options) {
         return e?.kind === 'preopen' ? e : null;
     };
     // wasi-libc resolves a path against its longest matching preopen and passes
-    // only the remainder, so deciding whether the guest named a socket means
-    // rebuilding the absolute path exactly as the host's path_open does.
-    const socketPath = (fd, ptr, length) => {
+    // only the remainder, so deciding whether the guest named a socket or a
+    // descriptor means rebuilding the absolute path exactly as the host's
+    // path_open does. Null for a path this codec cannot decode: that is its own
+    // to reject, with the errno its body would have produced.
+    const guestPath = (fd, ptr, length) => {
         let guest;
-        // A path this codec cannot decode is its own to reject, with the errno its
-        // body would have produced.
         try {
             guest = path(ptr, length);
         }
         catch {
-            return false;
+            return null;
         }
         const base = fds.get(fd);
         if (!guest.startsWith('/') && base?.kind === 'preopen') {
             guest = base.wasiPath.endsWith('/') ? base.wasiPath + guest : base.wasiPath + '/' + guest;
         }
-        return socketPathPrefixes.some(prefix => guest.startsWith(prefix));
+        return guest;
+    };
+    const socketPath = (fd, ptr, length) => {
+        const guest = guestPath(fd, ptr, length);
+        return guest !== null && socketPathPrefixes.some(prefix => guest.startsWith(prefix));
+    };
+    /** The descriptor a path open names, when the host can duplicate its own kinds. */
+    const named = (fd, ptr, length) => {
+        const guest = options.duplicate === undefined ? null : guestPath(fd, ptr, length);
+        return guest === null ? null : namedDescriptor(guest);
+    };
+    /**
+     * A new descriptor on what descriptor `fd` holds: an authority file's
+     * shares its offset, as dup(2)'s does; a resident copy's reads on from
+     * where it is, its pin staying with the original. ENOENT for a descriptor
+     * the process does not hold, as Linux answers for /dev/fd/N.
+     */
+    const duplicate = (fs, fd) => {
+        const e = fds.get(fd);
+        if (e === undefined)
+            fail('ENOENT');
+        const place = (copy) => { const id = options.allocateFd(); fds.set(id, copy); return id; };
+        if (e.kind === 'authority')
+            return after(fs.dup(e.handle.id), handle => place({ ...e, handle }));
+        if (e.kind === 'resident')
+            return place({ kind: 'resident', stat: e.stat, bytes: e.bytes, position: e.position, rights: e.rights, rightsInheriting: e.rightsInheriting, fdflags: e.fdflags });
+        if (e.kind === 'preopen')
+            return place({ ...e });
+        return options.duplicate?.(fd) ?? fail('ENXIO');
     };
     const at = (fd, p) => {
         if (p.startsWith('/'))
@@ -321,6 +363,9 @@ export function installAuthorityFilesystem(imports, options) {
         if (status & ~5)
             fail('ENOTSUP');
         pathRight(fd, 13);
+        const descriptor = named(fd, p, n);
+        if (descriptor !== null)
+            return after(duplicate(fs, descriptor), id => { u32(out, id); return 0; });
         if (flags & 1)
             pathRight(fd, 10);
         if (flags & 8)
@@ -379,8 +424,16 @@ export function installAuthorityFilesystem(imports, options) {
             });
         });
     }, args => !socketPath(args[0], args[2], args[3]));
-    imports.path_filestat_get = guard(imports.path_filestat_get, (fs, fd, flags, p, n, out) => { pathRight(fd, 18); return after(fs.stat(at(fd, path(p, n)), { followSymlinks: !!(flags & 1) }), st => writeStat(out, st ?? fail('ENOENT'))); });
     imports.fd_filestat_get = guard(imports.fd_filestat_get, (fs, fd, out) => { pathRight(fd, 21); return after(stat(fs, fd), st => writeStat(out, st)); }, owns);
+    // A path naming a descriptor is that descriptor's stat, whoever answers it.
+    const descriptorStat = imports.fd_filestat_get;
+    imports.path_filestat_get = guard(imports.path_filestat_get, (fs, fd, flags, p, n, out) => {
+        pathRight(fd, 18);
+        const descriptor = named(fd, p, n);
+        if (descriptor !== null)
+            return fds.has(descriptor) ? descriptorStat(descriptor, out) : fail('ENOENT');
+        return after(fs.stat(at(fd, path(p, n)), { followSymlinks: !!(flags & 1) }), st => writeStat(out, st ?? fail('ENOENT')));
+    });
     imports.fd_read = guard(imports.fd_read, (fs, fd, p, n, out) => read(fs, fd, p, n, null, out), owns);
     imports.fd_pread = guard(imports.fd_pread, (fs, fd, p, n, off, out) => read(fs, fd, p, n, num(off), out), owns);
     imports.fd_write = guard(imports.fd_write, (fs, fd, p, n, out) => write(fs, fd, p, n, null, out), owns);
