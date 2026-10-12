@@ -96,6 +96,7 @@ function fixture() {
   await s.pool.open('/d5', 'd5', async () => ['/d1', '/d6']);
   assert.deepEqual(s.calls[1].open, ['/d5', '/d6'], 'what is already prefetched is not asked for again');
   assert.deepEqual(s.calls[1].retire, [], 'nor retired');
+  assert.equal(s.calls[1].claim.length, 3, 'but claimed at the session, which closes what an advance leaves unclaimed (d0, and d1 and d2 kept)');
   const sent = s.calls.length;
   await s.pool.open('/d2', 'd2', async () => { throw new Error('served from the first batch'); });
   assert.equal(s.calls.length, sent, 'the first batch still serves after the miss');

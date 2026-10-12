@@ -394,10 +394,15 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     // fd_allocate, fd_filestat_set_size. wasi-libc asks for sync and status
     // rights on every open, and a resident copy answers those itself.
     const readOnly = !(requested & ((1n << 6n) | (1n << 8n) | (1n << 22n))) && !(flags & 15) && !(status & 1);
+    // An open that may make or empty a file names a file: a directory
+    // refuses it (EISDIR) and a symlink is followed or refused (ELOOP), so
+    // the descriptor's type is known without asking for its stat. (A
+    // directory opened only to write is not refused: the write is.)
+    const writes = !(flags & 2) && !!(flags & (1 | 8));
     const open = (): SyscallResult => after(fs.open(target, { read: !!(requested & 2n), write: !!(requested & 64n), append: !!(status & 1),
       create: !!(flags & 1), directory: !!(flags & 2), exclusive: !!(flags & 4), truncate: !!(flags & 8), followSymlinks,
       mode: creationMode(0o666) }), handle =>
-      after(fs.fstat(handle.id), st => {
+      after(writes ? { type: 'file' as const } : fs.fstat(handle.id), st => {
         const id = options.allocateFd();
         fds.set(id, { kind: 'authority', handle, type: st.type, rights: requested, rightsInheriting: childRights, fdflags: status });
         u32(out, id); return 0;

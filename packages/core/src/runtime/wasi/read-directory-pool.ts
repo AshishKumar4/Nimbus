@@ -62,7 +62,7 @@ export function readDirectoryPool({ call, store, client, before }: Options): Rea
   };
   const outstanding = (): number => unused.size + owned.size + retiring.size + uncertain + reserved;
   const discardUnused = (): void => {
-    for (const entry of unused.values()) retiring.add(entry.handle.id);
+    for (const entry of unused.values()) { claiming.delete(entry.handle.id); retiring.add(entry.handle.id); }
     unused.clear();
   };
   const invalidate = (): void => { generation++; trustedAtIo = false; discardUnused(); };
@@ -155,8 +155,12 @@ export function readDirectoryPool({ call, store, client, before }: Options): Rea
         const current = hit ? local(hit) : null;
         if (hit && current && hit.openedRevision !== null && current.entry.revision === hit.openedRevision) return claim(hit);
         // Only a hit that no longer holds is retired; the rest of what the
-        // walk was guessed to open stays, validated when it is claimed.
-        if (hit) { unused.delete(key); retiring.add(hit.handle.id); }
+        // walk was guessed to open stays, validated when it is claimed. The
+        // session closes what an advance of the channel leaves unclaimed, so
+        // the next exchange claims it there (still unused here, and retired
+        // at the run's end or when the store moves, as any).
+        if (hit) { unused.delete(key); claiming.delete(hit.handle.id); retiring.add(hit.handle.id); }
+        for (const entry of unused.values()) claiming.add(entry.handle.id);
         const candidates = (await prefetch()).filter((candidate) => !unused.has(keyOfPath(candidate)));
         if (began !== cancelled) throw failure('EAGAIN', 'directory open was cancelled while preparing');
         // At capacity, ACK retirement first. Do not spend credits merely
