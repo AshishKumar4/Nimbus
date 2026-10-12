@@ -1044,7 +1044,7 @@ const __fsMod = (() => {
   // ── VFS bundle lookup (fast path — in-memory) ──
   function _bundleLookup(absPath) {
     const k = _strip(absPath);
-    if (typeof __nimbusObserveRead === "function") __nimbusObserveRead(k);
+    if (typeof __resident !== "undefined" && __resident.observeRead !== null) __resident.observeRead(k);
     // The parked write first, as _writtenCell reads: it is this process's own,
     // newer than anything the store holds, and it is the live cell (a store
     // read reassembles a copy, which a write loop would pay for per write).
@@ -12158,7 +12158,7 @@ const __nimbusAdvised = new WeakSet();
 // \`required\`: loaded by a require() call, not by an ES module's static
 // import, which the lowering makes a call of the module's own require.
 function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = true, parent = undefined) {
-  if (typeof __nimbusObserveRead === "function") __nimbusObserveRead(String(resolvedPath).replace(/^\\/+/, ""));
+  if (typeof __resident !== "undefined" && __resident.observeRead !== null) __resident.observeRead(String(resolvedPath).replace(/^\\/+/, ""));
   const filename = "/" + resolvedPath.replace(/^\\/+/, "");
   // A query's or fragment's import is a job of its own, kept by its URL.
   const cacheKey = evaluationKey === resolvedPath ? filename : evaluationKey;

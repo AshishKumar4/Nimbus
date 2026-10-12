@@ -1586,11 +1586,10 @@ let __MODULE_VFS_BUNDLE = __nimbusWithCodeCells(${bundleSource.expression});
 // The shared read profile's files this launch staged; each is struck off
 // when read, and what is left at exit is reported unread (read-profile.ts).
 let __nimbusProfileStaged = null;
-function __nimbusObserveRead(path) {
-  if (__nimbusProfileStaged !== null) __nimbusProfileStaged.delete(path);
-}
 // This facet's store: one process, one store, for the life of the isolate.
-const __resident = __nimbusResidentModule.createResidentStore({ observeRead: __nimbusObserveRead });
+const __resident = __nimbusResidentModule.createResidentStore({
+  observeRead: (path) => { if (__nimbusProfileStaged !== null) __nimbusProfileStaged.delete(path); },
+});
 
 let __nimbusStarted = false;
 let __nimbusStarting = null;
