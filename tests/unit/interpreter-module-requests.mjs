@@ -101,8 +101,8 @@ assert.equal(moduleRequests('pkg/index.js', 'import a from "x";').unread, undefi
 // Read with the loader's parse goal: a module's top-level return is a syntax
 // error, which the permissive read (a script's goal after a module's) is not.
 assert.deepEqual(moduleRequests('pkg/a.mjs', 'return 1;'), { requests: [] });
-assert.deepEqual(moduleRequests('pkg/a.mjs', 'return 1;', false, { format: 'module' }), { requests: [], unread: 'syntax' });
-assert.deepEqual(moduleRequests('pkg/a.js', 'return 1;', false, {}), { requests: [] }, 'detection reads a script where a module does not parse');
-assert.deepEqual(moduleRequests('pkg/a.js', 'require("x");', false, { format: 'commonjs' }).requests.map((r) => r.specifier), ['x']);
+assert.deepEqual(moduleRequests('pkg/a.mjs', 'return 1;', false, 'module'), { requests: [], unread: 'syntax' });
+assert.deepEqual(moduleRequests('pkg/a.js', 'return 1;', false, 'detect'), { requests: [] }, 'detection reads a script where a module does not parse');
+assert.deepEqual(moduleRequests('pkg/a.js', 'require("x");', false, 'commonjs').requests.map((r) => r.specifier), ['x']);
 
 console.log('interpreter-module-requests: ok');

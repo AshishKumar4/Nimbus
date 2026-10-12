@@ -185,16 +185,17 @@ function leadingSlashes(path: string): number {
  * it read none: the text does not parse ('syntax'), or is TypeScript or JSX,
  * which it does not read ('unparsed'). The import() prefetch (node-shims.ts)
  * finds what to fetch with the requests, reading what it can; a late
- * graph's link plan reads with the loader's parse goal (`loader`: the
- * module's format, compileModule's), and loads a module it could not read as
- * the interpreter does, for its error. `javaScript`: the text is JavaScript
+ * graph's link plan reads with the loader's parse goal (`goal`: the format
+ * the loader gives the module, or 'detect' where its syntax decides, as
+ * compileModule parses it), and loads a module it could not read as the
+ * interpreter does, for its error. `javaScript`: the text is JavaScript
  * whatever the path's extension (a staged module's, as compileModule's).
  */
-export function moduleRequests(path: string, text: string, javaScript = false, loader?: { readonly format?: 'module' | 'commonjs' }): ModuleRequests {
+export function moduleRequests(path: string, text: string, javaScript = false, goal?: 'module' | 'commonjs' | 'detect'): ModuleRequests {
   if (!javaScript && UNPARSED_EXTENSIONS[extensionOf(path)]) return { requests: [], unread: 'unparsed' };
-  if (loader !== undefined) {
+  if (goal !== undefined) {
     try {
-      return { requests: programRequests(formatProgram(text, loader.format).program) };
+      return { requests: programRequests(formatProgram(text, goal === 'detect' ? undefined : goal).program) };
     } catch {
       return { requests: [], unread: 'syntax' };
     }

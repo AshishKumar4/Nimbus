@@ -12755,7 +12755,7 @@ function __nimbusEsmLinkPlan(key, url, seen, order, checked) {
   if (text === null) return;
   // Read with the parse goal the loader gives it: an adopted staged module's, a module; another's, its format.
   const format = staged !== -1 ? "module" : __nimbusFileFormat("/" + key);
-  const analysis = __nimbusModuleRequests(key, text, staged !== -1, { format });
+  const analysis = __nimbusModuleRequests(key, text, staged !== -1, format ?? "detect");
   // A module of the graph its parser could not read (a syntax error, or
   // TypeScript or JSX) is loaded as the interpreter loads it, for the error
   // that load gives, before any body runs; one it does load (code staged for
@@ -12974,9 +12974,9 @@ async function __nimbusReadAhead(paths, quota) {
 // and require() of a string), as the runtime-code interpreter's parser reads
 // it (core/interpreter moduleRequests): a request in a comment is none, one
 // in a template or with escapes is read as the language reads it.
-function __nimbusModuleRequests(path, text, javaScript = false, loader = undefined) {
+function __nimbusModuleRequests(path, text, javaScript = false, goal = undefined) {
   if (typeof __nimbusRegistryRequire !== "function") return { requests: [] };
-  try { return __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_MODULE}").moduleRequests(path, text, javaScript, loader); }
+  try { return __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_MODULE}").moduleRequests(path, text, javaScript, goal); }
   catch { return { requests: [] }; }
 }
 
