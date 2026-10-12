@@ -80,9 +80,13 @@ function project() {
 
 // ── a replacement whose shard fails before it writes, over a copy at the same version ──
 // The copy there before names the version the replacement does: it is no
-// evidence the replacement landed (its files are not this batch's). The
-// install fails, and the tree, the lockfile and package.json are as they were.
-{
+// evidence the replacement landed (its files are not this batch's), even
+// where the clock has not moved since it was written. The install fails,
+// and the tree, the lockfile and package.json are as they were.
+for (const clock of ['running', 'frozen']) {
+  const realNow = Date.now;
+  if (clock === 'frozen') { const at = realNow(); Date.now = () => at; }
+  try {
   const REGISTRY = { 'real-a': { d: '1.0.0' }, 'real-b': {}, d: {} };
   const harness = createSqliteVfsTestHarness(new Database(':memory:'));
   const vfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -115,6 +119,9 @@ function project() {
   assert.ok(root.exists(`${NM}/d/package.json`), 'what it needs is kept');
   assert.deepEqual(lockfile(), before.lock, 'the lockfile records what is on disk');
   assert.equal(root.readFileString(`${PROJ}/package.json`), before.json, 'nothing is saved');
+  } finally {
+    Date.now = realNow;
+  }
 }
 
 console.log('npm-install-shard-crash: ok');

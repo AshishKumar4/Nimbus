@@ -13,9 +13,10 @@
 // package.json (by default its name and version), and `filesFor(p)`'s other
 // files (path in the package → content: what its archive bundles), unless
 // `failFor(p)` names why it fails there. `crashFor(p)` makes the shard
-// itself fail when it reaches p: 'before' writing it, or 'after' (its
-// outcome lost, as a timed-out execution's). Each task settles on its own,
-// as the peer shard settles each.
+// itself fail when it reaches p: 'before' writing it, 'partial' (a file of
+// it written, not its package.json, which the writer writes last), or
+// 'after' (its outcome lost, as a timed-out execution's). Each task
+// settles on its own, as the peer shard settles each.
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { NpmInstaller } from '../../packages/worker/src/npm/installer.ts';
@@ -42,6 +43,10 @@ export function makeFanoutEnv({ root, NM, resultFor, shardsSeen = [], log = [], 
           if (errorText) return { name: p.name, version: p.version, pkgDir: p.pkgDir, fileCount: 0, bytesWritten: 0, elapsed: 1, warnings: [], errorText };
           const dir = p.pkgDir ?? `${NM}/${p.name}`;
           root.mkdir(dir, { recursive: true });
+          if (crashFor(p) === 'partial') {
+            root.writeFile(`${dir}/part.js`, '');
+            throw new Error(`shard crashed writing ${p.name}`);
+          }
           // As the batch writer does: every file stamped with the batch's mtime.
           const write = (path, content) => {
             root.writeFile(path, content);

@@ -6,7 +6,8 @@
 // mounted node_modules whole: copied beside its place and renamed there (on
 // a mount with no rename, package.json last). A package that cannot be put
 // there fails alone and the next install repairs it; what an install cut
-// short left behind is swept by the next. Before, the installer read
+// short left behind is swept by the next. A shard that fails costs only
+// what it did not finish. Before, the installer read
 // package.json from the engine ("No dependencies to install") and would have
 // written node_modules there. A project on SQLite, or one a mount's link
 // names, takes the engine's bulk path. Real NpmInstaller; the fan-out RPC is
@@ -60,7 +61,9 @@ const pkgJson = JSON.stringify({ name: 'p', version: '1.0.0', dependencies: { 'i
 const log = [];
 const shardsSeen = [];
 // The shards' batch writes are authorized as the invoking process, so they write as the user.
-const env = makeFanoutEnv({ root: vfs.as(CRED_SESSION_USER), NM: 'unused', resultFor: (name) => resolved(name, '7.0.0'), shardsSeen });
+// A shard that fails at the package `crash.at` names, as `crash.when` says (npm-fanout-test-env crashFor).
+const crash = { at: null, when: null };
+const env = makeFanoutEnv({ root: vfs.as(CRED_SESSION_USER), NM: 'unused', resultFor: (name) => resolved(name, '7.0.0'), shardsSeen, crashFor: (p) => (p.name === crash.at ? crash.when : null) });
 const ctx = { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage };
 const installer = new NpmInstaller(files, harness.sql, { env, ctx, onProgress: (msg) => log.push(msg) });
 const install = (dir) => installer.install(dir, { pid: PID, cred: CRED_SESSION_USER });
@@ -182,4 +185,21 @@ const install = (dir) => installer.install(dir, { pid: PID, cred: CRED_SESSION_U
 }
 
 await harness.close?.();
+// ── a shard that fails: what it published is put on the mount, a part of a package is not ──
+for (const [when, landed] of [['after', true], ['partial', false]]) {
+  const dir = `/m/crash-${when}`;
+  await view.mkdir(dir, { recursive: true });
+  await view.writeFile(`${dir}/package.json`, pkgJson);
+  Object.assign(crash, { at: 'is-number', when });
+  const result = await install(dir);
+  Object.assign(crash, { at: null, when: null });
+  if (landed) {
+    assert.deepEqual(result.failed, [], `a package the failed shard published is installed: ${log.join('\n')}`);
+    assert.equal(JSON.parse(await view.readFileString(`${dir}/node_modules/is-number/package.json`)).version, '7.0.0', 'and put on the mount');
+  } else {
+    assert.deepEqual(result.failed, ['is-number@7.0.0'], 'a package the shard did not finish fails');
+    assert.equal(await view.exists(`${dir}/node_modules/is-number`), false, 'and nothing of it is put on the mount');
+  }
+}
+
 console.log('npm-install-async-mount: ok');
