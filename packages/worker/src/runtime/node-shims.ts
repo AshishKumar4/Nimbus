@@ -13195,7 +13195,10 @@ function __requireFrom(id, fromDir, parent, required = true) {
     if (loading !== undefined && loading.loaded === false) {
       throw nodeError(Error, "ERR_REQUIRE_CYCLE_MODULE", "Cannot import CommonJS Module " + id + " in a cycle." + (parent?.filename ? " (from " + parent.filename + ")" : ""));
     }
-    return __loadModule(key, key, false, parent, esModule);
+    // A query's or fragment's module is its own instance, by its URL.
+    const { search, hash } = new URL(resolution.url);
+    const instance = search !== "" || hash !== "" ? resolution.url : key;
+    return __loadModule(key, instance, false, parent, esModule);
   }
   const resolved = __resolveFrom(id, fromDir, parent?.filename);
   if (!resolved) throw __nimbusModuleNotFound(id, parent);

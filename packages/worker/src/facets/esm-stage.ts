@@ -278,6 +278,11 @@ export async function stageEsModules(
       return member('builtin', builtin, (id, name) => builtinFacadeModule(name, id, PROVIDED_PACKAGE_EXPORTS[builtin] ?? []));
     }
     if (resolution.path === undefined) throw new Error(`Nimbus: ${resolution.url} has no file to stage`);
+    // A query's or fragment's module is an instance of its own (Node keys
+    // modules by URL), which a row by path cannot be: the importer's graph
+    // is the interpreter's, which keeps each URL's instance.
+    const { search, hash } = new URL(resolution.url);
+    if (search !== '' || hash !== '') throw notStaged(resolution.url);
     const key = stripLeadingSlashes(resolution.path);
     // Node's loader refuses to strip a TypeScript file under node_modules when it loads it.
     if (stripsTypes && stripsTypeScript(key) && typeScriptUnderNodeModules(key)) {
