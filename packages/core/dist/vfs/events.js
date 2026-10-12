@@ -28,11 +28,12 @@ export function projectChange(event, tree, shown, treeName) {
     const seen = (path) => (inWatchedTree(tree, path) ? shown(path) : null);
     const { type, timestamp } = event;
     const path = seen(event.path);
+    // The event itself where the watch names it as it came.
     if (event.oldPath === undefined)
-        return path === null ? null : { type, path, timestamp };
+        return path === null ? null : path === event.path ? event : { type, path, timestamp };
     const oldPath = seen(event.oldPath);
     if (path !== null && oldPath !== null)
-        return { type, path, oldPath, timestamp };
+        return path === event.path && oldPath === event.oldPath ? event : { type, path, oldPath, timestamp };
     if (oldPath !== null && event.oldPath === tree) {
         const there = shown(event.path);
         if (there !== null)

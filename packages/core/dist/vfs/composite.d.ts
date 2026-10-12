@@ -264,15 +264,15 @@ interface ChangeWatch {
     readonly listener: (events: readonly VfsEvent[]) => void;
     readonly subscribed: Map<Mount, () => void>;
     /** Batches published to it and not yet told, in landing order (judgeChanges judges each as it is told). */
-    readonly queue: Change[][];
+    readonly queue: Changes[];
     /** An earlier batch's judgment awaits: the ones after it wait behind it. */
     waiting: boolean;
     stopped: boolean;
 }
-/** A change published to a watch: in namespace names, from the mount its ends are on. */
-interface Change {
-    readonly event: VfsEvent;
+/** Changes published to a watch: in namespace names, from the mount their ends are on. */
+interface Changes {
     readonly mount: Mount;
+    readonly events: readonly VfsEvent[];
 }
 /** watchChanges: who is told, and the watches with batches to tell (drainChanges). */
 interface ChangeWatches {
@@ -485,6 +485,7 @@ export declare class CompositeVFS implements VFS {
      * told when it lands.
      */
     private landing;
+    private tellSpec;
     /**
      * A change of `type` that landed at `paths` (and from `oldPath`) through
      * `mount`, on `source` (by default what the mount gives this view), to
@@ -506,8 +507,9 @@ export declare class CompositeVFS implements VFS {
     /**
      * `batch` as `watch` is told it (projectChange): each end shown from the
      * mount it is on (that mount still at its point, the namespace routing
-     * the path to it, its source present: feedShows), and, for a watch that
-     * is not root's, under directories it may search (searchable).
+     * the path to it, its source present: feedShows, asked only where another
+     * mount meets the watched tree), and, for a watch that is not root's,
+     * under directories it may search (searchable).
      */
     private judgeChanges;
     /**
