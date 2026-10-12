@@ -33,7 +33,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SPECS } from './napi-wasm/specs.mjs';
 import { sha256Hex as sha256 } from './stage-asset.mjs';
-import { assertCurrentInputs } from './artifact-inputs.mjs';
+import { changedInputs } from './artifact-inputs.mjs';
 import { bindingInputs, loaderInputs } from './napi-wasm/inputs.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -92,9 +92,13 @@ async function stage(sourceDir, targetDir, files, provenance, alone = false) {
 
 const src = await sources();
 
+// Every build whose recorded inputs are not this tree's, named together: an
+// input several share (a wrapper crate, build.mjs) stales them all, and they
+// are regenerated in one run (a binding's build rebuilds the loader too).
+const stale = [];
 const loaderProvenance = JSON.parse(await fs.readFile(path.join(src.loader, 'provenance.json'), 'utf8'));
-assertCurrentInputs('napi-wasm loader', loaderProvenance.source?.inputs,
-  await loaderInputs(loaderProvenance.source?.graph ?? []), 'bun scripts/ci/remote-napi-loader.mjs');
+const loaderChanged = changedInputs(loaderProvenance.source?.inputs, await loaderInputs(loaderProvenance.source?.graph ?? []));
+if (loaderChanged.length) stale.push({ artifact: 'napi-wasm loader', changed: loaderChanged });
 const loaderDigests = LOADER_FILES.filter((f) => f !== 'provenance.json').map((f) => loaderProvenance.outputs[f]?.sha256);
 if (loaderDigests.some((d) => typeof d !== 'string')) fail(`${src.loader}/provenance.json lacks output digests`);
 const buildId = sha256(loaderDigests.join('\n')).slice(0, 16);
@@ -111,11 +115,17 @@ for (const spec of Object.values(SPECS)) {
   if (!existsSync(path.join(sourceDir, 'provenance.json'))) fail(`${sourceDir} has no provenance.json`);
   const provenance = JSON.parse(await fs.readFile(path.join(sourceDir, 'provenance.json'), 'utf8'));
   const key = `${spec.name}@${spec.version}`;
-  assertCurrentInputs(key, provenance.source?.inputs, await bindingInputs(key), `bun scripts/ci/remote-napi-binding.mjs ${key}`);
+  const changed = changedInputs(provenance.source?.inputs, await bindingInputs(key));
+  if (changed.length) stale.push({ artifact: key, key, changed });
   if (provenance.artifact !== spec.name || provenance.version !== spec.version) {
     fail(`${sourceDir} holds ${provenance.artifact}@${provenance.version}; specs.mjs pins ${spec.name}@${spec.version}`);
   }
   bindingSources.push({ spec, sourceDir, provenance });
+}
+if (stale.length) {
+  const keys = stale.flatMap((build) => (build.key === undefined ? [] : [build.key]));
+  const regenerate = keys.length ? `bun scripts/ci/remote-napi-binding.mjs ${keys.join(' ')}` : 'bun scripts/ci/remote-napi-loader.mjs';
+  fail(`these were built from other inputs than this tree's:\n${stale.map((build) => `${build.artifact}:\n    ${build.changed.join('\n    ')}`).join('\n')}\nRegenerate them together with: ${regenerate}`);
 }
 const loaderFacts = await stage(src.loader, loaderDir, LOADER_FILES, loaderProvenance, true);
 const bindings = [];

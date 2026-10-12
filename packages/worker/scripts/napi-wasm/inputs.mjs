@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
+import { findNodeAtLocation, getNodeValue, parseTree } from 'jsonc-parser';
 import { digestInputs, lockfileInputs } from '../artifact-inputs.mjs';
 import { sha256Hex } from '../stage-asset.mjs';
 import { EMNAPI, SPECS } from './specs.mjs';
@@ -34,9 +35,51 @@ export async function loaderInputs(graph, root = REPO) {
   })));
   return {
     ...await digestInputs(root, [...RECIPE, `${HERE}/specs.mjs`, `${HERE}/loader/napi-wasm-loader.ts`, `${HERE}/loader/wasi-trampoline.mjs`, ...configs, ...graph]),
-    ...await lockfileInputs(root, 'bun.lock', ['esbuild']),
+    ...await lockfileInputs(root, 'bun.lock', await lockfileClosure(root, 'bun.lock', ['esbuild'])),
     ...manifestInputs,
   };
+}
+
+/**
+ * The lockfile records `packages` and everything they depend on resolve to,
+ * optional dependencies too: the esbuild that compiles the loader runs as its
+ * optional native package (@esbuild/linux-x64 on CI), whose integrity is that
+ * package's own record, not esbuild's. Resolved as bun resolves: a package's
+ * own nested record (`esbuild/@esbuild/linux-x64`) before its ancestors'.
+ */
+async function lockfileClosure(root, lockfile, packages) {
+  const errors = [];
+  const lock = parseTree(await fs.readFile(path.join(root, lockfile), 'utf8'), errors, { allowTrailingComma: true });
+  if (!lock || errors.length) throw new Error(`cannot read dependency pins in ${lockfile}`);
+  const recordOf = (key) => { const entry = findNodeAtLocation(lock, ['packages', key]); return entry && getNodeValue(entry); };
+  const resolve = (from, name) => {
+    const names = from === null ? [] : packageNames(from);
+    for (let depth = names.length; depth >= 0; depth--) {
+      const key = [...names.slice(0, depth), name].join('/');
+      if (recordOf(key) !== undefined) return key;
+    }
+    throw new Error(`${lockfile} has no pin for ${name}${from === null ? '' : ` (a dependency of ${from})`}`);
+  };
+  const keys = new Set();
+  const visit = (from, name, optional) => {
+    let key;
+    try { key = resolve(from, name); } catch (error) { if (optional) return; throw error; }
+    if (keys.has(key)) return;
+    keys.add(key);
+    const info = [].concat(recordOf(key)).find((part) => part !== null && typeof part === 'object' && !Array.isArray(part));
+    for (const dependency of Object.keys(info?.dependencies ?? {})) visit(key, dependency, false);
+    for (const dependency of Object.keys(info?.optionalDependencies ?? {})) visit(key, dependency, true);
+  };
+  for (const name of packages) visit(null, name, false);
+  return [...keys];
+}
+
+/** The package names a lockfile key nests (`vite/esbuild/@esbuild/linux-x64`: vite, esbuild, @esbuild/linux-x64). */
+function packageNames(key) {
+  const names = [];
+  const parts = key.split('/');
+  for (let at = 0; at < parts.length; at++) names.push(parts[at].startsWith('@') ? `${parts[at]}/${parts[++at]}` : parts[at]);
+  return names;
 }
 
 /** Only this binding's spec and wrapper, not an unrelated binding's source. */

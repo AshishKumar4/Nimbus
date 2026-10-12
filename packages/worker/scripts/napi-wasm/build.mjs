@@ -51,7 +51,7 @@ import { build as esbuild } from 'esbuild';
 import { buildWasiTrampoline, DISPATCHED_WASI_IMPORTS } from './loader/wasi-trampoline.mjs';
 import { EMNAPI, SPECS } from './specs.mjs';
 import { bindingInputs, loaderGraph, loaderInputs, REPO } from './inputs.mjs';
-import { assertCurrentInputs } from '../artifact-inputs.mjs';
+import { assertCurrentInputs, changedInputs } from '../artifact-inputs.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const TARGET = 'wasm32-wasip1';
@@ -386,7 +386,7 @@ async function buildLoader(emnapi) {
   const outDir = path.join(OUT, 'napi-wasm');
   await fs.mkdir(outDir, { recursive: true });
   const loaderPath = path.join(outDir, 'napi-wasm-loader.mjs');
-  const result = await esbuild({
+  const compile = () => esbuild({
     absWorkingDir: REPO,
     metafile: true,
     entryPoints: [path.join(HERE, 'loader', 'napi-wasm-loader.ts')],
@@ -404,14 +404,29 @@ async function buildLoader(emnapi) {
     outfile: loaderPath,
     logLevel: 'warning',
   });
+  // The inputs the kept compile read: digested before it (the graph a first
+  // compile names) and again after it, and recorded only when they are the
+  // same, as buildSpec does for a binding. A source edited while it compiles
+  // is a refusal, not a loader recorded as built from bytes it never read.
+  const inputsOf = async (result) => {
+    const graph = loaderGraph(result.metafile, emnapi.npmDir);
+    const npmInputs = Object.fromEntries(await Promise.all(Object.entries(graph.npm).map(async ([name, file]) => [name, sha256(await fs.readFile(file))])));
+    return { inputs: await loaderInputs(graph.repository), graph: graph.repository, npmInputs };
+  };
+  const before = await inputsOf(await compile());
+  const after = await inputsOf(await compile());
+  const changed = [
+    ...changedInputs(Object.fromEntries(before.graph.map((name) => [name, 'graph'])), Object.fromEntries(after.graph.map((name) => [name, 'graph']))),
+    ...changedInputs(before.inputs, after.inputs),
+    ...changedInputs(before.npmInputs, after.npmInputs),
+  ];
+  if (changed.length) throw new Error(`napi-wasm: the loader's inputs changed while it compiled; build again:\n  ${[...new Set(changed)].join('\n  ')}`);
   const trampoline = buildWasiTrampoline();
   await fs.writeFile(path.join(outDir, 'wasi-trampoline.wasm'), trampoline);
   const loader = await fs.readFile(loaderPath);
-  const graph = loaderGraph(result.metafile, emnapi.npmDir);
-  const npmInputs = Object.fromEntries(await Promise.all(Object.entries(graph.npm).map(async ([name, file]) => [name, sha256(await fs.readFile(file))])));
   const provenance = {
     artifact: 'napi-wasm',
-    source: { inputs: await loaderInputs(graph.repository), graph: graph.repository, npmInputs },
+    source: before,
     npm: emnapi.packages,
     seams: emnapi.seams,
     trampolineDispatches: Object.keys(DISPATCHED_WASI_IMPORTS).sort(),

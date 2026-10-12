@@ -6,6 +6,15 @@ import { assertCurrentInputs, digestInputs } from '../../scripts/artifact-inputs
 const HERE = fileURLToPath(new URL('./', import.meta.url));
 export const PYTHON_OUTPUTS = ['python.wasm', 'python-sci.wasm', 'python313.zip', 'sci-packages.zip'];
 export const PYTHON_REGENERATE = 'bun scripts/ci/remote-python-build.mjs';
+/**
+ * The stages of a complete build (build-in-bwrap.sh's default): every one
+ * that compiles what the artifacts hold, then assets. Only such a run
+ * records provenance. A run of some of them (assets alone repacks the
+ * interpreters an earlier build linked) cannot say what its cached objects
+ * were built from, so the provenance stays as it was, and the gate refuses
+ * the repacked artifacts until a complete build.
+ */
+export const PYTHON_COMPLETE_STAGES = ['fetch', 'deps', 'nimbus', 'hostpy', 'wasi', 'extenv', 'ext', 'sci', 'assets'];
 
 export async function pythonInputs(root = HERE) {
   const sources = (await fs.readdir(root)).filter(name => /\.(?:c|py)$/.test(name));
@@ -27,6 +36,14 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   if (mode === '--snapshot' && snapshot) {
     await fs.writeFile(snapshot, JSON.stringify(await pythonInputs()));
   } else if (mode === '--record' && snapshot) {
+    const stages = process.argv.slice(4);
+    if (stages.join(' ') !== PYTHON_COMPLETE_STAGES.join(' ')) {
+      if (stages.includes('assets')) {
+        console.error(`CPython: provenance is recorded only by a complete build (${PYTHON_COMPLETE_STAGES.join(' ')}); `
+          + `stages ${stages.join(' ')} leave provenance.json as it was, and the gate refuses what they wrote until one: ${PYTHON_REGENERATE}`);
+      }
+      process.exit(0);
+    }
     const inputs = JSON.parse(await fs.readFile(snapshot, 'utf8'));
     assertCurrentInputs('CPython', inputs, await pythonInputs(), PYTHON_REGENERATE);
     await fs.writeFile(path.join(HERE, 'provenance.json'), JSON.stringify({
@@ -34,5 +51,5 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     }, null, 2) + '\n');
   } else if (mode === '--check' && !snapshot) {
     await checkPythonInputs();
-  } else throw new Error('usage: node wasm/python/inputs.mjs --check | --snapshot <file> | --record <file>');
+  } else throw new Error('usage: node wasm/python/inputs.mjs --check | --snapshot <file> | --record <file> <stage>...');
 }

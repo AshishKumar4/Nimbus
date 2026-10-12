@@ -41,9 +41,5 @@ bwrap --unshare-user --tmpfs / \
 	--setenv WASI_SDK /wasi-sdk \
 	bash -c 'mkdir -p "$HOME" && exec ./build-python.sh "$@"' build-python "$@"
 
-for stage in "$@"; do
-	if [ "$stage" = assets ]; then
-		node "$HERE/inputs.mjs" --record "$WORK/inputs.json"
-		break
-	fi
-done
+# Provenance comes only from a complete build (inputs.mjs PYTHON_COMPLETE_STAGES).
+node "$HERE/inputs.mjs" --record "$WORK/inputs.json" "$@"

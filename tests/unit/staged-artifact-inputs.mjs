@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { BuildFailure, runBuildFixpoint } from '../../scripts/dist-integrity.mjs';
 import { bindingInputs, loaderInputs } from '../../packages/worker/scripts/napi-wasm/inputs.mjs';
 import { opencodeInputs } from '../../packages/worker/scripts/opencode/inputs.mjs';
-import { pythonInputs } from '../../packages/worker/wasm/python/inputs.mjs';
+import { PYTHON_COMPLETE_STAGES, pythonInputs } from '../../packages/worker/wasm/python/inputs.mjs';
 import { oxcWasmInputs } from '../../packages/worker/scripts/oxc-wasm/inputs.mjs';
 import { SPECS } from '../../packages/worker/scripts/napi-wasm/specs.mjs';
 import { SPECS as RUNTIME_SPECS } from '../../packages/worker/scripts/runtime-specs.mjs';
@@ -88,6 +88,9 @@ try {
   const lock = await readFile(path.join(root, 'bun.lock'), 'utf8');
   await writeFile(path.join(root, 'bun.lock'), applyEdits(lock, modify(lock, ['packages', 'esbuild', 0], 'esbuild@0.0.0', {})));
   refused(run('packages/worker/scripts/bundle-napi-wasm.mjs'), 'bun.lock#esbuild', 'bun scripts/ci/remote-napi-loader.mjs');
+  // The compiler that runs is esbuild's native package: its own record pins its bytes.
+  await writeFile(path.join(root, 'bun.lock'), applyEdits(lock, modify(lock, ['packages', '@esbuild/linux-x64', 3], 'sha512-changed', {})));
+  refused(run('packages/worker/scripts/bundle-napi-wasm.mjs'), 'bun.lock#@esbuild/linux-x64', 'bun scripts/ci/remote-napi-loader.mjs');
   await copy('bun.lock');
 
   const coreManifest = 'packages/core/package.json';
@@ -98,10 +101,18 @@ try {
   assert.equal(run('packages/worker/scripts/bundle-napi-wasm.mjs').status, 0, 'a release version is not an esbuild input');
   await copy(coreManifest);
 
+  // A wrapper both rolldown versions share stales both: one command rebuilds them together.
   const added = 'packages/worker/scripts/napi-wasm/rolldown/binding/src/new.rs';
   await writeFile(path.join(root, added), 'pub const NEW: u32 = 1;\n');
-  refused(run('packages/worker/scripts/bundle-napi-wasm.mjs'), added, 'bun scripts/ci/remote-napi-binding.mjs rolldown@');
+  const rolldowns = Object.keys(SPECS).filter((key) => key.startsWith('rolldown@'));
+  assert.ok(rolldowns.length > 1, 'two rolldown versions share the wrapper');
+  refused(run('packages/worker/scripts/bundle-napi-wasm.mjs'), added, `bun scripts/ci/remote-napi-binding.mjs ${rolldowns.join(' ')}`);
   await rm(path.join(root, added));
+  // An input every binding shares names them all, in one command.
+  const linker = 'packages/worker/scripts/napi-wasm/link-wasm.sh';
+  await writeFile(path.join(root, linker), await readFile(path.join(root, linker), 'utf8') + '\n');
+  refused(run('packages/worker/scripts/bundle-napi-wasm.mjs'), linker, `bun scripts/ci/remote-napi-binding.mjs ${Object.keys(SPECS).join(' ')}`);
+  await copy(linker);
 
   for (const [script, file, command] of [
     ['packages/worker/scripts/bundle-opencode.mjs', 'packages/worker/scripts/opencode/stubs/bun-shim.ts', 'rebuild-opencode.mjs'],
@@ -111,8 +122,20 @@ try {
     refused(run(script), file.includes('/oxc-wasm/') ? 'src/lib.rs' : file, command);
     await copy(file);
   }
+  // A partial build (assets alone repacks an earlier build's interpreters)
+  // records no provenance over sources it did not compile; a complete one does.
+  const wrapper = await readFile(path.join(root, 'packages/worker/wasm/python/build-in-bwrap.sh'), 'utf8');
+  assert.match(wrapper, new RegExp(`set -- ${PYTHON_COMPLETE_STAGES.join(' ')}\\n`), "the wrapper's default is the complete build");
   const python = 'packages/worker/wasm/python/nimbus-py.c';
   await writeFile(path.join(root, python), await readFile(path.join(root, python), 'utf8') + '\n');
+  const pythonProvenance = path.join(root, 'packages/worker/wasm/python/provenance.json');
+  const recorded = await readFile(pythonProvenance);
+  const snapshot = path.join(root, 'python-inputs.json');
+  await writeFile(snapshot, JSON.stringify(await pythonInputs(path.join(root, 'packages/worker/wasm/python'))));
+  const partial = spawnSync('node', ['packages/worker/wasm/python/inputs.mjs', '--record', snapshot, 'assets'], { cwd: root, encoding: 'utf8' });
+  assert.equal(partial.status, 0, partial.stderr);
+  assert.ok(partial.stderr.includes('complete build'), partial.stderr);
+  assert.deepEqual(await readFile(pythonProvenance), recorded, 'an assets-only run leaves the provenance as it was');
   const result = spawnSync('node', ['packages/worker/wasm/python/inputs.mjs', '--check'], { cwd: root, encoding: 'utf8' });
   refused(result, 'nimbus-py.c', 'bun scripts/ci/remote-python-build.mjs');
   const pythonSpec = Object.keys(RUNTIME_SPECS).find(key => key.startsWith('cpython/'));
