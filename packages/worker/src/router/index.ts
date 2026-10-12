@@ -296,27 +296,20 @@ export function createNimbusHandler(
     // which session authenticated; this wrapper applies the headers.
     let sessionContext: { verified: VerifiedNimbusRequestToken; sessionId: string } | null = null;
     let destroyedSession: string | null = null;
-    const applySessionResponsePolicy = async (response: Response): Promise<Response> => {
+    const applySessionResponsePolicy = async (response: Promise<Response> | Response): Promise<Response> => {
+      const answered = await response;
       const setCookies: string[] = [];
       if (sessionContext !== null) {
         setCookies.push(...sessionCookieMigration(
           request.headers.get('Cookie'), sessionContext.verified, sessionContext.sessionId));
       }
       if (destroyedSession !== null) setCookies.push(expireSessionCookie(destroyedSession));
-      if (setCookies.length === 0) return response;
-      // Rebuild with explicit status/headers: the body transfers once to the
-      // returned response, and the fresh headers are always mutable — unlike
-      // the original's, which static assets may freeze. No second read.
-      const headers = new Headers(response.headers);
-      for (const value of setCookies) headers.append('Set-Cookie', value);
-      return new Response(response.body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers,
-      });
+      if (setCookies.length === 0) return answered;
+      for (const value of setCookies) answered.headers.append('Set-Cookie', value);
+      return answered;
     };
     const answered = (response: Promise<Response> | Response): Promise<Response> =>
-      applySessionResponsePolicy(Promise.resolve(response));
+      applySessionResponsePolicy(response);
 
     const url = new URL(request.url);
     const previewSuffix = readPreviewHostSuffix(env);
