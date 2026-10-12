@@ -79,6 +79,8 @@ export interface VerifiedNimbusToken {
     claims: NimbusTokenClaims;
     /** `${tn}:${sub || '_'}` — feed to `idFromName` after appending sessionId. */
     doInstanceName: string;
+    /** The exact wire bytes that verified, for re-issue without re-minting. */
+    raw: string;
 }
 /**
  * Options for `issueNimbusToken`. All optional.

@@ -168,7 +168,7 @@ export async function authorizeRequest(
   env: NimbusAuthEnv,
   required: { scopes: readonly string[]; sessionId?: string },
 ): Promise<VerifiedNimbusToken> {
-  const verified = await verifyRequestToken(request, env, { sessionId: required.sessionId });
+  const verified = await verifyRequestToken(request, env, { requireToken: true, sessionId: required.sessionId });
   requireScopes(verified, required.scopes);
   if (required.sessionId !== undefined) requireSessionPin(verified, required.sessionId);
   return verified;

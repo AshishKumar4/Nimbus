@@ -60,6 +60,7 @@ import {
   requireSessionPin,
   authErrorResponse,
   setNimbusTokenCookie,
+  NIMBUS_TOKEN_COOKIE,
   expireLegacyNimbusTokenCookie,
   enforceSessionCookieCapacity,
   sessionCookieMigration,

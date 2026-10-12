@@ -263,7 +263,7 @@ export function forwardToSession(
   // route-owned name, and the global name expired, in this same response.
   // Forwarded auth (Authorization/query) never holds the legacy name, so this
   // is a no-op for every request but a legacy-cookie reconnect.
-  return stub.fetch(inner).then((response) => {
+  return stub.fetch(inner).then((response: Response) => {
     const migrated = new Response(response.body, response);
     for (const value of migrate) migrated.headers.append('Set-Cookie', value);
     return migrated;

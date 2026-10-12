@@ -36,7 +36,7 @@ import { doUnavailableError } from './do-errors.js';
 import { buildPreviewHost, isPreviewHostSafeSid, parsePreviewHost, readPreviewHostSuffix, } from '../_shared/preview-host.js';
 import { ISOLATED_SHELL_HEADERS, isIsolatedShellUrl } from '../_shared/preview-isolation.js';
 import { parseSessionRoute, forwardToSession, renderInvalidSessionHtml, SESSION_ROUTE_PREFIX, LEGACY_PUBLIC_DO_SEGMENT, PREVIEW_CAPABILITY_HEADER, PUBLIC_BEARER_HEADER, } from '../_shared/session-router.js';
-import { issueNimbusToken, verifyNimbusToken, requireScopes, requireSessionPin, authErrorResponse, setNimbusTokenCookie, NIMBUS_TOKEN_QUERY, NimbusAuthError, NimbusBootstrapConsumedError, NimbusTokenClaimsError, DEFAULT_TOKEN_TTL_MS, ATTACH_BOOTSTRAP_TTL_MS, } from '../auth/index.js';
+import { issueNimbusToken, verifyNimbusToken, requireScopes, requireSessionPin, authErrorResponse, setNimbusTokenCookie, expireLegacyNimbusTokenCookie, enforceSessionCookieCapacity, sessionCookieMigration, NIMBUS_TOKEN_QUERY, NimbusAuthError, NimbusBootstrapConsumedError, NimbusTokenClaimsError, DEFAULT_TOKEN_TTL_MS, ATTACH_BOOTSTRAP_TTL_MS, } from '../auth/index.js';
 import { authorizeRequest } from '../auth/middleware.js';
 import { hasJwtSecret } from '../auth/token.js';
 import { adoptCtxExports } from '@nimbus-sh/fabric/composition.js';
@@ -195,7 +195,7 @@ export function createNimbusHandler(options = {}) {
                 && resolveAuthMode(env, explicitMode) === 'enforce') {
                 // Land on the path that was actually requested — the app owns it;
                 // the exchange only strips the token from the query.
-                return handleAttachExchange(url, preview.sid, env, {
+                return handleAttachExchange(url, preview.sid, env, request.headers.get('Cookie'), {
                     redirectPath: url.pathname,
                     singleUseScope: 'session:preview',
                     reusableScope: null,
@@ -218,7 +218,10 @@ export function createNimbusHandler(options = {}) {
                 sessionId: preview.sid,
                 innerPath: `${scopedInner}${url.pathname === '/' ? '/' : url.pathname}`,
                 basePath: '',
-            }, env, { tenantSegment: auth.tenantSegment });
+            }, env, {
+                tenantSegment: auth.tenantSegment,
+                migrateSessionCookies: auth instanceof Response ? [] : sessionCookieMigration(request.headers.get('Cookie'), auth.verified, preview.sid),
+            });
         }
         // Embedder custom routes run first among the control-plane routes.
         if (customRoutes) {
@@ -301,7 +304,7 @@ export function createNimbusHandler(options = {}) {
                 && request.headers.get('Upgrade') !== 'websocket'
                 && url.searchParams.get(NIMBUS_TOKEN_QUERY)
                 && resolveAuthMode(env, explicitMode) === 'enforce') {
-                return handleAttachExchange(url, route.sessionId, env, {
+                return handleAttachExchange(url, route.sessionId, env, request.headers.get('Cookie'), {
                     redirectPath: `${SESSION_ROUTE_PREFIX}/${route.sessionId}/`,
                     singleUseScope: 'session:bootstrap',
                     reusableScope: 'session:attach',
@@ -399,6 +402,7 @@ export function createNimbusHandler(options = {}) {
                 ...(auth.verified?.claims.scopes !== undefined
                     ? { callerScopes: auth.verified.claims.scopes }
                     : {}),
+                migrateSessionCookies: auth.verified ? sessionCookieMigration(request.headers.get('Cookie'), auth.verified, route.sessionId) : [],
             });
         }
         // ── Back-compat legacy root paths → landing page ────────────────
@@ -520,7 +524,7 @@ async function resolveNimbusRouteAuth(request, env, explicitMode, options) {
  * never persisted browser-side. Single-use exchanges get the default session
  * cookie lifetime; embedder tokens keep their own remaining lifetime.
  */
-async function handleAttachExchange(url, sessionId, env, options) {
+async function handleAttachExchange(url, sessionId, env, cookieHeader, options) {
     const token = url.searchParams.get(NIMBUS_TOKEN_QUERY);
     try {
         const verified = await verifyNimbusToken(env, token);
@@ -554,11 +558,19 @@ async function handleAttachExchange(url, sessionId, env, options) {
         const clean = new URL(url);
         clean.searchParams.delete(NIMBUS_TOKEN_QUERY);
         clean.pathname = options.redirectPath;
+        enforceSessionCookieCapacity(cookieHeader, sessionId);
+        const setCookies = [setNimbusTokenCookie(cookieToken, cookieExpSec, sessionId)];
+        if (cookieHeader?.includes(`${NIMBUS_TOKEN_COOKIE}=`)) {
+            // Migrating: the legacy global credential stops being selected the
+            // moment the route-owned one lands.
+            setCookies.push(expireLegacyNimbusTokenCookie());
+        }
         const headers = new Headers({
             Location: clean.pathname + clean.search,
-            'Set-Cookie': setNimbusTokenCookie(cookieToken, cookieExpSec),
             'Cache-Control': 'no-store',
         });
+        for (const value of setCookies)
+            headers.append('Set-Cookie', value);
         if (options.embeddedNavigation)
             headers.set('Cross-Origin-Resource-Policy', 'cross-origin');
         return new Response(null, { status: 302, headers });
