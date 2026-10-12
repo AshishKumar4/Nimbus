@@ -568,8 +568,11 @@ class PeerConflict extends Error {
 class Builder<P extends TreePackage> {
   readonly loadFailures = new Set<Node>();
   readonly warnings: string[] = [];
-  private readonly queue: Node[] = [];
+  private queue: Node[] = [];
+  private readonly queued = new Set<Node>();
   private queueSorted = true;
+  /** Requests whose package's edges prefetch has asked for. */
+  private readonly expanded = new Set<string>();
   private readonly seen = new Set<Node>();
   private readonly virtualRoots = new Map<Node, Node>();
   readonly resolutions = new Map<string, TreeResolution<P>>();
@@ -583,17 +586,23 @@ class Builder<P extends TreePackage> {
   // ── The queue (DepsQueue): the shallowest first, then by placement ──
 
   private push(node: Node): void {
-    if (this.queue.includes(node)) return;
+    if (this.queued.has(node)) return;
+    this.queued.add(node);
     this.queueSorted = false;
     this.queue.push(node);
   }
 
   private pop(): Node | undefined {
     if (!this.queueSorted) {
-      this.queue.sort((a, b) => a.depth - b.depth || localeCompare(a.location, b.location));
+      // Each node's place read once for the sort.
+      const keyed = this.queue.map((node) => ({ node, depth: node.depth, location: node.location }));
+      keyed.sort((a, b) => a.depth - b.depth || localeCompare(a.location, b.location));
+      this.queue = keyed.map(({ node }) => node);
       this.queueSorted = true;
     }
-    return this.queue.shift();
+    const node = this.queue.shift();
+    if (node) this.queued.delete(node);
+    return node;
   }
 
   // ── Resolution ──
@@ -702,27 +711,35 @@ class Builder<P extends TreePackage> {
     return problems;
   }
 
-  /** What the coming visits will ask, resolved together: the queue's problem edges, then their packages' peers, a set at a time. */
+  /**
+   * What the coming visits will ask, resolved ahead, a level at a time: the
+   * queue's problem edges, then every edge of what they resolve to (a peer
+   * also at its source's own spec, which its peer set prefers), and so on
+   * down. Resolution is the host's round trip; this keeps the trips to the
+   * depth of the tree, not its width. A request is expanded once.
+   */
   private async prefetch(node: Node): Promise<void> {
-    const edges = [node, ...this.queue].flatMap((member) => (member.tree === this.tree ? this.problemEdges(member) : []));
-    let requests = edges.map((edge) => ({ name: edge.name, range: edge.spec, from: edge.from }));
-    for (const seen = new Set<string>(); requests.length > 0;) {
-      await this.resolve(requests);
-      const next: typeof requests = [];
-      for (const { name, range, from } of requests) {
+    type Request = { name: string; range: string; from: Node | null };
+    let frontier: Request[] = [node, ...this.queue].flatMap((member) => (member.tree === this.tree ? this.problemEdges(member) : []))
+      .map((edge) => ({ name: edge.name, range: edge.spec, from: edge.from }));
+    while (frontier.length > 0) {
+      await this.resolve(frontier);
+      const next: Request[] = [];
+      for (const { name, range, from } of frontier) {
         const key = this.requestKey(name, range);
-        if (seen.has(key)) continue;
-        seen.add(key);
+        if (this.expanded.has(key)) continue;
+        this.expanded.add(key);
         const answer = this.resolutions.get(key);
         if (!answer || 'failed' in answer) continue;
-        for (const peer of this.edgesOf(answer.package)) {
-          if (!isPeer(peer.type) || (peer.type === 'peerOptional' && !this.tree.mentions(peer.name))) continue;
-          next.push({ name: peer.name, range: peer.range, from });
-          const own = from.edgesOut.get(peer.name);
-          if (own) next.push({ name: peer.name, range: own.spec, from });
+        for (const edge of this.edgesOf(answer.package)) {
+          if (edge.type === 'peerOptional' && !this.tree.mentions(edge.name)) continue;
+          const peer = isPeer(edge.type);
+          next.push({ name: edge.name, range: edge.range, from: peer ? from : null });
+          const own = peer ? from?.edgesOut.get(edge.name) : undefined;
+          if (own) next.push({ name: edge.name, range: own.spec, from });
         }
       }
-      requests = next;
+      frontier = next.filter(({ name, range }) => !this.expanded.has(this.requestKey(name, range)));
     }
   }
 
@@ -742,7 +759,7 @@ class Builder<P extends TreePackage> {
       this.seen.add(node);
       const problems = this.problemEdges(node);
       if (problems.length === 0) continue;
-      await this.prefetch(node);
+      if (problems.some((edge) => !this.resolutions.has(this.requestKey(edge.name, edge.spec)))) await this.prefetch(node);
 
       const tasks: Array<{ edge: Edge; dep: Node }> = [];
       for (const edge of problems) {
