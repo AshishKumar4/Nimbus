@@ -6,27 +6,36 @@ published independently in the `@nimbus-sh` npm scope.
 ## Unreleased
 
 - One change notification for the namespace: `CompositeVFS.watchChanges(path,
-  listener)` tells every change a view shows at a path or under it, on any
-  mount, as `VfsEvent`s (paths in the namespace), without reading, holding or
-  serializing anything. A backend may tell its own (the new optional
-  `VFS.watchChanges`, which `SqliteFiles` implements: the kernel hears SQLite's
-  stream as the engine batches it, any other principal is judged as each change
-  is published); any other mount's changes are told as they land through the
-  namespace, typed by the operation (whether a whole-file or range write made
-  its file is not looked up: those are `change`). Nothing reads the engine's
-  bus besides: the file tree's `fs-watch`, the in-supervisor Vite dev server,
-  wrangler dev, the real Vite facet's chokidar (`ViteDevServer`,
-  `NimbusWrangler` and `CirrusReal` take the session's `namespace` where
-  they took `vfs.events` or `vfsEvents`) and a process's
-  `RuntimeFsBridge.subscribe` hear the namespace, so they see changes on
-  mounts too, and not a write SQLite takes under a mount point; a rename's
-  `oldPath` reaches chokidar absolute. The
+  listener)` tells every change a view may see at a path or under it, on any
+  mount, as batches of `VfsEvent`s (paths in the namespace), by one rule for
+  every watch (`projectChange` in `vfs/events.js`): each end of a change told
+  where the view shows that file and may search every directory above it; a
+  rename seen at one end only is that end's `add` or `unlink`; a watched path
+  renamed is followed; a rename of a directory above a watched path is that
+  path's `unlink` or `add`. It is told to the watches registered when it
+  landed, at every mount of the store it landed in (the new optional
+  `VFS.fileStore`); a recursive copy or removal tells each entry as it lands.
+  A backend may tell its own (the new optional `VFS.watchChanges`, which
+  `SqliteFiles` implements, without storing any held write); any other
+  mount's changes are told as they land through the namespace, typed by the
+  operation (whether a whole-file or range write made its file is not looked
+  up: those are `change`). SQLite now tells every entry a copy made, as it
+  tells every entry a removal removed. Nothing reads the engine's bus besides:
+  the file tree's `fs-watch`, the in-supervisor Vite dev server, wrangler
+  dev, the real Vite facet's chokidar (`ViteDevServer`, `NimbusWrangler` and
+  `CirrusReal` take the session's `namespace` where they took `vfs.events` or
+  `vfsEvents`) and a process's `RuntimeFsBridge.subscribe` hear the
+  namespace, so they see changes on mounts too, and not a write SQLite takes
+  under a mount point; a rename's `oldPath` reaches chokidar absolute. The
   shell's built-in `node` has a working `fs.watch` (`NodeFilesystem.watch`
-  replaces `onChange`): Node's `rename`/`change` events, named from the
-  watched directory (recursive or not) or as the watched file, a persistent
-  watch keeping the program until it is closed; it watched the root, which
-  never fired. `VfsEventEmitter.on` hears what is published after it
-  registers, and a path listener on the root (`''`) hears every path.
+  replaces `onChange`): Node's `rename`/`change` events and filename
+  encodings, the watched target resolved through links and followed across
+  renames, `ENOENT` for a missing one, `close` (one `close` event) and
+  `ref`/`unref` as Node's, a referenced watch keeping the program; it watched
+  the root, which never fired. `VfsEventEmitter.on` hears only what is
+  published after it registers, listeners let go during a delivery are not
+  told, a path listener hears either end of a rename and a rename of a
+  directory above it, and a path listener on the root (`''`) hears every path.
 - A file on a mount is opened by one rule, and its open description is one
   implementation (`vfs/mounted-description.js`), for a process's synchronous
   face, its asynchronous one, and a wave's `open`; one descriptor numbering per
