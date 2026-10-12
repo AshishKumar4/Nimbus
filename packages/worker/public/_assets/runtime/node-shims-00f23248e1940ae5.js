@@ -11241,6 +11241,8 @@ function __nimbusEgressTlsConnect(real, net, args) {
     if (args[i] !== null && typeof args[i] === 'object') Object.assign(options, args[i++]);
     callback = args[i];
   }
+  // As Node's tls.connect: a servername it sets must be a string (TLSSocket.setServername).
+  if (options.servername && typeof options.servername !== 'string') throw invalidArgType('name', 'string', options.servername);
   const previous = options.socket;
   const target = () => {
     if (previous !== undefined) throw nodeError(Error, 'ERR_NIMBUS_EGRESS_STARTTLS', "Nimbus: TLS over a socket the program opened (tls.connect({ socket }), as STARTTLS does) is not available when the workspace's network goes through an egress: the egress carries that connection, and workerd starts no TLS on a connection through a service binding");

@@ -23,10 +23,15 @@ export const ISOLATE_NETWORK = {
     fetch: (input, init) => globalThis.fetch(input, init),
     forProcess: () => ISOLATE_NETWORK,
 };
-/** The network each egress object stands for (workspaceNetwork, selectProcessEgress). */
+/** The network each egress object stands for (workspaceNetwork). */
 const networks = new WeakMap();
-/** The process table a workspace egress's network selects for (selectProcessEgress). */
-const selecting = new WeakMap();
+/**
+ * Each live process's network, selected once: by whichever of its
+ * workspace's selecting networks asks first (a session's, before its
+ * workspace exists, and the workspace's). An entry is one table's, so this
+ * is the workspace's memo, not the egress's.
+ */
+const selections = new WeakMap();
 /** A network that selects for no process: every process's is this one. */
 function egressNetwork(egress, id) {
     const network = {
@@ -36,13 +41,27 @@ function egressNetwork(egress, id) {
     };
     return network;
 }
+/** One process's network: its own egress and id; any other process's is the workspace's to select. */
+function processNetwork(workspace, egress, id) {
+    const network = {
+        egress, id,
+        fetch: (input, init) => egress.fetch(new Request(input, init)),
+        forProcess: (pid) => (pid === 0 ? network : workspace.forProcess(pid)),
+    };
+    return network;
+}
 /**
- * The workspace network over `egress` whose processes each go out through
- * the egress `egressFor` mints for them: asked once per live entry of
- * `processes`, the source of its exec id.
+ * A workspace's network over `egress` that gives each process of
+ * `processes` the egress `egressFor` mints for it, asked once per live
+ * entry, the source of its exec id (NimbusWorkspaceOptions.egressFor).
+ * Each call makes a network of the caller's own: another workspace over the
+ * same egress, with or without its own `egressFor`, never selects through
+ * this one. Its id is `workspaceNetwork(egress)`'s, the egress's, for what
+ * Nimbus does on the workspace's behalf. `processes` is read as the process
+ * asks, so a table its host replaces is the one read.
  */
-function selectingNetwork(egress, id, egressFor, processes) {
-    const selections = new WeakMap();
+export function selectProcessEgress(egress, egressFor, processes) {
+    const { id } = workspaceNetwork(egress);
     const network = {
         egress, id,
         fetch: (input, init) => egress.fetch(new Request(input, init)),
@@ -61,36 +80,6 @@ function selectingNetwork(egress, id, egressFor, processes) {
             return selected;
         },
     };
-    return network;
-}
-/** One process's network: its own egress and id; any other process's is the workspace's to select. */
-function processNetwork(workspace, egress, id) {
-    const network = {
-        egress, id,
-        fetch: (input, init) => egress.fetch(new Request(input, init)),
-        forProcess: (pid) => (pid === 0 ? network : workspace.forProcess(pid)),
-    };
-    return network;
-}
-/**
- * The workspace network over `egress`, made to give each process of
- * `processes` the egress `egressFor` mints for it
- * (NimbusWorkspaceOptions.egressFor). Decided when the network is made: a
- * host that builds the network itself (for its facets) selects first, then
- * `workspaceNetwork(egress)` answers this one. Refused when the network over
- * `egress` was made without this table.
- */
-export function selectProcessEgress(egress, egressFor, processes) {
-    const known = networks.get(egress);
-    if (known !== undefined) {
-        if (selecting.get(egress) !== processes) {
-            throw new Error('selectProcessEgress: the network over this egress was made before without this process table; select before workspaceNetwork(egress)');
-        }
-        return known;
-    }
-    const network = selectingNetwork(egress, 'egress-' + crypto.randomUUID(), egressFor, processes);
-    networks.set(egress, network);
-    selecting.set(egress, processes);
     return network;
 }
 /**

@@ -216,8 +216,8 @@ export interface NimbusWorkspaceOptions {
      * keeps `egress` for that process. Requires `egress`, which still carries
      * the workspace's work that no process makes. A host that builds the
      * network for its `facets` itself makes it with
-     * `selectProcessEgress(egress, egressFor, processes)` and passes the same
-     * `processes`.
+     * `selectProcessEgress(egress, egressFor, processes)` over the same
+     * `processes`; a process is still asked for once.
      */
     readonly egressFor?: EgressFor;
 }
