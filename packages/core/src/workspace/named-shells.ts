@@ -86,52 +86,54 @@ export class NamedShells {
    */
   async hold<T>(id: string, options: NamedShellOptions, body: (shell: NamedShell) => Promise<T>): Promise<T> {
     const name = ShellIdSchema.parse(id);
-    return this.enqueue(name, async (leave) => {
-      let detached = false;
-      const detach = () => { detached = true; leave(); };
+    const { ready, leave } = this.enqueue(name);
+    await ready;
+    let detached = false;
+    const detach = () => { detached = true; leave(); };
+    try {
+      const saved = this.load(name);
+      const state = saved ?? { cwd: options.start?.cwd ?? this.home, env: options.start?.env ?? {} };
+      // The next owner may start before this body settles. It sees the last
+      // durable state, including a new name's initial root, never this body's
+      // in-flight cwd/environment or its later completion.
+      if (saved === null) this.save(name, state);
+      if (options.detach?.aborted) detach();
+      else options.detach?.addEventListener('abort', detach, { once: true });
+      const call: { shell?: Shell } = {};
       try {
-        const saved = this.load(name);
-        const state = saved ?? { cwd: options.start?.cwd ?? this.home, env: options.start?.env ?? {} };
-        // The next owner may start before this body settles. It sees the last
-        // durable state, including a new name's initial root, never this body's
-        // in-flight cwd/environment or its later completion.
-        if (saved === null) this.save(name, state);
-        if (options.detach?.aborted) detach();
-        else options.detach?.addEventListener('abort', detach, { once: true });
-        const call: { shell?: Shell } = {};
-        try {
-          return await body({ cwd: state.cwd, open: (pid) => (call.shell = this.shellFor(pid, state)) });
-        } finally {
-          if (!detached && options.persist !== false) this.save(name, call.shell ? { cwd: call.shell.getCwd(), env: call.shell.getEnv() } : state);
-        }
+        return await body({ cwd: state.cwd, open: (pid) => (call.shell = this.shellFor(pid, state)) });
       } finally {
-        options.detach?.removeEventListener('abort', detach);
+        if (!detached && options.persist !== false) this.save(name, call.shell ? { cwd: call.shell.getCwd(), env: call.shell.getEnv() } : state);
       }
-    });
+    } finally {
+      options.detach?.removeEventListener('abort', detach);
+      leave();
+    }
   }
 
   /** The last saved state, after earlier calls on this name have settled. */
   async read(id: string): Promise<ShellState | null> {
     const name = ShellIdSchema.parse(id);
-    return this.enqueue(name, async () => this.load(name));
+    const { ready, leave } = this.enqueue(name);
+    await ready;
+    try {
+      return this.load(name);
+    } finally {
+      leave();
+    }
   }
 
-  private async enqueue<T>(name: string, body: (leave: () => void) => Promise<T>): Promise<T> {
+  private enqueue(name: string): { ready: Promise<void>; leave: () => void } {
     const previous = this.queues.get(name) ?? Promise.resolve();
     let release = () => {};
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const tail = previous.then(() => gate);
     this.queues.set(name, tail);
-    await previous;
     const leave = () => {
       release();
       if (this.queues.get(name) === tail) this.queues.delete(name);
     };
-    try {
-      return await body(leave);
-    } finally {
-      leave();
-    }
+    return { ready: previous, leave };
   }
 
   private load(name: string): ShellState | null {
