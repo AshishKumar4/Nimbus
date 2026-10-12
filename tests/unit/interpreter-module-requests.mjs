@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict';
 import { moduleRequests } from '../../packages/core/src/interpreter/index.ts';
 
-const requests = (text, path = 'pkg/index.js') => moduleRequests(path, text).map((r) => `${r.kind}:${r.specifier}`).sort();
+const requests = (text, path = 'pkg/index.js') => moduleRequests(path, text).requests.map((r) => `${r.kind}:${r.specifier}`).sort();
 
 // ── every form, with its kind ──
 assert.deepEqual(requests([
@@ -94,8 +94,9 @@ assert.deepEqual(requests([
   'export const a = label("not-a-module"), b = second("not-a-module-either", "x");',
 ].join('\n')), []);
 
-// ── text the parser cannot read asks for nothing ──
-assert.deepEqual(requests('import a from "x"; const = ;'), []);
-assert.deepEqual(requests('import type { T } from "types-only";\n', 'pkg/index.ts'), []);
+// ── text the parser cannot read asks for nothing, and says why ──
+assert.deepEqual(moduleRequests('pkg/index.js', 'import a from "x"; const = ;'), { requests: [], unread: 'syntax' });
+assert.deepEqual(moduleRequests('pkg/index.ts', 'import type { T } from "types-only";\n'), { requests: [], unread: 'unparsed' });
+assert.equal(moduleRequests('pkg/index.js', 'import a from "x";').unread, undefined, 'text it read has no reason');
 
 console.log('interpreter-module-requests: ok');

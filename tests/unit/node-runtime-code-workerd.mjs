@@ -94,6 +94,17 @@ const FILES = {
   ].join('\n'),
   'grammar.js': "async function f(){ const ok = await /import(\"fake\")/.test('import\"fake\"'); const m = await import(\"./grammar-dep.js\"); console.log(\"GRAMMAR \" + ok + \" \" + m.value); } f();",
   'grammar-dep.js': 'module.exports = { value: 7 };',
+  // A late graph holding TypeScript written while the program runs: the
+  // launch compiles it next time, and refuses the graph before any of its
+  // bodies runs (a staged sibling's included).
+  'late-a.mjs': 'console.log("LATE A");',
+  'late-ts.mjs': [
+    'import { writeFileSync } from "node:fs";',
+    'if (globalThis.never) await import("./late-a.mjs");',
+    'writeFileSync(new URL("./late.ts", import.meta.url), "const n: number = 1;\\nconsole.log(\\"LATE TS \\" + n);\\n");',
+    'writeFileSync(new URL("./late-root.mjs", import.meta.url), "import \\"./late-a.mjs\\";\\nimport \\"./late.ts\\";\\n");',
+    'try { await import("./late-root.mjs"); console.log("LATE loaded"); } catch (e) { console.log("LATE " + e.code); }',
+  ].join('\n'),
   // A JSX entry, which the launch compiles (node and bun alike): Bun runs it
   // so, and its output is the reference.
   'app.jsx': 'globalThis.React = { createElement: (type) => ({ type }) };\nconsole.log("JSX " + (<b/>).type);\n',
@@ -370,6 +381,11 @@ try {
 
     const cells = await terminal.run(`cd ${W} && node cells.js`);
     assert.match(cells.stdout, /CELLS number,2,tr,tr-space,tab,tabx function:\/own\n/, cells.stdout);
+
+    const lateTs = await terminal.run(`cd ${W} && node late-ts.mjs`);
+    assert.equal(lateTs.status, 0, lateTs.stdout);
+    assert.match(lateTs.stdout, /^LATE ERR_NIMBUS_CODE_NEXT_LAUNCH$/m, lateTs.stdout);
+    assert.doesNotMatch(lateTs.stdout, /LATE A/, `no body of a graph that does not load runs:\n${lateTs.stdout}`);
 
     const grammar = await terminal.run(`cd ${W} && node grammar.js`);
     assert.equal(grammar.status, 0, grammar.stdout);

@@ -221,6 +221,17 @@ const FILES = {
     "await import('./generated.mjs');",
     "console.log('done');",
   ].join('\n') + '\n',
+  // A late graph with a module that does not parse links no body: the
+  // import() rejects with its SyntaxError.
+  'late-link-syntax/a.mjs': "console.log('A');\n",
+  'late-link-syntax/main.mjs': [
+    "import { writeFileSync } from 'node:fs';",
+    "if (globalThis.never) await import('./a.mjs');",
+    "writeFileSync(new URL('./bad.mjs', import.meta.url), 'export const = ;\\n');",
+    "writeFileSync(new URL('./generated.mjs', import.meta.url), \"import './a.mjs';\\nimport './bad.mjs';\\n\");",
+    // Its name: the order is what this checks; the parser's words are the interpreter's own.
+    "try { await import('./generated.mjs'); } catch (e) { console.log('rejected', e.name); }",
+  ].join('\n') + '\n',
   // JSON's __esModule/default are data, not CommonJS interop instructions.
   'json-query-esmodule/data.json': '{"__esModule":true,"default":7}\n',
   'json-query-esmodule/main.mjs': "import v from './data.json?q' with { type: 'json' };\nconsole.log(JSON.stringify(v));\n",
@@ -278,6 +289,7 @@ const COMMANDS = [
   'node late-link/main.mjs',
   'node late-link-staged/main.mjs',
   'node late-link-soft/main.mjs',
+  'node late-link-syntax/main.mjs',
   'node adopted-tla/main.mjs',
   'node json-query-esmodule/main.mjs',
   'node prepopulated-cache/main.cjs',
