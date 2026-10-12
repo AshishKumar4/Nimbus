@@ -17973,12 +17973,6 @@ function __nimbusFileImportMeta(filename, url = builtins.url.pathToFileURL(filen
 
 // Errors a known Workers-incompatible package's load threw, advised once.
 const __nimbusAdvised = new WeakSet();
-<<<<<<<< HEAD:packages/worker/public/_assets/runtime/node-shims-cf761061a5303fd2.js
-// `required`: loaded by a require() call, not by an ES module's static
-// import, which the lowering makes a call of the module's own require.
-function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = true, parent = undefined) {
-  if (typeof __resident !== "undefined" && __resident.observeRead !== null) __resident.observeRead(String(resolvedPath).replace(/^\/+/, ""));
-========
 // The ES modules the interpreter evaluated from files outside the map, with
 // their compiled cells: a later require() asks whether their graphs await.
 const __nimbusRuntimeEsModules = new WeakMap();
@@ -17997,8 +17991,7 @@ const __nimbusExecutingCommonJs = new WeakSet();
 // `esModule`: an ES module an import loads, which require.cache does not
 // hold until a require() loads it.
 function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = true, parent = undefined, esModule = false) {
-  if (globalThis.__nimbusProfileStaged) globalThis.__nimbusProfileStaged.delete(String(resolvedPath).replace(/^\/+/, ""));
->>>>>>>> origin/main:packages/worker/public/_assets/runtime/node-shims-e9b01bad2c734d62.js
+  if (typeof __resident !== "undefined" && __resident.observeRead !== null) __resident.observeRead(String(resolvedPath).replace(/^\/+/, ""));
   const filename = "/" + resolvedPath.replace(/^\/+/, "");
   const normalizedPath = filename.slice(1);
   // A query's or fragment's import is a job of its own, kept by its URL.
