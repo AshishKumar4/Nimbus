@@ -36,6 +36,7 @@ try {
   // their own source tree. No build or test can change the repository's files.
   const names = new Set([
     'bun.lock', 'packages/worker/scripts/bundle-napi-wasm.mjs',
+    'packages/core/src/constants.ts',
     'packages/worker/scripts/bundle-opencode.mjs', 'packages/worker/scripts/bundle-oxc-wasm.mjs',
     'packages/worker/scripts/build-opencode-attach-entry.mjs',
     'packages/worker/scripts/bundle-runtime.mjs', 'packages/worker/scripts/runtime-specs.mjs',
