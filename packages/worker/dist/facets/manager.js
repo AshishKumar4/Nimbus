@@ -2140,30 +2140,9 @@ const FACET_VFS_MODULE_SOURCE_MARGIN = 1024;
  * encoder, including its replacement of an unpaired surrogate with U+FFFD.
  */
 function _encodedSourceBytes(source) {
-    let bytes = 0;
-    for (let i = 0; i < source.length; i++) {
-        const code = source.charCodeAt(i);
-        if (code < 0x80) {
-            bytes += 1;
-            continue;
-        }
-        if (code < 0x800) {
-            bytes += 2;
-            continue;
-        }
-        if (code >= 0xd800 && code <= 0xdbff) {
-            const next = i + 1 < source.length ? source.charCodeAt(i + 1) : 0;
-            // A well-formed pair is one 4-byte code point; a lone surrogate is
-            // encoded as U+FFFD, which is three bytes — same as the default below.
-            if (next >= 0xdc00 && next <= 0xdfff) {
-                bytes += 4;
-                i++;
-                continue;
-            }
-        }
-        bytes += 3;
-    }
-    return bytes;
+    // UTF-8 bytes, a lone surrogate as U+FFFD's three: mapTextBytes, natively
+    // (the guard measures every cell and emit of a launch with it).
+    return mapTextBytes(source);
 }
 function _facetBundleModuleSource(bundle) {
     return `export default ${_serializeBundleForFacet(bundle)};`;
