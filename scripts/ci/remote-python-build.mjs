@@ -18,7 +18,8 @@
 // commit's writes nothing: that is the recipe reproducing them.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { NIMBUS_STATE } from './lib/state-dir.mjs';
 import { mapOnArmada } from './lib/armada.mjs';
@@ -74,8 +75,8 @@ const saveDir = join(NIMBUS_STATE, 'remote-python-build');
 mkdirSync(saveDir, { recursive: true });
 const saved = join(saveDir, `${new Date().toISOString().replace(/[-:.]/g, '')}-${sha.slice(0, 12)}.tar.xz`);
 writeFileSync(saved, Buffer.from(files.trim(), 'base64'));
-const unpacked = join(saveDir, `${sha.slice(0, 12)}-${r.jobId}`);
-mkdirSync(unpacked, { recursive: true });
+const unpacked = mkdtempSync(join(tmpdir(), 'remote-python-build-'));
+process.once('exit', () => rmSync(unpacked, { recursive: true, force: true }));
 const untar = spawnSync('tar', ['xJf', saved, '-C', unpacked], { encoding: 'utf8' });
 if (untar.status !== 0) throw new Error(`tar failed: ${untar.stderr}`);
 const built = Object.fromEntries(ARTIFACTS.map((file) => [file, digest(readFileSync(join(unpacked, file)))]));
