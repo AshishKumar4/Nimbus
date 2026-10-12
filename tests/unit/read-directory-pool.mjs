@@ -89,6 +89,19 @@ function fixture() {
   } finally { await s.close(); }
 }
 
+// A walk that opens what was not guessed keeps what was: a miss is no invalidation.
+{
+  const s = fixture();
+  await s.pool.open('/d0', 'd0', async () => ['/d1', '/d2']);
+  await s.pool.open('/d5', 'd5', async () => ['/d1', '/d6']);
+  assert.deepEqual(s.calls[1].open, ['/d5', '/d6'], 'what is already prefetched is not asked for again');
+  assert.deepEqual(s.calls[1].retire, [], 'nor retired');
+  const sent = s.calls.length;
+  await s.pool.open('/d2', 'd2', async () => { throw new Error('served from the first batch'); });
+  assert.equal(s.calls.length, sent, 'the first batch still serves after the miss');
+  await s.close();
+}
+
 // Lost/late first answer: the original ask cannot be replaced by arrival time.
 {
   const s = fixture(), reached = deferred(), finish = deferred();

@@ -39,6 +39,12 @@ export interface ReadDirectoryPool {
 
 function failure(code: string, message: string): Error { return Object.assign(new Error(`${code}: ${message}`), { code }); }
 
+/** A candidate's key as the batch reports it (no leading or trailing `/`), for one already prefetched; a descriptor-relative one never matches. */
+function keyOfPath(path: RuntimeFsPath): string {
+  const named = typeof path === 'string' ? path : 'root' in path ? `${path.root}/${path.path}` : '';
+  return named.split('/').filter((segment) => segment !== '' && segment !== '.').join('/');
+}
+
 export function readDirectoryPool({ call, store, client, before }: Options): ReadDirectoryPool {
   const channel = crypto.randomUUID();
   let sequence = 0, generation = 0, cancelled = 0;
@@ -148,8 +154,10 @@ export function readDirectoryPool({ call, store, client, before }: Options): Rea
         const hit = unused.get(key);
         const current = hit ? local(hit) : null;
         if (hit && current && hit.openedRevision !== null && current.entry.revision === hit.openedRevision) return claim(hit);
-        discardUnused();
-        const candidates = await prefetch();
+        // Only a hit that no longer holds is retired; the rest of what the
+        // walk was guessed to open stays, validated when it is claimed.
+        if (hit) { unused.delete(key); retiring.add(hit.handle.id); }
+        const candidates = (await prefetch()).filter((candidate) => !unused.has(keyOfPath(candidate)));
         if (began !== cancelled) throw failure('EAGAIN', 'directory open was cancelled while preparing');
         // At capacity, ACK retirement first. Do not spend credits merely
         // because a close was sent or a previous answer never arrived.
