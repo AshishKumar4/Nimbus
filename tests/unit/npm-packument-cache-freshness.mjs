@@ -95,8 +95,7 @@ async function scenario(tier, request, colo) {
     { SUPERVISOR: {
       async getPackument(packageName, options) {
         const client = new R2CacheClient(null, bucket);
-        const read = options?.revalidate ? client.revalidatePackument(packageName, options) : client.readThroughPackument(packageName, options);
-        return { ...await read, events: client._cacheEvents };
+        return { ...await client.readThroughPackument(packageName, options), events: client._cacheEvents };
       },
     } },
   );
@@ -186,10 +185,7 @@ if (!expiredControl) {
     const read = (options = {}) => client().readThroughPackument(NAME, { registry: REGISTRY, retries: 0, ...options });
     const resolve = (range) => resolveOnePackumentInFacet(
       { name: NAME, range, cachedEntries: [], fetchTimeoutMs: 1_000, retries: 0, registry: REGISTRY },
-      { SUPERVISOR: { async getPackument(packageName, options) {
-        const c = client();
-        return { ...await (options?.revalidate ? c.revalidatePackument(packageName, options) : c.readThroughPackument(packageName, options)), events: c._cacheEvents };
-      } } },
+      { SUPERVISOR: { async getPackument(packageName, options) { const c = client(); return { ...await c.readThroughPackument(packageName, options), events: c._cacheEvents }; } } },
     );
     assert.equal((await read()).source, 'network');
     now = START + PACKUMENT_TTL_MS - 1_000;
@@ -225,6 +221,18 @@ if (!expiredControl) {
     assert.match(missing.error?.reason ?? '', /no published version/);
     assert.equal(registry.requests.length, asked + 1, 'asked once');
     assert.equal(registry.requests.at(-1).ifNoneMatch, '"fixture-1"');
+
+    // A colo copy promoted from R2 keeps its ETag: a read past the cache
+    // from it is conditional, and an unchanged packument answers 304.
+    await withColoCache(async () => {
+      const promoted = await resolve('^1.0.0');
+      assert.equal(promoted.pkg?.version, '1.0.0');
+      const requests = registry.requests.length;
+      assert.ok(globalThis.caches.default.entries.has(packumentL2Url(NAME, REGISTRY)), 'promoted to the colo');
+      await resolve('^9.0.0');
+      assert.equal(registry.requests.length, requests + 1);
+      assert.equal(registry.requests.at(-1).ifNoneMatch, '"fixture-1"', 'conditional on the ETag the promotion kept');
+    });
 
     // A 304 renews an entry only where it still holds what was validated.
     // A reads revision 1 expired and is told it is unchanged; before A's

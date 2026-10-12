@@ -839,10 +839,7 @@ export function supervisorCalls<Base extends Class>(base: Base) {
     ): Promise<PackumentReadThrough & { events: CacheStatEvent[] }> {
       const plan = this._infrastructureCache('getPackument', [name, options]) ? { readOnly: false }
         : await this._call(this._op<{ ticket?: string; readOnly: boolean }>('getPackument', [name, options]));
-      return this._cacheRead(plan, async (client) => ({
-        ...await (options?.revalidate ? client.revalidatePackument(name, options, this._network()) : client.readThroughPackument(name, options, this._network())),
-        events: client._cacheEvents,
-      }));
+      return this._cacheRead(plan, async (client) => ({ ...await client.readThroughPackument(name, options, this._network()), events: client._cacheEvents }));
     }
 
     // ── Process I/O ───────────────────────────────────────────────────────
