@@ -80,12 +80,15 @@ export interface Interpreter {
  * string, a createRequire binding's calls, and a require wrapper's), or why
  * it read none: the text does not parse ('syntax'), or is TypeScript or JSX,
  * which it does not read ('unparsed'). The import() prefetch (node-shims.ts)
- * finds what to fetch with the requests; a late graph's link plan loads a
- * module it could not read as the interpreter does, for its error.
- * `javaScript`: the text is JavaScript whatever the path's extension (a
- * staged module's, as compileModule's).
+ * finds what to fetch with the requests, reading what it can; a late
+ * graph's link plan reads with the loader's parse goal (`loader`: the
+ * module's format, compileModule's), and loads a module it could not read as
+ * the interpreter does, for its error. `javaScript`: the text is JavaScript
+ * whatever the path's extension (a staged module's, as compileModule's).
  */
-export declare function moduleRequests(path: string, text: string, javaScript?: boolean): ModuleRequests;
+export declare function moduleRequests(path: string, text: string, javaScript?: boolean, loader?: {
+    readonly format?: 'module' | 'commonjs';
+}): ModuleRequests;
 /** moduleRequests' answer. */
 export interface ModuleRequests {
     readonly requests: ModuleRequest[];
