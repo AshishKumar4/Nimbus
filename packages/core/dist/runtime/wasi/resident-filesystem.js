@@ -320,9 +320,10 @@ export function residentFilesystem(session, resident, delegation) {
     };
     /**
      * Misses by directory: names the store did not know there, and bytes it
-     * did not hold. From a directory's second, a walk of it is assumed: its
-     * subtree is listed in one answer (unless past the listing's bound), and
-     * its files are fetched ahead (READ_AHEAD_*).
+     * did not hold. From a directory's second, it is listed in one answer: its
+     * subtree when names missed there were found (a walk; unless past the
+     * listing's bound), else itself (a probe for names that are not there);
+     * and its files are fetched ahead (READ_AHEAD_*).
      */
     const missesIn = new Map();
     const miss = (dir) => {
@@ -331,6 +332,8 @@ export function residentFilesystem(session, resident, delegation) {
         return misses;
     };
     const unlistable = new Set();
+    /** Whether the name a directory's last miss looked up was there: its misses are a walk of what is there, not a probe. */
+    const foundIn = new Map();
     /** Files a read-ahead batch is fetching, and the batch; and the bytes read ahead so far. */
     const fetchingAhead = new Map();
     let readAheadBytes = 0;
@@ -419,13 +422,18 @@ export function residentFilesystem(session, resident, delegation) {
                 return DELEGATE;
             const parent = parentKey(walked.missing);
             if (miss(parent) >= 2 && parent !== '' && store.children(parent) === undefined) {
-                // The subtree in one answer; past its bound, the directory alone.
-                const whole = unlistable.has(parent) ? Promise.resolve(false) : (counts.treeListings++, store.listTree(parent));
+                // A walk of what is there (the name its last miss looked up was
+                // found): the subtree in one answer; past its bound, the directory
+                // alone. A probe for what is not (an interpreter's import path): the
+                // directory alone.
+                const walking = foundIn.get(parent) === true && !unlistable.has(parent);
+                const whole = walking ? (counts.treeListings++, store.listTree(parent)) : Promise.resolve(false);
                 return whole
                     .then((listed) => {
                     if (listed)
                         return true;
-                    unlistable.add(parent);
+                    if (walking)
+                        unlistable.add(parent);
                     counts.listings++;
                     return store.list(parent);
                 })
@@ -440,7 +448,11 @@ export function residentFilesystem(session, resident, delegation) {
                 // The bytes of what the call names, when it is a small file: a stat is followed by an open.
                 const target = spelled[spelled.length - 1];
                 return store.lookup(keys, content && keys[keys.length - 1] === target)
-                    .then((known) => (known ? attempt(asked + 1) : DELEGATE));
+                    .then((known) => {
+                    if (known)
+                        foundIn.set(parent, Boolean(store.entry(walked.missing)));
+                    return known ? attempt(asked + 1) : DELEGATE;
+                });
             }
             counts.listings++;
             return store.list(parentKey(walked.missing)).then((listed) => (listed ? attempt(asked + 1) : DELEGATE));
