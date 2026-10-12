@@ -329,9 +329,19 @@ await check('mkdir -p tells only a directory it made, a watch registered while i
   const late = watching('/rps');
   g.release();
   await making;
-  assert.deepEqual(late.take(), []);
+  assert.deepEqual(late.take(), [], 'nothing made');
   late.stop();
   ns.unmount('/rps');
+  const g2 = gated();
+  ns.mount('/rpm2', asyncOnly(new MemoryVFS({ uid: 0, gid: 0 }), { beforeCall: (method) => (method === 'mkdir' ? (g2.enter(), g2.gate) : undefined) }), { resolvesPaths: true });
+  const creating = ns.mkdir('/rpm2/a/b', { recursive: true });
+  await g2.entering;
+  const later = watching('/rpm2');
+  g2.release();
+  await creating;
+  assert.deepEqual(later.take(), ['addDir /rpm2/a', 'addDir /rpm2/a/b'], 'each it made, as its backend says');
+  later.stop();
+  ns.unmount('/rpm2');
 });
 
 await check('a change is told to the watches registered when it landed, whatever was registered when it began', async () => {

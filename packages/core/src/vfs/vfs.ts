@@ -174,7 +174,12 @@ export interface VFS {
   readFile(path: string): Awaitable<Uint8Array>;
   writeFile(path: string, data: Uint8Array, options?: { mode?: number }): Awaitable<void>;
   readdir(path: string): Awaitable<VfsDirent[]>;
-  mkdir(path: string, options?: { recursive?: boolean; mode?: number }): Awaitable<void>;
+  /**
+   * With `recursive`, it may answer the directories it made, top down
+   * (none: they were all there), as Node's answers the first of them;
+   * nothing: it does not say.
+   */
+  mkdir(path: string, options?: { recursive?: boolean; mode?: number }): Awaitable<readonly string[] | void>;
   /** Removes a file; on backends without `rmdir`, also an empty directory. */
   unlink(path: string): Awaitable<void>;
 
@@ -290,7 +295,7 @@ export interface SyncVFS {
   readFile(path: string): Uint8Array;
   writeFile(path: string, data: Uint8Array, options?: { mode?: number }): void;
   readdir(path: string): VfsDirent[];
-  mkdir(path: string, options?: { recursive?: boolean; mode?: number }): void;
+  mkdir(path: string, options?: { recursive?: boolean; mode?: number }): readonly string[] | void;
   unlink(path: string): void;
   rmdir?(path: string): void;
   rename?(from: string, to: string): void;
