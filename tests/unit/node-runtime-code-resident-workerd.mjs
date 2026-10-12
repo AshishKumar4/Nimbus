@@ -182,9 +182,11 @@ server.listen(Number(process.env.PORT || 0), '127.0.0.1', () => console.log('BOU
     assert.ok(actualBefore, beforeLogs);
     assert.deepEqual(JSON.parse(actualBefore), expectedBefore, 'resident exception kind and continuation match Node');
 
-    // A client that leaves a response the server has gone quiet on: the
-    // guest hears it as Node's server does, its response closed unfinished
-    // and later writes refused.
+    // A client that leaves a response mid-stream: the guest hears it as
+    // Node's server does, its response closed unfinished and later writes
+    // refused. The server keeps writing: wrangler dev's local proxy passes a
+    // client's reset on only at a write (a quiet server's case is the live
+    // probe abandoned-download-releases-session).
     const abandonSource = String.raw`
 const events = [];
 const server = require('http').createServer((request, response) => {
@@ -193,7 +195,9 @@ const server = require('http').createServer((request, response) => {
   request.on('close', () => events.push('request close'));
   response.on('finish', () => events.push('response finish'));
   response.on('error', (error) => events.push('response error ' + error.code));
+  const more = setInterval(() => response.write(Buffer.alloc(1024, 98)), 50);
   response.on('close', () => {
+    clearInterval(more);
     events.push('response close ' + JSON.stringify({ destroyed: response.destroyed, finished: response.writableFinished }));
     response.write('late', (error) => events.push('late write ' + (error?.code ?? 'written')));
   });
