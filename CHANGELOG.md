@@ -7,6 +7,16 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## 2026-10-12: platform 0.8.2, core 0.18.0, fabric 0.13.0, worker 0.16.0, loom 0.2.5, sdk 0.13.1, react 0.3.1, cli 0.2.5, create-nimbus-app 0.2.2
 
+- Fixed: an npm install no longer fails for up to an hour after a dependency
+  publishes a new version. The shared packument cache served any unexpired
+  entry as the whole truth, so a range only the new version satisfies failed
+  with "no published version satisfies". When a cached packument cannot
+  answer a request (a range, an exact version, an alias, a staged binding or
+  a swap target), the resolver now asks once more past the cache, then picks
+  again; if that read fails, the cached answer stands as before. Fresh reads
+  are unchanged. The cache keeps the registry's ETag, so an expired entry
+  revalidates with a bodyless 304 instead of a full download. Entries cached
+  before this release refetch once when they expire.
 - Fixed: a file or directory a Node program creates has the mode it asked
   for, as Node's does. `writeFile` and `appendFile` (sync, callback and
   promise forms), `open` and write streams honour `mode`, less the umask, and
