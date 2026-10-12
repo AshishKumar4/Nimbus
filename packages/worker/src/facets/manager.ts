@@ -2113,6 +2113,8 @@ interface FacetVfsState {
   esm?: EsmStage;
   /** Its size and time in numbers (esmStageSize), kept past its release: the launch's debug line. */
   esmSize?: Record<string, number>;
+  /** ES modules carried as files only, never as modules of the map: only the passes that carry files to be read staged them. */
+  dataModules?: Set<string>;
   /** Where its build's time went, by phase, in ms (the walk, enrichment, transforms, fitting, staging, the rest, serialization). */
   phases?: Record<string, number>;
   /**
@@ -2419,7 +2421,7 @@ async function facetVfsBundleSourceFor(
   return vfsState.bundleSource
     ?? await buildFacetVfsBundleSource(
       vfsState.bundle, vfsState.bundleSideModulesRequired, pacer,
-      { emits: vfsState.emits, esm: vfsState.esm, codeOnly: vfsState.codeOnly },
+      { emits: vfsState.emits, esm: vfsState.esm, codeOnly: vfsState.codeOnly, dataModules: vfsState.dataModules },
     );
 }
 
@@ -2817,6 +2819,7 @@ export async function buildFacetVfsBundleSource(
     emits,
     esm,
     codeOnly,
+    dataModules,
     runtimeCode,
   }: {
     consume?: boolean;
@@ -2826,6 +2829,8 @@ export async function buildFacetVfsBundleSource(
     esm?: EsmStage;
     /** Files whose emit the map carries and not the file (FacetVfsState.codeOnly). */
     codeOnly?: ReadonlySet<string>;
+    /** ES modules carried as files only (FacetVfsState.dataModules): never a `{ cjs }` module. */
+    dataModules?: ReadonlySet<string>;
     /** Runtime code staged for this launch: `{ cjs }` module text by key. */
     runtimeCode?: ReadonlyMap<string, string>;
   } = {},
@@ -2851,7 +2856,7 @@ export async function buildFacetVfsBundleSource(
   for (const path of Object.keys(bundle)) {
     const cell = bundle[path];
     const emit = emits?.get(path);
-    const staged = esm?.modules.has(path) === true;
+    const staged = esm?.modules.has(path) === true || dataModules?.has(path) === true;
     const code = staged ? undefined : emit ?? (typeof cell === 'string' && isCodeCellPath(path) ? cell : undefined);
     const adopt = code !== undefined && emit === undefined && commonJsCellReadsBack(path);
     if (code !== undefined) {
@@ -4744,6 +4749,12 @@ async function _buildPrefetchBundle(
   //      No-op when entry isn't inside node_modules.
   const binSiblingAdd = (await addBinTargetSiblings(vfs, scriptPath, bundle, budgetState, bundleProfile));
   phase('e.binSiblings');
+  // What the passes that stage code have staged (the walk, the runs'
+  // evidence, the package entries, a bin's siblings). The passes after them
+  // carry files to be read (the working tree, absolute paths the entry
+  // names): an ES module only they carry is a file, not a module of the map
+  // (dataModules below).
+  const codePaths = new Set(Object.keys(bundle));
   await paceAfterPass();
 
   // 2.34 project-data snapshot: sync Node fs cannot await the
@@ -4992,6 +5003,7 @@ async function _buildPrefetchBundle(
   // (entryModule). A staged module's text supersedes its emit, which no
   // longer needs holding.
   let esm: EsmStage | undefined;
+  const dataModules = new Set<string>();
   if (esModules.size > 0 || entryEsModule !== undefined) {
     const cells = new Map<string, { code: string; sites: ImportSites }>();
     if (entryEsModule !== undefined && entryCode !== undefined) {
@@ -4999,8 +5011,17 @@ async function _buildPrefetchBundle(
     }
     for (const [key, sites] of esModules) {
       const code = emits.get(key);
-      if (code !== undefined) cells.set(key, { code, sites: JSON.parse(sites) as ImportSites });
+      if (code === undefined) continue;
+      if (codePaths.has(key)) cells.set(key, { code, sites: JSON.parse(sites) as ImportSites });
+      else dataModules.add(key);
     }
+    // A data module is carried as its file only: staging the working tree's
+    // modules (an example app's sources, importing packages not installed)
+    // cost every launch in it its listings and refusals, for code no
+    // program here imports. One a program does import is loaded as a file
+    // the launch did not stage (node-shims' __loadModule), and the next
+    // launch walks it from the run's record.
+    for (const key of dataModules) emits.delete(key);
     const held = (key: string) => {
       const cell = bundle[key];
       return typeof cell === 'string' ? cell : undefined;
@@ -5009,20 +5030,21 @@ async function _buildPrefetchBundle(
       try { return new Map((await vfs.readdir(dir)).map((entry) => [entry.name, entry.type])); } catch { return null; }
     };
     phase('fit');
-    esm = await stageEsModules({ files: filesOf(vfs), realpath: async (path) => await vfs.realpath(path), entries, held }, cells, {
+    // With no module to stage, the map carries no ES module host at all.
+    if (cells.size > 0) esm = await stageEsModules({ files: filesOf(vfs), realpath: async (path) => await vfs.realpath(path), entries, held }, cells, {
       conditions,
       cwd,
       scope: moduleScope,
       stripsTypes: stripTypes !== null && stripTypes !== 'javascript',
       typeScript: stripTypes !== 'javascript',
-      isCode: (key) => emits.has(key) || (typeof bundle[key] === 'string' && isCodeCellPath(key)),
+      isCode: (key) => !dataModules.has(key) && (emits.has(key) || (typeof bundle[key] === 'string' && isCodeCellPath(key))),
       gate: true,
     });
     // Staging reads and rewrites its modules' text, which the map's
     // serialization spends as it carries each one (buildFacetVfsBundleSource),
     // as it spent each lowered module's emit: each staged byte is spent once.
     // A pass's bundle weight here cost a launch over lodash-es a turn of its own.
-    for (const key of esm.modules.keys()) emits.delete(key);
+    for (const key of esm?.modules.keys() ?? []) emits.delete(key);
     phase('stage');
   }
   phase('rest');
@@ -5032,6 +5054,7 @@ async function _buildPrefetchBundle(
     phases,
     ...(emits.size > 0 ? { emits } : {}),
     ...(esm ? { esm, esmSize: esmStageSize(esm) } : {}),
+    ...(dataModules.size > 0 ? { dataModules } : {}),
     ...(codeOnly.size > 0 ? { codeOnly } : {}),
     cursor,
     reachableCount: fileCount,
@@ -6740,6 +6763,7 @@ export class FacetManager {
         emits: vfsState.emits,
         esm: vfsState.esm,
         codeOnly: vfsState.codeOnly,
+        dataModules: vfsState.dataModules,
         runtimeCode: await this._stagedRuntimeCode(learning, vfs, pacer, moduleScope, launch.stripTypes),
       },
     );

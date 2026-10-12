@@ -119,6 +119,11 @@ const FILES = {
     "console.log('second', (await import(write('gen2.js', 'export const kind = typeof require;'))).kind);",
     "console.log('cjs', (await import(write('gen3.js', 'exports.kind = typeof module;'))).default.kind);",
   ].join('\n') + '\n',
+  // A working-tree module no code reaches is carried as a file, not staged
+  // (manager.ts dataModules); a computed import() of it still loads it, as
+  // Node's does: its namespace, import.meta, its frames, one instance.
+  'dyncwd/lib.mjs': "export const v = 'lib';\nexport default import.meta.url.endsWith('/dyncwd/lib.mjs');\nexport function where() { return new Error('here').stack.split('\\n')[1].includes('/dyncwd/lib.mjs'); }\n",
+  'dyncwd/main.mjs': "const name = './li' + 'b.mjs';\nconst m = await import(name);\nconsole.log(m.v, m.default, m.where(), (await import(name)) === m);\n",
   // An uncaught error's report.
   'fatal/main.mjs': "import { sep } from 'node:path';\nconst x = sep.length;\nthrow new TypeError('fatal ' + x);\n",
   'fatal/syntax.mjs': "import './broken.mjs';\nconsole.log('never');\n",
@@ -128,7 +133,7 @@ const COMMANDS = [
   'node order/run.mjs', 'node live/main.mjs', 'node tla/main.mjs', 'node meta/sub/m.mjs', 'node cjs/main.mjs', 'node cjs/missing.mjs',
   'node builtin/main.mjs', 'node json/main.mjs', 'node json/bare.mjs', 'node res/main.mjs', 'node res/hidden.mjs', 'node res/absent.mjs',
   'node res/noext.mjs', 'node res/dir.mjs', 'node res/dynamic.mjs', 'node req/main.cjs', 'node req/later.mjs', 'node req/cycle-a.mjs',
-  'node hoist/bin.mjs', 'node hoist/observed.mjs', 'node req/tla-after.mjs', 'node stop/run.mjs', 'node io/main.mjs', 'node scope/req.mjs', 'node ts/main.ts', 'node fatal/main.mjs', 'node fatal/syntax.mjs', 'node pjson/main.mjs', 'node detect/main.mjs',
+  'node hoist/bin.mjs', 'node hoist/observed.mjs', 'node req/tla-after.mjs', 'node stop/run.mjs', 'node io/main.mjs', 'node scope/req.mjs', 'node ts/main.ts', 'node fatal/main.mjs', 'node fatal/syntax.mjs', 'node pjson/main.mjs', 'node detect/main.mjs', 'node dyncwd/main.mjs',
   `node --input-type=module -e "import { sep } from 'node:path'; console.log(sep, import.meta.url.endsWith('/[eval1]'), typeof await Promise.resolve(1));"`,
   `node --import ./live/counter.mjs -e "console.log('preloaded')"`,
 ];
