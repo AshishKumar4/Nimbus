@@ -466,7 +466,9 @@ function spawnResident(ctx, env, disk, supervisor, params) {
             // A peer relaying its coordinator's request leaves the numbering to it.
             const sending = relayed ?? sent.send(scope, abandon);
             try {
-                const response = await facet.hostHttpRequest(request, watchCapability, await incarnation, sending.id, sending.ended, sending.abandoned);
+                // A live watch that found the pinned instance admits the request; without one it carries its admission.
+                const admission = observation.validated() ? undefined : [watchCapability, await incarnation];
+                const response = await facet.hostHttpRequest(request, sending.id, sending.ended, sending.abandoned, admission);
                 if (response.status === 500 && response.headers.get(HOST_FAILED_HEADER) === watchCapability)
                     throw receivedFailure(new Error(await response.text()));
                 return await checked(response);

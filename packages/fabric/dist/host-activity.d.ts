@@ -7,6 +7,8 @@ export interface HostActivityLease {
 }
 export interface HostObservation {
     acquire(signal?: AbortSignal): HostActivityLease;
+    /** A watch on the host is open now and found the pinned incarnation. */
+    validated(): boolean;
     close(): void;
 }
 export declare const HOST_WATCH_HEADER = "x-nimbus-host-watch";
@@ -24,6 +26,7 @@ interface Observation {
     current?: {
         abort: AbortController;
         ready: Promise<void>;
+        validated?: true;
     };
     failed: Error | null;
 }
