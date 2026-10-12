@@ -62,6 +62,7 @@
  */
 
 import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
+import { normalizePath } from '@nimbus-sh/core/vfs/composite.js';
 import type { VfsEvent } from '@nimbus-sh/core/vfs/events.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 
@@ -108,7 +109,7 @@ export interface FsWatchHost {
  * (whose changes it would tell twice). None: the whole namespace.
  */
 function watchedTrees(paths: string[]): string[] {
-  const trees = [...new Set(paths.map((p) => `/${p.replace(/^\/+|\/+$/g, '')}`))].sort();
+  const trees = [...new Set(paths.map(normalizePath))].sort();
   if (trees.length === 0 || trees.includes('/')) return ['/'];
   return trees.filter((tree, i) => !trees.slice(0, i).some((outer) => tree.startsWith(`${outer}/`)));
 }
