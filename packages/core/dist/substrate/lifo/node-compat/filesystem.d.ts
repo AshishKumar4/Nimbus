@@ -1,4 +1,10 @@
 import type { RuntimeFsBridge, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat } from '../../../runtime/os-contracts.js';
+import type { VfsEvent } from '../../../vfs/events.js';
+export interface NodeWatch {
+    close(): void;
+    ref(): void;
+    unref(): void;
+}
 /** The synchronous filesystem the in-process Node interpreter's `fs` and `require` read. */
 export interface NodeFilesystem {
     readFile(path: string): Uint8Array;
@@ -11,6 +17,7 @@ export interface NodeFilesystem {
     stat(path: string): RuntimeVfsStat;
     /** stat(2) of `path` itself where it names a link (lstat); ENOENT when nothing is there. */
     lstat(path: string): RuntimeVfsStat;
+    realpath(path: string): string;
     mkdir(path: string, options?: {
         recursive?: boolean;
         mode?: number;
@@ -32,7 +39,14 @@ export interface NodeFilesystem {
     ftruncate(fd: number, size: number): void;
     fsync(fd: number): void;
     close(fd: number): void;
-    onChange: (() => void) | undefined;
+    /**
+     * Each change at `path` or under it the process's namespace shows
+     * (RuntimeFsBridge.subscribe), its paths absolute. `persistent` (default
+     * true): a guest stays while the watch is open and ref'd, as Node's does.
+     */
+    watch(path: string, listener: (event: VfsEvent) => void, options?: {
+        persistent?: boolean;
+    }): NodeWatch;
 }
 /**
  * The in-process Node interpreter runs `require` synchronously, so it demands

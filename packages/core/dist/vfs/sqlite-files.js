@@ -11,6 +11,8 @@
  */
 import { ROOT_DIRECTORY_MODE, ROOT_INODE } from './sqlite-vfs.js';
 import { syscallError, toVfsError, VfsError } from './vfs-error.js';
+import { projectChange } from './events.js';
+import { normalizeVfsPath } from './path.js';
 function absolute(key) {
     return key.startsWith('/') ? key : `/${key}`;
 }
@@ -91,6 +93,34 @@ export class SqliteFiles {
             ...(event.oldPath !== undefined ? { oldPath: absolute(event.oldPath) } : {}),
         }));
     }
+    /**
+     * Every mutation that lands at `path` or under it, through any view, as
+     * the one rule tells a watch (projectChange); paths absolute. The kernel
+     * sees everywhere, and its names are the database's: its watch is the
+     * engine's own stream, batched as it publishes (SqliteVFS.events). Any
+     * other principal's is judged as each change is published, under its names
+     * (CredentialedVfs.subscribe).
+     */
+    watchChanges(path, listener) {
+        if (this.view.cred.uid !== 0) {
+            return this.view.subscribe(path, (event) => {
+                listener([event.oldPath === undefined
+                        ? { type: event.type, path: absolute(event.path), timestamp: event.timestamp }
+                        : { type: event.type, path: absolute(event.path), oldPath: absolute(event.oldPath), timestamp: event.timestamp }]);
+            });
+        }
+        const tree = normalizeVfsPath(path);
+        return this.engine.events.on((batch) => {
+            const told = [];
+            for (const event of batch) {
+                const projected = projectChange(event, tree, absolute);
+                if (projected !== null)
+                    told.push(projected);
+            }
+            if (told.length > 0)
+                listener(told);
+        });
+    }
     /** `op`, its engine errors as Node's for `syscall` on `path` (and `dest`). */
     run(syscall, path, op, dest) {
         try {
@@ -116,6 +146,11 @@ export class SqliteFiles {
                 return null;
             throw converted;
         }
+    }
+    landedAt(path) {
+        if (path.replace(/\/+/g, '') === '')
+            return true;
+        return this.run('lstat', path, () => this.view.landedAt(path));
     }
     readFile(path) {
         return this.run('open', path, () => this.view.readFile(path));

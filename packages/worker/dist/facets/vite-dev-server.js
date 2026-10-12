@@ -1227,7 +1227,7 @@ const SERVICE_PREBUNDLE_OPTIONS = Object.freeze({
 });
 export class ViteDevServer {
     vfs;
-    vfsEvents;
+    namespace;
     esbuild;
     root;
     onHmrMessage;
@@ -1304,7 +1304,7 @@ export class ViteDevServer {
         this.configDir = opts.configDir ? normalizeVfsPath(opts.configDir) : null;
         this.onConfigChange = opts.onConfigChange ?? null;
         this.viteEsbuild = opts.viteEsbuild ?? viteEsbuildSettings(null);
-        this.vfsEvents = opts.vfs.events;
+        this.namespace = opts.namespace;
         this.esbuild = opts.esbuild;
         this.injectBasename = opts.injectBasename !== false;
         this.logPid = (opts.pid != null) ? opts.pid : null;
@@ -1465,7 +1465,7 @@ export class ViteDevServer {
         for (const message of this.viteEsbuild.unread)
             this.warnOnce(message);
         // Subscribe to VFS events for HMR
-        this.unsubVfs = this.vfsEvents.on((events) => {
+        this.unsubVfs = this.namespace.watchChanges('/', (events) => {
             this.handleVfsEvents(events);
         });
     }
@@ -1624,6 +1624,7 @@ export class ViteDevServer {
         });
     }
     /** Handle VFS change events → trigger HMR. */
+    /** The session's changes (CompositeVFS.watchChanges), each named as SQLite names it (no leading slash). */
     handleVfsEvents(events) {
         if (!this.running)
             return;
@@ -1635,8 +1636,9 @@ export class ViteDevServer {
         for (const event of events) {
             if (event.type === 'addDir' || event.type === 'unlinkDir')
                 continue;
-            const path = event.path;
-            const touched = event.type === 'rename' && event.oldPath ? [path, event.oldPath] : [path];
+            const path = event.path.slice(1);
+            const oldPath = event.oldPath?.slice(1);
+            const touched = event.type === 'rename' && oldPath ? [path, oldPath] : [path];
             if (this.configDir !== null && touched.some((p) => isViteConfigPath(p, this.configDir)))
                 configChanged = true;
             if (touched.some((p) => isTsconfigPath(p) || this.tsconfigFiles.has(p.replace(/^\/+/, ''))))
@@ -1659,7 +1661,7 @@ export class ViteDevServer {
             // a changed file a cache miss and the row is overwritten on reserve.
             // For renames, the original path is the one that goes away.
             if (this.npmCache && (event.type === 'unlink' || event.type === 'rename')) {
-                const gone = event.type === 'rename' ? (event.oldPath ?? path) : path;
+                const gone = event.type === 'rename' ? (oldPath ?? path) : path;
                 this.npmCache.deleteUserModuleTransform(gone);
                 this.npmCache.deleteUserModuleTransform(this.root + '/' + gone);
                 if (gone.startsWith(this.root + '/')) {

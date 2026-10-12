@@ -136,7 +136,7 @@ function renderWorkerRunningHtml(opts) {
 export class NimbusWrangler {
     network;
     vfs;
-    vfsEvents;
+    namespace;
     esbuild;
     loaderEnv;
     supervisorCtx; // ctx.facets for DO facets, ctx.exports for bindings
@@ -153,7 +153,7 @@ export class NimbusWrangler {
     doClassMap = new Map();
     constructor(opts) {
         this.vfs = opts.vfs;
-        this.vfsEvents = opts.vfsEvents;
+        this.namespace = opts.namespace;
         this.esbuild = opts.esbuild;
         this.loaderEnv = opts.env;
         this.network = opts.network;
@@ -176,7 +176,7 @@ export class NimbusWrangler {
             return false;
         // 3. Watch for file changes
         this.running = true;
-        this.unsubVfs = this.vfsEvents.on((events) => {
+        this.unsubVfs = this.namespace.watchChanges('/', (events) => {
             this.handleVfsEvents(events);
         });
         return true;
@@ -667,6 +667,7 @@ export class NimbusWrangler {
         return env;
     }
     // ── VFS event handling (hot reload) ───────────────────────────────────
+    /** The session's changes (CompositeVFS.watchChanges), each named as SQLite names it (no leading slash). */
     handleVfsEvents(events) {
         if (!this.running)
             return;
@@ -675,9 +676,10 @@ export class NimbusWrangler {
         for (const event of events) {
             if (event.type !== 'change' && event.type !== 'add' && event.type !== 'unlink')
                 continue;
-            if (event.path.startsWith(this.root) &&
-                !event.path.includes('node_modules/') &&
-                !event.path.includes('/.nimbus/')) {
+            const path = event.path.slice(1);
+            if (path.startsWith(this.root) &&
+                !path.includes('node_modules/') &&
+                !path.includes('/.nimbus/')) {
                 // W10: skip writes by KV/D1/R2 emulators (they live under
                 // <root>/.nimbus/{kv,r2}/...) — otherwise every emulator put
                 // triggers a rebuild and the system feedback-loops itself.

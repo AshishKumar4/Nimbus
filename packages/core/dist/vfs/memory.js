@@ -148,19 +148,23 @@ export class MemoryVFS {
             throw fail('ENOTDIR', call);
         return [...entry.children].map(([name, child]) => ({ name, type: child.type, stat: this.stats(child) }));
     }
+    /** With `recursive`, the directories it made, top down (VFS.mkdir). */
     mkdir(path, options) {
         const call = { syscall: 'mkdir', path };
         if (options?.recursive) {
+            const made = [];
             let at = '';
             for (const part of segments(path)) {
                 at += `/${part}`;
                 const existing = this.find(at, call);
-                if (existing === null)
+                if (existing === null) {
                     this.mkdir(at, { mode: options.mode });
+                    made.push(at);
+                }
                 else if (existing.type !== 'directory')
                     throw fail('ENOTDIR', call);
             }
-            return;
+            return made;
         }
         if (this.find(path, call, false) !== null)
             throw fail('EEXIST', call);
