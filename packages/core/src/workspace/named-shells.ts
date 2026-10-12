@@ -16,6 +16,7 @@
 
 import { z } from 'zod/v4';
 import type { Shell } from '../substrate/lifo/shell/Shell.js';
+import { cloneEnv } from '../substrate/lifo/shell/variables.js';
 import type { SqlDatabase } from '../runtime/os-contracts.js';
 
 /** Where a shell is: its working directory and its environment. */
@@ -54,7 +55,11 @@ export interface NamedShellOptions {
 const ShellIdSchema = z.string().min(1).max(160).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
 const ShellStateSchema = z.object({
   cwd: z.string().startsWith('/'),
-  env: z.record(z.string(), z.string()),
+  env: z.custom<Record<string, string>>((value) => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+    const prototype = Object.getPrototypeOf(value);
+    return (prototype === null || prototype === Object.prototype) && Object.values(value).every((entry) => typeof entry === 'string');
+  }).transform(cloneEnv),
 }).strict();
 
 /** A saved shell state, or an error naming what is wrong with it. */
@@ -140,7 +145,7 @@ export class NamedShells {
   }
 
   private save(name: string, state: ShellState): void {
-    const env = { ...state.env };
+    const env = cloneEnv(state.env);
     // `$` is the pid of the call that just ended, not state of the shell.
     delete env.$;
     this.sql.exec(

@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 
 const harness = createSqliteVfsTestHarness();
 let ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx });
@@ -13,6 +12,16 @@ try {
   assert.equal(await read(), null, 'reading an unused name does not create it');
   assert.equal(harness.sql.exec('SELECT id FROM vfs_shells WHERE id = ?', name).length, 0);
   for (const invalid of ['', '../invalid']) await assert.rejects(() => ws.shellState(invalid));
+
+  const protoEnv = Object.fromEntries([['__proto__', 'saved\ud800'], ['constructor', 'saved-constructor'], ['toString', 'saved-toString']]);
+  await ws.withNamedShell('proto-seed', { start: { cwd: '/tmp', env: protoEnv }, persist: false }, async () => {});
+  const stored = JSON.parse(harness.sql.exec('SELECT env FROM vfs_shells WHERE id = ?', 'proto-seed')[0].env);
+  assert.equal(Object.hasOwn(stored, '__proto__'), true, 'the saved JSON contains the own prototype-named variable');
+  const seeded = await ws.shellState('proto-seed');
+  for (const [key, value] of Object.entries(protoEnv)) {
+    assert.equal(Object.hasOwn(seeded.env, key), true, `the exact reader keeps ${key}`);
+    assert.equal(seeded.env[key], value);
+  }
 
   await run("export A='\ud800'");
   const first = await read();
@@ -33,7 +42,8 @@ try {
     assert.deepEqual(await read(), second, `exit status from ${command} does not become shell state`);
   }
   let previous = second;
-  for (const command of ["export '0=zero'", "export 'A-B=hyphen'", "export MULTILINE='first\nsecond'", 'cd /tmp']) {
+  for (const command of ["export '0=zero'", "export 'A-B=hyphen'", "export MULTILINE='first\nsecond'",
+    "export '__proto__=written\ud801'", 'export constructor=written-constructor', 'export toString=written-toString', 'cd /tmp']) {
     assert.equal((await run(command)).exitCode, 0);
     const current = await read();
     assert.notEqual(digest(current), digest(previous), 'every saved name, value and cwd contributes to the state');
@@ -42,6 +52,10 @@ try {
   assert.equal(previous.env['0'], 'zero');
   assert.equal(previous.env['A-B'], 'hyphen');
   assert.equal(previous.env.MULTILINE, 'first\nsecond');
+  assert.equal(Object.hasOwn(previous.env, '__proto__'), true, 'the public named exec writer keeps prototype-named variables');
+  assert.equal(previous.env.__proto__, 'written\ud801');
+  assert.equal(previous.env.constructor, 'written-constructor');
+  assert.equal(previous.env.toString, 'written-toString');
   assert.equal(previous.cwd, '/tmp');
   assert.equal(await ws.shellState('another'), null, 'the snapshot is scoped to its name');
 
@@ -54,16 +68,12 @@ try {
   const entered = new Promise((resolve, reject) => { enter = resolve; failEnter = reject; });
   let release;
   const released = new Promise((resolve) => { release = resolve; });
-  const { pid } = ws.processes.spawn('state-owner', ['state-owner'], previous.cwd, { cred: CRED_SESSION_USER });
-  const writing = ws.withNamedShell(name, {}, async (named) => {
-    const shell = named.open(pid);
-    await shell.execute("export QUEUED='\udfff'");
+  ws.registry.register('state-rendezvous', async () => {
     enter();
     await released;
-  }).finally(async () => {
-    ws.processes.exit(pid, 0);
-    await ws.processes.reapTree(pid);
+    return 0;
   });
+  const writing = run("export QUEUED='\udfff'; state-rendezvous");
   writing.catch(failEnter);
   await entered;
   const reading = read();

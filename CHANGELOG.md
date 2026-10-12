@@ -10,7 +10,8 @@ published independently in the `@nimbus-sh` npm scope.
   hardware concurrency stay unchanged.
 - Added: `NimbusWorkspace.shellState(name)` reads the named shell's saved cwd
   and exact environment, without its call pid. Reads share the shell's queue
-  and distinguish lone UTF-16 surrogates. Listings and UTF-8 pipes are unchanged.
+  and distinguish lone UTF-16 surrogates and variables named `__proto__`,
+  `constructor` or `toString`. Listings and UTF-8 pipes are unchanged.
 - Fixed: fabric connections preserve the host's socket type in lookups and
   listings, so callers can use methods such as `send` without type assertions.
 - Fixed: Cloudflare account lookup validates only the successful account
