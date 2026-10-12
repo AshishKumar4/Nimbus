@@ -4543,7 +4543,7 @@ export class SqliteVFS {
 
   /** `ino`: the number a delegation's holder gave the directory it made (askedIno), for a lone mkdir. */
   private mkdir(path: string, options: { recursive?: boolean; mode?: number; ino?: number } | undefined, cred: VfsCred): void {
-    const normalized = this.storageKey(path, cred);
+    const normalized = this.storageKey(path, cred, this.inodes, options?.recursive === true);
     // A directory that is there is made already: no mutation, so no lease
     // refuses it (a session's mkdir -p of its home while a lease holds a
     // repository under it). Each one made is checked as it is made.

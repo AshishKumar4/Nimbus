@@ -1,17 +1,23 @@
 #!/usr/bin/env bun
-// @tier quiet-cpu — paired in-process CPU comparison of plain SQLite and namespace lookups.
+// Paired in-process CPU comparison. remote-vfs-lookup-cpu supplies the baseline sources.
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readdirSync, symlinkSync, writeFileSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync, rmSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CompositeVFS } from '../../packages/core/src/vfs/composite.ts';
 import { sqliteFiles } from '../../packages/core/src/vfs/sqlite-files.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { hostSqlite } from './lib/host-sqlite.mjs';
+import { hostSqlite } from '../unit/lib/host-sqlite.mjs';
 
-const BASE = '53ae2ad98a620634abb90547b2172da66e826215';
+const args = process.argv.slice(2);
+const option = (name) => {
+  const at = args.indexOf(name);
+  assert.ok(at >= 0 && args[at + 1], `${name} is required`);
+  return args[at + 1];
+};
+const baseline = resolve(option('--baseline'));
+const output = option('--out');
 const source = new URL('../../packages/core/src/', import.meta.url).pathname;
 const fixture = mkdtempSync(join(source, '.vfs-cpu-'));
 const median = (values) => {
@@ -23,6 +29,7 @@ const USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 const ITERATIONS = 24_000;
 const PAIRS = 36;
 let checksum = 0;
+const results = [];
 
 try {
   mkdirSync(join(fixture, 'vfs'));
@@ -33,7 +40,7 @@ try {
   for (const entry of readdirSync(join(source, 'vfs'))) {
     const target = join(fixture, 'vfs', entry);
     if (['sqlite-vfs.ts', 'path.ts', 'composite.ts'].includes(entry)) {
-      writeFileSync(target, execFileSync('git', ['show', `${BASE}:packages/core/src/vfs/${entry}`]));
+      writeFileSync(target, readFileSync(join(baseline, entry)));
     } else symlinkSync(join(source, 'vfs', entry), target);
   }
   const { SqliteVFS: Before } = await import(pathToFileURL(join(fixture, 'vfs', 'sqlite-vfs.ts')).href);
@@ -43,6 +50,7 @@ try {
     const engine = new Store(host.sql, host.transactions);
     const root = engine.as(CRED_KERNEL);
     root.mkdir('home/user/a/b/c/d', { recursive: true });
+    root.symlink('a/b/c/d', 'home/user/link');
     const paths = Array.from({ length: 96 }, (_, i) => `/home/user/a/b/c/d/f${i}`);
     for (const path of paths) root.writeFile(path, `file-${path}`);
     const store = engine.as(USER);
@@ -54,6 +62,7 @@ try {
     for (let i = 0; i < ITERATIONS; i++) {
       const path = paths[(i * 17) % paths.length];
       if (kind === 'namespace') checksum += namespace.stat(path).size;
+      else if (kind === 'namespace-walk') checksum += namespace.stat(`/home/user/link/../d/f${(i * 17) % paths.length}`).size;
       else switch (i % 4) {
         case 0: checksum += store.stat(path).size; break;
         case 1: checksum += store.readFile(path).byteLength; break;
@@ -68,7 +77,7 @@ try {
     const used = process.cpuUsage(before);
     return (used.user + used.system) / 1000;
   };
-  for (const kind of ['store', 'namespace']) {
+  for (const kind of ['store', 'namespace', 'namespace-walk']) {
     for (let warm = 0; warm < 12; warm++) for (const arm of arms) run(arm, kind);
     const pairs = [];
     for (let pair = 0; pair < PAIRS; pair++) {
@@ -92,7 +101,10 @@ try {
     const interval = [quantile(boot, 0.025), quantile(boot, 0.975)];
     const spread = [Math.min(...aa), Math.max(...aa)];
     const result = { kind, iterations: ITERATIONS, pairs: PAIRS, medianA: median(pairs.map(({ A1, A2 }) => (A1 + A2) / 2)), medianB: median(pairs.map(({ B }) => B)), medianDelta: median(deltas), ci95: interval, aaSpread: spread, samples: pairs };
-    console.log(JSON.stringify(result));
+    results.push(result);
+    writeFileSync(output, `${JSON.stringify(results, null, 2)}\n`);
+    const { samples, ...summary } = result;
+    console.log(JSON.stringify(summary));
     assert.ok(result.medianDelta <= 0, `${kind}: median paired CPU delta ${result.medianDelta} ms is positive`);
     assert.ok(interval[0] >= spread[0] && interval[1] <= spread[1], `${kind}: confidence interval is outside A/A spread`);
   }

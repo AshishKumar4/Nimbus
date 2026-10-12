@@ -39,7 +39,8 @@ export function normalizeVfsPath(p: string): string {
   const text = String(p ?? '');
   // A key already in canonical form, or an absolute path that is one past
   // its leading slash, as most lookups pass, is returned without the split.
-  if (!NOT_NORMAL.test(text)) return text.charCodeAt(0) === 47 ? text.slice(1) : text;
+  const plain = plainVfsPath(text);
+  if (plain !== null) return plain;
   const segments = text.split('/');
   const out: string[] = [];
   // `..` at the root stays at the root, as POSIX resolves `/..`.
