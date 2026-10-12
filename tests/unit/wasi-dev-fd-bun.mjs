@@ -26,11 +26,16 @@ const seeded = await open({});
 seedRuntime(seeded.vfs, RUNTIMES.find((r) => r.name === 'cpython'));
 const ws = await open({ facets: localFacetHost(ISOLATE_NETWORK) });
 
+ws.vfs.as({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }).writeFile('home/user/f.txt', 'in a file\n');
 const py = (program) => `python3 -c ${JSON.stringify(program)}`;
 const cases = [
+  // The control: what the program reads from its stdin, it reads from /dev/stdin too.
+  { command: `printf 'line\\n' | ${py("import sys; print(sys.stdin.read().strip())")}`, stdout: 'line\n' },
   { command: `printf 'line\\n' | ${py("print(open('/dev/stdin').read().strip())")}`, stdout: 'line\n' },
   { command: `printf 'by-number\\n' | ${py("print(open('/dev/fd/0').read().strip())")}`, stdout: 'by-number\n' },
   { command: `printf 'proc\\n' | ${py("print(open('/proc/self/fd/0').read().strip())")}`, stdout: 'proc\n' },
+  { command: py("import os; fd = os.open('f.txt', os.O_RDONLY); print(open('/dev/fd/%d' % fd).read().strip())"), stdout: 'in a file\n' },
+  { command: py("import os; fd = os.open('f.txt', os.O_RDONLY); print(open('/proc/self/fd/%d' % fd).read().strip())"), stdout: 'in a file\n' },
   { command: py("f = open('/dev/stdout', 'w'); f.write('out\\n'); f.flush()"), stdout: 'out\n' },
   { command: `${py("f = open('/dev/stderr', 'w'); f.write('err\\n'); f.flush()")} 2>&1`, stdout: 'err\n' },
   { command: py("import os; print(os.path.exists('/dev/fd/1'), os.path.exists('/dev/fd/9'))"), stdout: 'True False\n' },
