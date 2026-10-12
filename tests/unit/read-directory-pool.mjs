@@ -103,6 +103,26 @@ function fixture() {
   await s.close();
 }
 
+// The process's own change distrusts the predictions, and retires none: the
+// next batch's answer revalidates each against the store.
+{
+  const s = fixture();
+  await s.pool.open('/d0', 'd0', async () => ['/d1', '/d2']);
+  const predicted = [...s.held].find(([, item]) => item.handle.path === 'd1')[0];
+  s.pool.invalidate();
+  s.nodes.set('d1', { ...s.nodes.get('d1'), revision: 9 });
+  await s.pool.open('/d2', 'd2', async () => []);
+  assert.equal(s.calls.length, 2, 'distrusted: the open asks the session');
+  assert.equal(s.calls[1].retire.includes(predicted), false, 'and keeps the other predictions');
+  assert.equal(s.calls[1].claim.includes(predicted), true, 'claimed at the session');
+  const sent = s.calls.length;
+  const d1 = await s.pool.open('/d1', 'd1', async () => []);
+  assert.equal(s.calls.length, sent + 1, 'a prediction whose directory changed is not claimed');
+  assert.ok(s.calls[sent].retire.length >= 1, 'it is retired');
+  assert.equal(s.pool.owns(d1.id), true);
+  await s.close();
+}
+
 // Lost/late first answer: the original ask cannot be replaced by arrival time.
 {
   const s = fixture(), reached = deferred(), finish = deferred();

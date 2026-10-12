@@ -26,6 +26,11 @@ export interface ReadDirectoryPool {
   close(id: number): void | Promise<void>;
   /** Only call where a real supervisor/store I/O reply arrived; timers never establish trust. */
   io(): void;
+  /**
+   * The store may be behind (the process's own change, input): nothing is
+   * claimed until a batch's answer is admitted, and then each prediction only
+   * if the store still shows the directory it opened. None is retired for it.
+   */
   invalidate(): void;
   /** A park timed out: late, not-yet-delivered descriptions are abandoned, never installed into the guest fd table. */
   cancelPending(): void;
@@ -65,11 +70,22 @@ export function readDirectoryPool({ call, store, client, before }: Options): Rea
     for (const entry of unused.values()) { claiming.delete(entry.handle.id); retiring.add(entry.handle.id); }
     unused.clear();
   };
-  const invalidate = (): void => { generation++; trustedAtIo = false; discardUnused(); };
+  /**
+   * The store may be behind (a change of the process's own, input, a
+   * recall): nothing is claimed until a batch's answer is admitted, and then
+   * each prediction only if the store still shows the directory it opened.
+   */
+  const distrust = (): void => { generation++; trustedAtIo = false; };
+  /** What the pool knows may be wrong (a failed or foreign answer, the end): every prediction is retired. */
+  const invalidate = (): void => { distrust(); discardUnused(); };
   const valid = (): boolean => {
     const yes = trustedAtIo && owner !== null && client.readUnchanged(owner)
       && store.ready() && store.cursor()?.epoch === epoch;
-    if (!yes) { trustedAtIo = false; discardUnused(); }
+    if (!yes) {
+      trustedAtIo = false;
+      // Another incarnation's store: no description of the old one is worth keeping.
+      if (store.cursor()?.epoch !== epoch) discardUnused();
+    }
     return yes;
   };
   const local = (entry: ReadDirectoryDescription): { key: string; entry: ResidentEntry } | null => {
@@ -194,10 +210,9 @@ export function readDirectoryPool({ call, store, client, before }: Options): Rea
     },
     io() {
       trustedAtIo = owner !== null && client.readUnchanged(owner) && client.readTrusted();
-      if (!trustedAtIo) discardUnused();
     },
-    invalidate,
-    cancelPending() { cancelled++; invalidate(); },
+    invalidate: distrust,
+    cancelPending() { cancelled++; distrust(); },
     async dispose() {
       ended = true;
       cancelled++;
