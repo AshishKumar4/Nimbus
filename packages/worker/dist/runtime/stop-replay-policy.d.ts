@@ -325,6 +325,9 @@ export declare const REPLAY_OPERATION_POLICY: {
     routeHostedHttp: {
         readonly kind: "effect";
     };
+    abandonHostedHttp: {
+        readonly kind: "effect";
+    };
     cancelHostProcess: {
         readonly kind: "effect";
     };

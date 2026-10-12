@@ -38,27 +38,28 @@ export declare class HostActivity {
     private failed;
 }
 /**
- * Whether a request's caller left it, asked by its handler on another actor:
- * true once the caller has left the response, false once it is done with it.
- * Minted with the request and passed beside it (a function crosses Workers
- * RPC as a stub, a signal does not), so the handler hears a caller that
- * leaves before any header as well as after one.
+ * The requests a host sent a handler on another actor, by id, so it can
+ * abandon one: before its response's headers as well as after. Workers RPC
+ * carries no signal, and asking per request costs a round trip; abandoning is
+ * the rare path, so only it sends anything. Each call carries the ids that
+ * ended since the last (`ended`), which the handler then forgets; an abandon
+ * that overtakes its request is kept until its request, or its end, arrives.
  */
-export type CallerLeft = () => Promise<boolean>;
-/** The caller of a request with `scope`, for its handler on another actor. */
-export declare function callerLeft(scope: ResponseScope): CallerLeft;
-/**
- * The handler's side: the scope of a request whose caller is on another
- * actor. Only that caller sees whether the response was delivered, so the
- * scope ends as the caller answers: settled when it was, aborted when it left
- * or can no longer be asked (its actor is gone), or aborted here first
- * (`fail`) when the relay to it fails. A stub received as a call's argument
- * is the call's; its `dup` is held until the answer.
- */
-export declare function callerScope(left: CallerLeft): {
-    scope: ResponseScope;
-    fail(reason?: unknown): void;
-};
+export declare class HandledRequests {
+    #private;
+    /** The signal of request `id`, its own if it was abandoned first; `ended` are forgotten first. */
+    admit(id: number, ended: readonly number[]): AbortSignal;
+    abandon(id: number): void;
+}
+/** The sending host's side: ids for its requests, the ended ones to report, and an abandon on `scope`'s abort. */
+export declare class SentRequests {
+    #private;
+    /** An id for a request with `scope`, the ids to report, and abandon(id) sent if the scope aborts first. */
+    send(scope: ResponseScope, abandon: (id: number) => Promise<unknown>): {
+        id: number;
+        ended: number[];
+    };
+}
 export declare function hostActivity(host: object): HostActivity;
 /**
  * One native fetch endpoint, outside the guest's HTTP handler, on every

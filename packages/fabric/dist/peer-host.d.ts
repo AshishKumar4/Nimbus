@@ -14,7 +14,6 @@
 import { type WorkspaceEgress } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { z } from 'zod/v4';
 import { type ResidentBootSpec } from './process-fabric.js';
-import { type CallerLeft } from './host-activity.js';
 export declare function isolateToken(): string;
 /**
  * Options the coordinator hands a hosting peer. Parsed on the peer, because a
@@ -52,8 +51,9 @@ export interface HostedHttpRequest {
     url: string;
     headers: [string, string][];
     body: ReadableStream | null;
-    /** Its caller, who can leave it before or after its headers. */
-    left: CallerLeft;
+    /** Its id, by which its coordinator can abandon it (HandledRequests), and the ids that ended since the last. */
+    id: number;
+    ended: number[];
 }
 export interface HostedHttpResponse {
     status: number;
@@ -142,6 +142,8 @@ export declare class PeerHost {
     awaitBoot(workerKey: string): Promise<HostedReply<{
         payload: unknown;
     }>>;
+    /** The coordinator abandons request `id` of a process this peer hosts (HandledRequests). */
+    abandonHttp(workerKey: string, capability: string, id: number): void;
     /**
      * Inbound HTTP for a port owned by a process this peer hosts.
      *
@@ -155,10 +157,10 @@ export declare class PeerHost {
      *
      * The response body is re-piped through an identity stream owned by THIS
      * isolate before it is returned, for the same reason the parts exist at all:
-     * what leaves here must not be an object the loaded worker owns. Only the
-     * coordinator's caller (`wire.left`) sees the response delivered or left,
-     * before its headers or after, so the request's scope ends as it answers;
-     * a pipe that fails here ends it first.
+     * what leaves here must not be an object the loaded worker owns. That
+     * pipe's end is when this host's work for the response is done; the
+     * coordinator abandons the request by its id (abandonHttp), before its
+     * headers or after.
      */
     routeHttp(workerKey: string, wire: HostedHttpRequest): Promise<HostedReply<HostedHttpResponse>>;
     /**

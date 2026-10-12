@@ -13,7 +13,7 @@
  * `HostedProcess` and never imports this file.
  */
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { callerLeft, hostActivity, HOST_INCARNATION_HEADER, HOST_REQUEST_HEADER, HOST_WATCH_HEADER, observeResidentConfig, } from './host-activity.js';
+import { hostActivity, HOST_INCARNATION_HEADER, HOST_REQUEST_HEADER, HOST_WATCH_HEADER, observeResidentConfig, SentRequests, } from './host-activity.js';
 import { readImmutableModuleSource } from '@nimbus-sh/core/_shared/staged-source.js';
 import { classifyError, describeError, isUnexplainedPlatformError } from '@nimbus-sh/platform/oom-classify.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
@@ -438,11 +438,7 @@ function spawnResident(ctx, env, disk, supervisor, params) {
     stopObserving = observation.close;
     // A request runs only on the instance pinned at open. An instance that
     // refuses it as replaced is this process's host lost, never a guest answer.
-    const admitted = async (request, send) => {
-        const headers = new Headers(request.headers);
-        headers.set(HOST_REQUEST_HEADER, watchCapability);
-        headers.set(HOST_INCARNATION_HEADER, await incarnation);
-        const response = await send(new Request(request, { headers }));
+    const checked = async (response) => {
         if (response.status !== 410 || response.headers.get(HOST_REQUEST_HEADER) !== watchCapability)
             return response;
         const gone = new Error(await response.text());
@@ -450,6 +446,15 @@ function spawnResident(ctx, env, disk, supervisor, params) {
             markLost(gone);
         throw new ProcessHostLost(gone);
     };
+    // An upgrade's admission rides its headers: fetch takes a Request alone.
+    const admitted = async (request) => {
+        const headers = new Headers(request.headers);
+        headers.set(HOST_REQUEST_HEADER, watchCapability);
+        headers.set(HOST_INCARNATION_HEADER, await incarnation);
+        return new Request(request, { headers });
+    };
+    const sent = new SentRequests();
+    const abandon = (id) => facet.abandonHttpRequest(watchCapability, id);
     return {
         started,
         lost,
@@ -459,7 +464,8 @@ function spawnResident(ctx, env, disk, supervisor, params) {
             const lease = observation.acquire(scope.signal);
             void scope.settled.then(lease.release);
             try {
-                return await admitted(request, (guarded) => facet.hostHttpRequest(guarded, callerLeft(scope)));
+                const { id, ended } = sent.send(scope, abandon);
+                return await checked(await facet.hostHttpRequest(request, watchCapability, await incarnation, id, ended));
             }
             catch (error) {
                 lease.release();
@@ -470,7 +476,7 @@ function spawnResident(ctx, env, disk, supervisor, params) {
         handleWebSocketRequest: async (request) => {
             const lease = observation.acquire();
             try {
-                return await admitted(request, (guarded) => facet.fetch(guarded));
+                return await checked(await facet.fetch(await admitted(request)));
             }
             finally {
                 lease.release();

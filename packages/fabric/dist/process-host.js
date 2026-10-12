@@ -67,7 +67,7 @@
  */
 import { networkRef } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { callerLeft, hostActivity, HOST_INCARNATION_HEADER } from './host-activity.js';
+import { hostActivity, HOST_INCARNATION_HEADER, SentRequests } from './host-activity.js';
 import { onColdStart } from './generation.js';
 import { peerRetryDelay } from './fanout.js';
 import { hostNamespaceBinding, hostOpDispatch } from './host-dispatch.js';
@@ -232,6 +232,7 @@ function processPeerStub(value, peerName) {
             return { payload: result.payload };
         },
         _rpcRouteHostedHttp: async (key, request) => parsePeerAnswer(PeerHttpResult, await dispatch({ op: 'routeHostedHttp', args: [key, request] })),
+        _rpcAbandonHostedHttp: async (key, capability, id) => { await dispatch({ op: 'abandonHostedHttp', args: [key, capability, id] }); },
         _rpcCancelHostProcess: async (key) => peerAnswer(PeerCancelResult, await dispatch({ op: 'cancelHostProcess', args: [key] })),
         fetch: async (request) => {
             const response = await Reflect.apply(fetchFn, value, [request]);
@@ -361,6 +362,9 @@ class PeerProcessHost {
             const started = loss.route(() => this.withPeer(placement.peerName, (stub) => stub._rpcAwaitHostedBoot(params.workerKey).then((r) => r.payload))).finally(starting.release);
             started.catch(() => { });
             let released = false;
+            const sent = new SentRequests();
+            const peered = (call) => link.stub ? call(link.stub) : this.withPeer(placement.peerName, call);
+            const abandon = (id) => peered((stub) => stub._rpcAbandonHostedHttp(params.workerKey, webSocketCapability, id));
             return {
                 started,
                 lost: loss.signal,
@@ -368,8 +372,8 @@ class PeerProcessHost {
                     const lease = observation.acquire(scope.signal);
                     void scope.settled.then(lease.release);
                     try {
-                        const route = (stub) => routeThroughPeer(stub, params.workerKey, webSocketCapability, request, scope);
-                        return await (link.stub ? route(link.stub) : this.withPeer(placement.peerName, route));
+                        const sending = sent.send(scope, abandon);
+                        return await peered((stub) => routeThroughPeer(stub, params.workerKey, webSocketCapability, request, sending));
                     }
                     catch (error) {
                         lease.release();
@@ -592,14 +596,14 @@ class HostLoss {
         return Promise.race([call, this.signal]);
     }
 }
-async function routeThroughPeer(stub, workerKey, capability, request, scope) {
+async function routeThroughPeer(stub, workerKey, capability, request, sending) {
     const result = await stub._rpcRouteHostedHttp(workerKey, {
         capability,
         method: request.method,
         url: request.url,
         headers: headerPairs(request.headers),
         body: request.method === 'GET' || request.method === 'HEAD' ? null : request.body,
-        left: callerLeft(scope),
+        ...sending,
     });
     const responseHeaders = new Headers();
     for (const [key, value] of result.headers)

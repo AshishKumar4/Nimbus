@@ -19,7 +19,8 @@ import { ProcessHostLost } from './process-fabric.js';
 import { bindingSupervisor, supervisorBindingProps } from './supervisor-props.js';
 import { withResolvers } from './turn-budget.js';
 import { processes, abortFacet, deleteFacetStorage } from './workerd-facet-host.js';
-import { callerScope, HOST_INCARNATION_HEADER } from './host-activity.js';
+import { HandledRequests, HOST_INCARNATION_HEADER } from './host-activity.js';
+import { responseScope } from '@nimbus-sh/core/runtime/port-registry.js';
 import { isHostReset } from '@nimbus-sh/platform/oom-classify.js';
 /**
  * This workerd process's identity. Module scope, so two Durable Objects
@@ -209,6 +210,7 @@ export class PeerHost {
             closed: false,
             watchers: new Map(),
             residencies: new Map(),
+            requests: new HandledRequests(),
             release: () => {
                 record.closed = true;
                 return releasing ??= (async () => {
@@ -299,6 +301,12 @@ export class PeerHost {
             return { payload: await record.started };
         });
     }
+    /** The coordinator abandons request `id` of a process this peer hosts (HandledRequests). */
+    abandonHttp(workerKey, capability, id) {
+        const record = this.records.get(workerKey);
+        if (record && record.webSocketCapability === capability)
+            record.requests.abandon(id);
+    }
     /**
      * Inbound HTTP for a port owned by a process this peer hosts.
      *
@@ -312,10 +320,10 @@ export class PeerHost {
      *
      * The response body is re-piped through an identity stream owned by THIS
      * isolate before it is returned, for the same reason the parts exist at all:
-     * what leaves here must not be an object the loaded worker owns. Only the
-     * coordinator's caller (`wire.left`) sees the response delivered or left,
-     * before its headers or after, so the request's scope ends as it answers;
-     * a pipe that fails here ends it first.
+     * what leaves here must not be an object the loaded worker owns. That
+     * pipe's end is when this host's work for the response is done; the
+     * coordinator abandons the request by its id (abandonHttp), before its
+     * headers or after.
      */
     async routeHttp(workerKey, wire) {
         return this.answer(workerKey, async () => {
@@ -331,22 +339,23 @@ export class PeerHost {
                 init.body = wire.body;
                 init.duplex = 'half';
             }
-            const { scope, fail } = callerScope(wire.left);
+            const { scope, owner } = responseScope(record.requests.admit(wire.id, wire.ended));
             let response;
             try {
                 response = await facet.handleHttpRequest(new Request(wire.url, init), scope);
             }
             catch (error) {
-                fail(error);
+                owner.fail(error);
                 throw error;
             }
             let body = null;
             if (response.body) {
-                // Its end here is not delivery: the coordinator's caller says when the body arrived.
                 const { readable, writable } = new IdentityTransformStream();
-                this.ctx.waitUntil(response.body.pipeTo(writable, { signal: scope.signal }).catch(fail));
+                this.ctx.waitUntil(response.body.pipeTo(writable, { signal: scope.signal }).then(owner.settle, owner.fail));
                 body = readable;
             }
+            else
+                owner.settle();
             return {
                 status: response.status,
                 statusText: response.statusText,

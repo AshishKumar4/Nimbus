@@ -454,6 +454,7 @@ export declare function _rpcAwaitHostedBoot(self: PeerHostRpcHost, workerKey: st
     payload: unknown;
 }>>;
 export declare function _rpcRouteHostedHttp(self: PeerHostRpcHost, workerKey: string, wire: HostedHttpRequest): Promise<HostedReply<HostedHttpResponse>>;
+export declare function _rpcAbandonHostedHttp(self: PeerHostRpcHost, workerKey: string, capability: string, id: number): void;
 export declare function _rpcCancelHostProcess(self: PeerHostRpcHost, workerKey: string): Promise<{
     cancelled: boolean;
 }>;

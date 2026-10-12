@@ -107,6 +107,7 @@ export declare const SUPERVISOR_OP_TABLE: {
     readonly hostProcess: null;
     readonly awaitHostedBoot: null;
     readonly routeHostedHttp: null;
+    readonly abandonHostedHttp: null;
     readonly cancelHostProcess: null;
     readonly hmrRelay: null;
     readonly hmrNextEvent: null;
