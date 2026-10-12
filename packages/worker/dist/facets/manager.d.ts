@@ -596,6 +596,26 @@ interface OptionalModuleGroup {
     root: string;
     members: ReadonlySet<string>;
 }
+/**
+ * What the size guard keeps of a snapshot over `bound` raw bytes: it drops
+ * the `evictable` paths in order until what remains fits. A path is kept
+ * while something holds it: `independent` (paths staged on their own), or a
+ * kept group it is a member of. Evicting an independent path drops every
+ * group that has it (a group missing a member cannot load); evicting a
+ * group's root drops the group. `rawTotal` is the snapshot's bytes before any
+ * eviction; each eviction leaves the bytes of what is still held.
+ *
+ * Each path's holders are counted once, and an eviction releases only what
+ * it drops: the set used to be built again from every kept group after each
+ * eviction, pacing all of it each time, and a pi launch evicting 530 to 838
+ * files spent seconds of turns on it.
+ */
+export declare function retainWithinBound(bound: number, rawTotal: number, independent: Set<string>, keptGroups: Set<OptionalModuleGroup>, evictable: readonly string[], rawBytes: ReadonlyMap<string, number>, pacer?: {
+    spend(bytes: number): Promise<void>;
+}): Promise<{
+    retained: Set<string>;
+    rawTotal: number;
+}>;
 export declare function greedyAddMainEntries(vfs: LaunchFs, cwd: string, bundle: Record<string, string | Uint8Array>, budgetState: {
     totalBytes: number;
     fileCount: number;
