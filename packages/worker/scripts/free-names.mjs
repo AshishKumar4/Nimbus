@@ -13,12 +13,13 @@ import { bindingScope, isNode, isSloppy, namesBinding, scoped, stringOf } from '
 /**
  * The free names of `source`, a script (or, with `sourceType: 'module'`, a module).
  *
- * With `guarded`, a name is not free where reading it cannot throw or is the
- * source's own: read only as `typeof name`, or inside a test, conditional or
- * `&&` whose test asks `typeof name` (an input only some embedders give), or
- * installed by the source on globalThis (`globalThis.name = …`,
- * `Object.defineProperty(globalThis, "name", …)`,
- * `Object.defineProperties(globalThis, { name: … })`).
+ * With `guarded`, a read that cannot throw for want of a binding is not free:
+ * `typeof name` itself, and a read only where a `typeof name` test says the
+ * name is there, by the test's sense: the branch of an `if` or conditional,
+ * or the right of `&&` or `||`, that runs only when the test holds
+ * (`typeof name !== "undefined"`, `typeof name === "function"`, either
+ * negated, joined by `&&` or `||`). A name some code puts on globalThis is
+ * not a binding: the read may run first, or the install not at all.
  *
  * @param {string} source
  * @param {{ sourceType?: 'script' | 'module', guarded?: boolean }} [options]
@@ -27,55 +28,32 @@ import { bindingScope, isNode, isSloppy, namesBinding, scoped, stringOf } from '
 export function freeNames(source, { sourceType = 'script', guarded = false } = {}) {
   const program = parse(source, { ecmaVersion: 'latest', sourceType, allowHashBang: true });
   if (!isNode(program)) throw new Error('free-names: acorn gave no program');
-  const { ranges, installed } = guarded ? guardsOf(program) : { ranges: new Map(), installed: new Set() };
+  const ranges = guarded ? typeofGuards(program) : new Map();
   const covered = (name, at) => (ranges.get(name) ?? []).some(([start, end]) => at >= start && at < end);
   const free = new Set();
   for (const [node, scope, parent, key] of scoped(program, { names: new Set(), parent: null }, isSloppy(program))) {
     if (node.type !== 'Identifier' || parent === null || !namesBinding(parent, key)) continue;
     const name = stringOf(node, 'name');
     if (name === null || bindingScope(scope, name) !== null) continue;
-    if (guarded && (installed.has(name) || (parent.type === 'UnaryExpression' && parent.operator === 'typeof') || covered(name, node.start))) continue;
+    if (guarded && ((parent.type === 'UnaryExpression' && parent.operator === 'typeof') || covered(name, node.start))) continue;
     free.add(name);
   }
   return free;
 }
 
-/** Where each name is read under a `typeof` test of it, and the names the program installs on globalThis. */
-function guardsOf(program) {
+/** For each name, the source ranges that run only when a `typeof` test of it said it is there. */
+function typeofGuards(program) {
   const ranges = new Map();
-  const installed = new Set();
-  const typeofNames = (node, out = []) => {
-    if (!node || typeof node !== 'object') return out;
-    if (node.type === 'UnaryExpression' && node.operator === 'typeof' && node.argument?.type === 'Identifier') out.push(node.argument.name);
-    for (const value of Object.values(node)) {
-      if (Array.isArray(value)) for (const item of value) typeofNames(item, out);
-      else if (value && typeof value === 'object' && typeof value.type === 'string') typeofNames(value, out);
-    }
-    return out;
+  const guard = (names, node) => {
+    for (const name of names) ranges.set(name, [...(ranges.get(name) ?? []), [node.start, node.end]]);
   };
-  const isGlobalThis = (node) => node?.type === 'Identifier' && node.name === 'globalThis';
-  const keyName = (node, computed) => (!computed && node?.type === 'Identifier' ? node.name : node?.type === 'Literal' && typeof node.value === 'string' ? node.value : null);
   const visit = (node) => {
     if (!node || typeof node !== 'object') return;
-    const test = node.type === 'IfStatement' || node.type === 'ConditionalExpression' ? node.test
-      : node.type === 'LogicalExpression' && node.operator === '&&' ? node.left : null;
-    if (test) for (const name of typeofNames(test)) ranges.set(name, [...(ranges.get(name) ?? []), [node.start, node.end]]);
-    if (node.type === 'AssignmentExpression' && node.left?.type === 'MemberExpression' && isGlobalThis(node.left.object)) {
-      const name = keyName(node.left.property, node.left.computed);
-      if (name !== null) installed.add(name);
-    }
-    if (node.type === 'CallExpression' && node.callee?.type === 'MemberExpression' && node.callee.object?.type === 'Identifier'
-      && node.callee.object.name === 'Object' && isGlobalThis(node.arguments?.[0])) {
-      const method = keyName(node.callee.property, node.callee.computed);
-      if (method === 'defineProperty') {
-        const name = keyName(node.arguments[1], true);
-        if (name !== null) installed.add(name);
-      } else if (method === 'defineProperties' && node.arguments[1]?.type === 'ObjectExpression') {
-        for (const prop of node.arguments[1].properties) {
-          const name = prop.type === 'Property' ? keyName(prop.key, prop.computed) : null;
-          if (name !== null) installed.add(name);
-        }
-      }
+    if (node.type === 'IfStatement' || node.type === 'ConditionalExpression') {
+      guard(boundWhen(node.test, true), node.consequent);
+      if (node.alternate) guard(boundWhen(node.test, false), node.alternate);
+    } else if (node.type === 'LogicalExpression' && (node.operator === '&&' || node.operator === '||')) {
+      guard(boundWhen(node.left, node.operator === '&&'), node.right);
     }
     for (const value of Object.values(node)) {
       if (Array.isArray(value)) for (const item of value) visit(item);
@@ -83,7 +61,28 @@ function guardsOf(program) {
     }
   };
   visit(program);
-  return { ranges, installed };
+  return ranges;
+}
+
+/** The names `test` says are there when it evaluates to `sense` (truthy when true). */
+function boundWhen(test, sense) {
+  if (!test || typeof test !== 'object') return [];
+  if (test.type === 'UnaryExpression' && test.operator === '!') return boundWhen(test.argument, !sense);
+  if (test.type === 'LogicalExpression') {
+    // `a && b` true: both are; `a || b` false: neither is. Otherwise either may be what decided it.
+    if (test.operator === '&&' && sense) return [...boundWhen(test.left, true), ...boundWhen(test.right, true)];
+    if (test.operator === '||' && !sense) return [...boundWhen(test.left, false), ...boundWhen(test.right, false)];
+    return [];
+  }
+  if (test.type !== 'BinaryExpression' || !['===', '==', '!==', '!='].includes(test.operator)) return [];
+  const typeofOf = (node) => (node?.type === 'UnaryExpression' && node.operator === 'typeof' && node.argument?.type === 'Identifier' ? node.argument.name : null);
+  const textOf = (node) => (node?.type === 'Literal' && typeof node.value === 'string' ? node.value : null);
+  const name = typeofOf(test.left) ?? typeofOf(test.right);
+  const text = typeofOf(test.left) !== null ? textOf(test.right) : textOf(test.left);
+  if (name === null || text === null) return [];
+  // Whether `typeof name === text` holds when the test is `sense`.
+  const equal = (test.operator === '===' || test.operator === '==') === sense;
+  return equal === (text !== 'undefined') ? [name] : [];
 }
 
 /** What every facet module has in scope without importing it: ECMAScript's globals and the Workers runtime's (nodejs_compat's `process` among them). */
