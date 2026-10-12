@@ -11,6 +11,7 @@
  */
 import { type CredentialedVfs, type SqliteVFS } from './sqlite-vfs.js';
 import type { SyncVFS, VFS, VfsCasResult, VfsChanges, VfsCred, VfsDirent, VfsOpenFile, VfsRevision, VfsStat, VfsViewOptions, VfsWriteObserver } from './vfs.js';
+import { type VfsEvent } from './events.js';
 export declare class SqliteFiles implements VFS {
     private readonly engine;
     private readonly view;
@@ -27,11 +28,21 @@ export declare class SqliteFiles implements VFS {
     as(cred: VfsCred, actor?: string, options?: VfsViewOptions): SqliteFiles;
     /** Every mutation that lands on the database, through any view (SqliteVFS.observeWrites); paths absolute. */
     observeWrites(observer: VfsWriteObserver): () => void;
+    /**
+     * Every mutation that lands at `path` or under it, through any view, as
+     * the one rule tells a watch (projectChange); paths absolute. The kernel
+     * sees everywhere, and its names are the database's: its watch is the
+     * engine's own stream, batched as it publishes (SqliteVFS.events). Any
+     * other principal's is judged as each change is published, under its names
+     * (CredentialedVfs.subscribe).
+     */
+    watchChanges(path: string, listener: (events: readonly VfsEvent[]) => void): () => void;
     /** `op`, its engine errors as Node's for `syscall` on `path` (and `dest`). */
     private run;
     stat(path: string, options?: {
         follow?: boolean;
     }): VfsStat | null;
+    landedAt(path: string): boolean;
     readFile(path: string): Uint8Array;
     readRange(path: string, offset: number, length: number): Uint8Array;
     access(path: string, mode: number): void;

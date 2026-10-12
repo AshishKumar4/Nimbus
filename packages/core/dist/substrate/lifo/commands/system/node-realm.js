@@ -61,7 +61,13 @@ export function isHostEvent(value) {
     switch (value.type) {
         case 'fetched': return typeof value.id === 'number' && isResponse(value.response);
         case 'serve': return typeof value.id === 'number' && typeof value.port === 'number' && record(value.request);
-        case 'changed': return true;
+        case 'changed':
+            return Number.isSafeInteger(value.id) && record(value.event)
+                && (value.event.type === 'add' || value.event.type === 'change' || value.event.type === 'unlink'
+                    || value.event.type === 'addDir' || value.event.type === 'unlinkDir' || value.event.type === 'rename')
+                && typeof value.event.path === 'string'
+                && (value.event.oldPath === undefined || typeof value.event.oldPath === 'string')
+                && typeof value.event.timestamp === 'number';
         default: return false;
     }
 }
@@ -160,6 +166,7 @@ function callFilesystem(fs, method, args) {
         case 'isDirectory': return fs.isDirectory(pathArg(a));
         case 'stat': return fs.stat(pathArg(a));
         case 'lstat': return fs.lstat(pathArg(a));
+        case 'realpath': return fs.realpath(pathArg(a));
         case 'mkdir': return fs.mkdir(pathArg(a), mkdirArg(b));
         case 'readdir': return fs.readdir(pathArg(a));
         case 'unlink': return fs.unlink(pathArg(a));
@@ -191,9 +198,9 @@ async function performCall(call, services) {
         case 'listen': return services.listen(portArg(call.port));
         case 'unlisten': return services.unlisten(portArg(call.port));
         case 'watch': {
-            if (typeof call.on !== 'boolean')
-                throw refused('watch that is neither on nor off');
-            return services.watch(call.on);
+            if (!Number.isSafeInteger(call.id) || typeof call.id !== 'number')
+                throw refused('watch without an id');
+            return services.watch(call.id, call.path === null ? null : pathArg(call.path));
         }
         default: throw refused(`call ${JSON.stringify(String(call.op))}`);
     }
@@ -250,7 +257,7 @@ export async function runNodeInRealm(program, ctx, kernel) {
             pending.delete(id);
         }
     };
-    let unwatch;
+    const watches = new Map();
     let stdinTaken = false;
     const services = {
         filesystem,
@@ -270,16 +277,16 @@ export async function runNodeInRealm(program, ctx, kernel) {
             if (ports.delete(port))
                 kernel?.portRegistry.delete(port);
         },
-        watch: (on) => {
-            unwatch?.();
-            unwatch = undefined;
-            if (!on)
+        watch: (id, path) => {
+            watches.get(id)?.close();
+            watches.delete(id);
+            if (path === null)
                 return;
-            const fs = filesystem();
-            const listener = () => { post({ type: 'changed' }); };
-            fs.onChange = listener;
-            unwatch = () => { if (fs.onChange === listener)
-                fs.onChange = undefined; };
+            watches.set(id, filesystem().watch(path, (event) => {
+                post({ type: 'changed', id, event: event.oldPath === undefined
+                        ? { type: event.type, path: event.path, timestamp: event.timestamp }
+                        : { type: event.type, path: event.path, oldPath: event.oldPath, timestamp: event.timestamp } });
+            }));
         },
     };
     let code = null;
@@ -334,7 +341,8 @@ export async function runNodeInRealm(program, ctx, kernel) {
     for (const respond of pending.values())
         respond(null);
     egress?.close();
-    unwatch?.();
+    for (const watch of watches.values())
+        watch.close();
     await written;
     if (end.terminated)
         return exitCodeForAbortSignal(ctx.signal);

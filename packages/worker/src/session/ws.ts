@@ -50,6 +50,7 @@ import { applyProcessClientFrame } from '@nimbus-sh/core/runtime/process-input-r
 import { z } from 'zod/v4';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import type { CirrusReal } from '../facets/cirrus-real.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { clearShellSocketStamp, noteShellSocketActivity } from './shell-socket.js';
@@ -63,6 +64,8 @@ import { PRIOR_GENERATION_EXIT_REASON } from './rpc.js';
  */
 export interface WsHost {
   sqliteFs: SqliteVFS | null;
+  /** The session's namespace and process bindings (fs-watch watches the namespace). */
+  getFilesystemAuthority(): ProcessFiles;
   shell: Shell | null;
   terminal: WebSocketTerminal | null;
   kernel: Kernel | null;
