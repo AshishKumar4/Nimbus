@@ -2985,6 +2985,11 @@ export class SqliteVFS {
     return `${root}/${name.slice(TMP_ROOT.length + 1)}`;
   }
 
+  /** A listing cursor is a lexical index position, not a path that must still exist. */
+  private cursorKey(path: string, cred: VfsCred): string {
+    return this.keyOfName(normalizeVfsPath(path), this.confinedTmpRoots.get(cred.uid));
+  }
+
   /**
    * The name a credential uses for `path`, whichever spelling it came in: a
    * confined caller's own root is `/tmp`, whether it wrote /tmp/x or the
@@ -5631,7 +5636,7 @@ export class SqliteVFS {
     // Before the walk, deliberately — see VfsListPage.
     const epoch = this._epoch;
     const rev = this._revision;
-    const from = after === null || after === undefined ? '' : this.storageKey(after, cred);
+    const from = after === null || after === undefined ? '' : this.cursorKey(after, cred);
     const entries: VfsListEntry[] = [];
     // The page is bounded by its encoded bytes, not only its row count: a full
     // page of long, escaped names or link targets can exceed the RPC frame.
@@ -6915,7 +6920,7 @@ export class SqliteVFS {
       list: (after, limit) => {
         pinned();
         const pageLimit = Math.min(Math.max(1, Math.trunc(limit ?? FS_LIST_PAGE_LIMIT)), FS_LIST_PAGE_LIMIT);
-        const from = after === null || after === undefined ? '' : this.storageKey(after, bound, tree);
+        const from = after === null || after === undefined ? '' : this.cursorKey(after, bound);
         const entries: VfsListEntry[] = [];
         const searchableDirs = new Map<string, boolean>();
         let cursor = from;
