@@ -150,13 +150,15 @@ import { createCoherence } from './coherence.js';
 import { createNamespace } from './namespace.js';
 import { createSync } from './sync.js';
 import { heapTables, sqlTables } from './tables.js';
+export { posixAccess } from '@nimbus-sh/core/vfs/posix-access.js';
 export { namespaceRowBytes, residentFileCost } from './cell-cost.js';
 export { NS_DIR, NS_FILE, NS_LINK } from './tables.js';
 export function createResidentStore(options = {}) {
     const coherence = createCoherence();
     const admission = createAdmission(coherence);
     const namespace = createNamespace(coherence, admission);
-    const cells = createCells(coherence, admission, namespace, options.observeRead ?? null);
+    const observeRead = options.observeRead ?? null;
+    const cells = createCells(coherence, admission, namespace, observeRead);
     const sync = createSync(coherence, admission, namespace, cells);
     const bindTables = (t, heap) => {
         // A store can outlive its process. Own rows left by an earlier one are
@@ -225,6 +227,7 @@ export function createResidentStore(options = {}) {
             bindTables(t, t);
             admission.bindHeap(budget);
         },
+        observeRead,
         coherence,
         admission,
         namespace,

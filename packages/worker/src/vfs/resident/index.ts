@@ -152,6 +152,7 @@ import { createNamespace, type Namespace } from './namespace.js';
 import { createSync, type Sync } from './sync.js';
 import { heapTables, sqlTables, type HeapTables, type ResidentSql, type ResidentTables } from './tables.js';
 
+export { posixAccess } from '@nimbus-sh/core/vfs/posix-access.js';
 export { namespaceRowBytes, residentFileCost } from './cell-cost.js';
 export { NS_DIR, NS_FILE, NS_LINK } from './tables.js';
 export type { ResidentCell } from './cell-cost.js';
@@ -178,6 +179,8 @@ export interface ResidentStore {
   bind(ctx: unknown): void;
   /** Bind to a one-shot's heap, capped at `budget` bytes and never growing past it (there is no ledger row to grow). */
   bindInMemory(budget: number): void;
+  /** What a read the store does not answer itself is told to (the process's module loads): ResidentStoreOptions.observeRead. */
+  readonly observeRead: ((path: string) => void) | null;
   readonly coherence: Coherence;
   readonly admission: Admission;
   readonly namespace: Namespace;
@@ -189,7 +192,8 @@ export function createResidentStore(options: ResidentStoreOptions = {}): Residen
   const coherence = createCoherence();
   const admission = createAdmission(coherence);
   const namespace = createNamespace(coherence, admission);
-  const cells = createCells(coherence, admission, namespace, options.observeRead ?? null);
+  const observeRead = options.observeRead ?? null;
+  const cells = createCells(coherence, admission, namespace, observeRead);
   const sync = createSync(coherence, admission, namespace, cells);
 
   const bindTables = (t: ResidentTables, heap: HeapTables | null): void => {
@@ -257,6 +261,7 @@ export function createResidentStore(options: ResidentStoreOptions = {}): Residen
       bindTables(t, t);
       admission.bindHeap(budget);
     },
+    observeRead,
     coherence,
     admission,
     namespace,
