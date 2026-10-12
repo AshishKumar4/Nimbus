@@ -50,7 +50,8 @@ export function isFacetPayload(value) {
         return false;
     const supervisor = value.supervisor;
     return supervisor === undefined
-        || (record(supervisor) && strings(supervisor.methods) && (supervisor.synchronous === null || strings(supervisor.synchronous)));
+        || (record(supervisor) && strings(supervisor.methods) && (supervisor.synchronous === null || strings(supervisor.synchronous))
+            && (supervisor.asynchronous === undefined || strings(supervisor.asynchronous)));
 }
 export function isFacetSubmit(value) {
     return record(value) && value.type === 'submit' && Number.isSafeInteger(value.id) && typeof value.source === 'string'
@@ -156,6 +157,7 @@ class RealmFacet {
     over = null;
     supervisor;
     supervisorMethods;
+    asynchronousMethods = [];
     synchronous;
     isolation = facetIsolation();
     constructor(spec, network) {
@@ -180,6 +182,10 @@ class RealmFacet {
                 const childCalls = createChildProcessSupervisor(children, pid);
                 Object.assign(this.supervisor, childCalls);
                 this.supervisorMethods = [...SUPERVISOR_METHODS, 'stdout', 'stderr', ...Object.keys(childCalls)];
+                // The WASI process layer follows children in background pumps. A
+                // synchronous long-poll would block the parent from writing stdin.
+                // Its own fd 0 still has to answer on a non-parking wasm stack.
+                this.asynchronousMethods = Object.keys(childCalls).filter(method => method !== 'cpReadStdin');
             }
         }
         this.synchronous = spec.syscalls?.vfs.synchronous;
@@ -199,7 +205,11 @@ class RealmFacet {
             tag: this.spec.tag,
             parking: engineParks(),
             preamble: this.spec.preamble,
-            supervisor: this.supervisor ? { methods: this.supervisorMethods, synchronous: this.synchronous ? SYNCHRONOUS_METHODS : null } : undefined,
+            supervisor: this.supervisor ? {
+                methods: this.supervisorMethods,
+                synchronous: this.synchronous ? SYNCHRONOUS_METHODS : null,
+                asynchronous: this.asynchronousMethods,
+            } : undefined,
             egress: this.network.egress !== undefined,
         };
         let post = () => false;
