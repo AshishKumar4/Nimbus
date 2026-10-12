@@ -60,7 +60,7 @@ import {
   type ResidentFilesystemStats,
   type ResidentNamespace,
 } from '@nimbus-sh/core/runtime/wasi/resident-filesystem.js';
-import { CRED_USER, type RuntimeFsBridge, type RuntimeVfsDirEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_SESSION_USER, type RuntimeFsBridge, type RuntimeVfsDirEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { ProcessFsSession } from '@nimbus-sh/core/_shared/process-fs-client.js';
 import { sqlJournal, type JournalSql } from '@nimbus-sh/core/_shared/process-fs-journal.js';
 import type { WaveFence } from '@nimbus-sh/platform/wave-writer.js';
@@ -191,7 +191,7 @@ const __WASI_STREAM_DEV = 1n << 32n;
 // before init answers EBADF against an empty descriptor table, which is true,
 // rather than trapping the guest.
 function __wasiEmptyFS(): WasiFsState {
-  return { root: '', umask: CRED_USER.umask, residentFileCap: WASI_RESIDENT_FILE_CAP_BYTES, cred: null, pid: 0 };
+  return { root: '', umask: CRED_SESSION_USER.umask, residentFileCap: WASI_RESIDENT_FILE_CAP_BYTES, cred: null, pid: 0 };
 }
 let __wasiFS: WasiFsState = __wasiEmptyFS();
 let __wasiPreopens: Array<{ fd: number; wasiPath: string; vfsPath: string }> = [];
@@ -451,7 +451,7 @@ export function __wasiInitFS(opts: WasiInitOptions): void {
   __wasiProcessGone = null;
   __wasiFS = {
     root: __wasiCanonicalize(opts.root || ''),
-    umask: (opts.cred?.umask ?? CRED_USER.umask) & 0o777,
+    umask: (opts.cred?.umask ?? CRED_SESSION_USER.umask) & 0o777,
     // Largest regular file the codec answers from a resident copy.
     residentFileCap: Number(opts.residentFileCap ?? WASI_RESIDENT_FILE_CAP_BYTES),
     cred: opts.cred ? { uid: Number(opts.cred.uid), gid: Number(opts.cred.gid), groups: [...(opts.cred.groups || [])].map(Number) } : null,
