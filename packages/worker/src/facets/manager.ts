@@ -4639,6 +4639,7 @@ async function _buildPrefetchBundle(
   room -= own.bytes;
   const learnedOnly = new Set(learned.filter((path) => !observedReads?.has(path) && !observedPaths.has(path)));
   await addObservedReads(vfs, learnedOnly, bundle, learnedPaths, budgetState, Math.max(0, room), pacer);
+  phase('e.observed');
   for (const path of observedPaths) learnedPaths.delete(path);
   await paceAfterPass();
 
@@ -4648,6 +4649,7 @@ async function _buildPrefetchBundle(
   //    static require closure, which is correctness-critical.
   const independentBeforeGroups = new Set(Object.keys(bundle));
   const greedy = (await greedyAddMainEntries(vfs, cwd, bundle, budgetState, prefetch.entryPaths ?? closurePaths, { maxBundleBytes, pacer, conditions }));
+  phase('e.greedy');
   // Each landed learned root's closure (PrefetchResult.units) is one group
   // beside the greedy pass's, kept or evicted whole: a dependency evicted on
   // its own leaves a root in the map that cannot load.
@@ -4670,6 +4672,7 @@ async function _buildPrefetchBundle(
   //      tldts, parse5, lookup-table packages, mime-db, etc.) ENOENT
   //      at facet runtime even though the file is on VFS-disk + in
   const assetAdd = (await addStaticReadFileAssets(vfs, cwd, bundle, budgetState));
+  phase('e.assets');
   void assetAdd;
   await paceAfterPass();
 
@@ -4681,6 +4684,7 @@ async function _buildPrefetchBundle(
   //      (dotfiles, no-extension sentinels, "digest/hash/version/sha/md5"
   //      shapes). Motivating case: ts-jest's `.ts-jest-digest`. See
   const dotAdd = (await addStaticReadFileDotfilesAndCompiled(vfs, cwd, bundle, budgetState));
+  phase('e.dotfiles');
   void dotAdd;
   await paceAfterPass();
 
@@ -4693,6 +4697,7 @@ async function _buildPrefetchBundle(
   //      as data, etc.) without needing a per-pkg whitelist.
   //      No-op when entry isn't inside node_modules.
   const binSiblingAdd = (await addBinTargetSiblings(vfs, scriptPath, bundle, budgetState, bundleProfile));
+  phase('e.binSiblings');
   await paceAfterPass();
 
   // 2.34 project-data snapshot: sync Node fs cannot await the
@@ -4701,6 +4706,7 @@ async function _buildPrefetchBundle(
   // and Nimbus cache directories. Async fs still uses live supervisor
   // reads and child-process staleness fallback.
   const cwdProjectAdd = (await addCwdProjectFiles(vfs, cwd, bundle, budgetState));
+  phase('e.cwdProject');
   void cwdProjectAdd;
   await paceAfterPass();
 
@@ -4729,6 +4735,7 @@ async function _buildPrefetchBundle(
   //   - Skip paths under known-untrusted prefixes (`/proc`, `/sys`,
   //     `/dev` — we don't have these mounts; they'd never resolve).
   const absScanAdd = (await addEntryAbsPathReads(vfs, entryCode || '', bundle, budgetState));
+  phase('e.absPaths');
   void absScanAdd;
   await paceAfterPass();
 
@@ -4915,6 +4922,8 @@ async function _buildPrefetchBundle(
       codeOnly.delete(k);
       size.remove(k);
     }
+    // How many it evicted, beside the phases' times (exec telemetry).
+    phases.evicted = evicted.length;
     if (evicted.length > 0) {
       truncated = true;
       console.warn(
