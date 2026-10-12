@@ -1004,15 +1004,15 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
         for (const p of parts) { combined.set(p, off); off += p.length; }
       }
       // The output's reader gone (a pipe's: the relay's EPIPE) is the write's EPIPE, as a native write's is.
-      const brokenPipe = (error: unknown): number => {
-        if ((error as { code?: unknown } | null)?.code === 'EPIPE') return __WASI_EPIPE;
+      const brokenPipe = (error: unknown): Errno => {
+        if ((error as { code?: unknown } | null)?.code === 'EPIPE') return __WASI_EPIPE as Errno;
         throw error;
       };
       let taken: void | Promise<void>;
       try { taken = appendStream(stream, combined); } catch (error) { return brokenPipe(error); }
       writeU32LE(nwrittenPtr, total);
       // A sink that pushes back hands a promise; any other value it returns is no answer.
-      return taken && typeof taken.then === 'function' ? Promise.resolve(taken).then(() => __WASI_ESUCCESS, brokenPipe) : __WASI_ESUCCESS;
+      return taken && typeof taken.then === 'function' ? Promise.resolve(taken).then((): Errno => __WASI_ESUCCESS, brokenPipe) : __WASI_ESUCCESS;
     },
 
     fd_seek(fd, _offsetArg, _whence, _newOffsetPtr) {
