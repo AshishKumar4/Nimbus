@@ -3564,7 +3564,11 @@ export class SqliteVFS {
     if (parent === '') return;
     const parentInode = this.inodes.get(parent);
     if (!parentInode || (parentInode.mode & 0o1000) === 0) return;
-    if (cred.uid !== parentInode.uid && cred.uid !== inode.uid) {
+    this.checkStickyParent(parentInode, inode, cred, path);
+  }
+
+  private checkStickyParent(parent: INode, inode: INode, cred: VfsCred, path: string): void {
+    if ((parent.mode & 0o1000) !== 0 && cred.uid !== 0 && cred.uid !== parent.uid && cred.uid !== inode.uid) {
       throw vfsKeyError('EPERM', normalizeVfsPath(path));
     }
   }
@@ -8558,9 +8562,7 @@ export class SqliteVFS {
       writable ??= parent;
     }
     if (writable === undefined) this.checkRootWritable(key.value, cred);
-    else if ((writable.mode & 0o1000) !== 0 && cred.uid !== 0 && cred.uid !== writable.uid && cred.uid !== inode.uid) {
-      throw vfsKeyError('EPERM', key.value);
-    }
+    else this.checkStickyParent(writable, inode, cred, key.value);
   }
 
   private normalizeBatchInode(
