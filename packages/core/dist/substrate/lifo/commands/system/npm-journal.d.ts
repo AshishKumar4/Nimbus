@@ -56,7 +56,12 @@ export declare class InstallJournal {
     commit(stderr: CommandOutputStream): Promise<void>;
     private write;
     private removeRetired;
-    /** Every path under `dir`, relative to it ('' for `dir` itself); a link is not followed. */
+    /**
+     * Every path under `path`, relative to it ('' for `path` itself); a link
+     * is not followed. Only a directory is listed, and a listing that fails,
+     * or names what is not there, throws: an incomplete listing is no
+     * evidence of what a rename moved.
+     */
     private pathsUnder;
     /**
      * What a rename from `source` to `destination` whose outcome was not

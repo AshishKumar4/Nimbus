@@ -13,6 +13,7 @@ export interface PackageLockEntry {
     dev?: unknown;
     optional?: unknown;
     devOptional?: unknown;
+    peer?: unknown;
     extraneous?: unknown;
     dependencies?: unknown;
     devDependencies?: unknown;

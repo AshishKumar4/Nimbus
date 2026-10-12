@@ -76,9 +76,10 @@ export async function planTree(roots, installed, host, options = {}) {
     const lockFlags = options.locked === 'trusted' && !builder.mutated;
     const lockOf = (each) => (each.payload.kind === 'installed' && lockFlags ? each.payload.lock : undefined);
     const flagsOf = (each) => lockOf(each) ?? { dev: !prod.has(each), optional: !required.has(each), devOptional: !prodRequired.has(each), peer: !nonPeer.has(each) };
+    // A failure is fatal unless the package is optional (reify's _handleOptionalFailure): devOptional only joins the --omit filter.
     const isRequired = (each) => {
         const lock = lockOf(each);
-        return lock ? !lock.optional && !lock.devOptional : required.has(each);
+        return lock ? lock.optional !== true : required.has(each);
     };
     // What the project does not reach is extraneous: it goes from a tree
     // installed before, but a lock's tree npm ci installs as it is.
