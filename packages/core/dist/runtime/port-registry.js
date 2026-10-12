@@ -75,20 +75,47 @@ const DECODABLE_CONTENT_CODINGS = new Map([
  * target sends a different number of bytes, as HTTP framing would. A HEAD
  * answer's length describes the GET it stands for, not the body it has none
  * of, so it is not held to it.
+ *
+ * The pipe into the last stage is explicit, so its settlement is when the
+ * body is done with (`owner.settle`): its end, its error, or `owner.signal`
+ * aborting it.
  */
-function relayRpcBody(response, method, gated) {
-    if (response.body === null)
+export function relayRpcBody(response, method, owner, gated = null) {
+    if (response.body === null) {
+        owner.settle();
         return response;
+    }
     const declared = method === 'HEAD' ? null : response.headers.get('Content-Length');
     // RFC 9110 §8.6: 1*DIGIT. Joined duplicates ("5, 5") are not one length.
     const length = declared !== null && /^\d+$/.test(declared) ? Number(declared) : NaN;
-    const body = Number.isSafeInteger(length)
-        ? (gated === null ? response.body : response.body.pipeThrough(gated)).pipeThrough(new FixedLengthStream(length))
-        : response.body.pipeThrough(gated ?? new TransformStream());
-    return new Response(body, {
+    const last = Number.isSafeInteger(length) ? new FixedLengthStream(length) : gated ?? abortableStage(owner.signal);
+    settleWith(owner, last === gated || gated === null ? response.body : response.body.pipeThrough(gated), last.writable);
+    return new Response(last.readable, {
         status: response.status,
         statusText: response.statusText,
         headers: response.headers,
+    });
+}
+/** One response's scope (RouteableFacetTarget), and the owner whose relay settles it. */
+export function responseScope(signal) {
+    let settle = () => { };
+    const settled = new Promise((resolve) => { settle = resolve; });
+    // A caller that leaves is done with the body, whatever its relay still waits on.
+    signal.addEventListener('abort', settle, { once: true });
+    return { scope: { signal, settled }, owner: { signal, settle } };
+}
+function settleWith(owner, source, last) {
+    void source.pipeTo(last, { signal: owner.signal }).then(owner.settle, owner.settle);
+}
+/**
+ * A JavaScript stage of the relay, errored when `signal` aborts. A pipe waits
+ * on a stage's read or write without looking at its signal, so this is what
+ * ends a pipe whose client is gone while its source is quiet or its sink full.
+ */
+function abortableStage(signal, transformer = {}) {
+    return new TransformStream({
+        ...transformer,
+        start: (controller) => { signal.addEventListener('abort', () => controller.error(signal.reason), { once: true }); },
     });
 }
 /**
@@ -96,18 +123,19 @@ function relayRpcBody(response, method, gated) {
  * its output is (ProcessOutput.releaseOutput): what it wrote while answering
  * is published before the piece after it, or its end, is seen.
  */
-function releasedBody(output, pid) {
-    return new TransformStream({
+function releasedBody(output, pid, signal) {
+    return abortableStage(signal, {
         transform: (chunk, controller) => output.releaseOutput(pid, () => controller.enqueue(chunk)),
         flush: () => output.releaseOutput(pid, () => { }),
     });
 }
-function decodeContentCoding(response, port, method, gated) {
+function decodeContentCoding(response, port, method, owner, gated) {
     const coding = response.headers.get('Content-Encoding')?.trim().toLowerCase();
     if (!coding || coding === 'identity' || response.body === null)
-        return relayRpcBody(response, method, gated);
+        return relayRpcBody(response, method, owner, gated);
     const format = DECODABLE_CONTENT_CODINGS.get(coding);
     if (!format) {
+        owner.settle();
         void response.body.cancel().catch(() => { });
         return new Response(JSON.stringify({
             error: `port proxy: target answered Content-Encoding "${coding}", which this hop cannot decode`,
@@ -118,8 +146,9 @@ function decodeContentCoding(response, port, method, gated) {
     headers.delete('Content-Encoding');
     // The decoded body has a different length; the Response re-derives it.
     headers.delete('Content-Length');
-    const body = gated === null ? response.body : response.body.pipeThrough(gated);
-    return new Response(body.pipeThrough(new DecompressionStream(format)), {
+    const decoder = new DecompressionStream(format);
+    settleWith(owner, gated === null ? response.body : response.body.pipeThrough(gated), decoder.writable);
+    return new Response(decoder.readable, {
         status: response.status,
         statusText: response.statusText,
         headers,
@@ -427,6 +456,9 @@ export class PortRegistry {
                 headers: { 'Content-Type': 'application/json' },
             });
         }
+        // Settled once the client is done with the answer, or at once when nothing was relayed.
+        const { scope, owner } = responseScope(request.signal);
+        let relayed = false;
         try {
             const outerUrl = new URL(request.url);
             // Preserve query; replace the pathname with the inner path so
@@ -488,7 +520,7 @@ export class PortRegistry {
             if (!handler) {
                 return new Response('Port target does not expose a WebSocket fetch route', { status: 501 });
             }
-            const response = await handler(forwarded);
+            const response = await handler(forwarded, scope);
             const output = this.output;
             // What it wrote before answering is published before anyone sees the
             // answer; a socket the answer hands over carries what nothing sees.
@@ -521,7 +553,10 @@ export class PortRegistry {
             // undone. We do NOT inject Access-Control-Allow-Origin — a port proxy
             // forwards whatever CORS policy the user's HTTP server chose (audit C3
             // discourages gratuitous wildcards on non-static routes).
-            return decodeContentCoding(response, port, request.method, output === null || response.body === null ? null : releasedBody(output, entry.pid));
+            const gate = output === null || response.body === null ? null : releasedBody(output, entry.pid, scope.signal);
+            const answer = decodeContentCoding(response, port, request.method, owner, gate);
+            relayed = true;
+            return answer;
         }
         catch (error) {
             // Server-side triage — users see only the 502 body, operators
@@ -531,6 +566,10 @@ export class PortRegistry {
                 status: 502,
                 headers: { 'Content-Type': 'application/json' },
             });
+        }
+        finally {
+            if (!relayed)
+                owner.settle();
         }
     }
     get stats() {
@@ -577,7 +616,9 @@ function routeableFacetTarget(value) {
     // A `fetch` target already has fetch semantics, so it serves both.
     const fetchMethod = Reflect.get(value, 'fetch');
     if (typeof fetchMethod === 'function') {
-        const fetch = fetchMethod.bind(value);
+        const bound = fetchMethod.bind(value);
+        // Its second parameter is a RequestInit, never a scope.
+        const fetch = (request) => bound(request);
         return { handleHttpRequest: fetch, handleWebSocketRequest: fetch };
     }
     const httpMethod = Reflect.get(value, 'handleHttpRequest');

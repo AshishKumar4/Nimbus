@@ -526,8 +526,6 @@ function workspaceShellIdentity(processes, shellProcess, getShell) {
         const stopped = processes.holdWork(child.pid, undefined, parent.signal);
         let exitCode = 1;
         try {
-            if (stopped.ready)
-                await stopped.ready;
             stopped.signal.throwIfAborted();
             // The child inherits its parent's descriptors, environment and directory.
             const ended = await getShell().runProgram(argv, {

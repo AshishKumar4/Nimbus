@@ -355,8 +355,6 @@ export class Shell {
         const stopped = identity.holdWork?.(identity.pid, (reason) => abortController.abort(reason), abortController.signal);
         const workSignal = stopped?.signal ?? abortController.signal;
         try {
-            if (stopped?.ready)
-                await stopped.ready;
             workSignal.throwIfAborted();
             const exitCode = await this.interpreter.executeLine(cmd, options?.terminalStdin, {
                 runExitTrap: options?.runExitTrap === true,
@@ -1072,8 +1070,6 @@ export class Shell {
         const stopped = identity.holdWork?.(identity.pid, (reason) => lineAbort.abort(reason), lineAbort.signal);
         const workSignal = stopped?.signal ?? lineAbort.signal;
         try {
-            if (stopped?.ready)
-                await stopped.ready;
             workSignal.throwIfAborted();
             // Saved beside the line, which does not wait for it: a reader's recall
             // the save meets (core README, process model) costs the line nothing.

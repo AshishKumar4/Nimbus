@@ -4,6 +4,9 @@
   "name": "nimbus-dev",
   "main": "src/index.ts",
   "compatibility_date": "2026-09-26",
+  "compatibility_flags": [
+    "enable_request_signal"
+  ],
   "limits": {
     "cpu_ms": 300000,
     "subrequests": 10000000

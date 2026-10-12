@@ -281,8 +281,6 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
             // It runs here, on the child's own descriptors: a kill stops it.
             const stopped = self.processes.holdWork(pid);
             try {
-                if (stopped.ready)
-                    await stopped.ready;
                 stopped.signal.throwIfAborted();
                 return (await runBuiltin(cmd, name, args, processIo(pid, env, cwd, stdin, hooks, stopped.signal))).status;
             }
@@ -355,8 +353,6 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
         const stopped = self.processes.holdWork(child.pid, undefined, parent.signal);
         let exitCode = 1;
         try {
-            if (stopped.ready)
-                await stopped.ready;
             stopped.signal.throwIfAborted();
             const ended = await runBuiltin(cmd, name, args, { ...parent, pid: child.pid, signal: stopped.signal });
             exitCode = ended.status;

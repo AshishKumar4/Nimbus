@@ -1,5 +1,7 @@
 export const HOST_WATCH_HEADER = 'x-nimbus-host-watch';
 export const HOST_INCARNATION_HEADER = 'x-nimbus-host-incarnation';
+/** A data request's per-open capability; with the pinned incarnation, it admits the request at the leaf. */
+export const HOST_REQUEST_HEADER = 'x-nimbus-host-request';
 export const HOST_WATCH_MODULE = '__nimbus_host_watch.js';
 export class HostActivity {
     observations = new Set();
@@ -85,11 +87,10 @@ export class HostActivity {
                 await close();
                 throw new Error('Nimbus: the process host did not validate its incarnation');
             }
-            if (observation.incarnation !== undefined && observation.incarnation !== incarnation) {
+            if (incarnation !== await observation.incarnation) {
                 await close();
                 throw new Error('Nimbus: the process host restarted without its process');
             }
-            observation.incarnation = incarnation;
             if (socket) {
                 const cancel = () => socket.close(1000, 'watch released');
                 const ended = () => {
@@ -153,44 +154,54 @@ export function hostActivity(host) {
     }
     return activity;
 }
-/** Target validation and response work share one lease through native body completion. */
-export async function hostResponse(ctx, observation, request, dispatch) {
-    const lease = observation.acquire(request.signal);
-    try {
-        await lease.ready;
-        request.signal.throwIfAborted();
-        const response = await dispatch();
-        // An upgrade transfers native socket ownership to its caller at the handshake.
-        if (response.webSocket || response.body === null) {
-            lease.release();
-            return response;
-        }
-        const { readable, writable } = new TransformStream();
-        ctx.waitUntil(response.body.pipeTo(writable, { signal: request.signal }).finally(lease.release).catch(() => { }));
-        return new Response(readable, { status: response.status, statusText: response.statusText, headers: response.headers });
-    }
-    catch (error) {
-        lease.release();
-        throw error;
-    }
-}
-/** One native fetch endpoint, outside the guest's HTTP handler, on every resident class. */
+/**
+ * One native fetch endpoint, outside the guest's HTTP handler, on every
+ * resident class, and the admission of both data entrypoints. A watch reports
+ * this instance's incarnation; a data request runs only with the per-open
+ * capability and the incarnation its host pinned at open, so an instance the
+ * platform put in the original's place refuses it before any guest code runs
+ * (its constructor and module scope still run: no subclass precedes them).
+ * The refusal carries the capability, which no guest answer can.
+ */
 export function observeResidentConfig(config, capability) {
     const modules = config.modules;
     const entry = HOST_WATCH_MODULE;
     if (Object.hasOwn(modules, entry))
         throw new Error('resident worker uses a reserved module name');
+    const [watch, request, incarnation, key] = [HOST_WATCH_HEADER, HOST_REQUEST_HEADER, HOST_INCARNATION_HEADER, capability].map((value) => JSON.stringify(value));
     modules[entry] = `import { NimbusProcess as Base } from ${JSON.stringify('./' + config.mainModule)};
 export * from ${JSON.stringify('./' + config.mainModule)};
 export class NimbusProcess extends Base {
   #incarnation = crypto.randomUUID();
   #watchers = new Set();
+  // A guest's fetch may hand its request on to its own handleHttpRequest.
+  #admitted = new WeakSet();
+  #admit(request) {
+    if (this.#admitted.has(request)) return request;
+    if (request.headers.get(${request}) !== ${key}) return new Response('Not found', { status: 404 });
+    if (request.headers.get(${incarnation}) !== this.#incarnation) {
+      return new Response('the instance that ran this process was replaced', { status: 410, headers: { [${request}]: ${key} } });
+    }
+    const headers = new Headers(request.headers);
+    headers.delete(${request});
+    headers.delete(${incarnation});
+    const admitted = new Request(request, { headers });
+    this.#admitted.add(admitted);
+    return admitted;
+  }
+  handleHttpRequest(request) {
+    const admitted = this.#admit(request);
+    return admitted instanceof Request ? super.handleHttpRequest(admitted) : admitted;
+  }
   fetch(request) {
-    if (request.headers.get(${JSON.stringify(HOST_WATCH_HEADER)}) !== ${JSON.stringify(capability)}) return super.fetch(request);
+    if (request.headers.get(${watch}) !== ${key}) {
+      const admitted = this.#admit(request);
+      return admitted instanceof Request ? super.fetch(admitted) : admitted;
+    }
     const watchers = this.#watchers;
     let current;
     const body = new ReadableStream({ start(controller) { current = controller; watchers.add(controller); }, cancel() { watchers.delete(current); } });
-    return new Response(body, {headers:{${JSON.stringify(HOST_INCARNATION_HEADER)}:this.#incarnation}});
+    return new Response(body, { headers: { [${incarnation}]: this.#incarnation } });
   }
 }`;
     config.mainModule = entry;

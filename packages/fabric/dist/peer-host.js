@@ -13,8 +13,10 @@
  */
 import { ISOLATE_NETWORK, workspaceNetwork, } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
+import { responseScope } from '@nimbus-sh/core/runtime/port-registry.js';
 import { isWebSocketUpgradeRequest } from '@nimbus-sh/core/_shared/websocket-upgrade.js';
 import { z } from 'zod/v4';
+import { ProcessHostLost } from './process-fabric.js';
 import { bindingSupervisor, supervisorBindingProps } from './supervisor-props.js';
 import { withResolvers } from './turn-budget.js';
 import { processes, abortFacet, deleteFacetStorage } from './workerd-facet-host.js';
@@ -309,9 +311,11 @@ export class PeerHost {
      * the leg carries the parts and rebuilds the object on each side: no
      * buffering, no size ceiling, and an SSE or chunked body still flows live.
      *
-     * The resident facade re-pipes its response through this host's native
-     * stream while it owns the work. Its body is already this isolate's and
-     * can cross the RPC boundary without another pipe.
+     * The response body is re-piped through an identity stream owned by THIS
+     * isolate before it is returned, for the same reason the parts exist at all:
+     * what leaves here must not be an object the loaded worker owns. That pipe's
+     * settlement is when the process's work for the response is done, and the
+     * coordinator ends it through `cancel` when its caller abandons the response.
      */
     async routeHttp(workerKey, wire) {
         return this.answer(workerKey, async () => {
@@ -327,12 +331,23 @@ export class PeerHost {
                 init.body = wire.body;
                 init.duplex = 'half';
             }
-            const response = await facet.handleHttpRequest(new Request(wire.url, init));
+            const abandoned = new AbortController();
+            const { scope, owner } = responseScope(abandoned.signal);
+            const response = await facet.handleHttpRequest(new Request(wire.url, init), scope);
+            let body = null;
+            if (response.body) {
+                const { readable, writable } = new IdentityTransformStream();
+                this.ctx.waitUntil(response.body.pipeTo(writable, { signal: abandoned.signal }).catch(() => { }).finally(owner.settle));
+                body = readable;
+            }
+            else
+                owner.settle();
             return {
                 status: response.status,
                 statusText: response.statusText,
                 headers: headerPairs(response.headers),
-                body: response.body,
+                body,
+                cancel: () => abandoned.abort(new DOMException('The response was abandoned', 'AbortError')),
             };
         });
     }
@@ -471,8 +486,11 @@ export class PeerHost {
         }
         catch (error) {
             const failure = this.records.get(key)?.failure;
+            // A replaced leaf's refusal (ProcessHostLost) names its cause, which the coordinator wraps again.
             if (failure || error instanceof LostHostedProcess || isHostReset(error))
                 return { hostLost: errorText(failure ?? error) };
+            if (error instanceof ProcessHostLost)
+                return { hostLost: errorText(error.cause) };
             throw error;
         }
     }

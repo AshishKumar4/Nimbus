@@ -28,7 +28,7 @@
  *   so a compressed body is decoded here. See `decodeContentCoding`.
  */
 import { type DocumentPolicy } from './document-policy.js';
-import type { RouteableFacetTarget } from './os-contracts.js';
+import type { ResponseScope, RouteableFacetTarget } from './os-contracts.js';
 import type { ProcessOutput } from './output-gate.js';
 export interface PortEntry {
     port: number;
@@ -53,6 +53,56 @@ export interface PortEntry {
      */
     document: DocumentPolicy | null;
 }
+/**
+ * Hand back a port target's response with its bytes and its headers in
+ * agreement.
+ *
+ * A `Response` a facet builds always holds an identity body. The runtime
+ * treats the bytes a `Response` is constructed from as unencoded and runs its
+ * own content negotiation on the way out: it drops a `Content-Encoding` the
+ * client did not ask for, and compresses again when the client did. Either
+ * way a guest server's `Content-Encoding` is a label with nothing behind it,
+ * and the browser renders compressed bytes as text.
+ *
+ * The forwarded request asks the target for `identity`, so this decode covers
+ * the server that compresses whatever the client said. A coding with no
+ * decoder answers 502: an honest failure beats a page of mojibake.
+ */
+/**
+ * Hand a body that arrived over Workers RPC to the HTTP layer through a stream
+ * this isolate owns. Measured on workerd 1.20260918.1: a facet's Response built
+ * from bytes (`Response.json`, a string, a Uint8Array) and returned as-is ends
+ * with the facet's side of the RPC stream failing "disconnected prematurely"
+ * after every byte has arrived, which marks the request as an exception and,
+ * under a compressing edge, truncates the body; a body read by this isolate
+ * closes cleanly. A body the facet streamed (`new Response(readable)`) was
+ * never affected, and rides the same pipe at no cost.
+ *
+ * The pipe keeps the target's `Content-Length`. The runtime sends a body built
+ * from any stream chunked, dropping the header, except a `FixedLengthStream`,
+ * whose length becomes the `Content-Length`:
+ * https://developers.cloudflare.com/workers/runtime-apis/streams/transformstream/#fixedlengthstream
+ * A range reader sizes its buffer from it and a download reports progress by
+ * it, so a declared length is relayed through one. It errors the body if the
+ * target sends a different number of bytes, as HTTP framing would. A HEAD
+ * answer's length describes the GET it stands for, not the body it has none
+ * of, so it is not held to it.
+ *
+ * The pipe into the last stage is explicit, so its settlement is when the
+ * body is done with (`owner.settle`): its end, its error, or `owner.signal`
+ * aborting it.
+ */
+export declare function relayRpcBody(response: Response, method: string, owner: BodyOwner, gated?: TransformStream<Uint8Array, Uint8Array> | null): Response;
+/** Who owns work for a relayed body: it ends with `signal`, and hears once the relay settles. */
+export interface BodyOwner {
+    readonly signal: AbortSignal;
+    settle(): void;
+}
+/** One response's scope (RouteableFacetTarget), and the owner whose relay settles it. */
+export declare function responseScope(signal: AbortSignal): {
+    scope: ResponseScope;
+    owner: BodyOwner;
+};
 export declare function createPortCapability(): string;
 /**
  * The header a forwarded request carries its process's ACQUIRE in. An

@@ -76,7 +76,7 @@
 import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { SupervisorBindingProps } from './supervisor-props.js';
 import { z } from 'zod/v4';
-import type { RouteableFacetTarget } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { ResponseScope, RouteableFacetTarget } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { ProcessFsJournalSource } from '@nimbus-sh/core/_shared/process-fs-journal.js';
 import type { ServiceStub, WorkerCode } from './vendor/types.js';
 /**
@@ -361,8 +361,8 @@ export interface HostedProcess {
      * Both start contracts and both substrates report through this one signal.
      */
     readonly lost: Promise<never>;
-    /** Inbound HTTP for the process's registered ports. */
-    handleHttpRequest(request: Request): Promise<Response>;
+    /** Inbound HTTP for the process's registered ports. The host owns work for the response for `scope`. */
+    handleHttpRequest(request: Request, scope: ResponseScope): Promise<Response>;
     /**
      * Inbound WebSocket upgrade, on fetch semantics for every hop. A 101
      * Response owns a live socket, which the parts-based RPC path cannot carry.

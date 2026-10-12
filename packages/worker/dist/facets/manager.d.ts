@@ -26,7 +26,7 @@ import { type NodeFacetSources } from '../runtime/node-shims-artifact.js';
 import { type ModuleSource, type ImmutableModuleSource } from '@nimbus-sh/platform/module-source.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { NimbusFilesystemAuthority, RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
-import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
+import { type PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { type PortVisibility } from '../session/port-capability.js';
 import { type PreloadModuleRoot, type RequiredModuleRoot } from '@nimbus-sh/core/runtime/require-resolver.js';
 import { type NodeLaunch } from '@nimbus-sh/core/runtime/node-cli.js';

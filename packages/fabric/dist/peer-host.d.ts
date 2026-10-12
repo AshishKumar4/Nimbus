@@ -13,7 +13,7 @@
  */
 import { type WorkspaceEgress } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { z } from 'zod/v4';
-import type { ResidentBootSpec } from './process-fabric.js';
+import { type ResidentBootSpec } from './process-fabric.js';
 export declare function isolateToken(): string;
 /**
  * Options the coordinator hands a hosting peer. Parsed on the peer, because a
@@ -57,6 +57,8 @@ export interface HostedHttpResponse {
     statusText: string;
     headers: [string, string][];
     body: ReadableStream | null;
+    /** Ends this host's relay of `body`, for a caller that abandons the response. */
+    cancel(): void;
 }
 export type HostedReply<T> = T | {
     hostLost: string;
@@ -149,9 +151,11 @@ export declare class PeerHost {
      * the leg carries the parts and rebuilds the object on each side: no
      * buffering, no size ceiling, and an SSE or chunked body still flows live.
      *
-     * The resident facade re-pipes its response through this host's native
-     * stream while it owns the work. Its body is already this isolate's and
-     * can cross the RPC boundary without another pipe.
+     * The response body is re-piped through an identity stream owned by THIS
+     * isolate before it is returned, for the same reason the parts exist at all:
+     * what leaves here must not be an object the loaded worker owns. That pipe's
+     * settlement is when the process's work for the response is done, and the
+     * coordinator ends it through `cancel` when its caller abandons the response.
      */
     routeHttp(workerKey: string, wire: HostedHttpRequest): Promise<HostedReply<HostedHttpResponse>>;
     /**

@@ -27,10 +27,9 @@ import type { OutputGate, ProcessOutput } from './output-gate.js';
 import { type SignalAbortReason } from '../substrate/lifo/shell/signals.js';
 import type { VfsCred } from './os-contracts.js';
 export interface ProcessWorkObservation {
-    readonly ready?: Promise<void>;
     release(): void;
 }
-export type HeldProcessWork = (() => void) & Pick<ProcessWorkObservation, 'ready'> & {
+export type HeldProcessWork = (() => void) & {
     readonly signal?: AbortSignal;
 };
 export interface ProcessSpawnOptions {
