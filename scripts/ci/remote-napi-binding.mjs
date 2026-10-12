@@ -23,10 +23,10 @@
 // either way the archive is saved and its path printed. Then commit them,
 // and run scripts/ci/remote-build.mjs for the dist fixpoint.
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { NIMBUS_STATE } from './lib/state-dir.mjs';
 import { mapOnArmada } from './lib/armada.mjs';
+import { extract, FILES_MARK, keepArchive, keptAs, splitArchive, writeRefusal } from './lib/remote-artifacts.mjs';
 
 const git = (args) => {
   const done = spawnSync('git', args, { encoding: 'utf8' });
@@ -84,41 +84,27 @@ const script = String.raw`
   (cd packages/worker && NIMBUS_NAPI_WASM_ARTIFACTS="$W/out" bun scripts/bundle-napi-wasm.mjs)
   echo ---PROVENANCE---
   cat "$W/out/${name}/${version}/provenance.json"
-  echo ---FILES---
+  echo ${FILES_MARK}
   tar cf - packages/worker/src/napi-wasm-artifacts.generated.ts packages/worker/public/_assets/napi-wasm/loader ${dir} -C "$W/out" ${name}/${version} | xz -9 | base64 -w0
   echo
 } > {out} 2>&1`;
 const r = await mapOnArmada({ repo, sha, files: [], setup, items: [1], label: `napi-wasm ${key} of ${sha.slice(0, 12)}`, timeout: 3600, command: ['bash', '-c', script] });
-const text = r.outputs?.[0] ?? r.outcomes?.[0]?.tail ?? '';
-const [log, rest = ''] = text.split('---PROVENANCE---');
-const [provenance, files = ''] = rest.split('---FILES---');
+const { log: rest, archive } = splitArchive(r.outputs?.[0] ?? r.outcomes?.[0]?.tail ?? '');
+const [log, provenance = ''] = rest.split('---PROVENANCE---');
 console.log(log.trim());
-if (r.outcomes?.[0]?.exitCode !== 0 || !files.trim()) {
+if (r.outcomes?.[0]?.exitCode !== 0 || archive === null) {
   console.error(`remote-napi-binding: the build failed on armada (job ${r.jobId}, exit ${r.outcomes?.[0]?.exitCode})`);
   process.exit(1);
 }
 console.log(provenance.trim());
-const archive = Buffer.from(files.trim(), 'base64');
-const saveDir = join(NIMBUS_STATE, 'remote-napi-binding');
-mkdirSync(saveDir, { recursive: true });
-const saved = join(saveDir, `${new Date().toISOString().replace(/[-:.]/g, '')}-${key}-${sha.slice(0, 12)}.tar.xz`);
-writeFileSync(saved, archive);
+const saved = `${keptAs('remote-napi-binding', `${key}-${sha.slice(0, 12)}`)}.tar.xz`;
 // What bundle-napi-wasm staged; the build's own out tree (its pruned
 // lockfile) stays in the archive, out of the Worker's static assets.
-const listed = spawnSync('tar', ['tJf', saved], { encoding: 'utf8' });
-if (listed.status !== 0) throw new Error(`tar failed: ${listed.stderr}`);
-const members = listed.stdout.split('\n').filter((member) => member.startsWith('packages/') && !member.endsWith('/'));
-const head = git(['-C', repo, 'rev-parse', 'HEAD']);
-// Members are repository-relative, whatever directory this runs from.
-const changed = members.filter((member) => git(['-C', repo, 'status', '--porcelain', '--', member]) !== '');
-const refusal = head !== sha ? `${sha.slice(0, 12)} is not this worktree's HEAD`
-  : existsSync(join(repo, dir)) ? `${dir} exists`
-    : changed.length > 0 ? `these have changes of their own: ${changed.join(', ')}`
-      : null;
+const members = keepArchive(saved, archive).filter((member) => member.startsWith('packages/'));
+const refusal = existsSync(join(repo, dir)) ? `${dir} exists` : writeRefusal(repo, sha, members);
 if (refusal !== null) {
   console.log(`remote-napi-binding: saved ${saved} (job ${r.jobId}); not written: ${refusal}`);
   process.exit(0);
 }
-const unpacked = spawnSync('tar', ['xJf', saved, '-C', repo, ...members], { encoding: 'utf8' });
-if (unpacked.status !== 0) throw new Error(`tar failed: ${unpacked.stderr}`);
+extract(repo, saved, members);
 console.log(`remote-napi-binding: wrote ${dir} (job ${r.jobId}; archive ${saved}). Commit it, then run scripts/ci/remote-build.mjs.`);
