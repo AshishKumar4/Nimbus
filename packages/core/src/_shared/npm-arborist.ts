@@ -1000,7 +1000,9 @@ export async function planTree<P extends TreePackage, I extends TreePackage>(
   for (const each of tree.nodes()) {
     const at = each.location;
     if (required.has(each)) requiredAt.add(at);
-    if (!prod.has(each)) dev.add(at);
+    // A node no prod edge reaches is dev, but a locked one nothing reaches,
+    // whose flags are the lock's (an extraneous entry is installed by ci).
+    if (!prod.has(each) && (reached.has(each) || !options.frozen)) dev.add(at);
     if (each.pkg === null) continue;
     // The host's own packages, under the types it gave them.
     nodes.set(at, each.origin === 'planned' && each.marks.placedFor

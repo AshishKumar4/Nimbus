@@ -357,7 +357,7 @@ function makeInstaller(pkgJson, resultFor) {
   const output = log.join('\n');
 
   assert.ok(result.failed.includes('native-gate'), `the later required chain upgrades the refusal (failed=${JSON.stringify(result.failed)})`);
-  assert.ok(/\[skip\].*native-gate — /.test(output), `the skip line is logged once at refusal time:\n${output}`);
+  assert.ok(!/\[skip\].*native-gate/.test(output), `a required refusal is no skip:\n${output}`);
   assert.ok(/npm ERR! native-gate: Requires a native binding for linux-x64\./.test(output), `the refusal names the package + reason:\n${output}`);
   assert.ok(/npm ERR! install incomplete.*native-gate/.test(output), `the closing line names it:\n${output}`);
   console.log('  caseG: dev-first ancestor, deeper required chain — end-of-walk closure wins');
