@@ -2,6 +2,8 @@
 import assert from 'node:assert/strict';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
+import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
@@ -80,6 +82,16 @@ for (const suffix of ['//f', '/./f']) {
     assert.equal(user.lstat('home/user/l').type, 'symlink');
   });
 }
+
+check('wave dispatch leaves mounted aliases to the namespace', ({ user, engine }) => {
+  const files = new ProcessFiles(engine);
+  files.vfs.mount('/m', new MemoryVFS(USER));
+  user.symlink('/m', 'home/user/alias');
+  for (const path of ['home/user/alias/f', 'home/user/alias//f', 'home/user/alias/./f']) {
+    assert.equal(files.waves.placesHere(user, [path]), false, `${path} belongs to the mount`);
+  }
+  assert.equal(files.waves.placesHere(user, ['home/user/physical/new']), true);
+});
 
 check('linked prefix cache preserves identity, hops and permission', ({ root, user, engine }) => {
   root.mkdir('home/user/other');
