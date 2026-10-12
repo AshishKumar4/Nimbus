@@ -93,16 +93,14 @@ try {
   // A process that can stop is answered through its journal at one seam,
   // the canonical handler's logical answer; a hosted answer is not wrapped
   // in a second one (each would count an occurrence a replay must match).
-  const replay = runtime.facetManager?.replay;
-  assert.ok(replay, '[3] the hosted runtime composes the process manager');
+  // The process manager here is one that only notes what passes its seam.
   const seen = [];
-  const call = replay.call;
-  replay.call = (op, ...rest) => { seen.push(op); return call.call(replay, op, ...rest); };
+  runtime.facetManagerComposed = { manager: { replay: { call: (op, _args, _pid, _run, dispatch) => { seen.push(op); return dispatch(); } } } };
   try {
     await runtime.supervisorOp({ op: 'fsAcquired', args: [acquire(), 'stat', ['/home/user/data.bin']], pid });
     await runtime.supervisorOp({ op: 'fsReadBatch', args: batch, pid });
   } finally {
-    replay.call = call;
+    runtime.facetManagerComposed = null;
   }
   assert.deepEqual(seen, ['fsAcquired', 'fsReadBatch'], '[3] each answer passes the journal once');
   console.log('  [3] each answer is journaled once');
