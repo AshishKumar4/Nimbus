@@ -5,7 +5,10 @@ import type { RegistryCacheEntry } from './registry-record.js';
  * `name` column of `pkg_lockfile` holds, whose primary key predates nesting.
  */
 export interface LockfileEntry {
+    /** The name it installs under (its folder's). */
     name: string;
+    /** The registry package it is (an alias's target): its record's key. '' for rows written before it was kept. */
+    registryName: string;
     resolvedVer: string;
     integrity: string;
     depsJson: string;
@@ -59,6 +62,11 @@ export declare class NpmCache {
      *  exact SQLite blob byte count (which would require a separate
      *  SELECT). */
     getRegistryEntry(name: string, version: string): RegistryCacheEntry | null;
+    /**
+     * getRegistryEntry for each `[name, version]`, read together: the record
+     * by `name@version`, or null; each counted as getRegistryEntry counts it.
+     */
+    getRegistryEntries(keys: ReadonlyArray<readonly [string, string]>): Map<string, RegistryCacheEntry | null>;
     /** Get all cached versions for a package name. */
     getRegistryVersions(name: string): RegistryCacheEntry[];
     /**
@@ -93,8 +101,12 @@ export declare class NpmCache {
      * is reread when it changes.
      */
     installRevision(): string;
-    /** Write/overwrite the lockfile for a project. Atomic via transaction. */
-    writeLockfile(projectPath: string, entries: Map<string, LockfileEntry>, ctx?: DurableObjectState): void;
+    /**
+     * Write/overwrite the lockfile for a project. Atomic via transaction.
+     * `previous`: what the table holds for it now (readLockfile's answer),
+     * so only the rows that change are written.
+     */
+    writeLockfile(projectPath: string, entries: Map<string, LockfileEntry>, ctx?: DurableObjectState, previous?: ReadonlyMap<string, LockfileEntry> | null): void;
     /** Get a pre-bundled ESM module. */
     getEsmBundle(specifier: string): EsmBundleEntry | null;
     /** Store a pre-bundled ESM module. */

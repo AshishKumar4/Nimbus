@@ -178,6 +178,8 @@ export declare class ProcessFiles implements NimbusFilesystemAuthority {
      * bridge on it). A flush that fails (an aborted binding's, a mount's
      * refusal) loses its bytes and is reported after the scope is closed.
      */
+    /** Every subscription of `scope` stopped, whichever of them fails to. */
+    private stopSubscriptions;
     private closeScope;
     private bridgeFor;
 }

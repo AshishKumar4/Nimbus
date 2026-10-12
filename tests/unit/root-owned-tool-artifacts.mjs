@@ -31,7 +31,6 @@ const resolved = (name, version) => ({
     name, version, tarballUrl: tgz(name, version), integrity: 'sha512-fixture',
     dependencies: {}, exports: null, main: 'index.js', module: '', bin: {},
   },
-  deps: {}, peerDeps: {}, optionalDeps: {},
   cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
 });
 

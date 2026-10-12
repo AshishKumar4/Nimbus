@@ -213,6 +213,8 @@ export interface CredentialedVfs {
     lstat(path: string): VfsStat;
     /** stat (lstat when `followLeaf` is false), or null when the name is not there: no error made for an absence. */
     statIfPresent(path: string, followLeaf?: boolean): VfsStat | null;
+    /** Whether something is at `path` (a link not followed) as published: no append stored, no holder recalled (VFS.landedAt). */
+    landedAt(path: string): boolean;
     /**
      * utimensat(2): null is UTIME_NOW, undefined UTIME_OMIT (that time kept).
      * Only now/omit needs no more than write permission or ownership; an
@@ -996,6 +998,8 @@ export declare class SqliteVFS {
      */
     private probeInode;
     private exists;
+    /** probeInode's answer on the published tree, by its walk alone (resolvePath stores appends and recalls holders). */
+    private landedAt;
     private isDirectory;
     private isFile;
     private isSymlink;
@@ -1111,8 +1115,10 @@ export declare class SqliteVFS {
     /** The highest directory at or above `dir` that the caller may not enter now, or null. */
     private closedAbove;
     /**
-     * A watch in `cred`'s view (CredentialedVfs.subscribe). A watch is not a
-     * cache, so an event it may not see is simply not delivered.
+     * A watch in `cred`'s view (CredentialedVfs.subscribe), each change told
+     * as the one rule tells a watch (projectChange), each end judged here
+     * (watchedName). A watch is not a cache, so an end it may not see is
+     * simply not told.
      */
     private subscribe;
     /**
@@ -2179,8 +2185,7 @@ export declare class SqliteVFS {
      * One commit's mutations, in order. Every write event among them holds its
      * content before any observer hears of the first: an observer's callback
      * (or a write or collection it makes) runs between deliveries, and must not
-     * take what a later event of the same commit names. `type` null is heard by
-     * the write observers alone (a copy's entries; the bus has the tree's one).
+     * take what a later event of the same commit names.
      */
     private emitMutations;
     private deliverMutation;

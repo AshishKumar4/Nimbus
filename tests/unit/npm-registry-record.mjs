@@ -21,7 +21,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { kernelInstaller, makeFanoutEnv } from './npm-fanout-test-env.mjs';
 
-const spec = (overrides) => ({ cachedEntries: [], isOptional: false, fetchTimeoutMs: 1_000, retries: 0, registry: 'https://registry.invalid', ...overrides });
+const spec = (overrides) => ({ cachedEntries: [], fetchTimeoutMs: 1_000, retries: 0, registry: 'https://registry.invalid', ...overrides });
 // What a value reads as once it has crossed a wire: an absent field and an undefined one alike.
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
@@ -51,7 +51,8 @@ const cold = await resolveOnePackumentInFacet(spec({ name: 'pkg', range: '^2.0.0
   SUPERVISOR: { async getPackument() { return { json: JSON.stringify(packument), source: 'network', events: [] }; } },
 });
 assert.ok(cold.pkg, `the cold resolve answered: ${JSON.stringify(cold.error ?? cold.messages)}`);
-assert.deepEqual(plain(cold.pkg.peerDependencies), { react: '^18.0.0' }, 'the cold resolve keeps the required peers');
+assert.deepEqual(plain(cold.pkg.peerDependencies), { react: '^18.0.0', maybe: '*' }, 'the cold resolve keeps every peer');
+assert.deepEqual(plain(cold.pkg.peerDependenciesMeta), { maybe: { optional: true } }, 'and which are optional');
 const record = cold.cacheWrites.find((entry) => entry.version === '2.1.0');
 assert.ok(record, 'the cold resolve staged its version');
 
@@ -71,10 +72,12 @@ console.log('  ok  a warm resolve answers what the cold one did');
   const ctx = { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage };
   const installer = kernelInstaller(vfs, harness.sql, { env, ctx });
   installer.npmCache.putRegistryEntries(cold.cacheWrites);
-  const lockfile = new Map([['pkg', { name: 'pkg', resolvedVer: '2.1.0', integrity: 'sha512-pkg', depsJson: '{"dep":"^1.0.0"}', hoistedPath: 'app/node_modules/pkg' }]]);
-  const { resolved } = installer.lockfileToResolved(lockfile, installer.lockRecords());
-  assert.deepEqual(plain(resolved.get('pkg')), plain(cold.pkg), "a lockfile's package is the one its resolve answered");
-  console.log("  ok  a lockfile's package is the one its resolve answered");
+  const entry = { name: 'pkg', registryName: 'pkg', resolvedVer: '2.1.0', integrity: 'sha512-pkg', depsJson: '{"dep":"^1.0.0"}', hoistedPath: 'app/node_modules/pkg' };
+  const recordOf = installer.lockRecords();
+  assert.deepEqual(plain(resolvedFromRecord(recordOf(entry))), plain(cold.pkg), "a lockfile's package is the one its resolve answered");
+  // Another package's record under the name (an alias retargeted) is not this placement's.
+  assert.equal(recordOf({ ...entry, integrity: 'sha512-another' }), null, 'a record of another package is none');
+  console.log("  ok  a lockfile's package is the one its resolve answered, and only that one");
 }
 
 {
@@ -107,13 +110,18 @@ console.log('  ok  a warm resolve answers what the cold one did');
   root.mkdir('app/node_modules', { recursive: true });
   const env = makeFanoutEnv({ root, NM: 'app/node_modules', resultFor: () => null });
   const installer = kernelInstaller(vfs, harness.sql, { env, ctx: { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage } });
-  installer.npmCache.putRegistryEntries([record]);
-  const lockfile = new Map([['odd', { name: 'odd', resolvedVer: '1.0.0', integrity: 'sha512-odd', depsJson: '{}', hoistedPath: 'app/node_modules/odd' }]]);
-  const recordOf = installer.lockRecords();
-  assert.equal(installer.isLockfileValid(lockfile, { odd: '1.0.0' }, recordOf), true, 'a malformed record still answers the check');
-  const { resolved } = installer.lockfileToResolved(installer.reachableFromSpecs(lockfile, { odd: '1.0.0' }, recordOf), recordOf);
-  assert.equal(resolved.get('odd')?.version, '1.0.0', 'and the reconstruction');
-  console.log('  ok  a record of another shape reads as none, and a valid-lockfile install over it goes on');
+  // As the facet writes it now: the registry package's own.
+  installer.npmCache.putRegistryEntries([{ ...record, registryName: 'odd' }]);
+  // A warm install over it: odd is installed, as the lockfile records, and the plan keeps it.
+  root.writeFile('app/package.json', JSON.stringify({ name: 'app', dependencies: { odd: '1.0.0' } }));
+  root.mkdir('app/node_modules/odd', { recursive: true });
+  root.writeFile('app/node_modules/odd/package.json', JSON.stringify({ name: 'odd', version: '1.0.0' }));
+  installer.npmCache.writeLockfile('app', new Map([['odd', { name: 'odd', registryName: 'odd', resolvedVer: '1.0.0', integrity: 'sha512-odd', depsJson: '{}', hoistedPath: 'app/node_modules/odd' }]]), { storage: harness.ctx.storage });
+  const log = [];
+  const result = await installer.install('app', { onProgress: (line) => log.push(line) });
+  assert.deepEqual(result.failed, [], log.join('\n'));
+  assert.ok(log.some((line) => line.startsWith('Lockfile valid')), `the install keeps what the lockfile records: ${log.join('\n')}`);
+  console.log('  ok  a record of another shape reads as none, and a warm install over it goes on');
 }
 
 console.log('npm-registry-record: ok');

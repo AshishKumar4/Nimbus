@@ -90,7 +90,7 @@ function makeVfs({ faults = new Map(), extraFiles = new Map(), reads = null } = 
       return body instanceof Uint8Array ? body : encoder.encode(body ?? '');
     },
   };
-  return { as: () => view, events: { on: () => () => {} } };
+  return { as: () => view };
 }
 
 /**

@@ -6,6 +6,9 @@ import { isNativeBinPath } from '../../../../runtime/os-contracts.js';
 import { npmBinMap } from '../../../../runtime/npm-bin-map.js';
 import { pickPackumentVersion } from '../../../../_shared/npm-semver.js';
 import { parseRegistryRequest, splitPackageSpec } from '../../../../_shared/npm-spec.js';
+import { canonicalTreePath, depthOf, holdTree, namedPackages, placementName, projectRoots, readPackageJson, saveNamed, } from '../../../../_shared/npm-tree.js';
+import { planTree, requiredFailures } from '../../../../_shared/npm-arborist/plan.js';
+import { InstallJournal } from './npm-journal.js';
 import { sriDigestOf, sriDigestsEqual, strongestSriEntry } from '../../../../_shared/tarball-integrity.js';
 import { RegistryPackumentSchema, RegistrySearchResponseSchema, renderSearchTable, } from './registry-schemas.js';
 import { parseNpmInstallInvocation, } from './npm-install-args.js';
@@ -104,6 +107,24 @@ async function readProjectPackageJson(vfs, cwd) {
         return null;
     }
 }
+/** package.json in `dir`, as the engine reads it; null where there is none, or it is not a JSON object. */
+async function packageJsonIn(vfs, dir) {
+    try {
+        return readPackageJson(await vfs.readFileString(join(dir, 'package.json')));
+    }
+    catch {
+        return null;
+    }
+}
+/** The package installed at `dir` under `name`: its manifest, version and registry name; null where there is none, or it names no version. */
+async function installedPackage(vfs, dir, name) {
+    const read = await packageJsonIn(vfs, dir);
+    const version = read?.json.version;
+    if (read === null || typeof version !== 'string')
+        return null;
+    const registryName = read.json.name;
+    return { ...read.manifest, name, version, registryName: typeof registryName === 'string' ? registryName : name };
+}
 async function writeProjectPackageJson(vfs, cwd, pkg) {
     const pkgPath = join(cwd, 'package.json');
     (await vfs.writeFile(pkgPath, JSON.stringify(pkg, null, 2) + '\n'));
@@ -158,48 +179,192 @@ export function registerBinCommand(registry, binName, scriptPath, kernel) {
         }),
     })));
 }
-// ─── Install logic ───
-async function installSinglePackage(name, version, targetBase, vfs, npmRegistry, signal, stdout, stderr, isGlobal, registry, seen, globalBinDir, kernel) {
-    if (seen.has(name))
-        return 0;
-    seen.add(name);
-    const targetDir = join(targetBase, name);
-    // Skip if already installed
-    if ((await vfs.exists(join(targetDir, 'package.json')))) {
-        return 0;
+/** The kernel-less shell's install queues are one namespace. */
+const NO_KERNEL = {};
+const describeError = (error) => error instanceof Error ? error.message : String(error);
+/**
+ * Every package installed under `modulesDir`'s tree, at its placement, in
+ * the top-level folders `top` keeps: a linked package (a symlink) is the
+ * link's, and not walked into.
+ */
+async function installedPlacements(vfs, modulesDir, top, prefix = '', out = []) {
+    for await (const name of packagesIn(vfs, modulesDir)) {
+        if (prefix === '' && !top(name))
+            continue;
+        const placement = prefix + name;
+        out.push(placement);
+        if (!(await vfs.isSymlink(join(modulesDir, name))))
+            await installedPlacements(vfs, join(modulesDir, name, 'node_modules'), top, `${placement}/node_modules/`, out);
     }
-    (await stdout.write(`  ${name}${version ? '@' + version : ''}...\n`));
-    const network = kernel?.network ?? ISOLATE_NETWORK;
-    const info = await fetchPackageInfo(network, npmRegistry, name, version, signal);
-    // writeTarballStream throws when the archive carried no manifest and writes
-    // package.json last, so a return here is a complete package on disk.
-    await fetchAndStreamPackage(network, info.dist.tarball, info.dist.integrity, targetDir, vfs, signal, stderr);
-    let installed = 1;
-    // Global install: link binaries into the resolved prefix's bin dir
-    if (isGlobal && globalBinDir) {
-        const binEntries = getBinEntries(info);
-        for (const [binName, binPath] of Object.entries(binEntries)) {
-            const scriptPath = resolve(targetDir, binPath);
-            registerBinCommand(registry, binName, scriptPath, kernel);
-            try {
-                (await vfs.mkdir(globalBinDir, { recursive: true }));
-            }
-            catch { /* exists */ }
-            (await vfs.writeFile(join(globalBinDir, binName), `#!/usr/bin/env node\nrequire('${scriptPath}');\n`));
+    return out;
+}
+async function installTree(roots, install) {
+    const { targetBase, vfs, network, npmRegistry, signal, stdout, stderr } = install;
+    const fail = async (name, message) => {
+        if (message.includes('Failed to fetch') || message.includes('NetworkError') || message.includes('CORS')) {
+            await stderr.write(`npm ERR! network error fetching ${name}\n`);
+            await stderr.write(`This may be a CORS restriction. Try: export NPM_REGISTRY=<proxy-url>\n`);
+        }
+        else {
+            await stderr.write(`npm ERR! ${name}: ${message}\n`);
+        }
+        return { installed: [], failed: [name] };
+    };
+    // ── Recover ──
+    if (!(await InstallJournal.recover(vfs, targetBase, stderr))) {
+        return await fail(targetBase, 'an install that did not finish could not be undone; its copies are kept as named above');
+    }
+    // A staging directory left behind holds only new packages: no install
+    // into this tree is using it while this one holds it.
+    try {
+        for (const { name } of await vfs.readdir(targetBase)) {
+            if (name.startsWith('.nimbus-staging-'))
+                await vfs.remove(join(targetBase, name), { recursive: true, force: true });
         }
     }
-    // Recursively install dependencies (flat into the same targetBase)
-    if (info.dependencies) {
-        for (const [depName, depRange] of Object.entries(info.dependencies)) {
-            try {
-                installed += await installSinglePackage(depName, depRange, targetBase, vfs, npmRegistry, signal, stdout, stderr, isGlobal, registry, seen, globalBinDir, kernel);
+    catch { /* no node_modules yet */ }
+    // ── Plan ──
+    const global = install.globalBinDir !== undefined;
+    const named = new Set(roots.map(({ name }) => name));
+    const onDisk = await installedPlacements(vfs, targetBase, (name) => !global || named.has(name));
+    const installed = (await Promise.all(onDisk.map(async (at) => {
+        const pkg = await installedPackage(vfs, join(targetBase, at), placementName(at));
+        return pkg && { at, pkg };
+    }))).flatMap((entry) => (entry ? [entry] : []));
+    const plan = await planTree(roots, global ? [] : installed, {
+        async resolve(requests) {
+            const answers = [];
+            for (const { name, range } of requests) {
+                await stdout.write(`  ${name}${range ? '@' + range : ''}...\n`);
+                try {
+                    const info = await fetchPackageInfo(network, npmRegistry, name, range || null, signal);
+                    answers.push({ package: { ...info, name, registryName: info.name, integrity: info.dist.integrity, bundleDependencies: info.bundleDependencies ?? info.bundledDependencies, info } });
+                }
+                catch (error) {
+                    answers.push({ failed: describeError(error) });
+                }
             }
-            catch (e) {
-                (await stderr.write(`  warn: could not install ${depName}: ${e instanceof Error ? e.message : String(e)}\n`));
+            return answers;
+        },
+        warn: async (message) => { await stderr.write(`npm WARN ${message}\n`); },
+    }, { global, force: install.force, strictPeerDeps: install.strictPeerDeps, legacyPeerDeps: install.legacyPeerDeps, preferDedupe: install.preferDedupe });
+    const [requiredFailure] = requiredFailures(plan);
+    if (requiredFailure)
+        return await fail(requiredFailure.edge.name, requiredFailure.reason);
+    for (const { id, edge } of plan.failures) {
+        await stderr.write(`npm WARN optional SKIPPING OPTIONAL DEPENDENCY: ${edge.name}: ${plan.reasons.get(id)}\n`);
+    }
+    signal.throwIfAborted();
+    // ── Reify ──
+    const run = Math.random().toString(36).slice(2, 10);
+    const staging = join(targetBase, `.nimbus-staging-${run}`);
+    // The tree to publish: what the plan holds, but what it leaves out and, with --omit=dev, what only devDependencies reach.
+    const inTree = (at) => plan.nodes.has(at) && !plan.skipped.has(at) && !plan.omits(at, install.omit);
+    const plannedVersion = (name) => (plan.skipped.has(name) ? null : plan.nodes.get(name)?.pkg.version ?? null);
+    // What the plan places is fetched, but where that package is installed already.
+    const installedAt = new Map(installed.map(({ at, pkg }) => [at, pkg]));
+    const planned = [];
+    for (const node of plan.nodes.values()) {
+        if (!node.planned || !inTree(node.at))
+            continue;
+        const current = installedAt.get(node.at);
+        if (current?.version !== node.pkg.version || current.registryName !== node.pkg.info.name)
+            planned.push(node);
+    }
+    const stagedAt = new Map(planned.map((node, i) => [node.at, join(staging, String(i))]));
+    try {
+        for (const node of planned) {
+            if (!inTree(node.at))
+                continue;
+            try {
+                // writeTarballStream throws when the archive carried no manifest
+                // and writes package.json last, so a return is a complete package.
+                await fetchAndStreamPackage(network, node.pkg.info.dist.tarball, node.pkg.info.dist.integrity, stagedAt.get(node.at) ?? staging, vfs, signal, stderr);
+            }
+            catch (error) {
+                if (plan.fail(node.at, describeError(error)) === null)
+                    return await fail(node.edge.name, describeError(error));
+                await stderr.write(`npm WARN optional SKIPPING OPTIONAL DEPENDENCY: ${node.edge.name}: ${describeError(error)}\n`);
             }
         }
+        signal.throwIfAborted();
+        // What is on disk the tree does not hold goes (npm prunes it).
+        const removals = onDisk.filter((at) => !inTree(at));
+        const publish = planned.filter((node) => inTree(node.at)).sort((x, y) => depthOf(x.at) - depthOf(y.at));
+        if (publish.length === 0 && removals.length === 0)
+            return { installed: [], failed: [], plannedVersion };
+        const journal = InstallJournal.begin(vfs, targetBase, run);
+        const retiredAt = new Map();
+        // The package the step being made is for, should it fail.
+        let current = targetBase;
+        try {
+            // Deepest first, so a package goes before the one it is nested in.
+            for (const at of removals.sort((x, y) => depthOf(y) - depthOf(x))) {
+                current = placementName(at);
+                const target = join(targetBase, at);
+                if (!(await vfs.exists(target)))
+                    continue;
+                await journal.move('retire', target, journal.retired(target));
+                retiredAt.set(at, journal.retired(target));
+            }
+            for (const node of publish) {
+                current = node.edge.name;
+                const target = join(targetBase, node.at);
+                if (await vfs.exists(target)) {
+                    await journal.move('retire', target, journal.retired(target));
+                    retiredAt.set(node.at, journal.retired(target));
+                }
+                await journal.move('publish', stagedAt.get(node.at) ?? staging, target);
+            }
+            // A kept package whose ancestor was retired (replaced, or bundling
+            // its own node_modules) went with it: it moves back into the tree,
+            // beside whatever the new ancestor bundles.
+            const published = new Set(publish.map((node) => node.at));
+            const kept = [...plan.nodes.values()].filter((node) => inTree(node.at) && !published.has(node.at)).sort((x, y) => depthOf(x.at) - depthOf(y.at));
+            for (const node of kept) {
+                const target = join(targetBase, node.at);
+                if (await vfs.exists(target))
+                    continue;
+                const ancestor = [...retiredAt.keys()].filter((at) => node.at.startsWith(at + '/node_modules/')).sort((x, y) => depthOf(y) - depthOf(x))[0];
+                if (ancestor === undefined)
+                    continue;
+                current = node.at;
+                const source = (retiredAt.get(ancestor) ?? '') + node.at.slice(ancestor.length);
+                if (await vfs.exists(source))
+                    await journal.move('carry', source, target);
+            }
+        }
+        catch (error) {
+            await journal.undo(stderr);
+            return await fail(current, describeError(error));
+        }
+        await journal.commit(stderr);
+        if (install.globalBinDir) {
+            for (const node of publish) {
+                if (node.edge.from === '')
+                    await linkGlobalBins(node.pkg.info, join(targetBase, node.at), install.globalBinDir, install);
+            }
+        }
+        return { installed: publish.map((node) => `${node.pkg.name}@${node.pkg.version}`), failed: [], plannedVersion };
     }
-    return installed;
+    finally {
+        try {
+            await vfs.remove(staging, { recursive: true, force: true });
+        }
+        catch { /* none was made */ }
+    }
+}
+/** Link a globally installed root's bins into the prefix's bin directory, and register them as commands. */
+async function linkGlobalBins(info, targetDir, globalBinDir, install) {
+    for (const [binName, binPath] of Object.entries(getBinEntries(info))) {
+        const scriptPath = resolve(targetDir, binPath);
+        registerBinCommand(install.registry, binName, scriptPath, install.kernel);
+        try {
+            (await install.vfs.mkdir(globalBinDir, { recursive: true }));
+        }
+        catch { /* exists */ }
+        (await install.vfs.writeFile(join(globalBinDir, binName), `#!/usr/bin/env node\nrequire('${scriptPath}');\n`));
+    }
 }
 // ─── Subcommands ───
 async function printHelp(ctx) {
@@ -229,6 +394,11 @@ async function npmInstall(ctx, registry, kernel, deps) {
     const args = ctx.args.slice(1);
     const invocation = parseNpmInstallInvocation(args);
     const packages = invocation.packages;
+    if (invocation.unsupported.length > 0) {
+        for (const line of invocation.unsupported)
+            await ctx.stderr.write(`npm ERR! ${line}\n`);
+        return 1;
+    }
     // ── Pre-checks the host used to do behind a wrapper ────────────────
     // `npm install -g` needs names (npm says the same); `npm install` needs a
     // package.json when no names were given. Both fire before any work, and
@@ -247,133 +417,111 @@ async function npmInstall(ctx, registry, kernel, deps) {
     // `<prefix>/lib/node_modules` and `<prefix>/bin` from it.
     const globalPrefix = resolveNpmPrefixVfs(ctx.cwd, ctx.env, invocation.prefix);
     const globalBinDir = `${globalPrefix}/bin`;
-    const globalModulesDir = `${globalPrefix}/lib/node_modules`;
     const npmRegistry = getRegistry(ctx.env);
     const startTime = Date.now();
-    let installed = 0;
-    // ── Host-batched install path ──────────────────────────────────────
-    // The port owns install, prefix dirs, and bin materialisation. This
-    // command owns the summary and the progress channel — per-invocation,
-    // so two terminals' installs can't interleave lines on one installer.
-    if (deps?.installer) {
-        const npmLog = invocation.loglevel
-            ? async (level, line) => { if (npmLogEnabled(invocation.loglevel, level))
-                await ctx.stderr.write(`${line}\n`); }
-            : null;
-        try {
-            const result = await deps.installer.install({
-                projectDir: ctx.cwd,
-                packages,
-                global: invocation.global,
-                globalPrefix: invocation.global ? globalPrefix : undefined,
-                pid: ctx.pid,
-                registry: npmRegistry,
-                production: invocation.production,
-                npmLog,
-                onProgress: async (line) => await ctx.stdout.write(`[npm] ${line}\n`),
-            });
-            await writeInstallSummary(ctx, result.installed, result.failed, {
-                totalFiles: result.totalFiles,
-                fromCacheHits: result.fromCacheHits,
-                linkedBins: result.linkedBins,
-                globalBinDir,
-                startedAt: startTime,
-            });
-            return result.failed.length > 0 ? 1 : 0;
-        }
-        catch (err) {
-            await ctx.stderr.write(`\x1b[31mnpm install failed: ${err instanceof Error ? err.message : String(err)}\x1b[0m\n`);
-            return 1;
-        }
+    // The port owns the install, prefix dirs and bin materialisation: the
+    // host's, else the shell's own (shellInstallPort). This command owns the
+    // summary and the progress channel — per-invocation, so two terminals'
+    // installs can't interleave lines on one installer.
+    const installer = deps?.installer ?? shellInstallPort(ctx, registry, kernel);
+    const npmLog = invocation.loglevel
+        ? async (level, line) => { if (npmLogEnabled(invocation.loglevel, level))
+            await ctx.stderr.write(`${line}\n`); }
+        : null;
+    try {
+        const result = await installer.install({
+            projectDir: ctx.cwd,
+            packages,
+            global: invocation.global,
+            globalPrefix: invocation.global ? globalPrefix : undefined,
+            pid: ctx.pid,
+            registry: npmRegistry,
+            production: invocation.production,
+            saveDev: invocation.saveDev,
+            saveOptional: invocation.saveOptional,
+            force: invocation.force,
+            strictPeerDeps: invocation.strictPeerDeps,
+            legacyPeerDeps: invocation.legacyPeerDeps,
+            omitOptional: invocation.omitOptional,
+            omitPeer: invocation.omitPeer,
+            preferDedupe: invocation.preferDedupe,
+            save: invocation.save,
+            savePrefix: invocation.savePrefix,
+            signal: ctx.signal,
+            npmLog,
+            onProgress: async (line) => await ctx.stdout.write(`[npm] ${line}\n`),
+        });
+        await writeInstallSummary(ctx, result.installed, result.failed, {
+            totalFiles: result.totalFiles,
+            fromCacheHits: result.fromCacheHits,
+            linkedBins: result.linkedBins,
+            globalBinDir,
+            startedAt: startTime,
+        });
+        return result.failed.length > 0 ? 1 : 0;
     }
-    // ── In-process fallback ────────────────────────────────────────────
-    // Same parse + same summary; the target tree derives from the resolved
-    // prefix so --prefix and npm_config_prefix do what they say.
-    const targetBase = invocation.global ? globalModulesDir : join(ctx.cwd, 'node_modules');
-    if (invocation.global) {
-        for (const dir of [globalModulesDir, globalBinDir]) {
-            try {
-                (await ctx.vfs.mkdir(dir, { recursive: true }));
-            }
-            catch { /* exists */ }
-        }
+    catch (err) {
+        await ctx.stderr.write(`\x1b[31mnpm install failed: ${err instanceof Error ? err.message : String(err)}\x1b[0m\n`);
+        return 1;
     }
-    const failed = [];
-    if (packages.length === 0) {
-        // Install from package.json
-        const pkg = (await readProjectPackageJson(ctx.vfs, ctx.cwd));
-        if (!pkg) {
-            await ctx.stderr.write('npm ERR! no package.json found\n');
-            return 1;
-        }
-        const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
-        const depNames = Object.keys(allDeps);
-        if (depNames.length === 0) {
-            await ctx.stdout.write('up to date, audited 0 packages\n');
-            return 0;
-        }
-        await ctx.stdout.write('Installing dependencies...\n');
-        const seen = new Set();
-        for (const [name, range] of Object.entries(allDeps)) {
+}
+/**
+ * The shell's own install port: npm's one engine (installTree) for a host
+ * that gives the command no port of its own (a library's shell). Its view
+ * of the filesystem is the command's identity's, not bound to the command's
+ * signal: a Ctrl-C stops the install before it publishes, and never takes
+ * away what it needs to finish or undo a publication. A local install plans
+ * the project's roots with the packages named, under the tree's hold, and
+ * saves what was named to package.json once the install is complete.
+ */
+function shellInstallPort(ctx, registry, kernel) {
+    return {
+        async install(spec) {
+            const signal = spec.signal ?? ctx.signal;
+            const vfs = ctx.vfsUntilExit?.() ?? ctx.vfs;
+            const targetBase = spec.global ? `${spec.globalPrefix}/lib/node_modules` : join(spec.projectDir, 'node_modules');
+            const globalBinDir = spec.global ? `${spec.globalPrefix}/bin` : undefined;
+            const tree = {
+                targetBase, vfs, network: kernel?.network ?? ISOLATE_NETWORK, npmRegistry: spec.registry, signal,
+                stdout: ctx.stdout, stderr: ctx.stderr, registry, kernel,
+                force: spec.force === true, strictPeerDeps: spec.strictPeerDeps === true, legacyPeerDeps: spec.legacyPeerDeps === true, preferDedupe: spec.preferDedupe === true,
+                omit: { dev: spec.production === true, optional: spec.omitOptional === true, peer: spec.omitPeer === true },
+                ...(globalBinDir ? { globalBinDir } : {}),
+            };
+            // The project's package.json is read and written under the tree's
+            // hold, so two installs at once add to it one after the other.
+            const canonical = await canonicalTreePath((path) => vfs.realpath(path), targetBase);
+            const held = holdTree(kernel ?? NO_KERNEL, canonical, signal);
+            const release = typeof held === 'function' ? held : await held;
             try {
-                installed += await installSinglePackage(name, range, targetBase, ctx.vfs, npmRegistry, ctx.signal, ctx.stdout, ctx.stderr, false, registry, seen, undefined, kernel);
-            }
-            catch (e) {
-                failed.push(name);
-                await ctx.stderr.write(`npm ERR! ${name}: ${e instanceof Error ? e.message : String(e)}\n`);
-            }
-        }
-    }
-    else {
-        // Install specified packages
-        await ctx.stdout.write('Installing packages...\n');
-        const seen = new Set();
-        for (const spec of packages) {
-            const { name, range: version } = splitPackageSpec(spec);
-            try {
-                installed += await installSinglePackage(name, version, targetBase, ctx.vfs, npmRegistry, ctx.signal, ctx.stdout, ctx.stderr, invocation.global, registry, seen, invocation.global ? globalBinDir : undefined);
-                // Update package.json for local installs
-                if (!invocation.global) {
-                    const pkg = (await readProjectPackageJson(ctx.vfs, ctx.cwd));
-                    if (pkg) {
-                        const installedPkgPath = join(targetBase, name, 'package.json');
-                        let versionStr = 'latest';
-                        try {
-                            const ipkg = JSON.parse((await ctx.vfs.readFileString(installedPkgPath)));
-                            // An alias (`mine@npm:real@^1`) saves the package it
-                            // installed, as npm does: "mine": "npm:real@^1.1.0".
-                            versionStr = (typeof ipkg.name === 'string' && ipkg.name !== name ? `npm:${ipkg.name}@` : '') + '^' + ipkg.version;
-                        }
-                        catch { /* ignore */ }
-                        if (invocation.saveDev) {
-                            pkg.devDependencies = pkg.devDependencies || {};
-                            pkg.devDependencies[name] = versionStr;
-                        }
-                        else {
-                            pkg.dependencies = pkg.dependencies || {};
-                            pkg.dependencies[name] = versionStr;
-                        }
-                        (await writeProjectPackageJson(ctx.vfs, ctx.cwd, pkg));
-                    }
+                if (globalBinDir) {
+                    for (const dir of [targetBase, globalBinDir])
+                        await vfs.mkdir(dir, { recursive: true });
+                }
+                // A global prefix has no package.json: its roots are what is named.
+                const project = spec.global ? null : await packageJsonIn(vfs, spec.projectDir);
+                const named = namedPackages(project?.manifest ?? null, spec.packages, { saveDev: spec.saveDev, saveOptional: spec.saveOptional });
+                const roots = projectRoots(project?.manifest ?? null, named, { legacyPeerDeps: spec.legacyPeerDeps === true });
+                await ctx.stdout.write(spec.packages.length === 0 ? 'Installing dependencies...\n' : 'Installing packages...\n');
+                const result = await installTree(roots, tree);
+                if (result.failed.length > 0 || project === null || named.length === 0 || spec.save === false)
+                    return result;
+                // What the command line named is saved to package.json, at the version the tree holds, once it installed.
+                try {
+                    const saved = (await packageJsonIn(vfs, spec.projectDir)) ?? project;
+                    await writeProjectPackageJson(vfs, spec.projectDir, saveNamed(saved.json, named, (name) => result.plannedVersion?.(name) ?? null, spec.savePrefix));
+                    return result;
+                }
+                catch (error) {
+                    await ctx.stderr.write(`npm ERR! ${describeError(error)}\n`);
+                    return { installed: result.installed, failed: named.map(({ name }) => name) };
                 }
             }
-            catch (e) {
-                failed.push(name);
-                const msg = e instanceof Error ? e.message : String(e);
-                if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('CORS')) {
-                    await ctx.stderr.write(`npm ERR! network error fetching ${name}\n`);
-                    await ctx.stderr.write(`This may be a CORS restriction. Try: export NPM_REGISTRY=<proxy-url>\n`);
-                }
-                else {
-                    await ctx.stderr.write(`npm ERR! ${msg}\n`);
-                }
+            finally {
+                release();
             }
-        }
-    }
-    // The in-process fallback reports the count it actually installed;
-    // writeInstallSummary's file/bin/cache decorations don't apply here.
-    await writeInstallSummary(ctx, installed > 0 ? new Array(installed).fill('') : [], failed, { startedAt: startTime });
-    return failed.length > 0 ? 1 : 0;
+        },
+    };
 }
 /** npm's prefix resolution: --prefix wins, then npm_config_prefix, then
  *  /usr/local; a relative value resolves against cwd. Absolute result. */
@@ -696,13 +844,18 @@ export function createNpmCommand(registry, shellExecute, kernel, deps) {
     };
 }
 /**
- * `npm ci`: a clean install of exactly the tree package-lock.json (or
- * npm-shrinkwrap.json) records. The host validates the lock and only then
- * removes node_modules: a lock that disagrees with package.json fails the
- * install with the project untouched, instead of being re-resolved.
+ * `npm ci`: a clean install of the tree package-lock.json (or
+ * npm-shrinkwrap.json) records. The host builds npm's tree over the lock
+ * and only then removes node_modules: a lock that is not that tree fails
+ * the install with the project untouched.
  */
 async function npmCi(ctx, deps) {
     const invocation = parseNpmInstallInvocation(ctx.args.slice(1));
+    if (invocation.unsupported.length > 0) {
+        for (const line of invocation.unsupported)
+            await ctx.stderr.write(`npm ERR! ${line}\n`);
+        return 1;
+    }
     if (invocation.global) {
         await ctx.stderr.write('npm ERR! `npm ci` does not work for global packages\n');
         return 1;
@@ -736,8 +889,15 @@ async function npmCi(ctx, deps) {
             packages: [],
             global: false,
             pid: ctx.pid,
+            signal: ctx.signal,
             registry: getRegistry(ctx.env),
             production: invocation.production,
+            omitOptional: invocation.omitOptional,
+            omitPeer: invocation.omitPeer,
+            force: invocation.force,
+            strictPeerDeps: invocation.strictPeerDeps,
+            legacyPeerDeps: invocation.legacyPeerDeps,
+            preferDedupe: invocation.preferDedupe,
             fromLockfile: true,
             npmLog,
             onProgress: async (line) => await ctx.stdout.write(`[npm] ${line}\n`),
@@ -754,14 +914,10 @@ async function npmCi(ctx, deps) {
         return 1;
     }
 }
-/**
- * Install a single npm package globally into the VFS.
- *
- * Called directly by `lifo install` to avoid the shell.execute()
- * round-trip which can silently swallow output and errors.
- */
 // ─── npx ───
-const NPX_CACHE = '/tmp/.npx-cache/node_modules';
+/** Where npx installs what it runs: a project of its own. */
+const NPX_CACHE_PROJECT = '/tmp/.npx-cache';
+const NPX_CACHE = `${NPX_CACHE_PROJECT}/node_modules`;
 async function findBinScript(vfs, pkgDir, binName) {
     const pkgJsonPath = join(pkgDir, 'package.json');
     if (!(await vfs.exists(pkgJsonPath)))
@@ -782,7 +938,9 @@ async function findBinScript(vfs, pkgDir, binName) {
         return null;
     }
 }
-export function createNpxCommand(registry, shellExecute) {
+export function createNpxCommand(registry, shellExecute, 
+/** Its network is the one the npx cache install fetches through. */
+kernel, deps) {
     return async (ctx) => {
         const rawArgs = ctx.args.slice();
         let explicitPkg = null;
@@ -829,7 +987,7 @@ export function createNpxCommand(registry, shellExecute) {
         }
         // Everything after the spec is passthrough args
         passthrough.push(...rawArgs.slice(i + 1));
-        const { name: parsedName, range: version } = splitPackageSpec(explicitPkg || spec);
+        const { name: parsedName } = splitPackageSpec(explicitPkg || spec);
         // The bin name to look for: if --package was used, spec is the bin name; otherwise derive from package name
         const binName = explicitPkg ? spec : parsedName.split('/').pop();
         // 1. Check local node_modules
@@ -844,13 +1002,13 @@ export function createNpxCommand(registry, shellExecute) {
         if (!scriptPath) {
             const cacheDir = join(NPX_CACHE, parsedName);
             if (!(await ctx.vfs.exists(join(cacheDir, 'package.json')))) {
-                const npmRegistry = getRegistry(ctx.env);
-                const seen = new Set();
-                try {
-                    await installSinglePackage(parsedName, version, NPX_CACHE, ctx.vfs, npmRegistry, ctx.signal, ctx.stdout, ctx.stderr, false, registry, seen);
-                }
-                catch (e) {
-                    await ctx.stderr.write(`npx: could not install ${parsedName}: ${e instanceof Error ? e.message : String(e)}\n`);
+                const installer = deps?.installer ?? shellInstallPort(ctx, registry, kernel);
+                const result = await installer.install({
+                    projectDir: NPX_CACHE_PROJECT, packages: [explicitPkg || spec], global: false,
+                    pid: ctx.pid, signal: ctx.signal, registry: getRegistry(ctx.env),
+                });
+                if (result.failed.length > 0) {
+                    await ctx.stderr.write(`npx: could not install ${parsedName}\n`);
                     return 1;
                 }
             }
@@ -876,36 +1034,21 @@ export function createNpxCommand(registry, shellExecute) {
         return 1;
     };
 }
-export async function npmInstallGlobal(packageName, ctx, registry, kernel) {
-    const npmRegistry = getRegistry(ctx.env);
+/**
+ * Install one package globally, through the install port (the host's, else
+ * the shell's own). Called directly by `lifo install` to avoid the
+ * shell.execute() round-trip, which can silently swallow output and errors.
+ */
+export async function npmInstallGlobal(packageName, ctx, registry, kernel, deps) {
     const startTime = Date.now();
-    const seen = new Set();
     const prefix = resolveNpmPrefixVfs(ctx.cwd, ctx.env, null);
-    const modulesDir = `${prefix}/lib/node_modules`;
-    const binDir = `${prefix}/bin`;
-    try {
-        (await ctx.vfs.mkdir(modulesDir, { recursive: true }));
-    }
-    catch { /* exists */ }
-    try {
-        (await ctx.vfs.mkdir(binDir, { recursive: true }));
-    }
-    catch { /* exists */ }
-    try {
-        const installed = await installSinglePackage(packageName, null, modulesDir, ctx.vfs, npmRegistry, ctx.signal, ctx.stdout, ctx.stderr, true, registry, seen, binDir, kernel);
-        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-        await ctx.stdout.write(`\nadded ${installed} package${installed !== 1 ? 's' : ''} in ${elapsed}s\n`);
-        return 0;
-    }
-    catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('CORS')) {
-            await ctx.stderr.write(`npm ERR! network error fetching ${packageName}\n`);
-            await ctx.stderr.write('This may be a CORS restriction. Try: export NPM_REGISTRY=<proxy-url>\n');
-        }
-        else {
-            await ctx.stderr.write(`npm ERR! ${msg}\n`);
-        }
+    const installer = deps?.installer ?? shellInstallPort(ctx, registry, kernel);
+    const { installed, failed } = await installer.install({
+        projectDir: ctx.cwd, packages: [packageName], global: true, globalPrefix: prefix, pid: ctx.pid, signal: ctx.signal, registry: getRegistry(ctx.env),
+    });
+    if (failed.length > 0)
         return 1;
-    }
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    await ctx.stdout.write(`\nadded ${installed.length} package${installed.length !== 1 ? 's' : ''} in ${elapsed}s\n`);
+    return 0;
 }

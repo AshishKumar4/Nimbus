@@ -43,6 +43,32 @@ export function satisfiesRange(version, range) {
     const trimmed = String(range).trim();
     return semver.satisfies(String(version), OPEN_RANGES.has(trimmed) ? '*' : trimmed, LOOSE);
 }
+/** Whether `a` is a version at least `b`, loosely (an unparsable one is not). */
+export function versionAtLeast(a, b) {
+    return semver.valid(a, LOOSE) !== null && semver.valid(b, LOOSE) !== null && semver.gte(a, b, LOOSE);
+}
+/** Whether some version both ranges allow (semver.intersects, loose). */
+export function rangesIntersect(a, b) {
+    try {
+        return semver.intersects(a, b, LOOSE);
+    }
+    catch {
+        return false;
+    }
+}
+/** Whether every version `inner` allows, `outer` allows too (semver.subset, loose). */
+export function rangeSubset(inner, outer) {
+    try {
+        return semver.subset(inner, outer, LOOSE);
+    }
+    catch {
+        return false;
+    }
+}
+/** Whether `spec` is one exact version (`1.2.3`), not a range or a tag. */
+export function isExactVersion(spec) {
+    return semver.valid(String(spec).trim(), LOOSE) !== null;
+}
 /**
  * Whether `range` is a semver range at all (an open one included). False
  * for git:, github:, a URL, file:, a dist-tag, and other non-range specs,

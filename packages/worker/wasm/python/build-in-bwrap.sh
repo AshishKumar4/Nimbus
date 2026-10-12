@@ -28,9 +28,11 @@ if [ ! -d "$WORK/wasi-sdk-25.0-x86_64-linux" ]; then
 	tar xzf "$WORK/wasi-sdk.tgz" -C "$WORK"
 	rm "$WORK/wasi-sdk.tgz"
 fi
-[ $# -gt 0 ] || set -- fetch deps nimbus hostpy wasi extenv ext sci assets
+# The default is the complete build (inputs.mjs PYTHON_COMPLETE_STAGES).
+[ $# -gt 0 ] || set -- $(node "$HERE/inputs.mjs" --stages)
 
-exec bwrap --unshare-user --tmpfs / \
+node "$HERE/inputs.mjs" --snapshot "$WORK/inputs.json"
+bwrap --unshare-user --tmpfs / \
 	--ro-bind /usr /usr --ro-bind /etc /etc --ro-bind-try /run /run \
 	--ro-bind-try /bin /bin --ro-bind-try /sbin /sbin --ro-bind-try /lib /lib --ro-bind-try /lib64 /lib64 \
 	--proc /proc --dev /dev --tmpfs /tmp \
@@ -39,3 +41,6 @@ exec bwrap --unshare-user --tmpfs / \
 	--setenv HOME /tmp/home --setenv TMPDIR /tmp --setenv PATH /usr/local/bin:/usr/bin:/bin \
 	--setenv WASI_SDK /wasi-sdk \
 	bash -c 'mkdir -p "$HOME" && exec ./build-python.sh "$@"' build-python "$@"
+
+# Provenance comes only from a complete build (inputs.mjs PYTHON_COMPLETE_STAGES).
+node "$HERE/inputs.mjs" --record "$WORK/inputs.json" "$@"
