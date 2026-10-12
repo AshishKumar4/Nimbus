@@ -24,13 +24,14 @@ export type VfsPathListener = (event: VfsEvent) => void;
  * - Path listeners receive individual events for matching paths.
  */
 export declare class VfsEventEmitter {
+    /** Each global listener, and how much of the batch now pending was published before it registered (none of its own). */
     private _globalListeners;
     private _pathListeners;
     private _pending;
     private _flushScheduled;
     private _totalEmitted;
     private _totalBatches;
-    /** Register a global listener that receives batched events. */
+    /** Register a global listener that receives batched events: those published from now on. */
     on(listener: VfsEventListener): () => void;
     /** Register a listener for a specific path (or path prefix with recursive). */
     onPath(path: string, listener: VfsPathListener): () => void;

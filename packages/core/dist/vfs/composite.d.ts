@@ -430,8 +430,8 @@ export declare class CompositeVFS implements VFS {
     /**
      * Every change this view shows at `path` or under it, on any mount, told
      * once it landed (VfsEvent, paths in this namespace), in the batches its
-     * backend makes of them: what it is and where, nothing read, held or
-     * waited for. The returned function stops it.
+     * backend makes of them, in order on each mount: what it is and where,
+     * nothing read, held or waited for. The returned function stops it.
      *
      * A backend that tells its own changes (VFS.watchChanges: SQLite) is
      * watched per mount, as this view's principal sees it, so its every
