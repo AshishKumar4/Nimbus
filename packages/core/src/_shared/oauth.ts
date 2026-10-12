@@ -85,8 +85,14 @@ const CloudflareOAuthTokenResponseSchema = z.object({
 }).passthrough();
 export type NimbusCloudflareOAuthTokenResponse = z.infer<typeof CloudflareOAuthTokenResponseSchema>;
 const CloudflareAccountsResponseSchema = z.object({
-  result: z.array(z.object({ id: z.string(), name: z.string().optional() }).passthrough()).default([]),
-}).merge(CloudflareErrorPayloadSchema);
+  result: z.array(z.object({ id: z.string(), name: z.string().optional() }).passthrough()),
+});
+
+class CloudflareAccountLookupError extends Error {
+  constructor(readonly status: number, detail: string, options?: ErrorOptions) {
+    super(`Cloudflare account lookup failed (HTTP ${status}): ${detail}`, options);
+  }
+}
 
 export async function requestNimbusCloudflareOAuthToken(
   config: { oauthClientId: string; oauthClientSecret?: string }, fields: Record<string, string>,
@@ -112,10 +118,14 @@ export async function fetchNimbusCloudflareUserInfo(accessToken: string): Promis
 
 export async function fetchNimbusCloudflareAccounts(accessToken: string): Promise<NimbusCloudflareAccount[]> {
   const response = await fetch(`${NIMBUS_CLOUDFLARE_API}/accounts`, { headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' } });
-  const payload = await responseJson(response);
-  const parsed = CloudflareAccountsResponseSchema.safeParse(payload);
-  if (!response.ok) throw new Error(cloudflareErrorDetail(payload, 'accounts request failed'));
-  return (parsed.success ? parsed.data.result : []).map((account) => ({ id: account.id, name: account.name || account.id }))
+  const parsed = await response.json().then((payload) => {
+    if (!response.ok) throw new CloudflareAccountLookupError(response.status, cloudflareErrorDetail(payload, response.statusText || 'accounts request failed'));
+    return CloudflareAccountsResponseSchema.safeParse(payload);
+  }, (cause) => {
+    throw new CloudflareAccountLookupError(response.status, 'response is not valid JSON', { cause });
+  });
+  if (!parsed.success) throw new CloudflareAccountLookupError(response.status, 'response has an invalid account result', { cause: parsed.error });
+  return parsed.data.result.map((account) => ({ id: account.id, name: account.name?.trim() || account.id }))
     .filter((account) => isNimbusCloudflareAccountId(account.id));
 }
 
