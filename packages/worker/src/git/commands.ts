@@ -968,9 +968,11 @@ interface GitRepo {
 
 /** setup_git_directory's walk: from the cwd up, a `.git` inside each level, else the level itself as a git directory. */
 async function discoverRepo(vfs: ProjectFs, cwd: string): Promise<GitRepo | null> {
+  // git's is_git_directory: HEAD, and objects and refs here or in the common directory it names.
   const isGitDir = async (key: string) => {
     const sub = (name: string) => (key ? `${key}/${name}` : name);
-    return await vfs.isFile(sub('HEAD')) && await vfs.isDirectory(sub('objects')) && await vfs.isDirectory(sub('refs'));
+    if (!await vfs.isFile(sub('HEAD'))) return false;
+    return await vfs.isFile(sub('commondir')) || (await vfs.isDirectory(sub('objects')) && await vfs.isDirectory(sub('refs')));
   };
   const segments = normalizeVfsPath(cwd).split('/').filter(Boolean);
   const shared = async (gitdir: string) => await vfs.isFile(`${gitdir}/commondir`);
