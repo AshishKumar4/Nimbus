@@ -129,9 +129,9 @@ export function relayRpcBody(response: Response, method: string, owner: BodyOwne
 /** Who owns work for a relayed body: it ends with `signal`, and hears once the relay settles. */
 export interface BodyOwner {
   readonly signal: AbortSignal;
-  /** The body was delivered whole, or there was none to deliver. */
+  /** The response was delivered whole: its body's end, or no body. */
   settle(): void;
-  /** The body will not be delivered: to its handler, the caller has left. */
+  /** The response will not be delivered, for any reason: to its handler, the caller has left. */
   fail(reason?: unknown): void;
 }
 
@@ -626,7 +626,8 @@ export class PortRegistry {
         },
       );
     } finally {
-      if (!relayed) owner.settle();
+      // Nothing reached the client: to its handler, that caller left.
+      if (!relayed) owner.fail();
     }
   }
 

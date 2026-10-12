@@ -19,13 +19,14 @@ const output = {
   escapeOutput() {},
 };
 
-for (const mode of ['facet', 'peer']) for (const route of ['port', 'direct']) for (const ending of ['eof', 'leave', 'partial-leave', 'error', 'short', 'long', 'no-body', 'leave-before-headers']) {
+for (const mode of ['facet', 'peer']) for (const route of ['port', 'direct']) for (const ending of ['eof', 'leave', 'partial-leave', 'error', 'short', 'long', 'no-body', 'leave-before-headers', 'throw']) {
   let source, cancelled = false, watching = 0, heard = false, handled;
   const handling = Promise.withResolvers();
   const world = createFacetWorld(() => ({
     startProcess: async () => ({}),
     handleHttpRequest: async (request) => {
       handled = request;
+      if (ending === 'throw') throw new Error('the handler failed');
       if (ending === 'leave-before-headers') {
         // A handler that never answers headers hears its caller leave through its request.
         handling.resolve();
@@ -67,11 +68,21 @@ for (const mode of ['facet', 'peer']) for (const route of ['port', 'direct']) fo
       assert.ok(peers === null || (peers.lefts.length === 1 && peers.lefts[0].dups === peers.lefts[0].disposed), `${label}: the peer disposes its caller stub`);
       continue;
     }
+    if (ending === 'throw') {
+      const outcome = await answered.then((value) => value.status, (error) => error.message);
+      await turns();
+      assert.ok(outcome === 502 || /the handler failed/.test(outcome), `${label}: ${outcome}`);
+      assert.equal(handled.signal.aborted, true, `${label}: a handler whose request failed hears its caller is gone`);
+      assert.equal(watching, 0, `${label}: and the work is released`);
+      assert.ok(peers === null || (peers.lefts.length === 1 && peers.lefts[0].dups === peers.lefts[0].disposed), `${label}: the peer disposes its caller stub`);
+      continue;
+    }
     response = await answered;
     await turns();
     if (ending === 'no-body') {
       assert.equal(response.status, 204);
       assert.equal(watching, 0, `${label}: a response without a body owns nothing past its headers`);
+      assert.equal(handled.signal.aborted, false, `${label}: a delivered response is not one its caller left`);
       assert.ok(peers?.lefts.every((left) => left.dups === left.disposed) ?? true, `${label}: the peer disposes its copy of the caller stub`);
       continue;
     }

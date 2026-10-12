@@ -407,7 +407,7 @@ export class PeerHost {
       const { scope, owner } = responseScope(callerLeftSignal(wire.left));
       let response: Response;
       try { response = await facet.handleHttpRequest(new Request(wire.url, init), scope); }
-      catch (error) { owner.settle(); throw error; }
+      catch (error) { owner.fail(error); throw error; }
       let body: ReadableStream | null = null;
       if (response.body) {
         const { readable, writable } = new IdentityTransformStream();
