@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "06caa31f80b23e46dfc2632263aecc6b11f4a7b5d0b267d8440eb7a3ba2c0b82",
+  "fingerprint": "47f257637f344cc1670e8f1ad628332c912a13278d2e7f6914a23ccf1d256b02",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2687,9 +2687,9 @@
     "packages/worker/dist/vfs/resident/permissions.d.ts": "bb547dc5032f45df67784d90370f94df5745fd8f4f49e292c410f43f27cb586b",
     "packages/worker/dist/vfs/resident/permissions.d.ts.map": "551243b8a7a4c0859fcd806bb739cd2a3946f09143ff7c582cac6d70a44b14c3",
     "packages/worker/dist/vfs/resident/permissions.js": "d437dad277530b86bbd402aaeb70191195b6ecf941c86061fa28b251f39f2ccd",
-    "packages/worker/dist/vfs/resident/supervisor.d.ts": "85b3aaae5941c288c2962505d069d894984963d6ad0f5475893d54c9aac8ace5",
-    "packages/worker/dist/vfs/resident/supervisor.d.ts.map": "1df15f4cf41829e0fb32284ea1f879579ebc8af9a47750163f62415898affffe",
-    "packages/worker/dist/vfs/resident/supervisor.js": "92de7707da86db3c522ef7630ee0595d1f32a7e2be23cd1784f35d60830c946e",
+    "packages/worker/dist/vfs/resident/supervisor.d.ts": "26d4402222dd62534beb5ad60c142f5f1beb9540f24d82ee635cb6433b9f4345",
+    "packages/worker/dist/vfs/resident/supervisor.d.ts.map": "edd1ef70149661b31291ffe3872d78027bb5a0dc7dcdc3cf3296d2ef198a8067",
+    "packages/worker/dist/vfs/resident/supervisor.js": "86b2d249aa63f67862a848f3f9f95dc67f8f52e629811fb3f6874eb93a996b6d",
     "packages/worker/dist/vfs/resident/sync.d.ts": "ea891a02977b5b43057617dc98246c2613ca30f9da9434e286578b86c676e3cb",
     "packages/worker/dist/vfs/resident/sync.d.ts.map": "2e29d6936e7c4d3647caec74fade61fccfcbc7fa2029f34672f58ec15a94f9b0",
     "packages/worker/dist/vfs/resident/sync.js": "dff514e7ce48b4b8aff0622a499a8cabc3fef98b8671736139a5cef9befa6bd7",
@@ -3109,7 +3109,7 @@
     "packages/worker/src/vfs/resident/lazy.ts": "80c276e191263c0bca69a5038ae8d21d40861dea3c5179889bdf62c9fe518c7a",
     "packages/worker/src/vfs/resident/namespace.ts": "b89a2387bbc792fd82b02ac639a358bd22cd509df971550a77ae894fd69cdab4",
     "packages/worker/src/vfs/resident/permissions.ts": "1c7aee24a46ca4b428943833483303c79bfa5a94cab9aee164329ca5990ba924",
-    "packages/worker/src/vfs/resident/supervisor.ts": "dde186ca9eae74dc0ed373674a74992e77bf773d16e422b35f3dbc2ebcefbbe2",
+    "packages/worker/src/vfs/resident/supervisor.ts": "518aa2c9be705021406a5c11a7d3b568dd771d8e00543dad57610b270b093cad",
     "packages/worker/src/vfs/resident/sync.ts": "d6d99c95604e444c96b42d40bd34348c71cee31d5ae808d9f20ef2d7af0b53f3",
     "packages/worker/src/vfs/resident/tables.ts": "88ed4397d31cb5cd4ec921b5f996f67d335ad0577db2b177c799017c36be5f44",
     "packages/worker/src/vfs/resident/transport.ts": "07e60616aeb9fdb751efc30d54907ea013ce4412bf77149272d9879e0847283a",
