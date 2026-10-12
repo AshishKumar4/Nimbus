@@ -72,9 +72,11 @@ const decoder = new TextDecoder();
   const session = Object.create(NimbusSession.prototype);
   session.ctx = { facets: {} };
   session.env = {};
-  Object.assign(session, bindRuntimeServices(session, {
+  const services = bindRuntimeServices(session, {
     ctx: session.ctx, env: session.env, notify() {}, async requestLaunchTurn() { return true; },
-  }));
+  });
+  Object.defineProperty(session, 'childProcessHost', { value: services.childProcessHost });
+  Object.assign(session, services);
   session.processes = processes;
   session.filesystem = new SessionFilesystem(rawVfs, session);
   session.terminal = terminal;

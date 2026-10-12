@@ -179,8 +179,7 @@ export interface ChildRunner {
   run(context: ChildRunnerContext): Promise<number | SpawnRefusal>;
 }
 
-export interface ChildProcessManagerDeps {
-  processes: SessionProcessSupervisor;
+export interface ChildProcessHost {
   resolve(request: SpawnReq, origin: ChildOrigin): Promise<ChildRunner | null>;
   /** End the host's work and clean its resources before the broker stamps the exit. */
   terminate(pid: number, signal: string): boolean;
@@ -192,6 +191,10 @@ export interface ChildProcessManagerDeps {
    * only once it has applied every number issued. 0: not numbered.
    */
   issueNews?: (parentPid: number) => number;
+}
+
+export interface ChildProcessManagerDeps extends ChildProcessHost {
+  processes: SessionProcessSupervisor;
 }
 
 /** Cap recursion depth to defend against runaway spawn loops. */
@@ -326,6 +329,11 @@ export class ChildProcessManager {
 
   constructor(deps: ChildProcessManagerDeps) {
     this.deps = deps;
+  }
+
+  /** Bind the platform's runner and cleanup to the workspace's existing broker. */
+  bindHost(host: ChildProcessHost): void {
+    this.deps = { ...host, processes: this.deps.processes };
   }
 
   // ── spawn ───────────────────────────────────────────────────────────────

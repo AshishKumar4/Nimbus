@@ -39,7 +39,7 @@
  */
 
 import type { CommandRegistry } from '@nimbus-sh/core/substrate/lifo/commands/registry.js';
-import type { ChildProcessManager } from '@nimbus-sh/core/runtime/child-process-manager.js';
+import type { ChildProcessHost, ChildProcessManager } from '@nimbus-sh/core/runtime/child-process-manager.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { SessionRouterRpc } from '@nimbus-sh/core/runtime/session-protocol.js';
@@ -90,6 +90,7 @@ export interface SessionInternal extends Pick<SessionRouterRpc,
   readonly facetManager: FacetManager | null;
   /** W8: child_process broker; lazy. */
   childProcessManager: ChildProcessManager | null;
+  readonly childProcessHost: ChildProcessHost;
   esbuildService: EsbuildService | null;
   /** The session's pre-bundle pool (its build facet); lazy via ensureBundlePool. */
   bundlePool: PrebundlePool | null;

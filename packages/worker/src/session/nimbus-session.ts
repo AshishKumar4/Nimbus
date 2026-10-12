@@ -300,6 +300,7 @@ type SessionEnv = runtimeServices.HostedRuntimeEnv & SessionAiHost['env'];
 
 export class NimbusSession extends CloudflareDurableObject<SessionEnv> implements SessionRouterRpc {
   #runtimeServices: ReturnType<typeof runtimeServices.bindRuntimeServices>;
+  get childProcessHost() { return this.#runtimeServices.childProcessHost; }
   // this.ctx and this.env are provided by the DurableObject base class
   runtimeWorkspace: NimbusWorkspace | null = null;
   private runtimeReady: Promise<void> | null = null;

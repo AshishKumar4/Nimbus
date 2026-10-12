@@ -216,6 +216,7 @@ export async function initSession(
       env: envOverlay,
       terminal: self.terminal,
       processes: self.processes,
+      childProcesses: self.childProcessHost,
       runtimeSource: runtimeCatalogSource(self.env),
       egress: self.egressForWorkspace(),
     });

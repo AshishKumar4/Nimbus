@@ -49,7 +49,7 @@ import { ProcessView } from '../runtime/process-files.js';
 import { WorkspaceFs } from './workspace-fs.js';
 import { PID_GEN_STRIDE, type ProcessEntry } from '../runtime/process-table.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
-import { ChildProcessManager } from '../runtime/child-process-manager.js';
+import { ChildProcessManager, type ChildProcessHost } from '../runtime/child-process-manager.js';
 import { resolveWorkspaceChild } from './child-process-runner.js';
 import { exitCodeForSignal } from '../substrate/lifo/shell/signals.js';
 import type { FacetHost } from '../runtime/facet-host.js';
@@ -180,6 +180,7 @@ export interface NimbusWorkspaceOptions {
   readonly ctxExports?: CtxExports;
   /** The process table that allocated supervisor-binding pids. */
   readonly processes?: SessionProcessSupervisor;
+  readonly childProcesses?: ChildProcessHost;
   readonly processOutput?: (stream: 'stdout' | 'stderr', pid: number, data: Uint8Array) => void | Promise<void>;
   readonly filesystemNamespace?: string;
   /**
@@ -371,6 +372,7 @@ export class NimbusWorkspace {
         return resolveWorkspaceChild(workspace, request, origin);
       },
       terminate: (pid, signal) => processes.kill(pid, exitCodeForSignal(signal)),
+      ...options.childProcesses,
     });
     const host = options.facets;
     const facets: FacetHost | undefined = host ? {
