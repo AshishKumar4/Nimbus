@@ -135,5 +135,24 @@ for (const asynchronous of [false, true]) {
   } finally { await direct.close(); await workspace.close(); }
 }
 
+for (const asynchronous of [false, true]) {
+  const state = await fixture(cases[2], asynchronous);
+  let recalled = 0;
+  let pending = true;
+  const namespace = state.box.files.vfs.as(USER);
+  const backend = (await namespace.route('/walk/tree/bad')).source;
+  const stat = backend.stat.bind(backend);
+  backend.stat = (path, options) => {
+    if (pending && path === '/tree/bad') throw new RecallRequired('tree', 'share', path, async () => { pending = false; recalled++; });
+    return stat(path, options);
+  };
+  try {
+    const report = await namespace.removeRecursive('/walk/tree');
+    assert.equal(recalled, 1, 'a traversal recall is retried, not recorded as a removal failure');
+    assert.deepEqual(report.failures, []);
+    assert.equal(state.root.exists('tree'), false);
+  } finally { await state.close(); }
+}
+
 assert.deepEqual(failures, [], failures.join('\n'));
 console.log('composite-rm-shell-fault-matrix: ok');

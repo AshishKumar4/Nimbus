@@ -24,6 +24,7 @@ for (const asynchronous of [false, true]) {
 
   class Walked extends SqliteFiles {
     removeRecursive = undefined;
+    constructor(...args) { super(...args); if (asynchronous) this.sync = undefined; }
     as(cred, actor, options) { return new Walked(engine, engine.as(cred, { ...options, actor })); }
     stat(path, options) {
       const read = () => {
@@ -49,6 +50,13 @@ for (const asynchronous of [false, true]) {
       };
       return asynchronous ? Promise.resolve().then(read) : read();
     }
+    unlink(path) {
+      const remove = () => {
+        if (path === '/tree/stat-parent/unstatable') throw new VfsError('EIO', 'unlink failed', path);
+        return super.unlink(path);
+      };
+      return asynchronous ? Promise.resolve().then(remove) : remove();
+    }
   }
 
   const namespace = new CompositeVFS(new Walked(engine, engine.as(USER)));
@@ -58,7 +66,7 @@ for (const asynchronous of [false, true]) {
   assert.deepEqual(report.removed, ['/tree/free', '/tree/vanished-dir', '/tree/vanished-error', '/tree/vanished-null']);
   assert.deepEqual(report.failures.map(({ path, error }) => [path, error.code, error.syscall, error.path]), [
     ['/tree/blocked', 'EACCES', 'scandir', '/tree/blocked'],
-    ['/tree/stat-parent/unstatable', 'EIO', 'lstat', '/tree/stat-parent/unstatable'],
+    ['/tree/stat-parent/unstatable', 'EIO', 'unlink', '/tree/stat-parent/unstatable'],
   ]);
   assert.equal(root.exists('tree/free'), false, 'read failures do not keep siblings');
   root.chmod('tree/blocked', 0o755);
