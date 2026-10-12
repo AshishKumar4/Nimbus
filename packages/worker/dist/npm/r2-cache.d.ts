@@ -145,6 +145,8 @@ export interface CachedPackument {
     expired: boolean;
     /** The registry's ETag for this body, which a refetch is made conditional on; absent where none was kept. */
     etag?: string;
+    /** Where it was read from R2: R2's own version of the object, which a renewal is conditional on. */
+    stored?: string;
 }
 /** Optional R2 binding shape (we treat null as "not provisioned"). */
 type R2BucketLike = {
@@ -153,12 +155,18 @@ type R2BucketLike = {
         text(): Promise<string>;
         uploaded?: Date;
         customMetadata?: Record<string, string>;
+        /** R2's own version of the object. */
+        etag?: string;
     } | null>;
+    /** Null where `onlyIf` does not hold: nothing is written. */
     put(key: string, body: Uint8Array | ArrayBuffer | string, opts?: {
         httpMetadata?: {
             contentType?: string;
         };
         customMetadata?: Record<string, string>;
+        onlyIf?: {
+            etagMatches: string;
+        };
     }): Promise<unknown>;
     delete(key: string): Promise<unknown>;
 } | null;
@@ -372,7 +380,9 @@ export declare class R2CacheClient {
      * Returns true on success, false on failure (same best-effort posture
      * as putTarball).
      */
-    putPackument(name: string, json: string, registry?: string, expiresAt?: number, etag?: string): Promise<boolean>;
+    putPackument(name: string, json: string, registry?: string, expiresAt?: number, etag?: string, 
+    /** Write only over this version of the stored object (R2's own etag). */
+    over?: string): Promise<boolean>;
     /** Lightweight feature-detection for callers that want to log path. */
     hasTarballBucket(): boolean;
     /** Lightweight feature-detection for callers that want to log path. */

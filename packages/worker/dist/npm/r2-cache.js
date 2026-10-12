@@ -567,7 +567,7 @@ export class R2CacheClient {
         if (!expired && !this.readOnly) {
             await this.fillPackumentL2(l2Key, json, expiresAt > 0 ? expiresAt : now + PACKUMENT_TTL_MS, etag);
         }
-        return { json, ageMs, expired, ...(etag ? { etag } : {}) };
+        return { json, ageMs, expired, ...(etag ? { etag } : {}), ...(obj.etag ? { stored: obj.etag } : {}) };
     }
     /**
      * The colo copy of a packument, kept until `expiresAt`: the cache layer
@@ -656,24 +656,37 @@ export class R2CacheClient {
         catch (e) {
             return { json: null, source: 'network', failure: errorText(e) };
         }
-        // Unchanged since it was cached: the cached body stands, kept as a
-        // fresh answer would be (what the 200 would cost, less its body).
-        const unchanged = resp.status === 304 && cached?.etag !== undefined;
-        if (resp.ok || unchanged) {
-            const json = unchanged ? cached.json : await resp.text();
-            if (!unchanged)
-                this._recordHit('L4', 'packument', json.length);
+        if (resp.status === 304 && cached?.etag !== undefined) {
+            // Unchanged since it was cached: the cached body stands. An expired
+            // copy is kept as a fresh answer would be (what the 200 would cost,
+            // less its body), but only where the stored entry is still the one
+            // validated: a newer body written meanwhile stays. R2 by its own
+            // version of the object (conditional put); the colo copy by its ETag.
+            if (!this.readOnly && shared && cached.expired) {
+                const expiresAt = Date.now() + PACKUMENT_TTL_MS;
+                if (cached.stored !== undefined)
+                    await this.putPackument(name, cached.json, registry, expiresAt, cached.etag, cached.stored);
+                const l2Key = new Request(packumentL2Url(name, registry));
+                const colo = await l2Get(l2Key);
+                if (colo === null || colo.headers.get('x-nimbus-etag') === cached.etag)
+                    await this.fillPackumentL2(l2Key, cached.json, expiresAt, cached.etag);
+            }
+            return { json: cached.json, source: 'r2-cache' };
+        }
+        if (resp.ok) {
+            const json = await resp.text();
+            this._recordHit('L4', 'packument', json.length);
             // Best-effort fill of R2 and of this colo's L2, good until the same
             // time and awaited so a follow-up read sees it; never of what an
             // egress answered. Filling R2 alone left the colo cold until a later
             // session read R2 back: a session each for registry, R2, then L2.
             if (!this.readOnly && shared) {
                 const expiresAt = Date.now() + PACKUMENT_TTL_MS;
-                const etag = resp.headers.get('etag') ?? (unchanged ? cached.etag : undefined) ?? undefined;
+                const etag = resp.headers.get('etag') ?? undefined;
                 await this.putPackument(name, json, registry, expiresAt, etag);
                 await this.fillPackumentL2(new Request(packumentL2Url(name, registry)), json, expiresAt, etag);
             }
-            return { json, source: unchanged ? 'r2-cache' : 'network' };
+            return { json, source: 'network' };
         }
         if (resp.status >= 400 && resp.status < 500) {
             // No such package. Not retryable, and not an error.
@@ -697,15 +710,18 @@ export class R2CacheClient {
      * Returns true on success, false on failure (same best-effort posture
      * as putTarball).
      */
-    async putPackument(name, json, registry = NPM_REGISTRY_ORIGIN, expiresAt = Date.now() + PACKUMENT_TTL_MS, etag) {
+    async putPackument(name, json, registry = NPM_REGISTRY_ORIGIN, expiresAt = Date.now() + PACKUMENT_TTL_MS, etag, 
+    /** Write only over this version of the stored object (R2's own etag). */
+    over) {
         if (!this.packumentBucket)
             return false;
         try {
-            await this.packumentBucket.put(packumentKey(name, registry), json, {
+            const written = await this.packumentBucket.put(packumentKey(name, registry), json, {
                 httpMetadata: { contentType: 'application/json' },
                 customMetadata: { expiresAt: String(expiresAt), ...(etag ? { etag } : {}) },
+                ...(over !== undefined ? { onlyIf: { etagMatches: over } } : {}),
             });
-            return true;
+            return over === undefined || written !== null;
         }
         catch {
             return false;
