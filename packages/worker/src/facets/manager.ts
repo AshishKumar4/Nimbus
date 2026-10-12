@@ -1588,7 +1588,7 @@ export async function generateLongRunningNodeCode(
   const source = moduleSource`
 import { DurableObject } from "cloudflare:workers";
 ${nodeProgramModule(bundleSource, runtime, usesSqlite, vfsState.stagedBindings, opts.wasmImports ?? [])}
-const __NIMBUS_ARGS = ${safeArgs};
+const __NIMBUS_ARGS = ${jsonDataExpression(safeArgs)};
 
 // \`let\`, not \`const\`, so the parsed bundle can be dropped once the store has
 // adopted it. Holding both is the double materialisation: the module map's text
@@ -2634,9 +2634,16 @@ function describeBundleCells(cells: BundleCellSize[], limit = 8): string {
  * The output is a SELF-EXECUTING IIFE expression so it can be substituted
  * directly into `const __MODULE_VFS_BUNDLE = ${expr};` template slots.
  */
+/** JSON object keys are data, including the special JavaScript literal key __proto__. */
+function jsonDataExpression(json: string): string {
+  return `JSON.parse(${JSON.stringify(json)})`;
+}
+
 function _serializeBundleForFacet(bundle: FacetVfsBundle): string {
   const strCells: Record<string, string> = {};
   const binCells: Record<string, string> = {};
+  Object.setPrototypeOf(strCells, null);
+  Object.setPrototypeOf(binCells, null);
   const deniedPaths: string[] = [];
   for (const [k, v] of Object.entries(bundle)) {
     if (typeof v === 'string') {
@@ -2660,10 +2667,7 @@ function _serializeBundleForFacet(bundle: FacetVfsBundle): string {
   }
   // The IIFE revives binary cells in-place. atob → binary string →
   // Uint8Array (Uint8Array.from(str, c=>c.charCodeAt(0))).
-  // Note: when binCells is empty (the overwhelming common case —
-  // source code is all text) the IIFE collapses to a JSON literal,
-  // costing only the IIFE wrapper bytes (~30) per facet boot.
-  return `(function(){const __b=${JSON.stringify(strCells)};const __x=${JSON.stringify(binCells)};const __d=${JSON.stringify(deniedPaths)};for(const __k in __x){__b[__k]=Uint8Array.from(atob(__x[__k]),__c=>__c.charCodeAt(0));}for(const __k of __d){__b[__k]={error:"EACCES"};}return __b;})()`;
+  return `(function(){const __b=${jsonDataExpression(JSON.stringify(strCells))};Object.setPrototypeOf(__b,null);const __x=${jsonDataExpression(JSON.stringify(binCells))};const __d=${JSON.stringify(deniedPaths)};for(const __k in __x){__b[__k]=Uint8Array.from(atob(__x[__k]),__c=>__c.charCodeAt(0));}for(const __k of __d){__b[__k]={error:"EACCES"};}return __b;})()`;
 }
 
 const FACET_VFS_MODULE_PREFIX = '__nimbus_vfs_bundle_';

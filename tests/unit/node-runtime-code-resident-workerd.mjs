@@ -27,10 +27,20 @@
 // generated artifacts before testing a runner change.
 
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { Nimbus } from '../../packages/sdk/src/sandbox.ts';
 
 import { localTerminal, startLocalProbe } from './lib/workerd-probe.mjs';
 
 const W = '/home/user/w';
+const RESIDENT_ENV = [
+  'const keys = ["__proto__", "constructor", "toString"];',
+  'const server = require("http").createServer((q,s) => s.end("ok"));',
+  'server.listen(0, () => {',
+  '  console.log("RESIDENT_ENV " + JSON.stringify({ keys: Object.keys(process.env).filter((key) => keys.includes(key)).sort(), values: keys.map((key) => process.env[key]) }));',
+  '  setTimeout(() => server.close(), 5000);',
+  '});',
+].join('\n');
 const FILES = {
   'server.js': [
     'require("http").createServer((q, s) => s.end("ok")).listen(7071);',
@@ -61,6 +71,35 @@ try {
       `mkdir -p ${W}/node_modules/late-module/deep && node -e "const f = JSON.parse(Buffer.from('${payload}', 'base64').toString()); for (const [n, t] of Object.entries(f)) require('fs').writeFileSync('${W}/' + n, t); console.log('SETUP')"`,
     );
     assert.match(setup.stdout, /SETUP/, setup.stdout);
+
+    const env = Object.fromEntries([['__proto__', 'resident-proto'], ['constructor', 'resident-constructor'], ['toString', 'resident-toString']]);
+    const native = spawnSync('node', ['-e', RESIDENT_ENV], { encoding: 'utf8', timeout: 20_000, env: { ...process.env, ...env } });
+    assert.equal(native.status, 0, native.stderr);
+    const box = Nimbus.connect({ endpoint: probe.base, token: probe.token }).sandbox('resident-env-' + crypto.randomUUID());
+    try {
+      await box.files.write('/home/user/named-env.js', RESIDENT_ENV);
+      const exported = await box.exec("export '__proto__=resident-proto' constructor=resident-constructor toString=resident-toString", { shellId: 'environment' });
+      assert.equal(exported.exitCode, 0, exported.stderr);
+      const started = await box.startProcess('node --watch /home/user/named-env.js', { shellId: 'environment' });
+      let logs;
+      for (const deadline = Date.now() + 30_000; Date.now() < deadline;) {
+        logs = await box.processes.logs(started.pid);
+        if (logs.text.includes('RESIDENT_ENV ')) break;
+        await Bun.sleep(50);
+      }
+      const line = logs?.text.split('\n').find((text) => text.startsWith('RESIDENT_ENV '));
+      assert.equal(line, native.stdout.trim(), 'every exported name reaches a real resident Node process as it reaches native Node');
+      await box.processes.kill(started.pid);
+      const seeded = await box.exec("sudo sh -c 'printf %s proto-root > /__proto__'");
+      assert.equal(seeded.exitCode, 0, seeded.stderr);
+      const rootFile = await box.exec('node -e "const f=require(\'fs\'); console.log(\'ROOT_PROTO \'+JSON.stringify([f.readFileSync(\'/__proto__\',\'utf8\'),f.readdirSync(\'/\').includes(\'__proto__\')]))"');
+      assert.equal(rootFile.exitCode, 0, rootFile.stderr);
+      const rootLine = rootFile.stdout.split('\n').find((text) => text.startsWith('ROOT_PROTO '));
+      assert.ok(rootLine, rootFile.stdout);
+      assert.deepEqual(JSON.parse(rootLine.slice('ROOT_PROTO '.length)), ['proto-root', true], 'the generated Node runner preserves prototype-named root files as data');
+    } finally {
+      await box.destroy();
+    }
 
     /** `pid`'s status in the session's process table (ps). */
     const statusOf = async (pid) => new RegExp(`^\\s*${pid}\\s+(\\S+)`, 'm').exec((await terminal.run('ps')).stdout)?.[1];
