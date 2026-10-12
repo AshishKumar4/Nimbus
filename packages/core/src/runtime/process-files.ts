@@ -1040,17 +1040,15 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
   remove(path: RuntimeFsPath, options?: { recursive?: boolean; force?: boolean; report?: boolean; keepVanishedAncestors?: boolean }) {
     return this.either([path], () => this.bridge.remove(path, options), async () => {
       const p = (await this.path(path, false));
-      const stat = await this.namespace.stat(p, { follow: false });
-      if (stat === null) {
-        if (options?.force) return;
-        throw syscallError('ENOENT', 'rm', p);
+      try {
+        if (!options?.recursive) return this.namespace.unlink(p);
+        const report = await this.namespace.removeRecursive(p, { keepVanishedAncestors: options.keepVanishedAncestors });
+        if (options.report) return report;
+        const failed = report.failures[0];
+        if (failed) throw failed.error;
+      } catch (error) {
+        if (!(options?.force && isVfsError(error, 'ENOENT'))) throw error;
       }
-      if (stat.type !== 'directory') return this.namespace.unlink(p);
-      if (!options?.recursive) throw syscallError('EISDIR', 'rm', p);
-      const report = await this.namespace.removeRecursive(p, { keepVanishedAncestors: options.keepVanishedAncestors });
-      if (options.report) return report;
-      const failed = report.failures[0];
-      if (failed) throw failed.error;
     });
   }
   copyFile(from: RuntimeFsPath, to: RuntimeFsPath) {

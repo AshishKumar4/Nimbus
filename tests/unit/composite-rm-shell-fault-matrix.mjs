@@ -172,6 +172,16 @@ for (const asynchronous of [false, true]) {
 }
 
 for (const asynchronous of [false, true]) {
+  const state = await fixture(cases[6], asynchronous);
+  try {
+    const report = await state.box.workspace.fs.removeRecursive('/walk/tree/bad');
+    assert.deepEqual(report.removed, ['/walk/tree/bad']);
+    assert.deepEqual(report.failures, []);
+    assert.equal(state.root.readFileString('outside/secret'), 'outside');
+  } finally { await state.close(); }
+}
+
+for (const asynchronous of [false, true]) {
   const state = await fixture(cases[2], asynchronous);
   let recalled = 0;
   let pending = true;
