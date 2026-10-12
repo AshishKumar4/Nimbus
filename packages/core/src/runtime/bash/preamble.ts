@@ -182,6 +182,16 @@ function wakeWriters(pp: BashPipe): void {
 // lowestFd must never re-issue it for a regular file.
 function lowestFd(proc: BashProc): number { let fd = 0; while (proc.fds.has(fd) || fd === 3) fd++; return fd; }
 function bumpPipe(s: BashSession, e: { pipeId: number; end: 'r' | 'w' }, d: number): void { const pp = s.pipes.get(e.pipeId) as BashPipe; if (e.end === 'r') pp.readers += d; else pp.writers += d; }
+/** A new descriptor on what `proc`'s stream or pipe descriptor `fd` holds, as dup(2); null for any other kind (AuthorityFilesystemOptions.duplicate). */
+function duplicateStream(s: BashSession, proc: BashProc, fd: number): number | null {
+  const e = proc.fds.get(fd);
+  if (e === undefined || (e.kind !== 'pipe' && e.kind !== 'stdin' && e.kind !== 'stdout' && e.kind !== 'stderr')) return null;
+  const copy = { ...e };
+  const next = lowestFd(proc);
+  proc.fds.set(next, copy);
+  if (copy.kind === 'pipe') bumpPipe(s, copy, 1);
+  return next;
+}
 function closeFd(s: BashSession, proc: BashProc, fd: number): void {
   const e = proc.fds.get(fd);
   if (!e) return;
@@ -354,7 +364,7 @@ function makeWasiFs(s: BashSession, proc: BashProc, DV: () => DataView, U8: () =
     random_get(p: number,n: number): BashErrno { for(let i=0;i<n;i+=65536)crypto.getRandomValues(U8().subarray(p+i,p+Math.min(i+65536,n)));return 0; },
     proc_exit(code: number) { throw new Exit(code); },
   };
-  installAuthorityFilesystem(imports, { fs: () => s.fs, memory, fds: proc.fds, allocateFd: () => lowestFd(proc), synchronous, umask: () => s.cred.umask, residentBytes: WASI_RESIDENT_FILE_CAP_BYTES, resident, processGone: s.gone });
+  installAuthorityFilesystem(imports, { fs: () => s.fs, memory, fds: proc.fds, allocateFd: () => lowestFd(proc), synchronous, umask: () => s.cred.umask, residentBytes: WASI_RESIDENT_FILE_CAP_BYTES, resident, processGone: s.gone, duplicate: (fd) => duplicateStream(s, proc, fd) });
   installPreopenRehoming(proc, imports);
   return imports;
 }
@@ -766,10 +776,11 @@ function makeProc(s: BashSession, pid: number, ppid: number, fds: Map<number, Ba
     // handed back to bash as a live descriptor.
     dup: suspend('dup', async (o: number) => {
       const e = proc.fds.get(o); if (!e) return -E.BADF;
+      const stream = duplicateStream(s, proc, o);
+      if (stream !== null) return stream;
       try {
         const nf = lowestFd(proc);
         proc.fds.set(nf, e.kind === 'authority' ? { ...e, handle: await s.fs.dup(e.handle.id) } : { ...e });
-        if (e.kind === 'pipe') bumpPipe(s, e, 1);
         return nf;
       } catch (error) { return -refusalErrno(error, s.gone); }
     }),

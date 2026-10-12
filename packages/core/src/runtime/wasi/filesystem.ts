@@ -183,6 +183,30 @@ export interface AuthorityFilesystemOptions {
    * descriptor goes to what the table held.
    */
   extension?: Partial<NimbusFsImports>;
+  /**
+   * A new descriptor, at the next free number, on what the host's own
+   * descriptor `fd` holds (a standard stream, a pipe end), as dup(2) makes
+   * one; null when that kind cannot be shared (a socket). Opening a path
+   * that names a descriptor (namedDescriptor) duplicates it: the codec's own
+   * kinds itself, the host's through this. Without it, those paths are the
+   * filesystem's.
+   */
+  duplicate?(fd: number): number | null;
+}
+
+const STANDARD_STREAMS: ReadonlyMap<string, number> = new Map([['/dev/stdin', 0], ['/dev/stdout', 1], ['/dev/stderr', 2]]);
+
+/**
+ * The descriptor an absolute guest path names, as Linux's /dev/fd/N,
+ * /proc/self/fd/N and /dev/std{in,out,err} do; null for any other path. No
+ * filesystem holds what these name: each is the process's own descriptor.
+ */
+export function namedDescriptor(path: string): number | null {
+  const normal = '/' + path.split('/').filter((segment) => segment !== '' && segment !== '.').join('/');
+  const stream = STANDARD_STREAMS.get(normal);
+  if (stream !== undefined) return stream;
+  const numbered = /^\/(?:dev\/fd|proc\/self\/fd)\/(\d{1,9})$/.exec(normal);
+  return numbered === null ? null : Number(numbered[1]);
 }
 
 /**
@@ -258,18 +282,42 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     return e?.kind === 'preopen' ? e : null;
   };
   // wasi-libc resolves a path against its longest matching preopen and passes
-  // only the remainder, so deciding whether the guest named a socket means
-  // rebuilding the absolute path exactly as the host's path_open does.
-  const socketPath = (fd: number, ptr: number, length: number): boolean => {
+  // only the remainder, so deciding whether the guest named a socket or a
+  // descriptor means rebuilding the absolute path exactly as the host's
+  // path_open does. Null for a path this codec cannot decode: that is its own
+  // to reject, with the errno its body would have produced.
+  const guestPath = (fd: number, ptr: number, length: number): string | null => {
     let guest: string;
-    // A path this codec cannot decode is its own to reject, with the errno its
-    // body would have produced.
-    try { guest = path(ptr, length); } catch { return false; }
+    try { guest = path(ptr, length); } catch { return null; }
     const base = fds.get(fd);
     if (!guest.startsWith('/') && base?.kind === 'preopen') {
       guest = base.wasiPath.endsWith('/') ? base.wasiPath + guest : base.wasiPath + '/' + guest;
     }
-    return socketPathPrefixes.some(prefix => guest.startsWith(prefix));
+    return guest;
+  };
+  const socketPath = (fd: number, ptr: number, length: number): boolean => {
+    const guest = guestPath(fd, ptr, length);
+    return guest !== null && socketPathPrefixes.some(prefix => guest.startsWith(prefix));
+  };
+  /** The descriptor a path open names, when the host can duplicate its own kinds. */
+  const named = (fd: number, ptr: number, length: number): number | null => {
+    const guest = options.duplicate === undefined ? null : guestPath(fd, ptr, length);
+    return guest === null ? null : namedDescriptor(guest);
+  };
+  /**
+   * A new descriptor on what descriptor `fd` holds: an authority file's
+   * shares its offset, as dup(2)'s does; a resident copy's reads on from
+   * where it is, its pin staying with the original. ENOENT for a descriptor
+   * the process does not hold, as Linux answers for /dev/fd/N.
+   */
+  const duplicate = (fs: Fs, fd: number): Awaitable<number> => {
+    const e = fds.get(fd);
+    if (e === undefined) fail('ENOENT');
+    const place = (copy: FilesystemFd): number => { const id = options.allocateFd(); fds.set(id, copy); return id; };
+    if (e.kind === 'authority') return after(fs.dup(e.handle.id), handle => place({ ...e, handle }));
+    if (e.kind === 'resident') return place({ kind: 'resident', stat: e.stat, bytes: e.bytes, position: e.position, rights: e.rights, rightsInheriting: e.rightsInheriting, fdflags: e.fdflags });
+    if (e.kind === 'preopen') return place({ ...e });
+    return options.duplicate?.(fd) ?? fail('ENXIO');
   };
   const at = (fd: number, p: string): RuntimeFsPath => {
     if (p.startsWith('/')) fail('ENOTCAPABLE');
@@ -383,6 +431,8 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
   imports.path_open = guard(imports.path_open, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, lookup: number, p: number, n: number, flags: number, rights: bigint, inherit: bigint, status: number, out: number) => {
     if (status & ~5) fail('ENOTSUP');
     pathRight(fd, 13);
+    const descriptor = named(fd, p, n);
+    if (descriptor !== null) return after(duplicate(fs, descriptor), id => { u32(out, id); return 0; });
     if (flags & 1) pathRight(fd, 10);
     if (flags & 8) pathRight(fd, 19);
     const target = at(fd, path(p, n));
@@ -432,9 +482,15 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
       });
     });
   }, args => !socketPath(args[0], args[2], args[3]));
-  imports.path_filestat_get = guard(imports.path_filestat_get, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, flags: number, p: number, n: number, out: number) =>
-    { pathRight(fd, 18); return after(fs.stat(at(fd, path(p, n)), { followSymlinks: !!(flags & 1) }), st => writeStat(out, st ?? fail('ENOENT'))); });
   imports.fd_filestat_get = guard(imports.fd_filestat_get, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, out: number) => { pathRight(fd, 21); return after(stat(fs, fd), st => writeStat(out, st)); }, owns);
+  // A path naming a descriptor is that descriptor's stat, whoever answers it.
+  const descriptorStat = imports.fd_filestat_get;
+  imports.path_filestat_get = guard(imports.path_filestat_get, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, flags: number, p: number, n: number, out: number) => {
+    pathRight(fd, 18);
+    const descriptor = named(fd, p, n);
+    if (descriptor !== null) return fds.has(descriptor) ? descriptorStat(descriptor, out) : fail('ENOENT');
+    return after(fs.stat(at(fd, path(p, n)), { followSymlinks: !!(flags & 1) }), st => writeStat(out, st ?? fail('ENOENT')));
+  });
   imports.fd_read = guard(imports.fd_read, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, p: number, n: number, out: number) => read(fs, fd, p, n, null, out), owns);
   imports.fd_pread = guard(imports.fd_pread, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, p: number, n: number, off: bigint, out: number) => read(fs, fd, p, n, num(off), out), owns);
   imports.fd_write = guard(imports.fd_write, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, p: number, n: number, out: number) => write(fs, fd, p, n, null, out), owns);

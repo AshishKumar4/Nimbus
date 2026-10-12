@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: in a WASI program (bash and its commands, CPython, any compiled
+  program), `/dev/fd/N`, `/proc/self/fd/N`, `/dev/stdin`, `/dev/stdout` and
+  `/dev/stderr` now open the process's own descriptor, as on Linux. Process
+  substitution works: `source <(...)`, `done < <(...)`, `diff <(...) <(...)`.
+  Before, `/dev/fd/N` was not found, `/dev/stdin` read as empty, and writes
+  to `/dev/stdout` and `/dev/stderr` were silently discarded.
+
 ## 2026-10-12: platform 0.8.2, core 0.18.0, fabric 0.13.0, worker 0.16.0, loom 0.2.5, sdk 0.13.1, react 0.3.1, cli 0.2.5, create-nimbus-app 0.2.2
 
 - Fixed: a file or directory a Node program creates has the mode it asked
