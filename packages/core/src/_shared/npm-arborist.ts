@@ -34,7 +34,7 @@
 import { versionAtLeast } from './npm-semver.js';
 import {
   bundledNames, depthOf, edgeRequest, isOptional, isPeer, manifestEdges, MAX_NEST_DEPTH, meets,
-  type EdgeType, type TreeEdge, type TreePackage, type TreeRoot,
+  type EdgeRequest, type EdgeType, type TreeEdge, type TreePackage, type TreeRoot,
 } from './npm-tree.js';
 
 // ── What a host gives and is given ───────────────────────────────────────────
@@ -133,7 +133,23 @@ class Edge {
   /** The node Node's walk finds from `from`, kept current by its tree. */
   to: Node | null = null;
   peerConflicted = false;
-  constructor(readonly from: Node, readonly name: string, readonly spec: string, readonly type: EdgeType, readonly explicit: boolean) {}
+  /** What its spec asks for, read once. */
+  readonly request: EdgeRequest;
+  /** Which versions it accepts, by version: a tree asks one edge of one version many times. */
+  private readonly accepted = new Map<string, boolean>();
+  constructor(readonly from: Node, readonly name: string, readonly spec: string, readonly type: EdgeType, readonly explicit: boolean) {
+    this.request = edgeRequest(name, spec);
+  }
+  /** Whether the registry package `registryName` (where known) at `version` meets it (dep-valid). */
+  accepts(registryName: string | undefined, version: string): boolean {
+    if (registryName !== undefined && registryName !== this.request.registryName) return false;
+    let answer = this.accepted.get(version);
+    if (answer === undefined) {
+      answer = meets(version, { name: this.name, range: this.spec });
+      this.accepted.set(version, answer);
+    }
+    return answer;
+  }
   get peer(): boolean { return isPeer(this.type); }
   get optional(): boolean { return isOptional(this.type); }
   /** Edge.valid: met, or an absent optional peer; never a peer inside its own dependent. */
@@ -190,23 +206,19 @@ class Node {
     for (let up = this.parent; up; up = up.parent) depth++;
     return depth;
   }
-  *ancestry(): Generator<Node> { for (let node: Node | null = this; node; node = node.parent) yield node; }
   isDescendantOf(ancestor: Node): boolean {
-    for (const node of this.ancestry()) if (node === ancestor) return true;
+    for (let node: Node | null = this; node; node = node.parent) if (node === ancestor) return true;
     return false;
   }
   resolve(name: string): Node | null {
-    for (const node of this.ancestry()) {
+    for (let node: Node | null = this; node; node = node.parent) {
       const child = node.children.get(name);
       if (child) return child;
     }
     return null;
   }
-  satisfies(edge: Pick<Edge, 'name' | 'spec'>): boolean {
-    if (this.pkg === null || edge.name !== this.name) return false;
-    const { registryName } = edgeRequest(edge.name, edge.spec);
-    if (this.pkg.registryName !== undefined && this.pkg.registryName !== registryName) return false;
-    return meets(this.pkg.version, { name: edge.name, range: edge.spec });
+  satisfies(edge: Edge): boolean {
+    return this.pkg !== null && edge.name === this.name && edge.accepts(this.pkg.registryName, this.pkg.version);
   }
   /** The same package at the same version. */
   matches(other: Node): boolean {
@@ -371,7 +383,7 @@ function peerEntrySets(node: Node): Map<Edge, Set<Node>> {
 
 /** The deepest place `name`, a dependency of `start`, may go: above every dependent that has it as a peer. */
 function deepestNestingTarget(start: Node, name: string | undefined): Node {
-  for (const target of start.ancestry()) {
+  for (let target: Node | null = start; target; target = target.parent) {
     if (target.isProjectRoot || target.parent === null || target.globalTop) return target;
     const edge = name === undefined ? undefined : target.edgesOut.get(name);
     if (!edge || !edge.peer) return target;
@@ -816,7 +828,7 @@ class Builder<P extends TreePackage> {
       canPlace: null, canPlaceSelf: null, placed: null, children: [], needEvaluation: new Set(),
     };
     if (edge.to && edge.valid && !explicit) return placement;
-    for (const target of placement.start.ancestry()) {
+    for (let target: Node | null = placement.start; target; target = target.parent) {
       const targetEdge = target.edgesOut.get(edge.name);
       if (!target.isTop && targetEdge && targetEdge.peer) continue;
       const check = new CanPlace(dep, target, edge, parent?.canPlace ?? null, [], false, explicit);
