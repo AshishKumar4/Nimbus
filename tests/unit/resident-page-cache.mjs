@@ -13,10 +13,10 @@
  *     cap, nor RESIDENT_PAGE_CACHE_FREE_SHARE of what they hold plus what
  *     the session's ledger says is still free, the least recently used out
  *     first;
- *   - a store that starts again from nothing (a new lazy boot) holds no page;
- *   - a kept store (SQLite an earlier process left) resumes with its pages
- *     for the same credential in the same epoch, and starts from nothing for
- *     another credential, another epoch, or a store whose stamp is gone.
+ *   - a store that starts again from nothing (a new lazy boot) holds no page.
+ *
+ * A warm facet's next process keeps the store and its pages
+ * (wasi-resident-fs-kept-store).
  */
 
 import assert from 'node:assert/strict';
@@ -25,7 +25,7 @@ import { FACET_RESIDENT_STORE_SOURCE } from '../../packages/worker/src/vfs/facet
 import { RESIDENT_PAGE_BYTES, RESIDENT_PAGE_CACHE_BYTES, RESIDENT_PAGE_CACHE_FREE_SHARE } from '../../packages/platform/src/limits.ts';
 
 const P = RESIDENT_PAGE_BYTES;
-const API = 'bindInMemory: __residentBindInMemory, bindTables: __residentBindTables, onSql: __residentTablesOnSql, bootLazy: __residentBootLazy, resume: __residentResumeLazy,'
+const API = 'bindInMemory: __residentBindInMemory, bindTables: __residentBindTables, onSql: __residentTablesOnSql, bootLazy: __residentBootLazy,'
   + ' view: __residentNamespaceView, pageHeld: __residentPageHeld, setStorage: __residentSetStorage, tables: () => __residentT';
 const freshStore = () => new Function(`${FACET_RESIDENT_STORE_SOURCE}\nreturn { ${API} };`)();
 
@@ -139,33 +139,6 @@ for (const backing of ['heap', 'sqlite']) {
   const held = store.pageHeld();
   assert.ok(held > 0, 'pages are held');
   assert.ok(held <= RESIDENT_PAGE_CACHE_FREE_SHARE * (held + free), `within their share of what is free (${held} bytes held, ${free} free)`);
-}
-
-// A kept store: the next process resumes with what the last one read.
-{
-  const sql = sqlShim();
-  const size = 8 * P;
-  const { s } = session(size);
-  const firstProcess = freshStore();
-  firstProcess.bindTables(firstProcess.onSql(sql));
-  firstProcess.setStorage(undefined, s);
-  assert.equal(await firstProcess.resume(s, USER), true, 'a store with no cursor boots fresh');
-  assert.equal((await firstProcess.view(s, 1, USER).pages('home/user/big', 5, size, 0, 3)).fetched, 4);
-  const next = async (cred, epoch = 'e1') => {
-    s.epoch = epoch;
-    const store = freshStore();
-    store.bindTables(store.onSql(sql));
-    store.setStorage(undefined, s);
-    assert.equal(await store.resume(s, cred), true);
-    return store;
-  };
-  const same = await next(USER);
-  assert.equal((await same.view(s, 1, USER).pages('home/user/big', 5, size, 0, 3)).fetched, 0, 'the same credential resumes with the pages');
-  const other = await next({ uid: 0, gid: 0, groups: [0] });
-  assert.equal(other.pageHeld(), 0, 'another credential starts from nothing');
-  await next(USER);
-  const moved = await next(USER, 'e2');
-  assert.equal(moved.pageHeld(), 0, 'another epoch starts from nothing');
 }
 
 assert.ok(RESIDENT_PAGE_CACHE_BYTES >= 64 * 1024 * 1024, 'the bound holds a deep history\'s index');

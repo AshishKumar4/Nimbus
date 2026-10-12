@@ -411,10 +411,8 @@ async function bundleAnsweringSupervisor() {
 /** The resident store's functions the WASI shim calls (wasi/preamble.ts declares them). */
 const WASI_RESIDENT_STORE_TOP_LEVEL = [
   '__residentBindInMemory',
-  '__residentBind',
   '__residentSetStorage',
   '__residentBootLazy',
-  '__residentResumeLazy',
   '__residentNamespaceView',
 ];
 

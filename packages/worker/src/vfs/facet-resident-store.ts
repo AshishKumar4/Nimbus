@@ -2398,48 +2398,6 @@ async function __residentBootLazy(supervisor) {
   return true;
 }
 
-/** Whose names a store holds: rows another credential walked are not this one's. */
-function __residentCredStamp(cred) {
-  if (!cred) return "";
-  const groups = (cred.groups || []).map(Number).sort((a, b) => a - b).join(",");
-  return Number(cred.uid) + ":" + Number(cred.gid) + ":" + groups;
-}
-
-/**
- * Boot a lazily listed namespace over a store an earlier process left (a
- * named one-shot's SQLite), so what it read is not read again: the delta from
- * the store's own cursor drops every file row a change since then reached and
- * keeps the rest, and the pages stay (a read takes one only at the revision
- * its file still has). Names are learned again on demand, as a lazy boot's
- * are: a delta admitted to a sealed store does not rewrite them. A store with
- * no cursor, another credential's, another epoch's, or one its delta cannot
- * bring forward (a poison) starts again from nothing (__residentBootLazy).
- */
-async function __residentResumeLazy(supervisor, cred) {
-  if (!__residentReady) throw new Error("Nimbus: __residentResumeLazy before __residentBind");
-  const t = __residentT;
-  const who = __residentCredStamp(cred);
-  const fresh = async () => {
-    const booted = await __residentBootLazy(supervisor);
-    if (booted) t.metaSet("cred", who);
-    return booted;
-  };
-  const cursor = __residentCursor();
-  if (cursor === null || t.metaGet("cred") !== who || !supervisor || typeof supervisor.fsAcquire !== "function") return fresh();
-  let answer = null;
-  try { answer = await supervisor.fsAcquire(cursor.epoch, cursor.rev, { namespace: true }); }
-  catch { answer = null; }
-  if (!answer || answer.poison || answer.epoch !== cursor.epoch || typeof answer.rev !== "number") return fresh();
-  __residentAdmit(answer);
-  __nsLazy = true;
-  __nsListed.clear();
-  t.nsClear();
-  __nsLinks = new Set();
-  __nsUnlisted = new Map();
-  __nsMarkReady(t, true);
-  return true;
-}
-
 /**
  * The ACQUIRE barrier of a lazily listed namespace, taken where input from
  * outside the process enters it (the runtime decides where; see the core
