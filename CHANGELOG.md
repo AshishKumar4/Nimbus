@@ -5,6 +5,25 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- One change notification for the namespace: `CompositeVFS.watchChanges(path,
+  listener)` tells every change a view shows at a path or under it, on any
+  mount, as `VfsEvent`s (paths in the namespace), without reading, holding or
+  serializing anything. A backend may tell its own (the new optional
+  `VFS.watchChanges`, which `SqliteFiles` implements: the kernel hears SQLite's
+  stream as the engine batches it, any other principal is judged as each change
+  is published); any other mount's changes are told as they land through the
+  namespace, typed by the operation (whether a whole-file or range write made
+  its file is not looked up: those are `change`). The file tree's `fs-watch`,
+  the real Vite facet's chokidar (`CirrusReal`'s `vfsEvents` option is now
+  `watchChanges`) and a process's `RuntimeFsBridge.subscribe` hear the
+  namespace, so they see changes on mounts too, and not a write SQLite takes
+  under a mount point; a rename's `oldPath` reaches chokidar absolute. The
+  shell's built-in `node` has a working `fs.watch` (`NodeFilesystem.watch`
+  replaces `onChange`): Node's `rename`/`change` events, named from the
+  watched directory (recursive or not) or as the watched file, a persistent
+  watch keeping the program until it is closed; it watched the root, which
+  never fired. `VfsEventEmitter.on` hears what is published after it
+  registers, and a path listener on the root (`''`) hears every path.
 - A file on a mount is opened by one rule, and its open description is one
   implementation (`vfs/mounted-description.js`), for a process's synchronous
   face, its asynchronous one, and a wave's `open`; one descriptor numbering per
