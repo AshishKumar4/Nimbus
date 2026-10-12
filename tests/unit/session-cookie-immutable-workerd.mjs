@@ -4,12 +4,14 @@
 // order, and the upgraded socket must still work after the copy.
 import assert from 'node:assert/strict';
 import { startLocalProbe } from './lib/workerd-probe.mjs';
-import { attachPathFor, deleteSession, mintSession } from '../behavioral/_driver.mjs';
+// NOTE: the driver reads BASE/NIMBUS_PROBE_TOKEN at import time, so it is
+// imported dynamically after startLocalProbe sets them (as localTerminal does).
 
 const probe = await startLocalProbe({ runtimes: [] });
+process.env.BASE = probe.base;
+process.env.NIMBUS_PROBE_TOKEN = probe.token;
+const { attachPathFor, deleteSession, mintSession } = await import('../behavioral/_driver.mjs');
 try {
-  process.env.BASE = probe.base;
-  process.env.NIMBUS_PROBE_TOKEN = probe.token;
   void mintSession; void deleteSession;
   const sid = await mintSession();
   try {
