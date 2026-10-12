@@ -230,10 +230,12 @@ export interface NpmInstallResult {
   linkedBins?: number;
 }
 
-/** What a lockfile says is installed: each placement's package, by its registry identity, version and integrity. */
+/** What a lockfile says is installed: each placement's package, by its registry identity, version and integrity, in placement order. */
 function lockRevision(lockfile: ReadonlyMap<string, LockfileEntry>): string {
   let revision = '';
-  for (const [at, entry] of lockfile) revision += `${at}\0${entry.registryName || entry.name}\0${entry.resolvedVer}\0${entry.integrity}\n`;
+  for (const [at, entry] of [...lockfile].sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0))) {
+    revision += `${at}\0${entry.registryName || entry.name}\0${entry.resolvedVer}\0${entry.integrity}\n`;
+  }
   return revision;
 }
 
