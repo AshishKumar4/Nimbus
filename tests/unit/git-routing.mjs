@@ -280,6 +280,12 @@ assert.equal((await git([...inRepo, 'status', '--short'], { env: configEnv })).s
 for (const signature of ['link', 'sdir']) {
   user.writeFile('home/user/repo/.git/index', encodeIndexFile([], [{ signature, bytes: new Uint8Array(20) }]));
   const before = user.readFile('home/user/repo/.git/index');
+  for (const words of [['checkout'], ['checkout', 'HEAD'], ['add'], ['reset', '--soft', 'HEAD']]) {
+    const ran = await git([...inRepo, ...words]);
+    assert.deepEqual(ran.real, [], `${signature}: ${words.join(' ')} does not consume the index`);
+    assert.equal(ran.code, 0, ran.stderr);
+    assert.deepEqual(user.readFile('home/user/repo/.git/index'), before);
+  }
   for (const words of [['status'], ['add', 'f'], ['commit', '-am', 'no-commit'], ['checkout', '-b', 'unreadable'], ['reset', '--hard', 'HEAD'], ['merge', 'topic']]) {
     const ran = await git([...inRepo, ...identity, ...words]);
     assert.deepEqual(ran.real, [[...inRepo, ...identity, ...words]], `${signature}: ${words[0]} hands off`);
