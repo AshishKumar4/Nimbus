@@ -151,7 +151,6 @@ import { createNamespace } from './namespace.js';
 import { createSync } from './sync.js';
 import { heapTables, sqlTables } from './tables.js';
 export { namespaceRowBytes, residentFileCost } from './cell-cost.js';
-export { programAllows } from './permissions.js';
 export { NS_DIR, NS_FILE, NS_LINK } from './tables.js';
 export function createResidentStore(options = {}) {
     const coherence = createCoherence();

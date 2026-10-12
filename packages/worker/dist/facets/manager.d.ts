@@ -290,7 +290,7 @@ export declare function generateLongRunningNodeCode(userCode: string, vfsState: 
  *
 
  * The process's view of names and stats is the namespace its store boots on
- * (vfs/facet-resident-store.ts), never a spawn-time table.
+ * (vfs/resident), never a spawn-time table.
  */
 type FacetVfsDenial = {
     error: 'EACCES';
@@ -504,7 +504,7 @@ interface FacetVfsBundleSource {
     runtimeCode: string;
     /**
      * What the process's store charges itself to adopt the data cells and the
-     * code cells it reads back (facet-resident-store's __residentCellCost).
+     * code cells it reads back (vfs/resident residentCellCost).
      */
     storageBytes: number;
 }
@@ -1578,7 +1578,7 @@ export declare class FacetManager {
      * Every package.json the process's credential can see (data-plan.ts's
      * `package-json` rule, which a resident's plan applies itself), as copies a
      * one-shot is handed beside its plan: its store holds each manifest its own
-     * listing names from boot (facet-resident-store's __residentSetManifests).
+     * listing names from boot (vfs/resident sync.setManifests).
      * A program resolves package names its closure never named, and reads each
      * manifest synchronously to do it: vite's config load, for every import of
      * the config it decides whether to externalize.

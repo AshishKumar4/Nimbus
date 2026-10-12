@@ -53,6 +53,7 @@ import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { ERRNO_DESCRIPTION } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { SYSTEM_IDENTITY } from '@nimbus-sh/core/constants.js';
 import { DIRENT_TYPES } from '@nimbus-sh/core/vfs/dirent-type.js';
+import { posixAccess } from '@nimbus-sh/core/vfs/posix-access.js';
 import { STDIN_SYNC_READ_BYTES, STDIN_FILE_READ_PIECE_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { COMMONJS_WRAPPER_NAMES } from '@nimbus-sh/core/runtime/javascript-ast.js';
 import { ES_MODULE_SCOPE_GLOBAL } from '@nimbus-sh/core/runtime/module-format.js';
@@ -900,7 +901,7 @@ function __nimbusOutText(streamName, bytes) {
  * literal walk it always was.
  */
 function __residentUnder(prefix) {
-  if (typeof __residentKeysUnder === "function") return __residentKeysUnder(prefix);
+  if (typeof __resident !== "undefined") return __resident.cells.keysUnder(prefix);
   const out = [];
   if (__vfsBundle) for (const bk in __vfsBundle) if (bk.startsWith(prefix)) out.push(bk);
   return out;
@@ -908,7 +909,7 @@ function __residentUnder(prefix) {
 
 /** Whether ANYTHING is held under a prefix. The hot half — never materializes. */
 function __residentAnyUnder(prefix) {
-  if (typeof __residentHasUnder === "function") return __residentHasUnder(prefix);
+  if (typeof __resident !== "undefined") return __resident.cells.hasUnder(prefix);
   if (__vfsBundle) for (const bk in __vfsBundle) if (bk.startsWith(prefix)) return true;
   return false;
 }
@@ -1026,7 +1027,7 @@ const __fsMod = (() => {
   // ── VFS bundle lookup (fast path — in-memory) ──
   function _bundleLookup(absPath) {
     const k = _strip(absPath);
-    if (globalThis.__nimbusProfileStaged) globalThis.__nimbusProfileStaged.delete(k);
+    if (typeof __nimbusObserveRead === "function") __nimbusObserveRead(k);
     // The parked write first, as _writtenCell reads: it is this process's own,
     // newer than anything the store holds, and it is the live cell (a store
     // read reassembles a copy, which a write loop would pay for per write).
@@ -1045,13 +1046,13 @@ const __fsMod = (() => {
   // Whether the store is bound: every embedding of these shims boots one (a
   // facet's SQLite, or a one-shot's heap), and this is the single place that asks.
   function _residentStorePresent() {
-    return typeof __residentAdmit === "function" && typeof __residentReady !== "undefined" && __residentReady;
+    return typeof __resident !== "undefined" && __resident.coherence.bound();
   }
 
   // ── The namespace (resident facets) ──
   //
   // A resident facet's store holds every name the credential can see, with
-  // its stat, exact at the cursor (vfs/facet-resident-store.ts). While it
+  // its stat, exact at the cursor (vfs/resident). While it
   // does, it answers every synchronous metadata question — stat, exists,
   // readdir, realpath, access — and an absent name is known absent, so none
   // of them records a miss or refuses. While it does not (a relist failed,
@@ -1067,7 +1068,7 @@ const __fsMod = (() => {
   // that has applied, because such a barrier's delta is answered after the
   // mutation committed, so the table then shows it or anything later.
   function _nsActive() {
-    return typeof __nsReady === "function" && __nsReady();
+    return typeof __resident !== "undefined" && __resident.namespace.ready();
   }
   // The namespace answers every synchronous metadata question, or none. While
   // it is not ready (a relist failed, until the next barrier repairs it) a
@@ -1076,7 +1077,7 @@ const __fsMod = (() => {
   function _nsRequire(syscall, displayPath, asyncForm) {
     if (_nsActive()) return;
     _stats.namespaceRefusals++;
-    const why = typeof __nsNotReadyCause === "function" ? __nsNotReadyCause() : "the process was started without one";
+    const why = typeof __resident !== "undefined" ? __resident.namespace.notReadyCause() : "the process was started without one";
     const err = _fsErr("EAGAIN", syscall, displayPath);
     err.message = "EAGAIN: " + syscall + " '" + String(displayPath) + "': the namespace is being rebuilt after " + why
       + (_supervisor() ? "; use " + asyncForm : "");
@@ -1089,7 +1090,7 @@ const __fsMod = (() => {
    * directory, whose entries are not known. Null when the namespace knows.
    */
   function _nsUnlisted(absPath, follow, listing) {
-    return _nsActive() && typeof __nsUnknown === "function" ? __nsUnknown(_strip(absPath), follow !== false, !!listing) : null;
+    return _nsActive() ? __resident.namespace.unknown(_strip(absPath), follow !== false, !!listing) : null;
   }
   /**
    * What a synchronous call answers on a mounted path its launch did not
@@ -1115,18 +1116,18 @@ const __fsMod = (() => {
   function _nsOwnSet(k, state, extra) {
     const before = _nsOwn.get(k);
     const entry = { state, from: extra?.from, link: extra?.link, hide: !!extra?.hide, settled: null };
-    try { __residentNamespaceOverlayDelta(_nsOwnCost(k, entry) - (before ? _nsOwnCost(k, before) : 0)); }
+    try { __resident.namespace.overlayDelta(_nsOwnCost(k, entry) - (before ? _nsOwnCost(k, before) : 0)); }
     catch (error) {
       // The view is sealed by the store. Let the already-projected structural
       // operation reach its authority/ack; aborting midway would strand
       // earlier overlays with no owning mutation to retire them.
-      if (__residentInHeap && error?.code === "ENOSPC") return;
+      if (__resident.admission.inHeap && error?.code === "ENOSPC") return;
       throw error;
     }
     _nsOwn.set(k, entry);
     _nsFresh.push(entry);
   }
-  function _nsOwnCost(k, entry) { return __namespaceRowBytes("", k, (entry.from ?? "") + (entry.link ?? "")); }
+  function _nsOwnCost(k, entry) { return __nimbusResidentModule.namespaceRowBytes("", k, (entry.from ?? "") + (entry.link ?? "")); }
   /** Hand the overlay entries made since the last mutation to the one being queued. */
   function _nsTakeFresh() {
     const mine = _nsFresh;
@@ -1136,7 +1137,7 @@ const __fsMod = (() => {
   function _nsRetire(begin) {
     for (const [k, entry] of _nsOwn) if (entry.settled !== null && entry.settled < begin) {
       _nsOwn.delete(k);
-      __residentNamespaceOverlayDelta(-_nsOwnCost(k, entry));
+      __resident.namespace.overlayDelta(-_nsOwnCost(k, entry));
     }
   }
 
@@ -1182,7 +1183,7 @@ const __fsMod = (() => {
    */
   function _nsLandingKey(k) {
     if (!_nsActive() || _nsOwnView(k) !== null) return k;
-    const found = __nsLookup(k, true);
+    const found = __resident.namespace.lookup(k, true);
     return found === "ELOOP" ? null : found.path;
   }
 
@@ -1204,7 +1205,7 @@ const __fsMod = (() => {
   function _nsHeldKey(k) {
     const own = _nsOwnView(k);
     if (own === "absent" || (own && (own.dir || own.hide))) return null;
-    const found = __nsLookup(own && own.alias !== undefined ? own.alias : k, true);
+    const found = __resident.namespace.lookup(own && own.alias !== undefined ? own.alias : k, true);
     return found === "ELOOP" ? null : found.path;
   }
 
@@ -1212,7 +1213,7 @@ const __fsMod = (() => {
   function _nsEntryKey(k) {
     const own = _nsOwnView(k);
     if (own === "absent" || (own && (own.dir || own.hide))) return null;
-    const found = __nsResolve(own && own.link !== undefined ? _nsMovedEntry(k, own) : own && own.alias !== undefined ? own.alias : k, false);
+    const found = __resident.namespace.resolve(own && own.link !== undefined ? _nsMovedEntry(k, own) : own && own.alias !== undefined ? own.alias : k, false);
     return found && found !== "ELOOP" ? found.path : null;
   }
 
@@ -1224,13 +1225,13 @@ const __fsMod = (() => {
    * the rename's own answer retires it.
    */
   function _nsMovedEntry(k, own) {
-    return __nsRowAt(__residentRequire(), own.link) !== undefined ? own.link : k;
+    return __resident.namespace.rowAt(own.link) !== undefined ? own.link : k;
   }
 
   /** The table key \`k\` denotes (overlay and symlinks applied), or null. */
   function _nsRealKey(k) {
     const held = _nsHeldKey(k);
-    return held !== null && __nsRowAt(__residentRequire(), held) !== undefined ? held : null;
+    return held !== null && __resident.namespace.rowAt(held) !== undefined ? held : null;
   }
 
   function _nsRowMeta(row) {
@@ -1250,7 +1251,7 @@ const __fsMod = (() => {
    * caught up with.
    */
   function _nsMeta(k, follow) {
-    if (k === "") return _nsRowMeta(__nsResolve("", true).row);
+    if (k === "") return _nsRowMeta(__resident.namespace.resolve("", true).row);
     if (__vfsWrites && k in __vfsWrites && _denialCode(__vfsWrites[k]) === null) {
       const size = _byteLen(__vfsWrites[k]);
       if (_createdHere.has(k)) {
@@ -1259,7 +1260,7 @@ const __fsMod = (() => {
       // A rewrite of a file that was there: its owner and mode stay what the
       // authority says they are, under the name it had before a rename.
       const renamed = _nsOwnView(k);
-      const found = __nsResolve(renamed && renamed.alias !== undefined ? renamed.alias : k, follow);
+      const found = __resident.namespace.resolve(renamed && renamed.alias !== undefined ? renamed.alias : k, follow);
       if (found && found !== "ELOOP" && Number(found.row.kind) === 0) return { ..._nsRowMeta(found.row), size };
     }
     const own = _nsOwnView(k);
@@ -1267,7 +1268,7 @@ const __fsMod = (() => {
     if (own && own.dir) return { type: "directory", size: 0, mode: 0o40777 & ~__processUmask, uid: cred.uid, gid: cred.gid, own: true };
     // A symlink this process moved is still a link to lstat.
     if (!follow && own && own.link !== undefined) {
-      const found = __nsResolve(_nsMovedEntry(k, own), false);
+      const found = __resident.namespace.resolve(_nsMovedEntry(k, own), false);
       if (found === "ELOOP") return "ELOOP";
       return found ? _nsRowMeta(found.row) : "absent";
     }
@@ -1275,7 +1276,7 @@ const __fsMod = (() => {
     // name before, but not what this process has put there since: those rows
     // are its own writes, recorded when the authority accepted them.
     if (!own || own.alias !== undefined || (own.hide && _createdHere.has(k))) {
-      const found = __nsResolve(own && own.alias !== undefined ? own.alias : k, follow);
+      const found = __resident.namespace.resolve(own && own.alias !== undefined ? own.alias : k, follow);
       if (found === "ELOOP") return "ELOOP";
       if (found) return _nsRowMeta(found.row);
       // Followed to a name the table does not list yet: a file this process
@@ -1296,9 +1297,9 @@ const __fsMod = (() => {
     const names = new Map();
     const own = _nsOwnView(k);
     if (own !== "absent" && !(own && own.hide) && !(own && own.dir && _nsOwn.get(k)?.hide)) {
-      const real = __nsResolve(own && own.alias !== undefined ? own.alias : k, true);
+      const real = __resident.namespace.resolve(own && own.alias !== undefined ? own.alias : k, true);
       if (real && real !== "ELOOP") {
-        for (const child of __nsChildren(real.path)) {
+        for (const child of __resident.namespace.children(real.path)) {
           names.set(child.name, child.kind === 1 ? "directory" : child.kind === 2 ? "symlink" : _direntTypeOfMode(child.mode, "file"));
         }
       }
@@ -1407,7 +1408,7 @@ const __fsMod = (() => {
     // Unreadable to this credential: the namespace's mode says so, and no
     // bytes could have been staged for it.
     if (!_modeAllows(st, 4)) return _fsErr("EACCES", syscall, displayPath);
-    if (typeof __residentStorageMiss === "function" && __residentStorageMiss(_strip(absPath))) {
+    if (typeof __resident !== "undefined" && __resident.cells.storageMiss(_strip(absPath))) {
       // The process's own write, which neither its store nor its heap budget
       // could hold: the workspace's storage is full.
       const full = _fsErr("ENOSPC", syscall, displayPath);
@@ -1649,10 +1650,10 @@ const __fsMod = (() => {
       // A store at its budget refuses a fill, and asks for room only then.
       // The repair can wait, so it reserves the room first, and the bytes it
       // fetches land in it; where none is to be had, they are not fetched.
-      if (typeof meta.size === "number" && typeof __residentReserve === "function" && !(await __residentReserve(k, __residentFileCost(meta.size)))) return;
+      if (typeof meta.size === "number" && typeof __resident !== "undefined" && !(await __resident.admission.reserve(k, __nimbusResidentModule.residentFileCost(meta.size)))) return;
     }
     try { await _liveReadFile(absPath, undefined, undefined, charge); }
-    finally { if (typeof __residentRelease === "function") __residentRelease(k); }
+    finally { if (typeof __resident !== "undefined") __resident.admission.release(k); }
   }
 
   /**
@@ -1697,7 +1698,7 @@ const __fsMod = (() => {
   // What the authority says of a path after this process's own async request
   // (a stat, read or accepted write) is what the sync view answers for it
   // from then on, as it would after the delta that reports it
-  // (facet-resident-store's __nsNoteLiveStat).
+  // (vfs/resident namespace.noteLiveStat).
   //
   // The lstat rides the read batch (_queueBatchRequest) rather than a call
   // of its own: a resumption refetches every path it owes at once
@@ -1706,7 +1707,7 @@ const __fsMod = (() => {
   // some of which stayed pending and never reached the session
   // (preview/new/lucide-barrel-cache-widens, measured 2026-09-28). Batched,
   // the learns cost a round trip per batch, as the reads before them do.
-  /** \`written\`: the revision of the own write the stat is asked after (__nsNoteLiveStat). */
+  /** \`written\`: the revision of the own write the stat is asked after (namespace.noteLiveStat). */
   async function _learnLive(absPath, supervisor, written) {
     if (!supervisor || typeof supervisor.fsReadBatch !== "function") return;
     const ticket = _beginFill(_strip(absPath));
@@ -1732,7 +1733,7 @@ const __fsMod = (() => {
    */
   function _noteLearnedStat(absPath, stat, ticket, written) {
     if (ticket.reported > (written === undefined ? ticket.rev : Math.max(written, ticket.rev))) return false;
-    __nsNoteLiveStat(_strip(absPath), stat, written);
+    __resident.namespace.noteLiveStat(_strip(absPath), stat, written);
     return true;
   }
 
@@ -2277,7 +2278,7 @@ const __fsMod = (() => {
     // The store dates the row at the read's cursor, so the next delta that
     // names the path above it evicts it. It declines, itself, to replace own
     // bytes or a row dated later than this read can vouch for.
-    if (!__residentFill(k, bytes, fill.rev)) return;
+    if (!__resident.cells.fill(k, bytes, fill.rev)) return;
     _stats.fills++;
     _stats.filledBytes += _byteLen(bytes);
   }
@@ -2323,13 +2324,13 @@ const __fsMod = (() => {
 
   /**
    * The repair's first try: the delta from the store's durable floor
-   * (__residentCursor), asked as every barrier asks it. True when it applied
+   * (coherence.cursor), asked as every barrier asks it. True when it applied
    * (the repair is done); false when a listing is needed after all.
    */
   async function _repairFromFloor(supervisor, result) {
     if (!supervisor || typeof supervisor.fsAcquire !== "function" || !_nsActive()) return false;
     if (result !== null && result.poison === true) return false;
-    const floor = __residentCursor();
+    const floor = __resident.coherence.cursor();
     if (floor === null || (result !== null && result.epoch !== floor.epoch)) return false;
     let delta;
     try {
@@ -2337,16 +2338,16 @@ const __fsMod = (() => {
     } catch { return false; }
     if (!delta || delta.poison === true || typeof delta.rev !== "number" || delta.epoch !== floor.epoch) return false;
     if (Array.isArray(delta.paths)) for (const entry of delta.paths) _noteReport(entry);
-    await __residentRoomForPushed(delta);
-    const applied = __residentAdmit(delta);
-    for (const dir of applied.relist) await __nsRelist(supervisor, dir);
+    await __resident.admission.roomForPushed(delta);
+    const applied = __resident.cells.admit(delta);
+    for (const dir of applied.relist) await __resident.sync.relist(supervisor, dir);
     if (!_nsActive()) return false;
     _cursor.epoch = applied.cursor.epoch;
     _cursor.rev = applied.cursor.rev;
     _stats.invalidations += applied.dropped.length;
     // What it should hold and lost (dropped by this delta, or by the barrier
     // that could not vouch for its rows), refetched by the namespace's stats.
-    const refilled = await __residentRefillFromNamespace(supervisor, applied.dropped);
+    const refilled = await __resident.sync.refillFromNamespace(supervisor, applied.dropped);
     _stats.fills += refilled.filled;
     _stats.filledBytes += refilled.bytes;
     _stats.floorRepairs++;
@@ -2366,9 +2367,9 @@ const __fsMod = (() => {
     // change, a poison (the log truncated past the cursor), or a namespace
     // that stopped answering needs the listing.
     if (await _repairFromFloor(supervisor, result)) return;
-    const ownAtStart = __residentOwnPaths();
+    const ownAtStart = __resident.cells.ownPaths();
     let repaired;
-    try { repaired = await __residentSynchronizeFromSupervisor(supervisor); }
+    try { repaired = await __resident.sync.synchronize(supervisor); }
     catch { repaired = null; }
     if (!repaired || !repaired.cursor) {
       // The pass could not vouch for a single row — a supervisor replaced
@@ -2379,13 +2380,13 @@ const __fsMod = (() => {
       // it would have been; a barrier with no answer drops every dated row and
       // keeps the cursor it had, which the next delta is still owed from.
       if (result) {
-        __residentAdmit(result);
+        __resident.cells.admit(result);
         _cursor.epoch = result.epoch;
         _cursor.rev = result.rev;
       } else {
-        __residentDropDated();
+        __resident.cells.dropDated();
       }
-      try { repaired = await __residentSynchronizeFromSupervisor(supervisor); }
+      try { repaired = await __resident.sync.synchronize(supervisor); }
       catch { repaired = null; }
     } else if (repaired.reconciled) {
       _stats.reconciles++;
@@ -2430,7 +2431,7 @@ const __fsMod = (() => {
     }
     for (const [k, rev] of reports) {
       __nimbusNoteVfsReport(k, rev);
-      const provenance = __residentProvenance(k);
+      const provenance = __resident.cells.provenance(k);
       if (provenance !== undefined && provenance !== -1 && provenance < rev) _evictOwed(k);
     }
   }
@@ -2536,7 +2537,7 @@ const __fsMod = (() => {
         // listing; otherwise the old overlay and replacement rows would
         // consume the same scarce allowance while preventing each other's
         // repair. Nothing synchronous may consult the sealed view here.
-        if (namespaceOwed && __residentInHeap) _nsRetire(begin);
+        if (namespaceOwed && __resident.admission.inHeap) _nsRetire(begin);
         const needsRepair = result === null || result.poison === true || _storeRepairOwed || namespaceOwed;
         if (!joining && !needsRepair) break;
         if (namespaceOwed) { namespaceAsked = true; _stats.namespaceRepairs++; }
@@ -2561,7 +2562,7 @@ const __fsMod = (() => {
           // than resume on rows none of them vouched for as of its own
           // answer, it drops them and leaves the repair owed: a colder cache,
           // never a stale byte. Any repair still to finish lists after this.
-          __residentDropDated();
+          __resident.cells.dropDated();
           _storeRepairOwed = true;
           __nimbusNoteUnnamedReports();
           await _awaitReportedOwnWrites();
@@ -2577,12 +2578,12 @@ const __fsMod = (() => {
         for (const entry of result.paths) _noteReport(entry);
       }
       // N18: room for what it pushes, before it is held.
-      await __residentRoomForPushed(result);
-      const applied = __residentAdmit(result);
+      await __resident.admission.roomForPushed(result);
+      const applied = __resident.cells.admit(result);
       _cursor.epoch = applied.cursor.epoch;
       _cursor.rev = applied.cursor.rev;
       // A directory that became searchable has descendants no delta names.
-      for (const dir of applied.relist) await __nsRelist(supervisor, dir);
+      for (const dir of applied.relist) await __resident.sync.relist(supervisor, dir);
       _nsRetire(begin);
       // The read lease this answer carried, from the moment it was asked:
       // what it vouches for is this answer, applied now.
@@ -2628,8 +2629,7 @@ const __fsMod = (() => {
     // Every build is the start of an answer the overlay may retire against:
     // its begin travels with it, and the answer to it comes back with it.
     const begin = ++_barrierBegins;
-    const options = _residentStorePresent() && typeof __residentAcquireOptions === "function"
-      ? __residentAcquireOptions() : undefined;
+    const options = _residentStorePresent() ? __resident.sync.acquireOptions() : undefined;
     return options
       ? { epoch: _cursor.epoch, cursor: _cursor.rev, begin, options }
       : { epoch: _cursor.epoch, cursor: _cursor.rev, begin };
@@ -4016,6 +4016,8 @@ const __fsMod = (() => {
   function chownSync(p, uid, gid) { _detachStructuralMutation(_chownQueued(p, uid, gid, undefined, "chown"), "chown", p); }
   function lchownSync(p, uid, gid) { _detachStructuralMutation(_chownQueued(p, uid, gid, { followSymlinks: false }, "lchown"), "lchown", p); }
 
+  // The one POSIX calculation (core vfs/posix-access.ts), as compiled.
+  const _posixAccess = ${posixAccess};
   /**
    * Whether this process may WANT (r=4, w=2, x=1) a path whose stat is
    * META, by POSIX's owner/group/other rule. Only a stat that states the
@@ -4029,12 +4031,7 @@ const __fsMod = (() => {
     const uid = Number(meta?.uid);
     const gid = Number(meta?.gid);
     if (!Number.isInteger(mode) || !Number.isInteger(uid) || !Number.isInteger(gid)) return false;
-    const bits = mode & 0o777;
-    const currentUid = Number(cred.uid);
-    if (currentUid === 0) return (want & 1) === 0 || (bits & 0o111) !== 0;
-    const groups = cred.groups.map(Number);
-    const shift = currentUid === uid ? 6 : (Number(cred.gid) === gid || groups.includes(gid)) ? 3 : 0;
-    return (((bits >> shift) & 7) & want) === want;
+    return _posixAccess({ mode, uid, gid }, want, { uid: Number(cred.uid), gid: Number(cred.gid), groups: cred.groups.map(Number) });
   }
 
   /** \`p\` and \`dest\`: what a refusal names, the call's own paths, whichever of them \`absPath\` is. */
@@ -4470,7 +4467,7 @@ const __fsMod = (() => {
     // moves a symlink itself, so a moved link keeps its own entry for lstat.
     const nsFrom = _nsRealKey(oldK);
     const nsEntry = _nsEntryKey(oldK);
-    const movedLink = nsEntry !== null && Number(__nsRowAt(__residentRequire(), nsEntry).kind) === __NS_LINK ? nsEntry : undefined;
+    const movedLink = nsEntry !== null && Number(__resident.namespace.rowAt(nsEntry).kind) === __nimbusResidentModule.NS_LINK ? nsEntry : undefined;
     // What this process created travels with the name; what it did not stays
     // the authority's, whatever the move does to the local tables.
     const oldPrefix = oldK + "/";
@@ -6451,12 +6448,12 @@ const __fsMod = (() => {
       const absPath = _resolve(filename);
       const key = _strip(absPath);
       function snapshot() {
-        if (typeof __nsReady === "function") {
+        if (typeof __resident !== "undefined") {
           // A relist temporarily makes metadata unavailable. Falling back
           // to byte cells here invents two changes: leaving and re-entering
           // the namespace, even when the watched inode never changed.
           if (!_nsActive()) return null;
-          const found = __nsResolve(key, true);
+          const found = __resident.namespace.resolve(key, true);
           if (!found || found === "ELOOP") return { stamp: "absent", absent: true };
           const row = found.row;
           return { stamp: [row.ino, row.kind, row.size, row.mtime, row.ctime, row.mode, row.uid, row.gid].join(":"), absent: false };
@@ -11766,12 +11763,12 @@ function __readFileOr(path, fallback) {
 }
 function __fileExists(path) {
   const k = path.replace(/^\\/+/, "");
-  // The namespace answers exactly (vfs/facet-resident-store.ts), except on a
+  // The namespace answers exactly (vfs/resident), except on a
   // mounted directory the launch did not list: asked only when the namespace
   // holds such a directory, statSync's refusal says so, and resolution
   // reports it rather than "Cannot find module".
   if (__fsMod.existsSync("/" + k)) return true;
-  if (typeof __nsUnknown === "function" && __nsUnknown(k, true, false) !== null) __fsMod.statSync("/" + k);
+  if (typeof __resident !== "undefined" && __resident.namespace.unknown(k, true, false) !== null) __fsMod.statSync("/" + k);
   return false;
 }
 // W3.5 Fix A: strict-file membership probe. __fileExists also returns true for
@@ -12144,7 +12141,7 @@ const __nimbusAdvised = new WeakSet();
 // \`required\`: loaded by a require() call, not by an ES module's static
 // import, which the lowering makes a call of the module's own require.
 function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = true, parent = undefined) {
-  if (globalThis.__nimbusProfileStaged) globalThis.__nimbusProfileStaged.delete(String(resolvedPath).replace(/^\\/+/, ""));
+  if (typeof __nimbusObserveRead === "function") __nimbusObserveRead(String(resolvedPath).replace(/^\\/+/, ""));
   const filename = "/" + resolvedPath.replace(/^\\/+/, "");
   // A query's or fragment's import is a job of its own, kept by its URL.
   const cacheKey = evaluationKey === resolvedPath ? filename : evaluationKey;

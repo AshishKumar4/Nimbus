@@ -864,7 +864,7 @@ export class SqliteVFS {
     // allocation pressure. Overflow poisons the cursors that fall behind the
     // log, and a poisoned reader repairs itself against `list()`'s absolute
     // per-path revisions rather than by rebuying its whole cache — see
-    // vfs/facet-resident-store.ts. So the budget can stay small even under the
+    // worker vfs/resident. So the budget can stay small even under the
     // continuous churn of an npm install, which must not be able to grow it.
     //
     // Note what this bound does NOT license: it is small because a poison is

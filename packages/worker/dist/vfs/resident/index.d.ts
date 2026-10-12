@@ -150,7 +150,6 @@ import { type Coherence } from './coherence.js';
 import { type Namespace } from './namespace.js';
 import { type Sync } from './sync.js';
 export { namespaceRowBytes, residentFileCost } from './cell-cost.js';
-export { programAllows } from './permissions.js';
 export { NS_DIR, NS_FILE, NS_LINK } from './tables.js';
 export type { ResidentCell } from './cell-cost.js';
 export interface ResidentStoreOptions {

@@ -491,15 +491,13 @@ function __nimbusRunVfsWriteMutation(snapshot, mutation, retainFailure, unseen) 
 
 /**
  * Whether this facet's resident set is the SQLite store
- * (vfs/facet-resident-store.ts), which the resident node body splices ahead
+ * (worker vfs/resident), which every node body creates ahead
  * of this ledger. Its rows carry their own revision, so a stamp is written
  * into the row, and __vfsBundleRevisions — which describes heap cells — says
  * nothing about them.
  */
 function __nimbusResidentRows() {
-  return typeof __residentStamp === "function"
-    && typeof __residentReady !== "undefined"
-    && __residentReady === true;
+  return typeof __resident !== "undefined" && __resident.coherence.bound();
 }
 
 /**
@@ -549,7 +547,7 @@ function __nimbusStampFlushedCell(snapshot, revision, reported) {
       __nimbusEvictLeasedCell(snapshot.key);
       return;
     }
-    __residentStamp(snapshot.key, revision);
+    __resident.cells.stamp(snapshot.key, revision);
     return;
   }
   if (__vfsBundle[snapshot.key] !== snapshot.content) return;
@@ -583,7 +581,7 @@ function __nimbusStampFlushedCell(snapshot, revision, reported) {
  * byte. \`false\` says no lease was taken and the end is a no-op.
  *
  * In the resident store the row is the stamp, so the store holds the row as
- * own bytes for the window (\`__residentLease\`, which the barrier keeps the
+ * own bytes for the window (\`__resident.cells.lease\`, which the barrier keeps the
  * way it keeps an Infinity stamp) and hands back the revision it was dated
  * at; the lease record carries that revision exactly as it does here.
  */
@@ -591,7 +589,7 @@ function __nimbusBeginOwnMutation(key) {
   if (__nimbusResidentRows()) {
     const open = __vfsOwnLeases[key];
     if (open) { open.pending++; return true; }
-    const dated = __residentLease(key);
+    const dated = __resident.cells.lease(key);
     if (dated === undefined) return false;
     __vfsOwnLeases[key] = { stamp: dated, pending: 1, peer: false, reported: -1 };
     return true;
@@ -692,7 +690,7 @@ function __nimbusEndOwnMutation(key, held, receipt) {
   const evict = lease.peer || lease.reported > lease.stamp;
   if (__nimbusResidentRows()) {
     if (evict) __nimbusEvictLeasedCell(key);
-    else if (!Object.prototype.hasOwnProperty.call(__vfsWrites, key)) __residentStamp(key, lease.stamp);
+    else if (!Object.prototype.hasOwnProperty.call(__vfsWrites, key)) __resident.cells.stamp(key, lease.stamp);
     return;
   }
   const resident = typeof __vfsBundle !== "undefined" && __vfsBundle && key in __vfsBundle;
@@ -723,9 +721,9 @@ function __nimbusFollowOwnWrite(key, receipt) {
     // as a lease's end would (nobody else between: the stamp is its before).
     if (!known) return;
     if (__nimbusResidentRows()) {
-      const dated = __residentLease(key);
+      const dated = __resident.cells.lease(key);
       if (dated === undefined) return;
-      __residentStamp(key, dated >= receipt.before ? receipt.after : dated);
+      __resident.cells.stamp(key, dated >= receipt.before ? receipt.after : dated);
       return;
     }
     const stamp = __vfsBundleRevisions[key];

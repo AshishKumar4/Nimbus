@@ -196,7 +196,7 @@ export function classifyMessage(msg) {
  * why an object reset mid-write still failed a whole install. Nimbus has
  * measured the live-write wording twice: a 45.7 MB single-turn write reset the
  * object once and the same write then succeeded 12/12 on retry
- * (`vfs/facet-resident-store.ts`), and it reset a session DO mid-npm-install
+ * (`vfs/resident`), and it reset a session DO mid-npm-install
  * on 2026-08-10 (probe `agentic-cli/new/pi-official-installer`). Retrying is
  * bounded, so the one case that is NOT transient — crossing the object's
  * storage budget, which the platform also reports this way

@@ -11,7 +11,6 @@ export type ResidentStat = Partial<RuntimeVfsStat> & {
     revision?: number;
     linkTarget?: string | null;
     target?: string | null;
-    [field: string]: unknown;
 };
 /** One entry of an ACQUIRE answer (VfsInvalidatedPath), as received. */
 export interface AcquireEntry {
@@ -64,20 +63,23 @@ export interface ReadBatchAnswer {
     bytes?: unknown;
     stat?: ResidentStat | null;
 }
+/** An answer the store awaits: the session's calls answer over RPC, a test's may answer at once. */
+type Answer<T> = T | PromiseLike<T>;
 export interface ResidentSupervisor {
-    fsAcquire?(epoch: string | null, cursor: number, options?: VfsAcquireOptions): Promise<AcquireAnswer | null | undefined>;
-    fsList?(after: string | null, limit: number): Promise<ListPage | null | undefined>;
-    fsListTree?(path: string, limit: number): Promise<{
+    fsAcquire?(epoch: string | null, cursor: number, options?: VfsAcquireOptions): Answer<AcquireAnswer | null | undefined>;
+    fsList?(after: string | null, limit: number): Answer<ListPage | null | undefined>;
+    fsListTree?(path: string, limit: number): Answer<{
         entries?: ListEntry[];
     } | null | undefined>;
-    fsReadBatch?(requests: ReadBatchRequest[]): Promise<(ReadBatchAnswer | null | undefined)[] | null | undefined>;
-    readdir?(path: string): Promise<{
+    fsReadBatch?(requests: ReadBatchRequest[]): Answer<(ReadBatchAnswer | null | undefined)[] | null | undefined>;
+    readdir?(path: string): Answer<{
         name: string;
     }[] | null | undefined>;
-    readlink?(path: string): Promise<unknown>;
-    fsStorageGrant?(facet: string, bytes: number, databaseSize: number): Promise<{
+    readlink?(path: string): Answer<unknown>;
+    fsStorageGrant?(facet: string, bytes: number, databaseSize: number): Answer<{
         granted?: number;
         cap?: number;
     } | null | undefined>;
 }
+export {};
 //# sourceMappingURL=supervisor.d.ts.map

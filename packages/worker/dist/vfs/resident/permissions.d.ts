@@ -1,7 +1,7 @@
 /**
- * A process's own permission checks, by the one POSIX calculation
- * (core posixAccess). What differs between callers is only what they make of
- * metadata or a credential that is absent, and that is all that is here.
+ * The namespace's permission checks, by the one POSIX calculation (core
+ * posixAccess): what is here is only what the namespace makes of metadata or
+ * a credential that is absent.
  */
 /** The credential a process runs as, as its launch carries it. */
 export interface ResidentCred {
@@ -24,12 +24,4 @@ export interface ModeMeta {
  * absent owner matches no one).
  */
 export declare function namespaceAllows(cred: ResidentCred | null, meta: ModeMeta | undefined, want: number): boolean;
-/**
- * Whether a program running as `cred` may `want` a path whose stat is
- * `meta`. Only a stat that states the owner, group and mode can be judged;
- * one that does not is not judged in the process's favour: absent fields
- * used to default to mode 0644 and owner 1000, which made any undescribed
- * file the reader's own.
- */
-export declare function programAllows(cred: ResidentCred, meta: ModeMeta | undefined | null, want: number): boolean;
 //# sourceMappingURL=permissions.d.ts.map

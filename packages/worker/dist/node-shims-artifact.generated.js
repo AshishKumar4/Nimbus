@@ -9,17 +9,17 @@
  * bytes after a rebuild; <NAME>_SHA256 is the full digest verified at fetch time.
  */
 /** dist/runtime/node-shims.js generateShimsCode() */
-export const NODE_SHIMS_ENTRY = "/_assets/runtime/node-shims-6e7186f468bae50a.js";
-export const NODE_SHIMS_BUILD_ID = "6e7186f468bae50a";
-export const NODE_SHIMS_SHA256 = "6e7186f468bae50a826c0f3cb45e002865b543cdc5f531dd34ae32ce565e5ab2";
+export const NODE_SHIMS_ENTRY = "/_assets/runtime/node-shims-51136bf64df72f8c.js";
+export const NODE_SHIMS_BUILD_ID = "51136bf64df72f8c";
+export const NODE_SHIMS_SHA256 = "51136bf64df72f8c45acf70608e2f2e3b4c6687963b89f7059ee427b00e0eecf";
 /** @nimbus-sh/core dist/_shared/vfs-write-ledger.js VFS_WRITE_LEDGER_SOURCE */
-export const VFS_WRITE_LEDGER_ENTRY = "/_assets/runtime/vfs-write-ledger-edfc9c57a6dbe204.js";
-export const VFS_WRITE_LEDGER_BUILD_ID = "edfc9c57a6dbe204";
-export const VFS_WRITE_LEDGER_SHA256 = "edfc9c57a6dbe20461a1398e7d8d49fcab758c6e19aeecbd76efbd07add026dc";
-/** dist/vfs/facet-resident-store.js FACET_RESIDENT_STORE_SOURCE */
-export const RESIDENT_STORE_ENTRY = "/_assets/runtime/resident-store-8af9c5a4dd466059.js";
-export const RESIDENT_STORE_BUILD_ID = "8af9c5a4dd466059";
-export const RESIDENT_STORE_SHA256 = "8af9c5a4dd466059e4b8086b2b5bf810d9a593c9de3ffeb0816776c3f6f80fd5";
+export const VFS_WRITE_LEDGER_ENTRY = "/_assets/runtime/vfs-write-ledger-5eba1719f249b2fb.js";
+export const VFS_WRITE_LEDGER_BUILD_ID = "5eba1719f249b2fb";
+export const VFS_WRITE_LEDGER_SHA256 = "5eba1719f249b2fb30675be75f94b9fc17bf1d9cc8ded5f12f814d4d9c010e0f";
+/** src/vfs/resident/index.ts, bundled by scripts/resident-store-bundle.mjs */
+export const RESIDENT_STORE_ENTRY = "/_assets/runtime/resident-store-3a73155524e689fb.js";
+export const RESIDENT_STORE_BUILD_ID = "3a73155524e689fb";
+export const RESIDENT_STORE_SHA256 = "3a73155524e689fbbf66b9f650a71a2b8a864253b9506b988a947e13cc58f9a0";
 /** @nimbus-sh/core src/interpreter/primordials.ts, bundled by scripts/interpreter-bundle.mjs */
 export const JS_INTERPRETER_PRIMORDIALS_ENTRY = "/_assets/runtime/js-interpreter-primordials-e620a61b7e9800fa.js";
 export const JS_INTERPRETER_PRIMORDIALS_BUILD_ID = "e620a61b7e9800fa";

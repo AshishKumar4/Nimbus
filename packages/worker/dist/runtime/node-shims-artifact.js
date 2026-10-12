@@ -25,10 +25,14 @@ export function createNodeFacetRuntime(sources, { codeCells = '[]', runtimeCode 
     }
     return {
         imports: COMMONJS_CELL_IMPORTS,
+        // The resident store's library (vfs/resident), evaluated once at module
+        // scope: it defines __nimbusResidentModule, whose createResidentStore each
+        // process calls for its own store.
         code: moduleSource `const __NIMBUS_CODE_CELLS = ${codeCells};
 const __NIMBUS_RUNTIME_CODE = ${runtimeCode};
 const __NIMBUS_STACK_ENTRY = ${stackEntry};
-${nodeFacetSource(sources, 'registry')}`,
+${nodeFacetSource(sources, 'registry')}
+${nodeFacetSource(sources, 'residentStore')}`,
         modules,
         immutableModules,
     };
