@@ -158,12 +158,7 @@ export interface ResidentStoreOptions {
     observeRead?: (path: string) => void;
 }
 export interface ResidentStore {
-    /**
-     * The resident set, as the shims have always seen it: `k in b`, `b[k]`,
-     * `Object.keys(b)`, `delete b[k]` across a dozen call sites in
-     * runtime/node-shims.ts, the shape the ledger uses for `__vfsWrites`. Every
-     * trap is synchronous, because every reader of __vfsBundle is.
-     */
+    /** The resident set, as the shims read it (Cells.bundle). */
     readonly bundle: Record<string, unknown>;
     /**
      * Bind to the process facet's own SQLite. The resident set lives there

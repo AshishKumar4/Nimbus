@@ -168,52 +168,8 @@ export function createResidentStore(options = {}) {
         coherence.bind(t, heap);
         namespace.bind(t);
     };
-    const bundle = new Proxy(Object.create(null), {
-        get(_t, path) {
-            if (typeof path !== 'string')
-                return undefined;
-            return cells.get(path);
-        },
-        has(_t, path) {
-            if (typeof path !== 'string')
-                return false;
-            return cells.has(path);
-        },
-        set(_t, path, cell) {
-            // The program's own write, stamped RK_OWN_WRITE: not the authority's
-            // yet, newer than anything it could report, and replaced with a real
-            // revision by the ledger when the write-back lands.
-            if (typeof path !== 'string')
-                return true;
-            cells.put(coherence.require(), path, cell, undefined);
-            return true;
-        },
-        deleteProperty(_t, path) {
-            if (typeof path === 'string')
-                cells.delete(coherence.require(), path);
-            return true;
-        },
-        ownKeys() { return cells.keys(); },
-        getOwnPropertyDescriptor(_t, path) {
-            if (typeof path !== 'string')
-                return undefined;
-            if (cells.head(path) === undefined)
-                return undefined;
-            // Configurable so 'delete' is legal and enumerable so for-in and
-            // Object.keys see it — the two things every scan site depends on.
-            //
-            // An ACCESSOR, not a data descriptor, and that is the whole point: a
-            // for-in or Object.keys over a Proxy asks this trap about every key, so a
-            // data descriptor had to produce `value` — reading every file's bytes out
-            // of SQLite to answer a question about NAMES. Measured at pi scale, one
-            // such scan read 87 MiB and threw all of it away. A getter answers the
-            // name question for free and still returns the bytes to anything that
-            // genuinely reads the property.
-            return { configurable: true, enumerable: true, get() { return cells.get(path); } };
-        },
-    });
     return {
-        bundle,
+        bundle: cells.bundle,
         bind(ctx) {
             const sql = ctx?.storage?.sql;
             if (!sql || typeof sql.exec !== 'function') {

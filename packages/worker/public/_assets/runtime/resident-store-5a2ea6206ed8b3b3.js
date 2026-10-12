@@ -1466,7 +1466,45 @@ var __nimbusResidentModule = (() => {
       }
       return out;
     };
+    const deleteCell = (t, path) => {
+      const had = head(path) !== void 0 || held.has(path);
+      forgetHeld(path);
+      t.chunkDelete(path);
+      t.fileDelete(path);
+      return had;
+    };
+    const keys = () => coherence.require().fileAllPaths();
+    const bundle = new Proxy(/* @__PURE__ */ Object.create(null), {
+      get(_t, path) {
+        if (typeof path !== "string") return void 0;
+        return get(path);
+      },
+      has(_t, path) {
+        if (typeof path !== "string") return false;
+        return head(path) !== void 0 || held.has(path);
+      },
+      set(_t, path, cell) {
+        if (typeof path !== "string") return true;
+        put(coherence.require(), path, cell, void 0);
+        return true;
+      },
+      deleteProperty(_t, path) {
+        if (typeof path === "string") deleteCell(coherence.require(), path);
+        return true;
+      },
+      ownKeys() {
+        return keys();
+      },
+      getOwnPropertyDescriptor(_t, path) {
+        if (typeof path !== "string") return void 0;
+        if (head(path) === void 0) return void 0;
+        return { configurable: true, enumerable: true, get() {
+          return get(path);
+        } };
+      }
+    });
     return {
+      bundle,
       /**
        * Apply one authority delta and unseal.
        *
@@ -1535,13 +1573,7 @@ var __nimbusResidentModule = (() => {
         t.filePut(path, source.kind, source.size, source.chunks, rev, String(ckey));
         return true;
       },
-      delete(t, path) {
-        const had = head(path) !== void 0 || held.has(path);
-        forgetHeld(path);
-        t.chunkDelete(path);
-        t.fileDelete(path);
-        return had;
-      },
+      delete: deleteCell,
       /**
        * What a row is dated at: its revision, RK_OWN_WRITE for this facet's own
        * unacknowledged bytes, or undefined when the path is not held.
@@ -1613,7 +1645,7 @@ var __nimbusResidentModule = (() => {
         return put(t, path, cell, rev);
       },
       /** Every held path. Backs the Object.keys / for-in scans in the shims. */
-      keys: () => coherence.require().fileAllPaths(),
+      keys,
       /**
        * Every path held as this facet's own unacknowledged bytes: the rows a
        * poison's repair keeps without a revision to vouch for them, whose reports
@@ -2555,37 +2587,8 @@ var __nimbusResidentModule = (() => {
       coherence.bind(t, heap);
       namespace.bind(t);
     };
-    const bundle = new Proxy(/* @__PURE__ */ Object.create(null), {
-      get(_t, path) {
-        if (typeof path !== "string") return void 0;
-        return cells.get(path);
-      },
-      has(_t, path) {
-        if (typeof path !== "string") return false;
-        return cells.has(path);
-      },
-      set(_t, path, cell) {
-        if (typeof path !== "string") return true;
-        cells.put(coherence.require(), path, cell, void 0);
-        return true;
-      },
-      deleteProperty(_t, path) {
-        if (typeof path === "string") cells.delete(coherence.require(), path);
-        return true;
-      },
-      ownKeys() {
-        return cells.keys();
-      },
-      getOwnPropertyDescriptor(_t, path) {
-        if (typeof path !== "string") return void 0;
-        if (cells.head(path) === void 0) return void 0;
-        return { configurable: true, enumerable: true, get() {
-          return cells.get(path);
-        } };
-      }
-    });
     return {
-      bundle,
+      bundle: cells.bundle,
       bind(ctx) {
         const sql = ctx?.storage?.sql;
         if (!sql || typeof sql.exec !== "function") {

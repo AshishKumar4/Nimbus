@@ -39,6 +39,13 @@ export interface Admitted {
     stale?: boolean;
 }
 export interface Cells {
+    /**
+     * The resident set, as the shims have always seen it: `k in b`, `b[k]`,
+     * `Object.keys(b)`, `delete b[k]` across a dozen call sites in
+     * runtime/node-shims.ts, the shape the ledger uses for `__vfsWrites`. Every
+     * trap is synchronous, because every reader of __vfsBundle is.
+     */
+    readonly bundle: Record<string, unknown>;
     /** Apply one authority delta and unseal (see admit below). */
     admit(result: AcquireAnswer | null | undefined): Admitted;
     dropDated(): void;
