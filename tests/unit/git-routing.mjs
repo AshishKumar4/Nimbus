@@ -330,7 +330,8 @@ for (const words of [['add', 'f'], ['checkout', '-b', 'noncone'], ['commit', '-a
     user.writeFile(`home/user/${dir}/.git/config`, config);
     user.writeFile(`home/user/${dir}/f`, 'x\n');
     for (const words of [['status'], ['add', 'f'], ['commit', '-q', '-m', 'first'], ['log', '--oneline'], ['branch', 'b'], ['rev-parse', 'HEAD']]) {
-      const args = ['-C', dir, '-c', 'user.name=Ada', '-c', 'user.email=ada@example.com', ...words];
+      // A -c value does not stand in for the repository's own format.
+      const args = ['-C', dir, '-c', 'user.name=Ada', '-c', 'user.email=ada@example.com', '-c', 'extensions.objectformat=sha1', '-c', 'core.repositoryformatversion=0', ...words];
       const ran = await git(args);
       assert.deepEqual(ran.real, [args], `${what}: ${words[0]} is real git's`);
       assert.equal(user.exists(`home/user/${dir}/.git/index`), false, `${what}: nothing written before the handoff`);
