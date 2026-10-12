@@ -163,7 +163,7 @@ export interface SessionInternal extends Pick<SessionRouterRpc,
 
   // ── Methods siblings call back into ─────────────────────────────────
   ensureSqliteFs(): SqliteVFS;
-  egressForWorkspace(): import('@nimbus-sh/core/_shared/workspace-network.js').WorkspaceEgress | undefined;
+  egressForWorkspace(): { egress?: import('@nimbus-sh/core/_shared/workspace-network.js').WorkspaceEgress; egressFor?: import('@nimbus-sh/core/_shared/workspace-network.js').EgressFor };
   getFilesystemAuthority(): import('@nimbus-sh/core/runtime/process-files.js').ProcessFiles
   ensureFacetManager(): ComposedFacetManager;
   ensureBundlePool(): PrebundlePool;

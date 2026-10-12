@@ -8,6 +8,7 @@ interface NodeSourceTexts {
     interpreterPrimordials: string;
     interpreter: string;
     interpreterOps: string;
+    parser: string;
     nodeLib: string;
     nodeLibRest: string;
     nodeDns: string;
@@ -18,10 +19,11 @@ export interface NodeFacetSources extends NodeSourceTexts {
 }
 export declare function nodeFacetSource(sources: NodeFacetSources, name: keyof NodeSourceTexts): string | ImmutableModuleSource;
 /** The registry bootstrap and its modules, for every runner that hosts node shims. */
-export declare function createNodeFacetRuntime(sources: NodeFacetSources, { codeCells, runtimeCode, stackEntry, }?: {
+export declare function createNodeFacetRuntime(sources: NodeFacetSources, { codeCells, runtimeCode, stackEntry, esm, }?: {
     codeCells?: string;
     runtimeCode?: string;
     stackEntry?: string;
+    esm?: string;
 }): {
     imports: string;
     code: import("@nimbus-sh/platform/module-source.js").ModuleSource;

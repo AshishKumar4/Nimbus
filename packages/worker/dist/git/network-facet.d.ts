@@ -239,7 +239,7 @@ export declare function execGitNetwork(ctx: DurableObjectState, env: any, opts: 
  * The workspace's network (`workspace.network`): every facet this operation
  * loads goes out through its egress, when its host supplied one (prepare,
  * every batch and history piece, a fence's reload, fetch/pull/push).
- */ network: WorkspaceNetwork): Promise<GitNetworkResult>;
+ */ workspace: WorkspaceNetwork): Promise<GitNetworkResult>;
 /**
  * The git network facet's module: the pack layer's bundle (pack/facet.ts),
  * whose network worker (pack/network-worker.ts) it exports.

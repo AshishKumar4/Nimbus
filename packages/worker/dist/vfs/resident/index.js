@@ -1,0 +1,199 @@
+/**
+ * A process's resident store: the resident set held in the process facet's
+ * own SQLite, or a one-shot's heap, instead of being fetched as it is read.
+ *
+ * A Nimbus process is a DO Facet whose class comes from the Worker Loader, and
+ * a facet has its own SQLite (`loaders/process-fabric.ts`). That storage is
+ * reachable SYNCHRONOUSLY — `ctx.storage.sql.exec` returns a Cursor, not a
+ * Promise — which is the one property that matters here, because a synchronous
+ * `fs.readFileSync` cannot block to fetch anything and no JS stack in workerd
+ * can be suspended to let it.
+ *
+ * So the resident set moves off the heap and into that SQLite, and a sync read
+ * becomes a point query rather than an admission decision. What that buys is
+ * not a faster read — it is a read that cannot MISS: the store holds the whole
+ * filesystem rather than a capped prefetch of it, so the first synchronous read
+ * of a file the process has never touched is answered instead of raising
+ * EAGAIN.
+ *
+ * Measured on production workerd (account f44999d1…, throwaway
+ * `nimbus-facetsql-probe`, 2026-08-08), all client-timed because `Date.now()`
+ * does not advance inside a facet across an I/O-free turn:
+ *
+ *   sync sql in a loader-defined facet   yes, incl. in the CONSTRUCTOR
+ *   20,000 sequential reads              no microtask interleaved — one stack
+ *   read cost                            ~8 us + ~1.6 us/KiB
+ *                                        (10.3 us @ 1.5 KiB, 16.3 us @ 6.4 KiB,
+ *                                         33.1 us @ 16 KiB)
+ *   pi-shaped 1,588 reads / 10.2 MB      25.8 ms
+ *   materialise 45.7 MB                  0.42-0.91 s, flat across 2.8k-30k rows
+ *   full wipe 7,141 rows / 58.8 MB       ~45 ms, storage actually reclaimed
+ *   max bytes in one value               2,199,981 with a 12-char key;
+ *                                        over it, a clean catchable
+ *                                        SQLITE_TOOBIG - not a reset
+ *
+ * WHAT IT ACTUALLY FREES, re-measured — smaller than first claimed
+ * ────────────────────────────────────────────────────────────────
+ * The figure that motivated this work — "38.5 MiB, 18.5% of the 208 MiB facet
+ * ceiling, before the program allocates anything" — does not survive
+ * re-measurement, and the error is worth keeping because it is easy to repeat:
+ * it is a SUPERVISOR-side cost (one cached LRU entry, against a 128 MiB isolate)
+ * quoted as a FACET-side one (against a 208 MiB ceiling). Two budgets, two
+ * numbers, and they happen to land within 0.5% of each other by coincidence of
+ * magnitude.
+ *
+ * Re-measured against a real 16,357-file pi install through the real
+ * `buildPrefetchBundle` / `generateEntrypointCode` path:
+ *
+ *   facet module map (main module)        12.50 MiB
+ *   parsed __MODULE_VFS_BUNDLE             8.22 MiB
+ *   both co-resident at module eval        20.72 MiB   (not 38.5)
+ *   supervisor co-resident at LOADER.load  21.01 MiB   (in a 128 MiB isolate)
+ *
+ * So adopting the bundle and releasing the parsed object frees **8.22 MiB** of
+ * facet heap, not 38.5. The module source text is owned by the loader's module
+ * registry and this code cannot free it; whether workerd retains it after
+ * evaluation is a workerd internal that nothing in this repo decides, and it is
+ * not guessed at here.
+ *
+ * The heap saving is therefore the SMALLEST of this store's three effects, and
+ * a poor reason to adopt it on its own. The two that matter:
+ *
+ *   1. A data read cannot miss, because the store is not capped by admission.
+ *      That is the constraint this exists to satisfy.
+ *   2. Data cells need not enter the module map AT ALL. Only cells that must be
+ *      `new Function`-compiled have to travel as module text; everything else
+ *      can be filled straight into SQLite from the supervisor. That is what can
+ *      take the 12.50 MiB main module down toward the size of the require
+ *      closure alone — a far larger win than releasing the parsed object, and
+ *      the one the filler exists for.
+ *
+ * A related mechanism, confirmed rather than refuted: an entry larger than the
+ * whole `PREFETCH_CACHE_MAX_BYTES` bound is admitted anyway and evicts every
+ * other entry (`facets/manager.ts` — the `if (oldest === key) continue` branch).
+ * Demonstrated: a 21.50 MiB entry left the cache 5.77 MB over its own 16 MiB
+ * bound with all four prior entries gone. Whether pi specifically crosses that
+ * bound is UNRESOLVED — a real pi 0.78.1 tree retains 12.04 MiB, comfortably
+ * under it, and the original 21.65 MiB was measured on 0.84.1 with a warm
+ * residency profile and a 119-package session. Do not repeat the pi number
+ * without re-measuring it on a live session.
+ *
+ * WHAT MOVING THE RESIDENT SET DOES NOT BUY — measured, against expectation
+ * ─────────────────────────────────────────────────────────────────────────
+ * It was proposed that module-map staging is what stalls a large spawn, and
+ * that this store deletes that stall. Measured on the same worker (task #122),
+ * timing build / loader-compile / boot separately over a synthetic bundle of
+ * 6,553 CJS cells:
+ *
+ *   corpus   source text   build    +compile   +boot(precompile)
+ *    8 MiB    8,346,849 B  0.10 s     0.15 s      0.18 s
+ *   16 MiB   16,704,474 B  0.12 s     0.19 s      0.69 s
+ *   24 MiB   25,062,099 B  0.17 s     0.15 s      0.41 s
+ *   32 MiB   33,413,349 B  0.29 s*    0.21 s      0.47 s
+ *   40 MiB   41,770,974 B  0.29 s     0.93 s      1.42 s
+ *
+ * (* one 3.7 s outlier at 32 MiB across the series, not reproduced.)
+ *
+ * A 40 MiB module map builds, loads, evaluates and `new Function`-precompiles
+ * all 6,553 modules in 1.42 s, with zero failures. So a 180 s stall at 40 MiB
+ * is NOT workerd staging a large module map, and the `new Function` loop is not
+ * the cost either — booting the same bytes with the loop removed is no faster.
+ * Whatever the fork path is spending 180 s on is upstream of staging: the VFS
+ * walk, the esbuild ESM→CJS pass over thousands of cells, or the per-cell
+ * budget accounting. This store does delete that upstream work for data cells,
+ * but the claim "it removes a live 24 MiB staging ceiling" is not supported —
+ * there is no such ceiling in the staging step.
+ *
+ * Two numbers that look contradictory and are not: the ~0.6 s materialisation
+ * above and the 180 s fork stall describe DIFFERENT operations. The first is
+ * SQLite insert throughput inside a facet that already exists, over bytes
+ * already in hand. It excludes acquiring those bytes from the session, and any
+ * production materialiser pays that separately.
+ *
+ * WHAT THIS STORE DOES NOT DO, and cannot
+ * ───────────────────────────────────────
+ * It does not make `require()` of a module outside the launch's module map
+ * work. Measured on the same worker: `new Function` succeeds at MODULE SCOPE
+ * and throws "Code generation from strings disallowed for this context" in the
+ * DO constructor and at request time. So code reaches a facet through the
+ * Worker Loader's module map or not at all, and that is a platform boundary,
+ * not a policy this store could relax.
+ *
+ * The split falls out of that, and it is the whole architecture:
+ *
+ *   CODE cells  — the static require closure. Each is a module of the map,
+ *                 compiled by the guest's registry when first required
+ *                 (core/_shared/commonjs-cell.ts). The store adopts its text,
+ *                 read back from the map, so a later `readFileSync` of a .js
+ *                 file is answered from the store like any other file.
+ *   EVERY OTHER — held here. Uncapped by admission, bounded only by the
+ *      byte      storage budget, so a data read cannot miss.
+ *
+ * That boundary is drawn where the failures are. The read profile
+ * (`scratchpad/node-sync-read-profile.md`) measured 97.07% of sync reads as
+ * module loading and put every observed failure in the data population: tsc's
+ * `lib/lib.*.d.ts`, cowsay's `cows/*.cow`, create-vite's templates. Those are
+ * the reads this store answers.
+ *
+ * The store is one module (this one, and the components it composes), built
+ * once into the asset a process loads and evaluated once per isolate; each
+ * process (each one-shot run, each resident, each WASI process) creates its
+ * own instance. Nothing per-spawn is in its text: both node bodies are
+ * content-addressed (one-shot by hash(code+bundle+manifest), resident by
+ * facet-image digest), and the cursor arrives at runtime through the admitted
+ * delta, so the text stays identical across spawns and the digest keeps
+ * deduping.
+ */
+import { createAdmission } from './admission.js';
+import { createCells } from './cells.js';
+import { createCoherence } from './coherence.js';
+import { createLazy } from './lazy.js';
+import { createNamespace } from './namespace.js';
+import { createSync } from './sync.js';
+import { createTransport } from './transport.js';
+import { heapTables, sqlTables } from './tables.js';
+export { posixAccess } from '@nimbus-sh/core/vfs/posix-access.js';
+export { namespaceRowBytes, residentFileCost } from './cell-cost.js';
+export { NS_DIR, NS_FILE, NS_LINK } from './tables.js';
+export function createResidentStore(options = {}) {
+    const coherence = createCoherence();
+    const admission = createAdmission(coherence);
+    const namespace = createNamespace(coherence, admission);
+    const observeRead = options.observeRead ?? null;
+    const cells = createCells(coherence, admission, namespace, observeRead);
+    const transport = createTransport(coherence, admission, namespace, cells);
+    const sync = createSync(coherence, admission, namespace, cells, transport);
+    const lazy = createLazy(coherence, admission, namespace, cells, transport, sync);
+    const bindTables = (t, heap) => {
+        // A store can outlive its process. Own rows left by an earlier one are
+        // writes that never reached the authority or cells whose acknowledgement it
+        // never saw: neither can be dated, so neither is a file.
+        t.dropOwn();
+        coherence.bind(t, heap);
+        namespace.bind(t);
+    };
+    return {
+        bundle: cells.bundle,
+        bind(ctx) {
+            const sql = ctx?.storage?.sql;
+            if (!sql || typeof sql.exec !== 'function') {
+                throw new Error('Nimbus: this facet has no synchronous SQLite (ctx.storage.sql); '
+                    + 'the resident set cannot be served and every sync read would raise EAGAIN');
+            }
+            bindTables(sqlTables(sql), null);
+        },
+        bindInMemory(budget) {
+            const t = heapTables();
+            bindTables(t, t);
+            admission.bindHeap(budget);
+        },
+        observeRead,
+        coherence,
+        admission,
+        namespace,
+        cells,
+        transport,
+        sync,
+        lazy,
+    };
+}

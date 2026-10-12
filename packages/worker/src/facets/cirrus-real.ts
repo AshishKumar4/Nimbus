@@ -769,7 +769,9 @@ export class CirrusReal {
     });
 
     const ctxExports = getCtxExports();
-    const supervisorProps = supervisorBindingProps(ctx, pid, { writerId: crypto.randomUUID(), network: this.network });
+    // The dev server's own network (WorkspaceNetwork.forProcess): its binding and its globalOutbound alike.
+    const network = this.network.forProcess(pid);
+    const supervisorProps = supervisorBindingProps(ctx, pid, { writerId: crypto.randomUUID(), network });
     const supervisorBinding = ctxExports?.SupervisorRPC
       ? ctxExports.SupervisorRPC({ props: supervisorProps })
       : undefined;
@@ -800,7 +802,7 @@ export class CirrusReal {
     //   persist across supervisor reconnects.
     // The loader outlives this instance, and a warm worker keeps the
     // SUPERVISOR binding in its env.
-    const stableLoaderId = supervisorLoaderKey(`${ctx.id.toString()}:cirrus-real-vite:${REAL_VITE_VERSION}:${pid}${this.network.id ? `:${this.network.id}` : ''}`, supervisorProps);
+    const stableLoaderId = supervisorLoaderKey(`${ctx.id.toString()}:cirrus-real-vite:${REAL_VITE_VERSION}:${pid}${network.id ? `:${network.id}` : ''}`, supervisorProps);
     const facetName = 'cirrus-real-vite';
     try {
       const worker = this.env.LOADER.get(facetLoaderKey('process', stableLoaderId), async () => applyFacetLimits('process', {
@@ -836,7 +838,7 @@ export class CirrusReal {
           ...(supervisorBinding ? { SUPERVISOR: supervisorBinding } : {}),
           ...(hmrBinding ? { CIRRUS_HMR: hmrBinding } : {}),
         },
-        ...loaderOutbound(this.network),
+        ...loaderOutbound(network),
       }));
 
       // [d1-fix] Two-path bind:

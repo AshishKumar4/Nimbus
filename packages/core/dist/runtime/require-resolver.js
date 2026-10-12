@@ -448,28 +448,22 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
         //     specifiers AST found but regex missed.
         // See `comment-strip.ts` header + the wave's verdict.md.
         const stripped = stripCommentsForImports(code);
-        // Every static dependency is staged the same way: the CommonJS
-        // resolution of its specifier, unless the facet provides it, until the
+        // Every static dependency is staged the same way: the resolution of its
+        // specifier its loader makes, unless the facet provides it, until the
         // closure is full. What each grammar adds after is its own:
-        //   - require()/require.resolve(): a manifest it names may carry bins.
+        //   - require()/require.resolve(): the CommonJS resolution; a manifest
+        //     it names may carry bins.
         //   - Immediately-invoked `createRequire(import.meta.url)('./x')` is a
         //     require of './x' from this file's directory (pi-coding-agent's bin).
-        //   - ESM `import`/`export … from` (X.5-C Fix #1): packages whose
-        //     `module` entry is ESM (react-remove-scroll, pathe, ESM nuxt deps)
-        //     need their relative siblings staged, since the process runs the
-        //     module lowered to CommonJS and its require takes a package's
-        //     "require" branch. A module runner that evaluates the same source
-        //     itself (Vite's, under Astro) imports a package with import(), which
-        //     takes the "import" branch: phase 2 resolves it (the same file as
-        //     the require branch adds nothing), behind every deferral the code
-        //     names, tables included (IMPORT_BRANCHES).
+        //   - ESM `import`/`export … from`: Node's ESM resolution (the "import"
+        //     conditions, no extension probing), as the process's registry links
+        //     the module (worker facets/esm-stage.ts), else the CommonJS one,
+        //     which is how Bun's resolution probes.
         const followUps = [
             [REQUIRE_RE, (specifier, staged) => { if (staged && !policy && namesManifest(specifier))
                     deferBins(staged.resolved); }],
             [CREATE_REQUIRE_CALL_RE, () => { }],
-            // Resolved in phase 2, where what it reads is optional too.
-            [IMPORT_RE, (specifier) => { if (!policy && !/^[./#]|^file:/.test(specifier))
-                    defer({ specifier, fromDir, alternatives: IMPORT_BRANCHES }); }],
+            [IMPORT_RE, () => { }],
         ];
         // Recursive and concurrently suspended walks each own their cursor
         // (matchAll): mutating a shared RegExp.lastIndex repeats or skips a
@@ -481,7 +475,11 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
                     continue;
                 if (closureExceeded || declined)
                     break;
-                const staged = await resolveStaticDependency(specifier, fromDir);
+                // An import Node's ESM resolution refuses may still load under
+                // Bun's, which probes as require() does (a `.js` naming its `.ts`).
+                const staged = grammar === IMPORT_RE
+                    ? await resolveStaticImport(specifier, fromDir) ?? await resolveStaticDependency(specifier, fromDir)
+                    : await resolveStaticDependency(specifier, fromDir);
                 if (staged) {
                     edge(fromFile, staged.resolved);
                     await addFile(staged.resolved);
@@ -547,9 +545,23 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
         }
         return resolveRequireEx(vfs, specifier, fromDir, addPkgJson, progress, conditions);
     }
-    /** The file a dynamic import from `fromDir` loads, or null (a builtin, a data: URL, or an error the loader reports). */
+    /** The file a static import or export-from in a module of `fromDir` links to, or null, as the registry links it. */
+    async function resolveStaticImport(specifier, fromDir) {
+        const resolved = await resolveDynamicImport(specifier, fromDir);
+        return resolved === null ? null : { resolved };
+    }
+    /**
+     * The file a dynamic import from `fromDir` loads, or null (a builtin, a
+     * data: URL, or an error the loader reports): each once per directory, as
+     * the walk resolves from the directory (resolveImportWith).
+     */
+    const importsFrom = new Map();
     async function resolveDynamicImport(specifier, fromDir) {
-        return await resolveImportWith(esm, specifier, fromDir);
+        const key = fromDir + '\0' + specifier;
+        let resolved = importsFrom.get(key);
+        if (resolved === undefined)
+            importsFrom.set(key, resolved = resolveImportWith(esm, specifier, fromDir));
+        return await resolved;
     }
     /**
      * Sink for intermediate package.json files consulted during
@@ -728,18 +740,41 @@ function isFacetProvided(id) {
  * holds them; `readText` answers the package.json files it reads.
  */
 function walkEsmResolver(vfs, progress, readText, conditions) {
+    // Each question once: the walk reads one snapshot, and its imports ask
+    // the same paths again (each node_modules up the tree, each scope).
+    const kinds = new Map();
+    const reals = new Map();
     return createEsmResolver({
-        async kind(path) {
+        kind(path) {
             const key = stripLeadingSlashes(path);
-            if (progress)
-                await progress(METADATA_CANDIDATE_WORK + key.length);
-            if (!(await vfs.exists(key)))
-                return null;
-            return (await vfs.isDirectory(key)) ? 'directory' : 'file';
+            let known = kinds.get(key);
+            if (known === undefined) {
+                known = (async () => {
+                    if (progress)
+                        await progress(METADATA_CANDIDATE_WORK + key.length);
+                    if (!(await vfs.exists(key)))
+                        return null;
+                    return (await vfs.isDirectory(key)) ? 'directory' : 'file';
+                })();
+                kinds.set(key, known);
+            }
+            return known;
         },
-        realpath: (path) => path,
+        realpath(path) {
+            let known = reals.get(path);
+            if (known === undefined) {
+                known = (async () => vfs.realpath ? '/' + stripLeadingSlashes(await vfs.realpath(stripLeadingSlashes(path))) : path)();
+                reals.set(path, known);
+            }
+            return known;
+        },
         readText,
         isBuiltin: (specifier) => isFacetProvided(specifier),
+        // No "Did you mean" hint: the walk shows no refusal (resolveImportWith,
+        // resolveDeferredImport), and an import it refuses is resolved as
+        // require() resolves it next. Staging gives the program its refusals,
+        // hints included (worker facets/esm-stage.ts). A hint here was a
+        // CommonJS resolution per refused import, every launch.
         cjsResolve: () => null,
     }, { conditions });
 }
@@ -822,14 +857,6 @@ export function configPackageNames(source) {
     });
     return [...names];
 }
-/**
- * Phase 2's tier for a package's "import" branch beside the "require" branch
- * the process loads: a module runner may import it, the code's own import()
- * calls certainly run. Ahead of a deferral table it shed 118 of Astro's Shiki
- * grammars (jsx.mjs and markdown.mjs among them), which a page's code block
- * loads with import().
- */
-const IMPORT_BRANCHES = Number.MAX_SAFE_INTEGER - 1;
 /** Phase 2's last tier: the bins of a package the code located by its manifest. */
 const LOCATED_PACKAGE_BINS = Number.MAX_SAFE_INTEGER;
 /** `pkg/package.json` or `@scope/pkg/package.json`: an installed package's manifest, by name. */

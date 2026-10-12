@@ -46,7 +46,7 @@
  * sent once and a drop surfaces.
  */
 
-import { EGRESS_TLS_REFUSAL, ISOLATE_NETWORK, workspaceNetwork, type WorkspaceEgress, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
+import { EGRESS_TLS_REFUSAL, ISOLATE_NETWORK, workspaceNetwork, type EgressTlsTarget, type WorkspaceEgress, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { WsRelayHeaders, WsRelayOpened } from './ws-relay.js';
 import type { DoCallRetryPolicy } from '@nimbus-sh/fabric/do-calls.js';
 import type { SupervisorOpEnvelope, SupervisorOpName, WriteFileStatAnswer } from '@nimbus-sh/core/workspace/supervisor-op.js';
@@ -973,8 +973,13 @@ export function supervisorCalls<Base extends Class>(base: Base) {
         const hostname = typeof payload.host === 'string' ? payload.host : '';
         const port = Number(payload.port);
         if (!hostname || !Number.isInteger(port) || port < 1 || port > 65535) throw new TypeError('netTls: bad target');
+        const servername = payload.servername;
+        if (servername !== undefined && (typeof servername !== 'string' || servername === '')) throw new TypeError('netTls: bad servername');
         if (typeof egress.connectTls !== 'function') throw Object.assign(new Error(EGRESS_TLS_REFUSAL), { code: 'ERR_NIMBUS_EGRESS_TLS' });
-        try { return await egress.connectTls({ hostname, port }); }
+        // The host is Node's servername when the program names none: only another name crosses.
+        const target: EgressTlsTarget = servername === undefined || servername === hostname
+          ? { hostname, port } : { hostname, port, servername };
+        try { return await egress.connectTls(target); }
         catch (error) {
           if (error instanceof TypeError && error.message === 'The RPC receiver does not implement the method "connectTls".') {
             throw Object.assign(new Error(EGRESS_TLS_REFUSAL), { code: 'ERR_NIMBUS_EGRESS_TLS' });

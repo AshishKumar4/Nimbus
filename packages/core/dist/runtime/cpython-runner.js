@@ -186,7 +186,8 @@ export function makeCPythonRunnerFactory(deps) {
             }
             const pipRuntimeContext = {
                 home,
-                network: deps.network,
+                // pip's process's network (WorkspaceNetwork.forProcess).
+                network: deps.network.forProcess(ctx.pid),
                 // No Pyodide lockfile: there is no curated wheel index behind this
                 // interpreter, so pip resolves against PyPI like anywhere else.
                 pyodideLockfileText: null,

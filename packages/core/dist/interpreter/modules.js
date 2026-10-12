@@ -1,5 +1,6 @@
 import { reflectApply, resume, resumeThrowing, withElement } from './intrinsics.js';
 import { ROOT_ENV, TDZ, tdzError } from './runtime.js';
+import { initializeStack, popStack, pushStack, stampStack, suspendedStack } from './stack.js';
 /** The wrapper function that runs `plan`. */
 export function moduleCell(plan, ops, helpers) {
     const { frame, exportsSlot, requireSlot, moduleSlot, filenameSlot, dirnameSlot, instantiate, body } = plan;
@@ -12,8 +13,7 @@ export function moduleCell(plan, ops, helpers) {
         env[moduleSlot] = moduleArg;
         env[filenameSlot] = filename;
         env[dirnameSlot] = dirname;
-        // A cell's module is always an ES module's: the next launch lowers
-        // esModuleSource's text, which declares an export.
+        initializeStack(env, plan.stack, undefined, undefined, false);
         const exportsObject = ops.get(moduleArg, 'exports');
         const define = reflectApply(helpers.exports, undefined, [exportsObject]);
         // Instantiation, before any import is evaluated: an import that
@@ -22,14 +22,24 @@ export function moduleCell(plan, ops, helpers) {
         if (instantiate !== null)
             instantiate(env);
         // The module is linked where the body runs: a module that suspends
-        // (top-level await) rejects for a failure linking it, as its lowered
-        // cell's async body does, rather than throwing.
+        // (top-level await) rejects for a failure linking it, rather than
+        // throwing.
         if (bg === null) {
-            link(plan, env, requireArg, helpers, exportsObject, define);
-            bs(env);
-            return undefined;
+            const previous = pushStack(env);
+            try {
+                link(plan, env, requireArg, helpers, exportsObject, define);
+                bs(env);
+                return undefined;
+            }
+            catch (error) {
+                stampStack(error);
+                throw error;
+            }
+            finally {
+                popStack(previous);
+            }
         }
-        return drive(() => {
+        return drive(env, () => {
             link(plan, env, requireArg, helpers, exportsObject, define);
             return bg(env);
         });
@@ -42,7 +52,7 @@ function link(plan, env, requireArg, helpers, exportsObject, define) {
         reflectApply(define, undefined, [exports[i].name, exportGetter(env, exports[i], helpers)]);
     for (let i = 0; i < requests.length; i++) {
         const { source, module, interop } = requests[i];
-        const m = reflectApply(requireArg, undefined, [source]);
+        const m = reflectApply(helpers.load, undefined, [requireArg, source]);
         if (module >= 0)
             env[module] = m;
         if (interop >= 0)
@@ -70,9 +80,22 @@ function exportGetter(env, entry, helpers) {
     };
 }
 /** Runs a module body's generator, made by `start`, as an async function would: one await per yielded value. */
-async function drive(start) {
-    const it = start();
-    let r = resume(it, undefined);
+async function drive(env, start) {
+    let it;
+    let r;
+    let previous = pushStack(env);
+    try {
+        it = start();
+        r = resume(it, undefined);
+    }
+    catch (error) {
+        stampStack(error);
+        throw error;
+    }
+    finally {
+        suspendedStack(env);
+        popStack(previous);
+    }
     while (!r.done) {
         let value;
         let ok = true;
@@ -83,7 +106,18 @@ async function drive(start) {
             ok = false;
             value = error;
         }
-        r = ok ? resume(it, value) : resumeThrowing(it, value);
+        previous = pushStack(env);
+        try {
+            r = ok ? resume(it, value) : resumeThrowing(it, value);
+        }
+        catch (error) {
+            stampStack(error);
+            throw error;
+        }
+        finally {
+            suspendedStack(env);
+            popStack(previous);
+        }
     }
     return undefined;
 }

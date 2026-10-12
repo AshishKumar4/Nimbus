@@ -31,8 +31,10 @@ import { type PortVisibility } from '../session/port-capability.js';
 import { type PreloadModuleRoot, type RequiredModuleRoot } from '@nimbus-sh/core/runtime/require-resolver.js';
 import { type NodeLaunch } from '@nimbus-sh/core/runtime/node-cli.js';
 import type { NodeTypeScript } from '@nimbus-sh/core/runtime/typescript-strip.js';
+import { type StaticFsRefs } from '@nimbus-sh/core/runtime/static-fs-refs.js';
 import type { ModuleScope } from '@nimbus-sh/core/runtime/module-format.js';
 import { type StagedProfileEntry } from './read-profile.js';
+import { type EsmStage } from './esm-stage.js';
 import { TurnBudget } from '@nimbus-sh/fabric/turn-budget.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { type BundleCellResultStore, type BundleCellTransformStats } from '@nimbus-sh/core/runtime/bundle-cell-transform.js';
@@ -131,6 +133,7 @@ export interface FacetExecResult {
         rpcWrites: number;
         fsRpcReads: number;
         namespaceRefusals?: number;
+        esmAdoptions?: number;
     };
 }
 /**
@@ -209,6 +212,8 @@ interface GeneratedNodeFacetCode {
     immutableModules: Record<string, ImmutableModuleSource>;
     modules: Record<string, string>;
     codeModules: Record<string, string>;
+    /** The staged ES modules and their facades, as `{ js }` module texts (FacetVfsBundleSource.esModules). */
+    esModules: Record<string, string>;
 }
 /**
  * The URL an entry's import() resolves against and its `Function` carries:
@@ -216,14 +221,14 @@ interface GeneratedNodeFacetCode {
  * `<cwd>/[stdin]`).
  */
 export declare function entryImporterUrl(filename: string | undefined, cwd: string): string;
-/** A data: URL module as a launch stages it: always an ES module to Node, in the runtime's scope. */
-export declare function stagedDataUrlModule(text: string, moduleScope: ModuleScope, esbuild: EsbuildService): Promise<string>;
+/** The VFS key a launch stages an ES module entry at: its file, or `[eval1]` in the working directory for `-e` and stdin code. */
+export declare function entryEsModuleKey(filename: string | undefined, cwd: string): string;
 /**
  * Generate one-shot runtime code with a plain fetch handler. `filename`
  * names the entry's module, and so its stack frames; with `cwd` it is the
  * entry's importer (entryImporterUrl).
  */
-export declare function generateEntrypointCode(userCode: string, vfsState: FacetVfsState, usesSqlite: boolean, sources: NodeFacetSources, wasmImports?: readonly FacetWasmImport[], filename?: string, cwd?: string, esModule?: boolean, esModuleMap?: string): Promise<GeneratedNodeFacetCode>;
+export declare function generateEntrypointCode(userCode: string, vfsState: FacetVfsState, usesSqlite: boolean, sources: NodeFacetSources, wasmImports?: readonly FacetWasmImport[], filename?: string, cwd?: string, esModule?: boolean, preamble?: string): Promise<GeneratedNodeFacetCode>;
 /** One wasm image the generated main module imports from the module map. */
 export interface FacetWasmImport {
     /** The module-map name the boot spec carries the image under. */
@@ -274,7 +279,8 @@ export declare function generateLongRunningNodeCode(userCode: string, vfsState: 
     filename?: string;
     dirname?: string;
     esModule?: boolean;
-    esModuleMap?: string;
+    /** CommonJS evaluated before the entry (node-runner.ts RunFreshOpts.preamble). */
+    preamble?: string;
     stdin?: string;
     attachedTty?: boolean;
     cred: ProcessEntry['cred'];
@@ -290,7 +296,7 @@ export declare function generateLongRunningNodeCode(userCode: string, vfsState: 
  *
 
  * The process's view of names and stats is the namespace its store boots on
- * (vfs/facet-resident-store.ts), never a spawn-time table.
+ * (vfs/resident), never a spawn-time table.
  */
 type FacetVfsDenial = {
     error: 'EACCES';
@@ -312,15 +318,18 @@ interface FacetVfsState {
      * with none is its own module.
      */
     emits?: Map<string, string>;
-    /** A lowered ES module's EsModuleMap (core async-module-lowering.ts), as JSON, by path. */
-    columnMaps?: Map<string, string>;
     /**
-     * The cells lowered from ESM or compiled from TypeScript
-     * (transformEsmInBundle), whose module wraps them in the block scope
-     * (commonjs-cell.ts, THE WRAPPER), each true where it is an ES module.
-     * Every other code cell is CommonJS as Node would run it.
+     * The ES modules the map carries, staged (esm-stage.ts): each its own
+     * module, which is never also in `emits`. Every other code cell is
+     * CommonJS as Node would run it.
      */
-    lowered?: Map<string, boolean>;
+    esm?: EsmStage;
+    /** Its size and time in numbers (esmStageSize), kept past its release: the launch's debug line. */
+    esmSize?: Record<string, number>;
+    /** ES modules carried as files only, never as modules of the map: only the passes that carry files to be read staged them. */
+    dataModules?: Set<string>;
+    /** Where its build's time went, by phase, in ms (the walk, enrichment, transforms, fitting, staging, the rest, serialization). */
+    phases?: Record<string, number>;
     /**
      * The files staged only to run whose module is an emit: the map carries the
      * emit and not the file, which no read asked for. A synchronous read of one
@@ -498,13 +507,17 @@ interface FacetVfsBundleSource {
     modules: Record<string, string>;
     /** The code cells as `{ cjs }` module texts, by module name. */
     codeModules: Record<string, string>;
+    /** The staged ES modules and what they link to, as `{ js }` module texts, by module name (esm-stage.ts). */
+    esModules: Record<string, string>;
     /** The JSON of the launch's CommonJsCellRow table. */
     codeCells: string;
+    /** The JSON of the launch's ES module table and refusals (esm-stage.ts EsmStage), or `null`. */
+    esm: string;
     /** The JSON list of runtime-code keys the map carries as `gen/<key>.js`. */
     runtimeCode: string;
     /**
      * What the process's store charges itself to adopt the data cells and the
-     * code cells it reads back (facet-resident-store's __residentCellCost).
+     * code cells it reads back (vfs/resident residentCellCost).
      */
     storageBytes: number;
 }
@@ -546,16 +559,16 @@ export declare function encodedBundleSize(bundle: FacetVfsBundle): {
  * split into ordered fragments; the merge expression concatenates those
  * fragments back to the original string or Uint8Array.
  */
-export declare function buildFacetVfsBundleSource(bundle: FacetVfsBundle, forceSideModules?: boolean, pacer?: TurnBudget, { consume, emits, columnMaps, lowered, codeOnly, runtimeCode, }?: {
+export declare function buildFacetVfsBundleSource(bundle: FacetVfsBundle, forceSideModules?: boolean, pacer?: TurnBudget, { consume, emits, esm, codeOnly, dataModules, runtimeCode, }?: {
     consume?: boolean;
     /** The module of each cell a transform changed (FacetVfsState.emits). */
     emits?: ReadonlyMap<string, string>;
-    /** FacetVfsState.columnMaps. */
-    columnMaps?: ReadonlyMap<string, string>;
-    /** FacetVfsState.lowered. */
-    lowered?: ReadonlyMap<string, boolean>;
+    /** The staged ES modules (FacetVfsState.esm). */
+    esm?: EsmStage;
     /** Files whose emit the map carries and not the file (FacetVfsState.codeOnly). */
     codeOnly?: ReadonlySet<string>;
+    /** ES modules carried as files only (FacetVfsState.dataModules): never a `{ cjs }` module. */
+    dataModules?: ReadonlySet<string>;
     /** Runtime code staged for this launch: `{ cjs }` module text by key. */
     runtimeCode?: ReadonlyMap<string, string>;
 }): Promise<FacetVfsBundleSource>;
@@ -588,6 +601,26 @@ interface OptionalModuleGroup {
     root: string;
     members: ReadonlySet<string>;
 }
+/**
+ * What the size guard keeps of a snapshot over `bound` raw bytes: it drops
+ * the `evictable` paths in order until what remains fits. A path is kept
+ * while something holds it: `independent` (paths staged on their own), or a
+ * kept group it is a member of. Evicting an independent path drops every
+ * group that has it (a group missing a member cannot load); evicting a
+ * group's root drops the group. `rawTotal` is the snapshot's bytes before any
+ * eviction; each eviction leaves the bytes of what is still held.
+ *
+ * Each path's holders are counted once, and an eviction releases only what
+ * it drops: the set used to be built again from every kept group after each
+ * eviction, pacing all of it each time, and a pi launch evicting 530 to 838
+ * files spent seconds of turns on it.
+ */
+export declare function retainWithinBound(bound: number, rawTotal: number, independent: Set<string>, keptGroups: Set<OptionalModuleGroup>, evictable: readonly string[], rawBytes: ReadonlyMap<string, number>, pacer?: {
+    spend(bytes: number): Promise<void>;
+}): Promise<{
+    retained: Set<string>;
+    rawTotal: number;
+}>;
 export declare function greedyAddMainEntries(vfs: LaunchFs, cwd: string, bundle: Record<string, string | Uint8Array>, budgetState: {
     totalBytes: number;
     fileCount: number;
@@ -795,7 +828,13 @@ export declare function lazyReadsByTarget(syncReadsOf: ReadonlyMap<string, reado
  * the bytes by path or carried them inline. A file that cannot be read is
  * left out; the seam's refusal names the module later.
  */
-export declare function collectClosureWasmImages(vfs: LaunchFs, bundle: Record<string, string | Uint8Array | FacetVfsDenial>, unstagedPaths: readonly string[]): Promise<WasmImageRecord[]>;
+export declare function collectClosureWasmImages(vfs: LaunchFs, bundle: Record<string, string | Uint8Array | FacetVfsDenial>, unstagedPaths: readonly string[], 
+/**
+ * A module's analysis as the data plan reads it (FacetManager
+ * _staticRefsOf: its file, once per revision), or null: then its cell is
+ * analyzed here.
+ */
+staticRefs?: (path: string) => Promise<StaticFsRefs | null>): Promise<WasmImageRecord[]>;
 /**
  * Stage the paths an earlier run of the same entry read synchronously and did
  * not have.
@@ -831,7 +870,7 @@ export interface PrefetchBundleOptions {
     scriptPath?: string;
     cwd: string;
     entryCode: string;
-    /** The ESM→CJS pass's transform host; absent, ESM cells stage as diagnostics. */
+    /** The module pass's transform host (transformBundleModules); absent, ES modules and TypeScript stage as diagnostics. */
     esbuild?: EsbuildService;
     bundleProfile?: FacetBundleProfile;
     /** Whose scope the runtime runs an ES module in (RuntimeRunOpts.moduleScope): absent, Node's. */
@@ -854,6 +893,10 @@ export interface PrefetchBundleOptions {
     stripTypes?: NodeTypeScript | null;
     /** What the command line preloads (`node -r`, `--import`): required roots, walked first, as they run first. */
     preloads?: readonly PreloadModuleRoot[];
+    /** `entryCode` is an ES module (`-e` or stdin, entryEsModuleKey): the VFS key it is staged at. */
+    entryEsModule?: string;
+    /** A module's static filesystem references, as the data plan reads them (collectClosureWasmImages). */
+    staticRefs?: (path: string) => Promise<StaticFsRefs | null>;
 }
 /**
  * The working dir's config files of the tool a launch runs. The tool
@@ -879,9 +922,8 @@ export declare function toolConfigRoots(vfs: LaunchFs, cwd: string, scriptPath: 
  * If required content still exceeds the per-module encoded ceiling, Worker
  * Loader side modules carry the bundle without truncating the closure.
  *
- * W3.5: now async to allow the optional ESM→CJS pre-pass via esbuild.
- * If `esbuild` is not provided, the pass is skipped (preserves prior
- * behaviour for code paths that don't have esbuild handy).
+ * The module pass (transformBundleModules) runs on `esbuild`; without it,
+ * ES modules and TypeScript stage as diagnostics.
  *
  */
 export declare function buildPrefetchBundle(vfs: LaunchFs, options: PrefetchBundleOptions): Promise<FacetVfsState>;
@@ -1066,9 +1108,10 @@ export interface ResidentSpawnOptions {
     cwd?: string;
     filename?: string;
     dirname?: string;
-    /** The program is an ES module the runtime lowered (RuntimeRunOpts.esModule). */
+    /** The program is an ES module (RuntimeRunOpts.esModule). */
     esModule?: boolean;
-    esModuleMap?: string;
+    /** CommonJS evaluated before the entry (node-runner.ts RunFreshOpts.preamble). */
+    preamble?: string;
     /** Whose scope the runtime runs an ES module in (RuntimeRunOpts.moduleScope): absent, Node's. */
     moduleScope?: ModuleScope;
     command?: string;
@@ -1253,7 +1296,7 @@ export declare class FacetManager {
     /** Per resident pid: the shared read profile's entries its launch staged, settled at its exit. */
     private readonly residentProfileOffers;
     /**
-     * The service the bundle's ESM→CJS pass transforms with. composeFacetManager
+     * The service the bundle's module pass transforms with. composeFacetManager
      * sets it: the host's own, or one whose transforms run in the session's
      * transform facet. Never one of this isolate: a transform engine's wasm
      * memory only grows.
@@ -1261,7 +1304,7 @@ export declare class FacetManager {
     private esbuild;
     /**
      * Prefetch-bundle cache. buildPrefetchBundle does a full VFS reachable-set
-     * walk + greedy oversample + esbuild ESM→CJS pass on EVERY foreground
+     * walk + greedy oversample + the module pass on EVERY foreground
      * exec — dominant wall-clock on large node_modules. This memoizes the
      * result (including the serialized facet bundle) keyed on
      * (bundleProfile, cwd, scriptPath, entryCode identity).
@@ -1299,7 +1342,7 @@ export declare class FacetManager {
     private readProfile;
     /** Read-profile changes dropped after losing every write race. */
     private readProfileConflicts;
-    /** Per module path: its static references at a revision (see _closureStaticRefs). */
+    /** Per credential and module path: its static references at a revision (see _staticRefsOf). */
     private staticRefsMemo;
     /** Modules whose references are remembered: a few programs' closures. */
     private static readonly STATIC_REFS_MEMO_MAX;
@@ -1443,7 +1486,7 @@ export declare class FacetManager {
      * (SqliteVFS.readRecallAt) is its to read before it is published.
      */
     private _kernelFor;
-    /** Give the bundle's ESM→CJS pass the host's esbuild, as composeFacetManager does. */
+    /** Give the bundle's module pass the host's esbuild, as composeFacetManager does. */
     setEsbuildService(esbuild: EsbuildService): void;
     /**
      * The entry script as the facet compiles it: each dynamic `import()` routed
@@ -1482,7 +1525,7 @@ export declare class FacetManager {
      * the entry, the working directory and the process they build for; that is
      * all they supply. Everything else — the revision-keyed cache and its stale
      * eviction, the residency profile a previous miss learned, the reachable-set
-     * walk and its enrichment passes, the ESM→CJS transform, the manifest and
+     * walk and its enrichment passes, the module pass, the manifest and
      * metadata, the module-map serialization with its side-module split, the
      * `node:sqlite` answer, and the release of the raw cells once they are
      * serialized — happens here, once, and yields the turn whenever a chunk's
@@ -1578,7 +1621,7 @@ export declare class FacetManager {
      * Every package.json the process's credential can see (data-plan.ts's
      * `package-json` rule, which a resident's plan applies itself), as copies a
      * one-shot is handed beside its plan: its store holds each manifest its own
-     * listing names from boot (facet-resident-store's __residentSetManifests).
+     * listing names from boot (vfs/resident sync.setManifests).
      * A program resolves package names its closure never named, and reads each
      * manifest synchronously to do it: vite's config load, for every import of
      * the config it decides whether to externalize.
@@ -1619,6 +1662,13 @@ export declare class FacetManager {
      * per revision of it, in this session.
      */
     private _closureStaticRefs;
+    /**
+     * One module's static filesystem references (_closureStaticRefs), parsed
+     * once per revision of its file in this session; null if it has no
+     * revision or cannot be read. The launch's image collector reads the same
+     * analysis (collectClosureWasmImages).
+     */
+    private _staticRefsOf;
     private _buildProcessBundle;
     /**
      * Generate a launch's map under the ceiling on it. `others` is what the rest
@@ -1678,10 +1728,13 @@ export declare class FacetManager {
     /**
      * The runtime code recorded for an entry, as `{ cjs }` module text by key:
      * a constructor call as the function module (or the SyntaxError the
-     * constructor would throw), a file lowered and wrapped as a module cell is.
-     * A file is staged by its content key even when the launch also carries its
+     * constructor would throw), a CommonJS file wrapped as a module cell is. A
+     * file is staged by its content key even when the launch also carries its
      * path as a cell: the guest looks a path up first and the key only for a
-     * path the map lacks — the same text written under a fresh name.
+     * path the map lacks — the same text written under a fresh name. An ES
+     * module (a data: URL's always) is not staged: each instance of it is the
+     * path it was written at, which a module the map fixes cannot be, so each
+     * launch interprets it (core native-esm.ts).
      */
     private _stagedRuntimeCode;
     /** True when the cache is holding this state — see FacetVfsState.cacheRetained. */
@@ -1744,10 +1797,10 @@ export declare class FacetManager {
         callerPid?: number;
         /** The process whose command runs the program: its parent, whose credential and exec id it takes. */
         invokerPid?: number;
-        /** The program is an ES module the runtime lowered (RuntimeRunOpts.esModule). */
+        /** The program is an ES module (RuntimeRunOpts.esModule). */
         esModule?: boolean;
-        /** RuntimeRunOpts.esModuleMap. */
-        esModuleMap?: string;
+        /** CommonJS evaluated before the entry (node-runner.ts RunFreshOpts.preamble). */
+        preamble?: string;
         /** Whose scope the runtime runs an ES module in (RuntimeRunOpts.moduleScope): absent, Node's. */
         moduleScope?: ModuleScope;
         bundleProfile?: FacetBundleProfile;

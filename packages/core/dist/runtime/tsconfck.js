@@ -19,8 +19,7 @@
  */
 import { normalizeVfsPath } from '../vfs/path.js';
 import { jsoncToJson } from './jsonc.js';
-import { splitBareSpecifier } from './barrel-detect.js';
-import { parseResolvablePackageJson } from '../_shared/exports-resolver.js';
+import { createRequireResolver, isRequireResolutionError } from './require-resolution.js';
 /** A config that could not be read or resolved, as tsconfck's TSConfckParseError. */
 export class TsconfckParseError extends Error {
     code;
@@ -196,125 +195,22 @@ function resolveExtends(extended, from, fs) {
 }
 /** Node's require.resolve(request) from the module `from`, or null. */
 function requireResolve(request, from, fs) {
-    const asFile = (path) => ['', '.js', '.json', '.node'].map((ext) => path + ext).find((candidate) => fs.isFile(candidate)) ?? null;
-    const asIndex = (dir) => asFile(`${dir}/index`);
-    const asDirectory = (dir) => {
-        const pkgPath = `${dir}/package.json`;
-        if (fs.isFile(pkgPath)) {
-            let text = '';
-            try {
-                text = fs.readFileString(pkgPath);
-            }
-            catch { /* unreadable: no main */ }
-            const main = parseResolvablePackageJson(text)?.main;
-            if (main) {
-                const at = resolve(dir, main);
-                const found = asFile(at) ?? asIndex(at);
-                if (found)
-                    return found;
-            }
-        }
-        return asIndex(dir);
-    };
-    if (request.startsWith('./') || request.startsWith('../') || request.startsWith('/') || request === '.' || request === '..') {
-        const at = resolve(dirname(from), request);
-        return asFile(at) ?? asDirectory(at);
+    const resolver = createRequireResolver({
+        // Config-only hosts historically expose regular-file probes alone.
+        // Treat unknown directories as candidates; only a confirmed file can
+        // resolve. Hosts with directory/realpath metadata answer them exactly.
+        kind: (path) => fs.isFile(path) ? 'file' : fs.isDirectory?.(path) === false ? null : 'directory',
+        readText: (path) => fs.readFileString(path),
+        realpath: (path) => fs.realpath?.(path) ?? path,
+    });
+    try {
+        return resolver.resolveSync(request, dirname(from))?.path ?? null;
     }
-    const { name, subpath } = splitBareSpecifier(request);
-    for (let dir = dirname(from);; dir = dirname(dir)) {
-        if (basename(dir) !== 'node_modules') {
-            const pkgDir = `${dir === '/' ? '' : dir}/node_modules/${name}`;
-            const pkgPath = `${pkgDir}/package.json`;
-            const pkg = fs.isFile(pkgPath) ? (() => {
-                try {
-                    return parseResolvablePackageJson(fs.readFileString(pkgPath));
-                }
-                catch {
-                    return null;
-                }
-            })() : null;
-            if (pkg?.exports !== undefined && pkg?.exports !== null) {
-                const target = requireExportsTarget(pkg.exports, subpath ? `./${subpath}` : '.');
-                // An exports map answers for its package: what it does not expose is not found.
-                if (!target)
-                    return null;
-                const at = resolve(pkgDir, target);
-                return fs.isFile(at) ? at : null;
-            }
-            const at = subpath ? `${pkgDir}/${subpath}` : pkgDir;
-            const found = asFile(at) ?? asDirectory(at);
-            if (found)
-                return found;
-        }
-        if (dir === '/')
+    catch (error) {
+        if (isRequireResolutionError(error))
             return null;
+        throw error;
     }
-}
-/** The conditions Node's require.resolve matches (`default` matches always). */
-const REQUIRE_CONDITIONS = new Set(['require', 'node', 'node-addons', 'default']);
-/**
- * A package's `exports` target for `subpath` ('.' or './x'), as Node's
- * PACKAGE_EXPORTS_RESOLVE finds it under require.resolve's conditions: an
- * exact key, else the longest `*` pattern; in a conditions object the first
- * key, in the object's order, that is `default` or a condition (not the
- * resolver's own priority: `{ default, require }` is `default`). Null where
- * nothing is exported there (Node throws ERR_PACKAGE_PATH_NOT_EXPORTED).
- */
-function requireExportsTarget(exports, subpath) {
-    const keys = exports !== null && typeof exports === 'object' && !Array.isArray(exports) ? Object.keys(exports) : [];
-    const subpaths = keys.length > 0 && keys.every((key) => key.startsWith('.'));
-    if (!subpaths)
-        return subpath === '.' ? exportsTarget(exports, null) ?? null : null;
-    const map = exports;
-    if (Object.prototype.hasOwnProperty.call(map, subpath) && !subpath.includes('*'))
-        return exportsTarget(map[subpath], null) ?? null;
-    let best = null;
-    for (const key of keys) {
-        const star = key.indexOf('*');
-        if (star < 0 || star !== key.lastIndexOf('*'))
-            continue;
-        const base = key.slice(0, star);
-        const trailer = key.slice(star + 1);
-        if (!subpath.startsWith(base) || subpath === base)
-            continue;
-        if (trailer && !(subpath.endsWith(trailer) && subpath.length >= key.length))
-            continue;
-        // PATTERN_KEY_COMPARE: the longer base, then the longer key.
-        if (!best || base.length > best.key.indexOf('*') || (base.length === best.key.indexOf('*') && key.length > best.key.length)) {
-            best = { key, match: subpath.slice(base.length, subpath.length - trailer.length) };
-        }
-    }
-    return best ? exportsTarget(map[best.key], best.match) ?? null : null;
-}
-/** PACKAGE_TARGET_RESOLVE: a target string (with `*` replaced), null, or undefined where nothing matched. */
-function exportsTarget(target, patternMatch) {
-    if (typeof target === 'string') {
-        if (!target.startsWith('./'))
-            return null;
-        return patternMatch === null ? target : target.replaceAll('*', patternMatch);
-    }
-    if (Array.isArray(target)) {
-        if (target.length === 0)
-            return null;
-        let last = null;
-        for (const item of target) {
-            last = exportsTarget(item, patternMatch);
-            if (last)
-                return last;
-        }
-        return last;
-    }
-    if (target !== null && typeof target === 'object') {
-        for (const [condition, value] of Object.entries(target)) {
-            if (!REQUIRE_CONDITIONS.has(condition))
-                continue;
-            const resolved = exportsTarget(value, patternMatch);
-            if (resolved !== undefined)
-                return resolved;
-        }
-        return undefined;
-    }
-    return null;
 }
 /** What `extends` carries over: references, extends and custom keys do not. */
 const EXTENDABLE_KEYS = ['compilerOptions', 'files', 'include', 'exclude', 'watchOptions', 'compileOnSave', 'typeAcquisition', 'buildOptions'];

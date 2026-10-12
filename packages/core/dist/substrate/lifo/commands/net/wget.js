@@ -54,7 +54,7 @@ function createWgetImpl(kernel) {
             // Every hop is classified first: bound to a kernel, a loopback one,
             // including one a redirect lands on, is served by its port table or its
             // host's loopback router, never by fetch.
-            const walk = await walkRedirects({ url: new URL(url), method: 'GET', headers: new Headers() }, { follow: true, send: (hop) => sendHop(kernel, hop.url, hopInit(hop, ctx.signal)) });
+            const walk = await walkRedirects({ url: new URL(url), method: 'GET', headers: new Headers() }, { follow: true, send: (hop) => sendHop(kernel, ctx.pid, hop.url, hopInit(hop, ctx.signal)) });
             if (walk.kind === 'refused') {
                 if (!options.quiet)
                     await ctx.stderr.write('failed.\n');

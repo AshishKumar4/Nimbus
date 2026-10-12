@@ -28,7 +28,7 @@ import { createCurlCommand } from '../substrate/lifo/commands/net/curl.js';
 import { createWgetCommand } from '../substrate/lifo/commands/net/wget.js';
 import { createDigCommand } from '../substrate/lifo/commands/net/dig.js';
 import { createPingCommand } from '../substrate/lifo/commands/net/ping.js';
-import { workspaceNetwork } from '../_shared/workspace-network.js';
+import { selectProcessEgress, workspaceNetwork } from '../_shared/workspace-network.js';
 import { runCommand } from '../substrate/lifo/sandbox/run-command.js';
 import { HeadlessTerminal } from '../substrate/lifo/sandbox/HeadlessTerminal.js';
 import { SqliteVFS, STORE_TABLES } from '../vfs/sqlite-vfs.js';
@@ -152,7 +152,6 @@ export class NimbusWorkspace {
             throw new Error('The workspace filesystem must be over the workspace SqliteVFS');
         await seedBaseFilesystem(filesystem, home);
         const kernel = new Kernel();
-        kernel.network = workspaceNetwork(options.egress);
         const registry = createDefaultRegistry();
         // The durable coreutils replace ~25 lifo builtins. They are the ones that
         // carry credentials and read this filesystem's uid/gid, so they must win.
@@ -164,6 +163,12 @@ export class NimbusWorkspace {
         // host-supplied one keeps the base its owner configured.
         if (!options.processes)
             processes.setPidBase((options.generation ?? 1) * PID_GEN_STRIDE);
+        if (options.egressFor !== undefined && options.egress === undefined) {
+            throw new TypeError('NimbusWorkspace: egressFor refines egress, the workspace\'s own network; give both');
+        }
+        kernel.network = options.egress !== undefined && options.egressFor !== undefined
+            ? selectProcessEgress(options.egress, options.egressFor, processes)
+            : workspaceNetwork(options.egress);
         // Its processes bind to this filesystem, so a reap releases them here,
         // and their output waits for what they wrote to be published: the one
         // place the table and the filesystem meet.

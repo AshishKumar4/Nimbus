@@ -6,7 +6,7 @@
  *
  * One SqliteVFS, one process bridge (the authority a WASI facet reaches over
  * the supervisor), and the adapter in front of that bridge over the real
- * shipped store source (worker vfs/facet-resident-store.ts), its namespace
+ * shipped store source (worker vfs/resident/index.ts), its namespace
  * listed on demand through the same supervisor surface a facet has. Each
  * probe runs both ways and the answers are compared: stats field by field,
  * bytes, listings, link text, realpaths, descriptors, and the errno of every
@@ -20,7 +20,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { residentFilesystem } from '../../packages/core/src/runtime/wasi/resident-filesystem.ts';
-import { FACET_RESIDENT_STORE_SOURCE } from '../../packages/worker/src/vfs/facet-resident-store.ts';
+import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const enc = new TextEncoder();
@@ -62,11 +62,8 @@ await kernel.chmod(k('locked.txt'), 0o600);
 for (const p of ['a.txt', 'big.bin', 'sub', 'sub/b.txt', 'sub/deep', 'sub/deep/c.txt', 'empty', 'many', 'ü file.txt']) await kernel.chown(k(p), 1000, 1000);
 
 // ── the store, as a facet holds it ─────────────────────────────────────────
-const store = new Function(
-  FACET_RESIDENT_STORE_SOURCE
-    + '\nreturn { __residentBindInMemory, __residentSetStorage, __residentBootLazy, __residentNamespaceView };',
-)();
-store.__residentBindInMemory(64 * 1024 * 1024);
+const store = createResidentStore();
+store.bindInMemory(64 * 1024 * 1024);
 /** The supervisor surface a WASI facet has, answered by the process bridge (its errors as the RPC delivers them). */
 const calls = { total: 0 };
 const supervisor = {
@@ -87,10 +84,10 @@ const supervisor = {
     return out;
   },
 };
-store.__residentSetStorage(undefined, supervisor);
-assert.equal(await store.__residentBootLazy(supervisor), true, 'the lazy namespace boots on the authority cursor');
+store.admission.setStorage(undefined, supervisor);
+assert.equal(await store.lazy.bootLazy(supervisor), true, 'the lazy namespace boots on the authority cursor');
 const device = (await authority.stat('/')).dev;
-const adapter = residentFilesystem(authority, store.__residentNamespaceView(supervisor, device, USER));
+const adapter = residentFilesystem(authority, store.lazy.namespaceView(supervisor, device, USER));
 
 // ── answers, comparable ─────────────────────────────────────────────────────
 const digest = (bytes) => (bytes === null ? null : `${bytes.byteLength}:${createHash('sha256').update(bytes).digest('hex').slice(0, 16)}`);
@@ -305,7 +302,7 @@ await compareAll('held-writes');
       return typeof value === 'function' ? value.bind(target) : value;
     },
   });
-  const full = residentFilesystem(refusing, store.__residentNamespaceView(supervisor, device, USER));
+  const full = residentFilesystem(refusing, store.lazy.namespaceView(supervisor, device, USER));
   const a = await full.open(beneath('full-a.txt'), { write: true, create: true, truncate: true });
   await assert.rejects(async () => full.write(a.id, null, enc.encode('lost')), { code: 'ENOSPC' }, 'the write reports its refusal');
   await full.close(a.id);

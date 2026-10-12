@@ -2,12 +2,12 @@
  * bundle-cell-transform.ts — what the session does to one staged module
  * before it can run as a module cell.
  *
- * Every cell a process can require is CommonJS by the time it is wrapped
- * (commonjs-cell.ts): the guest's registry could compile an ES module, but
- * cannot resolve its package imports, give it its own file URL, or import
- * names from the CommonJS it depends on. So an ES module or a TypeScript
- * source is lowered to CommonJS, and a CommonJS cell's dynamic `import()`
- * calls are routed to the process's ESM loader.
+ * An ES module runs as itself (native-esm.ts): the transform host reads where
+ * its module syntax is (its import sites), which the session stages it by.
+ * TypeScript is stripped (Node's) or compiled (the runtime's own), its module
+ * syntax kept, and then staged the same way where it is an ES module. A
+ * CommonJS cell's dynamic `import()` calls are routed to the process's ESM
+ * loader.
  *
  * A cell's result is a function of four things: its path, its source, this
  * pipeline's code, and the transform host's code. That is what lets a
@@ -23,37 +23,31 @@ import { errorText } from '../_shared/error-text.js';
 import { vfsPathExtension } from '../vfs/path.js';
 import { mayHaveDynamicImport } from './dynamic-import-rewrite.js';
 import { moduleImporterUrl } from '../_shared/module-importer.js';
-import { lowerEsModule } from './async-module-lowering.js';
 import { transformSlices } from './esbuild-service.js';
 import { rewriteProvidedCommonJsModules } from './provided-packages.js';
 import { MODULE_PARSE_OPTIONS, containsModuleSyntax, parseStatements } from './javascript-ast.js';
 import { isEsModuleFile, typeScriptUnderNodeModules } from './module-format.js';
 import { nodeModulesRefusal, typeScriptRefusalShim } from './typescript-refusal.js';
 /**
- * An ES module this large is lowered in the session (async-module-lowering.ts
- * lowerEsModule, which reads it a statement at a time, in bounded memory)
- * rather than shipped to the transform facet, which lowers a smaller one the
- * same way.
- */
-export const BUNDLED_ESM_REWRITE_MIN_BYTES = 512 * 1024;
-/**
- * The bundle entries that may need the ESM→CJS transform before they can run
- * as module cells.
+ * The bundle entries that may need the pipeline before they can run as
+ * module cells.
  *
  * Extensionless entries are in the set because that is the shape of nearly
  * every npm `bin` script. `.json` is data and `.cjs` is CommonJS by
- * definition; neither needs the transform. Content decides from here:
+ * definition; neither is staged as an ES module. Content decides from here:
  * `looksLikeEsm` sniffs module syntax, and parses an extensionless file,
  * which may be data rather than a script.
  */
 export function isBundleModuleCandidate(path) {
     const ext = vfsPathExtension(path);
-    return ext === '.js' || ext === '.mjs' || ext === '' || bundleTypescriptLoader(path) !== null;
+    return ext === '.js' || ext === '.mjs' || ext === '' || bundleCompiledLoader(path) !== null;
 }
 /**
- * The esbuild loader for a TypeScript source in the bundle, or null when the
- * path does not name one. Which extensions are TypeScript is
- * `typescriptLoader`'s table, the one a runtime's entry script is decided by.
+ * The esbuild loader for a source in the bundle the runtime compiles,
+ * TypeScript or JSX, or null when the path does not name one. Which
+ * extensions are TypeScript is `typescriptLoader`'s table, the one a
+ * runtime's entry script is decided by; `.jsx` is JSX, which the runtime
+ * compiles for `node` and `bun` alike (runtime-registry.ts's entry).
  *
  * A resolved `.ts` file reaches the facet as TypeScript, and TypeScript is not
  * JavaScript: compiling a type annotation is a SyntaxError whether or
@@ -71,7 +65,9 @@ export function isBundleModuleCandidate(path) {
  * comment where `lib.es5.d.ts` (217 KB) had been, and every global type was
  * gone. So a declaration file is left exactly as it was staged.
  */
-export function bundleTypescriptLoader(path) {
+export function bundleCompiledLoader(path) {
+    if (vfsPathExtension(path) === '.jsx')
+        return 'jsx';
     return isTypescriptDeclarationFile(path) ? null : typescriptLoader(path);
 }
 /**
@@ -97,15 +93,15 @@ export function looksLikeEsm(path, src, packageType) {
 }
 /**
  * Whether the staged cell at `path` goes through the pipeline at all: an ES
- * module or TypeScript source to lower, or CommonJS (`.cjs` included) whose
- * dynamic `import()` calls are the process's.
+ * module to stage, TypeScript to strip or compile, or CommonJS (`.cjs`
+ * included) whose dynamic `import()` calls are the process's.
  */
 export function needsBundleCellTransform(path, src, packageType) {
     if (path.endsWith('.cjs'))
         return mayHaveDynamicImport(src);
     if (!isBundleModuleCandidate(path))
         return false;
-    return bundleTypescriptLoader(path) !== null || looksLikeEsm(path, src, packageType) || mayHaveDynamicImport(src);
+    return bundleCompiledLoader(path) !== null || looksLikeEsm(path, src, packageType) || mayHaveDynamicImport(src);
 }
 /**
  * Parseable CommonJS standing in for a module esbuild could not transform: it
@@ -122,72 +118,40 @@ export function esbuildDiagnosticShim(path, reason) {
  * a runtime whose ES modules run in `scope` (module-format.ts ModuleScope).
  *
  * This is computation in the caller's isolate proportional to the source —
- * the provided-module pre-pass and, for large bundled ESM, its lowering to
- * CommonJS — so a paced caller accounts the source before it.
+ * the provided-module pre-pass — so a paced caller accounts the source
+ * before it.
  */
 export function prepareBundleCell(path, source, packageType, scope, stripTypes = null) {
     // TypeScript Node requires as JavaScript: an ES module by its syntax alone (module-format.ts typeScriptEntryRefused).
     const javaScript = stripTypes === 'javascript' && stripsTypeScript(path);
-    const loader = javaScript ? null : bundleTypescriptLoader(path);
+    const loader = javaScript ? null : bundleCompiledLoader(path);
     const typescript = loader !== null;
-    // Node's own TypeScript: stripped, then an ES module lowered or CommonJS as Node's format says (typescript-strip.ts).
+    const absUrl = moduleImporterUrl(path);
+    const cell = { path, typescript, absUrl };
+    // Node's own TypeScript: stripped, then staged or CommonJS as Node's format says (typescript-strip.ts).
     if (stripTypes !== null && stripTypes !== 'javascript' && stripsTypeScript(path)) {
-        const absUrl = moduleImporterUrl(path);
-        const cell = { path, typescript, lowered: false, absUrl };
         if (typeScriptUnderNodeModules(path)) {
             const refusal = nodeModulesRefusal('/' + path);
             return { ...cell, outcome: { error: refusal.message, typescript: refusal } };
         }
-        return {
-            ...cell,
-            request: { code: source, options: { stripTypes, packageType, sourcefile: '/' + path, dynamicImportParent: absUrl, moduleMetadata: true } },
-        };
+        return { ...cell, request: { code: source, options: { stripTypes, packageType, sourcefile: '/' + path, dynamicImportParent: absUrl } } };
     }
-    // A JavaScript file Node runs as an ES module is lowered in Node's module
-    // scope (module-format.ts): strict, `this` undefined at the top, and no
-    // CommonJS wrapper name; in Bun's, with CommonJS's names. TypeScript keeps
-    // CommonJS's names, as tsx and ts-node give them.
     const esm = javaScript ? containsModuleSyntax(source) : !typescript && looksLikeEsm(path, source, packageType);
-    // Source is transformed once per path; import.meta reads metadata from
-    // each evaluation's module object, including its query and fragment.
-    // The source URL still supplies the static parent for rewritten dynamic
-    // imports and diagnostics.
-    const absUrl = moduleImporterUrl(path);
-    // Every cell's dynamic import() is the process's: the transform keeps
-    // them, and the facet rewrites each to the process's ESM loader.
-    const moduleMetadata = typescript || esm;
-    const request = (code, rewriteOnly) => ({
-        code,
-        options: rewriteOnly
-            ? { rewriteOnly: true, dynamicImportParent: absUrl, moduleMetadata }
-            : {
-                ...(esm ? { esModule: scope } : { loader: loader ?? 'js', format: 'cjs', target: 'esnext' }),
-                dynamicImportParent: absUrl, moduleMetadata,
-            },
-    });
     let src;
     try {
         src = typescript ? source : rewriteProvidedCommonJsModules(source);
     }
     catch (e) {
         // The pre-pass cannot read this cell: a verdict on it alone, like esbuild's.
-        return { path, typescript, lowered: false, absUrl, outcome: { error: errorText(e) } };
+        return { ...cell, outcome: { error: errorText(e) } };
     }
+    // TypeScript the runtime compiles is staged where its emit has module syntax.
+    if (typescript)
+        return { ...cell, request: { code: src, options: { loader, esModule: scope, dynamicImportParent: absUrl } } };
+    if (esm)
+        return { ...cell, request: { code: src, options: { esModule: scope, dynamicImportParent: absUrl } } };
     // CommonJS already: only its dynamic import() calls change.
-    const rewriteOnly = !typescript && !esm;
-    const cell = { path, typescript, lowered: !rewriteOnly, absUrl };
-    if (esm && src.length >= BUNDLED_ESM_REWRITE_MIN_BYTES) {
-        try {
-            return { ...cell, outcome: { ...lowerEsModule(src, scope, absUrl), esModule: scope } };
-        }
-        catch (e) {
-            // Nested past this stack: the host's, then its engine's (runTransformRequest).
-            if (e instanceof RangeError)
-                return { ...cell, request: request(src, false) };
-            return { ...cell, outcome: { error: errorText(e) } };
-        }
-    }
-    return { ...cell, request: request(src, rewriteOnly) };
+    return { ...cell, request: { code: src, options: { rewriteOnly: true, dynamicImportParent: absUrl } } };
 }
 /**
  * The cell's result from the host's (or the session's) outcome. A transient
@@ -200,10 +164,9 @@ export function settleBundleCell(cell, outcome) {
         if (outcome.transient)
             throw new Error(`esbuild transform unavailable for ${cell.path}: ${outcome.error}`);
         const code = 'typescript' in outcome ? typeScriptRefusalShim(outcome.typescript) : esbuildDiagnosticShim(cell.path, outcome.error);
-        return { code, map: '', lowered: cell.lowered, esModule: false, failed: true };
+        return { code, sites: '', failed: true };
     }
-    const esModule = outcome.esModule !== undefined;
-    return { code: outcome.code, map: outcome.map, lowered: cell.lowered || esModule, esModule, failed: false };
+    return { code: outcome.code, sites: outcome.esModule !== undefined ? outcome.map : '', failed: false };
 }
 /**
  * The entry script as the facet compiles it: each dynamic `import()` routed to
@@ -228,7 +191,7 @@ export function entryScriptRequest(code, parentUrl) {
  * Only a paced launch stores what it transforms: its writes land on as many
  * turns as they take, where an unpaced one would put every write in one turn.
  * A transient host failure throws (settleBundleCell) before anything of its
- * slice is placed. Each cell is lowered for the launch's runtime's module
+ * slice is placed. Each cell is staged for the launch's runtime's module
  * `scope`.
  */
 export async function transformBundleCells(cells, { host, store, pacer, scope, stripTypes = null }, place) {
@@ -247,7 +210,7 @@ export async function transformBundleCells(cells, { host, store, pacer, scope, s
         stats.transformed++;
         if (!store || key === undefined || !spend)
             return;
-        const refused = await store.put(key, { code: result.code, map: result.map, lowered: result.lowered, esModule: result.esModule }, spend);
+        const refused = await store.put(key, { code: result.code, sites: result.sites }, spend);
         if (refused === null)
             return;
         stats.storeErrors++;
@@ -314,7 +277,7 @@ export async function transformEntryScript(code, parentUrl, { host, store, pacer
     if ('error' in outcome)
         throw new Error(`entry dynamic import transform failed: ${outcome.error}`);
     if (store && key !== undefined) {
-        await store.put(key, { code: outcome.code, map: outcome.map, lowered: false, esModule: false }, pacer ? (bytes) => pacer.spend(bytes) : undefined);
+        await store.put(key, { code: outcome.code, sites: '' }, pacer ? (bytes) => pacer.spend(bytes) : undefined);
     }
     return outcome.code;
 }

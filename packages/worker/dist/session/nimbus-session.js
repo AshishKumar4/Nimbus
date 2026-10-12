@@ -13,7 +13,7 @@ import * as runtimeServices from '../hosted/services.js';
  * `node` execution is delegated to dynamic workers via LOADER.load().
  * IPC between facets and the supervisor flows through SupervisorRPC.
  */
-import { workspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
+import { selectProcessEgress, workspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { DurableObject as CloudflareDurableObject } from 'cloudflare:workers';
 import { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { CRED_KERNEL, CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -434,10 +434,10 @@ export class NimbusSession extends CloudflareDurableObject {
             requestLaunchTurn: (at) => this._scheduleLaunchTurn(at),
             armResidentKeepalive: () => _w1EnsureResidentKeepalive(this, ctx),
             filesystem: () => this.getFilesystemAuthority(),
-            // The workspace's network is its egress's (workspaceNetwork: one per
-            // egress), so it is there before the workspace is: a launch re-driven
-            // by a cold alarm, or by the reconnect's recovery, goes out through it.
-            network: () => workspaceNetwork(this.egressForWorkspace()),
+            // The session's network is there before its workspace is: a launch
+            // re-driven by a cold alarm, or by the reconnect's recovery, goes out
+            // through it.
+            network: () => this.sessionNetwork(),
             supervisorOp: (envelope) => this.supervisorOp(envelope),
         });
         // In `wrangler dev`, the outer Worker and this DO share a single
@@ -688,12 +688,32 @@ export class NimbusSession extends CloudflareDurableObject {
     workspaceEgress() {
         return this.env.NIMBUS_EGRESS;
     }
-    /** This instance's {@link workspaceEgress}, asked for once. */
+    /** This instance's {@link workspaceEgress} and {@link egressFor}, asked for once. */
     #egress;
-    /** {@link workspaceEgress}, for the session's init and processes (not part of the embedder surface). */
+    /** {@link workspaceEgress} and {@link egressFor}, for the session's workspace (not part of the embedder surface). */
     egressForWorkspace() {
-        this.#egress ??= { egress: this.workspaceEgress() };
-        return this.#egress.egress;
+        if (this.#egress === undefined) {
+            const egress = this.workspaceEgress();
+            const egressFor = this.egressFor;
+            this.#egress = egress === undefined ? {} : egressFor === undefined ? { egress } : { egress, egressFor: (process) => egressFor.call(this, process) };
+        }
+        return this.#egress;
+    }
+    #network;
+    /**
+     * The session's network, before and across its workspaces: under
+     * {@link egressFor} it selects from whatever process table the session
+     * holds as a process asks (a destroy installs a new one), and a process
+     * is asked for once, whether this network or the workspace's asks first.
+     */
+    sessionNetwork() {
+        if (this.#network === undefined) {
+            const { egress, egressFor } = this.egressForWorkspace();
+            this.#network = egress !== undefined && egressFor !== undefined
+                ? selectProcessEgress(egress, egressFor, { get: (pid) => this.processes.get(pid) })
+                : workspaceNetwork(egress);
+        }
+        return this.#network;
     }
     /** The session's namespace and process bindings: one, for the workspace, facets and RPC alike. */
     getFilesystemAuthority() {
