@@ -376,7 +376,10 @@ export function createBufferedFs(supervisor, stats, authoritativeRoot, authorita
             return bufferMutation(async () => {
                 const now = Date.now();
                 ensureMetadataParents(p, now);
-                const mode = ((requested ?? 0) & 0o111) !== 0 ? 0o755 : 0o644;
+                // The mode asked for (0666 when none, as a program's create), less the
+                // 022 umask this facet makes files under: git's library asks 0777 for an
+                // executable and leaves the narrowing to the umask, which it has no other way to get.
+                const mode = (requested ?? 0o666) & ~0o022 & 0o7777;
                 const fileMetadata = { kind: 'file', size: buf.length, mode, mtimeMs: now, ctimeMs: now, atimeMs: now };
                 setMetadata(p, fileMetadata);
                 if (fileApi !== null && buf.length > ROUTED_FILE_MAX) {
