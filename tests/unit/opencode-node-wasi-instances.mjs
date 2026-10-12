@@ -41,7 +41,8 @@ const generated = generateOpencodeRunnerCode({
   vfsBundle: JSON.stringify({ 'home/user/node-only.txt': 'Node bytes', 'home/user/shared.txt': 'Node secret' }),
   vfsCursor: JSON.stringify(nodeSession.cursor()), vfsManifest: '{}', vfsMetadata: '{}',
 });
-const modules = generatedModuleSet(generated, 'runner.mjs');
+// The opencode runner stages no ES modules of its own.
+const modules = generatedModuleSet({ esModules: {}, ...generated }, 'runner.mjs');
 modules['runner.mjs'] += WASI_INSTANCE_PROBE + `
 export async function bootNodeForTest(supervisor) {
   __supervisor = globalThis.__nimbusAnsweringSupervisor(supervisor);
