@@ -3384,23 +3384,32 @@ realGit) {
                 return 128;
             }
             if (repo?.worktree && command !== null) {
+                let readsIndex = false;
                 switch (command.sub) {
                     case 'status':
-                    case 'add':
                     case 'commit':
                     case 'ls-files':
-                    case 'checkout':
-                    case 'reset':
                     case 'merge':
                     case 'pull':
                     case 'sparse-checkout':
-                        await worktreeRepo(ctx, git, repoVfs, fs, repo.gitdir, repo.worktree).prepare();
+                        readsIndex = true;
+                        break;
+                    case 'add':
+                        readsIndex = command.parsed.pathArgs.length > 0 || command.parsed.all === true || command.parsed.update;
+                        break;
+                    case 'checkout':
+                        readsIndex = command.parsed.paths.length > 0 || command.parsed.create
+                            || (command.parsed.ref !== undefined && command.parsed.ref !== 'HEAD');
+                        break;
+                    case 'reset':
+                        readsIndex = command.parsed.mode !== 'soft';
                         break;
                     case 'diff':
-                        if (!command.parsed.noIndex)
-                            await worktreeRepo(ctx, git, repoVfs, fs, repo.gitdir, repo.worktree).prepare();
+                        readsIndex = !command.parsed.noIndex;
                         break;
                 }
+                if (readsIndex)
+                    await worktreeRepo(ctx, git, repoVfs, fs, repo.gitdir, repo.worktree).prepare();
             }
         }
         if (command === null)
