@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { createNimbusHandler } from '../../packages/worker/src/router/index.ts';
 for(const options of [
-  {auth:{mode:'legacy'}}, {auth:{mode:'auto'}},
+  {auth:{mode:'legacy'}}, {},
 ]){
   for(const cookie of ['theme=dark','__Host-nimbus_token=old-value','theme=dark; __Host-nimbus_token-sid=other']){
     const names=[];
