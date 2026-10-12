@@ -1,11 +1,11 @@
 /** The real Git guest entry, compiled without importing its host/bootstrap graph. */
 import type { FacetBindings } from './facet-host.js';
-import type { WasiCred } from './wasi/types.js';
+import type { VfsCred } from './os-contracts.js';
 import type { ResidentFilesystemStats } from './wasi/resident-filesystem.js';
 export interface GitFacetArgs {
     argv: string[];
     env: Record<string, string>;
-    cred: WasiCred;
+    cred: VfsCred;
     /** The session pid git runs as (its runtime process): its output and input, and the parent of the children it starts. */
     pid: number;
 }
