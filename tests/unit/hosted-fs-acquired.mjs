@@ -103,7 +103,8 @@ try {
   } finally {
     replay.call = call;
   }
-  assert.deepEqual(seen, ['fsAcquired', 'fsReadBatch'], '[3] each answer passes the journal once');
+  // fsAcquired, the stat it carries (answered as its own), and the read: each once.
+  assert.deepEqual(seen, ['fsAcquired', 'stat', 'fsReadBatch'], '[3] each answer passes the journal once');
   console.log('  [3] each answer is journaled once');
 } finally {
   await runtime.close();
