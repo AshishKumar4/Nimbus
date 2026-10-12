@@ -304,9 +304,16 @@ export function createNimbusHandler(
       }
       if (destroyedSession !== null) setCookies.push(expireSessionCookie(destroyedSession));
       if (setCookies.length === 0) return response;
-      const melded = new Response(response.body, response);
-      for (const value of setCookies) melded.headers.append('Set-Cookie', value);
-      return melded;
+      // Rebuild with explicit status/headers: the body transfers once to the
+      // returned response, and the fresh headers are always mutable — unlike
+      // the original's, which static assets may freeze. No second read.
+      const headers = new Headers(response.headers);
+      for (const value of setCookies) headers.append('Set-Cookie', value);
+      return new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers,
+      });
     };
     const answered = (response: Promise<Response> | Response): Promise<Response> =>
       applySessionResponsePolicy(Promise.resolve(response));
