@@ -113,7 +113,6 @@ const unsupported = [
   ['branch', '--show-current', '--sort=-committerdate'],
   ['branch', 'new-branch', 'HEAD'], ['branch', '-d', 'a', 'b'], ['branch', '--list', '*'],
   ['checkout', '-qbnew-branch', '--no-overlay'], ['checkout', '-b', 'new-branch', 'HEAD'],
-  ['checkout', 'HEAD', '--', 'f', '--no-overlay'],
   ['remote', 'set-url', 'origin', 'https://example.com/repo'],
   ['remote', 'add', '--fetch', 'origin', 'https://example.com/repo'],
   ['fetch', 'origin', '--prune'], ['fetch', 'origin', 'main'],
@@ -168,6 +167,7 @@ for (const words of [
   ['checkout', 'no-such-branch'], ['fetch', 'no-such-remote'],
   ['pull', 'no-such-remote'], ['push', 'no-such-remote'], ['merge', 'no-such-branch'],
   ['tag', '-d', 'seed', 'missing'], ['reset', '--hard', 'no-such-revision'],
+  ['checkout', 'HEAD', '--', 'f', '--no-overlay'],
 ]) {
   const ran = await git([...inRepo, ...words]);
   assert.deepEqual(ran.real, [], `${words.join(' ')}: operational failure is not a capability refusal`);

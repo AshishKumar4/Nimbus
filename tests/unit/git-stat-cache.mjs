@@ -41,10 +41,10 @@ const files = new ProcessFiles(vfs);
 let indexWrites = 0;
 const observed = new Proxy(files.view({ pid: 1, cred: CRED_SESSION_USER }), {
   get(target, key) {
-    if (key === 'writeFile') {
-      return (path, content, options) => {
-        if (path.endsWith('/.git/index')) indexWrites++;
-        return target.writeFile(path, content, options);
+    if (key === 'rename') {
+      return (from, to) => {
+        if (to.endsWith('/.git/index')) indexWrites++;
+        return target.rename(from, to);
       };
     }
     const value = Reflect.get(target, key, target);

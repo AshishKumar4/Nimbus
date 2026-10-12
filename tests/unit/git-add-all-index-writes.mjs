@@ -75,13 +75,18 @@ const observed = new Proxy(files.view({ pid: 1, cred: CRED_SESSION_USER }), {
         return target[key](path);
       };
     }
-    if (key === 'writeFile') {
-      return (path, content, options) => {
-        const key = path.replace(/^\/+/, '');
-        if (key === `${REPO}/.git/index`) {
+    if (key === 'rename') {
+      return (from, to) => {
+        if (to.replace(/^\/+/, '') === `${REPO}/.git/index`) {
           indexWrites++;
           if (filesInFlight !== 0) indexBeforeObjects = true;
         }
+        return target.rename(from, to);
+      };
+    }
+    if (key === 'writeFile') {
+      return (path, content, options) => {
+        const key = path.replace(/^\/+/, '');
         if (key.startsWith(`${REPO}/.git/objects/`)) filesInFlight--;
         return target.writeFile(path, content, options);
       };

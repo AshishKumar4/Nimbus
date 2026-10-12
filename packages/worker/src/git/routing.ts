@@ -43,45 +43,12 @@ export const GIT_FAMILY_POLICY: Readonly<Record<GitFamily, GitFamilyPolicy>> = {
   other: wasi,
 };
 
-// Exactly the built-in git's commands, not every command in their family:
-// basic `log` stays JS but `show`/`blame` are real git; `checkout` stays JS
-// but `switch`/`restore` are real git.
-const JAVASCRIPT_COMMANDS = new Set([
-  undefined, '--version', '-v', '--help', '-h',
-  'init', 'clone', 'status', 'add', 'commit', 'rev-parse', 'ls-files', 'log',
-  'branch', 'checkout', 'diff', 'remote', 'fetch', 'pull', 'push', 'merge',
-  'reset', 'tag', 'config',
-]);
-
-/** Known operations inside a built-in command that its implementation lacks. */
-function needsRealGit(sub: string | undefined, args: readonly string[]): boolean {
-  if (!JAVASCRIPT_COMMANDS.has(sub)) return true;
-  const options: string[] = [];
-  let operandsAfterDashDash = 0;
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === '--') { operandsAfterDashDash = args.length - i - 1; break; }
-    options.push(arg);
-    // A commit message is data even when it spells a capability flag or
-    // `--`. Inspect the option, never its required value.
-    if (sub === 'commit' && ['-m', '--message', '--cleanup'].includes(arg)) i++;
+/** A capability refusal, raised only while no command effects have occurred. */
+export class UnsupportedGitOperation extends Error {
+  constructor(readonly diagnostic: string, readonly code: number) {
+    super(diagnostic.trimEnd());
+    this.name = 'UnsupportedGitOperation';
   }
-  const has = (names: string[]) => options.some((arg) => names.some((name) => arg === name || arg.startsWith(name + '=')
-    || (name.length === 2 && name.startsWith('-') && arg.startsWith(name) && arg.length > 2)));
-  if (sub === 'merge') {
-    // The built-in merge takes one revision and quiet only; it must not ignore
-    // strategy selection, --ff-only, conflict continuation or an octopus.
-    return options.some((arg) => arg.startsWith('-') && arg !== '-q' && arg !== '--quiet')
-      || options.filter((arg) => !arg.startsWith('-')).length + operandsAfterDashDash > 1;
-  }
-  if (sub === 'add') return has(['-p', '--patch', '-i', '--interactive', '-e', '--edit']);
-  if (sub === 'commit') return has(['--amend', '--fixup', '--squash', '--interactive', '--patch', '-p', '-i']);
-  if (sub === 'branch') return has(['-m', '-M', '--move', '-c', '-C', '--copy', '-f', '--force', '-v', '-vv', '--verbose']);
-  if (sub === 'checkout') return has(['-B', '-f', '--force', '--orphan', '--detach', '-p', '--patch', '--ours', '--theirs', '-m', '--merge']);
-  if (sub === 'config') return has(['--global', '--system', '--list', '-l', '--unset', '--unset-all', '--get-all', '--get-regexp', '--add', '--replace-all']);
-  if (sub === 'log') return has(['-p', '--patch', '--stat', '--graph', '-S', '-G', '-L', '--follow', '--format', '--pretty', '--all', '--reverse']);
-  if (sub === 'pull') return has(['--rebase', '--no-rebase', '--ff-only', '--no-ff', '--squash', '-s', '--strategy', '-X', '--strategy-option']);
-  return false;
 }
 
 const COMMAND_FAMILIES: Readonly<Record<string, GitFamily>> = {
@@ -130,9 +97,8 @@ export function classifyGitCommand(sub: string | undefined): GitFamily {
   return sub !== undefined && Object.hasOwn(COMMAND_FAMILIES, sub) ? COMMAND_FAMILIES[sub] : 'other';
 }
 
-/** Which git answers subcommand `sub` with `args` (the words after it): the family's policy, or real git for what the built-in one lacks. */
-export function gitBackend(sub: string | undefined, args: readonly string[]): GitFamilyPolicy['backend'] {
-  if (needsRealGit(sub, args)) return 'wasi';
+/** The measured family choice; capability belongs to the command's parser. */
+export function gitBackend(sub: string | undefined): GitFamilyPolicy['backend'] {
   // `git`, `git --version` and `git --help` are the built-in's own.
   return sub === undefined || sub.startsWith('-') ? 'javascript' : GIT_FAMILY_POLICY[classifyGitCommand(sub)].backend;
 }
