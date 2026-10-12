@@ -1,12 +1,12 @@
 // @serial
 // Stack frames and the fatal report's arrow, for ES modules small and large
-// (the transform facet's lowering and the session's are one:
-// async-module-lowering.ts lowerEsModule) and for CommonJS: an ES module's
-// frame names its file: URL, a CommonJS module's its path, top-level code
-// reads Node's way (`Object.<anonymous>`, or nothing in an ES module), and
-// the line and column are the file's, past what the lowering adds on the
-// first line, past a removed import, and past import.meta's binding; a
-// program's own Error.prepareStackTrace is handed call sites so named.
+// (each staged for the registry: core runtime/native-esm.ts) and for
+// CommonJS: an ES module's frame names its file: URL, a CommonJS module's its
+// path, top-level code reads Node's way (`Object.<anonymous>`, or nothing in
+// an ES module), and the line and column are the file's, past what staging
+// adds on the first line, past a rewritten specifier, and past import.meta's
+// binding; a program's own Error.prepareStackTrace is handed call sites so
+// named.
 // stdout and stderr are host Node's, with the program's frames kept and
 // Node's own left out.
 //
@@ -31,7 +31,7 @@ const FILES = {
   'line1.mjs': "import { sep } from 'node:path'; const s = 1; throw new Error('line one ' + s);\n",
   'big.mjs': `export function deep() {\n  throw new Error('big');\n}\nconst pad = "${'x'.repeat(600_000)}";\ndeep(pad);\n`,
   'cjs.cjs': "const a = 1;\nfunction f() { throw new Error('cjs ' + a); }\nf();\n",
-  // Columns after what the lowering rewrites on a line: an import's use, import.meta, an anonymous default's head.
+  // Columns after what staging rewrites on a line: a specifier, import.meta, an anonymous default's head.
   'sameline.mjs': "import { sep, join } from 'node:path'; const u = import.meta.url; const s = join('a', 'b') + sep; throw new Error('same line ' + s.length + typeof u);\n",
   'anon.mjs': "export default function () { throw new Error('anonymous default'); }\n",
   // An edit's length after every normalization (typeof of an unbound name), import.meta spelled with spaces.

@@ -42,7 +42,7 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -94,14 +94,27 @@ const FILES = {
   ].join('\n'),
   'grammar.js': "async function f(){ const ok = await /import(\"fake\")/.test('import\"fake\"'); const m = await import(\"./grammar-dep.js\"); console.log(\"GRAMMAR \" + ok + \" \" + m.value); } f();",
   'grammar-dep.js': 'module.exports = { value: 7 };',
+  // A late graph holding TypeScript written while the program runs: the
+  // launch compiles it next time, and refuses the graph before any of its
+  // bodies runs (a staged sibling's included).
+  'late-a.mjs': 'console.log("LATE A");',
+  'late-ts.mjs': [
+    'import { writeFileSync } from "node:fs";',
+    'if (globalThis.never) await import("./late-a.mjs");',
+    'writeFileSync(new URL("./late.ts", import.meta.url), "const n: number = 1;\\nconsole.log(\\"LATE TS \\" + n);\\n");',
+    'writeFileSync(new URL("./late-root.mjs", import.meta.url), "import \\"./late-a.mjs\\";\\nimport \\"./late.ts\\";\\n");',
+    'try { await import("./late-root.mjs"); console.log("LATE loaded"); } catch (e) { console.log("LATE " + e.code); }',
+  ].join('\n'),
+  // A JSX entry, which the launch compiles (node and bun alike): Bun runs it
+  // so, and its output is the reference.
+  'app.jsx': 'globalThis.React = { createElement: (type) => ({ type }) };\nconsole.log("JSX " + (<b/>).type);\n',
   // Module files written while the program runs (so interpreted), each with
   // top-level await: import() resolves once the module has finished, and
-  // rejects with what its evaluation throws. require() returns the exports
-  // at once, by design: static imports are lowered to require, which cannot
-  // wait (Node's own require of such a module throws ERR_REQUIRE_ASYNC_MODULE,
-  // which a lowered import cannot be told apart from). An export the module
-  // has not reached is in its TDZ until it does, and so is what a module
-  // that imports it statically reads (`transitive`; Node: 42).
+  // rejects with what its evaluation throws; require() refuses the module,
+  // as Node's does (ERR_REQUIRE_ASYNC_MODULE), before it runs. An export the
+  // module has not reached is in its TDZ until it does, and so is what an
+  // interpreted module that imports it statically reads (`transitive`;
+  // Node: 42).
   'tla.js': [
     'const fs = require("fs");',
     'const dir = "/home/user/w/.tmp-tla";',
@@ -112,12 +125,11 @@ const FILES = {
     'fs.writeFileSync(dir + "/req-" + name + ".mjs", "export const early = 1;\\nexport const v = await new Promise((r) => setTimeout(() => r(42), 20));\\n");',
     'fs.writeFileSync(dir + "/dep-" + name + ".mjs", "export const v = await new Promise((r) => setTimeout(() => r(42), 20));\\n");',
     'fs.writeFileSync(dir + "/top-" + name + ".mjs", "import { v } from \\"./dep-" + name + ".mjs\\";\\nexport const read = () => { try { return v; } catch (e) { return e.name; } };\\n");',
-    'const req = require(dir + "/req-" + name + ".mjs");',
-    'let reqNow; try { reqNow = req.early + "," + req.v; } catch (e) { reqNow = req.early + "," + e.name; }',
+    'let reqNow; try { reqNow = require(dir + "/req-" + name + ".mjs").early; } catch (e) { reqNow = e.code; }',
     'import(dir + "/late-" + name + ".mjs").then((m) => "late=" + m.v, (e) => "late!" + (e.code || e.message))',
     '  .then((late) => import(dir + "/bad-" + name + ".mjs").then(() => late + " bad=resolved", (e) => late + " bad!" + e.message))',
     '  .then((line) => import(dir + "/top-" + name + ".mjs").then((m) => line + " transitive=" + m.read()))',
-    '  .then((line) => console.log("TLA " + line + " req=" + reqNow + " later=" + req.v));',
+    '  .then((line) => console.log("TLA " + line + " req=" + reqNow));',
   ].join('\n'),
   'events.js': [
     'const EventEmitter = require("events");',
@@ -370,14 +382,33 @@ try {
     const cells = await terminal.run(`cd ${W} && node cells.js`);
     assert.match(cells.stdout, /CELLS number,2,tr,tr-space,tab,tabx function:\/own\n/, cells.stdout);
 
+    const lateTs = await terminal.run(`cd ${W} && node late-ts.mjs`);
+    assert.equal(lateTs.status, 0, lateTs.stdout);
+    assert.match(lateTs.stdout, /^LATE ERR_NIMBUS_CODE_NEXT_LAUNCH$/m, lateTs.stdout);
+    assert.doesNotMatch(lateTs.stdout, /LATE A/, `no body of a graph that does not load runs:\n${lateTs.stdout}`);
+
     const grammar = await terminal.run(`cd ${W} && node grammar.js`);
     assert.equal(grammar.status, 0, grammar.stdout);
     assert.match(grammar.stdout, /^GRAMMAR true 7$/m, grammar.stdout);
 
+    const jsxHost = mkdtempSync(join(tmpdir(), 'node-runtime-code-jsx-'));
+    try {
+      writeFileSync(join(jsxHost, 'app.jsx'), FILES['app.jsx']);
+      const reference = spawnSync('bun', ['app.jsx'], { cwd: jsxHost, encoding: 'utf8', env: { PATH: process.env.PATH } });
+      assert.equal(reference.stdout, 'JSX b\n', `bun runs the JSX entry: ${reference.stderr}`);
+    } finally {
+      rmSync(jsxHost, { recursive: true, force: true });
+    }
+    for (const runtime of ['node', 'bun']) {
+      const jsx = await terminal.run(`cd ${W} && ${runtime} app.jsx`);
+      assert.equal(jsx.status, 0, `${runtime} app.jsx: ${jsx.stdout}`);
+      assert.match(jsx.stdout, /^JSX b$/m, `${runtime} runs the compiled JSX entry as Bun does:\n${jsx.stdout}`);
+    }
+
     // One EventEmitter, workerd's: Node's function-constructor inheritance,
     // express's prototype mixin, native http servers and the static helpers.
     const tla = await terminal.run(`cd ${W} && node tla.js`);
-    assert.match(tla.stdout, /TLA late=42 bad!tla failed transitive=ReferenceError req=1,ReferenceError later=42/, tla.stdout);
+    assert.match(tla.stdout, /TLA late=42 bad!tla failed transitive=ReferenceError req=ERR_REQUIRE_ASYNC_MODULE/, tla.stdout);
 
     const events = await terminal.run(`cd ${W} && node events.js`);
     assert.equal(events.status, 0, events.stdout);

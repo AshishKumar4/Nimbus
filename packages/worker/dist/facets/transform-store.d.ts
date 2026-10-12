@@ -2,13 +2,14 @@
  * transform-store.ts — a session's launch transform results, kept by content
  * in its SQLite database.
  *
- * A launch lowers every ES module and TypeScript source in its closure to
- * CommonJS (core runtime/bundle-cell-transform.ts). For pi that is 11.5 MB of
- * source and 11-15 s of esbuild CPU, and it was kept only in the isolate's
- * heap, so every reset, eviction and re-drive paid it again: session
- * zealous-pangolin-6268 was torn down five times in 4.4 h and redid the whole
- * transform after each one. Here a result outlives the isolate, and a
- * re-driven or repeated launch reads it back instead.
+ * A launch reads every ES module in its closure for staging, and strips or
+ * compiles every TypeScript source (core runtime/bundle-cell-transform.ts).
+ * When that was a lowering to CommonJS, for pi it was 11.5 MB of source and
+ * 11-15 s of esbuild CPU, kept only in the isolate's heap, so every reset,
+ * eviction and re-drive paid it again: session zealous-pangolin-6268 was torn
+ * down five times in 4.4 h and redid the whole transform after each one. Here
+ * a result outlives the isolate, and a re-driven or repeated launch reads it
+ * back instead.
  *
  * Addressing. A result is stored under the sha256 of everything its output is
  * a function of: the pipeline's code (TRANSFORM_PIPELINE_ID, which core's

@@ -9,8 +9,9 @@
  * as the program: values, objects, prototypes and functions are the
  * program's own, never copies or proxies.
  *
- * The code is parsed once (acorn, bundled to reach only the built-ins the
- * launch captured at its start: parser-realm.ts), analyzed once (scope.ts)
+ * The code is parsed once (acorn, the parser module beside the interpreter,
+ * which reaches only the built-ins the launch captured at its start:
+ * parser.ts, parser-realm.ts), analyzed once (scope.ts)
  * and compiled once into closures (compile.ts); calling an interpreted
  * function runs those closures. host-ops.ts supplies the operators and the
  * native function objects interpreted functions are.
@@ -21,7 +22,7 @@
  * an ordinary call of the global eval, which a Worker refuses at request time
  * natively too.
  */
-import { Parser, parse, tokTypes } from 'acorn';
+import { parse } from 'acorn';
 import { expressionFunctionBody, parseRuntimeFunction, runtimeFunctionSource, scriptExpression, } from '../_shared/runtime-function-source.js';
 import { Compiler } from './compile.js';
 import { moduleCell } from './modules.js';
@@ -29,9 +30,10 @@ import { InterpreterRuntime, ROOT_ENV, frameTemplate, isObject } from './runtime
 import { analyzeCommonJs, analyzeFunction, analyzeProgram, releaseScopes } from './scope.js';
 import { ownFunctionExpression, ownProgram } from './tree.js';
 import { own } from './parser-realm.js';
-import { Error, LAUNCH_PRIMORDIALS, SafeMap, SyntaxError, charCodeAt, isWhitespaceCode, objectCreate, objectKeys, reflectGet, reflectGetOwnPropertyDescriptor, reflectSet, someItem, stringLastIndexOf, stringOf, stringSlice, withElement, } from './intrinsics.js';
+import { Error, LAUNCH_PRIMORDIALS, SafeMap, SafeWeakSet, SyntaxError, charCodeAt, isWhitespaceCode, reflectGet, reflectGetOwnPropertyDescriptor, someItem, stringLastIndexOf, stringOf, stringSlice, withElement, } from './intrinsics.js';
 import { UnsupportedSyntax } from './unsupported.js';
 import { programRequests } from './module-requests.js';
+import { stampStack, stackFrames } from './stack.js';
 export { INTERPRETER_UNSUPPORTED, UnsupportedSyntax } from './unsupported.js';
 export { replLineBody } from './repl-line.js';
 /** The parameters of Node's CommonJS module wrapper. */
@@ -96,13 +98,27 @@ function leadingSlashes(path) {
 /**
  * The modules a file's text asks for, as this parser reads it
  * (module-requests.ts programRequests: imports, import() and require() of a
- * string, a createRequire binding's calls, and a require wrapper's). Text the
- * parser cannot read (TypeScript, JSX, a syntax error) asks for nothing. The
- * import() prefetch (node-shims.ts) finds what to fetch with it.
+ * string, a createRequire binding's calls, and a require wrapper's), or why
+ * it read none: the text does not parse ('syntax'), or is TypeScript or JSX,
+ * which it does not read ('unparsed'). The import() prefetch (node-shims.ts)
+ * finds what to fetch with the requests, reading what it can; a late
+ * graph's link plan reads with the loader's parse goal (`goal`: the format
+ * the loader gives the module, or 'detect' where its syntax decides, as
+ * compileModule parses it), and loads a module it could not read as the
+ * interpreter does, for its error. `javaScript`: the text is JavaScript
+ * whatever the path's extension (a staged module's, as compileModule's).
  */
-export function moduleRequests(path, text) {
-    if (UNPARSED_EXTENSIONS[extensionOf(path)])
-        return [];
+export function moduleRequests(path, text, javaScript = false, goal) {
+    if (!javaScript && UNPARSED_EXTENSIONS[extensionOf(path)])
+        return { requests: [], unread: 'unparsed' };
+    if (goal !== undefined) {
+        try {
+            return { requests: programRequests(formatProgram(text, goal === 'detect' ? undefined : goal).program) };
+        }
+        catch {
+            return { requests: [], unread: 'syntax' };
+        }
+    }
     let program;
     try {
         program = parseQuick(text, MODULE_OPTIONS);
@@ -112,123 +128,10 @@ export function moduleRequests(path, text) {
             program = parseQuick(text, COMMONJS_OPTIONS);
         }
         catch {
-            return [];
+            return { requests: [], unread: 'syntax' };
         }
     }
-    return programRequests(program);
-}
-const AcornParserClass = Parser;
-const FOUND = objectCreate(null);
-/**
- * acorn keeping no statement once parsed, at the top level or in a block (a
- * fatal error may come from a multi-MiB bundle, and acorn's tree is 17 to 24
- * times its source): what is held is the chain of open nodes. It stops at the
- * innermost throw whose argument holds `offset`, which finishes before any
- * throw around it.
- */
-class ThrowFinder extends AcornParserClass {
-    offset = -1;
-    found = null;
-    // The token a syntax error is at, as V8 marks it: the parser's current or
-    // last token where one starts there (a reserved word is raised past it).
-    raisedToken = null;
-    // The binding a declarator just parsed, which V8 marks where its initializer is missing.
-    declared = null;
-    parseVarId(decl, kind) {
-        this.declared = null;
-        super.parseVarId(decl, kind);
-        this.declared = { start: decl.id.start, end: decl.id.end, required: kind === 'const' || decl.id.type !== 'Identifier' };
-    }
-    raise(pos, message) {
-        const declared = this.declared;
-        const missingInitializer = declared !== null && declared.required && declared.end === this.lastTokEnd
-            && this.type !== tokTypes.eq && (pos === this.start || pos === this.lastTokEnd);
-        this.raisedToken = missingInitializer ? [declared.start, declared.end]
-            : pos === this.start ? [pos, this.end] : pos === this.lastTokStart ? [pos, this.lastTokEnd] : null;
-        return super.raise(pos, message);
-    }
-    // acorn's is its raise, not a call of it.
-    raiseRecoverable(pos, message) {
-        return this.raise(pos, message);
-    }
-    parseTopLevel(node) {
-        const exports = objectCreate(null);
-        while (this.type !== tokTypes.eof)
-            this.parseStatement(null, true, exports);
-        if (this.inModule) {
-            const names = objectKeys(this.undefinedExports);
-            for (let i = 0; i < names.length; i++) {
-                const name = names[i];
-                const { start, end } = this.undefinedExports[name];
-                this.raisedToken = [start, end];
-                super.raise(start, "Export '" + name + "' is not defined");
-            }
-        }
-        this.next();
-        return this.finishNode(node, 'Program');
-    }
-    parseBlock(createNewLexicalScope = true, node = this.startNode(), exitStrict = false) {
-        reflectSet(node, 'body', []);
-        this.expect(tokTypes.braceL);
-        if (createNewLexicalScope)
-            this.enterScope(0);
-        while (this.type !== tokTypes.braceR)
-            this.parseStatement(null);
-        if (exitStrict)
-            this.strict = false;
-        this.next();
-        if (createNewLexicalScope)
-            this.exitScope();
-        return this.finishNode(node, 'BlockStatement');
-    }
-    finishNode(node, type) {
-        const finished = super.finishNode(node, type);
-        if (type === 'ThrowStatement') {
-            const argument = reflectGet(finished, 'argument');
-            if (this.offset >= reflectGet(argument, 'start') && this.offset < reflectGet(finished, 'end')) {
-                const start = reflectGet(finished, 'start');
-                this.found = [start, start + 1];
-                throw FOUND;
-            }
-        }
-        return finished;
-    }
-}
-/**
- * Where V8 would place a fatal error's report in `text`, a module's whole
- * text (a `{ cjs }` cell's wrapper included) as `goal` parses it, for the
- * process's fatal report (node-shims.ts __nimbusFatalArrow), which has a
- * frame's offset and not V8's message:
- *   - `offset` given: the innermost `throw` statement whose argument holds
- *     it, as [start, start + 1], V8's location of a throw; null for none;
- *   - `offset` -1: the syntax error that stops the parse, as [start, end]
- *     of the token it stops at; null when the text parses.
- */
-/** acorn's tokenizer, which Node's error_source.js reads an assert.ok() call's expression with. */
-export function tokenizer(code, options) {
-    return Parser.tokenizer(code, options);
-}
-export function fatalLocation(text, goal, offset) {
-    const finder = new ThrowFinder(goal === 'module' ? MODULE_OPTIONS : COMMONJS_OPTIONS, text);
-    finder.offset = offset;
-    try {
-        finder.parse();
-    }
-    catch (error) {
-        if (error === FOUND)
-            return finder.found;
-        if (offset !== -1 || !isObject(error))
-            return null;
-        const token = finder.raisedToken;
-        if (token !== null && token[1] > token[0])
-            return token;
-        const at = reflectGet(error, 'pos');
-        const end = reflectGet(error, 'raisedAt');
-        if (typeof at !== 'number')
-            return null;
-        return [at, typeof end === 'number' && end > at ? end : at + 1];
-    }
-    return null;
+    return { requests: programRequests(program) };
 }
 /** Whether a module's top level has import or export declarations. */
 function hasModuleSyntax(program) {
@@ -240,10 +143,23 @@ function hasModuleSyntax(program) {
  * import or export declarations, or when it parses only as one (top-level
  * await, import.meta); else CommonJS, a script whose top level may return.
  */
-function moduleProgram(text) {
+function moduleProgram(text, format) {
+    const { module, program } = formatProgram(text, format);
+    return { module, program: ownProgram(program) };
+}
+/**
+ * What text is in the loader's format, and its program: `format` where the
+ * loader gives one, else its syntax decides (Node's detection), as
+ * compileModule parses it; throws what the parse throws.
+ */
+function formatProgram(text, format) {
+    if (format === 'module')
+        return { module: true, program: parseQuick(text, MODULE_OPTIONS) };
+    if (format === 'commonjs')
+        return { module: false, program: parseQuick(text, COMMONJS_OPTIONS) };
     let module = null;
     try {
-        module = ownProgram(parseQuick(text, MODULE_OPTIONS));
+        module = parseQuick(text, MODULE_OPTIONS);
     }
     catch {
         // Not a module (sloppy-only syntax, a top-level return): CommonJS below.
@@ -251,7 +167,7 @@ function moduleProgram(text) {
     if (module !== null && hasModuleSyntax(module))
         return { module: true, program: module };
     try {
-        return { module: false, program: ownProgram(parseQuick(text, COMMONJS_OPTIONS)) };
+        return { module: false, program: parseQuick(text, COMMONJS_OPTIONS) };
     }
     catch (error) {
         if (module === null)
@@ -268,8 +184,8 @@ const REALM = {
         return typeof message === 'string' ? message : stringOf(error);
     },
 };
-function unitContext(runtime, source, module, host, moduleScope) {
-    return { source, module, host, runtime, imports: new SafeMap(), moduleScope };
+function unitContext(runtime, source, module, host, moduleScope, stack) {
+    return { source, module, host, runtime, imports: new SafeMap(), moduleScope, stack };
 }
 /** A unit's host: `origin`'s import() and `Function` binding, or else the host's import() against `parentUrl` and the global `Function`. */
 function unitHost(host, origin, parentUrl) {
@@ -287,7 +203,19 @@ export function createInterpreter(hostOps, host) {
     if (host.primordials !== LAUNCH_PRIMORDIALS)
         throw new Error('interpreter: its built-ins were not captured at the launch start');
     const runtime = new InterpreterRuntime(hostOps);
+    const capture = reflectGetOwnPropertyDescriptor(host, 'stackCapture')?.value;
+    const isProxy = reflectGetOwnPropertyDescriptor(host, 'stackIsProxy')?.value;
+    const isError = reflectGetOwnPropertyDescriptor(host, 'stackIsError')?.value;
+    const stackUnit = (source, file, esModule) => ({
+        source, file, esModule, capture: typeof capture === 'function' ? capture : null,
+        isProxy: typeof isProxy === 'function' ? isProxy : null,
+        isError: typeof isError === 'function' ? isError : null,
+    });
+    const detected = new SafeWeakSet();
+    const awaiting = new SafeWeakSet();
     const interpreter = {
+        captureStack(error, above) { stampStack(error, undefined, above, true); },
+        stackFrames,
         compileFunction(kind, params, body, origin) {
             // A trailing source map is parsed only when the shortened body fails.
             const short = withoutTrailingLineComments(body);
@@ -304,32 +232,44 @@ export function createInterpreter(hostOps, host) {
             const node = ownFunctionExpression(parsed.node);
             const analysis = analyzeFunction(node);
             const root = analysis.functionScopeOf(node);
-            const unit = unitContext(runtime, text, false, unitHost(host, origin, undefined), null);
+            const unit = unitContext(runtime, text, false, unitHost(host, origin, undefined), null, stackUnit(text, null, false));
             const fi = new Compiler(analysis, unit, text, 0, root).rootFunction(node, 'anonymous', runtimeFunctionSource(kind, params, body));
             releaseScopes(root);
             return runtime.makeFunction(fi, ROOT_ENV, undefined);
         },
-        compileModule(path, text, origin) {
-            if (UNPARSED_EXTENSIONS[extensionOf(path)])
+        compileModule(path, text, origin, javaScript = false, format) {
+            if (!javaScript && UNPARSED_EXTENSIONS[extensionOf(path)])
                 throw new UnsupportedSyntax(`${extensionOf(path)} source`);
             const parentUrl = stringSlice(path, 0, 5) === 'data:' ? 'data:text/javascript,' : `file:///${stringSlice(path, leadingSlashes(path))}`;
+            const stackFile = charCodeAt(path, 0) === 47 || stringSlice(path, 0, 5) === 'data:' || stringSlice(path, 0, 5) === 'file:' ? path : '/' + path;
             const moduleHost = unitHost(host, origin, parentUrl);
-            const parsed = moduleProgram(text);
+            const parsed = moduleProgram(text, format);
             if (parsed.module) {
                 const program = parsed.program;
                 const analysis = analyzeProgram(program, { kind: 'module', strict: true });
                 const root = analysis.functionScopeOf(program);
-                const plan = new Compiler(analysis, unitContext(runtime, text, true, moduleHost, root), text, 0, root).modulePlan(program, root);
+                const plan = new Compiler(analysis, unitContext(runtime, text, true, moduleHost, root, stackUnit(text, stackFile, true)), text, 0, root).modulePlan(program, root);
                 releaseScopes(root);
-                return moduleCell(plan, runtime.ops, host.moduleHelpers);
+                const cell = moduleCell(plan, runtime.ops, host.moduleHelpers);
+                if (format === undefined)
+                    detected.add(cell);
+                if (plan.body.g !== null)
+                    awaiting.add(cell);
+                return cell;
             }
             const script = parsed.program;
             const analysis = analyzeCommonJs(script, WRAPPER_PARAMS);
             const root = analysis.functionScopeOf(script);
-            const fi = new Compiler(analysis, unitContext(runtime, text, false, moduleHost, null), text, 0, root).commonJsFunction(script, root, WRAPPER_PARAMS);
+            const fi = new Compiler(analysis, unitContext(runtime, text, false, moduleHost, null, stackUnit(text, stackFile, false)), text, 0, root).commonJsFunction(script, root, WRAPPER_PARAMS);
             releaseScopes(root);
             // Called as the loader calls a staged cell, so `this` matches the next launch's.
             return runtime.makeFunction(fi, ROOT_ENV, undefined);
+        },
+        detectedModule(cell) {
+            return typeof cell === 'function' && detected.has(cell);
+        },
+        moduleAwaits(cell) {
+            return typeof cell === 'function' && awaiting.has(cell);
         },
         compileExpression(code, origin) {
             const at = scriptExpression(code, REALM);
@@ -342,7 +282,7 @@ export function createInterpreter(hostOps, host) {
             const program = ownProgram(parse(text, SCRIPT_OPTIONS));
             const analysis = analyzeProgram(program, { kind: 'script', strict: false });
             const root = analysis.functionScopeOf(program);
-            const unit = unitContext(runtime, text, false, unitHost(host, undefined, undefined), null);
+            const unit = unitContext(runtime, text, false, unitHost(host, undefined, undefined), null, stackUnit(text, null, false));
             const body = new Compiler(analysis, unit, text, 0, root).programBody(program, root);
             releaseScopes(root);
             if (body.g !== null)

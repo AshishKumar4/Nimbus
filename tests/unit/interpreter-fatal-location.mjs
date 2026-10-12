@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { fatalLocation } from '../../packages/core/src/interpreter/index.ts';
+import { fatalLocation } from '../../packages/core/src/interpreter/parser.ts';
 
 const { parse } = createRequire(new URL('../../packages/core/package.json', import.meta.url))('acorn');
 
@@ -53,7 +53,7 @@ for (const [text, mark] of [['const abc: number = 1;\n', 'abc'], ['const {a};\n'
 
 // A multi-MiB bundle in a heap far smaller than acorn's whole tree of it
 // (17 to 24 times its source): only the throw is kept.
-const moduleUrl = new URL('../../packages/core/dist/interpreter/index.js', import.meta.url).href;
+const moduleUrl = new URL('../../packages/core/dist/interpreter/parser.js', import.meta.url).href;
 const stress = spawnSync('node', [
   '--max-old-space-size=64',
   '--input-type=module',

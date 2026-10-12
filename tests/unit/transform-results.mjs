@@ -19,6 +19,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildPrefetchBundle } from '../../packages/worker/src/facets/manager.ts';
 import { EsbuildService, TRANSFORM_SLICE_SOURCE_BYTES } from '../../packages/core/src/runtime/esbuild-service.ts';
+import { readModuleImportSites } from '../../packages/core/src/runtime/dynamic-import-rewrite.ts';
 import { transformEntryScript } from '../../packages/core/src/runtime/bundle-cell-transform.ts';
 import { TransformStore, transformStoreStats } from '../../packages/worker/src/facets/transform-store.ts';
 import { TRANSFORM_PIPELINE_ID } from '../../packages/core/src/runtime/transform-pipeline.generated.ts';
@@ -34,8 +35,8 @@ const APP = 'home/user/app';
 
 // A program with a cell down every branch of the pipeline: an ES module, a
 // TypeScript source (its emit goes beside it), CommonJS whose dynamic
-// import() is rewritten, a module esbuild rejects, and a bundled ES module
-// large enough for the session's bounded rewrite.
+// import() is rewritten, a module the host rejects, and a large native ES
+// module whose source and import sites are stored just like a small one's.
 const program = (lib = 'export const lib = 1;\nexport default function where() { return import.meta.url; }\n') => ({
   'home/user/package.json': JSON.stringify({ name: 'app' }),
   [`${APP}/package.json`]: JSON.stringify({ name: 'app', type: 'module' }),
@@ -54,7 +55,8 @@ function recordingHost(calls, { reject = (code) => code.includes('BROKEN') } = {
     return requests.map(({ code, options }) => {
       if (reject(code)) return { error: 'Unexpected ";"' };
       if (options?.rewriteOnly) return { code: `/* rewritten */\n${code}`, map: '', warnings: [] };
-      return { code: `/* cjs ${options?.loader} */\n${code.replace(/(^|;)export (const|default) /gm, '$1exports.$2 ')}`, map: '', warnings: [] };
+      const javaScript = options?.loader === 'ts' ? code.replace(/: number/g, '') : code;
+      return { code: javaScript, map: JSON.stringify(readModuleImportSites(javaScript)), warnings: [], esModule: options.esModule };
     });
   };
 }
@@ -79,11 +81,11 @@ async function build(files, store, { calls = [], host = recordingHost(calls), pa
   return {
     calls,
     stats: state.transforms,
-    // What each path runs: its emit, or the file when no transform changed it.
+    // What each path runs: its native module, CommonJS emit, or original file.
     cells: Object.fromEntries(Object.keys(state.bundle).filter((path) => path.startsWith(APP)).sort()
-      .map((path) => [path, state.emits?.get(path) ?? state.bundle[path]])),
+      .map((path) => [path, state.esm?.modules.get(path)?.text ?? state.emits?.get(path) ?? state.bundle[path]])),
     emits: Object.fromEntries([...(state.emits ?? new Map())].sort()),
-    lowered: [...(state.lowered?.keys() ?? [])].sort(),
+    esm: Object.fromEntries([...(state.esm?.modules ?? new Map())].sort()),
   };
 }
 
@@ -127,7 +129,7 @@ try {
       const files = { 'home/user/package.json': '{}', [`${APP}/tok.mjs`]: source };
       const esbuild = new EsbuildService(undefined, { transformHost: recordingHost(calls) });
       const state = await buildPrefetchBundle(launchFs(files).fs, { scriptPath: `/${APP}/tok.mjs`, cwd: 'home/user', entryCode: source, esbuild, pacer: pacer(), transformStore: store });
-      return state.emits?.get(`${APP}/tok.mjs`);
+      return state.esm?.modules.get(`${APP}/tok.mjs`)?.text;
     };
     const firstCalls = [];
     assert.match(await launch(first, firstCalls), /00001unw/);
@@ -146,30 +148,36 @@ try {
     assert.match(crashed.cells[`${APP}/lib.mjs`], /esbuild transform failed for .*lib\.mjs/, 'premise: the crashed launch staged shims');
     const healthy = await build(program(), store);
     assert.doesNotMatch(healthy.cells[`${APP}/lib.mjs`], /esbuild transform failed/, 'the next launch against a healthy host transforms again');
-    assert.match(healthy.cells[`${APP}/lib.mjs`], /exports\.const lib = 1/);
+    assert.match(healthy.cells[`${APP}/lib.mjs`], /export const lib = 1/);
     assert.equal(healthy.stats.failed, 1, 'and only the genuinely broken module is a shim');
   }
 
   // ── A miss transforms and stores; a hit is the same bytes, with no transform ──
   const dbPath = join(dir, 'session.sqlite');
-  const cold = await build(program(), storeOver(new Database(dbPath)).store);
+  const coldDb = new Database(dbPath);
+  const coldStore = storeOver(coldDb).store;
+  const cold = await build(program(), coldStore);
   assert.ok(cold.calls.flat().length >= 4, `the cold launch transforms its cells (${cold.calls.flat().length} requests)`);
   assert.deepEqual(
     { stored: cold.stats.stored, failed: cold.stats.failed, storeErrors: cold.stats.storeErrors },
     { stored: 0, failed: 1, storeErrors: 0 },
     `the cold launch finds nothing stored, and esbuild rejects one module: ${JSON.stringify(cold.stats)}`,
   );
-  assert.ok(cold.emits[`${APP}/util.ts`], 'the TypeScript source has its emit');
-  assert.ok(cold.lowered.includes(`${APP}/lib.mjs`), 'the ES module is lowered');
+  assert.ok(cold.esm[`${APP}/util.ts`], 'the TypeScript emit is staged as a native ES module');
+  assert.ok(cold.esm[`${APP}/lib.mjs`], 'the ES module is staged natively');
+  const libKey = await coldStore.key('cell', `${APP}/lib.mjs`, program()[`${APP}/lib.mjs`], null, 'node', null);
+  const keptLib = coldStore.getMany([libKey]).get(libKey);
+  assert.deepEqual(keptLib, { code: program()[`${APP}/lib.mjs`], sites: JSON.stringify(readModuleImportSites(program()[`${APP}/lib.mjs`])) }, 'the store keeps native source and import-site JSON');
+  assert.equal(coldDb.query("SELECT COUNT(*) AS n FROM pragma_table_info('nimbus_transform_results') WHERE name = 'lowered'").get().n, 0, 'the native transform schema has no lowered column');
   assert.match(cold.cells[`${APP}/broken.mjs`], /esbuild transform failed for .*broken\.mjs: Unexpected/);
 
   const warm = await build(program(), storeOver(new Database(dbPath)).store);
-  // An ES module reaches the host as written; the host lowers it as one (async-module-lowering.ts lowerEsModule).
+  // Native source and its import sites are restored together on a cache hit.
   assert.deepEqual(warm.calls.flat(), [program()[`${APP}/broken.mjs`]], 'a warm launch sends the host only the rejected module');
   assert.equal(warm.stats.stored, cold.stats.cells - 1, 'every other cell is answered from the store');
   assert.deepEqual(warm.cells, cold.cells, 'a hit stages byte-identical cells');
   assert.deepEqual(warm.emits, cold.emits, 'and byte-identical emits');
-  assert.deepEqual(warm.lowered, cold.lowered, 'and the same lowered cells');
+  assert.deepEqual(warm.esm, cold.esm, 'and byte-identical native module stages');
 
   // ── It persists across a restarted session object ────────────────────────
   // A write cut short by a reset leaves parts no row names; the next isolate
@@ -186,7 +194,7 @@ try {
   assert.deepEqual(restarted.calls.flat(), [program()[`${APP}/broken.mjs`]], 'a restarted session object transforms nothing its predecessor stored');
   assert.deepEqual(restarted.cells, cold.cells, 'and stages the same bytes');
   assert.deepEqual(restarted.emits, cold.emits);
-  assert.deepEqual(restarted.lowered, cold.lowered);
+  assert.deepEqual(restarted.esm, cold.esm);
   assert.equal(restarted.orphansBefore, 1, 'premise: an interrupted write left a part behind');
   assert.equal(restarted.orphansAfter, 0, 'the restarted isolate deleted it');
 
@@ -215,7 +223,7 @@ try {
     const edited = await build(program('export const lib = 2;\n'), storeOver(new Database(dbPath)).store);
     assert.deepEqual(edited.calls.flat().sort(), ['export const lib = 2;\n', program()[`${APP}/broken.mjs`]].sort(),
       'only the edited module (and the rejected one) is transformed');
-    assert.match(edited.cells[`${APP}/lib.mjs`], /exports\.const lib = 2/);
+    assert.match(edited.cells[`${APP}/lib.mjs`], /export const lib = 2/);
     // Another transform host, or another pipeline: a deploy that changed
     // either drops the older generation's results and transforms everything.
     for (const other of [{ host: 'test-host/2' }, { pipeline: `${TRANSFORM_PIPELINE_ID}-next` }]) {
@@ -266,7 +274,7 @@ try {
     const launch = await build(program(), store);
     assert.ok(launch.stats.storeErrors > 0 && /SQLITE_FULL/.test(launch.stats.storeError),
       `a full database is counted with its reason: ${JSON.stringify(launch.stats)}`);
-    assert.match(launch.cells[`${APP}/lib.mjs`], /exports\.const lib = 1/, 'and the launch still has its results');
+    assert.match(launch.cells[`${APP}/lib.mjs`], /export const lib = 1/, 'and the launch still has its results');
     const stats = transformStoreStats(harness.sql, harness.ctx.storage);
     assert.ok(stats.storeErrors > 0 && /SQLITE_FULL/.test(stats.storeError), `and reported: ${JSON.stringify(stats)}`);
     assert.equal(stats.entries, 0);
@@ -281,8 +289,8 @@ try {
 
     // A store that cannot work at all is not a store with nothing in it.
     const drifted = storeOver(new Database(':memory:'));
-    drifted.harness.setFaultInjector((statement) => (statement.sql.includes('nimbus_transform_results') ? new Error('no such column: lowered') : null));
-    await assert.rejects(build(program(), drifted.store), /no such column: lowered/);
+    drifted.harness.setFaultInjector((statement) => (statement.sql.includes('nimbus_transform_results') ? new Error('no such column: code') : null));
+    await assert.rejects(build(program(), drifted.store), /no such column: code/);
   }
 
   // ── Bounded: least recently used leave first; nothing over the entry bound ──
@@ -290,7 +298,7 @@ try {
     const db = new Database(':memory:');
     const maxBytes = 64 * 1024;
     const { store } = storeOver(db, { maxBytes, maxEntryBytes: 16 * 1024 });
-    const result = (i, bytes = 4096) => ({ code: String(i).padEnd(bytes, '.'), map: i % 3 === 0 ? '{"head":1,"columns":[]}' : '', lowered: i % 2 === 0, esModule: i % 4 === 0 });
+    const result = (i, bytes = 4096) => ({ code: String(i).padEnd(bytes, '.'), sites: i % 3 === 0 ? JSON.stringify(readModuleImportSites('export const value = 1;')) : '' });
     const keys = [];
     for (let i = 0; i < 40; i++) {
       keys.push(await store.key('cell', `m${i}.mjs`, String(i)));
@@ -306,7 +314,8 @@ try {
     assert.ok(held.size >= Math.floor(maxBytes / (4096 + LEDGER_ROW_BYTES)) - 1, `the bound is used, not just enforced (${held.size} held)`);
     assert.ok(!held.has(keys[0]), 'the least recently used result left');
     assert.ok(held.has(keys[39]), 'the newest is kept');
-    assert.deepEqual(held.get(keys[38]), result(38), 'a kept result is the bytes and flag that were put');
+    assert.deepEqual(held.get(keys[38]), result(38), 'a kept CommonJS result is its bytes and empty sites');
+    assert.deepEqual(held.get(keys[39]), result(39), 'a kept ES-module result includes its import sites');
     const oversized = await store.key('cell', 'huge.mjs', 'huge');
     assert.equal(await store.put(oversized, result(0, 16 * 1024 + 1)), null);
     assert.equal(store.getMany([oversized]).size, 0, 'a result over the entry bound is not kept');
@@ -318,11 +327,13 @@ try {
     const { store } = storeOver(db);
     // Multi-byte text, so a part boundary falls inside a character.
     const code = '"use strict";\n' + 'ü€𝄞'.repeat(300_000);
-    const bytes = new TextEncoder().encode(code).byteLength;
+    const sites = JSON.stringify(readModuleImportSites('export const value = 1;'));
+    const result = { code, sites };
+    const bytes = new TextEncoder().encode(`${sites}\n${code}`).byteLength;
     const key = await store.key('cell', 'big.mjs', 'source');
     const spent = [];
     // A launch killed while the result is being written stops the write.
-    await assert.rejects(store.put(key, { code, map: '', lowered: true, esModule: false }, async (n) => { spent.push(n); throw new Error('process gone'); }), /process gone/);
+    await assert.rejects(store.put(key, result, async (n) => { spent.push(n); throw new Error('process gone'); }), /process gone/);
     assert.equal(store.getMany([key]).size, 0, 'a write cut short is no result');
     assert.equal(partsOf(db), 0, 'and leaves no parts behind');
     assert.equal(chargeOf(db), 0, 'and no charge');
@@ -332,12 +343,12 @@ try {
     spent.length = 0;
     let release;
     const gate = new Promise((resolve) => { release = resolve; });
-    const slow = store.put(key, { code, map: '', lowered: true, esModule: false }, async (n) => { spent.push(n); await gate; });
-    assert.equal(await store.put(key, { code, map: '', lowered: true, esModule: false }, async (n) => { spent.push(n); }), null);
-    assert.deepEqual(store.getMany([key]).get(key), { code, map: '', lowered: true, esModule: false }, 'the first to finish is read back exactly');
+    const slow = store.put(key, result, async (n) => { spent.push(n); await gate; });
+    assert.equal(await store.put(key, result, async (n) => { spent.push(n); }), null);
+    assert.deepEqual(store.getMany([key]).get(key), result, 'the first to finish is read back exactly');
     release();
     assert.equal(await slow, null);
-    assert.deepEqual(store.getMany([key]).get(key), { code, map: '', lowered: true, esModule: false }, 'and survives the second finishing');
+    assert.deepEqual(store.getMany([key]).get(key), result, 'and survives the second finishing');
     assert.equal(partsOf(db), Math.ceil(bytes / MAX_TX_BLOB_BYTES), 'only the result\'s own parts remain');
     assert.ok(spent.every((n) => n <= MAX_TX_BLOB_BYTES), `written in parts of at most ${MAX_TX_BLOB_BYTES} bytes`);
 
@@ -357,7 +368,7 @@ try {
     const code = 'import("./x.mjs");\n';
     const spent = [];
     const first = await transformEntryScript(code, 'file:///home/user/[eval]', { host, store, pacer: { spend: async (n) => { spent.push(n); } } });
-    // The stored payload: the (empty) map's line, then the code.
+    // The stored payload: the empty CommonJS import-sites line, then the code.
     assert.deepEqual(spent, [new TextEncoder().encode(`\n${first}`).byteLength], 'its write is accounted to the launch pacer, like a cell\'s');
     assert.equal(await transformEntryScript(code, 'file:///home/user/[eval]', { host, store }), first);
     assert.equal(calls.length, 1, 'the second run is read back');

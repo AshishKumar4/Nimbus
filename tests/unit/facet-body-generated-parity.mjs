@@ -97,12 +97,10 @@ for (const c of cases) {
     },
   });
   const changes = [
-    // The session's own step: which bundled ESM takes the bounded rewrite.
-    edit('bundle-cell-transform.ts', '512 * 1024', '256 * 1024'),
-    // A helper it reaches: the name import.meta is bound through.
-    edit('dynamic-import-rewrite.ts', "'__nimbusMetadataModule'", "'__nimbusMetadataCell'"),
-    // The service the host is called through: which requests it pre-rewrites.
-    edit('esbuild-service.ts', "options.loader === 'jsx';", "options.loader === 'jsx' || options.loader === 'ts';"),
+    // A helper it reaches: the name CommonJS import() is routed through.
+    edit('dynamic-import-rewrite.ts', "'__nimbusDynamicImport'", "'__nimbusAlternateImport'"),
+    // The service the host is called through: the default transform loader.
+    edit('esbuild-service.ts', "loader: options?.loader || 'ts',", "loader: options?.loader || 'js',"),
   ];
   for (const change of changes) {
     assert.notEqual(await transformPipelineId({ plugins: [change] }), committed, `${change.name} moves the pipeline id`);

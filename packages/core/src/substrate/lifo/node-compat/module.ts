@@ -52,7 +52,7 @@ export function isBuiltin(specifier: string): boolean {
 }
 
 export type RequireFunction = ((id: string) => unknown) & {
-  resolve: (id: string) => string;
+  resolve: ((id: string, options?: { paths?: string[] }) => string) & { paths?: (id: string) => string[] | null };
   cache: Record<string, unknown>;
 };
 

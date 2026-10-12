@@ -55,7 +55,9 @@ import { SYSTEM_IDENTITY } from '@nimbus-sh/core/constants.js';
 import { DIRENT_TYPES } from '@nimbus-sh/core/vfs/dirent-type.js';
 import { STDIN_SYNC_READ_BYTES, STDIN_FILE_READ_PIECE_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { COMMONJS_WRAPPER_NAMES } from '@nimbus-sh/core/runtime/javascript-ast.js';
-import { ES_MODULE_SCOPE_GLOBAL } from '@nimbus-sh/core/runtime/module-format.js';
+import { ESM_STATIC_IMPORT } from '@nimbus-sh/core/runtime/esm-interop.js';
+import { ESM_BUN_SCOPE, ESM_FACADE_DIR, ESM_TOP_LEVEL_AWAIT, ESM_TYPELESS } from '@nimbus-sh/core/runtime/native-esm.js';
+import { ESM_REQUIRED_SOURCE } from '@nimbus-sh/core/runtime/compiled-bodies.generated.js';
 import { FACET_PROVIDED_PACKAGES, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, NIMBUS_AI_GATEWAY_PORT, NODE_VERSION, NODE_VERSIONS, VFS_CAPACITY, } from '@nimbus-sh/core/constants.js';
 import { PACKAGE_ABI_POLICY } from '../facets/wasm-swap-registry.js';
 import { NATIVE_HTTP_SOURCE } from './native-http.js';
@@ -63,7 +65,7 @@ import { NODE_WS_UPGRADE_SOURCE } from './node-ws-upgrade.js';
 import { NODE_SOURCE_MAPS_SOURCE } from './node-source-maps.js';
 import { NODE_BUILTIN_FRONTS_SOURCE } from './node-builtin-fronts.js';
 import { NODE_MINIMATCH_SOURCE } from './node-minimatch-source.js';
-import { RUNTIME_INTERPRETER_MODULE, RUNTIME_NODE_LIB_MODULE, RUNTIME_WASM_MAX_BYTES } from '@nimbus-sh/core/_shared/commonjs-cell.js';
+import { RUNTIME_INTERPRETER_MODULE, RUNTIME_NODE_LIB_MODULE, RUNTIME_PARSER_MODULE, RUNTIME_WASM_MAX_BYTES } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { STAGED_BINDING_ARTIFACTS } from '../napi-wasm-artifacts.generated.js';
 const SQLITE_SHIM_CODE = generateSqliteShimCode();
 const UNDICI_SHIM_CODE = generateUndiciShimCode();
@@ -900,7 +902,7 @@ function __nimbusOutText(streamName, bytes) {
  * literal walk it always was.
  */
 function __residentUnder(prefix) {
-  if (typeof __resident !== "undefined") return __resident.cells.keysUnder(prefix);
+  if (typeof __residentKeysUnder === "function") return __residentKeysUnder(prefix);
   const out = [];
   if (__vfsBundle) for (const bk in __vfsBundle) if (bk.startsWith(prefix)) out.push(bk);
   return out;
@@ -908,7 +910,7 @@ function __residentUnder(prefix) {
 
 /** Whether ANYTHING is held under a prefix. The hot half — never materializes. */
 function __residentAnyUnder(prefix) {
-  if (typeof __resident !== "undefined") return __resident.cells.hasUnder(prefix);
+  if (typeof __residentHasUnder === "function") return __residentHasUnder(prefix);
   if (__vfsBundle) for (const bk in __vfsBundle) if (bk.startsWith(prefix)) return true;
   return false;
 }
@@ -1026,7 +1028,7 @@ const __fsMod = (() => {
   // ── VFS bundle lookup (fast path — in-memory) ──
   function _bundleLookup(absPath) {
     const k = _strip(absPath);
-    if (typeof __resident !== "undefined" && __resident.observeRead !== null) __resident.observeRead(k);
+    if (globalThis.__nimbusProfileStaged) globalThis.__nimbusProfileStaged.delete(k);
     // The parked write first, as _writtenCell reads: it is this process's own,
     // newer than anything the store holds, and it is the live cell (a store
     // read reassembles a copy, which a write loop would pay for per write).
@@ -1045,13 +1047,13 @@ const __fsMod = (() => {
   // Whether the store is bound: every embedding of these shims boots one (a
   // facet's SQLite, or a one-shot's heap), and this is the single place that asks.
   function _residentStorePresent() {
-    return typeof __resident !== "undefined" && __resident.coherence.bound();
+    return typeof __residentAdmit === "function" && typeof __residentReady !== "undefined" && __residentReady;
   }
 
   // ── The namespace (resident facets) ──
   //
   // A resident facet's store holds every name the credential can see, with
-  // its stat, exact at the cursor (vfs/resident). While it
+  // its stat, exact at the cursor (vfs/facet-resident-store.ts). While it
   // does, it answers every synchronous metadata question — stat, exists,
   // readdir, realpath, access — and an absent name is known absent, so none
   // of them records a miss or refuses. While it does not (a relist failed,
@@ -1067,7 +1069,7 @@ const __fsMod = (() => {
   // that has applied, because such a barrier's delta is answered after the
   // mutation committed, so the table then shows it or anything later.
   function _nsActive() {
-    return typeof __resident !== "undefined" && __resident.namespace.ready();
+    return typeof __nsReady === "function" && __nsReady();
   }
   // The namespace answers every synchronous metadata question, or none. While
   // it is not ready (a relist failed, until the next barrier repairs it) a
@@ -1076,7 +1078,7 @@ const __fsMod = (() => {
   function _nsRequire(syscall, displayPath, asyncForm) {
     if (_nsActive()) return;
     _stats.namespaceRefusals++;
-    const why = typeof __resident !== "undefined" ? __resident.namespace.notReadyCause() : "the process was started without one";
+    const why = typeof __nsNotReadyCause === "function" ? __nsNotReadyCause() : "the process was started without one";
     const err = _fsErr("EAGAIN", syscall, displayPath);
     err.message = "EAGAIN: " + syscall + " '" + String(displayPath) + "': the namespace is being rebuilt after " + why
       + (_supervisor() ? "; use " + asyncForm : "");
@@ -1089,7 +1091,7 @@ const __fsMod = (() => {
    * directory, whose entries are not known. Null when the namespace knows.
    */
   function _nsUnlisted(absPath, follow, listing) {
-    return _nsActive() ? __resident.namespace.unknown(_strip(absPath), follow !== false, !!listing) : null;
+    return _nsActive() && typeof __nsUnknown === "function" ? __nsUnknown(_strip(absPath), follow !== false, !!listing) : null;
   }
   /**
    * What a synchronous call answers on a mounted path its launch did not
@@ -1114,19 +1116,19 @@ const __fsMod = (() => {
   let _barrierBegins = 0;
   function _nsOwnSet(k, state, extra) {
     const before = _nsOwn.get(k);
-    const entry = { state, from: extra?.from, link: extra?.link, hide: !!extra?.hide, mode: extra?.mode, settled: null };
-    try { __resident.namespace.overlayDelta(_nsOwnCost(k, entry) - (before ? _nsOwnCost(k, before) : 0)); }
+    const entry = { state, from: extra?.from, link: extra?.link, hide: !!extra?.hide, settled: null };
+    try { __residentNamespaceOverlayDelta(_nsOwnCost(k, entry) - (before ? _nsOwnCost(k, before) : 0)); }
     catch (error) {
       // The view is sealed by the store. Let the already-projected structural
       // operation reach its authority/ack; aborting midway would strand
       // earlier overlays with no owning mutation to retire them.
-      if (__resident.admission.inHeap && error?.code === "ENOSPC") return;
+      if (__residentInHeap && error?.code === "ENOSPC") return;
       throw error;
     }
     _nsOwn.set(k, entry);
     _nsFresh.push(entry);
   }
-  function _nsOwnCost(k, entry) { return __nimbusResidentModule.namespaceRowBytes("", k, (entry.from ?? "") + (entry.link ?? "")); }
+  function _nsOwnCost(k, entry) { return __namespaceRowBytes("", k, (entry.from ?? "") + (entry.link ?? "")); }
   /** Hand the overlay entries made since the last mutation to the one being queued. */
   function _nsTakeFresh() {
     const mine = _nsFresh;
@@ -1136,7 +1138,7 @@ const __fsMod = (() => {
   function _nsRetire(begin) {
     for (const [k, entry] of _nsOwn) if (entry.settled !== null && entry.settled < begin) {
       _nsOwn.delete(k);
-      __resident.namespace.overlayDelta(-_nsOwnCost(k, entry));
+      __residentNamespaceOverlayDelta(-_nsOwnCost(k, entry));
     }
   }
 
@@ -1155,7 +1157,7 @@ const __fsMod = (() => {
     if (own) {
       if (own.state === "absent" || own.state === "absentTree") return "absent";
       if (own.state === "alias") return { alias: own.from, link: own.link };
-      return { dir: true, mode: own.mode };
+      return { dir: true };
     }
     for (let i = k.lastIndexOf("/"); i > 0; i = k.lastIndexOf("/", i - 1)) {
       const above = _nsOwn.get(k.slice(0, i));
@@ -1182,7 +1184,7 @@ const __fsMod = (() => {
    */
   function _nsLandingKey(k) {
     if (!_nsActive() || _nsOwnView(k) !== null) return k;
-    const found = __resident.namespace.lookup(k, true);
+    const found = __nsLookup(k, true);
     return found === "ELOOP" ? null : found.path;
   }
 
@@ -1204,7 +1206,7 @@ const __fsMod = (() => {
   function _nsHeldKey(k) {
     const own = _nsOwnView(k);
     if (own === "absent" || (own && (own.dir || own.hide))) return null;
-    const found = __resident.namespace.lookup(own && own.alias !== undefined ? own.alias : k, true);
+    const found = __nsLookup(own && own.alias !== undefined ? own.alias : k, true);
     return found === "ELOOP" ? null : found.path;
   }
 
@@ -1212,7 +1214,7 @@ const __fsMod = (() => {
   function _nsEntryKey(k) {
     const own = _nsOwnView(k);
     if (own === "absent" || (own && (own.dir || own.hide))) return null;
-    const found = __resident.namespace.resolve(own && own.link !== undefined ? _nsMovedEntry(k, own) : own && own.alias !== undefined ? own.alias : k, false);
+    const found = __nsResolve(own && own.link !== undefined ? _nsMovedEntry(k, own) : own && own.alias !== undefined ? own.alias : k, false);
     return found && found !== "ELOOP" ? found.path : null;
   }
 
@@ -1224,13 +1226,13 @@ const __fsMod = (() => {
    * the rename's own answer retires it.
    */
   function _nsMovedEntry(k, own) {
-    return __resident.namespace.rowAt(own.link) !== undefined ? own.link : k;
+    return __nsRowAt(__residentRequire(), own.link) !== undefined ? own.link : k;
   }
 
   /** The table key \`k\` denotes (overlay and symlinks applied), or null. */
   function _nsRealKey(k) {
     const held = _nsHeldKey(k);
-    return held !== null && __resident.namespace.rowAt(held) !== undefined ? held : null;
+    return held !== null && __nsRowAt(__residentRequire(), held) !== undefined ? held : null;
   }
 
   function _nsRowMeta(row) {
@@ -1250,24 +1252,24 @@ const __fsMod = (() => {
    * caught up with.
    */
   function _nsMeta(k, follow) {
-    if (k === "") return _nsRowMeta(__resident.namespace.resolve("", true).row);
+    if (k === "") return _nsRowMeta(__nsResolve("", true).row);
     if (__vfsWrites && k in __vfsWrites && _denialCode(__vfsWrites[k]) === null) {
       const size = _byteLen(__vfsWrites[k]);
       if (_createdHere.has(k)) {
-        return { type: "file", size, mode: 0o100000 | (_createdHere.get(k) & ~__processUmask), uid: cred.uid, gid: cred.gid, own: true };
+        return { type: "file", size, mode: 0o100666 & ~__processUmask, uid: cred.uid, gid: cred.gid, own: true };
       }
       // A rewrite of a file that was there: its owner and mode stay what the
       // authority says they are, under the name it had before a rename.
       const renamed = _nsOwnView(k);
-      const found = __resident.namespace.resolve(renamed && renamed.alias !== undefined ? renamed.alias : k, follow);
+      const found = __nsResolve(renamed && renamed.alias !== undefined ? renamed.alias : k, follow);
       if (found && found !== "ELOOP" && Number(found.row.kind) === 0) return { ..._nsRowMeta(found.row), size };
     }
     const own = _nsOwnView(k);
     if (own === "absent") return "absent";
-    if (own && own.dir) return { type: "directory", size: 0, mode: 0o40000 | ((own.mode ?? 0o777) & ~__processUmask), uid: cred.uid, gid: cred.gid, own: true };
+    if (own && own.dir) return { type: "directory", size: 0, mode: 0o40777 & ~__processUmask, uid: cred.uid, gid: cred.gid, own: true };
     // A symlink this process moved is still a link to lstat.
     if (!follow && own && own.link !== undefined) {
-      const found = __resident.namespace.resolve(_nsMovedEntry(k, own), false);
+      const found = __nsResolve(_nsMovedEntry(k, own), false);
       if (found === "ELOOP") return "ELOOP";
       return found ? _nsRowMeta(found.row) : "absent";
     }
@@ -1275,7 +1277,7 @@ const __fsMod = (() => {
     // name before, but not what this process has put there since: those rows
     // are its own writes, recorded when the authority accepted them.
     if (!own || own.alias !== undefined || (own.hide && _createdHere.has(k))) {
-      const found = __resident.namespace.resolve(own && own.alias !== undefined ? own.alias : k, follow);
+      const found = __nsResolve(own && own.alias !== undefined ? own.alias : k, follow);
       if (found === "ELOOP") return "ELOOP";
       if (found) return _nsRowMeta(found.row);
       // Followed to a name the table does not list yet: a file this process
@@ -1296,9 +1298,9 @@ const __fsMod = (() => {
     const names = new Map();
     const own = _nsOwnView(k);
     if (own !== "absent" && !(own && own.hide) && !(own && own.dir && _nsOwn.get(k)?.hide)) {
-      const real = __resident.namespace.resolve(own && own.alias !== undefined ? own.alias : k, true);
+      const real = __nsResolve(own && own.alias !== undefined ? own.alias : k, true);
       if (real && real !== "ELOOP") {
-        for (const child of __resident.namespace.children(real.path)) {
+        for (const child of __nsChildren(real.path)) {
           names.set(child.name, child.kind === 1 ? "directory" : child.kind === 2 ? "symlink" : _direntTypeOfMode(child.mode, "file"));
         }
       }
@@ -1351,8 +1353,8 @@ const __fsMod = (() => {
    * that the path is there, and the retirement of any revision stamp the old
    * content carried. One place, because every sync mutation owes all three.
    */
-  function _parkWrite(k, cell, mode = 0o666) {
-    _noteCreation(k, mode);
+  function _parkWrite(k, cell) {
+    _noteCreation(k);
     _ownWriteTimes[k] = Date.now();
     __vfsWrites[k] = cell;
     if (__vfsBundle) __vfsBundle[k] = cell;
@@ -1368,30 +1370,20 @@ const __fsMod = (() => {
    *
    * A path counts as created when nothing was there before the write and the
    * view KNOWS nothing was there. Unknown is not created: a file the process
-   * never staged may exist at the authority, owned by someone else. Each is
-   * kept with the mode the call that made it asked for (before the umask).
+   * never staged may exist at the authority, owned by someone else.
    */
-  const _createdHere = new Map();
-  function _noteCreation(k, mode = 0o666) {
+  const _createdHere = new Set();
+  function _noteCreation(k) {
     if (_createdHere.has(k)) return;
     const absPath = "/" + k;
     // Known absent: the namespace names everything this credential can see,
     // except on a mount where the launch did not list it, which is unknown.
     if (_statLadder(absPath) !== undefined || _nsUnlisted(absPath, true, false) !== null) return;
-    _createdHere.set(k, mode);
+    _createdHere.add(k);
   }
   function _forgetCreation(k) {
     const prefix = k + "/";
-    for (const key of [..._createdHere.keys()]) if (key === k || key.startsWith(prefix)) _createdHere.delete(key);
-  }
-  /**
-   * The permission bits a call that may create a file asks for (its \`mode\`
-   * option), before the umask: 0666 unless it says. The authority applies them
-   * only to a file the call makes; one already there keeps its own.
-   */
-  function _createMode(opts, syscall, p) {
-    const mode = opts !== null && typeof opts === "object" ? opts.mode : undefined;
-    return mode === undefined ? 0o666 : _coerceMode(mode, syscall, p);
+    for (const key of [..._createdHere]) if (key === k || key.startsWith(prefix)) _createdHere.delete(key);
   }
 
   function _forgetSyncTree(k) {
@@ -1417,7 +1409,7 @@ const __fsMod = (() => {
     // Unreadable to this credential: the namespace's mode says so, and no
     // bytes could have been staged for it.
     if (!_modeAllows(st, 4)) return _fsErr("EACCES", syscall, displayPath);
-    if (typeof __resident !== "undefined" && __resident.cells.storageMiss(_strip(absPath))) {
+    if (typeof __residentStorageMiss === "function" && __residentStorageMiss(_strip(absPath))) {
       // The process's own write, which neither its store nor its heap budget
       // could hold: the workspace's storage is full.
       const full = _fsErr("ENOSPC", syscall, displayPath);
@@ -1659,10 +1651,10 @@ const __fsMod = (() => {
       // A store at its budget refuses a fill, and asks for room only then.
       // The repair can wait, so it reserves the room first, and the bytes it
       // fetches land in it; where none is to be had, they are not fetched.
-      if (typeof meta.size === "number" && typeof __resident !== "undefined" && !(await __resident.admission.reserve(k, __nimbusResidentModule.residentFileCost(meta.size)))) return;
+      if (typeof meta.size === "number" && typeof __residentReserve === "function" && !(await __residentReserve(k, __residentFileCost(meta.size)))) return;
     }
     try { await _liveReadFile(absPath, undefined, undefined, charge); }
-    finally { if (typeof __resident !== "undefined") __resident.admission.release(k); }
+    finally { if (typeof __residentRelease === "function") __residentRelease(k); }
   }
 
   /**
@@ -1707,7 +1699,7 @@ const __fsMod = (() => {
   // What the authority says of a path after this process's own async request
   // (a stat, read or accepted write) is what the sync view answers for it
   // from then on, as it would after the delta that reports it
-  // (vfs/resident namespace.noteLiveStat).
+  // (facet-resident-store's __nsNoteLiveStat).
   //
   // The lstat rides the read batch (_queueBatchRequest) rather than a call
   // of its own: a resumption refetches every path it owes at once
@@ -1716,7 +1708,7 @@ const __fsMod = (() => {
   // some of which stayed pending and never reached the session
   // (preview/new/lucide-barrel-cache-widens, measured 2026-09-28). Batched,
   // the learns cost a round trip per batch, as the reads before them do.
-  /** \`written\`: the revision of the own write the stat is asked after (namespace.noteLiveStat). */
+  /** \`written\`: the revision of the own write the stat is asked after (__nsNoteLiveStat). */
   async function _learnLive(absPath, supervisor, written) {
     if (!supervisor || typeof supervisor.fsReadBatch !== "function") return;
     const ticket = _beginFill(_strip(absPath));
@@ -1742,7 +1734,7 @@ const __fsMod = (() => {
    */
   function _noteLearnedStat(absPath, stat, ticket, written) {
     if (ticket.reported > (written === undefined ? ticket.rev : Math.max(written, ticket.rev))) return false;
-    __resident.namespace.noteLiveStat(_strip(absPath), stat, written);
+    __nsNoteLiveStat(_strip(absPath), stat, written);
     return true;
   }
 
@@ -2287,7 +2279,7 @@ const __fsMod = (() => {
     // The store dates the row at the read's cursor, so the next delta that
     // names the path above it evicts it. It declines, itself, to replace own
     // bytes or a row dated later than this read can vouch for.
-    if (!__resident.cells.fill(k, bytes, fill.rev)) return;
+    if (!__residentFill(k, bytes, fill.rev)) return;
     _stats.fills++;
     _stats.filledBytes += _byteLen(bytes);
   }
@@ -2333,13 +2325,13 @@ const __fsMod = (() => {
 
   /**
    * The repair's first try: the delta from the store's durable floor
-   * (coherence.cursor), asked as every barrier asks it. True when it applied
+   * (__residentCursor), asked as every barrier asks it. True when it applied
    * (the repair is done); false when a listing is needed after all.
    */
   async function _repairFromFloor(supervisor, result) {
     if (!supervisor || typeof supervisor.fsAcquire !== "function" || !_nsActive()) return false;
     if (result !== null && result.poison === true) return false;
-    const floor = __resident.coherence.cursor();
+    const floor = __residentCursor();
     if (floor === null || (result !== null && result.epoch !== floor.epoch)) return false;
     let delta;
     try {
@@ -2347,16 +2339,16 @@ const __fsMod = (() => {
     } catch { return false; }
     if (!delta || delta.poison === true || typeof delta.rev !== "number" || delta.epoch !== floor.epoch) return false;
     if (Array.isArray(delta.paths)) for (const entry of delta.paths) _noteReport(entry);
-    await __resident.admission.roomForPushed(delta);
-    const applied = __resident.cells.admit(delta);
-    for (const dir of applied.relist) await __resident.transport.relist(supervisor, dir);
+    await __residentRoomForPushed(delta);
+    const applied = __residentAdmit(delta);
+    for (const dir of applied.relist) await __nsRelist(supervisor, dir);
     if (!_nsActive()) return false;
     _cursor.epoch = applied.cursor.epoch;
     _cursor.rev = applied.cursor.rev;
     _stats.invalidations += applied.dropped.length;
     // What it should hold and lost (dropped by this delta, or by the barrier
     // that could not vouch for its rows), refetched by the namespace's stats.
-    const refilled = await __resident.sync.refillFromNamespace(supervisor, applied.dropped);
+    const refilled = await __residentRefillFromNamespace(supervisor, applied.dropped);
     _stats.fills += refilled.filled;
     _stats.filledBytes += refilled.bytes;
     _stats.floorRepairs++;
@@ -2376,9 +2368,9 @@ const __fsMod = (() => {
     // change, a poison (the log truncated past the cursor), or a namespace
     // that stopped answering needs the listing.
     if (await _repairFromFloor(supervisor, result)) return;
-    const ownAtStart = __resident.cells.ownPaths();
+    const ownAtStart = __residentOwnPaths();
     let repaired;
-    try { repaired = await __resident.sync.synchronize(supervisor); }
+    try { repaired = await __residentSynchronizeFromSupervisor(supervisor); }
     catch { repaired = null; }
     if (!repaired || !repaired.cursor) {
       // The pass could not vouch for a single row — a supervisor replaced
@@ -2389,13 +2381,13 @@ const __fsMod = (() => {
       // it would have been; a barrier with no answer drops every dated row and
       // keeps the cursor it had, which the next delta is still owed from.
       if (result) {
-        __resident.cells.admit(result);
+        __residentAdmit(result);
         _cursor.epoch = result.epoch;
         _cursor.rev = result.rev;
       } else {
-        __resident.cells.dropDated();
+        __residentDropDated();
       }
-      try { repaired = await __resident.sync.synchronize(supervisor); }
+      try { repaired = await __residentSynchronizeFromSupervisor(supervisor); }
       catch { repaired = null; }
     } else if (repaired.reconciled) {
       _stats.reconciles++;
@@ -2440,7 +2432,7 @@ const __fsMod = (() => {
     }
     for (const [k, rev] of reports) {
       __nimbusNoteVfsReport(k, rev);
-      const provenance = __resident.cells.provenance(k);
+      const provenance = __residentProvenance(k);
       if (provenance !== undefined && provenance !== -1 && provenance < rev) _evictOwed(k);
     }
   }
@@ -2546,7 +2538,7 @@ const __fsMod = (() => {
         // listing; otherwise the old overlay and replacement rows would
         // consume the same scarce allowance while preventing each other's
         // repair. Nothing synchronous may consult the sealed view here.
-        if (namespaceOwed && __resident.admission.inHeap) _nsRetire(begin);
+        if (namespaceOwed && __residentInHeap) _nsRetire(begin);
         const needsRepair = result === null || result.poison === true || _storeRepairOwed || namespaceOwed;
         if (!joining && !needsRepair) break;
         if (namespaceOwed) { namespaceAsked = true; _stats.namespaceRepairs++; }
@@ -2571,7 +2563,7 @@ const __fsMod = (() => {
           // than resume on rows none of them vouched for as of its own
           // answer, it drops them and leaves the repair owed: a colder cache,
           // never a stale byte. Any repair still to finish lists after this.
-          __resident.cells.dropDated();
+          __residentDropDated();
           _storeRepairOwed = true;
           __nimbusNoteUnnamedReports();
           await _awaitReportedOwnWrites();
@@ -2587,12 +2579,12 @@ const __fsMod = (() => {
         for (const entry of result.paths) _noteReport(entry);
       }
       // N18: room for what it pushes, before it is held.
-      await __resident.admission.roomForPushed(result);
-      const applied = __resident.cells.admit(result);
+      await __residentRoomForPushed(result);
+      const applied = __residentAdmit(result);
       _cursor.epoch = applied.cursor.epoch;
       _cursor.rev = applied.cursor.rev;
       // A directory that became searchable has descendants no delta names.
-      for (const dir of applied.relist) await __resident.transport.relist(supervisor, dir);
+      for (const dir of applied.relist) await __nsRelist(supervisor, dir);
       _nsRetire(begin);
       // The read lease this answer carried, from the moment it was asked:
       // what it vouches for is this answer, applied now.
@@ -2638,7 +2630,8 @@ const __fsMod = (() => {
     // Every build is the start of an answer the overlay may retire against:
     // its begin travels with it, and the answer to it comes back with it.
     const begin = ++_barrierBegins;
-    const options = _residentStorePresent() ? __resident.sync.acquireOptions() : undefined;
+    const options = _residentStorePresent() && typeof __residentAcquireOptions === "function"
+      ? __residentAcquireOptions() : undefined;
     return options
       ? { epoch: _cursor.epoch, cursor: _cursor.rev, begin, options }
       : { epoch: _cursor.epoch, cursor: _cursor.rev, begin };
@@ -3687,24 +3680,12 @@ const __fsMod = (() => {
 
   // fs.promises.copyFile, and fs.promises.cp of a file: the source read as
   // fs.promises.readFile reads it, the copy written as writeFile writes it.
-  // \`fresh\`: \`dest\` is in a directory this copy just made, so nothing is there.
-  async function _copyFileAsync(src, dest, mode, fresh = false) {
+  async function _copyFileAsync(src, dest, mode) {
     if ((Number(mode) & __fsConstants.COPYFILE_EXCL) !== 0 && await _existsAsync(dest)) {
       throw _fsErr("EEXIST", "copyfile", src, dest);
     }
-    try {
-      const data = await _readFileAsync(src);
-      const from = (await _statAsync(src)).mode & 0o7777;
-      let there;
-      if (!fresh) {
-        try { there = await _statAsync(dest); }
-        catch (error) { if (error?.code !== "ENOENT") throw error; }
-      }
-      const left = _copyLeaves(there, from);
-      if (there !== undefined && !there.isDirectory() && left !== (there.mode & 0o7777)) await _chmodAsync(dest, left);
-      await _writeFileAsync(dest, data, { mode: from });
-      if (left !== from) await _chmodAsync(dest, from);
-    } catch (error) { throw _asCallError(error, "copyfile", src, dest); }
+    try { await _writeFileAsync(dest, await _readFileAsync(src)); }
+    catch (error) { throw _asCallError(error, "copyfile", src, dest); }
   }
 
   async function _existsAsync(p) {
@@ -3742,19 +3723,18 @@ const __fsMod = (() => {
   }
 
   async function _writeFileAsync(p, data, opts) {
-    const mode = _createMode(opts, "open", p);
     const absPath = _resolveFollow(p, "open");
     const supervisor = _supervisor();
     // A target this view cannot judge (on a mount, where the launch did not
     // list it) is the authority's to answer for, as the async rename's
     // destination is: parked and written back like any other write, and
     // refused (and the parked bytes dropped) if the authority refuses it.
-    const k = _parkWholeWrite(p, data, !!supervisor, mode);
+    const k = _parkWholeWrite(p, data, !!supervisor);
     if (!supervisor) return;
     const bytes = __nimbusVfsCellBytes(__vfsWrites[k]).slice();
     const decided = _decidedHere(absPath, bytes.byteLength);
     // Logged now, in program order; decided here, it is answered once logged.
-    const logged = _logParked(absPath, { type: "call", call: { call: "writeFile", path: k, mode, data: bytes } }, { acknowledged: decided });
+    const logged = _logParked(absPath, { type: "call", call: { call: "writeFile", path: k, mode: 0o666, data: bytes } }, { acknowledged: decided });
     if (decided) {
       _detachStructuralMutation(__nimbusDecided(logged.claimed, bytes.byteLength), "write", p);
       return;
@@ -3934,21 +3914,11 @@ const __fsMod = (() => {
     if (!existsSync(p)) throw _absentErr(_resolve(p), "chmod", p, "fs.promises.chmod");
     const absPath = _resolveFollow(p, "chmod");
     _ensureModeOwner(absPath, "chmod", p);
-    _detachStructuralMutation(_chmodQueued(absPath, _coerceMode(mode, "chmod", p), "chmod", p), "chmod", p);
-  }
-
-  // A sync chmod's effect: the local mode at once (statSync's overlay), and the
-  // change logged now, in program order, as chown's is. Left for a later flush
-  // of the path to carry, it was never sent when none came.
-  function _chmodQueued(absPath, mode, syscall, p) {
+    // Local-visible immediately (statSync overlay); the live write-through
+    // rides the next flush of the same path — same fidelity as utimesSync.
     const k = _strip(absPath);
-    _localModes[k] = mode;
-    const supervisor = _supervisor();
-    return _queueStructuralMutation(
-      absPath, syscall, p,
-      () => _vfsOp({ type: "setattr", path: k, attrs: { mode } }),
-      () => _flushParkedWrite(absPath, supervisor),
-    );
+    _localModes[k] = _coerceMode(mode, "chmod", p);
+    _pendingModes.add(k);
   }
 
   async function _chmodAsync(p, mode) {
@@ -4048,12 +4018,6 @@ const __fsMod = (() => {
   function chownSync(p, uid, gid) { _detachStructuralMutation(_chownQueued(p, uid, gid, undefined, "chown"), "chown", p); }
   function lchownSync(p, uid, gid) { _detachStructuralMutation(_chownQueued(p, uid, gid, { followSymlinks: false }, "lchown"), "lchown", p); }
 
-  // The one POSIX calculation (core vfs/posix-access.ts), as the store's
-  // library carries it: every node runner evaluates that library first. The
-  // process's credential as it reads it, made once; the entry is filled per check.
-  const _posixAccess = typeof __nimbusResidentModule !== "undefined" ? __nimbusResidentModule.posixAccess : null;
-  let _accessCred = null;
-  const _accessEntry = { mode: 0, uid: 0, gid: 0 };
   /**
    * Whether this process may WANT (r=4, w=2, x=1) a path whose stat is
    * META, by POSIX's owner/group/other rule. Only a stat that states the
@@ -4067,11 +4031,12 @@ const __fsMod = (() => {
     const uid = Number(meta?.uid);
     const gid = Number(meta?.gid);
     if (!Number.isInteger(mode) || !Number.isInteger(uid) || !Number.isInteger(gid)) return false;
-    _accessCred ??= { uid: Number(cred.uid), gid: Number(cred.gid), groups: cred.groups.map(Number) };
-    _accessEntry.mode = mode;
-    _accessEntry.uid = uid;
-    _accessEntry.gid = gid;
-    return _posixAccess(_accessEntry, want, _accessCred);
+    const bits = mode & 0o777;
+    const currentUid = Number(cred.uid);
+    if (currentUid === 0) return (want & 1) === 0 || (bits & 0o111) !== 0;
+    const groups = cred.groups.map(Number);
+    const shift = currentUid === uid ? 6 : (Number(cred.gid) === gid || groups.includes(gid)) ? 3 : 0;
+    return (((bits >> shift) & 7) & want) === want;
   }
 
   /** \`p\` and \`dest\`: what a refusal names, the call's own paths, whichever of them \`absPath\` is. */
@@ -4217,9 +4182,8 @@ const __fsMod = (() => {
   // (the hot path for source code / package.json / user JS).
   // Anything else is stringified (Node's behaviour for e.g. numbers).
   function writeFileSync(p, data, opts) {
-    const mode = _createMode(opts, "open", p);
-    const k = _parkWholeWrite(p, data, false, mode);
-    _logParked("/" + k, { type: "call", call: { call: "writeFile", path: k, mode, data: __nimbusVfsCellBytes(__vfsWrites[k]).slice() } }, { acknowledged: true });
+    const k = _parkWholeWrite(p, data, false);
+    _logParked("/" + k, { type: "call", call: { call: "writeFile", path: k, mode: 0o666, data: __nimbusVfsCellBytes(__vfsWrites[k]).slice() } }, { acknowledged: true });
   }
 
   /**
@@ -4227,7 +4191,7 @@ const __fsMod = (() => {
    * \`live\`: the async form, whose write-back the authority answers for a
    * target this view cannot judge (_ensureWritable).
    */
-  function _parkWholeWrite(p, data, live, mode) {
+  function _parkWholeWrite(p, data, live) {
     const absPath = _resolveFollow(p, "open");
     _ensureWritable(absPath, "open", p, live);
     const k = _strip(absPath);
@@ -4235,7 +4199,7 @@ const __fsMod = (() => {
     if (data instanceof Uint8Array) cell = data;
     else if (typeof data === "string") cell = data;
     else cell = String(data);
-    _parkWrite(k, cell, mode);
+    _parkWrite(k, cell);
     _parkedPartial.delete(k);
     return k;
   }
@@ -4252,7 +4216,6 @@ const __fsMod = (() => {
   // the program was told it succeeded). The cell is the file's whole content
   // only when it extends a parked cell of this process's that was whole.
   function _appendLocal(p, data, opts, acknowledged) {
-    const mode = _createMode(opts, "open", p);
     const absPath = _resolveFollow(p, "open");
     _ensureWritable(absPath, "open", p);
     const k = _strip(absPath);
@@ -4281,13 +4244,13 @@ const __fsMod = (() => {
       // Both strings — string concat.
       cell = existing + (typeof data === "string" ? data : String(data));
     }
-    _parkWrite(k, cell, mode);
+    _parkWrite(k, cell);
     // Bundle content is only a sync-view cache and may be stale: only a
     // pending whole write of this process's owns the cell's prefix.
     if (wholeBefore) _parkedPartial.delete(k);
     else _parkedPartial.set(k, __vfsWriteGenerations[k]);
     const appended = _asBytes(dataIsBytes ? data : (typeof data === "string" ? data : String(data))).slice();
-    return _logParked(absPath, { type: "call", call: { call: "appendFile", path: k, mode, data: appended } }, { acknowledged, partial: !wholeBefore });
+    return _logParked(absPath, { type: "call", call: { call: "appendFile", path: k, mode: 0o666, data: appended } }, { acknowledged, partial: !wholeBefore });
   }
 
   // ── existsSync ──
@@ -4401,15 +4364,15 @@ const __fsMod = (() => {
     }
     // A directory the view already shows (the namespace's, or one this
     // process made, whose mkdir is ahead in the log) is not made again.
-    const mode = opts?.mode === undefined ? 0o777 : _coerceMode(opts.mode, "mkdir", p);
     const known = new Set();
     for (const dir of created) {
       const was = _nsMeta(dir, true);
-      if (was === "absent") _nsOwnSet(dir, "dir", { hide: true, mode });
+      if (was === "absent") _nsOwnSet(dir, "dir", { hide: true });
       else if (was && typeof was === "object" && was.type === "directory") known.add(dir);
     }
     // Each directory this call makes, shallowest first, as mkdir -p takes
     // them: one already there (or made by another) answers success.
+    const mode = opts?.mode === undefined ? 0o777 : _coerceMode(opts.mode, "mkdir", p);
     const made = created.filter((dir) => !known.has(dir)).map((dir) => ({ dir, mode }));
     const queued = _queueStructuralMutation(absPath, "mkdir", p, () => Promise.all(
       made.map(({ dir, mode }) => _vfsCall({ call: "mkdir", path: dir, mode, existing: "ok" })),
@@ -4509,13 +4472,13 @@ const __fsMod = (() => {
     // moves a symlink itself, so a moved link keeps its own entry for lstat.
     const nsFrom = _nsRealKey(oldK);
     const nsEntry = _nsEntryKey(oldK);
-    const movedLink = nsEntry !== null && Number(__resident.namespace.rowAt(nsEntry).kind) === __nimbusResidentModule.NS_LINK ? nsEntry : undefined;
+    const movedLink = nsEntry !== null && Number(__nsRowAt(__residentRequire(), nsEntry).kind) === __NS_LINK ? nsEntry : undefined;
     // What this process created travels with the name; what it did not stays
     // the authority's, whatever the move does to the local tables.
     const oldPrefix = oldK + "/";
     const createdMoved = [..._createdHere]
-      .filter(([key]) => key === oldK || key.startsWith(oldPrefix))
-      .map(([key, mode]) => [newK + key.slice(oldK.length), mode]);
+      .filter((key) => key === oldK || key.startsWith(oldPrefix))
+      .map((key) => newK + key.slice(oldK.length));
     const content = __vfsBundle?.[oldK] ?? __vfsWrites?.[oldK];
     // The file's own cell moves with its name (retired once the move is
     // answered, below); one that is only an append's bytes cannot stand for
@@ -4583,10 +4546,10 @@ const __fsMod = (() => {
     }
     _forgetCreation(oldK);
     _forgetCreation(newK);
-    for (const [key, mode] of createdMoved) _createdHere.set(key, mode);
+    for (const key of createdMoved) _createdHere.add(key);
     for (const [ok, entry] of [..._nsOwn]) {
       if ((ok === oldK || ok.startsWith(oldPrefix)) && entry.state === "dir") {
-        _nsOwnSet(newK + ok.slice(oldK.length), "dir", { hide: entry.hide, mode: entry.mode });
+        _nsOwnSet(newK + ok.slice(oldK.length), "dir", { hide: entry.hide });
       }
     }
     if ((nsFrom !== null || movedLink !== undefined) && !_nsOwn.has(newK)) _nsOwnSet(newK, "alias", { from: nsFrom ?? undefined, link: movedLink });
@@ -4628,30 +4591,12 @@ const __fsMod = (() => {
   // ── copyFileSync ──
   // Bytes, not utf8: a utf8 round trip replaces every byte ≥ 0x80 with
   // U+FFFD, which is how a copied .png or .woff2 arrived corrupted.
-  // The copy is left as copyfile leaves it: the source's mode, exactly (over
-  // a file that was there, and past the umask). Others never hold more of the
-  // bytes than the source gives them: a file made for them is made with its
-  // mode, and one there is narrowed for others before they go in.
   function copyFileSync(src, dest, mode) {
     if ((Number(mode) & __fsConstants.COPYFILE_EXCL) !== 0 && existsSync(dest)) {
       throw _fsErr("EEXIST", "copyfile", src, dest);
     }
-    try {
-      const data = readFileSync(src);
-      const from = statSync(src).mode & 0o7777;
-      const there = statSync(dest, { throwIfNoEntry: false });
-      const left = _copyLeaves(there, from);
-      if (there !== undefined && !there.isDirectory() && left !== (there.mode & 0o7777)) chmodSync(dest, left);
-      writeFileSync(dest, data, { mode: from });
-      if (left !== from) chmodSync(dest, from);
-    } catch (error) { throw _asCallError(error, "copyfile", src, dest); }
-  }
-
-  // The mode a copy's target has while its bytes go in: one made for them, the
-  // source's less the umask; one there (\`there\`, its stat), its own, with
-  // nothing for others the source does not give them.
-  function _copyLeaves(there, from) {
-    return there === undefined ? from & ~__processUmask : (there.mode & 0o7777) & ~(0o077 & ~from);
+    try { writeFileSync(dest, readFileSync(src)); }
+    catch (error) { throw _asCallError(error, "copyfile", src, dest); }
   }
 
   /**
@@ -4759,17 +4704,10 @@ const __fsMod = (() => {
       const named = String(src).endsWith("/") ? String(src) : String(src) + "/";
       throw Object.assign(new Error("Recursive option not enabled, cannot copy a directory: " + named), { code: "ERR_FS_EISDIR" });
     }
-    // A directory it makes is its owner's alone until its entries are in, as
-    // GNU cp makes it, then takes the source's mode, as Node's cp leaves it.
-    const made = statSync(dest, { throwIfNoEntry: false }) === undefined;
-    if (made) {
-      mkdirSync(__pathMod.dirname(String(dest)), { recursive: true });
-      mkdirSync(dest, { mode: 0o700 });
-    }
+    mkdirSync(dest, { recursive: true });
     for (const ent of readdirSync(src, { withFileTypes: true })) {
       cpSync(__pathMod.join(String(src), ent.name), __pathMod.join(String(dest), ent.name), o);
     }
-    if (made && (st.mode & 0o7777) !== (0o700 & ~__processUmask)) chmodSync(dest, st.mode & 0o7777);
   }
 
   // ── mkdtemp ──
@@ -4787,12 +4725,12 @@ const __fsMod = (() => {
   }
   function mkdtempSync(prefix) {
     const name = _mkdtempName(prefix);
-    mkdirSync(name, { mode: 0o700 });
+    mkdirSync(name);
     return name;
   }
   async function _mkdtempAsync(prefix) {
     const name = _mkdtempName(prefix);
-    await _mkdirAsync(name, { mode: 0o700 });
+    await _mkdirAsync(name);
     return name;
   }
 
@@ -5213,7 +5151,6 @@ const __fsMod = (() => {
 
   async function _openAsync(path, flags, mode) {
     const fl = _parseOpenFlags(flags);
-    const createMode = mode === undefined || mode === null ? 0o666 : _coerceMode(mode, "open", path);
     const absPath = _resolveFollow(path, "open");
     const supervisor = _supervisor();
     let liveMeta = null;
@@ -5235,9 +5172,12 @@ const __fsMod = (() => {
     // The authority answered, so what it said is what the sync view keeps:
     // its stat when something is there, and when nothing is, the file this
     // open creates is the process's own.
-    if (!liveMeta && supervisor && !localStat) _createdHere.set(_strip(absPath), createMode);
+    if (!liveMeta && supervisor && !localStat) _createdHere.add(_strip(absPath));
     if (!exists) {
-      await _writeFileAsync(path, new Uint8Array(0), { mode: createMode });
+      await _writeFileAsync(path, new Uint8Array(0));
+      if (mode !== undefined && mode !== null) {
+        await _chmodAsync(path, Number(mode) & ~__processUmask);
+      }
       size = 0;
     } else if (fl.truncate) {
       await _truncateAsync(path, 0);
@@ -5248,7 +5188,6 @@ const __fsMod = (() => {
 
   function openSync(path, flags, mode) {
     const fl = _parseOpenFlags(flags);
-    const createMode = mode === undefined || mode === null ? 0o666 : _coerceMode(mode, "open", path);
     const absPath = _resolveFollow(path, "open");
     _ensureAncestorsTraversable(absPath, "open", path);
     const st = statSync(path, { throwIfNoEntry: false });
@@ -5260,7 +5199,7 @@ const __fsMod = (() => {
     if (fl.create && fl.exclusive && (exists || lstatSync(path, { throwIfNoEntry: false }) !== undefined)) throw _fsErr("EEXIST", "open", path);
     if (fl.read && exists) _ensureReadable(absPath, "open", path);
     if (fl.write || !exists) _ensureWritable(absPath, "open", path);
-    if (!exists) _noteCreation(_strip(absPath), createMode);
+    if (!exists) _noteCreation(_strip(absPath));
     let size = exists ? st.size : 0;
     // O_TRUNC means "make it empty", so zeroing is the requested semantic,
     // and creating a genuinely absent file is too. O_APPEND must NEVER
@@ -5270,7 +5209,10 @@ const __fsMod = (() => {
     if (fl.truncate || (!exists && !fl.append)) {
       // Creating or truncating also makes the file resident, which is what
       // lets the sync read/write path serve it without blocking.
-      writeFileSync(path, new Uint8Array(0), { mode: createMode });
+      writeFileSync(path, new Uint8Array(0));
+      if (!exists && mode !== undefined && mode !== null) {
+        chmodSync(path, Number(mode) & ~__processUmask);
+      }
       size = 0;
     }
     return new __FileHandle(path, fl, size).fd;
@@ -5385,8 +5327,10 @@ const __fsMod = (() => {
   function fchmodSync(fd, mode) {
     if (_isStdioFd(fd)) throw _fsErr("EINVAL", "fchmod", fd);
     const handle = _fdHandle(fd, "fchmod");
+    const k = _strip(handle._abs);
     _ensureModeOwner(handle._abs, "fchmod", handle._path);
-    _detachStructuralMutation(_chmodQueued(handle._abs, _coerceMode(mode, "fchmod", handle._path), "fchmod", handle._path), "fchmod", handle._path);
+    _localModes[k] = _coerceMode(mode, "fchmod", handle._path);
+    _pendingModes.add(k);
   }
   function fchownSync(fd, uid, gid) {
     if (_isStdioFd(fd)) throw _fsErr("EINVAL", "fchown", fd);
@@ -6285,36 +6229,21 @@ const __fsMod = (() => {
       // does for __dot__gitignore) sees the copy in the VFS instead of
       // ENOENT. Each directory is made as mkdir makes it, so the namespace's
       // overlay lists it for the writes beneath it.
-      // Each file is copied as copyFile copies it; a directory made here is
-      // its owner's alone until its entries are in, as GNU cp makes it, then
-      // takes the source's mode, as Node's cp leaves it. In a directory this
-      // copy made nothing is there, and nothing is looked for.
-      const made = [];
-      const makeDir = async (rel, fresh) => {
-        const at = rel ? "/" + destK + "/" + rel : "/" + destK;
-        if (!fresh && await _existsAsync(at)) return false;
-        if (!rel) await _mkdirAsync(__pathMod.dirname(at), { recursive: true });
-        await _mkdirAsync(at, { mode: 0o700 });
-        made.push([at, rel ? srcAbs + "/" + rel : srcAbs]);
-        return true;
-      };
-      const walk = async (relDir, fresh) => {
+      await _mkdirAsync("/" + destK, { recursive: true });
+      const walk = async (relDir) => {
         const absDir = relDir ? srcAbs + "/" + relDir : srcAbs;
         const ents = await _readdirAsync(absDir, { withFileTypes: true });
         for (const ent of ents) {
           const rel = relDir ? relDir + "/" + ent.name : ent.name;
           if (ent.isDirectory && ent.isDirectory()) {
-            await walk(rel, await makeDir(rel, fresh));
+            await _mkdirAsync("/" + destK + "/" + rel, { recursive: true });
+            await walk(rel);
           } else {
-            await _copyFileAsync(srcAbs + "/" + rel, "/" + destK + "/" + rel, undefined, fresh);
+            await _writeFileAsync("/" + destK + "/" + rel, await _readFileAsync(srcAbs + "/" + rel));
           }
         }
       };
-      await walk("", await makeDir("", false));
-      for (const [at, from] of made.reverse()) {
-        const mode = (await _statAsync(from)).mode & 0o7777;
-        if (mode !== (0o700 & ~__processUmask)) await _chmodAsync(at, mode);
-      }
+      await walk("");
     },
     copyFile: (src, dest, mode) => _copyFileAsync(src, dest, mode),
     rename: async (oldP, newP) => { await _renameAsync(oldP, newP); },
@@ -6457,18 +6386,14 @@ const __fsMod = (() => {
             for (const c of this._chunks) total += (c instanceof Uint8Array) ? c.byteLength : _enc.encode(c).length;
             const out = new Uint8Array(total); let off = 0;
             for (const c of this._chunks) { const b = (c instanceof Uint8Array) ? c : _enc.encode(c); out.set(b, off); off += b.byteLength; }
-            writeFileSync(this.path, out, this._createOptions());
+            writeFileSync(this.path, out);
           } else {
-            writeFileSync(this.path, this._chunks.join(""), this._createOptions());
+            writeFileSync(this.path, this._chunks.join(""));
           }
           cb();
         } catch (e) { cb(e); }
       }
       open() {}
-      // The file it makes: its \`mode\` option's.
-      _createOptions() {
-        return this._opts !== null && typeof this._opts === "object" && this._opts.mode !== undefined ? { mode: this._opts.mode } : undefined;
-      }
       // lib/internal/fs/streams.js: ends the stream, \`cb\` once it has closed.
       close(cb) {
         if (cb) {
@@ -6528,12 +6453,12 @@ const __fsMod = (() => {
       const absPath = _resolve(filename);
       const key = _strip(absPath);
       function snapshot() {
-        if (typeof __resident !== "undefined") {
+        if (typeof __nsReady === "function") {
           // A relist temporarily makes metadata unavailable. Falling back
           // to byte cells here invents two changes: leaving and re-entering
           // the namespace, even when the watched inode never changed.
           if (!_nsActive()) return null;
-          const found = __resident.namespace.resolve(key, true);
+          const found = __nsResolve(key, true);
           if (!found || found === "ELOOP") return { stamp: "absent", absent: true };
           const row = found.row;
           return { stamp: [row.ino, row.kind, row.size, row.mtime, row.ctime, row.mode, row.uid, row.gid].join(":"), absent: false };
@@ -7275,7 +7200,7 @@ function __nimbusNodeLib() {
     signals: __osMod.constants.signals,
     insideNodeModules: __nimbusInsideNodeModules,
     errorSourcePositions: __nimbusErrorSourcePositions,
-    tokenizer: (code, options) => __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_MODULE}").tokenizer(code, options),
+    tokenizer: (code, options) => __nimbusRegistryRequire("./${RUNTIME_PARSER_MODULE}").tokenizer(code, options),
     sourceMaps: { getSourceMapsSupport: () => __nimbusSourceMapsSupport, findSourceMap: __nimbusFindSourceMap, getSourceLine: __nimbusOriginalSourceLine },
     colorDepth: () => __nimbusColorDepth(),
     customPromisifyArgs: __nimbusCustomPromisifyArgs,
@@ -7637,7 +7562,7 @@ const __nimbusDecodeStringLiteral = ${DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE};
         const params = args.slice(0, -1).map(String);
         const body = args.length > 0 ? String(args[args.length - 1]) : "";
         try {
-          const fn = service.compileFunction(kind, params, body, origin());
+          const fn = service.compileFunction(kind, params, body, origin(routed));
           // A subclass's \`new\` (\`class F extends Function\`) makes an instance of the subclass.
           if (new.target !== undefined && new.target !== routed) {
             const proto = new.target.prototype;
@@ -7674,22 +7599,21 @@ const __nimbusDecodeStringLiteral = ${DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE};
   const nativeFunction = Function.__nimbusNative ?? Function;
   for (const [kind, Native] of kinds) {
     if (Native.__nimbusNative) continue;
-    const routed = routedConstructor(kind, Native, () => unbound);
+    const routed = routedConstructor(kind, Native, (constructor) => callerOrigin(constructor));
     Object.defineProperty(Native.prototype, "constructor", { value: routed, writable: true, configurable: true, enumerable: false });
     if (kind === "function") globalThis.Function = routed;
   }
   // A refusing origin: code whose import() Node refuses (vm's), or whose
-  // importer only its module's own Function carries. Its Function is
-  // undefined, its own property, so its code reads and assigns the global's.
+  // caller is no module of the program. Its Function is undefined, its own
+  // property, so its code reads and assigns the global's.
   const refusingOrigin = (code, message) => Object.freeze({
     import: () => Promise.reject(Object.assign(new TypeError(message), { code })),
     Function: undefined,
   });
   const unbound = refusingOrigin("ERR_NIMBUS_IMPORT_NO_IMPORTER",
-    "import() in code built by a function constructor that is not its module's own Function (one reached through a "
-    + "prototype, such as AsyncFunction, or through globalThis) has no importer here: Node resolves it against the "
-    + "module that called the constructor, which only that module's own Function carries in a Worker. Build the "
-    + "code with the module's Function, or import outside it.");
+    "import() in code built by a function constructor that no module of the program called (the stack names none) "
+    + "has no importer here: Node resolves it against the module that called the constructor. Build the code from "
+    + "a module, or import outside it.");
   // Each module's origin (THE WRAPPER): import() against its URL, and a
   // Function of its own whose code keeps the origin. One per URL, so a
   // module's Function is one object for as long as the process runs.
@@ -7702,6 +7626,31 @@ const __nimbusDecodeStringLiteral = ${DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE};
       origins.set(importer, origin);
     }
     return origin;
+  };
+  // The module whose code called a constructor that is not its own (the
+  // global Function, or one reached through a prototype): Node resolves the
+  // built code's import() against it, as V8 hands its host the caller's
+  // script. The innermost frame in a module of the program, above the
+  // constructor; none (runtime code's, or no module's) is unbound.
+  const callerOrigin = (constructor) => {
+    try {
+      // The interpreter's frames too: a module it evaluates may be the caller.
+      const holder = {};
+      if (__nimbusInterpreter !== null) {
+        // All its frames: the constructor is native, never one of them.
+        __nimbusInterpreter.captureStack(holder);
+        const stamp = __nimbusInterpretedStacks.get(holder);
+        if (stamp !== undefined) stamp.sites = __nimbusStackSites({}, Infinity, constructor);
+      }
+      for (const site of __nimbusStackSites(holder, Infinity, constructor)) {
+        const file = site.getFileName();
+        const module = typeof file === "string" ? __nimbusModuleOfFile(file) : null;
+        // A map module's path, or the program's entry's file (the stack entry has no map path).
+        const path = module === null ? null : module.path ?? (typeof module.file === "string" && module.file.startsWith("/") ? module.file : null);
+        if (path !== null) return globalThis.__nimbusCodeOrigin(__nimbusFileUrl(path));
+      }
+    } catch {}
+    return unbound;
   };
   globalThis.__nimbusUnboundOrigin = unbound;
   globalThis.__nimbusVmOrigin = refusingOrigin("ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING", "A dynamic import callback was not specified.");
@@ -10622,7 +10571,7 @@ function __nimbusArrowOf(module, text, start, end) {
     from -= module.head;
     to -= module.head;
   }
-  // A lowered ES module's line and places as its source has them.
+  // A staged ES module's line and places as its source has them.
   if (to > from) to = __nimbusSourceColumn(module, line, to);
   from = __nimbusSourceColumn(module, line, from + 1) - 1;
   if (to <= from) to = from + 1;
@@ -10672,13 +10621,13 @@ function __nimbusFatalArrow(error, fromPromise) {
     if (!texts.has(module.name)) texts.set(module.name, __nimbusFrameModuleText(module));
     return texts.get(module.name);
   };
-  if (!fromPromise) {
+  if (!fromPromise && !(top.esModule && typeof top.source === "string")) {
     for (const [file, line, column] of frames) {
       const module = __nimbusModuleOfFile(file);
       const text = module === null ? null : textOf(module);
       if (text === null) continue;
       const offset = __nimbusTextOffset(text, line, __nimbusEmittedColumn(module, line, column));
-      const thrown = offset < 0 ? null : __nimbusFatalLocation(text, "script", offset);
+      const thrown = offset < 0 ? null : __nimbusFatalLocation(text, module.esModule ? "module" : "script", offset);
       if (thrown !== null) return __nimbusSourceMappedArrow(module, text, thrown[0]) ?? __nimbusArrowOf(module, text, thrown[0], thrown[1]);
     }
   }
@@ -10692,7 +10641,7 @@ function __nimbusFatalArrow(error, fromPromise) {
 // __nimbusDecorateSyntaxError), or null.
 globalThis.__nimbusSyntaxErrorArrow = function __nimbusSyntaxErrorArrow(module) {
   const text = module === null ? null : __nimbusFrameModuleText(module);
-  const place = text === null ? null : __nimbusFatalLocation(text, "script", -1);
+  const place = text === null ? null : __nimbusFatalLocation(text, module.esModule ? "module" : "script", -1);
   return place === null ? null : __nimbusArrowOf(module, text, place[0], place[1]);
 };
 // ReportFatalException: the text Node prints for \`error\`. \`enhance\`: the
@@ -11131,16 +11080,7 @@ __NodeModule.globalPaths = [];
 // Node's lookup path list: every ancestor's node_modules, nearest first,
 // never a node_modules/node_modules.
 __NodeModule._nodeModulePaths = (from) => {
-  const resolved = __pathMod.resolve(String(from));
-  if (resolved === "/") return ["/node_modules"];
-  const paths = [];
-  const parts = resolved.split("/");
-  for (let i = parts.length; i > 0; i--) {
-    if (parts[i - 1] === "node_modules") continue;
-    const dir = parts.slice(0, i).join("/");
-    paths.push((dir || "") + "/node_modules");
-  }
-  return paths;
+  return requireNodeModulePaths(__pathMod.resolve(String(from)));
 };
 // Module._resolveFilename: a builtin's id as asked, a staged binding's name,
 // or the file \`request\` names from \`parent\` (or from each of
@@ -11150,7 +11090,7 @@ __NodeModule._resolveFilename = function _resolveFilename(request, parent, isMai
   let dirs = [__nimbusModuleDir(parent)];
   // options.paths' directories, from the working directory, each validated as
   // path.resolve does: a relative request's as it is searched, a bare one's first.
-  const relative = request.startsWith("./") || request.startsWith("../");
+  const relative = request === "." || request === ".." || request.startsWith("./") || request.startsWith("../");
   const absolute = (dir) => {
     if (typeof dir !== "string") throw invalidArgType("paths[0]", "string", dir);
     return __pathMod.resolve(dir);
@@ -11159,9 +11099,13 @@ __NodeModule._resolveFilename = function _resolveFilename(request, parent, isMai
     if (Array.isArray(options.paths)) dirs = relative ? options.paths : options.paths.map(absolute);
     else if (options.paths !== undefined) throw new nodeErrorCodes.ERR_INVALID_ARG_VALUE("options.paths", options.paths);
   }
-  for (const dir of dirs) {
-    const resolved = __resolveFrom(request, absolute(dir));
-    if (resolved) return "/" + resolved.replace(/^\\/+/, "");
+  const lookup = relative ? dirs : [__nimbusModuleDir(parent)];
+  for (const dir of lookup) {
+    const found = __requireResolver.resolveSync(request, absolute(dir), {
+      ...(relative ? {} : { paths: dirs.map(absolute) }),
+      ...(typeof parent?.filename === "string" ? { parent: parent.filename } : {}),
+    });
+    if (found) return found.builtin ? "node:" + found.builtin : found.path;
   }
   throw __nimbusModuleNotFound(request, parent);
 };
@@ -11191,8 +11135,9 @@ function __nimbusModuleNotFound(request, parent) {
 // resolving from \`fromDir\` (its file's directory). \`required\` false is an
 // ES module's, which only its static imports call.
 function __nimbusMakeRequire(module, fromDir = __nimbusModuleDir(module), required = true) {
+  // An interpreted ES module's static import passes its marker (esm-interop.ts ESM_LOAD_HELPER).
   const require = function require(id) {
-    return __requireFrom(id, fromDir, module, required);
+    return __requireFrom(id, fromDir, module, required && !(arguments.length > 1 && arguments[1] === ${JSON.stringify(ESM_STATIC_IMPORT)}));
   };
   function resolve(request, options) {
     if (typeof request !== "string") throw invalidArgType("request", "string", request);
@@ -11220,6 +11165,10 @@ Object.defineProperty(__NodeModule, "SourceMap", {
   enumerable: true, configurable: true,
 });
 __NodeModule.findSourceMap = function findSourceMap(sourceURL) { return __nimbusFindSourceMap(sourceURL); };
+// Each builtin's ES namespace reads its builtin's names again (native-esm.ts builtinFacadeModule).
+__NodeModule.syncBuiltinESMExports = function syncBuiltinESMExports() {
+  for (const resync of __nimbusEsmResyncs) resync();
+};
 __NodeModule.getSourceMapsSupport = function getSourceMapsSupport() { return __nimbusSourceMapsSupport; };
 __NodeModule.setSourceMapsSupport = function setSourceMapsSupport(enabled, options = {}) { __nimbusSetSourceMapsSupport(enabled, options); };
 Object.defineProperty(__NodeModule, "name", { value: "Module" });
@@ -11754,33 +11703,15 @@ __nimbusFrontEvents(builtins.events);
 // ═══════════════════════════════════════════════════════════════════════
 // ──  require() — full Node.js module resolution ─────────────────────
 // ═══════════════════════════════════════════════════════════════════════
-// A module's exports as a require() that meets it while it loads (a cycle)
-// reads them (__makeLoadingExports), by its Module.
-const __nimbusLoadingExports = new WeakMap();
-// The ES modules this process loaded, by file (or an import's URL with a query).
-const __nimbusEsModules = new Map();
-// A module cell's evaluation when it completes later (top-level await), by
-// its evaluation key: what an import of it waits for.
+// An interpreted module's evaluation when it completes later (top-level
+// await), by its evaluation key: what an import of it waits for.
 const __moduleEvaluations = new Map();
 // package → why the package ABI policy says it cannot run here (wasm-swap-registry.ts).
 const __nimbusAbiAdvisories = new Map(${ABI_ADVISORIES_LITERAL});
 
-// An ES module's scope binds none of CommonJS's names (module-format.ts
-// ES_MODULE_UNBOUND_NAMES): a lowered ES module reads, calls and assigns each
-// of them through this object's accessors, which throw the ReferenceError V8
-// throws for a name bound nowhere, from the module's own frame. \`typeof\` of
-// one is lowered to 'undefined', as V8's is.
+// CommonJS's names, which an ES module's scope binds none of: V8's
+// ReferenceError for one is the loader's to explain (__nimbusExplainCommonJSGlobalLike).
 const __nimbusCommonJSGlobalLike = ${JSON.stringify([...COMMONJS_WRAPPER_NAMES])};
-Object.defineProperty(globalThis, ${JSON.stringify(ES_MODULE_SCOPE_GLOBAL)}, { configurable: true, value: Object.freeze(Object.create(null, Object.fromEntries(
-  __nimbusCommonJSGlobalLike.map((name) => {
-    const unbound = function () {
-      const error = new ReferenceError(name + " is not defined");
-      Error.captureStackTrace(error, unbound);
-      throw error;
-    };
-    return [name, { get: unbound, set: unbound }];
-  }),
-))) });
 
 // The errors __nimbusExplainCommonJSGlobalLike has explained.
 const __nimbusExplained = new WeakSet();
@@ -11843,352 +11774,29 @@ function __readFileOr(path, fallback) {
 }
 function __fileExists(path) {
   const k = path.replace(/^\\/+/, "");
-  // The namespace answers exactly (vfs/resident), except on a
+  // The namespace answers exactly (vfs/facet-resident-store.ts), except on a
   // mounted directory the launch did not list: asked only when the namespace
   // holds such a directory, statSync's refusal says so, and resolution
   // reports it rather than "Cannot find module".
   if (__fsMod.existsSync("/" + k)) return true;
-  if (typeof __resident !== "undefined" && __resident.namespace.unknown(k, true, false) !== null) __fsMod.statSync("/" + k);
+  if (typeof __nsUnknown === "function" && __nsUnknown(k, true, false) !== null) __fsMod.statSync("/" + k);
   return false;
 }
-// W3.5 Fix A: strict-file membership probe. __fileExists also returns true for
-// directories (it has to — __resolveNodeModule and __resolveImportsField call
-// it to check whether a node_modules/<pkg> directory exists). __resolveFile's
-// empty-extension probe needs the inverse: "is this an actual file?" — so the
-// loop falls through to /index.js when "base" is a directory rather than
-// short-circuiting and returning the directory path (which __loadModule then
-// can't read, throwing "Cannot read module: <dir>"). See W3 retro §S3 for
-// the fastify ret/dist/types failure.
-function __pathIsFile(path) {
-  const k = path.replace(/^\\/+/, "");
-  const st = __fsMod.statSync("/" + k, { throwIfNoEntry: false });
-  return !!st && st.isFile();
-}
-function __resolveFile(base) {
-  // Mirrors Node's LOAD_AS_FILE + LOAD_AS_DIRECTORY (require_2 spec):
-  //
-  //   1. LOAD_AS_FILE -- try base, base.js, base.mjs, base.cjs, base.json
-  //      as a regular file. The empty-ext probe uses __pathIsFile (not
-  //      __fileExists) so a directory at "base" does NOT short-circuit
-  //      here; it falls through to the LOAD_AS_DIRECTORY block below.
-  //      See W3.5-plan.md §1 Failure 1.
-  //
-  //   2. LOAD_AS_DIRECTORY -- if "base" resolves to a directory:
-  //      a. If <base>/package.json has a "main" field -- recurse on it.
-  //         (Bug class C, audit 2026-05-11: this branch was missing,
-  //          so require("./mod") where mod/package.json#main="entry.js"
-  //          and no mod/index.js -- "Cannot find module ./mod".)
-  //      b. Else fall through to <base>/index.{js,cjs,mjs,json}.
-  //
-  // Must mirror the install-time pre-bundler at require-resolver.ts:
-  // resolveFile so prefetch + runtime agree on which file a given
-  // require() will load.
-  const fileExts = ["", ".js", ".mjs", ".cjs", ".json"];
-  for (const ext of fileExts) {
-    const cand = base + ext;
-    if (ext === "") {
-      if (__pathIsFile(cand)) return cand;
-      continue;
-    }
-    if (__fileExists(cand)) return cand;
-  }
-  // LOAD_AS_DIRECTORY: prefer package.json#main over index.*
-  const pkgJsonPath = base.replace(/\\/+$/, "") + "/package.json";
-  if (__pathIsFile(pkgJsonPath)) {
-    let pkg = null;
-    try { pkg = JSON.parse(__readFileOr(pkgJsonPath, "null")); } catch { /* fall through */ }
-    if (pkg && typeof pkg.main === "string" && pkg.main.length > 0) {
-      const mainStripped = pkg.main.replace(/^\\.\\/+/, "").replace(/^\\/+/, "");
-      // Normalize so a parent-relative main (e.g. web-streams-polyfill's
-      // ponyfill/package.json declaring main "../dist/ponyfill") collapses
-      // its ".." segments instead of probing a literal "dir/../dist" path
-      // that __fileExists never matches.
-      const mainBase = __vfsNormalizePath(base.replace(/\\/+$/, "") + "/" + mainStripped).replace(/^\\/+/, "");
-      // Recurse: main itself may be a directory (e.g. main: "lib") or
-      // a file without extension. Guard against pkg.main === "." which
-      // would re-enter this same base and stack-overflow.
-      if (mainBase !== base && mainBase !== base.replace(/\\/+$/, "")) {
-        const resolved = __resolveFile(mainBase);
-        if (resolved) return resolved;
-      }
-    }
-  }
-  const indexExts = ["/index.js", "/index.cjs", "/index.mjs", "/index.json"];
-  for (const ext of indexExts) {
-    const cand = base + ext;
-    if (__fileExists(cand)) return cand;
-  }
-  // TypeScript sources, probed only once every candidate above has missed, so
-  // the specifiers whose resolution changes are exactly those that resolve to
-  // nothing today. Must agree with the prefetch resolver or a file is shipped
-  // that this cannot find; both come from src/_shared/typescript-specifiers.ts
-  // and tests/unit/typescript-specifier-resolution.mjs compares them.
-  const baseTrim = base.replace(/\\/+$/, "");
-  for (const cand of typescriptFallbackCandidates(baseTrim)) {
-    if (__pathIsFile(cand)) return cand;
-  }
-  for (const ext of TYPESCRIPT_INDEX_CANDIDATES) {
-    const cand = baseTrim + ext;
-    if (__pathIsFile(cand)) return cand;
-  }
-  return null;
-}
-
-// ── Resolution, credential and upgrade rules, compiled from @nimbus-sh/core ──
-// _shared/node-shim-resolution.ts (NODE_SHIM_RESOLUTION_PREAMBLE). Declares
-// resolveExports, resolvePackageEntry, packageSelfReferenceSubpath,
-// DEFAULT_ESM_CONDITIONS, DEFAULT_CJS_CONDITIONS, typescriptFallbackCandidates,
-// TYPESCRIPT_INDEX_CANDIDATES, presentedCredential and isWebSocketUpgradeRequest
-// (function declarations, so the fetch patch above can call them).
+// Resolution is the compiled core generator, over the guest's resident fs.
+// Metadata/refusal handling stays here; selection and probing never do.
 ${NODE_SHIM_RESOLUTION_PREAMBLE}
-
-/** Conditions for runtime CJS resolution (user-shell node): require's, and the program's own (--conditions). */
-const __NIMBUS_CJS_CONDITIONS = ["require", "node", "default", ...__nimbusConditions];
-/** The fallback for a map whose entry is only under import: import's conditions, and the program's own. */
-const __NIMBUS_IMPORT_FALLBACK_CONDITIONS = [...DEFAULT_ESM_CONDITIONS, ...__nimbusConditions];
-
-/**
- * Read and parse a package.json from VFS. Returns null on miss/parse-fail.
- */
-function __readPkgJson(pkgDir) {
-  const s = __readFileOr(pkgDir + "/package.json", null);
-  if (!s) return null;
-  try { return JSON.parse(s); } catch { return null; }
-}
-
-/**
- * Resolve a single subpath inside an installed package (pkgDir).
- *   - subpath: '.' for root entry, './foo' for explicit subpath, etc.
- *   - Honours pkg.exports (subpath maps, wildcards, conditions).
- *   - Falls back to module/main for root, raw subpath probing otherwise.
- *   - Final filesystem probe via __resolveFile (extension list).
- *
- * Returns a VFS-relative path to the resolved file, or null.
- */
-function __resolvePkgSubpath(pkgDir, pkg, subpath) {
-  if (!pkg) pkg = __readPkgJson(pkgDir);
-  if (!pkg) {
-    // No package.json — try direct probe
-    if (subpath === ".") return __resolveFile(pkgDir + "/index");
-    return __resolveFile(pkgDir + "/" + subpath.replace(/^\\.\\/+/, ""));
-  }
-  let entry = resolvePackageEntry(pkg, subpath, __NIMBUS_CJS_CONDITIONS);
-  // X.5-F R3: ESM-condition fallback for pure-ESM packages whose
-  // dist/.mjs files were transformed to CJS
-  // by transformEsmInBundle (facets/manager.ts). Without this,
-  // packages like nuxt — whose exports map only contains
-  // {types, import} for the root subpath — return null from the CJS
-  // walk and dead-end with "Cannot find module 'nuxt'" even though
-  // dist/index.mjs is in the bundle and runnable as CJS. We only fall
-  // back when the package actually declares an exports map (so we
-  // don't shadow legit "package not installed" misses).
-  if (entry == null && pkg.exports != null) {
-    entry = resolvePackageEntry(pkg, subpath, __NIMBUS_IMPORT_FALLBACK_CONDITIONS);
-  }
-  if (entry != null) {
-    // Strip leading ./ from the resolver result
-    const stripped = entry.replace(/^\\.\\/+/, "");
-    const resolved = __resolveFile(pkgDir + "/" + stripped);
-    if (resolved) return resolved;
-    // W2.6a D2: exports/main yielded a target but the file doesn't exist
-    // in the bundle (capped out, or the package mis-declares its main).
-    // Fall through to the direct-probe path so we get index.js when the
-    // declared entry is missing. Without this fallback, packages whose
-    // exports point at a file evicted by the content cap return null and
-    // the require chain dead-ends with "Cannot find module" — even though
-    // a perfectly good index.js sits next to it.
-  }
-  // Fallback: probe the directory for a usable entry. This catches
-  //   (a) exports map yielded null (forbidden / no condition matched)
-  //   (b) exports map yielded a path whose file isn't on disk
-  //   (c) main yielded a path whose file isn't on disk
-  if (subpath === ".") {
-    // Try main again under the extension-list resolver, then fall through
-    // to /index probing. The shared resolvePackageEntry already prefers
-    // exports → module → main, so re-probing main here only triggers when
-    // entry was null OR entry's file was missing.
-    if (typeof pkg.main === 'string') {
-      const mainStripped = pkg.main.replace(/^\\.\\/+/, "");
-      const r = __resolveFile(pkgDir + "/" + mainStripped);
-      if (r) return r;
-    }
-    return __resolveFile(pkgDir + "/index");
-  }
-  const rel = subpath.replace(/^\\.\\/+/, "");
-  return __resolveFile(pkgDir + "/" + rel);
-}
-
-
-/**
- * Resolve a bare specifier (e.g. "react", "@scope/pkg", "pkg/sub/path")
- * by walking up node_modules from fromDir. Returns the resolved file or null.
- */
-function __resolveNodeModule(name, fromDir) {
-  // Split into pkgName + subpath
-  let pkgName, subpath;
-  if (name.startsWith("@")) {
-    const parts = name.split("/");
-    if (parts.length < 2) return null;
-    pkgName = parts.slice(0, 2).join("/");
-    subpath = parts.length > 2 ? "./" + parts.slice(2).join("/") : ".";
-  } else {
-    const slashIdx = name.indexOf("/");
-    if (slashIdx > 0) {
-      pkgName = name.substring(0, slashIdx);
-      subpath = "./" + name.substring(slashIdx + 1);
-    } else {
-      pkgName = name;
-      subpath = ".";
-    }
-  }
-
-  // Walk up directories looking for node_modules/<pkgName>.
-  // Audit §3.7 (P7 fastify case): the prior loop was right, but the
-  // visited-set keyed on dir-with-leading-slash-stripped while node_modules
-  // existence checks used the same form, so iteration COULD terminate early
-  // when hitting "" (empty string) at the root. Explicit termination on
-  // empty string + always-also-check root node_modules covers both.
-  let dir = (fromDir || "").replace(/^\\/+/, "");
-  const visited = new Set();
-  while (true) {
-    if (visited.has(dir)) break;
-    visited.add(dir);
-    const nmDir = (dir ? dir + "/" : "") + "node_modules/" + pkgName;
-    if (__fileExists(nmDir)) {
-      const resolved = __resolvePkgSubpath(nmDir, null, subpath);
-      if (resolved) return resolved;
-    }
-    if (!dir) break;
-    const lastSlash = dir.lastIndexOf("/");
-    dir = lastSlash > 0 ? dir.substring(0, lastSlash) : "";
-  }
-  return null;
-}
-
-/**
- * Node's "package scope" of a directory (readPackageScope): the nearest
- * enclosing package.json, walking up from fromDir. The FIRST package.json
- * found is the scope, even when it lacks the field the caller wants — the
- * imports field and the self-reference rule both belong to the importing
- * module's own package, never to an ancestor past it. The walk never
- * crosses a node_modules directory: a file that sits directly under one
- * belongs to no package, not to the project above it. Returns { dir, pkg }
- * (pkg null when the file is unparseable) or null when no package.json
- * encloses fromDir.
- */
-function __nearestPackageScope(fromDir) {
-  let dir = (fromDir || "").replace(/^\\/+/, "");
-  while (true) {
-    if (dir === "node_modules" || dir.endsWith("/node_modules")) return null;
-    const pkgJsonPath = (dir ? dir + "/" : "") + "package.json";
-    if (__fileExists(pkgJsonPath)) {
-      return { dir, pkg: __readPkgJson(dir) };
-    }
-    if (!dir) return null;
-    const lastSlash = dir.lastIndexOf("/");
-    dir = lastSlash > 0 ? dir.substring(0, lastSlash) : "";
-  }
-}
-
-/**
- * Resolve a #name imports-field specifier from the nearest enclosing
- * package.json. Returns the resolved file or null.
- */
-function __resolveImportsField(name, fromDir) {
-  // First package.json wins, even if no imports field (Node spec: imports
-  // field of the importing module's package).
-  const scope = __nearestPackageScope(fromDir);
-  if (!scope || !scope.pkg || !scope.pkg.imports) return null;
-  const dir = scope.dir;
-  const target = resolveExports(scope.pkg.imports, name, __NIMBUS_CJS_CONDITIONS);
-  if (!target) return null;
-  // Imports targets are relative to the package root (dir)
-  if (target.startsWith("./")) {
-    return __resolveFile((dir ? dir + "/" : "") + target.slice(2));
-  }
-  if (target.startsWith("/")) {
-    return __resolveFile(target.slice(1));
-  }
-  // Bare specifier — re-resolve as a node_module from this dir
-  return __resolveNodeModule(target, dir);
-}
-
-/**
- * Node's LOAD_PACKAGE_SELF: a bare specifier naming the enclosing package
- * itself (\`require('<its-name>')\`, \`require('<its-name>/sub')\`) resolves
- * through that package's own \`exports\` map — only when the nearest
- * package.json has \`exports\` AND its \`name\` matches, and only through
- * \`exports\` (no main/index probing: a subpath the map does not expose is
- * not exported). Sits between the imports-field branch and the
- * node_modules walk, where Node puts it. Returns the resolved file or null.
- *
- * Conditions are the ones the node_modules walk uses for the same
- * require: the runtime's CJS set first, the ESM set when the map exposes
- * the subpath only under \`import\` (dynamic import() is lowered onto this
- * require chain, see __resolvePkgSubpath).
- *
- * Tri-state, as in Node: null when the rule does not apply (the caller
- * walks node_modules); { resolved: null } when the enclosing package claims
- * the name but its map does not expose the subpath or the target is
- * missing — Node throws ERR_PACKAGE_PATH_NOT_EXPORTED / MODULE_NOT_FOUND
- * there and never consults node_modules, so neither does the caller.
- */
-function __resolvePackageSelf(name, fromDir) {
-  const scope = __nearestPackageScope(fromDir);
-  if (!scope || !scope.pkg) return null;
-  const subpath = packageSelfReferenceSubpath(scope.pkg, name);
-  if (subpath === null) return null;
-  let entry = resolveExports(scope.pkg.exports, subpath, __NIMBUS_CJS_CONDITIONS);
-  if (entry == null) entry = resolveExports(scope.pkg.exports, subpath, __NIMBUS_IMPORT_FALLBACK_CONDITIONS);
-  if (entry == null) return { resolved: null };
-  return { resolved: __resolveFile((scope.dir ? scope.dir + "/" : "") + entry.replace(/^\\.\\/+/, "")) };
-}
-
-function __exportsTarget(mod) {
-  const value = mod.exports;
-  if (value && (typeof value === "object" || typeof value === "function")) return value;
-  return Object(value);
-}
-
-function __isTdzExportRead(error) {
-  const message = error && typeof error.message === "string"
-    ? error.message
-    : String(error);
-  return message.includes("before initialization") ||
-    message.includes("Cannot read properties of undefined (reading");
-}
-
-function __makeLoadingExports(mod) {
-  return new Proxy({}, {
-    get(_target, prop) {
-      try {
-        return Reflect.get(__exportsTarget(mod), prop);
-      } catch (error) {
-        if (__isTdzExportRead(error)) return undefined;
-        throw error;
-      }
-    },
-    set(_target, prop, value) {
-      if (!mod.exports || (typeof mod.exports !== "object" && typeof mod.exports !== "function")) {
-        mod.exports = {};
-      }
-      return Reflect.set(mod.exports, prop, value);
-    },
-    has(_target, prop) {
-      return Reflect.has(__exportsTarget(mod), prop);
-    },
-    ownKeys() {
-      return Reflect.ownKeys(__exportsTarget(mod));
-    },
-    getOwnPropertyDescriptor(_target, prop) {
-      const desc = Reflect.getOwnPropertyDescriptor(__exportsTarget(mod), prop);
-      return desc ? { ...desc, configurable: true } : undefined;
-    },
-    getPrototypeOf() {
-      return Reflect.getPrototypeOf(__exportsTarget(mod));
-    },
-  });
-}
+const __requireResolver = createRequireResolver({
+  kind(path) {
+    if (!__fileExists(path)) return null;
+    const st = __fsMod.statSync(path, { throwIfNoEntry: false });
+    return !st ? null : st.isDirectory() ? "directory" : st.isFile() ? "file" : null;
+  },
+  readText(path) { return __readFileOr(path, null); },
+  realpath(path) { return __fsMod.realpathSync(path); },
+  isBuiltin(specifier) {
+    return __nimbusBuiltinId(specifier) !== null;
+  },
+}, { conditions: __nimbusConditions, policy: NIMBUS_TYPESCRIPT_REQUIRE_POLICY, collectPackageScope: false });
 
 /**
  * Load and execute a JS/JSON module from VFS.
@@ -12207,46 +11815,77 @@ function __makeLoadingExports(mod) {
 // The registry's own import.meta cannot serve: its module URLs all live
 // under file:///bundle/, never at the file's own path. dirname and filename
 // name the file, without the URL's query or fragment.
-function __nimbusFileImportMeta(filename, url = builtins.url.pathToFileURL(filename).href) {
+// \`main\`: whether the module is the program's entry, as Node 22's import.meta.main.
+function __nimbusFileImportMeta(filename, url = builtins.url.pathToFileURL(filename).href, main = false) {
   return Object.assign(Object.create(null), {
     dirname: __pathMod.dirname(filename),
     filename,
-    url,
+    main,
     resolve: (specifier) => globalThis.__nimbusImportMetaResolve(specifier, url),
+    url,
   });
 }
 
 // Errors a known Workers-incompatible package's load threw, advised once.
 const __nimbusAdvised = new WeakSet();
-// \`required\`: loaded by a require() call, not by an ES module's static
-// import, which the lowering makes a call of the module's own require.
-function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = true, parent = undefined) {
-  if (typeof __resident !== "undefined" && __resident.observeRead !== null) __resident.observeRead(String(resolvedPath).replace(/^\\/+/, ""));
+// The ES modules the interpreter evaluated from files outside the map, with
+// their compiled cells: a later require() asks whether their graphs await.
+const __nimbusRuntimeEsModules = new WeakMap();
+// Whether a runtime ES module's graph awaits at its top level (its text read again).
+function __nimbusRuntimeGraphAwaits(key, cell) {
+  const text = __readFileOr(key, null);
+  return text !== null && __nimbusRequiredGraphAwaits(key, cell, text, new Set());
+}
+// The CommonJS modules whose bodies are running now (Node's kIsExecuting):
+// an ES module that imports one is in a require(esm) cycle.
+const __nimbusExecutingCommonJs = new WeakSet();
+// \`required\`: loaded by a require() call, not by an import (an interpreted
+// ES module's static import, core interpreter/modules.ts, or import()).
+// A staged ES module is the registry's (__nimbusEsmRequire): this loads it
+// only when the interpreter evaluates it instead.
+// \`esModule\`: an ES module an import loads, which require.cache does not
+// hold until a require() loads it.
+function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = true, parent = undefined, esModule = false) {
+  if (globalThis.__nimbusProfileStaged) globalThis.__nimbusProfileStaged.delete(String(resolvedPath).replace(/^\\/+/, ""));
   const filename = "/" + resolvedPath.replace(/^\\/+/, "");
+  const normalizedPath = filename.slice(1);
   // A query's or fragment's import is a job of its own, kept by its URL.
   const cacheKey = evaluationKey === resolvedPath ? filename : evaluationKey;
-  // An ES module is the ES loader's (__nimbusEsModules); require.cache has
-  // it once a require() loads it (require(esm)), as Node's has.
-  const esModule = __nimbusModuleCellIsEsModule(resolvedPath.replace(/^\\/+/, ""));
-  const modules = esModule ? __nimbusEsModules : __NodeModule._cache;
-  const cached = esModule ? modules.get(cacheKey) : modules[cacheKey];
+  // A staged ES module: its namespace once the registry evaluated it, else
+  // the interpreter's evaluation of it, below (an instance of its own, for
+  // a query or a fragment, always).
+  const esmId = __nimbusEsmId("module", normalizedPath);
+  const adopted = esmId !== -1 && evaluationKey === resolvedPath;
+  // An ES module an import loaded is the ES loader's; require.cache has it
+  // once a require() loads it (require(esm)), as Node's has.
+  const cached = __NodeModule._cache[cacheKey] ?? __nimbusEsmInstances.get(cacheKey);
+  // An adopted ES module still evaluating: a require() of it is a cycle.
+  if (cached !== undefined && adopted && required && !cached.loaded) __nimbusEsmRequire(esmId, true, parent);
   if (cached !== undefined) {
-    if (esModule && required) __NodeModule._cache[cacheKey] ??= cached;
+    // A require() of an ES module whose graph awaits at its top level, imported already: Node's refusal still.
+    if (required && cached.loaded && (adopted ? __nimbusEsmGraphAwaits(esmId) : __nimbusRuntimeEsModules.has(cached) && __nimbusRuntimeGraphAwaits(normalizedPath, __nimbusRuntimeEsModules.get(cached)))) {
+      throw __nimbusRequireAsync(parent, filename);
+    }
     __nimbusUpdateChildren(parent, cached, true);
-    return cached.loaded ? cached.exports : (__nimbusLoadingExports.get(cached) ?? cached.exports);
+    if (required) __NodeModule._cache[cacheKey] ??= cached;
+    const record = adopted ? __nimbusEsmRecords[esmId] : undefined;
+    return required && record?.namespace ? __nimbusEsmRequired(record) : cached.exports;
+  }
+  if (adopted) {
+    const namespace = __nimbusEsmRequire(esmId, required, parent);
+    if (namespace !== null) return namespace;
   }
 
   const mod = new __NodeModule(filename, parent);
   mod.filename = filename;
   mod.paths = __NodeModule._nodeModulePaths(mod.path);
-  if (esModule) modules.set(cacheKey, mod);
-  else modules[cacheKey] = mod;
-  if (esModule && required) __NodeModule._cache[cacheKey] = mod;
-  __nimbusLoadingExports.set(mod, __makeLoadingExports(mod));
+  // An imported JSON file is require()'s too, as Node's JSON translator
+  // keeps it; a query's or a fragment's is its own.
+  if (esModule && !required && !(resolvedPath.endsWith(".json") && cacheKey === filename)) __nimbusEsmInstances.set(cacheKey, mod);
+  else __NodeModule._cache[cacheKey] = mod;
   const unload = () => {
-    if (esModule) modules.delete(cacheKey);
     if (__NodeModule._cache[cacheKey] === mod) delete __NodeModule._cache[cacheKey];
-    __nimbusLoadingExports.delete(mod);
+    if (__nimbusEsmInstances.get(cacheKey) === mod) __nimbusEsmInstances.delete(cacheKey);
     const siblings = parent?.children;
     const at = Array.isArray(siblings) ? siblings.indexOf(mod) : -1;
     if (at !== -1) siblings.splice(at, 1);
@@ -12268,32 +11907,35 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
       throw error;
     }
     mod.loaded = true;
-    __nimbusLoadingExports.delete(mod);
     return mod.exports;
   }
 
-  // JS — the cell's wrapper, called with the module's require. A lowered ES
-  // module calls its require for its static imports only: it has no require
-  // of its own (module-format.ts ES_MODULE_UNBOUND_NAMES).
+  // JS — the cell's wrapper, called with the module's require: an ES
+  // module's links its static imports, as Node's ESM loader resolves them.
   const modDir = __pathMod.dirname(filename);
-  const scopedRequire = __nimbusMakeRequire(mod, modDir, !esModule);
 
   // X.5-M3: thread currently-loading module path through globalThis so the
   // URL shim null-base fallback (in node-shims url module) can compose
-  // relative URLs against the real module location — synthesizing
-  // import.meta.url semantics for ESM that esbuild CJS-emit reduced to
-  // const import_meta = {}. Save+restore for recursive __loadModule.
+  // relative URLs against the real module location. Save+restore for
+  // recursive __loadModule.
   const __prevModulePath = globalThis.__currentModulePath;
   globalThis.__currentModulePath = resolvedPath;
   const moduleUrl = evaluationKey.startsWith("file:")
     ? evaluationKey : builtins.url.pathToFileURL("/" + resolvedPath).href;
   Object.defineProperty(mod, "__nimbusImportMeta", { value: __nimbusFileImportMeta("/" + resolvedPath, moduleUrl) });
+  // A require() refusing top-level await leaves its evaluation going on.
+  let evaluating = false;
   try {
-    const normalizedPath = resolvedPath.replace(/^\\/+/, "");
     __nimbusLoadsTypeScript(normalizedPath);
-    let cell = __nimbusModuleCell(normalizedPath);
+    let cell = esmId === -1 ? __nimbusModuleCell(normalizedPath) : null;
     let compiledText = null;
-    if (!cell) {
+    if (esmId !== -1) {
+      // The staged module's own text, as it was before it was staged. Node's
+      // ES loader warns of a typeless one it loads; its require() does not.
+      if (!required) __nimbusEsmWarnTypeless(esmId);
+      compiledText = __nimbusEsmSourceText(esmId);
+      cell = __nimbusAdoptedModule(normalizedPath, compiledText);
+    } else if (!cell) {
       // Not in the launch's map: written after it started, or not reached by
       // its closure. Kept apart from the read ledger, which settles reads. By
       // path, the next launch stages the file if it is still there; by
@@ -12304,24 +11946,61 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
       if (typeof __nimbusNotifyRuntimeCode === "function") __nimbusNotifyRuntimeCode();
       const text = __readFileOr(resolvedPath, null);
       if (text === null) throw new Error("Cannot load module '" + resolvedPath + "': it was not in this launch's module map; the next launch of the same command stages it.");
-      cell = __nimbusRuntimeModule(normalizedPath, text);
+      // In the format the loader gives the file: a typeless .js, imported or
+      // required, is CommonJS or an ES module by its syntax, as Node detects it.
+      const format = __nimbusFileFormat(filename);
+      cell = __nimbusRuntimeModule(normalizedPath, text, format);
       compiledText = text;
+      // A require() of an ES module refuses its graph if any of it awaits at
+      // its top level, evaluated already or not, before any of it runs.
+      const runtimeEsModule = format === "module" || (format === undefined && __nimbusDetectedModule(cell));
+      if (runtimeEsModule) __nimbusRuntimeEsModules.set(mod, cell);
+      if (required && runtimeEsModule && __nimbusRequiredGraphAwaits(normalizedPath, cell, text, new Set())) {
+        evaluating = true;
+        throw __nimbusRequireAsync(parent, filename);
+      }
+      // An imported .js its syntax made an ES module warns as a staged one does.
+      if (!required && format === undefined && filename.endsWith(".js") && __nimbusDetectedModule(cell)) {
+        const scope = __esmResolver.packageScopeSync(__nimbusEsmUrl(filename));
+        if (scope.exists && scope.type === "none") __nimbusWarnTypeless(filename, scope.pjsonPath);
+      }
       globalThis.__nimbusModuleMisses.delete(normalizedPath);
     }
     __nimbusCompiling("/" + normalizedPath, () => compiledText ?? __nimbusModuleSourceText(__nimbusModuleAtPath(normalizedPath)));
+    const scopedRequire = __nimbusMakeRequire(mod, modDir);
     // A CommonJS module's \`this\` is its exports, as Node calls its wrapper.
-    const evaluation = __nimbusReflectApply(cell, esModule ? undefined : mod.exports, [mod.exports, scopedRequire, mod, filename, modDir]);
-    // A module with top-level await completes later. require() returns its
-    // exports now (static imports lowered to require cannot wait); import()
-    // waits for it (__esmLoad).
-    if (evaluation && typeof evaluation.then === "function") __moduleEvaluations.set(evaluationKey, evaluation);
+    if (!adopted) __nimbusExecutingCommonJs.add(mod);
+    let evaluation;
+    try {
+      evaluation = __nimbusReflectApply(cell, mod.exports, [mod.exports, scopedRequire, mod, filename, modDir]);
+    } finally {
+      __nimbusExecutingCommonJs.delete(mod);
+    }
+    // A module with top-level await completes later: an import() waits for
+    // it (__esmLoad); require() refuses it, as Node's does.
+    if (evaluation && typeof evaluation.then === "function") {
+      __moduleEvaluations.set(evaluationKey, evaluation);
+      if (required && esmId !== -1) {
+        evaluation.then(undefined, () => {});
+        evaluating = true;
+        throw nodeError(Error, "ERR_REQUIRE_ASYNC_MODULE", "require() cannot be used on an ESM graph with top-level await. Use import() instead. To see where the top-level await comes from, use --experimental-print-required-tla.\\n  From " + (parent?.filename ?? "") + " \\n  Requiring " + filename + " ");
+      }
+    }
   } catch (e) {
     unload();
+    // An adopted ES module that threw stays failed: the next require() or
+    // import() of it throws what it threw, and does not evaluate it again
+    // (Node's errored module record).
+    if (adopted && !evaluating) {
+      const record = __nimbusEsmRecord(esmId);
+      record.state = __ESM_FAILED;
+      record.error = { value: e };
+    }
     // A ReferenceError for a CommonJS name is the module loader's to explain
     // where it leaves an ES module's job, and nothing else's: a require() of
     // an ES module is that module's job (Node's ModuleJobSync).
     if (__nimbusIsCommonJSGlobalLikeError(e)) {
-      if (required && esModule) __nimbusExplainCommonJSGlobalLike(e, moduleUrl, false);
+      if (required && esmId !== -1) __nimbusExplainCommonJSGlobalLike(e, moduleUrl, false);
       throw e;
     }
     // What escapes a module is the program's own error, as Node leaves it;
@@ -12346,7 +12025,14 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
   }
 
   mod.loaded = true;
-  __nimbusLoadingExports.delete(mod);
+  // An adopted ES module's namespace: its own names, live; a require()'s, Node's shape of it.
+  if (adopted) {
+    const record = __nimbusEsmRecord(esmId);
+    record.module = mod;
+    const exports = mod.exports;
+    record.namespace = __esmNamespaceOf(Object.keys(exports).filter((name) => name !== "__esModule"), (name) => exports[name]);
+    if (required) return __nimbusEsmRequired(record);
+  }
   return mod.exports;
 }
 
@@ -12354,63 +12040,10 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
  * Resolve a module ID from a given directory.
  * Returns the resolved VFS path, or null.
  */
-function __resolveFrom(id, fromDir) {
-  // An absolute file: URL is a specifier Node accepts: \`import(href)\` is the
-  // portable way to load a path a resolver just handed back, and it is what
-  // every package that resolves before it imports emits — @nuxt/cli's
-  // loadKit does \`import(pathToFileURL(resolveModulePath('@nuxt/kit', …)).href)\`.
-  // The ESM→CJS transform funnels those imports through this one resolver, so
-  // the scheme has to come off before the specifier is classified: with it on,
-  // the file: URL misses the absolute-path branch below and gets looked up as
-  // if it were the name of a package.
-  if (typeof id === "string" && id.startsWith("file:")) {
-    let filePath;
-    try {
-      const u = new URL(id);
-      // .pathname drops the query a cache-busting importer appends
-      // (\`import(href + "?t=" + Date.now())\` is the standard HMR spelling),
-      // and the decode is what node:url's fileURLToPath does with it.
-      filePath = decodeURIComponent(u.pathname);
-    } catch { filePath = id.replace(/^file:\\/\\//, ""); }
-    id = filePath;
-  }
-  // X.5-P: literal "." / ".." are CommonJS aliases for "./" / "../".
-  // Pre-fix they slipped past the startsWith("./")/("../") guards (which
-  // require >= 3 / >= 4 chars respectively) and fell into the bare-spec
-  // branch — querying __resolveNodeModule for a package literally named
-  // "." → "Cannot find module '.'" (verify-90993b3 §3 bucket P:
-  // fastify via ajv/dist/compile/jtd, redis via @redis/client/dist/lib/client).
-  // Normalize so they take the relative-resolve branch (which then probes
-  // index.js / package.json#main via __resolveFile). See
-  if (id === ".") id = "./";
-  else if (id === "..") id = "../";
-  // Relative path
-  if (id.startsWith("./") || id.startsWith("../") || id.startsWith("/")) {
-    let base;
-    if (id.startsWith("/")) {
-      base = id.replace(/^\\/+/, "");
-    } else {
-      // VFS paths are stored without leading /. __pathMod.resolve treats
-      // a non-absolute fromDir as relative-to-cwd which would corrupt the
-      // result (audit §3.7-bug). Force-absolutise fromDir before resolving,
-      // then strip the leading / again.
-      const absFromDir = fromDir.startsWith("/") ? fromDir : "/" + fromDir;
-      base = __pathMod.resolve(absFromDir, id).replace(/^\\/+/, "");
-    }
-    return __resolveFile(base);
-  }
-  // imports field (#name)
-  if (id.startsWith("#")) {
-    return __resolveImportsField(id, fromDir);
-  }
-  // Bare specifier: the enclosing package's own name resolves through its
-  // exports map (Node's LOAD_PACKAGE_SELF), then node_modules resolution.
-  // Once the enclosing package claims the name, its map is the whole
-  // answer: a subpath it does not expose is not found, never a
-  // node_modules copy's.
-  const self = __resolvePackageSelf(id, fromDir);
-  if (self) return self.resolved;
-  return __resolveNodeModule(id, fromDir);
+function __resolveFrom(id, fromDir, parentFile) {
+  const found = __requireResolver.resolveSync(id, "/" + String(fromDir).replace(/^\\/+/, ""), typeof parentFile === "string" ? { parent: parentFile } : undefined);
+  if (!found) return null;
+  return found.builtin ? "node:" + found.builtin : found.path.replace(/^\\/+/, "");
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -12446,7 +12079,7 @@ const __esmResolver = createEsmResolver({
       return found ? "/" + String(found).replace(/^\\/+/, "") : null;
     } catch { return null; }
   },
-}, { conditions: __nimbusConditions, stripTypes: !__nimbusTypeScriptAsJavaScript });
+}, { conditions: __nimbusConditions, stripTypes: !__nimbusTypeScriptAsJavaScript, cwd: () => __processMod.cwd() });
 const __esmNamespaces = new Map();
 /** A module namespace: its names sorted, read through to the exports. */
 function __esmNamespaceOf(names, read) {
@@ -12464,11 +12097,546 @@ function __nimbusAssertLoadable(resolution, type) {
   if (type === undefined && (__esmNamespaces.has(resolution.url) || __nimbusEsmJobCached(resolution.path))) return;
   __esmResolver.assertLoadable(resolution);
 }
+// ═══════════════════════════════════════════════════════════════════════
+// ──  Native ES modules (core runtime/native-esm.ts) ─────────────────
+// ═══════════════════════════════════════════════════════════════════════
+// The launch's ES modules are the registry's: it links them, evaluates them,
+// and keeps their bindings live (worker facets/esm-stage.ts stages them).
+// Its table, by id (a meta instance's query): [kind, key or builtin, a
+// module's targets' ids, 1 for Bun's scope]; and what each refused specifier
+// fails with, by the number of the missing module it names.
+const __nimbusEsm = typeof __NIMBUS_ESM === "undefined" || __NIMBUS_ESM === null ? { table: [], missing: [] } : __NIMBUS_ESM;
+let __nimbusEsmIds = null;
+// Node's format for the file at \`filename\` where its extension or its
+// package's "type" says it ("module" or "commonjs"), else undefined: its
+// syntax decides (detection).
+function __nimbusFileFormat(filename) {
+  try {
+    const url = __nimbusEsmUrl(filename);
+    const format = __esmResolver.resolveSync(url, url).format;
+    return format === "module" || format === "commonjs" ? format : undefined;
+  } catch {
+    return undefined;
+  }
+}
+// The map module of row \`id\` (worker facets/esm-stage.ts esmRowName): a
+// staged module's cell's module, else its facade by id.
+function __nimbusEsmName(id) {
+  const row = __nimbusEsm.table[id];
+  return row[0] === "module" ? __nimbusCodeCells.get(row[1])[1] : ${JSON.stringify(ESM_FACADE_DIR)} + id + ".js";
+}
+// The row of the module of \`kind\` at \`key\` (a builtin's name), or -1.
+function __nimbusEsmId(kind, key) {
+  if (__nimbusEsm.table.length === 0) return -1;
+  if (__nimbusEsmIds === null) {
+    __nimbusEsmIds = new Map();
+    __nimbusEsm.table.forEach((row, id) => { __nimbusEsmIds.set(row[0] + ":" + row[1], id); });
+  }
+  return __nimbusEsmIds.get(kind + ":" + key) ?? -1;
+}
+// What became of each module: its meta instance evaluated (linked into an
+// evaluation, a "batch"), its body begun, its body done (its namespace
+// registered), its body stopped by Nimbus before it began (its record's
+// error is Nimbus's own, never the program's), evaluated by the interpreter
+// instead (adopted), or its body threw (its record keeps what it threw).
+const __ESM_LINKED = 1, __ESM_BEGAN = 2, __ESM_DONE = 3, __ESM_STOPPED = 4, __ESM_ADOPTED = 5, __ESM_FAILED = 6;
+const __nimbusEsmRecords = [];
+function __nimbusEsmRecord(id) {
+  return __nimbusEsmRecords[id] ??= { id, state: 0, batch: null, namespace: null, required: undefined, error: undefined, module: undefined, requirer: undefined };
+}
+// What a body Nimbus stops throws, and a batch Nimbus cancels rejects with:
+// made the first time one is. An Error made as the shims start cost every
+// launch 10 to 19 ms, a program that never meets an ES module's included
+// (its stack's capture; ThinGerbil's paired measurement).
+let __nimbusEsmStopped = null;
+function __nimbusEsmStop() {
+  return __nimbusEsmStopped ??= new Error("Nimbus: this module was not evaluated by the registry");
+}
+// Whether \`error\` is that stop, never making it.
+function __nimbusIsEsmStop(error) {
+  return __nimbusEsmStopped !== null && error === __nimbusEsmStopped;
+}
+// How often the interpreter evaluated a staged module instead (adoption): the exit's diagnostics.
+let __nimbusEsmAdoptions = 0;
+// The ES modules the interpreter evaluated for an import (a query's or a
+// fragment's instance, an adopted module, a file outside the map), by
+// evaluation key: the ES loader's, never require.cache's until required.
+const __nimbusEsmInstances = new Map();
+// The batch the meta instances evaluating now join: one evaluation's, which
+// runs every meta instance it links in one synchronous turn, and ends with it.
+let __nimbusEsmOpenBatch = null;
+// How many evaluations have opened: an import() knows which began after it.
+let __nimbusEsmBatches = 0;
+// What each import() in flight resolves once its graph has loaded (__nimbusEsmImport).
+const __nimbusEsmLoading = new Set();
+const __nimbusEsmResolved = Promise.resolve();
+const __nimbusEsmThen = Promise.prototype.then;
+// A builtin facade's reads again of its builtin's names (module.syncBuiltinESMExports).
+const __nimbusEsmResyncs = [];
+// A file: URL of a VFS path, as Node's loader names a module.
+function __nimbusEsmUrl(path) {
+  const url = new URL("file://");
+  url.pathname = path;
+  return url.href;
+}
+// What a module's meta instance hands it (native-esm.ts metaModuleSource):
+// import.meta, its import(), the check its body opens with, and its
+// registration; a facade, what it loads; a builtin's, its resync hook.
+function __nimbusEsmEnter(metaUrl) {
+  const id = Number(String(metaUrl).slice(String(metaUrl).lastIndexOf("?") + 1));
+  const row = __nimbusEsm.table[id];
+  const record = __nimbusEsmRecord(id);
+  if (__nimbusEsmOpenBatch === null) {
+    // An evaluation begins: the graphs it loads are loaded.
+    const loading = [...__nimbusEsmLoading];
+    __nimbusEsmLoading.clear();
+    for (const loaded of loading) loaded();
+    __nimbusEsmOpenBatch = { running: new Set(), stop: null, thrower: null, seq: ++__nimbusEsmBatches };
+    __nimbusReflectApply(__nimbusEsmThen, __nimbusEsmResolved, [() => { __nimbusEsmOpenBatch = null; }]);
+  }
+  record.batch = __nimbusEsmOpenBatch;
+  record.state = __ESM_LINKED;
+  const c = () => __nimbusEsmCheck(record);
+  const r = (namespace) => {
+    record.state = __ESM_DONE;
+    record.namespace = namespace ?? null;
+    record.batch.running.delete(record);
+  };
+  if (row[0] === "module") {
+    const filename = "/" + row[1];
+    const url = __nimbusEsmUrl(filename);
+    // Compiled now, as Node's loader compiles it: its source map, where source maps are on.
+    __nimbusCompiling(url, () => __nimbusEsmSourceText(id));
+    const scope = { m: __nimbusFileImportMeta(filename, url, row[1] === __nimbusEsmEntryKey), i: (specifier, options) => globalThis.__nimbusDynamicImport(url, specifier, options), c, r };
+    // Bun's scope binds require, __filename and __dirname too (native-esm.ts bunScopeNames).
+    if (((row[3] ?? 0) & ${ESM_BUN_SCOPE}) !== 0) Object.assign(scope, { q: __NodeModule.createRequire(filename), f: filename, d: __pathMod.dirname(filename) });
+    return scope;
+  }
+  if (row[0] === "commonjs") return { c, r, l: () => __loadModule(row[1], row[1], true) };
+  // An ES module's import of a JSON file: Node's JSON translator, whose value
+  // is require()'s for the same file, one object in require.cache whichever
+  // loads it first.
+  if (row[0] === "json") return { c, r, l: () => __loadModule(row[1], row[1], true) };
+  return { c, r, l: () => builtins[row[1]], s: (resync) => { __nimbusEsmResyncs.push(resync); } };
+}
+// A body begins: unless an earlier body of its batch threw (Node's
+// evaluation stops at the first error) or Nimbus cancelled the batch. A body
+// that began and has not completed threw, or waits at a top-level await.
+function __nimbusEsmCheck(record) {
+  const batch = record.batch;
+  if (batch.stop === null) {
+    for (const began of batch.running) {
+      if (__nimbusEsmSuspends(began)) continue;
+      batch.stop = __nimbusEsmStop();
+      batch.thrower = began;
+      began.state = __ESM_FAILED;
+      break;
+    }
+  }
+  if (batch.stop !== null) {
+    record.state = __ESM_STOPPED;
+    throw batch.stop;
+  }
+  record.state = __ESM_BEGAN;
+  batch.running.add(record);
+}
+// Whether a module's body awaits at its top level, as staging read it.
+function __nimbusEsmSuspends(record) {
+  const row = __nimbusEsm.table[record.id];
+  return row[0] === "module" && ((row[3] ?? 0) & ${ESM_TOP_LEVEL_AWAIT}) !== 0;
+}
+// Whether the graph of an ES module the interpreter evaluates for a require()
+// awaits at its top level anywhere: a staged module's by its rows, another
+// by the interpreter's compile of it.
+function __nimbusRequiredGraphAwaits(key, cell, text, seen) {
+  if (seen.has(key)) return false;
+  seen.add(key);
+  if (__nimbusModuleAwaits(cell)) return true;
+  const parentUrl = __nimbusEsmUrl("/" + key);
+  for (const request of __nimbusModuleRequests(key, text).requests) {
+    if (request.kind !== "static") continue;
+    let resolution;
+    try { resolution = __esmResolver.resolveSync(request.specifier, parentUrl); } catch { continue; }
+    if (!resolution.path) continue;
+    const target = resolution.path.replace(/^\\/+/, "");
+    const id = __nimbusEsmId("module", target);
+    if (id !== -1) {
+      if (__nimbusEsmGraphAwaits(id)) return true;
+      continue;
+    }
+    if (resolution.format !== "module" && resolution.format !== "detect") continue;
+    const targetText = __readFileOr(target, null);
+    if (targetText === null) continue;
+    const targetCell = __nimbusRuntimeModule(target, targetText, resolution.format === "module" ? "module" : undefined);
+    if (resolution.format === "detect" && !__nimbusDetectedModule(targetCell)) continue;
+    if (__nimbusRequiredGraphAwaits(target, targetCell, targetText, seen)) return true;
+  }
+  return false;
+}
+// Whether a module of row \`id\`'s graph awaits at its top level: Node's
+// require() refuses such a graph, evaluated or not. The table does not
+// change, so neither does the answer: kept per row.
+const __nimbusEsmAwaits = [];
+function __nimbusEsmGraphAwaits(id) {
+  return __nimbusEsmAwaits[id] ??= __nimbusEsmGraphWalksAwait(id);
+}
+function __nimbusEsmGraphWalksAwait(id) {
+  const seen = new Set();
+  const stack = [id];
+  while (stack.length > 0) {
+    const at = stack.pop();
+    if (at < 0 || seen.has(at)) continue;
+    seen.add(at);
+    const row = __nimbusEsm.table[at];
+    if (row[0] !== "module") continue;
+    if (((row[3] ?? 0) & ${ESM_TOP_LEVEL_AWAIT}) !== 0) return true;
+    for (const target of row[2]) stack.push(target);
+  }
+  return false;
+}
+// A staged module's text as it was before it was staged: what the
+// interpreter evaluates when it adopts the module.
+function __nimbusEsmSourceText(id) {
+  const module = __nimbusModuleAtPath(__nimbusEsm.table[id][1]);
+  const text = __nimbusModuleSourceText(module);
+  if (text === null) throw new Error("Nimbus: cannot read the staged module " + __nimbusEsmName(id));
+  return module.hashbang ? "#!" + text.slice(2) : text;
+}
+// Whether the registry cannot evaluate the module with Node's semantics:
+// something its graph links to that the registry has not evaluated was
+// evaluated by the interpreter instead, which the registry would evaluate
+// again. (A module Nimbus stopped fails the registry's evaluation with
+// Nimbus's own error, which hands the module to the interpreter then.)
+function __nimbusEsmTainted(id) {
+  const seen = new Set();
+  const stack = [id];
+  while (stack.length > 0) {
+    const at = stack.pop();
+    if (at < 0 || seen.has(at)) continue;
+    seen.add(at);
+    const record = __nimbusEsmRecords[at];
+    if (record !== undefined) {
+      if (record.state === __ESM_DONE) continue;
+      // Evaluated by the interpreter, or failed there: what it threw is the
+      // interpreter's to give again (Node's errored module), not the registry's to evaluate.
+      if (record.state === __ESM_ADOPTED || (record.state === __ESM_FAILED && record.error !== undefined)) return true;
+    }
+    const row = __nimbusEsm.table[at];
+    if (row[0] === "module") for (const target of row[2]) stack.push(target);
+  }
+  return false;
+}
+// require() of a staged ES module, or an interpreted module's static import
+// of one: its namespace once the registry evaluated it (Node's
+// require(esm) shape for a require), null where the interpreter is to
+// evaluate it (its record given up), else Node's refusal.
+// Node's refusal of a require() whose graph has top-level await.
+function __nimbusRequireAsync(parent, filename) {
+  return nodeError(Error, "ERR_REQUIRE_ASYNC_MODULE", "require() cannot be used on an ESM graph with top-level await. Use import() instead. To see where the top-level await comes from, use --experimental-print-required-tla.\\n  From " + (parent?.filename ?? "") + " \\n  Requiring " + filename + " ");
+}
+function __nimbusEsmRequire(id, required, parent = undefined) {
+  const record = __nimbusEsmRecord(id);
+  if (record.state === __ESM_DONE) {
+    if (!required) return record.namespace;
+    const filename = "/" + __nimbusEsm.table[id][1];
+    if (__nimbusEsmGraphAwaits(id)) throw __nimbusRequireAsync(parent, filename);
+    // Node's require(esm) leaves a Module in require.cache, and takes it again after a delete.
+    if (record.module === undefined) {
+      record.module = new __NodeModule(filename, null);
+      record.module.filename = filename;
+      record.module.paths = __NodeModule._nodeModulePaths(__pathMod.dirname(filename));
+      record.module.exports = __nimbusEsmRequired(record);
+      record.module.loaded = true;
+    }
+    __NodeModule._cache[filename] ??= record.module;
+    return record.module.exports;
+  }
+  // Evaluated by the interpreter already: its result, its Module in require.cache again.
+  if (record.state === __ESM_ADOPTED && record.module !== undefined && record.namespace !== null) {
+    if (required && __nimbusEsmGraphAwaits(id)) throw __nimbusRequireAsync(parent, "/" + __nimbusEsm.table[id][1]);
+    if (required) __NodeModule._cache[record.module.filename] ??= record.module;
+    return required ? __nimbusEsmRequired(record) : record.module.exports;
+  }
+  // It threw: what it threw, once its evaluation's rejection said.
+  if (record.state === __ESM_FAILED && record.error !== undefined) throw record.error.value;
+  const filename = "/" + __nimbusEsm.table[id][1];
+  // Evaluating, for an import: Node's ESM loader's refusal, naming the requirer.
+  if (record.state === __ESM_BEGAN || (record.state === __ESM_ADOPTED && record.namespace === null && record.requirer === undefined)) {
+    if (__nimbusEsmSuspends(record)) throw __nimbusRequireAsync(parent, filename);
+    throw nodeError(Error, "ERR_REQUIRE_CYCLE_MODULE", "Cannot require() ES Module " + filename + " in a cycle." + (parent?.filename ? " (from " + parent.filename + ")" : "") + " A cycle involving require(esm) is not allowed to maintain invariants mandated by the ECMAScript specification. Try making at least part of the dependency in the graph lazily loaded.");
+  }
+  // Evaluating, for a require(): Node's CommonJS loader's, naming the require that began it.
+  if (record.state === __ESM_ADOPTED && record.namespace === null) {
+    throw nodeError(Error, "ERR_REQUIRE_CYCLE_MODULE", "Cannot require() ES Module " + filename + " in a cycle." + (record.requirer ? " (from " + record.requirer + ")" : ""));
+  }
+  // A require() refuses a graph with top-level await before any of it runs,
+  // as Node's does: its modules evaluated or not (an import() may have
+  // completed one already).
+  if (required && record.state !== __ESM_ADOPTED && __nimbusEsmGraphAwaits(id)) throw __nimbusRequireAsync(parent, filename);
+  // Linked into an evaluation that has not reached it: that evaluation is
+  // cancelled (each body yet to begin stops), and the module is the interpreter's.
+  if (record.state === __ESM_LINKED && record.batch.stop === null) record.batch.stop = __nimbusEsmStop();
+  if (record.state !== __ESM_ADOPTED) {
+    record.state = __ESM_ADOPTED;
+    // Who began it, for a cycle's refusal: a require()'s module, or none for an import.
+    record.requirer = required ? parent?.filename ?? "" : undefined;
+    __nimbusEsmAdoptions++;
+    // NIMBUS_DIAG_ESM=1: each adoption named on stderr, to count them in a workload.
+    if (__processMod.env.NIMBUS_DIAG_ESM === "1") {
+      try { __processMod.stderr.write("nimbus-esm: adopted /" + __nimbusEsm.table[id][1] + (required ? " (require)" : " (import)") + "\\n"); } catch {}
+    }
+  }
+  return null;
+}
+// Node's require(esm) result of a record's namespace (core runtime/native-esm-runtime.ts requiredEsModule).
+const __nimbusEsmRequired = ${ESM_REQUIRED_SOURCE}.requiredEsModule;
+// The package.json files Node's loader has warned are typeless (MODULE_TYPELESS_PACKAGE_JSON).
+const __nimbusTypelessWarned = new Set();
+// Node's warning of an imported .js that is an ES module by its syntax alone
+// under \`pjsonPath\`, a package.json with no "type" (get_format.js
+// warnTypelessPackageJsonFile): once per package.json, never under node_modules.
+function __nimbusWarnTypeless(path, pjsonPath) {
+  if (__nimbusTypelessWarned.has(pjsonPath) || path.includes("/node_modules/")) return;
+  __nimbusTypelessWarned.add(pjsonPath);
+  __processMod.emitWarning("Module type of " + __nimbusEsmUrl(path) + " is not specified and it doesn't parse as CommonJS.\\n"
+    + "Reparsing as ES module because module syntax was detected. This incurs a performance overhead.\\n"
+    + "To eliminate this warning, add \\"type\\": \\"module\\" to " + pjsonPath + ".", { code: "MODULE_TYPELESS_PACKAGE_JSON" });
+}
+// Node's warning as it loads a \`.js\` that is a module by its syntax alone
+// under a package.json with no "type", once per package.json, naming the
+// first such module it loads: \`id\`'s graph, in the order a load reaches
+// it (each module, then the modules it imports, level by level).
+function __nimbusEsmWarnTypeless(id) {
+  const seen = new Set([id]);
+  const queue = [id];
+  for (let at = 0; at < queue.length; at++) {
+    const row = __nimbusEsm.table[queue[at]];
+    if (row[0] !== "module") continue;
+    if (((row[3] ?? 0) & ${ESM_TYPELESS}) !== 0) __nimbusWarnTypeless("/" + row[1], row[4]);
+    for (const target of row[2]) {
+      if (target >= 0 && !seen.has(target)) { seen.add(target); queue.push(target); }
+    }
+  }
+}
+// The namespace of the staged module (or facade) \`id\`, evaluated by the
+// registry where it can be; the one place Nimbus calls the registry's import().
+async function __nimbusEsmImport(id) {
+  const record = __nimbusEsmRecord(id);
+  if (record.state === __ESM_DONE && record.namespace !== null) return record.namespace;
+  const row = __nimbusEsm.table[id];
+  if (row[0] === "module" && record.state === 0) __nimbusEsmWarnTypeless(id);
+  if (row[0] === "module" && __nimbusEsmTainted(id)) return __nimbusEsmInterpret(id);
+  let batch = null;
+  let since = __nimbusEsmBatches;
+  try {
+    // The program's own work while its graph loads, until its evaluation
+    // begins (its first meta instance) or it settles: a host whose loading
+    // reads keeps the process, as Node's loader keeps it while it reads;
+    // a top-level await that never settles does not. Armed before the
+    // import(), which may link and begin evaluating within the call.
+    let resolve;
+    __nimbusTrackOp(new Promise((settle) => { resolve = settle; }));
+    // Settled once, by whichever comes first; never left waiting in the
+    // list (a cached module's import() enters no meta instance to empty it).
+    const loaded = () => {
+      __nimbusEsmLoading.delete(loaded);
+      resolve();
+    };
+    __nimbusEsmLoading.add(loaded);
+    since = __nimbusEsmBatches;
+    const evaluation = import(__NIMBUS_BUNDLE_URL + __nimbusEsmName(id));
+    // The evaluation it began, when it began within the call (workerd's).
+    batch = __nimbusEsmOpenBatch;
+    __nimbusReflectApply(__nimbusEsmThen, evaluation, [loaded, loaded]);
+    return await evaluation;
+  } catch (error) {
+    // Its evaluation was cancelled or stopped short of a module (a require()
+    // took a module of it; an earlier evaluation stopped at a sibling's
+    // throw), or it links to a module the launch did not stage: the
+    // interpreter's.
+    if (row[0] === "module" && (__nimbusIsEsmStop(error) || __nimbusEsmMissingOf(error)?.code === "ERR_NIMBUS_NOT_STAGED")) {
+      return __nimbusEsmInterpret(id);
+    }
+    // The body that threw: one its evaluation began and did not complete
+    // (marked already where a later body's check stopped). It keeps what it
+    // threw, for a require() of it. A body suspended in its top-level await
+    // is the thrower only where no other is.
+    // Only a body of this import's own evaluation: one that began after
+    // the call (an import that failed to link began none), never an earlier
+    // evaluation's, suspended in its top-level await.
+    const own = (record) => record !== undefined && record.batch !== null
+      && (batch !== null ? record.batch === batch : record.batch.seq > since);
+    let thrower = null;
+    for (const record of __nimbusEsmRecords) {
+      if (!own(record)) continue;
+      if (record.state === __ESM_FAILED && record.error === undefined) thrower = record;
+      else if (record.state === __ESM_BEGAN && thrower === null && !__nimbusEsmSuspends(record)) thrower = record;
+    }
+    if (thrower === null) {
+      for (const record of __nimbusEsmRecords) {
+        if (own(record) && record.state === __ESM_BEGAN) thrower = record;
+      }
+    }
+    if (thrower !== null) {
+      thrower.state = __ESM_FAILED;
+      thrower.batch?.running.delete(thrower);
+      thrower.error = { value: error };
+    }
+    // Node's ModuleJob explains what escapes its evaluation by the job's own
+    // module, the one imported: its URL and its top-level await.
+    if (row[0] === "module") __nimbusExplainCommonJSGlobalLike(error, __nimbusEsmUrl("/" + row[1]), __nimbusEsmSuspends(__nimbusEsmRecord(id)));
+    throw __nimbusEsmLinkError(error, id);
+  }
+}
+// The interpreter's evaluation of staged module \`id\` (an adoption), as import() gives it.
+async function __nimbusEsmInterpret(id) {
+  const key = __nimbusEsm.table[id][1];
+  const url = __nimbusEsmUrl("/" + key);
+  const known = __esmNamespaces.get(url);
+  if (known !== undefined) return known;
+  const pending = (async () => {
+    let exports;
+    try {
+      exports = __loadModule(key, key, false, undefined, true);
+    } catch (e) {
+      __nimbusExplainCommonJSGlobalLike(e, url, false);
+      throw e;
+    }
+    const evaluation = __moduleEvaluations.get(key);
+    if (evaluation !== undefined) {
+      try { await evaluation; } catch (e) { __nimbusExplainCommonJSGlobalLike(e, url, true); throw e; }
+    }
+    // One namespace per module: a require()'s adoption's, or the registry's
+    // own where a static import found it evaluated (Node's D1).
+    const record = __nimbusEsmRecords[id];
+    if (record !== undefined && record.namespace !== null) return record.namespace;
+    if (exports !== null && typeof exports === "object" && Object.getPrototypeOf(exports) === null && exports[Symbol.toStringTag] === "Module" && !("__esModule" in exports)) return exports;
+    const names = exports && typeof exports === "object" ? Object.keys(exports).filter((name) => name !== "__esModule") : [];
+    return __esmNamespaceOf(names, (name) => exports[name]);
+  })();
+  __esmNamespaces.set(url, pending);
+  pending.then((namespace) => { __esmNamespaces.set(url, namespace); }, () => { __esmNamespaces.delete(url); });
+  return pending;
+}
+// A refusal staging recorded (EsmStage.missing), as the error Node's loader throws.
+function __nimbusEsmRefusal(missing) {
+  const Type = missing.name === "TypeError" ? TypeError : missing.name === "SyntaxError" ? SyntaxError : missing.name === "RangeError" ? RangeError : Error;
+  const refused = missing.code ? nodeError(Type, missing.code, missing.message) : new Type(missing.message);
+  if (missing.url !== undefined) refused.url = missing.url;
+  return refused;
+}
+// The refusal a link error names (a specifier staging refused), or null.
+function __nimbusEsmMissingOf(error) {
+  const message = error && typeof error.message === "string" ? error.message : "";
+  const at = /nimbus\\/missing\\/(\\d+)\\.js/.exec(message);
+  return at === null ? null : __nimbusEsm.missing[Number(at[1])] ?? null;
+}
+// What a failed evaluation of \`id\`'s graph rejects with, as Node's loader
+// words it: a refused specifier's own error; a missing export named as the
+// importing module wrote it, with its arrow; a module that does not
+// compile, with its arrow; else the program's error as it threw it.
+function __nimbusEsmLinkError(error, id) {
+  const missing = __nimbusEsmMissingOf(error);
+  if (missing !== null) return __nimbusEsmRefusal(missing);
+  if (!(error instanceof SyntaxError) || __nimbusDecorated.has(error)) return error;
+  try {
+    const exported = /^The requested module '([^']*)' does not provide an export named '([^']*)'$/.exec(error.message);
+    if (exported !== null) __nimbusEsmExportError(error, id, exported[1], exported[2]);
+    else __nimbusEsmCompileError(error, id);
+  } catch {}
+  return error;
+}
+// The unevaluated modules of \`id\`'s graph, in link order.
+function __nimbusEsmPending(id) {
+  const seen = new Set();
+  const order = [];
+  const visit = (at) => {
+    if (at < 0 || seen.has(at)) return;
+    seen.add(at);
+    const row = __nimbusEsm.table[at];
+    const state = __nimbusEsmRecords[at]?.state;
+    // Evaluated, or being evaluated by the interpreter: not this graph's to run.
+    if (row[0] !== "module" || state === __ESM_DONE || state === __ESM_ADOPTED) return;
+    order.push(at);
+    for (const target of row[2]) visit(target);
+  };
+  visit(id);
+  return order;
+}
+// A module of the graph that does not compile: the error's arrow is its.
+function __nimbusEsmCompileError(error, id) {
+  const { fatalLocation } = __nimbusRegistryRequire("./${RUNTIME_PARSER_MODULE}");
+  for (const at of __nimbusEsmPending(id)) {
+    const name = __nimbusEsmName(at);
+    const text = __nimbusReadBundleFile(__NIMBUS_BUNDLE_FILES + name, "utf8");
+    if (fatalLocation(text, "module", -1) === null) continue;
+    __nimbusDecorateSyntaxError(error, name);
+    return;
+  }
+}
+// A missing export, as Node words it for the specifier the importing module
+// wrote (a CommonJS module's in Node's words for one), its arrow under the
+// imported name: the declaration that imports \`name\` from \`requested\`,
+// as the parser reads the staged module, its places the source's.
+function __nimbusEsmExportError(error, id, requested, name) {
+  const { importedName } = __nimbusRegistryRequire("./${RUNTIME_PARSER_MODULE}");
+  for (const at of __nimbusEsmPending(id)) {
+    const module = __nimbusModuleAtPath(__nimbusEsm.table[at][1]);
+    const text = __nimbusReadBundleFile(__NIMBUS_BUNDLE_FILES + module.name, "utf8");
+    const place = importedName(text, requested, name);
+    if (place === null) continue;
+    const [nameStart, nameEnd, sourceStart, sourceEnd] = place;
+    // The specifier as written: staging's edit at its place, else as it is.
+    let specifier = requested;
+    const lines = text.slice(0, sourceStart).split(/\\r\\n|[\\n\\r\\u2028\\u2029]/);
+    const line = lines.length;
+    const column = lines[line - 1].length - (line === 1 ? module.head : 0);
+    let delta = 0;
+    for (const [, editAt, length, written] of __nimbusColumnEdits(module)?.get(line) ?? []) {
+      if (editAt + delta === column && length === sourceEnd - sourceStart) { specifier = written.slice(1, -1); break; }
+      delta += length - written.length;
+    }
+    // The module the importer's specifier names, as the registry resolved it.
+    let requestedUrl = null;
+    try { requestedUrl = new URL(requested, __NIMBUS_BUNDLE_URL + module.name).href; } catch {}
+    const target = __nimbusEsm.table[__nimbusEsm.table[at][2].find((t) => t >= 0 && __NIMBUS_BUNDLE_URL + __nimbusEsmName(t) === requestedUrl) ?? -1];
+    if (target === undefined) continue;
+    error.message = target[0] === "commonjs"
+      ? "Named export '" + name + "' not found. The requested module '" + specifier + "' is a CommonJS module, which may not support all module.exports as named exports.\\nCommonJS modules can always be imported via the default export, for example using:\\n\\nimport pkg from '" + specifier + "';\\nconst { " + name + " } = pkg;\\n"
+      : "The requested module '" + specifier + "' does not provide an export named '" + name + "'";
+    // Node's arrow: the imported name, on the declaration's line.
+    const arrow = __nimbusArrowOf(module, text, nameStart, nameEnd);
+    // Its frames as they were, under the message as Node words it.
+    const frames = typeof error.stack === "string" ? error.stack.split("\\n").filter((frame) => frame.startsWith("    at ")) : [];
+    error.stack = (arrow === null ? "" : arrow) + "SyntaxError: " + error.message + (frames.length > 0 ? "\\n" + frames.join("\\n") : "");
+    __nimbusDecorated.add(error);
+    return;
+  }
+}
+// The program's ES entry, imported: its evaluation is its job, and what
+// escapes it is explained as Node's loader explains it.
+let __nimbusEsmEntryKey = null;
+function __nimbusEsmRunEntry(key) {
+  __nimbusEsmEntryKey = key;
+  const id = __nimbusEsmId("module", key);
+  const url = __nimbusEsmUrl("/" + key);
+  return __nimbusEsmImport(id).then(() => undefined, (e) => {
+    __nimbusExplainCommonJSGlobalLike(e, url, __nimbusEsmSuspends(__nimbusEsmRecord(id)));
+    throw e;
+  });
+}
+if (typeof __nimbusEsmHost !== "undefined" && __nimbusEsmHost !== null) __nimbusEsmHost.enter = __nimbusEsmEnter;
+
+// What import() of a resolution gives: a staged module's (or facade's)
+// namespace from the registry; a builtin's, a data: URL's, a JSON file's and
+// a file the launch did not stage, made here, once per URL.
 function __esmLoad(resolution) {
   const cached = __esmNamespaces.get(resolution.url);
   if (cached) return cached;
   let ns;
   if (resolution.format === "builtin") {
+    const id = __nimbusEsmId("builtin", resolution.builtin);
+    if (id !== -1) return __nimbusEsmImport(id);
     const mod = builtins[resolution.builtin];
     const names = new Set(mod && (typeof mod === "object" || typeof mod === "function") ? Object.keys(mod) : []);
     names.add("default");
@@ -12492,13 +12660,13 @@ function __esmLoad(resolution) {
       const mod = { exports: {} };
       Object.defineProperty(mod, "__nimbusImportMeta", { value: {
         url: resolution.url,
-        resolve: (id) => globalThis.__nimbusImportMetaResolve(id, resolution.url),
+        resolve: (id) => __nimbusImportMetaResolve(id, resolution.url),
       } });
       const requireData = (id) => {
         const resolved = __esmResolver.resolveSync(String(id), resolution.url);
         __esmResolver.assertLoadable(resolved);
         if (resolved.format === "builtin") return builtins[resolved.builtin];
-        if (resolved.path) return __loadModule(resolved.path.replace(/^\\/+/, ""), resolved.url);
+        if (resolved.path) return __loadModule(resolved.path.replace(/^\\/+/, ""), resolved.url, false);
         throw nodeError(Error, "ERR_REQUIRE_ASYNC_MODULE", "Synchronous nested data-module import is unsupported");
       };
       let result;
@@ -12524,28 +12692,129 @@ function __esmLoad(resolution) {
     }
   } else {
     const key = resolution.path.replace(/^\\/+/, "");
-    // A typeless .js is the ES module the launch lowered, by its syntax.
-    const esm = resolution.format === "module"
-      || (resolution.format === "detect" && __nimbusModuleCellIsEsModule(key));
-    // Canonical queryless ESM shares evaluation with require() and static
-    // imports lowered to require(). Queries/fragments are distinct jobs.
-    const variant = esm && (resolution.url.includes("?") || resolution.url.includes("#"));
+    // A query or a fragment is a module instance of its own: the interpreter's.
+    const variant = resolution.url.includes("?") || resolution.url.includes("#");
+    if (!variant) {
+      const id = __nimbusEsmId("module", key);
+      if (id !== -1) return __nimbusEsmImport(id);
+      const facade = resolution.format === "json" ? __nimbusEsmId("json", key) : __nimbusEsmId("commonjs", key);
+      if (facade !== -1) return __nimbusEsmImport(facade);
+    }
+    const esm = resolution.format === "module" || resolution.format === "detect";
     const evaluationKey = variant ? resolution.url : key;
+    // An interpreted ES module links through its require(): the staged
+    // modules it imports are the registry's to evaluate, first.
+    if (esm) return __nimbusEsmLinkStaged(key).then(() => __esmLoadInterpreted(resolution, key, evaluationKey, esm));
+    return __esmLoadInterpreted(resolution, key, evaluationKey, esm);
+  }
+  __esmNamespaces.set(resolution.url, ns);
+  return ns;
+}
+// Evaluate, in import order, the staged ES modules the interpreted module at
+// \`key\` statically imports, and those its unstaged imports do, so the
+// interpreter finds them evaluated rather than evaluating them itself: once
+// the late graph's whole static closure links, staged modules, query and
+// fragment instances and all. A graph that does not link runs none of its
+// bodies, as Node's does: its import() rejects with the first refusal.
+async function __nimbusEsmLinkStaged(key) {
+  const order = [];
+  __nimbusEsmLinkPlan(key, __nimbusEsmUrl("/" + key), new Set(), order, new Set());
+  // What one throws ends the evaluation of what imports it, as Node's
+  // does: no later import of it evaluates, and the import() rejects.
+  for (const id of order) {
+    if (__nimbusEsmRecord(id).state !== __ESM_DONE && !__nimbusEsmTainted(id)) await __nimbusEsmImport(id);
+  }
+}
+// The staged modules a late graph imports, in import order (into
+// \`order\`); throws the refusal of a static import anywhere in its closure
+// that does not resolve or load. Each module once by its URL (a query's or
+// a fragment's instance is its own); \`checked\`, the staged rows whose
+// graphs link.
+function __nimbusEsmLinkPlan(key, url, seen, order, checked) {
+  if (seen.has(url)) return;
+  seen.add(url);
+  const staged = __nimbusEsmId("module", key);
+  const text = staged === -1 ? __readFileOr(key, null) : __nimbusEsmSourceText(staged);
+  if (text === null) return;
+  // Read with the parse goal the loader gives it: an adopted staged module's, a module; another's, its format.
+  const format = staged !== -1 ? "module" : __nimbusFileFormat("/" + key);
+  const analysis = __nimbusModuleRequests(key, text, staged !== -1, format ?? "detect");
+  // A module of the graph its parser could not read (a syntax error, or
+  // TypeScript or JSX) is loaded as the interpreter loads it, for the error
+  // that load gives, before any body runs; one it does load (code staged for
+  // it) is the launch's own to link.
+  if (analysis.unread !== undefined && staged === -1) __nimbusRuntimeModule(key, text, format);
+  for (const request of analysis.requests) {
+    if (request.kind !== "static") continue;
+    let resolution;
+    try {
+      resolution = __esmResolver.resolveSync(request.specifier, url);
+      __nimbusAssertLoadable(resolution, undefined);
+    } catch (error) {
+      // As the interpreter's static import refuses it: before the importer runs, with no arrow of its.
+      __nimbusDecorated.add(error);
+      throw error;
+    }
+    if (!resolution.path) continue;
+    const target = resolution.path.replace(/^\\/+/, "");
+    const { search, hash } = new URL(resolution.url);
+    const id = __nimbusEsmId("module", target);
+    // An unstaged module, or a query's or fragment's instance (the
+    // interpreter's own): its closure is the late graph's too.
+    if (id === -1 || search !== "" || hash !== "") {
+      // What the interpreter loads as an ES module (a CommonJS module compiles when it evaluates, as Node's does).
+      if (resolution.format === "module" || resolution.format === "detect") {
+        __nimbusEsmLinkPlan(target, resolution.url, seen, order, checked);
+      }
+      continue;
+    }
+    __nimbusEsmCheckLinks(id, seen, checked);
+    if (!order.includes(id)) order.push(id);
+  }
+}
+// Throws the refusal of a static import staged module \`id\`'s graph (what
+// of it is unevaluated) makes that staging refused for good. One staging
+// handed on (ERR_NIMBUS_NOT_STAGED: a query's or a fragment's instance,
+// which the interpreter evaluates where it is imported) is checked as the
+// late graph's own, and runs no body here.
+function __nimbusEsmCheckLinks(id, seen, checked) {
+  const visit = (at) => {
+    if (checked.has(at)) return;
+    checked.add(at);
+    const row = __nimbusEsm.table[at];
+    const state = __nimbusEsmRecords[at]?.state;
+    if (row[0] !== "module" || state === __ESM_DONE || state === __ESM_ADOPTED) return;
+    for (const target of row[2]) {
+      if (target >= 0) { visit(target); continue; }
+      const missing = __nimbusEsm.missing[-2 - target];
+      if (missing === undefined) continue;
+      if (missing.code === "ERR_NIMBUS_NOT_STAGED" && typeof missing.url === "string") {
+        const handed = new URL(missing.url);
+        __nimbusEsmLinkPlan(decodeURIComponent(handed.pathname).replace(/^\\/+/, ""), missing.url, seen, [], checked);
+        continue;
+      }
+      throw __nimbusEsmRefusal(missing);
+    }
+  };
+  visit(id);
+}
+function __esmLoadInterpreted(resolution, key, evaluationKey, esm) {
+  let ns;
+  {
     // The import is the module's job: what escapes its evaluation is
     // explained as Node's loader explains it.
     let exports;
     try {
-      exports = __loadModule(key, evaluationKey, false);
+      exports = __loadModule(key, evaluationKey, !esm, undefined, esm);
     } catch (e) {
       __nimbusExplainCommonJSGlobalLike(e, resolution.url, false);
       throw e;
     }
     const namespace = () => {
       if (resolution.format === "json") return __esmNamespaceOf(["default"], () => exports);
-      if (esm) {
-        // The ESM→CJS transform's exports: the module's own names, live.
-        const names = exports && typeof exports === "object" ? Object.keys(exports).filter((name) => name !== "__esModule") : [];
-        return __esmNamespaceOf(names, (name) => exports[name]);
+      // An interpreted ES module's exports: its own names, live.
+      if (exports && typeof exports === "object" && exports.__esModule === true) {
+        return __esmNamespaceOf(Object.keys(exports).filter((name) => name !== "__esModule"), (name) => exports[name]);
       }
       // CommonJS: module.exports is the default, its names the named exports.
       const mod = exports;
@@ -12688,20 +12957,18 @@ async function __nimbusReadAhead(paths, quota) {
 // and require() of a string), as the runtime-code interpreter's parser reads
 // it (core/interpreter moduleRequests): a request in a comment is none, one
 // in a template or with escapes is read as the language reads it.
-function __nimbusModuleRequests(path, text) {
-  if (typeof __nimbusRegistryRequire !== "function") return [];
-  try { return __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_MODULE}").moduleRequests(path, text); }
-  catch { return []; }
+function __nimbusModuleRequests(path, text, javaScript = false, goal = undefined) {
+  if (typeof __nimbusRegistryRequire !== "function") return { requests: [] };
+  try { return __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_MODULE}").moduleRequests(path, text, javaScript, goal); }
+  catch { return { requests: [] }; }
 }
 
 // Where a request from the module at importer leads, by the loader's own
-// rule, the one place it is decided: import() resolves under import's
-// conditions (__nimbusDynamicImport); a static import or export-from is
-// evaluated through the module's scoped require (core/interpreter
-// modules.ts, and esbuild's lowering of a cell), so it resolves as require
-// does, under require's conditions (__requireFrom), as require() itself.
+// rule, the one place it is decided: import() and a static import or
+// export-from resolve as Node's ESM loader does (__nimbusDynamicImport,
+// __requireFrom for an interpreted ES module); require() as require does.
 function __nimbusRequestTarget(kind, specifier, importer) {
-  if (kind === "dynamic") {
+  if (kind === "dynamic" || kind === "static") {
     const resolution = __esmResolver.resolveSync(specifier, builtins.url.pathToFileURL("/" + importer).href);
     return resolution && resolution.path ? resolution.path : null;
   }
@@ -12749,7 +13016,7 @@ function __nimbusImportStager(quota) {
           // uses; the file/byte quota applies before any fill is issued.
           for (const image of __nimbusRelativeWasmPaths(text, round[i])) images.add(image);
           // An import() in the closure is its own: it prefetches when it runs.
-          for (const request of __nimbusModuleRequests(round[i], text)) if (request.kind !== "dynamic") wanted.push([request, round[i]]);
+          for (const request of __nimbusModuleRequests(round[i], text).requests) if (request.kind !== "dynamic") wanted.push([request, round[i]]);
         }
         if (images.size > 0) await __nimbusReadAhead(images, quota);
         const found = await __nimbusHydrated(() => wanted.map(([request, k]) => target(request, k)), quota);
@@ -12973,7 +13240,10 @@ function __loadStagedBinding(builds, fromDir) {
 // Whether the ES loader has the module at \`path\`: an ES module require() loaded
 // (require(esm)), whose job it keeps. A CommonJS module require() loaded is no job of its.
 function __nimbusEsmJobCached(path) {
-  return typeof path === "string" && __nimbusEsModules.has("/" + path.replace(/^\\/+/, ""));
+  if (typeof path !== "string") return false;
+  const id = __nimbusEsmId("module", path.replace(/^\\/+/, ""));
+  const state = id === -1 ? 0 : __nimbusEsmRecords[id]?.state ?? 0;
+  return state === __ESM_DONE || state === __ESM_ADOPTED;
 }
 // Module.prototype.require from \`parent\`, its requests resolving from \`fromDir\`.
 function __requireFrom(id, fromDir, parent, required = true) {
@@ -12988,62 +13258,103 @@ function __requireFrom(id, fromDir, parent, required = true) {
   const notCarried = __stagedBindingNotCarried(id, fromDir);
   if (notCarried) throw notCarried;
 
-  const resolved = __resolveFrom(id, fromDir);
-  if (!resolved) throw __nimbusModuleNotFound(id, parent);
-  // An ES module's static import is the ES loader's, which refuses it before the importer runs: no arrow of the importer's.
-  if (!required && __nimbusTypeScriptAsJavaScript && stripsTypeScript(resolved) && !__nimbusEsmJobCached(resolved)) {
+  // An interpreted ES module's static import is the ES loader's: Node's
+  // ESM resolution, which refuses before the importer runs (no arrow of the importer's).
+  if (!required) {
+    const parentUrl = builtins.url.pathToFileURL(parent?.filename ?? "/" + String(fromDir).replace(/^\\/+/, "") + "/[import]").href;
+    let resolution;
     try {
-      __esmResolver.assertLoadable({ format: "unknown", path: "/" + String(resolved).replace(/^\\/+/, "") });
+      resolution = __esmResolver.resolveSync(id, parentUrl);
+      __nimbusAssertLoadable(resolution, undefined);
     } catch (error) {
       __nimbusDecorated.add(error);
       throw error;
     }
+    if (resolution.format === "builtin") return builtins[resolution.builtin];
+    const key = resolution.path.replace(/^\\/+/, "");
+    const esModule = resolution.format === "module" || (resolution.format === "detect" && __nimbusEsmId("module", key) !== -1);
+    // A CommonJS module still loading is one whose require() of an ES
+    // module led here: Node's loader refuses the cycle (require(esm)).
+    const loading = esModule ? undefined : __NodeModule._cache["/" + key];
+    if (loading !== undefined && __nimbusExecutingCommonJs.has(loading)) {
+      throw nodeError(Error, "ERR_REQUIRE_CYCLE_MODULE", "Cannot import CommonJS Module " + id + " in a cycle." + (parent?.filename ? " (from " + parent.filename + ")" : ""));
+    }
+    // A query's or fragment's ES module or JSON is its own instance, by its
+    // URL; a CommonJS module (by its extension, its package type or its
+    // syntax) is one module by its file, whatever the URL (Node's CommonJS
+    // translator keys its cache by filename).
+    const { search, hash } = new URL(resolution.url);
+    const instance = (search !== "" || hash !== "") && (esModule || resolution.format === "json") ? resolution.url : key;
+    const exports = __loadModule(key, instance, false, parent, esModule);
+    // A JSON module's namespace has its value as default alone, whatever it holds.
+    return resolution.format === "json" ? __esmNamespaceOf(["default"], () => exports) : exports;
   }
+  const resolved = __resolveFrom(id, fromDir, parent?.filename);
+  if (!resolved) throw __nimbusModuleNotFound(id, parent);
   return __loadModule(resolved, resolved, required, parent);
 }
 
-// The program's entry evaluated as Node's loader runs it (manager.ts
-// entryModule): a CommonJS entry with require(); an ES entry as a job of its
-// own, its require its static imports, and what escapes its evaluation
-// explained (__nimbusExplainCommonJSGlobalLike).
-function __nimbusEvaluateEntry(wrapper, mod, filename, dirname, esModule) {
+// V8's errors compiling CommonJS that an ES module would not have
+// (lib/internal/modules/helpers.js esmSyntaxErrorMessages), and those only
+// CommonJS throws, which Node retries as a module (throwsOnlyInCommonJSErrorMessages).
+const __NIMBUS_ESM_SYNTAX_ERRORS = ["Cannot use import statement outside a module", "Unexpected token 'export'", "Cannot use 'import.meta' outside a module"];
+const __NIMBUS_COMMONJS_ONLY_ERRORS = [
+  "Identifier 'module' has already been declared", "Identifier 'exports' has already been declared",
+  "Identifier 'require' has already been declared", "Identifier '__filename' has already been declared",
+  "Identifier '__dirname' has already been declared", "await is only valid in async functions and the top level bodies of modules",
+];
+// Node's enrichCJSError, for the main module (CJS loader wrapSafe): a
+// SyntaxError compiling it, whose source has module syntax, is preceded by a
+// warning, emitted at once, as the process is about to end.
+function __nimbusEnrichCommonJsError(e, source, filename) {
+  if (!(e instanceof SyntaxError)) return;
+  let moduleSyntax = __NIMBUS_ESM_SYNTAX_ERRORS.includes(e.message);
+  if (!moduleSyntax && __NIMBUS_COMMONJS_ONLY_ERRORS.includes(e.message)) {
+    const text = source();
+    moduleSyntax = text !== null && __nimbusRegistryRequire("./${RUNTIME_PARSER_MODULE}").fatalLocation(text, "module", -1) === null;
+  }
+  if (!moduleSyntax) return;
+  const warning = new Error("Failed to load the ES module: " + filename + ". Make sure to set \\"type\\": \\"module\\" in the nearest package.json file or use the .mjs extension.");
+  warning.name = "Warning";
+  Error.captureStackTrace(warning, __nimbusEnrichCommonJsError);
+  __processMod.emit("warning", warning);
+}
+// A CommonJS entry evaluated as Node's loader runs it (manager.ts
+// entryModule; an ES entry is the registry's, __nimbusEsmRunEntry).
+function __nimbusEvaluateEntry(load, mod, filename, dirname) {
   __nimbusLoadsTypeScript(filename);
-  __nimbusCompiling(filename, () => __nimbusModuleSourceText(__nimbusEntryModule()));
+  const source = () => __nimbusModuleSourceText(__nimbusEntryModule() ?? __nimbusModuleAtPath(String(filename).replace(/^\\/+/, "")));
+  __nimbusCompiling(filename, source);
   // A file's \`this\` is its exports, as Node's wrapper is called; -e and
   // stdin code is a script, whose \`this\` is the global object.
-  if (!esModule) {
-    const evaluated = filename === "<eval>" || filename === "[stdin]";
-    // A file entry is process.mainModule and require.main (Module._load's
-    // isMain), after the preloads, whose are undefined; -e's and stdin's are too.
-    if (!evaluated) {
-      Object.defineProperty(__processMod, "mainModule", { value: mod, writable: true, enumerable: true, configurable: true });
-      mod.id = ".";
-      __NodeModule._cache[mod.filename] = mod;
-    }
-    const self = evaluated ? globalThis : mod.exports;
-    let threw = true;
-    try {
-      const result = __nimbusReflectApply(wrapper, self, [mod.exports, __nimbusMakeRequire(mod), mod, evaluated ? mod.id : filename, evaluated ? "." : dirname]);
-      threw = false;
-      return result;
-    } finally {
-      // Module._load: a module whose load threw leaves the cache.
-      if (!evaluated && threw) delete __NodeModule._cache[mod.filename];
-      else if (!evaluated) mod.loaded = true;
-    }
-  }
-  const url = builtins.url.pathToFileURL(filename).href;
-  let result;
+  const evaluated = filename === "<eval>" || filename === "[stdin]";
+  let wrapper;
   try {
-    result = wrapper(mod.exports, __nimbusMakeRequire(mod, undefined, false), mod, filename, dirname);
+    wrapper = load();
   } catch (e) {
-    __nimbusExplainCommonJSGlobalLike(e, url, false);
+    if (!evaluated) __nimbusEnrichCommonJsError(e, source, filename);
     throw e;
   }
-  if (result && typeof result.then === "function") {
-    return result.then(undefined, (e) => { __nimbusExplainCommonJSGlobalLike(e, url, true); throw e; });
+  // A file entry is process.mainModule and require.main (Module._load's
+  // isMain), after the preloads, whose are undefined; -e's and stdin's are too.
+  if (!evaluated) {
+    Object.defineProperty(__processMod, "mainModule", { value: mod, writable: true, enumerable: true, configurable: true });
+    mod.id = ".";
+    __NodeModule._cache[mod.filename] = mod;
   }
-  return result;
+  const self = evaluated ? globalThis : mod.exports;
+  let threw = true;
+  __nimbusExecutingCommonJs.add(mod);
+  try {
+    const result = __nimbusReflectApply(wrapper, self, [mod.exports, __nimbusMakeRequire(mod), mod, evaluated ? mod.id : filename, evaluated ? "." : dirname]);
+    threw = false;
+    return result;
+  } finally {
+    __nimbusExecutingCommonJs.delete(mod);
+    // Module._load: a module whose load threw leaves the cache.
+    if (!evaluated && threw) delete __NodeModule._cache[mod.filename];
+    else if (!evaluated) mod.loaded = true;
+  }
 }
 // The program's entry as Node's run_main makes it: a file's Module; -e's
 // and stdin's "[eval]" and "[stdin]" at the working directory, an ES one's

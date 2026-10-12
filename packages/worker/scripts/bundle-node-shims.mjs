@@ -14,8 +14,8 @@
  *     esbuild), defining `__nimbusResidentModule`, whose
  *     createResidentStore each process calls for the resident set the shims
  *     read from.
- * and carries more as modules of its map: the runtime-code interpreter
- * and its host module (scripts/interpreter-bundle.mjs), which a launch
+ * and carries more as modules of its map: the runtime-code interpreter,
+ * its parser and its host module (scripts/interpreter-bundle.mjs), which a launch
  * compiles only when its program first produces code no launch staged, and
  * Node's library (src/runtime/node-lib-module.ts), which a launch compiles
  * only when its program first needs it.
@@ -37,6 +37,7 @@
  *   public/_assets/runtime/resident-store-<buildId>.js
  *   public/_assets/runtime/js-interpreter-<buildId>.js
  *   public/_assets/runtime/js-interpreter-ops-<buildId>.js
+ *   public/_assets/runtime/js-parser-<buildId>.js
  *   public/_assets/runtime/node-lib-<buildId>.js
  *   src/node-shims-artifact.generated.ts, per source:
  *     export const <NAME>_ENTRY: string;     // asset path
@@ -105,6 +106,12 @@ const SOURCES = [
     family: 'js-interpreter-ops',
     source: interpreter.ops,
     from: '@nimbus-sh/core src/interpreter/host-ops.ts HOST_OPS_SOURCE',
+  },
+  {
+    name: 'JS_PARSER',
+    family: 'js-parser',
+    source: interpreter.parserModule,
+    from: '@nimbus-sh/core src/interpreter/parser.ts, bundled by scripts/interpreter-bundle.mjs',
   },
   { name: 'NODE_LIB', family: 'node-lib', source: generateNodeLibModule(), from: 'dist/runtime/node-lib-module.js generateNodeLibModule()' },
   { name: 'NODE_LIB_REST', family: 'node-lib-rest', source: generateNodeLibRestModule(), from: 'dist/runtime/node-lib-module.js generateNodeLibRestModule()' },

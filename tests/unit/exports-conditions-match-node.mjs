@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { DEFAULT_CJS_CONDITIONS, resolveExports, resolvePackageEntry } from '../../packages/core/src/_shared/exports-resolver.ts';
+import { BUILD_BROWSER_PACKAGE_MAP_POLICY, DEFAULT_CJS_CONDITIONS, resolveExports, resolvePackageEntry } from '../../packages/core/src/_shared/exports-resolver.ts';
 import { createEsmResolver } from '../../packages/core/src/_shared/esm-resolver.ts';
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'exports-conditions-')));
@@ -51,6 +51,13 @@ const app = join(root, 'app');
 const specifiers = ['p', 'p/x', 'p/dev', 'p/late', '#cond', '#order', '#nested'];
 const appPkg = JSON.parse(files['app/package.json']);
 const pPkg = JSON.parse(files['node_modules/p/package.json']);
+
+// Intentional divergence: build/browser's historically permissive policy
+// accepts bare targets and falls through null conditions. Node never uses it.
+assert.equal(resolveExports({ require: null, default: 'compat.js' }, '.', ['require'], BUILD_BROWSER_PACKAGE_MAP_POLICY), 'compat.js');
+assert.equal(resolveExports({ browser: '', default: './default.js' }), './default.js', 'build/browser keeps its empty-string condition fallback');
+assert.equal(resolveExports(['', './array.js']), './array.js', 'build/browser keeps its empty-string array fallback');
+assert.equal(resolveExports({ browser: './browser.js', default: './default.js' }), './browser.js');
 
 for (const conditions of [[], ['development']]) {
   const flags = conditions.map((c) => `--conditions=${c}`);

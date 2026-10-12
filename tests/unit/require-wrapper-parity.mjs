@@ -97,7 +97,7 @@ export const d = viaMember('member-dep');`, []],
 ];
 
 for (const [name, code, expected] of cases) {
-  const runtime = [...new Set(moduleRequests('pkg/index.js', code).filter((r) => r.kind === 'require').map((r) => r.specifier))].sort();
+  const runtime = [...new Set(moduleRequests('pkg/index.js', code).requests.filter((r) => r.kind === 'require').map((r) => r.specifier))].sort();
   const walk = [...await requireWrapperCalls(code)].sort();
   assert.deepEqual(runtime, expected, `${name}: the import() prefetch reads ${JSON.stringify(runtime)}`);
   assert.deepEqual(walk, expected, `${name}: the supervisor's walk reads ${JSON.stringify(walk)}`);
