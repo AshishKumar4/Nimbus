@@ -8481,7 +8481,7 @@ export class FacetManager {
                             return relayRpcBody(await target.handleHttpRequest(request, scope), request.method, owner);
                         }
                         catch (error) {
-                            owner.settle();
+                            owner.fail(error);
                             throw error;
                         }
                     },

@@ -575,8 +575,9 @@ export class PortRegistry {
             });
         }
         finally {
+            // Nothing reached the client: to its handler, that caller left.
             if (!relayed)
-                owner.settle();
+                owner.fail();
         }
     }
     get stats() {

@@ -13,14 +13,13 @@
  */
 import { ISOLATE_NETWORK, workspaceNetwork, } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
-import { responseScope } from '@nimbus-sh/core/runtime/port-registry.js';
 import { isWebSocketUpgradeRequest } from '@nimbus-sh/core/_shared/websocket-upgrade.js';
 import { z } from 'zod/v4';
 import { ProcessHostLost } from './process-fabric.js';
 import { bindingSupervisor, supervisorBindingProps } from './supervisor-props.js';
 import { withResolvers } from './turn-budget.js';
 import { processes, abortFacet, deleteFacetStorage } from './workerd-facet-host.js';
-import { callerLeftSignal, HOST_INCARNATION_HEADER } from './host-activity.js';
+import { callerScope, HOST_INCARNATION_HEADER } from './host-activity.js';
 import { isHostReset } from '@nimbus-sh/platform/oom-classify.js';
 /**
  * This workerd process's identity. Module scope, so two Durable Objects
@@ -313,10 +312,10 @@ export class PeerHost {
      *
      * The response body is re-piped through an identity stream owned by THIS
      * isolate before it is returned, for the same reason the parts exist at all:
-     * what leaves here must not be an object the loaded worker owns. That pipe's
-     * settlement is when the process's work for the response is done; the
-     * coordinator's caller leaving (`wire.left`) ends the request, before its
-     * headers or after.
+     * what leaves here must not be an object the loaded worker owns. Only the
+     * coordinator's caller (`wire.left`) sees the response delivered or left,
+     * before its headers or after, so the request's scope ends as it answers;
+     * a pipe that fails here ends it first.
      */
     async routeHttp(workerKey, wire) {
         return this.answer(workerKey, async () => {
@@ -332,23 +331,22 @@ export class PeerHost {
                 init.body = wire.body;
                 init.duplex = 'half';
             }
-            const { scope, owner } = responseScope(callerLeftSignal(wire.left));
+            const { scope, fail } = callerScope(wire.left);
             let response;
             try {
                 response = await facet.handleHttpRequest(new Request(wire.url, init), scope);
             }
             catch (error) {
-                owner.settle();
+                fail(error);
                 throw error;
             }
             let body = null;
             if (response.body) {
+                // Its end here is not delivery: the coordinator's caller says when the body arrived.
                 const { readable, writable } = new IdentityTransformStream();
-                this.ctx.waitUntil(response.body.pipeTo(writable, { signal: scope.signal }).then(owner.settle, owner.fail));
+                this.ctx.waitUntil(response.body.pipeTo(writable, { signal: scope.signal }).catch(fail));
                 body = readable;
             }
-            else
-                owner.settle();
             return {
                 status: response.status,
                 statusText: response.statusText,

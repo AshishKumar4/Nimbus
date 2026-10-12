@@ -158,21 +158,29 @@ export function callerLeft(scope) {
     return () => left;
 }
 /**
- * The handler's side: a signal that aborts when the caller leaves, or when
- * the caller can no longer be asked (its actor is gone). A stub received as
- * a call's argument is the call's; its `dup` is held until the answer.
+ * The handler's side: the scope of a request whose caller is on another
+ * actor. Only that caller sees whether the response was delivered, so the
+ * scope ends as the caller answers: settled when it was, aborted when it left
+ * or can no longer be asked (its actor is gone), or aborted here first
+ * (`fail`) when the relay to it fails. A stub received as a call's argument
+ * is the call's; its `dup` is held until the answer.
  */
-export function callerLeftSignal(left) {
+export function callerScope(left) {
     const abandoned = new AbortController();
-    const leave = () => abandoned.abort(new DOMException('The caller left the request', 'AbortError'));
+    const fail = (reason) => abandoned.abort(reason ?? new DOMException('The caller left the request', 'AbortError'));
+    let settle = () => { };
+    const settled = new Promise((resolve) => { settle = resolve; });
+    abandoned.signal.addEventListener('abort', () => settle(), { once: true });
     const dup = Reflect.get(left, 'dup');
     const held = typeof dup === 'function' ? Reflect.apply(dup, left, []) : left;
     const ask = typeof held === 'function' ? held : left;
     void Promise.resolve(Reflect.apply(ask, undefined, []))
         .then((gone) => { if (gone === true)
-        leave(); }, leave)
+        fail();
+    else
+        settle(); }, fail)
         .finally(() => disposeRpcResource(held));
-    return abandoned.signal;
+    return { scope: { signal: abandoned.signal, settled }, fail };
 }
 const activities = new WeakMap();
 export function hostActivity(host) {

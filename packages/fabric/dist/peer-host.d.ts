@@ -155,10 +155,10 @@ export declare class PeerHost {
      *
      * The response body is re-piped through an identity stream owned by THIS
      * isolate before it is returned, for the same reason the parts exist at all:
-     * what leaves here must not be an object the loaded worker owns. That pipe's
-     * settlement is when the process's work for the response is done; the
-     * coordinator's caller leaving (`wire.left`) ends the request, before its
-     * headers or after.
+     * what leaves here must not be an object the loaded worker owns. Only the
+     * coordinator's caller (`wire.left`) sees the response delivered or left,
+     * before its headers or after, so the request's scope ends as it answers;
+     * a pipe that fails here ends it first.
      */
     routeHttp(workerKey: string, wire: HostedHttpRequest): Promise<HostedReply<HostedHttpResponse>>;
     /**

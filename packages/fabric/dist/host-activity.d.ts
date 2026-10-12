@@ -48,11 +48,17 @@ export type CallerLeft = () => Promise<boolean>;
 /** The caller of a request with `scope`, for its handler on another actor. */
 export declare function callerLeft(scope: ResponseScope): CallerLeft;
 /**
- * The handler's side: a signal that aborts when the caller leaves, or when
- * the caller can no longer be asked (its actor is gone). A stub received as
- * a call's argument is the call's; its `dup` is held until the answer.
+ * The handler's side: the scope of a request whose caller is on another
+ * actor. Only that caller sees whether the response was delivered, so the
+ * scope ends as the caller answers: settled when it was, aborted when it left
+ * or can no longer be asked (its actor is gone), or aborted here first
+ * (`fail`) when the relay to it fails. A stub received as a call's argument
+ * is the call's; its `dup` is held until the answer.
  */
-export declare function callerLeftSignal(left: CallerLeft): AbortSignal;
+export declare function callerScope(left: CallerLeft): {
+    scope: ResponseScope;
+    fail(reason?: unknown): void;
+};
 export declare function hostActivity(host: object): HostActivity;
 /**
  * One native fetch endpoint, outside the guest's HTTP handler, on every
