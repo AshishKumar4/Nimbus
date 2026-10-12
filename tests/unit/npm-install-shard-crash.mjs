@@ -81,13 +81,17 @@ function project() {
 // ── a replacement whose shard fails before it writes, over a copy at the same version ──
 // The copy there before names the version the replacement does: it is no
 // evidence the replacement landed (its files are not this batch's), even
-// where the clock has not moved since it was written. The install fails,
-// and the tree, the lockfile and package.json are as they were.
-for (const clock of ['running', 'frozen']) {
+// where the clock has not moved since it was written, or the old copy's
+// manifest is touched meanwhile. Nor is a copy of the very name@version
+// it replaces (another tarball). The install fails, and the tree, the
+// lockfile and package.json are as they were.
+for (const [clock, touched, replacement] of [['running', false, 'slot@npm:real-b@1.0.0'], ['frozen', false, 'slot@npm:real-b@1.0.0'], ['running', true, 'slot@npm:real-b@1.0.0'], ['running', true, 'slot@npm:real-a@1.0.0']]) {
   const realNow = Date.now;
   if (clock === 'frozen') { const at = realNow(); Date.now = () => at; }
   try {
   const REGISTRY = { 'real-a': { d: '1.0.0' }, 'real-b': {}, d: {} };
+  // real-a@1.0.0's tarball, which the registry changes for the last case.
+  let realA = 'sha512-real-a';
   const harness = createSqliteVfsTestHarness(new Database(':memory:'));
   const vfs = new SqliteVFS(harness.sql, harness.ctx);
   const root = vfs.as(CRED_KERNEL);
@@ -98,11 +102,16 @@ for (const clock of ['running', 'frozen']) {
     root, NM,
     resultFor: (name, spec) => {
       const { registryName } = parseRegistryRequest(name, spec.range);
-      const pkg = { name, registryName, version: '1.0.0', tarballUrl: `https://registry.invalid/${registryName}-1.0.0.tgz`, integrity: `sha512-${registryName}`, dependencies: REGISTRY[registryName], exports: null, main: 'index.js', module: '', bin: {} };
+      const pkg = { name, registryName, version: '1.0.0', tarballUrl: `https://registry.invalid/${registryName}-1.0.0.tgz`, integrity: registryName === 'real-a' ? realA : `sha512-${registryName}`, dependencies: REGISTRY[registryName], exports: null, main: 'index.js', module: '', bin: {} };
       return { pkg, cacheWrites: [registryRecord({ ...pkg, name: registryName }, Date.now())], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [] };
     },
     manifestFor: (p) => ({ name: p.tarballUrl.match(/registry\.invalid\/(.+)-1\.0\.0\.tgz/)[1], version: p.version }),
-    crashFor: (p) => (p.name === crash.at ? crash.when : null),
+    crashFor: (p) => {
+      if (p.name !== crash.at) return null;
+      // Something else touches the manifest there while the shard runs.
+      if (touched) root.utimes(`${NM}/slot/package.json`, Date.now() + 1000, Date.now() + 1000);
+      return crash.when;
+    },
   });
   const ctx = { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage };
   const installer = kernelInstaller(vfs, harness.sql, { env, ctx, onProgress: () => {} });
@@ -113,9 +122,11 @@ for (const clock of ['running', 'frozen']) {
   assert.deepEqual(before.lock, ['d=d@1.0.0', 'slot=real-a@1.0.0']);
 
   Object.assign(crash, { at: 'slot', when: 'before' });
-  const result = await installer.install(PROJ, { packages: ['slot@npm:real-b@1.0.0'] });
-  assert.deepEqual(result.failed, ['slot@1.0.0'], 'the replacement did not land');
+  realA = 'sha512-real-a-republished';
+  const result = await installer.install(PROJ, { packages: [replacement] });
+  assert.deepEqual(result.failed, ['slot@1.0.0'], `${replacement} (${clock} clock${touched ? ', touched' : ''}): the replacement did not land`);
   assert.equal(JSON.parse(root.readFileString(`${NM}/slot/package.json`)).name, 'real-a', 'the copy there is the one installed before');
+  assert.equal(installer.npmCache.readLockfile(PROJ).get('slot').integrity, 'sha512-real-a', 'and the lockfile says so');
   assert.ok(root.exists(`${NM}/d/package.json`), 'what it needs is kept');
   assert.deepEqual(lockfile(), before.lock, 'the lockfile records what is on disk');
   assert.equal(root.readFileString(`${PROJ}/package.json`), before.json, 'nothing is saved');

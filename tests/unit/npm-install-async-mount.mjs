@@ -202,4 +202,29 @@ for (const [when, landed] of [['after', true], ['partial', false]]) {
   }
 }
 
+// ── a package that fails takes what was staged beneath it: those fail too ──
+// a@1 nests x@2 below it (the project has x@1). a's shard fails partway,
+// x@2's lands in a's staged folder: it is not on the mount, and is not
+// reported installed.
+{
+  const nestedCrash = { at: null };
+  const nestedEnv = makeFanoutEnv({
+    root: vfs.as(CRED_SESSION_USER), NM: 'unused',
+    resultFor: (name, spec) => {
+      const answer = resolved(name, name === 'a' ? '1.0.0' : spec.range);
+      if (name === 'a') answer.pkg.dependencies = { x: '2.0.0' };
+      return answer;
+    },
+    crashFor: (p) => (p.name === nestedCrash.at ? 'partial' : null),
+  });
+  const nested = new NpmInstaller(files, harness.sql, { env: nestedEnv, ctx, onProgress: (msg) => log.push(msg) });
+  await view.mkdir('/m/nested', { recursive: true });
+  await view.writeFile('/m/nested/package.json', JSON.stringify({ name: 'n', version: '1.0.0', dependencies: { a: '1.0.0', x: '1.0.0' } }));
+  nestedCrash.at = 'a';
+  const result = await nested.install('/m/nested', { pid: PID, cred: CRED_SESSION_USER });
+  assert.deepEqual([...result.failed].sort(), ['a@1.0.0', 'x@2.0.0'], `what was staged beneath a failed package fails with it: ${log.join('\n')}`);
+  assert.ok(!result.installed.includes('x@2.0.0'), 'and is not reported installed');
+  assert.equal(await view.exists('/m/nested/node_modules/a'), false, 'nothing of a is on the mount');
+}
+
 console.log('npm-install-async-mount: ok');
