@@ -155,7 +155,8 @@ pool and fanout takes a network; Nimbus's own work states `ISOLATE_NETWORK`.
 | a plain TCP socket a program opens | yes, to the egress's `connect()` |
 | TLS a runtime makes itself over a plain socket (CPython's `ssl`: pip's downloads, `urllib` over https) | yes: the egress's `connect()` carries the encrypted stream |
 | a WebSocket server in the session (`ws`'s `WebSocketServer`, an `http` server's `'upgrade'`) | not available, egress or not: workerd's HTTP server emits `'request'`, never `'upgrade'`; a session's client connecting to one closes with 1006 (`Network connection lost`), measured with `ws` 8.22 and the global WebSocket |
-| a node program's TLS socket (`tls.connect`) | refused by name (`ERR_NIMBUS_EGRESS_TLS`): a Fetcher's `connect()` carries plain TCP only, so the TLS session could only be made off the egress |
+| a node program's TLS socket (`tls.connect`) | through the egress's optional `connectTls({ hostname, port, servername? })`, which makes the TLS session (`servername` when the program names one other than the host); without it, refused by name (`ERR_NIMBUS_EGRESS_TLS`) |
+| TLS over a socket the program opened (`tls.connect({ socket })`, STARTTLS) | refused by name (`ERR_NIMBUS_EGRESS_STARTTLS`): the egress carries that connection, and workerd starts no TLS on a connection through a service binding |
 | a worker or dev server a command starts (wrangler dev, vite) | yes |
 | an inline `node` program (a host without Dynamic Workers: Bun, Node): fetch, `http`/`https` | yes, as Node's fetch: the response streams, an unread body is not read, the program's redirect mode is honored and each hop is its own request through the egress |
 | an inline `node` program's WebSocket | refused by name: a WebSocket cannot cross the inline program's realm to the host |
@@ -167,6 +168,24 @@ HTTPS made by fetch or `https` is unaffected by the TLS limit: it is a
 request, not a socket. A session's processes keep their network across an
 instance reset: a launch the reset interrupted is re-driven through the same
 egress, before or without a reconnect.
+
+To tell which exec made a request, mint an egress per process:
+`NimbusWorkspace.create({ egress, egressFor })`, or `egressFor` on the
+session. It gets `{ pid, execId }` once per process and returns that
+process's egress, or undefined for the workspace's. Everything the process
+does goes through it: its programs and their sockets, the commands it runs,
+and its Dynamic Worker wherever it is hosted.
+
+```ts
+export class Session extends NimbusSession {
+  protected override workspaceEgress() {
+    return this.ctx.exports.Egress({ props: { session: this.ctx.id.toString() } });
+  }
+  protected override egressFor(process: EgressProcess) {
+    return this.ctx.exports.Egress({ props: { session: this.ctx.id.toString(), execId: process.execId } });
+  }
+}
+```
 
 ## Proteus-Style Tool Provider
 
