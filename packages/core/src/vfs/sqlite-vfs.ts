@@ -3441,7 +3441,7 @@ export class SqliteVFS {
     tree: InodeLookup = this.inodes,
   ): VfsNameResolution | null {
     const root = this.confinedTmpRoots.get(cred.uid);
-    const plain = plainVfsPath(path);
+    const plain = normalizeVfsLookupPath(path);
     if (plain === null) return null;
     const key = this.keyOfName(plain, root);
     const current = root === undefined ? key : this.logicalPath(key, cred, root) ?? key;

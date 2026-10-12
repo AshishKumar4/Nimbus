@@ -81,5 +81,29 @@ for (const suffix of ['//f', '/./f']) {
   });
 }
 
+check('linked prefix cache preserves identity, hops and permission', ({ root, user, engine }) => {
+  root.mkdir('home/user/other');
+  root.chown('home/user/other', USER.uid, USER.gid);
+  user.writeFile('home/user/physical/f', 'physical');
+  user.writeFile('home/user/physical/g', 'sibling');
+  user.writeFile('home/user/other/f', 'other');
+  user.symlink('physical', 'home/user/pkg');
+  user.symlink('.', 'home/user/physical/loop');
+  assert.equal(user.readFileString('home/user/pkg/f'), 'physical');
+  const get = engine.inodes.get.bind(engine.inodes);
+  let looked = 0;
+  engine.inodes.get = (key) => { looked++; return get(key); };
+  assert.equal(user.readFileString('home/user/pkg/g'), 'sibling');
+  assert.ok(looked <= 4, `a sibling resumed the searched prefix in ${looked} lookups`);
+  assert.equal(user.lstat('home/user/pkg').type, 'symlink');
+  assert.equal(user.readFileString(`home/user/pkg/${'loop/'.repeat(39)}f`), 'physical');
+  assert.throws(() => user.readFileString(`home/user/pkg/${'loop/'.repeat(40)}f`), { code: 'ELOOP' });
+  user.unlink('home/user/pkg');
+  user.symlink('other', 'home/user/pkg');
+  assert.equal(user.readFileString('home/user/pkg/f'), 'other');
+  root.chmod('home/user/other', 0);
+  assert.throws(() => user.readFileString('home/user/pkg/f'), { code: 'EACCES' });
+});
+
 assert.deepEqual(failures, [], failures.join('\n'));
 console.log('sqlite-vfs-lookup-regressions: ok');
