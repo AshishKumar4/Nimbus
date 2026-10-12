@@ -4,7 +4,9 @@
 // - writeFile's, appendFile's, open's and a write stream's `mode` (in each of
 //   their forms), less the process's umask; a file already there keeps its own;
 // - mkdir's `mode`, less the umask; mkdtemp's 0700;
-// - copyFile and cp: the source's mode exactly, over a file already there too;
+// - copyFile and cp: the source's mode exactly, over a file already there too,
+//   and at no point more for others than the source gives: a directory made
+//   no more open than its source, a file narrowed before the bytes go in;
 // - chmod and fchmod: the mode set, with nothing after it to carry it.
 // Runs the real generated one-shot module. Red before: every such file was
 // created 0666 less the umask, mkdtemp 0777 less it, a copy as a new file.
@@ -37,6 +39,8 @@ authority.kfs.mkdir('home/user/private');
 own('home/user/private', 0o700);
 authority.kfs.writeFile('home/user/private/key', 'k');
 own('home/user/private/key', 0o600);
+authority.kfs.writeFile('home/user/private/notes', 'n');
+own('home/user/private/notes', 0o644);
 
 const expected = {
   'sync.txt': 0o600,
@@ -60,6 +64,8 @@ const expected = {
   'copied-dir/key': 0o600,
   'promise-copied-dir': 0o700,
   'promise-copied-dir/key': 0o600,
+  'copied-dir/notes': 0o644,
+  'promise-copied-dir/notes': 0o644,
   'chmod-sync.txt': 0o600,
   'fchmod-sync.txt': 0o600,
 };
@@ -101,6 +107,19 @@ const generated = await generateEntrypointCode(program, { bundle: {} }, false, n
 const file = writeModuleSet(join(dir, 'entry'), generatedModuleSet(generated, 'runner.mjs'), 'runner.mjs');
 const mod = await import(file);
 
+// After every change the session commits: what the copies let others do.
+const exposures = [];
+const look = (path) => { try { return kernel.stat(path); } catch { return null; } };
+const stopWatching = kernel.subscribe('home/user', () => {
+  for (const dir of ['home/user/copied-dir', 'home/user/promise-copied-dir']) {
+    const made = look(dir);
+    if (made && (made.mode & 0o077) !== 0) exposures.push(`${dir} ${(made.mode & 0o777).toString(8)}`);
+  }
+  const over = look('home/user/copy-over.txt');
+  if (over && (over.mode & 0o077) !== 0 && new TextDecoder().decode(kernel.readFile('home/user/copy-over.txt')) === 'secret') {
+    exposures.push(`copy-over.txt ${(over.mode & 0o777).toString(8)} holding the secret`);
+  }
+});
 const process = processInstanceSupervisor(authority, cred);
 let body;
 try {
@@ -114,6 +133,7 @@ try {
   body = await response.json();
 } finally {
   await process.close();
+  stopWatching();
 }
 assert.equal(body.exitCode, 0, JSON.stringify(body));
 assert.equal(body.stderr, '');
@@ -123,5 +143,6 @@ assert.equal(seen.tempMode, 0o700, "the program stats mkdtemp's directory 0700")
 const atSession = (name) => authority.kfs.stat('home/user/' + name).mode & 0o777;
 assert.deepEqual(Object.fromEntries(Object.keys(expected).map((name) => [name, atSession(name)])), expected, 'the session holds each path with the mode it was made with');
 assert.equal(atSession(seen.temp), 0o700, "the session holds mkdtemp's directory 0700");
+assert.deepEqual(exposures, [], 'no copy let others do more than its source at any point');
 realProcess.stdout.write('one-shot-write-mode: PASS\n');
 realProcess.exit(0);
