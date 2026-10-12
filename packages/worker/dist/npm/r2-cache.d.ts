@@ -333,7 +333,9 @@ export declare class R2CacheClient {
      * to L2 until the R2 entry's customMetadata.expiresAt
      * (fillPackumentL2).
      */
-    getPackument(name: string, registry?: string): Promise<CachedPackument | null>;
+    getPackument(name: string, registry?: string, 
+    /** Also what a refetch is made conditional on (etag, stored), which an expired entry always carries. */
+    validators?: boolean): Promise<CachedPackument | null>;
     /**
      * The colo copy of a packument, kept until `expiresAt`: the cache layer
      * drops it at its max-age, and the absolute time rides in a header so a
@@ -368,6 +370,15 @@ export declare class R2CacheClient {
      * answered is the workspace's, never every tenant's).
      */
     network?: WorkspaceNetwork): Promise<PackumentReadThrough>;
+    /**
+     * A packument read past the cache, however fresh its copy: one a resolve
+     * could not answer from what the cache holds (cached absence is no proof
+     * that nothing is published). Past the registry's CDN as well, and
+     * conditional on the cached copy's ETag.
+     */
+    revalidatePackument(name: string, options?: PackumentReadOptions, network?: WorkspaceNetwork): Promise<PackumentReadThrough>;
+    /** The registry's answer for a packument the cache did not answer (`cached`: its copy, expired or not, whose ETag the request is conditional on), and the cache filled with it. */
+    private fetchPackument;
     /**
      * Write a packument JSON to R2 with a TTL stamp (`expiresAt`, by default
      * the packument TTL from now) and the registry's ETag in customMetadata.

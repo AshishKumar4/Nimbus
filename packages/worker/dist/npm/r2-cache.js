@@ -505,7 +505,9 @@ export class R2CacheClient {
      * to L2 until the R2 entry's customMetadata.expiresAt
      * (fillPackumentL2).
      */
-    async getPackument(name, registry = NPM_REGISTRY_ORIGIN) {
+    async getPackument(name, registry = NPM_REGISTRY_ORIGIN, 
+    /** Also what a refetch is made conditional on (etag, stored), which an expired entry always carries. */
+    validators = false) {
         // ── L2 fast path (per-colo) ───────────────────────────────────
         const l2Key = new Request(packumentL2Url(name, registry));
         const l2Hit = await l2Get(l2Key);
@@ -534,11 +536,10 @@ export class R2CacheClient {
             const expired = expiresAt > 0
                 ? now >= expiresAt
                 : ageMs >= PACKUMENT_TTL_MS;
-            const hit = { json, ageMs, expired };
+            if (!expired && !validators)
+                return { json, ageMs, expired };
             const etag = l2Hit.headers.get('x-nimbus-etag');
-            if (etag)
-                hit.etag = etag;
-            return hit;
+            return etag ? { json, ageMs, expired, etag } : { json, ageMs, expired };
         }
         this._recordMiss('L2', 'packument');
         // ── L3 path (cross-tenant) ────────────────────────────────────
@@ -566,11 +567,13 @@ export class R2CacheClient {
         // two callers reading the same key back-to-back during the fill
         // window do not both miss L2 and double-fetch L3; the cost (~1-3 ms
         // in workerd local, sub-ms at edge) is paid only on cold reads.
-        const etag = obj.customMetadata?.etag || undefined;
         if (!expired && !this.readOnly) {
-            await this.fillPackumentL2(l2Key, json, expiresAt > 0 ? expiresAt : now + PACKUMENT_TTL_MS, etag);
+            await this.fillPackumentL2(l2Key, json, expiresAt > 0 ? expiresAt : now + PACKUMENT_TTL_MS);
         }
+        if (!expired && !validators)
+            return { json, ageMs, expired };
         const hit = { json, ageMs, expired };
+        const etag = obj.customMetadata?.etag;
         if (etag)
             hit.etag = etag;
         if (obj.etag)
@@ -624,17 +627,31 @@ export class R2CacheClient {
         const registry = options?.registry ?? NPM_REGISTRY_ORIGIN;
         const shared = network.egress === undefined;
         const cached = shared ? await this.getPackument(name, registry) : null;
-        if (cached && !cached.expired && cached.json && !options?.revalidate) {
+        if (cached && !cached.expired && cached.json) {
             return { json: cached.json, source: 'r2-cache' };
         }
+        return this.fetchPackument(name, registry, cached, options, network);
+    }
+    /**
+     * A packument read past the cache, however fresh its copy: one a resolve
+     * could not answer from what the cache holds (cached absence is no proof
+     * that nothing is published). Past the registry's CDN as well, and
+     * conditional on the cached copy's ETag.
+     */
+    async revalidatePackument(name, options, network = ISOLATE_NETWORK) {
+        const registry = options?.registry ?? NPM_REGISTRY_ORIGIN;
+        const cached = network.egress === undefined ? await this.getPackument(name, registry, true) : null;
+        return this.fetchPackument(name, registry, cached, options, network, true);
+    }
+    /** The registry's answer for a packument the cache did not answer (`cached`: its copy, expired or not, whose ETag the request is conditional on), and the cache filled with it. */
+    async fetchPackument(name, registry, cached, options, network, pastCdn = false) {
+        const shared = network.egress === undefined;
         const url = packumentUrl(name, registry);
         const timeoutMs = options?.timeoutMs ?? 15_000;
-        // A refetch of a cached copy is conditional on its ETag; one a resolve
-        // could not answer from it goes past the registry's CDN as well.
         const headers = { Accept: 'application/vnd.npm.install-v1+json' };
         if (cached?.etag)
             headers['If-None-Match'] = cached.etag;
-        if (options?.revalidate)
+        if (pastCdn)
             headers['Cache-Control'] = 'no-cache';
         let resp;
         try {
@@ -672,12 +689,14 @@ export class R2CacheClient {
             // version of the object (conditional put); the colo copy by its ETag.
             if (!this.readOnly && shared && cached.expired) {
                 const expiresAt = Date.now() + PACKUMENT_TTL_MS;
-                if (cached.stored !== undefined)
-                    await this.putPackument(name, cached.json, registry, expiresAt, cached.etag, cached.stored);
-                const l2Key = new Request(packumentL2Url(name, registry));
-                const colo = await l2Get(l2Key);
-                if (colo === null || colo.headers.get('x-nimbus-etag') === cached.etag)
-                    await this.fillPackumentL2(l2Key, cached.json, expiresAt, cached.etag);
+                // Read from R2: renewed there first, and the colo only where that held.
+                const renewed = cached.stored === undefined || await this.putPackument(name, cached.json, registry, expiresAt, cached.etag, cached.stored);
+                if (renewed) {
+                    const l2Key = new Request(packumentL2Url(name, registry));
+                    const colo = await l2Get(l2Key);
+                    if (colo === null || colo.headers.get('x-nimbus-etag') === cached.etag)
+                        await this.fillPackumentL2(l2Key, cached.json, expiresAt, cached.etag);
+                }
             }
             return { json: cached.json, source: 'r2-cache' };
         }
