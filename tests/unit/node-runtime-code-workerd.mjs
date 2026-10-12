@@ -47,9 +47,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { localTerminal, startLocalProbe } from './lib/workerd-probe.mjs';
+import { NODE_UNUSED_SOCKETS } from './lib/node-unused-socket-program.mjs';
 
 const W = '/home/user/w';
 const FILES = {
+  'unused-sockets.js': NODE_UNUSED_SOCKETS,
   'identity.js': [
     'const locale = new Intl.DateTimeFormat().resolvedOptions().locale;',
     'const identity = { userAgent: navigator.userAgent, platform: navigator.platform, language: navigator.language, languages: navigator.languages };',
@@ -394,6 +396,12 @@ try {
     const pgTransport = await terminal.run(`cd ${W} && node pg-transport.js`);
     assert.equal(pgTransport.status, 0, pgTransport.stdout);
     assert.ok(pgTransport.stdout.split('\n').includes('PGTRANSPORT true'), 'standard pg uses its Node socket transport');
+    const unused = await terminal.run(`cd ${W} && node unused-sockets.js`);
+    const hostUnused = spawnSync('node', ['-e', NODE_UNUSED_SOCKETS], { encoding: 'utf8', timeout: 20_000 });
+    assert.equal(hostUnused.status, 0, hostUnused.stderr);
+    assert.equal(unused.status, 0, unused.stdout);
+    assert.equal(unused.stdout.split('\n').find((line) => line.startsWith('UNUSED_SOCKETS ')), hostUnused.stdout.trim(),
+      'sockets that never connect, including destroyed and unrefed ones, do not hold the program alive');
 
     const cells = await terminal.run(`cd ${W} && node cells.js`);
     assert.match(cells.stdout, /CELLS number,2,tr,tr-space,tab,tabx function:\/own\n/, cells.stdout);

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 
 const harness = createSqliteVfsTestHarness();
 let ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx });
@@ -49,15 +50,21 @@ try {
   assert.deepEqual(await read(), previous, 'the same saved row survives a workspace reopen');
 
   let enter;
-  const entered = new Promise((resolve) => { enter = resolve; });
+  let failEnter;
+  const entered = new Promise((resolve, reject) => { enter = resolve; failEnter = reject; });
   let release;
   const released = new Promise((resolve) => { release = resolve; });
+  const { pid } = ws.processes.spawn('state-owner', ['state-owner'], previous.cwd, { cred: CRED_SESSION_USER });
   const writing = ws.withNamedShell(name, {}, async (named) => {
-    const shell = named.open(321);
+    const shell = named.open(pid);
     await shell.execute("export QUEUED='\udfff'");
     enter();
     await released;
+  }).finally(async () => {
+    ws.processes.exit(pid, 0);
+    await ws.processes.reapTree(pid);
   });
+  writing.catch(failEnter);
   await entered;
   const reading = read();
   let completed = false;
