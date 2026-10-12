@@ -1,0 +1,46 @@
+#!/usr/bin/env bun
+// Behavior test: /dev/fd/N, /proc/self/fd/N and /dev/std{in,out,err} name the
+// process's own descriptors in the wasm bash, as on Linux.
+//
+// bash is configured with bash_cv_dev_fd=standard and bash_cv_dev_stdin=present
+// (packages/worker/wasm/bash/cross.cache): it hands process substitution's
+// pipe to a command as /dev/fd/N and opens /dev/stdin itself, trusting the OS
+// to resolve both. Driven through REAL bash on the REAL staged wasm, with
+// busybox for the commands, so each case is what a script observes. Every
+// expectation is native Linux bash's answer to the same script.
+
+import assert from 'node:assert/strict';
+import { runScript } from './lib/bash-preamble.mjs';
+
+const fs = { dirs: ['tmp'], modes: { tmp: 7 } };
+const cases = [
+  // Process substitution: bash opens /dev/fd/63 itself (source, a redirection)
+  // or hands the path to a command.
+  { script: "source <(echo 'echo sourced')", stdout: 'sourced\n', exitCode: 0 },
+  { script: "while read -r l; do echo \"[$l]\"; done < <(printf 'a\\nb\\n')", stdout: '[a]\n[b]\n', exitCode: 0 },
+  { script: 'cat <(echo x) <(echo y)', stdout: 'x\ny\n', exitCode: 0 },
+  { script: 'diff <(echo a) <(echo a) && echo same', stdout: 'same\n', exitCode: 0 },
+  { script: 'echo data > >(cat > /tmp/o); wait $!; cat /tmp/o', stdout: 'data\n', exitCode: 0 },
+  // A descriptor the script opened, by its number.
+  { script: "exec 4<<<'four'; read -r y < /dev/fd/4; echo \"$y\"", stdout: 'four\n', exitCode: 0 },
+  { script: "exec 4<<<'four'; read -r y < /proc/self/fd/4; echo \"$y\"", stdout: 'four\n', exitCode: 0 },
+  { script: '[ -e /dev/fd/0 ] && echo yes; [ -e /dev/fd/9 ] || echo no', stdout: 'yes\nno\n', exitCode: 0 },
+  { script: 'cat /dev/fd/9', stdout: '', exitCode: 1 },
+  // The standard streams by name.
+  { script: 'read -r x < /dev/stdin; echo "got $x"', stdin: 'line\n', stdout: 'got line\n', exitCode: 0 },
+  { script: 'cat /dev/stdin', stdin: 'piped\n', stdout: 'piped\n', exitCode: 0 },
+  { script: 'echo out > /dev/stdout', stdout: 'out\n', exitCode: 0 },
+  { script: '{ echo err > /dev/stderr; } 2>&1', stdout: 'err\n', exitCode: 0 },
+  { script: 'echo to-err > /dev/stderr', stdout: '', stderr: 'to-err\n', exitCode: 0 },
+];
+
+const failures = [];
+for (const c of cases) {
+  const r = await runScript(c.script, { ...fs, stdin: c.stdin });
+  const got = { stdout: r.stdout, exitCode: r.exitCode, ...(c.stderr === undefined ? {} : { stderr: r.stderr }) };
+  const want = { stdout: c.stdout, exitCode: c.exitCode, ...(c.stderr === undefined ? {} : { stderr: c.stderr }) };
+  try { assert.deepEqual(got, want); console.log(`  ✓ ${c.script}`); }
+  catch { failures.push(`${c.script}: got ${JSON.stringify({ ...got, stderr: r.stderr, error: r.error })}, want ${JSON.stringify(want)}`); console.log(`  ✗ ${c.script}`); }
+}
+assert.deepEqual(failures, []);
+console.log(`bash-dev-fd: ${cases.length} cases answer as Linux bash does`);
