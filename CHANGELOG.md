@@ -10,11 +10,14 @@ published independently in the `@nimbus-sh` npm scope.
   `servername`, which the egress presents and checks the server by, as Node
   does. It used to fail with `ERR_OPTION_NOT_IMPLEMENTED`. An egress that
   ignores the field connects as before (Kinu ask 44).
-- Changed: under an egress, `tls.connect({ socket })` over a socket that has
-  already carried bytes (STARTTLS) fails with `ERR_NIMBUS_EGRESS_STARTTLS`.
-  It used to make TLS on a new connection to the same host, which a STARTTLS
-  server answers as plaintext. A socket that has carried nothing still
-  upgrades (Kinu ask 46).
+- Changed: under an egress, `tls.connect({ socket })` (STARTTLS) fails with
+  `ERR_NIMBUS_EGRESS_STARTTLS`: "Nimbus: TLS over a socket the program
+  opened (tls.connect({ socket }), as STARTTLS does) is not available when
+  the workspace's network goes through an egress: the egress carries that
+  connection, and workerd starts no TLS on a connection through a service
+  binding". It used to close the program's socket and make TLS on a new
+  connection to the same host, which a STARTTLS server answers as plaintext.
+  A new connection is not the same connection (Kinu ask 46).
 
 ## 2026-10-12: core 0.18.0, fabric 0.13.0, worker 0.16.0, loom 0.2.5, sdk 0.13.1, react 0.3.1, cli 0.2.5, create-nimbus-app 0.2.2
 

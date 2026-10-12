@@ -558,13 +558,11 @@ Implementation rules:
   `connectTls({ hostname, port, servername? })` owns TLS and returns its
   plaintext streams; `servername` crosses when the program names one other
   than the host, and the egress presents it and checks the server by it.
-  `tls.connect({ socket })` over a socket that has carried no bytes closes the
-  plain connection and continues on those streams, as TLS from the first byte
-  is. Over one that has (STARTTLS) it fails with `ERR_NIMBUS_EGRESS_STARTTLS`:
+  `tls.connect({ socket })` (STARTTLS) fails with `ERR_NIMBUS_EGRESS_STARTTLS`:
   the egress carries that connection, and workerd starts no TLS on a
-  connection through a service binding. Without that method TLS retains its named refusal. Without an
-  egress, Node outbound TCP retains its current refusal. Inline Node
-  WebSockets relay their upgrade, messages and close through `egress.fetch`.
+  connection through a service binding. Under an egress without
+  `connectTls`, TLS retains its named refusal. Without an egress, Node
+  outbound TCP retains its current refusal. Inline Node WebSockets relay their upgrade, messages and close through `egress.fetch`.
   Known Node difference: workerd resolves a refused plain CONNECT's
   `socket.opened` and then signals EOF/close without bytes or the egress's
   refusal text; it does not emit an ECONNREFUSED error. A rejected

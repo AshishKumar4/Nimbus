@@ -169,7 +169,17 @@ export class TestTlsEgress extends TestEgress implements WorkspaceEgressTls {
 
   async connectTls(target: EgressTlsTarget): Promise<EgressStreams> {
     if (target.hostname === 'tls-refused.invalid') throw new Error('egress refused this TLS destination');
-    if (target.hostname !== EGRESS_TEST_HOST || target.port !== 443) throw new Error('unexpected TLS destination');
+    if (target.hostname !== EGRESS_TEST_HOST) {
+      // Any other server, as an embedder's egress reaches it: the session presents the servername and checks the server by it.
+      const { connect } = await import('cloudflare:sockets');
+      const address = { hostname: target.hostname, port: target.port };
+      const socket = target.servername === undefined
+        ? connect(address, { secureTransport: 'on', allowHalfOpen: true })
+        : connect(address, { secureTransport: 'starttls', allowHalfOpen: true }).startTls({ expectedServerHostname: target.servername });
+      await socket.opened;
+      return { readable: socket.readable, writable: socket.writable };
+    }
+    if (target.port !== 443) throw new Error('unexpected TLS destination');
     let reply: ReadableByteStreamController;
     let input = '';
     // The name the session presents and checks the server by, when the program named one other than the host.
