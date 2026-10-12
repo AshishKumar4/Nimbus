@@ -371,7 +371,7 @@ export class NpmInstaller {
         if (toFetch.length > 0) {
             log(`Fetching ${toFetch.length} packages... (path: batch-facet)`);
             const batchResult = engineDir !== null
-                ? await this.fetchViaBatchFacet(toFetch, `${engineDir}/node_modules`, this.store.as(opts.cred), opts.pid)
+                ? await this.fetchViaBatchFacet(toFetch, `${engineDir}/node_modules`, { engine: this.store.as(opts.cred), view }, opts.pid)
                 : await this.fetchIntoMount(toFetch, nmDir, principal);
             totalFiles += batchResult.filesWritten;
             published.push(...batchResult.installed);
@@ -822,13 +822,18 @@ export class NpmInstaller {
      *   placement).
      */
     async fetchViaBatchFacet(toFetch, nmDir, 
-    /** The engine as the invoking principal, which reads back what a failed shard published under `nmDir`. */
-    engine, pid) {
+    /**
+     * The invoking principal's faces, which read back what a failed shard
+     * published under `nmDir`: the engine, where its packages are; and its
+     * namespace, which the batch's waves write through, for its receipts.
+     */
+    reader, pid) {
         const log = (msg) => this.onProgress?.(msg);
         const installed = [];
         const failed = [];
         let filesWritten = 0;
         const mtime = Date.now();
+        const { engine, view } = reader;
         // Each placement's completion marker, its package.json: the package it
         // names (name@version), before the dispatch and after it.
         const markerOf = (placement) => `${nmDir}/${placement}/package.json`;
@@ -848,23 +853,25 @@ export class NpmInstaller {
         for (const { placement } of toFetch)
             before.set(placement, await withRecall(() => identity(placement)));
         // A replacement whose marker already names it (the same name@version,
-        // another tarball) is read back by its receipt instead, in this batch's
-        // own folder: what an install cut short left there goes first.
-        const receipts = `${nmDir}/${RECEIPTS_DIR}`;
+        // another tarball) is read back by its receipt instead, in the receipts
+        // folder: what an install cut short left there goes first. Receipts are
+        // read and removed through the namespace the waves write them through.
+        const receipts = `/${nmDir}/${RECEIPTS_DIR}`;
         const receiptOf = new Map();
         const unattributable = toFetch.filter((target) => before.get(target.placement) === wanted(target));
         if (unattributable.length > 0) {
-            if (await withRecall(() => engine.statIfPresent(receipts, false)) !== null)
-                await withRecall(() => engine.removeRecursive(receipts));
+            if (await view.exists(receipts))
+                for (const { name } of await view.readdir(receipts))
+                    await view.remove(`${receipts}/${name}`, { recursive: true });
             const acquisition = crypto.randomUUID();
-            unattributable.forEach(({ placement }, i) => receiptOf.set(placement, `${receipts}/${acquisition}-${i}`));
+            unattributable.forEach(({ placement }, i) => receiptOf.set(placement, `${nmDir}/${RECEIPTS_DIR}/${acquisition}-${i}`));
         }
         /** Whether this batch published `target`: its receipt landed, or its marker now names it and named another before. */
-        const landedHere = (target) => {
+        const landedHere = async (target) => {
             const receipt = receiptOf.get(target.placement);
             if (receipt !== undefined)
-                return engine.statIfPresent(receipt, false) !== null;
-            return identity(target.placement) === wanted(target);
+                return await view.exists(`/${receipt}`);
+            return await withRecall(() => identity(target.placement)) === wanted(target);
         };
         // Every entry in `toFetch` has a tarball URL — the diff phase fails
         // the ones that don't rather than dropping them. `pkgDir` is the
@@ -974,7 +981,7 @@ export class NpmInstaller {
                 for (const target of toFetch) {
                     if (!dirs.has(`${nmDir}/${target.placement}`))
                         continue;
-                    const landed = await withRecall(() => landedHere(target));
+                    const landed = await landedHere(target);
                     readBack.push({ name: target.pkg.name, version: target.pkg.version, pkgDir: `${nmDir}/${target.placement}`, fileCount: 0, bytesWritten: 0, elapsed: 0, warnings: [], ...(landed ? {} : { errorText: reason }) });
                 }
             }
@@ -1080,12 +1087,11 @@ export class NpmInstaller {
             throw e instanceof Error ? e : new Error(describeError(e));
         }
         finally {
-            if (receiptOf.size > 0) {
-                try {
-                    await withRecall(() => engine.removeRecursive(receipts));
-                }
-                catch { /* absent: no receipt landed; else the next batch removes it */ }
-            }
+            // This batch's receipts go, then the folder where it is an empty one (not where something is mounted there).
+            for (const receipt of receiptOf.values())
+                await view.remove(`/${receipt}`, { force: true }).catch(() => { });
+            if (receiptOf.size > 0)
+                await view.rmdir(receipts).catch(() => { });
         }
     }
     /**
@@ -1108,7 +1114,7 @@ export class NpmInstaller {
         await withRecall(() => staging.mkdir(stage, { recursive: true }));
         this.placing.add(stage);
         try {
-            const result = await this.fetchViaBatchFacet(toFetch, `${stage}/node_modules`, staging, principal.pid);
+            const result = await this.fetchViaBatchFacet(toFetch, `${stage}/node_modules`, { engine: staging, view }, principal.pid);
             const installed = [...result.installed];
             const failed = [...result.failed];
             // What failed is not put on the mount: its staged files (part of a
