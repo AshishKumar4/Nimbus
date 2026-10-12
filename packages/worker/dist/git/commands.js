@@ -131,8 +131,9 @@ function sessionGitFs(vfs, worktree = null, promisor) {
             }
             return Promise.resolve(data).then((bytes) => bytes, () => null);
         },
-        // A checkout's file modes are the index's: the session writes none here.
-        async writeFile(p, data) {
+        // A file made has the mode its caller asked for (a checkout's: the index's),
+        // so it is never more open than that; one there keeps its own.
+        async writeFile(p, data, mode) {
             await ensureDirectories(p, false);
             // A file replaces a link or a directory at its own path (entry.c checkout_entry, remove_subtree).
             const existing = checkedOut(p) ? (await lstatOrNull(p))?.type : undefined;
@@ -140,7 +141,7 @@ function sessionGitFs(vfs, worktree = null, promisor) {
                 await vfs.unlink(p);
             else if (existing === 'directory')
                 await vfs.removeRecursive(p);
-            await vfs.writeFile(p, data);
+            await vfs.writeFile(p, data, mode === undefined ? undefined : { mode });
         },
         async unlink(p) {
             if (await lstatOrNull(p))
@@ -1721,7 +1722,10 @@ async function tagCommand(ctx, git, fs, vfs, args) {
         // must not have, and its parser then misreads the listing.
         const { type } = await git.readObject({ fs, dir, oid: object, cache: {}, format: 'parsed' });
         const body = `object ${object}\ntype ${type}\ntag ${name}\ntagger ${tagger}\n\n${cleanupMessage(messages.join('\n\n'))}`;
-        value = await git.writeObject({ fs, dir, type: 'tag', object: new TextEncoder().encode(body), format: 'content' });
+        // Written as every object a command makes is: 0444 from its creation.
+        const objects = await worktreeRepo(ctx, git, vfs, fs, gitdir, dir).objectWriter();
+        value = await objects.write('tag', new TextEncoder().encode(body));
+        await objects.flush();
         await git.writeRef({ fs, dir, ref: `refs/tags/${name}`, value, force: true });
     }
     else {
@@ -1890,7 +1894,7 @@ async function refusal(ctx, error, strategy) {
 function checkoutWriter(vfs, root) {
     const fs = sessionGitFs(vfs, root);
     return {
-        writeFile: (path, data) => fs.promises.writeFile(path, data),
+        writeFile: (path, data, mode) => fs.promises.writeFile(path, data, { mode }),
         symlink: (target, path) => fs.promises.symlink(target, path),
         unlink: (path) => fs.promises.unlink(path),
         rmdir: (path) => fs.promises.rmdir(path),
@@ -2055,8 +2059,9 @@ async function checkoutPaths(ctx, git, vfs, fs, source, pathArgs, ignoreSkipWork
                 await writer.symlink(dec.decode(data), file);
             }
             else {
-                await writer.writeFile(file, data);
-                await writer.chmod(file, mode === 0o100755 ? 0o755 : 0o644);
+                const fileMode = mode === 0o100755 ? 0o755 : 0o644;
+                await writer.writeFile(file, data, fileMode);
+                await writer.chmod(file, fileMode);
             }
             added.add({ path, mode, oid, stat: await wrepo.fs.lstat(path), skipWorktree });
         }

@@ -5,7 +5,7 @@
 //     alike (cf-git reads .gitignore with the bare one), bytes otherwise;
 //   - a missing path is Node's ENOENT, its syscall named;
 //   - an inode is Node's fs.Stats: type bits on the mode, times as Dates;
-//   - writeFile hands the backend bytes and whether the mode is executable;
+//   - writeFile hands the backend bytes and the permission bits the caller asked for, if it did;
 //   - cf-git binds its recursive delete to the adapter's rmdir, which the
 //     backend gets with `recursive`.
 import assert from 'node:assert/strict';
@@ -21,7 +21,7 @@ const backend = {
     return null;
   },
   async readFile(path) { return files.get(path) ?? null; },
-  async writeFile(path, data, executable) { calls.push(['writeFile', path, data, executable]); },
+  async writeFile(path, data, mode) { calls.push(['writeFile', path, data, mode]); },
   async unlink() {},
   async readdir() { return []; },
   async mkdir() {},
@@ -53,9 +53,11 @@ assert.deepEqual(calls.filter(([op]) => op === 'stat').map(([, path, follow]) =>
 
 await fs.promises.writeFile('/repo/run.sh', new Uint8Array([1, 2]).buffer, { mode: 0o100755 });
 await fs.promises.writeFile('/repo/a.txt', 'text', { mode: 0o100644 });
+await fs.promises.writeFile('/repo/.git/HEAD', 'ref: refs/heads/main\n');
 assert.deepEqual(calls.filter(([op]) => op === 'writeFile'), [
-  ['writeFile', 'repo/run.sh', new Uint8Array([1, 2]), true],
-  ['writeFile', 'repo/a.txt', 'text', false],
+  ['writeFile', 'repo/run.sh', new Uint8Array([1, 2]), 0o755],
+  ['writeFile', 'repo/a.txt', 'text', 0o644],
+  ['writeFile', 'repo/.git/HEAD', 'ref: refs/heads/main\n', undefined],
 ]);
 
 // cf-git's FileSystem binds `_rm` to rmdir when it takes options (models/FileSystem.js bindFs).

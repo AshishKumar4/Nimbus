@@ -40,7 +40,8 @@ import type { SparseMatcher } from '../pack/sparse.js';
 import { type Worktree } from './walk.js';
 /** The worktree writes a checkout makes, at absolute paths (createGitFs's checkout rules). */
 export interface CheckoutWriter {
-    writeFile(path: string, data: Uint8Array): Promise<void>;
+    /** A file made with `mode`; one there keeps its own (chmod sets it). */
+    writeFile(path: string, data: Uint8Array, mode: number): Promise<void>;
     symlink(target: string, path: string): Promise<void>;
     unlink(path: string): Promise<void>;
     rmdir(path: string): Promise<void>;

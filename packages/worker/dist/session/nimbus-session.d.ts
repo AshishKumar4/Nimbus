@@ -36,6 +36,7 @@ import type { HmrEvent } from '../facets/real-vite-hmr.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
 import type { NpmInstaller } from '../npm/installer.js';
+import type { PackumentReadOptions } from '../npm/r2-cache.js';
 import type { DocumentPolicy } from '@nimbus-sh/core/runtime/document-policy.js';
 import type { AppDoor } from './routes.js';
 import type { NimbusWorkspace } from '@nimbus-sh/core/workspace';
@@ -401,11 +402,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
         readOnly: boolean;
     }>;
     _rpcPutCachedTarball(integrity: string, bytes: Uint8Array | ArrayBuffer): Promise<void>;
-    _rpcGetPackument(name: string, options?: {
-        retries?: number;
-        timeoutMs?: number;
-        registry?: string;
-    }, pid?: number, run?: string): Promise<{
+    _rpcGetPackument(name: string, options?: PackumentReadOptions, pid?: number, run?: string): Promise<{
         readOnly: boolean;
     }>;
     _rpcCacheResult(ticket: string, result: {
