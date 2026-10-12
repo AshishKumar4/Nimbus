@@ -85,6 +85,24 @@ try {
     assert.equal(rejected.status, 0, rejected.stdout);
     assert.match(rejected.stdout, /refused egress refused this TLS destination/);
     assert.doesNotMatch(rejected.stdout, /unexpected secureConnect/);
+    // A servername other than the host reaches the egress, which presents it and checks the server by it; the host's own is Node's default.
+    const named = await run(String.raw`
+      const tls = require('tls');
+      const ask = (servername, path) => new Promise((resolve) => {
+        const socket = tls.connect({ port: 443, host: 'egress-test.invalid', servername }, () => {
+          socket.write('HEAD ' + path + ' HTTP/1.0\r\nHost: egress-test.invalid\r\n\r\n');
+        });
+        socket.setEncoding('utf8');
+        let body = '';
+        socket.on('data', (part) => { body += part; });
+        socket.on('end', () => { console.log('answer', body.trim()); resolve(); });
+        socket.on('error', (error) => { console.error(error.code + ' ' + error.message); process.exitCode = 1; resolve(); });
+      });
+      ask('api.egress-test.invalid', '/named').then(() => ask('egress-test.invalid', '/host'));
+    `);
+    assert.equal(named.status, 0, named.stdout);
+    assert.match(named.stdout, /answer via-egress-tls egress-test\.invalid:443 as api\.egress-test\.invalid HEAD \/named HTTP\/1\.0/);
+    assert.match(named.stdout, /answer via-egress-tls egress-test\.invalid:443 HEAD \/host HTTP\/1\.0/);
     const timeout = await run(`
       const socket = require('tls').connect({ port: 443, host: 'egress-test.invalid', timeout: 30 });
       const deadline = setTimeout(() => { console.log('TLS timeout missing'); socket.destroy(); }, 1000);

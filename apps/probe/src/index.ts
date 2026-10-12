@@ -26,6 +26,7 @@ import {
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { MemoryVFS } from '@nimbus-sh/core/vfs/memory.js';
 import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { EgressStreams, EgressTlsTarget, WorkspaceEgressTls } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { CANARY_PROJECT, CANARY_WHEEL, canaryPypiJson, canaryWheel } from './egress-canary.js';
 
 /**
@@ -145,7 +146,7 @@ export class TestEgress extends WorkerEntrypoint {
   }
 }
 
-export class TestTlsEgress extends TestEgress {
+export class TestTlsEgress extends TestEgress implements WorkspaceEgressTls {
   override async connect(socket: Socket): Promise<void> {
     const { localAddress } = await socket.opened as { localAddress?: string };
     if (localAddress === 'tcp-refused.invalid:7') throw new Error('egress refused this TCP destination');
@@ -166,18 +167,20 @@ export class TestTlsEgress extends TestEgress {
     writer.releaseLock();
   }
 
-  async connectTls(target: { hostname: string; port: number }): Promise<{ readable: ReadableStream<Uint8Array>; writable: WritableStream<Uint8Array> }> {
+  async connectTls(target: EgressTlsTarget): Promise<EgressStreams> {
     if (target.hostname === 'tls-refused.invalid') throw new Error('egress refused this TLS destination');
     if (target.hostname !== EGRESS_TEST_HOST || target.port !== 443) throw new Error('unexpected TLS destination');
     let reply: ReadableByteStreamController;
     let input = '';
+    // The name the session presents and checks the server by, when the program named one other than the host.
+    const named = target.servername === undefined ? '' : ' as ' + target.servername;
     return {
       readable: new ReadableStream<Uint8Array>({ type: 'bytes', start(controller) { reply = controller; } }),
       writable: new WritableStream<Uint8Array>({
         write(chunk) {
           input += new TextDecoder().decode(chunk);
           if (!input.includes('\r\n\r\n')) return;
-          reply.enqueue(new TextEncoder().encode('via-egress-tls ' + target.hostname + ':' + target.port + ' ' + input.split('\r\n', 1)[0] + '\n'));
+          reply.enqueue(new TextEncoder().encode('via-egress-tls ' + target.hostname + ':' + target.port + named + ' ' + input.split('\r\n', 1)[0] + '\n'));
           reply.close();
         },
       }),

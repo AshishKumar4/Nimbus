@@ -5,6 +5,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Added: under an egress, a program's `tls.connect({ servername })` with a
+  name other than the host reaches the egress as `connectTls`'s optional
+  `servername`, which the egress presents and checks the server by, as Node
+  does. It used to fail with `ERR_OPTION_NOT_IMPLEMENTED`. An egress that
+  ignores the field connects as before (Kinu ask 44).
+
 ## 2026-10-12: core 0.18.0, fabric 0.13.0, worker 0.16.0, loom 0.2.5, sdk 0.13.1, react 0.3.1, cli 0.2.5, create-nimbus-app 0.2.2
 
 - Breaking: VFS-2b uses one change notification for the namespace:

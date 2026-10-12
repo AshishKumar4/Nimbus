@@ -1,6 +1,6 @@
 /** Native TLSSocket owns the Node stream; the egress owns its encrypted session. */
 export const EGRESS_TLS_CLIENT_SOURCE = String.raw`
-function __nimbusEgressTlsConnect(real, net, args, notImplemented) {
+function __nimbusEgressTlsConnect(real, net, args) {
   let options = {}, callback;
   if (args[0] !== null && typeof args[0] === 'object') { options = { ...args[0] }; callback = args[1]; }
   else {
@@ -18,9 +18,8 @@ function __nimbusEgressTlsConnect(real, net, args, notImplemented) {
     const bound = previous?._handle?.options;
     const host = options.host ?? bound?.host ?? previous?._host ?? 'localhost';
     const port = Number(options.port ?? bound?.port);
-    if (options.servername !== undefined && options.servername !== host) throw notImplemented('options.servername', 'the egress makes TLS with the destination hostname as its SNI');
     if (previous) previous.destroy();
-    return { host, port };
+    return typeof options.servername === 'string' && options.servername !== '' ? { host, port, servername: options.servername } : { host, port };
   };
   let reader, writer, resource;
   let endedRead = false, endedWrite = false, stopped = false;

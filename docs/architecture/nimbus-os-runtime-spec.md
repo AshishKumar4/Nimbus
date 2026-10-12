@@ -555,7 +555,9 @@ Implementation rules:
   HMR bridge is unchanged.
 - W8 under a workspace egress: Node `net.connect` and `net.Socket` use the
   native socket transport through the egress's `connect`. An optional
-  `connectTls({ hostname, port })` owns TLS and returns its plaintext streams;
+  `connectTls({ hostname, port, servername? })` owns TLS and returns its
+  plaintext streams; `servername` crosses when the program names one other
+  than the host, and the egress presents it and checks the server by it.
   `tls.connect({ socket })` closes the plain connection and continues on those
   streams. Without that method TLS retains its named refusal. Without an
   egress, Node outbound TCP retains its current refusal. Inline Node

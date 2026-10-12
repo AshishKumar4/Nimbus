@@ -27,10 +27,25 @@
  * An egress that carries no TCP at all refuses in its `connect`.
  */
 export interface WorkspaceEgressTls {
-  connectTls(target: { hostname: string; port: number }): Promise<{
-    readable: ReadableStream<Uint8Array>;
-    writable: WritableStream<Uint8Array>;
-  }>;
+  connectTls(target: EgressTlsTarget): Promise<EgressStreams>;
+}
+
+/** Where a program's TLS socket goes. */
+export interface EgressTlsTarget {
+  hostname: string;
+  port: number;
+  /**
+   * The name the session presents (SNI) and checks the server's certificate
+   * by, when the program named one other than `hostname`
+   * (`tls.connect({ servername })`); absent, `hostname`, as in Node.
+   */
+  servername?: string;
+}
+
+/** The plaintext of a connection the egress made. */
+export interface EgressStreams {
+  readable: ReadableStream<Uint8Array>;
+  writable: WritableStream<Uint8Array>;
 }
 
 export type WorkspaceEgress = Pick<Fetcher, 'fetch' | 'connect'> & Partial<WorkspaceEgressTls>;
