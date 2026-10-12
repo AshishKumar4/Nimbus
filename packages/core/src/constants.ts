@@ -142,9 +142,13 @@ export const FS_READ_BATCH_REQUEST_BYTES = 4 * 1024 * 1024;
 // deepest realistic paths: a node_modules path runs ~200 bytes, so a full
 // page is ~1.6 MB against the 28 MiB bound.
 export const FS_LIST_PAGE_LIMIT = 8192;
-/** Authority-owned directory descriptions outstanding from one process's prefetch channels. */
-export const DIRECTORY_PREFETCH_LIMIT = 64;
-export const DIRECTORY_BATCH_LIMIT = 32;
+/**
+ * Authority-owned directory descriptions outstanding from one process's
+ * prefetch channels, and how many one batch opens: git status on Express
+ * (69 directories) walks its tree in two batches of 64.
+ */
+export const DIRECTORY_PREFETCH_LIMIT = 128;
+export const DIRECTORY_BATCH_LIMIT = 64;
 
 // Entries one subtree listing (fsListTree) carries before it is refused
 // (E2BIG): two list pages' worth, in one round trip and one revision.

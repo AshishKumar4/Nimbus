@@ -29,8 +29,11 @@ export interface ReadDirectoryPool {
   invalidate(): void;
   /** A park timed out: late, not-yet-delivered descriptions are abandoned, never installed into the guest fd table. */
   cancelPending(): void;
-  pending(): boolean;
-  flush(): Promise<void>;
+  /**
+   * The process's run ended: nothing more is opened or sent. Its scope's
+   * release closes every description the pool still accounts for, so
+   * retiring them first would only cost the run a round trip.
+   */
   dispose(): Promise<void>;
 }
 
@@ -183,15 +186,12 @@ export function readDirectoryPool({ call, store, client, before }: Options): Rea
     },
     invalidate,
     cancelPending() { cancelled++; invalidate(); },
-    pending: () => retiring.size > 0 || unused.size > 0 || claiming.size > 0 || uncertain > 0,
-    flush: () => serial(drain),
     async dispose() {
       ended = true;
       cancelled++;
       await serial(async () => {
-        for (const id of owned.keys()) retiring.add(id);
-        owned.clear(); claiming.clear();
-        await drain();
+        invalidate();
+        owned.clear(); claiming.clear(); retiring.clear();
       });
     },
   };

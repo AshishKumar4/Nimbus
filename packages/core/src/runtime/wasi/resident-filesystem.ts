@@ -155,6 +155,8 @@ export interface ResidentFilesystem extends RuntimeFsBridge {
   settle(): Promise<UnsettledWrite[]>;
   /** What the process has asked so far, and who answered: a run's filesystem cost, in calls. */
   stats(): ResidentFilesystemStats;
+  /** The directories this process opened, in order (bounded): the next run's in the same facet (ResidentDelegation.walked). */
+  walked(): readonly string[];
 }
 
 /** A held file the session refused part of: what a run reports, naming the file. */
@@ -198,6 +200,9 @@ const WRITE_PIECE_BYTES = 1024 * 1024;
 
 /** Listings one call may take before it gives the question to the authority. */
 const MAX_LISTINGS_PER_CALL = 64;
+
+/** Directory opens a run records for the next run in its facet (ResidentFilesystem.walked). */
+const WALKED_DIRECTORIES = 1024;
 
 /** What this adapter answers itself is decided here: anything else is the authority's. */
 const DELEGATE = Symbol('delegate');
@@ -296,6 +301,13 @@ export interface ResidentDelegation {
   /** The process's own store's write log (HolderOptions.journal). */
   readonly journal?: ProcessFsJournal;
   readonly readDirectories?: ReadDirectorySupervisor['fsReadDirectories'];
+  /**
+   * The directories the last process in this facet opened, in order (its
+   * walked()): a run that repeats it (git status, again) opens them again,
+   * so the batch prefetches them first. A guess: each prefetched
+   * description is admitted only if the namespace still vouches for it.
+   */
+  readonly walked?: readonly string[];
 }
 
 export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentNamespace, delegation?: ResidentDelegation): ResidentFilesystem {
@@ -465,6 +477,20 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   };
   /** Where the walk the last directory open belongs to began: `walkAfter`'s bound. */
   let walkRoot: string | null = null;
+  /** The directories opened so far, in order; and the last run's, as its walk goes on. */
+  const opening: string[] = [];
+  const previous = delegation?.walked ?? [];
+  let along = 0;
+  /**
+   * The directories the last run opened after `key`, from where this run has
+   * got to in its walk: what it opens next, if it repeats it.
+   */
+  const repeated = (key: string, limit: number): string[] => {
+    const at = previous.indexOf(key, along);
+    if (at < 0) return [];
+    along = at + 1;
+    return previous.slice(at + 1, at + 1 + limit);
+  };
 
   /** Unlisted directories a walk has missed a name in, and how often; and those whose subtree is past the listing's bound. */
   const missesIn = new Map<string, number>();
@@ -638,9 +664,9 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
 
   fs.inbound = () => { owed = true; directoryPool?.invalidate(); };
   fs.cancelPendingDirectories = () => { owed = true; directoryPool?.cancelPending(); };
-  fs.holding = () => (holder?.pending() ?? false) || (directoryPool?.pending() ?? false);
+  fs.holding = () => holder?.pending() ?? false;
   // What leaves the process is preceded by everything it logged.
-  fs.flush = async () => { await holder?.flush(); await directoryPool?.flush(); };
+  fs.flush = async () => { await holder?.flush(); };
   fs.settle = async () => {
     const failures: UnsettledWrite[] = [];
     if (directoryPool) {
@@ -655,6 +681,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   // A sync of a file through any descriptor: everything this process logged
   // is answered first, and a refusal it recorded is this sync's answer.
   fs.syncInode = () => holder?.flush();
+  fs.walked = () => opening;
   fs.stats = () => ({
     ...counts,
     delegated: { ...counts.delegated },
@@ -795,23 +822,26 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
         if (key === DELEGATE || key === null || key === '' || entryAt(key)?.type !== 'directory') return DELEGATE;
         if (walkRoot === null || (key !== walkRoot && !key.startsWith(walkRoot + '/'))) walkRoot = key;
         const within = walkRoot;
+        if (opening.length < WALKED_DIRECTORIES) opening.push(key);
         const handle = await directoryPool!.open(path, key, async () => {
           // The existing bounded namespace listing owns these names. Walk
           // only directories it actually reported; no invented path/prefix.
           await listingOf(key);
+          // What the last run opened next comes first; then the walk on from here.
+          const next = [...new Set([...repeated(key, DIRECTORY_BATCH_LIMIT - 1), ...walkAfter(key, within, DIRECTORY_BATCH_LIMIT - 1)])];
           // Carry the caller's confinement/descriptor root to the authority;
           // never replace a beneath lookup with an absolute one. A
           // descriptor-relative open names only what is beneath its directory.
-          if (typeof path === 'string') return walkAfter(key, within, DIRECTORY_BATCH_LIMIT - 1).map((next) => '/' + next);
+          const beneath = (base: string): string[] => next.filter((candidate) => base === '' || candidate.startsWith(base + '/'));
+          if (typeof path === 'string') return next.slice(0, DIRECTORY_BATCH_LIMIT - 1).map((candidate) => '/' + candidate);
           if ('directory' in path) {
             const base = path.path.replace(/\/$/, '');
-            return walkAfter(key, key, DIRECTORY_BATCH_LIMIT - 1)
-              .map((next) => ({ ...path, path: (base === '' ? '' : base + '/') + next.slice(key.length + 1) }));
+            return beneath(key).slice(0, DIRECTORY_BATCH_LIMIT - 1)
+              .map((candidate) => ({ ...path, path: (base === '' ? '' : base + '/') + candidate.slice(key.length + 1) }));
           }
           const root = keyOf(path.root);
-          return walkAfter(key, within, DIRECTORY_BATCH_LIMIT - 1)
-            .filter((next) => root === '' || next.startsWith(root + '/'))
-            .map((next) => ({ ...path, path: root === '' ? next : next.slice(root.length + 1) }));
+          return beneath(root).slice(0, DIRECTORY_BATCH_LIMIT - 1)
+            .map((candidate) => ({ ...path, path: root === '' ? candidate : candidate.slice(root.length + 1) }));
         });
         return handle ?? DELEGATE;
       }), () => openOnSession(path, flags));

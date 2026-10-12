@@ -229,22 +229,27 @@ let __wasiProcessGone: string | null = null;
 // `inbound()` is called wherever input from outside enters the guest (a
 // socket's bytes, an accepted connection, a poll wakeup): the next answer then
 // takes the ACQUIRE barrier first, the causal rule a node process keeps.
-let __wasiResident: { sup: WasiSupervisorStub; fs: ResidentFilesystem; ready: Promise<ResidentNamespace | null> } | null = null;
+let __wasiResident: { sup: WasiSupervisorStub; who: string; fs: ResidentFilesystem; ready: Promise<ResidentNamespace | null> } | null = null;
 
 /**
- * The store the last process of this facet left (a warm facet, FacetSpec.warm):
- * whose names it holds, and the device the session's filesystem reports. The
- * next process of the same credential continues it.
+ * The store the last process of this facet left at the end of its run (a
+ * warm facet, FacetSpec.warm): whose names it holds, the device the session's
+ * filesystem reports, and the directories it opened. The next process of the
+ * same credential continues it.
  */
-let __wasiKept: { who: string; device: number } | null = null;
+let __wasiKept: { who: string; device: number; walked: readonly string[] } | null = null;
+
+/** Who a store's names were walked as. */
+function __wasiWho(cred: WasiCred): string {
+  return `${cred.uid}:${cred.gid}:${[...cred.groups].sort((a, b) => a - b).join(',')}`;
+}
 
 /** The resident filesystem over `sup`, booting its store; its calls go to the session until the boot lands. */
 function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): { fs: ResidentFilesystem; ready: Promise<ResidentNamespace | null> } {
   const supervisor = answeringSupervisor(sup);
   const authority = supervisorFilesystem(sup);
   const store = __wasiResidentStore;
-  const who = `${cred.uid}:${cred.gid}:${[...cred.groups].sort((a, b) => a - b).join(',')}`;
-  const kept = __wasiKept !== null && __wasiKept.who === who ? __wasiKept : null;
+  const kept = __wasiKept !== null && __wasiKept.who === __wasiWho(cred) ? __wasiKept : null;
   __wasiKept = null;
   store.__residentSetStorage(undefined, supervisor);
   // A kept store answers as it stood at its cursor: the process's first
@@ -305,9 +310,9 @@ function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): { fs: Res
     } : {}),
     isHomeRoot: isHomeDirectory,
     ...(journalSql === undefined ? {} : { journal: sqlJournal(journalSql) }),
+    ...(kept === null || view === null ? {} : { walked: kept.walked }),
   });
   if (kept !== null && view !== null) fs.inbound();
-  void ready.then((booted) => { if (booted !== null) __wasiKept = { who, device: booted.device }; });
   return { fs, ready };
 }
 
@@ -334,7 +339,7 @@ function __wasiFilesystem(parking: WasiMakeImportsOptions['parking']): RuntimeFs
   // same-isolate supervisor answers synchronously and is used as it is.
   const canPark = typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function';
   if (cred === null || !canPark) return supervisorFilesystem(sup);
-  if (__wasiResident === null || __wasiResident.sup !== sup) __wasiResident = { sup, ...__wasiStartResident(sup, cred) };
+  if (__wasiResident === null || __wasiResident.sup !== sup) __wasiResident = { sup, who: __wasiWho(cred), ...__wasiStartResident(sup, cred) };
   return __wasiResident.fs;
 }
 
@@ -366,10 +371,14 @@ export async function __wasiSettleWrites(): Promise<string | null> {
   let failed: string | null = null;
   try {
     if (__wasiResident !== null) {
-      const failures = await __wasiResident.fs.settle();
+      const resident = __wasiResident;
+      const failures = await resident.fs.settle();
       if (failures.length > 0) failed = failures
         .map((f) => `${f.path}: not written (${f.error instanceof Error ? f.error.message : String(f.error)})`)
         .join('; ');
+      // A run that ended with its store answering leaves it to the next process in this facet.
+      const view = await resident.ready;
+      if (view !== null && view.ready()) __wasiKept = { who: resident.who, device: view.device, walked: resident.fs.walked() };
     }
   } catch (error) {
     if (__wasiProcessGone === null) throw error;

@@ -13,7 +13,8 @@ const files = new ProcessFiles(engine);
 const fs = files.bind({ pid: 1, cred: CRED_KERNEL });
 const root = '/home/user/directories';
 await fs.mkdir(root, { recursive: true });
-for (let i = 0; i < 90; i++) await fs.mkdir(`${root}/d${i}`);
+const count = DIRECTORY_PREFETCH_LIMIT + 30;
+for (let i = 0; i < count; i++) await fs.mkdir(`${root}/d${i}`);
 const channel = crypto.randomUUID();
 let sequence = 0;
 const request = (open = [], options = {}) => ({ channel, sequence: ++sequence, epoch: engine.epoch, cursor: engine.revision(), open, retire: [], claim: [], lease: false, ...options });
@@ -40,15 +41,15 @@ try {
     const result = await readDirectoryBatch(fs, request(Array.from({ length: 16 }, (_, at) => `${root}/d${i + at + 3}`), { claim: held }));
     held.push(...result.opened.map((entry) => entry.handle.id));
   }
-  const full = await readDirectoryBatch(fs, request([`${root}/d89`], { claim: held }));
+  const full = await readDirectoryBatch(fs, request([`${root}/d${count - 1}`], { claim: held }));
   assert.equal(full.opened.length, 0, 'capacity allows only retirement/acknowledgement, not more speculative opens');
   assert.equal(full.outstanding, DIRECTORY_PREFETCH_LIMIT);
   await readDirectoryBatch(fs, request([], { retire: held }));
-  assert.equal((await readDirectoryBatch(fs, request([`${root}/d89`]))).opened.length, 1);
+  assert.equal((await readDirectoryBatch(fs, request([`${root}/d${count - 1}`]))).opened.length, 1);
 
   const lostChannel = crypto.randomUUID();
   await readDirectoryBatch(fs, { ...request(), channel: lostChannel, sequence: 2 });
-  await assert.rejects(() => readDirectoryBatch(fs, { ...request([`${root}/d88`]), channel: lostChannel, sequence: 1 }), { code: 'ESTALE' }, 'a late abandoned first request cannot allocate after id-free recovery');
+  await assert.rejects(() => readDirectoryBatch(fs, { ...request([`${root}/d${count - 2}`]), channel: lostChannel, sequence: 1 }), { code: 'ESTALE' }, 'a late abandoned first request cannot allocate after id-free recovery');
 
   const originalOpen = fs.open.bind(fs);
   const issued = [];

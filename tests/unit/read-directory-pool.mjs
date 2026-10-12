@@ -53,7 +53,20 @@ function fixture() {
   });
   s.pool = pool;
   s.recall = async () => { for (const finish of recalls.values()) finish('revoke'); await recalled.promise; };
-  s.close = async () => { await pool.dispose(); await client.settle(); for (const finish of recalls.values()) finish(null); };
+  // The run's end: the pool sends nothing more, and the process's scope
+  // release (the session's) closes every description it still accounts for.
+  s.close = async () => {
+    const sent = calls.length;
+    await pool.dispose();
+    await client.settle();
+    for (const finish of recalls.values()) finish(null);
+    assert.equal(calls.length, sent, 'ending the run costs no round trip');
+  };
+  /** The ids the next exchange retires: what the pool still owes the session. */
+  s.retiredNext = async () => {
+    await pool.open('/d99', 'd99', async () => []);
+    return calls[calls.length - 1].retire;
+  };
   return s;
 }
 
@@ -66,10 +79,10 @@ function fixture() {
     assert.equal(s.pool.local(a.id).entry.ino, 1);
     await s.pool.close(b.id);
     assert.equal(s.pool.closed(b.id), true, 'logical close is immediate while retirement is queued');
-    await s.pool.flush();
+    assert.ok((await s.retiredNext()).includes(b.id), 'the next exchange retires it');
     assert.equal(s.pool.closed(b.id), false, 'after acknowledgement the authority rejects the retired number');
     assert.equal(s.held.has(b.id), false);
-    assert.equal(s.held.size, 1, 'unused prefetch is retired but the required open remains real');
+    assert.ok(s.held.has(a.id), 'the required open remains real');
     assert.equal(s.pool.owns(a.id), true);
     await s.recall();
     assert.equal(s.pool.local(a.id), null, 'revocation disables locality, not the real descriptor');
@@ -93,7 +106,6 @@ function fixture() {
   assert.equal(s.pool.owns(handle.id), true, 'an already-required descriptor is retained');
   s.hook = null;
   await s.close();
-  assert.equal(s.held.size, 0);
 }
 
 // Recall during admission: ownership is registered before the admission yields.
@@ -134,17 +146,19 @@ function fixture() {
   finish.resolve();
   await refused;
   s.hook = null;
+  const late = [...s.held.keys()];
+  assert.deepEqual((await s.retiredNext()).filter((id) => late.includes(id)).sort(), late.sort(), 'the abandoned late descriptions are retired, never installed');
   await s.close();
-  assert.equal(s.held.size, 0);
 }
 // An admission failure still owes every descriptor the server already issued.
 {
   const s = fixture();
   s.admission = async () => { throw new Error('store admission refused'); };
   await assert.rejects(() => s.pool.open('/d0', 'd0', async () => ['/d1']), /store admission refused/);
-  assert.equal(s.held.size, 2);
+  const received = [...s.held.keys()];
+  assert.equal(received.length, 2);
   s.admission = null;
+  assert.deepEqual((await s.retiredNext()).filter((id) => received.includes(id)).sort(), received.sort(), 'no received ID was lost between receipt and admission');
   await s.close();
-  assert.equal(s.held.size, 0, 'no received ID was lost between receipt and admission');
 }
 console.log('read-directory-pool: original ask, recall ordering, final namespace, late parks and bounded lifetime');
