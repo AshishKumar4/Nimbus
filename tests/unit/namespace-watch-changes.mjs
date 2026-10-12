@@ -441,6 +441,36 @@ await check('a directory above a watched path renamed: nothing told where the wa
   assert.deepEqual(user.take(), []);
   assert.deepEqual(missing.take(), []);
   user.stop(); missing.stop();
+  kernel.mkdir('open1/sub', { recursive: true });
+  kernel.writeFile('open1/sub/file', 'f');
+  const seen = watching('/open1/sub/file', ns.as(PUBLIC));
+  const proc = files.bind({ pid: 4120, cred: PUBLIC });
+  const heard = [];
+  const stop = proc.subscribe('/open1/sub/file', (event) => heard.push(said(event)));
+  kernel.rename('open1', 'open2');
+  await settled();
+  assert.deepEqual(seen.take(), ['unlink /open1/sub/file'], 'where the watcher could look, it hears its path go');
+  assert.deepEqual(heard, ['unlink open1/sub/file']);
+  seen.stop(); stop();
+  // Following: nothing hidden, nothing made up.
+  kernel.mkdir('fb/secret', { recursive: true });
+  kernel.writeFile('fb/secret/token', 't');
+  kernel.chmod('fb/secret', 0o700);
+  kernel.mkdir('fm', { recursive: true });
+  const heardFollowing = [];
+  const stops = [
+    ns.as(PUBLIC).watchChanges('/fb/secret/token', (events) => heardFollowing.push(...events.map(said)), { follow: true }),
+    ns.watchChanges('/fm/missing', (events) => heardFollowing.push(...events.map(said)), { follow: true }),
+    ns.watchChanges('/fm-fixed-missing', () => {}),
+  ];
+  const fixedMissing = watching('/fm/missing');
+  kernel.rename('fb', 'fa');
+  kernel.rename('fm', 'fn');
+  await settled();
+  assert.deepEqual(heardFollowing, []);
+  assert.deepEqual(fixedMissing.take(), []);
+  for (const s of stops) s();
+  fixedMissing.stop();
 });
 
 await check('a change is told in the store its write was routed to, whatever the mount gives when it lands', async () => {

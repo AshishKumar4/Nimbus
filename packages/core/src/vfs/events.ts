@@ -33,10 +33,14 @@ export function inWatchedTree(tree: string, path: string): boolean {
  * directory above it, renamed is the watched path's going (unlink, where it
  * was seen); a watch that follows its target (`follow`) is told its move
  * instead (a rename, where it may see both places), and moves with it
- * (CompositeVFS.watchChanges). What a directory renamed to above the
- * watched path brings is not known, and not told. Null: nothing to tell.
+ * (CompositeVFS.watchChanges). A directory above it renamed took it along
+ * only if it is there now (`exists`, asked of nothing else); what a
+ * directory renamed to above the watched path brings is not known, and not
+ * told. Null: nothing to tell.
  */
-export function projectChange(event: VfsEvent, tree: string, shown: (path: string) => string | null, follow = false): VfsEvent | null {
+export function projectChange(
+  event: VfsEvent, tree: string, shown: (path: string) => string | null, follow = false, exists: (path: string) => boolean = () => true,
+): VfsEvent | null {
   const seen = (path: string): string | null => (inWatchedTree(tree, path) ? shown(path) : null);
   const { type, timestamp } = event;
   const path = seen(event.path);
@@ -44,9 +48,13 @@ export function projectChange(event: VfsEvent, tree: string, shown: (path: strin
   if (event.oldPath === undefined) return path === null ? null : path === event.path ? event : { type, path, timestamp };
   const from = event.oldPath;
   if (inWatchedTree(from, tree)) {
-    const was = shown(tree);
+    const moved = event.path + tree.slice(from.length);
+    // Where the watched path was: seen through the directories above `from` as they are, and the ones that
+    // moved with it where they went (they are the same directories).
+    const above = shown(from);
+    const was = above === null ? null : from === tree ? above : shown(moved) === null || !exists(moved) ? null : above + tree.slice(from.length);
     if (was === null) return null;
-    const now = follow ? shown(event.path + tree.slice(from.length)) : null;
+    const now = follow ? shown(moved) : null;
     return now === null ? { type: 'unlink', path: was, timestamp } : { type: 'rename', path: now, oldPath: was, timestamp };
   }
   const oldPath = seen(from);
@@ -59,15 +67,11 @@ export function projectChange(event: VfsEvent, tree: string, shown: (path: strin
 export type VfsEventListener = (events: VfsEvent[]) => void;
 export type VfsPathListener = (event: VfsEvent) => void;
 
-/** A listener's registration: what it hears, and whether it was let go (a delivery under way skips it). */
+/** A listener's registration: what it hears, the publications after `from`, and whether it was let go (a delivery under way skips it). */
 interface Registration<L> {
   readonly listener: L;
-  removed: boolean;
-}
-
-/** A global listener's: the publications it hears are those after `from`. */
-interface GlobalRegistration extends Registration<VfsEventListener> {
   readonly from: number;
+  removed: boolean;
 }
 
 /**
@@ -79,7 +83,7 @@ interface GlobalRegistration extends Registration<VfsEventListener> {
  *   either end of a rename, and a rename of a directory above their path.
  */
 export class VfsEventEmitter {
-  private _globalListeners: GlobalRegistration[] = [];
+  private _globalListeners: Registration<VfsEventListener>[] = [];
   private _pathListeners = new Map<string, Registration<VfsPathListener>[]>();
   private _pending: VfsEvent[] = [];
   /** Each pending event's publication number (they rise). */
@@ -87,6 +91,9 @@ export class VfsEventEmitter {
   /** Publications so far. */
   private _published = 0;
   private _flushScheduled = false;
+  /** Publications the path listeners are yet to hear, in order (one a listener makes waits for the one it hears). */
+  private _pathQueue: { event: VfsEvent; at: number }[] = [];
+  private _pathDelivering = false;
 
   // Stats
   private _totalEmitted = 0;
@@ -94,7 +101,7 @@ export class VfsEventEmitter {
 
   /** Register a global listener that receives batched events: those published from now on. */
   on(listener: VfsEventListener): () => void {
-    const entry: GlobalRegistration = { listener, from: this._published, removed: false };
+    const entry: Registration<VfsEventListener> = { listener, from: this._published, removed: false };
     this._globalListeners.push(entry);
     return () => {
       entry.removed = true;
@@ -110,7 +117,7 @@ export class VfsEventEmitter {
       list = [];
       this._pathListeners.set(path, list);
     }
-    const entry: Registration<VfsPathListener> = { listener, removed: false };
+    const entry: Registration<VfsPathListener> = { listener, from: this._published, removed: false };
     list.push(entry);
     return () => {
       entry.removed = true;
@@ -140,8 +147,16 @@ export class VfsEventEmitter {
       }
     }
 
-    // Immediately deliver to path listeners (no batching for these)
-    if (this._pathListeners.size > 0) this._deliverToPathListeners(event);
+    // Immediately deliver to path listeners (no batching for these), in publication order.
+    if (this._pathListeners.size === 0) return;
+    this._pathQueue.push({ event, at });
+    if (this._pathDelivering) return;
+    this._pathDelivering = true;
+    try {
+      for (let next = this._pathQueue.shift(); next !== undefined; next = this._pathQueue.shift()) this._deliverToPathListeners(next.event, next.at);
+    } finally {
+      this._pathDelivering = false;
+    }
   }
 
   /**
@@ -149,10 +164,10 @@ export class VfsEventEmitter {
    * at its path or above it, at either end of a rename, and under a renamed
    * directory (what it watches moved).
    */
-  private _deliverToPathListeners(event: VfsEvent): void {
+  private _deliverToPathListeners(event: VfsEvent, at: number): void {
     const heard: Registration<VfsPathListener>[] = [];
     const hear = (key: string): void => {
-      for (const entry of this._pathListeners.get(key) ?? []) if (!heard.includes(entry)) heard.push(entry);
+      for (const entry of this._pathListeners.get(key) ?? []) if (entry.from < at && !heard.includes(entry)) heard.push(entry);
     };
     for (const end of event.oldPath === undefined ? [event.path] : [event.path, event.oldPath]) {
       // The end itself, then each directory above it, the root's ('') last: it holds every path.

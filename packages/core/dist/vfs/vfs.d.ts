@@ -146,10 +146,15 @@ export interface VFS {
         mode?: number;
     }): Awaitable<void>;
     readdir(path: string): Awaitable<VfsDirent[]>;
+    /**
+     * With `recursive`, it may answer the directories it made, top down
+     * (none: they were all there), as Node's answers the first of them;
+     * nothing: it does not say.
+     */
     mkdir(path: string, options?: {
         recursive?: boolean;
         mode?: number;
-    }): Awaitable<void>;
+    }): Awaitable<readonly string[] | void>;
     /** Removes a file; on backends without `rmdir`, also an empty directory. */
     unlink(path: string): Awaitable<void>;
     /** Removes an empty directory. Absent: the composite checks emptiness and unlinks. */
@@ -283,7 +288,7 @@ export interface SyncVFS {
     mkdir(path: string, options?: {
         recursive?: boolean;
         mode?: number;
-    }): void;
+    }): readonly string[] | void;
     unlink(path: string): void;
     rmdir?(path: string): void;
     rename?(from: string, to: string): void;

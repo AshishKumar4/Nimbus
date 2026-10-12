@@ -2538,13 +2538,26 @@ export class CompositeVFS {
             // a backend that resolves its own paths makes the rest in one call.
             if (r.mount.options.resolvesPaths) {
                 const whole = this.locate(path);
-                // One call makes it all: whether it made the directory is known only by looking first, which a watch
-                // there asks for. Unwatched when it begins, it is told to no watch (one registered meanwhile included).
+                // One call makes it all, and what it made is told as its backend says (VFS.mkdir); one that does
+                // not say is looked at first while a watch is there, and told only then.
                 return andThen(this.table.changes === undefined ? undefined : this.softStat(ops, whole.rel, true), (there) => this.reportWrite({
-                    path, route: whole, ops, follow: true, kind: 'create', existingIsNoop: true, ...(there === undefined || there?.type === 'directory' ? { told: null } : {}),
+                    path, route: whole, ops, follow: true, kind: 'create', existingIsNoop: true, told: null,
                 }, () => {
                     this.guardMutation([at, path]);
-                    return ops.mkdir(whole.rel, { recursive: true, mode });
+                    const made = ops.mkdir(whole.rel, { recursive: true, mode });
+                    const tell = (dirs) => {
+                        if (this.table.changes === undefined)
+                            return;
+                        const paths = dirs !== undefined ? dirs.map((rel) => CompositeVFS.reroot(whole.mount.point, rel))
+                            : there === undefined || there?.type === 'directory' ? [] : [path];
+                        if (paths.length > 0)
+                            this.tellLanded(whole.mount, storeBehind(this.table, ops), 'addDir', paths);
+                    };
+                    if (isPromise(made))
+                        made.then(tell, () => { });
+                    else
+                        tell(made);
+                    return andThen(made, () => undefined);
                 }, sync));
             }
             return andThen(this.softStat(ops, r.rel, true), (stat) => {

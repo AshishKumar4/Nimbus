@@ -585,8 +585,7 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     scope.waveDescriptions.clear();
     scope.closed = true;
     scope.abort.abort();
-    for (const unsubscribe of scope.subscriptions) unsubscribe();
-    scope.subscriptions.clear();
+    this.stopSubscriptions(scope);
     return { lost };
   }
 
@@ -614,10 +613,8 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
    * bridge on it). A flush that fails (an aborted binding's, a mount's
    * refusal) loses its bytes and is reported after the scope is closed.
    */
-  private closeScope(scope: DescriptorScope): Awaitable<void> {
-    if (scope.closed) return;
-    const lost = closeDescriptions(scope);
-    // Every subscription stopped, whichever of them fails to.
+  /** Every subscription of `scope` stopped, whichever of them fails to. */
+  private stopSubscriptions(scope: DescriptorScope): void {
     for (const dispose of [...scope.subscriptions]) {
       try {
         dispose();
@@ -626,6 +623,12 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
       }
     }
     scope.subscriptions.clear();
+  }
+
+  private closeScope(scope: DescriptorScope): Awaitable<void> {
+    if (scope.closed) return;
+    const lost = closeDescriptions(scope);
+    this.stopSubscriptions(scope);
     scope.closed = true;
     scope.abort.abort();
     return andThen(lost, reportLost);
