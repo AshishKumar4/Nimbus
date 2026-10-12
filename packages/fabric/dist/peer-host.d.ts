@@ -124,6 +124,7 @@ export declare class PeerHost {
         facet: string | null;
         coordinator: string | null;
         residencies: number;
+        watchers: number;
     }>;
     /** Open once and answer. Observation and release are independently owned calls. */
     host(boot: unknown, opts: unknown): Promise<HostedReply<{

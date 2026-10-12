@@ -4,9 +4,10 @@ import { SUPERVISOR_OP_ROUTES, createSupervisorBridgeStore } from '@nimbus-sh/co
 import { SUPERVISOR_DELIVER_OP } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import { openSupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import { isHostedWatch, isHostedWebSocket, isHostedResidency } from '@nimbus-sh/fabric/peer-host.js';
+import { hostActivity } from '@nimbus-sh/fabric/host-activity.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { answerSupervisorOp, buildSessionSupervisorOps } from '../session/supervisor-op.js';
-import { armLogJanitor, armResidentKeepalive, installLogPersistence, logJanitorFired, noteResidentClient, residentKeepaliveFired } from '../session/hibernation.js';
+import { armLogJanitor, armResidentKeepalive, endResidentKeepalive, installLogPersistence, logJanitorFired, noteResidentClient, residentKeepaliveFired } from '../session/hibernation.js';
 import { takeLegacyResetNotice } from '../session/legacy-reset.js';
 import { appendScrollback, ensureSessionStateSchema, loadScrollback, loadShellState, persistShellState } from '../session/state-store.js';
 import { wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
@@ -33,7 +34,7 @@ class RuntimeOwner {
     closing = null;
     _w9PersistWired = false;
     _w9SchemaInit = false;
-    _w1KeepaliveArmed = false;
+    _w1Keepalive = null;
     _w1JanitorAt = null;
     _w1LastClientActivityAt = 0;
     _viteShimPid = null;
@@ -73,7 +74,7 @@ class RuntimeOwner {
         ensureSessionStateSchema(options.ctx);
         // A process's answers leave as the rest of its output does: once what it wrote is published.
         options.ports.setOutput(options.workspace.processes);
-        options.ports.setClientSocketActivity(() => noteResidentClient(this, (at) => this.scheduleKeepalive(at)));
+        options.ports.setClientSocketActivity(() => noteResidentClient(this, this.keepaliveCycle));
         this.terminal = new WebSocketTerminal(null, (data) => {
             appendScrollback(options.ctx, data, Date.now());
             persistShellState(options.ctx, { cwd: this.shell.getCwd(), env: this.shell.getEnv() });
@@ -87,7 +88,7 @@ class RuntimeOwner {
             resolveWorkerLaunch: options.resolveWorkerLaunch,
             filesystem: () => options.workspace.filesystem,
             network: () => options.workspace.network,
-            armResidentKeepalive: () => armResidentKeepalive(this, (at) => this.scheduleKeepalive(at)),
+            armResidentKeepalive: () => armResidentKeepalive(this, this.keepaliveCycle),
             supervisorOp: (envelope) => this.supervisorOp(envelope),
         });
         options.workspace.shell.bindTerminal(this.terminal);
@@ -159,12 +160,18 @@ class RuntimeOwner {
         return pending;
     }
     noteClientActivity() {
-        noteResidentClient(this, (at) => this.scheduleKeepalive(at));
+        noteResidentClient(this, this.keepaliveCycle);
     }
-    scheduleKeepalive(at) {
-        const pending = this.schedule('resident-keepalive', at);
-        this.options.lifecycle.waitUntil(pending);
-        return pending.then(() => true, () => false);
+    /** The embedder's lifecycle schedules the cycle; the runtime's own host activity is what it owns. */
+    get keepaliveCycle() {
+        return {
+            schedule: (at) => {
+                const pending = this.schedule('resident-keepalive', at);
+                this.options.lifecycle.waitUntil(pending);
+                return pending.then(() => true, () => false);
+            },
+            observe: () => hostActivity(this.ctx).acquire(),
+        };
     }
     schedule(reason, at) {
         if (this._w1SessionDestroyed)
@@ -239,8 +246,8 @@ class RuntimeOwner {
         }
         else if (task === 'resident-keepalive') {
             const next = residentKeepaliveFired(this, Date.now());
-            if (next !== null && !(await this.scheduleKeepalive(next)))
-                this._w1KeepaliveArmed = false;
+            if (next !== null && !(await this.keepaliveCycle.schedule(next)))
+                endResidentKeepalive(this);
         }
         else if (task === 'log-flush') {
             this.flushScheduled = false;

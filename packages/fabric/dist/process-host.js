@@ -354,7 +354,9 @@ class PeerProcessHost {
             residency.socket = response.webSocket;
             if (this.closed)
                 throw new Error('Nimbus: the process host is closed');
-            const observation = hostActivity(this.ctx).observe((signal) => this.watchPeer(placement.peerName, params.workerKey, webSocketCapability, signal), (error) => loss.lose(error), opened.incarnation);
+            // The stub an open observation holds: data calls made while it is open share it.
+            const link = {};
+            const observation = hostActivity(this.ctx).observe((signal) => this.watchPeer(placement.peerName, params.workerKey, webSocketCapability, signal, link), (error) => loss.lose(error), opened.incarnation);
             stopObserving = observation.close;
             const starting = hostActivity(this.ctx).acquire();
             const started = loss.route(() => this.withPeer(placement.peerName, (stub) => stub._rpcAwaitHostedBoot(params.workerKey).then((r) => r.payload))).finally(starting.release);
@@ -367,7 +369,8 @@ class PeerProcessHost {
                     const lease = observation.acquire(scope.signal);
                     void scope.settled.then(lease.release);
                     try {
-                        return await this.withPeer(placement.peerName, (stub) => routeThroughPeer(stub, params.workerKey, webSocketCapability, request, scope));
+                        const route = (stub) => routeThroughPeer(stub, params.workerKey, webSocketCapability, request, scope);
+                        return await (link.stub ? route(link.stub) : this.withPeer(placement.peerName, route));
                     }
                     catch (error) {
                         lease.release();
@@ -494,12 +497,15 @@ class PeerProcessHost {
             disposeRpcResource(stub);
         }
     }
-    async watchPeer(peerName, workerKey, capability, signal) {
+    async watchPeer(peerName, workerKey, capability, signal, link) {
         signal.throwIfAborted();
         let stub = this.getPeer(peerName);
+        link.stub = stub;
         const release = () => {
             if (!stub)
                 return;
+            if (link.stub === stub)
+                link.stub = undefined;
             disposeRpcResource(stub);
             stub = undefined;
             signal.removeEventListener('abort', release);

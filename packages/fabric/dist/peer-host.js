@@ -178,7 +178,7 @@ export class PeerHost {
         const stored = await this.ctx.storage.get(HOSTING_KEY_PREFIX + workerKey);
         const facet = record && !record.closed ? (await record.facet).name : null;
         return { found: facet !== null || stored !== undefined, incarnation: this.incarnation, facet,
-            coordinator: stored?.coordinatorDoId ?? null, residencies: record?.residencies.size ?? 0 };
+            coordinator: stored?.coordinatorDoId ?? null, residencies: record?.residencies.size ?? 0, watchers: record?.watchers.size ?? 0 };
     }
     /** Open once and answer. Observation and release are independently owned calls. */
     async host(boot, opts) {

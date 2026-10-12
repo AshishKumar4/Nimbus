@@ -321,10 +321,11 @@ export class NimbusSession extends CloudflareDurableObject {
      *  CF DO docs). The alarm itself lives in DO storage at key
      *  `w1_next_alarm_reasons`. */
     _w1JanitorAt = null;
-    /** W1: idempotency flag for the resident keep-alive alarm cycle — the
-     *  recurring event that holds this object in memory for as long as a
-     *  resident process runs (hibernation.ts ensureResidentKeepalive). */
-    _w1KeepaliveArmed = false;
+    /** W1: the resident keep-alive alarm cycle while armed — the recurring
+     *  event that holds this object in memory for as long as a resident
+     *  process runs and its client is present — and the host activity it owns
+     *  (hibernation.ts armResidentKeepalive). */
+    _w1Keepalive = null;
     /** W1: when a runtime client last reached this session over HTTP/WS; the keep-alive
      *  holds the object only while traffic was observed within
      *  RESIDENT_KEEPALIVE_DETACHED_MS (hibernation.ts residentClientPresent). */

@@ -41,6 +41,7 @@ import type { NimbusWorkspace } from '@nimbus-sh/core/workspace';
 import type { RuntimeManager } from '@nimbus-sh/core/runtime/runtime-manager.js';
 import { type SessionAiHost } from './ai.js';
 import { type TryEnableReplicasResult as _W12EnableResult } from '../replica/routing.js';
+import type { HostActivityLease } from '@nimbus-sh/fabric/host-activity.js';
 import { type InitSessionOptions } from './init.js';
 import * as _rpc from './rpc.js';
 import { SessionFilesystem } from './session-filesystem.js';
@@ -159,10 +160,11 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
      *  CF DO docs). The alarm itself lives in DO storage at key
      *  `w1_next_alarm_reasons`. */
     _w1JanitorAt: number | null;
-    /** W1: idempotency flag for the resident keep-alive alarm cycle — the
-     *  recurring event that holds this object in memory for as long as a
-     *  resident process runs (hibernation.ts ensureResidentKeepalive). */
-    _w1KeepaliveArmed: boolean;
+    /** W1: the resident keep-alive alarm cycle while armed — the recurring
+     *  event that holds this object in memory for as long as a resident
+     *  process runs and its client is present — and the host activity it owns
+     *  (hibernation.ts armResidentKeepalive). */
+    _w1Keepalive: HostActivityLease | null;
     /** W1: when a runtime client last reached this session over HTTP/WS; the keep-alive
      *  holds the object only while traffic was observed within
      *  RESIDENT_KEEPALIVE_DETACHED_MS (hibernation.ts residentClientPresent). */
