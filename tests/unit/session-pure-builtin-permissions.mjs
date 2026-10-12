@@ -1,64 +1,25 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
 import { createDefaultRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
-import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
-import { ProcessRegistry } from '../../packages/core/src/substrate/lifo/shell/ProcessRegistry.ts';
-import { Shell } from '../../packages/core/src/substrate/lifo/shell/Shell.ts';
+
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
+import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
-const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-pure-builtin-permissions-'));
-
-try {
-  const build = await Bun.build({
-    entrypoints: [
-      './packages/worker/src/session/nimbus-session.ts',
-      './packages/worker/src/session/session-filesystem.ts',
-      './packages/worker/src/session/supervisor-rpc.ts',
-      './packages/worker/src/hosted/services.ts',
-    ],
-    outdir: outputDir,
-    target: 'bun',
-    format: 'esm',
-    plugins: [{
-      name: 'cloudflare-workers-test-stub',
-      setup(builder) {
-        // cloudflare:sockets too: SupervisorRPC.connect loads it, and nothing here calls that.
-        builder.onResolve({ filter: /^cloudflare:(workers|sockets)$/ }, () => ({
-          path: 'cloudflare-workers',
-          namespace: 'test',
-        }));
-        builder.onLoad({ filter: /.*/, namespace: 'test' }, () => ({
-          contents: 'export class DurableObject {}; export class WorkerEntrypoint {}; export class RpcTarget {};',
-          loader: 'js',
-        }));
-      },
-    }],
+{
+  const { NimbusSession, SessionFilesystem, SupervisorRPC, bindRuntimeServices, NimbusWorkspace } = await importWorkerBundle({
+    'packages/worker/src/session/nimbus-session.ts': ['NimbusSession'],
+    'packages/worker/src/session/session-filesystem.ts': ['SessionFilesystem'],
+    'packages/worker/src/session/supervisor-rpc.ts': ['SupervisorRPC'],
+    'packages/worker/src/hosted/services.ts': ['bindRuntimeServices'],
+    'packages/core/src/workspace/nimbus-workspace.ts': ['NimbusWorkspace'],
   });
-  assert.equal(build.success, true, build.logs.map(String).join('\n'));
-
-  const entry = build.outputs.find((output) => output.path.endsWith('/nimbus-session.js'));
-  assert.ok(entry, 'the session entry bundle was emitted');
-  const { NimbusSession } = await import(pathToFileURL(entry.path).href);
-  const filesystemEntry = build.outputs.find((output) => output.path.endsWith('/session-filesystem.js'));
-  assert.ok(filesystemEntry, 'the session filesystem entry bundle was emitted');
-  const { SessionFilesystem } = await import(pathToFileURL(filesystemEntry.path).href);
-  const rpcEntry = build.outputs.find((output) => output.path.endsWith('/supervisor-rpc.js'));
-  assert.ok(rpcEntry, 'the supervisor RPC entry bundle was emitted');
-  const { SupervisorRPC } = await import(pathToFileURL(rpcEntry.path).href);
-  const servicesEntry = build.outputs.find((output) => output.path.endsWith('/services.js'));
-  assert.ok(servicesEntry, 'the shared runtime services entry was emitted');
-  const { bindRuntimeServices } = await import(pathToFileURL(servicesEntry.path).href);
 
   const harness = createSqliteVfsTestHarness();
   const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -78,7 +39,7 @@ try {
   rootVfs.writeFile('home/user/shell-secret.txt', 'SHELL-SECRET\n', { mode: 0o000 });
   rootVfs.writeFile('home/user/private.sh', 'echo PRIVATE-SCRIPT\n', { mode: 0o600 });
 
-  const registry = createDefaultRegistry();
+  let registry = createDefaultRegistry();
   registerUnixCommands(registry, rawVfs);
   registry.register('node', async (ctx) => {
     try {
@@ -97,12 +58,14 @@ try {
   const session = Object.create(NimbusSession.prototype);
   session.ctx = { facets: {} };
   session.env = {};
-  Object.assign(session, bindRuntimeServices(session, {
+  const { childProcessHost, ...delegated } = bindRuntimeServices(session, {
     ctx: session.ctx,
     env: session.env,
     notify() {},
     async requestLaunchTurn() { return true; },
-  }));
+  });
+  Object.defineProperty(session, 'childProcessHost', { value: childProcessHost });
+  Object.assign(session, delegated);
   session.processes = processes;
   session.filesystem = new SessionFilesystem(rawVfs, session);
   // ensureFacetManager short-circuits on this — the cp verbs under test
@@ -112,7 +75,6 @@ try {
   session.childProcessManager = null;
   session.esbuildService = null;
   session._setCpRegistry(registry);
-  const shellVfs = new ProcessFiles(rawVfs);
   const terminal = {
     write() {},
     writeln() {},
@@ -122,28 +84,13 @@ try {
     focus() {},
     clear() {},
   };
-  session.shell = new Shell(
-    terminal,
-    shellVfs,
-    registry,
-    { HOME: '/home/user', PATH: '/bin:/usr/bin' },
-    new ProcessRegistry(),
-    {
-      pid: userParent.pid,
-      cred: processes.cred(userParent.pid),
-      setUmask: (mask) => { processes.setUmask(userParent.pid, mask); },
-    },
-  );
-  // A child's `sh` runs on a shell of its own, as NimbusWorkspace.shellFor builds one.
-  session.runtimeWorkspace = {
-    shellFor(pid, state) {
-      const shell = new Shell(terminal, shellVfs, registry, { ...session.shell.getEnv(), ...state.env, $: String(pid) }, new ProcessRegistry(), {
-        pid, get cred() { return processes.cred(pid); }, setUmask: (mask) => processes.setUmask(pid, mask),
-      });
-      shell.setCwd(state.cwd);
-      return shell;
-    },
-  };
+  const node = await registry.resolve('node');
+  session.runtimeWorkspace = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx,
+    vfs: rawVfs, filesystem: session.getFilesystemAuthority(), processes, terminal, cwd: '/home/user' });
+  registry = session.runtimeWorkspace.registry;
+  registry.register('node', node);
+  session._setCpRegistry(registry);
+  session.shell = session.runtimeWorkspace.shell;
 
   let supervisorSpawnRequest;
   // supervisorOp is the session's own dispatch — the stub re-expresses the
@@ -266,8 +213,6 @@ try {
       stderr: new TextDecoder().decode(output.stderr),
     };
   }
-} finally {
-  await rm(outputDir, { recursive: true, force: true });
 }
 
 console.log('session pure builtin permissions: ok');

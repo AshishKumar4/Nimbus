@@ -266,12 +266,15 @@ assert.equal((await run(main, 'printf %s "$PATH"'))[0], mainPath);
   const session = Object.create(NimbusSession.prototype);
   session.ctx = { facets: {} };
   session.env = {};
-  Object.assign(session, bindRuntimeServices(session, {
+  const { childProcessHost, ...delegated } = bindRuntimeServices(session, {
     ctx: session.ctx,
     env: session.env,
     notify() {},
     async requestLaunchTurn() { return true; },
-  }));
+  });
+  Object.defineProperty(session, 'childProcessHost', { value: childProcessHost });
+  Object.assign(session, delegated);
+  session.runtimeWorkspace = main;
   session.processes = main.processes;
   session.filesystem = new SessionFilesystem(main.vfs, session);
   session.facetManagerComposed = { manager: { setVfs() {} }, apps: {}, pumpLaunches: async () => {} };
