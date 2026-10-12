@@ -11820,6 +11820,22 @@ function __nimbusFileImportMeta(filename, url = builtins.url.pathToFileURL(filen
 
 // Errors a known Workers-incompatible package's load threw, advised once.
 const __nimbusAdvised = new WeakSet();
+// An ES module's import of a JSON file (esm-stage.ts's member): Node's JSON
+// translator, whose value is require()'s for the same file. One object, in
+// require.cache, whichever loads it first.
+globalThis.__nimbusJsonModule = (filename, text) => {
+  const cached = __NodeModule._cache[filename];
+  if (cached !== undefined && cached.loaded) return cached.exports;
+  let exports;
+  try {
+    exports = JSON.parse(text.charCodeAt(0) === 0xFEFF ? text.slice(1) : text);
+  } catch (error) {
+    error.message = filename + ": " + error.message;
+    throw error;
+  }
+  __NodeModule._cache[filename] = { exports, loaded: true };
+  return exports;
+};
 // \`required\`: loaded by a require() call, not by an import (an interpreted
 // ES module's static import, core interpreter/modules.ts, or import()).
 // A staged ES module is the registry's (__nimbusEsmRequire): this loads it
@@ -11856,7 +11872,9 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
   const mod = new __NodeModule(filename, parent);
   mod.filename = filename;
   mod.paths = __NodeModule._nodeModulePaths(mod.path);
-  if (esModule && !required) __nimbusEsmInstances.set(cacheKey, mod);
+  // An imported JSON file is require()'s too, as Node's JSON translator
+  // keeps it (__nimbusJsonModule); a query's or a fragment's is its own.
+  if (esModule && !required && !(resolvedPath.endsWith(".json") && cacheKey === filename)) __nimbusEsmInstances.set(cacheKey, mod);
   else __NodeModule._cache[cacheKey] = mod;
   const unload = () => {
     if (__NodeModule._cache[cacheKey] === mod) delete __NodeModule._cache[cacheKey];
@@ -11898,6 +11916,8 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
   const moduleUrl = evaluationKey.startsWith("file:")
     ? evaluationKey : builtins.url.pathToFileURL("/" + resolvedPath).href;
   Object.defineProperty(mod, "__nimbusImportMeta", { value: __nimbusFileImportMeta("/" + resolvedPath, moduleUrl) });
+  // A require() refusing top-level await leaves its evaluation going on.
+  let evaluating = false;
   try {
     __nimbusLoadsTypeScript(normalizedPath);
     let cell = esmId === -1 ? __nimbusModuleCell(normalizedPath) : null;
@@ -11941,11 +11961,20 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
       __moduleEvaluations.set(evaluationKey, evaluation);
       if (required && esmId !== -1) {
         evaluation.then(undefined, () => {});
+        evaluating = true;
         throw nodeError(Error, "ERR_REQUIRE_ASYNC_MODULE", "require() cannot be used on an ESM graph with top-level await. Use import() instead. To see where the top-level await comes from, use --experimental-print-required-tla.\\n  From " + (parent?.filename ?? "") + " \\n  Requiring " + filename + " ");
       }
     }
   } catch (e) {
     unload();
+    // An adopted ES module that threw stays failed: the next require() or
+    // import() of it throws what it threw, and does not evaluate it again
+    // (Node's errored module record).
+    if (adopted && !evaluating) {
+      const record = __nimbusEsmRecord(esmId);
+      record.state = __ESM_FAILED;
+      record.error = { value: e };
+    }
     // A ReferenceError for a CommonJS name is the module loader's to explain
     // where it leaves an ES module's job, and nothing else's: a require() of
     // an ES module is that module's job (Node's ModuleJobSync).
@@ -12115,6 +12144,8 @@ const __nimbusEsmInstances = new Map();
 // The batch the meta instances evaluating now join: one evaluation's, which
 // runs every meta instance it links in one synchronous turn, and ends with it.
 let __nimbusEsmOpenBatch = null;
+// How many evaluations have opened: an import() knows which began after it.
+let __nimbusEsmBatches = 0;
 // What each import() in flight resolves once its graph has loaded (__nimbusEsmImport).
 const __nimbusEsmLoading = [];
 const __nimbusEsmResolved = Promise.resolve();
@@ -12137,7 +12168,7 @@ function __nimbusEsmEnter(metaUrl) {
   if (__nimbusEsmOpenBatch === null) {
     // An evaluation begins: the graphs it loads are loaded.
     for (const loaded of __nimbusEsmLoading.splice(0)) loaded();
-    __nimbusEsmOpenBatch = { running: new Set(), stop: null, thrower: null };
+    __nimbusEsmOpenBatch = { running: new Set(), stop: null, thrower: null, seq: ++__nimbusEsmBatches };
     __nimbusReflectApply(__nimbusEsmThen, __nimbusEsmResolved, [() => { __nimbusEsmOpenBatch = null; }]);
   }
   record.batch = __nimbusEsmOpenBatch;
@@ -12351,15 +12382,24 @@ async function __nimbusEsmImport(id) {
   if (row[0] === "module" && record.state === 0) __nimbusEsmWarnTypeless(id);
   if (row[0] === "module" && __nimbusEsmTainted(id)) return __nimbusEsmInterpret(id);
   let batch = null;
+  let since = __nimbusEsmBatches;
   try {
     // The program's own work while its graph loads, until its evaluation
     // begins (its first meta instance) or it settles: a host whose loading
     // reads keeps the process, as Node's loader keeps it while it reads;
     // a top-level await that never settles does not. Armed before the
     // import(), which may link and begin evaluating within the call.
-    let loaded;
-    __nimbusTrackOp(new Promise((resolve) => { loaded = resolve; }));
+    let resolve;
+    __nimbusTrackOp(new Promise((settle) => { resolve = settle; }));
+    // Settled once, by whichever comes first; never left waiting in the
+    // list (a cached module's import() enters no meta instance to empty it).
+    const loaded = () => {
+      const at = __nimbusEsmLoading.indexOf(loaded);
+      if (at !== -1) __nimbusEsmLoading.splice(at, 1);
+      resolve();
+    };
     __nimbusEsmLoading.push(loaded);
+    since = __nimbusEsmBatches;
     const evaluation = import(__NIMBUS_BUNDLE_URL + __nimbusEsmName(id));
     // The evaluation it began, when it began within the call (workerd's).
     batch = __nimbusEsmOpenBatch;
@@ -12377,15 +12417,20 @@ async function __nimbusEsmImport(id) {
     // (marked already where a later body's check stopped). It keeps what it
     // threw, for a require() of it. A body suspended in its top-level await
     // is the thrower only where no other is.
+    // Only a body of this import's own evaluation: one that began after
+    // the call (an import that failed to link began none), never an earlier
+    // evaluation's, suspended in its top-level await.
+    const own = (record) => record !== undefined && record.batch !== null
+      && (batch !== null ? record.batch === batch : record.batch.seq > since);
     let thrower = null;
     for (const record of __nimbusEsmRecords) {
-      if (record === undefined || (batch !== null && record.batch !== batch)) continue;
+      if (!own(record)) continue;
       if (record.state === __ESM_FAILED && record.error === undefined) thrower = record;
       else if (record.state === __ESM_BEGAN && thrower === null && !__nimbusEsmSuspends(record)) thrower = record;
     }
     if (thrower === null) {
       for (const record of __nimbusEsmRecords) {
-        if (record !== undefined && (batch === null || record.batch === batch) && record.state === __ESM_BEGAN) thrower = record;
+        if (own(record) && record.state === __ESM_BEGAN) thrower = record;
       }
     }
     if (thrower !== null) {
@@ -12658,9 +12703,9 @@ async function __nimbusEsmLinkStaged(key, seen) {
     const target = resolution.path.replace(/^\\/+/, "");
     const id = __nimbusEsmId("module", target);
     if (id === -1) await __nimbusEsmLinkStaged(target, seen);
-    else if (__nimbusEsmRecord(id).state !== __ESM_DONE && !__nimbusEsmTainted(id)) {
-      try { await __nimbusEsmImport(id); } catch {}
-    }
+    // What one throws ends the evaluation of what imports it, as Node's
+    // does: no later import of it evaluates, and the import() rejects.
+    else if (__nimbusEsmRecord(id).state !== __ESM_DONE && !__nimbusEsmTainted(id)) await __nimbusEsmImport(id);
   }
 }
 function __esmLoadInterpreted(resolution, key, evaluationKey, esm) {

@@ -289,8 +289,11 @@ export async function stageEsModules(
     if (resolution.format === 'json') {
       const text = await readText(resolution.path);
       if (text === null) throw notStaged(resolution.path);
-      // JSON.parse's value, as Node's: an object literal would make `__proto__` the prototype.
-      return member('json', key, () => `export default JSON.parse(${JSON.stringify(text.charCodeAt(0) === 0xfeff ? text.slice(1) : text)});\n`);
+      // Node's JSON translator: the object require() gives for the same
+      // file, one in require.cache whichever loads it first (node-shims.ts
+      // __nimbusJsonModule); JSON.parse's, as an object literal would make
+      // `__proto__` the prototype.
+      return member('json', key, () => `export default globalThis.__nimbusJsonModule(${JSON.stringify(resolution.path)}, ${JSON.stringify(text)});\n`);
     }
     // CommonJS by Node's format for it, loaded by require().
     if (!isCode(key)) throw notStaged(resolution.path);
