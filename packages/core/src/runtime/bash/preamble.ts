@@ -43,7 +43,7 @@ import type {
   BashWasiFsImports,
   BashWasiImports,
 } from './types.js';
-import { after, closeResident, descriptorNamed, installAuthorityFilesystem, processGoneMessage, refusalErrno, shareResident } from '../wasi/filesystem.js';
+import { after, closeResident, descriptorNamed, installAuthorityFilesystem, processGoneMessage, refusalErrno, shareResident, type AuthorityFd } from '../wasi/filesystem.js';
 import { supervisorFilesystem } from '../vfs-supervisor.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
 import { PIPE_CAPACITY, decideRead, decideWrite, heldExitSettles, holdsExit, pipeBudget, pipeLimitMessage, readerStops } from './pipe-rules.js';
@@ -183,15 +183,14 @@ function wakeWriters(pp: BashPipe): void {
 function lowestFd(proc: BashProc): number { let fd = 0; while (proc.fds.has(fd) || fd === 3) fd++; return fd; }
 function bumpPipe(s: BashSession, e: { pipeId: number; end: 'r' | 'w' }, d: number): void { const pp = s.pipes.get(e.pipeId) as BashPipe; if (e.end === 'r') pp.readers += d; else pp.writers += d; }
 /**
- * What a second descriptor on entry `e` holds (dup, dup2, a fork's copy): the
- * same open, as dup(2) shares an open file description and its offset. An
- * authority file's is the authority's own dup; a resident copy is shared.
- * A pipe end's count is the caller's to bump.
+ * What a second descriptor on entry `e` holds (dup, dup2, a fork's copy), for
+ * any kind but an authority file's (the authority's own dup): the same open,
+ * as dup(2) shares an open file description and its offset. A resident copy
+ * is shared; a pipe end's count is the caller's to bump. At once, with no
+ * await: a fork's pipe ends are counted before anything else runs.
  */
-async function duplicateEntry(s: BashSession, e: BashFdEntry): Promise<BashFdEntry> {
-  if (e.kind === 'authority') return { ...e, handle: await s.fs.dup(e.handle.id) };
-  if (e.kind === 'resident') return shareResident(e);
-  return { ...e };
+function shareEntry(e: Exclude<BashFdEntry, AuthorityFd>): BashFdEntry {
+  return e.kind === 'resident' ? shareResident(e) : { ...e };
 }
 /** A new descriptor on what `proc`'s stream or pipe descriptor `fd` holds, as dup(2); null for any other kind (AuthorityFilesystemOptions.duplicate). */
 function duplicateStream(s: BashSession, proc: BashProc, fd: number): number | null {
@@ -793,7 +792,7 @@ function makeProc(s: BashSession, pid: number, ppid: number, fds: Map<number, Ba
       if (stream !== null) return stream;
       try {
         const nf = lowestFd(proc);
-        proc.fds.set(nf, await duplicateEntry(s, e));
+        proc.fds.set(nf, e.kind === 'authority' ? { ...e, handle: await s.fs.dup(e.handle.id) } : shareEntry(e));
         return nf;
       } catch (error) { return -refusalErrno(error, s.gone); }
     }),
@@ -803,7 +802,7 @@ function makeProc(s: BashSession, pid: number, ppid: number, fds: Map<number, Ba
       try {
         // The old descriptor is released only once the duplicate exists, so a
         // failed dup2 leaves the target fd exactly as POSIX requires: untouched.
-        const copy = await duplicateEntry(s, e);
+        const copy = e.kind === 'authority' ? { ...e, handle: await s.fs.dup(e.handle.id) } : shareEntry(e);
         const displaced = proc.fds.get(n);
         if (displaced?.kind === 'preopen') {
           // `exec 3>file` claims the descriptor wasi-libc cached as its
@@ -1304,7 +1303,7 @@ async function doFork(s: BashSession, parent: BashProc): Promise<void> {
   const childPid = s.pidNext++;
   const childFds = new Map();
   for (const [fd, e] of parent.fds) {
-    childFds.set(fd, await duplicateEntry(s, e));
+    childFds.set(fd, e.kind === 'authority' ? { ...e, handle: await s.fs.dup(e.handle.id) } : shareEntry(e));
     if (e.kind === 'pipe') bumpPipe(s, e, 1);
   }
   const pmem = parent.inst.exports.memory;
