@@ -189,33 +189,42 @@ export class Builder<H extends HostPackages> {
 
   /**
    * What the coming visits will ask, resolved ahead, a level at a time: the
-   * queue's problem edges, then every edge of what they resolve to (a peer
-   * also at its source's own spec, which its peer set prefers), and so on
-   * down. Resolution is the host's round trip; this keeps the trips to the
-   * depth of the tree, not its width. A request is expanded once.
+   * queue's problem edges, then the edges of what they resolve to, and so
+   * on down, as the build loads them: a package's dependencies, and its
+   * peers as its dependent's virtual root loads them (#loadPeerSet), at the
+   * dependent's own spec where it has one, which the build resolves first.
+   * A package loaded only as a peer brings its peers; its dependencies wait
+   * until it is placed. Resolution is the host's round trip; this keeps the
+   * trips to the depth of the tree, not its width. A request is expanded
+   * once.
    */
   private async prefetch(node: Node<H>): Promise<void> {
-    type Request = { name: string; range: string; from: Node<H> | null };
+    /** A request, and the specs of the package whose virtual root loads its package. */
+    type Request = { name: string; range: string; dependent: (name: string) => string | undefined; peer: boolean };
     let frontier: Request[] = [node, ...this.queue].flatMap((member) => (member.tree === this.tree ? this.problemEdges(member) : []))
-      .map((edge) => ({ name: edge.name, range: edge.spec, from: edge.from }));
+      .map((edge) => ({ name: edge.name, range: edge.spec, dependent: (name: string) => edge.from.edgesOut.get(name)?.spec, peer: false }));
+    const expansion = ({ name, range, peer }: Request) => `${this.requestKey(name, range)}\0${peer ? 'peers' : 'all'}`;
+    const expanded = (request: Request) => this.expanded.has(expansion({ ...request, peer: false })) || this.expanded.has(expansion(request));
     while (frontier.length > 0) {
       await this.resolve(frontier);
       const next: Request[] = [];
-      for (const { name, range, from } of frontier) {
-        const key = this.requestKey(name, range);
-        if (this.expanded.has(key)) continue;
-        this.expanded.add(key);
-        const answer = this.resolutions.get(key);
+      for (const request of frontier) {
+        if (expanded(request)) continue;
+        this.expanded.add(expansion(request));
+        const answer = this.resolutions.get(this.requestKey(request.name, request.range));
         if (!answer || 'failed' in answer) continue;
-        for (const edge of this.edgesOf(answer.package)) {
+        const edges = this.edgesOf(answer.package);
+        const own = (name: string) => edges.find((edge) => edge.name === name)?.range;
+        for (const edge of edges) {
           if (edge.type === 'peerOptional' && !this.tree.mentions(edge.name)) continue;
-          const peer = isPeer(edge.type);
-          next.push({ name: edge.name, range: edge.range, from: peer ? from : null });
-          const own = peer ? from?.edgesOut.get(edge.name) : undefined;
-          if (own) next.push({ name: edge.name, range: own.spec, from });
+          if (!isPeer(edge.type)) {
+            if (!request.peer) next.push({ name: edge.name, range: edge.range, dependent: own, peer: false });
+          } else {
+            next.push({ name: edge.name, range: request.dependent(edge.name) ?? edge.range, dependent: request.dependent, peer: true });
+          }
         }
       }
-      frontier = next.filter(({ name, range }) => !this.expanded.has(this.requestKey(name, range)));
+      frontier = next.filter((request) => !expanded(request));
     }
   }
 
