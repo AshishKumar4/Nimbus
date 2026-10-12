@@ -2917,6 +2917,8 @@ async function __residentFetchFiles(supervisor, files) {
 
   // Per-file landed-part counts, so a head row is written only once every
   // range of that file is in. See __residentPutHead.
+  /** The revision each path is read at. */
+  const revOf = new Map(ranges.map((range) => [range.path, range.rev]));
   const landed = new Map();
   let filled = 0, failed = 0, fetchedBytes = 0;
   const failedPaths = new Set();
@@ -2965,12 +2967,13 @@ async function __residentFetchFiles(supervisor, files) {
       if (entry.bytes === null || entry.bytes === undefined) { failedPaths.add(range.path); continue; }
       const chunk = __residentBytes(entry.bytes);
       if (chunk.byteLength !== range.length) { failedPaths.add(range.path); continue; }
+      // Not a byte of it beneath a newer revision of the file (another fill's head and chunks).
+      if (__residentOutdated(t, range.path, range.rev)) { failedPaths.add(range.path); continue; }
       fetchedBytes += chunk.byteLength;
       if (!__residentPutChunk(t, range.path, range.part, chunk)) { failedPaths.add(range.path); continue; }
       const seen = (landed.get(range.path) || 0) + 1;
       landed.set(range.path, seen);
       if (seen === range.parts && !failedPaths.has(range.path)) {
-        if (__residentOutdated(t, range.path, range.rev)) { failedPaths.add(range.path); continue; }
         __residentPutHead(t, range.path, __RK_BINARY, range.size, range.parts, range.rev, range.ckey);
         filled++;
       }
@@ -2982,6 +2985,12 @@ async function __residentFetchFiles(supervisor, files) {
   // nothing will ever serve.
   for (const path of failedPaths) {
     failed++;
+    // A head at this read's revision or later (another fill, own bytes) is
+    // not this read's to drop; an older one may sit over chunks this read
+    // wrote, and goes with them.
+    const held = t.fileRev(path);
+    const rev = revOf.get(path);
+    if (held !== undefined && (held === __RK_OWN_WRITE || (typeof rev === "number" && held >= rev))) continue;
     t.chunkDelete(path);
     t.fileDelete(path);
   }
