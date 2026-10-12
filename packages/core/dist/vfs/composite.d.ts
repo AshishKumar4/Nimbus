@@ -482,7 +482,7 @@ export declare class CompositeVFS implements VFS {
     /**
      * `result`, `spec`'s mutation's answer, once it landed: its change told,
      * then, to the watches registered now (tellLanded). One that awaits is
-     * told when it lands.
+     * told when it lands, before its caller hears the answer.
      */
     private landing;
     private tellSpec;

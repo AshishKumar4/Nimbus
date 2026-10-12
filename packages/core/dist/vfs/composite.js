@@ -824,16 +824,15 @@ export class CompositeVFS {
     /**
      * `result`, `spec`'s mutation's answer, once it landed: its change told,
      * then, to the watches registered now (tellLanded). One that awaits is
-     * told when it lands.
+     * told when it lands, before its caller hears the answer.
      */
     landing(spec, result) {
         if (spec.told === null)
             return result;
         if (isPromise(result)) {
-            return result.then((value) => {
-                this.tellSpec(spec, value);
-                return value;
-            });
+            // Beside the answer, not in its way: told as it settles, before the caller resumes.
+            result.then((value) => this.tellSpec(spec, value), () => { });
+            return result;
         }
         if (this.table.changes !== undefined)
             this.tellSpec(spec, result);
@@ -2612,7 +2611,13 @@ export class CompositeVFS {
     copyBytes(from, fromRel, stat, to, toRel, toAt, made) {
         const mode = stat.mode === undefined ? undefined : stat.mode & 0o7777;
         const told = toRel === made.rel ? made.told : stat.type === 'directory' ? 'addDir' : 'add';
-        const landed = (result) => andThen(result, () => this.tellLanded(made.mount, undefined, told, [toAt]));
+        const landed = (result) => {
+            if (isPromise(result))
+                result.then(() => this.tellLanded(made.mount, undefined, told, [toAt]), () => { });
+            else
+                this.tellLanded(made.mount, undefined, told, [toAt]);
+            return result;
+        };
         if (stat.type === 'symlink') {
             if (typeof from.readlink !== 'function' || typeof to.symlink !== 'function') {
                 throw new Refusal('ENOTSUP', toRel, 'a link cannot be copied between these filesystems');
