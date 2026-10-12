@@ -350,7 +350,7 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
 
   let code: number | null = null;
   // The program's process's network (WorkspaceNetwork.forProcess).
-  const network = kernel?.network.forProcess(ctx.pid);
+  const network = kernel?.network?.forProcess(ctx.pid);
   const payload: NodeRealmPayload = { program, hosts: kernel?.dns?.hostsFile(), egress: network?.egress !== undefined };
   const egress = network?.egress === undefined ? null : new RealmEgress(network, (event) => { post(event); });
   const realm = await startRealm({

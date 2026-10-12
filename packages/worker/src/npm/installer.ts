@@ -317,8 +317,6 @@ export class NpmInstaller {
     // stream, pre-bundling) serve it at its engine key, the project's path
     // with every link resolved; a mounted project has none.
     const view = this.filesystem.view({ pid: opts.pid, cred: opts.cred });
-    // Every request the install makes goes out through the invoking process's network.
-    const network = this.network.forProcess(opts.pid);
     const engineDir = await engineKey(view, this.store, '/' + projDir);
     // One install into a node_modules tree at a time (core npm-tree.ts
     // holdTree), keyed by the tree itself: its path with every link
@@ -373,6 +371,8 @@ export class NpmInstaller {
     engineDir: string | null,
   ): Promise<NpmInstallResult> {
     const registry = npmRegistryOrigin(opts?.registry);
+    // Every request the install makes goes out through the invoking process's network.
+    const network = this.network.forProcess(opts.pid);
     const phases: Record<string, number> = {};
     // What is installed and what failed, by placement: labelled once the outcome is settled.
     const installedAt = new Map<string, string>();
@@ -1163,7 +1163,7 @@ export class NpmInstaller {
     const phaseProfile: string[] = [];
     const fanoutPool = new Fanout(this.env, this.ctx!, {
       tag: 'npm-install-batch',
-      network: this.network.forProcess(pid),
+      network: this.network.forProcess(pid ?? 0),
       // Whole-batch timeout. With per-shard parallelism of N=8 peer
       // DOs each running pLimit(3), Mossaic-class 456 packages
       // typical 30-60 s wall clock. 10 min covers pathological cases.
