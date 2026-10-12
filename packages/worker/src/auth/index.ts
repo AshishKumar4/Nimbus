@@ -23,8 +23,17 @@ export {
   requireScopes,
   requireSessionPin,
   setNimbusTokenCookie,
+  expireLegacyNimbusTokenCookie,
+  enforceSessionCookieCapacity,
+  nimbusTokenCookieName,
+  sessionCookieMigration,
+  isValidNimbusTokenCookieSid,
   authErrorResponse,
   NIMBUS_TOKEN_COOKIE,
+  NIMBUS_TOKEN_COOKIE_PREFIX,
+  NIMBUS_TOKEN_COOKIE_LIMIT,
+  NIMBUS_TOKEN_COOKIE_HEADER_LIMIT,
+  NIMBUS_TOKEN_SET_COOKIE_LIMIT,
   NIMBUS_TOKEN_QUERY,
 } from './middleware.js';
 

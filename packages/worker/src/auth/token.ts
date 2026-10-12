@@ -231,6 +231,7 @@ export async function verifyNimbusToken(
   return {
     claims,
     doInstanceName: `${claims.tn}:${claims.sub ?? '_'}`,
+    raw: token,
   };
 }
 

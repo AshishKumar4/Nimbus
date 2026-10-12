@@ -60,6 +60,9 @@ import {
   requireSessionPin,
   authErrorResponse,
   setNimbusTokenCookie,
+  expireLegacyNimbusTokenCookie,
+  enforceSessionCookieCapacity,
+  sessionCookieMigration,
   NIMBUS_TOKEN_QUERY,
   NimbusAuthError,
   NimbusBootstrapConsumedError,
@@ -390,7 +393,11 @@ export function createNimbusHandler(
           basePath: '',
         },
         env,
-        { tenantSegment: auth.tenantSegment },
+        {
+          tenantSegment: auth.tenantSegment,
+          migrateSessionCookies: auth instanceof Response ? [] : sessionCookieMigration(
+            request.headers.get('Cookie'), auth.verified!, preview.sid),
+        },
       );
     }
 
@@ -606,6 +613,8 @@ export function createNimbusHandler(
         ...(auth.verified?.claims.scopes !== undefined
           ? { callerScopes: auth.verified.claims.scopes }
           : {}),
+        migrateSessionCookies: auth.verified ? sessionCookieMigration(
+          request.headers.get('Cookie'), auth.verified, route.sessionId) : [],
       });
     }
 
@@ -819,11 +828,18 @@ async function handleAttachExchange(
     const clean = new URL(url);
     clean.searchParams.delete(NIMBUS_TOKEN_QUERY);
     clean.pathname = options.redirectPath;
+    enforceSessionCookieCapacity(request, sessionId);
+    const setCookies = [setNimbusTokenCookie(cookieToken, cookieExpSec, sessionId)];
+    if (request.headers.get('Cookie')?.includes(`${NIMBUS_TOKEN_COOKIE}=`)) {
+      // Migrating: the legacy global credential stops being selected the
+      // moment the route-owned one lands.
+      setCookies.push(expireLegacyNimbusTokenCookie());
+    }
     const headers = new Headers({
       Location: clean.pathname + clean.search,
-      'Set-Cookie': setNimbusTokenCookie(cookieToken, cookieExpSec),
       'Cache-Control': 'no-store',
     });
+    for (const value of setCookies) headers.append('Set-Cookie', value);
     if (options.embeddedNavigation) headers.set('Cross-Origin-Resource-Policy', 'cross-origin');
     return new Response(null, { status: 302, headers });
   } catch (e) {

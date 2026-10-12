@@ -41,8 +41,25 @@ const wrong=await router.fetch(new Request(`https://nimbus.test/s/${ids[0]}/api/
 }),env,ctx);
 assert.equal(wrong.status,403);
 assert.equal((await wrong.json()).code,'E_SESSION_PIN_MISMATCH','cookie naming does not relax sid pinning');
-const legacy=await router.fetch(new Request(`https://nimbus.test/s/${ids[0]}/api/stats`,{headers:{Cookie:`__Host-nimbus_token=${tokens[0]}`}}),env,ctx);
-assert.equal(legacy.status,401,'legacy global cookie is not a fallback credential');
+// Pre-deploy continuity: a tab whose jar holds only the legacy global cookie
+// keeps working across the deploy — its JWT pin equals the route sid — and the
+// next authenticated response migrates it to the route-owned name.
+const legacyExchange = await router.fetch(new Request(`https://nimbus.test/s/${ids[0]}/?nimbus_token=${encodeURIComponent(tokens[0])}`),env,ctx);
+assert.equal(legacyExchange.status,302);
+const legacyOnly=`__Host-nimbus_token=${encodeURIComponent(tokens[0])}`;
+const legacy=await router.fetch(new Request(`https://nimbus.test/s/${ids[0]}/api/stats`,{headers:{Cookie:legacyOnly}}),env,ctx);
+assert.equal(legacy.status,200,'a legacy cookie pinned to its own session survives the deploy');
+assert.equal((await legacy.json()).name,`tenant:user:${ids[0]}`);
+// Migration happens on the next authenticated response for that sid: the
+// route-owned name is set and the legacy name is expired in the same response.
+const migrated=await router.fetch(new Request(`https://nimbus.test/s/${ids[0]}/api/stats`,{headers:{Cookie:legacyOnly}}),env,ctx);
+assert.equal(migrated.status,200);
+const migratedCookies=migrated.headers.getSetCookie();
+assert.ok(migratedCookies.some(value=>value.startsWith(`__Host-nimbus_token-${ids[0]}=`)),'the route-owned name is set on use');
+assert.ok(migratedCookies.some(value=>value.startsWith('__Host-nimbus_token=;')&&/Max-Age=0/.test(value)),'the legacy name expires in the same response');
+const legacyOther=await router.fetch(new Request(`https://nimbus.test/s/${ids[1]}/api/stats`,{headers:{Cookie:legacyOnly}}),env,ctx);
+assert.equal(legacyOther.status,403,'a legacy cookie for another session fails exactly as its pin mismatch always did');
+assert.equal((await legacyOther.json()).code,'E_SESSION_PIN_MISMATCH');
 const mixed=await router.fetch(new Request(`https://nimbus.test/s/${ids[0]}/api/stats`,{headers:{Cookie:`__Host-nimbus_token=${tokens[1]}; ${header}`}}),env,ctx);
 assert.equal(mixed.status,200,'a pre-existing global cookie cannot contaminate the route cookie');
 const preview=await router.fetch(new Request(`https://3000--${ids[0]}.preview.test/assets/x`,{headers:{Cookie:header}}),env,ctx);
