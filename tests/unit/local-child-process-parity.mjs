@@ -8,7 +8,7 @@ import { RUNTIMES, seedRuntime } from './lib/wasm-runtimes.mjs';
 
 if (!process.env.CHILD_PARITY_CASE) {
   const failures = [];
-  for (const engine of ['bun', 'node']) for (const name of ['native', 'shell-path', 'parent', 'runtime-parent', 'host']) {
+  for (const engine of ['bun', 'node']) for (const name of ['native', 'native-sync', 'shell-path', 'parent', 'runtime-parent', 'host', 'child-host']) {
     const child = spawnSync(engine, ['--no-warnings', fileURLToPath(import.meta.url)], {
       env: { ...process.env, CHILD_PARITY_CASE: name }, encoding: 'utf8', timeout: 90_000,
     });
@@ -36,7 +36,23 @@ if (name === 'host' || name === 'shell-path') {
     { binName: 'sh', runner: runtime.entrypoints[0].runner, args: [] }] } : runtime);
   await seed.close();
 }
-const ws = await NimbusWorkspace.create({ ...sqlite, cwd: '/home/user', facets: Object.create(host) });
+/** A class adapter: its methods are on its prototype, and they use their receiver. */
+class ChildAdapter {
+  /** `hang` never finishes on its own: only a kill ends it. */
+  constructor(word) { this.word = word; this.terminated = []; this.held = Promise.withResolvers(); }
+  async resolve(request) {
+    return { run: async (context) => {
+      context.onStarted();
+      if (request.command === 'hang') await this.held.promise;
+      await context.output.onStdout(new TextEncoder().encode(`${this.word} ${request.command}\n`));
+      return 0;
+    } };
+  }
+  terminate(pid) { this.terminated.push(pid); return true; }
+}
+const adapter = name === 'child-host' ? new ChildAdapter('created') : undefined;
+const ws = await NimbusWorkspace.create({ ...sqlite, cwd: '/home/user', facets: Object.create(host),
+  ...(adapter ? { childProcesses: adapter } : {}) });
 const children = [];
 const spawn = async (command, args = [], extra = {}) => {
   const result = await ws.children.spawn({ parentPid: ws.shellProcessPid, command, args,
@@ -78,6 +94,35 @@ try {
       }
       break;
     }
+    case 'native-sync': {
+      // The nimbus_proc calls that answer at once work on any host; only waiting needs JSPI.
+      const wabt = await wabtFactory();
+      const parsed = wabt.parseWat('sync.wat', `(module
+        (import "wasi_snapshot_preview1" "proc_exit" (func $exit (param i32)))
+        (import "wasi_snapshot_preview1" "fd_close" (func $close (param i32) (result i32)))
+        (import "nimbus_proc" "ids" (func $ids (param i32) (result i32)))
+        (import "nimbus_proc" "pipe" (func $pipe (param i32) (result i32)))
+        (import "nimbus_proc" "dup" (func $dup (param i32 i32) (result i32)))
+        (import "nimbus_proc" "dup2" (func $dup2 (param i32 i32) (result i32)))
+        (import "nimbus_proc" "wait" (func $wait (param i32 i32 i32 i32) (result i32)))
+        (import "nimbus_proc" "kill" (func $kill (param i32 i32) (result i32)))
+        (memory (export "memory") 1)
+        (func (export "_start")
+          (if (call $ids (i32.const 200)) (then (call $exit (i32.const 91))))
+          (if (call $pipe (i32.const 208)) (then (call $exit (i32.const 92))))
+          (if (call $dup (i32.load (i32.const 208)) (i32.const 216)) (then (call $exit (i32.const 93))))
+          (if (call $dup2 (i32.load (i32.const 212)) (i32.load (i32.const 216))) (then (call $exit (i32.const 94))))
+          (if (call $close (i32.load (i32.const 216))) (then (call $exit (i32.const 95))))
+          (if (call $close (i32.load (i32.const 212))) (then (call $exit (i32.const 96))))
+          (if (call $close (i32.load (i32.const 208))) (then (call $exit (i32.const 97))))
+          (if (i32.ne (call $wait (i32.const -1) (i32.const 0) (i32.const 224) (i32.const 228)) (i32.const 12))
+            (then (call $exit (i32.const 98))))
+          (if (i32.ne (call $kill (i32.const 4242) (i32.const 15)) (i32.const 71)) (then (call $exit (i32.const 99))))))`);
+      try { await ws.fs.writeFile('sync-parent.wasm', parsed.toBinary({}).buffer); } finally { parsed.destroy(); }
+      const result = await ws.exec('wasm-runner /home/user/sync-parent.wasm');
+      assert.equal(result.exitCode, 0, result.stderr);
+      break;
+    }
     case 'shell-path': {
       const fs = ws.vfs.as(CRED_KERNEL);
       fs.mkdir('usr/local/bin', { recursive: true });
@@ -107,6 +152,17 @@ try {
     case 'host': {
       const result = await ws.exec(`bash -c 'printf x | cat'`);
       assert.equal(result.exitCode, 0, result.stderr); assert.equal(result.stdout, 'x');
+      break;
+    }
+    case 'child-host': {
+      assert.deepEqual(await output(await spawn('greet')), { code: 0, stdout: 'created greet\n', stderr: '' },
+        'a class adapter given at create resolves');
+      const hung = await spawn('hang');
+      assert.equal(ws.children.kill(hung, 'SIGTERM'), true);
+      assert.deepEqual(adapter.terminated, [hung], 'its terminate runs on it');
+      ws.children.bindHost(Object.create(new ChildAdapter('bound')));
+      assert.deepEqual(await output(await spawn('greet')), { code: 0, stdout: 'bound greet\n', stderr: '' },
+        'a prototype adapter binds with its methods');
       break;
     }
   }
