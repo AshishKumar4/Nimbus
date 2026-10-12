@@ -63,6 +63,12 @@ try {
   assert.equal(session.root.exists('home/user/failed-executable'), false, 'failure to add execute bits removes the incomplete file');
   guest.fsImport.fd_chmod = chmod;
   assert.equal(umask(0o077), 0o022, 'chmod failure leaves the original umask');
+
+  const next = makeGuest(P, session, { cred: { ...USER, umask: 0o007 } });
+  const opened = next.open('home/user/next-process', { oflags: 5 });
+  assert.equal(opened.errno, 0);
+  assert.equal(modeOf('next-process'), 0o660, 'a reused host starts with the new process credential, not the old mask');
+  assert.equal(next.wasi.fd_close(opened.fd), 0);
 } finally {
   await session.dispose();
 }
