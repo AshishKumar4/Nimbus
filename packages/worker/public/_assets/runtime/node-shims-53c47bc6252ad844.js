@@ -11249,6 +11249,10 @@ function __nimbusEgressTlsConnect(real, net, args) {
     const bound = previous?._handle?.options;
     const host = options.host ?? bound?.host ?? previous?._host ?? 'localhost';
     const port = Number(options.port ?? bound?.port);
+    // One that has carried nothing is TLS from its first byte, as a new connection is.
+    if (previous && (!(previous instanceof net.Socket) || previous.bytesRead !== 0 || previous.bytesWritten !== 0)) {
+      throw nodeError(Error, 'ERR_NIMBUS_EGRESS_STARTTLS', "Nimbus: TLS over a socket that has already carried bytes (STARTTLS) is not available when the workspace's network goes through an egress: workerd starts no TLS on a connection through a service binding. tls.connect({ socket }) upgrades a net.Socket only before it carries any bytes.");
+    }
     if (previous) previous.destroy();
     return typeof options.servername === 'string' && options.servername !== '' ? { host, port, servername: options.servername } : { host, port };
   };
