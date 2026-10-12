@@ -44,5 +44,30 @@ try {
       assert.ok(!waves.includes('node_modules/b/package.json'), 'a failed tarball never publishes its completion marker');
     }
   }
+  // Digest work: N same-URL/same-SRI placements sharing one download hash
+  // exactly once — the owner's fetch verification. Consumers compare digests.
+  const sharers = 4;
+  const sharedTarball = packageTarball({ 'package/package.json': '{"name":"s","version":"1.0.0"}' });
+  const sharedIntegrity = await sriOf(sharedTarball);
+  let fetches = 0;
+  globalThis.fetch = async () => { fetches++; return new Response(sharedTarball.slice()); };
+  const subtle = globalThis.crypto.subtle;
+  const rawDigest = subtle.digest.bind(subtle);
+  let hashes = 0;
+  globalThis.crypto.subtle.digest = (...args) => { hashes++; return rawDigest(...args); };
+  try {
+    const shared = await installPackagesInFacet({ packages: Array.from({ length: sharers }, (_, index) => ({
+      name: `s${index}`, version: '1.0.0', tarballUrl: url, integrity: sharedIntegrity,
+      pkgDir: `node_modules/s${index}`, installRoot: 'node_modules', mtime: 1,
+    })), concurrency: sharers }, { SUPERVISOR: {
+      async writeBatchStream(stream) {
+        const decoded = await decodeWave(stream);
+        return { ok: true, committedGroupSequence: decoded.paths.length, committedPathCount: decoded.paths.length, inodes: decoded.paths.length, chunks: decoded.chunks };
+      },
+    } });
+    assert.ok(shared.perPackage.every((result) => result.errorText === undefined));
+    assert.equal(fetches, 1, 'one download serves every same-key placement');
+    assert.equal(hashes, 1, `one digest computation per fetch, not per consumer (got ${hashes})`);
+  } finally { globalThis.crypto.subtle.digest = rawDigest; }
 } finally { globalThis.fetch = realFetch; }
-console.log('npm-shared-tarball-integrity: matching reuse and both adversarial pairs passed');
+console.log('npm-shared-tarball-integrity: matching reuse, both adversarial pairs, and single-hash sharing passed');
