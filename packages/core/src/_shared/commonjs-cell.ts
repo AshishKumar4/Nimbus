@@ -1084,6 +1084,10 @@ function __nimbusRuntimeInterpreter() {
 function __nimbusDetectedModule(cell) {
   return __nimbusInterpreter !== null && __nimbusInterpreter.detectedModule(cell);
 }
+// Whether an interpreted ES module awaits at its top level (moduleAwaits).
+function __nimbusModuleAwaits(cell) {
+  return __nimbusInterpreter !== null && __nimbusInterpreter.moduleAwaits(cell);
+}
 // A staged module's code from an origin (runtimeFunctionModule): a module
 // takes the origin's Function; a constructor's code takes its import() too,
 // or the shape that reads the global Function for an origin without one,

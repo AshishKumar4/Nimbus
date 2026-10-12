@@ -81,7 +81,7 @@ const FILES = {
     '  .then(() => console.log("FNWRITE " + new F("Function = 123; return typeof Function")()));',
   ].join('\n'),
   'pkg/bin/entry.mjs': [
-    'const { where } = await new Function("return import(\"../lib/cli.mjs\")")();',
+    'const { where } = await new Function("return import(\\"../lib/cli.mjs\\")")();',
     'console.log("ESMFN " + where);',
     'const later = await new Promise((resolve) => setTimeout(() => resolve(new Function("m", "return import(m)")("../lib/cli.mjs")), 0));',
     'console.log("ESMLATER " + later.where);',

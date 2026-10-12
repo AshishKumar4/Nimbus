@@ -100,6 +100,12 @@ export interface Interpreter {
    */
   detectedModule(cell: unknown): boolean;
   /**
+   * Whether compileModule made `cell` an ES module whose body awaits at its
+   * top level: a require() refuses a graph that holds one, before any of it
+   * runs (node-shims' require(esm)). False for any other cell.
+   */
+  moduleAwaits(cell: unknown): boolean;
+  /**
    * A function returning the value of the script `code` when it is one
    * expression (scriptExpression): vm.runInThisContext's code, as node-shims
    * hands it over and calls it, with the global object as `this` (a script's
@@ -262,6 +268,7 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
     isError: typeof isError === 'function' ? isError : null,
   });
   const detected = new SafeWeakSet<ModuleCell>();
+  const awaiting = new SafeWeakSet<ModuleCell>();
   const interpreter: Interpreter = {
     captureStack(error, above) { stampStack(error, undefined, above, true); },
     stackFrames,
@@ -299,6 +306,7 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
         releaseScopes(root);
         const cell = moduleCell(plan, runtime.ops, host.moduleHelpers);
         if (format === undefined) detected.add(cell);
+        if (plan.body.g !== null) awaiting.add(cell);
         return cell;
       }
       const script = parsed.program;
@@ -312,6 +320,10 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
 
     detectedModule(cell) {
       return typeof cell === 'function' && detected.has(cell as ModuleCell);
+    },
+
+    moduleAwaits(cell) {
+      return typeof cell === 'function' && awaiting.has(cell as ModuleCell);
     },
 
     compileExpression(code, origin) {

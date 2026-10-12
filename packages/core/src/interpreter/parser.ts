@@ -112,6 +112,41 @@ class ThrowFinder extends AcornParserClass {
   }
 }
 
+/**
+ * Where module `text` imports `name` from the specifier `requested` (an
+ * import's imported name, a default import's binding, an export-from's local
+ * name), and that specifier's string literal, as [nameStart, nameEnd,
+ * specifierStart, specifierEnd]: the missing-export report's arrow and the
+ * specifier as written (node-shims.ts __nimbusEsmExportError). Null where no
+ * declaration does, or the text does not parse.
+ */
+export function importedName(text: string, requested: string, name: string): [number, number, number, number] | null {
+  let program: Program;
+  try { program = parse(text, MODULE_OPTIONS); } catch { return null; }
+  const body = reflectGet(program, 'body') as readonly object[];
+  for (let i = 0; i < body.length; i++) {
+    const statement = body[i]!;
+    const type = reflectGet(statement, 'type');
+    if (type !== 'ImportDeclaration' && type !== 'ExportNamedDeclaration') continue;
+    const source = reflectGet(statement, 'source') as object | null;
+    if (source === null || reflectGet(source, 'value') !== requested) continue;
+    const specifiers = reflectGet(statement, 'specifiers') as readonly object[];
+    for (let j = 0; j < specifiers.length; j++) {
+      const specifier = specifiers[j]!;
+      const kind = reflectGet(specifier, 'type');
+      const node = (kind === 'ImportSpecifier' ? reflectGet(specifier, 'imported')
+        : kind === 'ImportDefaultSpecifier' || kind === 'ExportSpecifier' ? reflectGet(specifier, 'local') : null) as object | null;
+      if (node === null) continue;
+      const named = kind === 'ImportDefaultSpecifier' ? 'default'
+        : reflectGet(node, 'type') === 'Identifier' ? reflectGet(node, 'name') : reflectGet(node, 'value');
+      if (named !== name) continue;
+      return [reflectGet(node, 'start') as number, reflectGet(node, 'end') as number,
+        reflectGet(source, 'start') as number, reflectGet(source, 'end') as number];
+    }
+  }
+  return null;
+}
+
 /** acorn's tokens of a text: read one at a time, or iterated. */
 export type Tokens = Iterable<Token> & { getToken(): Token };
 
