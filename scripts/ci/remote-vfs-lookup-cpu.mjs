@@ -2,7 +2,7 @@
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { mapOnArmada } from './lib/armada.mjs';
+import { mapOnArmada, overlayCommit } from './lib/armada.mjs';
 import { NIMBUS_STATE } from './lib/state-dir.mjs';
 
 const git = (...args) => {
@@ -19,8 +19,9 @@ const baselineDir = '.ci-vfs-baseline';
 const files = ['sqlite-vfs.ts', 'path.ts', 'composite.ts'].map((name) => ({
   path: `${baselineDir}/${name}`, bytes: git('show', `${base}:packages/core/src/vfs/${name}`),
 }));
+const measured = overlayCommit(repo, sha, files);
 const run = await mapOnArmada({
-  repo, sha, files, items: [1], pool: 1, timeout: 1200,
+  repo, sha: measured, files: [], items: [1], pool: 1, timeout: 1200,
   label: `vfs-lookup-cpu ${sha.slice(0, 12)}`,
   command: ['bun', 'tests/bench/vfs-lookup-cpu.mjs', '--baseline', baselineDir, '--out', '{out}'],
 });
