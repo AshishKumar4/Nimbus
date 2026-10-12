@@ -275,6 +275,8 @@ interface ChangeWatch {
 interface Changes {
     readonly mount: Mount;
     readonly events: readonly VfsEvent[];
+    /** Told by the backend as this view's principal sees it (VFS.watchChanges): who may see what on it is the backend's to say. */
+    readonly judged: boolean;
 }
 /** watchChanges: who is told, and the watches with batches to tell (drainChanges). */
 interface ChangeWatches {
@@ -522,9 +524,11 @@ export declare class CompositeVFS implements VFS {
      * mount still at its point, the namespace routing the path to it, its
      * source present: feedShows, asked only where another mount meets the
      * watched tree), and, for a watch that is not root's, under directories it
-     * may search (searchable). An end where a directory above the watched path
-     * was is shown only where the watch may search both where that directory
-     * was and where it went (they are the same directories).
+     * may search (searchable): on the mount, as its backend judged them where
+     * it told them (judged), else by this view's lookups, an end where a
+     * directory above the watched path was shown only where the watch may
+     * search both where that directory was and where it went (they are the
+     * same directories).
      */
     private judgeChanges;
     /**

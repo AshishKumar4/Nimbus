@@ -832,7 +832,7 @@ export class CompositeVFS {
             const changes = this.table.changes;
             if (changes === undefined || watch.stopped)
                 return;
-            this.publishChanges(changes, watch, { mount, events: point === ROOT_POINT ? events : events.map(named) });
+            this.publishChanges(changes, watch, { mount, events: point === ROOT_POINT ? events : events.map(named), judged: true });
             this.drainChanges(changes);
         }));
     }
@@ -883,6 +883,7 @@ export class CompositeVFS {
                     continue;
                 this.publishChanges(changes, watch, {
                     mount: other,
+                    judged: false,
                     events: rels.map((rel) => {
                         const at = CompositeVFS.reroot(other.point, rel);
                         return oldRel === undefined ? { type, path: at, timestamp } : { type, path: at, oldPath: CompositeVFS.reroot(other.point, oldRel), timestamp };
@@ -952,12 +953,22 @@ export class CompositeVFS {
      * mount still at its point, the namespace routing the path to it, its
      * source present: feedShows, asked only where another mount meets the
      * watched tree), and, for a watch that is not root's, under directories it
-     * may search (searchable). An end where a directory above the watched path
-     * was is shown only where the watch may search both where that directory
-     * was and where it went (they are the same directories).
+     * may search (searchable): on the mount, as its backend judged them where
+     * it told them (judged), else by this view's lookups, an end where a
+     * directory above the watched path was shown only where the watch may
+     * search both where that directory was and where it went (they are the
+     * same directories).
      */
     judgeChanges(watch, batch) {
-        const { mount, events } = batch;
+        const { mount, events, judged } = batch;
+        // The path the namespace looks up for `path`: on a mount whose backend judged it, its first name there (the directories above the mount).
+        const lookedUp = (path) => {
+            if (!judged || path === mount.point)
+                return path;
+            const rest = relativeTo(mount.point, path);
+            const slash = rest.indexOf('/', 1);
+            return CompositeVFS.reroot(mount.point, slash === -1 ? rest : rest.slice(0, slash));
+        };
         if (this.table.mounts.get(mount.point) !== mount)
             return [];
         const routedFrom = (tree) => {
@@ -989,11 +1000,11 @@ export class CompositeVFS {
                 const shown = (path) => {
                     if (!routed(path))
                         return null;
-                    if (moved !== null && event.oldPath !== undefined && path === tree && path !== event.oldPath) {
+                    if (!judged && moved !== null && event.oldPath !== undefined && path === tree && path !== event.oldPath) {
                         // Where the watched path was, under a directory that moved: seen there only if seen where it is now.
                         return reached(event.oldPath) && reached(moved) ? path : null;
                     }
-                    return reached(path) ? path : null;
+                    return reached(lookedUp(path)) ? path : null;
                 };
                 const one = projectChange(event, tree, shown, watch.follow);
                 if (one === null)
@@ -1014,7 +1025,7 @@ export class CompositeVFS {
         let tree = watch.path;
         for (const event of events) {
             const { moved, paths } = asked(event, tree);
-            for (const path of paths) {
+            for (const path of judged ? paths.map(lookedUp) : paths) {
                 if (reach.has(path))
                     continue;
                 const searched = this.searchable(path);
