@@ -42,17 +42,19 @@ try {
       ws.onerror = (e) => { clearTimeout(timer); reject(new Error(`upgrade failed: ${e?.message ?? e}`)); };
     });
     assert.equal(opened, true);
+    // Bidirectional liveness through the terminal protocol: our input
+    // comes back as output. The greeting arrives first and is ignored.
     const echoed = await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('echo timed out')), 30_000);
+      const timer = setTimeout(() => reject(new Error('terminal round-trip timed out')), 30_000);
+      let seen = '';
       ws.onmessage = (event) => {
-        // The session greets the socket first; our ping's echo arrives after.
-        if (!String(event.data).includes('cookie-migration')) return;
-        clearTimeout(timer); resolve(String(event.data));
+        seen += String(event.data);
+        if (seen.includes('cookie-migration-probe')) { clearTimeout(timer); resolve(seen); }
       };
       ws.onerror = (e) => { clearTimeout(timer); reject(new Error(`socket error: ${e?.message ?? e}`)); };
-      ws.send(JSON.stringify({ type: 'ping', id: 'cookie-migration' }));
+      ws.send(JSON.stringify({ type: 'input', data: 'echo cookie-migration-probe\r' }));
     });
-    assert.match(echoed, /cookie-migration/);
+    assert.match(echoed, /cookie-migration-probe/);
     ws.close();
   } finally {
     await deleteSession(sid);
