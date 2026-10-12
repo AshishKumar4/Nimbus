@@ -175,6 +175,24 @@ try {
       assert.match(refused.stdout, /plain destroyed true/);
       assert.doesNotMatch(refused.stdout, /unexpected/);
     }
+    // A servername that is not a string throws as Node's tls.connect does, before any connection:
+    // the same lines as the host's Node.
+    const badNames = String.raw`
+      const tls = require('tls');
+      for (const servername of [42, {}, true, ['egress-test.invalid']]) {
+        try { tls.connect({ host: 'egress-test.invalid', port: 443, servername }); console.log('connected'); }
+        catch (error) { console.log(error.name, error.code, error.message); }
+      }
+      process.exit(0);
+    `;
+    const inSession = await run(badNames);
+    const inNode = spawnSync('node', ['-e', badNames], { encoding: 'utf8' });
+    assert.equal(inNode.status, 0, inNode.stderr);
+    assert.match(inNode.stdout, /^TypeError ERR_INVALID_ARG_TYPE /m);
+    assert.deepEqual(
+      inSession.stdout.split(/\r?\n/).filter((line) => line.trim() !== '' && !line.startsWith('[facet')),
+      inNode.stdout.split(/\r?\n/).filter((line) => line.trim() !== ''),
+    );
     // The name the program gives is the one presented and checked: the right one connects and is
     // the server's SNI; a wrong one is refused at the session, and nothing the program sends
     // reaches the server. As workerd's startTls stands, the certificate is checked once the

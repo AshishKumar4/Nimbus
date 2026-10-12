@@ -20,6 +20,8 @@ function __nimbusEgressTlsConnect(real, net, args) {
     if (args[i] !== null && typeof args[i] === 'object') Object.assign(options, args[i++]);
     callback = args[i];
   }
+  // As Node's tls.connect: a servername it sets must be a string (TLSSocket.setServername).
+  if (options.servername && typeof options.servername !== 'string') throw invalidArgType('name', 'string', options.servername);
   const previous = options.socket;
   const target = () => {
     if (previous !== undefined) throw nodeError(Error, 'ERR_NIMBUS_EGRESS_STARTTLS', ${JSON.stringify(EGRESS_STARTTLS_REFUSAL)});
