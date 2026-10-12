@@ -14,8 +14,12 @@ interface JournalStep {
     readonly kind: 'retire' | 'publish' | 'carry';
     readonly from: string;
     readonly to: string;
-    /** begun: not known to have finished; done: `to` holds all of it (what is left at `from` is residue); none: nothing moved. */
-    state: 'begun' | 'done' | 'none';
+    /**
+     * begun: not known to have finished; done: `to` holds all of it (what is
+     * left at `from` is residue); none: nothing moved; undone: its inverse is
+     * made, recorded before the next older step's is begun.
+     */
+    state: 'begun' | 'done' | 'none' | 'undone';
 }
 /** One install's publication into a node_modules tree. */
 export declare class InstallJournal {
@@ -45,12 +49,16 @@ export declare class InstallJournal {
     private write;
     private removeRetired;
     /**
-     * Newest first: a published package goes (its content is new), and a
-     * retired or carried copy moves back, over any residue a rename left
-     * where it came from. A step that may have moved part of an installed
-     * copy (begun, its outcome unknown, both names there) is not guessed at:
-     * both are kept, and named. `recovering`: an install that did not finish
-     * is undone, and what is put back is said.
+     * Newest first, each inverse recorded as made before the next older one
+     * begins, so a replay never makes one twice: a published package goes
+     * (its content is new), and a retired or carried copy moves back, over
+     * any residue a rename left where it came from; one already back (its
+     * copy gone from where it was moved, and in place) is only recorded. A
+     * step whose copy cannot be told, or restored, stops the undo there:
+     * nothing older is undone (an ancestor's inverse would take the copy
+     * with it), both names and the journal are kept, and named.
+     * `recovering`: an install that did not finish is undone, and what is
+     * put back is said.
      */
     private undoSteps;
 }

@@ -55,6 +55,7 @@ export function registryRecord(pkg, fetchedAt) {
         platformJson: JSON.stringify({ os: pkg.os, cpu: pkg.cpu, libc: pkg.libc }),
         optionalDepsJson: JSON.stringify(pkg.optionalDependencies ?? {}),
         peerMetaJson: JSON.stringify(pkg.peerDependenciesMeta ?? {}),
+        bundleJson: pkg.bundleDependencies === undefined ? '' : JSON.stringify(pkg.bundleDependencies),
         fetchedAt,
     };
 }
@@ -63,6 +64,7 @@ const NO_PLATFORM = Object.freeze({});
 export function resolvedFromRecord(record) {
     const platform = record.platformJson === '{}' ? NO_PLATFORM : decoded(record.platformJson, isObject, NO_PLATFORM);
     const peerMeta = decoded(record.peerMetaJson, isPeerMeta, {});
+    const bundle = record.bundleJson ? decoded(record.bundleJson, isAnyJson, undefined) : undefined;
     return {
         name: record.name,
         version: record.version,
@@ -72,6 +74,7 @@ export function resolvedFromRecord(record) {
         dependencies: decoded(record.depsJson, isStringMap, {}),
         peerDependencies: ranges(record.peerDepsJson),
         ...(Object.keys(peerMeta).length > 0 ? { peerDependenciesMeta: peerMeta } : {}),
+        ...(bundle === undefined ? {} : { bundleDependencies: bundle }),
         optionalDependencies: ranges(record.optionalDepsJson),
         os: isStringList(platform.os) ? platform.os : undefined,
         cpu: isStringList(platform.cpu) ? platform.cpu : undefined,

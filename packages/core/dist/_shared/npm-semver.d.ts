@@ -11,6 +11,8 @@ export declare function compareSemver(a: ParsedSemver, b: ParsedSemver): number;
 export declare function satisfiesRange(version: string, range: string): boolean;
 /** Whether `a` is a version at least `b`, loosely (an unparsable one is not). */
 export declare function versionAtLeast(a: string, b: string): boolean;
+/** Whether some version both ranges allow (semver.intersects, loose). */
+export declare function rangesIntersect(a: string, b: string): boolean;
 /** Whether every version `inner` allows, `outer` allows too (semver.subset, loose). */
 export declare function rangeSubset(inner: string, outer: string): boolean;
 /** Whether `spec` is one exact version (`1.2.3`), not a range or a tag. */

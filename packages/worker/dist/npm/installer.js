@@ -193,7 +193,7 @@ export class NpmInstaller {
         let tree;
         let usedLockfile = false;
         if (opts.fromLockfile) {
-            const locked = await this.treeFromPackageLock(projDir, project, principal, opts.production === true, log, registry);
+            const locked = await this.treeFromPackageLock(projDir, project, log, registry);
             tree = await this.resolveTreeViaFanout(roots, locked.installed, log, { ...engine, frozen: true });
             log(`Lockfile ${locked.lockName}: ${tree.plan.nodes.size} packages to place.`);
         }
@@ -226,15 +226,15 @@ export class NpmInstaller {
             log(`npm ERR! install incomplete — ${failed.length} missing: ${failed.join(', ')}`);
             return { installed: [], failed, totalFiles: 0, elapsed: Date.now() - start, cachedHits: 0, phases };
         }
-        opts.signal?.throwIfAborted();
         // ── Phase 2: Hoist ────────────────────────────────────────────────
-        // The tree to install: what the plan holds, but what it leaves out.
+        // The tree to install: what the plan holds, but what it leaves out and,
+        // with --omit=dev, what only devDependencies reach.
         phaseStart = Date.now();
         setInstallPhase('hoist');
         const resolved = new Map();
         const nested = new Map();
         for (const [at, node] of plan.nodes) {
-            if (plan.skipped.has(at))
+            if (plan.skipped.has(at) || (opts.production && plan.dev.has(at)))
                 continue;
             (at.includes('/node_modules/') ? nested : resolved).set(at, node.pkg);
         }
@@ -270,6 +270,14 @@ export class NpmInstaller {
         if (failed.length > 0) {
             log(`npm ERR! install incomplete — ${failed.length} missing: ${failed.join(', ')}`);
             return { installed: [], failed, totalFiles: 0, elapsed: Date.now() - start, cachedHits: 0, phases };
+        }
+        // npm ci installs the lock into an empty node_modules: the old tree
+        // goes first, once nothing stops the install. Releases before 0.13.2
+        // pre-bundled into it as root.
+        if (opts.fromLockfile && await project.exists(nmDir)) {
+            opts.signal?.throwIfAborted();
+            await this.handKernelArtifact(principal, `/${nmDir}/.nimbus-synthetic`);
+            await project.removeRecursive(nmDir);
         }
         // ── Phase 3: Diff (cache check) ─────────────────────────────────
         // Per placement: a nested copy is checked at its own directory, read
@@ -323,6 +331,8 @@ export class NpmInstaller {
         // transactions once summed to 0.0 ms with a 0.0 ms maximum). The count is
         // still the honest scale signal for the staged-write protocol.
         const commitsBefore = this.storageCommitCount();
+        // A stop now changes nothing: this is the first write into the tree.
+        opts.signal?.throwIfAborted();
         const published = [];
         if (toFetch.length > 0) {
             log(`Fetching ${toFetch.length} packages... (path: batch-facet)`);
@@ -353,20 +363,20 @@ export class NpmInstaller {
         // them, but those of a package that failed.
         // Linking a bin again links it as before: repeatable, so it waits for a delegation it meets.
         const linked = failedAt.size === 0 ? resolved : new Map([...resolved].filter(([at]) => !failedAt.has(at)));
-        await withRecall(() => this.linkBins(linked, engineDir === null ? { fs: project, nmDir } : { engine: this.store.as(opts.cred), nmDir: `${engineDir}/node_modules` }, []));
+        await withRecall(() => this.linkBins(linked, engineDir === null ? { fs: project, nmDir } : { engine: this.store.as(opts.cred), nmDir: `${engineDir}/node_modules` }));
         phases['link-bins'] = Date.now() - phaseStart;
         // ── Write lockfile ──────────────────────────────────────────────
         // The lockfile is the inventory pruning reads, so it records what is on
         // disk: the tree, or, after a required failure, what it held before with
         // what this install published over it.
         if (failed.length > 0)
-            this.writeLockfile(projDir, published, nmDir, lockfile);
+            this.writeLockfile(projDir, published, nmDir, opts.fromLockfile ? null : lockfile);
         else if (!usedLockfile || pruned > 0)
             this.writeLockfile(projDir, hoistPlacements(hoistPlan), nmDir);
         const installed = [...installedAt.values()];
         // ── Update package.json if explicit packages were added ─────────
         if (named.length > 0 && failed.length === 0) {
-            await this.updatePackageJson(projDir, project, principal, named, resolved);
+            await this.updatePackageJson(projDir, project, principal, named, (name) => (plan.skipped.has(name) ? null : plan.nodes.get(name)?.pkg.version ?? null));
         }
         // ── Phase 7: Pre-bundle (TRULY fire-and-forget) ─────────────────
         // The install command resolves IMMEDIATELY. Pre-bundle dispatches
@@ -465,11 +475,9 @@ export class NpmInstaller {
      * (Fanout): a layer the headroom holds runs on in-DO loaders, a wider one
      * on sibling NimbusSession DOs. Each layer's route is in its profile entry.
      *
-     * The walk is the install engine's plan (core _shared/npm-tree.ts): per
-     * edge, not per name, each package placed by the rule npm's arborist
-     * places it by (live case in tests/unit/npm-install-nested-conflict.mjs),
-     * what the lockfile says is installed kept where it meets an edge, and a
-     * placement required when a path of required edges reaches it, its
+     * The walk is the install engine's plan (core _shared/npm-arborist.ts,
+     * npm's arborist build over what the lockfile says is installed); a
+     * placement is required when a path of required edges reaches it, its
      * failure then failing the install; an optional one that fails is
      * skipped with what it takes along.
      *
@@ -1159,7 +1167,7 @@ export class NpmInstaller {
         const manifest = await fs.exists(pkgJsonPath) ? readPackageJson(await fs.readFileString(pkgJsonPath))?.manifest ?? null : null;
         const named = namedPackages(manifest, opts.packages ?? [], opts);
         const implicit = opts.global ? [...(lockfile?.keys() ?? [])].filter((at) => !at.includes('/node_modules/')) : [];
-        const roots = projectRoots(manifest, named, { implicit, legacyPeerDeps: opts.legacyPeerDeps === true, production: opts.production === true });
+        const roots = projectRoots(manifest, named, { implicit, legacyPeerDeps: opts.legacyPeerDeps === true });
         const explicit = new Set(named.map(({ name }) => name));
         const rooted = new Set(roots.map(({ name }) => name));
         for (const name of Object.keys(manifest?.devDependencies ?? {})) {
@@ -1296,7 +1304,7 @@ export class NpmInstaller {
      * required, and a swapped package resolves its swap target at the locked
      * version.
      */
-    async treeFromPackageLock(projDir, fs, principal, production, log, registry) {
+    async treeFromPackageLock(projDir, fs, log, registry) {
         let lockName;
         for (const name of ['npm-shrinkwrap.json', 'package-lock.json']) {
             if (await fs.exists(`${projDir}/${name}`)) {
@@ -1321,19 +1329,12 @@ export class NpmInstaller {
         if (unsupported !== undefined) {
             throw new Error(`${lockName} entry "${unsupported}" is a workspace or linked package, which \`npm ci\` here does not install`);
         }
-        // Only a lock that will be installed as written clears the old tree.
-        // Releases before 0.13.2 pre-bundled into it as root.
-        if (await fs.exists(`${projDir}/node_modules`)) {
-            await this.handKernelArtifact(principal, `/${projDir}/node_modules/.nimbus-synthetic`);
-            await fs.removeRecursive(`${projDir}/node_modules`);
-        }
         const installed = new Map();
         // Swapped lock entries by placement: each resolves its swap target at its own locked version.
         const swapPlacements = [];
         for (const [key, entry] of Object.entries(lock.packages)) {
-            if (key === '')
-                continue;
-            if (production && entry.dev === true)
+            // A bundled entry comes in its bundler's archive.
+            if (key === '' || entry.inBundle === true)
                 continue;
             const placement = key.slice('node_modules/'.length);
             const folderName = placement.split('/node_modules/').pop() ?? placement;
@@ -1346,15 +1347,19 @@ export class NpmInstaller {
                 libc: stringList(entry.libc),
                 main: '',
             };
+            // Its edges as the lock records them, read as any manifest is (optional peers, bundles).
+            const manifest = packageJsonDocument(entry)?.manifest ?? {};
             const pkg = {
                 name: folderName,
                 version,
                 registryName: name,
                 tarballUrl: typeof entry.resolved === 'string' ? entry.resolved : '',
                 integrity: typeof entry.integrity === 'string' ? entry.integrity : '',
-                dependencies: stringRecord(entry.dependencies),
-                optionalDependencies: stringRecord(entry.optionalDependencies),
-                peerDependencies: stringRecord(entry.peerDependencies),
+                dependencies: { ...manifest.dependencies },
+                optionalDependencies: manifest.optionalDependencies,
+                peerDependencies: manifest.peerDependencies,
+                peerDependenciesMeta: manifest.peerDependenciesMeta,
+                bundleDependencies: manifest.bundleDependencies,
                 os: platform.os,
                 cpu: platform.cpu,
                 libc: platform.libc,
@@ -1437,7 +1442,7 @@ export class NpmInstaller {
      * at the project's engine key), or written one by one through the
      * principal's view (`fs`) for a mounted project.
      */
-    async linkBins(resolved, target, kept = []) {
+    async linkBins(resolved, target) {
         const { nmDir } = target;
         const binDir = nmDir + '/.bin';
         const manifestEntries = [];
@@ -1448,10 +1453,8 @@ export class NpmInstaller {
         }
         if (manifestEntries.length === 0)
             return;
-        // `kept`: bins already linked that this install does not relink; the
-        // manifest still lists them, and their shims stay as they are.
-        const manifest = createNpmBinManifest([...kept, ...manifestEntries]);
-        const files = Object.values(createNpmBinManifest(manifestEntries).bins).map((binEntry) => ({
+        const manifest = createNpmBinManifest(manifestEntries);
+        const files = Object.values(manifest.bins).map((binEntry) => ({
             path: binDir + '/' + binEntry.name,
             data: enc.encode(createNpmBinShim(binEntry, binDir)),
             mode: 0o755,
@@ -1482,9 +1485,9 @@ export class NpmInstaller {
      * unless the range given is one that would widen. `resolved` is keyed by
      * the name the user typed — a swapped package resolves as an alias under
      * that name (applySwaps), so `esbuild` is saved as `esbuild`, never the
-     * swap target.
+     * swap target. `version`: the version the tree holds under a name.
      */
-    async updatePackageJson(projDir, fs, principal, named, resolved) {
+    async updatePackageJson(projDir, fs, principal, named, version) {
         const pkgJsonPath = projDir + '/package.json';
         if (!await fs.exists(pkgJsonPath))
             return;
@@ -1501,7 +1504,7 @@ export class NpmInstaller {
         const document = packageJsonDocument(parsed);
         if (document === null)
             throw new TypeError('package.json is not an object');
-        const saved = saveNamed(document.json, named, (name) => resolved.get(name)?.version ?? null);
+        const saved = saveNamed(document.json, named, version);
         // `npm init` and npm-fast before 0.13.2 wrote package.json as root.
         await this.handKernelArtifact(principal, `/${pkgJsonPath}`);
         await fs.writeFile(pkgJsonPath, JSON.stringify(saved, null, 2) + '\n');

@@ -124,11 +124,9 @@ export declare class NpmInstaller {
      * (Fanout): a layer the headroom holds runs on in-DO loaders, a wider one
      * on sibling NimbusSession DOs. Each layer's route is in its profile entry.
      *
-     * The walk is the install engine's plan (core _shared/npm-tree.ts): per
-     * edge, not per name, each package placed by the rule npm's arborist
-     * places it by (live case in tests/unit/npm-install-nested-conflict.mjs),
-     * what the lockfile says is installed kept where it meets an edge, and a
-     * placement required when a path of required edges reaches it, its
+     * The walk is the install engine's plan (core _shared/npm-arborist.ts,
+     * npm's arborist build over what the lockfile says is installed); a
+     * placement is required when a path of required edges reaches it, its
      * failure then failing the install; an optional one that fails is
      * skipped with what it takes along.
      *
@@ -264,7 +262,7 @@ export declare class NpmInstaller {
      * unless the range given is one that would widen. `resolved` is keyed by
      * the name the user typed — a swapped package resolves as an alias under
      * that name (applySwaps), so `esbuild` is saved as `esbuild`, never the
-     * swap target.
+     * swap target. `version`: the version the tree holds under a name.
      */
     private updatePackageJson;
     /**

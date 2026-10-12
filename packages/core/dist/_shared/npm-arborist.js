@@ -31,7 +31,7 @@
  * records, given as installed; only its flags and failures are found.
  */
 import { versionAtLeast } from './npm-semver.js';
-import { depthOf, edgeRequest, isOptional, isPeer, manifestEdges, MAX_NEST_DEPTH, meets, } from './npm-tree.js';
+import { bundledNames, depthOf, edgeRequest, isOptional, isPeer, manifestEdges, MAX_NEST_DEPTH, meets, } from './npm-tree.js';
 /** The required failures of `plan`: any fails the install. */
 export function requiredFailures(plan) {
     return plan.failures.filter(({ id }) => plan.required.has(id));
@@ -333,8 +333,18 @@ function canReplace(node, old, ignorePeers = []) {
     }
     return true;
 }
-/** Whether `node` is a needless copy: nothing wants it, or a copy two folders up does as well (Node.canDedupe). */
+/** Whether `node` came in a package's archive: a name its parent, or an ancestor between, bundles (Node.inDepBundle). */
+function inBundle(node) {
+    for (let child = node, parent = node.parent; parent && !parent.isProjectRoot; child = parent, parent = parent.parent) {
+        if (parent.pkg !== null && bundledNames(parent.pkg).includes(child.name))
+            return true;
+    }
+    return false;
+}
+/** Whether `node` is a needless copy: nothing wants it, or a copy two folders up does as well; never a bundled one (Node.canDedupe). */
 function canDedupe(node, preferDedupe) {
+    if (inBundle(node))
+        return false;
     const grandparent = node.parent?.parent;
     if (!grandparent)
         return false;
@@ -359,7 +369,6 @@ class CanPlace {
     explicit;
     verdict;
     self = null;
-    children = [];
     current;
     targetEdge;
     edgeOverride;
@@ -484,7 +493,6 @@ class CanPlace {
             if (!peerEdge.peer || !peer || peerPath.includes(peer))
                 continue;
             const check = new CanPlace(peer, deepestNestingTarget(this.target, peer.name), peerEdge, this, peerPath, true, false);
-            this.children.push(check);
             if (check.verdict === 'CONFLICT')
                 conflict = true;
         }
@@ -627,10 +635,13 @@ class Builder {
         }
         return node;
     }
-    /** A node's problem edges: unmet (but an optional peer's), invalid, or named on the command line (#problemEdges). */
+    /** A node's problem edges: unmet (but an optional peer's), invalid, or named on the command line (#problemEdges); what its archive bundles is its own. */
     problemEdges(node) {
         const problems = [];
+        const bundled = new Set(node.isProjectRoot || node.pkg === null ? [] : bundledNames(node.pkg));
         for (const edge of node.edgesOut.values()) {
+            if (bundled.has(edge.name))
+                continue;
             if (edge.to && this.loadFailures.has(edge.to))
                 continue;
             if (!edge.to) {
@@ -943,6 +954,7 @@ export async function planTree(roots, installed, host, options = {}) {
     // only edges are followed.
     const reached = new Set();
     const required = new Set();
+    const prod = new Set();
     const mark = (flagged, start, follow) => {
         const pending = [start];
         for (let each = pending.pop(); each; each = pending.pop()) {
@@ -960,6 +972,8 @@ export async function planTree(roots, installed, host, options = {}) {
         mark(reached, edge.to, () => true);
         if (!edge.optional)
             mark(required, edge.to, (e) => !e.optional);
+        if (edge.type !== 'dev')
+            mark(prod, edge.to, () => true);
     }
     const withFolders = (flagged) => {
         for (const each of [...flagged])
@@ -968,6 +982,7 @@ export async function planTree(roots, installed, host, options = {}) {
     };
     withFolders(reached);
     withFolders(required);
+    withFolders(prod);
     // ── What the project does not reach is extraneous, and goes from a tree installed before; a frozen tree is installed as it is ──
     if (!options.frozen && installed.length > 0)
         for (const each of [...tree.nodes()])
@@ -980,10 +995,13 @@ export async function planTree(roots, installed, host, options = {}) {
     // The tree, as the hosts get it, before anything is left out of it.
     const nodes = new Map();
     const requiredAt = new Set();
+    const dev = new Set();
     for (const each of tree.nodes()) {
         const at = each.location;
         if (required.has(each))
             requiredAt.add(at);
+        if (!prod.has(each))
+            dev.add(at);
         if (each.pkg === null)
             continue;
         // The host's own packages, under the types it gave them.
@@ -998,9 +1016,11 @@ export async function planTree(roots, installed, host, options = {}) {
         if (required.has(start))
             return null;
         reasons.set(start.location, reason);
+        // The set, and what is beneath each member's folder, which goes with it.
         const set = optionalSet(start);
         for (const member of set)
-            skipped.add(member.location);
+            for (const each of [member, ...descendants(member)])
+                skipped.add(each.location);
         for (const member of set)
             tree.detach(member);
         return skipped;
@@ -1033,6 +1053,7 @@ export async function planTree(roots, installed, host, options = {}) {
         resolvedAny: builder.resolutions.size > 0,
         failures: [...failures.values()],
         required: requiredAt,
+        dev,
         skipped,
         reasons,
         extraneous,

@@ -253,6 +253,8 @@ export interface FanoutShardOptions {
     supervisorPid?: number;
     /** The coordinator workspace's egress (FanoutOptions.network): the peer's facets go out through it. */
     network?: WorkspaceNetworkRef;
+    /** submitMany's: no task starts after one fails. Otherwise (submitManySettled) each runs, whatever the others do. */
+    stopOnFailure?: boolean;
 }
 /**
  * The peer end of a sharded submitMany: THIS Durable Object runs one

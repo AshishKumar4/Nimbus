@@ -405,6 +405,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
             dependencies: v.dependencies || {},
             peerDependencies,
             ...(peerDependenciesMeta ? { peerDependenciesMeta } : {}),
+            ...((v.bundleDependencies ?? v.bundledDependencies) === undefined ? {} : { bundleDependencies: v.bundleDependencies ?? v.bundledDependencies }),
             optionalDependencies,
             os: Array.isArray(v.os) ? v.os : undefined,
             cpu: Array.isArray(v.cpu) ? v.cpu : undefined,

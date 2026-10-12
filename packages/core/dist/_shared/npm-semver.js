@@ -47,6 +47,15 @@ export function satisfiesRange(version, range) {
 export function versionAtLeast(a, b) {
     return semver.valid(a, LOOSE) !== null && semver.valid(b, LOOSE) !== null && semver.gte(a, b, LOOSE);
 }
+/** Whether some version both ranges allow (semver.intersects, loose). */
+export function rangesIntersect(a, b) {
+    try {
+        return semver.intersects(a, b, LOOSE);
+    }
+    catch {
+        return false;
+    }
+}
 /** Whether every version `inner` allows, `outer` allows too (semver.subset, loose). */
 export function rangeSubset(inner, outer) {
     try {

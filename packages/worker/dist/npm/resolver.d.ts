@@ -19,9 +19,11 @@ export interface ResolvedPackage {
     dependencies: Record<string, string>;
     /** Peer dependencies: installed with the package, but an optional one (peerDependenciesMeta), which only constrains. */
     peerDependencies?: Record<string, string>;
-    peerDependenciesMeta?: Record<string, {
-        optional?: boolean;
-    }>;
+    peerDependenciesMeta?: Readonly<Record<string, {
+        readonly optional?: boolean;
+    }>>;
+    /** `bundleDependencies` as published (TreeManifest's): carried in its own archive. */
+    bundleDependencies?: unknown;
     /** Optional dependencies installed on a best-effort basis. */
     optionalDependencies?: Record<string, string>;
     /** Platform constraints declared by the registry package metadata. */

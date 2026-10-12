@@ -354,17 +354,18 @@ export declare class IsolatePool {
      * Run `fn` on every item in `items`, at most `concurrency` at a time,
      * pinned to stable slots so warm isolates are reused. Results are in input
      * order. After an item fails no item starts, and the map rejects with the
-     * first failure once every item that started has settled: nothing it
-     * dispatched is still running when it returns.
+     * first failure once every execution it started has settled, a timed-out
+     * one included: nothing it dispatched is still running when it returns.
      */
     map<T, R>(fn: FacetTaskSource<T, R>, items: T[], opts?: IsolateMapOptions): Promise<Array<Awaited<R>>>;
     /** `map`, where every item runs whatever the others do: each item's outcome. */
     mapSettled<T, R>(fn: FacetTaskSource<T, R>, items: T[], opts?: IsolateMapOptions): Promise<Array<Settled<Awaited<R>>>>;
     /**
-     * The peer-DO transport of `map`: the coordinator forwards the task's
-     * already compiled expression. Its exact bytes key the same warm slots.
+     * The peer-DO transport of `map` (`stopOnFailure`) and `mapSettled`: the
+     * coordinator forwards the task's already compiled expression, whose exact
+     * bytes key the same warm slots. Each item's outcome.
      */
-    mapSource<T, R>(fnSource: string, items: T[], opts?: IsolateMapOptions): Promise<Array<Awaited<R>>>;
+    mapSource<T, R>(fnSource: string, items: T[], stopOnFailure: boolean, opts?: IsolateMapOptions): Promise<Array<Settled<Awaited<R>>>>;
     /**
      * Release any RPC stubs held by the pool. Call this once the caller
      * is done with the pool (post-`map`/`submit`) so the underlying

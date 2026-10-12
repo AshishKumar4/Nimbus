@@ -36,7 +36,11 @@ export interface TreeManifest {
     readonly peerDependenciesMeta?: Readonly<Record<string, {
         readonly optional?: boolean;
     }>>;
+    /** `bundleDependencies` as published (npm also reads `bundledDependencies`): what its archive carries in its own node_modules, read by bundledNames. */
+    readonly bundleDependencies?: unknown;
 }
+/** The names a manifest bundles: its `bundleDependencies` list, or every dependency for `true`. They are not resolved, nor deduped away. */
+export declare function bundledNames(manifest: TreeManifest): string[];
 /** A package a host knows: its name and version, and the manifest its edges are read from. */
 export interface TreePackage extends TreeManifest {
     /** The name it is installed under (an alias's). */
@@ -103,11 +107,12 @@ export interface TreeRoot {
 export type SaveType = 'prod' | 'dev' | 'optional' | 'peer' | 'peerOptional';
 /** The save type npm infers for `name` from where the project declares it (add-rm-pkg-deps inferSaveType); prod when it does not. */
 export declare function inferSaveType(manifest: ProjectManifest | null, name: string): SaveType;
-/** A package named on the command line: `name`, the spec it gives (null: none), and where it is saved. */
+/** A package named on the command line: `name`, the spec it gives (null: none), and where it is saved (`explicit`: a flag said so; else inferred). */
 export interface NamedPackage {
     readonly name: string;
     readonly range: string | null;
     readonly saveType: SaveType;
+    readonly explicit: boolean;
 }
 /**
  * The packages a command line names, as npm adds them: each saved where the
@@ -122,26 +127,28 @@ export declare function namedPackages(manifest: ProjectManifest | null, specs: r
 /**
  * A project's roots, as npm's Node loads the root's edges, the later
  * replacing the earlier of one name: its peers, dependencies and optional
- * dependencies (manifestEdges), then its devDependencies, but with
- * `production` (`--omit=dev`); then the packages named on the command line,
- * explicit requests of their save type. `implicit`: names the project needs
+ * dependencies (manifestEdges), then its devDependencies; then the packages
+ * named on the command line, explicit requests of their save type. The
+ * tree is planned whole: `--omit=dev` leaves out at reification what only
+ * devDependencies reach (TreePlan.dev). `implicit`: names the project needs
  * without declaring them (a global prefix's installed packages), each met
  * by what is there.
  */
-export declare function projectRoots(manifest: ProjectManifest | null, named: readonly NamedPackage[], { implicit, legacyPeerDeps, production }?: {
+export declare function projectRoots(manifest: ProjectManifest | null, named: readonly NamedPackage[], { implicit, legacyPeerDeps }?: {
     implicit?: readonly string[];
     legacyPeerDeps?: boolean;
-    production?: boolean;
 }): TreeRoot[];
 /**
  * package.json (`json`, as parsed) with what the command line named saved,
- * as npm saves it after an install: each package that installed
- * (`installed`: the version under its name) under its save type, at
- * `^version` unless the spec given is a range `^version` would widen, an
- * alias as the package it names; out of the fields its save type excludes.
- * One that did not install keeps the spec given. As npm writes package.json,
- * a name in optionalDependencies is not repeated in dependencies. Every
- * other field is as it was.
+ * as npm saves it: first added where its save type goes and out of the
+ * fields that type excludes (add-rm-pkg-deps add), then, once it installed
+ * (`installed`: the version under its name), saved at `^version` unless the
+ * spec given is a range `^version` would widen, an alias as the package it
+ * names (reify #saveIdealTree). An explicit save type writes that field; an
+ * inferred one updates every field that names it, but a peer or optional
+ * range a dev one still intersects. One that did not install keeps the
+ * spec given. As npm writes package.json, a name in optionalDependencies is
+ * not repeated in dependencies. Every other field is as it was.
  */
 export declare function saveNamed(json: Readonly<Record<string, unknown>>, named: readonly NamedPackage[], installed: (name: string) => string | null): Record<string, unknown>;
 /**

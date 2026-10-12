@@ -16,16 +16,10 @@ export interface RegistryCacheEntry {
     integrity: string;
     depsJson: string;
     /**
-     * JSON-encoded REQUIRED peerDependencies (X.5-F R2).
-     *
-     * Optional peers — those marked `peerDependenciesMeta.<name>.optional
-     * === true` in the source packument — are filtered out before this
-     * field is written. Storing only the required subset means downstream
-     * lockfile-validity checks can ask "is this peer in the tree?"
-     * without having to consult the meta field again.
-     *
-     * Defaults to '{}' for entries written by pre-X.5-F builds (the
-     * column was added via ALTER TABLE, see ensureSchema).
+     * JSON-encoded peerDependencies: every peer, the optional ones named by
+     * peerMetaJson. Rows written before peerMetaJson was kept hold only the
+     * required peers, which read as required. '{}' for rows written before
+     * the column existed (added via ALTER TABLE, see ensureSchema).
      */
     peerDepsJson?: string;
     exportsJson: string;
@@ -50,6 +44,8 @@ export interface RegistryCacheEntry {
     optionalDepsJson?: string;
     /** JSON-encoded `peerDependenciesMeta` (which peers are optional); '{}' for rows written before it was kept, whose peers are the required ones. */
     peerMetaJson?: string;
+    /** JSON-encoded `bundleDependencies` as published; '' for none (and rows written before it was kept). */
+    bundleJson?: string;
     fetchedAt: number;
 }
 /** The record of `pkg`, fetched at `fetchedAt`, as the cache keeps it. */
