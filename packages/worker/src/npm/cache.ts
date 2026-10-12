@@ -443,7 +443,7 @@ export class NpmCache {
           );
         }
         this.sql.exec(
-          `INSERT INTO pkg_lockfile (project_path, name, resolved_ver, integrity, deps_json, hoisted_path, registry_name) VALUES ${placeholders}`,
+          `INSERT OR REPLACE INTO pkg_lockfile (project_path, name, resolved_ver, integrity, deps_json, hoisted_path, registry_name) VALUES ${placeholders}`,
           ...values,
         );
       }
