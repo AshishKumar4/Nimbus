@@ -9,7 +9,7 @@
       "packages/worker/scripts/artifact-inputs.mjs": "b0c9307e6f6f13bae05ccf99ab22cf7a715553b8c6f46dbbddfef0181a2f7115",
       "packages/worker/scripts/napi-wasm/astro-compiler/Cargo.lock": "090a5d238c8dbd6a5428d00e9648ad276e79e30210f5307e2c69e1775aca22fc",
       "packages/worker/scripts/napi-wasm/build.mjs": "7994687704b17f1ec5ba1d4243a014991d30b45552557c908ff87e1d3ebbbd0f",
-      "packages/worker/scripts/napi-wasm/inputs.mjs": "69ade52f21928330b1910721cf56d13453188c4a6f279c56ab76ff18c8dfebb7",
+      "packages/worker/scripts/napi-wasm/inputs.mjs": "3d6a3f74dec27e35b02056e1c77aafec043fde7e4fe12a3bb421dc0193dcf829",
       "packages/worker/scripts/napi-wasm/link-wasm.sh": "3ead1668bb4b234f95892a7da9698a2f901d6fa460ed204594dfe9a6d8fa46f5",
       "packages/worker/scripts/napi-wasm/rustc-remap.sh": "c0ad0342c9fa9832c80a780f0828f49f759d9d50274aef1ded89216bfb3dd07b",
       "packages/worker/scripts/stage-asset.mjs": "2187cb40e0491884adea0ae5deb543205f431e995a4e1e3a726d93d4e1173929",

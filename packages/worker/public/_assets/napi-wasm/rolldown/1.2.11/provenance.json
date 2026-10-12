@@ -8,7 +8,7 @@
     "inputs": {
       "packages/worker/scripts/artifact-inputs.mjs": "b0c9307e6f6f13bae05ccf99ab22cf7a715553b8c6f46dbbddfef0181a2f7115",
       "packages/worker/scripts/napi-wasm/build.mjs": "7994687704b17f1ec5ba1d4243a014991d30b45552557c908ff87e1d3ebbbd0f",
-      "packages/worker/scripts/napi-wasm/inputs.mjs": "69ade52f21928330b1910721cf56d13453188c4a6f279c56ab76ff18c8dfebb7",
+      "packages/worker/scripts/napi-wasm/inputs.mjs": "3d6a3f74dec27e35b02056e1c77aafec043fde7e4fe12a3bb421dc0193dcf829",
       "packages/worker/scripts/napi-wasm/link-wasm.sh": "3ead1668bb4b234f95892a7da9698a2f901d6fa460ed204594dfe9a6d8fa46f5",
       "packages/worker/scripts/napi-wasm/rolldown/Cargo.lock": "2e0f37b366cc59702cca940f424e4c184804cc4040b4d6050315842b9f34f229",
       "packages/worker/scripts/napi-wasm/rolldown/Cargo.toml": "0e892672b585cf1afd0bb2ec5a8b4d7d4814530ff2aea6a7f14a2dc4da9702f6",
