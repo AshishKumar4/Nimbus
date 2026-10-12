@@ -569,6 +569,8 @@ await check('a watch whose judgment awaits holds the batches after it: none judg
   const held = new MemoryVFS({ uid: 0, gid: 0 });
   held.mkdir('/a');
   held.writeFile('/a/f', enc.encode('f'));
+  held.mkdir('/c');
+  held.writeFile('/c/h', enc.encode('h'));
   ns.mount('/held', asyncOnly(held, {
     methods: { access: () => undefined },
     beforeCall: (method) => (method === 'access' ? (asked++, g.enter(), g.gate) : undefined),
@@ -580,6 +582,9 @@ await check('a watch whose judgment awaits holds the batches after it: none judg
   const stopFollowing = ns.as(PUBLIC).watchChanges('/held/a/f', (events) => heardFollowing.push(...events.map(said)), { follow: true });
   const heardMade = [];
   const stopMade = ns.as(PUBLIC).watchChanges('/held/a/g', (events) => heardMade.push(...events.map(said)), { follow: true });
+  const heardWritten = [];
+  const stopWritten = ns.as(PUBLIC).watchChanges('/held/c/h', (events) => heardWritten.push(...events.map(said)), { follow: true });
+  await settled();
   try {
     await ns.mkdir('/held/d');
     await g.entering;
@@ -590,6 +595,8 @@ await check('a watch whose judgment awaits holds the batches after it: none judg
     await ns.rename('/held/a', '/held/b');
     await ns.unlink('/held/b/f');
     await ns.writeFile('/held/b/g', enc.encode('g'));
+    await ns.rename('/held/c', '/held/k');
+    await ns.writeFile('/held/k/h', enc.encode('h2'));
     await settled();
     assert.equal(asked, judging, 'the batches after it wait to be judged');
     assert.deepEqual(user.take().filter(ours), [], 'nothing told before it');
@@ -598,12 +605,14 @@ await check('a watch whose judgment awaits holds the batches after it: none judg
     await settled();
     assert.deepEqual(user.take().filter(ours), [
       'addDir /held/d', 'addDir /held/e', 'change /quick/b', 'rename /held/a -> /held/b', 'unlink /held/b/f', 'change /held/b/g',
+      'rename /held/c -> /held/k', 'change /held/k/h',
     ]);
     assert.deepEqual(heardFollowing, ['rename /held/a/f -> /held/b/f', 'unlink /held/b/f'], 'a move judged by what followed it');
     assert.deepEqual(heardMade, [], 'a write after the move may have made it: it is not taken to have been there');
+    assert.deepEqual(heardWritten, ['rename /held/c/h -> /held/k/h', 'change /held/k/h'], 'nor to have not been');
   } finally {
     g.release();
-    user.stop(); stopFollowing(); stopMade();
+    user.stop(); stopFollowing(); stopMade(); stopWritten();
     ns.unmount('/held'); ns.unmount('/quick');
   }
 });
@@ -615,21 +624,21 @@ await check('a directory above a watched path renamed, then its target written t
   store.mkdir('/before');
   store.writeFile('/before/file', enc.encode('one'));
   store.mkdir('/empty');
-  // The look at the target (where it was, or where it went) waits while the write after the move lands.
-  const held = (method, [path]) => gating && method === 'stat' && (path === '/before/file' || path === '/after/file');
+  // Any look at where the target went waits while the write after the move lands.
+  const held = (method, [path]) => gating && method === 'stat' && path === '/after/file';
   ns.mount('/carry', asyncOnly(store, { beforeCall: (method, args) => (held(method, args) ? (gating = false, g.enter(), g.gate) : undefined) }), { resolvesPaths: true });
   const heard = { follows: [], fixed: [], absent: [] };
   const stops = [];
   try {
-    gating = true;
     stops.push(ns.watchChanges('/carry/before/file', (events) => heard.follows.push(...events.map(said)), { follow: true }));
-    await settled();
     stops.push(ns.watchChanges('/carry/before/file', (events) => heard.fixed.push(...events.map(said))));
     stops.push(ns.watchChanges('/carry/empty/file', (events) => heard.absent.push(...events.map(said)), { follow: true }));
     await settled();
+    gating = true;
     await ns.rename('/carry/before', '/carry/after');
     await ns.rename('/carry/empty', '/carry/emptied');
-    await g.entering;
+    await settled();
+    gating = false;
     await ns.writeFile('/carry/after/file', enc.encode('two'));
     await ns.writeFile('/carry/emptied/file', enc.encode('made'));
     g.release();

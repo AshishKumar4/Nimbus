@@ -1150,10 +1150,11 @@ export class CompositeVFS implements VFS {
    *
    * A watch is of `path` wherever it leads: the path renamed away, or a
    * directory above it, is its unlink; a directory above it took it along
-   * only if it was there, as a look when the watch began and the changes
-   * since say, else as it is now. One that follows its target (`follow`, as
-   * Node's fs.watch does, an inode's watch) is told that move instead, a
-   * rename, and is then of the path its target has.
+   * only if it was there, as a look when the watch began (a backend that
+   * awaits answers it when it does) and the changes since say, else as it
+   * is now. One that follows its target (`follow`, as Node's fs.watch does,
+   * an inode's watch) is told that move instead, a rename, and is then of
+   * the path its target has.
    *
    * A backend that tells its own changes (VFS.watchChanges: SQLite) is
    * watched per mount, as this view's principal sees it, so its every
