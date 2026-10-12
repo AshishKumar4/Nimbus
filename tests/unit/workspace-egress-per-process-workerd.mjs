@@ -41,9 +41,9 @@ const SERVE = `require('./who.js')().then((lines) => {
 });`;
 
 const sees = (text, execId) => {
-  assert.match(text, new RegExp(`fetch via-egress who ${execId}\\b`), text);
-  assert.match(text, new RegExp(`tcp via-egress-tcp who ${execId}\\b`), text);
-  assert.match(text, new RegExp(`tls via-egress-tls who ${execId}\\b`), text);
+  assert.match(text, new RegExp(`^fetch via-egress who ${execId}$`, 'm'), text);
+  assert.match(text, new RegExp(`^tcp via-egress-tcp who ${execId}$`, 'm'), text);
+  assert.match(text, new RegExp(`^tls via-egress-tls who ${execId}$`, 'm'), text);
 };
 
 const until = async (what, read, ms = 60_000) => {
