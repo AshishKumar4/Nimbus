@@ -13,11 +13,14 @@ published independently in the `@nimbus-sh` npm scope.
   stream as the engine batches it, any other principal is judged as each change
   is published); any other mount's changes are told as they land through the
   namespace, typed by the operation (whether a whole-file or range write made
-  its file is not looked up: those are `change`). The file tree's `fs-watch`,
-  the real Vite facet's chokidar (`CirrusReal`'s `vfsEvents` option is now
-  `watchChanges`) and a process's `RuntimeFsBridge.subscribe` hear the
-  namespace, so they see changes on mounts too, and not a write SQLite takes
-  under a mount point; a rename's `oldPath` reaches chokidar absolute. The
+  its file is not looked up: those are `change`). Nothing reads the engine's
+  bus besides: the file tree's `fs-watch`, the in-supervisor Vite dev server,
+  wrangler dev, the real Vite facet's chokidar (`ViteDevServer`,
+  `NimbusWrangler` and `CirrusReal` take the session's `namespace` where
+  they took `vfs.events` or `vfsEvents`) and a process's
+  `RuntimeFsBridge.subscribe` hear the namespace, so they see changes on
+  mounts too, and not a write SQLite takes under a mount point; a rename's
+  `oldPath` reaches chokidar absolute. The
   shell's built-in `node` has a working `fs.watch` (`NodeFilesystem.watch`
   replaces `onChange`): Node's `rename`/`change` events, named from the
   watched directory (recursive or not) or as the watched file, a persistent

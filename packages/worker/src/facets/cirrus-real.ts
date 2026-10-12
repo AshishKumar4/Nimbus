@@ -87,7 +87,7 @@ import {
 } from './real-vite-hmr.js';
 import type { CredentialedVfs, SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
-import type { VfsEvent } from '@nimbus-sh/core/vfs/events.js';
+import type { CompositeVFS } from '@nimbus-sh/core/vfs/composite.js';
 import type { ParsedViteConfig } from '@nimbus-sh/core/runtime/vite-config-parser.js';
 import { stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
 
@@ -566,7 +566,7 @@ export class CirrusReal {
   private root: string;
   private basePath: string;
   private vfs: CredentialedVfs;
-  private watchChanges: ((listener: (events: readonly VfsEvent[]) => void) => () => void) | null;
+  private namespace: Pick<CompositeVFS, 'watchChanges'>;
   private userConfigBundle: string | null;
   private extraSyntheticFiles: Record<string, string>;
 
@@ -619,8 +619,8 @@ export class CirrusReal {
     vfs: SqliteVFS;
     /** Who the server reads its project as: the credential of the process it runs under. */
     cred: VfsCred;
-    /** Watches the session's changes (CompositeVFS.watchChanges), for the facet's chokidar. */
-    watchChanges?: ((listener: (events: readonly VfsEvent[]) => void) => () => void) | null;
+    /** The session's namespace, whose changes the facet's chokidar hears (CompositeVFS.watchChanges). */
+    namespace: Pick<CompositeVFS, 'watchChanges'>;
     userConfigBundle?: string | null;
     extraSyntheticFiles?: Record<string, string>;
     /** The workspace's network: the dev server (the user's config included) goes out through its egress. */
@@ -632,7 +632,7 @@ export class CirrusReal {
     this.root = opts.root;
     this.basePath = opts.basePath;
     this.vfs = opts.vfs.as(opts.cred);
-    this.watchChanges = opts.watchChanges || null;
+    this.namespace = opts.namespace;
     this.userConfigBundle = opts.userConfigBundle || null;
     this.extraSyntheticFiles = opts.extraSyntheticFiles || {};
   }
@@ -912,13 +912,11 @@ export class CirrusReal {
 
     // Wire the session's changes into the HMR bridge so the facet's
     // chokidar shim actually sees file changes.
-    if (this.watchChanges) {
-      this._vfsUnsub = this.watchChanges((events) => {
-        // chokidar uses 'addDir'/'unlinkDir' for directory events; the
-        // namespace tells the same strings, so they pass through as-is.
-        for (const ev of events) this.hmr.pushVfsEvent(ev.type, ev.path, ev.oldPath);
-      });
-    }
+    this._vfsUnsub = this.namespace.watchChanges('/', (events) => {
+      // chokidar uses 'addDir'/'unlinkDir' for directory events; the
+      // namespace tells the same strings, so they pass through as-is.
+      for (const ev of events) this.hmr.pushVfsEvent(ev.type, ev.path, ev.oldPath);
+    });
   }
 
   stop(ctx?: DurableObjectState): void {

@@ -78,7 +78,7 @@ const ctx = {
 };
 const wrangler = new NimbusWrangler({
   vfs: { exists: (path) => files.has(path), readFileString: (path) => files.get(path) },
-  vfsEvents: { on(listener) { deliverVfsEvents = listener; return () => {}; } },
+  namespace: { watchChanges(path, listener) { deliverVfsEvents = listener; return () => {}; } },
   esbuild: {
     async build([entry]) {
       return { errors: [], warnings: [], outputFiles: [{ contents: files.get(entry) }] };
@@ -101,7 +101,7 @@ assert.equal(await answer(), 'v1 served=2 seen=2');
 
 files.set(`${ROOT}/src/index.js`, 'export const VERSION = "v2"; export class Counter {}');
 const rebuild = new Promise((resolve) => { rebuilt = resolve; });
-deliverVfsEvents([{ type: 'change', path: `${ROOT}/src/index.js` }]);
+deliverVfsEvents([{ type: 'change', path: `/${ROOT}/src/index.js` }]);
 await rebuild;
 assert.equal(await answer(), 'v2 served=1 seen=3',
   'after a rebuild the running inner DO restarts on the new build, and its storage stays');
