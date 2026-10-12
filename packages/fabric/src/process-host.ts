@@ -102,7 +102,6 @@ import {
 import { DYNAMIC_WORKER_CODE_LIMIT_BYTES } from './budgets.js';
 import { BindingError } from './vendor/errors.js';
 import {
-  hostOwnedResponse,
   processes,
   type ResidentFacetEnv,
 } from './workerd-facet-host.js';
@@ -182,7 +181,7 @@ class FacetProcessHost implements ProcessHost {
       ...facet,
       started: loss.route(() => facet.started).finally(starting.release),
       lost: loss.signal,
-      handleHttpRequest: (request: Request, scope: ResponseScope) => loss.route(async () => hostOwnedResponse(this.ctx, await facet.handleHttpRequest(request, scope), scope.signal)),
+      handleHttpRequest: (request: Request, scope: ResponseScope) => loss.route(() => facet.handleHttpRequest(request, scope)),
       handleWebSocketRequest: (request: Request) => loss.route(() => facet.handleWebSocketRequest(request)),
       release: () => {
         loss.release();

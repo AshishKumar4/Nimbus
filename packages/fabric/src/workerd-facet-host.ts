@@ -620,23 +620,6 @@ function spawnResident(
 }
 
 /**
- * A process's response body handed on through a native pipe this host owns.
- * A caller that leaves (`signal`) ends the pipe at once, and the process's
- * own stream with it: a read left waiting on that stream outlives the caller
- * and keeps this actor loaded. What leaves is not an object the loaded worker
- * owns, so it can cross to another actor. `settled` hears the pipe end.
- */
-export function hostOwnedResponse(ctx: Pick<DurableObjectState, 'waitUntil'>, response: Response, signal: AbortSignal, settled = (): void => {}): Response {
-  if (response.body === null) {
-    settled();
-    return response;
-  }
-  const { readable, writable } = new IdentityTransformStream();
-  ctx.waitUntil(response.body.pipeTo(writable, { signal }).catch(() => {}).finally(settled));
-  return new Response(readable, { status: response.status, statusText: response.statusText, headers: response.headers });
-}
-
-/**
  * A resident's failed start, logged to the session's log with the facet and
  * process it was, and answered as the error the user sees. A failure the
  * platform does not explain (isUnexplainedPlatformError) is named for them:
