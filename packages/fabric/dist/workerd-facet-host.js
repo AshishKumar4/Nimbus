@@ -13,7 +13,7 @@
  * `HostedProcess` and never imports this file.
  */
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { hostActivity, HOST_INCARNATION_HEADER, HOST_REQUEST_HEADER, HOST_WATCH_HEADER, observeResidentConfig, leafReceived, SentRequests, } from './host-activity.js';
+import { hostActivity, HOST_INCARNATION_HEADER, HOST_REQUEST_HEADER, HOST_WATCH_HEADER, observeResidentConfig, leafReceived, receivedFailure, SentRequests, } from './host-activity.js';
 import { readImmutableModuleSource } from '@nimbus-sh/core/_shared/staged-source.js';
 import { classifyError, describeError, isUnexplainedPlatformError } from '@nimbus-sh/platform/oom-classify.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
@@ -466,7 +466,10 @@ function spawnResident(ctx, env, disk, supervisor, params) {
             // A peer relaying its coordinator's request leaves the numbering to it.
             const sending = relayed ?? sent.send(scope, abandon);
             try {
-                return await checked(await facet.hostHttpRequest(request, watchCapability, await incarnation, sending.id, sending.ended, sending.abandoned));
+                const reply = await facet.hostHttpRequest(request, watchCapability, await incarnation, sending.id, sending.ended, sending.abandoned);
+                if ('failure' in reply)
+                    throw receivedFailure(reply.failure);
+                return await checked(reply.response);
             }
             catch (error) {
                 if (!relayed && !leafReceived(error))

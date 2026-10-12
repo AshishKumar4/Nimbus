@@ -54,13 +54,21 @@ export declare class SentRequests {
     /** `request`'s call failed before its leaf saw what it carried (leafReceived): carry it again (each is idempotent there). */
     unsent(request: HostRequest): void;
 }
+/** A leaf's answer to its host's HTTP call: its guest's response, or its guest's failure; either way the call arrived. */
+export type LeafReply = {
+    response: Response;
+} | {
+    failure: Error;
+};
 /**
- * The property a leaf sets on its guest's failure, crossing RPC with it
- * (enhanced_error_serialization): the call arrived, and what it carried was
- * seen. Any other failure may not have reached the leaf.
+ * The property a host sets on a guest failure its leaf answered: the call
+ * arrived, and what it carried was seen; any other failure may not have
+ * reached the leaf. It crosses only Nimbus's own RPC (a peer to its
+ * coordinator), which composeFabric holds to enhanced_error_serialization.
  */
 export declare const LEAF_RECEIVED = "nimbusLeafReceived";
 export declare function leafReceived(error: unknown): boolean;
+export declare function receivedFailure(failure: Error): Error;
 /** A request's id, and the earlier ones its leaf forgets (`ended`) or abandons first (`abandoned`). */
 export interface HostRequest {
     id: number;
