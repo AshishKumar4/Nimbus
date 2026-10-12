@@ -51,24 +51,37 @@ export class HostActivity {
   private hold(signal?: AbortSignal, dependency?: Observation): HostActivityLease {
     signal?.throwIfAborted();
     let rejectReady: ((reason: unknown) => void) | undefined;
+    let ready: Promise<void> | undefined;
+    let ended = false;
+    const reason = () => signal?.aborted ? signal.reason : new DOMException('Host validation aborted', 'AbortError');
     const cancel = () => {
+      ended = true;
       signal?.removeEventListener('abort', release);
-      rejectReady?.(signal?.aborted ? signal.reason : new DOMException('Host validation aborted', 'AbortError'));
+      rejectReady?.(reason());
     };
     const release = () => {
       if (!this.owners.delete(cancel)) return;
       cancel();
       if (this.owners.size === 0) this.stop();
     };
+    const idle = this.owners.size === 0;
     this.owners.add(cancel);
-    for (const observation of this.observations) if (!observation.failed) this.start(observation);
-    const ready = dependency ? new Promise<void>((resolve, reject) => {
-      rejectReady = reject;
-      this.start(dependency).then(resolve, reject);
-    }) : undefined;
-    ready?.catch(() => {});
+    // While anything holds the host its observations already run.
+    if (idle) for (const observation of this.observations) if (!observation.failed) this.start(observation);
     signal?.addEventListener('abort', release, { once: true });
-    return { ready, release };
+    const validated = () => {
+      if (!dependency) return undefined;
+      if (!ready) {
+        ready = ended ? Promise.reject(reason()) : new Promise<void>((resolve, reject) => {
+          rejectReady = reject;
+          this.start(dependency).then(resolve, reject);
+        });
+        ready.catch(() => {});
+      }
+      return ready;
+    };
+    // Made only for a holder that waits on validation; a request never does.
+    return { get ready() { return validated(); }, release };
   }
 
   /** End every old lease; a reused session starts with a fresh ownership epoch. */
