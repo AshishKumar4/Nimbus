@@ -23,6 +23,7 @@ import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { FacetManager } from '../facets/manager.js';
 import { type ComposedFacetManager } from '../facets/compose.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import type { ChildProcessManager } from '@nimbus-sh/core/runtime/child-process-manager.js';
 import type {
   SessionRouterRpc, SessionReadyOptions, SessionExecOptions, SessionRunCodeOptions,
   SessionDestroyOptions, SessionDestroyResult, SessionFileStat, SessionDirectoryEntry, SessionRuntimeInstallOptions,
@@ -343,7 +344,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
     return this.facetManagerComposed?.manager ?? null;
   }
   /** W8: child_process broker. Lazy — only constructed when first cp* RPC arrives. */
-  facetProcessManager: any = null;
+  facetProcessManager: ChildProcessManager | null = null;
   /**
    * Supervisor-owned outbound WebSockets. A facet's socket is terminated here
    * so an inbound frame reaches it as a supervisor reply — the only shape a
@@ -1213,9 +1214,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   _ensureWebSocketRelay(): WebSocketRelay { return this.#runtimeServices._ensureWebSocketRelay(); }
 
   /**
-   * W8: lazily construct the FacetProcessManager when the first cp* RPC
-   * arrives. Wired with adapters that bridge the Nimbus shell command
-   * registry to the FacetProcessManager's CommandRegistryLike contract.
+   * Lazily bind the core child broker to this session's runners and cleanup.
    */
   _ensureFacetProcessManager() { return this.#runtimeServices._ensureFacetProcessManager(); }
 

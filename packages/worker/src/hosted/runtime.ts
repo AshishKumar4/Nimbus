@@ -8,7 +8,7 @@ import { ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { SUPERVISOR_OP_ROUTES, createSupervisorBridgeStore, type SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { SUPERVISOR_DELIVER_OP } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import { openSupervisorDeliveries, type SupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
-import type { FacetProcessManager } from '../facets/process.js';
+import type { ChildProcessManager } from '@nimbus-sh/core/runtime/child-process-manager.js';
 import type { ComposedFacetManager, FacetManagerHostHooks } from '../facets/compose.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import type { PrebundlePool } from '../facets/prebundle-pool.js';
@@ -78,7 +78,7 @@ class RuntimeOwner {
   _viteShimPort: number | null = null;
   wranglerAliasBannerShown = false;
   facetManagerComposed: ComposedFacetManager | null = null;
-  facetProcessManager: FacetProcessManager | null = null;
+  facetProcessManager: ChildProcessManager | null = null;
   esbuildService: EsbuildService | null = null;
   bundlePool: PrebundlePool | null = null;
   npmInstaller: NpmInstaller | null = null;

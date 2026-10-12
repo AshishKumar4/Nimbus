@@ -1,67 +1,13 @@
-/**
- * facet-process.ts — supervisor-side broker for child_process.spawn.
- *
- * W8 Phase 1: facet-mapped pseudo-process. Each child_process.spawn call from
- * a parent facet routes through here:
- *
- *   parent facet  ── SUPERVISOR.cpSpawn(req) ─→  FacetProcessManager.spawn
- *                                                      │
- *                                                      ▼
- *                                  one of two execution kinds:
- *
- *   pure-builtin   — run inline in supervisor isolate via the command
- *                    registry (echo, cat, true, false, ls, env, sleep,
- *                    exit-code, …). No facet hop. Fast.
- *
- *   facet-direct   — mint a child facet that runs the command directly
- *                    via FacetManager.execStream(). The facet IS the
- *                    command's runtime — no nested cpRunBuiltinCommand
- *                    recursion (that was the BLOCKER-2 deadlock vector
- *                    in the initial plan; see W8-plan.md §8.5).
- *
- * stdin uses the shared process input channel; stdout/stderr use bounded
- * per-child pipes. cpReadOutput long-polls for incremental delivery
- * to the parent; cpDrainOutput is a one-shot full-flush invoked from the
- * parent's exit path so unawaited children don't lose output. A child's
- * stdin is a pipe: what runs it here reads the queue as a stream, as the
- * parent writes it (`_stdinOf`), and a runtime's facet reads the same channel
- * through cpReadStdin.
- *
- * Children run concurrently, as Node's do: each is dispatched on its own,
- * and nothing here waits for one child before starting the next. What a
- * child spends of the session's shared budgets it spends where it is spent
- * (a facet program's Dynamic Worker is admitted by the fabric's ledger).
- *
- * Lifecycle invariants:
- *   - A child's end is decided once (first writer wins: exitCode), kill()
- *     and reportExit() race-free, and its parent told of it (wait, a closed
- *     stream) only once it is published, with its output, as everything
- *     else that observes it is (SessionProcessSupervisor.published).
- *   - kill() runs the session's kill of the pid (its launch's terminator,
- *     and the release of what it held) before it stamps the exit, which
- *     wakes every pending waiter, so cpWait/cpReadOutput don't hang and
- *     nothing the child held outlives it.
- */
-
-import { singleQuote } from '@nimbus-sh/core/_shared/shell-quote.js';
-import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
-import { parseShellInvocation, type ShellName } from '@nimbus-sh/core/shell/shell-invocation.js';
-import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
-import type { ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
-import { enc, dec } from '@nimbus-sh/core/_shared/bytes.js';
-import { exitCodeForSignal, parseSignalName, signalDisposition } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
-import { isDynamicWorkerDeadlock } from '@nimbus-sh/fabric/budgets.js';
-import { pulledStdinReader } from '@nimbus-sh/core/shell/stdin-adapter.js';
-import type { CommandInputStream } from '@nimbus-sh/core/substrate/lifo/commands/types.js';
-
-/**
- * Result of running a pure-builtin or facet-direct command. Mirrors
- * FacetExecResult but with the streaming hooks already invoked, so this
- * value is just the final exit code.
- */
-export interface ExecStreamResult {
-  exitCode: number;
-}
+import { singleQuote } from '../_shared/shell-quote.js';
+import { errorText } from '../_shared/error-text.js';
+import { resolveVfsPath } from '../vfs/path.js';
+import { parseShellInvocation, type ShellName } from '../shell/shell-invocation.js';
+import type { SessionProcessSupervisor } from './session-process-supervisor.js';
+import type { ProcessView } from './process-files.js';
+import { enc } from '../_shared/bytes.js';
+import { exitCodeForSignal, parseSignalName, signalDisposition } from '../substrate/lifo/shell/signals.js';
+import { pulledStdinReader } from '../shell/stdin-adapter.js';
+import type { CommandInputStream } from '../substrate/lifo/commands/types.js';
 
 /**
  * Output chunk in a child's per-fd ring. Sequence numbers let parents
@@ -72,7 +18,7 @@ export interface ExecStreamResult {
 interface OutputChunk {
   seq: number;
   data: Uint8Array;
-  /** Its number among the parent's news (FacetProcessManagerDeps.issueNews); 0 for none. */
+  /** Its number among the parent's news (ChildProcessManagerDeps.issueNews); 0 for none. */
   news: number;
 }
 
@@ -149,7 +95,7 @@ export interface ChildExitStatus {
   spawnError?: string;
   /** Not done, but started: what a wait that asked to hear of the start answers. */
   started?: boolean;
-  /** The parent's news this answer delivers (FacetProcessManagerDeps.issueNews). */
+  /** The parent's news this answer delivers (ChildProcessManagerDeps.issueNews). */
   news?: number[];
 }
 
@@ -170,7 +116,7 @@ export interface ReadOutputResult {
   chunks: { seq: number; data: Uint8Array }[];
   closed: boolean;
   maxSeq: number;
-  /** The parent's news this answer delivers (FacetProcessManagerDeps.issueNews). */
+  /** The parent's news this answer delivers (ChildProcessManagerDeps.issueNews). */
   news?: number[];
 }
 
@@ -208,32 +154,6 @@ function concatBytes(chunks: readonly Uint8Array[]): Uint8Array {
   return joined;
 }
 
-/**
- * Command resolution. The shell registry returns whatever shape it likes;
- * we adapt to a normalized 3-state result.
- */
-export type CommandKind = 'pure-builtin' | 'facet-direct' | 'shell-direct' | 'unknown';
-
-/**
- * The minimum shape we need from the FacetManager. Production passes
- * the real FacetManager; tests pass a mock with execStream.
- */
-export interface FacetManagerLike {
-  /** `opts.stdin` is the command's stdin, a pipe it reads as it arrives. */
-  execStream(
-    code: string,
-    opts: { facetName?: string; cwd?: string; env?: Record<string, string>; argv?: string[]; stdin?: CommandInputStream },
-    hooks: OutputHooks,
-  ): Promise<number>;
-  /**
-   * The session's kill of `pid` by `signal` (a name without SIG): the work
-   * behind it ends (its launch's terminator), and what it held is released
-   * and its exit reported (ports, RPC resources, relayed sockets). False when
-   * it is not running.
-   */
-  kill(pid: number, signal: string): boolean;
-}
-
 /** Where a child runs from: its pid (whose credential it has), directory and environment. */
 export interface ChildOrigin {
   readonly pid: number;
@@ -241,46 +161,31 @@ export interface ChildOrigin {
   readonly env: Record<string, string>;
 }
 
-/**
- * The minimum shape we need from the command registry.
- */
-export interface CommandRegistryLike {
-  /** How `name` runs as the child `from` describes; null while nothing can run it. */
-  resolve(name: string, from: ChildOrigin): Promise<{ kind: CommandKind } | null>;
-  runPureBuiltin(
-    pid: number,
-    name: string,
-    args: string[],
-    env: Record<string, string>,
-    cwd: string,
-    stdin: CommandInputStream,
-    hooks: OutputHooks,
-  ): Promise<number>;
+export interface ChildRunnerContext extends ChildOrigin {
+  readonly parentPid: number;
+  readonly command: string;
+  readonly args: string[];
+  readonly stdio: SpawnReq['stdio'];
+  readonly stdin: CommandInputStream;
+  readonly output: OutputHooks;
+  /** Called by the runner only once the program actually starts. */
+  readonly onStarted: () => void;
 }
 
-export interface ShellExecutorLike {
-  execute(
-    pid: number,
-    commandLine: string,
-    env: Record<string, string>,
-    cwd: string,
-    stdin: CommandInputStream,
-    hooks: OutputHooks,
-  ): Promise<number>;
+export interface SpawnRefusal {
+  readonly code: string;
+  readonly errno: number;
 }
 
-/**
- * Constructor deps bundle. Keeping it as a single object simplifies
- * tests AND makes the production wiring in nimbus-session.ts read
- * declaratively.
- */
-export interface FacetProcessManagerDeps {
-  facetMgr: FacetManagerLike;
+export interface ChildRunner {
+  run(context: ChildRunnerContext): Promise<number | SpawnRefusal>;
+}
+
+export interface ChildProcessManagerDeps {
   processes: SessionProcessSupervisor;
-  /** The process's own view of the namespace: where `sh <script>` reads the script, as the process. */
-  vfsForProcess: (pid: number) => Pick<ProcessView, 'exists' | 'readFileString' | 'isDirectory'>;
-  commandRegistry: CommandRegistryLike;
-  shellExecutor?: ShellExecutorLike;
+  resolve(request: SpawnReq, origin: ChildOrigin): Promise<ChildRunner | null>;
+  /** End the host's work and clean its resources before the broker stamps the exit. */
+  terminate(pid: number, signal: string): boolean;
   /**
    * Number a piece of news of a child as it is produced, for its parent
    * `parentPid`: output the parent reads, the child's start, the end of a
@@ -316,8 +221,8 @@ type ShellSpawnPlan =
   | { kind: 'stdin'; args: string[] };
 
 /** A spawn's stdio as the parent's ChildProcess reads it (node-shims _normalizeStdio): a mode per descriptor. */
-function normalizeStdio(stdio: unknown): Array<'pipe' | 'ignore' | 'inherit'> {
-  const mode = (v: unknown) => (v === 'ignore' || v === 'inherit' ? v : 'pipe');
+function normalizeStdio(stdio: SpawnReq['stdio'] | string): Array<'pipe' | 'ignore' | 'inherit'> {
+  const mode = (v: string | undefined) => (v === 'ignore' || v === 'inherit' ? v : 'pipe');
   if (typeof stdio === 'string') return [mode(stdio), mode(stdio), mode(stdio)];
   if (!Array.isArray(stdio)) return ['pipe', 'pipe', 'pipe'];
   return [mode(stdio[0]), mode(stdio[1]), mode(stdio[2])];
@@ -335,7 +240,7 @@ function isShellCommand(command: string): boolean {
   return base === 'sh' || base === 'bash';
 }
 
-function normalizeVirtualCommand(command: string): string {
+export function normalizeChildCommand(command: string): string {
   const text = String(command || '').trim();
   if (!text.startsWith('/')) return text;
   const base = basenameOfCommand(text);
@@ -373,11 +278,52 @@ function shellLineFromSpawn(command: string, args: string[]): string {
   return [command, ...(Array.isArray(args) ? args : [])].map((part) => quoteShellToken(String(part))).join(' ');
 }
 
-export class FacetProcessManager {
-  private children = new Map<number, ChildEntry>();
-  private deps: FacetProcessManagerDeps;
+/** Shell spawns share parsing and script/stdin loading across local and remote hosts. */
+export function shellChildRunner(
+  request: SpawnReq,
+  vfs: Pick<ProcessView, 'exists' | 'readFileString' | 'isDirectory'>,
+  execute: (context: ChildRunnerContext, commandLine: string) => Promise<number>,
+): ChildRunner | null {
+  const args = Array.isArray(request.args) ? request.args.map(String) : [];
+  const plan: ShellSpawnPlan | null = isShellCommand(request.command)
+    ? parseShellCommandArgs(request.command, args)
+    : request.shell ? { kind: 'command', commandLine: shellLineFromSpawn(request.command, args), args: [] } : null;
+  if (!plan) return null;
+  return {
+    async run(context) {
+      context.onStarted();
+      try {
+        let commandLine: string;
+        if (plan.kind === 'command') commandLine = plan.commandLine;
+        else if (plan.kind === 'stdin') commandLine = await context.stdin.readAll();
+        else {
+          const shellName = shellNameForCommand(request.command);
+          const scriptPath = '/' + resolveVfsPath(plan.path, context.cwd);
+          try {
+            if (!await vfs.exists(scriptPath) || await vfs.isDirectory(scriptPath)) {
+              context.output.onStderr(textBytes(`${shellName}: ${plan.path}: No such file or directory\n`));
+              return 127;
+            }
+            commandLine = await vfs.readFileString(scriptPath);
+          } catch (error) {
+            context.output.onStderr(textBytes(`${shellName}: ${plan.path}: ${errorText(error)}\n`));
+            return 127;
+          }
+        }
+        return await execute({ ...context, env: { ...context.env, NIMBUS_CP_CHILD_PID: String(context.pid) } }, commandLine);
+      } catch (error) {
+        context.output.onStderr(textBytes(`shell error: ${errorText(error)}\n`));
+        return 1;
+      }
+    },
+  };
+}
 
-  constructor(deps: FacetProcessManagerDeps) {
+export class ChildProcessManager {
+  private children = new Map<number, ChildEntry>();
+  private deps: ChildProcessManagerDeps;
+
+  constructor(deps: ChildProcessManagerDeps) {
     this.deps = deps;
   }
 
@@ -455,15 +401,11 @@ export class FacetProcessManager {
     else this.deps.processes.openInput(pid);
     if (child.stdio[0] === 'ignore') this.deps.processes.endInput(pid);
 
-    const shellPlan = this._shellPlanFor(req);
-    const normalizedCommand = shellPlan ? 'sh' : normalizeVirtualCommand(req.command);
-    const dispatchReq = shellPlan
-      ? req
-      : { ...req, command: normalizedCommand };
-    let reg: { kind: CommandKind } | null;
+    const dispatchReq = { ...req, command: normalizeChildCommand(req.command) };
+    let runner: ChildRunner | null;
     try {
-      reg = shellPlan ? { kind: 'shell-direct' } : await this.deps.commandRegistry.resolve(normalizedCommand, { pid, cwd: req.cwd, env: childEnv });
-      if (!reg || reg.kind === 'unknown') throw Object.assign(new Error(`spawn ${req.command} ENOENT`), { code: 'ENOENT', errno: -2, path: req.command });
+      runner = await this.deps.resolve(dispatchReq, { pid, cwd: req.cwd, env: childEnv });
+      if (!runner) throw Object.assign(new Error(`spawn ${req.command} ENOENT`), { code: 'ENOENT', errno: -2, path: req.command });
     } catch (error) {
       this.deps.processes.closeInput(pid);
       child.parentClosed?.();
@@ -477,112 +419,38 @@ export class FacetProcessManager {
     // child.stdin.end() calls land in the stdin queue before a preseeded
     // child runtime starts. Resolution already succeeded before publishing
     // the child: an absent program is a spawn ENOENT, not an exit 127.
-    setTimeout(() => {
-      void (async () => {
-        await this._dispatch(child, reg.kind, dispatchReq);
-      })().catch((e) => {
-        // Last resort: a classification or both runners threw (a registered
-        // command's module that fails to load). Exit 1 with the error on stderr.
-        this._appendText(child, 2, `Error: ${e?.message || String(e)}\n`);
-        this._stampExit(child, 1, null);
-      });
-    }, 0);
+    const resolved = runner;
+    setTimeout(() => { void this._dispatch(child, resolved, dispatchReq); }, 0);
 
     return { childPid: pid };
   }
 
-  /**
-   * Run the child to its end and stamp its exit. A facet program or a shell
-   * line reads live stdin (NIMBUS_CP_CHILD_PID, cpReadStdin), as a Node
-   * child_process pipe does; a pure builtin reads that same live byte channel.
-   * Output goes straight to the child's bounded pipes while it runs,
-   * so a prompt reaches the parent before the child waits for an answer.
-   *
-   * Runs in this isolate, on its own: a child that never exits holds nothing
-   * a later child needs. (It used to be relayed through a single-slot Worker
-   * Loader pool whose call stayed open for the child's life, so every later
-   * spawn queued behind it, a kill included.)
-   */
-  private async _dispatch(child: ChildEntry, kind: CommandKind, req: SpawnReq): Promise<void> {
+  private async _dispatch(child: ChildEntry, runner: ChildRunner, req: SpawnReq): Promise<void> {
     if (child.exitCode !== null) return;
-    if (kind === 'unknown') {
-      this._markStarted(child);
-      this._appendText(child, 2, `${req.command}: command not found\n`);
-      this._stampExit(child, 127, null);
-      return;
-    }
+    const onStarted = () => this._markStarted(child);
     const hooks: OutputHooks = {
       onStdout: (d) => this._appendOutput(child, 1, d),
       onStderr: (d) => this._appendOutput(child, 2, d),
-      onStarted: () => this._markStarted(child),
+      onStarted,
     };
-    const cwd = String(req.cwd || '/home/user');
-    // A builtin or a shell line starts as it is dispatched; a facet program
-    // once its launch is let in (hooks.onStarted).
-    if (kind !== 'facet-direct') this._markStarted(child);
-    if (kind === 'pure-builtin') {
-      const stdin = this._stdinOf(child);
-      try {
-        const code = await this.deps.commandRegistry.runPureBuiltin(
-          child.pid, req.command, req.args, { ...child.env }, cwd, stdin, hooks,
-        );
-        this._stampExit(child, typeof code === 'number' ? code : 0, null);
-      } catch (e: any) {
-        this._appendText(child, 2, `Error: ${e?.message || String(e)}\n`);
-        this._stampExit(child, 1, null);
-      }
-      return;
-    }
-    const env = { ...child.env, NIMBUS_CP_CHILD_PID: String(child.pid) };
-    if (kind === 'shell-direct') {
-      try {
-        const plan = this._shellPlanFor(req);
-        if (!plan) {
-          this._appendText(child, 2, `${req.command}: unsupported shell invocation\n`);
-          this._stampExit(child, 127, null);
-          return;
-        }
-        const commandLine = await this._shellCommandLineForPlan(
-          plan, cwd, this._stdinOf(child), hooks, shellNameForCommand(req.command), child.pid,
-        );
-        if (commandLine === null) {
-          this._stampExit(child, 127, null);
-          return;
-        }
-        const code = await this._runShellLine(child.pid, commandLine, env, cwd, this._stdinOf(child), hooks);
-        this._stampExit(child, typeof code === 'number' ? code : 0, null);
-      } catch (e: any) {
-        this._appendText(child, 2, `shell error: ${e?.message || String(e)}\n`);
-        this._stampExit(child, 1, null);
-      }
-      return;
-    }
-    // facet-direct: the program runs as this child's pid, in its own facet.
-    const payload = JSON.stringify({
-      command: req.command,
-      args: req.args,
-      env,
-      cwd,
-      stdin: '',
-      processPid: child.pid,
-    });
     try {
-      const code = await this.deps.facetMgr.execStream(payload, { cwd, env, argv: req.args, stdin: this._stdinOf(child) }, hooks);
-      // A resident now (it listened, FacetManager._promote): its exit is its own.
-      const entry = this.deps.processes.get(child.pid);
-      const ended = entry?.longRunning === true && entry.state === 'running' ? await this.deps.processes.whenEnded(child.pid) : code;
-      this._stampExit(child, typeof ended === 'number' ? ended : 0, null);
-    } catch (e: any) {
-      // An initial admission refused before onStarted is a failed spawn.
-      // A child already started (including one stopped on stdin whose
-      // replay was refused) exists: stderr, exit 1 and close, never a second
-      // spawn outcome or a negative errno in place of its exit.
-      if (isDynamicWorkerDeadlock(e) && !child.started) {
-        child.spawnError = e.code;
-        this._stampExit(child, e.errno, null);
-        return;
+      const result = await runner.run({
+        pid: child.pid, parentPid: child.parentPid,
+        command: req.command, args: req.args, cwd: String(req.cwd || '/home/user'),
+        env: { ...child.env }, stdio: child.stdio,
+        stdin: this._stdinOf(child), output: hooks, onStarted,
+      });
+      if (typeof result === 'number') {
+        this._stampExit(child, result, null);
+      } else if (!child.started) {
+        child.spawnError = result.code;
+        this._stampExit(child, result.errno, null);
+      } else {
+        this._appendText(child, 2, `Error: ${result.code}\n`);
+        this._stampExit(child, 1, null);
       }
-      this._appendText(child, 2, `facet error: ${isDynamicWorkerDeadlock(e) ? `${e.code}: ` : ''}${e?.message || String(e)}\n`);
+    } catch (error) {
+      this._appendText(child, 2, `Error: ${errorText(error)}\n`);
       this._stampExit(child, 1, null);
     }
   }
@@ -600,57 +468,6 @@ export class FacetProcessManager {
         if (packet.ended) return null;
       }
     });
-  }
-
-  private _shellPlanFor(req: SpawnReq): ShellSpawnPlan | null {
-    const args = Array.isArray(req.args) ? req.args.map(String) : [];
-    if (req.shell) {
-      if (isShellCommand(req.command)) return parseShellCommandArgs(req.command, args);
-      return { kind: 'command', commandLine: shellLineFromSpawn(String(req.command), args), args: [] };
-    }
-    if (!isShellCommand(req.command)) return null;
-    return parseShellCommandArgs(req.command, args);
-  }
-
-  /** The shell's program: its `-c` text, its script, or (`sh` alone) its stdin, which it then has none left of. */
-  private async _shellCommandLineForPlan(
-    plan: ShellSpawnPlan,
-    cwd: string,
-    stdin: CommandInputStream,
-    hooks: OutputHooks,
-    shellName: ShellName,
-    processPid: number,
-  ): Promise<string | null> {
-    if (plan.kind === 'command') return plan.commandLine;
-    if (plan.kind === 'stdin') return stdin.readAll();
-
-    const scriptPath = '/' + resolveVfsPath(plan.path, cwd || '/home/user');
-    try {
-      const vfs = this.deps.vfsForProcess(processPid);
-      if (!await vfs.exists(scriptPath) || await vfs.isDirectory(scriptPath)) {
-        hooks.onStderr(textBytes(`${shellName}: ${plan.path}: No such file or directory\n`));
-        return null;
-      }
-      return await vfs.readFileString(scriptPath);
-    } catch (e: any) {
-      hooks.onStderr(textBytes(`${shellName}: ${plan.path}: ${e?.message || String(e)}\n`));
-      return null;
-    }
-  }
-
-  private async _runShellLine(
-    pid: number,
-    commandLine: string,
-    env: Record<string, string>,
-    cwd: string,
-    stdin: CommandInputStream,
-    hooks: OutputHooks,
-  ): Promise<number> {
-    if (!this.deps.shellExecutor) {
-      hooks.onStderr(textBytes('sh: shell executor unavailable\n'));
-      return 127;
-    }
-    return this.deps.shellExecutor.execute(pid, commandLine, env, cwd || '/home/user', stdin, hooks);
   }
 
   // ── stdin queue ─────────────────────────────────────────────────────────
@@ -870,7 +687,7 @@ export class FacetProcessManager {
 
   /**
    * Synchronous kill. First-writer-wins on exit slot. The work behind the
-   * pid ends first, through the session's own kill (FacetManagerLike.kill):
+   * pid ends first, through the host's own terminate:
    * the terminator its launch registered aborts a facet program's run, so
    * the Dynamic Worker it held goes back to the ledger now rather than when
    * the program would have ended on its own, and its ports, RPC resources
@@ -888,7 +705,7 @@ export class FacetProcessManager {
     if (name === null || name === '0' || signalDisposition(name) !== 'terminate') return false;
 
     child.killed = true;
-    this.deps.facetMgr.kill(child.pid, name);
+    this.deps.terminate(child.pid, name);
     this._stampExit(child, exitCodeForSignal(name), `SIG${name}`); // 128+signo, as the shell reports it
     return true;
   }
@@ -929,7 +746,9 @@ export class FacetProcessManager {
 
   /** The child's published end, to its waiters: wakes all of them (exit, output, stdin) so callers don't hang. */
   private _announceExit(child: ChildEntry): void {
-    try { this.deps.processes.markExit(child.pid, child.exitCode!); } catch {}
+    if (child.exitCode !== null) {
+      try { this.deps.processes.markExit(child.pid, child.exitCode); } catch {}
+    }
 
     // Wake exit waiters.
     const status = this._exitStatus(child);
@@ -999,7 +818,7 @@ export class FacetProcessManager {
     for (const w of child.startWaiters.splice(0)) w();
   }
 
-  /** A piece of news of `child` for its parent, numbered (FacetProcessManagerDeps.issueNews). */
+  /** A piece of news of `child` for its parent, numbered (ChildProcessManagerDeps.issueNews). */
   private _news(child: ChildEntry): number {
     try { return this.deps.issueNews?.(child.parentPid) ?? 0; } catch { return 0; }
   }
@@ -1033,4 +852,19 @@ export class FacetProcessManager {
   _getChildEntry(pid: number): ChildEntry | undefined {
     return this.children.get(pid);
   }
+}
+
+/** A facet's child-process capability. Its parent identity and stdin cannot be borrowed from another pid. */
+export function createChildProcessSupervisor(manager: ChildProcessManager, pid: number) {
+  return {
+    cpSpawn: (request: SpawnReq) => manager.spawn({ ...request, parentPid: pid }),
+    cpStdinWrite: (child: number, bytes: Uint8Array) => manager.stdinWrite(child, bytes),
+    cpStdinEnd: (child: number) => manager.stdinEnd(child),
+    cpReadOutput: (child: number, fd: 1 | 2, sinceSeq: number, waitMs?: number) => manager.readOutput(child, fd, sinceSeq, waitMs),
+    cpWait: (child: number, waitMs?: number, _acquire?: object, knownStarted = true) => manager.wait(child, waitMs, knownStarted),
+    cpKill: (child: number, signal: string | number = 'SIGTERM') => manager.kill(child, signal),
+    cpReadStdin: (_child: number, waitMs: number, _acquire?: object, maxBytes?: number) => manager.cpReadStdin(pid, waitMs, maxBytes),
+    cpCloseOutput: (child: number, fd: 1 | 2) => manager.closeOutput(child, fd),
+    cpDrainOutput: (child: number) => manager.drainOutput(child),
+  };
 }

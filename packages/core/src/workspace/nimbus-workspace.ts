@@ -49,6 +49,9 @@ import { ProcessView } from '../runtime/process-files.js';
 import { WorkspaceFs } from './workspace-fs.js';
 import { PID_GEN_STRIDE, type ProcessEntry } from '../runtime/process-table.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
+import { ChildProcessManager } from '../runtime/child-process-manager.js';
+import { resolveWorkspaceChild } from './child-process-runner.js';
+import { exitCodeForSignal } from '../substrate/lifo/shell/signals.js';
 import type { FacetHost } from '../runtime/facet-host.js';
 import { runtimeEntrypoints, type RunnerFactory } from '../runtime/installed-runtimes.js';
 import { RuntimeManager } from '../runtime/runtime-manager.js';
@@ -298,6 +301,7 @@ export class NimbusWorkspace {
     env: Record<string, string>,
     private readonly sql: SqlDatabase,
     processes: SessionProcessSupervisor,
+    readonly children: ChildProcessManager,
     runtimes: RuntimeManager,
     shellProcessPid: number,
     private readonly supervisorOps: (envelope: SupervisorOpEnvelope) => Promise<unknown>,
@@ -359,6 +363,23 @@ export class NimbusWorkspace {
     filesystem.holdOutput(processes);
 
     const env = { ...defaultEnv(home), ...options.env };
+    let workspace: NimbusWorkspace | null = null;
+    const children = new ChildProcessManager({
+      processes,
+      resolve: (request, origin) => {
+        if (!workspace) throw new Error('Nimbus: workspace is not initialized');
+        return resolveWorkspaceChild(workspace, request, origin);
+      },
+      terminate: (pid, signal) => processes.kill(pid, exitCodeForSignal(signal)),
+    });
+    const host = options.facets;
+    const facets: FacetHost | undefined = host ? {
+      ...host,
+      open: spec => host.open({
+        ...spec,
+        syscalls: spec.syscalls ? { ...spec.syscalls, children } : undefined,
+      }),
+    } : undefined;
 
     // The identity every shell command runs as. A host that supplied one keeps
     // it verbatim — its pid is already alive in ITS process table. Otherwise
@@ -420,9 +441,9 @@ export class NimbusWorkspace {
           : suppliedRuntimeSource(options.runtimes ?? []),
       });
 
-      if (options.facets) {
+      if (facets) {
         registerWasmRuntimes({
-          facets: options.facets,
+          facets,
           vfs,
           filesystem,
           registry,
@@ -510,11 +531,12 @@ export class NimbusWorkspace {
         output: options.processOutput,
         extend: options.supervisorOps,
       });
-      return new NimbusWorkspace(
+      workspace = new NimbusWorkspace(
         vfs, kernel, shell, registry, env, options.sql,
-        processes, runtimes, shellProcessPid,
+        processes, children, runtimes, shellProcessPid,
         supervisorOps, filesystem, runtimeLease, identity,
       );
+      return workspace;
     } catch (error) {
       await runtimeLease.dispose();
       throw error;
@@ -565,6 +587,7 @@ export class NimbusWorkspace {
       return result;
     } finally {
       this.processes.exit(pid, exitCode);
+      this.processes.markExit(pid, exitCode);
       // Its descriptors close as it exits; its entry, and what it bound in
       // the filesystem, go even if one fails to.
       try {

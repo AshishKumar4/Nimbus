@@ -47,6 +47,7 @@ import { isEgressGuestEvent, RealmEgress } from './realm-egress.js';
 import { fromRealmError, isRealmAnswer, startRealm, type Realm, type RealmOutcome } from './realm.js';
 import { FILESYSTEM_RPC_METHODS, vfsSupervisor } from './vfs-supervisor.js';
 import type { WasiParking } from './wasi/types.js';
+import { createChildProcessSupervisor } from './child-process-manager.js';
 
 // ── The facet's protocol (facet-guest.ts is the other side) ──────────────────
 
@@ -228,15 +229,21 @@ class RealmFacet implements Facet {
     const processes = spec.syscalls?.processes;
     if (this.supervisor && processes && spec.syscalls) {
       const pid = spec.syscalls.pid;
+      const children = spec.syscalls.children;
       Object.assign(this.supervisor, {
-        stdout: (bytes: Uint8Array) => processes.appendOutputBytes(pid, 'stdout', bytes),
-        stderr: (bytes: Uint8Array) => processes.appendOutputBytes(pid, 'stderr', bytes),
+        stdout: (bytes: Uint8Array) => children?.routeOutput(pid, 1, bytes) ?? processes.appendOutputBytes(pid, 'stdout', bytes),
+        stderr: (bytes: Uint8Array) => children?.routeOutput(pid, 2, bytes) ?? processes.appendOutputBytes(pid, 'stderr', bytes),
         cpReadStdin: async (_child: number, waitMs: number, _acquire?: unknown, maxBytes?: number) => {
           const packet = await processes.readInput(pid, waitMs, maxBytes);
           return { ...packet, data: typeof packet.data === 'string' ? new TextEncoder().encode(packet.data) : packet.data };
         },
       });
       this.supervisorMethods = [...SUPERVISOR_METHODS, 'stdout', 'stderr', 'cpReadStdin'];
+      if (children) {
+        const childCalls = createChildProcessSupervisor(children, pid);
+        Object.assign(this.supervisor, childCalls);
+        this.supervisorMethods = [...SUPERVISOR_METHODS, 'stdout', 'stderr', ...Object.keys(childCalls)];
+      }
     }
     this.synchronous = spec.syscalls?.vfs.synchronous;
   }

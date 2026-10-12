@@ -39,6 +39,7 @@
  */
 
 import type { CommandRegistry } from '@nimbus-sh/core/substrate/lifo/commands/registry.js';
+import type { ChildProcessManager } from '@nimbus-sh/core/runtime/child-process-manager.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { SessionRouterRpc } from '@nimbus-sh/core/runtime/session-protocol.js';
@@ -88,7 +89,7 @@ export interface SessionInternal extends Pick<SessionRouterRpc,
   facetManagerComposed: ComposedFacetManager | null;
   readonly facetManager: FacetManager | null;
   /** W8: child_process broker; lazy. */
-  facetProcessManager: any;
+  facetProcessManager: ChildProcessManager | null;
   esbuildService: EsbuildService | null;
   /** The session's pre-bundle pool (its build facet); lazy via ensureBundlePool. */
   bundlePool: PrebundlePool | null;
@@ -167,7 +168,7 @@ export interface SessionInternal extends Pick<SessionRouterRpc,
   getFilesystemAuthority(): import('@nimbus-sh/core/runtime/process-files.js').ProcessFiles
   ensureFacetManager(): ComposedFacetManager;
   ensureBundlePool(): PrebundlePool;
-  _ensureFacetProcessManager(): any;
+  _ensureFacetProcessManager(): ChildProcessManager;
   ensureNpmInstaller(onProgress?: (msg: string) => void): Promise<NpmInstaller>;
   _setCpRegistry(r: CommandRegistry): void;
   hydrateSessionBasePath(request: Request): Promise<void>;

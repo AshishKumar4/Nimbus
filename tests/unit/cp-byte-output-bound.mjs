@@ -1,17 +1,18 @@
 #!/usr/bin/env bun
 import assert from 'node:assert/strict';
-import { FacetProcessManager } from '../../packages/worker/src/facets/process.ts';
+import { ChildProcessManager } from '../../packages/core/src/runtime/child-process-manager.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 const processes = new SessionProcessSupervisor();
 const parent = processes.spawn('parent', [], '/').pid;
 let written = 0, stopped = false;
 const bytes = new Uint8Array(65536).map((_, i) => i & 255);
-const broker = new FacetProcessManager({ processes, vfsForProcess() {}, facetMgr: { kill() { return true; } },
-  commandRegistry: { async resolve() { return { kind: 'pure-builtin' }; }, async runPureBuiltin(_pid, _name, _args, _env, _cwd, _stdin, hooks) {
+const broker = new ChildProcessManager({ processes, terminate() { return true; },
+  async resolve() { return { async run({ output: hooks, onStarted }) {
+    onStarted();
     try { for (let i=0; i<12; i++) { await hooks.onStdout(bytes); written++; } }
     catch (e) { assert.equal(e.code, 'EPIPE'); stopped = true; }
     return 0;
-  } },
+  } }; },
 });
 const { childPid } = await broker.spawn({ parentPid: parent, command: 'producer', args: [], env: {}, cwd: '/', stdio: ['pipe','pipe','ignore'] });
 await new Promise(r => setTimeout(r, 30));
