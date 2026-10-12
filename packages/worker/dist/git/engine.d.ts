@@ -26,9 +26,11 @@ export interface ListRefsResult {
 export interface FetchPackRequest {
     url: string;
     auth?: RemoteAuth;
-    /** The repository's git directory, as an engine path: where the pack and .git/shallow are written. */
+    /** The repository's actual git directory, as Git exports it to the helper. */
     gitDir: string;
+    /** Shared refs and shallow boundary (GIT_COMMON_DIR, or gitDir's commondir). */
     commonDir?: string;
+    /** GIT_OBJECT_DIRECTORY when the objects live outside the common directory. */
     objectDir?: string;
     wants: string[];
     depth?: number;
