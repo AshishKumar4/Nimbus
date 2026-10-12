@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "5588a623bd15be732bb1653c5323745126b570516bd70bac00545a308aaf3ce7",
+  "fingerprint": "658c59f0d5855a2506a0db4b6caa9af4f82f3f0069d62565e11a5912829c9790",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2385,8 +2385,8 @@
     "packages/worker/dist/router/do-errors.d.ts.map": "e5e33251d09842cc80cc534cdb36c59fe684ab0b4c987ea2fd40f55702cef307",
     "packages/worker/dist/router/do-errors.js": "b69cf479f2c28970f7189b03f8a4687ef3fe3085a0f7b3b790898cb958ad4351",
     "packages/worker/dist/router/index.d.ts": "00d9730302e24081246f916b04f715253cce2420c35e6c4d2d1b92b40404fe2a",
-    "packages/worker/dist/router/index.d.ts.map": "a5da11b2e6ad6501c31d51e3f5842d0d50ea037342d4114f935b0a421bf107b3",
-    "packages/worker/dist/router/index.js": "9a2e02f209d2f0b08742526093a8b94b770424a92f8cd20a69e890d5ae646766",
+    "packages/worker/dist/router/index.d.ts.map": "9c871afe2e7fe9e7854e999cf945621bba96ad49ba4ed8484db24d2899f193a2",
+    "packages/worker/dist/router/index.js": "230d49e88e2448289f51a855fabc75c8c25447b66039c5db0684728058233176",
     "packages/worker/dist/router/public-directory-do.d.ts": "8f9b4d55ab6b30d9156fda33a6a3819fa0a49ed82faab87da8740fa2a1589823",
     "packages/worker/dist/router/public-directory-do.d.ts.map": "da80b24520416dbcd67bd286a36a7e355432cdaa7970b8a14885e33b4721d310",
     "packages/worker/dist/router/public-directory-do.js": "8f5ec96b04d21fcef381eeae59f738d9c0ea43de9e55abd358241abe2c4f3150",
@@ -2971,7 +2971,7 @@
     "packages/worker/src/replica/routing.ts": "b89c1fdbc8ed7469bbac7c83b16fceb230fe1330d6c693183586bc8cd2668d64",
     "packages/worker/src/rolldown-facet-artifact.generated.ts": "e8aefce5c21096d1bbf2a1c7df6d46b5b3030cbb36e1b7f3513b28cb06b98a89",
     "packages/worker/src/router/do-errors.ts": "d5fef23330d57259b2c65e777057db3aebf5954a13f2d72e2f2232704b11f297",
-    "packages/worker/src/router/index.ts": "5c8a5184693e3f58382ae0fdadf88f7b5e8f346e1a3265fc2393c27e54157e1d",
+    "packages/worker/src/router/index.ts": "f1d8ce2d5cbc9a26bff429cc80ab34ce5df6a1c7ddc7d7a47c2e426042fae37c",
     "packages/worker/src/router/public-directory-do.ts": "f9a2d68ceb8c4bf27cb7c14764d110afb019b2ba00d3bdb77e83eda70cd7b50a",
     "packages/worker/src/router/public-directory.ts": "03090bb1f15b812602b15fc18825907d2ceb686eb4fcd102b192401c0f25ef70",
     "packages/worker/src/router/remote-api.ts": "db9cbbe6ed4db28368365c7baacd2ca54e93f31d80bb2203bae2129c2d197701",

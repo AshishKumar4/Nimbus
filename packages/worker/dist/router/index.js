@@ -138,10 +138,27 @@ export function createNimbusHandler(options = {}) {
         let plannedMigration = [];
         let destroyedSession = null;
         // Plan at authentication, before any dispatch: the capacity check throws
-        // here, so a refusal always precedes the session DO's side effects.
+        // here, so a refusal always precedes the session DO's side effects. A
+        // refusal is an auth answer (same envelope as resolveNimbusRouteAuth),
+        // never an unhandled throw.
+        let authRefusal = null;
         const planMigration = (verified, sessionId) => {
-            plannedMigration = verified === null ? [] : planSessionCookieMigration(request.headers.get('Cookie'), verified, sessionId);
+            if (verified === null || authRefusal !== null) {
+                if (verified === null)
+                    plannedMigration = [];
+                return;
+            }
+            try {
+                plannedMigration = planSessionCookieMigration(request.headers.get('Cookie'), verified, sessionId);
+            }
+            catch (e) {
+                if (e instanceof NimbusAuthError)
+                    authRefusal = authErrorResponse(e);
+                else
+                    throw e;
+            }
         };
+        const authRefused = () => authRefusal;
         const applySessionResponsePolicy = async (response) => {
             const answered = await response;
             const setCookies = [...plannedMigration];
@@ -257,6 +274,8 @@ export function createNimbusHandler(options = {}) {
                 : `/port/${preview.port}`;
             if (auth.verified)
                 planMigration(auth.verified, preview.sid);
+            if (authRefused() !== null)
+                return authRefused();
             return answered(forwardToSession(request, {
                 sessionId: preview.sid,
                 innerPath: `${scopedInner}${url.pathname === '/' ? '/' : url.pathname}`,
@@ -370,6 +389,8 @@ export function createNimbusHandler(options = {}) {
                 return auth;
             const tenantSegment = auth.tenantSegment;
             planMigration(auth.verified, route.sessionId);
+            if (authRefused() !== null)
+                return authRefused();
             if (route.innerPath === '/api/preview-url' && request.method === 'GET') {
                 const rawPort = url.searchParams.get('port');
                 const port = rawPort && /^\d+$/.test(rawPort) ? Number(rawPort) : NaN;
