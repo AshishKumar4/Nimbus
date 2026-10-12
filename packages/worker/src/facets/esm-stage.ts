@@ -19,7 +19,7 @@ import { FACET_PROVIDED_PACKAGES } from '@nimbus-sh/core/constants.js';
 import { cjsModuleExportNamesAsync } from '@nimbus-sh/core/runtime/cjs-module-exports.js';
 import type { ImportSites } from '@nimbus-sh/core/runtime/dynamic-import-rewrite.js';
 import {
-  builtinFacadeModule, commonJsFacadeModule, ESM_BUN_SCOPE, ESM_FACADE_DIR, ESM_TOP_LEVEL_AWAIT, ESM_TYPELESS, ESM_HOST_MODULE, ESM_HOST_SOURCE, ESM_META_MODULE, metaModuleSource,
+  builtinFacadeModule, commonJsFacadeModule, jsonFacadeModule, ESM_BUN_SCOPE, ESM_FACADE_DIR, ESM_TOP_LEVEL_AWAIT, ESM_TYPELESS, ESM_HOST_MODULE, ESM_HOST_SOURCE, ESM_META_MODULE, metaModuleSource,
   stageEsModule, type StagedEsModule,
 } from '@nimbus-sh/core/runtime/native-esm.js';
 import { NODE_BUILTIN_EXPORTS } from '@nimbus-sh/core/runtime/node-builtin-exports.js';
@@ -295,10 +295,8 @@ export async function stageEsModules(
       const text = await readText(resolution.path);
       if (text === null) throw notStaged(resolution.path);
       // Node's JSON translator: the object require() gives for the same
-      // file, one in require.cache whichever loads it first (node-shims.ts
-      // __nimbusJsonModule); JSON.parse's, as an object literal would make
-      // `__proto__` the prototype.
-      return member('json', key, () => `export default globalThis.__nimbusJsonModule(${JSON.stringify(resolution.path)}, ${JSON.stringify(text)});\n`);
+      // file, one in require.cache whichever loads it first.
+      return member('json', key, (id, name) => jsonFacadeModule(name, id));
     }
     // CommonJS by Node's format for it, loaded by require().
     if (!isCode(key)) throw notStaged(resolution.path);

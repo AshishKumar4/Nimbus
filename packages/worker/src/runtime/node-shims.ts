@@ -11850,9 +11850,12 @@ const __nimbusExecutingCommonJs = new WeakSet();
 // An ES module's import of a JSON file (esm-stage.ts's member): Node's JSON
 // translator, whose value is require()'s for the same file. One object, in
 // require.cache, whichever loads it first.
-globalThis.__nimbusJsonModule = (filename, text) => {
+function __nimbusJsonExports(key) {
+  const filename = "/" + key;
   const cached = __NodeModule._cache[filename];
   if (cached !== undefined && cached.loaded) return cached.exports;
+  const text = __readFileOr(key, null);
+  if (text === null) throw new Error("Cannot read module: " + filename);
   let exports;
   try {
     exports = JSON.parse(text.charCodeAt(0) === 0xFEFF ? text.slice(1) : text);
@@ -11862,7 +11865,7 @@ globalThis.__nimbusJsonModule = (filename, text) => {
   }
   __NodeModule._cache[filename] = { exports, loaded: true };
   return exports;
-};
+}
 // \`required\`: loaded by a require() call, not by an import (an interpreted
 // ES module's static import, core interpreter/modules.ts, or import()).
 // A staged ES module is the registry's (__nimbusEsmRequire): this loads it
@@ -11900,7 +11903,7 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
   mod.filename = filename;
   mod.paths = __NodeModule._nodeModulePaths(mod.path);
   // An imported JSON file is require()'s too, as Node's JSON translator
-  // keeps it (__nimbusJsonModule); a query's or a fragment's is its own.
+  // keeps it (__nimbusJsonExports); a query's or a fragment's is its own.
   if (esModule && !required && !(resolvedPath.endsWith(".json") && cacheKey === filename)) __nimbusEsmInstances.set(cacheKey, mod);
   else __NodeModule._cache[cacheKey] = mod;
   const unload = () => {
@@ -12231,6 +12234,7 @@ function __nimbusEsmEnter(metaUrl) {
     return scope;
   }
   if (row[0] === "commonjs") return { c, r, l: () => __loadModule(row[1], row[1], true) };
+  if (row[0] === "json") return { c, r, l: () => __nimbusJsonExports(row[1]) };
   return { c, r, l: () => builtins[row[1]], s: (resync) => { __nimbusEsmResyncs.push(resync); } };
 }
 // A body begins: unless an earlier body of its batch threw (Node's

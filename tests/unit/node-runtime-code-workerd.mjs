@@ -96,12 +96,11 @@ const FILES = {
   'grammar-dep.js': 'module.exports = { value: 7 };',
   // Module files written while the program runs (so interpreted), each with
   // top-level await: import() resolves once the module has finished, and
-  // rejects with what its evaluation throws. require() returns the exports
-  // at once, by design: static imports are lowered to require, which cannot
-  // wait (Node's own require of such a module throws ERR_REQUIRE_ASYNC_MODULE,
-  // which a lowered import cannot be told apart from). An export the module
-  // has not reached is in its TDZ until it does, and so is what a module
-  // that imports it statically reads (`transitive`; Node: 42).
+  // rejects with what its evaluation throws; require() refuses the module,
+  // as Node's does (ERR_REQUIRE_ASYNC_MODULE), before it runs. An export the
+  // module has not reached is in its TDZ until it does, and so is what an
+  // interpreted module that imports it statically reads (`transitive`;
+  // Node: 42).
   'tla.js': [
     'const fs = require("fs");',
     'const dir = "/home/user/w/.tmp-tla";',
@@ -112,12 +111,11 @@ const FILES = {
     'fs.writeFileSync(dir + "/req-" + name + ".mjs", "export const early = 1;\\nexport const v = await new Promise((r) => setTimeout(() => r(42), 20));\\n");',
     'fs.writeFileSync(dir + "/dep-" + name + ".mjs", "export const v = await new Promise((r) => setTimeout(() => r(42), 20));\\n");',
     'fs.writeFileSync(dir + "/top-" + name + ".mjs", "import { v } from \\"./dep-" + name + ".mjs\\";\\nexport const read = () => { try { return v; } catch (e) { return e.name; } };\\n");',
-    'const req = require(dir + "/req-" + name + ".mjs");',
-    'let reqNow; try { reqNow = req.early + "," + req.v; } catch (e) { reqNow = req.early + "," + e.name; }',
+    'let reqNow; try { reqNow = require(dir + "/req-" + name + ".mjs").early; } catch (e) { reqNow = e.code; }',
     'import(dir + "/late-" + name + ".mjs").then((m) => "late=" + m.v, (e) => "late!" + (e.code || e.message))',
     '  .then((late) => import(dir + "/bad-" + name + ".mjs").then(() => late + " bad=resolved", (e) => late + " bad!" + e.message))',
     '  .then((line) => import(dir + "/top-" + name + ".mjs").then((m) => line + " transitive=" + m.read()))',
-    '  .then((line) => console.log("TLA " + line + " req=" + reqNow + " later=" + req.v));',
+    '  .then((line) => console.log("TLA " + line + " req=" + reqNow));',
   ].join('\n'),
   'events.js': [
     'const EventEmitter = require("events");',
@@ -377,7 +375,7 @@ try {
     // One EventEmitter, workerd's: Node's function-constructor inheritance,
     // express's prototype mixin, native http servers and the static helpers.
     const tla = await terminal.run(`cd ${W} && node tla.js`);
-    assert.match(tla.stdout, /TLA late=42 bad!tla failed transitive=ReferenceError req=1,ReferenceError later=42/, tla.stdout);
+    assert.match(tla.stdout, /TLA late=42 bad!tla failed transitive=ReferenceError req=ERR_REQUIRE_ASYNC_MODULE/, tla.stdout);
 
     const events = await terminal.run(`cd ${W} && node events.js`);
     assert.equal(events.status, 0, events.stdout);
