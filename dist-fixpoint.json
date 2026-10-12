@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "da3973273e261bca1bc6ed2c2231c912368f3130167fda657775746979b8d8f2",
+  "fingerprint": "605865fe8ea94259a311a7e2c9ffefc5a57a467e9cc84931ad15892896a24639",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -374,8 +374,8 @@
     "packages/core/dist/runtime/compiled-bodies.generated.d.ts.map": "c488b6862eddddc37899e528a27a6597b1345c5c337562cf3ea52fa3cadec3c7",
     "packages/core/dist/runtime/compiled-bodies.generated.js": "2729dfd00615330e965a5dbdebc66c31b17bf41934740adb1a46e94b7835b693",
     "packages/core/dist/runtime/cpython-preamble.d.ts": "70cd3d0f2e92e8b6dadf209ef2ff765637d6f18d8409dbb4357d0934dd879593",
-    "packages/core/dist/runtime/cpython-preamble.d.ts.map": "5af9d1da771f399500975565e99845f4cf674ffe47562d140ead9dc304970be5",
-    "packages/core/dist/runtime/cpython-preamble.js": "3a708d86a4383fa01d25de060d114973dc4c2a00725e1b57473dee3da6d3f6d9",
+    "packages/core/dist/runtime/cpython-preamble.d.ts.map": "33a8f6fc318a60f5191df5da4fe079531c267e6af7da8e5d48b4e3901ea957cc",
+    "packages/core/dist/runtime/cpython-preamble.js": "44aa6340e2df794c79965c4a941db48129644076b4cc4ec1dbbcd1d0d9aadf18",
     "packages/core/dist/runtime/cpython-runner.d.ts": "f49f7cd7c96ad8653949de841f344a9b612034ab8d31a36c6eb97f01c6b81c97",
     "packages/core/dist/runtime/cpython-runner.d.ts.map": "5fda463257122ca19b1aec99570e2d4569a8da90d6b9b1b9ecca9083a5941169",
     "packages/core/dist/runtime/cpython-runner.js": "7cb14fc917accdc0f25c62116910f9f9e3f3714a406c174a5f2cbe6dc9f9a614",
@@ -1403,7 +1403,7 @@
     "packages/core/src/runtime/cli-flags.ts": "23b203c999b01585cb6e4ddc5e6234066f10edb80fa2a4bb7f3f3dc260b8fd80",
     "packages/core/src/runtime/comment-strip.ts": "cbfea67bdc8c7bd618716a71d80bf3be0527386f3128ba64fd51a199f4532c38",
     "packages/core/src/runtime/compiled-bodies.generated.ts": "02569b55ce90df4485663a9a13e615798850bc7d3bdb9298ccb79e19ad0530b6",
-    "packages/core/src/runtime/cpython-preamble.ts": "55b952d0947cc0bf869795ecc64b586a0f71acae31eecd87e93ce1e319f06adb",
+    "packages/core/src/runtime/cpython-preamble.ts": "3adc0ef8a5bddb72eb2bf480f459a9358f95fa853ec97ba08e093c4789ce30b2",
     "packages/core/src/runtime/cpython-runner.ts": "aef8d34078f93a36b40e5219a579efb48102b3a7d38adeb2d0165974f723a4fe",
     "packages/core/src/runtime/css-bundle.ts": "fbe4b93ba2aaf5d9c4c2cf28b7c451abeddf391aee90219198b1a77d53b08ff0",
     "packages/core/src/runtime/css-syntax.ts": "44bbbbbdf2398d0c6af55df46b71ecc5a075495e3e120cdc363a9d15a01a9a8b",
