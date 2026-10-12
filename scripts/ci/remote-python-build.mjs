@@ -27,10 +27,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mapOnArmada } from './lib/armada.mjs';
 import { extract, FILES_MARK, keepArchive, keptAs, splitArchive, writeRefusal } from './lib/remote-artifacts.mjs';
+import { PYTHON_OUTPUTS } from '../../packages/worker/wasm/python/inputs.mjs';
 
 const DIR = 'packages/worker/wasm/python';
 /** What the recipe leaves next to build-python.sh (its "Outputs"). */
-const ARTIFACTS = ['python.wasm', 'python-sci.wasm', 'python313.zip', 'sci-packages.zip'].map((file) => `${DIR}/${file}`);
+const ARTIFACTS = PYTHON_OUTPUTS.map((file) => `${DIR}/${file}`);
 const RETURNED = [...ARTIFACTS, `${DIR}/provenance.json`];
 
 const git = (args, options = {}) => {
@@ -133,4 +134,5 @@ verdict.refusal = writeRefusal(repo, sha, differing);
 if (verdict.refusal !== null) finish(1, `${differing.length} artifacts differ; not written (${verdict.refusal}): they are in ${verdict.archive}`);
 extract(repo, verdict.archive, differing);
 verdict.written = differing;
-finish(1, `wrote ${differing.join(', ')}: review them, and commit them with the runtime's new version (runtime-specs.mjs)`);
+const payloadChanged = ARTIFACTS.some(path => differing.includes(path));
+finish(1, `wrote ${differing.join(', ')}: review and commit ${payloadChanged ? "them with the runtime's new version (runtime-specs.mjs)" : 'the provenance; the runtime bytes are unchanged'}`);
