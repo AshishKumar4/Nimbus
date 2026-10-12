@@ -14,7 +14,9 @@ try {
     for (const [from, to] of [['/m/leased/f', '/m/leased/g'], ['/home/user/alias/leased/f', '/home/user/alias/leased/g']]) {
       let refused;
       try { await view.rename(from, to); } catch (error) { refused = error; }
-      assert.equal(refused?.code, 'EBUSY', `${from}: ${refused?.stack}\n${refused?.cause?.stack}`);
+      const causes = [];
+      for (let cause = refused, depth = 0; cause && depth < 8; cause = cause.cause, depth++) causes.push({ message: cause.message, code: cause.code, path: cause.path, stack: cause.stack });
+      assert.equal(refused?.code, 'EBUSY', `${from}: ${JSON.stringify(causes)}`);
     }
     assert.equal((await view.readFile('/m/leased/f')).length, 4);
   } finally { box.files.engine.releaseExclusiveMutation(lease.owner); }
