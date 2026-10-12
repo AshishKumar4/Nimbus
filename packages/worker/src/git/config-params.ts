@@ -74,11 +74,12 @@ interface ConfigReader {
 /** The global files in git's order, read by cf-git's canonical config parser. */
 export function withGlobalConfig<G extends ConfigReader>(git: G, fs: {
   promises: { readFile(path: string, options?: 'utf8' | { encoding: 'utf8' }): Promise<Uint8Array | string> };
-}, env: Record<string, string>): G {
+}, env: Record<string, string>, cwd: string): G {
   const home = env.HOME;
   const xdg = env.XDG_CONFIG_HOME || (home ? `${home}/.config` : '');
-  const files = env.GIT_CONFIG_GLOBAL !== undefined ? [env.GIT_CONFIG_GLOBAL]
-    : [...(xdg ? [`${xdg}/git/config`] : []), ...(home ? [`${home}/.gitconfig`] : [])];
+  const files = (env.GIT_CONFIG_GLOBAL !== undefined ? [env.GIT_CONFIG_GLOBAL]
+    : [...(xdg ? [`${xdg}/git/config`] : []), ...(home ? [`${home}/.gitconfig`] : [])])
+    .map((file) => file.startsWith('/') ? file : `${cwd}/${file}`);
   if (files.length === 0) return git;
   const contents = new Map<string, ReturnType<typeof fs.promises.readFile>>();
   const read = (file: string, options?: 'utf8' | { encoding: 'utf8' }) => {

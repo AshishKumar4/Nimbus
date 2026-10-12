@@ -43,7 +43,7 @@ export const GIT_FAMILY_POLICY: Readonly<Record<GitFamily, GitFamilyPolicy>> = {
   other: wasi,
 };
 
-/** A capability refusal, raised only while no command effects have occurred. */
+/** A capability refusal; only the front door's pre-effect phase may hand it off. */
 export class UnsupportedGitOperation extends Error {
   constructor(readonly diagnostic: string, readonly code: number) {
     super(diagnostic.trimEnd());
