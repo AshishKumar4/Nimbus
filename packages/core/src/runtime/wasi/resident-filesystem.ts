@@ -45,7 +45,7 @@ import type {
   RuntimeVfsStat,
 } from '../os-contracts.js';
 import { fsError, modeAllows, walkBeneath } from '../beneath-walk.js';
-import { WASI_RESIDENT_FILE_CAP_BYTES, DIRECTORY_BATCH_LIMIT } from '../../constants.js';
+import { WASI_RESIDENT_FILE_CAP_BYTES, DIRECTORY_BATCH_LIMIT, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES } from '../../constants.js';
 import { RESIDENT_PAGE_BYTES } from '@nimbus-sh/platform/limits.js';
 import { delegationHolder, type DelegationHolder } from './delegation-holder.js';
 import { readDirectoryPool, type ReadDirectoryPool } from './read-directory-pool.js';
@@ -103,6 +103,8 @@ export interface ResidentNamespace {
    * the file is no longer at `revision` or a read failed.
    */
   pages(key: string, revision: number, size: number, first: number, last: number): Promise<{ pages: Uint8Array[]; fetched: number } | null>;
+  /** Fetch these files' bytes (each at its entry's revision) into the store in batched round trips. */
+  fillMany(files: ReadonlyArray<readonly [string, ResidentEntry]>): Promise<void>;
   /** The ACQUIRE barrier. */
   barrier(): Promise<boolean>;
   /** The same provenance cursor and ACQUIRE admission used by the normal barrier. */
@@ -178,9 +180,10 @@ export interface ResidentFilesystemStats {
   lookups: number;
   listings: number;
   treeListings: number;
-  /** Files fetched into the store, and their bytes. */
+  /** Files fetched into the store, and their bytes; of those, fetched ahead of their reads (and with the read that asked). */
   fills: number;
   filledBytes: number;
+  readAhead: number;
   /** Reads of files too big to hold whole answered through the store's pages, and the pages the session was asked for. */
   pagedReads: number;
   pagesFetched: number;
@@ -203,6 +206,29 @@ const MAX_LISTINGS_PER_CALL = 64;
 
 /** Directory opens a run records for the next run in its facet (ResidentFilesystem.walked). */
 const WALKED_DIRECTORIES = 1024;
+
+/**
+ * Read-ahead of a directory's files, earned by its misses. A program that
+ * reads a directory's files one after another (rolldown loading modules,
+ * an interpreter importing) pays a round trip for each it does not hold:
+ * Vite 8 pre-bundling lucide-react read 2,145 modules in 30.5 s, and in
+ * 8.3 s with the same files fetched ahead (throwaway, 2026-10-07). From a
+ * directory's second miss, a fill brings with it the directory's next files
+ * of the missed file's extension (in descriptor order after it, then from
+ * the directory's first), a window that doubles with each further miss there. A program that reads one file
+ * of a directory fetches only that file. Bounded per file, per batch (one
+ * fsReadBatch) and per process.
+ */
+const READ_AHEAD_FIRST = 8;
+const READ_AHEAD_FILE_BYTES = 256 * 1024;
+const READ_AHEAD_PROCESS_BYTES = 32 * 1024 * 1024;
+
+/** A name's extension, with its dot ('.mjs'), or '' when it has none. */
+function extensionOf(name: string): string {
+  const base = name.slice(name.lastIndexOf('/') + 1);
+  const dot = base.lastIndexOf('.');
+  return dot > 0 ? base.slice(dot) : '';
+}
 
 /** What this adapter answers itself is decided here: anything else is the authority's. */
 const DELEGATE = Symbol('delegate');
@@ -312,7 +338,7 @@ export interface ResidentDelegation {
 
 export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentNamespace, delegation?: ResidentDelegation): ResidentFilesystem {
   let directoryPool: ReadDirectoryPool | null = null;
-  const counts: ResidentFilesystemStats = { local: 0, delegated: {}, lookups: 0, listings: 0, treeListings: 0, fills: 0, filledBytes: 0, barriers: 0, waitMs: 0, pinnedBytes: 0, pins: 0, pagedReads: 0, pagesFetched: 0 };
+  const counts: ResidentFilesystemStats = { local: 0, delegated: {}, lookups: 0, listings: 0, treeListings: 0, fills: 0, filledBytes: 0, readAhead: 0, barriers: 0, waitMs: 0, pinnedBytes: 0, pins: 0, pagedReads: 0, pagesFetched: 0 };
   // Every wait on the session is timed where it leaves: the authority's calls
   // and the store's listings, fills and barriers. A facet's clock moves only
   // across I/O, so this is the part of a run's wall time the filesystem cost.
@@ -363,6 +389,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     content: (key) => resident.content(key),
     fill: (key, entry) => timed(resident.fill(key, entry)),
     pages: (key, revision, size, first, last) => timed(resident.pages(key, revision, size, first, last)),
+    fillMany: (files) => timed(resident.fillMany(files)),
     barrier: () => timed(resident.barrier()),
     cursor: () => resident.cursor(),
     admit: (answer) => resident.admit(answer),
@@ -492,9 +519,62 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     return previous.slice(at + 1, at + 1 + limit);
   };
 
-  /** Unlisted directories a walk has missed a name in, and how often; and those whose subtree is past the listing's bound. */
+  /**
+   * Misses by directory: names the store did not know there, and bytes it
+   * did not hold. From a directory's second, a walk of it is assumed: its
+   * subtree is listed in one answer (unless past the listing's bound), and
+   * its files are fetched ahead (READ_AHEAD_*).
+   */
   const missesIn = new Map<string, number>();
+  const miss = (dir: string): number => {
+    const misses = (missesIn.get(dir) ?? 0) + 1;
+    missesIn.set(dir, misses);
+    return misses;
+  };
   const unlistable = new Set<string>();
+  /** Files a read-ahead batch is fetching, and the batch; and the bytes read ahead so far. */
+  const fetchingAhead = new Map<string, Promise<void>>();
+  let readAheadBytes = 0;
+
+  /**
+   * A fill of `key` (`entry`), with the files of its directory read ahead
+   * when its misses earned it: the batch, which includes `key`, or undefined
+   * when `key` is filled alone.
+   */
+  const readAhead = (key: string, entry: ResidentEntry): Promise<void> | undefined => {
+    const dir = parentKey(key);
+    const misses = miss(dir);
+    const ext = extensionOf(key);
+    const children = store.children(dir);
+    if (misses < 2 || ext === '' || children === undefined) return undefined;
+    const window = READ_AHEAD_FIRST * 2 ** Math.min(misses - 2, 7);
+    const name = key.slice(key.lastIndexOf('/') + 1);
+    const batch: Array<[string, ResidentEntry]> = [[key, entry]];
+    let bytes = entry.size;
+    const ordered = byCodeUnit(children.filter((child) => child.type === 'file' && child.name !== name && extensionOf(child.name) === ext));
+    const at = ordered.findIndex((child) => child.name > name);
+    for (const child of at < 0 ? ordered : [...ordered.slice(at), ...ordered.slice(0, at)]) {
+      if (batch.length > window || batch.length >= FS_READ_BATCH_PATH_LIMIT) break;
+      const sibling = dir === '' ? child.name : `${dir}/${child.name}`;
+      if (fetchingAhead.has(sibling) || store.content(sibling) !== undefined) continue;
+      const found = entryAt(sibling);
+      if (!found || found.type !== 'file' || found.size > READ_AHEAD_FILE_BYTES) continue;
+      // What this process decided or writes through is its own to read.
+      if (holder?.content(found) !== undefined || holder?.writing(found.ino) !== undefined) continue;
+      if (bytes + found.size > FS_READ_BATCH_REQUEST_BYTES || readAheadBytes + bytes + found.size > READ_AHEAD_PROCESS_BYTES) break;
+      batch.push([sibling, found]);
+      bytes += found.size;
+    }
+    if (batch.length === 1) return undefined;
+    readAheadBytes += bytes - entry.size;
+    counts.fills += batch.length;
+    counts.filledBytes += bytes;
+    counts.readAhead += batch.length - 1;
+    const fetched = store.fillMany(batch).catch(() => {});
+    for (const [path] of batch) fetchingAhead.set(path, fetched);
+    void fetched.then(() => { for (const [path] of batch) if (fetchingAhead.get(path) === fetched) fetchingAhead.delete(path); });
+    return fetched;
+  };
 
   /** Where a path leads (its key), listing what the walk needs; DELEGATE for what this adapter does not answer. */
   const resolve = (path: RuntimeFsPath, follow: boolean, content = false): Resolution | Promise<Resolution> => {
@@ -525,14 +605,17 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       if (walked === null || walked === DELEGATE || typeof walked === 'string') return walked;
       if (asked >= MAX_LISTINGS_PER_CALL) return DELEGATE;
       const parent = parentKey(walked.missing);
-      const misses = (missesIn.get(parent) ?? 0) + 1;
-      missesIn.set(parent, misses);
-      if (misses >= 2 && parent !== '' && !unlistable.has(parent)) {
-        counts.treeListings++;
-        return store.listTree(parent).then((whole) => {
-          if (!whole) unlistable.add(parent);
-          return attempt(asked + 1);
-        });
+      if (miss(parent) >= 2 && parent !== '' && store.children(parent) === undefined) {
+        // The subtree in one answer; past its bound, the directory alone.
+        const whole = unlistable.has(parent) ? Promise.resolve(false) : (counts.treeListings++, store.listTree(parent));
+        return whole
+          .then((listed) => {
+            if (listed) return true;
+            unlistable.add(parent);
+            counts.listings++;
+            return store.list(parent);
+          })
+          .then((listed) => (listed ? attempt(asked + 1) : DELEGATE));
       }
       if (!looked.has(walked.missing)) {
         const spelled = prefixes(root, name).filter((key) => !looked.has(key) && store.entry(key) === undefined);
@@ -574,9 +657,18 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       (bytes === null || bytes === undefined || bytes.byteLength !== entry.size ? undefined : bytes);
     const held = store.content(key);
     if (held !== undefined && held.byteLength === entry.size) return held;
-    counts.fills++;
-    counts.filledBytes += entry.size;
-    return store.fill(key, entry).then(keep);
+    const fill = (): Promise<Uint8Array | undefined> => {
+      counts.fills++;
+      counts.filledBytes += entry.size;
+      return store.fill(key, entry).then(keep);
+    };
+    // A batch fetching it (read-ahead) is waited on, not repeated.
+    const batch = fetchingAhead.get(key) ?? readAhead(key, entry);
+    if (batch === undefined) return fill();
+    return batch.then(() => {
+      const fetched = store.content(key);
+      return fetched !== undefined && fetched.byteLength === entry.size ? fetched : fill();
+    });
   };
 
   /**

@@ -278,6 +278,7 @@ function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): { fs: Res
     fill: (key: string, entry: ResidentEntry) => (view === null ? Promise.resolve(null) : view.fill(key, entry)),
     pages: (key: string, revision: number, size: number, first: number, last: number) =>
       (view === null ? Promise.resolve(null) : view.pages(key, revision, size, first, last)),
+    fillMany: (files) => (view === null ? Promise.resolve() : view.fillMany(files)),
     barrier: () => (view === null ? Promise.resolve(false) : view.barrier()),
     cursor: () => view?.cursor() ?? null,
     admit: (answer) => view === null ? Promise.resolve(false) : view.admit(answer),
