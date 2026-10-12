@@ -12,7 +12,7 @@ import { parseExecId } from '@nimbus-sh/core/runtime/process-table.js';
 import { doUnavailableError } from './do-errors.js';
 import { codeRuntimeRequirement, runtimePolicyError } from '@nimbus-sh/config/sandbox';
 const DEFAULT_REMOTE_BASE_PATH = '/api/nimbus/v1';
-export async function handleNimbusRemoteApi(request, env, sdk) {
+export async function handleNimbusRemoteApi(request, env, sdk, outbox) {
     const remote = normalizeRemoteConfig(sdk?.remote);
     if (!remote.enabled)
         return null;
@@ -69,6 +69,8 @@ export async function handleNimbusRemoteApi(request, env, sdk) {
         profile,
         root,
         verified: remoteAuth.verified,
+        outbox,
+        sandboxId: match.sandboxId,
     };
     try {
         // perf(boot): the awaited stub call is a cross-isolate RPC = real I/O,
@@ -307,7 +309,16 @@ async function dispatchRemoteRpc(ctx) {
             return ctx.stub._rpcUnexposePort(numberArg(args[0], 'port'));
         case 'destroy':
             requireAnyScope(ctx, ['session:destroy', 'session:admin']);
-            return ctx.stub._rpcDestroy(objectArg(args[0]));
+            return ctx.stub._rpcDestroy(objectArg(args[0])).then((result) => {
+                // Proven destroy, reported as internal metadata for the caller's
+                // response policy — no JSON re-parse needed to rediscover it.
+                const outcome = result;
+                if (ctx.outbox !== undefined && outcome?.ok === true && typeof outcome?.destroyedAt === 'number'
+                    && isValidSessionId(ctx.sandboxId)) {
+                    ctx.outbox.destroyedSessionId = ctx.sandboxId;
+                }
+                return result;
+            });
         default:
             throw apiError(`Unknown Nimbus sandbox operation: ${String(op)}`, 'E_REMOTE_OP', 400);
     }

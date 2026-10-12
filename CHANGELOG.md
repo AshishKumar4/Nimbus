@@ -20,6 +20,15 @@ published independently in the `@nimbus-sh` npm scope.
 - Fixed: `VFS.copy` of a file to a new name (the shell's `cp`) makes it with
   the source's permission bits less the umask, as cp(1) does; it was made
   0666 less the umask, so a copy of a private file was readable by others.
+- Auth: each session route owns its attach cookie, `__Host-nimbus_token-<sid>`,
+  selected by the parsed route on HTTP and WebSocket (host previews included).
+  Two iframes on one page no longer overwrite each other's credential. The
+  pre-change `__Host-nimbus_token` cookie still authenticates its own pinned
+  session and migrates to the route-owned name on next use. Header and query
+  credentials are never stored as cookies, and issuance capacity is refused
+  before a single-use bootstrap is spent. Re-attaching a held session replaces
+  its cookie without growing the jar; destroying a session through its public
+  DELETE expires exactly its cookie.
 
 ## 2026-10-12: core 0.18.0, fabric 0.13.0, worker 0.16.0, loom 0.2.5, sdk 0.13.1, react 0.3.1, cli 0.2.5, create-nimbus-app 0.2.2
 
