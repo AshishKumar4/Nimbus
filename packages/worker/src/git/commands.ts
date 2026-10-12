@@ -1013,7 +1013,11 @@ const V1_EXTENSIONS: Readonly<Record<string, (value: string) => boolean>> = {
   relativeworktrees: () => true,
 };
 
-async function assertRepositoryImplemented(git: CfGit, fs: unknown, repo: GitRepo): Promise<void> {
+async function assertRepositoryImplemented(
+  git: { getConfig(args: { fs: unknown; gitdir: string; path: string }): Promise<unknown> },
+  fs: unknown,
+  repo: GitRepo,
+): Promise<void> {
   const where = repo.worktree ?? repo.gitdir;
   if (repo.linked) {
     throw new UnsupportedGitOperation(`fatal: '${where}' is a linked worktree or submodule checkout, which is not supported here\n`, 128);
