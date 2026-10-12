@@ -7,7 +7,8 @@
  * require('x')`, `__exportStar`, Babel's loop) that require() resolves to a
  * `.js`, a `.cjs` or a file of an extension require has no loader for,
  * walked the same way. A module whose source does not lex has no names but
- * `default`; a re-export that does not resolve adds none. A cycle stops at a
+ * `default`; a re-export that does not resolve, or whose resolution require()
+ * refuses (a path a package's "exports" hides), adds none. A cycle stops at a
  * module already being read: its names are the ones found so far, as Node's,
  * which records them first.
  *
@@ -34,7 +35,13 @@ function* walk(path, cache, source) {
     const names = new Set(['default', ...exports]);
     cache.set(path, names);
     for (const reexport of reexports) {
-        const resolved = yield { resolve: reexport, from: path };
+        let resolved;
+        try {
+            resolved = yield { resolve: reexport, from: path };
+        }
+        catch {
+            continue; // As Node's: a re-export require() refuses is skipped.
+        }
         if (typeof resolved !== 'string' || !resolved.startsWith('/'))
             continue;
         const slash = resolved.lastIndexOf('/');
@@ -57,7 +64,15 @@ export function cjsModuleExportNames(path, host, cache = new Map(), source) {
         if (step.done)
             return step.value;
         const q = step.value;
-        step = steps.next('source' in q ? host.source(q.source) : host.resolve(q.resolve, q.from));
+        let answer;
+        try {
+            answer = 'source' in q ? host.source(q.source) : host.resolve(q.resolve, q.from);
+        }
+        catch (error) {
+            step = steps.throw(error);
+            continue;
+        }
+        step = steps.next(answer);
     }
 }
 /** cjsModuleExportNames over a host whose answers may be promises (the session's filesystem). */
@@ -67,6 +82,14 @@ export async function cjsModuleExportNamesAsync(path, host, cache = new Map(), s
         if (step.done)
             return step.value;
         const q = step.value;
-        step = steps.next(await ('source' in q ? host.source(q.source) : host.resolve(q.resolve, q.from)));
+        let answer;
+        try {
+            answer = await ('source' in q ? host.source(q.source) : host.resolve(q.resolve, q.from));
+        }
+        catch (error) {
+            step = steps.throw(error);
+            continue;
+        }
+        step = steps.next(answer);
     }
 }

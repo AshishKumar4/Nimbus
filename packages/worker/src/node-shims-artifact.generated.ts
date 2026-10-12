@@ -10,9 +10,9 @@
  */
 
 /** dist/runtime/node-shims.js generateShimsCode() */
-export const NODE_SHIMS_ENTRY: string = "/_assets/runtime/node-shims-776ea6776a601ac6.js";
-export const NODE_SHIMS_BUILD_ID: string = "776ea6776a601ac6";
-export const NODE_SHIMS_SHA256: string = "776ea6776a601ac6e684fd82f640a70bc19fe29230153950c36a004afa1bfb76";
+export const NODE_SHIMS_ENTRY: string = "/_assets/runtime/node-shims-e8343a71c697f78b.js";
+export const NODE_SHIMS_BUILD_ID: string = "e8343a71c697f78b";
+export const NODE_SHIMS_SHA256: string = "e8343a71c697f78bde1f0786fdf0186fa1a3c53a5edf79006991fd924391fc33";
 
 /** @nimbus-sh/core dist/_shared/vfs-write-ledger.js VFS_WRITE_LEDGER_SOURCE */
 export const VFS_WRITE_LEDGER_ENTRY: string = "/_assets/runtime/vfs-write-ledger-edfc9c57a6dbe204.js";
@@ -30,9 +30,9 @@ export const JS_INTERPRETER_PRIMORDIALS_BUILD_ID: string = "e620a61b7e9800fa";
 export const JS_INTERPRETER_PRIMORDIALS_SHA256: string = "e620a61b7e9800fad31b82c28fe64bd149c0518dc8c614e512b88dc200096f48";
 
 /** @nimbus-sh/core src/interpreter, bundled by scripts/interpreter-bundle.mjs */
-export const JS_INTERPRETER_ENTRY: string = "/_assets/runtime/js-interpreter-b4335c5c7f4f4a16.js";
-export const JS_INTERPRETER_BUILD_ID: string = "b4335c5c7f4f4a16";
-export const JS_INTERPRETER_SHA256: string = "b4335c5c7f4f4a1675ed553b285debcbc9caa930188eecb6aaf709a7d73a9fde";
+export const JS_INTERPRETER_ENTRY: string = "/_assets/runtime/js-interpreter-e6376e880dc78f87.js";
+export const JS_INTERPRETER_BUILD_ID: string = "e6376e880dc78f87";
+export const JS_INTERPRETER_SHA256: string = "e6376e880dc78f87a7ec08a9f2d5a4b1eb712a06499ee278319425632e2b886a";
 
 /** @nimbus-sh/core src/interpreter/host-ops.ts HOST_OPS_SOURCE */
 export const JS_INTERPRETER_OPS_ENTRY: string = "/_assets/runtime/js-interpreter-ops-32cc78b8a580ed69.js";
@@ -40,9 +40,9 @@ export const JS_INTERPRETER_OPS_BUILD_ID: string = "32cc78b8a580ed69";
 export const JS_INTERPRETER_OPS_SHA256: string = "32cc78b8a580ed69cd7a2a738d584eb7805c1fcb4b43d1298ca60e5551a4c3f3";
 
 /** @nimbus-sh/core src/interpreter/parser.ts, bundled by scripts/interpreter-bundle.mjs */
-export const JS_PARSER_ENTRY: string = "/_assets/runtime/js-parser-6a911736d02d710f.js";
-export const JS_PARSER_BUILD_ID: string = "6a911736d02d710f";
-export const JS_PARSER_SHA256: string = "6a911736d02d710f8e87fc2a77b37924776908887daa4c60e52c8f601d80cd7c";
+export const JS_PARSER_ENTRY: string = "/_assets/runtime/js-parser-c8d022179f0f679e.js";
+export const JS_PARSER_BUILD_ID: string = "c8d022179f0f679e";
+export const JS_PARSER_SHA256: string = "c8d022179f0f679e691a2a5e721f967bf9b9711f8bbf82c2d2371cde49258907";
 
 /** dist/runtime/node-lib-module.js generateNodeLibModule() */
 export const NODE_LIB_ENTRY: string = "/_assets/runtime/node-lib-a60c3bc402bed8e6.js";
@@ -60,6 +60,6 @@ export const NODE_DNS_BUILD_ID: string = "cb7f3315fd57bcc8";
 export const NODE_DNS_SHA256: string = "cb7f3315fd57bcc80cc56f8acb984bb8dc9bdfe9e4fe2e6e7718cfc2ac91bddd";
 
 /** core src/_shared/commonjs-cell.ts through interpreter-bundle.mjs */
-export const NODE_REGISTRY_ENTRY: string = "/_assets/runtime/node-registry-44ec26db32fd0390.js";
-export const NODE_REGISTRY_BUILD_ID: string = "44ec26db32fd0390";
-export const NODE_REGISTRY_SHA256: string = "44ec26db32fd03909551a8ecdf9a751f4f72b9e84162a6d001c2e4caea99ec9f";
+export const NODE_REGISTRY_ENTRY: string = "/_assets/runtime/node-registry-e1ad99997a7658cd.js";
+export const NODE_REGISTRY_BUILD_ID: string = "e1ad99997a7658cd";
+export const NODE_REGISTRY_SHA256: string = "e1ad99997a7658cdd545f7355e0da2422079e298024797aa5ae6fb4fbcc1a135";

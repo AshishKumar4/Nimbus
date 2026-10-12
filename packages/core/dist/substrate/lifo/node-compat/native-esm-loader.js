@@ -12,6 +12,7 @@ import { escapedIdentifierNames, readModuleImportSites } from '../../../runtime/
 import { hasTopLevelAwait } from '../../../runtime/esm-require-hoist.js';
 import { applySourceEdits, containsModuleSyntax, isAstNode, MODULE_PARSE_OPTIONS, parseStatements } from '../../../runtime/javascript-ast.js';
 import { builtinFacadeModule, bunScopeNames, commonJsFacadeModule, ESM_HOST_MODULE, ESM_META_MODULE, metaModuleSource, relativeSpecifier, stageEsModule, } from '../../../runtime/native-esm.js';
+import { requiredEsModule, sourceColumn } from '../../../runtime/native-esm-runtime.js';
 import { dirname } from '../utils/path.js';
 import { fileURLToPath, pathToFileURL } from './url.js';
 const PRIVATE_PATH = '/__nimbus_lifo__/';
@@ -75,27 +76,53 @@ function installHooks() {
                 },
             });
         }
+        installFrames();
         return module;
     })();
 }
-/** Node's require(esm) result, over Bun's engine-evaluated namespace. */
-function requiredNamespace(record, namespace) {
-    if ('module.exports' in namespace)
-        return namespace['module.exports'];
-    if (!('default' in namespace) || Object.hasOwn(namespace, '__esModule'))
-        return namespace;
-    if (!record.required) {
-        const facade = Object.create(null);
-        for (const name of [...Object.keys(namespace), '__esModule'].sort()) {
-            if (name === '__esModule')
-                Object.defineProperty(facade, name, { value: true, enumerable: true, writable: true });
-            else
-                Object.defineProperty(facade, name, { enumerable: true, get: () => namespace[name] });
-        }
-        Object.defineProperty(facade, Symbol.toStringTag, { value: 'Module' });
-        record.required = Object.preventExtensions(facade);
-    }
-    return record.required;
+/**
+ * The realm's stack formatter, given the frames of a loader's modules as
+ * Node's read: the module's own URL and its source's column. Assigned, not
+ * defined: Bun keeps the hook behind its own setter. A program's own hook
+ * replaces it, as it replaces the realm's.
+ */
+function installFrames() {
+    const realm = Reflect.get(Error, 'prepareStackTrace');
+    if (typeof realm !== 'function')
+        return;
+    Reflect.set(Error, 'prepareStackTrace', function prepareStackTrace(error, sites) {
+        return Reflect.apply(realm, this, [error, sites.map(placedSite)]);
+    });
+}
+function placedSite(site) {
+    const file = site.getFileName();
+    const line = site.getLineNumber();
+    const column = site.getColumnNumber();
+    if (!file || line === null || column === null)
+        return site;
+    const url = privatePath(file) ? pathToFileURL(file).href : file;
+    const place = privateUrl(url) ? loaders.get(new URL(url).pathname.slice(PRIVATE_PATH.length).split('/')[0])?.frame(url, line, column) : null;
+    if (!place)
+        return site;
+    const from = `${file}:${line}:${column}`;
+    const to = `${place.file}:${line}:${place.column}`;
+    return new Proxy(site, {
+        get(target, key) {
+            if (key === 'getFileName' || key === 'getScriptNameOrSourceURL')
+                return () => place.file;
+            if (key === 'getColumnNumber')
+                return () => place.column;
+            if (key === 'toString') {
+                return () => {
+                    const text = String(target);
+                    const at = text.lastIndexOf(from);
+                    return at === -1 ? text : text.slice(0, at) + to + text.slice(at + from.length);
+                };
+            }
+            const value = Reflect.get(target, key);
+            return typeof value === 'function' ? value.bind(target) : value;
+        },
+    });
 }
 /** A loader's own sources, builtins, records and metadata under one private URL root. */
 export async function createNativeEsmLoader(context, cjs, main) {
@@ -311,7 +338,7 @@ export async function createNativeEsmLoader(context, cjs, main) {
                 if (record.state === 'new')
                     record.requirer ??= caller;
                 const namespace = hostModule.createRequire(pathToFileURL(caller).href)(root + record.name);
-                return bun ? requiredNamespace(record, record.namespace ?? namespace) : namespace;
+                return bun ? requiredEsModule(record.required ??= { namespace: record.namespace ?? namespace }) : namespace;
             }
             catch (error) {
                 if (bun && evaluating)
@@ -384,7 +411,19 @@ export async function createNativeEsmLoader(context, cjs, main) {
             const escaped = bun && source.includes('\\u') ? escapedIdentifierNames(source) : new Set();
             const mentioned = ['require', '__filename', '__dirname'].filter((name) => escaped.has(name));
             const commonJsNames = bun ? bunScopeNames(source + (mentioned.length ? `\n/* ${mentioned.join(' ')} */` : '')) : undefined;
-            return engineSource(stageEsModule(source, sites, { id: record.id, name: record.name, targets, commonJsNames }).text, record.name);
+            const staged = stageEsModule(source, sites, { id: record.id, name: record.name, targets, commonJsNames });
+            const lines = new Map();
+            for (const edit of staged.columns)
+                lines.set(edit[0], [...lines.get(edit[0]) ?? [], edit]);
+            record.positions = { head: staged.head, lines };
+            return engineSource(staged.text, record.name);
+        },
+        frame(url, line, column) {
+            const record = byName.get(url.slice(root.length));
+            if (!record?.positions)
+                return null;
+            const { head, lines } = record.positions;
+            return { file: record.resolution.url, column: sourceColumn(lines.get(line), line === 1 ? column - head : column) };
         },
         enter(url) {
             const record = byId[Number(new URL(url).search.slice(1))];

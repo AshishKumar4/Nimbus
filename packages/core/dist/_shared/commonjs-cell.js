@@ -501,6 +501,7 @@ const {
   moduleImporterUrl: __nimbusModuleImporterUrl,
   runtimeCodeKeySource: __nimbusRuntimeCodeKeySource,
   runtimeCodeSourceCharge: __nimbusRuntimeCodeSourceCharge,
+  sourceColumn: __nimbusEditedSourceColumn,
 } = ${COMMONJS_CELL_HELPERS_SOURCE};
 // The wrapper function of the cell at a VFS key, compiled by the registry the
 // first time it is asked for, with the module's own Function (THE WRAPPER);
@@ -604,16 +605,7 @@ function __nimbusColumnEdits(module) {
 // A 1-based column of a module's line as its source has it, from where V8
 // places it in the emit (a first line's past the wrapper's head).
 function __nimbusSourceColumn(module, line, column) {
-  const edits = __nimbusColumnEdits(module)?.get(line);
-  if (edits === undefined) return column;
-  let delta = 0;
-  for (const [, at, length, text, call] of edits) {
-    const start = at + delta;
-    if (column - 1 < start) break;
-    if (column - 1 < start + length || (call === 1 && column - 1 === start + length)) return at + 1;
-    delta += length - text.length;
-  }
-  return column - delta;
+  return __nimbusEditedSourceColumn(__nimbusColumnEdits(module)?.get(line), column);
 }
 // The inverse: where a source column of a module's line is in its emit.
 function __nimbusGeneratedColumn(module, line, column) {
@@ -1065,6 +1057,10 @@ function __nimbusRuntimeInterpreter() {
 // Whether the interpreter made \`cell\` an ES module by its syntax alone (Node's detection).
 function __nimbusDetectedModule(cell) {
   return __nimbusInterpreter !== null && __nimbusInterpreter.detectedModule(cell);
+}
+// Whether an interpreted ES module awaits at its top level (moduleAwaits).
+function __nimbusModuleAwaits(cell) {
+  return __nimbusInterpreter !== null && __nimbusInterpreter.moduleAwaits(cell);
 }
 // A staged module's code from an origin (runtimeFunctionModule): a module
 // takes the origin's Function; a constructor's code takes its import() too,

@@ -57,6 +57,7 @@ import { STDIN_SYNC_READ_BYTES, STDIN_FILE_READ_PIECE_BYTES } from '@nimbus-sh/c
 import { COMMONJS_WRAPPER_NAMES } from '@nimbus-sh/core/runtime/javascript-ast.js';
 import { ESM_STATIC_IMPORT } from '@nimbus-sh/core/runtime/esm-interop.js';
 import { ESM_BUN_SCOPE, ESM_FACADE_DIR, ESM_TOP_LEVEL_AWAIT, ESM_TYPELESS } from '@nimbus-sh/core/runtime/native-esm.js';
+import { ESM_REQUIRED_SOURCE } from '@nimbus-sh/core/runtime/compiled-bodies.generated.js';
 import { FACET_PROVIDED_PACKAGES, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, NIMBUS_AI_GATEWAY_PORT, NODE_VERSION, NODE_VERSIONS, VFS_CAPACITY, } from '@nimbus-sh/core/constants.js';
 import { PACKAGE_ABI_POLICY } from '../facets/wasm-swap-registry.js';
 import { NATIVE_HTTP_SOURCE } from './native-http.js';
@@ -11941,6 +11942,12 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
       const format = __nimbusFileFormat(filename);
       cell = __nimbusRuntimeModule(normalizedPath, text, format);
       compiledText = text;
+      // A require() of an ES module refuses its graph if any of it awaits at
+      // its top level, evaluated already or not, before any of it runs.
+      if (required && (format === "module" || (format === undefined && __nimbusDetectedModule(cell))) && __nimbusRequiredGraphAwaits(normalizedPath, cell, text, new Set())) {
+        evaluating = true;
+        throw __nimbusRequireAsync(parent, filename);
+      }
       // An imported .js its syntax made an ES module warns as a staged one does.
       if (!required && format === undefined && filename.endsWith(".js") && __nimbusDetectedModule(cell)) {
         const scope = __esmResolver.packageScopeSync(__nimbusEsmUrl(filename));
@@ -12215,6 +12222,34 @@ function __nimbusEsmSuspends(record) {
   const row = __nimbusEsm.table[record.id];
   return row[0] === "module" && ((row[3] ?? 0) & ${ESM_TOP_LEVEL_AWAIT}) !== 0;
 }
+// Whether the graph of an ES module the interpreter evaluates for a require()
+// awaits at its top level anywhere: a staged module's by its rows, another
+// by the interpreter's compile of it.
+function __nimbusRequiredGraphAwaits(key, cell, text, seen) {
+  if (seen.has(key)) return false;
+  seen.add(key);
+  if (__nimbusModuleAwaits(cell)) return true;
+  const parentUrl = __nimbusEsmUrl("/" + key);
+  for (const request of __nimbusModuleRequests(key, text)) {
+    if (request.kind !== "static") continue;
+    let resolution;
+    try { resolution = __esmResolver.resolveSync(request.specifier, parentUrl); } catch { continue; }
+    if (!resolution.path) continue;
+    const target = resolution.path.replace(/^\\/+/, "");
+    const id = __nimbusEsmId("module", target);
+    if (id !== -1) {
+      if (__nimbusEsmGraphAwaits(id)) return true;
+      continue;
+    }
+    if (resolution.format !== "module" && resolution.format !== "detect") continue;
+    const targetText = __readFileOr(target, null);
+    if (targetText === null) continue;
+    const targetCell = __nimbusRuntimeModule(target, targetText, resolution.format === "module" ? "module" : undefined);
+    if (resolution.format === "detect" && !__nimbusDetectedModule(targetCell)) continue;
+    if (__nimbusRequiredGraphAwaits(target, targetCell, targetText, seen)) return true;
+  }
+  return false;
+}
 // Whether a module of row \`id\`'s graph awaits at its top level: Node's
 // require() refuses such a graph, evaluated or not.
 function __nimbusEsmGraphAwaits(id) {
@@ -12324,24 +12359,8 @@ function __nimbusEsmRequire(id, required, parent = undefined) {
   }
   return null;
 }
-// Node's require(esm): a module's "module.exports" export, else its
-// namespace, which has no default export or names __esModule itself, else
-// the namespace with __esModule true beside its names.
-function __nimbusEsmRequired(record) {
-  const namespace = record.namespace;
-  if ("module.exports" in namespace) return namespace["module.exports"];
-  if (!("default" in namespace) || "__esModule" in namespace) return namespace;
-  if (record.required === undefined) {
-    const facade = Object.create(null);
-    for (const name of [...Object.keys(namespace), "__esModule"].sort()) {
-      if (name === "__esModule") Object.defineProperty(facade, name, { value: true, enumerable: true, writable: true });
-      else Object.defineProperty(facade, name, { enumerable: true, get: () => namespace[name] });
-    }
-    Object.defineProperty(facade, Symbol.toStringTag, { value: "Module" });
-    record.required = Object.preventExtensions(facade);
-  }
-  return record.required;
-}
+// Node's require(esm) result of a record's namespace (core runtime/native-esm-runtime.ts requiredEsModule).
+const __nimbusEsmRequired = ${ESM_REQUIRED_SOURCE}.requiredEsModule;
 // The package.json files Node's loader has warned are typeless (MODULE_TYPELESS_PACKAGE_JSON).
 const __nimbusTypelessWarned = new Set();
 // Node's warning of an imported .js that is an ES module by its syntax alone
@@ -12530,36 +12549,21 @@ function __nimbusEsmCompileError(error, id) {
 // imported name: the declaration that imports \`name\` from \`requested\`,
 // as the parser reads the staged module, its places the source's.
 function __nimbusEsmExportError(error, id, requested, name) {
-  const { parse } = __nimbusRegistryRequire("./${RUNTIME_PARSER_MODULE}");
+  const { importedName } = __nimbusRegistryRequire("./${RUNTIME_PARSER_MODULE}");
   for (const at of __nimbusEsmPending(id)) {
     const module = __nimbusModuleAtPath(__nimbusEsm.table[at][1]);
     const text = __nimbusReadBundleFile(__NIMBUS_BUNDLE_FILES + module.name, "utf8");
-    let program;
-    try { program = parse(text, { ecmaVersion: "latest", sourceType: "module" }); } catch { continue; }
-    let declaration = null;
-    let imported = null;
-    for (const statement of program.body) {
-      if (statement.type !== "ImportDeclaration" && statement.type !== "ExportNamedDeclaration") continue;
-      if (statement.source?.value !== requested) continue;
-      for (const specifier of statement.specifiers) {
-        // An import's imported name (a default import's binding), an export-from's local one.
-        const node = specifier.type === "ImportSpecifier" ? specifier.imported
-          : specifier.type === "ImportDefaultSpecifier" ? specifier.local
-          : specifier.type === "ExportSpecifier" ? specifier.local : null;
-        const named = specifier.type === "ImportDefaultSpecifier" ? "default" : node?.type === "Identifier" ? node.name : node?.value;
-        if (node !== null && named === name) { declaration = statement; imported = node; break; }
-      }
-      if (declaration !== null) break;
-    }
-    if (declaration === null) continue;
+    const place = importedName(text, requested, name);
+    if (place === null) continue;
+    const [nameStart, nameEnd, sourceStart, sourceEnd] = place;
     // The specifier as written: staging's edit at its place, else as it is.
     let specifier = requested;
-    const lines = text.slice(0, declaration.source.start).split(/\\r\\n|[\\n\\r\\u2028\\u2029]/);
+    const lines = text.slice(0, sourceStart).split(/\\r\\n|[\\n\\r\\u2028\\u2029]/);
     const line = lines.length;
     const column = lines[line - 1].length - (line === 1 ? module.head : 0);
     let delta = 0;
-    for (const [, place, length, written] of __nimbusColumnEdits(module)?.get(line) ?? []) {
-      if (place + delta === column && length === declaration.source.end - declaration.source.start) { specifier = written.slice(1, -1); break; }
+    for (const [, editAt, length, written] of __nimbusColumnEdits(module)?.get(line) ?? []) {
+      if (editAt + delta === column && length === sourceEnd - sourceStart) { specifier = written.slice(1, -1); break; }
       delta += length - written.length;
     }
     // The module the importer's specifier names, as the registry resolved it.
@@ -12571,7 +12575,7 @@ function __nimbusEsmExportError(error, id, requested, name) {
       ? "Named export '" + name + "' not found. The requested module '" + specifier + "' is a CommonJS module, which may not support all module.exports as named exports.\\nCommonJS modules can always be imported via the default export, for example using:\\n\\nimport pkg from '" + specifier + "';\\nconst { " + name + " } = pkg;\\n"
       : "The requested module '" + specifier + "' does not provide an export named '" + name + "'";
     // Node's arrow: the imported name, on the declaration's line.
-    const arrow = __nimbusArrowOf(module, text, imported.start, imported.end);
+    const arrow = __nimbusArrowOf(module, text, nameStart, nameEnd);
     // Its frames as they were, under the message as Node words it.
     const frames = typeof error.stack === "string" ? error.stack.split("\\n").filter((frame) => frame.startsWith("    at ")) : [];
     error.stack = (arrow === null ? "" : arrow) + "SyntaxError: " + error.message + (frames.length > 0 ? "\\n" + frames.join("\\n") : "");

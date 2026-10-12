@@ -58,6 +58,12 @@ export interface Interpreter {
      */
     detectedModule(cell: unknown): boolean;
     /**
+     * Whether compileModule made `cell` an ES module whose body awaits at its
+     * top level: a require() refuses a graph that holds one, before any of it
+     * runs (node-shims' require(esm)). False for any other cell.
+     */
+    moduleAwaits(cell: unknown): boolean;
+    /**
      * A function returning the value of the script `code` when it is one
      * expression (scriptExpression): vm.runInThisContext's code, as node-shims
      * hands it over and calls it, with the global object as `this` (a script's

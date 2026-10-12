@@ -189,6 +189,7 @@ export function createInterpreter(hostOps, host) {
         isError: typeof isError === 'function' ? isError : null,
     });
     const detected = new SafeWeakSet();
+    const awaiting = new SafeWeakSet();
     const interpreter = {
         captureStack(error, above) { stampStack(error, undefined, above, true); },
         stackFrames,
@@ -229,6 +230,8 @@ export function createInterpreter(hostOps, host) {
                 const cell = moduleCell(plan, runtime.ops, host.moduleHelpers);
                 if (format === undefined)
                     detected.add(cell);
+                if (plan.body.g !== null)
+                    awaiting.add(cell);
                 return cell;
             }
             const script = parsed.program;
@@ -241,6 +244,9 @@ export function createInterpreter(hostOps, host) {
         },
         detectedModule(cell) {
             return typeof cell === 'function' && detected.has(cell);
+        },
+        moduleAwaits(cell) {
+            return typeof cell === 'function' && awaiting.has(cell);
         },
         compileExpression(code, origin) {
             const at = scriptExpression(code, REALM);

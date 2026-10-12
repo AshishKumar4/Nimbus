@@ -9,6 +9,15 @@
  */
 import { parse, type Options, type Token } from 'acorn';
 export { parse };
+/**
+ * Where module `text` imports `name` from the specifier `requested` (an
+ * import's imported name, a default import's binding, an export-from's local
+ * name), and that specifier's string literal, as [nameStart, nameEnd,
+ * specifierStart, specifierEnd]: the missing-export report's arrow and the
+ * specifier as written (node-shims.ts __nimbusEsmExportError). Null where no
+ * declaration does, or the text does not parse.
+ */
+export declare function importedName(text: string, requested: string, name: string): [number, number, number, number] | null;
 /** acorn's tokens of a text: read one at a time, or iterated. */
 export type Tokens = Iterable<Token> & {
     getToken(): Token;

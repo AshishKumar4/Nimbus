@@ -91,6 +91,49 @@ class ThrowFinder extends AcornParserClass {
         return finished;
     }
 }
+/**
+ * Where module `text` imports `name` from the specifier `requested` (an
+ * import's imported name, a default import's binding, an export-from's local
+ * name), and that specifier's string literal, as [nameStart, nameEnd,
+ * specifierStart, specifierEnd]: the missing-export report's arrow and the
+ * specifier as written (node-shims.ts __nimbusEsmExportError). Null where no
+ * declaration does, or the text does not parse.
+ */
+export function importedName(text, requested, name) {
+    let program;
+    try {
+        program = parse(text, MODULE_OPTIONS);
+    }
+    catch {
+        return null;
+    }
+    const body = reflectGet(program, 'body');
+    for (let i = 0; i < body.length; i++) {
+        const statement = body[i];
+        const type = reflectGet(statement, 'type');
+        if (type !== 'ImportDeclaration' && type !== 'ExportNamedDeclaration')
+            continue;
+        const source = reflectGet(statement, 'source');
+        if (source === null || reflectGet(source, 'value') !== requested)
+            continue;
+        const specifiers = reflectGet(statement, 'specifiers');
+        for (let j = 0; j < specifiers.length; j++) {
+            const specifier = specifiers[j];
+            const kind = reflectGet(specifier, 'type');
+            const node = (kind === 'ImportSpecifier' ? reflectGet(specifier, 'imported')
+                : kind === 'ImportDefaultSpecifier' || kind === 'ExportSpecifier' ? reflectGet(specifier, 'local') : null);
+            if (node === null)
+                continue;
+            const named = kind === 'ImportDefaultSpecifier' ? 'default'
+                : reflectGet(node, 'type') === 'Identifier' ? reflectGet(node, 'name') : reflectGet(node, 'value');
+            if (named !== name)
+                continue;
+            return [reflectGet(node, 'start'), reflectGet(node, 'end'),
+                reflectGet(source, 'start'), reflectGet(source, 'end')];
+        }
+    }
+    return null;
+}
 /** acorn's tokenizer, which Node's error_source.js reads an assert.ok() call's expression with. */
 export function tokenizer(code, options) {
     return Parser.tokenizer(code, options);
