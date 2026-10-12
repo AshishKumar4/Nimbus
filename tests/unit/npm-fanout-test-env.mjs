@@ -16,7 +16,9 @@
 // itself fail when it reaches p: 'before' writing it, 'partial' (a file of
 // it written, not its package.json, which the writer writes last), or
 // 'after' (its outcome lost, as a timed-out execution's). Each task
-// settles on its own, as the peer shard settles each.
+// settles on its own, as the peer shard settles each. A receipt goes where
+// `writeReceipt` puts it (as the namespace routes the writer's waves), else
+// into `root`.
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { NpmInstaller } from '../../packages/worker/src/npm/installer.ts';
@@ -30,7 +32,7 @@ export function kernelInstaller(vfs, sql, opts) {
   return installer;
 }
 
-export function makeFanoutEnv({ root, NM, resultFor, shardsSeen = [], log = [], failFor = () => null, crashFor = () => null, manifestFor = (p) => ({ name: p.name, version: p.version }), filesFor = () => ({}) }) {
+export function makeFanoutEnv({ root, NM, resultFor, shardsSeen = [], log = [], failFor = () => null, crashFor = () => null, manifestFor = (p) => ({ name: p.name, version: p.version }), filesFor = () => ({}), writeReceipt = null }) {
   const fanoutReply = (args) => {
     if (args[0] && Array.isArray(args[0].packages)) {
       // The install shard: write each package's package.json so the
@@ -56,6 +58,12 @@ export function makeFanoutEnv({ root, NM, resultFor, shardsSeen = [], log = [], 
           for (const [path, content] of Object.entries(filesFor(p))) {
             root.mkdir(`${dir}/${path.slice(0, path.lastIndexOf('/'))}`, { recursive: true });
             write(`${dir}/${path}`, content);
+          }
+          // After its package.json, as the batch writer writes it (`writeReceipt`: where the namespace puts it).
+          if (p.receipt && writeReceipt) writeReceipt(p.receipt);
+          else if (p.receipt) {
+            root.mkdir(p.receipt.slice(0, p.receipt.lastIndexOf('/')), { recursive: true });
+            write(p.receipt, '');
           }
           if (crashFor(p) === 'after') throw new Error(`shard crashed after ${p.name}`);
           return { name: p.name, version: p.version, pkgDir: p.pkgDir, fileCount: 1, bytesWritten: 40, elapsed: 1, warnings: [] };

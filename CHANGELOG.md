@@ -5,9 +5,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
-- One change notification for the namespace: `CompositeVFS.watchChanges(path,
-  listener)` tells every change a view may see at a path or under it, on any
-  mount, as batches of `VfsEvent`s (paths in the namespace), by one rule for
+## 2026-10-12: core 0.18.0, fabric 0.13.0, worker 0.16.0, loom 0.2.5, sdk 0.13.1, react 0.3.1, cli 0.2.5, create-nimbus-app 0.2.2
+
+- Breaking: VFS-2b uses one change notification for the namespace:
+  `CompositeVFS.watchChanges(path, listener)` tells every change a view may
+  see at a path or under it, on any mount, as batches of `VfsEvent`s (paths
+  in the namespace), by one rule for
   every watch (`projectChange` in `vfs/events.js`): each end of a change told
   where the view shows that file and may search every directory above it; a
   rename seen at one end only is that end's `add` or `unlink`; the watched
@@ -45,7 +48,7 @@ published independently in the `@nimbus-sh` npm scope.
   published after it registers, listeners let go during a delivery are not
   told, a path listener hears either end of a rename and a rename of a
   directory above it, and a path listener on the root (`''`) hears every path.
-- Changed: `npm install` has one engine. The Worker's installer and the
+- Changed: `npm install` has one engine (WASI-2). The Worker's installer and the
   shell's own npm (a library workspace with no installer of its own) plan
   every install with core `_shared/npm-arborist/`, npm 10's arborist
   build: a conflict goes to the highest ancestor it fits, a package's peers
@@ -106,10 +109,11 @@ published independently in the `@nimbus-sh` npm scope.
   installed. A record cached before this release does not say which package
   it is, so it is not used: the first install after upgrading resolves its
   tree from the registry once.
-- A file on a mount is opened by one rule, and its open description is one
-  implementation (`vfs/mounted-description.js`), for a process's synchronous
-  face, its asynchronous one, and a wave's `open`; one descriptor numbering per
-  process (`runtime/descriptors.js`). Visible changes, Linux's answers:
+- Breaking: VFS-3 and VFS-9 A open a file on a mount by one rule, and its open
+  description is one implementation (`vfs/mounted-description.js`), for a
+  process's synchronous face, its asynchronous one, and a wave's `open`;
+  one descriptor numbering per process (`runtime/descriptors.js`). Visible
+  changes, Linux's answers:
   an open asking no access reads; `O_NOFOLLOW` of a mounted link is `ELOOP`
   (the synchronous face followed it); `O_CREAT|O_EXCL` of a link, even
   dangling, is `EEXIST` before `ELOOP`; `O_CREAT|O_DIRECTORY` of an absent name
@@ -185,6 +189,32 @@ published independently in the `@nimbus-sh` npm scope.
   refuses (`ENOENT`, `ENOTDIR`, `ELOOP`, `ENXIO`, `EACCES`) answers its refusal
   `{ code, at }` instead of throwing, for a caller that invalidates on what a
   name depended on. Without it both answer and refuse as before.
+
+- Breaking: `@nimbus-sh/fabric` removes `IsolateMapOptions.onError`.
+  `IsolatePool.map` returns values or rejects after all dispatched calls
+  settle; use `mapSettled` for each outcome. `mapSource` now requires
+  `stopOnFailure` and returns outcomes. `Fanout.submitMany` also waits for
+  dispatched tasks to settle; `submitManySettled` returns every outcome.
+- Fixed: npm placements sharing a tarball fetch each verify their own
+  integrity. Each required digest is computed once per shared fetch.
+- Fixed: Worker npm read-back uses a per-batch receipt when replacing the
+  same name@version after a shard's reply is lost. A previous copy cannot
+  prove this batch landed; receipts are removed after read-back.
+- Changed: generated napi-wasm, OpenCode, Oxc and CPython artifacts carry
+  source digests. The artifact-provenance gate refuses stale inputs before
+  restaging; remote rebuilds return artifacts through one checked write-back
+  path.
+- Fixed: the regenerated napi-wasm loader includes the current WASI
+  filesystem's Nimbus extensions, shared dirent helpers and `EFBIG` mapping.
+- Added: `scripts/ci/remote-python-build.mjs` builds CPython wasm reproducibly
+  on armada and returns the artifacts through the shared write-back path.
+- Changed: Lean formal models prove that draining a pipe releases a held exit
+  status without waiting for a background job. Async hydration completes by
+  fetched chunk identity, preserving queued chunks across reprioritization
+  and failures; pipe refinement fixtures cover drain settlement.
+- Changed: the release matrix excludes `remix-real` and `vinext-real` under
+  the recorded user approvals. The measured per-bundle engine split is not
+  shipped.
 
 ## 2026-10-11: platform 0.8.1, config 0.3.0, core 0.17.0, fabric 0.12.0, worker 0.15.0, loom 0.2.4, sdk 0.13.0, react 0.3.0, cli 0.2.4
 

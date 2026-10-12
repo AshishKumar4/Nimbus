@@ -6,6 +6,9 @@ import { mkdtempSync, readFileSync, writeFileSync, copyFileSync, readdirSync } f
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
+import { assertCurrentInputs, digestInputs } from '../../packages/worker/scripts/artifact-inputs.mjs';
+import { OPENCODE_SOURCE, opencodeInputs } from '../../packages/worker/scripts/opencode/inputs.mjs';
+import { sha256Hex } from '../../packages/worker/scripts/stage-asset.mjs';
 const workerRequire = createRequire(new URL('../../packages/worker/package.json', import.meta.url));
 const coreRequire = createRequire(new URL('../../packages/core/package.json', import.meta.url));
 const { parse } = workerRequire('acorn');
@@ -14,6 +17,7 @@ const walk = coreRequire('acorn-walk');
 const out = process.argv[process.argv.indexOf('--out') + 1];
 if (!out) throw new Error('--out is required');
 const repo = process.cwd();
+const inputs = await opencodeInputs();
 const run = (command, args, cwd = repo, env = process.env, quiet = false) => {
   const result = spawnSync(command, args, { cwd, env, encoding: 'utf8', maxBuffer: 1 << 29 });
   if (result.status !== 0) throw new Error(`${command} ${args.join(' ')}\n${result.stdout}\n${result.stderr}`);
@@ -22,10 +26,10 @@ const run = (command, args, cwd = repo, env = process.env, quiet = false) => {
 };
 const scratch = mkdtempSync(join(tmpdir(), 'nimbus-opencode-build-'));
 const upstream = join(scratch, 'source');
-run('git', ['clone', '--depth', '1', '--branch', 'v1.16.2', 'https://github.com/sst/opencode', upstream]);
+run('git', ['clone', '--depth', '1', '--branch', `v${OPENCODE_SOURCE.version}`, OPENCODE_SOURCE.url, upstream]);
 const sourceCommit = run('git', ['rev-parse', 'HEAD'], upstream);
-if (sourceCommit !== '76c631d198f9ff620e15468e45f3457d50481b57') throw new Error('OpenCode v1.16.2 source changed');
-run('bun', ['install', '--ignore-scripts', '--linker=hoisted'], upstream);
+if (sourceCommit !== OPENCODE_SOURCE.commit) throw new Error(`OpenCode v${OPENCODE_SOURCE.version} source changed`);
+run('bun', ['install', '--frozen-lockfile', '--ignore-scripts', '--linker=hoisted'], upstream);
 const recipe = join(repo, 'packages/worker/scripts/opencode');
 for (const patch of ['nimbus-defer-global-io.patch', 'nimbus-tree-sitter-exports.patch']) run('git', ['apply', join(recipe, patch)], upstream);
 const packageRoot = join(upstream, 'packages/opencode');
@@ -34,7 +38,7 @@ for (const file of readdirSync(join(recipe, 'stubs'))) copyFileSync(join(recipe,
 
 // Reuse the committed catalog snapshot, not whichever catalog models.dev
 // happens to serve today. Its single literal is inside ModelsDev's sync thunk.
-const assetRoot = join(repo, 'packages/worker/public/_assets/opencode/1.16.2');
+const assetRoot = join(repo, 'packages/worker/public/_assets/opencode', OPENCODE_SOURCE.version);
 const pack = JSON.parse(readFileSync(join(assetRoot, 'chunks.json'), 'utf8'));
 const literal = node => {
   if (node.type === 'Literal') return node.value;
@@ -58,7 +62,27 @@ const models = join(scratch, 'models.json');
 writeFileSync(models, JSON.stringify(snapshot));
 const dist = join(scratch, 'dist');
 const env = { ...process.env, NIMBUS_OPENCODE_ROOT: packageRoot, NIMBUS_OPENCODE_DIST: dist, MODELS_DEV_API_JSON: models };
-run('bun', ['build-node.ts'], packageRoot, env);
+// Bun embeds CommonJS __dirname in its chunks. A random clone path changes
+// those literals, and therefore every chunk hash that depends on them.
+run('bwrap', [
+  '--unshare-user', '--tmpfs', '/',
+  '--ro-bind', '/usr', '/usr', '--ro-bind', '/etc', '/etc',
+  ...['/bin', '/sbin', '/lib', '/lib64'].flatMap(dir => ['--ro-bind-try', dir, dir]),
+  '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp',
+  '--bind', upstream, '/src/opencode', '--bind', scratch, '/build',
+  '--chdir', '/src/opencode/packages/opencode',
+  '--setenv', 'NIMBUS_OPENCODE_ROOT', '/src/opencode/packages/opencode',
+  '--setenv', 'NIMBUS_OPENCODE_DIST', '/build/dist', '--setenv', 'MODELS_DEV_API_JSON', '/build/models.json',
+  '--setenv', 'HOME', '/tmp', '--setenv', 'BUN_INSTALL_CACHE_DIR', '/build/bun-cache',
+  '--setenv', 'TMPDIR', '/tmp',
+  'bun', 'build-node.ts',
+], repo, env);
+assertCurrentInputs('OpenCode', inputs, await opencodeInputs(), 'bun scripts/ci/rebuild-opencode.mjs --out <file> (on armada)');
+writeFileSync(join(dist, 'provenance.json'), JSON.stringify({
+  artifact: 'opencode',
+  source: { ...OPENCODE_SOURCE, inputs, catalogSnapshotSha256: sha256Hex(readFileSync(models)), upstreamInputs: await digestInputs(upstream, ['bun.lock', 'package.json']) },
+  toolchain: { bun: Bun.version },
+}, null, 2) + '\n');
 run('node', ['packages/worker/scripts/bundle-opencode.mjs'], repo, env);
 const assets = readdirSync(assetRoot).map(name => ({ name, bytes: Bun.file(join(assetRoot, name)).size }));
 for (const asset of assets) if (asset.bytes > 25 * 1024 * 1024) throw new Error(`asset exceeds the Workers 25MiB limit: ${asset.name} (${asset.bytes})`);
