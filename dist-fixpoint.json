@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "9c62778c4061884a44c0e945199b9e9b054c49440f34d6595fbdaeb7410dc479",
+  "fingerprint": "cfb9b74aa942dc8279ee470a97ed3158c85d06502de016ce4a25a7ac4e1f2036",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1720,8 +1720,8 @@
     "packages/fabric/dist/generation.d.ts.map": "8c0a5b5e201d2192469794371b6cb739bc05a1af022c952a9620664a300669c5",
     "packages/fabric/dist/generation.js": "f34cd1ffe981b9d1a3e0e91720f547f427b279fcf94eba3fabe988971d09dfc4",
     "packages/fabric/dist/host-activity.d.ts": "4a44cbd04bfe62b279d6df058b1b92c46eb817a6c183a70f740ccec4db7b79f7",
-    "packages/fabric/dist/host-activity.d.ts.map": "3b533be16702cd9fad71a9c71fdb484d78e4af87c214e9ad7f49d2fe9fe9bd9e",
-    "packages/fabric/dist/host-activity.js": "c08e7e0fcf5c92aadc3effefd8d6ae730137c026fc96ef74be532e69cd8f4e50",
+    "packages/fabric/dist/host-activity.d.ts.map": "3bc310570590c4cd3cb5ff05cf992e286f5e7e3f135161a643196b3fb49f6fe1",
+    "packages/fabric/dist/host-activity.js": "669bb28a6e315c93de7ea73f786a8c7e48d3d5795cdbfd45a344d301c79f88ef",
     "packages/fabric/dist/host-dispatch.d.ts": "4f89c1ada81cbab54148c90f986cacbf229e7e068c6bbeec522a416cfa7fa4da",
     "packages/fabric/dist/host-dispatch.d.ts.map": "6fe1522e91b3a5b5cfdc1920d309a401c8ceff3aec2dc5b951ab9b6dfbc146d3",
     "packages/fabric/dist/host-dispatch.js": "ed1e07fa3e0b75877177d0189e1b00aee35fea3676ab0b2ffb2fdbb0c65591a8",
@@ -1805,7 +1805,7 @@
     "packages/fabric/src/fanout.ts": "329b64f1548460079210058d5d8beb5754e3ead788f143ba54bc9c17d1b69198",
     "packages/fabric/src/fenced-work.ts": "01ed8f9e309369f15cc653171eae6a303779497cf23acb8611b79ebce36ef2c3",
     "packages/fabric/src/generation.ts": "320efc02fb7cb0d378dcf6872e7ba81a7d54ac3f27b322e8a776414d3296ee66",
-    "packages/fabric/src/host-activity.ts": "a9243713bdcdc5b612c5879274c4c712eeca47754917f8bbf32c5b06c927eb63",
+    "packages/fabric/src/host-activity.ts": "06ba77f63ad6e350f08cb313aaf54cc80e432fa1899294f1308390d17111e9df",
     "packages/fabric/src/host-dispatch.ts": "2514327e1650eb8ca851eb4bcb1315dc20e67f12ed50e067ee144deab95a05cc",
     "packages/fabric/src/host-wasm.ts": "2413e13d4a7255f5bb451eb670146870e93e636a939615672c87ade15f684bc8",
     "packages/fabric/src/image-store.ts": "303267ee6f2c903cc9f4d49e57abf5bd9e5aea831f83cb604d468d8affd83034",
