@@ -1402,7 +1402,7 @@ const __fsMod = (() => {
     for (const key of [..._createdHere.keys()]) if (key === k || key.startsWith(prefix)) _createdHere.delete(key);
   }
   /**
-   * The permission bits a call that may create a file asks for (its `mode`
+   * The permission bits a call that may create a file asks for (its \`mode\`
    * option), before the umask: 0666 unless it says. The authority applies them
    * only to a file the call makes; one already there keeps its own.
    */
@@ -3712,7 +3712,10 @@ const __fsMod = (() => {
       const data = await _readFileAsync(src);
       const from = (await _statAsync(src)).mode & 0o7777;
       await _writeFileAsync(dest, data, { mode: from });
-      if (((await _statAsync(dest)).mode & 0o7777) !== from) await _chmodAsync(dest, from);
+      // Made here: what its create asked for, less the umask; else as it is.
+      const created = _createdHere.get(_strip(_resolveFollow(dest, "open")));
+      const left = created !== undefined ? created & ~__processUmask : (await _statAsync(dest)).mode & 0o7777;
+      if (left !== from) await _chmodAsync(dest, from);
     } catch (error) { throw _asCallError(error, "copyfile", src, dest); }
   }
 
@@ -6444,7 +6447,7 @@ const __fsMod = (() => {
         } catch (e) { cb(e); }
       }
       open() {}
-      // The file it makes: its `mode` option's.
+      // The file it makes: its \`mode\` option's.
       _createOptions() {
         return this._opts !== null && typeof this._opts === "object" && this._opts.mode !== undefined ? { mode: this._opts.mode } : undefined;
       }
