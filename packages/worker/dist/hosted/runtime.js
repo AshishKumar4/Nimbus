@@ -136,7 +136,7 @@ class RuntimeOwner {
     ensureFacetManager() { this.assertOpen(); return this.services.ensureFacetManager(); }
     ensureNpmInstaller(onProgress) { this.assertOpen(); return this.services.ensureNpmInstaller(onProgress); }
     ensureGlobalPrefixDirs(prefix) { return this.services.ensureGlobalPrefixDirs(prefix); }
-    _ensureFacetProcessManager() { this.assertOpen(); return this.services._ensureFacetProcessManager(); }
+    _ensureChildProcessManager() { this.assertOpen(); return this.services._ensureChildProcessManager(); }
     _ensureWebSocketRelay() { this.assertOpen(); return this.services._ensureWebSocketRelay(); }
     _setCpRegistry(registry) {
         if (registry !== this._cpRegistry)

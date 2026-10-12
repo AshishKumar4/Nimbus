@@ -105,7 +105,7 @@ export function _ensureWebSocketRelay(self, runtimeContext) {
         self.webSocketRelay = new WebSocketRelay(runtimeContext.network);
     return self.webSocketRelay;
 }
-export function _ensureFacetProcessManager(self, runtimeContext) {
+export function _ensureChildProcessManager(self, runtimeContext) {
     if (self.facetProcessManager)
         return self.facetProcessManager;
     self.ensureSqliteFs();
@@ -402,7 +402,7 @@ export function bindRuntimeServices(host, context) {
         ensureBundlePool: ensureBundlePool.bind(null, host, context),
         ensureFacetManager: ensureFacetManager.bind(null, host, context),
         _ensureWebSocketRelay: _ensureWebSocketRelay.bind(null, host, context),
-        _ensureFacetProcessManager: _ensureFacetProcessManager.bind(null, host, context),
+        _ensureChildProcessManager: _ensureChildProcessManager.bind(null, host, context),
         ensureNpmInstaller: ensureNpmInstaller.bind(null, host, context),
         ensureGlobalPrefixDirs: ensureGlobalPrefixDirs.bind(null, host, context),
     };

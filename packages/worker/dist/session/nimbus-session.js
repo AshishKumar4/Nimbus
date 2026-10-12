@@ -1071,7 +1071,7 @@ export class NimbusSession extends CloudflareDurableObject {
     /**
      * Lazily bind the core child broker to this session's runners and cleanup.
      */
-    _ensureFacetProcessManager() { return this.#runtimeServices._ensureFacetProcessManager(); }
+    _ensureChildProcessManager() { return this.#runtimeServices._ensureChildProcessManager(); }
     /**
      * Set the shell command registry for the W8 broker to dispatch
      * resolved commands. Called from the shell-init path right after

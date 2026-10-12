@@ -1223,7 +1223,7 @@ export async function _rpcTransform(self, code, loader) {
 // facet calls cp* before the supervisor has initialized the broker
 // (e.g., immediately after DO hibernation wake-up).
 export async function _rpcCpSpawn(self, req) {
-    const fpm = self._ensureFacetProcessManager();
+    const fpm = self._ensureChildProcessManager();
     return fpm.spawn(req);
 }
 /**
@@ -1283,19 +1283,19 @@ export async function _rpcCpReadStdin(self, childPid, waitMs, acquire, pid, writ
     return withDeliveredAcquire(self, packet, delivers, acquire, pid);
 }
 export async function _rpcCpReadOutput(self, childPid, fd, sinceSeq, waitMs, acquire, pid) {
-    const fpm = self._ensureFacetProcessManager();
+    const fpm = self._ensureChildProcessManager();
     const output = await fpm.readOutput(childPid, fd, sinceSeq, waitMs);
     return withDeliveredAcquire(self, output, output.chunks.length > 0 || output.closed, acquire, pid);
 }
 export async function _rpcCpDrainOutput(self, childPid) {
-    const fpm = self._ensureFacetProcessManager();
+    const fpm = self._ensureChildProcessManager();
     return fpm.drainOutput(childPid);
 }
 export async function _rpcCpCloseOutput(self, childPid, fd) {
-    self._ensureFacetProcessManager().closeOutput(childPid, fd);
+    self._ensureChildProcessManager().closeOutput(childPid, fd);
 }
 export async function _rpcCpKill(self, childPid, signal) {
-    const fpm = self._ensureFacetProcessManager();
+    const fpm = self._ensureChildProcessManager();
     return fpm.kill(childPid, signal);
 }
 /**
@@ -1318,7 +1318,7 @@ export async function _rpcCpBlocked(self, pid, report) {
     });
 }
 export async function _rpcCpWait(self, childPid, waitMs, acquire, pid, knownStarted) {
-    const fpm = self._ensureFacetProcessManager();
+    const fpm = self._ensureChildProcessManager();
     const status = await fpm.wait(childPid, waitMs, knownStarted !== false);
     return withDeliveredAcquire(self, status, status.done, acquire, pid);
 }
