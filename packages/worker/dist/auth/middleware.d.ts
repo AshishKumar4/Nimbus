@@ -136,6 +136,13 @@ export declare function setNimbusTokenCookie(token: string, expSec: number, sess
  */
 export declare function expireLegacyNimbusTokenCookie(): string;
 /**
+ * Expire one session's route-owned attach cookie. Used when its session is
+ * destroyed through the public path, so a dead session frees its jar slot.
+ * Only the destroyed sid's name is ever expired here — sibling sessions'
+ * credentials are untouched.
+ */
+export declare function expireSessionCookie(sessionId: string): string;
+/**
  * Migration headers for a request that authenticated via the legacy global
  * cookie: re-issue its verified token under the route-owned name and expire
  * the legacy name, in the same response. Returns [] unless verification used
