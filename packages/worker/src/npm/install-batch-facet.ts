@@ -257,8 +257,10 @@ export const installPackagesInFacet = async function installPackagesInFacet(
   // Owners register on entry, so no waiter blocks an unstarted owner.
   // One digest computation per fetch: the owner publishes its bytes with the
   // digest entry it verified them against, and every same-key consumer compares
-  // its declared integrity to that verified digest without hashing again.
-  interface SharedTarballAcquisition { bytes: Uint8Array; verified: SriEntry | null }
+  // its declared integrity to that verified digest without hashing again. Only
+  // verified acquisitions are published: the injective key means a consumer's
+  // expected entry is always the entry its owner verified.
+  interface SharedTarballAcquisition { bytes: Uint8Array; verified: SriEntry }
   const tarballBytesByUrl = new Map<string, Promise<SharedTarballAcquisition | null>>();
 
   // ── Per-package install (inlined fetchAndStagePackage logic) ─────────
@@ -292,7 +294,8 @@ export const installPackagesInFacet = async function installPackagesInFacet(
     let r2HitBytes: Uint8Array | null = sharedAcquisition?.bytes ?? null;
     // The digest this placement verified its bytes against: the owner's for a
     // shared acquisition, the storage boundary's for an R2 hit, the registry
-    // fetch's for a download. Published with the bytes for same-key consumers.
+    // fetch's for a download. Published with the bytes for same-key consumers;
+    // null until this placement verifies (only verified acquisitions publish).
     let verifiedDigest: SriEntry | null = sharedAcquisition?.verified ?? null;
 
     // [W4] 1a. R2 cache lookup, hedged by the network fetch.
@@ -369,18 +372,10 @@ export const installPackagesInFacet = async function installPackagesInFacet(
         const expected = spec.integrity ? strongestSriEntry(spec.integrity) : null;
         const verified = sharedAcquisition.verified;
         const matches = expected === null
-          || (verified !== null && verified.digestAlgo === expected.digestAlgo && sriDigestsEqual(verified.digest, expected.digest));
-        if (!matches && (verified === null || expected === null)) {
-          // Unverified shared bytes with a requirement (unreachable for a
-          // same-key acquisition, whose integrity string is identical): hash
-          // once, exactly as an unshared fetch would.
-          const actual = expected === null ? null : await sriDigestOf(sharedAcquisition.bytes, expected.digestAlgo);
-          if (expected !== null && (actual === null || !sriDigestsEqual(actual, expected.digest))) throw new Error(
-            `integrity mismatch for ${spec.name}@${spec.version}: expected ${expected.algo}-${expected.digest}, got ${expected.algo}-${actual}`,
-          );
-        } else if (!matches) {
+          || (verified.digestAlgo === expected.digestAlgo && sriDigestsEqual(verified.digest, expected.digest));
+        if (!matches) {
           throw new Error(
-            `integrity mismatch for ${spec.name}@${spec.version}: expected ${expected!.algo}-${expected!.digest}, got ${verified!.algo}-${verified!.digest}`,
+            `integrity mismatch for ${spec.name}@${spec.version}: expected ${expected!.algo}-${expected!.digest}, got ${verified.algo}-${verified.digest}`,
           );
         }
       }
@@ -443,7 +438,8 @@ export const installPackagesInFacet = async function installPackagesInFacet(
         discardPendingNetwork();
         // A malformed integrity string is not a verification: the network
         // branch reports it when it parses there, and this path keeps its
-        // existing warn-and-proceed posture instead of throwing first.
+        // existing warn-and-proceed posture instead of throwing first. Such
+        // bytes stay unpublished: only verified acquisitions reach consumers.
         try {
           verifiedDigest = spec.integrity ? strongestSriEntry(spec.integrity) : null;
         } catch {
@@ -660,7 +656,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       // No-op once the retry loop has taken it; closes every early return.
       discardPendingNetwork();
       const publishedBytes = capturedTgzBytes ?? r2HitBytes;
-      publishTarballBytes(publishedBytes ? { bytes: publishedBytes, verified: verifiedDigest } : null);
+      publishTarballBytes(publishedBytes && verifiedDigest ? { bytes: publishedBytes, verified: verifiedDigest } : null);
       inFlight = Math.max(0, inFlight - 1);
     }
   };
