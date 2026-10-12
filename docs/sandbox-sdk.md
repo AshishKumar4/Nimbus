@@ -186,7 +186,9 @@ To tell which exec made a request, mint an egress per process:
 session. It gets `{ pid, execId }` once per process and returns that
 process's egress, or undefined for the workspace's. Everything the process
 does goes through it: its programs and their sockets, the commands it runs,
-and its Dynamic Worker wherever it is hosted.
+and its Dynamic Worker wherever it is hosted. A host that builds its facets'
+network itself makes it with `selectProcessEgress(egress, egressFor,
+processes)` over the workspace's process table, not `workspaceNetwork`.
 
 ```ts
 export class Session extends NimbusSession {
