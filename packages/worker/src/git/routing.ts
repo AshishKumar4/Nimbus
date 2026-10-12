@@ -38,7 +38,8 @@ export const GIT_FAMILY_POLICY: Readonly<Record<GitFamily, GitFamilyPolicy>> = {
   merge: javascript,
   rebase: wasi,
   stash: wasi,
-  sparse: wasi,
+  // The built-in implements sparse-checkout: what it does not do it hands over (sparse-checkout.ts).
+  sparse: javascript,
   transport: javascript,
   other: wasi,
 };
