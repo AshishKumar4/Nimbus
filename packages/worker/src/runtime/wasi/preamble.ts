@@ -819,7 +819,14 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
   // retries instead of being handed the watchdog's EAGAIN.
   const proc = processHost({
     fds: fdTable,
-    input: opts.stdinRead,
+    // The guest's stdin is its process's input channel, read through the
+    // supervisor it adopted; a guest with neither (a pure computation) is at
+    // its end. Every runtime on this layer gets it: CPython's, ruby's and
+    // clang's never passed a reader of their own, and read nothing.
+    input: (maxBytes) => {
+      const sup = __wasiSup, pid = __wasiFS.pid;
+      return sup?.cpReadStdin && pid ? sup.cpReadStdin(pid, 8000, undefined, maxBytes) : { data: new Uint8Array(0), ended: true };
+    },
     allocateFd: __wasiAllocateFd,
     memory: opts.getMemory,
     supervisor: () => __wasiSup,
@@ -893,10 +900,8 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     },
 
     fd_read(fd, iovsPtr, iovsLen, nreadPtr) {
+      if (fd === 0) { writeU32LE(nreadPtr, 0); return __WASI_ESUCCESS; }
       const entry = fdTable.get(fd);
-      // The guest's stdin, under whatever number it dup'd it to: what the
-      // process host does not answer (no input channel) is at its end.
-      if (fd === 0 || entry?.kind === 'stdin') { writeU32LE(nreadPtr, 0); return __WASI_ESUCCESS; }
       if (!entry) return __WASI_EBADF;
       // wasi-libc maps read(2) to fd_read for every fd kind. A socket fd
       // reads via the JSPI socket body (returns a Promise the Suspending

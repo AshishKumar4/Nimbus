@@ -284,11 +284,6 @@ export const wasmFacetCall = async function wasmFacetCall(args: {
         } = { mem: null };
         const abi = args.wasiAbi || 'preview1';
         const sup = facetEnv?.SUPERVISOR as {
-            cpReadStdin?(pid: number, waitMs: number, acquire?: unknown, maxBytes?: number): Promise<{
-                data: Uint8Array;
-                ended: boolean;
-                signal?: string;
-            }>;
             stdout?: unknown;
         } | undefined;
         if (typeof sup?.stdout !== 'function')
@@ -300,7 +295,6 @@ export const wasmFacetCall = async function wasmFacetCall(args: {
             abi,
             threads: !!args.threads,
             stdoutBytes: live.stdoutBytes, stderrBytes: live.stderrBytes,
-            ...(typeof sup?.cpReadStdin === 'function' ? { stdinRead: (maxBytes: number) => sup.cpReadStdin!(args.processPid!, 8000, undefined, maxBytes) } : {}),
             // Non-null by ordering, not by check. The import table is only ever
             // CALLED from inside the guest, and the guest cannot run before
             // `_start` below, by which point memRef.mem is assigned or the call

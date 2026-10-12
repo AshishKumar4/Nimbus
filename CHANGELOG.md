@@ -19,6 +19,10 @@ published independently in the `@nimbus-sh` npm scope.
 - Fixed: on Cloudflare, piping into the installed GNU bash (`printf x | bash
   -c 'read -r y'`) failed with "The RPC receiver does not implement the
   method "call"". bash now reads its piped stdin.
+- Fixed: CPython, Ruby and clang read their piped stdin (`printf x | python3
+  -c 'import sys; print(sys.stdin.read())'`). The WASI layer now reads every
+  runtime's fd 0 from its process's input channel; before, only the generic
+  wasm runner wired it, and the others read an empty stdin.
 
 ## 2026-10-12: platform 0.8.2, core 0.18.0, fabric 0.13.0, worker 0.16.0, loom 0.2.5, sdk 0.13.1, react 0.3.1, cli 0.2.5, create-nimbus-app 0.2.2
 
