@@ -11,6 +11,8 @@ published independently in the `@nimbus-sh` npm scope.
 - Added: `NimbusWorkspace.shellState(name)` reads the named shell's saved cwd
   and exact environment, without its call pid. Reads share the shell's queue
   and distinguish lone UTF-16 surrogates. Listings and UTF-8 pipes are unchanged.
+- Fixed: fabric connections preserve the host's socket type in lookups and
+  listings, so callers can use methods such as `send` without type assertions.
 
 ## 2026-10-12: core 0.18.0, fabric 0.13.0, worker 0.16.0, loom 0.2.5, sdk 0.13.1, react 0.3.1, cli 0.2.5, create-nimbus-app 0.2.2
 
