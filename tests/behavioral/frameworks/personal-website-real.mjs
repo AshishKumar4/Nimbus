@@ -45,7 +45,9 @@ try {
   if (cl.exitCode !== 0) throw new Error('clone failed; nothing to install or serve');
 
   // ── 2. install ──────────────────────────────────────────────────────
-  const ins = await t.run('cd /home/user/site && npm install', 900_000);
+  // wrangler's peerOptional @cloudflare/workers-types ^5 conflicts with the
+  // repo's ^4: npm's ERESOLVE, whose own remedy is --legacy-peer-deps.
+  const ins = await t.run('cd /home/user/site && npm install --legacy-peer-deps', 900_000);
   console.log('[install] exit=' + ins.exitCode);
   console.log(ins.output.split('\n').filter(l => l.trim()).slice(-15).join('\n'));
   a.check('npm install exits 0', ins.exitCode === 0, ins.output.slice(-800));

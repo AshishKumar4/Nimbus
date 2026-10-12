@@ -42,6 +42,48 @@ export interface InstallProgress {
     cachedHits: number;
     elapsed: number;
 }
+export interface NpmInstallOptions {
+    /** Explicit packages (`npm install react`). */
+    packages?: string[];
+    /** `--omit=dev` (`--production`): what only devDependencies reach is planned, not installed. */
+    production?: boolean;
+    /** `--omit=optional` / `--omit=peer`: likewise for what only optional, or only peer, dependencies reach. */
+    omitOptional?: boolean;
+    omitPeer?: boolean;
+    /** npm ci: install exactly the tree package-lock.json records. */
+    fromLockfile?: boolean;
+    /** The invoking process: authorizes the batch facet's writes. */
+    pid: number;
+    /** Its credential: what the project is read and written as. */
+    cred: VfsCred;
+    /** npm-protocol log sink (see --loglevel). */
+    npmLog?: NpmLogEmitter;
+    /** Per-invocation progress: overrides the constructor's sink. */
+    onProgress?: (msg: string) => void;
+    /** The command's NPM_REGISTRY; default registry.npmjs.org. */
+    registry?: string;
+    /** `--save-dev` / `--save-optional`: where what is named is saved. */
+    saveDev?: boolean;
+    saveOptional?: boolean;
+    /** False for `--no-save`: package.json is left as it is. */
+    save?: boolean;
+    /** What a saved range starts with ('' for `--save-exact`); '^' when not given. */
+    savePrefix?: string;
+    /** `--force`: a peer conflict the project owns is a warning. */
+    force?: boolean;
+    /** `--strict-peer-deps`: any peer conflict is ERESOLVE unless forced. */
+    strictPeerDeps?: boolean;
+    /** `--legacy-peer-deps`: peers are neither installed nor checked. */
+    legacyPeerDeps?: boolean;
+    /** `--prefer-dedupe`: one copy serves every edge it can, an older one included. */
+    preferDedupe?: boolean;
+    /** A global prefix's install: npm's shallow layout, and only what is named is built and changed. */
+    global?: boolean;
+    /** The command's: an install it stops before publication changes nothing; one waiting for the tree never starts. */
+    signal?: AbortSignal;
+    /** Run under the install's hold, once it has installed; answers the bins it linked. */
+    whileHeld?: (result: NpmInstallResult) => Promise<number>;
+}
 export interface NpmInstallResult {
     installed: string[];
     failed: string[];
@@ -49,6 +91,8 @@ export interface NpmInstallResult {
     elapsed: number;
     cachedHits: number;
     phases: Record<string, number>;
+    /** The bins `whileHeld` linked. */
+    linkedBins?: number;
 }
 export declare class NpmInstaller {
     /** The session's namespace: the project is reached through it as the invoking principal. */
@@ -57,6 +101,13 @@ export declare class NpmInstaller {
     /** What installs in this session are staging or copying now: a sweep leaves them. */
     private readonly placing;
     private cache;
+    /**
+     * The installed tree of each project's lockfile, by the lockfile's
+     * revision (lockRevision): a lockfile revision is read from its records
+     * once, or taken from the tree the install that wrote it planned. The
+     * disk is not trusted from it: the diff reads each placement.
+     */
+    private readonly installedTrees;
     private esbuild;
     /** The session's esbuild facet pool, shared with the on-demand dev-server path. */
     private bundlePool;
@@ -88,16 +139,7 @@ export declare class NpmInstaller {
      * - Full resolution + fetch + write pipeline
      * - Incremental: only fetches/writes what changed
      */
-    install(projectDir: string, opts: {
-        packages?: string[];
-        production?: boolean;
-        fromLockfile?: boolean;
-        pid: number;
-        cred: VfsCred;
-        npmLog?: NpmLogEmitter;
-        onProgress?: (msg: string) => void;
-        registry?: string;
-    }): Promise<NpmInstallResult>;
+    install(projectDir: string, opts: NpmInstallOptions): Promise<NpmInstallResult>;
     private _installInner;
     /**
      * F-2 frontier-coordinator path. Replaces the single-resolve-facet
@@ -109,24 +151,18 @@ export declare class NpmInstaller {
      * (Fanout): a layer the headroom holds runs on in-DO loaders, a wider one
      * on sibling NimbusSession DOs. Each layer's route is in its profile entry.
      *
-     * Resolution is per edge, not per name: the first version of a name goes
-     * to root; a later edge the nearest visible placement does not satisfy
-     * nests a copy under its dependent, never higher (placement.ts; live case
-     * in tests/unit/npm-install-nested-conflict.mjs).
+     * The walk is the install engine's plan (core _shared/npm-arborist,
+     * npm's arborist build over what the lockfile says is installed); a
+     * placement is required when a path of required edges reaches it, its
+     * failure then failing the install; an optional one that fails is
+     * skipped with what it takes along.
      *
-     * The supervisor still owns:
-     *   - placement (`placed` / `pending` / `settled`, by placement path),
-     *   - required peers (an optional peer installs only when the project
-     *     lists it, as npm does),
-     *   - X.5-G G1 optional-native silent-skip,
+     * The supervisor answers the plan's layers and owns:
+     *   - what cannot run here (a native binding or executable the ABI
+     *     policy names), left out where the plan finds it optional,
      *   - W6 swap / warn / reject decisions (top-level enforcement; the
-     *     per-package task ALSO checks these for transitive correctness).
-     *     A package is required iff it is reachable from a required root
-     *     (every selected spec except optionalDependencies roots) through
-     *     a chain of required edges (`dependencies` minus the package's
-     *     own optionalDependencies, required peers); W6 refusals are
-     *     classified against the closure computed over the resolved
-     *     graph at end of walk.
+     *     per-package task ALSO checks these for transitive correctness);
+     *     a refusal fails a required placement,
      *   - cache flushing (one batched putRegistryEntries at end).
      *
      * The per-package task (resolveOnePackumentInFacet) owns ONLY the
@@ -177,7 +213,16 @@ export declare class NpmInstaller {
     private placeMountedPackage;
     /** An artifact this installer wrote as root in an earlier release, handed to its directory's owner (see handKernelArtifact). */
     private handKernelArtifact;
-    private buildSpecs;
+    /**
+     * The install's roots (core npm-tree.ts projectRoots): every declared
+     * dependency, and the packages named on the command line (`npm install
+     * react react-dom@18.2.0`), explicit requests saved where npm saves them
+     * (namedPackages); a global prefix's roots are only what is named.
+     * What cannot run here is named by the advisory pass below, and a
+     * swap rewrites a root's range to its target (applyW6Registry); nothing a
+     * project declares is quietly left out of node_modules.
+     */
+    private buildRoots;
     /**
      * W6: apply the PACKAGE_ABI_POLICY swap rewrites and reject deny list
      * to a top-level spec map. Emits `[swap]` notices via onProgress.
@@ -201,49 +246,62 @@ export declare class NpmInstaller {
      */
     private applyW6Registry;
     /**
-     * A lockfile entry's registry record, read once however often the
-     * checks, the walk and the reconstruction of one install ask for it.
+     * A lockfile entry's record: its registry package's (the stable identity
+     * an alias names), read once however often one install asks for it; null
+     * where the cache holds none of that exact package. `entries`' records
+     * are read together, up front.
      */
     private lockRecords;
     /**
-     * Check if a lockfile is still valid against current package.json specs.
-     */
-    private isLockfileValid;
-    /**
-     * The placements of `lockfile` the project's specs reach through Node's
-     * walk: dependencies, optionalDependencies and required peers, each met
-     * by the placement nearest its dependent. A valid lockfile has every
-     * entry's registry record (isLockfileValid).
-     */
-    private reachableFromSpecs;
-    /**
-     * Remove the placements `previous` (the last install's lockfile) holds and
-     * `plan` does not, with the bins they linked, as the invoking principal.
-     * A placement inside another removed one goes with it. Answers how many
-     * were removed.
+     * Remove the placements of `previous` (the last install's lockfile, and
+     * what an optional failure left out) that `plan` does not hold. Answers
+     * how many were removed.
      */
     private pruneExtraneous;
     /**
-     * npm ci: the placements package-lock.json (or npm-shrinkwrap.json)
-     * records, checked against package.json first. The ABI policy the resolver
-     * applies still holds: platform-native optional shards are skipped, a
-     * required one is refused, and a swapped package resolves its swap target
-     * at the locked version.
+     * Remove `placements`, with the bins they linked, as the invoking
+     * principal; a placement inside another removed one goes with it, and a
+     * bin a package of `plan` links stays. Answers the placements removed.
+     */
+    private removePlacements;
+    /**
+     * npm ci: the tree package-lock.json (or npm-shrinkwrap.json) records,
+     * each placement as it is locked, and whether the lock is suspect: its
+     * root declares other dependencies than package.json (lockRootMatches).
+     * The ABI policy the resolver applies still holds: what cannot run here
+     * is left out where the plan finds it optional and refused where it is
+     * required, and a swapped package resolves its swap target at the locked
+     * version.
      */
     private treeFromPackageLock;
-    /** Convert a lockfile back to resolved packages: root by name, nested by placement path. */
-    private lockfileToResolved;
     /**
      * Write lockfile to SQLite.
      */
     private writeLockfile;
     /**
+     * The installed tree `lockfile` records: each placement's package from its
+     * registry package's record, under the name it installs as. A placement
+     * whose record the cache does not hold is left out, and so planned anew;
+     * a revision every record answered is kept (installedTrees).
+     */
+    private installedTree;
+    /**
      * Create node_modules/.bin/ entries for packages with "bin" fields: one
      * streamed batch through the engine as the invoking principal (`engine`,
      * at the project's engine key), or written one by one through the
-     * principal's view (`fs`) for a mounted project.
+     * principal's view (`fs`) for a mounted project. A shim the bin manifest
+     * already records as it is, and that is there, is not written again; nor
+     * is a manifest that does not change.
      */
     private linkBins;
+    /**
+     * package.json with what the command line named saved, as npm saves it
+     * (core npm-tree.ts saveNamed): each under its save type, at `^version`
+     * unless the range given is one that would widen. `resolved` is keyed by
+     * the name the user typed — a swapped package resolves as an alias under
+     * that name (applySwaps), so `esbuild` is saved as `esbuild`, never the
+     * swap target. `version`: the version the tree holds under a name.
+     */
     private updatePackageJson;
     /**
      * Pre-bundle ESM modules that are actually imported by the project source.

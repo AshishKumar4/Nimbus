@@ -18,7 +18,7 @@
  *   Hit = row(s) returned with size > 0; miss = empty result set. Callers
  *   fall through to L2/L3/L4 on miss.
  */
-import { placementName } from './placement.js';
+import { placementName } from '@nimbus-sh/core/_shared/npm-tree.js';
 import { recordHit as _l1RecordHit, recordMiss as _l1RecordMiss } from '@nimbus-sh/core/_shared/cache-stats.js';
 // ── NpmCache ────────────────────────────────────────────────────────────
 export class NpmCache {
@@ -44,6 +44,9 @@ export class NpmCache {
       bin_json       TEXT NOT NULL DEFAULT '{}',
       platform_json  TEXT NOT NULL DEFAULT '{}',
       optional_deps_json TEXT NOT NULL DEFAULT '{}',
+      peer_meta_json TEXT NOT NULL DEFAULT '{}',
+      registry_name  TEXT NOT NULL DEFAULT '',
+      bundle_json    TEXT NOT NULL DEFAULT '',
       fetched_at     INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (name, version)
     )`);
@@ -59,11 +62,11 @@ export class NpmCache {
             existingCols = new Set(cols.map((r) => String(r.name)));
         }
         catch { /* PRAGMA failed — fall through and ATTEMPT, swallow on error */ }
-        for (const col of ['peer_deps_json', 'platform_json', 'optional_deps_json']) {
+        for (const [col, fallback] of [['peer_deps_json', '{}'], ['platform_json', '{}'], ['optional_deps_json', '{}'], ['peer_meta_json', '{}'], ['registry_name', ''], ['bundle_json', '']]) {
             if (existingCols.has(col))
                 continue;
             try {
-                this.sql.exec(`ALTER TABLE pkg_registry_cache ADD COLUMN ${col} TEXT NOT NULL DEFAULT '{}'`);
+                this.sql.exec(`ALTER TABLE pkg_registry_cache ADD COLUMN ${col} TEXT NOT NULL DEFAULT '${fallback}'`);
             }
             catch (e) {
                 // Race or pre-existing — non-fatal; the column might already
@@ -81,8 +84,15 @@ export class NpmCache {
       integrity    TEXT NOT NULL DEFAULT '',
       deps_json    TEXT NOT NULL DEFAULT '{}',
       hoisted_path TEXT NOT NULL DEFAULT '',
+      registry_name TEXT NOT NULL DEFAULT '',
       PRIMARY KEY (project_path, name)
     )`);
+        try {
+            const cols = new Set([...this.sql.exec(`PRAGMA table_info(pkg_lockfile)`)].map((r) => String(r.name)));
+            if (!cols.has('registry_name'))
+                this.sql.exec(`ALTER TABLE pkg_lockfile ADD COLUMN registry_name TEXT NOT NULL DEFAULT ''`);
+        }
+        catch { /* the table was just created with it */ }
         // A bundle is served only to a principal who may read what it was built
         // from, so a row that does not say is of no use: a table predating the
         // `sources` column is dropped and recreated, and its bundles rebuild on
@@ -143,7 +153,7 @@ export class NpmCache {
         this.initialized = true;
     }
     // ── Registry cache ────────────────────────────────────────────────────
-    static REGISTRY_COLUMNS = 'name, version, tarball_url, integrity, deps_json, peer_deps_json, exports_json, main, module_field, bin_json, platform_json, optional_deps_json, fetched_at';
+    static REGISTRY_COLUMNS = 'name, version, tarball_url, integrity, deps_json, peer_deps_json, exports_json, main, module_field, bin_json, platform_json, optional_deps_json, peer_meta_json, registry_name, bundle_json, fetched_at';
     rowToRegistryEntry(r) {
         return {
             name: String(r.name),
@@ -158,6 +168,9 @@ export class NpmCache {
             binJson: String(r.bin_json),
             platformJson: String(r.platform_json ?? '{}'),
             optionalDepsJson: String(r.optional_deps_json ?? '{}'),
+            peerMetaJson: String(r.peer_meta_json ?? '{}'),
+            registryName: String(r.registry_name ?? ''),
+            bundleJson: String(r.bundle_json ?? ''),
             fetchedAt: Number(r.fetched_at),
         };
     }
@@ -191,6 +204,30 @@ export class NpmCache {
         _l1RecordHit('L1', 'packument', bytes);
         return entry;
     }
+    /**
+     * getRegistryEntry for each `[name, version]`, read together: the record
+     * by `name@version`, or null; each counted as getRegistryEntry counts it.
+     */
+    getRegistryEntries(keys) {
+        this.ensureSchema();
+        const out = new Map(keys.map(([name, version]) => [`${name}@${version}`, null]));
+        const unique = [...new Map(keys.map((key) => [`${key[0]}@${key[1]}`, key])).values()];
+        // DO SQLite binds at most 100 values a statement: 49 pairs.
+        for (let i = 0; i < unique.length; i += 49) {
+            const batch = unique.slice(i, i + 49);
+            for (const r of this.sql.exec(`SELECT ${NpmCache.REGISTRY_COLUMNS} FROM pkg_registry_cache WHERE (name, version) IN (VALUES ${batch.map(() => '(?,?)').join(',')})`, ...batch.flat())) {
+                const entry = this.rowToRegistryEntry(r);
+                out.set(`${entry.name}@${entry.version}`, entry);
+            }
+        }
+        for (const entry of out.values()) {
+            if (entry === null)
+                _l1RecordMiss('L1', 'packument');
+            else
+                _l1RecordHit('L1', 'packument', entry.depsJson.length + entry.peerDepsJson.length + entry.exportsJson.length + entry.binJson.length);
+        }
+        return out;
+    }
     /** Get all cached versions for a package name. */
     getRegistryVersions(name) {
         this.ensureSchema();
@@ -220,7 +257,7 @@ export class NpmCache {
             try {
                 this.sql.exec(`INSERT OR REPLACE INTO pkg_registry_cache
            (${NpmCache.REGISTRY_COLUMNS})
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, entry.name, entry.version, entry.tarballUrl, entry.integrity, entry.depsJson, entry.peerDepsJson || '{}', entry.exportsJson, entry.main, entry.moduleField, entry.binJson, entry.platformJson || '{}', entry.optionalDepsJson || '{}', entry.fetchedAt);
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, entry.name, entry.version, entry.tarballUrl, entry.integrity, entry.depsJson, entry.peerDepsJson || '{}', entry.exportsJson, entry.main, entry.moduleField, entry.binJson, entry.platformJson || '{}', entry.optionalDepsJson || '{}', entry.peerMetaJson || '{}', entry.registryName ?? '', entry.bundleJson ?? '', entry.fetchedAt);
                 written++;
             }
             catch (e) {
@@ -234,7 +271,7 @@ export class NpmCache {
     /** Read the lockfile for a project, keyed by placement path. Null if not found. */
     readLockfile(projectPath) {
         this.ensureSchema();
-        const rows = [...this.sql.exec(`SELECT name, resolved_ver, integrity, deps_json, hoisted_path
+        const rows = [...this.sql.exec(`SELECT name, resolved_ver, integrity, deps_json, hoisted_path, registry_name
        FROM pkg_lockfile WHERE project_path = ?`, projectPath)];
         if (rows.length === 0)
             return null;
@@ -243,6 +280,7 @@ export class NpmCache {
             const placement = String(r.name);
             result.set(placement, {
                 name: placementName(placement),
+                registryName: String(r.registry_name ?? ''),
                 resolvedVer: String(r.resolved_ver),
                 integrity: String(r.integrity),
                 depsJson: String(r.deps_json),
@@ -281,8 +319,12 @@ export class NpmCache {
         }
         return `${rows}:${(hash >>> 0).toString(16)}`;
     }
-    /** Write/overwrite the lockfile for a project. Atomic via transaction. */
-    writeLockfile(projectPath, entries, ctx) {
+    /**
+     * Write/overwrite the lockfile for a project. Atomic via transaction.
+     * `previous`: what the table holds for it now (readLockfile's answer),
+     * so only the rows that change are written.
+     */
+    writeLockfile(projectPath, entries, ctx, previous = null) {
         this.ensureSchema();
         const doTx = (fn) => {
             if (ctx?.storage?.transactionSync) {
@@ -292,20 +334,33 @@ export class NpmCache {
                 fn();
             }
         };
+        const same = (a, b) => a.resolvedVer === b.resolvedVer && a.integrity === b.integrity
+            && a.depsJson === b.depsJson && a.hoistedPath === b.hoistedPath && a.registryName === b.registryName;
         doTx(() => {
-            // Clear existing lockfile for this project
-            this.sql.exec(`DELETE FROM pkg_lockfile WHERE project_path = ?`, projectPath);
-            // Batch insert: DO SQLite ~100 var limit. 6 cols → max 16 rows (16×6=96).
-            const entryList = [...entries];
-            const BATCH = 16;
+            if (previous === null) {
+                this.sql.exec(`DELETE FROM pkg_lockfile WHERE project_path = ?`, projectPath);
+            }
+            else {
+                for (const [placement, entry] of previous) {
+                    const next = entries.get(placement);
+                    if (next === undefined || !same(entry, next))
+                        this.sql.exec(`DELETE FROM pkg_lockfile WHERE project_path = ? AND name = ?`, projectPath, placement);
+                }
+            }
+            // Batch insert: DO SQLite ~100 var limit. 7 cols → max 14 rows (14×7=98).
+            const entryList = [...entries].filter(([placement, entry]) => {
+                const before = previous?.get(placement);
+                return before === undefined || !same(before, entry);
+            });
+            const BATCH = 14;
             for (let i = 0; i < entryList.length; i += BATCH) {
                 const batch = entryList.slice(i, i + BATCH);
-                const placeholders = batch.map(() => '(?,?,?,?,?,?)').join(',');
+                const placeholders = batch.map(() => '(?,?,?,?,?,?,?)').join(',');
                 const values = [];
                 for (const [placement, e] of batch) {
-                    values.push(projectPath, placement, e.resolvedVer, e.integrity, e.depsJson, e.hoistedPath);
+                    values.push(projectPath, placement, e.resolvedVer, e.integrity, e.depsJson, e.hoistedPath, e.registryName);
                 }
-                this.sql.exec(`INSERT INTO pkg_lockfile (project_path, name, resolved_ver, integrity, deps_json, hoisted_path) VALUES ${placeholders}`, ...values);
+                this.sql.exec(`INSERT OR REPLACE INTO pkg_lockfile (project_path, name, resolved_ver, integrity, deps_json, hoisted_path, registry_name) VALUES ${placeholders}`, ...values);
             }
         });
     }
