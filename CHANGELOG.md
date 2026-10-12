@@ -7,10 +7,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 - Fixed: in a WASI program (bash and its commands, CPython, any compiled
   program), `/dev/fd/N`, `/proc/self/fd/N`, `/dev/stdin`, `/dev/stdout` and
-  `/dev/stderr` now open the process's own descriptor, as on Linux. Process
-  substitution works: `source <(...)`, `done < <(...)`, `diff <(...) <(...)`.
-  Before, `/dev/fd/N` was not found, `/dev/stdin` read as empty, and writes
-  to `/dev/stdout` and `/dev/stderr` were silently discarded.
+  `/dev/stderr` now name the process's own descriptor, as on Linux. A pipe or
+  a stream is shared. A file is opened again with the new open's flags, so it
+  gets its own offset, and `>/dev/stdout` truncates a file that stdout writes
+  to. `stat` of the path is that descriptor's stat. Process substitution works:
+  `source <(...)`, `done < <(...)`, `diff <(...) <(...)`. Before, `/dev/fd/N`
+  was not found, `/dev/stdin` read as empty, and writes to `/dev/stdout` and
+  `/dev/stderr` were silently discarded.
 - Fixed: a bash run whose non-local jump lost its target (an `exit` or
   `return` inside `eval`, a sourced file, or an EXIT trap) now fails with
   "bash-runner: pid N returned from _start mid-rewind, its longjmp or resume
