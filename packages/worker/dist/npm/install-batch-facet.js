@@ -135,10 +135,6 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
             console.warn('[npm] write wave re-sent', JSON.stringify(lost));
         },
     });
-    // A tarball placed twice in this shard is acquired once: the first owner
-    // publishes its bytes here, later owners of the URL wait for them. `null`
-    // means it had nothing to share and the waiter acquires on its own.
-    // Owners register on entry, so no waiter blocks an unstarted owner.
     const tarballBytesByUrl = new Map();
     // ── Per-package install (inlined fetchAndStagePackage logic) ─────────
     //
@@ -151,13 +147,13 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
         if (inFlight > inFlightPeak)
             inFlightPeak = inFlight;
         let publishTarballBytes = () => { };
-        let sharedBytes = null;
+        let sharedAcquisition = null;
         // Both fields can come from a lockfile. A delimiter is not injective
         // over arbitrary strings, and a URL alone cannot vouch for a digest.
         const tarballKey = JSON.stringify([spec.tarballUrl, spec.integrity]);
         const owner = tarballBytesByUrl.get(tarballKey);
         if (owner) {
-            sharedBytes = await owner;
+            sharedAcquisition = await owner;
         }
         else {
             tarballBytesByUrl.set(tarballKey, new Promise((rs) => { publishTarballBytes = rs; }));
@@ -165,7 +161,11 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
         // [W4] Compressed bytes for R2 write-back, captured by the integrity
         // tee below (null without integrity); published to duplicates on exit.
         let capturedTgzBytes = null;
-        let r2HitBytes = sharedBytes;
+        let r2HitBytes = sharedAcquisition?.bytes ?? null;
+        // The digest this placement verified its bytes against: the owner's for a
+        // shared acquisition, the storage boundary's for an R2 hit, the registry
+        // fetch's for a download. Published with the bytes for same-key consumers.
+        let verifiedDigest = sharedAcquisition?.verified ?? null;
         // [W4] 1a. R2 cache lookup, hedged by the network fetch.
         //
         // The R2 GET is bounded by R2_RACE_TIMEOUT_MS. That bound guards against a
@@ -185,7 +185,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
         // supervisor deployment) the R2 leg becomes a noop and there is nothing to
         // overlap with, so no hedge is armed — the retry loop's own first fetch is
         // already the first thing that happens.
-        const r2Available = sharedBytes === null && typeof env.SUPERVISOR.getCachedTarball === 'function';
+        const r2Available = sharedAcquisition === null && typeof env.SUPERVISOR.getCachedTarball === 'function';
         const r2WaitStart = Date.now();
         const r2P = r2Available
             ? Promise.race([
@@ -230,15 +230,25 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
             hedgeAbort.abort();
         };
         try {
-            // The shared producer verifies its own placement. This consumer's
-            // expected digest is checked too, before it can publish any entries.
-            // Registry/R2 reads keep their existing verification boundaries.
-            if (sharedBytes !== null) {
+            // A shared acquisition arrives with the digest its owner verified. This
+            // consumer's expected digest is compared to that verified digest — no
+            // second hash — before it can publish any entries. Registry/R2 reads
+            // keep their existing verification boundaries.
+            if (sharedAcquisition !== null) {
                 const expected = spec.integrity ? strongestSriEntry(spec.integrity) : null;
-                if (expected !== null) {
-                    const actual = await sriDigestOf(sharedBytes, expected.digestAlgo);
-                    if (!sriDigestsEqual(actual, expected.digest))
+                const verified = sharedAcquisition.verified;
+                const matches = expected === null
+                    || (verified !== null && verified.digestAlgo === expected.digestAlgo && sriDigestsEqual(verified.digest, expected.digest));
+                if (!matches && (verified === null || expected === null)) {
+                    // Unverified shared bytes with a requirement (unreachable for a
+                    // same-key acquisition, whose integrity string is identical): hash
+                    // once, exactly as an unshared fetch would.
+                    const actual = expected === null ? null : await sriDigestOf(sharedAcquisition.bytes, expected.digestAlgo);
+                    if (expected !== null && (actual === null || !sriDigestsEqual(actual, expected.digest)))
                         throw new Error(`integrity mismatch for ${spec.name}@${spec.version}: expected ${expected.algo}-${expected.digest}, got ${expected.algo}-${actual}`);
+                }
+                else if (!matches) {
+                    throw new Error(`integrity mismatch for ${spec.name}@${spec.version}: expected ${expected.algo}-${expected.digest}, got ${verified.algo}-${verified.digest}`);
                 }
             }
             // Acquisition span, measured from the first cache probe to the moment
@@ -300,8 +310,9 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
                 // verification point and it is not here. Bytes shared by another
                 // placement were verified by their owner; not an R2 outcome.
                 discardPendingNetwork();
+                verifiedDigest = spec.integrity ? strongestSriEntry(spec.integrity) : null;
                 tarballElapsedMs = Date.now() - r2WaitStart;
-                if (!sharedBytes)
+                if (!sharedAcquisition)
                     pipelinedTarballRaceWins++;
                 tarballsCompleted++;
                 cumulativeBytesDecoded += r2HitBytes.length;
@@ -408,6 +419,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
                         // before returning, so capturedTgzBytes is always populated
                         // by the time we reach the write-back code below.
                         capturedTgzBytes = flat;
+                        verifiedDigest = sri;
                     })();
                 }
             }
@@ -507,7 +519,8 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
         finally {
             // No-op once the retry loop has taken it; closes every early return.
             discardPendingNetwork();
-            publishTarballBytes(capturedTgzBytes ?? r2HitBytes);
+            const publishedBytes = capturedTgzBytes ?? r2HitBytes;
+            publishTarballBytes(publishedBytes ? { bytes: publishedBytes, verified: verifiedDigest } : null);
             inFlight = Math.max(0, inFlight - 1);
         }
     };
