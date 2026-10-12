@@ -5,8 +5,9 @@
 //   their forms), less the process's umask; a file already there keeps its own;
 // - mkdir's `mode`, less the umask; mkdtemp's 0700;
 // - copyFile and cp: the source's mode exactly, over a file already there too,
-//   and at no point more for others than the source gives: a directory made
-//   no more open than its source, a file narrowed before the bytes go in;
+//   and while it is made another principal can read no more of it than the
+//   source lets it: a directory made is its owner's alone until it is filled,
+//   a file there is narrowed before the bytes go in;
 // - chmod and fchmod: the mode set, with nothing after it to carry it.
 // Runs the real generated one-shot module. Red before: every such file was
 // created 0666 less the umask, mkdtemp 0777 less it, a copy as a new file.
@@ -41,6 +42,13 @@ authority.kfs.writeFile('home/user/private/key', 'k');
 own('home/user/private/key', 0o600);
 authority.kfs.writeFile('home/user/private/notes', 'n');
 own('home/user/private/notes', 0o644);
+// A private tree whose copy fails partway: a readable entry, then one its owner may not read.
+kernel.mkdir('home/user/broken');
+own('home/user/broken', 0o700);
+authority.kfs.writeFile('home/user/broken/a-notes', 'n');
+own('home/user/broken/a-notes', 0o644);
+authority.kfs.writeFile('home/user/broken/z-locked', 'z');
+own('home/user/broken/z-locked', 0o000);
 
 const expected = {
   'sync.txt': 0o600,
@@ -93,6 +101,9 @@ const fs = require('fs');
   await fs.promises.copyFile(at('secret.txt'), at('promise-copy.txt'));
   fs.cpSync(at('private'), at('copied-dir'), { recursive: true });
   await fs.promises.cp(at('private'), at('promise-copied-dir'), { recursive: true });
+  const failed = [];
+  try { fs.cpSync(at('broken'), at('broken-copy'), { recursive: true }); } catch (error) { failed.push(error.code); }
+  try { await fs.promises.cp(at('broken'), at('promise-broken-copy'), { recursive: true }); } catch (error) { failed.push(error.code); }
   fs.writeFileSync(at('chmod-sync.txt'), 'a');
   fs.chmodSync(at('chmod-sync.txt'), 0o600);
   const fd = fs.openSync(at('fchmod-sync.txt'), 'w');
@@ -100,24 +111,28 @@ const fs = require('fs');
   fs.closeSync(fd);
   const modes = {};
   for (const name of ${JSON.stringify(Object.keys(expected))}) modes[name] = fs.statSync(at(name)).mode & 0o777;
-  console.log(JSON.stringify({ modes, temp: temp.slice('/home/user/'.length), tempMode: fs.statSync(temp).mode & 0o777 }));
+  console.log(JSON.stringify({ modes, temp: temp.slice('/home/user/'.length), tempMode: fs.statSync(temp).mode & 0o777, failed }));
 })();
 `;
 const generated = await generateEntrypointCode(program, { bundle: {} }, false, nodeFacetSources(generateShimsCode()));
 const file = writeModuleSet(join(dir, 'entry'), generatedModuleSet(generated, 'runner.mjs'), 'runner.mjs');
 const mod = await import(file);
 
-// After every change the session commits: what the copies let others do.
+// Another principal, after every change the session commits while the copies
+// are made: each private thing in them it tries to read is refused.
+const other = authority.rawVfs.as({ uid: 2000, gid: 2000, groups: [2000], umask: 0o022 });
 const exposures = [];
-const look = (path) => { try { return kernel.stat(path); } catch { return null; } };
+const present = (path) => { try { kernel.stat(path); return true; } catch { return false; } };
+const readAs = (path) => { try { other.readFile(path); return 'read'; } catch (error) { return error.code; } };
 const stopWatching = kernel.subscribe('home/user', () => {
-  for (const dir of ['home/user/copied-dir', 'home/user/promise-copied-dir']) {
-    const made = look(dir);
-    if (made && (made.mode & 0o077) !== 0) exposures.push(`${dir} ${(made.mode & 0o777).toString(8)}`);
+  for (const path of ['home/user/copied-dir/notes', 'home/user/promise-copied-dir/notes', 'home/user/broken-copy/a-notes', 'home/user/promise-broken-copy/a-notes']) {
+    if (!present(path)) continue;
+    const answer = readAs(path);
+    if (answer !== 'EACCES') exposures.push(`${path}: ${answer}`);
   }
-  const over = look('home/user/copy-over.txt');
-  if (over && (over.mode & 0o077) !== 0 && new TextDecoder().decode(kernel.readFile('home/user/copy-over.txt')) === 'secret') {
-    exposures.push(`copy-over.txt ${(over.mode & 0o777).toString(8)} holding the secret`);
+  if (present('home/user/copy-over.txt') && new TextDecoder().decode(kernel.readFile('home/user/copy-over.txt')) === 'secret') {
+    const answer = readAs('home/user/copy-over.txt');
+    if (answer !== 'EACCES') exposures.push(`copy-over.txt holding the secret: ${answer}`);
   }
 });
 const process = processInstanceSupervisor(authority, cred);
@@ -143,6 +158,12 @@ assert.equal(seen.tempMode, 0o700, "the program stats mkdtemp's directory 0700")
 const atSession = (name) => authority.kfs.stat('home/user/' + name).mode & 0o777;
 assert.deepEqual(Object.fromEntries(Object.keys(expected).map((name) => [name, atSession(name)])), expected, 'the session holds each path with the mode it was made with');
 assert.equal(atSession(seen.temp), 0o700, "the session holds mkdtemp's directory 0700");
-assert.deepEqual(exposures, [], 'no copy let others do more than its source at any point');
+assert.deepEqual(exposures, [], 'another principal was refused every private copy while it was made');
+// A copy that failed partway leaves what it made its owner's alone.
+assert.deepEqual(seen.failed, ['EACCES', 'EACCES'], 'both copies of the tree with an unreadable entry fail');
+for (const path of ['home/user/broken-copy/a-notes', 'home/user/promise-broken-copy/a-notes']) {
+  assert.ok(present(path), `${path} was copied before the failure`);
+  assert.throws(() => other.readFile(path), { code: 'EACCES' }, `after the failed copy another principal still cannot read ${path}`);
+}
 realProcess.stdout.write('one-shot-write-mode: PASS\n');
 realProcess.exit(0);
