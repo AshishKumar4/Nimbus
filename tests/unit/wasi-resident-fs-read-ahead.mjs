@@ -24,6 +24,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { residentFilesystem } from '../../packages/core/src/runtime/wasi/resident-filesystem.ts';
+import { subtreeListing } from '../../packages/core/src/runtime/fs-list-tree.ts';
 import { FACET_RESIDENT_STORE_SOURCE } from '../../packages/worker/src/vfs/facet-resident-store.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
@@ -55,10 +56,11 @@ const store = new Function(
     + '\nreturn { __residentBindInMemory, __residentSetStorage, __residentBootLazy, __residentNamespaceView };',
 )();
 store.__residentBindInMemory(64 * 1024 * 1024);
-const seen = { batches: 0, read: [] };
+const seen = { batches: 0, read: [], trees: [], lists: 0 };
 const supervisor = {
   fsAcquire: (...args) => authority.acquire(...args),
-  fsList: (...args) => authority.list(...args),
+  fsList: (...args) => { seen.lists++; return authority.list(...args); },
+  async fsListTree(dir, max) { seen.trees.push(dir); return subtreeListing(authority, dir.replace(/^\/+/, ''), max); },
   readdir: (path) => authority.readdir(path),
   readlink: (path) => authority.readlink(path),
   stat: (path, options) => authority.stat(path, options),
@@ -101,6 +103,15 @@ const fs = residentFilesystem(authority, store.__residentNamespaceView(superviso
   assert.ok(fs.stats().readAhead >= ICONS - 20, `read ahead: ${fs.stats().readAhead}`);
   assert.equal(read.filter((path) => path.endsWith('.map')).length, 0, 'only the extension being read is read ahead');
   assert.equal(new Set(read).size, read.length, `no file is fetched twice (${read.length} reads for ${new Set(read).size} files)`);
+}
+
+// ── a probe for names that are not there (an import path): the directory alone, never its subtree ──
+{
+  const trees = seen.trees.length;
+  for (const name of ['json.py', 'json/__init__.py', 'email.py', 'email/__init__.py', 'decimal.py']) {
+    assert.equal(await fs.stat(beneath(`pkg/${name}`)), null, `${name} is not there`);
+  }
+  assert.deepEqual(seen.trees.slice(trees), [], "pkg's 800-file subtree is not listed for a probe of absent names");
 }
 
 // ── and the other directory is still not read ahead by its one read ──
