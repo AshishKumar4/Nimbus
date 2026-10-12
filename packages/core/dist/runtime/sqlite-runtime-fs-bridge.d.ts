@@ -1,37 +1,10 @@
-import { type CredentialedVfs, type DelegationTerms, type SqliteVFS, type VfsOpenDescription } from '../vfs/sqlite-vfs.js';
+import { type CredentialedVfs, type DelegationTerms, type SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { WriteStreamOptions } from './wave-contracts.js';
 import { WaveIngest } from './wave-ingest.js';
 import { type CompositeVFS } from '../vfs/composite.js';
+import { type Awaitable } from '../vfs/vfs.js';
 export { fsError, modeAllows, walkBeneath, type BeneathLookup } from './beneath-walk.js';
 import type { RuntimeFileHandle, RuntimeFsPath, RuntimeReadOptions, RuntimeSynchronousFs, RuntimeFsBridge, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat, VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeMutationOwner, ExclusiveMutationGrant, ExclusiveMutationRequest } from './os-contracts.js';
-interface OpenDescription {
-    handle: RuntimeFileHandle;
-    node: VfsOpenDescription;
-    refs: number;
-}
-export interface SqliteDescriptorScope {
-    nextId: number;
-    handles: Map<number, OpenDescription>;
-    /** The process's open descriptions its waves name (W7Call description), by the id it chose: descriptors of its own. */
-    waveDescriptions: Map<string, number>;
-    closed: boolean;
-    /** Aborted when the scope closes; cancels in-flight stream commits. */
-    abort: AbortController;
-    subscriptions: Set<() => void>;
-    /** The exclusive leases the process took itself (not delegations), by owner: each one's release, among the subscriptions. */
-    leases: Map<string, () => void>;
-}
-export declare function createSqliteDescriptorScope(): SqliteDescriptorScope;
-/**
- * Closes every description `scope` holds, each whatever another's flush
- * answers, and empties it. The flushes that failed (lastClose's errors) are
- * returned, for the caller to report once the rest of its teardown is done
- * (reportLost): a teardown that stopped at the first one would keep the
- * scope, and everything it revokes, open.
- */
-export declare function closeDescriptions(scope: SqliteDescriptorScope): unknown[];
-/** Reports closeDescriptions' failures: the one, or EIO over them all. */
-export declare function reportLost(lost: readonly unknown[]): void;
 export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     private readonly rawVfs;
     private readonly scope;
@@ -45,13 +18,14 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     private readonly vfs;
     /** The namespace as this caller sees it: what a path off the SQLite root reaches. */
     private readonly mounted;
-    constructor(vfs: CredentialedVfs, rawVfs: SqliteVFS, scope?: SqliteDescriptorScope, namespace?: CompositeVFS | undefined, 
+    private readonly descriptors;
+    constructor(vfs: CredentialedVfs, rawVfs: SqliteVFS, scope?: import("./descriptors.js").DescriptorScope, namespace?: CompositeVFS | undefined, 
     /** A stable inode number for a mounted entry whose backend keeps none (shared across the session's bridges). */
     /** Bytes one buffered handle may hold before a write is EFBIG. */
     bufferedWriteBytes?: number, 
     /** The namespace's wave ingestion (ProcessFiles.waves); without a namespace, none places anything elsewhere. */
     waves?: WaveIngest);
-    dispose(): void;
+    dispose(): Awaitable<void>;
     /**
      * Where a path lives, decided only after confinement: the namespace is
      * consulted with the fully resolved path, so a `..` or an absolute path
@@ -67,8 +41,6 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
      * one.
      */
     private walkOnSqlite;
-    /** A mounted entry's stat in this contract's shape; a mount never moves the SQLite clock. */
-    private virtualStat;
     /** SQLite stores no row for the namespace root; it is the one directory that always exists. */
     private rootStat;
     stat(path: RuntimeFsPath, options?: {
@@ -78,13 +50,9 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         followSymlinks?: boolean;
         cached?: boolean;
     }): Uint8Array | null;
-    /**
-     * A mounted file as this process sees it while it holds buffered writes to
-     * it (VFS-PF-001 viewAs, page-cache semantics): the mount's file with each
-     * of this process's descriptions of it applied, in open order. Undefined
-     * when it holds none pending: then the mount's own file is the answer.
-     * Another process's pending writes are never in it.
-     */
+    /** Before a cut of a mounted file (a truncate, a whole-file write): the writes this process holds on it, written (settleHeldAt). */
+    private settleAt;
+    /** A mounted file as this process sees it, its pending writes applied (processView); undefined when it holds none. */
     private processView;
     writeFile(path: RuntimeFsPath, bytes: string | Uint8Array, options?: {
         createParents?: boolean;
@@ -114,6 +82,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner): RuntimeFileHandle;
     read(handleId: number, offset: number | null, length: number): Uint8Array;
     write(handleId: number, offset: number | null, bytes: Uint8Array): number;
+    /** A description that awaits, closed by a caller that cannot wait: its backend's close answers no one (it holds no writes: each landed as made). */
     close(handleId: number): void;
     readdir(path: RuntimeFsPath, options?: {
         followSymlinks?: boolean;
@@ -168,6 +137,9 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
      * and its file alive until its close.
      */
     private readonly waveDescriptions;
+    private waveDescription;
+    /** `node`, the description a wave's open of `id` made: the session's descriptor of it. */
+    private keepWaveDescription;
     /**
      * A lease; with `held`, a process's own (ProcessFiles' bridge), which ends
      * with the process; with its `terms`, a delegation, whose recalls that
@@ -214,17 +186,6 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     /** Operations with SQLite-only semantics (journals, atomic renames, mutation leases) refuse kernel mounts. */
     private sqlitePath;
     private openRoot;
-    /** `mode`: the file's mode if this creates it, made at it, as the asynchronous mount path makes it. */
-    private openMount;
-    /**
-     * A mount that cannot write in place (no writeRange): the handle buffers
-     * its writes, at most `bufferedWriteBytes` (EFBIG past it, nothing
-     * buffered), and a flush (fsync, the last close, the process's release)
-     * reads the file, applies them in order and writes it back. Opened `sync`
-     * (O_SYNC), each write is flushed before it returns, so its answer is what
-     * the mount did.
-     */
-    private buffer;
     private ensureParent;
     /** ENOENT or ENOTDIR for `call` when `path`'s parent is missing or not a directory. */
     private assertParentDirectory;
@@ -237,8 +198,6 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     /** A mount never moves the raw clock, and ACQUIRE never lists its paths. */
     private mountReceipt;
     private assertExpectedRevision;
-    private description;
-    private getHandle;
     /** The absolute path a descriptor was opened at. */
     descriptorPath(handleId: number): string;
     fstat(handleId: number): RuntimeVfsStat;
@@ -253,6 +212,4 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     fchown(handleId: number, uid: number, gid: number): void;
     futimes(handleId: number, atime: number, mtime: number): void;
 }
-/** What one buffered mount handle holds before EFBIG: a whole-file rewrite at flush, kept off the heap's edge. */
-export declare const BUFFERED_WRITE_BYTES: number;
 //# sourceMappingURL=sqlite-runtime-fs-bridge.d.ts.map

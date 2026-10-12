@@ -23,6 +23,9 @@ import { parentKey } from '../vfs/path.js';
 import type { VfsOpenDescription, VfsStat } from '../vfs/sqlite-vfs.js';
 import { vfsError } from '../vfs/vfs-error.js';
 import type { VfsCred } from './os-contracts.js';
+import type { MountedFileDescription } from './descriptors.js';
+import type { PinnedName } from '../vfs/composite.js';
+import type { Awaitable } from '../vfs/vfs.js';
 
 export interface WriteBatchStreamProgress {
   /** 1-based sequence of the last durable publish group; zero means none. */
@@ -214,6 +217,13 @@ export interface WaveRouter {
    * presents it here.
    */
   apply(record: RoutedWaveRecord, cred: VfsCred, guard: () => void, owner?: string): Promise<RoutedStat | null>;
+  /**
+   * open(2) of a name the namespace places on a mount (W7Call open), decided
+   * as every open is (openOnMount), `guard` run right before it changes
+   * anything: the name it found (CompositeVFS.pin, presenting `owner`, never
+   * the wave's admission: a description outlives its wave) and its stat.
+   */
+  open(call: Extract<W7PathCall, { call: 'open' }>, cred: VfsCred, guard: () => void, owner?: string): Promise<{ file: PinnedName; stat: RoutedStat }>;
 }
 
 /**
@@ -258,11 +268,21 @@ export interface WaveDescriptions {
    * descriptor of it, or null when no file has that number any more.
    */
   adopt(id: string, ino: number, rights: { read: boolean; write: boolean }, path: string, cred: VfsCred): number | null;
-  /** The description `id` names, or undefined (never opened, or closed). */
+  /** The description `id` names on this filesystem, or undefined (never opened, closed, or a mount's). */
   node(id: string): VfsOpenDescription | undefined;
+  /** The description of a file on a mount `id` names (describe), or undefined (never opened, closed, or this filesystem's). */
+  mounted(id: string): MountedFileDescription | undefined;
+  /**
+   * Keep the file at `file`, the name a wave's open of a name on a mount
+   * found (WaveRouter.open), as description `id` (PinnedName.hold), each
+   * write in its mount before it is answered: the session's descriptor of
+   * it, which the process reads, stats and closes as any of its own.
+   */
+  describe(id: string, file: PinnedName, ino: number, rights: { read: boolean; write: boolean }): Awaitable<number>;
   /** The session's descriptor of `id`, or undefined. */
   handle(id: string): number | undefined;
-  close(id: string): void;
+  /** Closes `id`: its last close's answer (lastClose), which a mount's description's backend may await. */
+  close(id: string): Awaitable<void>;
 }
 
 export type WriteBatchStreamFailurePhase = 'decode' | 'stage' | 'validation' | 'publish';
@@ -431,10 +451,10 @@ export interface WaveScope {
     calls: readonly { path: string; seq: number | null; op: WaveLocalOp }[],
     writer: string | null,
   ): { at: number; error: unknown } | { befores: number[]; results: (VfsStat | null | void)[]; after: number };
-  /** Whether description `id` is one the wave's calls may name. */
-  isDescribed(id: string): boolean;
   /** An open the cursor passed, answered again as it was. */
   reopened(path: string, id: string): WriteStreamReceipt | null;
+  /** What the session kept of the wave's process's description `id` (vfs_wave_descriptions) is no longer this filesystem's: a mount's description took the id, or closed it. */
+  forgetDescription(id: string): void;
   /** The writer's cursor and any refusal kept for it (WaveSequence), acknowledging `ack`. */
   openSequence(sequence: WaveSequence): { cursor: number; refused: NonNullable<WaveSequenceAnswer['refused']> | null };
   /** The writer's cursor moved to `seq`, in a transaction of its own. */

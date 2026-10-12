@@ -27,14 +27,14 @@ const socketPathPrefixes = [WASI_TCP_PATH_PREFIX, WASI_LISTEN_PATH_PREFIX, WASI_
 const encoder = new TextEncoder(), decoder = new TextDecoder('utf-8', { fatal: true });
 /** Every code a VFS backend throws (vfs-error.ts), as its preview1 errno. */
 const VFS_ERRNO = {
-    E2BIG: 1, EACCES: 2, EAGAIN: 6, EBADF: 8, EBUSY: 10, EEXIST: 20, EINVAL: 28, EIO: 29, EISDIR: 31,
+    E2BIG: 1, EACCES: 2, EAGAIN: 6, EBADF: 8, EBUSY: 10, EEXIST: 20, EFBIG: 22, EINVAL: 28, EIO: 29, EISDIR: 31,
     ELOOP: 32, ENAMETOOLONG: 37, ENOENT: 44, ENOSPC: 51, ENOTDIR: 54, ENOTEMPTY: 55, ENOTSUP: 58,
     ENXIO: 60, EPERM: 63, EROFS: 69, ESTALE: 72, EXDEV: 75,
 };
 const errno = {
     ...VFS_ERRNO,
     // The codec's own refusals, and the session's for a process it no longer holds.
-    EFAULT: 21, EFBIG: 22, EINTR: 27, EMFILE: 33, ENFILE: 41, ENOMEM: 48, ENOSYS: 52,
+    EFAULT: 21, EINTR: 27, EMFILE: 33, ENFILE: 41, ENOMEM: 48, ENOSYS: 52,
     EPIPE: 64, ESPIPE: 70, ESRCH: 71, ENOTCAPABLE: 76,
 };
 /**
