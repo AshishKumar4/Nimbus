@@ -3287,12 +3287,11 @@ export class CompositeVFS implements VFS {
         return undefined;
       }
       const entry: { rel: string; dir: boolean; unread?: VfsError } = { rel: r, dir: stat.type === 'directory' };
-      order.push(entry);
-      if (stat.type !== 'directory') return undefined;
+      if (stat.type !== 'directory') { order.push(entry); return undefined; }
       const failed = (cause: Error): void => {
         const error = errorOf(r, 'scandir', cause);
         if (error.code === 'ENOENT') missing(r);
-        else entry.unread = error;
+        else { entry.unread = error; order.push(entry); }
       };
       let entries: Awaitable<VfsDirent[]>;
       try { entries = composed ? this.readdirAt(at(r), sync) : ops.readdir(r); }
@@ -3301,10 +3300,10 @@ export class CompositeVFS implements VFS {
         (chain, entry) => andThen(chain, () => visit(r === '/' ? `/${entry.name}` : `${r}/${entry.name}`)),
         undefined,
       );
-      return isPromise(entries) ? entries.then(descend, failed) : descend(entries);
+      const visited = (entries: VfsDirent[]): Awaitable<void> => andThen(descend(entries), () => { order.push(entry); });
+      return isPromise(entries) ? entries.then(visited, failed) : visited(entries);
     };
     return andThen(visit(rel), () => {
-      order.reverse();
       return andThen(order.reduce<Awaitable<void>>((chain, entry) => andThen(chain, () => {
         if (gone.has(entry.rel) || kept.has(entry.rel)) return undefined;
         const fail = (cause: Error): void => {
