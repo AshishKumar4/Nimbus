@@ -15,6 +15,15 @@ root.chown('home/user', USER.uid, USER.gid);
 root.writeFile('home/user/regular', 'regular');
 const files = sqliteFiles(engine, USER);
 const namespace = new CompositeVFS(files).as(USER);
+const store = engine.as(USER);
+root.mkdir('home/user/physical');
+root.chown('home/user/physical', USER.uid, USER.gid);
+root.symlink('physical', 'home/user/link');
+for (const view of [store, files, namespace, namespace.sync]) {
+  await view.mkdir('/home/user/link', { recursive: true });
+  assert.equal(root.lstat('home/user/link').type, 'symlink');
+  assert.equal(root.stat('home/user/physical').type, 'directory');
+}
 const faces = [files, namespace, namespace.sync];
 const failures = [];
 for (const [index, face] of faces.entries()) {
