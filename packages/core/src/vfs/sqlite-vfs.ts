@@ -3817,9 +3817,8 @@ export class SqliteVFS {
    */
   private subscribe(path: string, cred: VfsCred, listener: (event: VfsEvent) => void): () => void {
     const key = this.storageKey(path, cred);
-    const name = normalizeVfsPath(path);
     return this.events.onPath(key, (event) => {
-      const told = projectChange(event, key, (at) => this.watchedName(at, cred), name);
+      const told = projectChange(event, key, (at) => this.watchedName(at, cred));
       if (told !== null) listener(told);
     });
   }

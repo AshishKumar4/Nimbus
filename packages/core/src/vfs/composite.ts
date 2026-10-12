@@ -403,8 +403,8 @@ interface WriteWatch {
 /** One watchChanges registration: its view, the tree it watches, and the mounts whose backends tell it their own changes. */
 interface ChangeWatch {
   readonly view: CompositeVFS;
-  /** The namespace path watched, and everything under it. */
-  readonly path: string;
+  /** The namespace path watched, and everything under it: where it is now, told its own move (projectChange). */
+  path: string;
   readonly listener: (events: readonly VfsEvent[]) => void;
   readonly subscribed: Map<Mount, () => void>;
   /** Batches published to it and not yet told, in landing order (judgeChanges judges each as it is told). */
@@ -481,6 +481,8 @@ interface Table {
   writes?: WriteWatches;
   /** watchChanges: who is told. */
   changes?: ChangeWatches;
+  /** Each principal's view of a backend, to the backend it views (storeBehind). */
+  readonly behind: WeakMap<object, VFS>;
   /** Directory → names of mount points (or their missing ancestors) directly in it. */
   synthesized: Map<string, Set<string>>;
   /** Asked before a credentialed view's mutation reaches a backend (guardMutations). */
@@ -551,6 +553,13 @@ function relativeTo(point: string, path: string): string {
 /** The store `found`'s files are in (VFS.fileStore): the backend itself, when it names none. */
 function storeOf(found: VFS): object {
   return found.fileStore ?? found;
+}
+
+/** The store a mutation's `ops` (a backend, a principal's view of it, or its synchronous face) wrote in. */
+function storeBehind(table: Table, ops: Ops): object {
+  if (ops.fileStore !== undefined) return ops.fileStore;
+  const found = table.behind.get(ops);
+  return found === undefined ? ops : storeOf(found);
 }
 
 /** An rm -r report (VfsRemoval). */
@@ -707,7 +716,7 @@ export class CompositeVFS implements VFS {
       this.viewer = shared.principal;
       this.views = shared.views;
     } else {
-      this.table = { mounts: new Map([[ROOT_POINT, { point: ROOT_POINT, under: ROOT_POINT, source: root, options, dev: null, inos: new Map() }]]), generation: 0, synthesized: new Map() };
+      this.table = { mounts: new Map([[ROOT_POINT, { point: ROOT_POINT, under: ROOT_POINT, source: root, options, dev: null, inos: new Map() }]]), generation: 0, synthesized: new Map(), behind: new WeakMap() };
       this.viewer = { cred: null };
       const refs = new Map<string, WeakRef<CompositeVFS>>();
       this.views = { refs, gone: new FinalizationRegistry((key: string) => {
@@ -1181,21 +1190,20 @@ export class CompositeVFS implements VFS {
    * Watch `mount`'s backend, as this view sees it, where it tells its own
    * changes and holds part of `watch`'s tree: a source fixed for every
    * principal (one that gives a backend per principal, or per moment, is
-   * told as the namespace changes it).
+   * told as the namespace changes it). The whole of it: the watched tree may
+   * move anywhere on it (a rename does not leave its mount).
    */
   private subscribeChanges(watch: ChangeWatch, mount: Mount): void {
     if (typeof mount.source === 'function') return;
     const { path } = watch;
-    const rel = path === mount.point || path.startsWith(mount.under) ? relativeTo(mount.point, path)
-      : inWatchedTree(path, mount.point) ? '/' : null;
-    if (rel === null) return;
+    if (!inWatchedTree(mount.point, path) && !inWatchedTree(path, mount.point)) return;
     const backend = this.backend(mount);
     if (backend === null || typeof backend.watchChanges !== 'function') return;
     const { point } = mount;
     const named = (event: VfsEvent): VfsEvent => (event.oldPath === undefined
       ? { type: event.type, path: CompositeVFS.reroot(point, event.path), timestamp: event.timestamp }
       : { type: event.type, path: CompositeVFS.reroot(point, event.path), oldPath: CompositeVFS.reroot(point, event.oldPath), timestamp: event.timestamp });
-    watch.subscribed.set(mount, backend.watchChanges(rel, (events) => {
+    watch.subscribed.set(mount, backend.watchChanges('/', (events) => {
       const changes = this.table.changes;
       if (changes === undefined || watch.stopped) return;
       this.publishChanges(changes, watch, { mount, events: point === ROOT_POINT ? events : events.map(named) });
@@ -1223,22 +1231,19 @@ export class CompositeVFS implements VFS {
     if (this.table.changes === undefined) return;
     const { oldPath } = spec;
     const type = spec.told ?? (oldPath !== undefined ? 'rename' : spec.kind === 'create' ? 'addDir' : spec.kind === 'remove' ? 'unlink' : 'change');
-    this.tellLanded(spec.route.mount, spec.source, type, spec.landed?.(value) ?? [spec.path], oldPath);
+    this.tellLanded(spec.route.mount, spec.source === undefined ? storeBehind(this.table, spec.ops) : storeOf(spec.source), type, spec.landed?.(value) ?? [spec.path], oldPath);
   }
 
   /**
    * A change of `type` that landed at `paths` (and from `oldPath`) through
-   * `mount`, on `source` (by default what the mount gives this view), to
-   * each watch registered now: at every mount through which that watch's
-   * view sees the same store, unless that mount's backend tells the watch
-   * its own.
+   * `mount`, in `store` (the one the mutation was routed to, whatever the
+   * mount gives now), to each watch registered now: at every mount through
+   * which that watch's view sees the same store, unless that mount's
+   * backend tells the watch its own.
    */
-  private tellLanded(mount: Mount, source: VFS | undefined, type: VfsEventType, paths: readonly string[], oldPath?: string): void {
+  private tellLanded(mount: Mount, store: object, type: VfsEventType, paths: readonly string[], oldPath?: string): void {
     const changes = this.table.changes;
     if (changes === undefined) return;
-    const found = source ?? this.sourceOf(mount);
-    if (found === null) return;
-    const store = storeOf(found);
     const timestamp = Date.now();
     const rels = paths.map((at) => relativeTo(mount.point, at));
     const oldRel = oldPath === undefined ? undefined : relativeTo(mount.point, oldPath);
@@ -1312,41 +1317,74 @@ export class CompositeVFS implements VFS {
   }
 
   /**
-   * `batch` as `watch` is told it (projectChange): each end shown from the
-   * mount it is on (that mount still at its point, the namespace routing
-   * the path to it, its source present: feedShows, asked only where another
-   * mount meets the watched tree), and, for a watch that is not root's,
-   * under directories it may search (searchable).
+   * `batch` as `watch` is told it (projectChange), in order, the watch
+   * following its own move: each end shown from the mount it is on (that
+   * mount still at its point, the namespace routing the path to it, its
+   * source present: feedShows, asked only where another mount meets the
+   * watched tree), and, for a watch that is not root's, under directories it
+   * may search (searchable). An end where a directory above the watched path
+   * was is shown only where the watch may search both where that directory
+   * was and where it went (they are the same directories).
    */
   private judgeChanges(watch: ChangeWatch, batch: Changes): Awaitable<VfsEvent[]> {
     const { mount, events } = batch;
-    const tree = watch.path;
     if (this.table.mounts.get(mount.point) !== mount) return [];
-    // No other mount at, above or in the watched tree: every path in it is this mount's to show.
-    let alone = true;
-    for (const other of this.table.mounts.values()) {
-      if (other !== mount && other.point !== ROOT_POINT && (inWatchedTree(tree, other.point) || inWatchedTree(other.point, tree))) alone = false;
-    }
-    const routed = (path: string): boolean => (alone && inWatchedTree(tree, path)) || this.feedShows(path, mount);
+    const routedFrom = (tree: string): ((path: string) => boolean) => {
+      // No other mount at, above or in the watched tree: every path in it is this mount's to show.
+      let alone = true;
+      for (const other of this.table.mounts.values()) {
+        if (other !== mount && other.point !== ROOT_POINT && (inWatchedTree(tree, other.point) || inWatchedTree(other.point, tree))) alone = false;
+      }
+      return (path) => (alone && inWatchedTree(tree, path)) || this.feedShows(path, mount);
+    };
     const cred = this.viewer.cred;
+    const everywhere = cred === null || cred.uid === 0;
+    // The paths each event may name, where the watch is when it comes (it may move within the batch).
+    const asked = (event: VfsEvent, tree: string): { moved: string | null; paths: string[] } => {
+      const from = event.oldPath;
+      if (from === undefined) return { moved: null, paths: [event.path] };
+      // The watched path itself, or a directory above it, renamed: where the watched path is now.
+      const moved = inWatchedTree(from, tree) ? event.path + tree.slice(from.length) : null;
+      return { moved, paths: moved === null ? [event.path, from] : [event.path, from, tree, moved] };
+    };
     const project = (reached: (path: string) => boolean): VfsEvent[] => {
       const told: VfsEvent[] = [];
+      let routed = routedFrom(watch.path);
       for (const event of events) {
-        const shown = projectChange(event, tree, (path) => (routed(path) && reached(path) ? path : null), tree);
-        if (shown !== null) told.push(shown);
+        const tree = watch.path;
+        const { moved } = asked(event, tree);
+        const shown = (path: string): string | null => {
+          if (!routed(path)) return null;
+          if (moved !== null && event.oldPath !== undefined && path === tree && path !== event.oldPath) {
+            // Where the watched path was, under a directory that moved: seen there only if seen where it is now.
+            return reached(event.oldPath) && reached(moved) ? path : null;
+          }
+          return reached(path) ? path : null;
+        };
+        const one = projectChange(event, tree, shown);
+        if (one === null) continue;
+        told.push(one);
+        if (one.type === 'rename' && one.oldPath === tree) {
+          watch.path = one.path;
+          routed = routedFrom(watch.path);
+        }
       }
       return told;
     };
-    if (cred === null || cred.uid === 0) return project(() => true);
+    if (everywhere) return project(() => true);
     const reach = new Map<string, Awaitable<boolean>>();
     let waits = false;
+    // Every path the batch may ask about, wherever the watch may move within it.
+    let tree = watch.path;
     for (const event of events) {
-      for (const path of event.oldPath === undefined ? [event.path, tree] : [event.path, event.oldPath, tree]) {
+      const { moved, paths } = asked(event, tree);
+      for (const path of paths) {
         if (reach.has(path)) continue;
         const searched = this.searchable(path);
         waits ||= isPromise(searched);
         reach.set(path, searched);
       }
+      if (moved !== null) tree = moved;
     }
     if (!waits) return project((path) => reach.get(path) === true);
     const paths = [...reach.keys()];
@@ -1358,26 +1396,49 @@ export class CompositeVFS implements VFS {
 
   /**
    * Whether this view may search every directory above `path`, by its own
-   * lookup (resolve, the last component not looked at). A directory gone
-   * (a removed tree, its entries told after it) is judged by the nearest
-   * one left above it.
+   * lookup (resolve, the last component not looked at), and, on a mount that
+   * resolves its own paths, by that backend's (access). A directory no
+   * longer there (a removed tree, its entries told after it) cannot be
+   * judged: what was under it is not shown.
    */
   private searchable(path: string): Awaitable<boolean> {
+    const refused = (error: unknown): boolean => {
+      if (isVfsError(error)) return false;
+      throw error;
+    };
     const decide = (sync: boolean): Awaitable<boolean> => {
-      const refused = (error: unknown): Awaitable<boolean> => {
-        if (sync && isAsyncMountRefusal(error)) return decide(false);
-        if (isVfsError(error, 'ENOENT') && path !== ROOT_POINT) return this.searchable(parentOf(path));
-        if (isVfsError(error)) return false;
-        throw error;
-      };
       try {
         const at = this.resolve(path, false, sync);
-        return isPromise(at) ? at.then((to) => to === path, refused) : at === path;
+        const within = (to: string): Awaitable<boolean> => (to === path ? this.searchableWithin(path, sync) : false);
+        return isPromise(at) ? at.then(within, refused) : within(at);
       } catch (error) {
+        if (sync && isAsyncMountRefusal(error)) return decide(false);
         return refused(error);
       }
     };
     return decide(true);
+  }
+
+  /** On a mount that resolves its own paths, whether its backend lets this view search the directory holding `path` (access, search). */
+  private searchableWithin(path: string, sync: boolean): Awaitable<boolean> {
+    const route = this.locate(path);
+    if (!route.mount.options.resolvesPaths || path === route.mount.point) return true;
+    const files = this.backend(route.mount);
+    if (files === null) return false;
+    const face = sync ? files.sync : files;
+    if (face === undefined) return this.searchableWithin(path, false);
+    // A backend of one identity has no modes to search by.
+    if (face.access === undefined) return true;
+    const refused = (error: unknown): boolean => {
+      if (isVfsError(error)) return false;
+      throw error;
+    };
+    try {
+      const searched = face.access(relativeTo(route.mount.point, parentOf(path)), 1);
+      return isPromise(searched) ? searched.then(() => true, refused) : true;
+    } catch (error) {
+      return refused(error);
+    }
   }
 
   /**
@@ -2208,6 +2269,7 @@ export class CompositeVFS implements VFS {
         ...(this.landed ? { landed: true } : {}),
       };
       this.viewed.set(found, view = found.as(cred, this.viewer.actor, options));
+      this.table.behind.set(view, found);
     }
     return view;
   }
@@ -2220,7 +2282,10 @@ export class CompositeVFS implements VFS {
         { asyncMount: true as const },
       );
     }
-    return files.sync;
+    const face = files.sync;
+    // A face of its own (not the backend itself): the backend it is of, for the store a mutation through it lands in (storeBehind).
+    if (face !== files && !this.table.behind.has(face)) this.table.behind.set(face, this.table.behind.get(files) ?? files);
+    return face;
   }
 
   /** The shortest mount on `path` whose source answers null for this view (rule 1), or null. */
@@ -2984,8 +3049,8 @@ export class CompositeVFS implements VFS {
     const mode = stat.mode === undefined ? undefined : stat.mode & 0o7777;
     const told = toRel === made.rel ? made.told : stat.type === 'directory' ? 'addDir' : 'add';
     const landed = (result: Awaitable<void>): Awaitable<void> => {
-      if (isPromise(result)) result.then(() => this.tellLanded(made.mount, undefined, told, [toAt]), () => {});
-      else this.tellLanded(made.mount, undefined, told, [toAt]);
+      if (isPromise(result)) result.then(() => this.tellLanded(made.mount, storeBehind(this.table, to), told, [toAt]), () => {});
+      else if (this.table.changes !== undefined) this.tellLanded(made.mount, storeBehind(this.table, to), told, [toAt]);
       return result;
     };
     if (stat.type === 'symlink') {
@@ -3060,7 +3125,7 @@ export class CompositeVFS implements VFS {
               })),
             }
             : { removed: [path], kept: [], failures: [] };
-          this.tellLanded(mount, undefined, 'unlink', removal.removed);
+          if (this.table.changes !== undefined) this.tellLanded(mount, storeBehind(this.table, backend), 'unlink', removal.removed);
           return removal;
         });
       }
@@ -3113,7 +3178,7 @@ export class CompositeVFS implements VFS {
           const out = entry.dir && typeof ops.rmdir === 'function' ? ops.rmdir(entry.rel) : ops.unlink(entry.rel);
           const removed = (): void => {
             gone.add(entry.rel);
-            this.tellLanded(mount, undefined, entry.dir ? 'unlinkDir' : 'unlink', [at(entry.rel)]);
+            if (this.table.changes !== undefined) this.tellLanded(mount, storeBehind(this.table, ops), entry.dir ? 'unlinkDir' : 'unlink', [at(entry.rel)]);
           };
           if (isPromise(out)) return out.then(removed, fail);
           removed();

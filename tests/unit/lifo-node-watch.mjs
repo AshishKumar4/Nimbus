@@ -185,9 +185,9 @@ await check('renamed files and directories stay watched under their original nam
   kernel.writeFile('w/moving-directory/child.txt', 'one');
   const directory = hearing('/w/moving-directory');
   try {
+    // In one turn: the writes after the renames are told in the same batch, by the names the watches had.
     kernel.rename('w/moving.txt', 'moved.txt');
     kernel.rename('w/moving-directory', 'moved-directory');
-    await settled();
     kernel.writeFile('moved.txt', 'two');
     kernel.writeFile('moved-directory/child.txt', 'two');
     await settled();

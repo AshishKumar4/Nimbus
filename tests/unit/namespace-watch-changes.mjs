@@ -20,6 +20,7 @@ import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
+import { VfsEventEmitter } from '../../packages/core/src/vfs/events.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { sqliteFiles } from '../../packages/core/src/vfs/sqlite-files.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
@@ -377,6 +378,104 @@ await check('registering a watch stores nothing an open description holds', asyn
   assert.equal(stored, 0, 'no storage write');
   writer.close();
   assert.equal(new TextDecoder().decode(kernel.readFile('home/user/held.log')), 'base:held');
+});
+
+
+await check('a watch follows its path when it, or a directory above it, is renamed, the changes after it in the same batch too', async () => {
+  kernel.writeFile('home/user/f1', 'one');
+  kernel.mkdir('home/user/dirA/sub', { recursive: true });
+  kernel.writeFile('home/user/dirA/sub/deep', 'one');
+  const file = watching('/home/user/f1');
+  const deep = watching('/home/user/dirA/sub/deep');
+  kernel.rename('home/user/f1', 'home/user/f2');
+  kernel.writeFile('home/user/f2', 'two');
+  kernel.rename('home/user/dirA', 'home/user/dirB');
+  kernel.writeFile('home/user/dirB/sub/deep', 'two');
+  await settled();
+  assert.deepEqual(file.take(), ['rename /home/user/f1 -> /home/user/f2', 'change /home/user/f2']);
+  assert.deepEqual(deep.take(), ['rename /home/user/dirA/sub/deep -> /home/user/dirB/sub/deep', 'change /home/user/dirB/sub/deep']);
+  file.stop(); deep.stop();
+});
+
+await check('a directory above a watched path renamed: nothing told where the watcher could not look, and no path is made up', async () => {
+  kernel.mkdir('before/secret', { recursive: true });
+  kernel.writeFile('before/secret/token', 't');
+  kernel.chmod('before/secret', 0o700);
+  kernel.mkdir('before2', { recursive: true });
+  const user = watching('/before/secret/token', ns.as(PUBLIC));
+  const missing = watching('/after2/missing');
+  kernel.rename('before', 'after');
+  kernel.rename('before2', 'after2');
+  await settled();
+  assert.deepEqual(user.take(), []);
+  assert.deepEqual(missing.take(), []);
+  user.stop(); missing.stop();
+});
+
+await check('a change is told in the store its write was routed to, whatever the mount gives when it lands', async () => {
+  const g = gated();
+  const storeA = new MemoryVFS({ uid: 0, gid: 0 });
+  const storeB = new MemoryVFS({ uid: 0, gid: 0 });
+  const slowA = asyncOnly(storeA, { beforeCall: (method) => (method === 'writeFile' ? (g.enter(), g.gate) : undefined) });
+  let current = slowA;
+  ns.mount('/factory', () => current);
+  ns.mount('/alias-a', storeA);
+  const root = watching('/');
+  try {
+    const writing = ns.writeFile('/factory/file', enc.encode('f'));
+    await g.entering;
+    current = storeB;
+    g.release();
+    await writing;
+    assert.deepEqual(root.take().filter((line) => !line.includes('/home')), ['change /alias-a/file']);
+  } finally {
+    root.stop();
+    ns.unmount('/factory'); ns.unmount('/alias-a');
+  }
+});
+
+await check('on a mount that resolves its own paths, a change under a directory the watcher may not search is not told to it', async () => {
+  const other = createSqliteVfsTestHarness();
+  const inner = sqliteFiles(new SqliteVFS(other.sql, other.ctx), CRED_KERNEL);
+  const quiet = (vfs) => new Proxy(vfs, {
+    get(target, key) {
+      if (key === 'watchChanges') return undefined;
+      if (key === 'as') return (...args) => quiet(target.as(...args));
+      if (key === 'sync') return quiet(target.sync === target ? target : target.sync);
+      const value = target[key];
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+    has: (target, key) => key !== 'watchChanges' && key in target,
+  });
+  ns.mount('/rpm', quiet(inner), { resolvesPaths: true });
+  await ns.mkdir('/rpm/secret');
+  await ns.chmod('/rpm/secret', 0o700);
+  const user = watching('/rpm', ns.as(PUBLIC));
+  const root = watching('/rpm');
+  try {
+    await ns.writeFile('/rpm/secret/token', enc.encode('t'));
+    await settled();
+    assert.deepEqual(user.take(), []);
+    assert.deepEqual(root.take(), ['change /rpm/secret/token']);
+  } finally {
+    user.stop(); root.stop();
+    ns.unmount('/rpm');
+  }
+});
+
+await check('a listener that publishes while it is told: what it publishes is after, for every listener', async () => {
+  const bus = new VfsEventEmitter();
+  const all = [];
+  const late = [];
+  bus.on((batch) => all.push(...batch.map((event) => event.path)));
+  bus.onPath('first', () => {
+    bus.on((batch) => late.push(...batch.map((event) => event.path)));
+    bus.emit('add', 'second');
+  });
+  bus.emit('add', 'first');
+  await settled();
+  assert.deepEqual(all, ['first', 'second']);
+  assert.deepEqual(late, ['second']);
 });
 
 

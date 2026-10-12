@@ -115,11 +115,10 @@ export class SqliteFiles implements VFS {
       });
     }
     const tree = normalizeVfsPath(path);
-    const name = absolute(tree);
     return this.engine.events.on((batch) => {
       const told: VfsEvent[] = [];
       for (const event of batch) {
-        const projected = projectChange(event, tree, absolute, name);
+        const projected = projectChange(event, tree, absolute);
         if (projected !== null) told.push(projected);
       }
       if (told.length > 0) listener(told);

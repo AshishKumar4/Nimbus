@@ -28,30 +28,35 @@ export function inWatchedTree(tree: string, path: string): boolean {
 /**
  * `event` as a watch of `tree` is told it, one rule for every watch: each
  * end of it the watch holds (in `tree`) and may see (`shown`: its name for
- * a path, null when it may not see it) is told; the watched path itself
- * renamed is that rename, wherever it went that the watch may see (the
- * watch follows it, as inotify does); any other rename seen at one end
- * only is that end's add, or unlink; a rename of a directory above `tree`
- * is the watched path's own going (seen where the directory was) or coming
- * (seen where it is now), named `treeName`. Null: nothing to tell.
+ * a path, null when it may not see it) is told; the watched path itself,
+ * or a directory above it, renamed is the watched path's own move: a rename
+ * where the watch may see both its places, else its going (unlink) or
+ * coming (add); any other rename seen at one end only is that end's add, or
+ * unlink; a directory renamed to above the watched path is its coming
+ * (add). Null: nothing to tell. A watch that is told its own move follows
+ * it (CompositeVFS.watchChanges).
  */
-export function projectChange(event: VfsEvent, tree: string, shown: (path: string) => string | null, treeName: string): VfsEvent | null {
+export function projectChange(event: VfsEvent, tree: string, shown: (path: string) => string | null): VfsEvent | null {
   const seen = (path: string): string | null => (inWatchedTree(tree, path) ? shown(path) : null);
   const { type, timestamp } = event;
   const path = seen(event.path);
   // The event itself where the watch names it as it came.
   if (event.oldPath === undefined) return path === null ? null : path === event.path ? event : { type, path, timestamp };
-  const oldPath = seen(event.oldPath);
-  if (path !== null && oldPath !== null) return path === event.path && oldPath === event.oldPath ? event : { type, path, oldPath, timestamp };
-  if (oldPath !== null && event.oldPath === tree) {
-    const there = shown(event.path);
-    if (there !== null) return { type, path: there, oldPath, timestamp };
+  const from = event.oldPath;
+  if (inWatchedTree(from, tree)) {
+    const was = shown(tree);
+    const now = shown(from === tree ? event.path : event.path + tree.slice(from.length));
+    if (was !== null && now !== null) return { type: 'rename', path: now, oldPath: was, timestamp };
+    if (was !== null) return { type: 'unlink', path: was, timestamp };
+    return now === null ? null : { type: 'add', path: now, timestamp };
   }
+  const oldPath = seen(from);
+  if (path !== null && oldPath !== null) return path === event.path && oldPath === from ? event : { type, path, oldPath, timestamp };
   if (path !== null) return { type: 'add', path, timestamp };
   if (oldPath !== null) return { type: 'unlink', path: oldPath, timestamp };
-  if (inWatchedTree(event.oldPath, tree) && shown(event.oldPath) !== null) return { type: 'unlink', path: treeName, timestamp };
-  if (inWatchedTree(event.path, tree) && shown(tree) !== null) return { type: 'add', path: treeName, timestamp };
-  return null;
+  if (!inWatchedTree(event.path, tree)) return null;
+  const there = shown(tree);
+  return there === null ? null : { type: 'add', path: there, timestamp };
 }
 
 export type VfsEventListener = (events: VfsEvent[]) => void;
@@ -128,17 +133,18 @@ export class VfsEventEmitter {
     if (this._globalListeners.length === 0 && this._pathListeners.size === 0) return;
     const event: VfsEvent = { type, path, timestamp: Date.now(), oldPath };
 
+    // Queued for the global listeners first: one a path listener publishes is after it.
+    if (this._globalListeners.length > 0) {
+      this._pending.push(event);
+      this._pendingAt.push(at);
+      if (!this._flushScheduled) {
+        this._flushScheduled = true;
+        queueMicrotask(() => this._flush());
+      }
+    }
+
     // Immediately deliver to path listeners (no batching for these)
     if (this._pathListeners.size > 0) this._deliverToPathListeners(event);
-    if (this._globalListeners.length === 0) return;
-    this._pending.push(event);
-    this._pendingAt.push(at);
-
-    // Schedule batch flush for global listeners
-    if (!this._flushScheduled) {
-      this._flushScheduled = true;
-      queueMicrotask(() => this._flush());
-    }
   }
 
   /**

@@ -284,6 +284,8 @@ export interface VfsRange { offset: number; length: number }
  * watches or descriptions.
  */
 export interface SyncVFS {
+  /** VFS.fileStore: the same store as the face it is of. */
+  readonly fileStore?: object;
   stat(path: string, options?: { follow?: boolean }): VfsStat | null;
   readFile(path: string): Uint8Array;
   writeFile(path: string, data: Uint8Array, options?: { mode?: number }): void;

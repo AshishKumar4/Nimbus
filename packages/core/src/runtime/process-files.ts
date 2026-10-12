@@ -617,7 +617,14 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
   private closeScope(scope: DescriptorScope): Awaitable<void> {
     if (scope.closed) return;
     const lost = closeDescriptions(scope);
-    for (const dispose of scope.subscriptions) dispose();
+    // Every subscription stopped, whichever of them fails to.
+    for (const dispose of [...scope.subscriptions]) {
+      try {
+        dispose();
+      } catch (error) {
+        console.error('[process-files] a subscription could not be stopped:', error instanceof Error ? error.message : String(error));
+      }
+    }
     scope.subscriptions.clear();
     scope.closed = true;
     scope.abort.abort();
@@ -721,8 +728,8 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
     const dispose = (): void => {
       if (stopped) return;
       stopped = true;
-      stop();
       this.scope.subscriptions.delete(dispose);
+      stop();
     };
     this.scope.subscriptions.add(dispose);
     return dispose;
