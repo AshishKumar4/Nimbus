@@ -178,7 +178,7 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
   /** Directories (keys) every entry of which is a row: below them a missing row is an absent name. */
   const listed = new Set<string>();
 
-  const ready = (): boolean => coherence.bound() && coherence.sealed() === null && ok;
+  const ready = (): boolean => ok && coherence.serving();
 
   const markReady = (t: ResidentTables, isReady: boolean, why?: string): void => {
     t.metaSet('ns', isReady ? '1' : '0');

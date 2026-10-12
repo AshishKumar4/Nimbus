@@ -29,6 +29,8 @@ export interface Coherence {
   bind(t: ResidentTables, heap: HeapTables | null): void;
   /** Bound, sealed or not. */
   bound(): boolean;
+  /** Bound and unsealed: rows may be served. */
+  serving(): boolean;
   /** The bound tables, sealed or not; `doing` names the call refused before binding. */
   tables(doing: string): ResidentTables;
   /** The bound heap tables, when the store is a one-shot's heap. */
@@ -64,6 +66,7 @@ export function createCoherence(): Coherence {
   return {
     bind(tables, heapTables) { t = tables; heap = heapTables; },
     bound: () => t !== null,
+    serving: () => t !== null && !isSealed,
     tables(doing) {
       if (t === null) throw new Error('Nimbus: ' + doing + ' before the store was bound');
       return t;
