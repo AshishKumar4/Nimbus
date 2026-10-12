@@ -29,6 +29,11 @@ export interface ReadDirectoryPool {
     close(id: number): void | Promise<void>;
     /** Only call where a real supervisor/store I/O reply arrived; timers never establish trust. */
     io(): void;
+    /**
+     * The store may be behind (the process's own change, input): nothing is
+     * claimed until a batch's answer is admitted, and then each prediction only
+     * if the store still shows the directory it opened. None is retired for it.
+     */
     invalidate(): void;
     /** A park timed out: late, not-yet-delivered descriptions are abandoned, never installed into the guest fd table. */
     cancelPending(): void;

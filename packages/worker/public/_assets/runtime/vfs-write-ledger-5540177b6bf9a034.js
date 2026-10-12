@@ -24,7 +24,6 @@ var __nimbusProcessFsModule = (() => {
     DECIDED_BACKLOG_OPS: () => DECIDED_BACKLOG_OPS,
     GRANT_AFTER: () => GRANT_AFTER,
     GRANT_IDLE_MS: () => GRANT_IDLE_MS,
-    LEARNED_GRANT_INOS: () => LEARNED_GRANT_INOS,
     MAX_DELEGATIONS_PER_PROCESS: () => MAX_DELEGATIONS_PER_PROCESS,
     PROCESS_FS_HEAP_SYNC_CAP_BYTES: () => PROCESS_FS_HEAP_SYNC_CAP_BYTES,
     PROCESS_FS_HEAP_WINDOW_BYTES: () => PROCESS_FS_HEAP_WINDOW_BYTES,
@@ -1228,7 +1227,6 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
   }
   var DATA_PIECE_BYTES = WAVE_BYTES;
   var MAX_DELEGATIONS_PER_PROCESS = 8;
-  var LEARNED_GRANT_INOS = 64;
   var GRANT_AFTER = 8;
   function withUmaskOf(op, umask) {
     if (umask === void 0 || op.type !== "call") return op;
@@ -1729,11 +1727,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         void Promise.all(idle.map(close)).then(armIdle);
       }, grantIdleMs);
     };
-    let changed = null;
-    const changedUnder = (key) => {
-      changed = changed === null ? key : commonAncestor(changed, key);
-    };
-    const claim = (root, first) => {
+    const claim = (root) => {
       const port = session.grants;
       if (port === void 0 || claiming !== null || settling) return;
       claiming = (async () => {
@@ -1757,7 +1751,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         await client.flush();
         paused = true;
         await quiet();
-        const inos = rangeOf.has(target) ? rangeOf.get(target) * 2 : first ?? options.grantInos ?? GRANT_INOS;
+        const inos = rangeOf.has(target) ? rangeOf.get(target) * 2 : options.grantInos ?? GRANT_INOS;
         let granted;
         try {
           granted = await port.acquire("/" + target, { reads: true, inos, bytes: GRANT_BYTES });
@@ -1778,8 +1772,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
           shared: false,
           closing: false,
           ended: false,
-          lastUsed: now(),
-          used: false
+          lastUsed: now()
         };
         grants.push(grant);
         counters.grants++;
@@ -1799,11 +1792,8 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         if (held !== void 0) {
           if (pendingSyncOps >= DECIDED_BACKLOG_OPS || pendingSyncBytes >= DECIDED_BACKLOG_BYTES) return void 0;
           held.lastUsed = now();
-          held.used = true;
-          changedUnder(held.root);
           return held;
         }
-        changedUnder(parentKey(key));
         if (session.grants === void 0 || settling || escaped !== null) return void 0;
         if (grants.some((grant) => !grant.ended && within(key, grant.root))) return void 0;
         let deepest;
@@ -1815,21 +1805,6 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         }
         if (deepest !== void 0) claim(deepest);
         return void 0;
-      },
-      async claimAhead(roots) {
-        for (const root of roots.slice(0, MAX_DELEGATIONS_PER_PROCESS)) {
-          if (!allowedRoot(root) || [...refusedRoots].some((refused) => within(root, refused))) continue;
-          if (grants.some((grant) => !grant.ended && within(root, grant.root))) continue;
-          await claiming?.catch(() => {
-          });
-          claim(root, LEARNED_GRANT_INOS);
-          await claiming?.catch(() => {
-          });
-        }
-      },
-      mutated() {
-        for (const grant of grants) if (grant.used) changedUnder(grant.root);
-        return changed !== null && allowedRoot(changed) ? changed : null;
       },
       number(grant) {
         const held = grant;

@@ -29,13 +29,22 @@ export function readDirectoryPool({ call, store, client, before }) {
         }
         unused.clear();
     };
-    const invalidate = () => { generation++; trustedAtIo = false; discardUnused(); };
+    /**
+     * The store may be behind (a change of the process's own, input, a
+     * recall): nothing is claimed until a batch's answer is admitted, and then
+     * each prediction only if the store still shows the directory it opened.
+     */
+    const distrust = () => { generation++; trustedAtIo = false; };
+    /** What the pool knows may be wrong (a failed or foreign answer, the end): every prediction is retired. */
+    const invalidate = () => { distrust(); discardUnused(); };
     const valid = () => {
         const yes = trustedAtIo && owner !== null && client.readUnchanged(owner)
             && store.ready() && store.cursor()?.epoch === epoch;
         if (!yes) {
             trustedAtIo = false;
-            discardUnused();
+            // Another incarnation's store: no description of the old one is worth keeping.
+            if (store.cursor()?.epoch !== epoch)
+                discardUnused();
         }
         return yes;
     };
@@ -194,11 +203,9 @@ export function readDirectoryPool({ call, store, client, before }) {
         },
         io() {
             trustedAtIo = owner !== null && client.readUnchanged(owner) && client.readTrusted();
-            if (!trustedAtIo)
-                discardUnused();
         },
-        invalidate,
-        cancelPending() { cancelled++; invalidate(); },
+        invalidate: distrust,
+        cancelPending() { cancelled++; distrust(); },
         async dispose() {
             ended = true;
             cancelled++;
