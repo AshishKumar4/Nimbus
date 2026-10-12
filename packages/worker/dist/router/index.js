@@ -154,12 +154,12 @@ export function createNimbusHandler(options = {}) {
             const headers = new Headers(answered.headers);
             for (const value of setCookies)
                 headers.append('Set-Cookie', value);
+            const socket = answered.webSocket;
             return new Response(answered.body, {
                 status: answered.status,
                 statusText: answered.statusText,
                 headers,
-                // @ts-expect-error workerd-only upgrade slot; absent on plain answers
-                ...(answered.webSocket === undefined ? {} : { webSocket: answered.webSocket }),
+                ...(socket === undefined ? {} : { webSocket: socket }),
             });
         };
         const answered = (response) => applySessionResponsePolicy(response);

@@ -311,12 +311,12 @@ export function createNimbusHandler(
       // headers alone carries it across untouched.
       const headers = new Headers(answered.headers);
       for (const value of setCookies) headers.append('Set-Cookie', value);
-      const socket = (answered as unknown as { webSocket?: unknown }).webSocket;
+      const socket = (answered as unknown as { webSocket?: WebSocket | null }).webSocket;
       return new Response(answered.body, {
         status: answered.status,
         statusText: answered.statusText,
         headers,
-        ...(socket === undefined ? {} : { webSocket: socket }),
+        ...(socket == null ? {} : { webSocket: socket }),
       });
     };
     const answered = (response: Promise<Response> | Response): Promise<Response> =>
