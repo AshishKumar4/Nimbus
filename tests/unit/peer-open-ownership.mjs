@@ -103,7 +103,7 @@ for (const reset of [false, true]) {
   assert.equal(t.stubs.filter(stub => !stub.disposed).length, 0);
   assert.equal(await peerPlacement(t.ctx, t.params.pid), null);
   assert.equal([...peer.peerHost.records.values()][0].residencies.size, 0, 'bounded cancellation closes residency before replying');
-  assert.deepEqual(await peer.peerHost.inspect(placement.workerKey), { found: false, incarnation: before.incarnation, facet: null, coordinator: null, residencies: 0 });
+  assert.deepEqual(await peer.peerHost.inspect(placement.workerKey), { found: false, incarnation: before.incarnation, facet: null, coordinator: null, residencies: 0, watchers: 0 });
 }
 {
   const t = setup();
