@@ -164,7 +164,8 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
         let r2HitBytes = sharedAcquisition?.bytes ?? null;
         // The digest this placement verified its bytes against: the owner's for a
         // shared acquisition, the storage boundary's for an R2 hit, the registry
-        // fetch's for a download. Published with the bytes for same-key consumers.
+        // fetch's for a download. Published with the bytes for same-key consumers;
+        // null until this placement verifies (only verified acquisitions publish).
         let verifiedDigest = sharedAcquisition?.verified ?? null;
         // [W4] 1a. R2 cache lookup, hedged by the network fetch.
         //
@@ -238,16 +239,8 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
                 const expected = spec.integrity ? strongestSriEntry(spec.integrity) : null;
                 const verified = sharedAcquisition.verified;
                 const matches = expected === null
-                    || (verified !== null && verified.digestAlgo === expected.digestAlgo && sriDigestsEqual(verified.digest, expected.digest));
-                if (!matches && (verified === null || expected === null)) {
-                    // Unverified shared bytes with a requirement (unreachable for a
-                    // same-key acquisition, whose integrity string is identical): hash
-                    // once, exactly as an unshared fetch would.
-                    const actual = expected === null ? null : await sriDigestOf(sharedAcquisition.bytes, expected.digestAlgo);
-                    if (expected !== null && (actual === null || !sriDigestsEqual(actual, expected.digest)))
-                        throw new Error(`integrity mismatch for ${spec.name}@${spec.version}: expected ${expected.algo}-${expected.digest}, got ${expected.algo}-${actual}`);
-                }
-                else if (!matches) {
+                    || (verified.digestAlgo === expected.digestAlgo && sriDigestsEqual(verified.digest, expected.digest));
+                if (!matches) {
                     throw new Error(`integrity mismatch for ${spec.name}@${spec.version}: expected ${expected.algo}-${expected.digest}, got ${verified.algo}-${verified.digest}`);
                 }
             }
@@ -312,7 +305,8 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
                 discardPendingNetwork();
                 // A malformed integrity string is not a verification: the network
                 // branch reports it when it parses there, and this path keeps its
-                // existing warn-and-proceed posture instead of throwing first.
+                // existing warn-and-proceed posture instead of throwing first. Such
+                // bytes stay unpublished: only verified acquisitions reach consumers.
                 try {
                     verifiedDigest = spec.integrity ? strongestSriEntry(spec.integrity) : null;
                 }
@@ -528,7 +522,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
             // No-op once the retry loop has taken it; closes every early return.
             discardPendingNetwork();
             const publishedBytes = capturedTgzBytes ?? r2HitBytes;
-            publishTarballBytes(publishedBytes ? { bytes: publishedBytes, verified: verifiedDigest } : null);
+            publishTarballBytes(publishedBytes && verifiedDigest ? { bytes: publishedBytes, verified: verifiedDigest } : null);
             inFlight = Math.max(0, inFlight - 1);
         }
     };
