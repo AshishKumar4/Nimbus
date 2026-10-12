@@ -72,5 +72,18 @@ assert.equal(kernel.stat('home/user/notes.txt').mode & 0o7777, 0o751, 'chmod rea
 assert.equal((await pathStat('home/user/notes.txt')).mode, S_IFREG | 0o751, 'and the next stat sees it');
 assert.equal(await fsImport.path_chmod(PREOPEN_FD, 0, PATH, putPath('home/user/link'), 0o700), E.NOTSUP, 'no lchmod');
 
+assert.equal(await fsImport.umask(0o077, OUT), 0);
+assert.equal(view().getUint32(OUT, true), USER.umask, 'the live mask starts at the credential');
+const privateFd = await guest.open('home/user/private', { create: true, exclusive: true, write: true });
+assert.equal(await fsImport.fd_stat(privateFd, OUT), 0);
+assert.equal(decode(OUT).mode & 0o777, 0o600, 'preview1 creates under the live mask');
+await guest.close(privateFd);
+assert.equal(await fsImport.umask(0o022, OUT), 0);
+assert.equal(view().getUint32(OUT, true), 0o077, 'umask returns the previous live value');
+const publicFd = await guest.open('home/user/public', { create: true, write: true });
+assert.equal(await fsImport.fd_stat(publicFd, OUT), 0);
+assert.equal(decode(OUT).mode & 0o777, 0o644, 'restoring the mask restores normal creation');
+await guest.close(publicFd);
+
 await guest.dispose();
 console.log('wasi-nimbus-fs: ok');
