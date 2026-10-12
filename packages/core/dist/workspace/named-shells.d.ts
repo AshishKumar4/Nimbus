@@ -72,6 +72,10 @@ export declare class NamedShells {
      * exists from then on, rooted there.
      */
     hold<T>(id: string, options: NamedShellOptions, body: (shell: NamedShell) => Promise<T>): Promise<T>;
+    /** The last saved state, after earlier calls on this name have settled. */
+    read(id: string): Promise<ShellState | null>;
+    private enqueue;
+    private load;
     private save;
 }
 //# sourceMappingURL=named-shells.d.ts.map

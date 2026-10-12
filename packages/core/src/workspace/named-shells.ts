@@ -111,7 +111,7 @@ export class NamedShells {
   }
 
   /** The last saved state, after earlier calls on this name have settled. */
-  read(id: string): Promise<ShellState | null> {
+  async read(id: string): Promise<ShellState | null> {
     const name = ShellIdSchema.parse(id);
     return this.enqueue(name, async () => this.load(name));
   }

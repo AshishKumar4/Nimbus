@@ -36,7 +36,7 @@ import { RuntimeManager } from '../runtime/runtime-manager.js';
 import { type RuntimePackage, type RuntimeSource } from '../runtime/runtime-package.js';
 import { type CtxExports, type FabricComposition } from '@nimbus-sh/platform/composition.js';
 import { type SupervisorOpEnvelope, type SupervisorOpHandler } from './supervisor-op.js';
-import { type NamedShell, type NamedShellOptions } from './named-shells.js';
+import { type NamedShell, type NamedShellOptions, type ShellState } from './named-shells.js';
 export { parseShellState, type NamedShell, type NamedShellOptions, type ShellState } from './named-shells.js';
 /** {@link NimbusWorkspace.exec}'s options: the command's, and which shell runs it. */
 export interface WorkspaceExecOptions extends RunOptions {
@@ -307,6 +307,8 @@ export declare class NimbusWorkspace {
      * jobs) calls it directly, and builds the shell with `open(pid)`.
      */
     withNamedShell<T>(id: string, options: NamedShellOptions, body: (shell: NamedShell) => Promise<T>): Promise<T>;
+    /** Read a named shell's saved cwd and exact UTF-16 environment, or null if it has no saved state. */
+    shellState(id: string): Promise<ShellState | null>;
     /** The hosting object forwards its supervisorOp RPC to this method. */
     supervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown>;
     /**

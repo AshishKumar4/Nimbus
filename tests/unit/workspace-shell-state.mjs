@@ -23,6 +23,9 @@ try {
   assert.equal(second.env.A, '\ud801');
   assert.notEqual(digest(second), firstDigest, 'the approval digest distinguishes lone surrogates before UTF-8 encoding');
   assert.equal(first.env.A, '\ud800', 'an earlier snapshot does not change');
+  const edited = await read();
+  edited.env.A = 'changed by caller';
+  assert.deepEqual(await read(), second, 'a caller cannot mutate the saved row through its snapshot');
 
   for (const command of ['true', 'false', 'missing-state-command']) {
     await run(command);
