@@ -1026,8 +1026,10 @@ export class CompositeVFS {
      */
     reportWrite(spec, run, sync) {
         const writes = this.table.writes;
-        if (writes === undefined || writes.subscribed.has(spec.route.mount))
-            return this.landing(spec, run());
+        if (writes === undefined || writes.subscribed.has(spec.route.mount)) {
+            const result = run();
+            return this.table.changes === undefined && !isPromise(result) ? result : this.landing(spec, result);
+        }
         return this.inTurn(writes, spec.route.mount, spec.path, sync, () => this.reportIn(writes, spec, run));
     }
     /**
@@ -1038,8 +1040,12 @@ export class CompositeVFS {
      */
     reportPrepared(mount, name, sync, prepare) {
         const writes = this.table.writes;
-        if (writes === undefined || writes.subscribed.has(mount))
-            return andThen(prepare(), ({ spec, run }) => (spec === null ? run() : this.landing(spec, run())));
+        if (writes === undefined || writes.subscribed.has(mount)) {
+            return andThen(prepare(), ({ spec, run }) => {
+                const result = run();
+                return spec === null || (this.table.changes === undefined && !isPromise(result)) ? result : this.landing(spec, result);
+            });
+        }
         return this.inTurn(writes, mount, name, sync, () => andThen(prepare(), ({ spec, run }) => (spec === null ? run() : this.reportIn(writes, spec, run))));
     }
     /** `report` in its turn among the observed mutations (takeTurn); a caller that cannot wait is refused while another holds it. */
@@ -1280,10 +1286,7 @@ export class CompositeVFS {
             if (at === null)
                 return { spec: null, run: guarded };
             const { name, rel } = at;
-            const spec = {
-                path: name, route: { mount, path: name, rel }, ops: backend, follow: true, kind: 'write', still: () => still(at), source: target.source,
-                ...(written === undefined ? {} : { written }), ...(told === undefined ? {} : { told }),
-            };
+            const spec = { path: name, route: { mount, path: name, rel }, ops: backend, follow: true, kind: 'write', still: () => still(at), source: target.source, written, told };
             return { spec, run: guarded };
         }));
     }
