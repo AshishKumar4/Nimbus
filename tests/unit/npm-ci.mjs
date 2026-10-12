@@ -352,13 +352,15 @@ const versionAt = (root, dir) => JSON.parse(root.readFileString(`${NM}/${dir}/pa
 // ── a lock that does not meet its own dependencies fails before anything changes ──
 //
 // npm ci builds the ideal tree over the lock and checks it is the lock's
-// (validate-lockfile): a package the lock lacks, or holds at a version an
-// edge does not accept, fails the command before node_modules is cleared.
+// (validate-lockfile): a package the lock lacks, or one an edge it records
+// does not accept, fails the command before node_modules is cleared.
 for (const [label, entries, line] of [
   ['a dependency the lock lacks', {}, /Missing: b@1\.2\.0 from lock file/],
+  // npm places the copy a accepts at the highest folder it fits, the root,
+  // and keeps the nested one (an older copy does not dedupe a newer).
   ['a dependency the lock holds at a version its dependent does not accept', {
     'node_modules/a/node_modules/b': { version: '2.0.0', resolved: tgz('b', '2.0.0'), integrity: 'sha512-b2' },
-  }, /Invalid: lock file's b@2\.0\.0 does not satisfy b@1\.2\.0/],
+  }, /Missing: b@1\.2\.0 from lock file/],
 ]) {
   const pkgJson = { name: 'unsound', version: '1.0.0', dependencies: { a: '1.0.0' } };
   const lock = {

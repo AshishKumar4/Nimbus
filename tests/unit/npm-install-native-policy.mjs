@@ -728,15 +728,15 @@ function makeInstaller(pkgJson, resultFor) {
     console.log('  caseR: changed range re-resolves');
   }
 
-  // git root — presence-only
+  // git root — refused, whatever is installed under its name
   {
+    const asked = [];
     const { installer, log, harness } = makeInstaller(
       { name: 'git-app', dependencies: { ...ok, gitpkg: 'github:user/repo#v1' } },
-      (name) => resolvedResult(name, '1.0.0'),
+      (name) => { asked.push(name); return resolvedResult(name, '1.0.0'); },
     );
-    // A git spec never reaches the resolver — seed the lockfile and
-    // registry cache the way a real install left them, then confirm a
-    // non-semver range answers presence-only instead of invalidating.
+    // A git spec is not installed here, and never reaches the resolver:
+    // a registry package of its name installed before does not meet it.
     const entries = new Map();
     for (const name of ['ok-a', 'ok-b', 'ok-c', 'ok-d']) {
       installer.npmCache.putRegistryEntries([cw(name, '1.0.0')]);
@@ -749,9 +749,10 @@ function makeInstaller(pkgJson, resultFor) {
     });
     installer.npmCache.writeLockfile(PROJ, entries, { storage: harness.ctx.storage });
     const result = await installer.install(PROJ);
-    assert.ok(/Lockfile valid/.test(log.join('\n')), `a git root answers presence-only:\n${log.join('\n')}`);
-    assert.deepEqual(result.failed, []);
-    console.log('  caseR: git root stays valid by presence');
+    assert.deepEqual(result.failed, ['gitpkg'], log.join('\n'));
+    assert.ok(/gitpkg@github:user\/repo#v1 is not a registry package/.test(log.join('\n')), `the refusal says why:\n${log.join('\n')}`);
+    assert.deepEqual(asked, [], 'nothing is resolved');
+    console.log('  caseR: a git root is refused');
   }
 }
 
