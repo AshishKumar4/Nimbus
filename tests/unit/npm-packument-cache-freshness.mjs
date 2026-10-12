@@ -75,7 +75,7 @@ function fakeRegistry() {
     assert.equal(request.method, 'GET');
     assert.equal(request.url, packumentUrl(NAME, REGISTRY), 'no real network I/O is allowed');
     assert.match(request.headers.get('accept'), /application\/vnd\.npm\.install-v1\+json/);
-    requests.push({ url: request.url, ifNoneMatch: request.headers.get('if-none-match'), revision });
+    requests.push({ url: request.url, ifNoneMatch: request.headers.get('if-none-match'), cacheControl: request.headers.get('cache-control'), revision });
     const headers = { ETag: `"fixture-${revision}"`, 'Cache-Control': 'public, max-age=300' };
     if (request.headers.get('if-none-match') === headers.ETag) {
       return new Response(null, { status: 304, headers });
@@ -196,6 +196,7 @@ if (!expiredControl) {
     const renewed = await read();
     assert.equal(renewed.source, 'r2-cache', 'unchanged: the cached body stands');
     assert.equal(registry.requests.at(-1).ifNoneMatch, '"fixture-1"', 'refetched on its ETag');
+    assert.equal(registry.requests.at(-1).cacheControl, null, "through the registry's CDN, as an expired read always was");
     const stored = bucket.entries.get(packumentKey(NAME, REGISTRY));
     assert.equal(Number(stored.customMetadata.expiresAt), now + PACKUMENT_TTL_MS, 'kept as a fresh answer would be');
     assert.equal(stored.customMetadata.etag, '"fixture-1"');
@@ -221,6 +222,7 @@ if (!expiredControl) {
     assert.match(missing.error?.reason ?? '', /no published version/);
     assert.equal(registry.requests.length, asked + 1, 'asked once');
     assert.equal(registry.requests.at(-1).ifNoneMatch, '"fixture-1"');
+    assert.equal(registry.requests.at(-1).cacheControl, 'no-cache', "past the registry's CDN, which may lag a publication too");
 
     // A colo copy promoted from R2 keeps its ETag: a read past the cache
     // from it is conditional, and an unchanged packument answers 304.
