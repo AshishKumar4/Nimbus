@@ -34,7 +34,7 @@ import { manifestsOf, prebundleCacheKey, prebundleRequest, sliceManifests, still
 import { NpmCache } from './cache.js';
 import { hoistPlacements, } from './resolver.js';
 import { canonicalTreePath, holdTree, namedPackages, packageJsonDocument, projectRoots, readPackageJson, saveNamed, } from '@nimbus-sh/core/_shared/npm-tree.js';
-import { planTree } from '@nimbus-sh/core/_shared/npm-arborist.js';
+import { planTree } from '@nimbus-sh/core/_shared/npm-arborist/plan.js';
 import { packageLockMismatches, parsePackageLock, stringList, stringRecord } from './package-lock.js';
 import { npmRegistryOrigin, packumentUrl } from './r2-cache.js';
 import { npmAddedLine, npmHttpCacheLine, npmHttpFetchLine, npmTitleLine, } from '@nimbus-sh/core/substrate/lifo/commands/system/npm-log.js';
@@ -182,26 +182,33 @@ export class NpmInstaller {
         const principal = { pid: opts.pid, cred: opts.cred, view, tmp };
         const lockfile = this.cache.readLockfile(projDir);
         const { roots, named, devOnly, advised } = await this.buildRoots(projDir, project, opts, lockfile);
-        const engine = { devOnly, advised, registry, shallow: opts.global === true, force: opts.force === true, legacyPeerDeps: opts.legacyPeerDeps === true, omitDev: opts.production === true };
+        const engine = { devOnly, advised, registry, global: opts.global === true, force: opts.force === true, legacyPeerDeps: opts.legacyPeerDeps === true, omitDev: opts.production === true };
         // ── Phase 1: Resolve ──────────────────────────────────────────
-        // The one engine's plan (core npm-arborist.ts) over the tree installed
+        // The one engine's plan (core _shared/npm-arborist) over the tree installed
         // before: what the lockfile records (each placement's registry record),
         // its unmet edges resolved through the resolver fanout. npm ci plans
-        // nothing: its tree is the one package-lock.json records.
+        // over the tree package-lock.json records, and the plan must be that
+        // tree (validate-lockfile), or it fails before anything changes.
         phaseStart = Date.now();
         setInstallPhase('resolve');
         let tree;
         let usedLockfile = false;
         if (opts.fromLockfile) {
             const locked = await this.treeFromPackageLock(projDir, project, log, registry);
-            tree = await this.resolveTreeViaFanout(roots, locked.installed, log, { ...engine, frozen: true });
+            tree = await this.resolveTreeViaFanout(roots, locked.installed, log, { ...engine, locked: true });
+            if (tree.plan.lockMismatches.length > 0) {
+                throw new Error(`\`npm ci\` can only install packages when your package.json and ${locked.lockName} are in sync. ` +
+                    `Please update your lock file with \`npm install\` before continuing.\n` +
+                    tree.plan.lockMismatches.map((line) => `npm ERR! ${line}`).join('\n'));
+            }
             log(`Lockfile ${locked.lockName}: ${tree.plan.nodes.size} packages to place.`);
         }
         else {
             const recordOf = this.lockRecords();
+            // Each placement's package from its registry package's record, under the name it installs as.
             const installed = [...lockfile ?? []].flatMap(([at, entry]) => {
                 const record = recordOf(entry);
-                return record === null ? [] : [{ at, pkg: resolvedFromRecord(record) }];
+                return record === null ? [] : [{ at, pkg: { ...resolvedFromRecord(record), name: entry.name, registryName: record.name } }];
             });
             tree = await this.resolveTreeViaFanout(roots, installed, log, engine);
             // The lockfile answered every edge: nothing resolved, nothing failed.
@@ -285,18 +292,23 @@ export class NpmInstaller {
         phaseStart = Date.now();
         setInstallPhase('diff');
         const toFetch = [];
+        /** The version of the package at a placement, by its package.json; undefined where there is none, or it is corrupt. */
+        const installedVersion = async (placement) => {
+            try {
+                const { version } = JSON.parse(await project.readFileString(`${nmDir}/${placement}/package.json`));
+                return typeof version === 'string' ? version : undefined;
+            }
+            catch {
+                return undefined;
+            }
+        };
         for (const target of hoistPlacements(hoistPlan)) {
             const { pkg } = target;
             // Already installed at the placement: that version, and (where the
             // lockfile records it) the same package, an alias's target included.
             const locked = lockfile?.get(target.placement);
             if (locked === undefined || locked.integrity === pkg.integrity) {
-                let version;
-                try {
-                    version = JSON.parse(await project.readFileString(`${nmDir}/${target.placement}/package.json`)).version;
-                }
-                catch { /* none, or corrupt: install it */ }
-                if (version === pkg.version) {
+                if ((await installedVersion(target.placement)) === pkg.version) {
                     installedAt.set(target.placement, `${pkg.name}@${pkg.version}`);
                     cachedHits++;
                     continue;
@@ -337,7 +349,7 @@ export class NpmInstaller {
         if (toFetch.length > 0) {
             log(`Fetching ${toFetch.length} packages... (path: batch-facet)`);
             const batchResult = engineDir !== null
-                ? await this.fetchViaBatchFacet(toFetch, `${engineDir}/node_modules`, opts.pid)
+                ? await this.fetchViaBatchFacet(toFetch, `${engineDir}/node_modules`, installedVersion, opts.pid)
                 : await this.fetchIntoMount(toFetch, nmDir, principal);
             totalFiles += batchResult.filesWritten;
             published.push(...batchResult.installed);
@@ -475,7 +487,7 @@ export class NpmInstaller {
      * (Fanout): a layer the headroom holds runs on in-DO loaders, a wider one
      * on sibling NimbusSession DOs. Each layer's route is in its profile entry.
      *
-     * The walk is the install engine's plan (core _shared/npm-arborist.ts,
+     * The walk is the install engine's plan (core _shared/npm-arborist,
      * npm's arborist build over what the lockfile says is installed); a
      * placement is required when a path of required edges reaches it, its
      * failure then failing the install; an optional one that fails is
@@ -570,7 +582,7 @@ export class NpmInstaller {
             // runs its bucket as wide as its own Dynamic Worker headroom allows.
             maxPeers: RESOLVE_PEER_CAP,
         });
-        // The one engine's plan (core _shared/npm-arborist.ts) over the
+        // The one engine's plan (core _shared/npm-arborist) over the
         // resolver facets, from the tree installed before (`installed`): each
         // batch of requests it makes dispatched as ONE submitMany batch, every
         // task settled on its own, so a request that fails is that request's
@@ -689,7 +701,7 @@ export class NpmInstaller {
             },
             // A peer conflict npm lets through: said the way npm does.
             warn: (message) => log(`npm WARN ${message}`),
-        }, { shallow: opts.shallow === true, force: opts.force === true, legacyPeerDeps: opts.legacyPeerDeps === true, frozen: opts.frozen === true });
+        }, { global: opts.global === true, force: opts.force === true, legacyPeerDeps: opts.legacyPeerDeps === true, locked: opts.locked === true });
         // What the tree installs that cannot run here is said once.
         const installing = (at) => !plan.skipped.has(at) && !(opts.omitDev && plan.dev.has(at));
         for (const [at, node] of plan.nodes) {
@@ -777,7 +789,9 @@ export class NpmInstaller {
      *   `shard-${i}` task key deterministically (tests can predict
      *   placement).
      */
-    async fetchViaBatchFacet(toFetch, nmDir, pid) {
+    async fetchViaBatchFacet(toFetch, nmDir, 
+    /** The version installed at a placement, by its package.json (the batch writer's completion marker). */
+    installedVersion, pid) {
         const log = (msg) => this.onProgress?.(msg);
         const installed = [];
         const failed = [];
@@ -868,15 +882,27 @@ export class NpmInstaller {
             key: `shard-${shardIdx}`,
             args: { packages: shardSpecs, concurrency: 3 },
         }));
-        let shardResults;
         try {
-            try {
-                shardResults = await fanoutPool.submitMany(tasks, NPM_INSTALL_BATCH_TASK);
-            }
-            catch (e) {
-                const msg = `${describeError(e)} (${tasks.length} shard${tasks.length === 1 ? '' : 's'}, ${batchRoute.taken?.topology})`;
-                log(`  [batch-fanout] aborted: ${msg}`);
-                throw new Error(`batch-fanout install failed: ${msg}`, { cause: e });
+            // Every shard settles on its own: one that fails costs its packages,
+            // never what the others published.
+            const settled = await fanoutPool.submitManySettled(tasks, NPM_INSTALL_BATCH_TASK);
+            const shardResults = settled.flatMap((outcome) => (outcome.ok ? [outcome.value] : []));
+            const readBack = [];
+            // A shard that failed (or timed out, its writes perhaps landed) is
+            // read back from disk: a package whose package.json, written last, is
+            // in place at its version is installed; the rest failed with it.
+            for (const [index, outcome] of settled.entries()) {
+                if (outcome.ok)
+                    continue;
+                const reason = `install shard failed: ${describeError(outcome.error)} (${batchRoute.taken?.topology})`;
+                log(`  [batch-fanout] ${reason}`);
+                const dirs = new Set(tasks[index].args.packages.map((spec) => spec.pkgDir));
+                for (const target of toFetch) {
+                    if (!dirs.has(`${nmDir}/${target.placement}`))
+                        continue;
+                    const landed = (await installedVersion(target.placement)) === target.pkg.version;
+                    readBack.push({ name: target.pkg.name, version: target.pkg.version, pkgDir: `${nmDir}/${target.placement}`, fileCount: 0, bytesWritten: 0, elapsed: 0, warnings: [], ...(landed ? {} : { errorText: reason }) });
+                }
             }
             // Merge per-shard InstallBatchResult into a single result for
             // the rest of the function. Maintain input order: the
@@ -885,8 +911,8 @@ export class NpmInstaller {
             // semantics (installed/failed are unordered string lists,
             // filesWritten is summed) so we don't need to re-order.
             const result = {
-                perPackage: shardResults.flatMap((r) => r.perPackage),
-                elapsed: Math.max(...shardResults.map((r) => r.elapsed)),
+                perPackage: [...shardResults.flatMap((r) => r.perPackage), ...readBack],
+                elapsed: Math.max(0, ...shardResults.map((r) => r.elapsed)),
                 facetCounters: mergeFacetCounters(shardResults.map((r) => r.facetCounters)),
                 // cache-obs-2: merge per-shard cacheStatEvents (flat
                 // concatenation). Each shard's events are independent.
@@ -1000,7 +1026,16 @@ export class NpmInstaller {
         await withRecall(() => staging.mkdir(stage, { recursive: true }));
         this.placing.add(stage);
         try {
-            const result = await this.fetchViaBatchFacet(toFetch, `${stage}/node_modules`, principal.pid);
+            const stagedVersion = async (placement) => {
+                try {
+                    const { version } = JSON.parse(await staging.readFileString(`${stage}/node_modules/${placement}/package.json`));
+                    return typeof version === 'string' ? version : undefined;
+                }
+                catch {
+                    return undefined;
+                }
+            };
+            const result = await this.fetchViaBatchFacet(toFetch, `${stage}/node_modules`, stagedVersion, principal.pid);
             const installed = [...result.installed];
             const failed = [...result.failed];
             const placed = new Set(toFetch.map(({ placement }) => placement));
@@ -1224,17 +1259,18 @@ export class NpmInstaller {
     }
     // ── Lockfile ──────────────────────────────────────────────────────────
     /**
-     * A lockfile entry's registry record, read once however often one install
-     * asks for it: null where the cache has none of that package (an alias's
-     * name, retargeted, holds another's).
+     * A lockfile entry's record: its registry package's (the stable identity
+     * an alias names), read once however often one install asks for it; null
+     * where the cache holds none of that exact package.
      */
     lockRecords() {
         const read = new Map();
         return (entry) => {
-            const key = `${entry.name}@${entry.resolvedVer}`;
+            const registryName = entry.registryName || entry.name;
+            const key = `${registryName}@${entry.resolvedVer}`;
             let record = read.get(key);
             if (record === undefined) {
-                record = this.cache.getRegistryEntry(entry.name, entry.resolvedVer);
+                record = this.cache.getRegistryEntry(registryName, entry.resolvedVer);
                 read.set(key, record);
             }
             return record !== null && record.integrity === entry.integrity ? record : null;
@@ -1350,8 +1386,9 @@ export class NpmInstaller {
                 libc: stringList(entry.libc),
                 main: '',
             };
-            // Its edges as the lock records them, read as any manifest is (optional peers, bundles).
+            // Its edges as the lock records them, read as any manifest is (optional peers, bundles), and its flags.
             const manifest = packageJsonDocument(entry)?.manifest ?? {};
+            const lock = { dev: entry.dev === true, optional: entry.optional === true, devOptional: entry.devOptional === true, extraneous: entry.extraneous === true };
             const pkg = {
                 name: folderName,
                 version,
@@ -1373,7 +1410,7 @@ export class NpmInstaller {
             };
             const platformReject = policyNativePlatformReject(PACKAGE_ABI_POLICY, platform);
             if (platformReject) {
-                installed.set(placement, { at: placement, pkg, refused: platformReject.reason });
+                installed.set(placement, { at: placement, pkg, refused: platformReject.reason, lock });
                 continue;
             }
             // Policy follows the registry identity (`name`), placement the folder the lock
@@ -1397,7 +1434,7 @@ export class NpmInstaller {
             const binding = isOptionalNativeBinding(platform)
                 ? `optional native binding (os=${platform.os ?? '*'}, cpu=${platform.cpu ?? '*'}, libc=${platform.libc ?? '*'})`
                 : undefined;
-            installed.set(placement, binding === undefined ? { at: placement, pkg } : { at: placement, pkg, skipIfOptional: binding });
+            installed.set(placement, { at: placement, pkg, skipIfOptional: binding, lock });
         }
         // A swap resolves as its own tree, rebased under its placement: its
         // package there, anything it brings below it, unless the lock already
@@ -1430,6 +1467,7 @@ export class NpmInstaller {
         for (const { placement, pkg } of placements) {
             entries.set(placement, {
                 name: pkg.name,
+                registryName: pkg.registryName ?? pkg.name,
                 resolvedVer: pkg.version,
                 integrity: pkg.integrity,
                 depsJson: JSON.stringify(pkg.dependencies),

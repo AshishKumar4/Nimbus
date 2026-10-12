@@ -5,7 +5,10 @@ import type { RegistryCacheEntry } from './registry-record.js';
  * `name` column of `pkg_lockfile` holds, whose primary key predates nesting.
  */
 export interface LockfileEntry {
+    /** The name it installs under (its folder's). */
     name: string;
+    /** The registry package it is (an alias's target): its record's key. '' for rows written before it was kept. */
+    registryName: string;
     resolvedVer: string;
     integrity: string;
     depsJson: string;

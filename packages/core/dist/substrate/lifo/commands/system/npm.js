@@ -7,7 +7,7 @@ import { npmBinMap } from '../../../../runtime/npm-bin-map.js';
 import { pickPackumentVersion } from '../../../../_shared/npm-semver.js';
 import { parseRegistryRequest, splitPackageSpec } from '../../../../_shared/npm-spec.js';
 import { canonicalTreePath, depthOf, holdTree, namedPackages, placementName, projectRoots, readPackageJson, saveNamed, } from '../../../../_shared/npm-tree.js';
-import { planTree, requiredFailures } from '../../../../_shared/npm-arborist.js';
+import { planTree, requiredFailures } from '../../../../_shared/npm-arborist/plan.js';
 import { InstallJournal } from './npm-journal.js';
 import { sriDigestOf, sriDigestsEqual, strongestSriEntry } from '../../../../_shared/tarball-integrity.js';
 import { RegistryPackumentSchema, RegistrySearchResponseSchema, renderSearchTable, } from './registry-schemas.js';
@@ -242,7 +242,7 @@ async function installTree(roots, install) {
             return answers;
         },
         warn: async (message) => { await stderr.write(`npm WARN ${message}\n`); },
-    }, { shallow: install.globalBinDir !== undefined, force: install.force, legacyPeerDeps: install.legacyPeerDeps });
+    }, { global: install.globalBinDir !== undefined, force: install.force, legacyPeerDeps: install.legacyPeerDeps });
     const [requiredFailure] = requiredFailures(plan);
     if (requiredFailure)
         return await fail(requiredFailure.edge.name, requiredFailure.reason);

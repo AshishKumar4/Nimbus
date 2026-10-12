@@ -1,6 +1,6 @@
 /**
  * npm-tree.ts — the vocabulary of npm's one install engine, shared by the
- * engine (npm-arborist.ts, which builds the tree) and its two hosts (worker
+ * engine (npm-arborist/, which builds the tree) and its two hosts (worker
  * npm/installer.ts and lifo commands/system/npm.ts): placements, manifests
  * and their edges, a project's roots, what the command line names and how it
  * is saved, and one install into a tree at a time.

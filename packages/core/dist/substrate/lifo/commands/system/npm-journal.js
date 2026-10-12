@@ -16,7 +16,7 @@ function stepsOf(value) {
         const { kind, from, to, state } = step;
         if ((kind !== 'retire' && kind !== 'publish' && kind !== 'carry') || typeof from !== 'string' || typeof to !== 'string')
             return null;
-        if (state !== 'begun' && state !== 'done' && state !== 'none' && state !== 'undone')
+        if (state !== 'begun' && state !== 'done' && state !== 'none' && state !== 'undoing' && state !== 'undone')
             return null;
         read.push({ kind, from, to, state });
     }
@@ -118,52 +118,106 @@ export class InstallJournal {
             }
         }
     }
+    /** Every path under `dir`, relative to it ('' for `dir` itself); a link is not followed. */
+    async pathsUnder(dir, prefix = '', out = new Set()) {
+        out.add(prefix);
+        if (await this.vfs.isSymlink(dir))
+            return out;
+        let entries;
+        try {
+            entries = await this.vfs.readdir(dir);
+        }
+        catch {
+            return out;
+        }
+        for (const { name } of entries)
+            await this.pathsUnder(join(dir, name), `${prefix}/${name}`, out);
+        return out;
+    }
     /**
-     * Newest first, each inverse recorded as made before the next older one
-     * begins, so a replay never makes one twice: a published package goes
-     * (its content is new), and a retired or carried copy moves back, over
-     * any residue a rename left where it came from; one already back (its
-     * copy gone from where it was moved, and in place) is only recorded. A
-     * step whose copy cannot be told, or restored, stops the undo there:
-     * nothing older is undone (an ancestor's inverse would take the copy
-     * with it), both names and the journal are kept, and named.
+     * What a rename from `source` to `destination` whose outcome was not
+     * recorded did: nothing; all of it (the source's remains residue); or
+     * part of it, the source whole.
+     */
+    async settle(source, destination) {
+        if (!(await this.vfs.exists(destination)))
+            return 'none';
+        if (!(await this.vfs.exists(source)))
+            return 'all';
+        const moved = await this.pathsUnder(destination);
+        for (const path of await this.pathsUnder(source))
+            if (!moved.has(path))
+                return 'part';
+        return 'all';
+    }
+    async record(step, state) {
+        step.state = state;
+        await this.write();
+    }
+    /**
+     * Newest first, each inverse recorded before it is made and once it is,
+     * so a replay never makes one twice: a published package goes (its
+     * content is new); a retired or carried copy moves back where it was,
+     * over the residue a rename left there. A step whose outcome was not
+     * recorded is settled from the trees first: a part moved is removed from
+     * where it went, the source being whole. A step that cannot be undone
+     * stops the undo there: nothing older is undone (an ancestor's inverse
+     * would take the copy with it); the journal stays, and names it.
      * `recovering`: an install that did not finish is undone, and what is
      * put back is said.
      */
     async undoSteps(stderr, recovering) {
         for (const step of [...this.steps].reverse()) {
             const { kind, from, to } = step;
-            if (step.state === 'undone')
-                continue;
             try {
-                let state = step.state;
-                if (state === 'begun') {
-                    const atFrom = await this.vfs.exists(from);
-                    const atTo = await this.vfs.exists(to);
-                    state = !atTo ? 'none' : !atFrom ? 'done' : kind === 'publish' ? 'done' : 'begun';
+                if (step.state === 'begun') {
+                    const outcome = await this.settle(from, to);
+                    if (outcome === 'part')
+                        await this.vfs.remove(to, { recursive: true, force: true });
+                    await this.record(step, outcome === 'all' ? 'done' : 'none');
                 }
-                if (state === 'begun') {
-                    await stderr.write(`npm ERR! could not tell whether ${from} or ${to} holds the installed copy; both are kept, and nothing older is undone\n`);
-                    return false;
+                if (step.state === 'undoing') {
+                    const outcome = await this.settle(to, from);
+                    if (outcome === 'all')
+                        await this.vfs.remove(to, { recursive: true, force: true });
+                    if (outcome === 'part')
+                        await this.vfs.remove(from, { recursive: true, force: true });
+                    await this.record(step, outcome === 'all' ? 'undone' : 'done');
                 }
-                if (state === 'done' && kind === 'publish') {
+                if (step.state !== 'done')
+                    continue;
+                if (kind === 'publish') {
                     // Staged and published content alike are this install's own.
                     await this.vfs.remove(to, { recursive: true, force: true });
                     await this.vfs.remove(from, { recursive: true, force: true });
+                    await this.record(step, 'undone');
+                    continue;
                 }
-                else if (state === 'done' && await this.vfs.exists(to)) {
-                    await this.vfs.remove(from, { recursive: true, force: true });
-                    await this.vfs.mkdir(dirname(from), { recursive: true });
-                    await this.vfs.rename(to, from);
-                    if (recovering)
-                        await stderr.write(`npm WARN restored ${from}, which an install that did not finish had moved\n`);
-                }
-                else if (state === 'done' && !(await this.vfs.exists(from))) {
+                if (!(await this.vfs.exists(to))) {
                     await stderr.write(`npm ERR! the copy ${to} held of ${from} is gone; nothing older is undone\n`);
                     return false;
                 }
-                step.state = 'undone';
-                await this.write();
+                // What is at `from` is residue: the inverse's destination is emptied first.
+                await this.vfs.remove(from, { recursive: true, force: true });
+                await this.vfs.mkdir(dirname(from), { recursive: true });
+                await this.record(step, 'undoing');
+                try {
+                    await this.vfs.rename(to, from);
+                }
+                catch (error) {
+                    const outcome = renameOutcome(error);
+                    if (outcome === undefined)
+                        throw error;
+                    if (outcome !== 'all') {
+                        await this.record(step, 'done');
+                        throw error;
+                    }
+                    // All of it is back; what is left where it was is residue.
+                    await this.vfs.remove(to, { recursive: true, force: true });
+                }
+                await this.record(step, 'undone');
+                if (recovering)
+                    await stderr.write(`npm WARN restored ${from}, which an install that did not finish had moved\n`);
             }
             catch (error) {
                 await stderr.write(kind === 'publish'

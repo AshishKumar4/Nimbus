@@ -1,6 +1,6 @@
 /**
  * npm-tree.ts — the vocabulary of npm's one install engine, shared by the
- * engine (npm-arborist.ts, which builds the tree) and its two hosts (worker
+ * engine (npm-arborist/, which builds the tree) and its two hosts (worker
  * npm/installer.ts and lifo commands/system/npm.ts): placements, manifests
  * and their edges, a project's roots, what the command line names and how it
  * is saved, and one install into a tree at a time.
@@ -88,7 +88,7 @@ export function manifestEdges(manifest, { legacyPeerDeps = false } = {}) {
     return [...byName.values()];
 }
 /** Each spec parsed once, by `name\0spec`. */
-const edgeRequests = new LruMap(4096);
+const edgeRequests = new LruMap(8192);
 export function edgeRequest(name, spec) {
     const key = `${name}\0${spec}`;
     let request = edgeRequests.get(key);
@@ -99,10 +99,20 @@ export function edgeRequest(name, spec) {
     }
     return request;
 }
+/** Each version tested against each range once, by `version\0range`. */
+const satisfied = new LruMap(65536);
 /** Whether `version` meets an edge's range, as npm's dep-valid reckons it: any version, for a spec that is not a range. */
 export function meets(version, edge) {
     const { range } = edgeRequest(edge.name, edge.range);
-    return range === null || satisfiesRange(version, range);
+    if (range === null)
+        return true;
+    const key = `${version}\0${range}`;
+    let answer = satisfied.get(key);
+    if (answer === undefined) {
+        answer = satisfiesRange(version, range);
+        satisfied.set(key, answer);
+    }
+    return answer;
 }
 /** A dependency field as npm reads it: its string ranges (an entry of another shape names no dependency). */
 const DependencyMapSchema = z.record(z.string(), z.unknown()).transform((map) => Object.fromEntries(Object.entries(map).flatMap(([name, range]) => (typeof range === 'string' ? [[name, range]] : []))));

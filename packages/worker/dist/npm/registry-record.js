@@ -20,14 +20,14 @@ function decoded(json, shape, fallback) {
     if (!json)
         return fallback;
     // Most of a record's maps are empty: no parse for those.
-    if (json === '{}')
-        return {};
-    let value;
-    try {
-        value = JSON.parse(json);
-    }
-    catch {
-        return fallback;
+    let value = {};
+    if (json !== '{}') {
+        try {
+            value = JSON.parse(json);
+        }
+        catch {
+            return fallback;
+        }
     }
     return shape(value) ? value : fallback;
 }

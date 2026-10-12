@@ -5,6 +5,13 @@
  * package is in place. An install that does not finish (a failure, a crash,
  * a lost isolate) is undone from the journal, by itself or by the next
  * install, and only from what the journal records.
+ *
+ * A rename leaves one of three states (renameOutcome): nothing moved; part
+ * of the tree at its destination and all of it still at its source; or all
+ * of it at its destination and residue (a part of it) at its source. Where
+ * the outcome was not recorded (a crash), it is read back from the two
+ * trees: the destination holds all of it exactly when every path still at
+ * the source is at the destination too.
  */
 import type { CommandOutputStream } from '../types.js';
 import type { ProcessView as VFS } from '../../../../runtime/process-files.js';
@@ -15,11 +22,12 @@ interface JournalStep {
     readonly from: string;
     readonly to: string;
     /**
-     * begun: not known to have finished; done: `to` holds all of it (what is
-     * left at `from` is residue); none: nothing moved; undone: its inverse is
-     * made, recorded before the next older step's is begun.
+     * begun: its outcome not recorded; done: `to` holds all of it (what is
+     * left at `from` is residue); none: nothing moved; undoing: its inverse
+     * (`to` back to `from`, which was empty) begun, its outcome not recorded;
+     * undone: the inverse made, recorded before the next older step's begins.
      */
-    state: 'begun' | 'done' | 'none' | 'undone';
+    state: 'begun' | 'done' | 'none' | 'undoing' | 'undone';
 }
 /** One install's publication into a node_modules tree. */
 export declare class InstallJournal {
@@ -48,15 +56,24 @@ export declare class InstallJournal {
     commit(stderr: CommandOutputStream): Promise<void>;
     private write;
     private removeRetired;
+    /** Every path under `dir`, relative to it ('' for `dir` itself); a link is not followed. */
+    private pathsUnder;
     /**
-     * Newest first, each inverse recorded as made before the next older one
-     * begins, so a replay never makes one twice: a published package goes
-     * (its content is new), and a retired or carried copy moves back, over
-     * any residue a rename left where it came from; one already back (its
-     * copy gone from where it was moved, and in place) is only recorded. A
-     * step whose copy cannot be told, or restored, stops the undo there:
-     * nothing older is undone (an ancestor's inverse would take the copy
-     * with it), both names and the journal are kept, and named.
+     * What a rename from `source` to `destination` whose outcome was not
+     * recorded did: nothing; all of it (the source's remains residue); or
+     * part of it, the source whole.
+     */
+    private settle;
+    private record;
+    /**
+     * Newest first, each inverse recorded before it is made and once it is,
+     * so a replay never makes one twice: a published package goes (its
+     * content is new); a retired or carried copy moves back where it was,
+     * over the residue a rename left there. A step whose outcome was not
+     * recorded is settled from the trees first: a part moved is removed from
+     * where it went, the source being whole. A step that cannot be undone
+     * stops the undo there: nothing older is undone (an ancestor's inverse
+     * would take the copy with it); the journal stays, and names it.
      * `recovering`: an install that did not finish is undone, and what is
      * put back is said.
      */

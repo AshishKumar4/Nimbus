@@ -124,7 +124,7 @@ export declare class NpmInstaller {
      * (Fanout): a layer the headroom holds runs on in-DO loaders, a wider one
      * on sibling NimbusSession DOs. Each layer's route is in its profile entry.
      *
-     * The walk is the install engine's plan (core _shared/npm-arborist.ts,
+     * The walk is the install engine's plan (core _shared/npm-arborist,
      * npm's arborist build over what the lockfile says is installed); a
      * placement is required when a path of required edges reaches it, its
      * failure then failing the install; an optional one that fails is
@@ -219,9 +219,9 @@ export declare class NpmInstaller {
      */
     private applyW6Registry;
     /**
-     * A lockfile entry's registry record, read once however often one install
-     * asks for it: null where the cache has none of that package (an alias's
-     * name, retargeted, holds another's).
+     * A lockfile entry's record: its registry package's (the stable identity
+     * an alias names), read once however often one install asks for it; null
+     * where the cache holds none of that exact package.
      */
     private lockRecords;
     /**
