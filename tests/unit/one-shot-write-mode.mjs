@@ -4,7 +4,8 @@
 // - writeFile's, appendFile's, open's and a write stream's `mode` (in each of
 //   their forms), less the process's umask; a file already there keeps its own;
 // - mkdir's `mode`, less the umask; mkdtemp's 0700;
-// - copyFile and cp: the source's mode exactly, over a file already there too.
+// - copyFile and cp: the source's mode exactly, over a file already there too;
+// - chmod and fchmod: the mode set, with nothing after it to carry it.
 // Runs the real generated one-shot module. Red before: every such file was
 // created 0666 less the umask, mkdtemp 0777 less it, a copy as a new file.
 import assert from 'node:assert/strict';
@@ -59,6 +60,8 @@ const expected = {
   'copied-dir/key': 0o600,
   'promise-copied-dir': 0o700,
   'promise-copied-dir/key': 0o600,
+  'chmod-sync.txt': 0o600,
+  'fchmod-sync.txt': 0o600,
 };
 const program = `
 const fs = require('fs');
@@ -84,6 +87,11 @@ const fs = require('fs');
   await fs.promises.copyFile(at('secret.txt'), at('promise-copy.txt'));
   fs.cpSync(at('private'), at('copied-dir'), { recursive: true });
   await fs.promises.cp(at('private'), at('promise-copied-dir'), { recursive: true });
+  fs.writeFileSync(at('chmod-sync.txt'), 'a');
+  fs.chmodSync(at('chmod-sync.txt'), 0o600);
+  const fd = fs.openSync(at('fchmod-sync.txt'), 'w');
+  fs.fchmodSync(fd, 0o600);
+  fs.closeSync(fd);
   const modes = {};
   for (const name of ${JSON.stringify(Object.keys(expected))}) modes[name] = fs.statSync(at(name)).mode & 0o777;
   console.log(JSON.stringify({ modes, temp: temp.slice('/home/user/'.length), tempMode: fs.statSync(temp).mode & 0o777 }));
