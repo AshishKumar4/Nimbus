@@ -1280,6 +1280,18 @@ function __residentCopyByKey(t, path, ckey, rev) {
   return true;
 }
 
+/**
+ * Whether the namespace holds a later revision of `path` than `rev`: bytes
+ * read at `rev` are older than what a barrier admitted while the read was
+ * in flight (read-ahead goes on beside the program's own calls), and are not
+ * installed, or a later read would be served them by their length alone.
+ */
+function __residentOutdated(t, path, rev) {
+  const [parent, name] = __nsSplit(path);
+  const listed = t.nsGet(parent, name);
+  return listed !== undefined && typeof rev === "number" && Number(listed.rev) > rev;
+}
+
 function __residentDelete(t, path) {
   const had = __residentHead(path) !== undefined || __residentHeld.has(path);
   __residentForgetHeld(path);
@@ -2150,48 +2162,6 @@ async function __residentBootLazy(supervisor) {
   return true;
 }
 
-/** Whose names a store holds: rows another credential walked are not this one's. */
-function __residentCredStamp(cred) {
-  if (!cred) return "";
-  const groups = (cred.groups || []).map(Number).sort((a, b) => a - b).join(",");
-  return Number(cred.uid) + ":" + Number(cred.gid) + ":" + groups;
-}
-
-/**
- * Boot a lazily listed namespace over a store an earlier process left (a
- * named one-shot's SQLite), so what it read is not read again: the delta from
- * the store's own cursor drops every file row a change since then reached and
- * keeps the rest, and the pages stay (a read takes one only at the revision
- * its file still has). Names are learned again on demand, as a lazy boot's
- * are: a delta admitted to a sealed store does not rewrite them. A store with
- * no cursor, another credential's, another epoch's, or one its delta cannot
- * bring forward (a poison) starts again from nothing (__residentBootLazy).
- */
-async function __residentResumeLazy(supervisor, cred) {
-  if (!__residentReady) throw new Error("Nimbus: __residentResumeLazy before __residentBind");
-  const t = __residentT;
-  const who = __residentCredStamp(cred);
-  const fresh = async () => {
-    const booted = await __residentBootLazy(supervisor);
-    if (booted) t.metaSet("cred", who);
-    return booted;
-  };
-  const cursor = __residentCursor();
-  if (cursor === null || t.metaGet("cred") !== who || !supervisor || typeof supervisor.fsAcquire !== "function") return fresh();
-  let answer = null;
-  try { answer = await supervisor.fsAcquire(cursor.epoch, cursor.rev, { namespace: true }); }
-  catch { answer = null; }
-  if (!answer || answer.poison || answer.epoch !== cursor.epoch || typeof answer.rev !== "number") return fresh();
-  __residentAdmit(answer);
-  __nsLazy = true;
-  __nsListed.clear();
-  t.nsClear();
-  __nsLinks = new Set();
-  __nsUnlisted = new Map();
-  __nsMarkReady(t, true);
-  return true;
-}
-
 /**
  * The ACQUIRE barrier of a lazily listed namespace, taken where input from
  * outside the process enters it (the runtime decides where; see the core
@@ -2254,7 +2224,11 @@ function __residentNamespaceView(supervisor, device, cred) {
     list: (k) => __nsListDirectory(supervisor, k),
     lookup: (keys, content) => __nsLookupKeys(supervisor, keys, content ? __RESIDENT_LOOKUP_CONTENT_BYTES : 0),
     listTree: (k) => __nsListSubtree(supervisor, k),
-    content(k) {
+    content(k, revision) {
+      if (typeof revision === "number") {
+        const stamped = __residentProvenance(k);
+        if (stamped !== undefined && stamped !== __RK_OWN_WRITE && stamped < revision) return undefined;
+      }
       const cell = __residentGet(k);
       if (cell === undefined || (cell && typeof cell === "object" && cell.error)) return undefined;
       return typeof cell === "string" ? encoder.encode(cell) : cell;
@@ -2263,7 +2237,7 @@ function __residentNamespaceView(supervisor, device, cred) {
       const cursor = __residentCursor();
       if (cursor === null) return null;
       await __residentFetchFiles(supervisor, [{ path: k, size: entry.size, rev: entry.revision, epoch: cursor.epoch, ckey: null }]);
-      const bytes = view.content(k);
+      const bytes = view.content(k, entry.revision);
       return bytes === undefined ? null : bytes;
     },
     pages: (k, rev, size, first, last) => __residentPages(supervisor, k, rev, size, first, last),
@@ -2707,6 +2681,8 @@ async function __residentFetchFiles(supervisor, files) {
 
   // Per-file landed-part counts, so a head row is written only once every
   // range of that file is in. See __residentPutHead.
+  /** The revision each path is read at. */
+  const revOf = new Map(ranges.map((range) => [range.path, range.rev]));
   const landed = new Map();
   let filled = 0, failed = 0, fetchedBytes = 0;
   const failedPaths = new Set();
@@ -2755,6 +2731,8 @@ async function __residentFetchFiles(supervisor, files) {
       if (entry.bytes === null || entry.bytes === undefined) { failedPaths.add(range.path); continue; }
       const chunk = __residentBytes(entry.bytes);
       if (chunk.byteLength !== range.length) { failedPaths.add(range.path); continue; }
+      // Not a byte of it beneath a newer revision of the file (another fill's head and chunks).
+      if (__residentOutdated(t, range.path, range.rev)) { failedPaths.add(range.path); continue; }
       fetchedBytes += chunk.byteLength;
       if (!__residentPutChunk(t, range.path, range.part, chunk)) { failedPaths.add(range.path); continue; }
       const seen = (landed.get(range.path) || 0) + 1;
@@ -2771,12 +2749,18 @@ async function __residentFetchFiles(supervisor, files) {
   // nothing will ever serve.
   for (const path of failedPaths) {
     failed++;
+    // A head at this read's revision or later (another fill, own bytes) is
+    // not this read's to drop; an older one may sit over chunks this read
+    // wrote, and goes with them.
+    const held = t.fileRev(path);
+    const rev = revOf.get(path);
+    if (held !== undefined && (held === __RK_OWN_WRITE || (typeof rev === "number" && held >= rev))) continue;
     t.chunkDelete(path);
     t.fileDelete(path);
   }
 
   for (const file of later) {
-    if (__residentCopyByKey(t, file.path, file.ckey, file.rev)) copied++;
+    if (!__residentOutdated(t, file.path, file.rev) && __residentCopyByKey(t, file.path, file.ckey, file.rev)) copied++;
     else failed++;
   }
   if (ranges.length > 0) await __residentReportSize();

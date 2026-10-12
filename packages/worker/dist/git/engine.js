@@ -20,29 +20,24 @@
 import { execGitNetwork } from './network-facet.js';
 /** A failed operation, as the helper reports it to git. */
 export class RemoteEngineError extends Error {
-    constructor(message) {
+    remoteFailure;
+    constructor(message, remoteFailure) {
         super(message);
+        this.remoteFailure = remoteFailure;
         this.name = 'RemoteEngineError';
     }
-}
-/** The worktree whose .git `gitDir` is: the pack layer writes below a worktree's .git. */
-function worktreeOf(gitDir) {
-    const trimmed = gitDir.replace(/\/+$/, '');
-    if (!trimmed.endsWith('/.git')) {
-        throw new RemoteEngineError(`fatal: the engine writes into a repository's .git, not '${gitDir}' (a bare repository is not supported yet)`);
-    }
-    return trimmed.slice(0, -'/.git'.length) || '/';
 }
 /** The answer of an operation that succeeded, or its error. */
 function answer(result, op) {
     if (!result.success || result.remote === undefined)
-        throw new RemoteEngineError(result.error ?? `git ${op} failed`);
+        throw new RemoteEngineError(result.error ?? `git ${op} failed`, result.remoteFailure);
     return result.remote;
 }
 export function createRemoteEngine(binding) {
     const base = {
         pid: binding.pid,
         quiet: true,
+        signal: binding.signal,
         ...(binding.timeoutMs !== undefined ? { timeout: binding.timeoutMs } : {}),
         ...(binding.budgetUnits !== undefined ? { historyBudgetUnits: binding.budgetUnits } : {}),
     };
@@ -57,10 +52,13 @@ export function createRemoteEngine(binding) {
             const result = await execGitNetwork(binding.ctx, binding.env, {
                 ...base,
                 op: 'remote-fetch',
-                dir: worktreeOf(request.gitDir),
+                dir: request.gitDir,
                 url: request.url,
                 auth: request.auth,
                 remoteFetch: {
+                    gitDir: request.gitDir,
+                    commonDir: request.commonDir,
+                    objectDir: request.objectDir,
                     wants: request.wants,
                     ...(request.depth !== undefined ? { depth: request.depth } : {}),
                     ...(request.deepenSince !== undefined ? { deepenSince: request.deepenSince } : {}),

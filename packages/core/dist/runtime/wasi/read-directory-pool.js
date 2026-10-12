@@ -16,6 +16,8 @@ export function readDirectoryPool({ call, store, client, before, endWaitMs = DIR
     let sequence = 0, generation = 0, cancelled = 0;
     let owner = null, epoch = null;
     let trustedAtIo = false, ended = false, uncertain = 0, reserved = 0;
+    /** The session refused the channel itself (its scope's channel budget, or the channel's own window): the batch is not used again. */
+    let unavailable = false;
     let tail = Promise.resolve();
     const unused = new Map();
     const owned = new Map();
@@ -148,6 +150,8 @@ export function readDirectoryPool({ call, store, client, before, endWaitMs = DIR
             return serial(async () => {
                 if (ended)
                     throw failure('ESTALE', 'directory pool ended');
+                if (unavailable)
+                    return null;
                 if (began !== cancelled)
                     throw failure('EAGAIN', 'directory open was cancelled while queued');
                 if (!store.ready() || !store.cursor()) {
@@ -194,7 +198,18 @@ export function readDirectoryPool({ call, store, client, before, endWaitMs = DIR
                 // Even if the lease was recalled before admission, the required
                 // real descriptor is the completed open; never reopen it by name.
                 return claim(required);
-            }).catch((error) => { invalidate(); throw error; });
+            }).catch((error) => {
+                invalidate();
+                // An optimization the session cannot account for: the directory is
+                // opened as any is (null), now and from now on. The open's own
+                // refusal (ENOENT, EACCES) and a park given up on stay the caller's.
+                const code = error?.code;
+                if (!ended && (code === 'ENOSPC' || code === 'ESTALE')) {
+                    unavailable = true;
+                    return null;
+                }
+                throw error;
+            });
         },
         owns: (id) => owned.has(id),
         closed: (id) => retiring.has(id),
@@ -226,7 +241,7 @@ export function readDirectoryPool({ call, store, client, before, endWaitMs = DIR
             // is sent now, not behind an exchange the session may never answer (a
             // park the watchdog gave up on): its later sequence supersedes that
             // one. The run waits for it at most endWaitMs.
-            let timer;
+            let timer = null;
             await Promise.race([
                 exchange([], false, true).then(() => { }, () => { }),
                 new Promise((resolve) => { timer = setTimeout(resolve, endWaitMs); }),

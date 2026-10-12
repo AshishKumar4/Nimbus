@@ -6,7 +6,7 @@
 import { z } from 'zod';
 import { RuntimeFsPathSchema } from './filesystem-path.js';
 import { withRecall } from '../vfs/recall.js';
-import { DIRECTORY_PREFETCH_LIMIT, DIRECTORY_BATCH_LIMIT, DIRECTORY_ENDED_CHANNELS } from '../constants.js';
+import { DIRECTORY_PREFETCH_LIMIT, DIRECTORY_BATCH_LIMIT, DIRECTORY_SEQUENCE_WINDOW } from '../constants.js';
 export const DIRECTORY_READ_RPC = 'fsReadDirectories';
 const Ids = z.array(z.number().int().nonnegative()).max(DIRECTORY_PREFETCH_LIMIT);
 const Request = z.object({
@@ -53,7 +53,7 @@ export async function readDirectoryBatch(fs, input) {
         throw refusal('ESTALE', 'directory descriptor scope ended');
     let budget = scopes.get(scope);
     if (budget === undefined) {
-        const created = { ended: false, reserved: 0, channels: new Map(), endedChannels: new Set(), tracked: new Map(), tail: Promise.resolve() };
+        const created = { ended: false, reserved: 0, channels: new Map(), endedChannels: new Map(), tracked: new Map(), tail: Promise.resolve() };
         scopes.set(scope, created);
         // The scope closes its descriptions; the account ends on the same release, before the scope is marked closed.
         scope.subscriptions.add(() => {
@@ -69,8 +69,13 @@ export async function readDirectoryBatch(fs, input) {
         throw refusal('ESTALE', 'directory descriptor scope ended'); };
     const run = async () => {
         live();
-        if (budget.endedChannels.has(request.channel))
+        const outstanding = budget.endedChannels.get(request.channel);
+        if (outstanding !== undefined) {
+            outstanding.delete(request.sequence);
+            if (outstanding.size === 0)
+                budget.endedChannels.delete(request.channel);
             throw refusal('ESTALE', 'directory prefetch channel ended');
+        }
         let channel = budget.channels.get(request.channel);
         if (!channel) {
             // A late request from a rewound run cannot close reused descriptor numbers.
@@ -79,11 +84,22 @@ export async function readDirectoryBatch(fs, input) {
             // superseded, and cannot allocate after that recovery acknowledged.
             if (request.retire.length || request.claim.length || (request.sequence !== 1 && request.open.length > 0))
                 throw refusal('ESTALE', 'unknown directory prefetch channel');
-            if (budget.channels.size >= DIRECTORY_PREFETCH_LIMIT)
+            if (budget.channels.size + budget.endedChannels.size >= DIRECTORY_PREFETCH_LIMIT)
                 throw refusal('ENOSPC', 'too many directory prefetch channels');
-            channel = { sequence: 0 };
+            if (request.sequence > DIRECTORY_SEQUENCE_WINDOW)
+                throw refusal('ESTALE', 'directory batch numbered past the channel\'s window');
+            channel = { sequence: 0, missing: 1, ahead: new Set() };
             budget.channels.set(request.channel, channel);
         }
+        if (request.sequence >= channel.missing + DIRECTORY_SEQUENCE_WINDOW)
+            throw refusal('ESTALE', 'directory batch numbered past the channel\'s window');
+        if (request.sequence === channel.missing) {
+            channel.missing++;
+            while (channel.ahead.delete(channel.missing))
+                channel.missing++;
+        }
+        else if (request.sequence > channel.missing)
+            channel.ahead.add(request.sequence);
         if (request.sequence <= channel.sequence)
             throw refusal('ESTALE', 'directory batch was already superseded');
         channel.sequence = request.sequence;
@@ -137,12 +153,14 @@ export async function readDirectoryBatch(fs, input) {
                 }
             }
             budget.channels.delete(request.channel);
-            budget.endedChannels.add(request.channel);
-            for (const oldest of budget.endedChannels) {
-                if (budget.endedChannels.size <= DIRECTORY_ENDED_CHANNELS)
-                    break;
-                budget.endedChannels.delete(oldest);
-            }
+            // The run's requests are numbered from 1 without gaps: those that have
+            // not arrived (within the window) are refused when they do.
+            const missing = new Set();
+            for (let sequence = channel.missing; sequence < request.sequence; sequence++)
+                if (!channel.ahead.has(sequence))
+                    missing.add(sequence);
+            if (missing.size > 0)
+                budget.endedChannels.set(request.channel, missing);
         }
         if (closeErrors.length)
             throw closeErrors[0];

@@ -1,4 +1,5 @@
 import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
+import type { RemoteFailure } from './pack/remote-failure.js';
 /** Credentials for the remote, as the builtin git takes them (GIT_USERNAME, GIT_PASSWORD or GIT_TOKEN). */
 export interface RemoteAuth {
     username: string;
@@ -27,6 +28,8 @@ export interface FetchPackRequest {
     auth?: RemoteAuth;
     /** The repository's git directory, as an engine path: where the pack and .git/shallow are written. */
     gitDir: string;
+    commonDir?: string;
+    objectDir?: string;
     wants: string[];
     depth?: number;
     /** Seconds since the epoch. */
@@ -88,6 +91,7 @@ export interface EngineBinding {
     /** The calling process: the facet acts as it (its credential, its filesystem). */
     pid: number;
     network: WorkspaceNetwork;
+    signal?: AbortSignal;
     /** One operation's limit (the facet's default when absent). */
     timeoutMs?: number;
     /** Verification knob: a fetch's decoding budget per invocation (processor.ts WORK_BUDGET_UNITS by default). */
@@ -95,7 +99,8 @@ export interface EngineBinding {
 }
 /** A failed operation, as the helper reports it to git. */
 export declare class RemoteEngineError extends Error {
-    constructor(message: string);
+    readonly remoteFailure?: RemoteFailure | undefined;
+    constructor(message: string, remoteFailure?: RemoteFailure | undefined);
 }
 export declare function createRemoteEngine(binding: EngineBinding): RemoteEngine;
 //# sourceMappingURL=engine.d.ts.map

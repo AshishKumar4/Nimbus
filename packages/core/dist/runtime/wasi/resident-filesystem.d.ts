@@ -80,8 +80,12 @@ export interface ResidentNamespace {
     lookup(keys: string[], content: boolean): Promise<boolean>;
     /** List everything under `key` in a few pages. False when that did not finish. */
     listTree(key: string): Promise<boolean>;
-    /** The bytes of file `key` the store holds, or undefined. */
-    content(key: string): Uint8Array | undefined;
+    /**
+     * The bytes of file `key` the store holds, or undefined; with `revision`,
+     * only bytes dated at it or later (or the facet's own): a read of older
+     * bytes that landed after a barrier admitted the change is not served.
+     */
+    content(key: string, revision?: number): Uint8Array | undefined;
     /** Fetch file `key`'s bytes (at `entry`'s revision) into the store; null when they could not be fetched. */
     fill(key: string, entry: ResidentEntry): Promise<Uint8Array | null>;
     /**

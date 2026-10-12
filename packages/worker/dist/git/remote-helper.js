@@ -18,6 +18,10 @@
  * Not stateless-connect or connect: with those git would run the protocol
  * itself, and git.wasm cannot demultiplex a sideband (start_async forks).
  */
+import { RemoteEngineError } from './engine.js';
+import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
+import { base64Utf8 } from '@nimbus-sh/core/_shared/crypto.js';
+import { anonymizeUrl, redactCredentials, remoteFailureText, selectRemoteCredentials, urlCredentials } from './pack/remote-failure.js';
 const HEX_OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 /** A C-style quoted value (quote_c_style) as the string it quotes; any other as it is. */
 export function unquoteC(value) {
@@ -117,52 +121,23 @@ function setOption(options, name, raw) {
         default: return 'unsupported';
     }
 }
-/**
- * The value of local ref `name` (full, as git names a push source), through
- * a symbolic ref, a loose file or packed-refs; null when there is none.
- */
-async function localRef(io, gitDir, name) {
-    const dec = new TextDecoder();
-    for (let hops = 0; hops < 5; hops++) {
-        const loose = await io.readFile(`${gitDir}/${name}`);
-        if (loose !== null) {
-            const text = dec.decode(loose).trim();
-            if (text.startsWith('ref: ')) {
-                name = text.slice(5);
-                continue;
-            }
-            return HEX_OID.test(text) ? text : null;
-        }
-        const packed = await io.readFile(`${gitDir}/packed-refs`);
-        if (packed === null)
-            return null;
-        for (const line of dec.decode(packed).split('\n')) {
-            const space = line.indexOf(' ');
-            if (space > 0 && line.slice(space + 1) === name && HEX_OID.test(line.slice(0, space)))
-                return line.slice(0, space);
-        }
-        return null;
-    }
-    return null;
-}
 /** The directory git named in GIT_DIR, absolute (git gives it relative to the cwd it started the helper in). */
 function gitDirOf(io) {
     const dir = io.env.GIT_DIR;
-    if (!dir)
-        return null;
-    if (dir.startsWith('/'))
-        return dir.replace(/\/+$/, '');
-    const parts = `${io.cwd}/${dir}`.split('/');
-    const out = [];
-    for (const part of parts) {
-        if (part === '' || part === '.')
-            continue;
-        if (part === '..')
-            out.pop();
-        else
-            out.push(part);
+    return dir ? resolveVfsPath(io.cwd, dir) : null;
+}
+/** Git exports a common directory when overridden; a linked gitdir otherwise records it in commondir. */
+async function storageOf(io, gitDir) {
+    let commonDir = io.env.GIT_COMMON_DIR ? resolveVfsPath(io.cwd, io.env.GIT_COMMON_DIR) : gitDir;
+    if (!io.env.GIT_COMMON_DIR) {
+        const common = await io.readFile(gitDir + '/commondir');
+        if (common !== null)
+            commonDir = resolveVfsPath(gitDir, new TextDecoder().decode(common).trimEnd());
     }
-    return `/${out.join('/')}`;
+    return {
+        ...(commonDir !== gitDir ? { commonDir } : {}),
+        ...(io.env.GIT_OBJECT_DIRECTORY ? { objectDir: resolveVfsPath(io.cwd, io.env.GIT_OBJECT_DIRECTORY) } : {}),
+    };
 }
 function errorMessage(error) {
     return error instanceof Error ? error.message : String(error);
@@ -194,6 +169,10 @@ export async function runRemoteHelper(io, engine, local) {
         username: io.env.GIT_USERNAME || '',
         password: io.env.GIT_PASSWORD || io.env.GIT_TOKEN || '',
     };
+    const credentials = selectRemoteCredentials(url, auth);
+    const embedded = urlCredentials(url);
+    const secrets = [io.env.GIT_PASSWORD ?? '', io.env.GIT_TOKEN ?? '', embedded.password,
+        base64Utf8(credentials.username + ':' + credentials.password)];
     const options = {
         verbosity: 1, progress: false, deepenNot: [], deepenRelative: false, followTags: false, dryRun: false, force: false,
         checkConnectivity: false, cas: new Map(), updateShallow: false, atomic: false, pushOptions: [], objectFormat: false,
@@ -203,7 +182,9 @@ export async function runRemoteHelper(io, engine, local) {
     /** The id that names no object, in the remote's hash. */
     let zero = '0'.repeat(40);
     const fail = async (what, error) => {
-        await io.stderr(`fatal: ${what}: ${errorMessage(error)}\n`);
+        await io.stderr(error instanceof RemoteEngineError && error.remoteFailure
+            ? remoteFailureText(url, error.remoteFailure, { username: credentials.username, password: Boolean(credentials.password) }, secrets)
+            : redactCredentials(`fatal: ${what}: ${errorMessage(error)}\n`, secrets));
         return 128;
     };
     for (;;) {
@@ -229,7 +210,7 @@ export async function runRemoteHelper(io, engine, local) {
                 listed = await engine.listRefs({ url, auth, forPush });
             }
             catch (error) {
-                return fail(`could not read the refs of ${url}`, error);
+                return fail(`could not read the refs of ${anonymizeUrl(url)}`, error);
             }
             let out = options.objectFormat ? `:object-format ${listed.objectFormat}\n` : '';
             for (const ref of listed.refs) {
@@ -243,7 +224,7 @@ export async function runRemoteHelper(io, engine, local) {
             await io.stdout(`${out}\n`);
             zero = '0'.repeat(listed.objectFormat === 'sha256' ? 64 : 40);
             if (forPush)
-                pushRefs = new Map(listed.refs.filter((r) => r.oid).map((r) => [r.name, r.oid]));
+                pushRefs = new Map(listed.refs.flatMap((r) => r.oid === null ? [] : [[r.name, r.oid]]));
             continue;
         }
         if (line.startsWith('fetch ')) {
@@ -261,7 +242,7 @@ export async function runRemoteHelper(io, engine, local) {
             let fetched;
             try {
                 fetched = await engine.fetchPack({
-                    url, auth, gitDir, wants: [...wants],
+                    url, auth, gitDir, ...await storageOf(io, gitDir), wants: [...wants],
                     ...(options.depth !== undefined ? { depth: options.depth } : {}),
                     ...(options.deepenSince !== undefined ? { deepenSince: options.deepenSince } : {}),
                     ...(options.deepenNot.length > 0 ? { deepenNot: options.deepenNot } : {}),
@@ -272,7 +253,7 @@ export async function runRemoteHelper(io, engine, local) {
                 });
             }
             catch (error) {
-                return fail(`could not fetch from ${url}`, error);
+                return fail(`could not fetch from ${anonymizeUrl(url)}`, error);
             }
             if (options.verbosity > 0 && options.progress && fetched.packName) {
                 await io.stderr(`Received ${fetched.objects} objects, ${fetched.bytes} bytes.\n`);
@@ -300,7 +281,13 @@ export async function runRemoteHelper(io, engine, local) {
             for (const spec of specs) {
                 let next = zero;
                 if (spec.src !== '') {
-                    const resolved = HEX_OID.test(spec.src) ? spec.src : await localRef(io, gitDir, spec.src);
+                    let resolved;
+                    try {
+                        resolved = HEX_OID.test(spec.src) ? spec.src : await local.resolve(gitDir, spec.src);
+                    }
+                    catch (error) {
+                        return fail('push', error);
+                    }
                     if (resolved === null) {
                         statuses.set(spec.dst, `error ${spec.dst} src refspec ${spec.src} does not match any`);
                         continue;
@@ -340,7 +327,7 @@ export async function runRemoteHelper(io, engine, local) {
                     });
                 }
                 catch (error) {
-                    return fail(`could not push to ${url}`, error);
+                    return fail(`could not push to ${anonymizeUrl(url)}`, error);
                 }
                 for (const ref of pushed.refs) {
                     statuses.set(ref.ref, ref.ok ? `ok ${ref.ref}` : `error ${ref.ref}${ref.reason ? ` ${ref.reason}` : ''}`);
@@ -354,7 +341,7 @@ export async function runRemoteHelper(io, engine, local) {
             let out = '';
             for (const spec of specs)
                 out += `${statuses.get(spec.dst) ?? `error ${spec.dst} not reported by the remote`}\n`;
-            await io.stdout(`${out}\n`);
+            await io.stdout(redactCredentials(`${out}\n`, secrets));
             continue;
         }
         return fail('protocol error', new Error(`unknown command '${line}' from git`));

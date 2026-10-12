@@ -41,6 +41,9 @@ export declare function listRefs(remote: RemoteTransport, request: {
     objectFormat: 'sha1' | 'sha256';
 }>;
 export interface FetchPackRequest {
+    gitDir: string;
+    commonDir?: string;
+    objectDir?: string;
     jobId: string;
     wants: string[];
     depth?: number;

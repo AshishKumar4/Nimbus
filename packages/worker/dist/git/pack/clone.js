@@ -92,7 +92,7 @@ const encoder = new TextEncoder();
 export { readRange };
 /** A resumed step run again after its answer was lost: its recorded outcome, its pack's naming finished; or null. */
 export async function settledBefore(context, tmpName, recordName) {
-    return await resumeInstall(packFiles(context), join(context.dir, PACK_DIR), tmpName, join(context.dir, STAGE_DIR + '/' + recordName));
+    return await resumeInstall(packFiles(context), packDirectory(context), tmpName, stageDirectory(context) + '/' + recordName);
 }
 /**
  * The clone's ranged file calls (its lease covers them); whole files and
@@ -101,9 +101,9 @@ export async function settledBefore(context, tmpName, recordName) {
  */
 function packFiles(context, writer) {
     const supervisor = context.supervisor;
-    const relative = (path) => path.slice(context.dir.length + 1);
+    const relative = (path) => context.storage ? path : path.slice(context.dir.length + 1);
     let own = null;
-    const waves = () => writer ?? (own ??= context.writer());
+    const waves = () => writer ?? (own ??= context.writer(undefined, context.storage?.objectDir));
     return {
         fsWriteRange: (path, offset, bytes) => supervisor.fsWriteRange(path, offset, bytes),
         fsTruncate: (path, size) => supervisor.fsTruncate(path, size),
@@ -125,6 +125,12 @@ function packFiles(context, writer) {
 }
 export function join(dir, path) {
     return dir + '/' + path;
+}
+export function packDirectory(context) {
+    return context.storage ? context.storage.objectDir + '/pack' : join(context.dir, PACK_DIR);
+}
+function stageDirectory(context) {
+    return context.storage ? context.storage.gitDir + '/nimbus-clone' : join(context.dir, STAGE_DIR);
 }
 function stripSlash(path) {
     return path.startsWith('/') ? path.slice(1) : path;
@@ -195,7 +201,7 @@ async function storePack(context, writer, stream, tmpName, options) {
 }
 /** storePack, or where its decoding stopped when the budget ran out first (see resumePack). */
 export async function storePackResumable(context, writer, stream, tmpName, options) {
-    const store = new RangedPackFile(packFiles(context), join(context.dir, PACK_DIR + '/' + tmpName));
+    const store = new RangedPackFile(packFiles(context), packDirectory(context) + '/' + tmpName);
     const result = await new PackStreamProcessor({
         store,
         cacheBytes: options.cacheBytes,
@@ -208,9 +214,9 @@ export async function storePackResumable(context, writer, stream, tmpName, optio
 }
 /** Continue decoding a pending pack from its stored bytes; it may stop at the budget again. */
 export async function resumePack(context, writer, pending, options) {
-    const store = new RangedPackFile(packFiles(context), join(context.dir, PACK_DIR + '/' + pending.tmpName));
+    const store = new RangedPackFile(packFiles(context), packDirectory(context) + '/' + pending.tmpName);
     store.size = pending.packBytes;
-    const records = await readRange(context.supervisor, join(context.dir, STAGE_DIR + '/ckpt-' + pending.tmpName), 0, pending.recordsBytes);
+    const records = await readRange(context.supervisor, stageDirectory(context) + '/ckpt-' + pending.tmpName, 0, pending.recordsBytes);
     const result = await new PackStreamProcessor({
         store,
         cacheBytes: options.cacheBytes,
@@ -226,8 +232,9 @@ async function settlePack(context, writer, tmpName, result, promisor, record) {
     if (result.checkpoint !== null || result.entries === null) {
         const checkpoint = result.checkpoint;
         const recordsBytes = checkpoint.records.byteLength;
-        await writer.file(STAGE_DIR + '/ckpt-' + tmpName, 0o644, checkpoint.records);
-        await writer.flush();
+        const checkpointWriter = context.storage ? context.writer(undefined, context.storage.gitDir) : writer;
+        await checkpointWriter.file((context.storage ? stageDirectory(context) : STAGE_DIR) + '/ckpt-' + tmpName, 0o644, checkpoint.records);
+        await checkpointWriter.flush();
         return {
             pending: {
                 tmpName,
@@ -244,11 +251,11 @@ async function settlePack(context, writer, tmpName, result, promisor, record) {
     const extra = record === undefined ? undefined : await record.publish();
     await writer.flush();
     const summary = await installPack(packFiles(context, writer), {
-        dir: join(context.dir, PACK_DIR),
+        dir: packDirectory(context),
         tmpName,
         result,
         promisor,
-        record: record === undefined ? undefined : { path: join(context.dir, STAGE_DIR + '/' + record.name), extra },
+        record: record === undefined ? undefined : { path: stageDirectory(context) + '/' + record.name, extra },
     });
     if (summary === null)
         throw new PackFormatError('pack ' + tmpName + ' holds no objects');
