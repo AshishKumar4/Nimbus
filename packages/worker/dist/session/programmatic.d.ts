@@ -88,7 +88,7 @@ export interface ProgrammaticHost extends TimerHost {
         close(): void;
     }) | null;
     kernel?: unknown;
-    facetProcessManager?: ChildProcessManager | null;
+    childProcessManager?: ChildProcessManager | null;
     esbuildService?: unknown;
     /** The session's esbuild facet pool; torn down with the installer and dev server. */
     bundlePool?: {

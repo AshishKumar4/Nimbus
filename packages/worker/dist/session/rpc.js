@@ -858,7 +858,7 @@ export async function _rpcStdout(self, pid, data, at, run) {
         data = self.facetManager?.gateOutput(pid, 'stdout', data, at, run) ?? data;
     if (data.byteLength === 0)
         return;
-    const childOutput = self.facetProcessManager?.routeOutput(pid, 1, data);
+    const childOutput = self.childProcessManager?.routeOutput(pid, 1, data);
     if (childOutput) {
         await childOutput;
         return;
@@ -901,7 +901,7 @@ export async function _rpcStderr(self, pid, data, at, run) {
         data = self.facetManager?.gateOutput(pid, 'stderr', data, at, run) ?? data;
     if (data.byteLength === 0)
         return;
-    const childOutput = self.facetProcessManager?.routeOutput(pid, 2, data);
+    const childOutput = self.childProcessManager?.routeOutput(pid, 2, data);
     if (childOutput) {
         await childOutput;
         return;
@@ -1039,7 +1039,7 @@ function reportExit(self, pid, code, tail, dataReads, profileUnread, runtimeCode
     // A child_process child's end is its parent's to report, as its output
     // is: the terminal hears nothing of it (the parent may not even read
     // what it wrote, as a Node parent need not).
-    if (self.facetProcessManager?.isChild(pid))
+    if (self.childProcessManager?.isChild(pid))
         return;
     const cmdFromTable = self.processes.get(pid)?.command;
     notifyTerminalEvent(self.terminal, { type: 'exit', pid, code, command: cmdFromTable });
@@ -1114,7 +1114,7 @@ function reportExternalExit(self, pid, code, reason) {
     self.processes.markExit(pid, code, reason);
     // A child_process child's end is its parent's to report, as its output
     // is (routeOutput): the terminal hears nothing of it.
-    if (!self.facetProcessManager?.isChild(pid)) {
+    if (!self.childProcessManager?.isChild(pid)) {
         const cmdFromTable = self.processes.get(pid)?.command;
         notifyTerminalEvent(self.terminal, { type: 'exit', pid, code, reason, command: cmdFromTable });
         if (self.terminal && self.processes.logSize(pid) > 0) {
