@@ -14,7 +14,7 @@
 // One EVALUATION of a program is one boot: `world.boots` is the ledger a ghost
 // process would show up in, because a second boot means the user's module
 // scope ran twice.
-import { callerLeftSignal, hostActivity, HOST_WATCH_HEADER, HOST_INCARNATION_HEADER, HOST_REQUEST_HEADER } from '../../packages/fabric/src/host-activity.ts';
+import { callerScope, hostActivity, HOST_WATCH_HEADER, HOST_INCARNATION_HEADER, HOST_REQUEST_HEADER } from '../../packages/fabric/src/host-activity.ts';
 import { installHostWatchSocket } from './lib/host-watch-socket.mjs';
 installHostWatchSocket();
 
@@ -127,7 +127,7 @@ export function createFacetWorld(evaluate, { resolveConfig = true, evaluatesAdap
         async hostHttpRequest(request, left) {
           const instance = await ensure(name, start);
           if (evaluatesAdapter) return instance.hostHttpRequest(request, left);
-          const admitted = admit(instance, request, callerLeftSignal(left));
+          const admitted = admit(instance, request, callerScope(left).scope.signal);
           return admitted instanceof Request ? instance.handleHttpRequest(admitted) : admitted;
         },
         // A resident's WebSocket entrypoint (ResidentFacet.handleWebSocketRequest).
