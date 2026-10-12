@@ -380,6 +380,8 @@ export interface VfsRemoval {
     removed: string[];
     kept: string[];
     failures: VfsRemovalFailure[];
+    /** Entries gone before this walk could remove them; consumers decide whether to diagnose them. */
+    vanished?: string[];
 }
 export interface VfsRemovalFailure {
     path: string;

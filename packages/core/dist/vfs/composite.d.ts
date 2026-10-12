@@ -88,6 +88,12 @@ export declare function comparePaths(a: string, b: string): number;
  */
 export declare function runtimeStatOf(stat: VfsStat): RuntimeVfsStat;
 export type { Principal } from './vfs.js';
+/** The namespace always offers recursive removal, walking a backend that does not. */
+export interface CompositeSyncVFS extends SyncVFS {
+    removeRecursive(path: string, options?: {
+        keepVanishedAncestors?: boolean;
+    }): VfsRemoval;
+}
 /** A backend, or a function giving the backend for a principal at this instant (null: absent). */
 export type VfsSource = VFS | ((principal: Principal) => VFS | null);
 export interface MountOptions {
@@ -752,7 +758,7 @@ export declare class CompositeVFS implements VFS {
     as(cred: VfsCred, actor?: string, options?: VfsViewOptions): CompositeVFS;
     /** Who this view acts as. */
     get principal(): Principal;
-    get sync(): SyncVFS;
+    get sync(): CompositeSyncVFS;
     private resynthesize;
     /** The mount `path` (resolved, normalized) is on: the longest point at or above it. */
     private locate;
@@ -958,7 +964,9 @@ export declare class CompositeVFS implements VFS {
     unlink(path: string): Promise<void>;
     rmdir(path: string): Promise<void>;
     rename(from: string, to: string): Promise<void>;
-    removeRecursive(path: string): Promise<VfsRemoval>;
+    removeRecursive(path: string, options?: {
+        keepVanishedAncestors?: boolean;
+    }): Promise<VfsRemoval>;
     symlink(target: string, path: string): Promise<void>;
     readlink(path: string): Promise<string>;
     chmod(path: string, mode: number): Promise<void>;

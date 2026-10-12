@@ -15953,11 +15953,18 @@ function normalizeVfsPath(p) {
   const text = String(p ?? "");
   const plain = plainVfsPath(text);
   if (plain !== null) return plain;
-  const segments = text.split("/");
+  return normalizedSegments(text, false);
+}
+function normalizedSegments(path3, lookup) {
+  const segments = path3.split("/");
+  const leaf = segments[segments.length - 1];
+  if (lookup && (leaf === "" || leaf === ".")) return null;
   const out = [];
   for (const seg of segments) {
-    if (seg === "..") out.pop();
-    else if (seg !== "." && seg !== "") out.push(seg);
+    if (seg === "..") {
+      if (lookup) return null;
+      out.pop();
+    } else if (seg !== "." && seg !== "") out.push(seg);
   }
   return out.join("/");
 }

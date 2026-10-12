@@ -1,7 +1,6 @@
 import { andThen } from './vfs.js';
-export function walkVfsPath(input, lookup, loop) {
-    const walk = (components, hops) => {
-        const resolved = [];
+export function walkVfsPath(input, lookup, loop, options) {
+    const walk = (components, hops, resolved = []) => {
         const step = (index) => {
             for (; index < components.length; index++) {
                 const component = components[index];
@@ -18,11 +17,14 @@ export function walkVfsPath(input, lookup, loop) {
                     const expand = (read) => {
                         if (hops >= 40)
                             return loop();
-                        return andThen(read(), (target) => walk([
-                            ...(target.startsWith('/') ? [] : resolved.slice(0, -1)),
-                            ...target.split('/'),
-                            ...components.slice(at + 1),
-                        ], hops + 1));
+                        return andThen(read(), (text) => {
+                            const target = options?.target?.(text) ?? text;
+                            return walk([
+                                ...(target.startsWith('/') ? [] : resolved.slice(0, -1)),
+                                ...target.split('/'),
+                                ...components.slice(at + 1),
+                            ], hops + 1);
+                        });
                     };
                     return typeof link === 'function' ? expand(link)
                         : link.then((follow) => follow === null ? step(at + 1) : expand(follow));
@@ -32,5 +34,5 @@ export function walkVfsPath(input, lookup, loop) {
         };
         return step(0);
     };
-    return walk(String(input).split('/'), 0);
+    return walk(String(input).split('/'), options?.start?.hops ?? 0, options?.start?.path.split('/').filter(Boolean));
 }
