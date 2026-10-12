@@ -135,7 +135,8 @@ for (const code of [1000, 1005, 1006, 'error']) {
   const lease = hostActivity(t.ctx).acquire(); await lease.ready;
   const peer = [...t.peers.values()][0];
   const record = [...peer.peerHost.records.values()][0];
-  for (let i = 0; i < 20 && !record.watchers.size; i++) await turns();
+  // The leaf's adapter is imported for real the first time: that is I/O, not a turn.
+  for (let i = 0; i < 400 && !record.watchers.size; i++) await new Promise((resolve) => setTimeout(resolve, 5));
   const server = [...record.watchers.keys()][0];
   assert.equal(hostActivity(peer.ctx).owners.size, 1);
   const replies = [], close = server.close.bind(server);
