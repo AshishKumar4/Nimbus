@@ -17,13 +17,13 @@
 //
 // Run it in the lane's worktree. <commit> defaults to HEAD; what is built is
 // the commit, never the working tree. The files are written into the
-// worktree only when <commit> is its HEAD, the binding's directory does not
-// exist yet, and no file the archive writes has a change of its own, staged
+// worktree only when <commit> is its HEAD and no staged artifact being
+// replaced has a change of its own, staged
 // or not (checked when the run returns, so an edit made during it counts);
 // either way the archive is saved and its path printed. Then commit them,
 // and run scripts/ci/remote-build.mjs for the dist fixpoint.
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { mapOnArmada } from './lib/armada.mjs';
 import { extract, FILES_MARK, keepArchive, keptAs, splitArchive, writeRefusal } from './lib/remote-artifacts.mjs';
@@ -101,10 +101,12 @@ const saved = `${keptAs('remote-napi-binding', `${key}-${sha.slice(0, 12)}`)}.ta
 // What bundle-napi-wasm staged; the build's own out tree (its pruned
 // lockfile) stays in the archive, out of the Worker's static assets.
 const members = keepArchive(saved, archive).filter((member) => member.startsWith('packages/'));
-const refusal = existsSync(join(repo, dir)) ? `${dir} exists` : writeRefusal(repo, sha, members);
+const loader = 'packages/worker/public/_assets/napi-wasm/loader';
+const refusal = writeRefusal(repo, sha, [dir, loader, 'packages/worker/src/napi-wasm-artifacts.generated.ts']);
 if (refusal !== null) {
   console.log(`remote-napi-binding: saved ${saved} (job ${r.jobId}); not written: ${refusal}`);
   process.exit(0);
 }
+if (existsSync(join(repo, loader))) rmSync(join(repo, loader), { recursive: true, force: true });
 extract(repo, saved, members);
 console.log(`remote-napi-binding: wrote ${dir} (job ${r.jobId}; archive ${saved}). Commit it, then run scripts/ci/remote-build.mjs.`);

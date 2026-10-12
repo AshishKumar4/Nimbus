@@ -99,14 +99,13 @@ const loaderDigests = LOADER_FILES.filter((f) => f !== 'provenance.json').map((f
 if (loaderDigests.some((d) => typeof d !== 'string')) fail(`${src.loader}/provenance.json lacks output digests`);
 const buildId = sha256(loaderDigests.join('\n')).slice(0, 16);
 const loaderDir = path.join(ASSETS, 'loader', buildId);
-const loaderFacts = await stage(src.loader, loaderDir, LOADER_FILES, loaderProvenance, true);
 const asset = (dir, file, facts) => ({
   path: `/_assets/napi-wasm/${path.relative(ASSETS, dir).split(path.sep).join('/')}/${file}`,
   sha256: facts[file].sha256,
   bytes: facts[file].bytes,
 });
 
-const bindings = [];
+const bindingSources = [];
 for (const spec of Object.values(SPECS)) {
   const sourceDir = src.binding(spec.name, spec.version);
   if (!existsSync(path.join(sourceDir, 'provenance.json'))) fail(`${sourceDir} has no provenance.json`);
@@ -116,6 +115,11 @@ for (const spec of Object.values(SPECS)) {
   if (provenance.artifact !== spec.name || provenance.version !== spec.version) {
     fail(`${sourceDir} holds ${provenance.artifact}@${provenance.version}; specs.mjs pins ${spec.name}@${spec.version}`);
   }
+  bindingSources.push({ spec, sourceDir, provenance });
+}
+const loaderFacts = await stage(src.loader, loaderDir, LOADER_FILES, loaderProvenance, true);
+const bindings = [];
+for (const { spec, sourceDir, provenance } of bindingSources) {
   const file = `${spec.name}.wasm`;
   const dir = path.join(ASSETS, spec.name, spec.version);
   const facts = await stage(sourceDir, dir, [file, 'provenance.json'], provenance);
