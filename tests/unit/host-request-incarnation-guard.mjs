@@ -41,7 +41,7 @@ async function call(process, entry, sent) {
   const [token, nonce] = [headers.get(REQUEST_GUARD), headers.get(HOST_INCARNATION_HEADER)];
   headers.delete(REQUEST_GUARD);
   headers.delete(HOST_INCARNATION_HEADER);
-  return process.hostHttpRequest(new Request(sent, { headers }), token, nonce, nextId++, []);
+  return process.hostHttpRequest(new Request(sent, { headers }), token, nonce, nextId++, [], []);
 }
 function request(nonce, token = capability, upgrade = false) {
   return new Request('https://leaf.invalid/user/path?kept=yes', {
@@ -104,6 +104,15 @@ for (const entry of ['hostHttpRequest', 'handleHttpRequest', 'fetch']) {
   await process.abandonHttpRequest(capability, nextId);
   await (await call(process, 'hostHttpRequest', request(pinned))).text();
   assert.equal(ctx.signal.aborted, true, 'an abandon that arrived first still reaches its request');
+  // An abandon whose own call did not arrive rides the next request.
+  const missed = nextId;
+  await (await call(process, 'hostHttpRequest', request(pinned))).text();
+  const held = ctx.signal;
+  assert.equal(held.aborted, false);
+  const headers = new Headers(request(pinned).headers);
+  headers.delete(REQUEST_GUARD); headers.delete(HOST_INCARNATION_HEADER);
+  await (await process.hostHttpRequest(new Request(request(pinned), { headers }), capability, pinned, nextId++, [], [missed])).text();
+  assert.equal(held.aborted, true, 'an abandon carried by a later request reaches its request');
 }
 {
   // A guest that reflects on its own class cannot learn the capability, so

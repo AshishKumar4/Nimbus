@@ -134,9 +134,10 @@ export function createFacetWorld(evaluate, { resolveConfig = true, evaluatesAdap
     get(name, start) {
       return {
         async startProcess(args) { return (await ensure(name, start)).startProcess(args); },
-        async hostHttpRequest(request, key, pinned, id, ended) {
+        async hostHttpRequest(request, key, pinned, id, ended, abandoned) {
           const instance = await ensure(name, start);
-          if (evaluatesAdapter) return instance.hostHttpRequest(request, key, pinned, id, ended);
+          if (evaluatesAdapter) return instance.hostHttpRequest(request, key, pinned, id, ended, abandoned);
+          for (const gone of abandoned) { tables.get(instance)?.get(gone)?.abort(); tables.get(instance)?.delete(gone); }
           if (!key) return new Response('Not found', { status: 404 });
           if (pinned !== incarnationOf(instance)) return new Response('the instance that ran this process was replaced', { status: 410, headers: { [HOST_REQUEST_HEADER]: key } });
           return instance.handleHttpRequest(new Request(request, { signal: requestOf(instance, id, ended).signal }));

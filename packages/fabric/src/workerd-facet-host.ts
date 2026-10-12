@@ -21,6 +21,7 @@ import {
   HOST_WATCH_HEADER,
   observeResidentConfig,
   type HostActivityLease,
+  type HostRequest,
   SentRequests,
 } from './host-activity.js';
 import type { ModuleSourceEnv } from '@nimbus-sh/platform/module-source.js';
@@ -99,7 +100,7 @@ async function stagedOneShot(key: string, stage: unknown, supervisor: Supervisor
 interface ResidentFacetStub {
   startProcess(args?: unknown): Promise<unknown>;
   /** Inbound HTTP through the host adapter (observeResidentConfig): admission as arguments, and a request id it can abandon. */
-  hostHttpRequest(request: Request, capability: string, incarnation: string, id: number, ended: readonly number[]): Promise<Response>;
+  hostHttpRequest(request: Request, capability: string, incarnation: string, id: number, ended: readonly number[], abandoned: readonly number[]): Promise<Response>;
   abandonHttpRequest(capability: string, id: number): Promise<void>;
   /**
    * A facet stub is a Durable Object stub, so it fetches. That is the one path
@@ -387,7 +388,7 @@ export type ResidentFacet = Omit<HostedProcess, 'describe' | 'handleHttpRequest'
    * request passes that request's numbering (SentRequests) instead of its
    * own, and its coordinator abandons it through abandonHttpRequest.
    */
-  handleHttpRequest(request: Request, scope: ResponseScope, relayed?: { id: number; ended: number[] }): Promise<Response>;
+  handleHttpRequest(request: Request, scope: ResponseScope, relayed?: HostRequest): Promise<Response>;
   abandonHttpRequest(id: number): Promise<void>;
 };
 
@@ -627,12 +628,12 @@ function spawnResident(
     lost,
     acquireActivity: observation.acquire,
     // A request waits for the pinned incarnation, never for the boot.
-    handleHttpRequest: async (request: Request, scope: ResponseScope, relayed?: { id: number; ended: number[] }) => {
+    handleHttpRequest: async (request: Request, scope: ResponseScope, relayed?: HostRequest) => {
       const lease = observation.acquire();
       void scope.settled.then(lease.release);
       try {
-        const { id, ended } = relayed ?? sent.send(scope, abandon);
-        return await checked(await facet.hostHttpRequest(request, watchCapability, await incarnation, id, ended));
+        const { id, ended, abandoned } = relayed ?? sent.send(scope, abandon);
+        return await checked(await facet.hostHttpRequest(request, watchCapability, await incarnation, id, ended, abandoned));
       } catch (error) { lease.release(); throw error; }
     },
     abandonHttpRequest: abandon,

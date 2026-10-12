@@ -69,7 +69,7 @@
 import { networkRef, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { ResponseScope } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { hostActivity, HOST_INCARNATION_HEADER, SentRequests } from './host-activity.js';
+import { hostActivity, HOST_INCARNATION_HEADER, SentRequests, type HostRequest } from './host-activity.js';
 import { onColdStart } from './generation.js';
 import { peerRetryDelay } from './fanout.js';
 import { hostNamespaceBinding, hostOpDispatch, type HostNamespaceBinding } from './host-dispatch.js';
@@ -663,7 +663,7 @@ async function routeThroughPeer(
   workerKey: string,
   capability: string,
   request: Request,
-  sending: { id: number; ended: number[] },
+  sending: HostRequest,
 ): Promise<Response> {
   const result = await stub._rpcRouteHostedHttp(workerKey, {
     capability,

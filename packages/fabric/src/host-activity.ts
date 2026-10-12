@@ -170,23 +170,36 @@ export class HostActivity {
  * signal, and asking per request costs a round trip; abandoning is the rare
  * path, so only it sends anything (the leaf's abandonHttpRequest). Each call
  * carries the ids that ended since the last (`ended`), which the leaf then
- * forgets; it keeps an abandon that overtakes its request until its request,
- * or its end, arrives (observeResidentConfig).
+ * forgets, and those whose abandon did not arrive (`abandoned`), which it
+ * abandons and forgets; it keeps an abandon that overtakes its request until
+ * its request, or its end, arrives (observeResidentConfig).
  */
 export class SentRequests {
   #next = 0;
   #ended: number[] = [];
+  #abandoned: number[] = [];
   /** An id for a request with `scope`, the ids to report, and abandon(id) sent if it is not delivered. */
-  send(scope: ResponseScope, abandon: (id: number) => Promise<unknown>): { id: number; ended: number[] } {
+  send(scope: ResponseScope, abandon: (id: number) => Promise<unknown>): HostRequest {
     const id = this.#next++;
-    const ended = this.#ended;
+    const { ended, abandoned } = { ended: this.#ended, abandoned: this.#abandoned };
     this.#ended = [];
-    // Reported as ended only once any abandon was delivered: a report that
-    // overtook it would leave the handler holding the late abandon for good.
-    const end = () => { this.#ended.push(id); };
-    void scope.settled.then((delivered) => { if (delivered) end(); else void abandon(id).then(end, end); });
-    return { id, ended };
+    this.#abandoned = [];
+    // Reported as ended only once its abandon arrived: a report that overtook
+    // it would leave the leaf holding the late abandon for good. One that did
+    // not arrive rides the next request instead.
+    void scope.settled.then((delivered) => {
+      if (delivered) this.#ended.push(id);
+      else void abandon(id).then(() => this.#ended.push(id), () => this.#abandoned.push(id));
+    });
+    return { id, ended, abandoned };
   }
+}
+
+/** A request's id, and the earlier ones its leaf forgets (`ended`) or abandons first (`abandoned`). */
+export interface HostRequest {
+  id: number;
+  ended: number[];
+  abandoned: number[];
 }
 
 const activities = new WeakMap<object, HostActivity>();
@@ -236,8 +249,12 @@ export class NimbusProcess extends Base {
   #admitted = new WeakSet();
   // Its host's requests by id (SentRequests).
   #requests = new Map();
-  #request(id, ended) {
+  #request(id, ended, abandoned = []) {
     for (const done of ended) this.#requests.delete(done);
+    for (const gone of abandoned) {
+      this.#requests.get(gone)?.abort(new DOMException('The caller left the request', 'AbortError'));
+      this.#requests.delete(gone);
+    }
     let request = this.#requests.get(id);
     if (!request) this.#requests.set(id, request = new AbortController());
     return request;
@@ -263,10 +280,10 @@ export class NimbusProcess extends Base {
   // The host's HTTP entry. Its admission travels as arguments, and request
   // \`id\` is one its host can abandon (SentRequests): the guest sees its
   // caller leave as its request's signal.
-  hostHttpRequest(request, key, pinned, id, ended) {
+  hostHttpRequest(request, key, pinned, id, ended, abandoned) {
     if (key !== capability) return new Response('Not found', { status: 404 });
     if (pinned !== this.#incarnation) return this.#replaced();
-    const admitted = new Request(request, { signal: this.#request(id, ended).signal });
+    const admitted = new Request(request, { signal: this.#request(id, ended, abandoned).signal });
     this.#admitted.add(admitted);
     return super.handleHttpRequest(admitted);
   }

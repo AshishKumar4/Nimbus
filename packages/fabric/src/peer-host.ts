@@ -88,9 +88,10 @@ export interface HostedHttpRequest {
   url: string;
   headers: [string, string][];
   body: ReadableStream | null;
-  /** Its id, by which its coordinator can abandon it, and the ids that ended since the last (SentRequests). */
+  /** Its id, by which its coordinator can abandon it, and the earlier ids the leaf forgets or abandons (SentRequests). */
   id: number;
   ended: number[];
+  abandoned: number[];
 }
 
 export interface HostedHttpResponse {
@@ -416,7 +417,7 @@ export class PeerHost {
       // its coordinator abandons it by. This relay's own end is its pipe's.
       const { scope, owner } = responseScope(new AbortController().signal);
       let response: Response;
-      try { response = await facet.handleHttpRequest(new Request(wire.url, init), scope, { id: wire.id, ended: wire.ended }); }
+      try { response = await facet.handleHttpRequest(new Request(wire.url, init), scope, { id: wire.id, ended: wire.ended, abandoned: wire.abandoned }); }
       catch (error) { owner.fail(); throw error; }
       let body: ReadableStream | null = null;
       if (response.body) {

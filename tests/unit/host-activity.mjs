@@ -67,6 +67,20 @@ function setup() {
   a.release(); assert.equal(t.calls[1].signal.aborted, false, 'old leases cannot release a new session generation');
   b.release(); t.remove();
 }
+{
+  // A request that was not delivered is abandoned; an abandon that does not
+  // arrive (its target busy, not gone) rides the next request instead of
+  // being reported ended, which would make the leaf forget it unabandoned.
+  const sent = new SentRequests(), abandons = [];
+  const scope = (delivered) => ({ signal: new AbortController().signal, settled: Promise.resolve(delivered) });
+  const first = sent.send(scope(true), async () => {});
+  assert.deepEqual(first, { id: 0, ended: [], abandoned: [] });
+  sent.send(scope(false), async (id) => { abandons.push(id); throw new Error('overloaded'); });
+  sent.send(scope(false), async (id) => { abandons.push(id); });
+  await turns();
+  assert.deepEqual(abandons, [1, 2]);
+  assert.deepEqual(sent.send(scope(true), async () => {}), { id: 3, ended: [0, 2], abandoned: [1] });
+}
 console.log('host-activity: idle, shared active watches, abort, wake validation and host loss');
 
 {

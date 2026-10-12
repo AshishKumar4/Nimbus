@@ -518,12 +518,12 @@ for (const mode of PROCESS_HOST_MODES) {
   // process, so it parks exactly one key: anything else is refused at once,
   // and without that anyone holding a sibling stub could pile up map entries
   // and 30-second timers here by the thousand.
-  const route = _rpcRouteHostedHttp(peer, 'k62', { capability: goodOpts2.webSocketCapability, method: 'GET', url: 'http://x/', headers: [], body: null, id: 0, ended: [] });
+  const route = _rpcRouteHostedHttp(peer, 'k62', { capability: goodOpts2.webSocketCapability, method: 'GET', url: 'http://x/', headers: [], body: null, id: 0, ended: [], abandoned: [] });
   let routeSettled = false;
   route.then(() => { routeSettled = true; }, () => { routeSettled = true; });
   // Refused at once: settled before any timer can fire, the parked key's
   // 30-second wait included.
-  const second = _rpcRouteHostedHttp(peer, 'other-key', { capability: goodOpts2.webSocketCapability, method: 'GET', url: 'http://x/', headers: [], body: null, id: 0, ended: [] });
+  const second = _rpcRouteHostedHttp(peer, 'other-key', { capability: goodOpts2.webSocketCapability, method: 'GET', url: 'http://x/', headers: [], body: null, id: 0, ended: [], abandoned: [] });
   let refusedAtOnce = false;
   second.catch(() => { refusedAtOnce = true; });
   await new Promise((resolve) => setTimeout(resolve, 0));
