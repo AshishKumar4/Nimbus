@@ -377,7 +377,7 @@ theorem removeRecursive_stays_in_mount (S : St) (P : Principal) (raw : String) (
             · rename_i entries _
               constructor
               · obtain ⟨hm, _⟩ := CompositeRemoval.walk_single_mount (removalConfig caps) S P strict p entries
-                  ((route S.mounts p).backend + 1) (by omega)
+                  ((route S.mounts p).backend + 1) (Nat.succ_ne_self _)
                 exact hm
               · intro c hne
                 exact (CompositeRemoval.walk_single_mount (removalConfig caps) S P strict p entries c hne).2
