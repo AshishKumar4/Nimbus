@@ -5,6 +5,11 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: walked recursive removal keeps unreadable children and their parents,
+  reports traversal failures, and continues removing siblings.
+- Fixed: credentialed SQLite paths follow links before `..`, matching the
+  namespace while keeping plain lookups on their indexed fast path.
+
 ## 2026-10-12: core 0.18.0, fabric 0.13.0, worker 0.16.0, loom 0.2.5, sdk 0.13.1, react 0.3.1, cli 0.2.5, create-nimbus-app 0.2.2
 
 - Breaking: VFS-2b uses one change notification for the namespace:

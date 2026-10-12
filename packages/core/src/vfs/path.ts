@@ -30,6 +30,11 @@
  */
 const NOT_NORMAL = /\/$|\/\/|(?:^|\/)\.\.?(?:\/|$)/;
 
+/** A plain lookup key, or null when components must be walked before normalization. */
+export function plainVfsPath(path: string): string | null {
+  return NOT_NORMAL.test(path) ? null : path.charCodeAt(0) === 47 ? path.slice(1) : path;
+}
+
 export function normalizeVfsPath(p: string): string {
   const text = String(p ?? '');
   // A key already in canonical form, or an absolute path that is one past

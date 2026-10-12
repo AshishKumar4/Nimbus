@@ -28,7 +28,8 @@
  */
 
 import { projectChange, VfsEventEmitter, type VfsEvent, type VfsEventType } from './events.js';
-import { normalizeVfsPath, parentKey, parentVfsPath, pathsOverlap } from './path.js';
+import { normalizeVfsPath, parentKey, parentVfsPath, pathsOverlap, plainVfsPath, stripLeadingSlashes } from './path.js';
+import { walkVfsPath } from './path-walk.js';
 import { PathRevisions, type OwnGeneration } from './path-revisions.js';
 import { z } from 'zod/v4';
 import {
@@ -2969,8 +2970,10 @@ export class SqliteVFS {
    * key already inside that root is returned untouched, so the several methods
    * that derive a key before handing it on cannot stack the rewrite.
    */
-  private storageKey(path: string, cred: VfsCred): string {
-    return this.keyOfName(normalizeVfsPath(path), this.confinedTmpRoots.get(cred.uid));
+  private storageKey(path: string, cred: VfsCred, tree: InodeLookup = this.inodes, creating = false): string {
+    const plain = plainVfsPath(path);
+    return plain === null ? this.walkComponents(path, cred, false, creating, tree).path
+      : this.keyOfName(plain, this.confinedTmpRoots.get(cred.uid));
   }
 
   /** {@link storageKey} of a name already normalized, under a principal's private root. */
@@ -2988,10 +2991,12 @@ export class SqliteVFS {
    * root's storage key. One name per file is what lets resolution walk the
    * caller's view rather than storage.
    */
-  private nameOf(path: string, cred: VfsCred): string {
-    const key = this.storageKey(path, cred);
-    // Never null: storageKey never yields a key this caller has no name for.
-    return this.logicalPath(key, cred) ?? key;
+  private nameOf(path: string, cred: VfsCred, tree: InodeLookup = this.inodes, root = this.confinedTmpRoots.get(cred.uid)): string {
+    const plain = plainVfsPath(path);
+    if (plain === null) return this.walkComponents(path, cred, false, false, tree).name;
+    if (root === undefined) return plain;
+    const key = this.keyOfName(plain, root);
+    return this.logicalPath(key, cred, root) ?? key;
   }
 
   /**
@@ -3007,8 +3012,7 @@ export class SqliteVFS {
    * unconfined caller sees storage as it is, which is what the kernel and the
    * session user need.
    */
-  private logicalPath(key: string, cred: VfsCred): string | null {
-    const root = this.confinedTmpRoots.get(cred.uid);
+  private logicalPath(key: string, cred: VfsCred, root = this.confinedTmpRoots.get(cred.uid)): string | null {
     if (root === undefined) return key;
     if (key === root) return TMP_ROOT;
     if (key.startsWith(`${root}/`)) return `${TMP_ROOT}/${key.slice(root.length + 1)}`;
@@ -3263,7 +3267,10 @@ export class SqliteVFS {
     tree: InodeLookup,
   ): { path: string; inode: INode | undefined; name: string } {
     const root = this.confinedTmpRoots.get(cred.uid);
-    let current = this.nameOf(path, cred);
+    const plain = plainVfsPath(path);
+    if (plain === null) return this.walkComponents(path, cred, followLeaf, allowMissing, tree);
+    const key = this.keyOfName(plain, root);
+    const current = root === undefined ? key : this.logicalPath(key, cred, root) ?? key;
     // The last walk (see lastResolution), when nothing since could have
     // changed where it leads: for this name, its answer.
     const last = this.lastResolution;
@@ -3285,42 +3292,53 @@ export class SqliteVFS {
       if (inode === undefined) return { path: key, inode: undefined, name: current };
       if (!(followLeaf && inode.kind === 'symlink')) return this.walked(key, inode, current, cred, tree);
     }
-    // Hops are counted, never deduplicated (Linux, MAXSYMLINKS 40): a link
-    // met again on a longer path (`loop -> .`) is one more hop, not a cycle.
-    for (let hops = 0; hops <= 40; hops++) {
-      const parts = current.split('/').filter(Boolean);
-      let prefix = '';
-      let restarted = false;
-      let reached: INode | undefined;
-      for (let index = 0; index < parts.length; index++) {
-        prefix = prefix ? `${prefix}/${parts[index]}` : parts[index];
-        const inode = tree.get(this.keyOfName(prefix, root));
-        reached = inode;
-        const leaf = index === parts.length - 1;
-        if (!inode) {
-          if (leaf || allowMissing) return { path: this.keyOfName(current, root), inode: undefined, name: current };
-          throw vfsKeyError('ENOENT', prefix);
-        }
-        if (inode.kind === 'symlink' && (!leaf || followLeaf)) {
-          if (hops === 40) throw vfsKeyError('ELOOP', path);
-          const target = dec.decode(this.readWhole(inode));
-          const suffix = parts.slice(index + 1).join('/');
-          const base = target.startsWith('/') ? target : `${parentKey(prefix)}/${target}`;
-          current = this.nameOf(suffix ? `${base}/${suffix}` : base, cred);
-          restarted = true;
-          break;
-        }
-        if (!leaf) {
-          if (inode.kind !== 'directory') throw vfsKeyError('ENOTDIR', prefix);
-          if (!this.accessInode(inode, 0o1, cred)) throw vfsKeyError('EACCES', prefix);
-        }
+    // Plain paths keep the indexed walk; only a followed link needs component expansion.
+    const parts = current === '' ? [] : current.split('/');
+    let prefix = '';
+    let reached: INode | undefined;
+    for (let index = 0; index < parts.length; index++) {
+      prefix = prefix ? `${prefix}/${parts[index]}` : parts[index];
+      const inode = tree.get(this.keyOfName(prefix, root));
+      reached = inode;
+      const leaf = index === parts.length - 1;
+      if (!inode) {
+        if (leaf || allowMissing) return { path: this.keyOfName(current, root), inode: undefined, name: current };
+        throw vfsKeyError('ENOENT', prefix);
       }
-      if (restarted) continue;
-      const key = this.keyOfName(current, root);
-      // The leaf was looked up last, under the same name.
-      return this.walked(key, prefix === current ? reached : tree.get(key), current, cred, tree);
+      if (inode.kind === 'symlink' && (!leaf || followLeaf)) return this.walkComponents(current, cred, followLeaf, allowMissing, tree);
+      if (!leaf) {
+        if (inode.kind !== 'directory') throw vfsKeyError('ENOTDIR', prefix);
+        if (!this.accessInode(inode, 0o1, cred)) throw vfsKeyError('EACCES', prefix);
+      }
     }
-    throw vfsKeyError('ELOOP', path);
+    const resolvedKey = this.keyOfName(current, root);
+    return this.walked(resolvedKey, prefix === current ? reached : tree.get(resolvedKey), current, cred, tree);
+  }
+
+  /** The namespace's component walk, looking up this tree in the caller's names. */
+  private walkComponents(
+    path: string, cred: VfsCred, followLeaf: boolean, allowMissing: boolean, tree: InodeLookup,
+  ): { path: string; inode: INode | undefined; name: string } {
+    const root = this.confinedTmpRoots.get(cred.uid);
+    const spelling = stripLeadingSlashes(path);
+    const input = this.logicalPath(spelling, cred, root) ?? spelling;
+    const name = walkVfsPath(input, (prefix, final) => {
+      const key = this.keyOfName(prefix.slice(1), root);
+      if (tree === this.inodes && this.exclusiveMutationLeases.size > 0) this.recallReads(key);
+      const inode = tree.get(key);
+      if (inode === undefined) {
+        if (!final && !allowMissing) throw vfsKeyError('ENOENT', prefix);
+        return null;
+      }
+      if (inode.kind === 'symlink' && (!final || followLeaf)) return () => dec.decode(this.readWhole(inode));
+      if (!final) {
+        if (inode.kind !== 'directory') throw vfsKeyError('ENOTDIR', prefix);
+        if (!this.accessInode(inode, 0o1, cred)) throw vfsKeyError('EACCES', prefix);
+      }
+      return null;
+    }, () => { throw vfsKeyError('ELOOP', path); }).slice(1);
+    const key = this.keyOfName(name, root);
+    return this.walked(key, tree.get(key), name, cred, tree);
   }
 
   /** A walk's answer, kept as lastResolution when it found something on the live tree. */
