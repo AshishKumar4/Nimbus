@@ -19123,32 +19123,37 @@ function __esmLoad(resolution) {
 // Evaluate, in import order, the staged ES modules the interpreted module at
 // `key` statically imports, and those its unstaged imports do, so the
 // interpreter finds them evaluated rather than evaluating them itself: once
-// every static import of the late graph resolves and loads. A graph that
-// does not link runs none of its bodies, as Node's does: its import()
-// rejects with the first refusal, as the interpreter's own import gives it.
+// the late graph's whole static closure links, staged modules, query and
+// fragment instances and all. A graph that does not link runs none of its
+// bodies, as Node's does: its import() rejects with the first refusal.
 async function __nimbusEsmLinkStaged(key) {
   const order = [];
-  __nimbusEsmLinkPlan(key, new Set(), order);
+  const unlinkable = __nimbusEsmLinkPlan(key, __nimbusEsmUrl("/" + key), new Set(), order, new Set());
+  // A staged module whose graph does not link: the registry's import of it
+  // rejects with its refusal before any of its graph runs.
+  if (unlinkable !== -1) await __nimbusEsmImport(unlinkable);
   // What one throws ends the evaluation of what imports it, as Node's
   // does: no later import of it evaluates, and the import() rejects.
   for (const id of order) {
     if (__nimbusEsmRecord(id).state !== __ESM_DONE && !__nimbusEsmTainted(id)) await __nimbusEsmImport(id);
   }
 }
-// The staged modules a late graph links to, in import order (into
-// `order`); throws the refusal of a static import that does not resolve or load.
-function __nimbusEsmLinkPlan(key, seen, order) {
-  if (seen.has(key)) return;
-  seen.add(key);
+// The staged modules a late graph imports, in import order (into
+// `order`); the first of them whose graph does not link, or -1; throws
+// the refusal of a static import of an unstaged module that does not
+// resolve or load. Each module once by its URL (a query's or a fragment's
+// instance is its own).
+function __nimbusEsmLinkPlan(key, url, seen, order, checked) {
+  if (seen.has(url)) return -1;
+  seen.add(url);
   const staged = __nimbusEsmId("module", key);
   const text = staged === -1 ? __readFileOr(key, null) : __nimbusEsmSourceText(staged);
-  if (text === null) return;
-  const parentUrl = __nimbusEsmUrl("/" + key);
+  if (text === null) return -1;
   for (const request of __nimbusModuleRequests(key, text)) {
     if (request.kind !== "static") continue;
     let resolution;
     try {
-      resolution = __esmResolver.resolveSync(request.specifier, parentUrl);
+      resolution = __esmResolver.resolveSync(request.specifier, url);
       __nimbusAssertLoadable(resolution, undefined);
     } catch (error) {
       // As the interpreter's static import refuses it: before the importer runs, with no arrow of its.
@@ -19156,14 +19161,35 @@ function __nimbusEsmLinkPlan(key, seen, order) {
       throw error;
     }
     if (!resolution.path) continue;
-    // A query's or fragment's instance is the interpreter's own, linked where it is imported.
-    const { search, hash } = new URL(resolution.url);
-    if (search !== "" || hash !== "") continue;
     const target = resolution.path.replace(/^\/+/, "");
+    const { search, hash } = new URL(resolution.url);
     const id = __nimbusEsmId("module", target);
-    if (id === -1) __nimbusEsmLinkPlan(target, seen, order);
-    else if (!order.includes(id)) order.push(id);
+    // An unstaged module, or a query's or fragment's instance (the
+    // interpreter's own): its closure is the late graph's too.
+    if (id === -1 || search !== "" || hash !== "") {
+      const found = __nimbusEsmLinkPlan(target, resolution.url, seen, order, checked);
+      if (found !== -1) return found;
+      continue;
+    }
+    if (__nimbusEsmRefuses(id, checked)) return id;
+    if (!order.includes(id)) order.push(id);
   }
+  return -1;
+}
+// Whether staged module `id`'s graph, what of it is unevaluated, holds a
+// static import staging refused (a missing module, ESM_MISSING_DIR): its
+// link fails. `checked` holds the rows already found to link.
+function __nimbusEsmRefuses(id, checked) {
+  const visit = (at) => {
+    if (checked.has(at)) return false;
+    checked.add(at);
+    const row = __nimbusEsm.table[at];
+    const state = __nimbusEsmRecords[at]?.state;
+    if (row[0] !== "module" || state === __ESM_DONE || state === __ESM_ADOPTED) return false;
+    for (const target of row[2]) if (target === -1 || visit(target)) return true;
+    return false;
+  };
+  return visit(id);
 }
 function __esmLoadInterpreted(resolution, key, evaluationKey, esm) {
   let ns;
