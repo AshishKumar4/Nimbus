@@ -29,6 +29,7 @@ import { engineKey } from '@nimbus-sh/core/runtime/process-files.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { direntTypeIn } from '@nimbus-sh/core/vfs/dirent-type.js';
+import { LruMap } from '@nimbus-sh/core/_shared/lru-map.js';
 import { handKernelArtifact, projectFs } from '../runtime/project-fs.js';
 import { manifestsOf, prebundleCacheKey, prebundleRequest, sliceManifests, stillCurrent } from './cache-keys.js';
 import { NpmCache } from './cache.js';
@@ -61,6 +62,14 @@ import { scanProjectImports, transformParser, namedImportSignature, buildSynthet
 import { enc } from '@nimbus-sh/core/_shared/bytes.js';
 import { createNpmBinManifest, createNpmBinShim, npmBinManifestPath, declaredPackageBins, packageBinEntries, parseNpmBinManifest, } from './bin-links.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
+/** What a lockfile says is installed: each placement's package, by its registry identity, version and integrity, in placement order. */
+function lockRevision(lockfile) {
+    let revision = '';
+    for (const [at, entry] of [...lockfile].sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0))) {
+        revision += `${at}\0${entry.registryName || entry.name}\0${entry.resolvedVer}\0${entry.integrity}\n`;
+    }
+    return revision;
+}
 // ── NpmInstaller ────────────────────────────────────────────────────────
 export class NpmInstaller {
     /** The session's namespace: the project is reached through it as the invoking principal. */
@@ -69,6 +78,13 @@ export class NpmInstaller {
     /** What installs in this session are staging or copying now: a sweep leaves them. */
     placing = new Set();
     cache;
+    /**
+     * The installed tree of each project's lockfile, by the lockfile's
+     * revision (lockRevision): a lockfile revision is read from its records
+     * once, or taken from the tree the install that wrote it planned. The
+     * disk is not trusted from it: the diff reads each placement.
+     */
+    installedTrees = new LruMap(8);
     esbuild;
     /** The session's esbuild facet pool, shared with the on-demand dev-server path. */
     bundlePool;
@@ -213,12 +229,7 @@ export class NpmInstaller {
             log(`Lockfile ${locked.lockName}: ${tree.plan.nodes.size} packages to place.`);
         }
         else {
-            const recordOf = this.lockRecords(lockfile?.values() ?? []);
-            // Each placement's package from its registry package's record, under the name it installs as.
-            const installed = opts.global ? [] : [...lockfile ?? []].flatMap(([at, entry]) => {
-                const record = recordOf(entry);
-                return record === null ? [] : [{ at, pkg: { ...resolvedFromRecord(record), name: entry.name, registryName: record.name } }];
-            });
+            const installed = opts.global || lockfile === null ? [] : this.installedTree(projDir, lockfile);
             tree = await this.resolveTreeViaFanout(roots, installed, log, engine);
             // The lockfile answered every edge: nothing resolved, nothing failed.
             usedLockfile = lockfile !== null && !tree.plan.resolvedAny && tree.plan.failures.length === 0;
@@ -397,8 +408,13 @@ export class NpmInstaller {
         // what this install published over it.
         if (failed.length > 0)
             this.writeLockfile(projDir, published, nmDir, lockfile, opts.fromLockfile ? null : lockfile);
-        else if (!usedLockfile || pruned > 0)
-            this.writeLockfile(projDir, hoistPlacements(hoistPlan), nmDir, lockfile, opts.global ? new Map([...lockfile ?? []].filter(([at]) => !inScope(at))) : null);
+        else if (!usedLockfile || pruned > 0) {
+            const placements = hoistPlacements(hoistPlan);
+            const written = this.writeLockfile(projDir, placements, nmDir, lockfile, opts.global ? new Map([...lockfile ?? []].filter(([at]) => !inScope(at))) : null);
+            // npm ci's packages are the lock's, not the registry records' an install reads.
+            if (!opts.global && !opts.fromLockfile)
+                this.installedTrees.set(projDir, { revision: lockRevision(written), installed: placements.map(({ placement, pkg }) => ({ at: placement, pkg })) });
+        }
         const installed = [...installedAt.values()];
         // ── Update package.json if explicit packages were added ─────────
         if (named.length > 0 && failed.length === 0 && opts.save !== false && !opts.global) {
@@ -1504,6 +1520,27 @@ export class NpmInstaller {
             });
         }
         this.cache.writeLockfile(projDir, entries, this.ctx, previous);
+        return entries;
+    }
+    /**
+     * The installed tree `lockfile` records: each placement's package from its
+     * registry package's record, under the name it installs as. A placement
+     * whose record the cache does not hold is left out, and so planned anew;
+     * a revision every record answered is kept (installedTrees).
+     */
+    installedTree(projDir, lockfile) {
+        const revision = lockRevision(lockfile);
+        const known = this.installedTrees.get(projDir);
+        if (known?.revision === revision)
+            return known.installed;
+        const recordOf = this.lockRecords(lockfile.values());
+        const installed = [...lockfile].flatMap(([at, entry]) => {
+            const record = recordOf(entry);
+            return record === null ? [] : [{ at, pkg: { ...resolvedFromRecord(record), name: entry.name, registryName: record.name } }];
+        });
+        if (installed.length === lockfile.size)
+            this.installedTrees.set(projDir, { revision, installed });
+        return installed;
     }
     // ── Bin linking ───────────────────────────────────────────────────────
     /**

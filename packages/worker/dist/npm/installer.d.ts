@@ -101,6 +101,13 @@ export declare class NpmInstaller {
     /** What installs in this session are staging or copying now: a sweep leaves them. */
     private readonly placing;
     private cache;
+    /**
+     * The installed tree of each project's lockfile, by the lockfile's
+     * revision (lockRevision): a lockfile revision is read from its records
+     * once, or taken from the tree the install that wrote it planned. The
+     * disk is not trusted from it: the diff reads each placement.
+     */
+    private readonly installedTrees;
     private esbuild;
     /** The session's esbuild facet pool, shared with the on-demand dev-server path. */
     private bundlePool;
@@ -271,6 +278,13 @@ export declare class NpmInstaller {
      * Write lockfile to SQLite.
      */
     private writeLockfile;
+    /**
+     * The installed tree `lockfile` records: each placement's package from its
+     * registry package's record, under the name it installs as. A placement
+     * whose record the cache does not hold is left out, and so planned anew;
+     * a revision every record answered is kept (installedTrees).
+     */
+    private installedTree;
     /**
      * Create node_modules/.bin/ entries for packages with "bin" fields: one
      * streamed batch through the engine as the invoking principal (`engine`,

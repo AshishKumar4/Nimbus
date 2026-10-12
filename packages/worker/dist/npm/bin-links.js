@@ -75,9 +75,12 @@ function relativeRequest(fromDir, target) {
     return rel.startsWith('../') ? rel : `./${rel}`;
 }
 export function packageBinEntries(pkg, nodeModulesPath) {
+    const bins = npmBinMap(pkg.name, pkg.bin);
+    if (bins.size === 0)
+        return [];
     const packagePath = normalizeVfsPath(`${nodeModulesPath}/${pkg.name}`);
     const packageVersion = String(pkg.version || '');
-    return [...npmBinMap(pkg.name, pkg.bin)].map(([name, target]) => ({
+    return [...bins].map(([name, target]) => ({
         name,
         packageName: pkg.name,
         packageVersion,

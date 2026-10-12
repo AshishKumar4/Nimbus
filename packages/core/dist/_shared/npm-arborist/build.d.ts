@@ -27,8 +27,6 @@ export declare class Builder<H extends HostPackages> {
     private readonly expanded;
     private readonly seen;
     private readonly virtualRoots;
-    /** A package's edges, read from its manifest once. */
-    private readonly edgeDefinitions;
     constructor(tree: Tree<H>, host: TreeHost<H['resolved']>, options: PlanOptions);
     edgesOf(pkg: TreePackage | null): EdgeDefinition[];
     private push;
@@ -42,7 +40,13 @@ export declare class Builder<H extends HostPackages> {
     private resolve;
     /** The node `name@spec` resolves to, in `parent` (a virtual root): its package, or a load failure (#nodeFromSpec). */
     private nodeFromSpec;
-    /** A root outside the tree with `source`'s edges, where a package and its peer set are loaded (#virtualRoot). */
+    /** Whether the package `name@spec` resolves to has peers. */
+    private hasPeers;
+    /**
+     * A root outside the tree with `source`'s edges, where a package and its
+     * peer set are loaded (#virtualRoot). `bare`: for a package with no peers,
+     * where no peer set loads and the edges would go unread: none.
+     */
     private virtualRoot;
     /** The package for `edge`, loaded with its peer set into a virtual root (#nodeFromEdge). */
     private nodeFromEdge;
@@ -52,10 +56,14 @@ export declare class Builder<H extends HostPackages> {
     private problemEdges;
     /**
      * What the coming visits will ask, resolved ahead, a level at a time: the
-     * queue's problem edges, then every edge of what they resolve to (a peer
-     * also at its source's own spec, which its peer set prefers), and so on
-     * down. Resolution is the host's round trip; this keeps the trips to the
-     * depth of the tree, not its width. A request is expanded once.
+     * queue's problem edges, then the edges of what they resolve to, and so
+     * on down, as the build loads them: a package's dependencies, and its
+     * peers as its dependent's virtual root loads them (#loadPeerSet), at the
+     * dependent's own spec where it has one, which the build resolves first.
+     * A package loaded only as a peer brings its peers; its dependencies wait
+     * until it is placed. Resolution is the host's round trip; this keeps the
+     * trips to the depth of the tree, not its width. A request is expanded
+     * once.
      */
     private prefetch;
     build(): Promise<void>;
