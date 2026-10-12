@@ -50,6 +50,9 @@ export function loaderGraph(metafile, npmDir, root = REPO) {
   const npmRoot = path.join(npmDir, 'node_modules');
   const repository = [], npm = {};
   for (const input of Object.keys(metafile.inputs)) {
+    // esbuild lists the generated define array as a virtual module. Its
+    // bytes come from build.mjs and wasi-trampoline.mjs, both recorded inputs.
+    if (input === '<define:__NIMBUS_NAPI_WASM_DISPATCHED__>') continue;
     const file = path.resolve(root, input);
     const external = path.relative(npmRoot, file);
     if (!external.startsWith(`..${path.sep}`) && external !== '..' && !path.isAbsolute(external)) {
