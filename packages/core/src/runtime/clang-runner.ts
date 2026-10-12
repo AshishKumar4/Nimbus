@@ -33,8 +33,7 @@ import { type ProcessView, withHostView } from './process-files.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import type { Facet, FacetHost } from './facet-host.js';
 import type { ClangFacetResult } from './facet-tasks.js';
-import { CRED_KERNEL, gateSyncLaunch, requireVfsCred, WASM32_WASI_NIMBUS_ABI, type NimbusFilesystemAuthority } from './os-contracts.js';
-import type { WasiCred } from './wasi/types.js';
+import { CRED_KERNEL, gateSyncLaunch, requireVfsCred, WASM32_WASI_NIMBUS_ABI, type NimbusFilesystemAuthority, type VfsCred } from './os-contracts.js';
 import type { ResidentFilesystemStats } from './wasi/resident-filesystem.js';
 import { normalizeVfsPath, resolveVfsPath } from '../vfs/path.js';
 import { hasLeadingCliFlag } from './cli-flags.js';
@@ -81,7 +80,7 @@ export function makeClangRunnerFactory(deps: {
       const notHydrated = await gateSyncLaunch(vfs.process, cwd, null, argv);
       if (notHydrated !== null) { ctx.stderr.write(`${binName}: ${notHydrated}\n`); return 1; }
       const { uid, gid, groups, umask } = requireVfsCred(ctx.cred, binName);
-      const processCred: WasiCred = { uid, gid, groups: [...groups] };
+      const processCred: VfsCred = { uid, gid, groups: [...groups], umask };
 
       // Fast paths — no wasm boot.
       if (hasLeadingCliFlag(argv, CLANG_VERSION_FLAGS)) {
@@ -549,7 +548,7 @@ async function ensureSysrootUnpacked(vfs: ProcessView, tarVfsPath: string, sysro
 interface ClangFacetArgs {
   argv: string[];
   /** The credential the session runs the toolchain as: what its own copy of the namespace is read as. */
-  cred: WasiCred;
+  cred: VfsCred;
 }
 
 interface ClangFacetTarget {

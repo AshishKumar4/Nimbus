@@ -151,6 +151,8 @@ export interface RuntimeOpenFlags {
   followSymlinks?: boolean;
   /** Creation mode, masked by the binding's umask like mkdir's; ignored when the file exists. */
   mode?: number;
+  /** A process's live mask for this create, in place of its binding's initial mask. */
+  umask?: number;
   expectedRevision?: number;
   /**
    * O_SYNC: each write is in the store before it returns. Without it an
@@ -163,7 +165,7 @@ export interface RuntimeOpenFlags {
 export interface RuntimeFileHandle {
   id: number;
   path: string;
-  flags: Required<Omit<RuntimeOpenFlags, 'expectedRevision' | 'mode' | 'sync'>> & {
+  flags: Required<Omit<RuntimeOpenFlags, 'expectedRevision' | 'mode' | 'umask' | 'sync'>> & {
     expectedRevision?: number;
   };
   position: number;
@@ -378,7 +380,7 @@ export interface RuntimeFsBridge {
   write(handleId: number, offset: number | null, bytes: Uint8Array): Awaitable<number>;
   close(handleId: number): Awaitable<void>;
   readdir(path: RuntimeFsPath, options?: { followSymlinks?: boolean }): Awaitable<RuntimeVfsDirEntry[]>;
-  mkdir(path: RuntimeFsPath, options?: { recursive?: boolean; mode?: number } & RuntimeMutationOwner): Awaitable<void>;
+  mkdir(path: RuntimeFsPath, options?: { recursive?: boolean; mode?: number; umask?: number } & RuntimeMutationOwner): Awaitable<void>;
   unlink(path: RuntimeFsPath, options?: RuntimeMutationOwner): Awaitable<void>;
   rmdir(path: RuntimeFsPath, options?: RuntimeMutationOwner): Awaitable<void>;
   rename(from: RuntimeFsPath, to: RuntimeFsPath, options?: RuntimeMutationOwner): Awaitable<void>;

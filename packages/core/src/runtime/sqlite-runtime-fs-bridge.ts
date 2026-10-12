@@ -1,7 +1,7 @@
 import { ROOT_DIRECTORY_MODE, ROOT_INODE, type CredentialedVfs, type DelegationTerms, type SqliteVFS, type VfsNameResolution, type VfsOpenDescription } from '../vfs/sqlite-vfs.js';
 import { BUFFERED_WRITE_BYTES, describeMounted, flagsRefusal, openAccess, openFollows, openMounted } from '../vfs/mounted-description.js';
 import { closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost, settleHeldAt, type Description } from './descriptors.js';
-import type { WaveDescriptions, WriteStreamOptions } from './wave-contracts.js';
+import { withUmask, type WaveDescriptions, type WriteStreamOptions } from './wave-contracts.js';
 import { WaveIngest } from './wave-ingest.js';
 import { runtimeStatOf, type CompositeVFS } from '../vfs/composite.js';
 import { abandon, andThen, isPromise, readDeclaredSource, readRangeOrWhole, syncValue, type Awaitable, type SyncVFS, type VfsRemoval } from '../vfs/vfs.js';
@@ -287,8 +287,9 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   }
 
   /** This caller's view, presenting `owner`'s exclusive mutation lease when it names one. */
-  private owned(owner: string | undefined): CredentialedVfs {
-    return owner === undefined ? this.vfs : this.rawVfs.as(this.vfs.cred, { mutationOwner: owner, actor: this.vfs.principal.actor, holds: this.vfs.holds });
+  private owned(owner: string | undefined, umask?: number): CredentialedVfs {
+    const cred = withUmask(this.vfs.cred, umask);
+    return owner === undefined && cred === this.vfs.cred ? this.vfs : this.rawVfs.as(cred, { mutationOwner: owner, actor: this.vfs.principal.actor, holds: this.vfs.holds });
   }
 
   truncate(
@@ -420,7 +421,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       if (directory && (normalizedFlags.truncate || normalizedFlags.append)) throw fsError('EISDIR', 'open', path);
       if (exists) this.vfs.access(p, openAccess(normalizedFlags, directory));
       if (!exists) {
-        this.owned(owner).writeFile(p, new Uint8Array(0), { mode: flags.mode });
+        this.owned(owner, flags.umask).writeFile(p, new Uint8Array(0), { mode: flags.mode });
       } else if (normalizedFlags.truncate) {
         this.owned(owner).truncate(p, 0);
       }
@@ -462,7 +463,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     });
   }
 
-  mkdir(path: RuntimeFsPath, options: { recursive?: boolean; mode?: number } & RuntimeMutationOwner = {}): void {
+  mkdir(path: RuntimeFsPath, options: { recursive?: boolean; mode?: number; umask?: number } & RuntimeMutationOwner = {}): void {
     return called({ syscall: 'mkdir', path }, () => {
       const owner = options.mutationOwner;
       let located: Located;
@@ -489,7 +490,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       // mkdir of what is there is EEXIST, as mkdir(2) says, before any
       // permission check on its parent (`/` has none).
       if (this.mayExist(located)) throw fsError('EEXIST', 'mkdir', path);
-      this.owned(owner).mkdir(located.path, { recursive: !!options.recursive, mode: options.mode });
+      this.owned(owner, options.umask).mkdir(located.path, { recursive: !!options.recursive, mode: options.mode });
     });
   }
 

@@ -85,5 +85,13 @@ assert.equal(await fsImport.fd_stat(publicFd, OUT), 0);
 assert.equal(decode(OUT).mode & 0o777, 0o644, 'restoring the mask restores normal creation');
 await guest.close(publicFd);
 
+assert.equal(await fsImport.umask(0, OUT), 0);
+const unmaskedFd = await guest.open('home/user/unmasked', { create: true, write: true });
+assert.equal(await fsImport.fd_stat(unmaskedFd, OUT), 0);
+assert.equal(decode(OUT).mode & 0o777, 0o666, 'the live mask replaces the binding mask, rather than adding to it');
+await guest.close(unmaskedFd);
+assert.equal(await wasiImport.path_create_directory(PREOPEN_FD, PATH, putPath('home/user/unmasked-dir')), 0);
+assert.equal((await pathStat('home/user/unmasked-dir')).mode & 0o777, 0o777, 'directories use the same live mask');
+
 await guest.dispose();
 console.log('wasi-nimbus-fs: ok');

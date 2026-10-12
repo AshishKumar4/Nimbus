@@ -17,7 +17,6 @@
 #undef fstat
 #undef chmod
 #undef fchmod
-#undef open
 #undef access
 
 pid_t getppid(void) { return 1; }
@@ -28,7 +27,6 @@ int execve(const char *p, char *const a[], char *const e[]) { (void)p; (void)a; 
 int execvp(const char *p, char *const a[]) { (void)p; (void)a; errno = ENOSYS; return -1; }
 int execl(const char *p, const char *a, ...) { (void)p; (void)a; errno = ENOSYS; return -1; }
 int execlp(const char *p, const char *a, ...) { (void)p; (void)a; errno = ENOSYS; return -1; }
-mode_t umask(mode_t m) { (void)m; return 022; }
 unsigned alarm(unsigned s) { (void)s; return 0; }
 char *getpass(const char *p) { (void)p; return NULL; }
 pid_t tcgetpgrp(int f) { (void)f; errno = ENOTTY; return -1; }

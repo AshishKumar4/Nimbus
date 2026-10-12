@@ -33,6 +33,13 @@ try {
   assert.equal(umask(0o022), 0o077);
   assert.equal(file('requested-private', 0o600, false), 0);
   assert.equal(modeOf('requested-private'), 0o600, 'O_CREAT applies mode without O_EXCL');
+  assert.equal(file('group-readable', 0o640), 0);
+  assert.equal(modeOf('group-readable'), 0o640, 'creation keeps only the requested read and write permissions');
+
+  assert.equal(umask(0), 0o022);
+  assert.equal(file('unmasked', 0o666), 0);
+  assert.equal(modeOf('unmasked'), 0o666, 'the binding does not reapply the inherited mask');
+  assert.equal(umask(0o022), 0);
 
   assert.equal(umask(0o111), 0o022);
   assert.equal(file('masked-executable', 0o755), 0);
@@ -53,7 +60,7 @@ try {
   const chmod = guest.fsImport.fd_chmod;
   guest.fsImport.fd_chmod = () => 29;
   assert.equal(file('failed-executable', 0o755), 29);
-  assert.equal(session.root.stat('home/user/failed-executable'), null, 'failure to add execute bits removes the incomplete file');
+  assert.equal(session.root.exists('home/user/failed-executable'), false, 'failure to add execute bits removes the incomplete file');
   guest.fsImport.fd_chmod = chmod;
   assert.equal(umask(0o077), 0o022, 'chmod failure leaves the original umask');
 } finally {

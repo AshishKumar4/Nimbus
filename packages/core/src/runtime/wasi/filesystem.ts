@@ -146,7 +146,7 @@ export interface AuthorityFilesystemOptions {
   allocateFd(): number;
   abi?: 'preview0' | 'preview1';
   synchronous: boolean;
-  /** The guest's live umask when its process can move it after boot (bash's `umask` builtin). */
+  /** The process's live umask (bash's builtin or a nimbus-libc guest's umask). */
   umask?(): number;
   /**
    * The session answered that it holds no such process: it restarted (or
@@ -294,7 +294,10 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     if (!(e.rights & (1n << BigInt(bit)))) fail('ENOTCAPABLE');
     return e;
   };
-  const creationMode = (base: number): number | undefined => options.umask ? base & ~options.umask() : undefined;
+  const creationMode = (base: number): { mode?: number; umask?: number } => {
+    const umask = options.umask?.();
+    return umask === undefined ? {} : { mode: base & ~umask, umask };
+  };
   const pathRight = (fd: number, bit: number) => {
     const e = preopen(fd) ?? entry(fd);
     if (!((e.rights ?? 0x1fffffffn) & (1n << BigInt(bit)))) fail('ENOTCAPABLE');
@@ -401,7 +404,7 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     const writes = !(flags & 2) && !!(flags & (1 | 8));
     const open = (): SyscallResult => after(fs.open(target, { read: !!(requested & 2n), write: !!(requested & 64n), append: !!(status & 1),
       create: !!(flags & 1), directory: !!(flags & 2), exclusive: !!(flags & 4), truncate: !!(flags & 8), followSymlinks,
-      mode: creationMode(0o666) }), handle =>
+      ...creationMode(0o666) }), handle =>
       after(writes ? { type: 'file' as const } : fs.fstat(handle.id), st => {
         const id = options.allocateFd();
         fds.set(id, { kind: 'authority', handle, type: st.type, rights: requested, rightsInheriting: childRights, fdflags: status });
@@ -537,7 +540,7 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
       u32(used, written); return 0;
     });
   }, owns);
-  imports.path_create_directory = guard(imports.path_create_directory, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, p: number, n: number) => { pathRight(fd, 9); return after(fs.mkdir(at(fd, path(p, n)), { recursive: false, mode: creationMode(0o777) }), () => 0); });
+  imports.path_create_directory = guard(imports.path_create_directory, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, p: number, n: number) => { pathRight(fd, 9); return after(fs.mkdir(at(fd, path(p, n)), { recursive: false, ...creationMode(0o777) }), () => 0); });
   imports.path_remove_directory = guard(imports.path_remove_directory, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, p: number, n: number) => { pathRight(fd, 25); return after(fs.rmdir(at(fd, path(p, n))), () => 0); });
   imports.path_unlink_file = guard(imports.path_unlink_file, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, p: number, n: number) => { pathRight(fd, 26); return after(fs.unlink(at(fd, path(p, n))), () => 0); });
   imports.path_rename = guard(imports.path_rename, (fs: RuntimeFsBridge | RuntimeSynchronousFs, from: number, p: number, n: number, to: number, q: number, m: number) => { pathRight(from, 16); pathRight(to, 17); return after(fs.rename(at(from, path(p, n)), at(to, path(q, m))), () => 0); });

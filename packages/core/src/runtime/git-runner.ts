@@ -35,7 +35,6 @@ import type { FacetHost } from './facet-host.js';
 import { GIT_CALL_TASK } from './compiled-bodies.generated.js';
 import type { GitFacetArgs, GitFacetResult } from './git-facet-task.js';
 import { CRED_KERNEL, GIT_WASI_ENV, gateSyncLaunch, requireVfsCred, type NimbusFilesystemAuthority } from './os-contracts.js';
-import type { WasiCred } from './wasi/types.js';
 import type { ResidentFilesystemStats } from './wasi/resident-filesystem.js';
 import { normalizeVfsPath } from '../vfs/path.js';
 import { openRuntimeStdio } from './runtime-stdio.js';
@@ -101,8 +100,7 @@ export function makeGitRunnerFactory(deps: {
         ctx.stderr.write(`${binName}: ${GIT_WASM} or ${GIT_SYSTEM_CONFIG} missing from the install\n`);
         return 127;
       }
-      const { uid, gid, groups } = requireVfsCred(ctx.cred, binName);
-      const cred: WasiCred = { uid, gid, groups: [...groups] };
+      const cred = requireVfsCred(ctx.cred, binName);
 
       try {
         image ??= withHostView(deps.filesystem, CRED_KERNEL, (runtimeVfs) => runtimeVfs.readArrayBufferUncached(wasmPath));

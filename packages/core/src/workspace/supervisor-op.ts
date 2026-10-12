@@ -27,6 +27,7 @@ const OpenOptions = z.object({
   create: z.boolean().optional(), exclusive: z.boolean().optional(), directory: z.boolean().optional(),
   truncate: z.boolean().optional(), followSymlinks: z.boolean().optional(), expectedRevision: z.number().int().nonnegative().optional(),
   mode: z.number().int().nonnegative().max(0o7777).optional(),
+  umask: z.number().int().nonnegative().max(0o777).optional(),
 });
 /** A byte offset into a file: what a ranged write may start at. */
 const RangeOffset = z.number().int().nonnegative();
@@ -455,7 +456,7 @@ const NATIVE_OPS = {
     }
   },
   mkdir: (e, t) => fsFor(e, t).mkdir(FsPath.parse(e.args?.[0]), {
-    ...z.object({ recursive: z.boolean().optional(), mode: z.number().int().nonnegative().optional() }).default({ recursive: true }).parse(e.args?.[1]),
+    ...z.object({ recursive: z.boolean().optional(), mode: z.number().int().nonnegative().optional(), umask: z.number().int().nonnegative().max(0o777).optional() }).default({ recursive: true }).parse(e.args?.[1]),
     ...leaseOf(e),
   }),
   rmdir: (e, t) => fsFor(e, t).rmdir(FsPath.parse(e.args?.[0]), leaseOf(e)),

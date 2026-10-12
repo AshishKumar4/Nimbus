@@ -1240,10 +1240,10 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     const local = decide<void>('mkdir', () => after(keyFor(path, false), (key) => {
       if (key === DELEGATE) return DELEGATE;
       named = key;
-      return after(holder!.mkdir(key, pathOf(path), mode), (done) => (done ? undefined : DELEGATE));
+      return after(holder!.mkdir(key, pathOf(path), mode, options?.umask), (done) => (done ? undefined : DELEGATE));
     }));
     return after(local, (done) => (done !== DELEGATE ? undefined
-      : named !== undefined ? byClient('mkdir', { type: 'call', call: { call: 'mkdir', path: named, mode } }) : bySessionMkdir(path, options)));
+      : named !== undefined ? byClient('mkdir', { type: 'call', call: { call: 'mkdir', path: named, mode, ...(options?.umask === undefined ? {} : { umask: options.umask }) } }) : bySessionMkdir(path, options)));
   };
   const bySessionUnlink = fs.unlink;
   fs.unlink = (path) => {
