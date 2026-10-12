@@ -210,8 +210,11 @@ export function hostAdapterBytes(mainModule) {
 }
 function hostAdapter(mainModule, capability) {
     const [watch, request, incarnation, key] = [HOST_WATCH_HEADER, HOST_REQUEST_HEADER, HOST_INCARNATION_HEADER, capability].map((value) => JSON.stringify(value));
+    // Module scope, not the class's text: a guest reads its class's source
+    // (this.constructor.toString()), and with the capability could forge a refusal.
     return `import { NimbusProcess as Base } from ${JSON.stringify('./' + mainModule)};
 export * from ${JSON.stringify('./' + mainModule)};
+const capability = ${key};
 export class NimbusProcess extends Base {
   #incarnation = crypto.randomUUID();
   #watchers = new Set();
@@ -219,9 +222,9 @@ export class NimbusProcess extends Base {
   #admitted = new WeakSet();
   #admit(request, signal) {
     if (this.#admitted.has(request)) return request;
-    if (request.headers.get(${request}) !== ${key}) return new Response('Not found', { status: 404 });
+    if (request.headers.get(${request}) !== capability) return new Response('Not found', { status: 404 });
     if (request.headers.get(${incarnation}) !== this.#incarnation) {
-      return new Response('the instance that ran this process was replaced', { status: 410, headers: { [${request}]: ${key} } });
+      return new Response('the instance that ran this process was replaced', { status: 410, headers: { [${request}]: capability } });
     }
     const headers = new Headers(request.headers);
     headers.delete(${request});
@@ -245,7 +248,7 @@ export class NimbusProcess extends Base {
     return admitted instanceof Request ? super.handleHttpRequest(admitted) : admitted;
   }
   fetch(request) {
-    if (request.headers.get(${watch}) !== ${key}) {
+    if (request.headers.get(${watch}) !== capability) {
       const admitted = this.#admit(request);
       return admitted instanceof Request ? super.fetch(admitted) : admitted;
     }
