@@ -14,8 +14,10 @@ import type { Command } from '../types.js';
 import type { CommandRegistry } from '../registry.js';
 import { ProcessView } from '../../../../runtime/process-files.js';
 import type { Kernel } from '../../kernel/index.js';
-import type { ShellExecuteFn } from './npm.js';
-export declare function createLifoPkgCommand(registry: CommandRegistry, _shellExecute?: ShellExecuteFn, kernel?: Kernel): Command;
+import type { NpmCommandDeps, ShellExecuteFn } from './npm.js';
+export declare function createLifoPkgCommand(registry: CommandRegistry, _shellExecute?: ShellExecuteFn, kernel?: Kernel, 
+/** Its install port: the host's, else the shell's own. */
+deps?: NpmCommandDeps): Command;
 /**
  * Boot-time loader: restores dev-linked commands + re-registers
  * installed lifo packages with the lifo runtime.

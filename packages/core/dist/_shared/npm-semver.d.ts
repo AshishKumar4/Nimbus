@@ -9,6 +9,14 @@ export declare function compareSemver(a: ParsedSemver, b: ParsedSemver): number;
  * for a comparator on its own `major.minor.patch`); an open range is `*`.
  */
 export declare function satisfiesRange(version: string, range: string): boolean;
+/** Whether `a` is a version at least `b`, loosely (an unparsable one is not). */
+export declare function versionAtLeast(a: string, b: string): boolean;
+/** Whether some version both ranges allow (semver.intersects, loose). */
+export declare function rangesIntersect(a: string, b: string): boolean;
+/** Whether every version `inner` allows, `outer` allows too (semver.subset, loose). */
+export declare function rangeSubset(inner: string, outer: string): boolean;
+/** Whether `spec` is one exact version (`1.2.3`), not a range or a tag. */
+export declare function isExactVersion(spec: string): boolean;
 /**
  * Whether `range` is a semver range at all (an open one included). False
  * for git:, github:, a URL, file:, a dist-tag, and other non-range specs,

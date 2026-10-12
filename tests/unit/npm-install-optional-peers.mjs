@@ -70,7 +70,7 @@ root.writeFile(`${PROJ}/package.json`, JSON.stringify({ name: 'fixture', depende
 const log = [];
 const env = makeFanoutEnv({
   root, NM,
-  resultFor: (name, spec) => resolveOnePackumentInFacet({ cachedEntries: [], isOptional: false, fetchTimeoutMs: 1_000, retries: 0, ...spec }, resolverEnv),
+  resultFor: (name, spec) => resolveOnePackumentInFacet({ cachedEntries: [], fetchTimeoutMs: 1_000, retries: 0, ...spec }, resolverEnv),
 });
 const ctx = { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage };
 const installer = kernelInstaller(vfs, harness.sql, { env, ctx, onProgress: (msg) => log.push(msg) });

@@ -21,7 +21,7 @@ import { ISOLATE_NETWORK, networkRef, requireNetwork, workspaceNetwork, } from '
 import { djb2 } from './vendor/serialize.js';
 import { requireFacetTaskSource } from '@nimbus-sh/core/runtime/facet-task.js';
 import { BindingError } from './vendor/errors.js';
-import { IsolatePool } from './isolate-pool.js';
+import { IsolatePool, valuesOf } from './isolate-pool.js';
 import { claimDynamicWorkers, dynamicWorkerHeadroom } from './budgets.js';
 import { hostRoute } from './composition.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
@@ -136,7 +136,9 @@ export class Fanout {
      * Peer shards: tasks hash onto min(tasks, maxPeers ?? MAX_PEER_FANOUT)
      * peers and each peer runs its bucket through its own IsolatePool, as
      * wide as that peer's headroom allows. A single submitMany call returns
-     * when ALL tasks complete (or any throws).
+     * when ALL tasks complete; after one fails no more are dispatched, and it
+     * rejects with that failure once everything dispatched has settled, so no
+     * task it started is still running when it returns.
      *
      * `fn` is the user function executed per task. It runs INSIDE a
      * Worker Loader isolate (in the in-DO path) or inside a peer DO's
@@ -145,15 +147,22 @@ export class Fanout {
      * unchanged on either route (same as IsolatePool#prepare).
      */
     async submitMany(tasks, fn) {
+        return valuesOf(await this.dispatch(tasks, fn, true));
+    }
+    /** `submitMany`, where every task is dispatched whatever the others do: each task's outcome, once all have settled. */
+    async submitManySettled(tasks, fn) {
+        return this.dispatch(tasks, fn, false);
+    }
+    async dispatch(tasks, fn, stopOnFailure) {
         if (tasks.length === 0)
             return [];
         const headroom = dynamicWorkerHeadroom(this.ctx);
         const claim = claimDynamicWorkers(this.ctx, tasks.length);
         this.opts.onRoute?.({ topology: claim ? 'in-do' : 'peer-do', tasks: tasks.length, headroom });
         if (!claim)
-            return this._dispatchPeerDo(tasks, fn);
+            return this._dispatchPeerDo(tasks, fn, stopOnFailure);
         try {
-            return await this._dispatchInDo(tasks, fn, claim);
+            return await this._dispatchInDo(tasks, fn, claim, stopOnFailure);
         }
         finally {
             claim.release();
@@ -177,7 +186,7 @@ export class Fanout {
         return `nbf:${this.opts.tag}:${this.coordDoIdShort}:${shard}`;
     }
     // ── Private: in-DO dispatch (in-DO fanout) ──────────────────────────────
-    async _dispatchInDo(tasks, fn, claim) {
+    async _dispatchInDo(tasks, fn, claim, stopOnFailure) {
         // One slot — one Dynamic Worker — per task; submitMany has claimed
         // that width on the ledger, and the pool's dispatches are held inside it.
         const pool = new IsolatePool(this.env, this.ctx, {
@@ -195,11 +204,9 @@ export class Fanout {
         });
         try {
             const items = tasks.map((t) => t.args);
-            const results = await pool.map(fn, items);
-            // pool.map returns Array<R | null> (null on per-item failure with
-            // onError='null'/'skip'). Default onError='throw' rejects on
-            // first failure, so successful settle here implies all R values.
-            return results;
+            if (!stopOnFailure)
+                return await pool.mapSettled(fn, items);
+            return (await pool.map(fn, items)).map((value) => ({ ok: true, value }));
         }
         finally {
             try {
@@ -209,7 +216,7 @@ export class Fanout {
         }
     }
     // ── Private: peer-DO dispatch (peer-DO fanout) ────────────────────────────
-    async _dispatchPeerDo(tasks, fn) {
+    async _dispatchPeerDo(tasks, fn, stopOnFailure) {
         // The peer-DO topology routes through the composed host namespace —
         // a workspace host names its own binding, and its stub forwards one
         // supervisorOp entrypoint, not private _rpc* methods.
@@ -252,85 +259,87 @@ export class Fanout {
             const siblingName = `nbf:${this.opts.tag}:${this.coordDoIdShort}:${shard}`;
             const id = ns.idFromName(siblingName);
             const peerArgs = bucket.map((t) => t.args);
-            dispatchers.push(async () => {
-                for (let attempt = 0;; attempt++) {
-                    // Fresh stub per attempt: after a transient reset the previous
-                    // stub points at a torn-down object, so a retry re-resolves the
-                    // sibling by its stable id.
-                    const peerStub = ns.get(id);
-                    try {
-                        const dispatch = hostOpDispatch(peerStub, `Fanout peer ${siblingName}`);
-                        // A peer DO call is a Durable Object RPC, not a Dynamic Worker:
-                        // it spends none of this coordinator's budget, and the peer
-                        // spends its own.
-                        const shardOpts = {
-                            tag: this.opts.tag,
-                            timeoutMs: this.opts.timeoutMs,
-                            preamble: this.opts.preamble,
-                            wasmModules: this.opts.wasmModules,
-                            extraBindings: this.opts.extraBindings,
-                            omitSupervisor: this.opts.omitSupervisor,
-                            // The workspace's egress: the peer's facets go out through it too.
-                            network: networkRef(this.opts.network),
-                            // INSTALL-HONESTY: forward the COORDINATOR's full doId so
-                            // the peer's IsolatePool can mint a SUPERVISOR
-                            // binding that routes back HERE (the user's session DO),
-                            // not to the peer DO itself. Without this, peer DOs'
-                            // env.SUPERVISOR.writeBatch / writeBatchStream / stdout /
-                            // ... write into the peer's own VFS — invisible to the
-                            // user. See INSTALL-HONESTY-retro.md.
-                            coordinatorDoId: this.coordDoId,
-                            coordinatorRoute: hostRoute() ?? undefined,
-                            // Credential source for peer-side writeBatchStream — the
-                            // invoking process pid, so package writes are authorized
-                            // as the user (not rejected as pid:0).
-                            supervisorPid: this.opts.supervisorPid,
-                        };
-                        const rpcResp = await dispatch({ op: 'fanoutExecute', args: [fnSource, peerArgs, shardOpts] });
+            dispatchers.push({ bucket, run: async () => {
+                    for (let attempt = 0;; attempt++) {
+                        // Fresh stub per attempt: after a transient reset the previous
+                        // stub points at a torn-down object, so a retry re-resolves the
+                        // sibling by its stable id.
+                        const peerStub = ns.get(id);
                         try {
-                            if (!isPeerResult(rpcResp))
-                                throw new BindingError(`Fanout peer '${siblingName}' returned no result array`);
-                            const peerResults = rpcResp.results;
-                            if (peerResults.length !== bucket.length) {
-                                throw new Error(`peer DO returned ${peerResults.length} results for ${bucket.length} tasks ` +
-                                    `(siblingName=${siblingName})`);
-                            }
-                            // Place each result back into its original input slot.
-                            for (let i = 0; i < bucket.length; i++) {
-                                const origIdx = taskIndex.get(bucket[i]);
-                                if (origIdx === undefined) {
-                                    throw new Error(`peer DO result had no original task index (siblingName=${siblingName})`);
+                            const dispatch = hostOpDispatch(peerStub, `Fanout peer ${siblingName}`);
+                            // A peer DO call is a Durable Object RPC, not a Dynamic Worker:
+                            // it spends none of this coordinator's budget, and the peer
+                            // spends its own.
+                            const shardOpts = {
+                                tag: this.opts.tag,
+                                timeoutMs: this.opts.timeoutMs,
+                                preamble: this.opts.preamble,
+                                wasmModules: this.opts.wasmModules,
+                                extraBindings: this.opts.extraBindings,
+                                omitSupervisor: this.opts.omitSupervisor,
+                                // The workspace's egress: the peer's facets go out through it too.
+                                network: networkRef(this.opts.network),
+                                // INSTALL-HONESTY: forward the COORDINATOR's full doId so
+                                // the peer's IsolatePool can mint a SUPERVISOR
+                                // binding that routes back HERE (the user's session DO),
+                                // not to the peer DO itself. Without this, peer DOs'
+                                // env.SUPERVISOR.writeBatch / writeBatchStream / stdout /
+                                // ... write into the peer's own VFS — invisible to the
+                                // user. See INSTALL-HONESTY-retro.md.
+                                coordinatorDoId: this.coordDoId,
+                                coordinatorRoute: hostRoute() ?? undefined,
+                                // Credential source for peer-side writeBatchStream — the
+                                // invoking process pid, so package writes are authorized
+                                // as the user (not rejected as pid:0).
+                                supervisorPid: this.opts.supervisorPid,
+                                stopOnFailure,
+                            };
+                            const rpcResp = await dispatch({ op: 'fanoutExecute', args: [fnSource, peerArgs, shardOpts] });
+                            try {
+                                if (!isPeerResult(rpcResp))
+                                    throw new BindingError(`Fanout peer '${siblingName}' returned no result array`);
+                                const peerResults = rpcResp.results;
+                                if (peerResults.length !== bucket.length) {
+                                    throw new Error(`peer DO returned ${peerResults.length} results for ${bucket.length} tasks ` +
+                                        `(siblingName=${siblingName})`);
                                 }
-                                results[origIdx] = peerResults[i];
+                                // Place each result back into its original input slot.
+                                for (let i = 0; i < bucket.length; i++) {
+                                    const origIdx = taskIndex.get(bucket[i]);
+                                    if (origIdx === undefined) {
+                                        throw new Error(`peer DO result had no original task index (siblingName=${siblingName})`);
+                                    }
+                                    const outcome = peerResults[i];
+                                    results[origIdx] = outcome.ok ? { ok: true, value: outcome.value } : { ok: false, error: new Error(outcome.message) };
+                                }
                             }
+                            finally {
+                                disposeRpcResource(rpcResp);
+                            }
+                            return;
+                        }
+                        catch (err) {
+                            // A shard waits out an overloaded peer: it never ran there.
+                            const backoff = peerRetryDelay(err, attempt, { retryOverloaded: true });
+                            if (backoff !== null) {
+                                await new Promise((r) => setTimeout(r, backoff));
+                                continue;
+                            }
+                            // Re-throwing bare loses everything only this frame knows: which
+                            // sibling ran the shard, how wide it was, and how many attempts
+                            // it already cost. Callers report the message, so a rejection the
+                            // platform words as `internal error` arrived at the user with no
+                            // way to tell a one-off peer from a shard that had exhausted its
+                            // retries. `cause` keeps the original for anything that inspects
+                            // errors rather than reads them.
+                            throw new Error(`peer shard ${siblingName} (${bucket.length} task${bucket.length === 1 ? '' : 's'}) `
+                                + `failed after ${attempt + 1} attempt${attempt === 0 ? '' : 's'}: ${describeError(err)}`, { cause: err });
                         }
                         finally {
-                            disposeRpcResource(rpcResp);
+                            disposeRpcResource(peerStub);
                         }
-                        return;
                     }
-                    catch (err) {
-                        // A shard waits out an overloaded peer: it never ran there.
-                        const backoff = peerRetryDelay(err, attempt, { retryOverloaded: true });
-                        if (backoff !== null) {
-                            await new Promise((r) => setTimeout(r, backoff));
-                            continue;
-                        }
-                        // Re-throwing bare loses everything only this frame knows: which
-                        // sibling ran the shard, how wide it was, and how many attempts
-                        // it already cost. Callers report the message, so a rejection the
-                        // platform words as `internal error` arrived at the user with no
-                        // way to tell a one-off peer from a shard that had exhausted its
-                        // retries. `cause` keeps the original for anything that inspects
-                        // errors rather than reads them.
-                        throw new Error(`peer shard ${siblingName} (${bucket.length} task${bucket.length === 1 ? '' : 's'}) `
-                            + `failed after ${attempt + 1} attempt${attempt === 0 ? '' : 's'}: ${describeError(err)}`, { cause: err });
-                    }
-                    finally {
-                        disposeRpcResource(peerStub);
-                    }
-                }
-            });
+                } });
         }
         // Dispatch peer shards in bounded phases. A single Promise.all across all
         // shards can create too many simultaneous cold sibling DO starts under
@@ -340,11 +349,27 @@ export class Fanout {
         // A phase is a hard barrier: no shard in phase N+1 starts until every
         // shard in phase N returns, so `width@ms` per phase is what separates
         // "the shards are slow" from "there are too many barriers".
+        //
+        // A phase settles whole before the next starts, so a shard that fails
+        // leaves none of its phase running; after one fails, submitMany starts
+        // no more.
         for (let i = 0; i < dispatchers.length; i += FANOUT_PHASE_SIZE) {
             const phase = dispatchers.slice(i, i + FANOUT_PHASE_SIZE);
             const phaseStartedAt = Date.now();
-            await Promise.all(phase.map((d) => d()));
+            const outcomes = await Promise.allSettled(phase.map((d) => d.run()));
             this.opts.onDispatchPhase?.(phase.length, Date.now() - phaseStartedAt);
+            outcomes.forEach((outcome, at) => {
+                if (outcome.status === 'fulfilled')
+                    return;
+                const error = outcome.reason instanceof Error ? outcome.reason : new Error(String(outcome.reason));
+                for (const task of phase[at].bucket)
+                    results[taskIndex.get(task) ?? -1] = { ok: false, error };
+            });
+            if (stopOnFailure && phase.some(({ bucket }) => bucket.some((task) => results[taskIndex.get(task) ?? -1]?.ok === false)))
+                break;
+        }
+        for (let i = 0; i < results.length; i++) {
+            results[i] ??= { ok: false, error: new Error('not dispatched: an earlier shard failed') };
         }
         return results;
     }
@@ -392,8 +417,8 @@ export async function executeFanoutShard(env, ctx, fnSource, args, opts = {}) {
     });
     try {
         // The coordinator already validated and serialized the function.
-        const results = await pool.mapSource(fnSource, args);
-        return { results };
+        const settled = await pool.mapSource(fnSource, args, opts.stopOnFailure !== false);
+        return { results: settled.map((outcome) => (outcome.ok ? outcome : { ok: false, message: describeError(outcome.error) })) };
     }
     finally {
         try {

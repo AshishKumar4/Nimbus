@@ -12,20 +12,16 @@ import type { ResolvedPackage } from './resolver.js';
 export interface RegistryCacheEntry {
   name: string;
   version: string;
+  /** The registry package (an alias's target); '' for rows written before it was kept. */
+  registryName?: string;
   tarballUrl: string;
   integrity: string;
   depsJson: string;       // JSON-encoded Record<string, string>
   /**
-   * JSON-encoded REQUIRED peerDependencies (X.5-F R2).
-   *
-   * Optional peers — those marked `peerDependenciesMeta.<name>.optional
-   * === true` in the source packument — are filtered out before this
-   * field is written. Storing only the required subset means downstream
-   * lockfile-validity checks can ask "is this peer in the tree?"
-   * without having to consult the meta field again.
-   *
-   * Defaults to '{}' for entries written by pre-X.5-F builds (the
-   * column was added via ALTER TABLE, see ensureSchema).
+   * JSON-encoded peerDependencies: every peer, the optional ones named by
+   * peerMetaJson. Rows written before peerMetaJson was kept hold only the
+   * required peers, which read as required. '{}' for rows written before
+   * the column existed (added via ALTER TABLE, see ensureSchema).
    */
   peerDepsJson?: string;
   exportsJson: string;    // JSON-encoded exports field
@@ -48,6 +44,10 @@ export interface RegistryCacheEntry {
    * resolve. Defaults to '{}' for pre-migration rows.
    */
   optionalDepsJson?: string;
+  /** JSON-encoded `peerDependenciesMeta` (which peers are optional); '{}' for rows written before it was kept, whose peers are the required ones. */
+  peerMetaJson?: string;
+  /** JSON-encoded `bundleDependencies` as published; '' for none (and rows written before it was kept). */
+  bundleJson?: string;
   fetchedAt: number;
 }
 
@@ -58,6 +58,8 @@ const isObject = (value: unknown): value is Record<string, unknown> =>
 const isStringMap = (value: unknown): value is Record<string, string> =>
   isObject(value) && Object.values(value).every((v) => typeof v === 'string');
 const isStringList = (value: unknown): value is string[] => Array.isArray(value) && value.every((v) => typeof v === 'string');
+const isPeerMeta = (value: unknown): value is Record<string, { optional?: boolean }> =>
+  isObject(value) && Object.values(value).every((meta) => isObject(meta) && (meta.optional === undefined || typeof meta.optional === 'boolean'));
 const isAnyJson = (value: unknown): value is unknown => true;
 
 /**
@@ -68,9 +70,10 @@ const isAnyJson = (value: unknown): value is unknown => true;
 function decoded<T>(json: string | undefined, shape: (value: unknown) => value is T, fallback: T): T {
   if (!json) return fallback;
   // Most of a record's maps are empty: no parse for those.
-  if (json === '{}') return {} as T;
-  let value: unknown;
-  try { value = JSON.parse(json); } catch { return fallback; }
+  let value: unknown = {};
+  if (json !== '{}') {
+    try { value = JSON.parse(json); } catch { return fallback; }
+  }
   return shape(value) ? value : fallback;
 }
 
@@ -86,6 +89,7 @@ export function registryRecord(pkg: ResolvedPackage, fetchedAt: number): Registr
   return {
     name: pkg.name,
     version: pkg.version,
+    registryName: pkg.registryName ?? pkg.name,
     tarballUrl: pkg.tarballUrl,
     integrity: pkg.integrity,
     depsJson: JSON.stringify(pkg.dependencies),
@@ -96,16 +100,9 @@ export function registryRecord(pkg: ResolvedPackage, fetchedAt: number): Registr
     binJson: JSON.stringify(pkg.bin),
     platformJson: JSON.stringify({ os: pkg.os, cpu: pkg.cpu, libc: pkg.libc }),
     optionalDepsJson: JSON.stringify(pkg.optionalDependencies ?? {}),
+    peerMetaJson: JSON.stringify(pkg.peerDependenciesMeta ?? {}),
+    bundleJson: pkg.bundleDependencies === undefined ? '' : JSON.stringify(pkg.bundleDependencies),
     fetchedAt,
-  };
-}
-
-/** A record's edges, as resolvedFromRecord decodes them: its dependencies, required peers and optional dependencies. */
-export function recordEdges(record: RegistryCacheEntry): Pick<ResolvedPackage, 'dependencies' | 'peerDependencies' | 'optionalDependencies'> {
-  return {
-    dependencies: decoded(record.depsJson, isStringMap, {}),
-    peerDependencies: ranges(record.peerDepsJson),
-    optionalDependencies: ranges(record.optionalDepsJson),
   };
 }
 
@@ -114,13 +111,18 @@ const NO_PLATFORM: Platform = Object.freeze({});
 /** The package a record describes, as a cold resolve of its version answers it. */
 export function resolvedFromRecord(record: RegistryCacheEntry): ResolvedPackage {
   const platform: Platform = record.platformJson === '{}' ? NO_PLATFORM : decoded(record.platformJson, isObject, NO_PLATFORM);
+  const peerMeta = decoded(record.peerMetaJson, isPeerMeta, {});
+  const bundle: unknown = record.bundleJson ? decoded(record.bundleJson, isAnyJson, undefined) : undefined;
   return {
     name: record.name,
     version: record.version,
+    ...(record.registryName ? { registryName: record.registryName } : {}),
     tarballUrl: record.tarballUrl,
     integrity: record.integrity,
     dependencies: decoded(record.depsJson, isStringMap, {}),
     peerDependencies: ranges(record.peerDepsJson),
+    ...(Object.keys(peerMeta).length > 0 ? { peerDependenciesMeta: peerMeta } : {}),
+    ...(bundle === undefined ? {} : { bundleDependencies: bundle }),
     optionalDependencies: ranges(record.optionalDepsJson),
     os: isStringList(platform.os) ? platform.os : undefined,
     cpu: isStringList(platform.cpu) ? platform.cpu : undefined,

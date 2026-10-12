@@ -5,6 +5,67 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed: `npm install` has one engine. The Worker's installer and the
+  shell's own npm (a library workspace with no installer of its own) plan
+  every install with core `_shared/npm-arborist/`, npm 10's arborist
+  build: a conflict goes to the highest ancestor it fits, a package's peers
+  are placed with it, an optional peer only constrains, and what a package
+  bundles is its own. A package named on the command line is resolved even
+  where an installed copy meets it (`pkg@latest`, an alias retargeted).
+  Installs are checked against npm 10.9.8 itself, on both hosts. A cycle of
+  incompatible ranges, which npm breaks with a link, fails past 16 levels.
+- Breaking: options npm has that change the tree, and that are not
+  implemented here, are refused with `npm ERR!` instead of ignored:
+  `--install-strategy` other than hoisted (and `--global-style`,
+  `--legacy-bundling`), workspaces, `--dry-run`, `--package-lock-only`,
+  `--no-bin-links`, `--before`, `--cpu`/`--os`/`--libc` and
+  `--engine-strict`. So are git, file, directory and URL specs, which no
+  host installs. New: `--omit=optional`, `--omit=peer`, `--include`,
+  `--strict-peer-deps`, `--prefer-dedupe`, `--no-save`, `--save-exact` and
+  `--save-prefix`, as npm reads them.
+- Breaking: `npm ci` builds npm's ideal tree over the lock and fails, before
+  it removes anything, where that tree is not the lock's: a package the lock
+  lacks, or holds at another version. A lock whose root declares other
+  dependencies than package.json is no longer refused for that alone; its
+  flags are found again and what nothing reaches is left out, as npm does.
+  `npm ci` keeps the lock's dev, optional and peer flags, honours `--omit`,
+  `--force`, `--legacy-peer-deps` and `--strict-peer-deps`.
+- Breaking: a required failure changes nothing, as in npm. An install with
+  a required dependency that cannot be resolved, or that is refused for its
+  platform (EBADPLATFORM), now installs nothing and exits 1; before, it
+  installed everything else. When a required tarball fails partway through
+  a Worker install, the install exits 1 and names what it published and
+  what failed. It removes nothing, leaves package.json unchanged, and
+  records in the lockfile only what is on disk.
+- Breaking: a peer dependency that conflicts with one of the project's own
+  dependencies is npm's ERESOLVE, and the install fails. `--force` lets it
+  through with a warning; `--legacy-peer-deps` installs no peers at all.
+- Changed: `npm install <pkg>` plans with the project's whole tree, and
+  prunes what the tree no longer needs. It saves where npm saves: `-D`,
+  `-O`, otherwise where the project already declares the package. A bare
+  name keeps its declared range. The saved range is `^version` unless the
+  range given is narrower.
+- Changed: an optional dependency that fails, whether at resolution, by a
+  platform refusal or at download, is left out with every package only it
+  needed. The decision is made per placement, over the whole graph. A
+  dependency that is in both `dependencies` and `devDependencies` takes its
+  `devDependencies` range. The project's own `peerDependencies` install.
+  `--omit=dev` plans the whole tree and leaves out what only
+  devDependencies reach, as npm does.
+- Changed: `npm install -g` uses npm's global layout, where each package's
+  dependencies, and its peers, sit beneath it. It builds what it names
+  afresh and changes nothing else in the prefix; `<prefix>/lib/package.json`
+  is neither read nor written.
+- Changed: the shell's own npm publishes under a journal in `node_modules`.
+  If an install is interrupted, the next one undoes it before planning.
+  Ctrl-C before publication changes nothing. Installs into one tree, in
+  either host, run one at a time. A stopped install that is waiting for the
+  tree never starts.
+- Changed: registry cache records belong to the registry package, and are
+  kept only under its name; an alias's lockfile entry names the package it
+  installed. A record cached before this release does not say which package
+  it is, so it is not used: the first install after upgrading resolves its
+  tree from the registry once.
 - A file on a mount is opened by one rule, and its open description is one
   implementation (`vfs/mounted-description.js`), for a process's synchronous
   face, its asynchronous one, and a wave's `open`; one descriptor numbering per

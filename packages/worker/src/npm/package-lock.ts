@@ -1,10 +1,7 @@
 /**
  * npm's package-lock.json / npm-shrinkwrap.json (lockfileVersion 2 and 3),
- * read for `npm ci`: the `packages` map keyed by install path, and the check
- * that the lock still describes what package.json declares.
+ * read for `npm ci`: the `packages` map keyed by install path.
  */
-import { isSemverRange, satisfiesRange } from '@nimbus-sh/core/_shared/npm-semver.js';
-import { parseRegistryRequest } from '@nimbus-sh/core/_shared/npm-spec.js';
 
 /** A parsed JSON object or array: a value whose fields can be read and set. */
 export function isJsonObject(value: unknown): value is Record<string, unknown> {
@@ -19,10 +16,15 @@ export interface PackageLockEntry {
   link?: unknown;
   dev?: unknown;
   optional?: unknown;
+  devOptional?: unknown;
+  peer?: unknown;
+  extraneous?: unknown;
   dependencies?: unknown;
   devDependencies?: unknown;
   optionalDependencies?: unknown;
   peerDependencies?: unknown;
+  peerDependenciesMeta?: unknown;
+  bundleDependencies?: unknown;
   bin?: unknown;
   os?: unknown;
   cpu?: unknown;
@@ -44,46 +46,6 @@ export function parsePackageLock(text: string, lockName: string): PackageLock {
     );
   }
   return { lockfileVersion: version, packages: lock.packages as Record<string, PackageLockEntry> };
-}
-
-const DEPENDENCY_FIELDS = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'] as const;
-
-/**
- * Why the lock no longer describes package.json, one line per disagreement;
- * empty when they agree. Every declared dependency must be locked at a
- * version its range accepts, and the lock's root must declare the same
- * dependency set, so a dependency removed from package.json is caught too.
- */
-export function packageLockMismatches(value: unknown, lock: PackageLock): string[] {
-  // A primitive document declares nothing; null has no fields to read.
-  if (value === null) throw new TypeError('package.json is null');
-  const pkgJson = isJsonObject(value) ? value : {};
-  const out: string[] = [];
-  const root = lock.packages[''] ?? {};
-  for (const field of DEPENDENCY_FIELDS) {
-    const declared = stringRecord(pkgJson[field]);
-    const locked = stringRecord(root[field]);
-    for (const [name, spec] of Object.entries(declared)) {
-      if (locked[name] !== spec) {
-        out.push(`Invalid: lock file's root ${field} has ${name}@${locked[name] ?? '(none)'}, package.json has ${name}@${spec}`);
-        continue;
-      }
-      const entry = lock.packages[`node_modules/${name}`];
-      if (!entry) {
-        if (field !== 'peerDependencies' && field !== 'optionalDependencies') out.push(`Missing: ${name}@${spec} from lock file`);
-        continue;
-      }
-      const range = parseRegistryRequest(name, spec).range;
-      const version = typeof entry.version === 'string' ? entry.version : '';
-      if (isSemverRange(range) && !satisfiesRange(version, range)) {
-        out.push(`Invalid: lock file's ${name}@${version || '(none)'} does not satisfy ${name}@${spec}`);
-      }
-    }
-    for (const name of Object.keys(locked)) {
-      if (!Object.hasOwn(declared, name)) out.push(`Invalid: lock file's root ${field} has ${name}, which package.json does not declare`);
-    }
-  }
-  return out;
 }
 
 export function stringRecord(value: unknown): Record<string, string> {
