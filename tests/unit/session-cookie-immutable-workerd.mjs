@@ -4,17 +4,18 @@
 // order, and the upgraded socket must still work after the copy.
 import assert from 'node:assert/strict';
 import { startLocalProbe } from './lib/workerd-probe.mjs';
+import { attachPathFor, deleteSession, mintSession } from '../behavioral/_driver.mjs';
 
 const probe = await startLocalProbe({ runtimes: [] });
 try {
   process.env.BASE = probe.base;
   process.env.NIMBUS_PROBE_TOKEN = probe.token;
-  const { mintSession, deleteSession } = await import('../../behavioral/_driver.mjs');
+  void mintSession; void deleteSession;
   const sid = await mintSession();
   try {
     // Attach without following the redirect: capture the legacy global cookie,
     // exactly as a pre-deploy tab's jar holds it.
-    const { attachPathFor } = await import('../../behavioral/_driver.mjs');
+
     const exchange = await fetch(`${probe.base}${attachPathFor(sid)}`, { redirect: 'manual' });
     assert.equal(exchange.status, 302);
     const legacy = exchange.headers.getSetCookie().map((v) => v.split(';', 1)[0])
