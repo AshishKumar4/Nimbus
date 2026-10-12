@@ -16,7 +16,7 @@ const A = 'a'.repeat(40);
 const B = 'b'.repeat(40);
 
 /** Run the helper on `input` (git's lines): its exit, what it wrote, and what the engine was asked. */
-async function converse(input, { env = { GIT_DIR: '.git' }, url = 'https://example.com/r.git', engine: override = {} } = {}) {
+async function converse(input, { env = { GIT_DIR: '.git' }, url = 'https://example.com/r.git', readFile = async () => null, engine: override = {} } = {}) {
   const lines = input.split('\n');
   const asked = [];
   let out = '';
@@ -43,7 +43,7 @@ async function converse(input, { env = { GIT_DIR: '.git' }, url = 'https://examp
     readLine: async () => (lines.length > 0 ? lines.shift() : null),
     stdout: (text) => { out += text; },
     stderr: (text) => { err += text; },
-    readFile: async () => null,
+    readFile,
   }, engine, { has: async () => new Set(), resolve: async () => null, packObjects: () => null });
   return { code, out, err, asked };
 }
@@ -88,6 +88,23 @@ assert.equal(unquoteC('"open'), null);
 }
 
 {
+  const r = await converse(`fetch ${A} refs/heads/main\n\n`, {
+    env: { GIT_DIR: '../shared.git/worktrees/linked', GIT_OBJECT_DIRECTORY: '../objects' },
+    readFile: async (path) => path === '/home/user/shared.git/worktrees/linked/commondir' ? new TextEncoder().encode('../..\n') : null,
+  });
+  assert.equal(r.code, 0);
+  assert.equal(r.asked[0][1].gitDir, '/home/user/shared.git/worktrees/linked');
+  assert.equal(r.asked[0][1].commonDir, '/home/user/shared.git');
+  assert.equal(r.asked[0][1].objectDir, '/home/user/objects');
+  const override = await converse(`fetch ${A} refs/heads/main\n\n`, {
+    env: { GIT_DIR: '.git', GIT_COMMON_DIR: '../common.git' },
+    readFile: async () => { throw new Error('commondir must not be read when Git exports the common directory'); },
+  });
+  assert.equal(override.code, 0);
+  assert.equal(override.asked[0][1].commonDir, '/home/user/common.git');
+}
+
+{
   const r = await converse(`list\nfetch ${A} refs/heads/main\n\n`, {
     engine: { async fetchPack() { throw new Error('HTTP 403'); } },
   });
@@ -115,6 +132,14 @@ assert.equal(unquoteC('"open'), null);
   assert.equal(r.code, 128);
   assert.ok(!r.err.includes('URL-SECRET') && !r.err.includes('ENV-SECRET') && !r.err.includes('user:'), r.err);
   assert.match(r.err, /example\.com\/private\.git/, 'the failed destination remains identifiable');
+}
+
+{
+  const r = await converse(`list for-push\npush +${A}:refs/heads/p\n\n`, {
+    env: { GIT_DIR: '.git', GIT_PASSWORD: 'p' },
+  });
+  assert.equal(r.code, 0);
+  assert.match(r.out, /ok refs\/heads\/p\n/, 'redacting a short password does not change protocol ref names');
 }
 
 console.log('git-remote-helper: ok');

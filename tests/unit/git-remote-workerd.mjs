@@ -32,7 +32,11 @@ try {
   const bare = join(served, 'repo.git');
   host(work, 'clone', '-q', '--bare', source, bare);
   host(bare, 'config', 'http.receivepack', 'true');
-  server = startGitHttpServer(served, { refuse: (path) => path.startsWith('/denied.git/') });
+  server = startGitHttpServer(served, {
+    refuse: (path) => path.startsWith('/denied.git/') && new Response('denied URL-SECRET ENV-SECRET', {
+      status: 401, headers: { 'content-type': 'text/plain', 'www-authenticate': 'Basic realm="git"' },
+    }),
+  });
   const url = server.url + '/repo.git';
   probe = await startLocalProbe({ runtimes: ['bash', 'git'] });
   terminal = await localTerminal(probe, { install: ['bash', 'git'] });
@@ -93,6 +97,8 @@ try {
   const denied = await terminal.run(`GIT_TOKEN=ENV-SECRET git ls-remote 'http://user:URL-SECRET@127.0.0.1:${new URL(url).port}/denied.git'`, 300_000);
   assert.notEqual(denied.status, 0);
   assert.ok(!denied.stdout.includes('URL-SECRET') && !denied.stdout.includes('ENV-SECRET') && !denied.stdout.includes('user:'), denied.stdout);
+  assert.equal(server.requests.find(({ path }) => path.startsWith('/denied.git/'))?.authorization,
+    'Basic ' + Buffer.from('user:URL-SECRET').toString('base64'), 'URL credentials passed through the session engine');
   assert.ok(server.requests.some(({ path }) => path.endsWith('/git-upload-pack')), 'fetch used the session network engine');
   assert.ok(server.requests.some(({ path }) => path.endsWith('/git-receive-pack')), 'push used the session network engine');
   console.log('git-remote-workerd: both helpers, ls-remote, divergent pull --rebase, streamed push, linked fetch and redacted refusal passed');

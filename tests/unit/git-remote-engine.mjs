@@ -37,6 +37,12 @@ const engine = createRemoteEngine({ ctx: session.doCtx, env: session.doEnv, pid:
 const packOf = (repo, include, exclude = []) => new Blob([hostGit(repo, ['pack-objects', '--revs', '--stdout', '-q'], [...include, ...exclude.map((oid) => '^' + oid)].join('\n') + '\n')]).stream();
 
 try {
+  const stopped = new AbortController();
+  stopped.abort();
+  const cancelled = createRemoteEngine({ ctx: session.doCtx, env: session.doEnv, pid: 7, network: ISOLATE_NETWORK, signal: stopped.signal });
+  await assert.rejects(cancelled.listRefs({ url: 'http://127.0.0.1/stopped.git', forPush: false }), /cancel/i);
+  assert.equal(session.requests.loads, 0, 'a stopped helper starts no network facet');
+
   const source = join(work, 'source');
   hostGit(work, ['init', '-q', '-b', 'main', source]);
   const commit = (name) => {

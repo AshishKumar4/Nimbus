@@ -154,19 +154,19 @@ function setOption(options: Options, name: string, raw: string): string {
 /** The directory git named in GIT_DIR, absolute (git gives it relative to the cwd it started the helper in). */
 function gitDirOf(io: HelperIo): string | null {
   const dir = io.env.GIT_DIR;
-  return dir ? resolveVfsPath(io.cwd, dir) : null;
+  return dir ? '/' + resolveVfsPath(dir, io.cwd) : null;
 }
 
 /** Git exports a common directory when overridden; a linked gitdir otherwise records it in commondir. */
 async function storageOf(io: HelperIo, gitDir: string): Promise<{ commonDir?: string; objectDir?: string }> {
-  let commonDir = io.env.GIT_COMMON_DIR ? resolveVfsPath(io.cwd, io.env.GIT_COMMON_DIR) : gitDir;
+  let commonDir = io.env.GIT_COMMON_DIR ? '/' + resolveVfsPath(io.env.GIT_COMMON_DIR, io.cwd) : gitDir;
   if (!io.env.GIT_COMMON_DIR) {
     const common = await io.readFile(gitDir + '/commondir');
-    if (common !== null) commonDir = resolveVfsPath(gitDir, new TextDecoder().decode(common).trimEnd());
+    if (common !== null) commonDir = '/' + resolveVfsPath(new TextDecoder().decode(common).trimEnd(), gitDir);
   }
   return {
     ...(commonDir !== gitDir ? { commonDir } : {}),
-    ...(io.env.GIT_OBJECT_DIRECTORY ? { objectDir: resolveVfsPath(io.cwd, io.env.GIT_OBJECT_DIRECTORY) } : {}),
+    ...(io.env.GIT_OBJECT_DIRECTORY ? { objectDir: '/' + resolveVfsPath(io.env.GIT_OBJECT_DIRECTORY, io.cwd) } : {}),
   };
 }
 
@@ -246,14 +246,15 @@ export async function runRemoteHelper(io: HelperIo, engine: RemoteEngine, local:
         return fail(`could not read the refs of ${anonymizeUrl(url)}`, error);
       }
       let out = options.objectFormat ? `:object-format ${listed.objectFormat}\n` : '';
+      if (forPush) pushRefs = new Map();
       for (const ref of listed.refs) {
+        if (forPush && ref.oid !== null) pushRefs?.set(ref.name, ref.oid);
         if (ref.symref) out += `@${ref.symref} ${ref.name}\n`;
         else if (ref.oid) out += `${ref.oid} ${ref.name}\n`;
         else out += `? ${ref.name}\n`;
       }
       await io.stdout(`${out}\n`);
       zero = '0'.repeat(listed.objectFormat === 'sha256' ? 64 : 40);
-      if (forPush) pushRefs = new Map(listed.refs.flatMap((r) => r.oid === null ? [] : [[r.name, r.oid]]));
       continue;
     }
 
@@ -344,7 +345,7 @@ export async function runRemoteHelper(io: HelperIo, engine: RemoteEngine, local:
           return fail(`could not push to ${anonymizeUrl(url)}`, error);
         }
         for (const ref of pushed.refs) {
-          statuses.set(ref.ref, ref.ok ? `ok ${ref.ref}` : `error ${ref.ref}${ref.reason ? ` ${ref.reason}` : ''}`);
+          statuses.set(ref.ref, ref.ok ? `ok ${ref.ref}` : `error ${ref.ref}${ref.reason ? ` ${redactCredentials(ref.reason, secrets)}` : ''}`);
         }
       } else {
         for (const command of commands) statuses.set(command.ref, `ok ${command.ref}`);
@@ -352,7 +353,7 @@ export async function runRemoteHelper(io: HelperIo, engine: RemoteEngine, local:
       // Every ref git asked about gets an answer, in the order it asked.
       let out = '';
       for (const spec of specs) out += `${statuses.get(spec.dst) ?? `error ${spec.dst} not reported by the remote`}\n`;
-      await io.stdout(redactCredentials(`${out}\n`, secrets));
+      await io.stdout(`${out}\n`);
       continue;
     }
 

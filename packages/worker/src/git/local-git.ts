@@ -7,13 +7,14 @@ const encoder = new TextEncoder();
 
 /** Git's object and ref operations, as children of the remote helper on the session's byte pipes. */
 export function createLocalGit(manager: FacetProcessManager, from: Pick<CommandContext, 'pid' | 'cwd' | 'env' | 'signal'>): LocalGit {
-  const run = (gitDir: string, args: string[], input: () => Promise<string>): ReadableStream<Uint8Array> => {
+  const run = (gitDir: string, args: string[], input: (signal: AbortSignal) => Promise<string>, signal = from.signal): ReadableStream<Uint8Array> => {
+    const stop = new AbortController();
     let pid: number | null = null;
     let ended = false;
     let cursor = 0;
     const cancelled = () => new DOMException('git child cancelled', 'AbortError');
     const close = () => {
-      from.signal.removeEventListener('abort', abort);
+      signal.removeEventListener('abort', abort);
       if (pid !== null) {
         manager.closeOutput(pid, 1);
         manager.closeOutput(pid, 2);
@@ -27,21 +28,22 @@ export function createLocalGit(manager: FacetProcessManager, from: Pick<CommandC
         abort = () => {
           if (ended) return;
           ended = true;
+          stop.abort();
           kill();
           controller.error(cancelled());
         };
-        from.signal.addEventListener('abort', abort, { once: true });
+        signal.addEventListener('abort', abort, { once: true });
         opened = (async () => {
-          if (from.signal.aborted) throw cancelled();
-          const text = await input();
-          if (ended || from.signal.aborted) throw cancelled();
+          if (signal.aborted) throw cancelled();
+          const text = await input(stop.signal);
+          if (ended || signal.aborted) throw cancelled();
           const child = await manager.spawn({
             command: 'git', args, parentPid: from.pid, cwd: from.cwd,
             env: { ...from.env, GIT_DIR: gitDir, NIMBUS_GIT_WASI: '1' },
             stdio: ['pipe', 'pipe', 'pipe'],
           });
           pid = child.childPid;
-          if (ended || from.signal.aborted) { kill(); throw cancelled(); }
+          if (ended || signal.aborted) { kill(); throw cancelled(); }
           let detail = '';
           const stderr = (async () => {
             const decoder = new TextDecoder();
@@ -69,7 +71,7 @@ export function createLocalGit(manager: FacetProcessManager, from: Pick<CommandC
             }
           })();
           const complete = Promise.all([feed, stderr, wait]).then(([, , status]) => {
-            if (from.signal.aborted) throw cancelled();
+            if (stop.signal.aborted) throw cancelled();
             if (status.exitCode !== 0 || status.signal !== null) {
               throw new Error(`git ${args[0]} exited ${status.exitCode ?? status.signal}${detail.trim() ? ': ' + detail.trim() : ''}`);
             }
@@ -115,28 +117,29 @@ export function createLocalGit(manager: FacetProcessManager, from: Pick<CommandC
       },
       async cancel() {
         ended = true;
+        stop.abort();
         kill();
         const child = await opened.catch(() => null);
         if (child) { kill(); await child.complete.catch(() => {}); }
       },
     });
   };
-  const check = async (gitDir: string, refs: string[]): Promise<Array<string | null>> => {
+  const check = async (gitDir: string, refs: string[], signal = from.signal): Promise<Array<string | null>> => {
     if (refs.length === 0) return [];
-    const text = await new Response(run(gitDir, ['cat-file', '--batch-check=%(objectname)'], async () => refs.join('\n') + '\n')).text();
+    const text = await new Response(run(gitDir, ['cat-file', '--batch-check=%(objectname)'], async () => refs.join('\n') + '\n', signal)).text();
     const lines = text.trimEnd().split('\n');
     return refs.map((_, i) => OID.test(lines[i] ?? '') ? lines[i] : null);
   };
-  const has = async (gitDir: string, oids: string[]): Promise<Set<string>> => {
-    const checked = await check(gitDir, oids);
+  const has = async (gitDir: string, oids: string[], signal = from.signal): Promise<Set<string>> => {
+    const checked = await check(gitDir, oids, signal);
     return new Set(oids.filter((_, i) => checked[i] !== null));
   };
   return {
     has,
     async resolve(gitDir, ref) { return (await check(gitDir, [ref]))[0] ?? null; },
     packObjects({ gitDir, include, exclude }) {
-      return run(gitDir, ['pack-objects', '--revs', '--thin', '--stdout', '-q'], async () => {
-        const present = await has(gitDir, exclude);
+      return run(gitDir, ['pack-objects', '--revs', '--thin', '--stdout', '-q'], async (signal) => {
+        const present = await has(gitDir, exclude, signal);
         return [...include, ...exclude.filter((oid) => present.has(oid)).map((oid) => '^' + oid)].join('\n') + '\n';
       });
     },
