@@ -6,7 +6,7 @@ import { HOSTED_WATCH_HEADER } from '../../packages/fabric/src/peer-host.ts';
 
 adoptCtxExports({ SupervisorRPC: options => ({ props: options.props }) });
 const turns = async () => { for (let i = 0; i < 160; i++) await Promise.resolve(); };
-const boot = { kind: 'code', code: { compatibilityDate: '2026-09-26', mainModule: 'worker.js', modules: { 'worker.js': 'export class NimbusProcess {}' } } };
+const boot = { kind: 'code', code: { compatibilityDate: '2026-09-26', compatibilityFlags: [], mainModule: 'worker.js', modules: { 'worker.js': 'export class NimbusProcess {}' } } };
 let guestCalls = 0, dataCalls = 0, blocked = false;
 const pendingWatch = Promise.withResolvers();
 const world = createFacetWorld(() => ({
