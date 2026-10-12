@@ -384,7 +384,7 @@ await check('the engine\'s listeners: one registered while a batch is told hears
   stopB(); stopC();
 });
 
-await check('registering a watch stores nothing an open description holds', async () => {
+await check('registering a watch stores nothing an open description holds, a watch of that file included', async () => {
   kernel.writeFile('home/user/held.log', 'base:');
   const writer = raw.openDescription('home/user/held.log', CRED_KERNEL, { read: false, write: true });
   writer.write(writer.end(), enc.encode('held'));
@@ -392,8 +392,12 @@ await check('registering a watch stores nothing an open description holds', asyn
   const exec = harness.sql.exec.bind(harness.sql);
   harness.sql.exec = (query, ...params) => { if (/^\s*(INSERT|UPDATE|DELETE)/i.test(query)) stored++; return exec(query, ...params); };
   try {
-    const w = watching('/home/user/unrelated', ns.as(PUBLIC));
-    w.stop();
+    for (const view of [ns, ns.as(PUBLIC)]) {
+      for (const path of ['/home/user/unrelated', '/home/user/held.log']) {
+        watching(path, view).stop();
+        view.watchChanges(path, () => {}, { follow: true })();
+      }
+    }
   } finally {
     harness.sql.exec = exec;
   }

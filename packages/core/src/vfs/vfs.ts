@@ -206,6 +206,13 @@ export interface VFS {
    */
   access?(path: string, mode: number): Awaitable<void>;
   /**
+   * Whether something is at `path` (itself: a link is not followed) as its
+   * changes have been told (watchChanges), storing nothing it holds back and
+   * asking nothing of another holder; a backend that holds nothing back
+   * need not have it (stat answers). EACCES where it may not look.
+   */
+  landed?(path: string): Awaitable<boolean>;
+  /**
    * The regular file at `path`, held open with `rights` (its access decided
    * by the open that asks, VFS.access): its operations reach that file
    * wherever it is named later, renamed or unlinked, until its close. Absent:
@@ -305,6 +312,7 @@ export interface SyncVFS {
   writeRange?(path: string, offset: number, bytes: Uint8Array): void;
   truncate?(path: string, size: number): void;
   access?(path: string, mode: number): void;
+  landed?(path: string): boolean;
   openFile?(path: string, rights: { read: boolean; write: boolean }): VfsOpenFile;
   removeRecursive?(path: string): VfsRemoval | void;
   symlink?(target: string, path: string): void;

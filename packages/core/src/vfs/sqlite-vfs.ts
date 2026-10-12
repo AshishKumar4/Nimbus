@@ -451,6 +451,8 @@ export interface CredentialedVfs {
   lstat(path: string): VfsStat;
   /** stat (lstat when `followLeaf` is false), or null when the name is not there: no error made for an absence. */
   statIfPresent(path: string, followLeaf?: boolean): VfsStat | null;
+  /** Whether something is at `path` (a link not followed) as published: no append stored, no holder recalled (VFS.landed). */
+  landed(path: string): boolean;
   /**
    * utimensat(2): null is UTIME_NOW, undefined UTIME_OMIT (that time kept).
    * Only now/omit needs no more than write permission or ownership; an
@@ -1389,7 +1391,7 @@ const APPEND_RUN_LATENCY_MS = 100;
 const LEAF_READS: ReadonlySet<keyof CredentialedVfs> = new Set([
   'exists', 'isDirectory', 'isFile', 'isSymlink', 'kind', 'access', 'readlink', 'resolveSymlink', 'resolveName',
   'readFile', 'readFileUncached', 'readRange', 'readRangeUncached', 'readFileString', 'stat', 'lstat', 'statIfPresent',
-  'getDefaultAcl', 'readdir', 'contentKey', 'storageKey', 'subscribe',
+  'landed', 'getDefaultAcl', 'readdir', 'contentKey', 'storageKey', 'subscribe',
 ] satisfies (keyof CredentialedVfs)[]);
 
 /**
@@ -3072,6 +3074,7 @@ export class SqliteVFS {
       stat: (path) => this.stat(path, bound, true),
       lstat: (path) => this.stat(path, bound, false),
       statIfPresent: (path, followLeaf = true) => this.statIfPresent(path, bound, followLeaf),
+      landed: (path) => this.landed(path, bound),
       utimes: (path, atimeMs, mtimeMs, options) => this.utimes(path, atimeMs, mtimeMs, bound, options?.followSymlinks !== false),
       chmod: (path, mode) => this.chmod(path, mode, bound),
       setDefaultAcl: (path, perms) => this.setDefaultAcl(path, perms, bound),
@@ -3485,6 +3488,17 @@ export class SqliteVFS {
 
   private exists(path: string, cred: VfsCred): boolean {
     return this.probeInode(path, cred) !== undefined;
+  }
+
+  /** probeInode's answer on the published tree, by its walk alone (resolvePath stores appends and recalls holders). */
+  private landed(path: string, cred: VfsCred): boolean {
+    try {
+      return this.walkPath(path, cred, false, true, this.inodes).inode !== undefined;
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') return false;
+      throw error;
+    }
   }
 
   private isDirectory(path: string, cred: VfsCred): boolean {
@@ -6858,6 +6872,7 @@ export class SqliteVFS {
         const inode = this.checkAccess(path, 0, bound, { followLeaf, allowMissingLeaf: true, tree }).inode;
         return inode === undefined ? null : this.statOf(inode);
       },
+      landed: (path) => probe(path) !== undefined,
       utimes: readOnly,
       chmod: readOnly,
       setDefaultAcl: readOnly,

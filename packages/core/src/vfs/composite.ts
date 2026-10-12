@@ -1488,7 +1488,10 @@ export class CompositeVFS implements VFS {
     return asked.length === 0 ? judgeFrom(0) : Promise.all(asked).then(() => judgeFrom(0));
   }
 
-  /** Whether something is at `path` for this view (lstat, its own lookup), by awaiting where its mount does. */
+  /**
+   * Whether something is at `path` for this view (lstat, its own lookup), by awaiting where its mount does: on a
+   * backend that holds changes back, as they have been told (VFS.landed), its own lookup storing and recalling nothing.
+   */
   private presentAt(path: string): Awaitable<boolean> {
     const decide = (sync: boolean): Awaitable<boolean> => {
       const refused = (error: unknown): boolean => {
@@ -1496,6 +1499,14 @@ export class CompositeVFS implements VFS {
         throw error;
       };
       try {
+        if (!this.isStructural(path) && this.absentOn(path) === null) {
+          const route = this.locate(path);
+          const ops = this.ops(route, sync);
+          if (typeof ops.landed === 'function') {
+            const found = ops.landed(route.rel);
+            return isPromise(found) ? found.then((there) => there === true, refused) : found === true;
+          }
+        }
         const stat = this.statAt(path, false, sync);
         return isPromise(stat) ? stat.then((found) => found !== null, refused) : stat !== null;
       } catch (error) {

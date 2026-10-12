@@ -150,6 +150,11 @@ export class SqliteFiles implements VFS {
     }
   }
 
+  landed(path: string): boolean {
+    if (path.replace(/\/+/g, '') === '') return true;
+    return this.run('lstat', path, () => this.view.landed(path));
+  }
+
   readFile(path: string): Uint8Array {
     return this.run('open', path, () => this.view.readFile(path));
   }
