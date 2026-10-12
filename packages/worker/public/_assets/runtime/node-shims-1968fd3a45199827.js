@@ -11242,18 +11242,10 @@ function __nimbusEgressTlsConnect(real, net, args) {
     callback = args[i];
   }
   const previous = options.socket;
-  const target = async () => {
-    if (previous?.connecting) await new Promise((resolve, reject) => {
-      previous.once('connect', resolve); previous.once('error', reject);
-    });
-    const bound = previous?._handle?.options;
-    const host = options.host ?? bound?.host ?? previous?._host ?? 'localhost';
-    const port = Number(options.port ?? bound?.port);
-    // One that has carried nothing is TLS from its first byte, as a new connection is.
-    if (previous && (!(previous instanceof net.Socket) || previous.bytesRead !== 0 || previous.bytesWritten !== 0)) {
-      throw nodeError(Error, 'ERR_NIMBUS_EGRESS_STARTTLS', "Nimbus: TLS over a socket that has already carried bytes (STARTTLS) is not available when the workspace's network goes through an egress: workerd starts no TLS on a connection through a service binding. tls.connect({ socket }) upgrades a net.Socket only before it carries any bytes.");
-    }
-    if (previous) previous.destroy();
+  const target = () => {
+    if (previous !== undefined) throw nodeError(Error, 'ERR_NIMBUS_EGRESS_STARTTLS', "Nimbus: TLS over a socket the program opened (tls.connect({ socket }), as STARTTLS does) is not available when the workspace's network goes through an egress: the egress carries that connection, and workerd starts no TLS on a connection through a service binding");
+    const host = options.host ?? 'localhost';
+    const port = Number(options.port);
     return typeof options.servername === 'string' && options.servername !== '' ? { host, port, servername: options.servername } : { host, port };
   };
   let reader, writer, resource;
@@ -11269,10 +11261,10 @@ function __nimbusEgressTlsConnect(real, net, args) {
   let admit;
   const admitted = new Promise((resolve) => { admit = resolve; });
   const ready = admitted.then(async () => {
+    const where = target();
     await __nimbusRawSocket();
-    const where = await target();
     if (stopped) return;
-    resource = await __supervisor.netTls(previous ? 'upgrade' : 'open', '', where);
+    resource = await __supervisor.netTls('open', '', where);
     if (stopped) {
       await Promise.all([resource.readable.cancel(), resource.writable.abort()]);
       resource[Symbol.dispose]?.(); resource = undefined;
@@ -11320,10 +11312,10 @@ function __nimbusEgressTlsConnect(real, net, args) {
   carrier = new net.Socket({ allowHalfOpen: options.allowHalfOpen === true, handle: {
     socket: initial, reader: readable.getReader({ mode: 'byob' }), writer: writable.getWriter(),
     bytesRead: 0, bytesWritten: 0, reading: false,
-    options: { host: options.host ?? previous?._host ?? 'localhost', port: Number(options.port ?? previous?._handle?.options.port), addressType: 0 },
+    options: { host: options.host ?? 'localhost', port: Number(options.port), addressType: 0 },
   } });
   const socket = real.connect({ ...options, socket: carrier }, callback);
-  if (!previous && options.timeout) socket.setTimeout(options.timeout);
+  if (previous === undefined && options.timeout) socket.setTimeout(options.timeout);
   ready.catch((error) => socket.destroy(error));
   return socket;
 }
