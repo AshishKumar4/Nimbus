@@ -1069,9 +1069,7 @@ export class NimbusSession extends CloudflareDurableObject {
      */
     _ensureWebSocketRelay() { return this.#runtimeServices._ensureWebSocketRelay(); }
     /**
-     * W8: lazily construct the FacetProcessManager when the first cp* RPC
-     * arrives. Wired with adapters that bridge the Nimbus shell command
-     * registry to the FacetProcessManager's CommandRegistryLike contract.
+     * Lazily bind the core child broker to this session's runners and cleanup.
      */
     _ensureFacetProcessManager() { return this.#runtimeServices._ensureFacetProcessManager(); }
     /**

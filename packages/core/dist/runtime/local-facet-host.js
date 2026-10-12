@@ -38,6 +38,7 @@ import { requireNetwork } from '../_shared/workspace-network.js';
 import { isEgressGuestEvent, RealmEgress } from './realm-egress.js';
 import { fromRealmError, isRealmAnswer, startRealm } from './realm.js';
 import { FILESYSTEM_RPC_METHODS, vfsSupervisor } from './vfs-supervisor.js';
+import { createChildProcessSupervisor } from './child-process-manager.js';
 const record = (value) => typeof value === 'object' && value !== null;
 const strings = (value) => Array.isArray(value) && value.every((entry) => typeof entry === 'string');
 export function isFacetPayload(value) {
@@ -165,15 +166,21 @@ class RealmFacet {
         const processes = spec.syscalls?.processes;
         if (this.supervisor && processes && spec.syscalls) {
             const pid = spec.syscalls.pid;
+            const children = spec.syscalls.children;
             Object.assign(this.supervisor, {
-                stdout: (bytes) => processes.appendOutputBytes(pid, 'stdout', bytes),
-                stderr: (bytes) => processes.appendOutputBytes(pid, 'stderr', bytes),
+                stdout: (bytes) => children?.routeOutput(pid, 1, bytes) ?? processes.appendOutputBytes(pid, 'stdout', bytes),
+                stderr: (bytes) => children?.routeOutput(pid, 2, bytes) ?? processes.appendOutputBytes(pid, 'stderr', bytes),
                 cpReadStdin: async (_child, waitMs, _acquire, maxBytes) => {
                     const packet = await processes.readInput(pid, waitMs, maxBytes);
                     return { ...packet, data: typeof packet.data === 'string' ? new TextEncoder().encode(packet.data) : packet.data };
                 },
             });
             this.supervisorMethods = [...SUPERVISOR_METHODS, 'stdout', 'stderr', 'cpReadStdin'];
+            if (children) {
+                const childCalls = createChildProcessSupervisor(children, pid);
+                Object.assign(this.supervisor, childCalls);
+                this.supervisorMethods = [...SUPERVISOR_METHODS, 'stdout', 'stderr', ...Object.keys(childCalls)];
+            }
         }
         this.synchronous = spec.syscalls?.vfs.synchronous;
     }

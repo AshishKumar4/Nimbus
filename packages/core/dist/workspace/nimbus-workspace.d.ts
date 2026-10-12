@@ -31,6 +31,7 @@ import type { SqlDatabase, TransactionHost } from '../runtime/os-contracts.js';
 import { ProcessFiles } from '../runtime/process-files.js';
 import { WorkspaceFs } from './workspace-fs.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
+import { ChildProcessManager } from '../runtime/child-process-manager.js';
 import type { FacetHost } from '../runtime/facet-host.js';
 import { RuntimeManager } from '../runtime/runtime-manager.js';
 import { type RuntimePackage, type RuntimeSource } from '../runtime/runtime-package.js';
@@ -218,6 +219,7 @@ export interface NimbusWorkspaceOptions {
  */
 export declare class NimbusWorkspace {
     private readonly sql;
+    readonly children: ChildProcessManager;
     private readonly supervisorOps;
     readonly filesystem: ProcessFiles;
     private readonly runtimeLease;

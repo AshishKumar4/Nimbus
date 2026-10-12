@@ -1,5 +1,6 @@
 import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { type ComposedFacetManager, type FacetManagerHostHooks } from "../facets/compose.js";
+import { ChildProcessManager } from "@nimbus-sh/core/runtime/child-process-manager.js";
 import { type NimbusFilesystemAuthority } from "@nimbus-sh/core/runtime/os-contracts.js";
 import { PrebundlePool } from "../facets/prebundle-pool.js";
 import type { NpmInstaller } from "../npm/installer.js";
@@ -37,14 +38,14 @@ export interface RuntimeServiceContext {
 export declare function ensureBundlePool(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext): PrebundlePool;
 export declare function ensureFacetManager(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext): ComposedFacetManager;
 export declare function _ensureWebSocketRelay(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext): WebSocketRelay;
-export declare function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext): any;
+export declare function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext): ChildProcessManager;
 export declare function ensureNpmInstaller(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext, onProgress?: (msg: string) => void): Promise<NpmInstaller>;
 export declare function ensureGlobalPrefixDirs(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext, prefix: string): void;
 export declare function bindRuntimeServices(host: RuntimeServiceHost, context: RuntimeServiceContext): {
     ensureBundlePool: () => PrebundlePool;
     ensureFacetManager: () => ComposedFacetManager;
     _ensureWebSocketRelay: () => WebSocketRelay;
-    _ensureFacetProcessManager: () => any;
+    _ensureFacetProcessManager: () => ChildProcessManager;
     ensureNpmInstaller: (onProgress?: ((msg: string) => void) | undefined) => Promise<NpmInstaller>;
     ensureGlobalPrefixDirs: (prefix: string) => void;
 };

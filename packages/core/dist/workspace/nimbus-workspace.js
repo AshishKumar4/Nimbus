@@ -39,6 +39,9 @@ import { ProcessView } from '../runtime/process-files.js';
 import { WorkspaceFs } from './workspace-fs.js';
 import { PID_GEN_STRIDE } from '../runtime/process-table.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
+import { ChildProcessManager } from '../runtime/child-process-manager.js';
+import { resolveWorkspaceChild } from './child-process-runner.js';
+import { exitCodeForSignal } from '../substrate/lifo/shell/signals.js';
 import { runtimeEntrypoints } from '../runtime/installed-runtimes.js';
 import { RuntimeManager } from '../runtime/runtime-manager.js';
 import { makeNimbusVerbHandler } from '../runtime/nimbus-command.js';
@@ -64,6 +67,7 @@ export { parseShellState } from './named-shells.js';
  */
 export class NimbusWorkspace {
     sql;
+    children;
     supervisorOps;
     filesystem;
     runtimeLease;
@@ -107,10 +111,11 @@ export class NimbusWorkspace {
      *  supplied one, else the `sh` this workspace spawned. */
     shellProcessPid;
     namedShells;
-    constructor(vfs, kernel, shell, registry, env, sql, processes, runtimes, shellProcessPid, supervisorOps, filesystem, runtimeLease, 
+    constructor(vfs, kernel, shell, registry, env, sql, processes, children, runtimes, shellProcessPid, supervisorOps, filesystem, runtimeLease, 
     /** Who the workspace shell acts as, and so every call's process. */
     identity) {
         this.sql = sql;
+        this.children = children;
         this.supervisorOps = supervisorOps;
         this.filesystem = filesystem;
         this.runtimeLease = runtimeLease;
@@ -170,6 +175,24 @@ export class NimbusWorkspace {
         processes.setRelease((pid) => filesystem.releaseProcess(pid), (pid) => filesystem.processEnded(pid));
         filesystem.holdOutput(processes);
         const env = { ...defaultEnv(home), ...options.env };
+        let workspace = null;
+        const children = new ChildProcessManager({
+            processes,
+            resolve: (request, origin) => {
+                if (!workspace)
+                    throw new Error('Nimbus: workspace is not initialized');
+                return resolveWorkspaceChild(workspace, request, origin);
+            },
+            terminate: (pid, signal) => processes.kill(pid, exitCodeForSignal(signal)),
+        });
+        const host = options.facets;
+        const facets = host ? {
+            ...host,
+            open: spec => host.open({
+                ...spec,
+                syscalls: spec.syscalls ? { ...spec.syscalls, children } : undefined,
+            }),
+        } : undefined;
         // The identity every shell command runs as. A host that supplied one keeps
         // it verbatim — its pid is already alive in ITS process table. Otherwise
         // the workspace's own supervisor spawns the shell process, so `sudo`,
@@ -221,9 +244,9 @@ export class NimbusWorkspace {
                     ? composeRuntimeSources([suppliedRuntimeSource(options.runtimes ?? []), options.runtimeSource])
                     : suppliedRuntimeSource(options.runtimes ?? []),
             });
-            if (options.facets) {
+            if (facets) {
                 registerWasmRuntimes({
-                    facets: options.facets,
+                    facets,
                     vfs,
                     filesystem,
                     registry,
@@ -315,7 +338,8 @@ export class NimbusWorkspace {
                 output: options.processOutput,
                 extend: options.supervisorOps,
             });
-            return new NimbusWorkspace(vfs, kernel, shell, registry, env, options.sql, processes, runtimes, shellProcessPid, supervisorOps, filesystem, runtimeLease, identity);
+            workspace = new NimbusWorkspace(vfs, kernel, shell, registry, env, options.sql, processes, children, runtimes, shellProcessPid, supervisorOps, filesystem, runtimeLease, identity);
+            return workspace;
         }
         catch (error) {
             await runtimeLease.dispose();
@@ -366,6 +390,7 @@ export class NimbusWorkspace {
         }
         finally {
             this.processes.exit(pid, exitCode);
+            this.processes.markExit(pid, exitCode);
             // Its descriptors close as it exits; its entry, and what it bound in
             // the filesystem, go even if one fails to.
             try {
