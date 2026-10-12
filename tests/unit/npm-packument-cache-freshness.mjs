@@ -53,6 +53,7 @@ function fakeBucket() {
     },
     async delete() { throw new Error('no cache eviction is part of freshness'); },
   };
+  return bucket;
 }
 
 function fakeRegistry() {
