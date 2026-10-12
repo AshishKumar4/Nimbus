@@ -608,6 +608,42 @@ await check('a watch whose judgment awaits holds the batches after it: none judg
   }
 });
 
+await check('a directory above a watched path renamed, then its target written through the namespace: taken along only if it was there, as the watch began and its changes since say', async () => {
+  const g = gated();
+  let gating = false;
+  const store = new MemoryVFS({ uid: 0, gid: 0 });
+  store.mkdir('/before');
+  store.writeFile('/before/file', enc.encode('one'));
+  store.mkdir('/empty');
+  // The look at the target (where it was, or where it went) waits while the write after the move lands.
+  const held = (method, [path]) => gating && method === 'stat' && (path === '/before/file' || path === '/after/file');
+  ns.mount('/carry', asyncOnly(store, { beforeCall: (method, args) => (held(method, args) ? (gating = false, g.enter(), g.gate) : undefined) }), { resolvesPaths: true });
+  const heard = { follows: [], fixed: [], absent: [] };
+  const stops = [];
+  try {
+    gating = true;
+    stops.push(ns.watchChanges('/carry/before/file', (events) => heard.follows.push(...events.map(said)), { follow: true }));
+    await settled();
+    stops.push(ns.watchChanges('/carry/before/file', (events) => heard.fixed.push(...events.map(said))));
+    stops.push(ns.watchChanges('/carry/empty/file', (events) => heard.absent.push(...events.map(said)), { follow: true }));
+    await settled();
+    await ns.rename('/carry/before', '/carry/after');
+    await ns.rename('/carry/empty', '/carry/emptied');
+    await g.entering;
+    await ns.writeFile('/carry/after/file', enc.encode('two'));
+    await ns.writeFile('/carry/emptied/file', enc.encode('made'));
+    g.release();
+    await settled();
+    assert.deepEqual(heard.follows, ['rename /carry/before/file -> /carry/after/file', 'change /carry/after/file']);
+    assert.deepEqual(heard.fixed, ['unlink /carry/before/file']);
+    assert.deepEqual(heard.absent, [], 'made after the move: not taken along');
+  } finally {
+    g.release();
+    for (const stop of stops) stop();
+    ns.unmount('/carry');
+  }
+});
+
 await check('a source that fails one watcher\'s view as a change lands: every other watch is told, and the write stands', async () => {
   const shared = new MemoryVFS({ uid: 0, gid: 0 });
   ns.mount('/plain', shared);
