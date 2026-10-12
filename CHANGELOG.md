@@ -5,6 +5,58 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+## 2026-10-12: core 0.18.0, fabric 0.13.0, worker 0.16.0, loom 0.2.5, sdk 0.13.1, react 0.3.1, cli 0.2.5, create-nimbus-app 0.2.2
+
+- Breaking: node runs ES modules natively. A program's ES modules (`.mjs`,
+  `type: module`, a typeless `.js` with module syntax, `-e`/stdin under
+  `--input-type=module`) are staged as the Worker's own modules and
+  evaluated by its module registry, no longer lowered to CommonJS. They link
+  and evaluate in Node's order, with live bindings and one namespace per
+  module, and top-level await suspends only its own graph. A `require()` of
+  an ES module returns Node's require(esm) result. It is refused with
+  `ERR_REQUIRE_ASYNC_MODULE` before any of the graph runs if the graph
+  awaits at its top level, even after an `import()` evaluated it. A module
+  that threw throws the same error again on every later `require()` or
+  `import()`, without evaluating twice. `import()` and `require()` of a JSON
+  file share one object. A query or fragment URL (`./m.mjs?x`) is its own
+  instance. An ES import of a CommonJS module that is still executing fails
+  with `ERR_REQUIRE_CYCLE_MODULE`. `import()` in code that `Function`,
+  `AsyncFunction` or `eval` built resolves against the module that called
+  it. A missing export or a module that does not compile is reported with
+  Node's message and its arrow at the source position. A module graph
+  written while the program runs (late) is resolved and parsed whole before
+  any of its bodies runs. A missing file, a syntax error (a top-level
+  `return` in a module included), or TypeScript/JSX that cannot be compiled
+  until the next launch (`ERR_NIMBUS_CODE_NEXT_LAUNCH`) rejects its
+  `import()` with no body run, staged modules' bodies included, as in Node.
+  `node app.jsx` and `bun app.jsx` compile JSX entries and modules. Measured
+  against the previous main, paired: `pi --help` is 9.8 s faster (about 13.7
+  s against 23.9 s); a fresh 120-module ES graph launches 323 ms faster, and
+  80 ms faster when warm; the launch's WebAssembly-image scan is 40 ms
+  against 89 ms. Small `node -e` launches are unchanged.
+- Breaking for embedders (native ES modules):
+  `@nimbus-sh/core/runtime/async-module-lowering.js` is removed, and with it
+  `lowerEsModule`. New core modules: `runtime/native-esm.js`
+  (`readEsModule`), `runtime/cjs-module-exports.js` (Node's CommonJS
+  named-export discovery; an unresolvable re-export adds no names),
+  `runtime/cjs-module-lexer.js` (cjs-module-lexer 2.2.0, Node 22.22.3's,
+  vendored; core and worker now pin `cjs-module-lexer` 2.2.0), and
+  `runtime/esm-require-hoist.js`. New worker module: `facets/esm-stage.js`
+  (`stageEsModules`). `bundleTypescriptLoader` is renamed
+  `bundleCompiledLoader` and also answers `jsx`. fabric's
+  `encodeCommonJsPack` is replaced by `encodeCodePack(codeModules,
+  esModules)`, whose packs also carry ES modules. The interpreter's
+  `moduleRequests` returns `{ requests, unread }` instead of an array
+  (`unread`: `'syntax'` or `'unparsed'`), with optional `javaScript` and
+  parse-goal arguments. The transform store's key schema moves to
+  `nimbus-transform/5`, so earlier records miss once.
+- Known gaps in native ES modules: a typeless ES module written at runtime
+  and imported under two static query variants shares one instance; a module
+  that rebinds its `createRequire` alias with `var` before a top-level
+  `require()` can have that require hoisted; in the lifo (Bun) runtime, a
+  namespace without a default export gets `__esModule`, and a free
+  `require`/`__filename` in an ES module reads `undefined` instead of
+  throwing.
 - Auth: each session route owns its attach cookie, `__Host-nimbus_token-<sid>`,
   selected by the parsed route on HTTP and WebSocket (host previews included).
   Two iframes on one page no longer overwrite each other's credential. The
@@ -14,9 +66,6 @@ published independently in the `@nimbus-sh` npm scope.
   before a single-use bootstrap is spent. Re-attaching a held session replaces
   its cookie without growing the jar; destroying a session through its public
   DELETE expires exactly its cookie.
-
-## 2026-10-12: core 0.18.0, fabric 0.13.0, worker 0.16.0, loom 0.2.5, sdk 0.13.1, react 0.3.1, cli 0.2.5, create-nimbus-app 0.2.2
-
 - Breaking: VFS-2b uses one change notification for the namespace:
   `CompositeVFS.watchChanges(path, listener)` tells every change a view may
   see at a path or under it, on any mount, as batches of `VfsEvent`s (paths
