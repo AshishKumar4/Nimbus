@@ -12271,7 +12271,9 @@ function __nimbusEsmTainted(id) {
     const record = __nimbusEsmRecords[at];
     if (record !== undefined) {
       if (record.state === __ESM_DONE) continue;
-      if (record.state === __ESM_ADOPTED) return true;
+      // Evaluated by the interpreter, or failed there: what it threw is the
+      // interpreter's to give again (Node's errored module), not the registry's to evaluate.
+      if (record.state === __ESM_ADOPTED || (record.state === __ESM_FAILED && record.error !== undefined)) return true;
     }
     const row = __nimbusEsm.table[at];
     if (row[0] === "module") for (const target of row[2]) stack.push(target);
