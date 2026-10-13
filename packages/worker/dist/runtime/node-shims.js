@@ -4539,6 +4539,7 @@ const __fsMod = (() => {
   // sends the path alone and the authority's mkdir creates the ancestors.
   function _mkdirQueued(p, opts) {
     const absPath = _resolve(p);
+    _nsRequire("mkdir", p, "fs.promises.mkdir");
     const k = _strip(absPath);
     // Each directory as the call names it (what it sends) and the name it is
     // kept under: its parent's landing and its own name (_nsEntryName).
@@ -6499,10 +6500,9 @@ const __fsMod = (() => {
     // AbortError. Like Node's generator, it checks its options on first next().
     watch: (filename, opts) => {
       const signal = opts?.signal;
-      const lib = __nimbusNodeLib();
-      const aborted = () => new (lib.require("internal/errors").AbortError)(undefined, { cause: signal.reason });
+      const aborted = () => new (__nimbusNodeLib().require("internal/errors").AbortError)(undefined, { cause: signal.reason });
       let refused = null;
-      try { if (signal !== undefined) lib.require("internal/validators").validateAbortSignal(signal, "options.signal"); }
+      try { if (signal !== undefined) __nimbusNodeLib().require("internal/validators").validateAbortSignal(signal, "options.signal"); }
       catch (error) { refused = error; }
       const queue = [];
       const waiting = [];
