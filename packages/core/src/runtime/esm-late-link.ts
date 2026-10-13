@@ -374,10 +374,14 @@ interface Binding {
   readonly binding: string;
 }
 
-/** A late or staged module's facts; null where not known here. */
+/**
+ * A late or staged module's facts; null where not known here. A late module
+ * an earlier link read (a query's instance a staged module, already run,
+ * hands on) is that link's.
+ */
 function factsOf(host: LateLinkHost, late: LateGraph, target: LateTarget): ModuleFacts | null {
   if (target.row === undefined) {
-    const node = late.modules.get(target.url);
+    const node = late.modules.get(target.url) ?? lateModules.get(target.url);
     return node === undefined || !node.known ? null : node;
   }
   return moduleFacts(host, target.row);
