@@ -12,10 +12,10 @@ published independently in the `@nimbus-sh` npm scope.
   gets its own offset, and `>/dev/stdout` truncates a file that stdout writes
   to. It is the file itself, even one renamed or unlinked since, never
   whatever file now has its old name, opened as it is now: its current
-  content, under its current permissions. In an uploaded program or CPython,
-  a small file opened read-only that another process renamed or removed since
-  cannot be opened again this way yet (ENOENT); one its own process renamed
-  or removed can. `stat` of the path is that descriptor's stat. Process substitution works:
+  content, under its current permissions. A small file opened read-only
+  that another program (not the shell, or not the uploaded program itself)
+  renamed or removed since cannot be opened again this way yet (ENOENT).
+  `stat` of the path is that descriptor's stat. Process substitution works:
   `source <(...)`, `done < <(...)`, `diff <(...) <(...)`. Before, `/dev/fd/N`
   was not found, `/dev/stdin` read as empty, and writes to `/dev/stdout` and
   `/dev/stderr` were silently discarded.
