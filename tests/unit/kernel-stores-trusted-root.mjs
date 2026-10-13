@@ -38,7 +38,8 @@ function session(name) {
   const harness = createSqliteVfsTestHarness();
   const vfs = new SqliteVFS(harness.sql, harness.ctx);
   seedBaseFilesystem(vfs);
-  manager.setVfs(vfs, processFiles(vfs));
+  const files = processFiles(vfs);
+  manager.setVfs(vfs, files);
   const kernel = vfs.as(CRED_KERNEL);
   const user = vfs.as(CRED_SESSION_USER);
   // A directory only root may change, holding a file the user may not remove.
@@ -47,7 +48,7 @@ function session(name) {
   const victim = () => kernel.readdir('etc/victim').map((entry) => entry.name).sort();
   const spawn = (code, file) => manager.spawnNode(code, { command: `node ${file}`, filename: `/home/user/${file}`, cwd: '/home/user' });
   const pid = processes.spawn('node', ['node'], '/home/user').pid;
-  return { world, manager, kernel, user, victim, spawn, pid };
+  return { world, manager, kernel, user, victim, spawn, pid, files, processes };
 }
 const pacer = { chunks: 0, async spend() {} };
 const wasm = new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0]);
@@ -75,30 +76,29 @@ const wasm = new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0]);
   console.log('  a link the user put where a store was is not followed');
 }
 
-// ── an earlier release's stores below /var are removed, through no link ────
+// ── an earlier release's stores below /var are left as they were ─────────
+// A durable worker an earlier release made may still boot from a path there,
+// and a root-owned directory at that name is not proof the kernel made it:
+// the user may have moved another of root's trees there. Nothing is removed.
 {
-  const { kernel, user, victim, spawn } = session('kernel-stores-legacy');
+  const { kernel, spawn } = session('kernel-stores-legacy');
   const legacy = ['var/lib/nimbus/facet-images', 'var/lib/nimbus/inline-wasm', 'var/lib/nimbus/staged/a/1'];
   for (const dir of legacy) kernel.mkdir(dir, { recursive: true, mode: 0o755 });
-  kernel.writeFile(`var/lib/nimbus/facet-images/${'0'.repeat(64)}.js`, 'old', { mode: 0o644 });
-  kernel.writeFile('var/lib/nimbus/inline-wasm/sha256-0.wasm', 'old', { mode: 0o644 });
-  kernel.writeFile('var/lib/nimbus/staged/a/1/a.wasm', 'old', { mode: 0o644 });
+  const old = [`var/lib/nimbus/facet-images/${'0'.repeat(64)}.js`, 'var/lib/nimbus/inline-wasm/sha256-0.wasm', 'var/lib/nimbus/staged/a/1/a.wasm'];
+  for (const file of old) kernel.writeFile(file, 'old', { mode: 0o644 });
   await spawn('const a = 1;', 'a.js');
-  for (const store of ['facet-images', 'inline-wasm', 'staged']) {
-    assert.equal(kernel.exists(`var/lib/nimbus/${store}`), false, `the old ${store} store is removed`);
-  }
-  console.log("  an earlier release's stores below /var are removed");
+  for (const file of old) assert.equal(kernel.exists(file), true, `${file} is left`);
+  console.log("  an earlier release's stores below /var are left as they were");
 }
+
+// ── a delegation of /var holds up no launch ───────────────────────────────
+// /var is the user's: a process may hold it, and the kernel's stores are not there.
 {
-  // Where /var/lib is the user's link, what it leads to is not the kernel's to remove.
-  const { kernel, user, victim, spawn } = session('kernel-stores-legacy-link');
-  kernel.mkdir('etc/victim/nimbus/facet-images', { recursive: true, mode: 0o755 });
-  kernel.writeFile('etc/victim/nimbus/facet-images/keep', 'keep', { mode: 0o644 });
-  if (kernel.exists('var/lib')) user.rename('var/lib', 'var/lib-old');
-  user.symlink('/etc/victim', 'var/lib');
+  const { files, processes, spawn } = session('kernel-stores-var-delegation');
+  const holder = processes.spawn('git', ['git'], '/home/user').pid;
+  files.bind({ pid: holder, cred: CRED_SESSION_USER }).acquireExclusiveMutation('/var', { delegate: { reads: true } });
   await spawn('const a = 1;', 'a.js');
-  assert.equal(kernel.exists('etc/victim/nimbus/facet-images/keep'), true, 'nothing is removed through a link');
-  console.log('  nothing is removed through a link');
+  console.log('  a delegation of /var holds up no launch');
 }
 
 // ── a /.nimbus that is not the kernel's own directory is refused ───────────
