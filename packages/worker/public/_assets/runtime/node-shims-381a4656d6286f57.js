@@ -3236,6 +3236,57 @@ const __fsMod = (() => {
   const _nsOwn = new Map();
   let _nsFresh = [];
   let _barrierBegins = 0;
+  // This process's own attributes: the mode (chmod) and the times (utimes) it
+  // set on each path, answered ahead of the namespace's until the namespace
+  // says so. Each is an overlay entry ({ value, settled }) with its lifetime:
+  // settled when its change is answered, retired by the barrier after that
+  // (_nsRetire), dropped when the path is removed and moved when it is.
+  const _localModes = new Map();
+  const _localTimes = new Map();
+  // Modes set locally that the authority has not received yet. Delivered once:
+  // re-sending on every flush made each read of the path a chmod, which bumped
+  // its revision and evicted the process's own cell (create-astro EAGAIN).
+  const _pendingModes = new Set();
+  /**
+   * Set this process's own attribute on `k`. `fresh`: the change is the next
+   * one queued (_queueStructuralMutation settles it); otherwise its caller
+   * settles it (_settleLocalAttr) once the change is answered.
+   */
+  function _setLocalAttr(attrs, k, value, fresh) {
+    const entry = { value, settled: null };
+    attrs.set(k, entry);
+    if (fresh) _nsFresh.push(entry);
+    return entry;
+  }
+  function _settleLocalAttr(entry) {
+    if (entry.settled === null) entry.settled = _barrierBegins;
+  }
+  /** A removed path's own attributes go with it (`tree`: and those beneath it). */
+  function _forgetLocalAttrs(k, tree) {
+    const prefix = k + "/";
+    for (const attrs of [_localModes, _localTimes]) {
+      attrs.delete(k);
+      if (tree) for (const key of [...attrs.keys()]) if (key.startsWith(prefix)) attrs.delete(key);
+    }
+    _pendingModes.delete(k);
+    if (tree) for (const key of [..._pendingModes]) if (key.startsWith(prefix)) _pendingModes.delete(key);
+  }
+  /** A renamed path's own attributes, and those beneath it, travel with its name. */
+  function _moveLocalAttrs(oldK, newK) {
+    const prefix = oldK + "/";
+    for (const attrs of [_localModes, _localTimes]) {
+      for (const [key, entry] of [...attrs]) {
+        if (key !== oldK && !key.startsWith(prefix)) continue;
+        attrs.delete(key);
+        attrs.set(newK + key.slice(oldK.length), entry);
+      }
+    }
+    for (const key of [..._pendingModes]) {
+      if (key !== oldK && !key.startsWith(prefix)) continue;
+      _pendingModes.delete(key);
+      _pendingModes.add(newK + key.slice(oldK.length));
+    }
+  }
   function _nsOwnSet(k, state, extra) {
     const before = _nsOwn.get(k);
     const entry = { state, from: extra?.from, link: extra?.link, hide: !!extra?.hide, mode: extra?.mode, settled: null };
@@ -3261,6 +3312,9 @@ const __fsMod = (() => {
     for (const [k, entry] of _nsOwn) if (entry.settled !== null && entry.settled < begin) {
       _nsOwn.delete(k);
       __resident.namespace.overlayDelta(-_nsOwnCost(k, entry));
+    }
+    for (const attrs of [_localModes, _localTimes]) {
+      for (const [k, entry] of attrs) if (entry.settled !== null && entry.settled < begin) attrs.delete(k);
     }
   }
 
@@ -3363,7 +3417,7 @@ const __fsMod = (() => {
       type: kind === 1 ? "directory" : kind === 2 ? "symlink" : "file",
       size: Number(row.size), mode: Number(row.mode), uid: Number(row.uid), gid: Number(row.gid),
       atime: Number(row.atime), mtime: Number(row.mtime), ctime: Number(row.ctime),
-      ino: Number(row.ino),
+      ino: Number(row.ino), dev: Number(row.dev), nlink: Number(row.nlink),
     };
   }
 
@@ -3465,6 +3519,7 @@ const __fsMod = (() => {
   // delta does.
   function _forgetSyncPath(k) {
     delete _ownWriteTimes[k];
+    _forgetLocalAttrs(k, false);
     _createdHere.delete(k);
     _announcedDirs.delete(k);
     _nsOwnSet(k, "absent");
@@ -3520,6 +3575,7 @@ const __fsMod = (() => {
 
   function _forgetSyncTree(k) {
     const prefix = k + "/";
+    _forgetLocalAttrs(k, true);
     _forgetCreation(k);
     _nsOwnSet(k, "absentTree");
     for (const dir of _announcedDirs) if (dir.startsWith(prefix)) _announcedDirs.delete(dir);
@@ -3949,18 +4005,11 @@ const __fsMod = (() => {
     return _fsRpc(promise, syscall, p, use);
   }
 
-  // This process's own: what it set on each path, until the namespace says so.
-  const _localTimes = Object.create(null);
-  const _localModes = Object.create(null);
   // When this process last changed each path's content: the mtime its own
   // writes carry until the namespace describes them. Reading the clock at
   // each stat instead gave a file a new mtime on every stat, which a
   // watcher polling mtimeMs reads as an edit.
   const _ownWriteTimes = Object.create(null);
-  // Modes set locally that the authority has not received yet. Delivered once:
-  // re-sending on every flush made each read of the path a chmod, which bumped
-  // its revision and evicted the process's own cell (create-astro EAGAIN).
-  const _pendingModes = new Set();
 
   function _coerceMode(value, syscall, p) {
     const n = typeof value === "string" ? parseInt(value, 8) : Number(value);
@@ -3979,7 +4028,7 @@ const __fsMod = (() => {
     return Math.trunc(n * 1000);
   }
 
-  function _recordLocalTimes(absPath, atime, mtime, syscall, p) {
+  function _recordLocalTimes(absPath, atime, mtime, syscall, p, fresh = true) {
     const k = _strip(absPath);
     const time = {
       atimeMs: _coerceTimeMs(atime, syscall, p),
@@ -3987,8 +4036,7 @@ const __fsMod = (() => {
     };
     // The sync view answers these times ahead of the namespace's (_statObject)
     // until the utimes is reported back, as a write's own bytes are.
-    _localTimes[k] = time;
-    return time;
+    return _setLocalAttr(_localTimes, k, time, fresh);
   }
 
   // lib/internal/fs/utils.js StatsBase, Stats and BigIntStats: what every
@@ -4045,14 +4093,17 @@ const __fsMod = (() => {
   Stats.prototype._checkModeProperty = function (property) {
     return (this.mode & _S_IFMT) === property;
   };
-  // The one filesystem's device number; a block is Linux's 512 bytes, allocated 4096 at a time.
+  // The device a stat without one is on: metadata with no filesystem behind
+  // it (a heap-only embedder's bundle). A block is Linux's 512 bytes,
+  // allocated 4096 at a time.
   const _STAT_DEVICE = 2049;
   const _STAT_BLKSIZE = 4096;
-  // A path's Stats: a directory has its own link and its entry's, a file one.
-  function _newStats(mode, uid, gid, ino, size, atimeMs, mtimeMs, ctimeMs, nlink) {
+  // A path's Stats: its identity (device, inode, links) as its filesystem
+  // gives it; without one, a directory has its own link and its entry's, a file one.
+  function _newStats(mode, uid, gid, ino, size, atimeMs, mtimeMs, ctimeMs, nlink, dev) {
     const blocks = Math.ceil(size / _STAT_BLKSIZE) * (_STAT_BLKSIZE / 512);
     const links = nlink ?? ((mode & _S_IFMT) === 0o040000 ? 2 : 1);
-    return new Stats(_STAT_DEVICE, mode, links, Number(uid), Number(gid), 0, _STAT_BLKSIZE, ino ?? 0, size, blocks, atimeMs, mtimeMs, ctimeMs, ctimeMs);
+    return new Stats(dev ?? _STAT_DEVICE, mode, links, Number(uid), Number(gid), 0, _STAT_BLKSIZE, ino ?? 0, size, blocks, atimeMs, mtimeMs, ctimeMs, ctimeMs);
   }
   // A stat call's answer, BigIntStats in nanoseconds where `bigint` (its
   // options' bigint, read before its I/O, as Node reads it).
@@ -4065,7 +4116,7 @@ const __fsMod = (() => {
   }
   // A path's mode: its stored bits, its type's where they name none, and this process's own chmod over them.
   function _statMode(k, isDir, isSymlink, mode) {
-    const localMode = _localModes[k];
+    const localMode = _localModes.get(k)?.value;
     const typeMode = isDir ? 0o040000 : isSymlink ? 0o120000 : 0o100000;
     if (localMode !== undefined) return typeMode | localMode;
     const storedMode = Number(mode);
@@ -4079,12 +4130,23 @@ const __fsMod = (() => {
   // from its metadata (_statObject), which records nothing: one record per
   // stat grew a map entry for every file a program ever stats.
   function _localStatObject(k, isDir, isSymlink, size, mode, uid, gid) {
-    const time = _localTimes[k];
+    const time = _localTimes.get(k)?.value;
     const mtimeMs = Number.isFinite(time?.mtimeMs) ? time.mtimeMs
       : Number.isFinite(_ownWriteTimes[k]) ? _ownWriteTimes[k]
       : (_ownWriteTimes[k] = Date.now());
     const atimeMs = Number.isFinite(time?.atimeMs) ? time.atimeMs : mtimeMs;
-    return _newStats(_statMode(k, isDir, isSymlink, mode), uid, gid, undefined, size, atimeMs, mtimeMs, mtimeMs);
+    // Not yet in the namespace: on the device of the directory it is in, one
+    // link, as its filesystem will say.
+    return _newStats(_statMode(k, isDir, isSymlink, mode), uid, gid, undefined, size, atimeMs, mtimeMs, mtimeMs, 1, _nsDeviceAbove(k));
+  }
+  /** The device of the nearest directory above `k` the namespace holds, if any. */
+  function _nsDeviceAbove(k) {
+    if (!_nsActive()) return undefined;
+    for (let i = k.lastIndexOf("/"); ; i = k.lastIndexOf("/", i - 1)) {
+      const found = __resident.namespace.resolve(i > 0 ? k.slice(0, i) : "", true);
+      if (found && found !== "ELOOP" && Number(found.row.dev) > 0) return Number(found.row.dev);
+      if (i <= 0) return undefined;
+    }
   }
 
   function _supervisor() {
@@ -5083,7 +5145,7 @@ const __fsMod = (() => {
     if (pending.length === 0) return;
     const deepest = "/" + pending[pending.length - 1];
     // Each one, shallowest first, as mkdir -p makes them.
-    const made = pending.map((dir) => _vfsCall({ call: "mkdir", path: dir, mode: _localModes[dir] ?? 0o777, existing: "ok" }));
+    const made = pending.map((dir) => _vfsCall({ call: "mkdir", path: dir, mode: _localModes.get(dir)?.value ?? 0o777, existing: "ok" }));
     await _fsRpc(Promise.all(made), "mkdir", deepest, () => undefined);
     for (const dir of pending) _announcedDirs.add(dir);
     _markVfsStale();
@@ -5249,15 +5311,17 @@ const __fsMod = (() => {
     // A pending sync chmod rides along with the next flush of the same path.
     if (_pendingModes.has(k)) {
       _pendingModes.delete(k);
+      const entry = _localModes.get(k);
       try {
         await _ownMutation(
           absPath,
-          () => _fsRpc(_vfsOp({ type: "setattr", path: k, attrs: { mode: _localModes[k] } }), "chmod", absPath, _receiptOf),
+          () => _fsRpc(_vfsOp({ type: "setattr", path: k, attrs: { mode: entry.value } }), "chmod", absPath, _receiptOf),
         );
       } catch (error) {
         _pendingModes.add(k);
         throw error;
       }
+      _settleLocalAttr(entry);
       _markVfsStale();
     }
   }
@@ -5345,12 +5409,13 @@ const __fsMod = (() => {
     const now = Date.now();
     // This process's own utimes, until it is reported back, ahead of the
     // namespace's (_recordLocalTimes).
-    const own = key === undefined ? undefined : _localTimes[key];
+    const own = key === undefined ? undefined : _localTimes.get(key)?.value;
     const mtimeMs = Number.isFinite(own?.mtimeMs) ? own.mtimeMs : Number(meta?.mtime ?? now);
     const atimeMs = Number.isFinite(own?.atimeMs) ? own.atimeMs : Number(meta?.atime ?? meta?.mtime ?? now);
     const ctimeMs = Number(meta?.ctime ?? meta?.mtime ?? now);
     const mode = _statMode(key, isDir, isSymlink, Number(meta?.mode ?? (isDir ? 0o755 : 0o644)));
-    return _newStats(mode, meta?.uid, meta?.gid, meta?.ino === undefined ? undefined : Number(meta.ino), Number(meta?.size || 0), atimeMs, mtimeMs, ctimeMs);
+    const identity = (value) => value === undefined || value === null ? undefined : Number(value);
+    return _newStats(mode, meta?.uid, meta?.gid, identity(meta?.ino), Number(meta?.size || 0), atimeMs, mtimeMs, ctimeMs, identity(meta?.nlink), identity(meta?.dev));
   }
 
   // Each exact dirent type's S_IFMT bits and Node predicate (core's vfs/dirent-type.ts).
@@ -6072,13 +6137,13 @@ const __fsMod = (() => {
   function utimesSync(p, atime, mtime) {
     if (!existsSync(p)) throw _absentErr(_resolve(p), "utimes", p, "fs.promises.utimes");
     const absPath = _resolveFollow(p, "utimes");
-    _detachStructuralMutation(_utimesQueued(absPath, _recordLocalTimes(absPath, atime, mtime, "utimes", p), true, "utimes", p), "utimes", p);
+    _detachStructuralMutation(_utimesQueued(absPath, _recordLocalTimes(absPath, atime, mtime, "utimes", p).value, true, "utimes", p), "utimes", p);
   }
 
   function lutimesSync(p, atime, mtime) {
     if (!existsSync(p)) throw _absentErr(_resolve(p), "lutimes", p, "fs.promises.lutimes", false);
     const absPath = _resolve(p);
-    _detachStructuralMutation(_utimesQueued(absPath, _recordLocalTimes(absPath, atime, mtime, "lutimes", p), false, "lutimes", p), "lutimes", p);
+    _detachStructuralMutation(_utimesQueued(absPath, _recordLocalTimes(absPath, atime, mtime, "lutimes", p).value, false, "lutimes", p), "lutimes", p);
   }
 
   // A sync utimes' effect: the local times at once (statSync's overlay), and
@@ -6104,7 +6169,8 @@ const __fsMod = (() => {
     if (!localExists && !supervisor) {
       throw _fsErr("ENOENT", syscall, p);
     }
-    const time = _recordLocalTimes(absPath, atime, mtime, syscall, p);
+    const entry = _recordLocalTimes(absPath, atime, mtime, syscall, p, false);
+    const time = entry.value;
     if (supervisor) {
       await _flushLocalPathToSupervisor(absPath, supervisor, followSymlinks);
       // Ordered behind the path's pending mutations: an fd write queued a
@@ -6120,6 +6186,7 @@ const __fsMod = (() => {
       ));
       if (_hasVfsMutationQueue()) await __nimbusQueueVfsMutation(absPath, leased);
       else await leased();
+      _settleLocalAttr(entry);
       _markVfsStale();
       return;
     }
@@ -6151,7 +6218,7 @@ const __fsMod = (() => {
   // of the path to carry, it was never sent when none came.
   function _chmodQueued(absPath, mode, syscall, p) {
     const k = _strip(absPath);
-    _localModes[k] = mode;
+    _setLocalAttr(_localModes, k, mode, true);
     return _queueStructuralMutation(absPath, syscall, p, () => _vfsOp({ type: "setattr", path: k, attrs: { mode } }));
   }
 
@@ -6165,7 +6232,7 @@ const __fsMod = (() => {
     }
     const m = _coerceMode(mode, "chmod", p);
     if (localExists) _ensureModeOwner(absPath, "chmod", p);
-    _localModes[_strip(absPath)] = m;
+    _setLocalAttr(_localModes, _strip(absPath), m, false);
     _pendingModes.add(_strip(absPath));
     if (supervisor) {
       await _flushLocalPathToSupervisor(absPath, supervisor);
@@ -6706,6 +6773,10 @@ const __fsMod = (() => {
     } else if (source !== undefined && target !== undefined && target.isDirectory()) {
       throw _fsErr("EISDIR", "rename", oldP, newP);
     }
+    // What this process set on the name (its mode, its times) is the moved
+    // file's; what it set on the name it replaces goes with that.
+    _forgetLocalAttrs(newK, true);
+    _moveLocalAttrs(oldK, newK);
     // The table still holds the old name until the rename is reported, so the
     // new name reads through to it and the old one reads as gone. rename(2)
     // moves a symlink itself, so a moved link keeps its own entry for lstat.
@@ -7577,7 +7648,7 @@ const __fsMod = (() => {
   function futimesSync(fd, atime, mtime) {
     if (_isStdioFd(fd)) throw _fsErr("EINVAL", "futimes", fd);
     const handle = _fdHandle(fd, "futimes");
-    _detachStructuralMutation(_utimesQueued(handle._abs, _recordLocalTimes(handle._abs, atime, mtime, "futimes", handle._path), true, "futimes", handle._path), "futimes", handle._path);
+    _detachStructuralMutation(_utimesQueued(handle._abs, _recordLocalTimes(handle._abs, atime, mtime, "futimes", handle._path).value, true, "futimes", handle._path), "futimes", handle._path);
   }
   function fchmodSync(fd, mode) {
     if (_isStdioFd(fd)) throw _fsErr("EINVAL", "fchmod", fd);
