@@ -6541,13 +6541,14 @@ const __fsMod = (() => {
       const queue = [];
       const waiting = [];
       let stop = null;
-      let state = "new"; // "new" | "watching" | "done"
+      let listening = false;
+      let state = "new"; // "new" | "watching" | "aborted" | "done"
       const aborted = () => new (__nimbusNodeLib().require("internal/errors").AbortError)(undefined, { cause: signal.reason });
       const finish = () => {
         state = "done";
         queue.length = 0;
         if (stop !== null) { stop(); stop = null; }
-        signal?.removeEventListener("abort", onAbort);
+        if (listening) { listening = false; signal.removeEventListener("abort", onAbort); }
       };
       const onAbort = () => {
         const pending = waiting.splice(0);
@@ -6565,7 +6566,7 @@ const __fsMod = (() => {
           const pending = waiting.shift();
           if (pending) pending.resolve({ value: event, done: false }); else queue.push(event);
         });
-        signal?.addEventListener("abort", onAbort, { once: true });
+        if (signal !== undefined) { signal.addEventListener("abort", onAbort, { once: true }); listening = true; }
       };
       const iterator = {
         next() {
