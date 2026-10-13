@@ -19,7 +19,7 @@ export function fsError(code, syscall, path, dest, options = {}) {
 export function modeAllows(stat, want, cred) {
     if (stat.mode === undefined)
         return true;
-    return posixAccess({ mode: stat.mode, uid: stat.uid ?? -1, gid: stat.gid ?? -1, directory: stat.type === undefined ? undefined : stat.type === 'directory' }, want, cred);
+    return posixAccess({ mode: stat.mode, uid: stat.uid ?? -1, gid: stat.gid ?? -1, type: stat.type }, want, cred);
 }
 /**
  * A lookup beneath `root` (RESOLVE_BENEATH, a WASI preopen), as the

@@ -7,6 +7,7 @@
  */
 import type { RuntimeFsPath } from './os-contracts.js';
 import { type FsError } from '../vfs/vfs-error.js';
+import { type PosixNodeType } from '../vfs/posix-access.js';
 export type { FsError };
 /** Links followed before ELOOP (Linux MAXSYMLINKS). */
 export declare const MAX_LINK_HOPS = 40;
@@ -20,7 +21,7 @@ export declare function modeAllows(stat: {
     mode?: number;
     uid?: number;
     gid?: number;
-    type?: string;
+    type: PosixNodeType;
 }, want: number, cred: {
     uid: number;
     gid: number;

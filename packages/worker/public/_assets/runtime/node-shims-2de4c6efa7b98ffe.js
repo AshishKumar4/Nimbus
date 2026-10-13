@@ -6184,7 +6184,7 @@ const __fsMod = (() => {
   // process's credential as it reads it, made once; the entry is filled per check.
   const _posixAccess = typeof __nimbusResidentModule !== "undefined" ? __nimbusResidentModule.posixAccess : null;
   let _accessCred = null;
-  const _accessEntry = { mode: 0, uid: 0, gid: 0 };
+  const _accessEntry = { mode: 0, uid: 0, gid: 0, type: "file" };
   /**
    * Whether this process may WANT (r=4, w=2, x=1) a path whose stat is
    * META, by POSIX's owner/group/other rule. Only a stat that states the
@@ -6202,6 +6202,10 @@ const __fsMod = (() => {
     _accessEntry.mode = mode;
     _accessEntry.uid = uid;
     _accessEntry.gid = gid;
+    // Its type as the entry says (a Stats, or the namespace's metadata), never its mode bits.
+    _accessEntry.type = typeof meta.isDirectory === "function"
+      ? (meta.isDirectory() ? "directory" : meta.isSymbolicLink() ? "symlink" : "file")
+      : meta.type;
     return _posixAccess(_accessEntry, want, _accessCred);
   }
 

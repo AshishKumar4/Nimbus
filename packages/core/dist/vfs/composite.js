@@ -2266,7 +2266,7 @@ export class CompositeVFS {
         // backend's mode may carry no file-type bits.
         if (cred === null || stat.mode === undefined)
             return true;
-        return posixAccess({ mode: stat.mode, uid: stat.uid ?? -1, gid: stat.gid ?? -1, directory: stat.type === 'directory' }, want, cred);
+        return posixAccess({ mode: stat.mode, uid: stat.uid ?? -1, gid: stat.gid ?? -1, type: stat.type }, want, cred);
     }
     /** A stat that failed during the walk: absent (ENOENT) reads as nothing there; other errors stand. */
     walkMiss(error, _path) {
