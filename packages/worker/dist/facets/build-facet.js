@@ -404,10 +404,16 @@ export function buildFacetPrebundler(ctx, env) {
  * Loads the Durable Object's build facet and waits for it: the staged parts
  * fetched and verified, the binding instantiated. What prewarmBuildFacet
  * starts, for a caller that wants the load behind it before it allocates
- * (a pre-bundle's slice). Rejects as the load does.
+ * (a pre-bundle's slice). Once per generation: a facet warmed (or warming)
+ * is not asked again; a retired one's successor is warmed by its first
+ * caller. Rejects as the load does, and the next caller loads afresh.
  */
-export async function loadBuildFacet(ctx, env) {
+export function loadBuildFacet(ctx, env) {
     const facet = sharedBuildFacet(ctx, env);
+    facet.warmed ??= warm(ctx, facet);
+    return facet.warmed;
+}
+async function warm(ctx, facet) {
     const endCall = await beginCall(ctx, facet);
     try {
         await (await facet.stub).warm();

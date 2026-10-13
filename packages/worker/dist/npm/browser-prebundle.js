@@ -18,8 +18,9 @@ import { getSharedRuntimeExternals, vfsBuildInputs } from '@nimbus-sh/core/runti
 import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier, splitBareSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
 import { PREBUNDLE_DEFINE, sliceSources } from '@nimbus-sh/core/runtime/prebundle-slice.js';
 import { R_OK } from '@nimbus-sh/core/runtime/process-files.js';
+import { recallOf } from '@nimbus-sh/core/vfs/recall.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
-import { resolvePackageEntry } from '@nimbus-sh/core/_shared/exports-resolver.js';
+import { parseResolvablePackageJson, resolvePackageEntry } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { PRE_BUNDLE_SLICE_CAP_BYTES } from '@nimbus-sh/platform/limits.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { describeError } from '@nimbus-sh/platform/oom-classify.js';
@@ -217,27 +218,17 @@ function synthesizeEntry(ctx, specifier, barrel) {
 }
 /** The bundle built in the facet from a slice walked here, or why not. */
 async function buildInFacet(ctx, pool, specifier, entry, lease) {
-    const nmDir = ctx.root + '/node_modules';
     let slice;
-    if (entry.referencedFiles !== null) {
-        // A synthetic entry's slice: the files it references and their relative
-        // imports, and the entry itself (outside the package), not the whole
-        // package, so a package of thousands of files fits the cap.
-        const scoped = await buildScopedSliceForSynthetic(ctx.vfs, nmDir, packageNameFromSpecifier(specifier), entry.referencedFiles, ctx.parse);
-        let bytes;
-        try {
-            bytes = ctx.vfs.readFile(entry.entryPath);
-        }
-        catch (error) {
-            return `its synthetic entry ${entry.entryPath} could not be read back: ${describeError(error)}`;
-        }
-        const parentDir = entry.entryPath.substring(0, entry.entryPath.lastIndexOf('/'));
-        scoped.entries.push({ path: '/' + parentDir.replace(/^\/+/, ''), isDir: true });
-        scoped.entries.push({ path: '/' + entry.entryPath.replace(/^\/+/, ''), bytes, isDir: false });
-        slice = { slice: scoped.entries, totalBytes: scoped.totalBytes + bytes.length + entry.entryPath.length };
+    try {
+        slice = await gatherSlice(ctx, specifier, entry);
     }
-    else {
-        slice = buildSliceForSpecifierWithCap(ctx.vfs, specifier, nmDir, PRE_BUNDLE_SLICE_CAP_BYTES);
+    catch (error) {
+        // Refused (the principal may not read a file of it) or met a recall:
+        // the request's to answer. Anything else (bytes still being imported)
+        // is this bundle's failure, said.
+        if (recallOf(error) !== null || ['EACCES', 'EPERM'].includes(Reflect.get(Object(error), 'code')))
+            throw error;
+        return `its files could not be gathered: ${describeError(error)}`;
     }
     if (!slice)
         return `its files exceed the ${(PRE_BUNDLE_SLICE_CAP_BYTES / (1024 * 1024)).toFixed(0)} MiB a bundle may be built from`;
@@ -268,6 +259,22 @@ async function buildInFacet(ctx, pool, specifier, entry, lease) {
     if (!result.ok || !result.esmCode)
         return `its bundle failed: ${result.errorText ?? 'no output'}`;
     return { esmCode: result.esmCode, sources, key, manifests: request.manifests, moved: false, warnings: result.warnings ?? [] };
+}
+/** The files a bundle of `specifier` is built from, walked here, or null past the cap. */
+async function gatherSlice(ctx, specifier, entry) {
+    const nmDir = ctx.root + '/node_modules';
+    if (entry.referencedFiles !== null) {
+        // A synthetic entry's slice: the files it references and their relative
+        // imports, and the entry itself (outside the package), not the whole
+        // package, so a package of thousands of files fits the cap.
+        const scoped = await buildScopedSliceForSynthetic(ctx.vfs, nmDir, packageNameFromSpecifier(specifier), entry.referencedFiles, ctx.parse);
+        const bytes = ctx.vfs.readFile(entry.entryPath);
+        const parentDir = entry.entryPath.substring(0, entry.entryPath.lastIndexOf('/'));
+        scoped.entries.push({ path: '/' + parentDir.replace(/^\/+/, ''), isDir: true });
+        scoped.entries.push({ path: '/' + entry.entryPath.replace(/^\/+/, ''), bytes, isDir: false });
+        return { slice: scoped.entries, totalBytes: scoped.totalBytes + bytes.length + entry.entryPath.length };
+    }
+    return buildSliceForSpecifierWithCap(ctx.vfs, specifier, nmDir, PRE_BUNDLE_SLICE_CAP_BYTES);
 }
 /** The bundle built by the EsbuildService's build (no pool), reading through a view that records each manifest as it reads it. */
 async function buildInService(ctx, specifier, entryPath) {
@@ -337,9 +344,9 @@ export function resolvePrebundleEntry(vfs, root, specifier) {
         let pkg = null;
         if (vfs.exists(pkgDir + '/package.json')) {
             try {
-                pkg = JSON.parse(vfs.readFileString(pkgDir + '/package.json'));
+                pkg = parseResolvablePackageJson(vfs.readFileString(pkgDir + '/package.json'));
             }
-            catch { /* malformed */ }
+            catch { /* unreadable */ }
         }
         if (pkg?.exports) {
             const entry = resolvePackageEntry(pkg, subpath ? './' + subpath : '.');
@@ -353,14 +360,17 @@ export function resolvePrebundleEntry(vfs, root, specifier) {
                 return direct;
             const nestedPath = pkgDir + '/' + subpath + '/package.json';
             if (vfs.exists(nestedPath)) {
+                let nested = null;
                 try {
-                    const nested = JSON.parse(vfs.readFileString(nestedPath));
+                    nested = parseResolvablePackageJson(vfs.readFileString(nestedPath));
+                }
+                catch { /* unreadable */ }
+                if (nested !== null) {
                     const entry = nested.module || nested.main || 'index.js';
                     const found = resolveFile(vfs, normalizeVfsPath(pkgDir + '/' + subpath + '/' + entry.replace(/^\.\//, '')));
                     if (found)
                         return found;
                 }
-                catch { /* malformed */ }
             }
         }
         if (!subpath && pkg) {
