@@ -242,6 +242,8 @@ export declare class ViteDevServer {
     private ctx;
     /** The session's pre-bundle pool; null = bundle through the EsbuildService. */
     private readonly bundlePool;
+    /** What this server's pre-bundles are built and served as (npm/browser-prebundle.ts). */
+    private readonly prebundle;
     /**
      * In-flight on-demand-bundle coalescing map. When the browser fires
      * multiple parallel requests for the same /preview/@modules/<spec>
@@ -288,8 +290,6 @@ export declare class ViteDevServer {
     /** What has been said once (warnOnce). */
     private warned;
     constructor(opts: ViteDevServerOptions);
-    /** What this server's pre-bundles are built and served as (npm/browser-prebundle.ts). */
-    private prebundleContext;
     /** Detect TailwindCSS usage in the project */
     private detectTailwind;
     /**
