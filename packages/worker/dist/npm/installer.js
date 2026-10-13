@@ -193,7 +193,7 @@ export class NpmInstaller {
         // short left there goes first.
         const tmp = await engineKey(view, this.store, '/tmp');
         if (tmp !== null)
-            this.sweepStaging(tmp);
+            this.sweepStaging(tmp, opts.cred);
         const principal = { pid: opts.pid, cred: opts.cred, view, tmp };
         const lockfile = this.cache.readLockfile(projDir);
         const { roots, named, devOnly, advised } = await this.buildRoots(projDir, project, opts);
@@ -1186,12 +1186,23 @@ export class NpmInstaller {
         }
     }
     /** Staging directories in `tmp` no install in this session is using: an install cut short left them. */
-    sweepStaging(tmp) {
-        // As the kernel: another user's staging directory in the sticky /tmp is still this installer's.
-        const kernel = this.store.as(CRED_KERNEL);
+    sweepStaging(tmp, cred) {
+        // As the kernel in the session's own /tmp (another user's staging
+        // directory there is still this installer's), reached through no link:
+        // its parent is root's `/`. Anywhere else, as the installing user, who
+        // may replace /tmp with a link to a directory that is not the kernel's to
+        // clear.
+        let sweeper = this.store.as(cred);
+        try {
+            if (tmp === 'tmp' && this.store.as(CRED_KERNEL).lstat(tmp).type === 'directory')
+                sweeper = this.store.as(CRED_KERNEL);
+        }
+        catch {
+            return;
+        }
         let entries;
         try {
-            entries = kernel.readdir(tmp);
+            entries = sweeper.readdir(tmp);
         }
         catch {
             return;
@@ -1201,7 +1212,7 @@ export class NpmInstaller {
             if (entry.type !== 'directory' || !entry.name.startsWith(STAGE_PREFIX) || this.placing.has(path))
                 continue;
             try {
-                kernel.removeRecursive(path);
+                sweeper.removeRecursive(path);
             }
             catch { /* tried again next time */ }
         }
