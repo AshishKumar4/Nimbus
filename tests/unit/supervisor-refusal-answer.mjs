@@ -36,6 +36,9 @@ import {
   vfsSupervisor,
 } from '../../packages/core/src/runtime/vfs-supervisor.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
+import { SqliteFiles } from '../../packages/core/src/vfs/sqlite-files.ts';
+import { VfsError } from '../../packages/core/src/vfs/vfs-error.ts';
 import { acrossRpc } from './lib/rpc-error.mjs';
 
 const build = await Bun.build({
@@ -82,7 +85,7 @@ const ops = buildSessionSupervisorOps({
 });
 
 /** SupervisorRPC as the platform serves it: a fresh instance per call, the session one hop away. */
-function entrypoint(props = { doId: 'host-id', pid, writerId: 'writer' }) {
+function entrypoint(props = { doId: 'host-id', pid, writerId: 'writer' }, session = ops) {
   const supervisor = Object.create(SupervisorRPC.prototype);
   supervisor.ctx = { props: { ...props, route: { supervisorEntrypoint: 'SupervisorRPC', hostNamespace: 'HOST', hostDispatchMethod: 'supervisorOp' } } };
   supervisor.env = {
@@ -92,7 +95,7 @@ function entrypoint(props = { doId: 'host-id', pid, writerId: 'writer' }) {
       get: () => ({
         // Hop 1: the session's refusal crosses to the entrypoint.
         async supervisorOp(envelope) {
-          try { return structuredClone(await ops.dispatch(envelope)); }
+          try { return structuredClone(await session.dispatch(envelope)); }
           catch (error) { throw acrossRpc(error); }
         },
       }),
@@ -107,14 +110,14 @@ function entrypoint(props = { doId: 'host-id', pid, writerId: 'writer' }) {
  * cloned, a throw as acrossRpc delivers it. `calls` records the methods the
  * facet called on the stub.
  */
-function facetBinding(props) {
+function facetBinding(props, session = ops) {
   const calls = [];
   const stub = new Proxy({}, {
     get(_, name) {
       if (typeof name !== 'string') return undefined;
       return async (...args) => {
         calls.push(name);
-        try { return structuredClone(await entrypoint(props)[name](...args)); }
+        try { return structuredClone(await entrypoint(props, session)[name](...args)); }
         catch (error) { throw acrossRpc(error); }
       };
     },
@@ -249,4 +252,53 @@ for (const [method, args] of REFUSED) {
   assert.equal(answeringSupervisor(local), local, 'a same-isolate supervisor has no answer and is used as it is');
 }
 
-console.log('ok - supervisor-refusal-answer (refusals answered as values, rethrown exactly, codec answers)');
+// ── (4) a partial removal's report: each failure's error arrives whole ─────
+// rm -r on a walked mount carries on past an entry it may not remove and
+// reports it. Its report is the call's value, so it crosses both hops as a
+// value; each failure's error arrives as that refusal would, thrown: its
+// name, message, code, errno, syscall, path and detail.
+{
+  /** A session whose /walk is a walked filesystem that refuses to unlink tree/held. */
+  const walkSession = () => {
+    const walkHarness = createSqliteVfsTestHarness();
+    const engine = new SqliteVFS(walkHarness.sql, walkHarness.ctx);
+    const root = engine.as(CRED_KERNEL);
+    root.mkdir('tree', { recursive: true });
+    root.chown('tree', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+    root.writeFile('tree/free', 'free');
+    root.writeFile('tree/held', 'held');
+    class Walked extends SqliteFiles {
+      removeRecursive = undefined;
+      as(cred, actor, options) { return new Walked(engine, engine.as(cred, { ...options, actor })); }
+      unlink(path) {
+        if (path === '/tree/held') throw new VfsError('EACCES', 'held by the test', path, { detail: 'outside the consented directory' });
+        return super.unlink(path);
+      }
+    }
+    const files = new ProcessFiles(rawVfs);
+    files.vfs.mount('/walk', new Walked(engine, engine.as(CRED_SESSION_USER)));
+    return {
+      files,
+      ops: buildSessionSupervisorOps({
+        sqliteFs: rawVfs, processes, ensureSqliteFs() {}, _rpcStdout() {}, _rpcStderr() {},
+        getFilesystemAuthority: () => files,
+      }),
+    };
+  };
+  const fields = (error) => ({
+    name: error.name, message: error.message, code: error.code, errno: error.errno,
+    syscall: error.syscall, path: error.path, detail: error.detail,
+  });
+  const here = await walkSession().files.bind({ pid, cred: CRED_SESSION_USER }).remove('/walk/tree', { recursive: true, report: true });
+  assert.equal(here.failures.length, 1, 'the walk reports the entry it could not remove');
+  const { ops: walkOps } = walkSession();
+  const { stub } = facetBinding(undefined, walkOps);
+  const there = await supervisorFilesystem(stub).remove('/walk/tree', { recursive: true, report: true });
+  assert.deepEqual({ removed: there.removed, kept: there.kept, vanished: there.vanished }, { removed: here.removed, kept: here.kept, vanished: here.vanished });
+  assert.equal(there.failures.length, 1);
+  assert.equal(there.failures[0].path, here.failures[0].path);
+  assert.ok(there.failures[0].error instanceof Error, 'the failure is an error after both hops');
+  assert.deepEqual(fields(there.failures[0].error), fields(here.failures[0].error), "and its refusal's every field arrived");
+}
+
+console.log('ok - supervisor-refusal-answer (refusals answered as values, rethrown exactly, codec answers, removal reports)');
