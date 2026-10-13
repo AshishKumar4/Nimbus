@@ -7,6 +7,12 @@
  * its first element, a subscripted one promotes a scalar to an array, and
  * an array literal replaces whatever the name held.
  */
+/** A variable dictionary: prototype names are ordinary variable names too. */
+export function cloneEnv(source) {
+    const env = { ...source };
+    Object.setPrototypeOf(env, null);
+    return env;
+}
 /** `name=value` (`name+=value` with `append`); on an array, its first element. False for a readonly name. */
 export function assignVariable(store, name, value, append = false) {
     if (store.readonlyNames.has(name))

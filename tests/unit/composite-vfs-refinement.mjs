@@ -15,7 +15,7 @@ import { readFileSync } from 'node:fs';
 const src = new URL('../../packages/core/src/vfs/', import.meta.url).pathname;
 const { CompositeVFS } = await import(`${src}/composite.ts`);
 const { MemoryVFS } = await import(`${src}/memory.ts`);
-const { isVfsError, VfsError } = await import(`${src}/vfs-error.ts`);
+const { isVfsError, VfsError, syscallError } = await import(`${src}/vfs-error.ts`);
 
 const fixture = JSON.parse(readFileSync(
   new URL('../../lean/fixtures/composite-vfs.json', import.meta.url), 'utf8',
@@ -38,7 +38,14 @@ const credOf = (uid) => {
 function withCaps(vfs, caps) {
   if (!caps) return vfs;
   const pins = new Set((caps.pins ?? []).map((p) => `/${p}`));
+  const fault = (kind, path, syscall) => {
+    const refusal = (caps.faults?.[kind] ?? []).find((entry) => `/${entry.path}` === path);
+    if (!refusal) return;
+    if (refusal.code === 'ENOENT' && vfs.stat(path, { follow: false }) !== null) vfs.removeRecursive(path);
+    throw syscallError(refusal.code, syscall, path);
+  };
   const busy = (op) => (path) => {
+    fault('remove', path, op);
     if (pins.has(path)) throw new VfsError('EBUSY', 'pinned', path);
     return vfs[op](path);
   };
@@ -48,10 +55,10 @@ function withCaps(vfs, caps) {
     return rest;
   };
   const wrapped = {
-    stat: (path, options) => noModes(vfs.stat(path, options)),
+    stat: (path, options) => { fault('stat', path, options?.follow === false ? 'lstat' : 'stat'); return noModes(vfs.stat(path, options)); },
     readFile: (path) => vfs.readFile(path),
     writeFile: (path, data, options) => vfs.writeFile(path, data, options),
-    readdir: (path) => vfs.readdir(path).map((entry) => ({ ...entry, stat: entry.stat && noModes(entry.stat) })),
+    readdir: (path) => { fault('readdir', path, 'scandir'); return vfs.readdir(path).map((entry) => ({ ...entry, stat: entry.stat && noModes(entry.stat) })); },
     mkdir: (path, options) => vfs.mkdir(path, options),
     unlink: busy('unlink'),
     rmdir: busy('rmdir'),
@@ -113,7 +120,11 @@ function answer(step, got) {
     case 'readdir': return { names: value.map((e) => e.name).sort() };
     case 'readFile':
     case 'readRange': return { bytes: dec.decode(value) };
-    case 'removeRecursive': return { removed: value.removed, kept: value.kept };
+    case 'removeRecursive': return {
+      removed: value.removed, kept: value.kept,
+      failures: value.failures.map(({ path, error }) => ({ path, code: error.code, syscall: error.syscall })).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
+      ...(value.vanished === undefined ? {} : { vanished: value.vanished }),
+    };
     case 'copy': return { count: value };
     case 'writeFileIfRevision':
     case 'readFileAtRevision': return { supported: true };
@@ -135,7 +146,7 @@ for (const [index, testCase] of fixture.cases.entries()) {
   const composite = new CompositeVFS(views.root);
   for (const mount of testCase.mounts) {
     const backend = views[mount.backend];
-    composite.mount(mount.point, ({ cred }) => (mount.only === null || (cred !== null && mount.only.includes(cred.uid)) ? backend : null));
+    composite.mount(mount.point, ({ cred }) => (mount.only === null || (cred !== null && mount.only.includes(cred.uid)) ? backend : null), { readOnly: mount.readOnly === true });
   }
   try {
     for (const [s, step] of testCase.steps.entries()) {
@@ -152,7 +163,7 @@ for (const [index, testCase] of fixture.cases.entries()) {
           case 'unlink': return view.unlink(step.path);
           case 'rmdir': return view.rmdir(step.path);
           case 'rename': return view.rename(step.path, step.to);
-          case 'removeRecursive': return view.removeRecursive(step.path);
+          case 'removeRecursive': return view.removeRecursive(step.path, { keepVanishedAncestors: step.keepVanishedAncestors === true });
           case 'readRange': return view.readRange(step.path, step.offset, step.length);
           case 'copy': return view.copy(step.path, step.to, { recursive: step.recursive });
           case 'statMode': return view.stat(step.path);

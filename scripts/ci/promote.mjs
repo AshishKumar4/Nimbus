@@ -15,8 +15,11 @@
 //   2. deploy-isolation's preflight (scripts/deploy-isolation.mjs).
 //   3. The upload, `wrangler deploy --no-bundle -e production`, verified by
 //      version id: printed, served, and not the one served before. The
-//      production lease (lib/lease.mjs) is held from here through 4.
-//   4. The live checks, from containers, against https://nimbus-os.dev as a
+//      production lease (lib/lease.mjs) is held from here through 5.
+//   4. Readiness: the edge serves the upload, READINESS_CYCLES consecutive
+//      answers stamped with its version (_deploy-target waitForVersion).
+//      The edge keeps serving the old version for a while after a deploy.
+//   5. The live checks, from containers, against https://nimbus-os.dev as a
 //      visitor reaches it (HOSTED_DEMO_CHECKS and PRODUCTION_ONLY_CHECKS:
 //      /try, the docs terminal, host-form previews).
 // The checks count only if production still serves the upload after them.
@@ -24,7 +27,8 @@
 // --dry-run does 1 and 2, reads the version production serves, writes the
 // upload config, and stops.
 // Exit: 0, live and every check green; 1, a failed upload or check; 2, not
-// graded (nothing was uploaded).
+// graded (nothing was uploaded, the upload never served alone, or something
+// else deployed during the checks).
 import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -67,7 +71,7 @@ if (dirty) notGraded(`the worktree is not clean:\n${dirty}`);
 assertInstalled(repo, 'promote');
 const { RELEASES, readRelease, releaseDigest, uploadConfig } = await import('./lib/release.mjs');
 const { holdLease } = await import('./lib/lease.mjs');
-const { activeVersionId, deployAndVerify, requireAccountPin } = await import('../../tests/behavioral/_deploy-target.mjs');
+const { activeVersionId, deployAndVerify, requireAccountPin, waitForVersion } = await import('../../tests/behavioral/_deploy-target.mjs');
 const account = requireAccountPin();
 
 // 1. The release staging verified.
@@ -138,7 +142,17 @@ try {
 }
 log(`${PRODUCTION.name} → version ${versionId}, verified served`);
 
-// 4. The live checks.
+// 4. Readiness: graded only once the edge answers with the upload alone.
+try {
+  const ready = await waitForVersion(PRODUCTION.origin, versionId);
+  log(`${PRODUCTION.origin} answered ${ready.cycles} times in a row as ${versionId}`);
+} catch (error) {
+  writeFileSync(join(dir, 'promoted.json'), `${JSON.stringify({ commit: sha, at: new Date().toISOString(), release: sealed, before, versionId, live: { exitCode: 2, readiness: error.message } }, null, 2)}\n`);
+  console.log(`promote: NOT GRADED — ${PRODUCTION.origin} never answered as ${versionId} alone: ${error.message}\n  production may serve a mix; to go back: ${rollback}`);
+  process.exit(2);
+}
+
+// 5. The live checks.
 const checks = [...HOSTED_DEMO_CHECKS, ...PRODUCTION_ONLY_CHECKS];
 const live = spawnSync('bun', ['scripts/ci/remote-probes.mjs', '--target', `hosted:${PRODUCTION.origin}`, sha, '--only', checks.join(','), '--parts', '1', '--jobs', String(checks.length)], {
   cwd: repo, stdio: ['ignore', 'pipe', 'inherit'], encoding: 'utf8', maxBuffer: 1 << 30,

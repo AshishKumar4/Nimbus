@@ -15992,14 +15992,25 @@ function resolvePackageEntry(pkg, subpath = ".", conditions = DEFAULT_BUILD_COND
 
 // ../core/src/vfs/path.ts
 var NOT_NORMAL = /\/$|\/\/|(?:^|\/)\.\.?(?:\/|$)/;
+function plainVfsPath(path3) {
+  return NOT_NORMAL.test(path3) ? null : path3.charCodeAt(0) === 47 ? path3.slice(1) : path3;
+}
 function normalizeVfsPath(p) {
   const text = String(p ?? "");
-  if (!NOT_NORMAL.test(text)) return text.charCodeAt(0) === 47 ? text.slice(1) : text;
-  const segments = text.split("/");
+  const plain = plainVfsPath(text);
+  if (plain !== null) return plain;
+  return normalizedSegments(text, false);
+}
+function normalizedSegments(path3, lookup) {
+  const segments = path3.split("/");
+  const leaf = segments[segments.length - 1];
+  if (lookup && (leaf === "" || leaf === ".")) return null;
   const out = [];
   for (const seg of segments) {
-    if (seg === "..") out.pop();
-    else if (seg !== "." && seg !== "") out.push(seg);
+    if (seg === "..") {
+      if (lookup) return null;
+      out.pop();
+    } else if (seg !== "." && seg !== "") out.push(seg);
   }
   return out.join("/");
 }

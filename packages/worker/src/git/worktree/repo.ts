@@ -24,6 +24,7 @@ import { coneMatcher, parseConeSparseCheckout, type SparseMatcher } from '../pac
 import { DirCache, compareBytes, objectId, type IndexEdit } from './dircache.js';
 import { Excludes, parsePatternList, type PatternList } from './excludes.js';
 import { EMPTY_TREE, treeOf, type ObjectStore } from './tree.js';
+import { DEFAULT_PATH_PROTECTION, type PathProtection } from './verify-path.js';
 import { matchStat, newCounters, worktreeBlobId, type WalkCounters, type Worktree, type WorktreeFs, type WorktreeStat, type WorktreeType } from './walk.js';
 
 /** The cf-git calls a repository makes. */
@@ -337,6 +338,15 @@ export class WorktreeRepo {
     const cone = configBool(await this.worktreeSetting('core.sparseCheckoutCone')) === true ? parseConeSparseCheckout(patterns) : null;
     if (cone === null) throw new Error('fatal: a sparse checkout without cone mode is not supported');
     return coneMatcher(cone, configBool(await this.worktreeSetting('core.ignorecase')) === true);
+  }
+
+  /** core.protectHFS and core.protectNTFS, the repository's over the global, else git's defaults (verify-path.ts). */
+  async pathProtection(): Promise<PathProtection> {
+    const setting = async (key: string) => configBool(await this.config(key) ?? await this.globalConfig(key));
+    return {
+      hfs: await setting('core.protecthfs') ?? DEFAULT_PATH_PROTECTION.hfs,
+      ntfs: await setting('core.protectntfs') ?? DEFAULT_PATH_PROTECTION.ntfs,
+    };
   }
 
   /** The worktree with the settings its comparisons take. */

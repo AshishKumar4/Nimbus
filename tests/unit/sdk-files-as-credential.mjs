@@ -15,6 +15,7 @@ import assert from 'node:assert/strict';
 
 import { Nimbus } from '../../packages/sdk/src/sandbox.ts';
 import { handleNimbusRemoteApi } from '../../packages/worker/src/router/remote-api.ts';
+import { CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 
 const AGENT = Object.freeze({ uid: 4242, gid: 4242, groups: Object.freeze([4242]), umask: 0o022 });
 const STAT = { type: 'file', size: 1, ctime: 0, atime: 0, mtime: 0, mode: 0o644, uid: 4242, gid: 4242 };
@@ -177,10 +178,11 @@ function makeBinding(calls) {
   }
   assert.deepEqual(reached, [], 'the refusal happens before the session is asked');
 
-  // Refused, not dropped: the plain ops still go through untouched.
+  // Refused, not dropped: the plain ops still go through, with no credential
+  // the caller named; a deletion acts as the session's user (remote-delete-credential).
   assert.equal((await call('readFile', ['/a'])).status, 200);
   assert.equal((await call('deleteFile', ['/a', { recursive: true }])).status, 200);
-  assert.deepEqual(reached, [['readFile', '/a'], ['deleteFile', '/a', { recursive: true }]], 'and reach the session with no credential');
+  assert.deepEqual(reached, [['readFile', '/a'], ['deleteFile', '/a', { recursive: true }, CRED_SESSION_USER]], 'and reach the session as its user');
 }
 
 console.log('PASS sdk-files-as-credential');

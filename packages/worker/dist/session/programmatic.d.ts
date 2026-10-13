@@ -10,6 +10,7 @@ import { type MinShellRegistry } from '@nimbus-sh/core/runtime/installed-runtime
 import type { ProcessLogReadOptions } from '@nimbus-sh/core/runtime/process-logs.js';
 import { type TerminalLike } from '../runtime/process-logs-api.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import { type HostActivityLease } from '@nimbus-sh/fabric/host-activity.js';
 import type { ChildProcessManager } from '@nimbus-sh/core/runtime/child-process-manager.js';
 import type { ComposedFacetManager } from '../facets/compose.js';
 import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
@@ -43,10 +44,6 @@ interface ProgrammaticViteServer {
     isRunning: boolean;
     stop(): void;
 }
-interface ProgrammaticCirrusServer {
-    isRunning: boolean;
-    stop(ctx: ProgrammaticContext): void;
-}
 export interface ProgrammaticHost extends TimerHost {
     readonly runtimeManager: RuntimeManager;
     ensureRuntimeReady(): Promise<void>;
@@ -55,6 +52,8 @@ export interface ProgrammaticHost extends TimerHost {
     _w1SessionDestroyed: boolean;
     /** The log-janitor deadline this instance armed (hibernation.ts armLogJanitor), or null. */
     _w1JanitorAt: number | null;
+    /** The resident keep-alive cycle this instance armed, and the host activity it owns (hibernation.ts). */
+    _w1Keepalive: HostActivityLease | null;
     env: RuntimeCatalogEnv;
     ctx: ProgrammaticContext;
     /**
@@ -74,7 +73,9 @@ export interface ProgrammaticHost extends TimerHost {
     facetManagerComposed: ComposedFacetManager | null;
     facetManager: ProgrammaticFacetManager | null;
     viteDevServer: ProgrammaticViteServer | null;
-    cirrusReal: ProgrammaticCirrusServer | null;
+    cirrusReal: {
+        readonly isRunning: boolean;
+    } | null;
     _cpRegistry: MinShellRegistry | null;
     /** Named shells this object's storage held before they were the workspace's, once adopted. See `withShellState`. */
     _storedShellsAdopted?: Promise<void>;

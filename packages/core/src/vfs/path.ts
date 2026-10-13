@@ -30,16 +30,52 @@
  */
 const NOT_NORMAL = /\/$|\/\/|(?:^|\/)\.\.?(?:\/|$)/;
 
+/** A plain lookup key, or null when components must be walked before normalization. */
+export function plainVfsPath(path: string): string | null {
+  return NOT_NORMAL.test(path) ? null : path.charCodeAt(0) === 47 ? path.slice(1) : path;
+}
+
 export function normalizeVfsPath(p: string): string {
   const text = String(p ?? '');
   // A key already in canonical form, or an absolute path that is one past
   // its leading slash, as most lookups pass, is returned without the split.
-  if (!NOT_NORMAL.test(text)) return text.charCodeAt(0) === 47 ? text.slice(1) : text;
-  const segments = text.split('/');
+  const plain = plainVfsPath(text);
+  if (plain !== null) return plain;
+  return normalizedSegments(text, false);
+}
+
+/** Dot-only spellings may use indexed lookup; parents and trailing directory checks must be walked. */
+let recentLookup: { path: string; key: string | null } | null = null;
+let priorLookup: { path: string; key: string | null } | null = null;
+export function normalizeVfsLookupPath(path: string): string | null {
+  const plain = plainVfsPath(path);
+  if (plain !== null) return plain;
+  if (recentLookup?.path === path) return recentLookup.key;
+  if (priorLookup?.path === path) {
+    const matched = priorLookup;
+    priorLookup = recentLookup;
+    recentLookup = matched;
+    return matched.key;
+  }
+  const key = normalizedSegments(path, true);
+  priorLookup = recentLookup;
+  recentLookup = { path, key };
+  return key;
+}
+
+function normalizedSegments(path: string, lookup: false): string;
+function normalizedSegments(path: string, lookup: true): string | null;
+function normalizedSegments(path: string, lookup: boolean): string | null {
+  const segments = path.split('/');
+  const leaf = segments[segments.length - 1];
+  if (lookup && (leaf === '' || leaf === '.')) return null;
   const out: string[] = [];
   // `..` at the root stays at the root, as POSIX resolves `/..`.
   for (const seg of segments) {
-    if (seg === '..') out.pop();
+    if (seg === '..') {
+      if (lookup) return null;
+      out.pop();
+    }
     else if (seg !== '.' && seg !== '') out.push(seg);
   }
   return out.join('/');

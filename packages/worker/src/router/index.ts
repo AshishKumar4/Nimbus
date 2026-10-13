@@ -79,6 +79,7 @@ import { adoptCtxExports } from '@nimbus-sh/fabric/composition.js';
 import {
   handleNimbusRemoteApi,
   type NimbusRemoteApiOutbox,
+  remoteApiBasePath,
   remoteApiEnabled,
   type NimbusSdkRouterConfig,
 } from './remote-api.js';
@@ -230,6 +231,13 @@ export interface CreateNimbusHandlerOptions {
 }
 
 /**
+ * The header naming the Worker version that answered: `env.CF_VERSION_METADATA.id`,
+ * from a `version_metadata` binding named `CF_VERSION_METADATA`. A deploy's
+ * readiness reads it to know the edge serves the version it uploaded.
+ */
+export const NIMBUS_VERSION_HEADER = 'x-nimbus-version';
+
+/**
  * The shape every `default export` Workers handler must satisfy.
  * Exported so embedders can type their own composed default export.
  */
@@ -280,6 +288,26 @@ export function createNimbusHandler(
   // Resolve auth mode at factory-construction time.
   const explicitMode = authConfig.mode
     ?? (authConfig.legacyPublic ? 'legacy' : undefined);
+  const remoteBase = remoteApiEnabled(options.sdk) ? remoteApiBasePath(options.sdk) : null;
+
+  /**
+   * Whether this request's reply names the version that answered it: the
+   * replies a deploy's readiness reads, none of which needs account state —
+   * the session cycle (`POST /new`, the terminal upgrade, `DELETE /s/<id>/`)
+   * and the remote API, whose unauthenticated refusal answers before any
+   * session. Every other reply is left as it is: an asset's or a port's
+   * encoded body is not rebuilt, and a preview host's paths are its app's.
+   */
+  function namesVersion(request: Request, env: any): boolean {
+    const { method } = request;
+    if (method === 'GET' ? request.headers.get('Upgrade') !== 'websocket' : method !== 'POST' && method !== 'DELETE') return false;
+    const url = new URL(request.url);
+    if (parsePreviewHost(url.host, readPreviewHostSuffix(env))) return false;
+    const path = url.pathname;
+    if (method === 'GET') return /^\/s\/[^/]+\/ws$/.test(path);
+    if (method === 'DELETE') return /^\/s\/[^/]+\/?$/.test(path);
+    return path === '/new' || (remoteBase !== null && path.startsWith(`${remoteBase}/`));
+  }
 
   async function route(request: Request, env: any, ctx: ExecutionContext): Promise<Response> {
     // Capture ctx.exports on first call (loopback bindings for facets).
@@ -696,34 +724,51 @@ export function createNimbusHandler(
     return new Response('Not found', { status: 404 });
   }
 
-  return {
-    async fetch(request: Request, env: any, ctx: ExecutionContext): Promise<Response> {
-      try {
-        return await route(request, env, ctx);
-      } catch (e: unknown) {
-        // With `run_worker_first`, this handler is the entry point for the
-        // marketing site and the docs as well as the app, so an uncaught
-        // throw would take the whole public surface down.
-        console.error('[nimbus] unhandled router error:', e instanceof Error ? e.stack || e : e);
-        const unavailable = doUnavailableError(e);
-        if (unavailable) {
-          return Response.json({
-            ok: false,
-            error: unavailable.error,
-            code: unavailable.code,
-          }, {
-            status: 503,
-            headers: {
-              'Cache-Control': 'no-store',
-              'Retry-After': unavailable.retryAfter,
-            },
-          });
-        }
-        return new Response('Internal error', {
-          status: 500,
-          headers: { 'Cache-Control': 'no-store' },
+  async function answer(request: Request, env: any, ctx: ExecutionContext): Promise<Response> {
+    try {
+      return await route(request, env, ctx);
+    } catch (e: unknown) {
+      // With `run_worker_first`, this handler is the entry point for the
+      // marketing site and the docs as well as the app, so an uncaught
+      // throw would take the whole public surface down.
+      console.error('[nimbus] unhandled router error:', e instanceof Error ? e.stack || e : e);
+      const unavailable = doUnavailableError(e);
+      if (unavailable) {
+        return Response.json({
+          ok: false,
+          error: unavailable.error,
+          code: unavailable.code,
+        }, {
+          status: 503,
+          headers: {
+            'Cache-Control': 'no-store',
+            'Retry-After': unavailable.retryAfter,
+          },
         });
       }
+      return new Response('Internal error', {
+        status: 500,
+        headers: { 'Cache-Control': 'no-store' },
+      });
+    }
+  }
+
+  return {
+    async fetch(request: Request, env: any, ctx: ExecutionContext): Promise<Response> {
+      const response = await answer(request, env, ctx);
+      const version: unknown = env?.CF_VERSION_METADATA?.id;
+      if (typeof version !== 'string' || !namesVersion(request, env)) return response;
+      // Fetched replies (the session DO's upgrade among them) have immutable
+      // headers: stamp a copy; a 101 keeps its socket beside them.
+      const headers = new Headers(response.headers);
+      headers.set(NIMBUS_VERSION_HEADER, version);
+      const socket = (response as unknown as { webSocket?: WebSocket | null }).webSocket;
+      return new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers,
+        ...(socket == null ? {} : { webSocket: socket }),
+      });
     },
   };
 }

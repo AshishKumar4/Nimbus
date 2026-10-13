@@ -86,6 +86,7 @@ export interface SessionInternal extends Pick<SessionRouterRpc,
   shell: Shell | null;
   shellProcessPid: number | null;
   terminal: WebSocketTerminal | null;
+  dispatchTerminalInput(frame: string): void;
   facetManagerComposed: ComposedFacetManager | null;
   readonly facetManager: FacetManager | null;
   /** W8: child_process broker; lazy. */
@@ -114,6 +115,10 @@ export interface SessionInternal extends Pick<SessionRouterRpc,
   /** Process supervisor facade (always present from ctor). */
   processes: SessionProcessSupervisor;
   portRegistry: PortRegistry;
+  _w1JanitorAt: number | null;
+  _w1Keepalive: import('@nimbus-sh/fabric/host-activity.js').HostActivityLease | null;
+  _w1LastClientActivityAt: number;
+  _w1SessionDestroyed: boolean;
 
   // ── W9 hibernation persistence state ────────────────────────────────
   _w9WsConfig: WsHibernationConfigResult | null;

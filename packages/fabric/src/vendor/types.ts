@@ -2,59 +2,8 @@
 // Not yet in @cloudflare/workers-types. Remove this file when they ship.
 // https://developers.cloudflare.com/workers/runtime-apis/bindings/worker-loader/
 
-export interface JsModule { js: string }
-export interface CjsModule { cjs: string }
-export interface PyModule { py: string }
-export interface TextModule { text: string }
-export interface DataModule { data: ArrayBuffer }
-export interface JsonModule { json: unknown }
-/**
- * A WebAssembly module, importable from a facet by module name. Nimbus ships
- * these on every path — sql.js for node:sqlite, the interpreter images for
- * python and ruby — so the omission here was the type lagging the API, not a
- * kind the loader lacks. The loader takes either the bytes, which it
- * compiles, or a module the caller holds compiled already, whose compiled
- * code the dynamic worker then shares (workerd src/workerd/api/
- * worker-loader.c++, extractWasmModuleContent). A module handed over this
- * way should be described with describeHostWasm (host-wasm.ts): the
- * code-size budget and the loader cache key cannot read a Module's size or
- * identity from JS.
- */
-export interface WasmModule { wasm: ArrayBuffer | WebAssembly.Module }
-
-/** Plain string = type inferred from file extension (.js or .py). */
-export type ModuleContent =
-  | string
-  | JsModule
-  | CjsModule
-  | PyModule
-  | TextModule
-  | DataModule
-  | JsonModule
-  | WasmModule;
-
-export interface WorkerCode {
-  compatibilityDate: string;
-  compatibilityFlags?: string[];
-  allowExperimental?: boolean;
-  limits?: { cpuMs?: number; subRequests?: number };
-  mainModule: string;
-  modules: Record<string, ModuleContent>;
-  env?: Record<string, unknown>;
-
-  /**
-   * Network access control:
-   * - `undefined`: inherit parent's network access.
-   * - `null`: block all outbound (fetch/connect throw).
-   * - A service stub: redirect outbound through that binding.
-   */
-  globalOutbound?: ServiceStub | null;
-  tails?: ServiceStub[];
-}
-
-export interface ServiceStub {
-  fetch(input: RequestInfo, init?: RequestInit): Promise<Response>;
-}
+import type { WorkerCode } from '@nimbus-sh/platform/worker-code.js';
+export type { JsModule, CjsModule, PyModule, TextModule, DataModule, JsonModule, WasmModule, ModuleContent, WorkerCode, ServiceStub } from '@nimbus-sh/platform/worker-code.js';
 
 export interface EntrypointOptions {
   props?: Record<string, unknown>;

@@ -249,12 +249,10 @@ export declare class ProcessView implements VFS {
     /** writeFile of `size` bytes that arrive over time, published whole once they have (RuntimeFsBridge.writeFileFrom). */
     writeFileFrom(path: string, size: number, source: AsyncIterable<Uint8Array>): Promise<void>;
     truncate(path: string, size: number): Promise<void>;
-    /**
-     * rm -r: what went, by the roots removed, what is still there, and why.
-     * The engine removes a tree in one step or refuses it whole, so its report
-     * is the operand or the refusal.
-     */
-    removeRecursive(path: string): Promise<VfsRemoval>;
+    /** rm -r's complete namespace report, including partial removal and vanished children. */
+    removeRecursive(path: string, options?: {
+        keepVanishedAncestors?: boolean;
+    }): Promise<VfsRemoval>;
     symlink(target: string, path: string): Promise<void>;
     readlink(path: string): Promise<string>;
     /** Where the link at `path`, reading `link`, leads in this namespace (RuntimeFsBridge.linkLeadsTo), for a caller following it itself. */

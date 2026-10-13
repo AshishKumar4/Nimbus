@@ -56,6 +56,17 @@ function isOutput(value: unknown): value is StoppedOutput[] {
  * all of it is checked.
  */
 export function stopRecordOf(error: unknown, nonce: string, run: number): StopRecord | null {
+  const seen = new Set<Error>();
+  for (;;) {
+    const record = parseStopRecord(error, nonce, run);
+    if (record) return record;
+    if (!(error instanceof Error) || seen.has(error)) return null;
+    seen.add(error);
+    error = error.cause;
+  }
+}
+
+function parseStopRecord(error: unknown, nonce: string, run: number): StopRecord | null {
   const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
   const marker = `${STOP_RECORD_PREFIX}${nonce} `;
   const at = message.indexOf(marker);

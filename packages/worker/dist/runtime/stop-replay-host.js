@@ -55,6 +55,18 @@ function isOutput(value) {
  * all of it is checked.
  */
 export function stopRecordOf(error, nonce, run) {
+    const seen = new Set();
+    for (;;) {
+        const record = parseStopRecord(error, nonce, run);
+        if (record)
+            return record;
+        if (!(error instanceof Error) || seen.has(error))
+            return null;
+        seen.add(error);
+        error = error.cause;
+    }
+}
+function parseStopRecord(error, nonce, run) {
     const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
     const marker = `${STOP_RECORD_PREFIX}${nonce} `;
     const at = message.indexOf(marker);

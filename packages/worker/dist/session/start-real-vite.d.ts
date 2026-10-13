@@ -5,10 +5,10 @@
  * Two callers share it: the `vite` shell builtin (opt-in via NIMBUS_REAL_VITE=1
  * or `nimbusDevServer: 'real'`) and the hibernation-restore path in
  * session/routes.ts. Booting is heavy — it pre-bundles the user's vite.config
- * against the VFS, allocates the facet payload, and boots a dynamic-worker
- * facet — so it must not be duplicated: a woken session has to rebuild the
- * server exactly as the command did, or the two disagree on what real-vite
- * looks like.
+ * against the VFS, allocates the facet payload, and launches the server as one
+ * of the session's resident processes — so it must not be duplicated: a woken
+ * session has to rebuild the server exactly as the command did, or the two
+ * disagree on what real-vite looks like.
  *
  * It also persists what restore needs into the SAME `vite-config` key the
  * Cirrus shim writes, tagged `devServer: 'real'` so restore rebuilds real-vite
@@ -67,8 +67,9 @@ export interface StartRealViteResult {
     cfgPath: string | null;
 }
 /**
- * Boot a cirrus-real dev server on `self`, register its port, and persist the
- * config restore needs. `self` is the session host (RoutesHost/InitHost = any).
+ * Boot a cirrus-real dev server on `self` as a resident process serving its
+ * port, and persist the config restore needs. One already running is ended
+ * first. `self` is the session host (RoutesHost/InitHost = any).
  */
 export declare function startRealVite(self: any, opts: StartRealViteOptions): Promise<StartRealViteResult>;
 //# sourceMappingURL=start-real-vite.d.ts.map

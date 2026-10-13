@@ -40,6 +40,7 @@ import { diffTrees, type Leaf, type ObjectStore } from './tree.js';
 import { walkTreeAndIndex } from './status.js';
 import type { SparseMatcher } from '../pack/sparse.js';
 import { compareEntry, matchStat, scanWorktree, type Worktree, type WorktreeStat } from './walk.js';
+import { invalidPathError, verifyPath, type PathProtection } from './verify-path.js';
 
 /** The worktree writes a checkout makes, at absolute paths (createGitFs's checkout rules). */
 export interface CheckoutWriter {
@@ -66,6 +67,8 @@ export interface SparsityContext {
 
 /** What a refused checkout names, by git's kinds. */
 export interface Refusal {
+  /** Paths git's verify_path refuses the target's entries (add_index_entry), each its own error. */
+  invalid: string[];
   local: string[];
   directories: string[];
   untracked: string[];
@@ -74,8 +77,11 @@ export interface Refusal {
 /** What the refusal is of: a branch switch, or a merge's fast-forward. */
 export type CheckoutOperation = 'checkout' | 'merge';
 
-/** unpack-trees.c's unpack_plumbing_errors: the paths of each kind, then "Aborting". */
-function refusalMessage({ local, directories, untracked }: Refusal, operation: CheckoutOperation): string {
+/**
+ * An invalid path's error as the walk meets it, then unpack-trees.c's
+ * display_error_msgs: the paths of each kind, then "Aborting".
+ */
+function refusalMessage({ invalid, local, directories, untracked }: Refusal, operation: CheckoutOperation): string {
   const list = (paths: string[]) => paths.map((path) => `\t${path}\n`).join('');
   const action = operation === 'merge' ? 'merge' : 'switch branches';
   let text = '';
@@ -88,7 +94,7 @@ function refusalMessage({ local, directories, untracked }: Refusal, operation: C
     text += `error: The following untracked working tree files would be overwritten by ${operation}:\n${list(untracked)}`
       + `Please move or remove them before you ${action}.\n`;
   }
-  return `${text}Aborting\n`;
+  return invalid.map(invalidPathError).join('') + (text && `${text}Aborting\n`);
 }
 
 /** A refusal, git's message its own: nothing was written. */
@@ -114,6 +120,8 @@ export interface SwitchContext extends SparsityContext {
   operation: CheckoutOperation;
   /** The worktree's sparse checkout (WorktreeRepo.sparseMatcher), or null. */
   sparse?: SparseMatcher | null;
+  /** The names verify_path refuses beyond its own (WorktreeRepo.pathProtection). */
+  protect: PathProtection;
 }
 
 type Kind = 'blob' | 'tree' | 'commit' | null;
@@ -226,7 +234,7 @@ export async function switchTrees(ctx: SwitchContext, head: string | null, targe
   const lstat = view.lstat;
 
   const ops: Op[] = [];
-  const refusal: Refusal = { local: [], directories: [], untracked: [] };
+  const refusal: Refusal = { invalid: [], local: [], directories: [], untracked: [] };
   const replaced = new Set<string>();
   const replacedAncestor = (path: string): string | null => {
     for (let dir = parentOf(path); dir; dir = parentOf(dir)) if (replaced.has(dir)) return dir;
@@ -272,9 +280,16 @@ export async function switchTrees(ctx: SwitchContext, head: string | null, targe
     // verify_uptodate: the worktree holds what the index says, or nothing; a skip-worktree entry is.
     const upToDate = async () => (entry >= 0 && dc.skipWorktree(entry)) || st === null ||
       (st.type !== 'directory' && await compareEntry(tree, dc, entry, path, st) === null);
+    // add_index_entry: the target's entry at a path verify_path refuses fails the checkout.
+    const valid = () => {
+      if (verifyPath(path, leaf!.mode, ctx.protect)) return true;
+      refusal.invalid.push(path);
+      return false;
+    };
     // Outside a sparse checkout's cone the target's entry is indexed skip-worktree, not written,
     // and a file the worktree still held there goes (unpack-trees' CE_WT_REMOVE).
     const write = (method: 'create' | 'update' | 'update-dir-to-blob') => {
+      if (!valid()) return;
       if (outside(path)) {
         // Only a file the index had checked out: what is at a skip-worktree entry's path is not git's.
         const materialized = entry >= 0 && !dc.skipWorktree(entry) && st !== null && st.type !== 'directory';
@@ -287,8 +302,9 @@ export async function switchTrees(ctx: SwitchContext, head: string | null, targe
 
     if (commitType === 'commit') {
       // A submodule: its gitlink is indexed, its contents never touched.
-      if (outside(path)) ops.push({ method: 'skip-worktree', path, oid: leaf!.oid, mode: leaf!.mode, present: false });
-      else if (workType === 'blob') refusal.untracked.push(path);
+      if (!outside(path) && workType === 'blob') refusal.untracked.push(path);
+      else if (!valid()) continue;
+      else if (outside(path)) ops.push({ method: 'skip-worktree', path, oid: leaf!.oid, mode: leaf!.mode, present: false });
       else ops.push({ method: 'mkdir-index', path, oid: leaf!.oid, mode: leaf!.mode });
       continue;
     }
@@ -392,8 +408,9 @@ export async function switchTrees(ctx: SwitchContext, head: string | null, targe
     else refusal.untracked.push(path);
   }
 
-  if (refusal.local.length + refusal.directories.length + refusal.untracked.length > 0) {
+  if (refusal.invalid.length + refusal.local.length + refusal.directories.length + refusal.untracked.length > 0) {
     throw new CheckoutRefused({
+      invalid: refusal.invalid,
       local: [...new Set(refusal.local)],
       directories: [...new Set(refusal.directories)],
       untracked: [...new Set(refusal.untracked)],

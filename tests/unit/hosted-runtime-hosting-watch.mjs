@@ -1,25 +1,13 @@
 #!/usr/bin/env bun
-// A hosted runtime that hosts a peer's process watches for its own reset
-// through its embedder's lifecycle, and never through an alarm of its own.
-//
-// MaximumSquirrel (on 6d7c95767): the shared _rpcHostProcess armed fabric's
-// timer mux directly. An embedder owns its object's alarm and hands tasks
-// back through onScheduled, which had no hosting-watch: the watch never ran,
-// and arming it could overwrite the embedder's own alarm.
-//
-// Asserted through composeHostedRuntime's public surface:
-//   - hosting a process asks the lifecycle for 'hosting-watch' and leaves the
-//     object's alarm alone;
-//   - onScheduled('hosting-watch') reports a hosting record with no process
-//     to its session, drops it, and asks for nothing more;
-//   - a report the session did not get is asked for again through the
-//     lifecycle, and the record is kept.
+// A hosted peer has no lifetime RPC or polling alarm. Native fetch owns
+// observation; a cold record is refused on use and kept until release.
 
 import assert from 'node:assert/strict';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
+import { HOSTED_WATCH_HEADER, HOSTED_WEBSOCKET_CAPABILITY_HEADER } from '../../packages/fabric/src/peer-host.ts';
 
 const bundle = await importWorkerBundle({
   'packages/worker/src/workspace-host.ts': ['composeHostedRuntime'],
@@ -55,7 +43,6 @@ const ctx = {
 };
 const COORDINATOR = 'coordinator-session';
 const reports = [];
-let failReports = 0;
 const env = {
   WORKSPACES: {
     idFromName(name) { return name; },
@@ -63,7 +50,6 @@ const env = {
     get(id) {
       return {
         async supervisorOp(envelope) {
-          if (failReports > 0) { failReports--; throw new Error('Network connection lost.'); }
           reports.push({ to: id, ...envelope });
           return true;
         },
@@ -91,41 +77,67 @@ const runtime = await bundle.composeHostedRuntime({
 });
 const watches = () => scheduled.filter(([task]) => task === 'hosting-watch');
 
-// ── hosting a process asks the lifecycle, not the alarm ─────────────────────
+// Hosting ends at open; observation is a separate, cancellable native fetch.
 {
   const workerKey = 'nimbus-process:coordinator-session:1000001';
-  // The host leg is held for the process's life; it settles when it is cancelled.
-  const held = runtime.supervisorOp({
+  const capability = crypto.randomUUID();
+  const opened = runtime.supervisorOp({
     op: 'hostProcess',
     args: [
       { kind: 'code', code: { compatibilityDate: '2026-01-01', compatibilityFlags: [], mainModule: 'p.js', modules: { 'p.js': 'export default {}' } } },
-      { coordinatorDoId: COORDINATOR, pid: 1000001, writerId: crypto.randomUUID(), workerKey, webSocketCapability: crypto.randomUUID() },
+      { coordinatorDoId: COORDINATOR, pid: 1000001, writerId: crypto.randomUUID(), workerKey, webSocketCapability: capability },
     ],
-  }).catch(() => {});
-  for (let i = 0; i < 200 && watches().length === 0; i++) await new Promise((r) => setTimeout(r, 10));
-  assert.equal(watches().length, 1, `hosting asked the lifecycle for the watch: ${JSON.stringify(scheduled)}`);
-  assert.deepEqual(alarms, [], 'the embedder\'s alarm is left alone');
-  await runtime.supervisorOp({ op: 'cancelHostProcess', args: [workerKey] }).catch(() => {});
-  await Promise.race([held, new Promise((r) => setTimeout(r, 2000))]);
+  });
+  try {
+    const boot = await Promise.race([opened, new Promise(resolve => setTimeout(() => resolve('held'), 1000))]);
+    assert.notEqual(boot, 'held', 'hostProcess must not be a permanent residency RPC');
+    assert.equal(boot.ok, true);
+    assert.equal(watches().length, 0, JSON.stringify(scheduled));
+    assert.deepEqual(alarms, [], 'the embedder\'s alarm is left alone');
+    const abort = new AbortController();
+    const response = await runtime.hostedFetch(new Request('https://watch.invalid/', { signal: abort.signal, headers: {
+      [HOSTED_WATCH_HEADER]: workerKey, [HOSTED_WEBSOCKET_CAPABILITY_HEADER]: capability,
+    } }));
+    assert.equal(response.status, 101);
+    const socket = response.webSocket;
+    socket.accept();
+    const closed = new Promise(resolve => socket.addEventListener('close', resolve, { once: true }));
+    abort.abort();
+    await closed;
+  } finally { await runtime.supervisorOp({ op: 'cancelHostProcess', args: [workerKey] }); await opened; }
 }
 
-// ── a record with no process is reported, dropped, and not watched again ───
+// Legacy scheduler events stop. Missing incarnations are found by use, not polling.
 {
-  await ctx.storage.put('hosting:lost-key', { coordinatorDoId: COORDINATOR, workerKey: 'lost-key', capability: 'cap-1' });
-  scheduled.length = 0;
-  failReports = 1;
-  await runtime.onScheduled('hosting-watch');
-  assert.equal(watches().length >= 1, true, 'a report the session did not get is asked for again');
-  assert.ok(await ctx.storage.get('hosting:lost-key'), 'and its record is kept');
-
+  await ctx.storage.put('hosting:lost-key', { coordinatorDoId: COORDINATOR, workerKey: 'lost-key', capability: 'cap-1', incarnation: 'old', facet: 'proc-slot-99' });
   scheduled.length = 0;
   await runtime.onScheduled('hosting-watch');
-  const lost = reports.filter((r) => r.op === 'hostLost');
-  assert.deepEqual(lost.map((r) => [r.to, ...r.args]), [[COORDINATOR, 'lost-key', 'cap-1']], 'the session is told');
+  assert.deepEqual(watches(), [], 'an old hosting-watch event is never rearmed');
+  assert.deepEqual(reports, [], 'idle hosts send no periodic loss reports');
+  const lost = await runtime.hostedFetch(new Request('https://watch.invalid/', { headers: {
+    [HOSTED_WATCH_HEADER]: 'lost-key', [HOSTED_WEBSOCKET_CAPABILITY_HEADER]: 'cap-1',
+  } }));
+  assert.equal(lost.status, 410);
+  assert.match(await lost.text(), /restarted/);
+  assert.ok(await ctx.storage.get('hosting:lost-key'), 'loss evidence remains until the coordinator releases it');
+  await runtime.supervisorOp({ op: 'cancelHostProcess', args: ['lost-key'] });
   assert.equal(await ctx.storage.get('hosting:lost-key'), undefined, 'the record is dropped');
   assert.deepEqual(alarms, [], 'the embedder\'s alarm is still left alone');
 }
 
-await Promise.race([runtime.close(), new Promise((r) => setTimeout(r, 5000))]);
+// Old peer mode was throwaway-only. Its unnameable rows retire, not a guessed facet.
+await ctx.storage.put('hosting:legacy-key', { coordinatorDoId: COORDINATOR, workerKey: 'legacy-key', capability: 'legacy' });
+const warnings = [], warn = console.warn, abortFacet = ctx.facets.abort;
+console.warn = (...args) => warnings.push(args.join(' '));
+ctx.facets.abort = () => assert.fail('legacy cleanup cannot guess a physical facet');
+try {
+  await runtime.supervisorOp({ op: 'cancelHostProcess', args: ['legacy-key'] });
+  await runtime.supervisorOp({ op: 'cancelHostProcess', args: ['legacy-key'] });
+  assert.equal(await ctx.storage.get('hosting:legacy-key'), undefined);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /peer facet could not be named/);
+} finally { console.warn = warn; ctx.facets.abort = abortFacet; }
+
+await runtime.close();
 console.log('hosted-runtime-hosting-watch: ok');
 process.exit(0);

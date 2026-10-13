@@ -11,7 +11,7 @@ export { PackStreamProcessor, WORK_BUDGET_UNITS } from './processor.js';
 export type { PackStore, ProcessedObject, PackProcessResult, PackCheckpoint } from './processor.js';
 export { encodeIdxV2, ENTRY_BYTES } from './idx.js';
 export { discover, requestPack, UploadPackError } from './upload-pack.js';
-export { CheckoutPlan, encodeBatch, decodeBatch, parseTree } from './plan.js';
+export { CheckoutPlan, encodeBatch, decodeBatch } from './plan.js';
 export { oidToHex, oidFromHex, PackFormatError } from './format.js';
 export { cloneDiscover, cloneFast, cloneBatch, cloneFinish, clonePlanFromStore, fetchObjects } from './clone.js';
 export { historyStep, historyResume, historyPlan, treeSlices } from './history.js';

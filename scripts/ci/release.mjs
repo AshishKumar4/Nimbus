@@ -12,7 +12,10 @@
 //      the same bytes.
 //   2. This machine uploads it, as built, to nimbus-probe-staging and
 //      nimbus-staging (tests/behavioral/_staging-target.mjs up --release),
-//      after deploy-isolation's preflight, and verifies each version id.
+//      after deploy-isolation's preflight, verifies each version id, and
+//      waits until each answers as that version alone (_deploy-target
+//      waitForTarget and waitForVersion: the edge serves the old version for
+//      a while after a deploy).
 //   3. The staging matrix, from containers (scripts/ci/remote-probes.mjs),
 //      graded row by row (scripts/ci/lib/matrix.mjs): green only if every
 //      red row is a probe the user deferred (tests/behavioral/_deferred.mjs)

@@ -1065,6 +1065,13 @@ class VirtualListener {
     return this.queue.shift() ?? null;
   }
 
+  /** `conn`, accepted and not taken up, is the next accept's: a waiting one's, else the queue's first. */
+  restore(conn: VirtualConnection): void {
+    const waiter = this.acceptWaiters.shift();
+    if (waiter) waiter.resolve(conn);
+    else this.queue.unshift(conn);
+  }
+
   /** `conn` leaves the queue, unaccepted: its request is over. */
   withdraw(conn: VirtualConnection): void {
     const at = this.queue.indexOf(conn);
@@ -1145,6 +1152,26 @@ export class VirtualSocketKernel {
     if (!listener) throw new Error(`port is not listening: ${port}`);
     const conn = await listener.accept();
     return { id: conn.id, host: '127.0.0.1', port: 0 };
+  }
+
+  /**
+   * Give back a connection `accept` handed out that its caller did not take
+   * up (a WASI accept the park deadline answered first): the next accept on
+   * the port takes it. With the port closed meanwhile, it is aborted, as a
+   * queued one is.
+   */
+  unaccept(port: number, accepted: AcceptedVirtualConnection): void {
+    const conn = this.connections.get(accepted.id);
+    if (!(conn instanceof VirtualConnection)) return;
+    const listener = this.listeners.get(Number(port));
+    if (listener) {
+      listener.restore(conn);
+      // Queued again, it is news to a poll of the port, as an arrival is.
+      this.notifyReadable(Number(port));
+      return;
+    }
+    this.connections.delete(conn.id);
+    conn.abort(`listener closed on port ${port}`, 502);
   }
 
   acceptNow(port: number): AcceptedVirtualConnection | null {

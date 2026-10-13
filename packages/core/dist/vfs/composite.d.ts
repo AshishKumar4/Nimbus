@@ -88,6 +88,12 @@ export declare function comparePaths(a: string, b: string): number;
  */
 export declare function runtimeStatOf(stat: VfsStat): RuntimeVfsStat;
 export type { Principal } from './vfs.js';
+/** The namespace always offers recursive removal, walking a backend that does not. */
+export interface CompositeSyncVFS extends SyncVFS {
+    removeRecursive(path: string, options?: {
+        keepVanishedAncestors?: boolean;
+    }): VfsRemoval;
+}
 /** A backend, or a function giving the backend for a principal at this instant (null: absent). */
 export type VfsSource = VFS | ((principal: Principal) => VFS | null);
 export interface MountOptions {
@@ -752,7 +758,7 @@ export declare class CompositeVFS implements VFS {
     as(cred: VfsCred, actor?: string, options?: VfsViewOptions): CompositeVFS;
     /** Who this view acts as. */
     get principal(): Principal;
-    get sync(): SyncVFS;
+    get sync(): CompositeSyncVFS;
     private resynthesize;
     /** The mount `path` (resolved, normalized) is on: the longest point at or above it. */
     private locate;
@@ -798,7 +804,7 @@ export declare class CompositeVFS implements VFS {
      * `input` with every root link on it followed (the last only when
      * `follow`), normalized in this namespace. A mount point or a directory
      * above one is never a link (rule 2); a component inside a mount is left to
-     * that backend. ELOOP past MAX_LINK_HOPS.
+     * that backend. ELOOP past 40 link hops.
      */
     /** `creating`: absent non-final components are allowed (mkdir -p makes them); a file among them is still ENOTDIR. */
     private resolve;
@@ -958,7 +964,9 @@ export declare class CompositeVFS implements VFS {
     unlink(path: string): Promise<void>;
     rmdir(path: string): Promise<void>;
     rename(from: string, to: string): Promise<void>;
-    removeRecursive(path: string): Promise<VfsRemoval>;
+    removeRecursive(path: string, options?: {
+        keepVanishedAncestors?: boolean;
+    }): Promise<VfsRemoval>;
     symlink(target: string, path: string): Promise<void>;
     readlink(path: string): Promise<string>;
     chmod(path: string, mode: number): Promise<void>;

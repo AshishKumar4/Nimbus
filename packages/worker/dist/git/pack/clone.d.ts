@@ -17,6 +17,7 @@
  */
 import { readRange, type PackSummary } from './install.js';
 import { type EntryStat } from '../worktree/dircache.js';
+import { type PathProtection } from '../worktree/verify-path.js';
 import { oidFromHex } from './format.js';
 import { PackStreamProcessor, type PackProcessResult } from './processor.js';
 import { type Advertisement, type GitTransportAuth } from './upload-pack.js';
@@ -71,6 +72,8 @@ export interface CloneRequest {
     budgetUnits?: number;
     /** `git clone --sparse`: a cone-mode sparse checkout of the top's files only. */
     sparse?: boolean;
+    /** The names the checkout refuses beyond verify_path's own, as the clone's command is configured (`-c`, the user's global config). */
+    protect?: PathProtection;
 }
 export interface CloneBatchPlan {
     index: number;
@@ -103,6 +106,8 @@ export interface ClonePrepared {
     /** The remote's tags, and which of their ids prepare's pack held (TagWatch). */
     tags: CloneTag[];
     tagsFound: string[];
+    /** git's error for the path its checkout refuses (CheckoutPlan.refused): the checkout fails, once every object is in. */
+    checkoutErrors?: string[];
 }
 /** An advertised tag: its ref, the id it names, and what that peels to. */
 export interface CloneTag {
@@ -226,6 +231,7 @@ export declare function clonePlanFromStore(context: CloneContext, request: {
     commit: string;
     blobsPerBatch?: number;
     sparse?: boolean;
+    protect?: PathProtection;
 }): Promise<ClonePrepared>;
 export declare function concat(parts: Uint8Array[]): Uint8Array;
 /** One batch: its blobs fetched by id, written at their paths as they resolve. */

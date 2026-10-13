@@ -58,7 +58,9 @@ export declare function buildFacetPrebundler(ctx: DurableObjectState, env: unkno
  * Loads the Durable Object's build facet and waits for it: the staged parts
  * fetched and verified, the binding instantiated. What prewarmBuildFacet
  * starts, for a caller that wants the load behind it before it allocates
- * (a pre-bundle's slice). Rejects as the load does.
+ * (a pre-bundle's slice). Once per generation: a facet warmed (or warming)
+ * is not asked again; a retired one's successor is warmed by its first
+ * caller. Rejects as the load does, and the next caller loads afresh.
  */
 export declare function loadBuildFacet(ctx: DurableObjectState, env: unknown): Promise<void>;
 //# sourceMappingURL=build-facet.d.ts.map

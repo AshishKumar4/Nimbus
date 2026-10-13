@@ -23,7 +23,7 @@ import { commonJsCellModuleName, commonJsCellReadsBack, columnMapModuleName, com
 import { moduleImporterUrl } from '@nimbus-sh/core/_shared/module-importer.js';
 import { isTypescriptDeclarationFile } from '@nimbus-sh/core/_shared/typescript-specifiers.js';
 import { ReadAheadBudget, STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
-import { execIdField } from '@nimbus-sh/core/runtime/process-table.js';
+import { execIdField, parseExecId } from '@nimbus-sh/core/runtime/process-table.js';
 import { exitCodeForSignal } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { createNodeFacetRuntime, fetchNodeFacetSources, nodeFacetSource } from '../runtime/node-shims-artifact.js';
 import { moduleSource } from '@nimbus-sh/platform/module-source.js';
@@ -34,6 +34,7 @@ import { normalizeVfsPath, stripLeadingSlashes, vfsPathExtension } from '@nimbus
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 import { direntTypeOf } from '@nimbus-sh/core/vfs/dirent-type.js';
+import { relayRpcBody, responseScope } from '@nimbus-sh/core/runtime/port-registry.js';
 import { clearPortCapability, listPortReservations, readPortReservation, readPortReservationByOwner, releasePortReservation, restoreReservedPortCapability, } from '../session/port-capability.js';
 import { deriveResidentOwner, launchArgv } from './resident-identity.js';
 import { z } from 'zod/v4';
@@ -88,14 +89,15 @@ import { acquireDurableFacetSlot, freeDurableFacetSlot, } from './durable-slots.
 import { persistDurableWorkerImage, purgeDurableWorkerImages, } from './durable-images.js';
 import { SQLITE_WASM_MODULE_NAME, } from '../runtime/opencode-facet-runner.js';
 import { parsePortFromArgv, resolveLongRunningPort } from '@nimbus-sh/core/runtime/long-running-handle.js';
+import { hostActivity, hostAdapterBytes } from '@nimbus-sh/fabric/host-activity.js';
 import { DEFAULT_FACET_BUNDLE_PROFILE, } from '@nimbus-sh/core/runtime/bundle-profile.js';
 import { CF_COMPAT_DATE, DEFAULT_HOME, GUEST_COMPAT_FLAGS, VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES, BUNDLE_MAX_ENCODED_BYTES, PREFETCH_CACHE_MAX_BYTES, FS_LIST_PAGE_LIMIT, CHUNK_SIZE, } from '@nimbus-sh/core/constants.js';
 import { LEDGER_ROW_BYTES } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { ONE_SHOT_STORE_MEMORY_BYTES, RESIDENT_CHUNK_BYTES } from '../vfs/facet-resident-limits.js';
 import { residentCellCost } from '../vfs/resident/cell-cost.js';
-import { MAX_RPC_SAFE_PAYLOAD_BYTES, SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES } from '@nimbus-sh/platform/limits.js';
-import { CRED_KERNEL, isNativeBinPath, launchNamedPaths } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { acquireSupervisorAllocation, tryAcquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
+import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
+import { CRED_KERNEL, isNativeBinPath, launchNamedPaths, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { streamedWasmImageDigest, wasmImageDigest } from './wasm-image-digest.js';
 import { prefetchBundleStart, prefetchBundleEnd, setPrefetchCacheBytes, } from '@nimbus-sh/platform/diag-counters.js';
 const launchAdapters = new WeakMap();
@@ -315,7 +317,7 @@ function __nimbusReportBlockedState() {
 // child as much as a callback would be. Once the evaluation settles, the
 // loop gives a settling chain its warm-up turns again; a rejected
 // evaluation is uncaught as it rejects.
-async function __nimbusRunEntrypointToExit(__entryResult, __deadlineMs) {
+async function __nimbusRunEntrypointToExit(__entryResult, __deadlineMs, __beforeExit) {
   let __evaluating = Boolean(__entryResult) && typeof __entryResult.then === "function";
   let __grace = 0;
   if (__evaluating) {
@@ -331,7 +333,36 @@ async function __nimbusRunEntrypointToExit(__entryResult, __deadlineMs) {
     if (__grace > 0) { __grace--; return 1 + __nimbusLiveHandles(); }
     return __nimbusLiveHandles();
   };
-  return await __nimbusRunEventLoop(__count, __nimbusProcessExitPromise, __deadlineMs, 4, __nimbusReportBlockedState);
+  if (!__beforeExit) return await __nimbusRunEventLoop(__count, __nimbusProcessExitPromise, __deadlineMs, 4, __nimbusReportBlockedState);
+  const __limited = Number.isFinite(__deadlineMs);
+  const __startedAt = __limited ? Date.now() : 0;
+  for (;;) {
+    const __remaining = __limited ? Math.max(0, __deadlineMs - (Date.now() - __startedAt)) : __deadlineMs;
+    const __drained = await __nimbusRunEventLoop(__count, __nimbusProcessExitPromise, __remaining, 4, __nimbusReportBlockedState);
+    if (__drained.pending || !await __beforeExit()) return __drained;
+  }
+}
+
+async function __nimbusBeforeExitHasWork() {
+  if (__nimbusProgramStopped || !__processMod.listenerCount("beforeExit")) return false;
+  const __rawSetTimeout = globalThis.__nimbusRawSetTimeout || globalThis.setTimeout;
+  // Already-returned writes still publish, but are not new Node work.
+  const __nodeHandles = () => Math.max(0, __nimbusLiveHandles() - __nimbusHandleCount("__nimbusAcknowledgedVfsOps"));
+  for (;;) {
+    try { __processMod.emit("beforeExit", __processMod.exitCode || 0); }
+    catch (error) { __nimbusUncaughtException(error, false); }
+    let __continued = __nodeHandles() > 0;
+    for (let __pass = 0; __pass < 4; __pass++) {
+      await new Promise((resolve) => __rawSetTimeout(resolve, 0));
+      __continued ||= __nodeHandles() > 0;
+    }
+    if (__nimbusProgramStopped) return false;
+    if (__continued && __nimbusLiveHandles() > 0) return true;
+    if (!__continued) {
+      await __nimbusRunEventLoop(__nimbusLiveHandles, __nimbusProcessExitPromise, Infinity, 0);
+      return false;
+    }
+  }
 }
 
 // Whether the program holds no live handle once a settling chain has had the
@@ -349,17 +380,25 @@ async function __nimbusHoldsNoHandle() {
 // (a timer firing or cleared, an operation settling, a server closed or
 // unref'd, stdin let go) calls __nimbusHandleReleased, and a release that
 // leaves none is the program's natural end.
-function __nimbusNaturalExit() {
+function __nimbusNaturalExit(__beforeExit) {
   return new Promise((resolve) => {
     let __checking = false;
     const __released = () => {
       if (__checking) return;
       __checking = true;
-      __nimbusHoldsNoHandle().then((__none) => {
+      __nimbusHoldsNoHandle().then(async (__none) => {
+        if (__none && __beforeExit && await __beforeExit()) __none = false;
         __checking = false;
         if (!__none) return;
         if (globalThis.__nimbusHandleReleased === __released) globalThis.__nimbusHandleReleased = undefined;
         resolve();
+      }).catch((error) => {
+        __checking = false;
+        __nimbusUncaughtException(error, false);
+        if (__nimbusProgramStopped) {
+          if (globalThis.__nimbusHandleReleased === __released) globalThis.__nimbusHandleReleased = undefined;
+          resolve();
+        } else __released();
       });
     };
     globalThis.__nimbusHandleReleased = __released;
@@ -738,6 +777,18 @@ ${STOP_REPLAY_SOURCE}
 // only other way a string becomes code in a Worker is \`new Function\` at
 // module evaluation, which compiled the whole closure before the program ran.
 ${runtime.code}
+
+// These getters retain only identity, not a run's filesystem and shims.
+function __nimbusInstallNodeNavigator(__version) {
+  let __languages;
+  const __languageList = () => __languages ??= Object.freeze([new Intl.DateTimeFormat().resolvedOptions().locale]);
+  Object.defineProperties(globalThis.navigator, {
+    userAgent: { get: () => 'Node.js/' + __version.slice(1).split('.')[0], enumerable: true, configurable: true },
+    platform: { get: () => 'Linux x86_64', enumerable: true, configurable: true },
+    language: { get: () => __languageList()[0], enumerable: true, configurable: true },
+    languages: { get: __languageList, enumerable: true, configurable: true },
+  });
+}
 `;
 }
 /**
@@ -858,6 +909,7 @@ ${RESIDENCY_MISS_REPORT}
     try { globalThis.process = __processMod; } catch {}
     try { globalThis.Buffer = __BufferMod; } catch {}
     try { globalThis.global = globalThis; } catch {}
+    __nimbusInstallNodeNavigator(__processMod.version);
     // undici's fetch (bundled by e.g. create-cloudflare) detaches
     // performance.markResourceTiming and calls it with no receiver,
     // which workerd rejects with "Illegal invocation" and crashes the
@@ -991,7 +1043,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
         if (__thrown instanceof __ProcessExit) throw __thrown;
         __nimbusUncaughtException(__thrown, ${entry.esModule});
       }
-      const __drain = await __nimbusRunEntrypointToExit(__entryResult, __entryBudgetMs);
+      const __drain = await __nimbusRunEntrypointToExit(__entryResult, __entryBudgetMs, __nimbusBeforeExitHasWork);
       __drainPasses = __drain.passes;
       if (__nimbusProcessExitCode !== null) exitCode = __nimbusProcessExitCode;
 
@@ -1056,7 +1108,9 @@ ${nodeProgramRuntime(sources, entry.esModule)}
       try {
         await __nimbusDrainVfsWrites(__supervisor);
       } catch (e) {
-        const trace = (e && e.stack) || (e && e.message) || String(e);
+        const message = (e && e.message) || String(e);
+        const stack = (e && e.stack) || message;
+        const trace = stack.includes(message) ? stack : message + "\\n" + stack;
         stderr += trace + "\\n";
         exitCode = 1;
         if (!captureOutput) await __nimbusReleaseStderr(trace + "\\n");
@@ -1086,7 +1140,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
     return __NimbusHostResponse.json({
       exitCode,
       stdout: (__supervisor && !captureOutput) ? "" : stdout,
-      stderr: (__supervisor && !captureOutput) ? "" : stderr,
+      stderr: (__supervisor && !captureOutput) ? __nimbusUnreportedStderr : stderr,
       // Unconditional, unlike diag: the supervisor stages these paths into
       // the next bundle for the same entry, so withholding them behind a
       // debug flag would leave the miss to repeat forever.
@@ -1204,7 +1258,7 @@ export function facetWasmImportsSource(wasmImports) {
 export async function generateLongRunningNodeCode(userCode, vfsState, opts, usesSqlite, sources, pacer) {
     const bundleSource = await facetVfsBundleSourceFor(vfsState, pacer);
     const entry = entryModule(userCode, opts.filename, opts.cwd || DEFAULT_HOME, opts.esModule, bundleSource, opts.preamble);
-    const safeArgs = JSON.stringify({
+    const args = {
         argv: opts.argv || [],
         nodeCommandLine: opts.node ?? null,
         env: opts.env || {},
@@ -1214,12 +1268,12 @@ export async function generateLongRunningNodeCode(userCode, vfsState, opts, uses
         stdin: opts.stdin || '',
         attachedTty: opts.attachedTty === true,
         cred: opts.cred,
-    });
+    };
     const runtime = createNodeFacetRuntime(sources, { ...bundleSource, stackEntry: entry.stackEntry });
     const source = moduleSource `
 import { DurableObject } from "cloudflare:workers";
 ${nodeProgramModule(bundleSource, runtime, usesSqlite, vfsState.stagedBindings, opts.wasmImports ?? [])}
-const __NIMBUS_ARGS = ${safeArgs};
+const __NIMBUS_ARGS = ${jsonDataLiteral(args)};
 
 // \`let\`, not \`const\`, so the parsed bundle can be dropped once the store has
 // adopted it. Holding both is the double materialisation: the module map's text
@@ -1462,7 +1516,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
         if (__nimbusProcessExitCode !== null) exitCode = __nimbusProcessExitCode;
         // Finished during its boot (\`--help\`, a CLI run that also serves):
         // the boot answers with its exit, as an explicit exit's does.
-        else if (!__nimbusHeldWithoutHandles) __nimbusEndedAtBoot = await __nimbusHoldsNoHandle();
+        else if (!__nimbusHeldWithoutHandles) __nimbusEndedAtBoot = await __nimbusHoldsNoHandle() && !await __nimbusBeforeExitHasWork();
       }
     } catch (e) {
       if (e instanceof __ProcessExit) {
@@ -1528,7 +1582,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
           finalCode = __nimbusEndedAtBoot ? 0 : Number(await __nimbusProcessExitPromise);
         } else {
           // process.exit, or the natural end: no live handle left.
-          finalCode = Number(await Promise.race([__nimbusProcessExitPromise, __nimbusNaturalExit().then(() => 0)]));
+          finalCode = Number(await Promise.race([__nimbusProcessExitPromise, __nimbusNaturalExit(__nimbusBeforeExitHasWork).then(() => 0)]));
         }
         if (__nimbusProcessExitCode === null) {
           finalCode = __nimbusExitAtEnd();
@@ -1600,13 +1654,7 @@ export class NimbusProcess extends DurableObject {
     // Its write log is kept in its own store (process-fs-journal.ts).
     globalThis.__nimbusFsJournalSql = ctx.storage.sql;
   }
-  // Pending while this isolate lives: the coordinator learns of its death
-  // (out of memory, out of CPU) by this call's rejection. Its resolver is
-  // kept on the object, so a collection never finds the promise unsettleable
-  // (which the runtime answers by rejecting it: "Promise will never complete").
-  held() {
-    return new Promise((resolve) => { (this.__nimbusHeld ??= []).push(resolve); });
-  }
+
   async startProcess(startArgs) {
     // Held so an HTTP-first entry (a restart re-entered by a routed request)
     // starts from the same payload startProcess would have used.
@@ -2082,6 +2130,35 @@ function describeBundleCells(cells, limit = 8) {
     return shown.map(([path, bytes]) => `${path} (${bytes} bytes)`).join(', ') + (rest > 0 ? `, +${rest} more` : '');
 }
 /**
+ * JSON data as the JavaScript expression that evaluates to it: its JSON text,
+ * except that an own `__proto__` key is written computed (`["__proto__"]`),
+ * since in an object literal `"__proto__":` sets the prototype instead of
+ * making the key. Data without one is its JSON text, byte for byte, so the
+ * counters that size generated sources from JSON encodings stay exact.
+ */
+function jsonDataLiteral(value) {
+    return holdsProtoKey(value) ? dataLiteral(JSON.parse(JSON.stringify(value))) : JSON.stringify(value);
+}
+function holdsProtoKey(value) {
+    if (value === null || typeof value !== 'object')
+        return false;
+    if (!Array.isArray(value) && Object.hasOwn(value, '__proto__'))
+        return true;
+    return Object.values(value).some(holdsProtoKey);
+}
+/** Parsed JSON data as `jsonDataLiteral` writes it. */
+function dataLiteral(data) {
+    if (data === null || typeof data !== 'object')
+        return JSON.stringify(data);
+    if (Array.isArray(data))
+        return `[${data.map(dataLiteral).join(',')}]`;
+    return `{${Object.entries(data).map(([key, item]) => `${key === '__proto__' ? '["__proto__"]' : JSON.stringify(key)}:${dataLiteral(item)}`).join(',')}}`;
+}
+/** Bytes a bundle key costs the generated source: its JSON text, computed when it is `__proto__`. */
+function _bundleKeyBytes(path) {
+    return _jsonEncodedBytes(path) + (path === '__proto__' ? 2 : 0);
+}
+/**
  * hardening-r5: emit a JS expression that revives binary cells from base64
  * and preserves permission-denial cells alongside ordinary strings.
  *
@@ -2091,6 +2168,8 @@ function describeBundleCells(cells, limit = 8) {
 function _serializeBundleForFacet(bundle) {
     const strCells = {};
     const binCells = {};
+    Object.setPrototypeOf(strCells, null);
+    Object.setPrototypeOf(binCells, null);
     const deniedPaths = [];
     for (const [k, v] of Object.entries(bundle)) {
         if (typeof v === 'string') {
@@ -2113,10 +2192,7 @@ function _serializeBundleForFacet(bundle) {
     }
     // The IIFE revives binary cells in-place. atob → binary string →
     // Uint8Array (Uint8Array.from(str, c=>c.charCodeAt(0))).
-    // Note: when binCells is empty (the overwhelming common case —
-    // source code is all text) the IIFE collapses to a JSON literal,
-    // costing only the IIFE wrapper bytes (~30) per facet boot.
-    return `(function(){const __b=${JSON.stringify(strCells)};const __x=${JSON.stringify(binCells)};const __d=${JSON.stringify(deniedPaths)};for(const __k in __x){__b[__k]=Uint8Array.from(atob(__x[__k]),__c=>__c.charCodeAt(0));}for(const __k of __d){__b[__k]={error:"EACCES"};}return __b;})()`;
+    return `(function(){const __b=${jsonDataLiteral(strCells)};Object.setPrototypeOf(__b,null);const __x=${jsonDataLiteral(binCells)};const __d=${JSON.stringify(deniedPaths)};for(const __k in __x){__b[__k]=Uint8Array.from(atob(__x[__k]),__c=>__c.charCodeAt(0));}for(const __k of __d){__b[__k]={error:"EACCES"};}return __b;})()`;
 }
 const FACET_VFS_MODULE_PREFIX = '__nimbus_vfs_bundle_';
 const FACET_VFS_MODULE_SOURCE_MARGIN = 1024;
@@ -2166,10 +2242,10 @@ const _FACET_MODULE_ENVELOPE_BYTES = _encodedSourceBytes(_facetBundleModuleSourc
  */
 function _facetBundleCellBytes(path, cell) {
     if (typeof cell === 'string') {
-        return _jsonEncodedBytes(path) + 1 + _jsonEncodedBytes(cell);
+        return _bundleKeyBytes(path) + 1 + _jsonEncodedBytes(cell);
     }
     if (cell instanceof Uint8Array) {
-        return _jsonEncodedBytes(path) + 1 + 4 * Math.ceil(cell.byteLength / 3) + 2;
+        return _bundleKeyBytes(path) + 1 + 4 * Math.ceil(cell.byteLength / 3) + 2;
     }
     // A denial cell rides in the path array, which carries no key.
     return _jsonEncodedBytes(path);
@@ -2242,6 +2318,7 @@ export async function buildFacetVfsBundleSource(bundle, forceSideModules = false
     // build), so each is taken as its module is written and the map is never
     // held twice. Otherwise the caller's bundle is left as it was.
     const data = consume ? bundle : {};
+    Object.setPrototypeOf(data, null);
     for (const path of Object.keys(bundle)) {
         const cell = bundle[path];
         const emit = emits?.get(path);
@@ -2333,6 +2410,7 @@ async function serializeFacetVfsData(bundle, forceSideModules, pacer, consume) {
     const imports = [];
     const aliases = [];
     let chunk = {};
+    Object.setPrototypeOf(chunk, null);
     let chunkPaths = [];
     let estimatedBytes = 0;
     // A chunk becomes its side module the moment it is full, so the cells it
@@ -2357,6 +2435,7 @@ async function serializeFacetVfsData(bundle, forceSideModules, pacer, consume) {
             for (const path of chunkPaths)
                 delete bundle[path];
         chunk = {};
+        Object.setPrototypeOf(chunk, null);
         chunkPaths = [];
         estimatedBytes = 0;
         // Each side module is an independent serialization of its own cells, so
@@ -2378,7 +2457,7 @@ async function serializeFacetVfsData(bundle, forceSideModules, pacer, consume) {
         chunkPaths.push(path);
     }
     await flushChunk();
-    const expression = `(function(__parts){const __out={};for(const __part of __parts){` +
+    const expression = `(function(__parts){const __out=Object.create(null);for(const __part of __parts){` +
         `for(const [__k,__v] of Object.entries(__part)){const __prev=__out[__k];` +
         `if(__prev===undefined){__out[__k]=__v;}` +
         `else if(typeof __prev==="string"&&typeof __v==="string"){__out[__k]=__prev+__v;}` +
@@ -3986,111 +4065,37 @@ export async function toolConfigRoots(vfs, cwd, scriptPath) {
  *
  */
 export async function buildPrefetchBundle(vfs, options) {
-    return await withPrefetchAllocation(async (admission) => {
-        const state = await gatherPrefetchBundle(vfs, options);
-        admission.fit(state.rawBytes ?? 0);
-        return state;
-    });
-}
-/**
- * What a launch's build and module map hold live at their peak, per byte of
- * the closure they are made from: its cells, their serialized source and the
- * map made from it. Measured live (after a collection) as a build starts
- * serializing and as its launch ends: a ~17 MiB closure's launch at 45 MB
- * over its base (2.5 times).
- */
-const PREFETCH_PEAK_PER_BYTE = 3;
-/** What work made from a closure of `closureBytes` holds at its peak, within the budget. */
-function prefetchNeed(closureBytes) {
-    return Math.min(SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, Math.max(1, Math.ceil(closureBytes * PREFETCH_PEAK_PER_BYTE)));
-}
-/**
- * An admission (Kinu #29): `bytes` of the supervisor's admitted transient
- * budget, by default the whole of it, taken at once, until its work has
- * measured the closure it is made from (`fit`), then PREFETCH_PEAK_PER_BYTE
- * times that at most, the rest given back to the work queued behind it. A
- * launch's build gathers its cells and serializes them under one, and keeps
- * it until its module map is generated (FacetManager.buildAdmissions), so no
- * other build runs beside them beyond what the budget holds. Nothing asks
- * the pool while holding one (two builds holding their cells while a third
- * queued for more deadlocked every one). One that has to wait for room
- * waits under `wait`: a launch whose process ends meanwhile is never admitted.
- */
-async function admitPrefetch(wait, bytes = SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES) {
-    const now = tryAdmitPrefetch(bytes);
-    if (now !== null)
-        return now;
-    const waiting = wait?.();
+    // This build accumulates raw VFS contents in the supervisor heap, and did it
+    // with nothing watching: the estimator read 9.4 MiB while these bytes were
+    // resetting the DO three times. Take the budget the enrichment passes are
+    // allowed to spend, so a build queues behind other heavy work instead of
+    // racing it, and attribute it so it lands under `prefetchBundleBytes` rather
+    // than in the unattributed remainder.
+    const lease = await acquireSupervisorAllocation(VFS_BUNDLE_MAX_BYTES);
+    prefetchBundleStart(VFS_BUNDLE_MAX_BYTES);
     try {
-        const lease = await acquireSupervisorAllocation(bytes, waiting?.signal);
-        // Room came as its launch ended: given back, not used.
-        if (waiting?.signal.aborted) {
-            lease.release();
-            throw waiting.signal.reason;
+        try {
+            return await _buildPrefetchBundle(vfs, options);
         }
-        return admissionOf(lease, bytes, true);
+        catch (error) {
+            // The modules earlier runs executed are what an earlier run got through
+            // without; they must not stop this one starting. A launch they (or
+            // their emits, which the walk does not count) take past the bound is
+            // built again with them as optional roots (RequiredModuleRoot.optional):
+            // each staged whole as far as the bound allows, and what does not fit
+            // loads late, as the run that learned it loaded it. Only a launch that
+            // overflows pays the second build.
+            const learned = options.executedModules ?? [];
+            if (!(error instanceof ClosureBoundExceededError) || learned.length === 0 || learned.every((root) => root.optional))
+                throw error;
+            console.warn(`[facet-manager] the modules earlier runs executed take ${options.scriptPath ?? 'the entry code'}'s map past `
+                + `its ${options.maxBundleBytes ?? VFS_BUNDLE_MAX_BYTES}-byte bound (${error.outcome.lastPath}); they are staged as optional roots, as far as the bound allows`);
+            return await _buildPrefetchBundle(vfs, { ...options, executedModules: learned.map((root) => ({ ...root, optional: true })) });
+        }
     }
     finally {
-        waiting?.dispose();
-    }
-}
-/** admitPrefetch's admission where there is room now, at once (no await); null where it would wait. */
-function tryAdmitPrefetch(bytes) {
-    const lease = tryAcquireSupervisorAllocation(bytes);
-    return lease === null ? null : admissionOf(lease, bytes, false);
-}
-function admissionOf(admitted, bytes, queued) {
-    // Attributed so it lands under `prefetchBundleBytes`, not the unattributed remainder.
-    let held = bytes;
-    prefetchBundleStart(held);
-    return {
-        queued,
-        fit(closureBytes) {
-            const need = prefetchNeed(closureBytes);
-            if (held === 0 || need >= held)
-                return;
-            admitted.shrinkTo(need);
-            prefetchBundleEnd(held - need);
-            held = need;
-        },
-        release() {
-            if (held === 0)
-                return;
-            prefetchBundleEnd(held);
-            held = 0;
-            admitted.release();
-        },
-    };
-}
-/** `work` under an admission of its own (admitPrefetch's `wait` and `bytes`), given back as it ends. */
-async function withPrefetchAllocation(work, wait, bytes) {
-    const admission = await admitPrefetch(wait, bytes);
-    try {
-        return await work(admission);
-    }
-    finally {
-        admission.release();
-    }
-}
-/** The launch's cells, gathered from `vfs` (callers hold withPrefetchAllocation's admission). */
-async function gatherPrefetchBundle(vfs, options) {
-    try {
-        return await _buildPrefetchBundle(vfs, options);
-    }
-    catch (error) {
-        // The modules earlier runs executed are what an earlier run got through
-        // without; they must not stop this one starting. A launch they (or
-        // their emits, which the walk does not count) take past the bound is
-        // built again with them as optional roots (RequiredModuleRoot.optional):
-        // each staged whole as far as the bound allows, and what does not fit
-        // loads late, as the run that learned it loaded it. Only a launch that
-        // overflows pays the second build.
-        const learned = options.executedModules ?? [];
-        if (!(error instanceof ClosureBoundExceededError) || learned.length === 0 || learned.every((root) => root.optional))
-            throw error;
-        console.warn(`[facet-manager] the modules earlier runs executed take ${options.scriptPath ?? 'the entry code'}'s map past `
-            + `its ${options.maxBundleBytes ?? VFS_BUNDLE_MAX_BYTES}-byte bound (${error.outcome.lastPath}); they are staged as optional roots, as far as the bound allows`);
-        return await _buildPrefetchBundle(vfs, { ...options, executedModules: learned.map((root) => ({ ...root, optional: true })) });
+        prefetchBundleEnd(VFS_BUNDLE_MAX_BYTES);
+        lease.release();
     }
 }
 async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE, moduleScope = 'node', observedReads, pacer, maxBundleBytes = VFS_BUNDLE_MAX_BYTES, learnedFor, executedModules, transformStore, conditions = [], stripTypes = null, preloads = [], entryEsModule, staticRefs, }) {
@@ -4122,6 +4127,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
         throw new ClosureBoundExceededError(prefetch);
     }
     const bundle = { ...prefetch.bundle };
+    Object.setPrototypeOf(bundle, null);
     const closurePaths = new Set(Object.keys(prefetch.bundle).filter((path) => !prefetch.speculative.has(path)));
     // Non-executable read evidence and other sessions' profiles may use only
     // the room the required executable graph leaves. Neither may displace it.
@@ -4343,6 +4349,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
     let rawTotal = 0;
     /** What the bound evicts, held until its images and reads are named below. */
     const evictedCells = {};
+    Object.setPrototypeOf(evictedCells, null);
     for (const [path, cell] of Object.entries(bundle)) {
         const bytes = codeOnly.has(path) ? 0 : _bundleCellRawBytes(cell);
         rawBytes.set(path, bytes);
@@ -4740,28 +4747,6 @@ export class FacetManager {
     /** Live sum of the entries' `bytes`, mirrored to the diag gauge on change. */
     prefetchCacheBytes = 0;
     /**
-     * Cache-miss builds in flight, by key and the revision they read: a launch
-     * of the same key waits for one, then takes its entry, or (one the cache
-     * did not retain) its own copy of the state, built at the revision `done`
-     * names (null: it built nothing of its own).
-     */
-    prefetchBuilds = new Map();
-    /**
-     * A launch's build admission (admitPrefetch), by pid, held from its build
-     * until its module map is generated: what it built is live until then, and
-     * no other build runs beside it beyond what the budget holds. Given back
-     * once the map is made (_generateUnderCeiling), when the launch builds
-     * again, and as its launch ends however it ends.
-     */
-    buildAdmissions = new Map();
-    _releaseBuildAdmission(pid) {
-        const admission = this.buildAdmissions.get(pid);
-        if (admission === undefined)
-            return;
-        this.buildAdmissions.delete(pid);
-        admission.release();
-    }
-    /**
      * What each command's runs learned for its next launch: the modules they
      * tried to execute and the files they read that the launch lacked, and the
      * runtime code they produced (launch-learning-store.ts). Kept in the
@@ -4828,6 +4813,7 @@ export class FacetManager {
         this.learnedServers = new LearnedServers(ctx.storage);
         this.env = parseFacetManagerEnv(env);
         this.processes = processes;
+        this.processes.setWorkObservation(() => hostActivity(ctx).acquire());
         this.portRegistry = portRegistry;
         this.hooks = hooks;
         // The workspace's network (FacetManagerHooks.network); a manager no workspace composed uses the isolate's.
@@ -4997,15 +4983,6 @@ export class FacetManager {
         this.ctx.waitUntil(handle.done
             .catch((e) => this._end(pid, { code: 1, cause: `${what} failed: ${errorMessage(e)}` }))
             .finally(() => this.releaseProcessRpcResources(pid)));
-    }
-    /**
-     * The actor hosting `workerKey` reports, from its own next incarnation,
-     * that the platform reset it under the process (fabric
-     * PeerHost.watchFired). True when it was this session's open process, which
-     * is now lost (ProcessHost.hostLost).
-     */
-    hostLost(workerKey, capability) {
-        return this.processHost.hostLost?.(workerKey, capability) ?? false;
     }
     /**
      * The platform reset the host of a running process (ProcessHostLost): the
@@ -5795,33 +5772,6 @@ export class FacetManager {
         }
         return refs;
     }
-    /**
-     * The cache's entry for `key` at `revision`, if one is held. An entry built
-     * at an older revision can never be SERVED again — the lookup requires an
-     * exact match — so from the first write after it was admitted it is
-     * retained garbage, held in the isolate that is measurably
-     * memory-constrained. Dropped here, before the build that replaces it
-     * allocates, so the stale filesystem graph and the new one never co-reside.
-     */
-    _takePrefetchEntry(key, revision, spec) {
-        let evictedStale = false;
-        for (const [staleKey, stale] of this.prefetchBundleCache) {
-            if (stale.revision === revision)
-                continue;
-            this.prefetchBundleCache.delete(staleKey);
-            this.prefetchCacheBytes -= stale.bytes;
-            evictedStale = true;
-        }
-        if (evictedStale)
-            setPrefetchCacheBytes(this.prefetchCacheBytes);
-        const cached = this.prefetchBundleCache.get(key);
-        if (!cached || cached.revision !== revision || spec.maxBundleBytes !== undefined)
-            return null;
-        // Refresh LRU recency.
-        this.prefetchBundleCache.delete(key);
-        this.prefetchBundleCache.set(key, cached);
-        return { ...cached.vfsState, cacheHit: true, cacheRetained: true };
-    }
     async _buildProcessBundle(entry, spec, pacer) {
         if (!this.vfs) {
             return { bundle: {}, reachableCount: 0, truncated: false };
@@ -5847,180 +5797,146 @@ export class FacetManager {
         // `-e` code is staged as an ES module or not, as the command line says.
         const evaluatedModule = spec.esModule === true && (spec.scriptPath === undefined || spec.scriptPath === '<eval>' || spec.scriptPath === '[stdin]');
         const key = `${profile}\x00${moduleScope}\x00${credKey}\x00${spec.cwd}\x00${spec.scriptPath ?? ''}\x00${_fnv1a(spec.entryCode)}\x00${JSON.stringify(launch)}\x00${evaluatedModule ? 1 : 0}`;
+        const revision = (await vfs.revision());
+        // An entry built at an older revision can never be SERVED again — the
+        // lookup below requires an exact match — so from the first write after it
+        // was admitted it is retained garbage, held in the isolate that is
+        // measurably memory-constrained. Dropped here, before the build that
+        // replaces it allocates, so the stale filesystem graph and the new one
+        // never co-reside.
+        let evictedStale = false;
+        for (const [staleKey, stale] of this.prefetchBundleCache) {
+            if (stale.revision === revision)
+                continue;
+            this.prefetchBundleCache.delete(staleKey);
+            this.prefetchCacheBytes -= stale.bytes;
+            evictedStale = true;
+        }
+        if (evictedStale)
+            setPrefetchCacheBytes(this.prefetchCacheBytes);
         // A report still being recorded may drop this entry: let it land first.
         await this.learning.settled();
-        let revision = await vfs.revision();
-        /** The entry for `key` at the filesystem's revision now, read again (after a wait). */
-        const takeCached = async () => {
-            await this.learning.settled();
-            revision = await vfs.revision();
-            return this._takePrefetchEntry(key, revision, spec);
+        const cached = this.prefetchBundleCache.get(key);
+        if (cached && cached.revision === revision && spec.maxBundleBytes === undefined) {
+            // Refresh LRU recency.
+            this.prefetchBundleCache.delete(key);
+            this.prefetchBundleCache.set(key, cached);
+            return { ...cached.vfsState, cacheHit: true, cacheRetained: true };
+        }
+        const readProfile = this.readProfile;
+        const offered = [];
+        const learnedFor = readProfile === null ? undefined : async (closure) => {
+            const roots = this._profileRoots(closure, spec.cwd);
+            if (roots.length === 0)
+                return [];
+            offered.push(...await readProfile.lookup(roots, this._packageIdentity(cred), READ_PROFILE_LAUNCH_BYTES));
+            return offered.map((entry) => entry.path);
         };
-        const cached = this._takePrefetchEntry(key, revision, spec);
-        if (cached)
-            return cached;
-        // A build of the same launch at the same revision is in flight: its entry is this launch's once it is admitted.
-        // (A rebuild under the ceiling takes no entry, and waits for none.)
-        const shared = spec.maxBundleBytes === undefined;
-        const inFlight = shared ? this.prefetchBuilds.get(key) : undefined;
-        if (inFlight !== undefined && inFlight.revision === revision) {
-            const built = await inFlight.done;
-            const published = await takeCached();
-            if (published)
-                return published;
-            // Not retained (past the entry bound): that build's own result, if the filesystem is still at the revision it read.
-            if (built !== null && built.revision === revision)
-                return { ...built.state, cacheHit: true, cacheRetained: false };
+        const learning = await this.learning.forLaunch(key);
+        // What earlier runs executed roots the required graph; what they read
+        // stays data. A module whose file is readable but was not in the map
+        // arrives as runtime code with its text; its imports are roots too, so a
+        // launch does not discover one static dependency per run (Nuxt/Vinext).
+        const executed = learning.executedModules.map((path) => ({ path }));
+        for (const code of learning.code.values()) {
+            if (code.kind === 'module' && !code.path.startsWith('data:')) {
+                executed.push({ path: code.path.replace(/^\/+/, ''), text: code.text });
+            }
         }
-        // Kinu #29: the cells are gathered and serialized under one admission,
-        // kept until the launch's module map is made, so cache-miss builds queue
-        // for room through all three. A launch admitted after a wait, while
-        // another of its key published, takes that entry. A build again for
-        // this launch (after a stop, under the ceiling) supersedes its last.
-        this._releaseBuildAdmission(entry.pid);
-        const buildUnder = async (admission) => {
-            const admitted = admission.queued ? await takeCached() : null;
-            if (admitted)
-                return { state: admitted, shared: null };
-            const readProfile = this.readProfile;
-            const offered = [];
-            const learnedFor = readProfile === null ? undefined : async (closure) => {
-                const roots = this._profileRoots(closure, spec.cwd);
-                if (roots.length === 0)
-                    return [];
-                offered.push(...await readProfile.lookup(roots, this._packageIdentity(cred), READ_PROFILE_LAUNCH_BYTES));
-                return offered.map((entry) => entry.path);
-            };
-            const learning = await this.learning.forLaunch(key);
-            // What earlier runs executed roots the required graph; what they read
-            // stays data. A module whose file is readable but was not in the map
-            // arrives as runtime code with its text; its imports are roots too, so a
-            // launch does not discover one static dependency per run (Nuxt/Vinext).
-            const executed = learning.executedModules.map((path) => ({ path }));
-            for (const code of learning.code.values()) {
-                if (code.kind === 'module' && !code.path.startsWith('data:')) {
-                    executed.push({ path: code.path.replace(/^\/+/, ''), text: code.text });
+        const vfsState = await buildPrefetchBundle(vfs, {
+            scriptPath: spec.scriptPath,
+            cwd: spec.cwd,
+            entryCode: spec.entryCode,
+            esbuild: this.esbuild ?? undefined,
+            staticRefs: (path) => this._staticRefsOf(vfs, cred, path, pacer),
+            bundleProfile: profile,
+            moduleScope,
+            observedReads: new Set(learning.dataReads),
+            pacer,
+            learnedFor,
+            // Under the ceiling's bound, what earlier runs executed is staged as far as it allows (_rebuildUnderCeiling).
+            executedModules: spec.maxBundleBytes === undefined ? executed : executed.map((root) => ({ ...root, optional: true })),
+            ...(spec.maxBundleBytes !== undefined ? { maxBundleBytes: spec.maxBundleBytes } : {}),
+            transformStore: this._transformStore(),
+            conditions: launch.conditions,
+            stripTypes: launch.stripTypes,
+            preloads: [
+                ...launch.require.map((specifier) => ({ preload: 'require', specifier })),
+                ...launch.import.map((specifier) => ({ preload: 'import', specifier })),
+            ],
+            ...(evaluatedModule ? { entryEsModule: entryEsModuleKey(spec.scriptPath, spec.cwd) } : {}),
+        });
+        if (offered.length > 0) {
+            const staged = [];
+            const unresolved = [];
+            for (const entry of offered) {
+                if (vfsState.bundle[entry.path] !== undefined) {
+                    staged.push(entry);
+                    continue;
                 }
+                // Not staged: over the budget, or nothing a regular file answers (then it is pruned).
+                const stat = await Promise.resolve(vfs.stat('/' + entry.path, { followSymlinks: false })).catch(() => null);
+                if (stat === null || stat.type !== 'file')
+                    unresolved.push(entry.path);
             }
-            const vfsState = await gatherPrefetchBundle(vfs, {
-                scriptPath: spec.scriptPath,
-                cwd: spec.cwd,
-                entryCode: spec.entryCode,
-                esbuild: this.esbuild ?? undefined,
-                staticRefs: (path) => this._staticRefsOf(vfs, cred, path, pacer),
-                bundleProfile: profile,
-                moduleScope,
-                observedReads: new Set(learning.dataReads),
-                pacer,
-                learnedFor,
-                // Under the ceiling's bound, what earlier runs executed is staged as far as it allows (_rebuildUnderCeiling).
-                executedModules: spec.maxBundleBytes === undefined ? executed : executed.map((root) => ({ ...root, optional: true })),
-                ...(spec.maxBundleBytes !== undefined ? { maxBundleBytes: spec.maxBundleBytes } : {}),
-                transformStore: this._transformStore(),
-                conditions: launch.conditions,
-                stripTypes: launch.stripTypes,
-                preloads: [
-                    ...launch.require.map((specifier) => ({ preload: 'require', specifier })),
-                    ...launch.import.map((specifier) => ({ preload: 'import', specifier })),
-                ],
-                ...(evaluatedModule ? { entryEsModule: entryEsModuleKey(spec.scriptPath, spec.cwd) } : {}),
-            });
-            admission.fit(vfsState.rawBytes ?? 0);
-            if (offered.length > 0) {
-                const staged = [];
-                const unresolved = [];
-                for (const entry of offered) {
-                    if (vfsState.bundle[entry.path] !== undefined) {
-                        staged.push(entry);
-                        continue;
-                    }
-                    // Not staged: over the budget, or nothing a regular file answers (then it is pruned).
-                    const stat = await Promise.resolve(vfs.stat('/' + entry.path, { followSymlinks: false })).catch(() => null);
-                    if (stat === null || stat.type !== 'file')
-                        unresolved.push(entry.path);
-                }
-                vfsState.profileOffer = { staged, unresolved };
-            }
-            vfsState.bundleKey = key;
-            vfsState.bundlePaths = Object.keys(vfsState.bundle);
-            // The only consumers of the raw cells past serialization are these two
-            // answers, so they come first; the serialization then consumes the cells.
-            vfsState.usesNodeSqlite = bundleUsesNodeSqlite(spec.entryCode, vfsState.bundle);
-            // What the closure names, and what the launched bin's own dependency tree
-            // installs: a binding is compiled with the launch or not at all, and a
-            // program can reach its owner by a specifier no walk follows.
-            const declaredWalk = { probes: 0 };
-            const declaredBindings = await stagedBindingsDeclaredBy(declaredBindingFs(vfs), spec.scriptPath, undefined, declaredWalk);
-            const namedBindings = stagedBindingsRequiredBy(Object.entries(vfsState.bundle));
-            const requiredBindings = new Set([...namedBindings, ...declaredBindings]);
-            vfsState.stagedBindings = STAGED_BINDINGS.filter((b) => requiredBindings.has(b.key)).map((b) => b.key);
-            if (this.debugEnabled) {
-                this.processes.appendOutput(entry.pid, 'stderr', `[nimbus-debug] staged bindings: [${vfsState.stagedBindings.join(', ')}]`
-                    + ` (named by the closure: [${namedBindings.join(', ')}]; declared by the bin's dependencies: [${declaredBindings.join(', ')}],`
-                    + ` ${declaredWalk.probes} filesystem questions)\n`);
-            }
-            // Wasm a package inlines as base64 in its own source (Vite's copy of
-            // es-module-lexer) never passes through the filesystem, so the closure
-            // walk's by-path records cannot name it; it is staged here instead.
-            // And so do the images earlier runs compiled from bytes in memory (learnedWasmImages).
-            const inlineWasm = this._stageWasmImageBytes([...findInlineWasmImages(vfsState.bundle), ...learnedWasmImages(learning.code)], entry.pid);
-            if (inlineWasm.length > 0)
-                vfsState.wasmImages = [...(vfsState.wasmImages ?? []), ...inlineWasm];
-            // And what the module map costs the facet's store, which adopts it at boot
-            // (N18): taken now, while the cells exist, for every launch this state
-            // serves (a cache hit included).
-            vfsState.moduleStorageBytes = moduleMapStorageBytes(vfsState.bundle, vfsState.codeOnly);
-            const serializeFrom = Date.now();
-            vfsState.bundleSource = await buildFacetVfsBundleSource(vfsState.bundle, vfsState.bundleSideModulesRequired, pacer, {
-                consume: true,
-                emits: vfsState.emits,
-                esm: vfsState.esm,
-                codeOnly: vfsState.codeOnly,
-                dataModules: vfsState.dataModules,
-                runtimeCode: await this._stagedRuntimeCode(learning, vfs, pacer, moduleScope, launch.stripTypes),
-            });
-            if (vfsState.phases)
-                vfsState.phases.serialize = Date.now() - serializeFrom;
-            vfsState.cacheHit = false;
-            // Serialization is total: bundleSource/serializedManifest/serializedMetadata
-            // carry every byte the raw cells and objects do, and both generators read
-            // only the serialized forms. Retaining both doubled what an entry costs
-            // for its whole lifetime — measured for pi at 502af77, per entry: raw
-            // 17,253,610 + source 18,262,324 + manifest 600,060 + metadata 3,841,244
-            // = 39,957,238 B, of which the raw halves are 21,694,914 B held to answer
-            // `usesNodeSqlite`. Dropping them is a pure release: nothing downstream of
-            // this method reads them, and a cache MISS rebuilds from the VFS rather
-            // than from anything discarded here.
-            //
-            // Released BEFORE admission so the byte bound prices what the entry costs
-            // from here on, not the peak it passed through on the way in.
-            releaseSerializedSources(vfsState);
-            vfsState.cacheRetained = this._admitPrefetchCacheEntry(key, revision, vfsState);
-            // What a launch of this key waiting for this build takes: a state of its own, released by it alone.
-            return { state: vfsState, shared: { state: { ...vfsState }, revision } };
-        };
-        const building = (async () => {
-            const admission = await admitPrefetch(() => this._launchEnds(entry.pid));
-            try {
-                const built = await buildUnder(admission);
-                this.buildAdmissions.set(entry.pid, admission);
-                return built;
-            }
-            catch (error) {
-                admission.release();
-                throw error;
-            }
-        })();
-        const inProgress = { revision, done: building.then((built) => built.shared, () => null) };
-        if (shared)
-            this.prefetchBuilds.set(key, inProgress);
-        try {
-            return (await building).state;
+            vfsState.profileOffer = { staged, unresolved };
         }
-        finally {
-            if (this.prefetchBuilds.get(key) === inProgress)
-                this.prefetchBuilds.delete(key);
+        vfsState.bundleKey = key;
+        vfsState.bundlePaths = Object.keys(vfsState.bundle);
+        // The only consumers of the raw cells past serialization are these two
+        // answers, so they come first; the serialization then consumes the cells.
+        vfsState.usesNodeSqlite = bundleUsesNodeSqlite(spec.entryCode, vfsState.bundle);
+        // What the closure names, and what the launched bin's own dependency tree
+        // installs: a binding is compiled with the launch or not at all, and a
+        // program can reach its owner by a specifier no walk follows.
+        const declaredWalk = { probes: 0 };
+        const declaredBindings = await stagedBindingsDeclaredBy(declaredBindingFs(vfs), spec.scriptPath, undefined, declaredWalk);
+        const namedBindings = stagedBindingsRequiredBy(Object.entries(vfsState.bundle));
+        const requiredBindings = new Set([...namedBindings, ...declaredBindings]);
+        vfsState.stagedBindings = STAGED_BINDINGS.filter((b) => requiredBindings.has(b.key)).map((b) => b.key);
+        if (this.debugEnabled) {
+            this.processes.appendOutput(entry.pid, 'stderr', `[nimbus-debug] staged bindings: [${vfsState.stagedBindings.join(', ')}]`
+                + ` (named by the closure: [${namedBindings.join(', ')}]; declared by the bin's dependencies: [${declaredBindings.join(', ')}],`
+                + ` ${declaredWalk.probes} filesystem questions)\n`);
         }
+        // Wasm a package inlines as base64 in its own source (Vite's copy of
+        // es-module-lexer) never passes through the filesystem, so the closure
+        // walk's by-path records cannot name it; it is staged here instead.
+        // And so do the images earlier runs compiled from bytes in memory (learnedWasmImages).
+        const inlineWasm = this._stageWasmImageBytes([...findInlineWasmImages(vfsState.bundle), ...learnedWasmImages(learning.code)], entry.pid);
+        if (inlineWasm.length > 0)
+            vfsState.wasmImages = [...(vfsState.wasmImages ?? []), ...inlineWasm];
+        // And what the module map costs the facet's store, which adopts it at boot
+        // (N18): taken now, while the cells exist, for every launch this state
+        // serves (a cache hit included).
+        vfsState.moduleStorageBytes = moduleMapStorageBytes(vfsState.bundle, vfsState.codeOnly);
+        const serializeFrom = Date.now();
+        vfsState.bundleSource = await buildFacetVfsBundleSource(vfsState.bundle, vfsState.bundleSideModulesRequired, pacer, {
+            consume: true,
+            emits: vfsState.emits,
+            esm: vfsState.esm,
+            codeOnly: vfsState.codeOnly,
+            dataModules: vfsState.dataModules,
+            runtimeCode: await this._stagedRuntimeCode(learning, vfs, pacer, moduleScope, launch.stripTypes),
+        });
+        if (vfsState.phases)
+            vfsState.phases.serialize = Date.now() - serializeFrom;
+        vfsState.cacheHit = false;
+        // Serialization is total: bundleSource/serializedManifest/serializedMetadata
+        // carry every byte the raw cells and objects do, and both generators read
+        // only the serialized forms. Retaining both doubled what an entry costs
+        // for its whole lifetime — measured for pi at 502af77, per entry: raw
+        // 17,253,610 + source 18,262,324 + manifest 600,060 + metadata 3,841,244
+        // = 39,957,238 B, of which the raw halves are 21,694,914 B held to answer
+        // `usesNodeSqlite`. Dropping them is a pure release: nothing downstream of
+        // this method reads them, and a cache MISS rebuilds from the VFS rather
+        // than from anything discarded here.
+        //
+        // Released BEFORE admission so the byte bound prices what the entry costs
+        // from here on, not the peak it passed through on the way in.
+        releaseSerializedSources(vfsState);
+        vfsState.cacheRetained = this._admitPrefetchCacheEntry(key, revision, vfsState);
+        return vfsState;
     }
     /**
      * Generate a launch's map under the ceiling on it. `others` is what the rest
@@ -6030,52 +5946,31 @@ export class FacetManager {
      * keeps and is made again from the state without the rest; one over it
      * with none of it throws ModuleMapOverCeilingError.
      */
-    _generateUnderCeiling(pid, vfsState, others, generate) {
-        // Under the launch's build admission, given back once the map is made;
-        // a state it did not build (a cache hit, another launch's build) under
-        // an admission of its own: a map is another copy of its closure. Its
-        // closure is known, so what the map needs is taken at once, with no
-        // await where there is room (a cache hit's path).
-        const built = this.buildAdmissions.get(pid);
-        if (built !== undefined)
-            this.buildAdmissions.delete(pid);
-        const need = built === undefined ? prefetchNeed(vfsState.rawBytes ?? 0) : 0;
-        const admission = built ?? tryAdmitPrefetch(need);
-        if (admission !== null)
-            return this._generateWithin(pid, vfsState, others, generate, admission);
-        return admitPrefetch(() => this._launchEnds(pid), need).then((queued) => this._generateWithin(pid, vfsState, others, generate, queued));
-    }
-    /** _generateUnderCeiling's work, under its admission, which it gives back as it ends. */
-    async _generateWithin(pid, vfsState, others, generate, admission) {
-        try {
-            const room = DYNAMIC_WORKER_CODE_LIMIT_BYTES - others;
-            let generated = await generate(vfsState);
-            const bytes = generatedMapTextBytes(generated, room);
-            if (bytes === null || bytes <= room)
-                return generated;
-            const source = vfsState.bundleSource;
-            const keys = source ? JSON.parse(source.runtimeCode) : [];
-            const learned = keys.map((key) => [key, mapTextBytes(generated.codeModules[runtimeCodeModuleName(key)] ?? '')]);
-            generated = undefined;
-            const { kept, over } = learnedRuntimeCodeWithin(bytes, learned, room);
-            if (over > 0 || !source)
-                throw new ModuleMapOverCeilingError(over);
-            const keep = new Set(kept);
-            const codeModules = { ...source.codeModules };
-            for (const key of keys)
-                if (!keep.has(key))
-                    delete codeModules[runtimeCodeModuleName(key)];
-            const message = `the module map is ${(bytes + others).toLocaleString('en-US')} bytes with the code earlier runs learned, over the `
-                + `${DYNAMIC_WORKER_CODE_LIMIT_BYTES.toLocaleString('en-US')}-byte ceiling: it stages ${kept.length} of its ${keys.length} pieces, `
-                + 'the first its runs needed, and runs the rest interpreted, as the run that learned them did';
-            console.warn(`[facet-manager] pid ${pid}: ${message}`);
-            if (this.debugEnabled)
-                this.processes.appendOutput(pid, 'stderr', `[nimbus-debug] ${message}\n`);
-            return await generate({ ...vfsState, bundleSource: { ...source, codeModules, runtimeCode: JSON.stringify(kept) } });
-        }
-        finally {
-            admission.release();
-        }
+    async _generateUnderCeiling(pid, vfsState, others, generate) {
+        const room = DYNAMIC_WORKER_CODE_LIMIT_BYTES - others;
+        let generated = await generate(vfsState);
+        const bytes = generatedMapTextBytes(generated, room);
+        if (bytes === null || bytes <= room)
+            return generated;
+        const source = vfsState.bundleSource;
+        const keys = source ? JSON.parse(source.runtimeCode) : [];
+        const learned = keys.map((key) => [key, mapTextBytes(generated.codeModules[runtimeCodeModuleName(key)] ?? '')]);
+        generated = undefined;
+        const { kept, over } = learnedRuntimeCodeWithin(bytes, learned, room);
+        if (over > 0 || !source)
+            throw new ModuleMapOverCeilingError(over);
+        const keep = new Set(kept);
+        const codeModules = { ...source.codeModules };
+        for (const key of keys)
+            if (!keep.has(key))
+                delete codeModules[runtimeCodeModuleName(key)];
+        const message = `the module map is ${(bytes + others).toLocaleString('en-US')} bytes with the code earlier runs learned, over the `
+            + `${DYNAMIC_WORKER_CODE_LIMIT_BYTES.toLocaleString('en-US')}-byte ceiling: it stages ${kept.length} of its ${keys.length} pieces, `
+            + 'the first its runs needed, and runs the rest interpreted, as the run that learned them did';
+        console.warn(`[facet-manager] pid ${pid}: ${message}`);
+        if (this.debugEnabled)
+            this.processes.appendOutput(pid, 'stderr', `[nimbus-debug] ${message}\n`);
+        return generate({ ...vfsState, bundleSource: { ...source, codeModules, runtimeCode: JSON.stringify(kept) } });
     }
     /**
      * Build a launch's state again when its map was over the ceiling with none
@@ -6099,11 +5994,12 @@ export class FacetManager {
     }
     /**
      * What a resident's map holds beside its generated text: its sidecars, its
-     * staged bindings' loader and trampoline, and the wasm images and bindings
-     * it reads by path at boot, at their size on the session's disk.
+     * staged bindings' loader and trampoline, the host's adapter around its
+     * worker.js, and the wasm images and bindings it reads by path at boot, at
+     * their size on the session's disk.
      */
     _residentMemberBytes(sqliteModules, staged, wasmImports) {
-        let bytes = moduleMemberBytes(sqliteModules);
+        let bytes = moduleMemberBytes(sqliteModules) + hostAdapterBytes('worker.js');
         if (staged)
             bytes += mapTextBytes(staged.loader) + staged.trampoline.byteLength;
         const fs = this.vfs?.as(CRED_KERNEL);
@@ -6697,7 +6593,6 @@ export class FacetManager {
         finally {
             this.launching.delete(entry.pid);
             opts.signal?.removeEventListener('abort', onShellAbort);
-            this._releaseBuildAdmission(entry.pid);
         }
     }
     /** The one-shot launches not yet running (their stage and its age) and the launches waiting for a turn. */
@@ -7305,16 +7200,11 @@ export class FacetManager {
         if (this.vfs)
             this.imageStore.ensureDir(entry.pid);
         const processVfs = this.filesystem ? this.filesystem.bind({ pid: entry.pid, cred: entry.cred }) : null;
-        // Gathered and serialized under one admission (Kinu #29).
-        const { vfsState, vfsBundle } = await withPrefetchAllocation(async (admission) => {
-            const gathered = processVfs
-                ? await gatherPrefetchBundle(processVfs, { cwd: opts.cwd, entryCode: '', esbuild: this.esbuild || undefined })
-                : { bundle: {}, reachableCount: 0, truncated: false };
-            admission.fit(gathered.rawBytes ?? 0);
-            const serialized = _serializeBundleForFacet(gathered.bundle);
-            assertStagedBundleFitsRpcPayload(serialized, gathered.bundle);
-            return { vfsState: gathered, vfsBundle: serialized };
-        }, () => this._launchEnds(entry.pid));
+        const vfsState = processVfs
+            ? await buildPrefetchBundle(processVfs, { cwd: opts.cwd, entryCode: '', esbuild: this.esbuild || undefined })
+            : { bundle: {}, reachableCount: 0, truncated: false };
+        const vfsBundle = _serializeBundleForFacet(vfsState.bundle);
+        assertStagedBundleFitsRpcPayload(vfsBundle, vfsState.bundle);
         const stageSpec = {
             mode,
             argv: opts.argv,
@@ -7477,8 +7367,10 @@ export class FacetManager {
      * fails or stops (to wait for stdin) is its launcher's to handle; a
      * lifetime resident's caller watches its lifecycle itself.
      */
-    _watchHost(pid, handle, diesAlone) {
+    _watchHost(pid, handle, diesAlone, controlFailure) {
         handle.done.catch((error) => {
+            if (controlFailure?.(error))
+                return;
             if (error instanceof ProcessHostLost) {
                 this._endByHostLoss(pid, error);
                 return;
@@ -7525,25 +7417,12 @@ export class FacetManager {
         throw new Error(`Nimbus: the launch for pid ${pid} was cancelled while it was suspended`);
     }
     /**
-     * What `pid`'s launch waits for room under (admitPrefetch): aborted once
-     * its process ends, so a launch killed or destroyed while it queued is
-     * never admitted after its end.
-     */
-    _launchEnds(pid) {
-        this._assertLaunchStillOwned(pid);
-        const ended = new AbortController();
-        const dispose = this.processes.subscribeTerminal(pid, () => {
-            ended.abort(new Error(`Nimbus: the launch for pid ${pid} was cancelled while it waited for room`));
-        });
-        return { signal: ended.signal, dispose };
-    }
-    /**
      * The one way this manager boots a resident process. Every resident process
      * is a facet of this session; there is nothing to place and nothing here
      * decides anything about where a program runs.
      */
     async _startResidentProcess(pid, spec) {
-        const { run, ...process } = spec;
+        const { run, controlFailure, ...process } = spec;
         const handle = await this.processFabric.startResidentProcess({
             pid,
             workerKey: `nimbus-process:${this.ctx.id.toString()}:${pid}${run !== undefined && run > 1 ? `:run${run}` : ''}`,
@@ -7555,7 +7434,7 @@ export class FacetManager {
             },
             ...process,
         });
-        this._watchHost(pid, handle, spec.startContract === 'boot' && spec.journaled === true);
+        this._watchHost(pid, handle, spec.startContract === 'boot' && spec.journaled === true, controlFailure);
         return handle;
     }
     /** A booted resident died without anyone ending it: it exits 1, its reason on its stderr. */
@@ -7603,6 +7482,7 @@ export class FacetManager {
         while (this.launchTasks.size > 0)
             await Promise.allSettled([...this.launchTasks]);
         await Promise.all(this.rowAmendments.values());
+        await this.processHost.close?.();
     }
     /** Allocate a free loopback port for a resident server facet (from 4096 up). */
     _allocateLoopbackPort() {
@@ -7783,12 +7663,15 @@ export class FacetManager {
      * never holds one): it runs as the row says, records the process it
      * restarts and why, and says so as its first line of output. The terminal
      * a session's restart disconnected is not where the user looks for it.
+     * A restored launch runs as its identity says, and restarts nothing.
      */
-    _spawnLaunchEntry(command, argv, cwd, invokerPid, redriven) {
-        if (redriven === undefined)
+    _spawnLaunchEntry(command, argv, cwd, invokerPid, who) {
+        if (who === undefined)
             return this.processes.spawn(command, argv, cwd, { parentPid: invokerPid });
-        const { restart, ...identity } = redriven;
-        const entry = this.processes.spawn(command, argv, cwd, { ...identity, restartedFrom: restart.from });
+        const { cred, execId, restart } = who;
+        const entry = this.processes.spawn(command, argv, cwd, { cred, execId, ...(restart === undefined ? {} : { restartedFrom: restart.from }) });
+        if (restart === undefined)
+            return entry;
         const why = restart.from.cause === 'exited'
             ? `"${command}" exited with code ${restart.from.exitCode}, so it was restarted (restart on-failure)`
             : restart.from.cause === 'host-reset'
@@ -7822,6 +7705,14 @@ export class FacetManager {
         await this.processes.reap();
         const command = opts.command || (opts.filename ? `node ${opts.filename}` : 'node <script>');
         const cwd = opts.cwd || '/home/user';
+        if (!this.processHost.imageDelivery.storageSharedWithSession) {
+            const argv = launchArgv({ execArgv: opts.node?.execArgv, argv: opts.argv });
+            const derived = await deriveResidentOwner(cwd, argv);
+            const declared = opts.port === undefined ? null : await readPortReservation(this.ctx, opts.port);
+            const owner = declared?.kind === 'explicit' && declared.owner !== null ? declared.owner : derived;
+            if (await readPortReservationByOwner(this.ctx, owner))
+                this.processHost.assertDurableStorage();
+        }
         let entry;
         if (opts.skipSpawn && opts.callerPid != null) {
             const found = this.processes.get(opts.callerPid);
@@ -7878,7 +7769,8 @@ export class FacetManager {
     _runResidentLaunch(entry, code, command, opts, attempt) {
         if (this.launchesClosed)
             return Promise.reject(new Error('Launch scheduler is closed'));
-        return this.trackLaunchTask(this._runResidentLaunchBody(entry, code, command, opts, attempt));
+        const preparing = this.processes.holdWork(entry.pid);
+        return this.trackLaunchTask(this._runResidentLaunchBody(entry, code, command, opts, attempt).finally(preparing));
     }
     async _runResidentLaunchBody(entry, code, command, opts, attempt) {
         const cwd = opts.cwd || '/home/user';
@@ -7997,7 +7889,6 @@ export class FacetManager {
         }
         finally {
             pacer.settle();
-            this._releaseBuildAdmission(entry.pid);
         }
         // Booted and running: its budget is whole again once it has run
         // RESIDENT_PROVEN_MS in this instance (_proveByUptime). If the process
@@ -8166,11 +8057,13 @@ export class FacetManager {
                     // pid the session has finished reporting on.
                     this._assertLaunchStillOwned(entry.pid);
                     try {
+                        const launchingNonce = stopNonce, launchingRun = rerun?.replay.run ?? 1;
                         handle = await this._startResidentProcess(entry.pid, {
                             // The attached-TTY runner holds startProcess open for the process's
                             // life; the server/watch runner returns once it is up.
                             startContract: opts.attachedTty ? 'lifetime' : 'boot',
                             journaled: true,
+                            ...(stoppable ? { controlFailure: (error) => stopRecordOf(error, launchingNonce, launchingRun) !== null } : {}),
                             startArgs: {
                                 pid: entry.pid, vfsCursor, dataPlan,
                                 ...(Object.keys(lazyReads).length > 0 ? { lazyReads } : {}),
@@ -8371,13 +8264,26 @@ export class FacetManager {
     }
     /** `attempt` is the journal's re-drive budget, and `redriven` who a re-drive runs as, as `_spawnResident` carries them. */
     async _spawnWorker(workerCode, command, cwd, opts, attempt, redriven) {
+        if (opts.identity !== undefined && (opts.invokerPid !== undefined || opts.resident !== undefined || opts.durable !== undefined)) {
+            throw new Error('Nimbus: spawnWorker identity is exclusive with invokerPid, resident and durable');
+        }
+        if (opts.bindings !== undefined && (opts.env !== undefined || opts.durable !== undefined || opts.resident !== undefined)) {
+            throw new Error('Nimbus: spawnWorker bindings go beside the default env: not with an explicit env, nor on a journalled launch, which could not re-mint them');
+        }
+        const identity = opts.identity === undefined ? undefined : {
+            cred: requireVfsCred(opts.identity.cred, 'spawnWorker identity'),
+            ...(opts.identity.execId === undefined ? {} : { execId: parseExecId(opts.identity.execId) }),
+        };
         if (opts.resident && !opts.durable) {
             opts = { ...opts, durable: { owner: await deriveResidentOwner(cwd, opts.resident.argv) } };
+        }
+        if (opts.durable && (!opts.resident || await readPortReservationByOwner(this.ctx, opts.durable.owner))) {
+            this.processHost.assertDurableStorage();
         }
         await this.processes.reap();
         // The table entry carries the same argv the identity is derived from, so
         // a runtime resident reads the same way through either path.
-        const entry = this._spawnLaunchEntry(command, opts.resident?.argv ?? [], cwd, opts.invokerPid, redriven);
+        const entry = this._spawnLaunchEntry(command, opts.identity?.argv.map(String) ?? opts.resident?.argv ?? [], cwd, opts.invokerPid, redriven ?? identity);
         // Stamp the process-table entry so /api/processes exposes this as a
         // long-running process.
         this.processes.setLongRunning(entry.pid);
@@ -8514,6 +8420,7 @@ export class FacetManager {
                         vfsWasmModules: opts.vfsWasmModules,
                         ...(opts.vfsTextModules !== undefined ? { vfsTextModules: opts.vfsTextModules } : {}),
                         ...(opts.env !== undefined || launchEnv !== undefined ? { env: { ...opts.env, ...launchEnv } } : {}),
+                        ...(opts.bindings !== undefined ? { bindings: opts.bindings } : {}),
                         ...(opts.globalOutbound !== undefined ? { globalOutbound: opts.globalOutbound } : {}),
                     },
                 },
@@ -8548,7 +8455,17 @@ export class FacetManager {
                 pid: entry.pid,
                 boot,
                 facet: {
-                    fetch: (request) => target.handleHttpRequest(request),
+                    // The caller reads the body across RPC; the process's work for it ends with the relay.
+                    fetch: async (request) => {
+                        const { scope, owner } = responseScope(request.signal);
+                        try {
+                            return relayRpcBody(await target.handleHttpRequest(request, scope), request.method, owner);
+                        }
+                        catch (error) {
+                            owner.fail();
+                            throw error;
+                        }
+                    },
                     connect: async (request) => {
                         if (typeof target.handleWebSocketRequest !== 'function') {
                             throw new Error(`Nimbus: worker pid ${entry.pid} accepts no WebSocket upgrades`);
