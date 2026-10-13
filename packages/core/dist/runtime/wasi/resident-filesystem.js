@@ -735,7 +735,12 @@ export function residentFilesystem(session, resident, delegation) {
     // session descriptor, any other by its file's name while that name has it.
     const bySessionReopen = Reflect.get(fs, 'reopen');
     if (typeof bySessionReopen === 'function') {
-        Reflect.set(fs, 'reopen', (target, flags, options) => {
+        Reflect.set(fs, 'reopen', (target, given, options) => {
+            // The holder's descriptors and the session's alike: each closed where it is (RuntimeOpenFlags.closing).
+            if (given.closing)
+                for (const id of given.closing)
+                    closeUnawaited(fs, id);
+            const flags = given.closing ? { ...given, closing: undefined } : given;
             const held = holder;
             if (!held?.owns(target.handle))
                 return Reflect.apply(bySessionReopen, fs, [target, flags, options]);

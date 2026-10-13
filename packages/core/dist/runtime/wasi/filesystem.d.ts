@@ -115,13 +115,15 @@ export declare function after<T, R>(value: Awaitable<T>, next: (value: T) => Awa
  */
 export declare class ResidentHolds {
     private readonly keep;
+    /** Holds waiting for an open to close them; past this many they are closed at once, with calls of their own. */
+    static readonly RELEASED_MAX = 64;
     private released;
     private readonly kept;
     constructor(keep?: number);
     /** The name a hold is kept by: what `open` was asked of, followed or not. */
     static keyOf(name: RuntimeFsPath, follow: boolean): string;
-    /** `hold`, its copy of the file `stat` describes let go. */
-    letGo(hold: SessionHold, stat: {
+    /** `hold`, its copy of the file `stat` describes let go, on `fs`. */
+    letGo(fs: RuntimeFsBridge | RuntimeSynchronousFs, hold: SessionHold, stat: {
         readonly dev: number;
         readonly ino: number;
     }): void;
@@ -131,8 +133,8 @@ export declare class ResidentHolds {
         readonly dev: number;
         readonly ino: number;
     } | undefined;
-    /** A hold no copy will take again. */
-    release(handle: number): void;
+    /** A hold no copy will take again, on `fs`: closed with the next open, or now once RELEASED_MAX wait. */
+    release(fs: RuntimeFsBridge | RuntimeSynchronousFs, handle: number): void;
     /** The holds the next open closes, handed out once. */
     take(): readonly number[] | undefined;
 }

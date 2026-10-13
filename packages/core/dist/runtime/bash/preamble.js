@@ -197,7 +197,7 @@ function closeFd(s, proc, fd) {
     if (e.kind === 'resident') {
         const held = closeResident(e);
         if (held !== null)
-            s.holds.letGo(held, e.stat);
+            s.holds.letGo(s.fs, held, e.stat);
     }
     if (e.kind === 'pipe') {
         bumpPipe(s, e, -1);

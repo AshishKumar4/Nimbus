@@ -1039,19 +1039,22 @@ class AwaitingProcessBridge {
     awaits(handleId) {
         return this.scope.handles.get(handleId)?.node.awaits === true;
     }
-    open(path, given, options) {
-        // Its own descriptors and the bridge's alike: each closed where it is.
-        if (given.closing) {
-            for (const id of given.closing) {
-                try {
-                    const closing = this.close(id);
-                    if (closing instanceof Promise)
-                        closing.catch(() => { });
-                }
-                catch { /* not the caller's to hear of */ }
+    /** RuntimeOpenFlags.closing, its own descriptors and the bridge's alike, each closed where it is: `given` without it. */
+    closing(given) {
+        if (!given.closing)
+            return given;
+        for (const id of given.closing) {
+            try {
+                const closing = this.close(id);
+                if (closing instanceof Promise)
+                    closing.catch(() => { });
             }
+            catch { /* not the caller's to hear of */ }
         }
-        const flags = given.closing ? { ...given, closing: undefined } : given;
+        return { ...given, closing: undefined };
+    }
+    open(path, given, options) {
+        const flags = this.closing(given);
         return this.either([path], () => this.bridge.open(path, flags, options), async () => {
             const opened = openFlags(flags);
             const flagged = flagsRefusal(opened);
@@ -1076,7 +1079,8 @@ class AwaitingProcessBridge {
             return this.descriptors.open(node, opened);
         });
     }
-    reopen(target, flags, options) {
+    reopen(target, given, options) {
+        const flags = this.closing(given);
         if (!this.awaits(target.handle))
             return this.bridge.reopen(target, flags, options);
         // A file on a mount that answers by awaiting: reopened there, by the name it is held by.

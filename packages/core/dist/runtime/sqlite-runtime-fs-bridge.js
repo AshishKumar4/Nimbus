@@ -941,6 +941,8 @@ export class SqliteRuntimeFsBridge {
         return located.path;
     }
     reopen(target, flags, options = {}) {
+        if (flags.closing)
+            this.closeQuietly(flags.closing);
         const named = this.descriptors.openedAs(target.handle);
         return called({ syscall: 'open', path: named }, () => {
             const normalizedFlags = openFlags(flags);
