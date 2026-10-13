@@ -73,8 +73,12 @@ try {
     assert.match(setup.stdout, /SETUP/, setup.stdout);
 
     const env = Object.fromEntries([['__proto__', 'resident-proto'], ['constructor', 'resident-constructor'], ['toString', 'resident-toString']]);
-    const native = spawnSync('node', ['-e', RESIDENT_ENV], { encoding: 'utf8', timeout: 20_000, env: { ...process.env, ...env } });
+    const nativeSetup = 'const env = JSON.parse(' + JSON.stringify(JSON.stringify(env)) + '); for (const key of Object.keys(env)) process.env[key] = env[key];\n';
+    const native = spawnSync('node', ['-e', nativeSetup + RESIDENT_ENV], { encoding: 'utf8', timeout: 20_000 });
     assert.equal(native.status, 0, native.stderr);
+    const nativeEnv = JSON.parse(native.stdout.trim().slice('RESIDENT_ENV '.length));
+    assert.deepEqual(nativeEnv.keys, Object.keys(env).sort(), 'the native control was given every environment name');
+    assert.deepEqual(nativeEnv.values, ['resident-proto', 'resident-constructor', 'resident-toString']);
     const box = Nimbus.connect({ endpoint: probe.base, token: probe.token }).sandbox('resident-env-' + crypto.randomUUID());
     try {
       await box.files.write('/home/user/named-env.js', RESIDENT_ENV);
