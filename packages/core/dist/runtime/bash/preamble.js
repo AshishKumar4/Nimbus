@@ -1,4 +1,4 @@
-import { after, closeResident, descriptorNamed, installAuthorityFilesystem, processGoneMessage, refusalErrno, shareResident } from '../wasi/filesystem.js';
+import { after, closeResident, closeUnawaited, descriptorNamed, installAuthorityFilesystem, processGoneMessage, refusalErrno, shareResident } from '../wasi/filesystem.js';
 import { supervisorFilesystem } from '../vfs-supervisor.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
 import { PIPE_CAPACITY, decideRead, decideWrite, heldExitSettles, holdsExit, pipeBudget, pipeLimitMessage, readerStops } from './pipe-rules.js';
@@ -191,9 +191,12 @@ function closeFd(s, proc, fd) {
     // The entry is gone either way: a release that fails has still released
     // this process's claim on it, and letting the rejection reach s.error
     // would report the whole slice as failed instead of its exit code.
-    const held = e.kind === 'authority' ? e.handle.id : e.kind === 'resident' ? closeResident(e) : null;
+    if (e.kind === 'authority')
+        queueSessionTask(s, Promise.resolve(s.fs.close(e.handle.id)).catch(() => { }));
+    // A copy's descriptor: nothing of the guest's waits on it, nor does the scheduler.
+    const held = e.kind === 'resident' ? closeResident(e) : null;
     if (held !== null)
-        queueSessionTask(s, Promise.resolve(s.fs.close(held)).catch(() => { }));
+        closeUnawaited(s.fs, held);
     if (e.kind === 'pipe') {
         bumpPipe(s, e, -1);
         const pp = s.pipes.get(e.pipeId);
