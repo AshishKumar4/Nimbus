@@ -86,7 +86,7 @@ const ETC = ['etc/profile', 'etc/hostname', 'etc/os-release'];
 
   // A file someone put at a launcher's name is never replaced, and runs as itself.
   kernel.unlink('usr/bin/toy');
-  kernel.writeFile('usr/bin/toy', '#!/bin/sh\necho mine\n', { mode: 0o755 });
+  kernel.writeFile('usr/bin/toy', 'echo mine\n', { mode: 0o755 });
   await ws.runtimes.installPackage(toyPackage(), { force: true });
   assert.equal(kernel.lstat('usr/bin/toy').type, 'file', 'a file at the launcher\'s name is left');
   assert.equal((await ws.exec('/usr/bin/toy')).stdout, 'mine\n', 'and runs as itself');
