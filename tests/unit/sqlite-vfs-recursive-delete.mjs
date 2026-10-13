@@ -280,7 +280,8 @@ function counters(rawVfs) {
 const CRED_USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 
 // A directory that cannot be read cannot have its entries removed — the check
-// the recursive walk got from readdir, which resolving from the index skips.
+// the recursive walk gets from readdir, which resolving from the index skips.
+// It stays, with what is in it, and its scandir refusal is the report's.
 {
   const { rawVfs, vfs } = openVfs();
   // Under a directory the user owns: removing a name from `/` is the kernel's.
@@ -293,30 +294,34 @@ const CRED_USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
   vfs.chown('w/u/opaque/secret.txt', 1000, 1000);
   vfs.chmod('w/u/opaque', 0o333);
 
+  const refusals = (report) => report.failures.map(({ path, error }) => [path, error.code, error.syscall]);
   const user = rawVfs.as(CRED_USER);
-  assert.throws(() => user.removeRecursive('w/u'), /EACCES/);
-  // Nothing was removed: the refusal precedes the first commit.
+  const refused = user.removeRecursive('w/u');
+  assert.deepEqual([refused.kept, refusals(refused)], [['w/u', 'w/u/opaque'], [['w/u/opaque', 'EACCES', 'scandir']]]);
   assert.equal(vfs.exists('w/u/opaque/secret.txt'), true);
-  assert.equal(vfs.exists('w/u/opaque'), true);
 
   vfs.chmod('w/u/opaque', 0o755);
-  assert.equal(user.removeRecursive('w/u'), 3);
+  assert.deepEqual(user.removeRecursive('w/u'), { removed: ['w/u'], kept: [], failures: [] });
 }
 
-// Removal still needs write+execute on the parent of the root.
+// Removal still needs write+execute on the parent of the root: the tree's
+// contents go, and the root stays with its refusal.
 {
   const { rawVfs, vfs } = openVfs();
   vfs.mkdir('locked/tree', { recursive: true });
   vfs.writeFile('locked/tree/file.txt', 'x');
+  vfs.chown('locked/tree', 1000, 1000);
   vfs.chmod('locked', 0o555);
   const user = rawVfs.as(CRED_USER);
-  assert.throws(() => user.removeRecursive('locked/tree'), /EACCES/);
-  assert.equal(vfs.exists('locked/tree/file.txt'), true);
+  const refused = user.removeRecursive('locked/tree');
+  assert.deepEqual(refused.failures.map(({ path, error }) => [path, error.code, error.syscall]), [['locked/tree', 'EACCES', 'rmdir']]);
+  assert.equal(vfs.exists('locked/tree'), true);
+  assert.equal(vfs.exists('locked/tree/file.txt'), false);
 }
 
-// An entry inside a directory the caller cannot write is refused, and the
-// group holding it commits nothing — the same refusal a per-entry unlink of
-// that path would have raised.
+// An entry inside a directory the caller cannot write is refused — the same
+// refusal a per-entry unlink of that path raises — and stays, with the
+// directories holding it; the rest goes.
 {
   const { rawVfs, vfs } = openVfs();
   vfs.mkdir('shared/mine', { recursive: true });
@@ -329,9 +334,10 @@ const CRED_USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 
   const user = rawVfs.as(CRED_USER);
   assert.throws(() => user.unlink('shared/theirs/file.txt'), /EACCES/);
-  assert.throws(() => user.removeRecursive('shared'), /EACCES/);
-  assert.equal(vfs.exists('shared/theirs/file.txt'), true);
-  assert.equal(vfs.exists('shared/mine'), true, 'the refused group commits nothing');
+  const refused = user.removeRecursive('shared');
+  assert.deepEqual(refused.failures.map(({ path, error }) => [path, error.code, error.syscall]), [['shared/theirs/file.txt', 'EACCES', 'unlink']]);
+  assert.deepEqual(refused.kept, ['shared', 'shared/theirs', 'shared/theirs/file.txt']);
+  assert.equal(vfs.exists('shared/mine'), false, 'the rest went');
 }
 
 // ── Faults ────────────────────────────────────────────────────────────────
