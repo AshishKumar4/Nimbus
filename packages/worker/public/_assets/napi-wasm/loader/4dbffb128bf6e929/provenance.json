@@ -2,7 +2,7 @@
   "artifact": "napi-wasm",
   "source": {
     "inputs": {
-      "packages/core/src/runtime/wasi/filesystem.ts": "21a8330baff318b204a763b655f8fd5d3840c52d3f130f1678d778bf2e7f5aca",
+      "packages/core/src/runtime/wasi/filesystem.ts": "438cc04d1e43db6ccd65215a175592e32529744a21adaedb853f19b8f487cfc5",
       "packages/core/src/vfs/dirent-type.ts": "f22395b71aab1211b5f55eded1f996c0719d05c1b838025fc3651ba61e253185",
       "packages/core/src/vfs/vfs-error.ts": "0470e3d0a43c1b5c6f8b5daebeea895f6858307203a72f984fde4d6e01041008",
       "packages/core/src/vfs/vfs.ts": "b5bea1dc45fbcd0fb3b758c559ed4a291de193509f6b70a3a7580bd9ee84515e",
@@ -164,8 +164,8 @@
   ],
   "outputs": {
     "napi-wasm-loader.mjs": {
-      "bytes": 212794,
-      "sha256": "5671074f9c6b301cdc99ef6e8c1ae0ca153882abf6ce89b8d829881740d39ff6"
+      "bytes": 213046,
+      "sha256": "ebafa2ddcaeae2533b8fab4d22ccfe29b39651fc85becdd6c3de4b4b77335390"
     },
     "wasi-trampoline.wasm": {
       "bytes": 1961,
