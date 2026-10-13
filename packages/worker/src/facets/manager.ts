@@ -2864,6 +2864,7 @@ export async function buildFacetVfsBundleSource(
   // build), so each is taken as its module is written and the map is never
   // held twice. Otherwise the caller's bundle is left as it was.
   const data: FacetVfsBundle = consume ? bundle : {};
+  Object.setPrototypeOf(data, null);
   for (const path of Object.keys(bundle)) {
     const cell = bundle[path];
     const emit = emits?.get(path);
@@ -2963,6 +2964,7 @@ async function serializeFacetVfsData(
   const imports: string[] = [];
   const aliases: string[] = [];
   let chunk: FacetVfsBundle = {};
+  Object.setPrototypeOf(chunk, null);
   let chunkPaths: string[] = [];
   let estimatedBytes = 0;
 
@@ -2985,6 +2987,7 @@ async function serializeFacetVfsData(
     aliases.push(alias);
     if (consume) for (const path of chunkPaths) delete bundle[path];
     chunk = {};
+    Object.setPrototypeOf(chunk, null);
     chunkPaths = [];
     estimatedBytes = 0;
     // Each side module is an independent serialization of its own cells, so
@@ -4680,6 +4683,7 @@ async function _buildPrefetchBundle(
     throw new ClosureBoundExceededError(prefetch);
   }
   const bundle: Record<string, string | Uint8Array> = { ...prefetch.bundle };
+  Object.setPrototypeOf(bundle, null);
   const closurePaths: ReadonlySet<string> = new Set(
     Object.keys(prefetch.bundle).filter((path) => !prefetch.speculative.has(path)),
   );
@@ -4903,6 +4907,7 @@ async function _buildPrefetchBundle(
   let rawTotal = 0;
   /** What the bound evicts, held until its images and reads are named below. */
   const evictedCells: Record<string, string | Uint8Array> = {};
+  Object.setPrototypeOf(evictedCells, null);
   for (const [path, cell] of Object.entries(bundle)) {
     const bytes = codeOnly.has(path) ? 0 : _bundleCellRawBytes(cell);
     rawBytes.set(path, bytes);
