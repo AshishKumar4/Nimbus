@@ -41,15 +41,17 @@ import {
 import { UnsupportedSyntax } from './unsupported.js';
 import { type ModuleRequest, programRequests } from './module-requests.js';
 import type { ModuleBindings } from '../runtime/esm-interop.js';
+import { type LateLinkHost, linkLateGraph } from '../runtime/esm-late-link.js';
 import { type InterpretedFrame, type StackUnit, stampStack, stackFrames } from './stack.js';
 
 export type { HostOps } from './host-ops.js';
 export { INTERPRETER_UNSUPPORTED, UnsupportedSyntax } from './unsupported.js';
 export { replLineBody } from './repl-line.js';
-// What a late module's import of a CommonJS module the launch did not stage
-// names (node-shims __nimbusCommonJsNames): Node's lexer runs on the
-// module's source before it runs, so the interpreter's runtime carries it.
+// What only a late graph needs, carried here, which every late graph loads:
+// the names Node's lexer finds in a CommonJS module the launch did not stage
+// (node-shims __nimbusCommonJsNames), and the late graph's link.
 export { cjsModuleExportNames } from '../runtime/cjs-module-exports.js';
+export { starConflicts } from '../runtime/esm-late-link.js';
 export type { ModuleCell } from './modules.js';
 export type { ModuleRequest } from './module-requests.js';
 
@@ -217,6 +219,11 @@ export function moduleRequests(path: string, text: string, javaScript = false, g
     }
   }
   return { requests: programRequests(program) };
+}
+
+/** esm-late-link.ts linkLateGraph, reading each module with moduleRequests. */
+export function linkLate(host: LateLinkHost, key: string, url: string): number[] {
+  return linkLateGraph(host, moduleRequests, key, url);
 }
 
 /** moduleRequests' answer. */
