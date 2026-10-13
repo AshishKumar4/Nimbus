@@ -3,17 +3,17 @@
   "source": {
     "inputs": {
       "../../scripts/artifact-inputs.mjs": "b0c9307e6f6f13bae05ccf99ab22cf7a715553b8c6f46dbbddfef0181a2f7115",
-      "build-bash.sh": "46cad66cd4093b422a6fafca2172fa054f186813acc60a90807dccd2f41f02aa",
+      "build-bash.sh": "df02884a023be271a95d42274e8405deff8c18f42170414a1c50b200b35ac434",
       "build-in-bwrap.sh": "9ec80a0befc8bb87371427e91ef2ccc49ad55eabc2e579450b362fb38068411a",
       "cross.cache": "94c70967b023de4687815ec71d3ffdd8394491ed97f3fe52a2a37bd4935325a3",
       "include/termios.h": "64b72d467d29829d60ac3c69af7846a0ba6ec1de3d7e137b3ca275c7c0928ae4",
       "inputs.mjs": "b8f5f6ff4874a9873834b4b7f47169516c09fcaac715882756968eb95eecd321",
-      "nimbus-proc.c": "a4d2d2d446b491655451f8206aa72c2190667c93f4a5a45dd28618dd2a5c8b66",
-      "nimbus-proc.h": "ef125318b7bd1f4764edf3638f58ff28e37b03ace141c3ec5a803078d1846890",
+      "nimbus-proc.c": "0e12961c2f89e2649097a1123c333d83dcab80d6a3f47895ad51d44c06da43d4",
+      "nimbus-proc.h": "69583a295ee76bdefe8bc2d9c6198d4ebd8387a0acfeb40d3576c0b472a872f0",
       "patches/procenv.patch": "e520402c028fa8271f5d4f94871e7bedc09e9d18df56c53b73153d7e265c04af"
     }
   },
   "outputs": {
-    "bash.async.wasm": "551ab446699205ca8b412bda2f69301078b99e870243b8bdf793eade62612b5e"
+    "bash.async.wasm": "8ac4bf873ffdd375131b21ab023c7a900ce158c449bcf973e8e030291f9f7d71"
   }
 }
