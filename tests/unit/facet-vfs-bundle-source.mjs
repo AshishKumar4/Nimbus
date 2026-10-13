@@ -20,6 +20,10 @@ function evaluateBundleSource(source) {
   return new Function(...aliases, `return (${source.expression});`)(...parts);
 }
 
+// A bundle comes back as a dictionary: no prototype, so a file named like one
+// of Object.prototype's members is only a file.
+const dictionary = (entries) => Object.assign(Object.create(null), entries);
+
 // Data cells: a program's code files are modules of their own, not bundle
 // data (the last case below).
 const oversizedSource = 'const value = "escaped";\n'.repeat(900_000);
@@ -43,7 +47,7 @@ for (const [name, moduleSource] of Object.entries(source.modules)) {
 }
 assert.deepEqual(
   evaluateBundleSource(source),
-  bundle,
+  dictionary(bundle),
   'side modules reconstruct every text, binary, denial, and transitive leaf cell exactly',
 );
 
@@ -72,16 +76,16 @@ const inline = await buildFacetVfsBundleSource({
   'usr/local/lib/node_modules/shebang-command/package.json': '{"main":"index.js"}',
 });
 assert.deepEqual(inline.modules, {}, 'small bundles keep the existing inline path');
-assert.deepEqual(evaluateBundleSource(inline), {
+assert.deepEqual(evaluateBundleSource(inline), dictionary({
   'usr/local/lib/node_modules/shebang-command/package.json': '{"main":"index.js"}',
-});
+}));
 
 // A code cell is its own `{ cjs }` module and not data as well — the store
 // takes its file from that module — so it costs the map its text once.
 {
   const code = 'module.exports = () => "node";';
   const split = await buildFacetVfsBundleSource({ 'usr/local/lib/node_modules/shebang-command/index.js': code });
-  assert.deepEqual(evaluateBundleSource(split), {}, 'no data copy of a code cell');
+  assert.deepEqual(evaluateBundleSource(split), dictionary({}), 'no data copy of a code cell');
   const texts = Object.values(split.codeModules);
   assert.equal(texts.length, 1);
   assert.equal(texts[0].split(code).length, 2, 'the module carries the cell once');
@@ -145,7 +149,7 @@ for (const [label, char, bytesPerChar] of [
     'an inline binary bundle really is within the ceiling (the counter does not under-count)',
   );
   assert.deepEqual(
-    evaluateBundleSource(fits), { [BIN]: justUnder },
+    evaluateBundleSource(fits), dictionary({ [BIN]: justUnder }),
     'a ceiling-sized binary cell still revives byte-for-byte',
   );
 
