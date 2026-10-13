@@ -11,7 +11,7 @@
 import { andThen, isPromise, type Awaitable } from '../vfs/vfs.js';
 import type { VfsOpenDescription } from '../vfs/sqlite-vfs.js';
 import { fsError } from '../vfs/vfs-error.js';
-import type { RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat } from './os-contracts.js';
+import type { RuntimeFileHandle, RuntimeOpenedFile, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat } from './os-contracts.js';
 
 /** The engine's description of a file on SQLite (SqliteVFS.openDescription): every answer at once. */
 export type EngineDescription = VfsOpenDescription & { readonly mounted?: undefined; readonly awaits?: undefined };
@@ -234,6 +234,15 @@ export class Descriptors {
     const handle: RuntimeFileHandle = { id: this.scope.nextId++, path, flags: Object.freeze(flags), position: 0, closed: false };
     this.scope.handles.set(handle.id, { handle, node, refs: 1 });
     return { ...handle };
+  }
+
+  /**
+   * issue's descriptor as an open answers it: with its file's stat, fstat's
+   * then, its revision `revision` where the open went by a name (the name's).
+   */
+  open(node: Description, flags: RuntimeFileHandle['flags'], path = node.path(), revision?: number): Awaitable<RuntimeOpenedFile> {
+    const handle = this.issue(node, flags, path);
+    return andThen(this.fstat(handle.id), (stat) => ({ ...handle, stat: revision === undefined ? stat : { ...stat, revision } }));
   }
 
   /** The description `id` names, to answer from (EBADF when none, or once the scope is closed). */

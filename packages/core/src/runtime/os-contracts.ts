@@ -170,14 +170,19 @@ export interface RuntimeFileHandle {
   closed: boolean;
 }
 
+/** What an open answers: the new descriptor, and its file's stat as the open found it (the opened name's revision, where it opened one). */
+export interface RuntimeOpenedFile extends RuntimeFileHandle {
+  stat: RuntimeVfsStat;
+}
+
 export type Awaitable<T> = T | Promise<T>;
 
 /**
  * The file a reopen opens again (RuntimeFsBridge.reopen): the one an open
- * descriptor of the process is on, or one known by its identity (a copy the
- * process read it into, which holds no descriptor).
+ * descriptor of the process is on. The descriptor is the capability: a file
+ * is never reopened by its number alone, which any process can name.
  */
-export type RuntimeReopenTarget = { readonly handle: number } | { readonly dev: number; readonly ino: number };
+export type RuntimeReopenTarget = { readonly handle: number };
 export type RuntimeFsPath = string
   | { readonly directory: number; readonly path: string; readonly beneath?: boolean }
   | { readonly root: string; readonly path: string; readonly beneath: true };
@@ -380,7 +385,7 @@ export interface RuntimeFsBridge {
   /** Change stored ownership, optionally operating on a symlink itself. */
   chown(path: RuntimeFsPath, uid: number, gid: number, options?: { followSymlinks?: boolean }): Awaitable<VfsMutationReceipt>;
   /** `options.mutationOwner`: the lease an open for writing presents. */
-  open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner): Awaitable<RuntimeFileHandle>;
+  open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner): Awaitable<RuntimeOpenedFile>;
   /**
    * A new open file description of the file `target` is (Linux's open of
    * /proc/self/fd/N): the file, never a name, so one renamed or unlinked
@@ -388,7 +393,7 @@ export interface RuntimeFsBridge {
    * against the file as it is now; O_TRUNC and O_APPEND honored. A file on
    * a mount is held there by its name: ESTALE once that name holds another.
    */
-  reopen(target: RuntimeReopenTarget, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner): Awaitable<RuntimeFileHandle>;
+  reopen(target: RuntimeReopenTarget, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner): Awaitable<RuntimeOpenedFile>;
   read(handleId: number, offset: number | null, length: number): Awaitable<Uint8Array>;
   write(handleId: number, offset: number | null, bytes: Uint8Array): Awaitable<number>;
   close(handleId: number): Awaitable<void>;

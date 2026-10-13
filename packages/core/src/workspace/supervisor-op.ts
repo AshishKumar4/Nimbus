@@ -31,11 +31,8 @@ const OpenOptions = z.object({
   truncate: z.boolean().optional(), followSymlinks: z.boolean().optional(), expectedRevision: z.number().int().nonnegative().optional(),
   mode: z.number().int().nonnegative().max(0o7777).optional(),
 });
-/** What a reopen opens again (RuntimeReopenTarget): an open descriptor's file, or a file by its identity. */
-const ReopenTarget = z.union([
-  z.object({ handle: z.number().int() }),
-  z.object({ dev: z.number().int().nonnegative(), ino: z.number().int().positive() }),
-]);
+/** What a reopen opens again (RuntimeReopenTarget): an open descriptor's file. */
+const ReopenTarget = z.object({ handle: z.number().int() });
 /** A byte offset into a file: what a ranged write may start at. */
 const RangeOffset = z.number().int().nonnegative();
 /** What `deliverOnce` carries besides the mutation's args; its op is checked against the delivered set. */
