@@ -5,6 +5,19 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Added: real git 2.53, built for WASI, in the default runtime catalog.
+  `git` runs it for every command, option or repository format the
+  built-in git does not fully implement (for example `log --graph`,
+  `commit` with paths, `branch -d`'s merged check, `push -u`, `rebase`,
+  `stash`, a SHA-256 repository); `status`, `add`, `diff`, a plain `commit`
+  and `checkout` stay on the built-in git. Remote helpers (`git-remote-http`
+  and `git-remote-https`), hooks and aliases work through the session's one
+  child-process broker. On a host whose engine cannot suspend WebAssembly
+  (Node 22), a git child process is refused by name instead.
+- Fixed: a program's end no longer waits on the session to answer the
+  release of its read lease and of the subtrees it held; only its last
+  writes are waited for.
+
 ## 2026-10-12: platform 0.8.2, core 0.18.0, fabric 0.13.0, worker 0.16.0, loom 0.2.5, sdk 0.13.1, react 0.3.1, cli 0.2.5, create-nimbus-app 0.2.2
 
 - Fixed (security): the shell's Ctrl+P palette put file names into the page as
