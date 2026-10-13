@@ -317,11 +317,11 @@ export class NimbusProcess extends Base {
       if (admission[0] !== capability) return new Response('Not found', { status: 404 });
       if (admission[1] !== this.#incarnation) return this.#replaced();
     }
-    // The request is this call's own: its signal becomes the one its host can abort.
-    Object.defineProperty(request, 'signal', { value: this.#request(id, ended, abandoned).signal });
-    this.#admitted.add(request);
+    // Its signal natively the one its host can abort: a guest's clone, copy or fetch of it keeps it.
+    const admitted = new Request(request, { signal: this.#request(id, ended, abandoned).signal });
+    this.#admitted.add(admitted);
     const failed = (error) => new Response(error instanceof Error ? error.message : String(error), { status: 500, headers: { [${failed}]: capability } });
-    try { return Promise.resolve(super.handleHttpRequest(request)).catch(failed); }
+    try { return Promise.resolve(super.handleHttpRequest(admitted)).catch(failed); }
     catch (error) { return failed(error); }
   }
   abandonHttpRequest(key, id) {
