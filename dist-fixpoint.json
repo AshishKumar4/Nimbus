@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "fbc51ab8975c219900700b4d1faa0a9c72f5bd71af42e0924c61892e013730e4",
+  "fingerprint": "069d9cfcc2c0bd94ac05ad070bb7f0a93d5520edc8fcf245823ddd709b63e158",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2367,9 +2367,9 @@
     "packages/worker/dist/git/worktree/refname.d.ts": "5548a01262293fb7e98eb25d7eb369396cf1fe78ce4e6aba8a6bbe0c0aa60a71",
     "packages/worker/dist/git/worktree/refname.d.ts.map": "1cfca73289924fb50a5531c6d455222052ec400c61744319e884a34bab36163e",
     "packages/worker/dist/git/worktree/refname.js": "4a8f893aade839290995198032b1d9232e21094e469b7e065365bcf180aae128",
-    "packages/worker/dist/git/worktree/repo.d.ts": "14ec3dd41c7b5bc4aed4318b900c0e973e407e9bf7d969a3d0b95cbb9d3e0e33",
-    "packages/worker/dist/git/worktree/repo.d.ts.map": "2af2e7b32db8da83831ceb89f99baf9141160bb81d19b3e5a0134d01bc34e779",
-    "packages/worker/dist/git/worktree/repo.js": "0417b43d3bf829d26feff7e4f89d76d70eb95a0d784ffd9ec10ec805eb0cf253",
+    "packages/worker/dist/git/worktree/repo.d.ts": "9d54a854b2f2e4331fd3ecfdcd6212aa06d2afd5b5d7a7a21ad4d6f2c74c1cfd",
+    "packages/worker/dist/git/worktree/repo.d.ts.map": "cea1a9fdb0c379229673b7ed3b2a45da300d258963b4e33c56dc3ceeef80c575",
+    "packages/worker/dist/git/worktree/repo.js": "521ed581c277fa2bbc4d6e8fb9859dec0713b2ed8e5878a4878d6805de1e1e8c",
     "packages/worker/dist/git/worktree/status.d.ts": "9fd97cbba0d25043c695f9c93459e2cbbe71a93bc900ff46639a5e43055234f8",
     "packages/worker/dist/git/worktree/status.d.ts.map": "b6a0e2f5d1338a45b0f128eae0695ba7fa2057290d4e2178bf039596d58b309e",
     "packages/worker/dist/git/worktree/status.js": "6ae9c89c5e22e5a38e6599e3922506fc5fdfa72824cec92e323af94c75357e7e",
@@ -3093,7 +3093,7 @@
     "packages/worker/src/git/worktree/excludes.ts": "8c2dee053cc754422ffe213e292f5b362f572a9e82eed07acd460e6a0329abf8",
     "packages/worker/src/git/worktree/pairs.ts": "0a03baf004642df13ab1695b545405bff06ce2f5e8c4ab15bfccd4e3c2fb62e0",
     "packages/worker/src/git/worktree/refname.ts": "cf41e2b23278146be5f87595c1b065fb71a76d207016e4e252ac793bcb6a288c",
-    "packages/worker/src/git/worktree/repo.ts": "919b64851a1aea8144ebe3c5b68c220f45b91d1d58ad5d1c4d93be86466a07e4",
+    "packages/worker/src/git/worktree/repo.ts": "57aa3619460c7b82a5c2ffbf4c041c0c61336a4ef4fd984276261c609f294632",
     "packages/worker/src/git/worktree/status.ts": "63cf75f983fb94ef262490e455db055ea161b40836b4bf488692db83809655a5",
     "packages/worker/src/git/worktree/tree.ts": "b5b44dc14f3eaddeee0f0cfa75e6743196b8a59217f4e86423a7ef2a996276fd",
     "packages/worker/src/git/worktree/verify-path.ts": "98867f333caf836dcea8dcfecb99815e9069137c4702dcb45fa6250db5360534",

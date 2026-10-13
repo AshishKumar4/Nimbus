@@ -150,7 +150,7 @@ export declare class WorktreeRepo {
      * read here.
      */
     sparseMatcher(): Promise<SparseMatcher | null>;
-    /** core.protectHFS and core.protectNTFS, the repository's over the global, else git's defaults (verify-path.ts). */
+    /** core.protectHFS and core.protectNTFS as the command's config reads them (-c, the repository's, the global), else git's defaults (verify-path.ts). */
     pathProtection(): Promise<PathProtection>;
     /** The worktree with the settings its comparisons take. */
     worktree(): Promise<Worktree>;
