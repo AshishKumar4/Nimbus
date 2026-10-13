@@ -17,9 +17,11 @@ published independently in the `@nimbus-sh` npm scope.
   loses that connection's changes, and two connections or processes writing
   one file each write their own image, the last close winning. A write the
   program may not make fails `close()` as `fs.writeFileSync` would; one the
-  session refuses later is reported as any refused write is. A SQLite-only
-  program's first write in a fresh isolate costs about 6 ms CPU, the fs
-  write path's one-time compile; writes are no longer lost. A Node `fs`
+  session refuses later is reported as any refused write is. node:sqlite is
+  powered by `fs`, so a close that writes costs what writing that file
+  through `fs` costs: about 0.85 ms CPU per database a close writes, and a
+  SQLite-only program's first write in a fresh isolate about 6 ms more, the
+  fs write path's one-time compile. Writes are no longer lost. A Node `fs`
   write over an existing file no longer reads the file it replaces (about
   0.4 ms less per MiB).
 - Fixed: a module a Node program writes and then imports links as Node's
