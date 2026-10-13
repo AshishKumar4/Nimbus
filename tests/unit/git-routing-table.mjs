@@ -271,6 +271,35 @@ for (const [dir, dirMode, config] of [['.git/hooks', 0o311, null], ['githooks', 
   user.unlink('home/user/repo/repo-hooks/pre-commit');
 }
 
+// The format guard keeps its verdict on a repository while its config is
+// unchanged, and tells a change by what names the content: .git/config a
+// link switched between two files of one revision (written in one
+// transaction) is a change. The second sets extensions.worktreeConfig, and
+// its config.worktree names hooks with a pre-commit: the commit is real
+// git's, not run by the built-in on the first file's verdict (RearHerring).
+{
+  const config = user.readFileString('home/user/repo/.git/config');
+  vfs.withTransaction(() => {
+    user.writeFile('home/user/repo/.git/config-plain', config);
+    user.writeFile('home/user/repo/.git/config-worktree', config + '[extensions]\n\tworktreeConfig = true\n');
+  });
+  assert.equal(user.revision('home/user/repo/.git/config-plain'), user.revision('home/user/repo/.git/config-worktree'), 'the two files are of one revision');
+  user.writeFile('home/user/repo/.git/config.worktree', '[core]\n\thooksPath = wt-hooks\n');
+  user.mkdir('home/user/repo/wt-hooks', { recursive: true });
+  user.writeFile('home/user/repo/wt-hooks/pre-commit', '#!/bin/sh\nexit 1\n');
+  user.chmod('home/user/repo/wt-hooks/pre-commit', 0o755);
+  user.unlink('home/user/repo/.git/config');
+  user.symlink('config-plain', 'home/user/repo/.git/config');
+  assert.equal(await engine(['commit', '-m', 'x', '--allow-empty']), 'built-in', 'the plain config: no worktree layer, no hook');
+  user.unlink('home/user/repo/.git/config');
+  user.symlink('config-worktree', 'home/user/repo/.git/config');
+  const who = await engine(['commit', '-m', 'x', '--allow-empty']);
+  if (who !== 'real git') wrong.push(`real git expected once .git/config links to a file setting extensions.worktreeConfig: git commit (${who})`);
+  user.unlink('home/user/repo/.git/config');
+  user.writeFile('home/user/repo/.git/config', config);
+  for (const path of ['.git/config-plain', '.git/config-worktree', '.git/config.worktree', 'wt-hooks/pre-commit']) user.unlink(`home/user/repo/${path}`);
+}
+
 // The refresh a status or diff writes back runs post-index-change in git:
 // where that hook is executable the built-in keeps none, as git keeps none
 // it cannot lock, and so runs no hook. Without it, the refresh is kept.
