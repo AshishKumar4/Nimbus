@@ -173,6 +173,10 @@ if (RUNTIME === 'cpython') {
   const { checkPythonInputs } = await import('../wasm/python/inputs.mjs');
   await checkPythonInputs();
 }
+if (RUNTIME === 'bash') {
+  const { checkBashInputs } = await import('../wasm/bash/inputs.mjs');
+  await checkBashInputs();
+}
 if (spec.auxiliary_bins) {
   const list = new URL(`${spec.local_base}/${spec.auxiliary_bins}`, import.meta.url);
   const names = readFileSync(list, 'utf8').split('\n').filter(Boolean);
