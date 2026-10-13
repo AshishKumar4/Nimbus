@@ -62,7 +62,7 @@ export function* walkBeneath(root, path, follow, cred, handedOver) {
                 throw fsError('ENOENT', 'path', path);
             if (searched.type !== 'directory')
                 throw fsError('ENOTDIR', 'path', path);
-            if (!modeAllows(searched, 1, cred))
+            if (!modeAllows({ ...searched, type: 'directory' }, 1, cred))
                 throw fsError('EACCES', 'path', path);
         }
         if (segment === '.')
