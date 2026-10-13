@@ -780,7 +780,7 @@ export const NIMBUS_RUNTIME_ABIS: Readonly<Record<string, RuntimePackageAbi>> = 
  * catalog is shared by every deployment reading it and a workspace binds only
  * the build its preamble was written against.
  */
-export const BASH_RUNNER = 'bash-runner@3';
+export const BASH_RUNNER = 'bash-runner@4';
 
 /** Name-to-name package rewrite at the resolver/installer boundary. */
 export interface PackageSwapEntry {

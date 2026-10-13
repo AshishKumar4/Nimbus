@@ -75,7 +75,7 @@ const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harnes
     manifest.push({ path, content: `blobs/bash-5.2.37-4/${path}`, sha256: createHash('sha256').update(bytes).digest('hex'), size: bytes.length });
   }
   fs.writeFile(`${root}/manifest.json`, JSON.stringify({
-    name: 'bash', version: '5.2.37-3', license: 'GPL-3.0-or-later', wasi_namespace: 'wasi_snapshot_preview1',
+    name: 'bash', version: '5.2.37-4', license: 'GPL-3.0-or-later', wasi_namespace: 'wasi_snapshot_preview1',
     files: manifest, entrypoints: [{ binName: 'bash', runner: BASH_RUNNER, args: [] }],
   }));
 }

@@ -8,6 +8,7 @@ import { join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { ARENA_SIZE, CaptureStore } from '../../packages/core/src/runtime/bash/capture-store.ts';
 
 if (process.versions.bun) {
   const child = spawnSync('node', [fileURLToPath(import.meta.url)], { stdio: 'inherit' });
@@ -23,6 +24,10 @@ const bash = new WebAssembly.Module(bashBytes);
 const busybox = new WebAssembly.Module(busyboxBytes);
 const imports = (mod) => WebAssembly.Module.imports(mod).map(({ module, name }) => `${module}.${name}`);
 assert(imports(bash).includes('nimbus_proc.capture_cwd'));
+// bash-runner@4: every jmp_buf copy and saved-copy end reaches the runner, and the stack's bounds and pointer are exported.
+assert(imports(bash).includes('nimbus_procenv.copy') && imports(bash).includes('nimbus_procenv.drop'));
+const exported = Object.fromEntries(WebAssembly.Module.exports(bash).map(({ name, kind }) => [name, kind]));
+for (const name of ['__stack_pointer', '__data_end', '__heap_base']) assert.equal(exported[name], 'global', name);
 assert(imports(busybox).includes('nimbus_proc.startup_cwd'));
 assert(imports(busybox).includes('nimbus_proc.stat_metadata'));
 assert(imports(busybox).includes('wasi_snapshot_preview1.fd_sync'));
@@ -72,31 +77,31 @@ function nativeImports(getInstance, cwd, observed) {
 async function runBash() {
   const observed = { cwd: 0, captured: [], metadata: 0, denials: 0 };
   let instance;
-  let reason = null, rewind = false, result = 0, code = null, nextSlot = 0;
-  let pending, captureEnv, jumpEnv, jumpValue;
-  const slots = new Map();
-  const free = [];
-  const mainSize = 8 << 20, slotSize = 256 << 10;
-  let base, slot0;
-  const view = () => new DataView(instance.exports.memory.buffer);
-  const header = (ptr, size) => { view().setUint32(ptr, ptr + 8, true); view().setUint32(ptr + 4, ptr + size, true); };
+  let reason = null, rewind = false, result = 0, code = null;
+  let pending, captureEnv, captureSp, jumpEnv, jumpValue;
+  // The runner's own capture store, driven as the runner drives it (bash/preamble.ts).
+  let store;
+  const stats = { mainHi: 0, captureBytesHi: 0, captureCompactions: 0, captureLiveHi: 0 };
+  const memory = () => instance.exports.memory;
+  const sp = () => instance.exports.__stack_pointer.value;
+  const unwind = () => instance.exports.asyncify_start_unwind(store.unwindAt(memory(), stats, 1));
   const nimbus = nativeImports(() => instance, '/work', observed);
   Object.assign(nimbus, {
     getppid: () => 1, getpgid: () => 17, setpgid: () => -52, tcgetpgrp: () => -59, tcsetpgrp: () => -59,
     setjmp(env) {
       if (rewind) { instance.exports.asyncify_stop_rewind(); rewind = false; return; }
-      if (slots.has(env)) free.push(slots.get(env));
-      const index = free.length > 1 ? free.shift() : nextSlot < 32 ? nextSlot++ : free.shift();
-      assert.notEqual(index, undefined);
-      slots.set(env, index); view().setInt32(env, index, true); view().setInt32(env + 4, 0, true);
-      captureEnv = env; reason = 'capture'; header(slot0 + index * slotSize, slotSize);
-      instance.exports.asyncify_start_unwind(slot0 + index * slotSize);
+      store.sweep(memory(), sp()); store.setting(env);
+      captureEnv = env; captureSp = sp(); reason = 'capture'; unwind();
     },
     longjmp(env, value) {
-      jumpEnv = env; jumpValue = value; reason = 'jump'; header(base, mainSize);
-      instance.exports.asyncify_start_unwind(base);
+      store.sweep(memory(), sp());
+      jumpEnv = env; jumpValue = value; reason = 'jump'; unwind();
     },
   });
+  const procenv = {
+    copy(dst, src) { store.sweep(memory(), sp()); store.copied(memory(), dst, src); },
+    drop(at) { store.sweep(memory(), sp()); store.dropped(at); },
+  };
   // These commands deliberately stay in Bash. Unexpected process operations
   // fail this binary proof instead of claiming success for an untested syscall.
   for (const { module, name } of WebAssembly.Module.imports(bash)) {
@@ -114,7 +119,7 @@ async function runBash() {
     table[name] = (...args) => {
       if (rewind) { instance.exports.asyncify_stop_rewind(); rewind = false; return result; }
       reason = 'io'; pending = () => original(...args); delayed.set(name, (delayed.get(name) || 0) + 1);
-      header(base, mainSize); instance.exports.asyncify_start_unwind(base); return 0;
+      unwind(); return 0;
     };
   }
   const originalWrite = table.fd_write;
@@ -130,9 +135,10 @@ async function runBash() {
   const env = { getuid: () => 123, geteuid: () => 123, getgid: () => 456, getegid: () => 456,
     getpid: () => 17, setuid: () => -1, setgid: () => -1, umask: () => 0o022,
     gethostname: () => -1, dlopen: () => 0, dlsym: () => 0, dlclose: () => -1, dlerror: () => 0 };
-  instance = new WebAssembly.Instance(bash, { wasi_snapshot_preview1: table, nimbus_proc: nimbus, env });
-  base = instance.exports.memory.buffer.byteLength; slot0 = base + mainSize;
-  instance.exports.memory.grow((mainSize + 32 * slotSize) / 65536);
+  instance = new WebAssembly.Instance(bash, { wasi_snapshot_preview1: table, nimbus_proc: nimbus, nimbus_procenv: procenv, env });
+  const base = memory().buffer.byteLength;
+  memory().grow(ARENA_SIZE / 65536);
+  store = new CaptureStore({ low: instance.exports.__data_end.value, high: instance.exports.__heap_base.value }, base, ARENA_SIZE);
   let initial = true;
   for (let steps = 0; code === null; steps++) {
     assert(steps < 5000, 'binary scheduler did not terminate');
@@ -140,14 +146,13 @@ async function runBash() {
     catch (error) { if (error === exit) break; throw error; }
     assert(reason, 'guest returned without exit or unwind');
     instance.exports.asyncify_stop_unwind();
-    let rewindAt = base;
+    let rewindAt = store.top;
     if (reason === 'capture') {
-      rewindAt = slot0 + view().getInt32(captureEnv, true) * slotSize;
-      view().setUint32(captureEnv + 8, view().getUint32(rewindAt, true), true);
+      rewindAt = store.take(memory(), captureEnv, captureSp, stats, 1);
     } else if (reason === 'jump') {
-      rewindAt = slot0 + view().getInt32(jumpEnv, true) * slotSize;
-      view().setUint32(rewindAt, view().getUint32(jumpEnv + 8, true), true);
-      view().setInt32(jumpEnv + 4, jumpValue, true);
+      const target = store.jump(memory(), jumpEnv, jumpValue, 1);
+      instance.exports.__stack_pointer.value = target.sp;
+      rewindAt = target.at;
     } else {
       await new Promise((resolve) => setTimeout(resolve, 1)); result = pending();
     }
