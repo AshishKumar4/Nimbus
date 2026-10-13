@@ -256,6 +256,15 @@ for (const [when, landed] of [['after', true], ['partial', false]]) {
   await install('/m/t');
   assert.equal(root.exists('tmp/.npm-stage-4-setgid/g/root-group'), true, "a file only root's group may remove is left");
   root.removeRecursive('tmp/.npm-stage-4-setgid');
+  // Nor is any other group's: nogroup (65534) is a group like any other.
+  vfs.as(OTHER).mkdir('tmp/.npm-stage-5-nogroup', { recursive: true });
+  root.mkdir('tmp/.npm-stage-5-nogroup/g', { mode: 0o770 });
+  root.chown('tmp/.npm-stage-5-nogroup/g', 0, 65534);
+  root.chmod('tmp/.npm-stage-5-nogroup/g', 0o770);
+  root.writeFile('tmp/.npm-stage-5-nogroup/g/nogroup', 'root', { mode: 0o660 });
+  await install('/m/t');
+  assert.equal(root.exists('tmp/.npm-stage-5-nogroup/g/nogroup'), true, "a file only nogroup may remove is left");
+  root.removeRecursive('tmp/.npm-stage-5-nogroup');
   console.log('  the sweep removes each stage as the user who owns it');
 }
 
