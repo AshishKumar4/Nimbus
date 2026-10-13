@@ -10,8 +10,11 @@
 //     launches at once peak at one build's heap plus the admitted budget;
 //   - launches of one key at once build once; a build queued across a write
 //     builds the new generation; a failure gives its admission back;
-//   - three ~17 MiB builds sharing the pool all finish, and one that fails
-//     or is killed while it holds its admission stops none of the others.
+//   - three ~17 MiB builds sharing the pool all finish, peaking at one
+//     build's heap plus the admitted budget, and one that fails or is
+//     killed while it holds its admission stops none of the others;
+//   - two launches of one ~17 MiB program at once (past the cache's entry
+//     bound) build once.
 import assert from 'node:assert/strict';
 import { mock } from 'bun:test';
 import { heapStats } from 'bun:jsc';
@@ -31,12 +34,17 @@ const reservations = [];
 let peak = 0;
 let failSerialization = false;
 // What a ~17 MiB build does as it starts serializing its cell (the three-caller
-// cases below): fail, or be killed, while it holds its admission.
+// cases below): fail, or be killed, while it holds its admission. And how many
+// times each was serialized.
 const onBigCell = new Map();
+const bigSerialized = new Map();
 mock.module(cellsPath, () => ({ ...cells,
   wrapCommonJsCell(...args) {
     const big = /PREFETCH_BIG_EVIDENCE ([\w-]+)/.exec(args[0].slice(0, 64))?.[1];
-    if (big !== undefined) onBigCell.get(big)?.();
+    if (big !== undefined) {
+      bigSerialized.set(big, (bigSerialized.get(big) ?? 0) + 1);
+      onBigCell.get(big)?.();
+    }
     if (args[0].includes('PREFETCH_LEASE_EVIDENCE')) {
       reservations.push(readSupervisorAllocationBudget().current);
       peak = Math.max(peak, heapStats().heapSize);
@@ -139,10 +147,34 @@ try {
   let peakHeld = 0;
   const watchHeld = setInterval(() => { peakHeld = Math.max(peakHeld, readSupervisorAllocationBudget().current); }, 1);
   try {
-    const settled = await settleWithin(three(['a', 'b', 'c']), 120_000);
+    // One ~17 MiB build alone, for its bytes; then three at once peak at one build's plus the admitted budget.
+    const alone = await peakOver(() => manager.exec("require('./cell.js')", bigTree('alone')));
+    assert.equal(alone.result.exitCode, 0, alone.result.stderr);
+    const bigThree = await peakOver(() => settleWithin(three(['a', 'b', 'c']), 120_000));
+    const settled = bigThree.result;
     assert.notEqual(settled, 'deadlocked', 'three ~17 MiB builds sharing the pool all finish');
     assert.deepEqual(settled.map((r) => r.status === 'fulfilled' ? r.value.exitCode : String(r.reason)), [0, 0, 0]);
     assert.ok(peakHeld <= readSupervisorAllocationBudget().capacity, `the pool's ceiling held (${peakHeld})`);
+    const capacity = readSupervisorAllocationBudget().capacity;
+    console.log('PREFETCH_SERIALIZATION_BIG ' + JSON.stringify({ singlePeakOverBase: alone.over, peakOverBase: bigThree.over, capacity }));
+    assert.ok(bigThree.over <= alone.over + capacity,
+      `three ~17 MiB builds at once peak at one build's bytes plus the admitted budget (${bigThree.over} > ${alone.over} + ${capacity})`);
+    drained();
+
+    // Two launches of one ~17 MiB program at once: past the cache's entry
+    // bound, nothing is published for the second to take, so it takes the
+    // first's own result (the filesystem still at the revision it read): one
+    // build, both run.
+    const same = bigTree('same');
+    const pair = await settleWithin([manager.exec("require('./cell.js')", same), manager.exec("require('./cell.js')", same)], 120_000);
+    assert.notEqual(pair, 'deadlocked', 'two same-key ~17 MiB launches finish');
+    assert.deepEqual(pair.map((r) => r.status === 'fulfilled' ? r.value.exitCode : String(r.reason)), [0, 0]);
+    assert.equal(bigSerialized.get('same'), 1, `two same-key ~17 MiB launches at once build once (${bigSerialized.get('same')} builds)`);
+    drained();
+    // A write between them: the next launch builds the new generation.
+    fs.writeFile('home/user/big-same/cell.js', `// PREFETCH_BIG_EVIDENCE same\nmodule.exports = "${'y'.repeat(BIG)}".length;\n`, { mode: 0o644 });
+    assert.equal((await manager.exec("require('./cell.js')", same)).exitCode, 0);
+    assert.equal(bigSerialized.get('same'), 2, 'a launch after a write builds the new generation');
     drained();
 
     // A build that fails while it holds its admission gives it back, and the
