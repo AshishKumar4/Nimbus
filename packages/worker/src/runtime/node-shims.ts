@@ -11230,9 +11230,10 @@ function __nimbusModuleNotFound(request, parent) {
 // resolving from \`fromDir\` (its file's directory). \`required\` false is an
 // ES module's, which only its static imports call.
 function __nimbusMakeRequire(module, fromDir = __nimbusModuleDir(module), required = true) {
-  // An interpreted ES module's static import passes its marker (esm-interop.ts ESM_LOAD_HELPER).
+  // An interpreted ES module's static import passes its marker and its type attribute (esm-interop.ts ESM_LOAD_HELPER).
   const require = function require(id) {
-    return __requireFrom(id, fromDir, module, required && !(arguments.length > 1 && arguments[1] === ${JSON.stringify(ESM_STATIC_IMPORT)}));
+    if (arguments.length > 1 && arguments[1] === ${JSON.stringify(ESM_STATIC_IMPORT)}) return __requireFrom(id, fromDir, module, false, arguments[2]);
+    return __requireFrom(id, fromDir, module, required);
   };
   function resolve(request, options) {
     if (typeof request !== "string") throw invalidArgType("request", "string", request);
@@ -12776,9 +12777,11 @@ function __esmLoad(resolution) {
         url: resolution.url,
         resolve: (id) => globalThis.__nimbusImportMetaResolve(id, resolution.url),
       } });
-      const requireData = (id) => {
+      // Its static imports (ESM_LOAD_HELPER: the specifier, the marker, the type attribute).
+      const requireData = (id, marker, type = null) => {
         const resolved = __esmResolver.resolveSync(String(id), resolution.url);
         __esmResolver.assertLoadable(resolved);
+        __esmResolver.validateAttributes(resolved.url, resolved.format, type === null ? {} : { type });
         if (resolved.format === "builtin") return builtins[resolved.builtin];
         if (resolved.path) return __loadModule(resolved.path.replace(/^\\/+/, ""), resolved.url, false);
         throw nodeError(Error, "ERR_REQUIRE_ASYNC_MODULE", "Synchronous nested data-module import is unsupported");
@@ -12870,6 +12873,7 @@ function __nimbusEsmLinkPlan(key, url, seen, order, checked, late) {
   const known = bindings !== undefined && bindings.imports.length === statics;
   const reads = known ? Array.from(bindings.imports, (names) => Array.from(names)) : [];
   const starsAt = known ? Array.from(bindings.stars) : [];
+  const types = known ? Array.from(bindings.types) : [];
   const node = { known, exports: known ? Array.from(bindings.exports) : [], stars: [], imports: [] };
   late.modules.set(url, node);
   let at = -1;
@@ -12879,7 +12883,10 @@ function __nimbusEsmLinkPlan(key, url, seen, order, checked, late) {
     let resolution;
     try {
       resolution = __esmResolver.resolveSync(request.specifier, url);
-      __nimbusAssertLoadable(resolution, undefined);
+      // Checked against its attributes as the interpreter's static import checks it (__requireFrom).
+      const type = known ? types[at] : null;
+      __nimbusAssertLoadable(resolution, type ?? undefined);
+      if (known) __esmResolver.validateAttributes(resolution.url, resolution.format, type === null ? {} : { type });
     } catch (error) {
       // As the interpreter's static import refuses it: before the importer runs, with no arrow of its.
       __nimbusDecorated.add(error);
@@ -13480,8 +13487,9 @@ function __nimbusEsmJobCached(path) {
   const state = id === -1 ? 0 : __nimbusEsmRecords[id]?.state ?? 0;
   return state === __ESM_DONE || state === __ESM_ADOPTED;
 }
-// Module.prototype.require from \`parent\`, its requests resolving from \`fromDir\`.
-function __requireFrom(id, fromDir, parent, required = true) {
+// Module.prototype.require from \`parent\`, its requests resolving from \`fromDir\`;
+// not \`required\`, an interpreted ES module's static import, with its \`type\` attribute.
+function __requireFrom(id, fromDir, parent, required = true, type = null) {
   if (typeof id !== "string") throw invalidArgType("id", "string", id);
   if (id === "") throw new nodeErrorCodes.ERR_INVALID_ARG_VALUE("id", id, "must be a non-empty string");
   const builtin = __nimbusBuiltinId(id);
@@ -13500,7 +13508,9 @@ function __requireFrom(id, fromDir, parent, required = true) {
     let resolution;
     try {
       resolution = __esmResolver.resolveSync(id, parentUrl);
-      __nimbusAssertLoadable(resolution, undefined);
+      // Loaded, then checked against its attributes, as Node's loader does.
+      __nimbusAssertLoadable(resolution, type ?? undefined);
+      __esmResolver.validateAttributes(resolution.url, resolution.format, type === null || type === undefined ? {} : { type });
     } catch (error) {
       __nimbusDecorated.add(error);
       throw error;

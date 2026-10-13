@@ -28,7 +28,7 @@
  */
 import { Parser, parseExpressionAt, tokenizer, tokTypes, type AnyNode, type Node, type Options, type TokenType } from 'acorn';
 import { applySourceEdits, isAstNode, MODULE_PARSE_OPTIONS, parseStatements, type SourceEdit } from './javascript-ast.js';
-import { esmBindings, esmLink, esmRecord, type EsmLists, type EsmRecord, type ModuleBindings } from './esm-interop.js';
+import { esmBindings, esmLink, esmRecord, importType, type EsmLists, type EsmRecord, type ModuleBindings } from './esm-interop.js';
 import { createModuleLexer, type LexedImport, type ModuleLexer } from './module-lexer.js';
 import { ambiguousSlashes, htmlComments, lineEnd, Lines, parenthesisEnd, skipTrivia } from './import-lexer-hazards.js';
 
@@ -97,7 +97,7 @@ export interface StaticSpecifierSite {
   readonly start: number;
   readonly end: number;
   readonly specifier: string;
-  /** Its `with { … }` attributes, as written. */
+  /** The attributes its loader checks: its `type`, if it has one (esm-interop.ts importType). */
   readonly attributes: Readonly<Record<string, string>>;
   /** Where its attributes clause is, from the specifier's end to the clause's `}`: present with attributes. */
   readonly clause?: Span;
@@ -159,6 +159,7 @@ function lexedImportSites(code: string, withBindings = false): ImportSites | nul
   const statics: StaticSpecifierSite[] = [];
   const imports: (readonly string[])[] = [];
   const stars: number[] = [];
+  const types: (string | null)[] = [];
   for (const entry of lexed) {
     if (entry.t === DYNAMIC_IMPORT) sites.push({ ss: entry.ss, se: entry.se, d: entry.d, lexed: true });
     else if (entry.t === IMPORT_META) metas.push({ start: entry.s, end: entry.e });
@@ -166,9 +167,11 @@ function lexedImportSites(code: string, withBindings = false): ImportSites | nul
       // A specifier with escapes the lexer cannot unquote is the grammar's to read.
       if (entry.n === undefined) return null;
       const site = { start: entry.s - 1, end: entry.e + 1 };
-      const attributes = Object.fromEntries(entry.at ?? []);
-      const clause = Object.keys(attributes).length > 0 ? attributesClause(source, site, entry.se) : undefined;
-      statics.push({ ...site, specifier: entry.n, attributes, ...(clause ? { clause } : {}) });
+      // Its `type` alone, as importType reads the grammar's: V8 drops the other keys of a static import.
+      const type = (entry.at ?? []).find(([key]) => key === 'type')?.[1] ?? null;
+      const clause = (entry.at ?? []).length > 0 ? attributesClause(source, site, entry.se) : undefined;
+      statics.push({ ...site, specifier: entry.n, attributes: type === null ? {} : { type }, ...(clause ? { clause } : {}) });
+      types.push(type);
       if (withBindings) {
         // The declaration up to its specifier's quote: what it reads of that module.
         const read = clauseNames(source.slice(entry.ss, site.start));
@@ -205,7 +208,7 @@ function lexedImportSites(code: string, withBindings = false): ImportSites | nul
   const sitesRead: ImportSites = { calls, metas, statics, moduleSyntax: lexing[3] === true };
   if (!withBindings) return sitesRead;
   const exports = exportNames(lexing[1]);
-  return exports === null ? null : { ...sitesRead, bindings: { exports, imports, stars } };
+  return exports === null ? null : { ...sitesRead, bindings: { exports, imports, stars, types } };
 }
 
 /** The names of the lexer's exports, or null for an entry it did not name. */
@@ -339,14 +342,10 @@ export function readModuleImportSites(code: string): ImportSites {
       declarations = true;
       const source = statement.source;
       if (!source || typeof source.value !== 'string') return;
-      const attributes: Record<string, string> = {};
-      for (const attribute of statement.attributes ?? []) {
-        const key = attribute.key.type === 'Identifier' ? attribute.key.name : String(attribute.key.value);
-        if (typeof attribute.value.value === 'string') attributes[key] = attribute.value.value;
-      }
+      const type = importType(statement);
       const last = statement.attributes?.[statement.attributes.length - 1];
       const clause = last === undefined ? undefined : attributesClauseAfter(code, source, last.end);
-      statics.push({ start: source.start, end: source.end, specifier: source.value, attributes, ...(clause ? { clause } : {}) });
+      statics.push({ start: source.start, end: source.end, specifier: source.value, attributes: type === null ? {} : { type }, ...(clause ? { clause } : {}) });
     },
   });
   calls.sort((a, b) => a.start - b.start);

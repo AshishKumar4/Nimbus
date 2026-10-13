@@ -50,11 +50,18 @@ export interface ModulePlan {
   /** The export getters, in the order they are installed. */
   readonly exports: readonly ModuleExport[];
   /**
-   * Each requested module, required in order: the slot it goes to, and its
-   * interop's (a default import's), -1 for none; and the names its imports
-   * and re-exports read of it (esm-interop.ts ModuleBindings).
+   * Each requested module, required in order with its `type` attribute
+   * (which the loader checks): the slot it goes to, and its interop's (a
+   * default import's), -1 for none; and the names its imports and re-exports
+   * read of it (esm-interop.ts ModuleBindings).
    */
-  readonly requests: readonly { readonly source: string; readonly module: number; readonly interop: number; readonly names: readonly string[] }[];
+  readonly requests: readonly {
+    readonly source: string;
+    readonly type: string | null;
+    readonly module: number;
+    readonly interop: number;
+    readonly names: readonly string[];
+  }[];
   /** Each import's namespace, made into `slot` from the module in `from` once every request is required. */
   readonly namespaces: readonly { readonly slot: number; readonly from: number }[];
   /** Slots of the modules whose names `export *` copies. */
@@ -121,8 +128,8 @@ function link(plan: ModulePlan, env: Env, requireArg: unknown, helpers: ModuleHe
   const { exports, requests, namespaces, stars } = plan;
   for (let i = 0; i < exports.length; i++) reflectApply(define, undefined, [exports[i].name, exportGetter(env, exports[i], helpers)]);
   for (let i = 0; i < requests.length; i++) {
-    const { source, module, interop } = requests[i];
-    const m: unknown = reflectApply(helpers.load, undefined, [requireArg, source]);
+    const { source, type, module, interop } = requests[i];
+    const m: unknown = reflectApply(helpers.load, undefined, [requireArg, source, type]);
     if (module >= 0) env[module] = m;
     if (interop >= 0) env[interop] = reflectApply(helpers.interop, undefined, [m]);
   }
