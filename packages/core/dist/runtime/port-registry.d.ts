@@ -107,6 +107,13 @@ export declare function responseScope(caller: AbortSignal): {
     scope: ResponseScope;
     owner: BodyOwner;
 };
+/**
+ * `outer` (a Request's serialized URL) with its path replaced by `pathname`,
+ * its query kept and its fragment dropped. Read off the serialization, which
+ * is already normalized, rather than parsed again for every request; an
+ * authority with userinfo, or a path that is not one, goes through URL.
+ */
+export declare function innerRequestUrl(outer: string, pathname: string): string;
 export declare function createPortCapability(): string;
 /**
  * The header a forwarded request carries its process's ACQUIRE in. An
