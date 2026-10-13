@@ -349,6 +349,9 @@ export function descriptorNamed(fds: ReadonlyMap<number, FilesystemFd>, fd: numb
     if (directory === undefined) return null;
     absolute = directory + '/' + path;
   }
+  // Every path but these is turned away before any normalizing: an `fd` segment
+  // is followed by a separator, a standard stream's name starts `std`.
+  if (!absolute.includes('fd/') && !absolute.includes('std')) return null;
   const normal = '/' + absolute.split('/').filter((segment) => segment !== '' && segment !== '.').join('/');
   const stream = Object.hasOwn(STANDARD_STREAMS, normal) ? STANDARD_STREAMS[normal] : undefined;
   if (stream !== undefined) return stream;
@@ -462,9 +465,9 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
    * takes part (duplicate); ENOENT for one the process does not hold, as
    * Linux answers for /dev/fd/N.
    */
-  const named = (fd: number, ptr: number, length: number): number | null => {
+  const named = (fd: number, name: string): number | null => {
     if (options.duplicate === undefined) return null;
-    const descriptor = descriptorNamed(fds, fd, path(ptr, length));
+    const descriptor = descriptorNamed(fds, fd, name);
     if (descriptor !== null && !fds.has(descriptor)) fail('ENOENT');
     return descriptor;
   };
@@ -580,7 +583,8 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
   imports.path_open = guard(imports.path_open, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, lookup: number, p: number, n: number, flags: number, rights: bigint, inherit: bigint, status: number, out: number) => {
     if (status & ~5) fail('ENOTSUP');
     pathRight(fd, 13);
-    const descriptor = named(fd, p, n);
+    const name = path(p, n);
+    const descriptor = named(fd, name);
     const reopened = descriptor === null ? undefined : fds.get(descriptor);
     if (descriptor !== null && reopened?.kind !== 'authority' && reopened?.kind !== 'resident' && reopened?.kind !== 'preopen') {
       u32(out, options.duplicate?.(descriptor) ?? fail('ENXIO')); return 0;
@@ -588,7 +592,7 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     if (flags & 1) pathRight(fd, 10);
     if (flags & 8) pathRight(fd, 19);
     // A preopen named by a descriptor path is its root, by name, as everything beneath it is.
-    const target = reopened?.kind === 'preopen' ? reopened.vfsPath : at(fd, path(p, n));
+    const target = reopened?.kind === 'preopen' ? reopened.vfsPath : at(fd, name);
     const parent = preopen(fd) ?? entry(fd);
     const requested = BigInt(rights), childRights = BigInt(inherit);
     const allowed = parent.rightsInheriting;
@@ -689,9 +693,10 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
   const descriptorStat = imports.fd_filestat_get;
   imports.path_filestat_get = guard(imports.path_filestat_get, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, flags: number, p: number, n: number, out: number) => {
     pathRight(fd, 18);
-    const descriptor = named(fd, p, n);
+    const name = path(p, n);
+    const descriptor = named(fd, name);
     if (descriptor !== null) return descriptorStat(descriptor, out);
-    return after(fs.stat(at(fd, path(p, n)), { followSymlinks: !!(flags & 1) }), st => writeStat(out, st ?? fail('ENOENT')));
+    return after(fs.stat(at(fd, name), { followSymlinks: !!(flags & 1) }), st => writeStat(out, st ?? fail('ENOENT')));
   });
   imports.fd_read = guard(imports.fd_read, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, p: number, n: number, out: number) => read(fs, fd, p, n, null, out), owns);
   imports.fd_pread = guard(imports.fd_pread, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, p: number, n: number, off: bigint, out: number) => read(fs, fd, p, n, num(off), out), owns);
@@ -834,9 +839,10 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     const descriptorNimbusStat = ext.fd_stat;
     ext.path_stat = guard(ext.path_stat, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, flags: number, p: number, n: number, out: number) => {
       pathRight(fd, 18);
-      const descriptor = named(fd, p, n);
+      const name = path(p, n);
+      const descriptor = named(fd, name);
       if (descriptor !== null) return descriptorNimbusStat(descriptor, out);
-      return after(fs.stat(at(fd, path(p, n)), { followSymlinks: !!(flags & 1) }), st => writeNimbusStat(out, st ?? fail('ENOENT')));
+      return after(fs.stat(at(fd, name), { followSymlinks: !!(flags & 1) }), st => writeNimbusStat(out, st ?? fail('ENOENT')));
     });
     ext.path_chmod = guard(ext.path_chmod, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, flags: number, p: number, n: number, mode: number) => {
       pathRight(fd, 20);
