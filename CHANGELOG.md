@@ -13,6 +13,12 @@ published independently in the `@nimbus-sh` npm scope.
   now does what it does on a mounted directory and on Linux: an entry it may
   not remove stays, with the directories holding it, and everything else
   goes; it refused the whole tree before removing anything.
+- Fixed: `nimbus wrangler dev`'s Worker Loader binding (`worker_loaders`)
+  cached a Worker loaded with `LOADER.get(id, …)` under its id alone, for
+  the whole isolate: two Workers in co-located sessions that used the same
+  id shared one, and the second ran the first's code. A keyed Worker is now
+  its loader's own: each build's binding has its own, so a rebuild loads
+  its keyed Workers afresh.
 - Fixed: a module a Node program writes and then imports links as Node's
   does before any of its graph runs. An import of a name its module does
   not export is Node's SyntaxError, with no module body run first; before,

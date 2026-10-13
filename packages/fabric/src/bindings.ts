@@ -454,6 +454,12 @@ interface NimbusLoaderDepthProps {
    */
   egress?: WorkspaceEgress;
   networkId?: string;
+  /**
+   * Whose loader this is: an opaque name its minter makes once per owner and
+   * load generation (a `wrangler dev` build), under which its keyed workers
+   * (LOADER.get) are cached. Two owners in one isolate never share one.
+   */
+  namespace?: string;
 }
 
 /** The network part of `props`, to carry to the next hop. */
@@ -512,16 +518,20 @@ export class NimbusLoaderRPC extends WorkerEntrypoint<NimbusLoaderShimEnv, Nimbu
   }
 
   /**
-   * Inner: env.LOADER.get(id, callback). The inner's callback returns
-   * a code object; we treat `id` as the outer cache key (prefixed so
-   * it doesn't collide with load()-generated keys).
+   * Inner: env.LOADER.get(id, callback). The inner's callback returns a code
+   * object, cached under this loader's owner, its network and `id`: an id is
+   * reused within its owner, as the platform's LOADER.get reuses it, and
+   * never across owners. (load() keys are random, and cannot collide.)
    */
   async get(id: string, callback: () => WorkerCode | Promise<WorkerCode>): Promise<unknown> {
     this._assertDepthOk();
     const outerLoader = this.env?.LOADER;
     if (!outerLoader) throw new Error('Nimbus: outer env.LOADER missing');
-    const networkId = this.ctx.props?.networkId;
-    const key = 'get:' + id + (networkId === undefined ? '' : '@' + networkId);
+    const namespace = this.ctx.props?.namespace;
+    if (typeof namespace !== 'string' || namespace === '') {
+      throw new Error('Nimbus: this Worker Loader binding was minted without an owner namespace, so it has no keyed workers');
+    }
+    const key = 'get:' + JSON.stringify([namespace, this.ctx.props?.networkId ?? null, id]);
     if (_loadedCodesGet(key) === undefined) {
       const code = await callback();
       _loadedCodesPut(key, code);
