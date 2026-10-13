@@ -6,9 +6,12 @@ published independently in the `@nimbus-sh` npm scope.
 ## Unreleased
 
 - Fixed: a Node program's launch holds its share of the session's memory
-  budget while it packs the files it staged, not only while it gathers
-  them, so several launches at once queue instead of building side by side
-  past the budget. Launches of the same program at once build it once.
+  budget while it packs the files it staged, and until its module map is
+  made, not only while it gathers them, so several launches at once queue
+  instead of building side by side past the budget. Launches of the same
+  program at once build it once. A launch killed, or whose session is
+  destroyed, while it waits for room is never admitted.
+
 ## 2026-10-13: platform 0.9.0, core 0.19.0, fabric 0.14.0, worker 0.17.0, config 0.3.1, loom 0.3.0, sdk 0.14.0, react 0.3.2, cli 0.2.6, create-nimbus-app 0.2.3
 
 - Fixed: in a WASI program (an uploaded program, CPython), a socket read that
