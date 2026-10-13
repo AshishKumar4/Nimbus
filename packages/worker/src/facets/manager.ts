@@ -5792,7 +5792,7 @@ export class FacetManager {
     this.hooks = hooks;
     // The workspace's network (FacetManagerHooks.network); a manager no workspace composed uses the isolate's.
     this.network = hooks.network ?? (() => ISOLATE_NETWORK);
-    this.processHost = host(ctx, env, () => this._residentDisk(), this.network, hooks.supervise);
+    this.processHost = host(ctx, env, (pid) => this._residentDisk(pid), this.network, hooks.supervise);
     this.processJournals = new ProcessJournals(() => (this.ctx.storage as { sql?: SqlStorage }).sql);
     // Every resident logs its changes in its facet's store: the session
     // books the store when it opens, and drains it when the process is
@@ -6948,13 +6948,15 @@ export class FacetManager {
    * their size on the session's disk.
    */
   private _residentMemberBytes(
+    pid: number,
     sqliteModules: Readonly<Record<string, { wasm: ArrayBuffer }>>,
     staged: ResidentStagedBindings | null,
     wasmImports: readonly FacetWasmImport[],
   ): number {
     let bytes = moduleMemberBytes(sqliteModules) + hostAdapterBytes('worker.js');
     if (staged) bytes += mapTextBytes(staged.loader) + staged.trampoline.byteLength;
-    const fs = this.vfs?.as(CRED_KERNEL);
+    // Sized as the process its boot reads them as (_residentDisk).
+    const fs = this.vfs?.as(this.processes.cred(pid));
     for (const path of [...wasmImports.map((image) => image.vfsPath), ...Object.values(staged?.bindingPaths ?? {})]) {
       // One that is not there fails the boot, which reads it; it holds nothing here.
       try { bytes += fs?.stat(path).size ?? 0; } catch { /* absent */ }
@@ -8389,21 +8391,23 @@ export class FacetManager {
   }
 
   /**
-   * The reader the fabric completes a boot spec's by-path members with.
+   * The reader the fabric completes process `pid`'s boot spec's by-path
+   * members with.
    *
-   * Reads as CRED_KERNEL because that is who WROTE them: the generated images
-   * are kernel-owned (`_imageBlobs`) and the runtime wasm images
-   * are installed by the kernel. Uncached because these are the session's
-   * largest files — a ruby interpreter image is 34.3 MiB — and pinning one in
-   * the VFS content LRU for the life of the session is what once crashed the
-   * supervisor.
+   * Reads as the process, as a peer host's reader already does (its no-run
+   * binding acts for the pid): the boot names project images the process
+   * chose, so it reads only what the process may. The kernel's own images
+   * (`_imageBlobs`, installed runtimes) are world-readable. Uncached because
+   * these are the session's largest files — a ruby interpreter image is
+   * 34.3 MiB — and pinning one in the VFS content LRU for the life of the
+   * session is what once crashed the supervisor.
    */
-  private _residentDisk(): ResidentDiskReader {
+  private _residentDisk(pid: number): ResidentDiskReader {
     const vfs = this.vfs;
     if (!vfs) {
       throw new Error('Nimbus: a resident process needs a session filesystem to boot');
     }
-    const fs = vfs.as(CRED_KERNEL);
+    const fs = vfs.as(this.processes.cred(pid));
     return { readFile: (path) => fs.readFileUncached(path) };
   }
 
@@ -9018,7 +9022,7 @@ export class FacetManager {
       staged = await this._residentStagedBindingMembers(vfsState.stagedBindings ?? [], entry.pid, pacer);
       try {
         generatedWorker = await this._generateUnderCeiling(
-          entry.pid, vfsState, this._residentMemberBytes(sqlite, staged, images),
+          entry.pid, vfsState, this._residentMemberBytes(entry.pid, sqlite, staged, images),
           (state) => generateLongRunningNodeCode(userCode, state, { ...opts, env: processEnv, cred: entry.cred, wasmImports: images }, usesSqlite, sources, pacer),
         );
         break;

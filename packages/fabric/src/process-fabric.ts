@@ -716,8 +716,9 @@ export interface ProcessHost {
  *
  * A factory rather than a finished {@link ProcessHost}, because the substrate
  * needs the disk its processes boot from and only the manager can produce one:
- * that reader answers as the credential that WROTE the boot images and
- * deliberately uncached, since they are the largest files a session holds.
+ * that reader answers, for the pid it boots, as that process's credential (a
+ * boot reads only what its process may read), and deliberately uncached,
+ * since they are the largest files a session holds.
  * Demanding a finished host would make every caller reproduce that policy, and
  * a second copy of a credential rule is a second thing to keep in step.
  *
@@ -728,7 +729,7 @@ export interface ProcessHost {
 export type ProcessHostFactory = (
   ctx: DurableObjectState,
   env: unknown,
-  disk: () => ResidentDiskReader,
+  disk: (pid: number) => ResidentDiskReader,
   network: () => WorkspaceNetwork,
   supervise?: Supervise,
 ) => ProcessHost;

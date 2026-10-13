@@ -6,7 +6,7 @@ import type { CommandContext } from '@nimbus-sh/core/substrate/lifo/commands/typ
 import type { ShellCommandIdentity } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
 import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
 import { NimbusWorkspace } from '@nimbus-sh/core/workspace';
-import { BASH_RUNNER, CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { BASH_RUNNER, CRED_KERNEL, CRED_SESSION_USER, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { handKernelArtifact, projectFs } from '../runtime/project-fs.js';
 import { makeEsbuildCommand } from '@nimbus-sh/core/runtime/esbuild-cli.js';
@@ -52,8 +52,11 @@ export type RuntimeCommandHost = Pick<SessionInternal,
 
 export async function registerHostedCommands(self: RuntimeCommandHost, workspace: NimbusWorkspace): Promise<void> {
   const sqliteFs = workspace.vfs;
+  // The nimbus verb's runtime installs are Nimbus's own system state.
   const kernelFs = sqliteFs.as(CRED_KERNEL);
-  const namespaceFs = workspace.filesystem.namespaceFs(CRED_KERNEL);
+  // The build service's default view, for a build that names none: the
+  // session's user, never the kernel. A command's own build names its view.
+  const ownerFs = workspace.filesystem.namespaceFs(CRED_SESSION_USER);
   const kernel = workspace.kernel;
   const shell = workspace.shell;
   const registry = workspace.registry;
@@ -390,7 +393,7 @@ const nodeSpec: RuntimeSpec = {
     getEsbuild: () => {
       if (!self.esbuildService) {
         self.ensureSqliteFs();
-        self.esbuildService = supervisorEsbuildService(self.ctx, self.env, namespaceFs);
+        self.esbuildService = supervisorEsbuildService(self.ctx, self.env, ownerFs);
       }
       return self.esbuildService!;
     },
@@ -542,7 +545,7 @@ const bunSpec: RuntimeSpec = {
     getEsbuild: () => {
       if (!self.esbuildService) {
         self.ensureSqliteFs();
-        self.esbuildService = supervisorEsbuildService(self.ctx, self.env, namespaceFs);
+        self.esbuildService = supervisorEsbuildService(self.ctx, self.env, ownerFs);
       }
       return self.esbuildService!;
     },
@@ -579,7 +582,7 @@ const bunSpec: RuntimeSpec = {
         getEsbuild: () => {
           if (!self.esbuildService) {
             self.ensureSqliteFs();
-            self.esbuildService = supervisorEsbuildService(self.ctx, self.env, namespaceFs);
+            self.esbuildService = supervisorEsbuildService(self.ctx, self.env, ownerFs);
           }
           return self.esbuildService!;
         },
@@ -681,7 +684,7 @@ const wranglerHandler = (invokedAs: 'wrangler' | 'nimbus-wrangler') =>
     // Lazy-init esbuild
     if (!self.esbuildService) {
       self.ensureSqliteFs();
-      self.esbuildService = supervisorEsbuildService(self.ctx, self.env, namespaceFs);
+      self.esbuildService = supervisorEsbuildService(self.ctx, self.env, ownerFs);
     }
 
     // Parse --root flag; default to the shell cwd so `npm run dev` from
@@ -703,6 +706,7 @@ const wranglerHandler = (invokedAs: 'wrangler' | 'nimbus-wrangler') =>
 
     // Stop existing
     if (self.nimbusWrangler?.isRunning) self.nimbusWrangler.stop();
+    let starting = true;
 
     // Pre-flight: read the wrangler config ourselves and call out any
     // binding fields nimbus-wrangler can't provide. NimbusWrangler will
@@ -728,10 +732,14 @@ const wranglerHandler = (invokedAs: 'wrangler' | 'nimbus-wrangler') =>
       );
     }
 
+    // The dev server reads its config, migrations and stores, and bundles
+    // its Worker, as the process that started it, for as long as it runs.
+    const cred = requireVfsCred(ctx.cred, invokedAs);
     self.nimbusWrangler = new NimbusWrangler({
       // The dev server's Worker goes out through the network of the command that started it.
       network: workspace.network.forProcess(ctx.pid),
-      vfs: kernelFs,
+      vfs: sqliteFs.as(cred),
+      bundleFs: workspace.filesystem.namespaceFs(cred),
       namespace: workspace.filesystem.vfs,
       esbuild: self.esbuildService!,
       env: self.env,
@@ -739,7 +747,10 @@ const wranglerHandler = (invokedAs: 'wrangler' | 'nimbus-wrangler') =>
       // synthesizing durable_objects bindings on the inner Worker.
       ctx: self.ctx,
       root: vfsRoot,
+      // While the command runs, its own stderr says why a start fails; after
+      // it returns, rebuilds report to the terminal.
       onLog: (msg) => {
+        if (starting) { ctx.stderr.write(msg); return; }
         if (terminal) {
           try { terminal.write(msg); } catch {}
         }
@@ -751,7 +762,7 @@ const wranglerHandler = (invokedAs: 'wrangler' | 'nimbus-wrangler') =>
       },
     });
 
-    const ok = await self.nimbusWrangler.start();
+    const ok = await self.nimbusWrangler.start().finally(() => { starting = false; });
     if (!ok) {
       ctx.stderr.write('  \x1b[31mFailed to start Worker dev server.\x1b[0m\n');
       return 1;

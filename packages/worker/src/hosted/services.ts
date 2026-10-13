@@ -220,7 +220,7 @@ export async function ensureNpmInstaller(self: RuntimeServiceHost, runtimeContex
     self.ensureSqliteFs();
     if (!self.esbuildService) {
       if (!self.sqliteFs) throw new Error('Session VFS is not initialized');
-      self.esbuildService = supervisorEsbuildService(runtimeContext.ctx, runtimeContext.env, self.getFilesystemAuthority().namespaceFs(CRED_KERNEL));
+      self.esbuildService = supervisorEsbuildService(runtimeContext.ctx, runtimeContext.env, self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER));
     }
     // Lazy-load the installer (+ its ~216 KB resolver/facet/loader-pool
     // subgraph) on first npm use so it stays out of the cold script-eval
