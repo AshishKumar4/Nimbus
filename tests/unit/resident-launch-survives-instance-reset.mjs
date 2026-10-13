@@ -106,12 +106,13 @@ function parkedPastLease(gen) {
  *  test will reset: its storage writes stay pending until a `sync()`, and
  *  `ctx.storage.crash()` — the reset — drops what was never synced, which is
  *  what the platform's rollback did to the journal of a mid-launch death. */
-function createInstance(session, generation, { pumpWhile, crashable = false }) {
+function createInstance(session, generation, { pumpWhile, crashable = false, evaluate = undefined }) {
   const notices = [];
   const spawns = [];
   let waiting = false;
   const { ctx, manager, processes, world } = launchManager(session.label, {
     session, generation, crashable,
+    ...(evaluate ? { evaluate } : {}),
     env: { NIMBUS_LAUNCH_CHUNK_BYTES: '2048' },
     hooks: {
       // A launch that asks for a turn this instance will not pump is parked,
@@ -136,6 +137,43 @@ const settle = async (predicate, tries = 400) => {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
 };
+
+for (const kind of ['boot', 'attached', 'killed']) {
+  const session = createSession('preparation-' + kind), entered = Promise.withResolvers(), boot = Promise.withResolvers();
+  let pump = false, active = 0;
+  const gen = createInstance(session, 1, { pumpWhile: () => pump, evaluate: () => ({
+    startProcess() { entered.resolve(); return boot.promise; }, handleHttpRequest() { return new Response('ready'); },
+  }) });
+  gen.processes.setWorkObservation(() => { active++; let held = true; return { release() { if (held) { held = false; active--; } } }; });
+  const spawning = gen.manager.spawnNode("require('dep');", {
+    filename: '/home/user/run.js', cwd: '/home/user', command: kind, attachedTty: kind !== 'boot',
+  });
+  void spawning.catch(() => {});
+  await settle(() => gen.waitingForTurn());
+  const pid = gen.spawns[0].pid;
+  try {
+    assert.equal(active, 1, 'paced preparation owns process work after its caller may have returned');
+    if (kind === 'killed') {
+      gen.manager.kill(pid);
+      assert.equal(active, 0, 'kill releases preparation observation immediately');
+    }
+    pump = true; await gen.manager.pumpResidentLaunches();
+    if (kind === 'killed') {
+      await gen.manager.closeLaunches();
+      assert.equal(gen.world.boots.length, 0, 'a killed parked preparation never starts its guest');
+    } else {
+      await entered.promise;
+      if (kind === 'boot') {
+        assert.equal(active, 1, 'boot preparation owns work until its boot result');
+        boot.resolve({ ok: true }); await spawning;
+      } else {
+        await settle(() => active === 0);
+        assert.equal(active, 0, 'attached preparation hands off without waiting for the process lifetime');
+      }
+      assert.equal(active, 0);
+    }
+  } finally { boot.resolve({ ok: true }); gen.manager.kill(pid); pump = true; await gen.manager.closeLaunches(); }
+}
 
 // ── 1. a reset launch comes back, and the user is told once ───────────────
 {

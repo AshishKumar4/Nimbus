@@ -1,4 +1,5 @@
 // @serial
+// @tier slow — workerd/Node differential: CI 35 s wall, 42 s CPU, 1.40 GiB peak (2026-10-11).
 // What nothing caught ends the program as it ends Node 22.22.3's: the same
 // stderr, byte for byte (but for the stack frames, which are the runtime's
 // own beside the program's), and the same exit code (shims' fatal
@@ -59,6 +60,16 @@ const FILES = {
   'req.cjs': "const x = 1;\nrequire('./bad.cjs');\n",
   'code3.cjs': 'process.exitCode = 3;\n',
   'code4.cjs': "process.exitCode = '4';\nprocess.on('exit', (c) => console.error('exit', JSON.stringify(c)));\nprocess.exit();\n",
+  'code257.cjs': 'process.exitCode = 257;\n',
+  'codeneg.cjs': 'process.exitCode = -1;\n',
+  'clearcode.cjs': 'process.exitCode = 7; process.exitCode = undefined;\n',
+  'nullcode.cjs': 'process.exitCode = 7; process.exitCode = null;\n',
+  'beforecode.cjs': 'process.on("beforeExit", () => { process.exitCode = 5; });\n',
+  'beforework.cjs': 'let once = false; process.on("beforeExit", () => { if (!once) { once = true; setTimeout(() => { console.error("later"); process.exitCode = 6; }, 0); } });\n',
+  'beforeprint.cjs': 'process.on("beforeExit", () => console.error("before"));\n',
+  'beforewrite.cjs': 'process.on("beforeExit", () => { const fs = require("fs"); fs.writeFileSync("before.txt", "before-write"); console.error(fs.readFileSync("before.txt", "utf8")); });\n',
+  'beforethrow.cjs': 'process.on("beforeExit", () => { throw new Error("before-exit failure"); });\n',
+  'beforehandled.cjs': 'function broken() { throw new Error("before-exit failure"); } process.on("beforeExit", broken); process.on("uncaughtException", (error, kind) => { console.error(error.message, kind); process.removeListener("beforeExit", broken); setTimeout(() => { console.error("continued"); process.exitCode = 7; }, 0); }); process.on("exit", code => console.error("exit", code));\n',
   'input.js': 'throw new Error("in")\n',
 };
 const COMMANDS = [
@@ -66,6 +77,8 @@ const COMMANDS = [
   'node handler.cjs', 'node exitcode.cjs', 'node handled.cjs', 'node rejhandled.cjs', 'node cause.cjs',
   'node minified.cjs', 'node noname.cjs', 'node tab.cjs', 'node uni.cjs', 'node multi.cjs', 'node fnthrow.cjs',
   'node this.cjs', 'node bad.cjs', 'node req.cjs', 'node code3.cjs', 'node code4.cjs',
+  'node code257.cjs', 'node codeneg.cjs', 'node clearcode.cjs', 'node nullcode.cjs', 'node beforecode.cjs', 'node beforework.cjs',
+  'node beforeprint.cjs', 'node beforewrite.cjs', 'node beforethrow.cjs', 'node beforehandled.cjs',
   `node -e 'throw new Error("ev")'`, 'node - < input.js',
 ];
 

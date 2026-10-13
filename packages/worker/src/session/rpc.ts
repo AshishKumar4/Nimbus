@@ -43,7 +43,7 @@ import { readHydrating } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import type { StorageLedger } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
-import { PeerHost, type HostedHttpRequest, type HostedHttpResponse } from '@nimbus-sh/fabric/peer-host.js';
+import { PeerHost, type HostedHttpRequest, type HostedHttpResponse, type HostedReply } from '@nimbus-sh/fabric/peer-host.js';
 import { OpencodeStageSpecSchema } from '../facets/opencode-staging.js';
 import {
   recordFailure, getLastRpcFrame, getLastFacetId,
@@ -1550,11 +1550,10 @@ export function _rpcFanoutExecute(self: RpcHost, fnSource: string, args: unknown
 const ResidentBootSpecSchema = residentBootSpecSchema(OpencodeStageSpecSchema);
 
 /**
- * The PeerHost an object serves its siblings with: Nimbus's boot specs, and
- * the hosting watch armed through the object's own scheduler.
+ * The PeerHost an object serves its siblings with, using Nimbus's boot specs.
  */
-export function peerHostFor(ctx: DurableObjectState, env: unknown, scheduleWatch: (at: number) => Promise<void>): PeerHost {
-  return new PeerHost(ctx, env, { bootSpec: ResidentBootSpecSchema, scheduleWatch });
+export function peerHostFor(ctx: DurableObjectState, env: unknown): PeerHost {
+  return new PeerHost(ctx, env, { bootSpec: ResidentBootSpecSchema });
 }
 
 interface PeerHostRpcHost {
@@ -1564,35 +1563,18 @@ interface PeerHostRpcHost {
 export function _rpcProcessHostProbe(self: PeerHostRpcHost): { isolateToken: string } {
   return self.peerHost.probe();
 }
-export function _rpcHostProcess(self: PeerHostRpcHost, boot: unknown, opts: unknown): Promise<{ ok: boolean }> {
+export function _rpcHostProcess(self: PeerHostRpcHost, boot: unknown, opts: unknown): Promise<HostedReply<{ ok: boolean; incarnation: string }>> {
   return self.peerHost.host(boot, opts);
 }
-export function _rpcAwaitHostedOpen(self: PeerHostRpcHost, workerKey: string): Promise<{ ok: boolean }> {
-  return self.peerHost.awaitOpen(workerKey);
-}
-export function _rpcAwaitHostedBoot(self: PeerHostRpcHost, workerKey: string): Promise<{ payload: unknown }> {
+export function _rpcAwaitHostedBoot(self: PeerHostRpcHost, workerKey: string): Promise<HostedReply<{ payload: unknown } | { refused: unknown }>> {
   return self.peerHost.awaitBoot(workerKey);
 }
-export function _rpcRouteHostedHttp(self: PeerHostRpcHost, workerKey: string, wire: HostedHttpRequest): Promise<HostedHttpResponse> {
+export function _rpcRouteHostedHttp(self: PeerHostRpcHost, workerKey: string, wire: HostedHttpRequest): Promise<HostedReply<HostedHttpResponse>> {
   return self.peerHost.routeHttp(workerKey, wire);
+}
+export function _rpcAbandonHostedHttp(self: PeerHostRpcHost, workerKey: string, capability: string, id: number): Promise<void> {
+  return self.peerHost.abandonHttp(workerKey, capability, id);
 }
 export function _rpcCancelHostProcess(self: PeerHostRpcHost, workerKey: string): Promise<{ cancelled: boolean }> {
   return self.peerHost.cancel(workerKey);
-}
-
-/**
- * RPC: the actor that hosted `workerKey` for this session reports, from a new
- * incarnation, that the platform reset it under the process. The capability
- * proves it hosted it. True when the process was this session's and is now
- * ended.
- */
-export function _rpcHostLost(self: RpcHost, workerKey: string, capability: string): boolean {
-  // An answer either way: the host keeps asking until it gets one, so a
-  // session that cannot act on the report still answers it.
-  try {
-    return self.facetManager?.hostLost(workerKey, capability) ?? false;
-  } catch (error) {
-    console.warn(`[process-host] a report that process ${workerKey} lost its host could not be applied:`, errorText(error));
-    return false;
-  }
 }

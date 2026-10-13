@@ -738,7 +738,9 @@ subdomain of `nimbus-os.dev` resolves and answers 200, because the zone's
   `enhanced_error_serialization` (on by date from 2026-04-21, or listed as a
   flag on an older date, as Kinu's 2025-12-01 must): `composeFabric` refuses a
   Worker without it, since it is what carries a filesystem error's `code`
-  across RPC to a process.
+  across RPC to a process. Every host also lists `enable_request_signal`,
+  which no date enables: `composeFabric` refuses a Worker without it, since a
+  request's `signal` is the only sign that its client left.
 - `@nimbus-sh/sdk/worker` is the public Worker embedder import. `@nimbus-sh/worker`
   carries runtime assets and implementation.
 - `R2` runtime catalog state is external. Correct code can still fail runtime

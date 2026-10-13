@@ -37,14 +37,18 @@ for (const badProps of [{ doId: 's', pid: 7 }, { doId: 's', pid: 7, bindingKind:
   assert.equal(received.length,before,'the refusal is at the caller, before a host request or timeout');
 }
 // Every SUPERVISOR and globalOutbound binding of a resident or one-shot
-// process comes from the one checked mint (bindingSupervisor); the
-// infrastructure constructor stays local.
+// process comes from the one checked mint (bindingSupervisor). The one no-run
+// constructor serves a host's own work only: the isolate pool's helpers, and
+// a peer's reads of a hosted process's boot images, never a process's env.
 const hostSource = readFileSync(new URL('../../packages/fabric/src/workerd-facet-host.ts', import.meta.url), 'utf8');
 assert.equal((hostSource.match(/bindingSupervisor\(supervisor\)/g) || []).length, 2);
 assert.doesNotMatch(hostSource, /mintProcessSupervisor|supervisorRpc\(\{ props/);
 const propsSource = readFileSync(new URL('../../packages/fabric/src/supervisor-props.ts', import.meta.url), 'utf8');
 assert.match(propsSource, /export function bindingSupervisor[\s\S]*?return mintProcessSupervisor<object>\(mint, props\);/);
+assert.match(propsSource, /export function infrastructureSupervisorProps/);
 const poolSource = readFileSync(new URL('../../packages/fabric/src/isolate-pool.ts', import.meta.url), 'utf8');
-assert.match(poolSource, /function infrastructureSupervisorProps/);
-assert.doesNotMatch(poolSource, /export function infrastructureSupervisorProps/);
+assert.doesNotMatch(poolSource, /function infrastructureSupervisorProps/, 'one no-run constructor');
+assert.doesNotMatch(hostSource, /infrastructureSupervisor/, 'a resident is never handed a no-run binding');
+const peerSource = readFileSync(new URL('../../packages/fabric/src/peer-host.ts', import.meta.url), 'utf8');
+assert.deepEqual(peerSource.match(/infrastructureSupervisor(?:Props)?\(/g), ['infrastructureSupervisor(', 'infrastructureSupervisorProps('], "the peer's no-run binding reads its process's boot images, and nothing else");
 console.log('supervisor-binding-roles: every process capability has a run; no-run infrastructure refuses guest ops');

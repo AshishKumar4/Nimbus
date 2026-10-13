@@ -137,6 +137,7 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
             }
         };
     const bundle = {};
+    Object.setPrototypeOf(bundle, null);
     const speculative = new Set();
     const visited = new Set();
     let bytesSeen = 0;

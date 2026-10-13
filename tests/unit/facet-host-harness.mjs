@@ -14,18 +14,38 @@
 // One EVALUATION of a program is one boot: `world.boots` is the ledger a ghost
 // process would show up in, because a second boot means the user's module
 // scope ran twice.
+import { hostActivity, observeResidentConfig, HOST_WATCH_HEADER, HOST_INCARNATION_HEADER, HOST_REQUEST_HEADER } from '../../packages/fabric/src/host-activity.ts';
+import { importModuleSet } from './lib/module-map-bundle.mjs';
+import { installHostWatchSocket } from './lib/host-watch-socket.mjs';
+installHostWatchSocket();
+
+/** A guest the generated adapter extends, forwarding to the harness's instance. */
+const GUEST_FORWARDER = `export class NimbusProcess {
+  constructor(ctx) { this.guest = ctx.guest; }
+  startProcess(args) { return this.guest.startProcess(args); }
+  handleHttpRequest(request) { return this.guest.handleHttpRequest(request); }
+  fetch(request) { return this.guest.fetch(request); }
+}`;
+/** The generated adapter class for `capability`, over GUEST_FORWARDER. */
+async function adapterFor(capability) {
+  const config = observeResidentConfig({ compatibilityDate: '2026-09-26', mainModule: 'guest.js', modules: { 'guest.js': GUEST_FORWARDER } }, capability);
+  return (await importModuleSet(config.modules, config.mainModule)).NimbusProcess;
+}
 
 /**
  * @param {(config: unknown, info: { loaderId: string, facetName: string, className: string })
  *          => unknown} evaluate
  *   Stands in for the program: called once per module evaluation, returns the
  *   object whose `startProcess` / `handleHttpRequest` the facet stub exposes.
- * @param {{ resolveConfig?: boolean }} [options]
+ * @param {{ resolveConfig?: boolean, evaluatesAdapter?: boolean }} [options]
  *   `resolveConfig: false` leaves the module map unbuilt — for tests whose
  *   subject is routing or readiness rather than what the map contains, so they
  *   need not stand up the artifact the assembler fetches.
+ *   `evaluatesAdapter: true` says `evaluate` returns the generated host
+ *   adapter itself (observeResidentConfig's entry), which answers watches and
+ *   admits requests; otherwise the stub models that adapter around a guest.
  */
-export function createFacetWorld(evaluate, { resolveConfig = true } = {}) {
+export function createFacetWorld(evaluate, { resolveConfig = true, evaluatesAdapter = false } = {}) {
   /** One entry per module evaluation — the ledger a ghost boot lands in. */
   const boots = [];
   const bootSpecs = [];
@@ -72,10 +92,16 @@ export function createFacetWorld(evaluate, { resolveConfig = true } = {}) {
     },
   };
 
+  /** facetName → the class its start returned, which the platform can instantiate again. */
+  const classes = new Map();
   const ensure = (name, start) => {
     let instance = live.get(name);
     if (!instance) {
-      instance = (async () => (await start()).class.instantiate(name))();
+      instance = (async () => {
+        const started = (await start()).class;
+        classes.set(name, started);
+        return started.instantiate(name);
+      })();
       // A failed start must not be remembered as a live facet.
       instance.catch(() => { if (live.get(name) === instance) live.delete(name); });
       live.set(name, instance);
@@ -83,32 +109,48 @@ export function createFacetWorld(evaluate, { resolveConfig = true } = {}) {
     return instance;
   };
 
-  /** facetName → its isolate's death, which a runtime resident's held() call hears. */
-  const deaths = new Map();
-  const deathOf = (name) => {
-    let death = deaths.get(name);
-    if (!death) {
-      let reject;
-      death = { promise: new Promise((_, r) => { reject = r; }), reject };
-      death.promise.catch(() => {});
-      deaths.set(name, death);
+  // The real generated adapter (observeResidentConfig) around each guest
+  // instance, for the capability its host opened it with: the harness models
+  // the facet transport, never the receiver.
+  const adapters = new Map();
+  const receivers = new WeakMap();
+  const receiverOf = (instance, capability) => {
+    let receiver = receivers.get(instance);
+    if (!receiver) {
+      let adapter = adapters.get(capability);
+      if (!adapter) adapters.set(capability, adapter = adapterFor(capability));
+      receivers.set(instance, receiver = adapter.then((Adapter) => new Adapter({ guest: instance }, {})));
     }
-    return death;
+    return receiver;
   };
+  const watches = new Map();
   const die = (name, error) => {
-    deaths.get(name)?.reject(error);
-    deaths.delete(name);
+    for (const controller of watches.get(name) ?? []) controller.error(error);
+    watches.delete(name);
   };
 
   const facets = {
     get(name, start) {
       return {
         async startProcess(args) { return (await ensure(name, start)).startProcess(args); },
-        async handleHttpRequest(request) { return (await ensure(name, start)).handleHttpRequest(request); },
-        // A resident's WebSocket entrypoint (ResidentFacet.handleWebSocketRequest).
-        async fetch(request) { return (await ensure(name, start)).fetch(request); },
-        // A runtime resident's class holds this open while its isolate lives.
-        held() { return deathOf(name).promise; },
+        // A resident's one entrypoint (observeResidentConfig): its watch, its
+        // upgrades and its HTTP. The call's signal is its request's, as the
+        // platform makes a fetch's: cancelling the call aborts it.
+        async fetch(request, init) {
+          const instance = await ensure(name, start);
+          const sent = init?.signal ? new Request(request, { signal: init.signal }) : request;
+          if (evaluatesAdapter) return instance.fetch(sent);
+          const capability = request.headers.get(HOST_WATCH_HEADER) ?? request.headers.get(HOST_REQUEST_HEADER) ?? undefined;
+          const response = await (await receiverOf(instance, capability)).fetch(sent);
+          if (!request.headers.has(HOST_WATCH_HEADER) || response.status !== 200 || !response.body) return response;
+          // A watch rides a stream the platform can end: its death errors it.
+          let active = watches.get(name);
+          if (!active) watches.set(name, active = new Set());
+          let held;
+          const relay = new TransformStream({ start(controller) { held = controller; active.add(controller); } });
+          void response.body.pipeTo(relay.writable).catch(() => {}).finally(() => active.delete(held));
+          return new Response(relay.readable, { headers: response.headers });
+        },
         // The journal reader's (LOADER.load above).
         async numberings() { return (await ensure(name, start)).numberings(); },
         async number(numbering) { return (await ensure(name, start)).number(numbering); },
@@ -121,8 +163,8 @@ export function createFacetWorld(evaluate, { resolveConfig = true } = {}) {
     // durable release relies on.
     // Whoever aborts or deletes a facet ended it, and what held it open
     // hears nothing (a release ignores it; a previous incarnation is gone).
-    abort(name) { live.delete(name); deaths.delete(name); },
-    delete(name) { live.delete(name); deaths.delete(name); resetProcessFacetStorage(name); },
+    abort(name) { live.delete(name); die(name, new Error('facet aborted')); },
+    delete(name) { live.delete(name); die(name, new Error('facet deleted')); resetProcessFacetStorage(name); },
   };
 
   return {
@@ -134,7 +176,9 @@ export function createFacetWorld(evaluate, { resolveConfig = true } = {}) {
     liveFacets: () => [...live.keys()],
     /** Drop a running facet the way a platform reset would, without releasing it. */
     lose: (name) => live.delete(name),
-    /** The facet's isolate dies on its own (out of memory, out of CPU): its held() call rejects with `error`. */
+    /** The platform puts a fresh instance of the facet's class in its place, without its host's start: the old one's watches end. */
+    replace: (name) => { live.set(name, classes.get(name).instantiate(name)); die(name, new Error('the facet was replaced')); },
+    /** The facet dies on its own; every active native observation rejects. */
     die: (name, error = new Error('Worker exceeded memory limit.')) => { live.delete(name); die(name, error); },
   };
 }
@@ -243,22 +287,21 @@ export function createFacetCtx(world, doId = 'do-test', storage = new Map(), { c
 // A `ProcessHost` of either kind, over the SAME facet world, so one suite can
 // be run twice and the two substrates compared assertion for assertion. The
 // peer arm is not a mock of the peer leg: each sibling serves the real
-// `_rpcHostProcess` / `_rpcAwaitHostedOpen` / `_rpcAwaitHostedBoot` /
+// `_rpcHostProcess` / `_rpcAwaitHostedBoot` /
 // `_rpcRouteHostedHttp` / `_rpcCancelHostProcess` legs and the upgrade hop
 // from its own PeerHost, behind a fake `NIMBUS_SESSION` namespace, so what is
 // under test on that arm is the shipped code.
 
 import {
+  _rpcAbandonHostedHttp,
   _rpcAwaitHostedBoot,
-  _rpcAwaitHostedOpen,
   _rpcCancelHostProcess,
   _rpcHostProcess,
   _rpcRouteHostedHttp,
   peerHostFor,
 } from '../../packages/worker/src/session/rpc.ts';
-import { isolateToken } from '../../packages/fabric/src/peer-host.ts';
+import { isolateToken, isHostedWatch, isHostedResidency } from '../../packages/fabric/src/peer-host.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
-import { timers } from '../../packages/fabric/src/timers.ts';
 import { composeFabric } from '../../packages/fabric/src/composition.ts';
 import { openSupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
 import { sqlJournal } from '../../packages/core/src/_shared/process-fs-journal.ts';
@@ -316,6 +359,7 @@ export function createProcessHost(mode, world, disk, {
     () => disk,
   );
   host.peers = peers;
+  host.acquireActivity = () => hostActivity(coordinator).acquire();
   host.namesResolved = calls;
   host.stubs = stubs;
   host.hostIncarnation = hostIncarnation;
@@ -325,18 +369,17 @@ export function createProcessHost(mode, world, disk, {
 /**
  * A fake `NIMBUS_SESSION` namespace whose sibling sessions host processes
  * through the REAL `_rpc*` host legs, over `world`'s facets. `peers` maps each
- * sibling's name to its state; `peer.die(error)` severs its held host leg
- * exactly as a Durable Object reset severs an inbound call.
+ * sibling's name to its state; `peer.die(error)` ends active watches and calls.
  *
  * `colocated: true` makes every peer report the COORDINATOR's isolate;
- * `peerWithoutFacets: true` gives each peer no `ctx.facets`. `coordinator`
- * (`{ doId, supervisorOp }`) is the session a peer reaches back to through
- * the same namespace. Each peer's storage records the alarm it arms
+ * `peerWithoutFacets: true` gives each peer no `ctx.facets`. Each peer's storage records the alarm it arms
  * (`ctx.storage.alarmAt`). `onPeer(peer)` sees each peer as it is made.
  */
-export function createPeerNamespace(world, hostEnv, { colocated = false, peerWithoutFacets = false, coordinator, onPeer } = {}) {
+export function createPeerNamespace(world, hostEnv, { colocated = false, peerWithoutFacets = false, onPeer } = {}) {
   const calls = [];
   const stubs = [];
+  /** Each request a coordinator routed to a peer, and the ones it abandoned, by id. */
+  const routed = [], abandoned = [];
   // Every `ns.get()` for one name reaches one peer, exactly as a DO namespace
   // does; a second stub for the same name must see the same hosted records.
   const peers = new Map();
@@ -360,17 +403,14 @@ export function createPeerNamespace(world, hostEnv, { colocated = false, peerWit
         // accepting the first candidate — would never run under test.
         isolateToken: colocated ? isolateToken() : `peer-isolate-${peers.size}`,
       };
-      // The held host leg is the peer's life. `die()` severs it exactly as a
-      // Durable Object reset severs an inbound call.
-      peer.death = new Promise((_, reject) => { peer.die = reject; });
+      // A reset closes native watches and rejects any bounded call in flight.
+      peer.deathSignal = new AbortController();
+      peer.death = new Promise((_, reject) => { peer.die = (error) => { peer.deathSignal.abort(error); reject(error); }; });
       peer.death.catch(() => {});
-      // `reset(error)` is the reset Cloudflare was measured doing (2026-10-07):
-      // the held leg stays open, and every later call to the peer fails with
-      // `error`.
+      // A loss while idle is found on the next request, not by a background watch.
       peer.resetBy = null;
       peer.reset = (error) => { peer.resetBy = error; };
-      // A session arms its hosting watch on its own timer mux (NimbusSession.peerHost).
-      peer.peerHost = peerHostFor(ctx, peer.env, (at) => timers(peer, ctx).arm('hosting-watch', at));
+      peer.peerHost = peerHostFor(ctx, peer.env);
       onPeer?.(peer);
       peers.set(name, peer);
     }
@@ -380,9 +420,6 @@ export function createPeerNamespace(world, hostEnv, { colocated = false, peerWit
     idFromName: (name) => name,
     idFromString: (id) => id,
     get(name) {
-      if (coordinator !== undefined && name === coordinator.doId) {
-        return { supervisorOp: (envelope) => Promise.resolve().then(() => coordinator.supervisorOp(envelope)) };
-      }
       const peer = peerFor(name);
       calls.push(name);
       // Stubs carry a disposer, as RPC stubs do, so a leg that forgets to
@@ -395,6 +432,8 @@ export function createPeerNamespace(world, hostEnv, { colocated = false, peerWit
         // to the same real handler the production entrypoint calls first.
         async fetch(request) {
           if (peer.resetBy) throw peer.resetBy;
+          if (isHostedResidency(request)) return peer.peerHost.reside(new Request(request, { signal: AbortSignal.any([request.signal, peer.deathSignal.signal]) }));
+          if (isHostedWatch(request)) return peer.peerHost.watch(new Request(request, { signal: AbortSignal.any([request.signal, peer.deathSignal.signal]) }));
           return peer.peerHost.routeWebSocket(request);
         },
         // The host forwards one envelope op; the arm still exercises the
@@ -402,13 +441,17 @@ export function createPeerNamespace(world, hostEnv, { colocated = false, peerWit
         // supervisorOp first, exactly as the shipped host does.
         supervisorOp(envelope) {
           const { op, args } = envelope;
-          if (peer.resetBy && op !== 'hostProcess') return Promise.reject(peer.resetBy);
+          if (peer.resetBy && op === 'cancelHostProcess') {
+            peer.resetBy = null;
+            peer.ctx = createFacetCtx(world, name, peer.ctx.storage.rows);
+            peer.peerHost = peerHostFor(peer.ctx, peer.env);
+          } else if (peer.resetBy && op !== 'hostProcess') return Promise.reject(peer.resetBy);
           switch (op) {
             case 'processHostProbe': return Promise.resolve({ isolateToken: peer.isolateToken });
             case 'hostProcess': return Promise.race([_rpcHostProcess(peer, args[0], args[1]), peer.death]);
-            case 'awaitHostedOpen': return _rpcAwaitHostedOpen(peer, args[0]);
-            case 'awaitHostedBoot': return _rpcAwaitHostedBoot(peer, args[0]);
-            case 'routeHostedHttp': return _rpcRouteHostedHttp(peer, args[0], args[1]);
+            case 'awaitHostedBoot': return Promise.race([_rpcAwaitHostedBoot(peer, args[0]), peer.death]);
+            case 'routeHostedHttp': routed.push(args[1].id); return _rpcRouteHostedHttp(peer, args[0], args[1]);
+            case 'abandonHostedHttp': abandoned.push(args[2]); return Promise.resolve(_rpcAbandonHostedHttp(peer, args[0], args[1], args[2]));
             case 'cancelHostProcess': return _rpcCancelHostProcess(peer, args[0]);
             default: return Promise.reject(new Error(`peer stub: unserved op ${op}`));
           }
@@ -416,7 +459,7 @@ export function createPeerNamespace(world, hostEnv, { colocated = false, peerWit
       };
     },
   };
-  return { ns, peers, calls, stubs };
+  return { ns, peers, calls, stubs, routed, abandoned };
 }
 
 /**

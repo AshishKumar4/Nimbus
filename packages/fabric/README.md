@@ -31,7 +31,11 @@ it the module fails to load at deploy time.
 date of 2026-04-21 or later, or the flag in `compatibility_flags` on an older
 date. A program's filesystem errors reach it across workerd RPC, and only
 that flag carries their `code`. On workerd without it `composeFabric` throws,
-naming both fixes, rather than every program seeing `EIO`. It throws where
+naming both fixes, rather than every program seeing `EIO`. It needs
+`enable_request_signal` in `compatibility_flags` too, on every date: a
+process owns work for a response until its client is done with it, and only
+that flag shows a client leaving. Without it `composeFabric` throws, naming
+the flag. It throws where
 it is called. At module scope the Worker fails at startup. A library host
 that composes through `NimbusWorkspace.create({ fabric })` deploys and
 starts, and its first create throws.
