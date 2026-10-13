@@ -2227,7 +2227,7 @@ export async function buildFacetVfsBundleSource(bundle, forceSideModules = false
     const rows = [];
     for (const [key, text] of runtimeCode ?? [])
         codeModules[runtimeCodeModuleName(key)] = text;
-    // Read only by a graph a program produces after its launch began (node-shims' late link plan).
+    // The facades' names, read only by a graph a program produces after its launch began (core esm-late-link.ts).
     if (esm !== undefined)
         codeModules[ESM_BINDINGS_MODULE] = JSON.stringify(esm.bindings);
     // An ES module's text is never its file's (its prologue, its specifiers):

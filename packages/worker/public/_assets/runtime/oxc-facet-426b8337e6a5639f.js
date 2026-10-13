@@ -6911,9 +6911,6 @@ error: the Oxc transform crashed (${reason})`);
   var ESM_STATIC_IMPORT = "nimbus:static-import";
   var ESM_LOAD_HELPER = `(require, source, type) => require(source, "${ESM_STATIC_IMPORT}", type)`;
   var ESM_MODULE_HELPERS = `{ exports: ${ESM_EXPORTS_HELPER}, star: ${ESM_STAR_HELPER}, conflicts: ${ESM_CONFLICTS_HELPER}, load: ${ESM_LOAD_HELPER} }`;
-  function exportName(node) {
-    return node.type === "Identifier" ? node.name : `${node.value}`;
-  }
   function importType(node) {
     const attributes = node.attributes ?? [];
     for (let i = 0; i < attributes.length; i++) {
@@ -6921,172 +6918,6 @@ error: the Oxc transform crashed (${reason})`);
       if ((key.type === "Identifier" ? key.name : key.value) === "type" && typeof value.value === "string") return value.value;
     }
     return null;
-  }
-  function esmRecord(node, lists) {
-    switch (node.type) {
-      case "ImportDeclaration": {
-        const bindings = lists.list();
-        for (let i = 0; i < node.specifiers.length; i++) {
-          const specifier = node.specifiers[i];
-          lists.push(bindings, specifier.type === "ImportNamespaceSpecifier" ? { kind: "namespace", local: specifier.local.name } : {
-            kind: "named",
-            local: specifier.local.name,
-            imported: specifier.type === "ImportDefaultSpecifier" ? "default" : exportName(specifier.imported)
-          });
-        }
-        return { kind: "import", start: node.start, end: node.end, source: `${node.source.value}`, type: importType(node), bindings };
-      }
-      case "ExportNamedDeclaration": {
-        const names = lists.list();
-        const declaration = node.declaration;
-        if (declaration) {
-          if (declaration.type === "VariableDeclaration") {
-            const ids = lists.list();
-            for (let i = 0; i < declaration.declarations.length; i++) bindingIdentifiers(declaration.declarations[i].id, ids);
-            for (let i = 0; i < ids.length; i++) lists.push(names, { kind: "named", exported: ids[i].name, local: ids[i].name });
-          } else {
-            lists.push(names, { kind: "named", exported: declaration.id.name, local: declaration.id.name });
-          }
-          return { kind: "export", start: node.start, end: declaration.start, source: null, type: null, names };
-        }
-        for (let i = 0; i < node.specifiers.length; i++) {
-          const specifier = node.specifiers[i];
-          lists.push(names, { kind: "named", exported: exportName(specifier.exported), local: exportName(specifier.local) });
-        }
-        return { kind: "export", start: node.start, end: node.end, source: node.source ? `${node.source.value}` : null, type: node.source ? importType(node) : null, names };
-      }
-      case "ExportDefaultDeclaration": {
-        const declaration = node.declaration;
-        if ((declaration.type === "FunctionDeclaration" || declaration.type === "ClassDeclaration") && declaration.id) {
-          const names = lists.list();
-          lists.push(names, { kind: "named", exported: "default", local: declaration.id.name });
-          return { kind: "export", start: node.start, end: declaration.start, source: null, type: null, names };
-        }
-        return { kind: "export-default", start: node.start, end: node.end, expression: { start: declaration.start, end: declaration.end } };
-      }
-      case "ExportAllDeclaration": {
-        if (node.exported) {
-          const names = lists.list();
-          lists.push(names, { kind: "namespace", exported: exportName(node.exported) });
-          return { kind: "export", start: node.start, end: node.end, source: `${node.source.value}`, type: importType(node), names };
-        }
-        return { kind: "export-all", start: node.start, end: node.end, source: `${node.source.value}`, type: importType(node) };
-      }
-      default:
-        return null;
-    }
-  }
-  function esmLink(records, lists) {
-    const exports = lists.list();
-    const requests = lists.list();
-    const namespaces = lists.list();
-    const stars = lists.list();
-    const none = lists.list();
-    const request = (source, type, kept, bindings) => {
-      lists.push(requests, { source, type, kept, bindings });
-      return requests.length - 1;
-    };
-    for (let i = 0; i < records.length; i++) {
-      const record = records[i];
-      switch (record.kind) {
-        case "import": {
-          const at2 = request(record.source, record.type, record.bindings.length > 0, record.bindings);
-          for (let j = 0; j < record.bindings.length; j++) {
-            const binding = record.bindings[j];
-            if (binding.kind === "namespace") lists.push(namespaces, { request: at2, local: binding.local });
-          }
-          break;
-        }
-        case "export": {
-          if (record.source === null) {
-            for (let j = 0; j < record.names.length; j++) {
-              const name = record.names[j];
-              if (name.kind === "named") lists.push(exports, { kind: "binding", exported: name.exported, local: name.local });
-            }
-            break;
-          }
-          const at2 = request(record.source, record.type, true, none);
-          for (let j = 0; j < record.names.length; j++) {
-            const name = record.names[j];
-            if (name.kind === "named") {
-              lists.push(exports, { kind: "reexport", exported: name.exported, request: at2, name: name.local });
-            } else {
-              lists.push(namespaces, { request: at2, local: null });
-              lists.push(exports, { kind: "namespace", exported: name.exported, namespace: namespaces.length - 1 });
-            }
-          }
-          break;
-        }
-        case "export-default":
-          lists.push(exports, { kind: "default", exported: "default" });
-          break;
-        case "export-all":
-          lists.push(stars, request(record.source, record.type, true, none));
-          break;
-      }
-    }
-    return { exports: byExportedName(exports, lists), requests, namespaces, stars };
-  }
-  function esmBindings(link, lists) {
-    const exports = lists.list();
-    for (let i = 0; i < link.exports.length; i++) lists.push(exports, link.exports[i].exported);
-    const imports = lists.list();
-    for (let i = 0; i < link.requests.length; i++) {
-      const names = lists.list();
-      const bindings = link.requests[i].bindings;
-      for (let j = 0; j < bindings.length; j++) {
-        const binding = bindings[j];
-        if (binding.kind === "named") lists.push(names, binding.imported);
-      }
-      lists.push(imports, names);
-    }
-    for (let i = 0; i < link.exports.length; i++) {
-      const entry = link.exports[i];
-      if (entry.kind === "reexport") lists.push(imports[entry.request], entry.name);
-    }
-    const types2 = lists.list();
-    for (let i = 0; i < link.requests.length; i++) lists.push(types2, link.requests[i].type);
-    const reexports = lists.list();
-    for (let i = 0; i < link.exports.length; i++) {
-      const entry = link.exports[i];
-      if (entry.kind === "reexport") lists.push(reexports, [entry.exported, entry.request, entry.name]);
-      else if (entry.kind === "namespace") lists.push(reexports, [entry.exported, link.namespaces[entry.namespace].request, null]);
-      else if (entry.kind === "binding") {
-        for (let r = 0; r < link.requests.length; r++) {
-          const bindings = link.requests[r].bindings;
-          for (let j = 0; j < bindings.length; j++) {
-            const binding = bindings[j];
-            if (binding.local === entry.local) lists.push(reexports, [entry.exported, r, binding.kind === "named" ? binding.imported : null]);
-          }
-        }
-      }
-    }
-    return { exports, imports, stars: link.stars, types: types2, reexports };
-  }
-  function byExportedName(entries, lists) {
-    const n = entries.length;
-    let sorted = true;
-    for (let i = 1; i < n && sorted; i++) sorted = !(entries[i].exported < entries[i - 1].exported);
-    if (sorted) return entries;
-    let from = entries;
-    let to = lists.list();
-    for (let i = 0; i < n; i++) lists.push(to, entries[i]);
-    for (let width = 1; width < n; width *= 2) {
-      for (let low = 0; low < n; low += 2 * width) {
-        const middle = low + width < n ? low + width : n;
-        const high = low + 2 * width < n ? low + 2 * width : n;
-        let i = low;
-        let j = middle;
-        let k = low;
-        while (i < middle && j < high) to[k++] = from[j].exported < from[i].exported ? from[j++] : from[i++];
-        while (i < middle) to[k++] = from[i++];
-        while (j < high) to[k++] = from[j++];
-      }
-      const merged = to;
-      to = from;
-      from = merged;
-    }
-    return from;
   }
 
   function createModuleLexer() {
@@ -9772,7 +9603,7 @@ error: the Oxc transform crashed (${reason})`);
     if (source[at2] === ",") at2 = skipTrivia(source, at2 + 1).at;
     return source[at2] === "}" ? { start: site.end, end: at2 + 1 } : void 0;
   }
-  function lexedImportSites(code, withBindings = false) {
+  function lexedImportSites(code) {
     const hashbang = code.startsWith("#!") ? lineEnd(code, 0) : 0;
     const source = hashbang ? " ".repeat(hashbang) + code.slice(hashbang) : code;
     const lexing = lexModule(source);
@@ -9783,10 +9614,6 @@ error: the Oxc transform crashed (${reason})`);
     const sites = [];
     const metas = [];
     const statics = [];
-    const imports = [];
-    const stars = [];
-    const types2 = [];
-    const clauses = [];
     for (const entry of lexed) {
       if (entry.t === DYNAMIC_IMPORT) sites.push({ ss: entry.ss, se: entry.se, d: entry.d, lexed: true });
       else if (entry.t === IMPORT_META) metas.push({ start: entry.s, end: entry.e });
@@ -9796,8 +9623,6 @@ error: the Oxc transform crashed (${reason})`);
         const type = (entry.at ?? []).find(([key]) => key === "type")?.[1] ?? null;
         const clause = (entry.at ?? []).length > 0 ? attributesClause(source, site, entry.se) : void 0;
         statics.push({ ...site, specifier: entry.n, attributes: type === null ? {} : { type }, ...clause ? { clause } : {} });
-        types2.push(type);
-        if (withBindings) clauses.push(source.slice(entry.ss, site.start));
       } else {
         return null;
       }
@@ -9821,134 +9646,7 @@ error: the Oxc transform crashed (${reason})`);
       }
       calls.push({ start: site.ss, open: site.d });
     }
-    const sitesRead = { calls, metas, statics, moduleSyntax: lexing[3] === true };
-    if (!withBindings) return sitesRead;
-    const tokens = clauseTokens(clauses);
-    if (tokens === null) return null;
-    const reexports = [];
-    const imported =   new Map();
-    for (let request = 0; request < tokens.length; request++) {
-      const read = clauseNames(tokens[request]);
-      if (read === null) return null;
-      if (read.star) stars.push(request);
-      const reexport = tokens[request][0]?.type === types$1._export;
-      for (const [name, from] of read.links) {
-        if (reexport) reexports.push([name, request, from]);
-        else imported.set(name, [request, from]);
-      }
-      imports.push(read.names);
-    }
-    const lexedExports = exportNames(lexing[1]);
-    if (lexedExports === null) return null;
-    for (const [name, local] of lexedExports) {
-      const binding = local === void 0 ? void 0 : imported.get(local);
-      if (binding !== void 0) reexports.push([name, ...binding]);
-    }
-    const exports = lexedExports.map(([name]) => name);
-    return { ...sitesRead, bindings: { exports, imports, stars, types: types2, reexports } };
-  }
-  function exportNames(lexedExports) {
-    if (!Array.isArray(lexedExports)) return null;
-    const names = [];
-    for (const entry of lexedExports) {
-      const name = typeof entry === "object" && entry !== null ? Reflect.get(entry, "n") : void 0;
-      const local = typeof entry === "object" && entry !== null ? Reflect.get(entry, "ln") : void 0;
-      if (typeof name !== "string") return null;
-      names.push([name, typeof local === "string" ? local : void 0]);
-    }
-    return names;
-  }
-  function clauseTokens(clauses) {
-    const lists = [[]];
-    if (clauses.length === 0) return [];
-    try {
-      for (const token of tokenizer2(clauses.join("\n;\n"), MODULE_PARSE_OPTIONS)) {
-        if (token.type === types$1.semi) lists.push([]);
-        else lists[lists.length - 1].push({ type: token.type, value: Reflect.get(token, "value") });
-      }
-    } catch {
-      return null;
-    }
-    return lists.length === clauses.length ? lists : null;
-  }
-  function clauseNames(tokens) {
-    let at2 = 1;
-    const is = (type) => tokens[at2]?.type === type;
-    const word = (value) => {
-      const token = tokens[at2];
-      if (token === void 0 || typeof token.value !== "string") return null;
-      if (token.type !== types$1.name && token.type !== types$1.string && token.type.keyword === void 0) return null;
-      if (value !== void 0 && (token.value !== value || token.type === types$1.string)) return null;
-      return token.value;
-    };
-    const list = () => {
-      const pairs = [];
-      at2++;
-      while (!is(types$1.braceR)) {
-        const name = word();
-        if (name === null) return null;
-        at2++;
-        let second = name;
-        if (word("as") !== null) {
-          at2++;
-          const renamed = word();
-          if (renamed === null) return null;
-          second = renamed;
-          at2++;
-        }
-        pairs.push([name, second]);
-        if (is(types$1.comma)) at2++;
-        else if (!is(types$1.braceR)) return null;
-      }
-      at2++;
-      return pairs;
-    };
-    const links = [];
-    const from = (names, star) => word("from") !== null && at2 === tokens.length - 1 ? { names, star, links } : null;
-    if (tokens[0]?.type === types$1._import) {
-      if (at2 === tokens.length) return { names: [], star: false, links };
-      const names = [];
-      if (!is(types$1.star) && !is(types$1.braceL)) {
-        const local = word();
-        if (local === null) return null;
-        names.push("default");
-        links.push([local, "default"]);
-        at2++;
-        if (!is(types$1.comma)) return from(names, false);
-        at2++;
-      }
-      if (is(types$1.star)) {
-        at2++;
-        if (word("as") === null) return null;
-        at2++;
-        const local = word();
-        if (local === null) return null;
-        links.push([local, null]);
-        at2++;
-        return from(names, false);
-      }
-      if (!is(types$1.braceL)) return null;
-      const named2 = list();
-      if (named2 === null) return null;
-      for (const [imported, local] of named2) links.push([local, imported]);
-      return from([...names, ...named2.map(([imported]) => imported)], false);
-    }
-    if (tokens[0]?.type !== types$1._export) return null;
-    if (is(types$1.star)) {
-      at2++;
-      if (word("as") === null) return from([], true);
-      at2++;
-      const exported = word();
-      if (exported === null) return null;
-      links.push([exported, null]);
-      at2++;
-      return from([], false);
-    }
-    if (!is(types$1.braceL)) return null;
-    const named = list();
-    if (named === null) return null;
-    for (const [local, exported] of named) links.push([exported, local]);
-    return from(named.map(([local]) => local), false);
+    return { calls, metas, statics, moduleSyntax: lexing[3] === true };
   }
   function rewriteFromLexer(code, call) {
     const sites = lexedImportSites(code);
@@ -9957,7 +9655,7 @@ error: the Oxc transform crashed (${reason})`);
   function readModuleImportSites(code) {
     let lexed;
     try {
-      lexed = lexedImportSites(code, true);
+      lexed = lexedImportSites(code);
     } catch (error) {
       if (!(isLexerError(error) || error instanceof SyntaxError || error instanceof RangeError)) throw error;
       lexed = null;
@@ -9966,7 +9664,6 @@ error: the Oxc transform crashed (${reason})`);
     const calls = [];
     const metas = [];
     const statics = [];
-    const records = [];
     let declarations = false;
     parseStatements(code, MODULE_PARSE_OPTIONS, {
       onNode: (node) => {
@@ -9974,10 +9671,6 @@ error: the Oxc transform crashed (${reason})`);
         else if (node.type === "MetaProperty" && node.meta.name === "import") metas.push({ start: node.start, end: node.end });
       },
       onStatement: (statement) => {
-        if (statement.type === "ImportDeclaration" || statement.type === "ExportNamedDeclaration" || statement.type === "ExportDefaultDeclaration" || statement.type === "ExportAllDeclaration") {
-          const record = esmRecord(statement, ARRAY_LISTS);
-          if (record !== null) records.push(record);
-        }
         if (statement.type === "ExportDefaultDeclaration") declarations = true;
         if (statement.type !== "ImportDeclaration" && statement.type !== "ExportAllDeclaration" && statement.type !== "ExportNamedDeclaration") return;
         declarations = true;
@@ -9991,17 +9684,8 @@ error: the Oxc transform crashed (${reason})`);
     });
     calls.sort((a, b) => a.start - b.start);
     metas.sort((a, b) => a.start - b.start);
-    return {
-      calls,
-      metas,
-      statics,
-      moduleSyntax: declarations || metas.length > 0,
-      bindings: esmBindings(esmLink(records, ARRAY_LISTS), ARRAY_LISTS)
-    };
+    return { calls, metas, statics, moduleSyntax: declarations || metas.length > 0 };
   }
-  var ARRAY_LISTS = { list: () => [], push: (list, value) => {
-    list.push(value);
-  } };
   var CODE_MARK = " import.meta ";
   function passedOver(source, imports, hazards) {
     const reported =   new Set();

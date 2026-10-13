@@ -20,25 +20,14 @@ export interface LateResolution {
     readonly path?: string;
     readonly builtin?: string;
 }
-/**
- * A staged module row's bindings (worker facets/esm-stage.ts EsmRowBindings,
- * a module's): its own names, the rows its `export *`s reach, by static
- * import that reads names the row it loads, its specifier as written and the
- * names, and its names that are another row's (the name, the row, the name
- * there; null for its namespace).
- */
-export type ModuleRowFacts = readonly [
-    exports: readonly string[],
-    stars: readonly number[],
-    imports: readonly (readonly [row: number, specifier: string, ...names: string[]])[],
-    reexports?: readonly (readonly [exported: string, row: number, name: string | null])[]
-];
 export interface LateLinkHost {
     /** The staged row of `kind` at `key` (a builtin's name), or -1. */
     row(kind: 'module' | 'commonjs' | 'json' | 'builtin', key: string): number;
     /** A staged row's kind: 'module', or a facade's ('commonjs', 'json', 'builtin'). */
     rowKind(row: number): string;
-    /** The launch's row bindings, as staging wrote them (worker facets/esm-stage.ts EsmRowBindings): JSON, by row. */
+    /** A staged row's key: a module's path, a builtin's name. */
+    rowKey(row: number): string;
+    /** The facades' export names, as staging wrote them (worker facets/esm-stage.ts EsmRowBindings): JSON, by row. */
     rowBindings(): string;
     /** A staged module row's static targets: a row, or -2 - i for the staging refused as missing(i). */
     rowTargets(row: number): readonly number[];

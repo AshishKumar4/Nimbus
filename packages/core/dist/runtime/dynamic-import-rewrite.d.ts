@@ -1,4 +1,3 @@
-import { type ModuleBindings } from './esm-interop.js';
 export declare const DYNAMIC_IMPORT_HELPER = "__nimbusDynamicImport";
 export declare function mayHaveDynamicImport(code: string): boolean;
 interface Span {
@@ -35,8 +34,6 @@ export interface ImportSites {
     readonly topLevelAwait?: true;
     /** The require() calls of its top level staging may hoist (esm-require-hoist.ts hoistableRequires). */
     readonly requires?: readonly string[];
-    /** What its imports need of their modules, by static specifier, and what it exports (readModuleImportSites); absent where not read. */
-    readonly bindings?: ModuleBindings;
 }
 /**
  * An ES module's import() calls, import.meta and static specifiers, as the

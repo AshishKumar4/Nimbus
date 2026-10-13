@@ -13,30 +13,64 @@
  * CommonJS lexer), so a launch whose imports never need it never compiles it.
  */
 import { cjsModuleExportNames } from './cjs-module-exports.js';
-/** The launch's row bindings, read once. */
-let rowBindings;
-function bindingsOf(host, row) {
-    if (rowBindings === undefined) {
-        try {
-            const parsed = JSON.parse(host.rowBindings());
-            rowBindings = parsed;
-        }
-        catch {
-            rowBindings = [];
-        }
-    }
-    return rowBindings[row] ?? null;
-}
-const isModuleRow = (bindings) => Array.isArray(bindings[0]);
-/** A staged module row's bindings, or null where unknown. */
-function moduleFacts(host, row) {
-    const bindings = bindingsOf(host, row);
-    return bindings !== null && isModuleRow(bindings) ? bindings : null;
-}
+/** The facades' export names, by row, read once. */
+let facadeNames;
 /** A facade row's export names, or null where unknown. */
 function rowNames(host, row) {
-    const bindings = bindingsOf(host, row);
-    return bindings !== null && !isModuleRow(bindings) ? bindings : null;
+    if (facadeNames === undefined) {
+        try {
+            const parsed = JSON.parse(host.rowBindings());
+            facadeNames = parsed;
+        }
+        catch {
+            facadeNames = [];
+        }
+    }
+    return facadeNames[row] ?? null;
+}
+/** Staged module rows' facts, by row, read from their sources when a link first needs them. */
+const rowFacts = new Map();
+/** A staged module row's facts, or null where its source does not tell them. */
+function moduleFacts(host, row) {
+    const known = rowFacts.get(row);
+    if (known !== undefined)
+        return known;
+    let facts = null;
+    const key = host.rowKey(row);
+    const text = host.source(key, row);
+    const analysis = text === null ? null : host.requests(key, text, true, 'module');
+    const bindings = analysis?.bindings;
+    const targets = host.rowTargets(row);
+    const specifiers = [];
+    for (const request of analysis?.requests ?? [])
+        if (request.kind === 'static')
+            specifiers.push(request.specifier);
+    if (bindings !== undefined && bindings.imports.length === targets.length && specifiers.length === targets.length) {
+        const exports = [];
+        for (let i = 0; i < bindings.exports.length; i++)
+            exports.push(bindings.exports[i]);
+        const stars = [];
+        for (let i = 0; i < bindings.stars.length; i++)
+            if (targets[bindings.stars[i]] >= 0)
+                stars.push(targets[bindings.stars[i]]);
+        const imports = [];
+        for (let at = 0; at < targets.length; at++) {
+            const names = [];
+            for (let i = 0; i < bindings.imports[at].length; i++)
+                names.push(bindings.imports[at][i]);
+            if (targets[at] >= 0 && names.length > 0)
+                imports.push([targets[at], specifiers[at], ...names]);
+        }
+        const reexports = [];
+        for (let i = 0; i < bindings.reexports.length; i++) {
+            const [exported, at, name] = bindings.reexports[i];
+            if (targets[at] >= 0)
+                reexports.push([exported, targets[at], name]);
+        }
+        facts = { exports, stars, imports, reexports };
+    }
+    rowFacts.set(row, facts);
+    return facts;
 }
 /** Every late module a link has read, by URL: what an interpreted module's `export *` asks of (starConflicts). */
 const lateModules = new Map();
@@ -256,7 +290,7 @@ function edgesOf(host, late, target) {
     const facts = host.rowKind(target.row) === 'module' ? moduleFacts(host, target.row) : null;
     if (facts === null)
         return [];
-    return facts[2].map(([row, specifier, ...names]) => ({ target: { row }, specifier, names }));
+    return facts.imports.map(([row, specifier, ...names]) => ({ target: { row }, specifier, names }));
 }
 /** A name its module's `export *`s reach two different bindings of. */
 const AMBIGUOUS = 'ambiguous';
@@ -270,9 +304,9 @@ function factsOf(host, late, target) {
     if (facts === null)
         return null;
     return {
-        exports: facts[0],
-        stars: facts[1].map((row) => ({ row })),
-        reexports: (facts[3] ?? []).map(([exported, row, name]) => [exported, { row }, name]),
+        exports: facts.exports,
+        stars: facts.stars.map((row) => ({ row })),
+        reexports: facts.reexports.map(([exported, row, name]) => [exported, { row }, name]),
     };
 }
 /**

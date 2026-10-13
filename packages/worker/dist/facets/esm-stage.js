@@ -293,23 +293,6 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
             }
         }
         targetNames.push(targets);
-        // What its static imports read of their rows, by the specifiers as written.
-        const read = sites.bindings;
-        if (read !== undefined && read.imports.length === sites.statics.length) {
-            const imports = [];
-            for (let at = 0; at < sites.statics.length; at++) {
-                if (rowTargets[at] >= 0 && read.imports[at].length > 0)
-                    imports.push([rowTargets[at], sites.statics[at].specifier, ...read.imports[at]]);
-            }
-            const stars = read.stars.map((at) => rowTargets[at]).filter((row) => row >= 0);
-            const reexports = read.reexports
-                .filter(([, at]) => rowTargets[at] >= 0)
-                .map(([exported, at, name]) => [exported, rowTargets[at], name]);
-            bindings[id] = [read.exports, stars, imports, reexports];
-        }
-        else {
-            bindings[id] = null;
-        }
         id++;
     }
     // The require() calls a module's top level can make static imports
