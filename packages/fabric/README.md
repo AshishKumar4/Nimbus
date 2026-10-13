@@ -390,7 +390,10 @@ Three platform rules shape them. A `WorkerStub` does not serialize, so each
 hop is its own `WorkerEntrypoint` class. A stub belongs to the request that
 minted it, so the shims store code rather than stubs and re-resolve through
 `LOADER.get(id, cb)`; workerd caches by ID, and the code map is capped at 32
-entries. An RPC method is a wildcard property, so call `ep.method(request)`
+entries. A keyed Worker is cached under its loader's owner namespace, its
+network and its id: each binding's minter names its owner (once per build in
+`nimbus wrangler dev`), so two owners never share a Worker under one id, and a
+loader without an owner has no keyed Workers. An RPC method is a wildcard property, so call `ep.method(request)`
 and never `method.call(ep, request)`, which workerd refuses.
 
 Nesting is capped at depth 4. Raise it with `NIMBUS_INNER_LOADER_DEPTH`.

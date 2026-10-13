@@ -12,6 +12,7 @@ interface NodeSourceTexts {
     nodeLib: string;
     nodeLibRest: string;
     nodeDns: string;
+    esmLate: string;
 }
 /** Generators accept inline test sources and digest-verified deployed sources through the same path. */
 export interface NodeFacetSources extends NodeSourceTexts {

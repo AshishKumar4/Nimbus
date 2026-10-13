@@ -32,7 +32,7 @@ const env = { LOADER: {
   load(code) { captured.loads.push(code); return stub; },
   get(key, callback) { captured.gets.push({ key, code: Promise.resolve(callback()) }); return stub; },
 } };
-const loader = Object.assign(Object.create(NimbusLoaderRPC.prototype), { ctx: { props: {}, exports }, env });
+const loader = Object.assign(Object.create(NimbusLoaderRPC.prototype), { ctx: { props: { namespace: 'facet-policy-owner' }, exports }, env });
 
 for (const keyed of [false, true]) {
   const loaded = keyed ? await loader.get('fixture', () => forged) : loader.load(forged);
