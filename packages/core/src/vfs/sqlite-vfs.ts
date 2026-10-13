@@ -68,7 +68,7 @@ import {
   type CreditLease,
 } from '@nimbus-sh/platform/weighted-credit-pool.js';
 import { createHash } from 'node:crypto';
-import { posixAccess } from './posix-access.js';
+import { posixAccess, type PosixNodeType } from './posix-access.js';
 import { RecallRequired, recallOf, withRecall } from './recall.js';
 import { SESSION_KERNEL_ROOTS, readLeaseCovers } from '../_shared/read-lease-cover.js';
 export { RecallRequired, recallOf, withRecall } from './recall.js';
@@ -3236,16 +3236,11 @@ export class SqliteVFS {
   }
 
   private accessInode(inode: INode, want: number, cred: VfsCred): boolean {
-    return this.accessMode(inode.mode, inode.uid, inode.gid, want, cred, inode.isDir);
+    return this.accessMode(inode.mode, inode.uid, inode.gid, inode.kind, want, cred);
   }
 
-  /**
-   * `directory`: whether the entry is one. A stored mode may carry no
-   * file-type bits (mkdir keeps the permission bits it was given), and root's
-   * search of a directory depends on it (posixAccess).
-   */
-  private accessMode(mode: number, uid: number, gid: number, want: number, cred: VfsCred, directory: boolean): boolean {
-    return posixAccess({ mode, uid, gid, directory }, want, cred);
+  private accessMode(mode: number, uid: number, gid: number, type: PosixNodeType, want: number, cred: VfsCred): boolean {
+    return posixAccess({ mode, uid, gid, type }, want, cred);
   }
 
   /**
@@ -3544,7 +3539,7 @@ export class SqliteVFS {
    * removing a name in it needs write and search there like any directory.
    */
   private checkRootWritable(path: string, cred: VfsCred): void {
-    if (!this.accessMode(ROOT_DIRECTORY_MODE, 0, 0, 0o3, cred, true)) throw vfsKeyError('EACCES', normalizeVfsPath(path));
+    if (!this.accessMode(ROOT_DIRECTORY_MODE, 0, 0, 'directory', 0o3, cred)) throw vfsKeyError('EACCES', normalizeVfsPath(path));
   }
 
   private checkParentAccess(path: string, cred: VfsCred): void {
@@ -8765,7 +8760,7 @@ export class SqliteVFS {
       const staged = pending.get(parent);
       if (!staged || !staged.isDir) throw vfsKeyError('ENOENT', parent);
       checkParent(parent, placing);
-      if (!this.accessMode(staged.mode, staged.uid ?? 1000, staged.gid ?? 1000, 0o3, cred, true)) {
+      if (!this.accessMode(staged.mode, staged.uid ?? 1000, staged.gid ?? 1000, 'directory', 0o3, cred)) {
         throw vfsKeyError('EACCES', parent);
       }
     };

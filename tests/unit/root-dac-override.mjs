@@ -4,7 +4,8 @@
 // mode; it executes a regular file only when some execute bit is set.
 //   1. the one calculation (posixAccess), on directories and files;
 //   2. the session's store: root stats, lists and writes under a mode-000
-//      directory, and rm -r of a tree holding one removes it whole;
+//      directory (chmod'ed to it, made with it, or made so by a batch), and
+//      rm -r of a tree holding one removes it whole;
 //   3. a mounted backend that keeps modes without file-type bits;
 //   4. the namespace's check.
 // Red before: root was denied search on a directory with no execute bits, so
@@ -23,14 +24,14 @@ const ROOT = { uid: 0, gid: 0, groups: [0] };
 const USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 
 // ── 1. the one calculation ───────────────────────────────────────────────
-const closedDir = { mode: 0o040000, uid: 1000, gid: 1000 };
-const closedFile = { mode: 0o100000, uid: 1000, gid: 1000 };
-const ownerExec = { mode: 0o100100, uid: 1000, gid: 1000 };
+const closedDir = { mode: 0o000, uid: 1000, gid: 1000, type: 'directory' };
+const closedFile = { mode: 0o000, uid: 1000, gid: 1000, type: 'file' };
+const ownerExec = { mode: 0o100, uid: 1000, gid: 1000, type: 'file' };
 assert.deepEqual([1, 2, 4, 7].map((want) => posixAccess(closedDir, want, ROOT)), [true, true, true, true], 'root searches, writes and reads a mode-000 directory');
 assert.deepEqual([2, 4, 6].map((want) => posixAccess(closedFile, want, ROOT)), [true, true, true], 'root reads and writes a mode-000 file');
 assert.equal(posixAccess(closedFile, 1, ROOT), false, 'root does not execute a file with no execute bit');
 assert.equal(posixAccess(ownerExec, 1, ROOT), true, 'root executes a file any execute bit is set on');
-assert.equal(posixAccess({ mode: 0, uid: 1000, gid: 1000, directory: true }, 1, ROOT), true, 'a directory named as one, its mode without type bits');
+assert.equal(posixAccess({ mode: 0o040000, uid: 1000, gid: 1000, type: 'file' }, 1, ROOT), false, 'the type is the entry\'s own, not its mode bits');
 assert.equal(posixAccess(closedDir, 1, USER), false, 'others are still judged by the mode');
 
 // ── 2. the session's store ───────────────────────────────────────────────
@@ -53,6 +54,31 @@ assert.equal(posixAccess(closedDir, 1, USER), false, 'others are still judged by
   harness.db.close();
 }
 
+// ── 2b. a directory made with mode 000, alone and in a batch ─────────────
+// mkdir keeps the permission bits it is given, without file-type bits; the
+// directory is a directory all the same.
+{
+  const harness = createSqliteVfsTestHarness();
+  const engine = new SqliteVFS(harness.sql, harness.ctx);
+  const root = engine.as(CRED_KERNEL);
+  root.mkdir('home', { mode: 0o755 });
+  root.mkdir('home/closed', { mode: 0 });
+  root.writeFile('home/closed/f', 'f');
+  assert.equal(root.stat('home/closed/f').size, 1, 'root writes and stats under a directory made with mode 000');
+  root.writeBatch({
+    inodes: [
+      { path: 'batch', parentPath: '', isDir: true, size: 0, mtime: 1, mode: 0o000, chunkCount: 0 },
+      { path: 'batch/inner', parentPath: 'batch', isDir: true, size: 0, mtime: 1, mode: 0o000, chunkCount: 0 },
+      { path: 'batch/inner/f', parentPath: 'batch/inner', isDir: false, size: 0, mtime: 1, mode: 0o644, chunkCount: 0 },
+    ],
+    chunks: [],
+  });
+  assert.deepEqual(root.readdir('batch/inner').map((entry) => entry.name), ['f'], 'and under directories a batch made with mode 000');
+  assert.deepEqual(root.removeRecursive('home/closed'), { removed: ['home/closed'], kept: [], failures: [] });
+  assert.deepEqual(root.removeRecursive('batch'), { removed: ['batch'], kept: [], failures: [] });
+  harness.db.close();
+}
+
 // ── 3. a mounted backend whose modes carry no file-type bits ─────────────
 {
   const memory = new MemoryVFS({ uid: 1000, gid: 1000 });
@@ -65,7 +91,7 @@ assert.equal(posixAccess(closedDir, 1, USER), false, 'others are still judged by
 }
 
 // ── 4. the namespace's check ─────────────────────────────────────────────
-assert.equal(namespaceAllows(ROOT, { mode: 0o040000, uid: 1000, gid: 1000 }, 1), true, 'the namespace lets root search a mode-000 directory');
-assert.equal(namespaceAllows(ROOT, { mode: 0o100000, uid: 1000, gid: 1000 }, 1), false, 'and not execute a file with no execute bit');
+assert.equal(namespaceAllows(ROOT, { mode: 0, uid: 1000, gid: 1000 }, 'directory', 1), true, 'the namespace lets root search a mode-000 directory');
+assert.equal(namespaceAllows(ROOT, { mode: 0, uid: 1000, gid: 1000 }, 'file', 1), false, 'and not execute a file with no execute bit');
 
 console.log('root-dac-override: ok');
