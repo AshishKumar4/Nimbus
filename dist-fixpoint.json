@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "5df1e043c53a59eba54a7078f2ebcc7bb481ff620669b43a31b952f55354824a",
+  "fingerprint": "8576f076efcb9e36dc33e8fa44962eaf936d7142acce2286c75cfce5c8078bd1",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1288,9 +1288,9 @@
     "packages/core/dist/workspace/nimbus-workspace.d.ts": "f4458bb029ab03120ee6916f8cb009537d16b5e1d0d903b30e703ff9343bcd33",
     "packages/core/dist/workspace/nimbus-workspace.d.ts.map": "b87a0f2f9883d411309d35deaa76646a381f9074ec7f5dd7135b178f92c4ac0c",
     "packages/core/dist/workspace/nimbus-workspace.js": "1784a6daeb0fb76f6ae0e428751f773c3f9fbc6e331b312a5c0c614562eee9ab",
-    "packages/core/dist/workspace/supervisor-delivery.d.ts": "8342a6f4048ebd6d7b1a9d64ddc32c803a77892a30b1de68d0ffc1d7edaa95fc",
-    "packages/core/dist/workspace/supervisor-delivery.d.ts.map": "2101d1065babadeeffd30015d395e5946669cb5a4362847a62e7e84123e45e44",
-    "packages/core/dist/workspace/supervisor-delivery.js": "3729c7cab308cabef3d7a49ed1879f46d3facf6468c2c7bc5a4ad7bb2aed3289",
+    "packages/core/dist/workspace/supervisor-delivery.d.ts": "6cddb9525278afa8c1aee8b31149358e48b3325e997a9e02021e057f4305b618",
+    "packages/core/dist/workspace/supervisor-delivery.d.ts.map": "87b3ab35f63ebe6e298785b94b463e7fcc0b142722b61ad702934496c0c3447a",
+    "packages/core/dist/workspace/supervisor-delivery.js": "a2c5f61c933ad96a014b0488249050d07ded68c07932e54be88063f3492ca575",
     "packages/core/dist/workspace/supervisor-op.d.ts": "66fd7f541f8669cf8fb38be65c854f21a7c4eb8ab1deede72bde85e59f728181",
     "packages/core/dist/workspace/supervisor-op.d.ts.map": "3f2b9a3c17869afade7b9ca1000f73ca5d98049cb7a592a53102e2d33601503f",
     "packages/core/dist/workspace/supervisor-op.js": "7e16f3bbf6567debcd9f5bc82207c321ccf3d45c2ffed5f1e05c17d67331376a",
@@ -1716,7 +1716,7 @@
     "packages/core/src/workspace/child-process-runner.ts": "1b4b9ffc912d17997df71fb88b03ba10fe0231e760c6f46796ca409b7c61f675",
     "packages/core/src/workspace/named-shells.ts": "280f61ea14a9aef4a31ddcda074fd791a05d864370d716d8ae22a400d62c2793",
     "packages/core/src/workspace/nimbus-workspace.ts": "68247f9c5f63fd3b1a4ef963f9ceb706f5660df8d840acd96402793f859679b3",
-    "packages/core/src/workspace/supervisor-delivery.ts": "fbb2b20aa98761f09cfbe0dc4b0a8d988629bda867aa5c9550016ccbcd358ef3",
+    "packages/core/src/workspace/supervisor-delivery.ts": "080bc3fe00f1e352557bbd574c95ba79505ce2ecec298e02e6e41a528824ee56",
     "packages/core/src/workspace/supervisor-op.ts": "486c98daebbd15e5edb1c5bf34139f47928eafc6de5f19086c10858aedaaa4d1",
     "packages/core/src/workspace/supervisor-ops.ts": "d16ae90a4d4e6f202e53511548def4699db9cb12765f858709c44d9de6f76b2f",
     "packages/core/src/workspace/workspace-fs.ts": "c540fc01f7eea3f6507a2ace5e2e279f55100d5915682dbdd85a7cb9460eb5da",
