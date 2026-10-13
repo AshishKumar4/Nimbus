@@ -1148,7 +1148,7 @@ async function assertRepositoryFormat(
 ): Promise<{ worktreeConfig: boolean }> {
   if (repo.linked) return await assertRepositoryImplemented(git, fs, repo);
   let revision = 0;
-  try { revision = ctx.vfs.revision(`${repo.gitdir}/config`); } catch { /* not told: read */ }
+  try { revision = await ctx.vfs.process.revision(`${repo.gitdir}/config`); } catch { /* not told: read */ }
   const key = `${ctx.cred.uid}:${ctx.cred.gid}:${ctx.cred.groups.join(',')}:${repo.gitdir}`;
   let verdicts = formatVerdicts.get(session);
   if (verdicts === undefined) formatVerdicts.set(session, verdicts = new Map());
