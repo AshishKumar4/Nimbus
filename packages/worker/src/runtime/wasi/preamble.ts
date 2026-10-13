@@ -47,7 +47,6 @@ import type {
 
 import {
   installAuthorityFilesystem,
-  lowestFreeFd,
   processGoneMessage,
   WASI_ACCEPTED_PATH_PREFIX,
   WASI_LISTEN_PATH_PREFIX,
@@ -416,6 +415,7 @@ export function __wasiInitFS(opts: WasiInitOptions): void {
   fdTable.set(0, { kind: 'stdin' });
   fdTable.set(1, { kind: 'stdout' });
   fdTable.set(2, { kind: 'stderr' });
+  nextFd = 3;
   for (const po of (opts.preopens || [])) {
     const fd = __wasiAllocateFd();
     const vfsPath = __wasiCanonicalize(po.vfsPath);
@@ -658,9 +658,12 @@ function __wasiAdoptSocket(socket: WasiSocket, fdflags: number): number {
 // writes to it. The mask is advisory for this module's own kinds; the codec
 // enforces rights on its descriptors.
 export const fdTable = new Map<number, FdEntry>();
-// The only source of descriptor numbers, for files, sockets and pipes alike.
-// From 3: the host answers 0, 1 and 2 as the guest's streams by number.
-function __wasiAllocateFd(): number { return lowestFreeFd(fdTable, 3); }
+let nextFd = 3;
+// The only source of descriptor numbers. A second counter — one for files, one
+// for sockets — hands the same number out twice and the later open silently
+// destroys the earlier fd's entry. fd_renumber and dup2 place entries at
+// numbers the guest picks, so the counter steps over a number one holds.
+function __wasiAllocateFd(): number { while (fdTable.has(nextFd)) nextFd++; return nextFd++; }
 
 
 

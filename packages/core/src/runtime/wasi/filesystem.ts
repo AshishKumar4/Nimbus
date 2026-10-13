@@ -140,23 +140,10 @@ const num = (value: number | bigint): number => {
   return n;
 };
 
-/**
- * The lowest descriptor number at or above `from` that no entry of `taken`
- * holds and is not `reserved`, as POSIX open(2) and dup(2) choose one. Every
- * WASI host's allocator: fd_renumber and dup2 place entries at numbers the
- * guest picks, so a counter would hand one of them out again.
- */
-export function lowestFreeFd(taken: { has(fd: number): boolean }, from: number, reserved?: number): number {
-  let fd = from;
-  while (taken.has(fd) || fd === reserved) fd++;
-  return fd;
-}
-
 export interface AuthorityFilesystemOptions {
   fs(): RuntimeFsBridge | null;
   memory(): WebAssembly.Memory;
   fds: Map<number, FilesystemFd>;
-  /** The lowest number not in `fds`: it is taken once its entry is set, so set it before asking again. */
   allocateFd(): number;
   abi?: 'preview0' | 'preview1';
   synchronous: boolean;

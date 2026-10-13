@@ -43,7 +43,7 @@ import type {
   BashWasiFsImports,
   BashWasiImports,
 } from './types.js';
-import { after, installAuthorityFilesystem, lowestFreeFd, processGoneMessage, refusalErrno } from '../wasi/filesystem.js';
+import { after, installAuthorityFilesystem, processGoneMessage, refusalErrno } from '../wasi/filesystem.js';
 import { supervisorFilesystem } from '../vfs-supervisor.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
 import { PIPE_CAPACITY, decideRead, decideWrite, heldExitSettles, holdsExit, pipeBudget, pipeLimitMessage, readerStops } from './pipe-rules.js';
@@ -180,7 +180,7 @@ function wakeWriters(pp: BashPipe): void {
 // real 'preopen' entry: wasi-libc's path ops fd_fdstat_get the dirfd
 // to compute inherited rights, so it must answer (not EBADF), and
 // lowestFd must never re-issue it for a regular file.
-function lowestFd(proc: BashProc): number { return lowestFreeFd(proc.fds, 0, 3); }
+function lowestFd(proc: BashProc): number { let fd = 0; while (proc.fds.has(fd) || fd === 3) fd++; return fd; }
 function bumpPipe(s: BashSession, e: { pipeId: number; end: 'r' | 'w' }, d: number): void { const pp = s.pipes.get(e.pipeId) as BashPipe; if (e.end === 'r') pp.readers += d; else pp.writers += d; }
 function closeFd(s: BashSession, proc: BashProc, fd: number): void {
   const e = proc.fds.get(fd);

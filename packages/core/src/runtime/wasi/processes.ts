@@ -128,7 +128,6 @@ export interface ChildNews {
 export interface ProcessHostOptions {
   /** The guest's descriptor table, shared with the rest of its WASI layer. */
   fds: Map<number, FdEntry | PipeFdEntry>;
-  /** The lowest number not in `fds`: it is taken once its entry is set, so set it before asking again. */
   allocateFd(): number;
   memory(): WebAssembly.Memory;
   /** The supervisor the guest's facet holds, and the guest's own pid. */
@@ -398,8 +397,8 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
     pipe(fdsPtr) {
       const pipe = newPipe();
       const read = opts.allocateFd();
-      opts.fds.set(read, { kind: 'pipe', end: 'read', pipe });
       const write = opts.allocateFd();
+      opts.fds.set(read, { kind: 'pipe', end: 'read', pipe });
       opts.fds.set(write, { kind: 'pipe', end: 'write', pipe });
       pipe.readers = 1;
       pipe.writers = 1;
