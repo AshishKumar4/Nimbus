@@ -68,10 +68,13 @@ def observed (S : St) (P : Principal) (composed : Bool) (operand q : Path) : Opt
 
 def namesAt (S : St) (P : Principal) (composed : Bool) (operand q : Path) : List String :=
   if composed then
-    if synth S.mounts P q && look (treeAt S q) (rel S.mounts q) != some .dir then
-      ((mountChildren S.mounts P q).eraseDups.mergeSort (fun a b => decide (a ≤ b))).filter
-        (fun n => !absent S.mounts P (q ++ [n]))
-    else listing S P q
+    -- Fixture backends start in path order. Composite readdirOf keeps those own
+    -- names first and appends mount names in table order, not lexical order.
+    -- Alias races make that order observable even when the report is sorted.
+    let extra := (mountChildren S.mounts P q).eraseDups
+    let own := if synth S.mounts P q && look (treeAt S q) (rel S.mounts q) != some .dir then []
+      else (children (treeAt S q) (rel S.mounts q)).eraseDups.mergeSort (fun a b => decide (a ≤ b))
+    ((own.filter (fun n => !extra.contains n)) ++ extra).filter (fun n => !absent S.mounts P (q ++ [n]))
   else (children (S.trees (owner S composed operand q).backend) (localPath S composed operand q)).eraseDups.mergeSort
     (fun a b => decide (a ≤ b))
 

@@ -424,6 +424,10 @@ def directedRemoval : List Json :=
     removalCase "rm-r-shared-backend-disappearance-does-not-skip-later-mount-rmdir"
       [⟨["tree", "a"], 1, none⟩, ⟨["tree", "b"], 1, none⟩]
       [(0, mountRoot), (1, [(["leaf"], .file 2)])]
+      [(0, fullCaps 0), (1, { walkedCaps with faults := { stat := [(["leaf"], "ENOENT")] } })] (rm true),
+    removalCase "rm-r-shared-backend-reversed-mount-order"
+      [⟨["tree", "b"], 1, none⟩, ⟨["tree", "a"], 1, none⟩]
+      [(0, mountRoot), (1, [(["leaf"], .file 2)])]
       [(0, fullCaps 0), (1, { walkedCaps with faults := { stat := [(["leaf"], "ENOENT")] } })] (rm true) ]
 
 def fixture : String :=
