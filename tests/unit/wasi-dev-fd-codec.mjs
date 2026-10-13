@@ -267,5 +267,39 @@ await check('a hold kept at a name is not the copy of another file the name has 
   assert.equal((await p.authority.fstat(p.fds.get(again).hold.handle)).ino, p.fds.get(again).stat.ino);
 });
 
+await check('a /dev/fd reopen closes the holds let go before it', async () => {
+  const p = await processWith({ 'q.txt': 'q' }, { session: true });
+  const fd = await p.open('home/user/q.txt');
+  const first = await p.open(`dev/fd/${fd}`);
+  const firstHold = p.fds.get(first).hold.handle;
+  await p.close(first);
+  const second = await p.open(`dev/fd/${fd}`);
+  assert.equal((await outcome(() => p.authority.fstat(firstHold))).code, 'EBADF', 'the next reopen closed it');
+  await p.close(second);
+});
+
+await check('holds let go with no open after them are closed past a bound, not kept to the end', async () => {
+  const p = await processWith({ 'b.txt': 'b' }, { session: true });
+  const fd = await p.open('home/user/b.txt');
+  const copies = [];
+  for (let i = 0; i < 80; i++) copies.push(await p.open(`dev/fd/${fd}`));
+  const firstHold = p.fds.get(copies[0]).hold.handle;
+  for (const copy of copies) await p.close(copy);
+  assert.equal((await outcome(() => p.authority.fstat(firstHold))).code, 'EBADF', 'closed, though no open came after');
+});
+
+await check('a kept hold whose name fails its stat is not lost', async () => {
+  const p = await processWith({ 'k.txt': 'k', 'other.txt': 'o' }, { session: true, keep: 1 });
+  const fd = await p.open('home/user/k.txt');
+  const held = p.fds.get(fd).hold.handle;
+  await p.close(fd);
+  await p.kernel.chmod('/home/user', 0);
+  assert.equal(await p.openErrno('home/user/k.txt'), E.ACCES, 'its name cannot be walked');
+  await p.kernel.chmod('/home/user', 0o755);
+  await p.close(await p.open('home/user/other.txt'));
+  await p.open('home/user/other.txt');
+  assert.equal((await outcome(() => p.authority.fstat(held))).code, 'EBADF', 'the hold the failed open took is closed');
+});
+
 assert.deepEqual(failures, []);
 console.log('wasi-dev-fd-codec: ok');
