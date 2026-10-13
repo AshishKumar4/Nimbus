@@ -6865,9 +6865,8 @@ export class FacetManager {
     spec: ProcessBundleSpec,
     pacer: TurnBudget,
   ): Promise<FacetVfsState> {
-    if (!this.vfs) {
-      return { bundle: {}, reachableCount: 0, truncated: false };
-    }
+    // No filesystem: an empty bundle, its map's share taken as any other's.
+    if (!this.vfs) return await this._holdMapShare(entry, { bundle: {}, reachableCount: 0, truncated: false });
     if (!this.filesystem) throw new Error('Process filesystem authority is not initialized');
     this.imageStore.ensureDir(entry.pid);
     // Its program runs under the node shims, every way out of which waits at
