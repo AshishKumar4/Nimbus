@@ -1167,24 +1167,32 @@ const __fsMod = (() => {
   }
   /** \`extra.settled\`: answered already; else the next queued mutation settles it. "absentTree" drops the entries beneath. */
   function _nsOwnSet(k, state, extra) {
-    const before = _nsOwn.get(k);
     const entry = {
       state, from: extra?.from, link: extra?.link, target: extra?.target, hide: !!extra?.hide, mode: extra?.mode,
       settled: extra?.settled ? _barrierBegins : null,
       word: null,
     };
     entry.word = _nsWordOf(entry);
+    if (!_nsOwnPut(k, entry)) return;
+    if (state === "absentTree") _nsOwnDropBeneath(k);
+    if (!extra?.settled && state !== "file") _nsFresh.push(entry);
+  }
+  /**
+   * An entry kept under \`k\`: a new one, or one a rename moves, which keeps
+   * its identity and with it its settlement. False when the store has sealed
+   * the view: the structural operation still reaches its authority, as
+   * aborting midway would strand earlier entries with no mutation to retire
+   * them.
+   */
+  function _nsOwnPut(k, entry) {
+    const before = _nsOwn.get(k);
     try { __resident.namespace.overlayDelta(_nsOwnCost(k, entry) - (before ? _nsOwnCost(k, before) : 0)); }
     catch (error) {
-      // The view is sealed by the store. Let the already-projected structural
-      // operation reach its authority/ack; aborting midway would strand
-      // earlier overlays with no owning mutation to retire them.
-      if (__resident.admission.inHeap && error?.code === "ENOSPC") return;
+      if (__resident.admission.inHeap && error?.code === "ENOSPC") return false;
       throw error;
     }
     _nsOwn.set(k, entry);
-    if (state === "absentTree") _nsOwnDropBeneath(k);
-    if (!extra?.settled && state !== "file") _nsFresh.push(entry);
+    return true;
   }
   function _nsOwnDrop(k, entry) {
     _nsOwn.delete(k);
@@ -4767,8 +4775,11 @@ const __fsMod = (() => {
     const replaced = _nsOwn.get(newN);
     if (replaced) _nsOwnDrop(newN, replaced);
     _nsOwnDropBeneath(newN);
+    // Each keeps its identity under the new name. One not settled yet
+    // settles with the move too: the authority takes the move after all that
+    // was queued beneath the old name.
     for (const [key, entry] of ownMoved) {
-      _nsOwnSet(key, entry.state, { from: entry.from, link: entry.link, target: entry.target, hide: entry.hide, mode: entry.mode });
+      if (_nsOwnPut(key, entry) && entry.settled === null) _nsFresh.push(entry);
     }
     if ((nsFrom !== null || movedLink !== undefined) && !_nsOwn.has(newN)) _nsOwnSet(newN, "alias", { from: nsFrom ?? undefined, link: movedLink });
     _nsOwnSet(oldN, "absentTree");
