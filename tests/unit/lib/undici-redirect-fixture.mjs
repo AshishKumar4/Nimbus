@@ -59,21 +59,49 @@ for (let index = 0; index < 2; index++) {
 }
 `.trim();
 
-/** @type {{ status: number, target: string, method: string, bytes?: boolean, flat?: boolean, stream?: boolean }[]} */
+/**
+ * A request body of each kind undici.request takes, 'payload' in each:
+ * a string (undefined), a Buffer, a Node Readable, an async generator, a Web
+ * ReadableStream, a sync generator, an array of Buffers, a Blob.
+ * @typedef {'bytes' | 'readable' | 'async' | 'web' | 'generator' | 'array' | 'blob'} BodyKind
+ */
+/** @type {{ status: number, target: string, method: string, kind?: BodyKind, flat?: boolean }[]} */
 export const REDIRECT_CASES = [
   ...[300, 301, 302, 303, 307, 308].flatMap((status) => ['cross', 'same'].map((target) => ({ status, target, method: 'POST' }))),
   ...['PUT', 'DELETE', 'GET', 'HEAD'].map((method) => ({ status: 303, target: 'cross', method })),
-  ...[301, 302, 307, 308].map((status) => ({ status, target: 'cross', method: 'PUT', bytes: true })),
+  ...[301, 302, 307, 308].map((status) => ({ status, target: 'cross', method: 'PUT', kind: 'bytes' })),
   ...[304, 305, 306, 309].map((status) => ({ status, target: 'cross', method: 'GET' })),
   { status: 307, target: 'roundtrip', method: 'POST', flat: true },
   { status: 308, target: 'same', method: 'POST', flat: true },
-  ...[303, 307, 308].map((status) => ({ status, target: 'cross', method: 'POST', stream: true })),
+  ...[303, 307, 308].map((status) => ({ status, target: 'cross', method: 'POST', kind: 'readable' })),
+  ...['async', 'web', 'generator', 'array', 'blob'].flatMap((kind) => [301, 303, 307].map((status) => ({ status, target: 'cross', method: 'POST', kind }))),
 ];
+
+/**
+ * The kinds undici 6's RedirectHandler cannot send twice: a stream, and any
+ * iterable but a string or a byte view, which it wraps to mark used once
+ * read (lib/handler/redirect-handler.js BodyAsyncIterable). Sent with the
+ * first request, each is disturbed when the redirect arrives, so it is not
+ * followed.
+ */
+const SENT_ONCE = ['readable', 'async', 'web', 'generator', 'array'];
 
 export const REDIRECT_CLIENT = String.raw`
 const { request } = require('undici');
 const { Readable } = require('stream');
 const cases = ${JSON.stringify(REDIRECT_CASES)};
+const bodyOf = (kind, text) => {
+  switch (kind) {
+    case 'bytes': return Buffer.from(text);
+    case 'readable': return Readable.from([text]);
+    case 'async': return (async function* () { yield Buffer.from(text); })();
+    case 'web': return new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(text)); controller.close(); } });
+    case 'generator': return (function* () { yield Buffer.from(text); })();
+    case 'array': return [Buffer.from(text)];
+    case 'blob': return new Blob([text]);
+    default: return text;
+  }
+};
 const run = async (origin = process.argv[2]) => {
   const results = [];
   for (const entry of cases) {
@@ -89,7 +117,7 @@ const run = async (origin = process.argv[2]) => {
     const before = JSON.stringify(input);
     const response = await request(origin + '/hop?status=' + entry.status + '&target=' + entry.target, {
       method: entry.method, headers: input,
-      body: entry.stream ? Readable.from([body]) : entry.bytes ? Buffer.from(body) : body,
+      body: body === undefined ? undefined : bodyOf(entry.kind, body),
       maxRedirections: 3,
     });
     const received = JSON.parse(response.headers['x-observed']);
@@ -143,8 +171,8 @@ export function redirectFailures(report) {
     const entry = REDIRECT_CASES[i];
     const result = report.results[i];
     if (!result) continue;
-    const label = `${entry.status} ${entry.method} ${entry.target}${entry.flat ? ' flat headers' : ''}${entry.stream ? ' stream' : ''}`;
-    const followed = [300, 301, 302, 303, 307, 308].includes(entry.status) && !entry.stream;
+    const label = `${entry.status} ${entry.method} ${entry.target}${entry.flat ? ' flat headers' : ''}${entry.kind ? ` ${entry.kind} body` : ''}`;
+    const followed = [300, 301, 302, 303, 307, 308].includes(entry.status) && !SENT_ONCE.includes(entry.kind);
     const rewrite = followed && entry.status === 303 && entry.method !== 'HEAD';
     const cross = followed && entry.target !== 'same';
     check(`${label} status`, result.statusCode, followed ? 200 : entry.status);
