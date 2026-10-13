@@ -39,8 +39,8 @@ export interface BuildWranglerOptions {
   /**
    * Compatibility date. Default `2026-09-26`. A date keeps every other
    * behavior it selects; the config names each flag Nimbus needs that the
-   * date does not enable: `enhanced_error_serialization` before 2026-04-21
-   * and `nodejs_compat` before 2026-08-04.
+   * date does not enable: `enhanced_error_serialization` before 2026-04-21,
+   * `nodejs_compat` before 2026-08-04, and `enable_request_signal` always.
    */
   compatibilityDate?: string;
   /** Smart placement on/off. Default `true`. */
@@ -149,15 +149,18 @@ export const NIMBUS_REQUIRED_ALIASES: Readonly<Record<string, string>> = Object.
 
 /**
  * The flags Nimbus needs, each with the compatibility date from which
- * workerd enables it (src/workerd/io/compatibility-date.capnp): a config
- * names a flag only when its date is earlier. `enhanced_error_serialization`
- * (`enhancedErrorSerialization @115`) carries a filesystem error's `code`
- * across RPC; composeFabric refuses a Worker without it. `nodejs_compat`
- * (`nodeJsCompat @21`) brings `node:crypto` and `node:async_hooks`.
+ * workerd enables it (src/workerd/io/compatibility-date.capnp), or null when
+ * no date does: a config names a flag unless its date is the config's or
+ * earlier. `enhanced_error_serialization` (`enhancedErrorSerialization @115`)
+ * carries a filesystem error's `code` across RPC, and `enable_request_signal`
+ * (`enableRequestSignal @90`) shows a request's client leaving; composeFabric
+ * refuses a Worker without either. `nodejs_compat` (`nodeJsCompat @21`)
+ * brings `node:crypto` and `node:async_hooks`.
  */
-const REQUIRED_FLAGS: ReadonlyArray<readonly [flag: string, onByDate: string]> = [
+const REQUIRED_FLAGS: ReadonlyArray<readonly [flag: string, onByDate: string | null]> = [
   ['nodejs_compat', '2026-08-04'],
   ['enhanced_error_serialization', '2026-04-21'],
+  ['enable_request_signal', null],
 ];
 
 /**
@@ -197,7 +200,7 @@ export function buildNimbusWranglerConfig(opts: BuildWranglerOptions): WranglerC
     name: opts.name,
     main: 'src/index.ts',
     compatibility_date: compatDate,
-    compatibility_flags: REQUIRED_FLAGS.filter(([, onByDate]) => compatDate < onByDate).map(([flag]) => flag),
+    compatibility_flags: REQUIRED_FLAGS.filter(([, onByDate]) => onByDate === null || compatDate < onByDate).map(([flag]) => flag),
     // Shell commands run in the session DO; the platform's 30 s default kills long ones.
     limits: { cpu_ms: cpuMs, subrequests },
     assets: {

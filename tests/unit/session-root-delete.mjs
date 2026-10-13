@@ -75,6 +75,10 @@ function sessionState() {
     ensureSqliteFs() { this.filesystem ??= new SessionFilesystem(new SqliteVFS(harness.sql, harness.ctx), this); },
     terminal: null,
     facetManager: null,
+    ensureFacetManager() {
+      this.facetManager ??= { kill: () => false, async closeLaunches() {} };
+      return { manager: this.facetManager };
+    },
   };
   host.ensureSqliteFs();
   const files = () => { host.ensureSqliteFs(); return host.sqliteFs.as(CRED_KERNEL); };

@@ -26,6 +26,11 @@ import {
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { MemoryVFS } from '@nimbus-sh/core/vfs/memory.js';
 import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { processHostMode } from '../../../packages/worker/src/loaders/process-host.js';
+import { disposeRpcResource } from '../../../packages/platform/src/rpc-dispose.js';
+import { peerPlacement } from '@nimbus-sh/fabric/process-host.js';
+import { abortFacet } from '@nimbus-sh/fabric/workerd-facet-host.js';
+import { z } from 'zod/v4';
 import type { EgressProcess, EgressStreams, EgressTlsTarget, WorkspaceEgress, WorkspaceEgressTls } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { CANARY_PROJECT, CANARY_WHEEL, canaryPypiJson, canaryWheel } from './egress-canary.js';
 
@@ -233,6 +238,30 @@ export class TestTlsEgress extends TestEgress implements WorkspaceEgressTls {
 
 /** The SDK's session under the embedder's per-session test egress. */
 export class NimbusSession extends SdkNimbusSession {
+  private requireProbeDiagnostics(): void {
+    if (!('NIMBUS_DEBUG' in this.env) || this.env.NIMBUS_DEBUG !== '1') throw new Error('probe diagnostics are disabled');
+  }
+  _rpcProbePlacement(pid: number) {
+    this.requireProbeDiagnostics();
+    return peerPlacement(this.ctx, pid);
+  }
+  _rpcProbeCoordinatorReset(): never {
+    this.requireProbeDiagnostics();
+    this.ctx.abort('probe: coordinator reset');
+  }
+  async _rpcProbePeer(workerKey: string, action: 'inspect' | 'facet-reset' | 'host-reset', coordinator: string) {
+    this.requireProbeDiagnostics();
+    const current = await this.peerHost.inspect(workerKey);
+    if (!current.found) return current;
+    if (current.coordinator !== coordinator) throw new Error('the probe placement belongs to another coordinator');
+    if (action === 'host-reset') this.ctx.abort('probe: hosting actor reset');
+    if (action === 'facet-reset') {
+      if (current.facet === null) throw new Error('the probe process is already absent');
+      abortFacet(this.ctx, current.facet,
+        Object.assign(new Error('Durable Object reset because its code was updated.'), { durableObjectReset: true }));
+    }
+    return current;
+  }
   /** The embedder mount at /mnt/data, made once per instance with its filesystem. */
   #dataMounted = false;
 
@@ -278,26 +307,24 @@ const nimbus = createNimbusHandler({
   sdk: { remote: true },
 });
 
-const EMBEDDER_WORKER_RE = /^\/api\/embedder\/([A-Za-z0-9._-]+)\/spawn-worker$/;
-type ProbeEnv = Parameters<typeof nimbus.fetch>[1] & { CF_VERSION_METADATA?: { id: string } };
+const EMBEDDER_WORKER_RE = /^\/api\/embedder\/([A-Za-z0-9._-]+)\/(spawn-worker|host-loss|quiet-websocket)$/;
+type ProbeEnv = Omit<Parameters<typeof nimbus.fetch>[1], 'NIMBUS_SESSION'> & {
+  NIMBUS_SESSION: DurableObjectNamespace<NimbusSession>;
+  NIMBUS_DEBUG?: string;
+};
+const HostLossProbe = z.discriminatedUnion('action', [
+  z.object({ action: z.literal('mode') }),
+  z.object({ action: z.enum(['inspect', 'state', 'facet-reset', 'host-reset', 'coordinator-reset']), pid: z.number().int().positive().safe() }),
+  z.object({ action: z.literal('placement-state'), peerName: z.string(), workerKey: z.string() }),
+]);
 
+// Readiness replies carry x-nimbus-version from createNimbusHandler itself.
 export default {
   async fetch(request: Request, env: ProbeEnv, ctx: ExecutionContext): Promise<Response> {
-    const path = new URL(request.url).pathname;
-    const match = request.method === 'POST' ? EMBEDDER_WORKER_RE.exec(path) : null;
-    const response = match ? await spawnEmbedderWorker(request, env, match[1]) : await nimbus.fetch(request, env, ctx);
-    const versionId = env.CF_VERSION_METADATA?.id;
-    // Stamp the three readiness replies, including 101; leave encoded asset
-    // and port responses intact instead of rebuilding their body metadata.
-    const readiness = (request.method === 'POST' && path === '/new')
-      || (request.method === 'GET' && /^\/s\/[^/]+\/ws$/.test(path))
-      || (request.method === 'DELETE' && /^\/s\/[^/]+\/$/.test(path));
-    if (!versionId || !readiness) return response;
-    const headers = new Headers(response.headers);
-    headers.set('x-nimbus-probe-version', versionId);
-    return new Response(response.body, {
-      status: response.status, statusText: response.statusText, headers, webSocket: response.webSocket,
-    });
+    const match = request.method === 'POST' ? EMBEDDER_WORKER_RE.exec(new URL(request.url).pathname) : null;
+    if (!match) return nimbus.fetch(request, env, ctx);
+    return match[2] === 'host-loss' ? probeHostLoss(request, env, match[1])
+      : match[2] === 'quiet-websocket' ? spawnQuietWebSocket(request, env, match[1]) : spawnEmbedderWorker(request, env, match[1]);
   },
 };
 
@@ -371,6 +398,91 @@ async function spawnEmbedderWorker(request: Request, env: any, sessionId: string
       { status: 500, headers: { 'Cache-Control': 'no-store' } },
     );
   }
+}
+
+async function probeHostLoss(request: Request, env: ProbeEnv, sessionId: string): Promise<Response> {
+  let owner: DurableObjectStub<NimbusSession> | undefined;
+  try {
+    if (env.NIMBUS_DEBUG !== '1') return new Response('Not found', { status: 404 });
+    const verified = await verifyRequestToken(request, env);
+    if (!verified) return authRequiredResponse();
+    requireScopes(verified, ['sandbox:use']);
+    requireSessionPin(verified, sessionId);
+    const parsed = HostLossProbe.safeParse(await request.json());
+    if (!parsed.success) return new Response('Bad probe request', { status: 400 });
+    const input = parsed.data;
+    if (input.action === 'mode') return Response.json({ mode: processHostMode(env) });
+    const coordinator = env.NIMBUS_SESSION.idFromName(`${verified.claims.tn}:${verified.claims.sub ?? '_'}:${sessionId}`).toString();
+    if (input.action === 'placement-state') {
+      const peer = env.NIMBUS_SESSION.get(env.NIMBUS_SESSION.idFromName(input.peerName));
+      try { return Response.json(await peer._rpcProbePeer(input.workerKey, 'inspect', coordinator)); }
+      finally { disposeRpcResource(peer); }
+    }
+    owner = env.NIMBUS_SESSION.get(env.NIMBUS_SESSION.idFromString(coordinator));
+    const rows = await owner._rpcListProcesses();
+    const process = rows.find((row) => row.pid === input.pid);
+    if (!process) return new Response('Unknown process', { status: 404 });
+    if (input.action === 'state') return Response.json(process);
+    const placement = await owner._rpcProbePlacement(input.pid);
+    if (!placement) return new Response('Peer process not found', { status: 404 });
+    if (input.action === 'coordinator-reset') {
+      try { await owner._rpcProbeCoordinatorReset(); }
+      catch { return Response.json({ reset: true, placement }); }
+      throw new Error('the coordinator reset returned normally');
+    }
+    const peer = env.NIMBUS_SESSION.get(env.NIMBUS_SESSION.idFromName(placement.peerName));
+    try {
+      const before = await peer._rpcProbePeer(placement.workerKey, 'inspect', coordinator);
+      if (!before.found) return new Response('Peer process not found', { status: 404 });
+      if (input.action === 'inspect') return Response.json({ ...before, placement });
+      try {
+        return Response.json(await peer._rpcProbePeer(placement.workerKey, input.action, coordinator));
+      } catch (error) {
+        if (input.action !== 'host-reset') throw error;
+        const fresh = env.NIMBUS_SESSION.get(env.NIMBUS_SESSION.idFromName(placement.peerName));
+        try {
+          const after = await fresh._rpcProbePeer(placement.workerKey, 'inspect', coordinator);
+          if (after.incarnation === before.incarnation) throw new Error('the hosting actor did not reset');
+          return Response.json({ reset: true, before: before.incarnation, after: after.incarnation });
+        } finally { disposeRpcResource(fresh); }
+      }
+    } finally { disposeRpcResource(peer); }
+  } catch (error) {
+    if (error instanceof NimbusAuthError) return authErrorResponse(error);
+    return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 });
+  } finally { disposeRpcResource(owner); }
+}
+
+async function spawnQuietWebSocket(request: Request, env: ProbeEnv, sessionId: string): Promise<Response> {
+  let stub: DurableObjectStub<NimbusSession> | undefined;
+  try {
+    const verified = await verifyRequestToken(request, env);
+    if (!verified) return authRequiredResponse();
+    requireScopes(verified, ['sandbox:use']); requireSessionPin(verified, sessionId);
+    const box = Nimbus.fromEnv(env).sandbox(sessionId, { tenant: verified.claims.tn, subject: verified.claims.sub ?? '_' });
+    await box.ready();
+    stub = env.NIMBUS_SESSION.get(env.NIMBUS_SESSION.idFromName(`${verified.claims.tn}:${verified.claims.sub ?? '_'}:${sessionId}`));
+    const code = `import { DurableObject } from 'cloudflare:workers';
+export class NimbusProcess extends DurableObject {
+  nonce = crypto.randomUUID();
+  startProcess() { return { nonce: this.nonce }; }
+  handleHttpRequest() { return Response.json(this.startProcess()); }
+  fetch(request) {
+    if (request.headers.get('Upgrade') !== 'websocket') return this.handleHttpRequest(request);
+    const [client, server] = Object.values(new WebSocketPair());
+    server.addEventListener('message', () => server.send(JSON.stringify(this.startProcess())));
+    server.addEventListener('close', () => server.close());
+    server.accept(); server.send(JSON.stringify(this.startProcess()));
+    return new Response(null, { status: 101, webSocket: client });
+  }
+}`;
+    const spawned = await stub._rpcSpawnWorker(code, 'quiet preview socket', '/home/user', { port: 3248 });
+    try { return Response.json({ pid: spawned.pid, port: 3248, boot: z.object({ nonce: z.string().uuid() }).parse(spawned.boot) }); }
+    finally { disposeRpcResource(spawned); }
+  } catch (error) {
+    if (error instanceof NimbusAuthError) return authErrorResponse(error);
+    return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 });
+  } finally { disposeRpcResource(stub); }
 }
 
 function authRequiredResponse(): Response {

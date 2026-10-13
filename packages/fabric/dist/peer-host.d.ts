@@ -13,7 +13,7 @@
  */
 import { type WorkspaceEgress } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { z } from 'zod/v4';
-import type { ResidentBootSpec } from './process-fabric.js';
+import { type ResidentBootSpec } from './process-fabric.js';
 export declare function isolateToken(): string;
 /**
  * Options the coordinator hands a hosting peer. Parsed on the peer, because a
@@ -46,10 +46,15 @@ export type HostProcessOpts = z.infer<typeof HostProcessOptsSchema>;
  * and a live SSE body still streams.
  */
 export interface HostedHttpRequest {
+    capability: string;
     method: string;
     url: string;
     headers: [string, string][];
     body: ReadableStream | null;
+    /** Its id, by which its coordinator can abandon it, the watermark below which the peer forgets, and abandons it carries (SentRequests). */
+    id: number;
+    low: number;
+    abandoned?: number[];
 }
 export interface HostedHttpResponse {
     status: number;
@@ -57,6 +62,12 @@ export interface HostedHttpResponse {
     headers: [string, string][];
     body: ReadableStream | null;
 }
+export type HostedReply<T> = T | {
+    hostLost: string;
+};
+export declare const HOSTED_WATCH_HEADER = "x-nimbus-hosted-watch";
+export declare const HOSTED_RESIDENCY_HEADER = "x-nimbus-hosted-residency";
+export declare const HOSTED_FAILURE_HEADER = "x-nimbus-hosted-failure";
 /**
  * Which hosted process a fetched upgrade is for. An upgrade cannot travel as
  * RPC arguments, so the two values `_rpcRouteHostedHttp` would have taken ride
@@ -75,7 +86,9 @@ export declare const HOSTED_WEBSOCKET_CAPABILITY_HEADER = "x-nimbus-hosted-webso
  * the object's own.
  */
 export declare function isHostedWebSocket(request: Request): boolean;
-/** What the object hosting processes supplies: the two things the fabric cannot know. */
+export declare function isHostedWatch(request: Request): boolean;
+export declare function isHostedResidency(request: Request): boolean;
+/** The embedder's boot-spec authority. */
 export interface PeerHostOptions {
     /**
      * The boot-spec schema with the embedder's own stage
@@ -83,17 +96,7 @@ export interface PeerHostOptions {
      * what it boots.
      */
     bootSpec: z.ZodType<ResidentBootSpec>;
-    /**
-     * Arm the hosting watch through the object's own scheduler: a session's
-     * timer mux, or an embedder's lifecycle, which owns its alarm.
-     */
-    scheduleWatch(at: number): Promise<void>;
 }
-/**
- * How often a host holding a process looks for its own reset: the resident
- * keep-alive's cadence, so the session learns of it within one cadence.
- */
-export declare const HOSTING_WATCH_MS = 5000;
 /**
  * The processes this Durable Object hosts for its siblings, and every leg a
  * coordinator's {@link PeerProcessHost} calls on it. One per object: its
@@ -103,6 +106,7 @@ export declare const HOSTING_WATCH_MS = 5000;
 export declare class PeerHost {
     private readonly ctx;
     private readonly options;
+    private readonly incarnation;
     private readonly records;
     private readonly waiters;
     private readonly env;
@@ -116,47 +120,33 @@ export declare class PeerHost {
     probe(): {
         isolateToken: string;
     };
-    /**
-     * Host a resident process. Held open by the coordinator for the process's
-     * whole life, and it is that held call which keeps this object resident —
-     * the hosting watch is armed to report a reset, never to wake a host back
-     * up. Resolves when the coordinator releases the process; rejects if it
-     * could not be opened at all.
-     *
-     * The runner's start CONTRACT never crosses. The coordinator's fabric decides
-     * from it when the process is over and releases, which cancels this call — so
-     * this leg holds uniformly and has no idea whether it is hosting a TUI or a
-     * server.
-     *
-     * If the coordinator dies, workerd cancels this inbound call, the facet is
-     * released in the `finally` below, and the process dies with it: a hosting
-     * peer never outlives its parent session.
-     */
-    host(boot: unknown, opts: unknown): Promise<{
-        ok: boolean;
+    /** A hosting record's current physical actor, without admitting guest work. */
+    inspect(workerKey: string): Promise<{
+        found: boolean;
+        incarnation: string;
+        facet: string | null;
+        coordinator: string | null;
+        residencies: number;
+        watchers: number;
     }>;
-    /**
-     * Settle once the process is OPEN on this peer, or reject with whatever
-     * stopped it from opening.
-     *
-     * This exists so a host failure surfaces at the same place on both substrates.
-     * Opening a facet of your own DO either throws or does not, before the fabric
-     * has a handle; opening one on a peer is a message, and without this the
-     * coordinator would return a handle for a process that never existed and only
-     * discover it later, through `done`.
-     */
-    awaitOpen(workerKey: string): Promise<{
+    /** Open once and answer. Observation and release are independently owned calls. */
+    host(boot: unknown, opts: unknown): Promise<HostedReply<{
         ok: boolean;
-    }>;
+        incarnation: string;
+    }>>;
     /**
      * Read back the runner's startProcess payload. `host` started it; this
      * never starts anything, so a coordinator asking twice gets the same answer
      * a local facet would have returned inline — and for a `lifetime` runner it
      * settles at exit, exactly as the local one does.
      */
-    awaitBoot(workerKey: string): Promise<{
+    awaitBoot(workerKey: string): Promise<HostedReply<{
         payload: unknown;
-    }>;
+    } | {
+        refused: unknown;
+    }>>;
+    /** The coordinator abandons request `id` of a process this peer hosts (SentRequests): its leaf's call is cancelled. */
+    abandonHttp(workerKey: string, capability: string, id: number): Promise<void>;
     /**
      * Inbound HTTP for a port owned by a process this peer hosts.
      *
@@ -170,9 +160,13 @@ export declare class PeerHost {
      *
      * The response body is re-piped through an identity stream owned by THIS
      * isolate before it is returned, for the same reason the parts exist at all:
-     * what leaves here must not be an object the loaded worker owns.
+     * what leaves here must not be an object the loaded worker owns. That
+     * pipe's end is when this host's work for the response is done; the
+     * coordinator abandons the request by its id (abandonHttp), which cancels its leaf's call,
+     * before its headers or after, and the leaf's guest ending its body ends
+     * the pipe.
      */
-    routeHttp(workerKey: string, wire: HostedHttpRequest): Promise<HostedHttpResponse>;
+    routeHttp(workerKey: string, wire: HostedHttpRequest): Promise<HostedReply<HostedHttpResponse>>;
     /**
      * The peer end of the upgrade hop (isHostedWebSocket). Reached by `fetch`
      * rather than RPC, so the 101 and its live socket travel back as
@@ -188,27 +182,20 @@ export declare class PeerHost {
     /**
      * Deterministic kill of a hosted process — the same teardown a coordinator
      * applies to a facet of its own, and it does not answer until it has
-     * happened. The facet is released HERE rather than left to the held call's
-     * `finally`, because a caller that has to guess whether the process is really
-     * gone cannot retire the writer identity behind it.
+     * happened: a caller that has to guess whether the process is gone cannot
+     * retire the writer identity behind it.
      */
     cancel(workerKey: string): Promise<{
         cancelled: boolean;
     }>;
-    /**
-     * The hosting alarm. A row whose process this incarnation does not hold is
-     * one the platform reset this object under (a new incarnation remembers
-     * nothing of the processes it held, and the held leg that would have said so
-     * may stay open, measured 2026-10-07): the session is told at once, and the
-     * row is dropped once the session has answered, whatever it answered. A row
-     * the session did not hear about is kept, and so is the watch: the next
-     * alarm tells it again. A failure to read or drop the rows is retried the
-     * same way, since the dispatcher forgets a reason whose handler throws.
-     * Answers when to look again, or null when nothing is left to watch.
-     */
-    watchFired(): Promise<number | null>;
-    /** One that cannot be armed throws, and the host refuses the process rather than hold one nothing would report the loss of. */
-    private armWatch;
+    /** One abortable observation bridges coordinator activity to this actor. */
+    watch(request: Request): Promise<Response>;
+    /** The coordinator retains its endpoint unaccepted; only the peer receives events. */
+    reside(request: Request): Promise<Response>;
+    private socket;
+    private authorized;
+    private gone;
+    private answer;
     private register;
     /**
      * The record for `workerKey`, waiting briefly if the host leg has not landed

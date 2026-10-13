@@ -1,10 +1,11 @@
 #!/usr/bin/env bun
 // @tier slow — 64-cycle health and version cases; CI 37.65 s wall (2026-10-08).
 import assert from 'node:assert/strict';
-import { waitForTarget } from '../behavioral/_deploy-target.mjs';
+import { waitForTarget, waitForVersion } from '../behavioral/_deploy-target.mjs';
+import { VERSION_HEADER } from '../behavioral/_session-transport.mjs';
 
 const uploaded = 'uploaded-version';
-const header = 'x-nimbus-probe-version';
+const header = VERSION_HEADER;
 const cycles = 64;
 const failures = [];
 
@@ -80,5 +81,45 @@ for (const mode of ['ready', 'mint-mismatch', 'upgrade-mismatch', 'delete-mismat
     server.stop(true);
   }
 }
+// A deployment readiness cannot open a session on (the hosted demo): its
+// stamped answers count only from the uploaded version. The old version
+// stamps nothing at all, as the version before this one did.
+for (const mode of ['old-first', 'old-mid-streak', 'paced', 'never-new']) {
+  let answers = 0;
+  const server = Bun.serve({
+    hostname: '127.0.0.1', port: 0,
+    fetch(request) {
+      assert.equal(request.method, 'POST');
+      assert.equal(new URL(request.url).pathname, '/api/nimbus/v1/sandboxes/nimbus-readiness/rpc');
+      assert.equal(request.headers.get('authorization'), null, 'readiness needs no credential');
+      answers++;
+      const old = mode === 'never-new' || (mode === 'old-first' && answers === 1) || (mode === 'old-mid-streak' && answers === 10);
+      return Response.json({ ok: false, code: 'E_AUTH_MISSING' }, { status: 401, headers: old ? {} : { [header]: uploaded } });
+    },
+  });
+  try {
+    const floorMs = mode === 'paced' ? 20 : 1;
+    const started = Date.now();
+    let error;
+    try { await waitForVersion(server.url.origin, uploaded, { timeoutMs: mode === 'never-new' ? 300 : 15_000, floorMs }); }
+    catch (caught) { error = caught; }
+    if (mode === 'never-new') {
+      assert.ok(error, 'an old version can never declare the uploaded version ready');
+      assert.equal(error.exitCode, 2, 'exhausting readiness is NOT GRADED');
+      assert.match(error.message, /answered version null, expected uploaded version uploaded-version/);
+    } else {
+      assert.equal(error, undefined, `${mode}: ${error?.message}`);
+      const expected = cycles + (mode === 'old-first' ? 1 : mode === 'old-mid-streak' ? 10 : 0);
+      assert.equal(answers, expected, `${mode}: only ${cycles} consecutive answers from the uploaded version declare readiness`);
+      if (mode === 'paced') assert.ok(Date.now() - started >= (cycles - 1) * floorMs, 'each answer is paced to the cycle floor');
+    }
+    console.log(`PASS stamped ${mode}: ${answers} answers`);
+  } catch (error) {
+    failures.push(`stamped ${mode}: ${error.message}`);
+  } finally {
+    server.stop(true);
+  }
+}
+
 assert.deepEqual(failures, []);
 console.log('deploy-version-readiness: PASS');

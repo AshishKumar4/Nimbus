@@ -94,12 +94,18 @@ function __nimbusProcessFs() {
  */
 function __nimbusSubmitVfs(op, acknowledged = false) {
   if (typeof globalThis.__nimbusPendingOps !== "number") globalThis.__nimbusPendingOps = 0;
+  if (typeof globalThis.__nimbusAcknowledgedVfsOps !== "number") globalThis.__nimbusAcknowledgedVfsOps = 0;
   // The program's own change, as it made it: what a run made again (the
   // runner's stop-replay, where it has one) has to make the same way.
   if (typeof __nimbusStopReplay !== "undefined") __nimbusStopReplay.mutation(op);
   const answer = __nimbusProcessFs().submit(op, { acknowledged });
   globalThis.__nimbusPendingOps++;
-  const settled = () => { globalThis.__nimbusPendingOps--; globalThis.__nimbusHandleReleased?.(); };
+  if (acknowledged) globalThis.__nimbusAcknowledgedVfsOps++;
+  const settled = () => {
+    globalThis.__nimbusPendingOps--;
+    if (acknowledged) globalThis.__nimbusAcknowledgedVfsOps--;
+    globalThis.__nimbusHandleReleased?.();
+  };
   answer.then(settled, settled);
   return answer;
 }
