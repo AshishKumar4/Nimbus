@@ -1,5 +1,5 @@
 // @serial
-// @tier slow — drives the production embedder under workerd and real Node's bundled undici
+// @tier slow — drives workerd; CI red-first run 8 s wall, task peak 1.33 GiB (2026-10-13)
 // Credential isolation, redirects and their cap through builtins.undici, not
 // a Function evaluating the shim or a mocked fetch. Both processes run the
 // identical client/server fixtures; Node 22's real bundled undici is the oracle.

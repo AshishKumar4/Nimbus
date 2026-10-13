@@ -9920,6 +9920,10 @@ return {"applyRedirectPolicy":c,"isRedirectStatus":o};})();
 
     let response;
     for (let followed = 0; ; followed++) {
+      // A socket transport normally synthesizes Host. Fetch's in-process HTTP
+      // route has no wire to do that, so regenerate it here after the policy
+      // removed the previous hop's Host, including on same-origin redirects.
+      if (!hop.headers.has("host")) hop.headers.set("host", hop.url.host);
       response = await __fetch(hop.url.href, {
         method: hop.method,
         headers: hop.headers,
