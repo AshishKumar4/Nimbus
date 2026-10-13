@@ -51,8 +51,8 @@ export interface LateLinkHost {
      * else Node's error, as the loader's own (no arrow of the importer's).
      */
     resolve(specifier: string, parentUrl: string, type: string | null | undefined): LateResolution;
-    /** A builtin's exports. */
-    builtin(name: string): object | null | undefined;
+    /** A builtin's export names: `default`, and its own (a function's too). */
+    builtinNames(name: string): readonly string[];
     /** The file require() loads for `specifier` from the module at `parentPath`, or null. */
     cjsResolve(specifier: string, parentPath: string): string | null;
     /** Node's message for `name`, which the module `specifier` names does not export. */

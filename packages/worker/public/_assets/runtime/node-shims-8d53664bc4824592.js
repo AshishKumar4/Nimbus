@@ -19281,7 +19281,7 @@ const __nimbusLateLinkHost = {
   fileFormat: (key) => __nimbusFileFormat("/" + key),
   loadUnread: (key, text, format) => { __nimbusRuntimeModule(key, text, format); },
   resolve: __nimbusResolveImport,
-  builtin: (name) => builtins[name],
+  builtinNames: (name) => Object.keys(__nimbusObjectNamespace(builtins[name])),
   cjsResolve: __nimbusCjsResolve,
   exportMessage: __nimbusEsmExportMessage,
   decorate: (error) => {

@@ -188,10 +188,7 @@ function plan(host, key, url, seen, order, checked, late) {
 function lateTarget(host, resolution) {
     if (resolution.format === 'builtin' && resolution.builtin !== undefined) {
         const id = host.row('builtin', resolution.builtin);
-        if (id !== -1)
-            return { row: id };
-        const exports = host.builtin(resolution.builtin);
-        return { url: resolution.url, names: ['default', ...(typeof exports === 'object' && exports !== null ? Object.keys(exports) : [])], commonjs: false };
+        return id !== -1 ? { row: id } : { url: resolution.url, names: host.builtinNames(resolution.builtin), commonjs: false };
     }
     if (resolution.path === undefined)
         return null;
