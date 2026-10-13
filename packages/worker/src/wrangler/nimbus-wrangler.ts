@@ -209,6 +209,7 @@ export class NimbusWrangler {
 
   /** Start the wrangler dev server. */
   async start(): Promise<boolean> {
+    this.stopped = false;
     // 1. Read wrangler config
     this.config = this.readConfig();
     if (!this.config) {
@@ -227,7 +228,7 @@ export class NimbusWrangler {
     return ok && !this.stopped;
   }
 
-  /** Whether stop() was called: a start it cut short failed for that reason. */
+  /** Whether stop() was called since the last start(): a start it cut short failed for that reason. */
   get wasStopped() { return this.stopped; }
 
   /** Stop the wrangler dev server, and any build it has under way. */
