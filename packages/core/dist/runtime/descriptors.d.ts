@@ -139,8 +139,9 @@ export declare class Descriptors {
     /** A descriptor for `node`, new, at offset 0, opened at `path` (the description's own name for its file unless the opener has it). */
     issue(node: Description, flags: RuntimeFileHandle['flags'], path?: string): RuntimeFileHandle;
     /**
-     * issue's descriptor as an open answers it: with its file's stat, fstat's
-     * then, its revision `revision` where the open went by a name (the name's).
+     * issue's descriptor as an open answers it: with its file's stat, as fstat
+     * answers it, its revision `revision` where the open went by a name (the
+     * name's).
      */
     open(node: Description, flags: RuntimeFileHandle['flags'], path?: string, revision?: number): Awaitable<RuntimeOpenedFile>;
     /** The description `id` names, to answer from (EBADF when none, or once the scope is closed). */

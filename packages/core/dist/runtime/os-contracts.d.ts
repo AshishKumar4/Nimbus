@@ -117,6 +117,12 @@ export interface RuntimeOpenFlags {
      * its reads and writes are EBADF.
      */
     path?: boolean;
+    /**
+     * The caller's descriptors this open closes first, each as close() does,
+     * a refusal of one dropped: closes nothing waits on (a resident copy's
+     * hold), sent with the next open rather than as calls of their own.
+     */
+    closing?: readonly number[];
     /** Creation mode, masked by the binding's umask like mkdir's; ignored when the file exists. */
     mode?: number;
     expectedRevision?: number;
@@ -130,7 +136,7 @@ export interface RuntimeOpenFlags {
 export interface RuntimeFileHandle {
     id: number;
     path: string;
-    flags: Required<Omit<RuntimeOpenFlags, 'expectedRevision' | 'mode' | 'sync' | 'path'>> & {
+    flags: Required<Omit<RuntimeOpenFlags, 'expectedRevision' | 'mode' | 'sync' | 'path' | 'closing'>> & {
         expectedRevision?: number;
     };
     position: number;

@@ -35,7 +35,7 @@
  *     absent: the adapter lists the directory and walks again.
  */
 import { fsError, modeAllows, walkBeneath } from '../beneath-walk.js';
-import { openIdentified } from './filesystem.js';
+import { closeUnawaited, openIdentified } from './filesystem.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
 import { delegationHolder } from './delegation-holder.js';
 /** A held write goes to the session in pieces of this size: each fits one call. */
@@ -552,7 +552,12 @@ export function residentFilesystem(session, resident, delegation) {
     }), () => authority.realpath(path));
     /** A descriptor of the holder's, as an open answers it: with its stat, the holder's. */
     const heldOpen = (handle) => ({ ...handle, stat: statOf(holder.fstat(handle.id)) });
-    fs.open = (path, flags) => {
+    fs.open = (path, given) => {
+        // The holder's descriptors and the session's alike: each closed where it is (RuntimeOpenFlags.closing).
+        if (given.closing)
+            for (const id of given.closing)
+                closeUnawaited(fs, id);
+        const flags = given.closing ? { ...given, closing: undefined } : given;
         const readOnly = !flags.write && !flags.create && !flags.truncate && !flags.append && !flags.exclusive;
         if (!readOnly && holder !== null) {
             // A file made or emptied in a subtree this process holds is decided here.

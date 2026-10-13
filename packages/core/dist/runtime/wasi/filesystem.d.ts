@@ -101,6 +101,18 @@ export declare function refusalErrno(error: unknown, gone?: (refusal: string) =>
 /** How a run whose session no longer holds its process ends. */
 export declare function processGoneMessage(refusal: string): string;
 export declare function after<T, R>(value: Awaitable<T>, next: (value: T) => Awaitable<R>): Awaitable<R>;
+/**
+ * The session descriptors that hold resident copies (residentHolds), for one
+ * filesystem: a hold its copy let go waits here, and the next open closes it
+ * (RuntimeOpenFlags.closing), as a close of its own would be a second call
+ * to the session for every copy.
+ */
+export declare class ResidentHolds {
+    private released;
+    release(handle: number): void;
+    /** The holds the next open closes, handed out once. */
+    take(): readonly number[] | undefined;
+}
 /** A session descriptor nothing of the guest's waits to see closed: closed, a refusal of it dropped. */
 export declare function closeUnawaited(fs: RuntimeFsBridge | RuntimeSynchronousFs, handle: number): void;
 /**
@@ -139,13 +151,14 @@ export interface AuthorityFilesystemOptions {
      */
     residentBytes?: number;
     /**
-     * Whether a resident copy holds its file at the session, by an O_PATH
-     * descriptor (RuntimeOpenFlags.path) its open answers the stat with: the
-     * file itself, renamed or unlinked since, is what /dev/fd/N opens again.
-     * Without (a host that cannot hold one, or pins bytes itself), a copy is
-     * opened again by the name it was read at, while that name has it.
+     * Where a resident copy's hold of its file at the session goes when the
+     * copy is let go: an O_PATH descriptor (RuntimeOpenFlags.path) its open
+     * answers the stat with, so the file itself, renamed or unlinked since, is
+     * what /dev/fd/N opens again. Without (a host that cannot hold one, or
+     * pins bytes itself), a copy is opened again by the name it was read at,
+     * while that name has it.
      */
-    residentHolds?: boolean;
+    residentHolds?: ResidentHolds;
     /**
      * Whether a resident copy outlives its descriptor (default true). A guest
      * whose host process already holds the filesystem's content (a node
