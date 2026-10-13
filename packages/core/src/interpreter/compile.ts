@@ -100,12 +100,9 @@ export interface UnitHost {
   readonly functionBinding: { value: unknown } | null;
 }
 
-/** An import binding's source: the slot holds the module (named, default) or the namespace object. */
-/** A module's import binding: it holds a module (or interop) and reads `name` of it at each use, or holds a namespace. */
 /**
- * A module's import binding: it reads `name` of the value in `slot` (its
- * request's module, or for `default` the module's interop) at each use, or
- * is the namespace in its own slot.
+ * A module's import binding: it reads `name` of the namespace in `slot` (its
+ * request's module) at each use, or is that namespace.
  */
 type ImportInfo = { readonly kind: 'named' | 'namespace'; readonly name: string; readonly slot: number };
 
@@ -3559,16 +3556,12 @@ export class Compiler {
   /**
    * An ES module's plan (modules.ts): the link of its declarations
    * (esm-interop.ts) over its frame's slots, its instantiation and its
-   * statements. A named import's binding holds its module, or for `default`
-   * its interop, and each use reads the name of it (bindingRead); a
-   * namespace import's holds the namespace.
+   * statements. Each kept request's slot holds its module's namespace (what
+   * the loader gives a static import): a named import's binding reads its
+   * name of it at each use (bindingRead), a namespace import's is it.
    */
   modulePlan(program: Program, root: FunctionScope): ModulePlan {
     const link = programLink(program);
-    // What each request must export, which linking checks (modules.ts link).
-    const required = esmBindings(link, SAFE_LISTS).imports;
-    // Each kept request's module goes to a slot of its own, and its interop
-    // to another; a named import reads its name of one of them at each use.
     const requests = newSafeList<ModulePlan['requests'][number]>();
     const moduleSlots = newSafeList<number>();
     // Every slot linking fills starts in its TDZ (bindingRead).
@@ -3576,51 +3569,36 @@ export class Compiler {
     for (let i = 0; i < link.requests.length; i++) {
       const request = link.requests[i];
       const module = request.kept ? root.size++ : -1;
-      const interop = request.interop ? root.size++ : -1;
       if (module >= 0) append(linked, module);
-      if (interop >= 0) append(linked, interop);
       append(moduleSlots, module);
       for (let j = 0; j < request.bindings.length; j++) {
         const binding = request.bindings[j];
-        if (binding.kind === 'named') this.importBinding(root, binding.local, 'named', binding.imported, binding.imported === 'default' ? interop : module);
+        if (binding.kind === 'named') this.importBinding(root, binding.local, 'named', binding.imported, module);
       }
-      append(requests, { source: request.source, type: request.type, module, interop, names: required[i] });
+      append(requests, { source: request.source, type: request.type, module });
     }
-    // An import's namespace goes to its binding; a re-export's
-    // (`export * as`) to a slot of its own, when first read.
-    const namespaces = newSafeList<{ readonly slot: number; readonly from: number }>();
-    const namespaceSlots = newSafeList<number>();
     for (let i = 0; i < link.namespaces.length; i++) {
       const { request, local } = link.namespaces[i];
-      if (local === null) {
-        append(namespaceSlots, root.size++);
-        continue;
-      }
-      const slot = this.importBinding(root, local, 'namespace', '*', null);
-      append(linked, slot);
-      append(namespaceSlots, slot);
-      append(namespaces, { slot, from: moduleSlots[request] });
+      if (local !== null) this.importBinding(root, local, 'namespace', '*', moduleSlots[request]);
     }
     const ops = this.ops;
     const exports = newSafeList<ModuleExport>();
     for (let i = 0; i < link.exports.length; i++) {
       const entry = link.exports[i];
-      if (entry.kind === 'namespace') {
-        append(exports, { kind: 'namespace', name: entry.exported, slot: namespaceSlots[entry.namespace], from: moduleSlots[link.namespaces[entry.namespace].request] });
-      } else if (entry.kind === 'reexport') {
-        const slot = moduleSlots[entry.request];
-        const name = entry.name;
-        const exported = entry.exported;
+      const exported = entry.exported;
+      if (entry.kind === 'namespace' || entry.kind === 'reexport') {
+        // `export * as` is the module's namespace; `export { x } from`, its name of it.
+        const slot = moduleSlots[entry.kind === 'namespace' ? link.namespaces[entry.namespace].request : entry.request];
+        const name = entry.kind === 'namespace' ? null : entry.name;
         append(exports, {
-          kind: 'read',
           name: exported,
           read: (env) => {
             if (env[slot] === TDZ) throw tdzError(exported);
-            return ops.get(env[slot], name);
+            return name === null ? env[slot] : ops.get(env[slot], name);
           },
         });
       } else {
-        append(exports, { kind: 'read', name: entry.exported, read: this.rootRead(root, entry.kind === 'default' ? '*default*' : entry.local) });
+        append(exports, { name: exported, read: this.rootRead(root, entry.kind === 'default' ? '*default*' : entry.local) });
       }
     }
     const stars = newSafeList<number>();
@@ -3637,7 +3615,6 @@ export class Compiler {
       dirnameSlot: bindingSlot(root, '%dirname'),
       exports,
       requests,
-      namespaces,
       stars,
       instantiate,
       body,

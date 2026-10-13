@@ -46,6 +46,10 @@ import { type InterpretedFrame, type StackUnit, stampStack, stackFrames } from '
 export type { HostOps } from './host-ops.js';
 export { INTERPRETER_UNSUPPORTED, UnsupportedSyntax } from './unsupported.js';
 export { replLineBody } from './repl-line.js';
+// What a late module's import of a CommonJS module the launch did not stage
+// names (node-shims __nimbusCommonJsNames): Node's lexer runs on the
+// module's source before it runs, so the interpreter's runtime carries it.
+export { cjsModuleExportNames } from '../runtime/cjs-module-exports.js';
 export type { ModuleCell } from './modules.js';
 export type { ModuleRequest } from './module-requests.js';
 
