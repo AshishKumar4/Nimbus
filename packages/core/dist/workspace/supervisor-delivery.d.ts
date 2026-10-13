@@ -119,6 +119,12 @@ export declare class SupervisorDeliveries {
     private readonly running;
     /** One joined-read index: pending reads, plus bounded replies of journaled runs. */
     private readonly reads;
+    /**
+     * Reads no run made: an infrastructure binding's, a host reading on a
+     * process's behalf (a peer reading its boot images). They are no part of
+     * any run's receipts, and a run's scope does not refuse them as stale.
+     */
+    private readonly hostReads;
     /** Open write-wave epochs, by `${pid}:${writer}`: the newest attempt admitted under each. */
     private readonly waveEpochs;
     /** Each epoch's waves being applied now: a retirement waits for them (retireWaveWriter). */

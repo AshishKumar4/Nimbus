@@ -16,7 +16,7 @@ import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { isWebSocketUpgradeRequest } from '@nimbus-sh/core/_shared/websocket-upgrade.js';
 import { z } from 'zod/v4';
 import { ProcessHostLost } from './process-fabric.js';
-import { bindingSupervisor, supervisorBindingProps } from './supervisor-props.js';
+import { infrastructureSupervisor, infrastructureSupervisorProps, supervisorBindingProps } from './supervisor-props.js';
 import { withResolvers } from './turn-budget.js';
 import { processes, abortFacet, deleteFacetStorage } from './workerd-facet-host.js';
 import { HandledRequests, HOST_INCARNATION_HEADER } from './host-activity.js';
@@ -121,11 +121,14 @@ const CANCELLED_HOSTING_KEY_PREFIX = 'hosting-cancelled:';
  * supervisor RPC carries and no substrate should be able to read more than the
  * process it hosts. Boot-spec members are reachable under it by construction:
  * the image store is kernel-owned mode 0644 precisely so any process can read
- * it, and the installed runtime images are world-readable too.
+ * it, and the installed runtime images are world-readable too. The reads are
+ * this peer's, not the process's run's, so they go through a binding no run
+ * acts through: a run whose boot is stopped and replayed (stop/replay) is
+ * judged by what it received itself, and it received none of these.
  */
 const RESIDENT_READ_RANGE_BYTES = 4 * 1024 * 1024;
-function peerDiskReader(supervisor) {
-    const fs = bindingSupervisor(supervisor);
+function peerDiskReader(reads) {
+    const fs = infrastructureSupervisor(reads);
     return { readFile: (path) => readSupervisorFile(fs, path) };
 }
 async function readSupervisorFile(fs, path) {
@@ -187,13 +190,17 @@ export class PeerHost {
         const { workerKey } = hostOpts;
         if (this.records.get(workerKey)?.closed === false)
             throw new Error('Nimbus: the peer already owns this process');
+        const network = hostOpts.network === undefined ? ISOLATE_NETWORK : workspaceNetwork(hostOpts.network.egress, hostOpts.network.id);
         const supervisor = {
             ...supervisorBindingProps(this.ctx, hostOpts.pid, {
-                writerId: hostOpts.writerId, doId: hostOpts.coordinatorDoId, route: hostOpts.route,
-                network: hostOpts.network === undefined ? ISOLATE_NETWORK : workspaceNetwork(hostOpts.network.egress, hostOpts.network.id),
+                writerId: hostOpts.writerId, doId: hostOpts.coordinatorDoId, route: hostOpts.route, network,
             }),
             ...(hostOpts.hostIncarnation === undefined ? {} : { hostIncarnation: hostOpts.hostIncarnation }),
         };
+        // This peer's own reads for the process (its boot images): the process's pid, way back and network, no run.
+        const reads = infrastructureSupervisorProps(this.ctx, hostOpts.pid, {
+            doId: hostOpts.coordinatorDoId, route: supervisor.route, network: network.forProcess(hostOpts.pid),
+        });
         const opened = withResolvers();
         const started = withResolvers();
         // Nothing awaits these unless a leg asks for them; keep the runtime from
@@ -250,7 +257,7 @@ export class PeerHost {
             if (record.closed)
                 throw new Error('Nimbus: the peer process was cancelled before opening');
             let located;
-            facet = processes(this.ctx, this.env).spawn(() => peerDiskReader(supervisor), supervisor, {
+            facet = processes(this.ctx, this.env).spawn(() => peerDiskReader(reads), supervisor, {
                 pid: hostOpts.pid,
                 workerKey,
                 boot: spec,

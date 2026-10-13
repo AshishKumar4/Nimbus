@@ -14,11 +14,17 @@
  * (`NimbusWorkspace.shellFor`), from the state this module keeps.
  */
 import { z } from 'zod/v4';
+import { cloneEnv } from '../substrate/lifo/shell/variables.js';
 /** A shell's name, the rule an `execId` follows. */
 const ShellIdSchema = z.string().min(1).max(160).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
 const ShellStateSchema = z.object({
     cwd: z.string().startsWith('/'),
-    env: z.record(z.string(), z.string()),
+    env: z.custom((value) => {
+        if (typeof value !== 'object' || value === null || Array.isArray(value))
+            return false;
+        const prototype = Object.getPrototypeOf(value);
+        return (prototype === null || prototype === Object.prototype) && Object.values(value).every((entry) => typeof entry === 'string');
+    }).transform(cloneEnv),
 }).strict();
 /** A saved shell state, or an error naming what is wrong with it. */
 export function parseShellState(value) {
@@ -32,6 +38,8 @@ export class NamedShells {
     shellFor;
     /** One queue per name: the last call made on it, settled when that call is. */
     queues = new Map();
+    idle = Promise.resolve();
+    parsedName;
     constructor(sql, 
     /** Where a name with no saved state and no `start` begins. */
     home, 
@@ -48,12 +56,22 @@ export class NamedShells {
      * started even when it saves nothing else (`persist: false`), so the name
      * exists from then on, rooted there.
      */
-    async hold(id, options, body) {
-        const name = ShellIdSchema.parse(id);
-        const previous = this.queues.get(name) ?? Promise.resolve();
+    hold(id, options, body) {
+        return this.run(id, options, body);
+    }
+    /** The last saved state, after earlier calls on this name have settled. */
+    read(id) {
+        return this.run(id);
+    }
+    async run(id, options, body) {
+        // Cache only name syntax; reload its saved state on every turn.
+        const name = this.parsedName !== undefined && id === this.parsedName ? id : ShellIdSchema.parse(id);
+        this.parsedName = name;
+        const queued = this.queues.get(name);
+        const previous = queued ?? this.idle;
         let release = () => { };
         const gate = new Promise((resolve) => { release = resolve; });
-        const tail = previous.then(() => gate);
+        const tail = queued === undefined ? gate : previous.then(() => gate);
         this.queues.set(name, tail);
         await previous;
         let detached = false;
@@ -66,14 +84,15 @@ export class NamedShells {
         try {
             // Every call, so a workspace whose tables were dropped makes it again.
             this.sql.exec(`CREATE TABLE IF NOT EXISTS ${SHELLS_TABLE} (id TEXT PRIMARY KEY, cwd TEXT NOT NULL, env TEXT NOT NULL)`);
-            const [saved] = this.sql.exec(`SELECT cwd, env FROM ${SHELLS_TABLE} WHERE id = ?`, name);
-            const state = saved === undefined
-                ? { cwd: options.start?.cwd ?? this.home, env: options.start?.env ?? {} }
-                : parseShellState({ cwd: saved.cwd, env: JSON.parse(String(saved.env)) });
+            const [row] = this.sql.exec(`SELECT cwd, env FROM ${SHELLS_TABLE} WHERE id = ?`, name);
+            const saved = row === undefined ? null : parseShellState({ cwd: row.cwd, env: JSON.parse(String(row.env)) });
+            if (options === undefined || body === undefined)
+                return saved;
+            const state = saved ?? { cwd: options.start?.cwd ?? this.home, env: options.start?.env ?? {} };
             // The next owner may start before this body settles. It sees the last
             // durable state, including a new name's initial root, never this body's
             // in-flight cwd/environment or its later completion.
-            if (saved === undefined)
+            if (saved === null)
                 this.save(name, state);
             if (options.detach?.aborted)
                 detach();
@@ -89,12 +108,12 @@ export class NamedShells {
             }
         }
         finally {
-            options.detach?.removeEventListener('abort', detach);
+            options?.detach?.removeEventListener('abort', detach);
             leave();
         }
     }
     save(name, state) {
-        const env = { ...state.env };
+        const env = cloneEnv(state.env);
         // `$` is the pid of the call that just ended, not state of the shell.
         delete env.$;
         this.sql.exec(`INSERT INTO ${SHELLS_TABLE} (id, cwd, env) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET cwd = excluded.cwd, env = excluded.env`, name, state.cwd, JSON.stringify(env));

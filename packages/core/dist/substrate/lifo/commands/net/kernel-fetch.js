@@ -11,6 +11,7 @@
 import { isLoopbackHost, } from '../../kernel/index.js';
 import { waitForSignalOrTimeout } from '../signal.js';
 import { ISOLATE_NETWORK } from '../../../../_shared/workspace-network.js';
+import { applyRedirectPolicy, isRedirectStatus } from '../../../../runtime/http-redirect-policy.js';
 /**
  * The loopback port a URL asks for, or null when it is not loopback. A name
  * is resolved through the kernel's /etc/hosts; a caller that holds no
@@ -94,10 +95,6 @@ export async function dispatchWorkspaceRequest(kernel, port, request) {
 }
 /** How many redirects a walk follows before it gives up: curl's and wget's default. */
 export const MAX_REDIRECTS = 20;
-/** Request headers fetch-follow strips when a redirect crosses origins. */
-const CREDENTIAL_HEADERS = ['authorization', 'proxy-authorization', 'cookie', 'cookie2'];
-/** Content headers that only make sense on a request that carries a body. */
-const CONTENT_HEADERS = ['content-type', 'content-length', 'transfer-encoding', 'expect'];
 /** One hop's request init, as fetch and the port registry take it: GET and HEAD carry no body. */
 export function hopInit(hop, signal) {
     const hasBody = hop.method !== 'GET' && hop.method !== 'HEAD' && hop.body !== undefined;
@@ -136,7 +133,7 @@ export async function walkRedirects(start, options) {
             return { kind: result.kind, url: hop.url };
         const { response } = result;
         await options.arrived?.(response);
-        const location = options.follow && response.status >= 300 && response.status < 400
+        const location = options.follow && isRedirectStatus(response.status, 'command')
             ? response.headers.get('location')
             : null;
         if (!location)
@@ -153,16 +150,6 @@ export async function walkRedirects(start, options) {
             return { kind: 'response', response, url: hop.url };
         }
         response.body?.cancel().catch(() => { });
-        if (([301, 302].includes(response.status) && hop.method === 'POST') || (response.status === 303 && hop.method !== 'HEAD')) {
-            hop.method = 'GET';
-            hop.body = undefined;
-        }
-        if (hop.body === undefined)
-            for (const name of CONTENT_HEADERS)
-                hop.headers.delete(name);
-        if (next.origin !== hop.url.origin)
-            for (const name of CREDENTIAL_HEADERS)
-                hop.headers.delete(name);
-        hop.url = next;
+        applyRedirectPolicy(hop, response.status, next, 'command');
     }
 }
