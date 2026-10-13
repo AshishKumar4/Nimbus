@@ -346,6 +346,7 @@ export const networkWorker = {
                             commit: requireOid(history.commit, 'streamed commit'),
                             blobsPerBatch: opts.blobsPerBatch,
                             sparse: opts.sparse === true,
+                            protect: opts.protect,
                         });
                     }
                     else if (history.step === 'plan') {
@@ -441,6 +442,7 @@ export const networkWorker = {
                     blobsPerBatch: opts.blobsPerBatch,
                     budgetUnits: opts.historyBudgetUnits,
                     sparse: opts.sparse === true,
+                    protect: opts.protect,
                 }, advertisement);
                 const prepared = 'stream' in started ? { stream: started.stream } : { fast: started };
                 return respond(true, { prepared, metadataOverlay: overlayStats() });

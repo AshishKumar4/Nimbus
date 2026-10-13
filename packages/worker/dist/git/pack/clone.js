@@ -376,7 +376,7 @@ export async function cloneFast(context, request, advertisement) {
             if (found === undefined)
                 throw new PackFormatError('the pack lacks tree ' + oidToHex(data, at));
             return found;
-        }, request.sparse === true ? coneMatcher(coneOf([])) : undefined);
+        }, request.sparse === true ? coneMatcher(coneOf([])) : undefined, request.protect);
     };
     const head = tagObject ?? commit;
     const promisorRefs = head + ' HEAD\n' + head + ' ' + fullRef + '\n';
@@ -697,7 +697,7 @@ export async function clonePlanFromStore(context, request) {
         throw new PackFormatError('the clone lacks commit ' + request.commit);
     const tree = commitTree(commitObject.data, request.commit);
     const trees = await readTrees(store, tree);
-    const plan = CheckoutPlan.fromTrees(trees.get(tree), (data, at) => trees.get(oidToHex(data, at)), request.sparse === true ? coneMatcher(coneOf([])) : undefined);
+    const plan = CheckoutPlan.fromTrees(trees.get(tree), (data, at) => trees.get(oidToHex(data, at)), request.sparse === true ? coneMatcher(coneOf([])) : undefined, request.protect);
     const cacheTree = cacheTreeOf('', tree, trees).built.bytes;
     trees.clear();
     const writer = context.writer();
