@@ -13619,20 +13619,22 @@ function __nimbusEsmJobCached(path) {
 function __requireFrom(id, fromDir, parent, required = true, type = null) {
   if (typeof id !== "string") throw invalidArgType("id", "string", id);
   if (id === "") throw new nodeErrorCodes.ERR_INVALID_ARG_VALUE("id", id, "must be a non-empty string");
-  const staged = __stagedBinding(id);
-  if (staged) {
-    const exports = __loadStagedBinding(staged, fromDir);
-    return required ? exports : __nimbusObjectNamespace(exports);
-  }
-  const notCarried = __stagedBindingNotCarried(id, fromDir);
-  if (notCarried) throw notCarried;
   if (!required) {
+    // A staged N-API binding is its package, to an import as to require().
+    const staged = __stagedBinding(id);
+    if (staged) return __nimbusObjectNamespace(__loadStagedBinding(staged, fromDir));
+    const notCarried = __stagedBindingNotCarried(id, fromDir);
+    if (notCarried) throw notCarried;
     return __nimbusStaticImport(id, builtins.url.pathToFileURL(parent?.filename ?? "/" + String(fromDir).replace(/^\\/+/, "") + "/[import]").href, parent, type);
   }
   const builtin = __nimbusBuiltinId(id);
   if (builtin !== null) return builtins[builtin];
   if (__nimbusFacetProvidedPackages.has(id)) return builtins[id];
   if (id.startsWith("node:")) throw nodeError(Error, "ERR_UNKNOWN_BUILTIN_MODULE", "No such built-in module: " + id);
+  const staged = __stagedBinding(id);
+  if (staged) return __loadStagedBinding(staged, fromDir);
+  const notCarried = __stagedBindingNotCarried(id, fromDir);
+  if (notCarried) throw notCarried;
   const resolved = __resolveFrom(id, fromDir, parent?.filename);
   if (!resolved) throw __nimbusModuleNotFound(id, parent);
   return __loadModule(resolved, resolved, required, parent);
