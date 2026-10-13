@@ -33,12 +33,10 @@ const savedAccount = process.env.CLOUDFLARE_ACCOUNT_ID;
 try {
   const scripts = join(root, 'packages/worker/scripts');
   mkdirSync(scripts, { recursive: true });
-  for (const script of ['bundle-runtime.mjs', 'runtime-specs.mjs']) cpSync(join(WORKER, 'scripts', script), join(scripts, script));
+  for (const script of ['bundle-runtime.mjs', 'runtime-specs.mjs', 'artifact-inputs.mjs']) cpSync(join(WORKER, 'scripts', script), join(scripts, script));
   cpSync(join(WORKER, 'runtime-contracts'), join(root, 'packages/worker/runtime-contracts'), { recursive: true });
-  for (const file of ['bash.async.wasm', 'coreutils/busybox.wasm', 'coreutils/busybox.applets']) {
-    mkdirSync(join(root, 'packages/worker/wasm/bash/coreutils'), { recursive: true });
-    cpSync(join(WORKER, 'wasm/bash', file), join(root, 'packages/worker/wasm/bash', file));
-  }
+  // The module, busybox, and the recipe and provenance the publisher checks them against (wasm/bash/inputs.mjs).
+  cpSync(join(WORKER, 'wasm/bash'), join(root, 'packages/worker/wasm/bash'), { recursive: true });
   mkdirSync(join(root, 'node_modules/@nimbus-sh'), { recursive: true });
   symlinkSync(CORE, join(root, 'node_modules/@nimbus-sh/core'));
   stageDeploymentProject(root, OLD);
