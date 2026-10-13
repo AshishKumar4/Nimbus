@@ -251,6 +251,7 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
     wsSend(id: number, text: string | null, bytes: Uint8Array | null): Promise<void>;
     wsClose(id: number, code?: number, reason?: string): Promise<void>;
     fsOpen(path: RuntimeFsPath, flags: RuntimeOpenFlags): Promise<RuntimeFileHandle>;
+    fsReopen(target: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeReopenTarget, flags: RuntimeOpenFlags, options?: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeMutationOwner | undefined): Promise<Awaited<ReturnType<RuntimeFsBridge["reopen"]>>>;
     fsRead(handleId: number, offset: number | null, length: number): Promise<Uint8Array>;
     fsWrite(handleId: number, offset: number | null, bytes: Uint8Array | ArrayBuffer | number[]): Promise<number>;
     /** A descriptor's stat and its directory listing move nothing: re-sent like any read. */

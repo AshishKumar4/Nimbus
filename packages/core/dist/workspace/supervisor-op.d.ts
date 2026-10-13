@@ -195,6 +195,7 @@ export declare const SUPERVISOR_OP_ROUTES: Readonly<Record<Exclude<SupervisorOpN
 declare const NATIVE_OPS: {
     readFile: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<string | null>;
     fsOpen: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").RuntimeFileHandle>;
+    fsReopen: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").RuntimeFileHandle>;
     fsRead: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<Uint8Array<ArrayBufferLike>>;
     fsWrite: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<number>;
     fsClose: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;

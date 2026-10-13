@@ -33,7 +33,7 @@ import { formatProcMounts } from '../shell/mount-commands.js';
 import { CRED_KERNEL, requireVfsCred, } from './os-contracts.js';
 import { fsError, modeAllows, SqliteRuntimeFsBridge, walkBeneath } from './sqlite-runtime-fs-bridge.js';
 import { closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost, settleHeldAt } from './descriptors.js';
-import { BUFFERED_WRITE_BYTES, flagsRefusal, openFollows, openMounted } from '../vfs/mounted-description.js';
+import { BUFFERED_WRITE_BYTES, flagsRefusal, openFollows, openMounted, reopenMounted } from '../vfs/mounted-description.js';
 function immutableCredential(cred) {
     const checked = requireVfsCred(cred, 'filesystem binding');
     return Object.freeze({ uid: checked.uid, gid: checked.gid, groups: Object.freeze([...checked.groups]), umask: checked.umask });
@@ -146,6 +146,7 @@ class GuardedProcessBridge {
         return this.target.chown(path, uid, gid, options);
     }
     open(path, flags, options) { this.guard(); return this.target.open(path, flags, options); }
+    reopen(target, flags, options) { this.guard(); return this.target.reopen(target, flags, options); }
     read(handleId, offset, length) { this.guard(); return this.reading(() => this.target.read(handleId, offset, length)); }
     write(handleId, offset, bytes) { this.guard(); return this.target.write(handleId, offset, bytes); }
     close(handleId) { return this.target.close(handleId); }
@@ -1053,6 +1054,35 @@ class AwaitingProcessBridge {
                 pin: (file, follow) => files.pin(file, { follow, sync: false }),
                 sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes ?? BUFFERED_WRITE_BYTES,
             });
+            try {
+                this.live();
+            }
+            catch (error) {
+                abandon(node);
+                throw error;
+            }
+            return this.descriptors.issue(node, opened);
+        });
+    }
+    reopen(target, flags, options) {
+        if (!('handle' in target) || !this.awaits(target.handle))
+            return this.bridge.reopen(target, flags, options);
+        // A file on a mount that answers by awaiting: reopened there, by the name it is held by.
+        this.live();
+        const held = this.descriptors.description(target.handle);
+        if (!held.mounted)
+            return this.bridge.reopen(target, flags, options);
+        const opened = openFlags(flags);
+        const name = held.path();
+        const flagged = flagsRefusal(opened) ?? (opened.create && opened.exclusive ? 'EEXIST' : null);
+        if (flagged !== null)
+            throw syscallError(flagged, 'open', name);
+        const files = this.owned(opened.write || opened.truncate || opened.append ? options : undefined);
+        return andThen(reopenMounted(held, {
+            flags: opened, mode: flags.mode, refuse: (code, syscall) => syscallError(code, syscall, name), scope: this.scope,
+            pin: (file, follow) => files.pin(file, { follow, sync: false }),
+            sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes ?? BUFFERED_WRITE_BYTES,
+        }), (node) => {
             try {
                 this.live();
             }

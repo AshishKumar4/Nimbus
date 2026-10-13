@@ -741,6 +741,19 @@ export declare class SqliteVFS {
         read: boolean;
         write: boolean;
     }, principal?: Principal, holds?: () => ReadonlySet<string>): VfsOpenDescription | null;
+    /**
+     * A new description of the file `ino` numbers, as an open of
+     * /proc/self/fd/N makes one: describeInode's file (an unlinked file a
+     * description holds included), `rights` checked against it as it is now.
+     * ENOENT once no description holds it and no name has it.
+     */
+    reopenInode(ino: number, path: string, cred: VfsCred, rights: {
+        read: boolean;
+        write: boolean;
+        sync?: boolean;
+    }, principal?: Principal, holds?: () => ReadonlySet<string>, mutationOwner?: string): VfsOpenDescription;
+    /** The inode `ino` numbers: the one an open description holds, else the one a name has; null when neither does. */
+    private inodeNumbered;
     private describe;
     /**
      * Hold `bytes`, written through `opened` at `offset`, in its file's

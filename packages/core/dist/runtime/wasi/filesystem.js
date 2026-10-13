@@ -4,10 +4,12 @@ export function shareResident(open) {
     open.opens++;
     return open;
 }
-/** One descriptor on a resident open closed; the last gives its pin back. */
+/** One descriptor on a resident open closed; the last gives back its hold on the pin, and the last hold the pin. */
 export function closeResident(open) {
-    if (--open.opens === 0)
-        open.release?.();
+    if (--open.opens > 0 || open.pin === undefined)
+        return;
+    if (--open.pin.holds === 0)
+        open.pin.release();
 }
 /**
  * Synthetic paths that name a socket rather than a file, and the one place
@@ -91,10 +93,11 @@ const STANDARD_STREAMS = { '/dev/stdin': 0, '/dev/stdout': 1, '/dev/stderr': 2 }
  * this one question: path_open, path_filestat_get, the extension's path_stat
  * and bash's stat_metadata.
  *
- * Linux's answer to what such a path opens: a file or directory is opened
- * again by its name, with the new open's flags (a new description, its own
- * offset, O_TRUNC and O_APPEND honored); a stream or a pipe end is shared.
- * Stat'd, it is that descriptor's stat.
+ * Linux's answer to what such a path opens: the file or directory itself
+ * is opened again, with the new open's flags (a new description, its own
+ * offset, O_TRUNC and O_APPEND honored), even one renamed or unlinked
+ * since; a stream or a pipe end is shared. Stat'd, it is that descriptor's
+ * stat.
  */
 export function descriptorNamed(fds, fd, path, cwd) {
     let absolute = path;
@@ -226,17 +229,6 @@ export function installAuthorityFilesystem(imports, options) {
         if (descriptor !== null && !fds.has(descriptor))
             fail('ENOENT');
         return descriptor;
-    };
-    /** The name a file or directory the codec holds is opened again by; null for what the host holds. */
-    const nameOf = (descriptor) => {
-        const e = fds.get(descriptor);
-        if (e?.kind === 'authority')
-            return e.handle.path;
-        if (e?.kind === 'resident')
-            return e.name;
-        if (e?.kind === 'preopen')
-            return e.vfsPath;
-        return null;
     };
     const at = (fd, p) => {
         if (p.startsWith('/'))
@@ -390,8 +382,8 @@ export function installAuthorityFilesystem(imports, options) {
             fail('ENOTSUP');
         pathRight(fd, 13);
         const descriptor = named(fd, p, n);
-        const reopened = descriptor === null ? null : nameOf(descriptor);
-        if (descriptor !== null && reopened === null) {
+        const reopened = descriptor === null ? undefined : fds.get(descriptor);
+        if (descriptor !== null && reopened?.kind !== 'authority' && reopened?.kind !== 'resident' && reopened?.kind !== 'preopen') {
             u32(out, options.duplicate?.(descriptor) ?? fail('ENXIO'));
             return 0;
         }
@@ -399,10 +391,9 @@ export function installAuthorityFilesystem(imports, options) {
             pathRight(fd, 10);
         if (flags & 8)
             pathRight(fd, 19);
-        const target = reopened ?? at(fd, path(p, n));
+        // A preopen named by a descriptor path is its root, by name, as everything beneath it is.
+        const target = reopened?.kind === 'preopen' ? reopened.vfsPath : at(fd, path(p, n));
         const parent = preopen(fd) ?? entry(fd);
-        // A directory descriptor's name for the file outlives that descriptor; a preopen's is its own.
-        const name = typeof target !== 'string' && parent.kind === 'authority' ? `${parent.handle.path}/${path(p, n)}` : target;
         const requested = BigInt(rights), childRights = BigInt(inherit);
         const allowed = parent.rightsInheriting;
         if (allowed !== undefined && ((requested | childRights) & ~allowed))
@@ -412,14 +403,31 @@ export function installAuthorityFilesystem(imports, options) {
         // fd_allocate, fd_filestat_set_size. wasi-libc asks for sync and status
         // rights on every open, and a resident copy answers those itself.
         const readOnly = !(requested & ((1n << 6n) | (1n << 8n) | (1n << 22n))) && !(flags & 15) && !(status & 1);
-        const open = () => after(fs.open(target, { read: !!(requested & 2n), write: !!(requested & 64n), append: !!(status & 1),
+        const opening = { read: !!(requested & 2n), write: !!(requested & 64n), append: !!(status & 1),
             create: !!(flags & 1), directory: !!(flags & 2), exclusive: !!(flags & 4), truncate: !!(flags & 8), followSymlinks,
-            mode: creationMode(0o666) }), handle => after(fs.fstat(handle.id), st => {
+            mode: creationMode(0o666) };
+        const opened = (handle) => after(fs.fstat(handle.id), st => {
             const id = options.allocateFd();
             fds.set(id, { kind: 'authority', handle, type: st.type, rights: requested, rightsInheriting: childRights, fdflags: status });
             u32(out, id);
             return 0;
-        }));
+        });
+        // A file a descriptor holds is opened again as itself, never by a name a
+        // rename or an unlink may have given to another (RuntimeFsBridge.reopen).
+        if (reopened?.kind === 'authority')
+            return after(fs.reopen({ handle: reopened.handle.id }, opening), opened);
+        if (reopened?.kind === 'resident') {
+            if (!readOnly)
+                return after(fs.reopen({ dev: reopened.stat.dev, ino: reopened.stat.ino }, opening), opened);
+            // Read again from its own start: the same bytes, another hold on their pin.
+            if (reopened.pin !== undefined)
+                reopened.pin.holds++;
+            const id = options.allocateFd();
+            fds.set(id, { kind: 'resident', stat: reopened.stat, bytes: reopened.bytes, ...(reopened.pin === undefined ? {} : { pin: reopened.pin }), opens: 1, position: 0, rights: requested, rightsInheriting: childRights, fdflags: status });
+            u32(out, id);
+            return 0;
+        }
+        const open = () => after(fs.open(target, opening), opened);
         if (!readOnly || residentBytes === 0)
             return open();
         return after(fs.stat(target, { followSymlinks }), st => {
@@ -442,14 +450,14 @@ export function installAuthorityFilesystem(imports, options) {
                     if (pinned === null)
                         return open();
                     const id = options.allocateFd();
-                    fds.set(id, { kind: 'resident', stat: st, bytes: pinned.bytes, name, release: pinned.release, opens: 1, position: 0, rights: requested, rightsInheriting: childRights, fdflags: status });
+                    fds.set(id, { kind: 'resident', stat: st, bytes: pinned.bytes, pin: { holds: 1, release: pinned.release }, opens: 1, position: 0, rights: requested, rightsInheriting: childRights, fdflags: status });
                     u32(out, id);
                     return 0;
                 });
             }
             return after(residentContent(fs, target, st), bytes => {
                 const id = options.allocateFd();
-                fds.set(id, { kind: 'resident', stat: st, bytes, name, opens: 1, position: 0, rights: requested, rightsInheriting: childRights, fdflags: status });
+                fds.set(id, { kind: 'resident', stat: st, bytes, opens: 1, position: 0, rights: requested, rightsInheriting: childRights, fdflags: status });
                 u32(out, id);
                 return 0;
             });
