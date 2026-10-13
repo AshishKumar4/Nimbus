@@ -19,7 +19,7 @@
 // REAL resident body on it (tests/unit/lib/resident-body.mjs).
 
 import assert from 'node:assert/strict';
-import { FACET_RESIDENT_STORE_SOURCE } from '../../packages/worker/src/vfs/facet-resident-store.ts';
+import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
 import { _rpcFsList } from '../../packages/worker/src/session/rpc.ts';
 import {
   createAuthority,
@@ -58,13 +58,11 @@ async function keptStore() {
 
   // What a previous launch leaves: the cold adopt, then the boot fill.
   const sql = facetSql();
-  const previous = new Function(
-    `${FACET_RESIDENT_STORE_SOURCE}\nreturn { __residentBind, __residentAdoptModuleBundle, __residentSynchronizeFromSupervisor, __residentSetPlan };`,
-  )();
-  previous.__residentBind({ storage: { sql } });
-  previous.__residentSetPlan(await residentDataPlan(authority, '/home/user/app'));
-  previous.__residentAdoptModuleBundle({}, authority.cursor());
-  const filled = await previous.__residentSynchronizeFromSupervisor(facetSupervisor(authority).supervisor);
+  const previous = createResidentStore();
+  previous.bind({ storage: { sql } });
+  previous.sync.setPlan(await residentDataPlan(authority, '/home/user/app'));
+  previous.sync.adoptModuleBundle({}, authority.cursor());
+  const filled = await previous.sync.synchronize(facetSupervisor(authority).supervisor);
   assert.equal(filled.filled, 3, 'the previous launch held every file');
 
   kfs.writeFile('home/user/app/staged.txt', 'NEW-STAGED');

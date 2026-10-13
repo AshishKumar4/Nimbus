@@ -31,6 +31,7 @@ import { disposeRpcResource } from '../../../packages/platform/src/rpc-dispose.j
 import { peerPlacement } from '@nimbus-sh/fabric/process-host.js';
 import { abortFacet } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { z } from 'zod/v4';
+import type { EgressProcess, EgressStreams, EgressTlsTarget, WorkspaceEgress, WorkspaceEgressTls } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { CANARY_PROJECT, CANARY_WHEEL, canaryPypiJson, canaryWheel } from './egress-canary.js';
 
 /**
@@ -38,6 +39,8 @@ import { CANARY_PROJECT, CANARY_WHEEL, canaryPypiJson, canaryWheel } from './egr
  * request that reaches it went through the egress.
  */
 const EGRESS_TEST_HOST = 'egress-test.invalid';
+/** What test egresses were asked under /who/ (TestEgress), as `<path> <exec>`: one isolate's, for a test to read back. */
+const WHO_SEEN: string[] = [];
 
 /** What the egress answers a plain-HTTP request to EGRESS_TEST_HOST with, over TCP: the canary wheel, or its request line. */
 function egressTcpHttpResponse(requestLine: string): Uint8Array {
@@ -79,13 +82,35 @@ async function readRequestLine(readable: ReadableStream<Uint8Array>): Promise<st
  * session under it can still install packages. What an embedder supplies is
  * the same shape: a Fetcher, minted per session with its identity in props.
  */
-export class TestEgress extends WorkerEntrypoint {
+/** Who a test egress was minted for: the session, and with a per-process egress (NIMBUS_TEST_EGRESS_PER_PROCESS=1) the process and its exec. */
+interface TestEgressProps {
+  session: string;
+  pid?: number;
+  execId?: string;
+}
+
+export class TestEgress extends WorkerEntrypoint<Cloudflare.Env, TestEgressProps> {
+  /** The exec this egress was minted for, as its answers to /who, TCP port 9 and TLS /who name it: '-' for none. */
+  protected who(): string {
+    return this.ctx.props.execId ?? '-';
+  }
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (url.hostname === 'pypi.org' && (url.pathname === `/pypi/${CANARY_PROJECT}/json` || url.pathname === `/pypi/${CANARY_PROJECT}/1.0/json`)) {
       return Response.json(canaryPypiJson(`http://${EGRESS_TEST_HOST}/${CANARY_WHEEL}`));
     }
     if (url.hostname !== EGRESS_TEST_HOST) return fetch(request);
+    // Which egress answered: /who itself, and any path under it refused with that name as text (git shows it as `remote:`).
+    if (url.pathname === '/who' || url.pathname.startsWith('/who.')) {
+      return new Response(`via-egress who ${this.who()}`, { status: url.pathname === '/who' ? 200 : 403, headers: { 'content-type': 'text/plain' } });
+    }
+    // Any other path under /who is recorded with the exec that asked; /who-seen lists them, oldest first.
+    if (url.pathname.startsWith('/who/')) {
+      WHO_SEEN.push(`${url.pathname.slice('/who/'.length)} ${this.who()}`);
+      return Response.json({});
+    }
+    if (url.pathname === '/who-seen') return new Response(WHO_SEEN.join('\n'), { headers: { 'content-type': 'text/plain' } });
     const encoding = /^\/encoded-(gzip|br|deflate)$/.exec(url.pathname)?.[1];
     if (encoding !== undefined) {
       // As a server compresses: the body encoded, sent as it is (encodeBody 'manual').
@@ -137,6 +162,12 @@ export class TestEgress extends WorkerEntrypoint {
       await writer.close();
       return;
     }
+    if (localAddress === `${EGRESS_TEST_HOST}:9`) {
+      const writer = socket.writable.getWriter();
+      await writer.write(new TextEncoder().encode(`via-egress-tcp who ${this.who()}\n`));
+      await writer.close();
+      return;
+    }
     if (localAddress?.startsWith(`${EGRESS_TEST_HOST}:`)) {
       const writer = socket.writable.getWriter();
       await writer.write(new TextEncoder().encode('via-egress-tcp\n'));
@@ -150,7 +181,7 @@ export class TestEgress extends WorkerEntrypoint {
   }
 }
 
-export class TestTlsEgress extends TestEgress {
+export class TestTlsEgress extends TestEgress implements WorkspaceEgressTls {
   override async connect(socket: Socket): Promise<void> {
     const { localAddress } = await socket.opened as { localAddress?: string };
     if (localAddress === 'tcp-refused.invalid:7') throw new Error('egress refused this TCP destination');
@@ -171,18 +202,33 @@ export class TestTlsEgress extends TestEgress {
     writer.releaseLock();
   }
 
-  async connectTls(target: { hostname: string; port: number }): Promise<{ readable: ReadableStream<Uint8Array>; writable: WritableStream<Uint8Array> }> {
+  async connectTls(target: EgressTlsTarget): Promise<EgressStreams> {
     if (target.hostname === 'tls-refused.invalid') throw new Error('egress refused this TLS destination');
-    if (target.hostname !== EGRESS_TEST_HOST || target.port !== 443) throw new Error('unexpected TLS destination');
+    if (target.hostname !== EGRESS_TEST_HOST) {
+      // Any other server, as an embedder's egress reaches it: the session presents the servername and checks the server by it.
+      const { connect } = await import('cloudflare:sockets');
+      const address = { hostname: target.hostname, port: target.port };
+      const socket = target.servername === undefined
+        ? connect(address, { secureTransport: 'on', allowHalfOpen: true })
+        : connect(address, { secureTransport: 'starttls', allowHalfOpen: true }).startTls({ expectedServerHostname: target.servername });
+      await socket.opened;
+      return { readable: socket.readable, writable: socket.writable };
+    }
+    if (target.port !== 443) throw new Error('unexpected TLS destination');
     let reply: ReadableByteStreamController;
     let input = '';
+    // The name the session presents and checks the server by, when the program named one other than the host.
+    const named = target.servername === undefined ? '' : ' as ' + target.servername;
+    const who = this.who();
     return {
       readable: new ReadableStream<Uint8Array>({ type: 'bytes', start(controller) { reply = controller; } }),
       writable: new WritableStream<Uint8Array>({
         write(chunk) {
           input += new TextDecoder().decode(chunk);
           if (!input.includes('\r\n\r\n')) return;
-          reply.enqueue(new TextEncoder().encode('via-egress-tls ' + target.hostname + ':' + target.port + ' ' + input.split('\r\n', 1)[0] + '\n'));
+          const line = input.split('\r\n', 1)[0] ?? '';
+          const answer = line.split(' ')[1] === '/who' ? 'via-egress-tls who ' + who : 'via-egress-tls ' + target.hostname + ':' + target.port + named + ' ' + line;
+          reply.enqueue(new TextEncoder().encode(answer + '\n'));
           reply.close();
         },
       }),
@@ -237,12 +283,22 @@ export class NimbusSession extends SdkNimbusSession {
 
   protected override workspaceEgress() {
     if ((this.env as { NIMBUS_TEST_EGRESS?: string }).NIMBUS_TEST_EGRESS !== '1') return super.workspaceEgress();
+    return this.#testEgress({ session: this.ctx.id.toString() });
+  }
+
+  /** With NIMBUS_TEST_EGRESS_PER_PROCESS=1, each process's own test egress, minted with its pid and exec. */
+  protected override egressFor(process: EgressProcess): WorkspaceEgress | undefined {
+    if ((this.env as { NIMBUS_TEST_EGRESS_PER_PROCESS?: string }).NIMBUS_TEST_EGRESS_PER_PROCESS !== '1') return undefined;
+    return this.#testEgress({ session: this.ctx.id.toString(), pid: process.pid, ...(process.execId === undefined ? {} : { execId: process.execId }) });
+  }
+
+  #testEgress(props: TestEgressProps): Fetcher {
     if ((this.env as { NIMBUS_TEST_EGRESS_TLS?: string }).NIMBUS_TEST_EGRESS_TLS === '1') {
-      return (this.ctx as unknown as { exports: { TestTlsEgress(options: { props: object }): Fetcher } })
-        .exports.TestTlsEgress({ props: { session: this.ctx.id.toString() } });
+      return (this.ctx as unknown as { exports: { TestTlsEgress(options: { props: TestEgressProps }): Fetcher } })
+        .exports.TestTlsEgress({ props });
     }
-    return (this.ctx as unknown as { exports: { TestEgress(options: { props: object }): Fetcher } })
-      .exports.TestEgress({ props: { session: this.ctx.id.toString() } });
+    return (this.ctx as unknown as { exports: { TestEgress(options: { props: TestEgressProps }): Fetcher } })
+      .exports.TestEgress({ props });
   }
 }
 

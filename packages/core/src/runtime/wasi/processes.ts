@@ -88,20 +88,20 @@ export interface PipeFdEntry {
   rightsInheriting?: bigint;
 }
 
-/** The child-process calls this module makes, as the session's SupervisorRPC answers them. */
+/** Remote supervisors answer by promise; a non-parking local realm answers on the caller's stack. */
 interface ChildProcessSupervisor {
   cpSpawn(req: {
     command: string; args: string[]; env: Record<string, string>; cwd: string;
     stdio: Array<'pipe' | 'ignore' | 'inherit'>; parentPid: number;
-  }): Promise<{ childPid: number }>;
-  cpStdinWrite(childPid: number, data: Uint8Array): Promise<{ ok: boolean }>;
-  cpStdinEnd(childPid: number): Promise<void>;
+  }): { childPid: number } | Promise<{ childPid: number }>;
+  cpStdinWrite(childPid: number, data: Uint8Array): { ok: boolean } | Promise<{ ok: boolean }>;
+  cpStdinEnd(childPid: number): void | Promise<void>;
   cpReadOutput(childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number): Promise<{
     chunks: Array<{ seq: number; data: Uint8Array }>; closed: boolean; maxSeq: number; news?: number[];
   }>;
   /** With `knownStarted` false it answers at the child's start too (`started`); a refused spawn ends with `spawnError`, its errno's code. */
   cpWait(childPid: number, waitMs: number, acquire?: undefined, knownStarted?: boolean): Promise<ChildWait>;
-  cpKill(childPid: number, signal: string): Promise<boolean>;
+  cpKill(childPid: number, signal: string): boolean | Promise<boolean>;
 }
 
 interface ChildWait {
@@ -145,6 +145,8 @@ export interface ProcessHostOptions {
   news: ChildNews | null;
   /** The credential the guest runs as; null where it has none (a guest with no session). */
   cred(): { uid: number; gid: number } | null;
+  /** Whether the guest can be suspended in an import (JSPI), so that an import may answer by promise. */
+  parks: boolean;
 }
 
 interface Child {
@@ -238,6 +240,17 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
     return { ready, cancel: () => finish(null, true) };
   };
 
+  /**
+   * An import that has to wait for its answer, in a guest that cannot be
+   * suspended: refused by name before it does anything. A promise returned
+   * where an i32 belongs would read as 0, success.
+   */
+  const mustWait = (name: string): void => {
+    if (opts.parks) return;
+    throw new Error(`nimbus_proc.${name} has to wait for its answer, and this guest cannot be suspended: `
+      + 'a WASI guest\'s child processes need JSPI (WebAssembly.Suspending and WebAssembly.promising)');
+  };
+
   const notify = (child: Child): void => {
     for (const waiter of child.waiters.splice(0)) waiter();
   };
@@ -261,22 +274,24 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
   /**
    * A descriptor on `pipe`'s `end` went: the last writer ends what a reader
    * or a child sees. A child's stdin the session cannot end is past helping:
-   * the session is gone, and the child with it.
+   * the session is gone, and the child with it. Only ending a child's stdin
+   * waits; everything else is done when this returns.
    */
-  const drop = async (pipe: Pipe, end: 'read' | 'write'): Promise<void> => {
+  const drop = (pipe: Pipe, end: 'read' | 'write'): Promise<void> | undefined => {
     if (end === 'read') {
       pipe.readers--;
       if (pipe.readers === 0) wake(pipe);
-      return;
+      return undefined;
     }
     pipe.writers--;
-    if (pipe.writers > 0) return;
+    if (pipe.writers > 0) return undefined;
     wake(pipe);
-    if (pipe.end && !pipe.ended) {
-      pipe.ended = true;
-      await pipe.end().catch(() => {});
-    }
+    if (!pipe.end || pipe.ended) return undefined;
+    pipe.ended = true;
+    return pipe.end().catch(() => {});
   };
+  /** The answer once `dropped` (a drop's wait, if it has one) is done. */
+  const after = (dropped: Promise<void> | undefined): SyscallResult => (dropped ? dropped.then(() => E.SUCCESS) : E.SUCCESS);
 
   /** The strings in a NUL-separated buffer the guest passed. */
   const strings = (ptr: number, len: number): string[] => {
@@ -414,7 +429,7 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
       const copy = { ...entry };
       if (copy.kind === 'pipe') hold(copy);
       opts.fds.set(to, copy);
-      return replaced ? drop(replaced.pipe, replaced.end).then(() => E.SUCCESS) : E.SUCCESS;
+      return after(replaced ? drop(replaced.pipe, replaced.end) : undefined);
     },
 
     spawn(argvPtr, argvLen, envPtr, envLen, dirPtr, dirLen, fdin, fdout, fderr, pidPtr) {
@@ -422,6 +437,7 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
       if (!sup) return E.NOSYS;
       const argv = strings(argvPtr, argvLen);
       if (argv.length === 0) return E.INVAL;
+      mustWait('spawn');
       const env: Record<string, string> = {};
       for (const entry of strings(envPtr, envLen)) {
         const at = entry.indexOf('=');
@@ -466,16 +482,16 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
           // A write the session cannot take is the child's stdin gone (EPIPE).
           pipe.forward = async (bytes) => {
             await opts.release();
-            return sup.cpStdinWrite(childPid, bytes).then(({ ok }) => ok, () => false);
+            try { return (await sup.cpStdinWrite(childPid, bytes)).ok; } catch { return false; }
           };
-          pipe.end = () => sup.cpStdinEnd(childPid);
+          pipe.end = async () => { await sup.cpStdinEnd(childPid); };
           for (const chunk of pipe.chunks.splice(0)) await pipe.forward(chunk);
           pipe.buffered = 0;
           wake(pipe);
           // The child holds the read end until it exits.
           if (pipe.writers === 0 && !pipe.ended) { pipe.ended = true; await pipe.end().catch(() => {}); }
         } else if (!inheritedInput) {
-          await sup.cpStdinEnd(childPid).catch(() => {});
+          try { await sup.cpStdinEnd(childPid); } catch {}
         }
         const child: Child = { pid: childPid, start: null, status: null, failed: false, waiters: [] };
         children.set(childPid, child);
@@ -526,6 +542,7 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
       };
       const now = answer();
       if (now !== null) return now;
+      mustWait('start');
       return parkedWait((wake) => child.waiters.push(wake), answer).ready.then((started) => started ?? E.INTR);
     },
 
@@ -548,6 +565,7 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
       const now = reap();
       if (now !== null) return now;
       if (options & WNOHANG) { view().setInt32(waitedPtr, 0, true); return E.SUCCESS; }
+      mustWait('wait');
       return parkedWait((wake) => { for (const child of candidates) child.waiters.push(wake); }, reap).ready.then((reaped) => reaped ?? E.INTR);
     },
 
@@ -558,7 +576,8 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
       if (signal === 0) return E.SUCCESS;
       const name = SIGNALS[signal];
       if (!name) return E.INVAL;
-      return sup.cpKill(pid, name).then((delivered) => (delivered ? E.SUCCESS : E.SRCH));
+      mustWait('kill');
+      return Promise.resolve(sup.cpKill(pid, name)).then((delivered) => (delivered ? E.SUCCESS : E.SRCH));
     },
   };
 
@@ -645,7 +664,7 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
     const entry = pipeEntry(fd);
     if (!entry) return null;
     opts.fds.delete(fd);
-    return drop(entry.pipe, entry.end).then(() => E.SUCCESS);
+    return after(drop(entry.pipe, entry.end));
   };
 
   const readiness: ProcessHost['readiness'] = (fd, want) => {

@@ -58,11 +58,11 @@ export async function _rpcPutCachedTarball(_self, _integrity, _bytes) { }
 export async function _rpcCacheResult(self, ticket, result, pid, run) {
     if (result.failed && result.failure)
         result = { ...result, failure: errorFromCacheFailure(result.failure) };
-    await self.facetManager?.cacheResult(pid, run, ticket, result);
+    await self.facetManager?.replay.cacheResult(pid, run, ticket, result);
 }
 export async function _rpcStdinPrepared(self, pid, run) {
     if (pid !== undefined)
-        self.facetManager?.stdinPrepared(pid, run);
+        self.facetManager?.replay.stdinPrepared(pid, run);
 }
 function queueExitNotice(self, notice) {
     return Boolean(self.terminal && self.shell?.queueProcessExitNotice(notice, self.processes, renderExitNotice));
@@ -725,17 +725,17 @@ export async function _rpcHmrNextEvent(self, timeoutMs = 25_000) {
 // connection it opens through the session; and its outbound's calls.
 export async function _rpcReplayBoundary(self, pid, run) {
     if (typeof pid === 'number')
-        await self.facetManager?.replayBoundary(pid, run);
+        await self.facetManager?.replay.boundary(pid, run);
 }
 export async function _rpcNetTls(self, action, token, payload, pid, run) {
     if (typeof pid !== 'number' || !self.facetManager)
         throw new Error('netTls: no such process');
-    return self.facetManager.netTls(pid, run, String(action), String(token), payload);
+    return self.facetManager.replay.netTls(pid, run, String(action), String(token), payload);
 }
 export async function _rpcOutbound(self, action, payload, pid, run) {
     if (typeof pid !== 'number' || !self.facetManager)
         throw new Error('outbound: no such process');
-    return self.facetManager.outboundCall(pid, run, String(action), payload);
+    return self.facetManager.replay.outbound(pid, run, String(action), payload);
 }
 /**
  * Bulk-write files and directories via one transactionSync().
@@ -857,7 +857,7 @@ export async function _rpcStdout(self, pid, data, at, run) {
         data = self.facetManager?.gateOutput(pid, 'stdout', data, at, run) ?? data;
     if (data.byteLength === 0)
         return;
-    const childOutput = self.facetProcessManager?.routeOutput(pid, 1, data);
+    const childOutput = self.childProcessManager?.routeOutput(pid, 1, data);
     if (childOutput) {
         await childOutput;
         return;
@@ -900,7 +900,7 @@ export async function _rpcStderr(self, pid, data, at, run) {
         data = self.facetManager?.gateOutput(pid, 'stderr', data, at, run) ?? data;
     if (data.byteLength === 0)
         return;
-    const childOutput = self.facetProcessManager?.routeOutput(pid, 2, data);
+    const childOutput = self.childProcessManager?.routeOutput(pid, 2, data);
     if (childOutput) {
         await childOutput;
         return;
@@ -1038,7 +1038,7 @@ function reportExit(self, pid, code, tail, dataReads, profileUnread, runtimeCode
     // A child_process child's end is its parent's to report, as its output
     // is: the terminal hears nothing of it (the parent may not even read
     // what it wrote, as a Node parent need not).
-    if (self.facetProcessManager?.isChild(pid))
+    if (self.childProcessManager?.isChild(pid))
         return;
     const cmdFromTable = self.processes.get(pid)?.command;
     notifyTerminalEvent(self.terminal, { type: 'exit', pid, code, command: cmdFromTable });
@@ -1113,7 +1113,7 @@ function reportExternalExit(self, pid, code, reason) {
     self.processes.markExit(pid, code, reason);
     // A child_process child's end is its parent's to report, as its output
     // is (routeOutput): the terminal hears nothing of it.
-    if (!self.facetProcessManager?.isChild(pid)) {
+    if (!self.childProcessManager?.isChild(pid)) {
         const cmdFromTable = self.processes.get(pid)?.command;
         notifyTerminalEvent(self.terminal, { type: 'exit', pid, code, reason, command: cmdFromTable });
         if (self.terminal && self.processes.logSize(pid) > 0) {
@@ -1217,12 +1217,12 @@ export async function _rpcTransform(self, code, loader) {
 }
 // ── child_process RPC entrypoints [W8 Phase 1] ────────────────────────
 //
-// Delegate to the lazily-constructed FacetProcessManager. Defensive
-// ensureFacetProcessManager() handles cold-start cases where a child
+// Delegate to the lazily-constructed ChildProcessManager. Defensive
+// _ensureChildProcessManager() handles cold-start cases where a child
 // facet calls cp* before the supervisor has initialized the broker
 // (e.g., immediately after DO hibernation wake-up).
 export async function _rpcCpSpawn(self, req) {
-    const fpm = self._ensureFacetProcessManager();
+    const fpm = self._ensureChildProcessManager();
     return fpm.spawn(req);
 }
 /**
@@ -1282,19 +1282,19 @@ export async function _rpcCpReadStdin(self, childPid, waitMs, acquire, pid, writ
     return withDeliveredAcquire(self, packet, delivers, acquire, pid);
 }
 export async function _rpcCpReadOutput(self, childPid, fd, sinceSeq, waitMs, acquire, pid) {
-    const fpm = self._ensureFacetProcessManager();
+    const fpm = self._ensureChildProcessManager();
     const output = await fpm.readOutput(childPid, fd, sinceSeq, waitMs);
     return withDeliveredAcquire(self, output, output.chunks.length > 0 || output.closed, acquire, pid);
 }
 export async function _rpcCpDrainOutput(self, childPid) {
-    const fpm = self._ensureFacetProcessManager();
+    const fpm = self._ensureChildProcessManager();
     return fpm.drainOutput(childPid);
 }
 export async function _rpcCpCloseOutput(self, childPid, fd) {
-    self._ensureFacetProcessManager().closeOutput(childPid, fd);
+    self._ensureChildProcessManager().closeOutput(childPid, fd);
 }
 export async function _rpcCpKill(self, childPid, signal) {
-    const fpm = self._ensureFacetProcessManager();
+    const fpm = self._ensureChildProcessManager();
     return fpm.kill(childPid, signal);
 }
 /**
@@ -1317,7 +1317,7 @@ export async function _rpcCpBlocked(self, pid, report) {
     });
 }
 export async function _rpcCpWait(self, childPid, waitMs, acquire, pid, knownStarted) {
-    const fpm = self._ensureFacetProcessManager();
+    const fpm = self._ensureChildProcessManager();
     const status = await fpm.wait(childPid, waitMs, knownStarted !== false);
     return withDeliveredAcquire(self, status, status.done, acquire, pid);
 }

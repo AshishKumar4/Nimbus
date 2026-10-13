@@ -28,7 +28,7 @@ import { createCurlCommand } from '../substrate/lifo/commands/net/curl.js';
 import { createWgetCommand } from '../substrate/lifo/commands/net/wget.js';
 import { createDigCommand } from '../substrate/lifo/commands/net/dig.js';
 import { createPingCommand } from '../substrate/lifo/commands/net/ping.js';
-import { workspaceNetwork } from '../_shared/workspace-network.js';
+import { selectProcessEgress, workspaceNetwork } from '../_shared/workspace-network.js';
 import { runCommand } from '../substrate/lifo/sandbox/run-command.js';
 import { HeadlessTerminal } from '../substrate/lifo/sandbox/HeadlessTerminal.js';
 import { SqliteVFS, STORE_TABLES } from '../vfs/sqlite-vfs.js';
@@ -39,6 +39,9 @@ import { ProcessView } from '../runtime/process-files.js';
 import { WorkspaceFs } from './workspace-fs.js';
 import { PID_GEN_STRIDE } from '../runtime/process-table.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
+import { ChildProcessManager } from '../runtime/child-process-manager.js';
+import { resolveWorkspaceChild } from './child-process-runner.js';
+import { exitCodeForSignal } from '../substrate/lifo/shell/signals.js';
 import { runtimeEntrypoints } from '../runtime/installed-runtimes.js';
 import { RuntimeManager } from '../runtime/runtime-manager.js';
 import { makeNimbusVerbHandler } from '../runtime/nimbus-command.js';
@@ -64,6 +67,7 @@ export { parseShellState } from './named-shells.js';
  */
 export class NimbusWorkspace {
     sql;
+    children;
     supervisorOps;
     filesystem;
     runtimeLease;
@@ -107,10 +111,11 @@ export class NimbusWorkspace {
      *  supplied one, else the `sh` this workspace spawned. */
     shellProcessPid;
     namedShells;
-    constructor(vfs, kernel, shell, registry, env, sql, processes, runtimes, shellProcessPid, supervisorOps, filesystem, runtimeLease, 
+    constructor(vfs, kernel, shell, registry, env, sql, processes, children, runtimes, shellProcessPid, supervisorOps, filesystem, runtimeLease, 
     /** Who the workspace shell acts as, and so every call's process. */
     identity) {
         this.sql = sql;
+        this.children = children;
         this.supervisorOps = supervisorOps;
         this.filesystem = filesystem;
         this.runtimeLease = runtimeLease;
@@ -152,7 +157,6 @@ export class NimbusWorkspace {
             throw new Error('The workspace filesystem must be over the workspace SqliteVFS');
         await seedBaseFilesystem(filesystem, home);
         const kernel = new Kernel();
-        kernel.network = workspaceNetwork(options.egress);
         const registry = createDefaultRegistry();
         // The durable coreutils replace ~25 lifo builtins. They are the ones that
         // carry credentials and read this filesystem's uid/gid, so they must win.
@@ -164,12 +168,39 @@ export class NimbusWorkspace {
         // host-supplied one keeps the base its owner configured.
         if (!options.processes)
             processes.setPidBase((options.generation ?? 1) * PID_GEN_STRIDE);
+        if (options.egressFor !== undefined && options.egress === undefined) {
+            throw new TypeError('NimbusWorkspace: egressFor refines egress, the workspace\'s own network; give both');
+        }
+        kernel.network = options.egress !== undefined && options.egressFor !== undefined
+            ? selectProcessEgress(options.egress, options.egressFor, processes)
+            : workspaceNetwork(options.egress);
         // Its processes bind to this filesystem, so a reap releases them here,
         // and their output waits for what they wrote to be published: the one
         // place the table and the filesystem meet.
         processes.setRelease((pid) => filesystem.releaseProcess(pid), (pid) => filesystem.processEnded(pid));
         filesystem.holdOutput(processes);
         const env = { ...defaultEnv(home), ...options.env };
+        let workspace = null;
+        const children = new ChildProcessManager({
+            processes,
+            resolve: (request, origin) => {
+                if (!workspace)
+                    throw new Error('Nimbus: workspace is not initialized');
+                return resolveWorkspaceChild(workspace, request, origin);
+            },
+            terminate: (pid, signal) => processes.kill(pid, exitCodeForSignal(signal)),
+        });
+        if (options.childProcesses)
+            children.bindHost(options.childProcesses);
+        const host = options.facets;
+        const facets = host ? {
+            parking: host.parking,
+            memoryBudgetBytes: host.memoryBudgetBytes,
+            open: spec => host.open({
+                ...spec,
+                syscalls: spec.syscalls ? { ...spec.syscalls, children } : undefined,
+            }),
+        } : undefined;
         // The identity every shell command runs as. A host that supplied one keeps
         // it verbatim — its pid is already alive in ITS process table. Otherwise
         // the workspace's own supervisor spawns the shell process, so `sudo`,
@@ -221,9 +252,9 @@ export class NimbusWorkspace {
                     ? composeRuntimeSources([suppliedRuntimeSource(options.runtimes ?? []), options.runtimeSource])
                     : suppliedRuntimeSource(options.runtimes ?? []),
             });
-            if (options.facets) {
+            if (facets) {
                 registerWasmRuntimes({
-                    facets: options.facets,
+                    facets,
                     vfs,
                     filesystem,
                     registry,
@@ -315,7 +346,8 @@ export class NimbusWorkspace {
                 output: options.processOutput,
                 extend: options.supervisorOps,
             });
-            return new NimbusWorkspace(vfs, kernel, shell, registry, env, options.sql, processes, runtimes, shellProcessPid, supervisorOps, filesystem, runtimeLease, identity);
+            workspace = new NimbusWorkspace(vfs, kernel, shell, registry, env, options.sql, processes, children, runtimes, shellProcessPid, supervisorOps, filesystem, runtimeLease, identity);
+            return workspace;
         }
         catch (error) {
             await runtimeLease.dispose();

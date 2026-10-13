@@ -286,7 +286,7 @@ for (const kind of ['boot', 'attached', 'killed']) {
 // ── 2. the re-drive is not a retry loop ──────────────────────────────────
 //
 // The reset this recovers from is classified transient and is retryable
-// (12/12 upstream, vfs/facet-resident-store.ts). The one that is NOT — the
+// (12/12 upstream, vfs/resident/index.ts). The one that is NOT — the
 // object crossing its storage budget, which the platform reports the same way
 // — recurs, and a launch that came back from a reset only to be reset again is
 // how that looks. It gets reported, not re-driven a second time.

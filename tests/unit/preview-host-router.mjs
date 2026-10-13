@@ -10,6 +10,7 @@
 
 import assert from 'node:assert/strict';
 import { issueNimbusToken, verifyNimbusToken } from '../../packages/worker/src/auth/token.ts';
+import { nimbusTokenCookieName } from '../../packages/worker/src/auth/middleware.ts';
 import { createNimbusHandler } from '../../packages/worker/src/router/index.ts';
 
 class FakeNamespace {
@@ -112,7 +113,7 @@ async function mintPreviewUrl(handler, env, attachToken, port = 3000) {
   // `__Host-` is what stops untrusted preview code from setting a shadowing
   // `nimbus_token` for the parent domain: the browser rejects the prefix with
   // a Domain attribute or a Path other than `/`.
-  assert.match(setCookie, /^__Host-nimbus_token=/);
+  assert.match(setCookie, /^__Host-nimbus_token-/);
   assert.match(setCookie, /; Path=\/;/);
   assert.doesNotMatch(setCookie, /Domain=/i);
   assert.match(setCookie, /; Secure/);
@@ -139,7 +140,7 @@ async function mintPreviewUrl(handler, env, attachToken, port = 3000) {
   // `session:preview` scope is never persisted browser-side.
   const cookieClaims = (await verifyNimbusToken(
     env,
-    decodeURIComponent(cookie.slice('__Host-nimbus_token='.length)),
+    decodeURIComponent(cookie.slice(`${nimbusTokenCookieName(sid)}=`.length)),
   )).claims;
   assert.deepEqual(cookieClaims.scopes, ['session:attach']);
   assert.equal(cookieClaims.jti, undefined);

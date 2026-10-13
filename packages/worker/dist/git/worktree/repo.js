@@ -169,7 +169,7 @@ export class WorktreeRepo {
                 const dir = `${this.gitdir}/objects/${oid.slice(0, 2)}`;
                 await this.vfs.mkdir(dir, { recursive: true });
                 const path = `${dir}/${oid.slice(2)}`;
-                await this.vfs.writeFile(path, bytes);
+                await this.vfs.writeFile(path, bytes, { mode: LOOSE_MODE });
                 await this.vfs.chmod(path, LOOSE_MODE);
             },
             pending: () => false,

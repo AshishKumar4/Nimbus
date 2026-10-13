@@ -112,6 +112,14 @@ export declare function packumentUrl(name: string, registry?: string): string;
  *  the R2 path and go straight to the network — they're the long tail
  *  for which W7 (streams over RPC) will close the gap. */
 export declare const MAX_R2_TARBALL_BYTES: number;
+/** How a packument is read: through the cache, or (`revalidate`) past it to the registry, however fresh the cached copy. */
+export interface PackumentReadOptions {
+    retries?: number;
+    timeoutMs?: number;
+    registry?: string;
+    /** The cached copy cannot answer what is asked: ask the registry (past its CDN) before saying nothing does. */
+    revalidate?: boolean;
+}
 /** Outcome of `R2CacheClient.readThroughPackument`. */
 export interface PackumentReadThrough {
     /** Corgi packument JSON text, or null when `status`/`failure` is set. */
@@ -135,6 +143,10 @@ export interface CachedPackument {
      *  expired entries are returned only as a stale-while-error fallback,
      *  never as a hot-path hit. */
     expired: boolean;
+    /** The registry's ETag for this body, which a refetch is made conditional on; absent where none was kept. */
+    etag?: string;
+    /** Where it was read from R2: R2's own version of the object, which a renewal is conditional on. */
+    stored?: string;
 }
 /** Optional R2 binding shape (we treat null as "not provisioned"). */
 type R2BucketLike = {
@@ -143,12 +155,18 @@ type R2BucketLike = {
         text(): Promise<string>;
         uploaded?: Date;
         customMetadata?: Record<string, string>;
+        /** R2's own version of the object. */
+        etag?: string;
     } | null>;
+    /** Null where `onlyIf` does not hold: nothing is written. */
     put(key: string, body: Uint8Array | ArrayBuffer | string, opts?: {
         httpMetadata?: {
             contentType?: string;
         };
         customMetadata?: Record<string, string>;
+        onlyIf?: {
+            etagMatches: string;
+        };
     }): Promise<unknown>;
     delete(key: string): Promise<unknown>;
 } | null;
@@ -315,7 +333,9 @@ export declare class R2CacheClient {
      * to L2 until the R2 entry's customMetadata.expiresAt
      * (fillPackumentL2).
      */
-    getPackument(name: string, registry?: string): Promise<CachedPackument | null>;
+    getPackument(name: string, registry?: string, 
+    /** Also what a refetch is made conditional on (etag, stored), which an expired entry always carries. */
+    validators?: boolean): Promise<CachedPackument | null>;
     /**
      * The colo copy of a packument, kept until `expiresAt`: the cache layer
      * drops it at its max-age, and the absolute time rides in a header so a
@@ -343,11 +363,7 @@ export declare class R2CacheClient {
      * `status` is set when the registry answered 4xx (no such package);
      * `failure` when every attempt failed. Both leave `json` null.
      */
-    readThroughPackument(name: string, options?: {
-        retries?: number;
-        timeoutMs?: number;
-        registry?: string;
-    }, 
+    readThroughPackument(name: string, options?: PackumentReadOptions, 
     /**
      * The workspace's network. Under an egress the shared cache is neither
      * read (the egress sees every registry read) nor filled (what an egress
@@ -355,9 +371,16 @@ export declare class R2CacheClient {
      */
     network?: WorkspaceNetwork): Promise<PackumentReadThrough>;
     /**
+     * The registry's answer for a packument the cache did not answer
+     * (`cached`: its copy, expired, or one a resolve could not answer, whose
+     * ETag the request is conditional on; `revalidate`: past the registry's
+     * CDN as well), and the cache filled with it.
+     */
+    private fetchPackument;
+    /**
      * Write a packument JSON to R2 with a TTL stamp (`expiresAt`, by default
-     * the packument TTL from now) in customMetadata. No-op if the bucket
-     * binding is missing.
+     * the packument TTL from now) and the registry's ETag in customMetadata.
+     * No-op if the bucket binding is missing.
      *
      * Only `readThroughPackument` (and the debug bench seeder) call this:
      * it is a storage primitive, never an RPC. See readThroughPackument
@@ -366,7 +389,9 @@ export declare class R2CacheClient {
      * Returns true on success, false on failure (same best-effort posture
      * as putTarball).
      */
-    putPackument(name: string, json: string, registry?: string, expiresAt?: number): Promise<boolean>;
+    putPackument(name: string, json: string, registry?: string, expiresAt?: number, etag?: string, 
+    /** Write only over this version of the stored object (R2's own etag). */
+    over?: string): Promise<boolean>;
     /** Lightweight feature-detection for callers that want to log path. */
     hasTarballBucket(): boolean;
     /** Lightweight feature-detection for callers that want to log path. */

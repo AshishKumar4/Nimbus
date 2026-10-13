@@ -10,7 +10,7 @@ import { type MinShellRegistry } from '@nimbus-sh/core/runtime/installed-runtime
 import type { ProcessLogReadOptions } from '@nimbus-sh/core/runtime/process-logs.js';
 import { type TerminalLike } from '../runtime/process-logs-api.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
-import { type HostActivityLease } from '@nimbus-sh/fabric/host-activity.js';
+import type { ChildProcessManager } from '@nimbus-sh/core/runtime/child-process-manager.js';
 import type { ComposedFacetManager } from '../facets/compose.js';
 import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import type { RuntimeCatalogEnv } from '../runtime/runtime-catalog.js';
@@ -55,8 +55,6 @@ export interface ProgrammaticHost extends TimerHost {
     _w1SessionDestroyed: boolean;
     /** The log-janitor deadline this instance armed (hibernation.ts armLogJanitor), or null. */
     _w1JanitorAt: number | null;
-    /** The resident keep-alive cycle this instance armed, and the host activity it owns (hibernation.ts). */
-    _w1Keepalive: HostActivityLease | null;
     env: RuntimeCatalogEnv;
     ctx: ProgrammaticContext;
     /**
@@ -90,7 +88,7 @@ export interface ProgrammaticHost extends TimerHost {
         close(): void;
     }) | null;
     kernel?: unknown;
-    facetProcessManager?: unknown;
+    childProcessManager?: ChildProcessManager | null;
     esbuildService?: unknown;
     /** The session's esbuild facet pool; torn down with the installer and dev server. */
     bundlePool?: {

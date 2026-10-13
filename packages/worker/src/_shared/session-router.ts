@@ -36,6 +36,31 @@
 
 import { NIMBUS_TOKEN_QUERY } from '../auth/middleware.js';
 
+/**
+ * Remove the browser's attach credentials on the forwarded edge. Behind this
+ * edge there is no browser and no second session, so a credential the
+ * browser selected for this route must not ride further into the session's
+ * own servers — the query is already deleted above, and every per-session
+ * (`__Host-nimbus_token-<sid>`) and legacy (`__Host-nimbus_token`) cookie
+ * goes here. Runs on exact names and the exact prefix only: a user's own
+ * cookie that merely mentions tokens is none of this function's business.
+ */
+export function stripNimbusAttachCookies(headers: Headers): void {
+  const cookie = headers.get('Cookie');
+  if (!cookie) return;
+  const kept: string[] = [];
+  for (const c of cookie.split(';')) {
+    const pair = c.trim();
+    const at = pair.indexOf('=');
+    if (at <= 0) continue;
+    const name = pair.slice(0, at);
+    if (name === '__Host-nimbus_token' || name.startsWith('__Host-nimbus_token-')) continue;
+    kept.push(pair);
+  }
+  if (kept.length === 0) headers.delete('Cookie');
+  else headers.set('Cookie', kept.join('; '));
+}
+
 /** Prefix for all session-scoped routes. Centralized for future refactors. */
 export const SESSION_ROUTE_PREFIX = '/s';
 
@@ -154,6 +179,7 @@ export interface ForwardOptions {
    */
   callerScopes?: readonly string[];
 }
+
 /**
  * Forward a request to the session's DO.
  *
@@ -173,6 +199,8 @@ export interface ForwardOptions {
  * @param env Bindings env. Must carry `NIMBUS_SESSION` DO namespace.
  * @param opts Tenant scoping. See {@link ForwardOptions}.
  */
+
+
 export function forwardToSession(
   request: Request,
   route: ParsedSessionRoute,
@@ -202,8 +230,12 @@ export function forwardToSession(
   // still attached would carry a live credential into inner-DO logs, the
   // referrers of whatever the session serves, and — on the port-preview
   // path — into the user's own untrusted server. Strip it here, once, on
-  // the single edge every session request crosses.
+  // the single edge every session request crosses. The attach cookie goes
+  // with it: behind this edge there is no browser and no second session,
+  // so a credential the browser selected for this route must not ride
+  // further into the session's own servers.
   innerUrl.searchParams.delete(NIMBUS_TOKEN_QUERY);
+  stripNimbusAttachCookies(headers);
   // Build the forwarded Request. Preserve body + method. For GETs/HEADs,
   // body is undefined (Request constructor rejects bodies there anyway).
   const hasBody = request.method !== 'GET' && request.method !== 'HEAD';

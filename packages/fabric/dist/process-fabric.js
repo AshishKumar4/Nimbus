@@ -124,13 +124,13 @@ export const ResidentCodeSpecSchema = z.object({
     /** Runtime libraries are immutable deployment assets, never per-process images. */
     assetModules: z.record(z.string(), z.object({ kind: z.enum(['js', 'cjs']), source: ModuleSourceAssetSchema })).optional(),
     /**
-     * VFS paths of generated CommonJS PACKS (encodeCommonJsPack): each image
-     * carries many `{ cjs }` modules, and the map gains every one of them at
-     * load. A node process's module cells travel this way — one module per
-     * file, so the guest's registry compiles only what the program requires,
-     * and one image per launch, so the boot spec names a path and not thousands.
+     * VFS paths of generated code packs (encodeCodePack): each image carries
+     * many `{ cjs }` and `{ js }` modules, and the map gains every one of them
+     * at load. A node process's module cells travel this way — one module per
+     * file, so the guest's registry compiles only what the program loads, and
+     * one image per launch, so the boot spec names a path and not thousands.
      */
-    vfsCommonJsPacks: z.array(z.string()).optional(),
+    vfsCodePacks: z.array(z.string()).optional(),
     /**
      * The isolate's exact `env`: one entry per binding the embedder minted,
      * carried by reference so loopback stubs survive untouched. Defined —
@@ -234,8 +234,8 @@ export async function residentLoaderConfig(spec, disk, readAsset) {
     // the wasm images, an astro project's second launch held its 38 MiB of
     // wasm, its pack's 25.7 MB of bytes and their 48 MiB decoded at once, and
     // reset the session's isolate.
-    for (const path of spec.vfsCommonJsPacks ?? []) {
-        Object.assign(resolved, decodeCommonJsPackBytes(await readFacetImageBytes(disk, path)));
+    for (const path of spec.vfsCodePacks ?? []) {
+        Object.assign(resolved, decodeCodePackBytes(await readFacetImageBytes(disk, path)));
     }
     const immutable = (source) => {
         if (!readAsset)
@@ -280,20 +280,25 @@ export async function residentLoaderConfig(spec, disk, readAsset) {
     };
 }
 /**
- * One image holding many `{ cjs }` modules: a JSON index of `[name, length]`
- * rows, a newline, and the module texts back to back. Lengths are UTF-16 code
- * units, each module's length as a string (decodeCommonJsPackBytes reads the
- * bytes they end at).
+ * One image holding many code modules: a JSON index of `[name, length]` rows
+ * for `{ cjs }` modules and `[name, length, "js"]` rows for ES modules, a
+ * newline, and the module texts back to back. Lengths are UTF-16 code units,
+ * each module's length as a string (decodeCodePackBytes reads the bytes they
+ * end at).
  *
  * Encoded as its parts, in order, never joined: the image store encodes them
  * straight into the image's bytes, and a joined copy would be a second full
  * copy of the program's code on the coordinator.
  */
-export function encodeCommonJsPack(modules) {
+export function encodeCodePack(commonJs, esModules = {}) {
     const index = [];
     const parts = [''];
-    for (const [name, text] of Object.entries(modules)) {
+    for (const [name, text] of Object.entries(commonJs)) {
         index.push([name, text.length]);
+        parts.push(text);
+    }
+    for (const [name, text] of Object.entries(esModules)) {
+        index.push([name, text.length, 'js']);
         parts.push(text);
     }
     parts[0] = JSON.stringify(index) + '\n';
@@ -307,16 +312,19 @@ export function encodeCommonJsPack(modules) {
  * counts UTF-16 units, so each module's bytes end where its units do: a
  * four-byte sequence is two units, any other lead byte one.
  */
-export function decodeCommonJsPackBytes(pack) {
+export function decodeCodePackBytes(pack) {
     const newline = pack.indexOf(0x0a);
     if (newline < 0)
-        throw new Error('Nimbus: a CommonJS pack has no index');
+        throw new Error('Nimbus: a code pack has no index');
     // A module's text is what the index counts, a leading byte order mark included.
     const decoder = new TextDecoder('utf-8', { ignoreBOM: true });
-    const index = z.array(z.tuple([z.string(), z.number().int().nonnegative()])).parse(JSON.parse(decoder.decode(pack.subarray(0, newline))));
+    const index = z.array(z.union([
+        z.tuple([z.string(), z.number().int().nonnegative()]),
+        z.tuple([z.string(), z.number().int().nonnegative(), z.literal('js')]),
+    ])).parse(JSON.parse(decoder.decode(pack.subarray(0, newline))));
     const modules = {};
     let offset = newline + 1;
-    for (const [name, length] of index) {
+    for (const [name, length, kind] of index) {
         let end = offset;
         for (let units = 0; units < length && end < pack.length; end++) {
             const byte = pack[end];
@@ -328,12 +336,12 @@ export function decodeCommonJsPackBytes(pack) {
             end++;
         const text = decoder.decode(pack.subarray(offset, end));
         if (text.length !== length)
-            throw new Error(`Nimbus: CommonJS pack module '${name}' decodes to ${text.length} units, its index says ${length}`);
-        modules[name] = { cjs: text };
+            throw new Error(`Nimbus: code pack module '${name}' decodes to ${text.length} units, its index says ${length}`);
+        modules[name] = kind === 'js' ? { js: text } : { cjs: text };
         offset = end;
     }
     if (offset !== pack.length)
-        throw new Error(`Nimbus: CommonJS pack holds ${pack.length - offset} bytes its index does not name`);
+        throw new Error(`Nimbus: code pack holds ${pack.length - offset} bytes its index does not name`);
     return modules;
 }
 /** One content-addressed facet image, verified against the digest its path claims. */

@@ -41,7 +41,7 @@ export interface SessionSupervisorHost {
      * spawned. Absent, the session serves no delivered mutation.
      */
     readonly supervisorDeliveries?: SupervisorDeliveries;
-    readonly facetManager?: Pick<FacetManager, 'journalCall'> | null;
+    readonly facetManager?: Pick<FacetManager, 'replay'> | null;
     waveTurn?(): Promise<void>;
     _rpcStdout(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
     _rpcStderr(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;

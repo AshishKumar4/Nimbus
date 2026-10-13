@@ -408,7 +408,8 @@ class PeerProcessHost implements ProcessHost {
         pid: supervisor.pid,
         writerId: params.writerId,
         hostIncarnation: supervisor.hostIncarnation,
-        network: networkRef(this.network()),
+        // The process's egress crosses to the peer, which mints the process's binding with it.
+        network: networkRef(this.network().forProcess(params.pid)),
         workerKey: params.workerKey,
         webSocketCapability,
         startArgs: params.startArgs,

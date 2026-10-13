@@ -101,16 +101,16 @@ export async function _rpcGetPackument(_self: RpcHost, _name: string, _options?:
 export async function _rpcPutCachedTarball(_self: RpcHost, _integrity: string, _bytes: Uint8Array | ArrayBuffer): Promise<void> {}
 export async function _rpcCacheResult(self: RpcHost, ticket: string, result: { value?: unknown; failure?: unknown; failed?: boolean }, pid?: number, run?: string): Promise<void> {
   if (result.failed && result.failure) result = { ...result, failure: errorFromCacheFailure(result.failure as ReplayFailure) };
-  await self.facetManager?.cacheResult(pid, run, ticket, result);
+  await self.facetManager?.replay.cacheResult(pid, run, ticket, result);
 }
 export async function _rpcStdinPrepared(self: RpcHost, pid?: number, run?: string): Promise<void> {
-  if (pid !== undefined) self.facetManager?.stdinPrepared(pid, run);
+  if (pid !== undefined) self.facetManager?.replay.stdinPrepared(pid, run);
 }
 
 type ProcessRpcHost = Pick<NimbusSession, 'processes'>;
 type ReportRpcHost = ProcessRpcHost & Pick<NimbusSession, 'facetManager'>;
 type ExitRpcHost = ReportRpcHost & Pick<NimbusSession,
-  'terminal' | 'shell' | 'webSocketRelay' | 'supervisorDeliveries' | 'servedReads' | '_emitExitDump' | 'nimbusDebug' | 'facetProcessManager'
+  'terminal' | 'shell' | 'webSocketRelay' | 'supervisorDeliveries' | 'servedReads' | '_emitExitDump' | 'nimbusDebug' | 'childProcessManager'
 >;
 
 function queueExitNotice(self: Pick<NimbusSession, 'terminal' | 'shell' | 'processes'>, notice: ProcessExitNotice): boolean {
@@ -938,17 +938,17 @@ export async function _rpcHmrNextEvent(self: Pick<NimbusSession, 'cirrusReal'>, 
 // its run after a stop reached the read the run before stopped at; a TLS
 // connection it opens through the session; and its outbound's calls.
 export async function _rpcReplayBoundary(self: RpcHost, pid?: number, run?: string): Promise<void> {
-  if (typeof pid === 'number') await self.facetManager?.replayBoundary(pid, run);
+  if (typeof pid === 'number') await self.facetManager?.replay.boundary(pid, run);
 }
 
 export async function _rpcNetTls(self: RpcHost, action: unknown, token: unknown, payload: unknown, pid?: number, run?: string): Promise<unknown> {
   if (typeof pid !== 'number' || !self.facetManager) throw new Error('netTls: no such process');
-  return self.facetManager.netTls(pid, run, String(action), String(token), payload as Record<string, unknown> | undefined);
+  return self.facetManager.replay.netTls(pid, run, String(action), String(token), payload as Record<string, unknown> | undefined);
 }
 
 export async function _rpcOutbound(self: RpcHost, action: unknown, payload: unknown, pid?: number, run?: string): Promise<unknown> {
   if (typeof pid !== 'number' || !self.facetManager) throw new Error('outbound: no such process');
-  return self.facetManager.outboundCall(pid, run, String(action), payload as Record<string, unknown> | undefined);
+  return self.facetManager.replay.outbound(pid, run, String(action), payload as Record<string, unknown> | undefined);
 }
 
 
@@ -1082,7 +1082,7 @@ export async function _rpcStdout(self: RpcHost, pid: number, data: Uint8Array, a
     // (runtime/stop-replay.ts), is not delivered twice.
     if (at !== undefined && run !== undefined) data = self.facetManager?.gateOutput(pid, 'stdout', data, at, run) ?? data;
     if (data.byteLength === 0) return;
-    const childOutput = self.facetProcessManager?.routeOutput(pid, 1, data);
+    const childOutput = self.childProcessManager?.routeOutput(pid, 1, data);
     if (childOutput) { await childOutput; return; }
     // Always buffer raw data (keeps ANSI for replay). Terminal paint only
     // if someone is listening — detached sessions shouldn't silently lose
@@ -1111,7 +1111,7 @@ export async function _rpcStderr(self: RpcHost, pid: number, data: Uint8Array, a
     if (isPriorGenerationPid(self, pid)) return;
     if (at !== undefined && run !== undefined) data = self.facetManager?.gateOutput(pid, 'stderr', data, at, run) ?? data;
     if (data.byteLength === 0) return;
-    const childOutput = self.facetProcessManager?.routeOutput(pid, 2, data);
+    const childOutput = self.childProcessManager?.routeOutput(pid, 2, data);
     if (childOutput) { await childOutput; return; }
     try {
       if (pid > 0) await self.processes.appendOutputBytes(pid, 'stderr', data);
@@ -1230,7 +1230,7 @@ function reportExit(
     // A child_process child's end is its parent's to report, as its output
     // is: the terminal hears nothing of it (the parent may not even read
     // what it wrote, as a Node parent need not).
-    if (self.facetProcessManager?.isChild(pid)) return;
+    if (self.childProcessManager?.isChild(pid)) return;
     const cmdFromTable = self.processes.get(pid)?.command;
     notifyTerminalEvent(self.terminal, { type: 'exit', pid, code, command: cmdFromTable });
 
@@ -1303,7 +1303,7 @@ function reportExternalExit(self: RpcHost, pid: number, code: number, reason: st
     self.processes.markExit(pid, code, reason);
     // A child_process child's end is its parent's to report, as its output
     // is (routeOutput): the terminal hears nothing of it.
-    if (!self.facetProcessManager?.isChild(pid)) {
+    if (!self.childProcessManager?.isChild(pid)) {
       const cmdFromTable = self.processes.get(pid)?.command;
       notifyTerminalEvent(self.terminal, { type: 'exit', pid, code, reason, command: cmdFromTable });
       if (self.terminal && self.processes.logSize(pid) > 0) {
@@ -1410,13 +1410,13 @@ export async function _rpcTransform(self: RpcHost, code: string, loader: string)
 
   // ── child_process RPC entrypoints [W8 Phase 1] ────────────────────────
   //
-  // Delegate to the lazily-constructed FacetProcessManager. Defensive
-  // ensureFacetProcessManager() handles cold-start cases where a child
+  // Delegate to the lazily-constructed ChildProcessManager. Defensive
+  // _ensureChildProcessManager() handles cold-start cases where a child
   // facet calls cp* before the supervisor has initialized the broker
   // (e.g., immediately after DO hibernation wake-up).
 
 export async function _rpcCpSpawn(self: RpcHost, req: any): Promise<{ childPid: number }> {
-    const fpm = self._ensureFacetProcessManager();
+    const fpm = self._ensureChildProcessManager();
     return fpm.spawn(req);
 }
 
@@ -1493,22 +1493,22 @@ export async function _rpcCpReadOutput(
   acquire?: unknown,
   pid?: number,
 ) {
-    const fpm = self._ensureFacetProcessManager();
+    const fpm = self._ensureChildProcessManager();
     const output = await fpm.readOutput(childPid, fd, sinceSeq, waitMs);
     return withDeliveredAcquire(self, output, output.chunks.length > 0 || output.closed, acquire, pid);
 }
 
 export async function _rpcCpDrainOutput(self: RpcHost, childPid: number) {
-    const fpm = self._ensureFacetProcessManager();
+    const fpm = self._ensureChildProcessManager();
     return fpm.drainOutput(childPid);
 }
 
 export async function _rpcCpCloseOutput(self: RpcHost, childPid: number, fd: 1 | 2): Promise<void> {
-    self._ensureFacetProcessManager().closeOutput(childPid, fd);
+    self._ensureChildProcessManager().closeOutput(childPid, fd);
 }
 
 export async function _rpcCpKill(self: RpcHost, childPid: number, signal: string): Promise<boolean> {
-    const fpm = self._ensureFacetProcessManager();
+    const fpm = self._ensureChildProcessManager();
     return fpm.kill(childPid, signal);
 }
 
@@ -1530,7 +1530,7 @@ export async function _rpcCpBlocked(self: RpcHost, pid: number, report: unknown)
 }
 
 export async function _rpcCpWait(self: RpcHost, childPid: number, waitMs: number, acquire?: unknown, pid?: number, knownStarted?: boolean) {
-    const fpm = self._ensureFacetProcessManager();
+    const fpm = self._ensureChildProcessManager();
     const status = await fpm.wait(childPid, waitMs, knownStarted !== false);
     return withDeliveredAcquire(self, status, status.done, acquire, pid);
 }

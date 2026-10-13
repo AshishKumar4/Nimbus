@@ -37,7 +37,7 @@ export interface NodeProgramEnd {
 }
 /**
  * Run `program` in the current realm, which is the program's own: its globals
- * (process, Buffer, console, the bundlers' interop helpers) are installed on
+ * (process, Buffer, console) are installed on
  * globalThis for good. Resolves once the main script has run (an ES module's
  * top-level await included). What it left (timers, servers, requests) runs on
  * in the realm's own event loop, which owns how long the process lives.

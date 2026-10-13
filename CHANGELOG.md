@@ -44,8 +44,131 @@ published independently in the `@nimbus-sh` npm scope.
   throwaway-only hosting records without a physical facet name, logs that the
   peer facet could not be named, and never guesses which facet to delete.
 
-## 2026-10-12: core 0.18.0, fabric 0.13.0, worker 0.16.0, loom 0.2.5, sdk 0.13.1, react 0.3.1, cli 0.2.5, create-nimbus-app 0.2.2
+## 2026-10-12: platform 0.8.2, core 0.18.0, fabric 0.13.0, worker 0.16.0, loom 0.2.5, sdk 0.13.1, react 0.3.1, cli 0.2.5, create-nimbus-app 0.2.2
 
+- Fixed (security): the shell's Ctrl+P palette put file names into the page as
+  HTML. A file named like `<img src=x onerror=...>`, for example from a cloned
+  repository, ran script in the shell page when the palette opened. Palette
+  entries are now plain text, and its error line is escaped.
+- Fixed: `utimesSync`, `lutimesSync` and `futimesSync` in a Node program reach
+  the session; they changed only what the program itself saw.
+- Fixed: a file JS git checks out, and a loose object it writes, is made with
+  its final mode (0644 or 0755, 0444); it was made 0666 less the umask and
+  changed after, so under a permissive umask others could write it meanwhile.
+- Fixed: an npm install no longer fails for up to an hour after a dependency
+  publishes a new version. The shared packument cache served any unexpired
+  entry as the whole truth, so a range only the new version satisfies failed
+  with "no published version satisfies". When a cached packument cannot
+  answer a request (a range, an exact version, an alias, a staged binding or
+  a swap target), the resolver now asks once more past the cache, then picks
+  again; if that read fails, the cached answer stands as before. Fresh reads
+  are unchanged. The cache keeps the registry's ETag, so an expired entry
+  revalidates with a bodyless 304 instead of a full download. Entries cached
+  before this release refetch once when they expire.
+- Fixed: a file or directory a Node program creates has the mode it asked
+  for, as Node's does. `writeFile` and `appendFile` (sync, callback and
+  promise forms), `open` and write streams honour `mode`, less the umask, and
+  a file already there keeps its own. `mkdir` shows its `mode` to the
+  program's own `stat`. `mkdtemp` makes 0700. `copyFile` and `cp` leave the
+  source's mode. Before, such files were made 0666 less the umask, so
+  `writeFileSync(p, secret, { mode: 0o600 })` made a file others could read.
+  `chmodSync` and `fchmodSync` reach the session when nothing touches the
+  path after them; before, such a change was kept only in the process.
+  A directory `cp` makes is its owner's alone until it is filled, and a file
+  copied over another is closed to others before the bytes go in, so no one
+  reads a private copy while it is made or after it fails partway.
+- Fixed: `VFS.copy` of a file to a new name (the shell's `cp`) makes it with
+  the source's permission bits less the umask, as cp(1) does; it was made
+  0666 less the umask, so a copy of a private file was readable by others.
+- Added: an egress per process (Kinu ask 45). `NimbusWorkspaceOptions.egressFor`
+  and `NimbusSession.egressFor` take `{ pid, execId }` and return the egress
+  for that process, or undefined to keep the workspace's. Nimbus asks once
+  per process while it lives (`WorkspaceNetwork.forProcess`), and everything
+  the process does goes through that one egress: its fetch, sockets and TLS,
+  its Dynamic Worker's outbound, a peer hosting it, and the commands it runs
+  (curl, wget, dig, ping, npm, pip, gem, lifo, git, wrangler dev and the
+  Workers it loads, opencode, the inline node). An embedder that mints it
+  with the exec in its props can tell which exec made each request. Each
+  workspace selects for its own processes, so two workspaces over one egress
+  object never share a selection, and a session destroyed and made again
+  selects for its new processes. Without `egressFor`, nothing changes.
+- Fixed: under an egress, three kinds of traffic went around it: a one-shot
+  opencode run (`opencode run`, `opencode models`), a Worker that a
+  `wrangler dev` Worker loads through `worker_loaders`, and `lifo search`.
+  Each now goes through the egress of the process that makes it.
+- Added: under an egress, a program's `tls.connect({ servername })` with a
+  name other than the host reaches the egress as `connectTls`'s optional
+  `servername`, which the egress presents and checks the server by, as Node
+  does. It used to fail with `ERR_OPTION_NOT_IMPLEMENTED`. A servername that
+  is not a string throws `ERR_INVALID_ARG_TYPE`, as in Node. An egress that
+  ignores the field connects as before (Kinu ask 44).
+- Changed: under an egress, `tls.connect({ socket })` (STARTTLS) fails with
+  `ERR_NIMBUS_EGRESS_STARTTLS`: "Nimbus: TLS over a socket the program
+  opened (tls.connect({ socket }), as STARTTLS does) is not available when
+  the workspace's network goes through an egress: the egress carries that
+  connection, and workerd starts no TLS on a connection through a service
+  binding". It used to close the program's socket and make TLS on a new
+  connection to the same host, which a STARTTLS server answers as plaintext.
+  A new connection is not the same connection (Kinu ask 46).
+- Breaking: node runs ES modules natively. A program's ES modules (`.mjs`,
+  `type: module`, a typeless `.js` with module syntax, `-e`/stdin under
+  `--input-type=module`) are staged as the Worker's own modules and
+  evaluated by its module registry, no longer lowered to CommonJS. They link
+  and evaluate in Node's order, with live bindings and one namespace per
+  module, and top-level await suspends only its own graph. A `require()` of
+  an ES module returns Node's require(esm) result. It is refused with
+  `ERR_REQUIRE_ASYNC_MODULE` before any of the graph runs if the graph
+  awaits at its top level, even after an `import()` evaluated it. A module
+  that threw throws the same error again on every later `require()` or
+  `import()`, without evaluating twice. `import()` and `require()` of a JSON
+  file share one object. A query or fragment URL (`./m.mjs?x`) is its own
+  instance. An ES import of a CommonJS module that is still executing fails
+  with `ERR_REQUIRE_CYCLE_MODULE`. `import()` in code that `Function`,
+  `AsyncFunction` or `eval` built resolves against the module that called
+  it. A missing export or a module that does not compile is reported with
+  Node's message and its arrow at the source position. A module graph
+  written while the program runs (late) is resolved and parsed whole before
+  any of its bodies runs. A missing file, a syntax error (a top-level
+  `return` in a module included), or TypeScript/JSX that cannot be compiled
+  until the next launch (`ERR_NIMBUS_CODE_NEXT_LAUNCH`) rejects its
+  `import()` with no body run, staged modules' bodies included, as in Node.
+  `node app.jsx` and `bun app.jsx` compile JSX entries and modules. Measured
+  against the previous main, paired: `pi --help` is 9.8 s faster (about 13.7
+  s against 23.9 s); a fresh 120-module ES graph launches 323 ms faster, and
+  80 ms faster when warm; the launch's WebAssembly-image scan is 40 ms
+  against 89 ms. Small `node -e` launches are unchanged.
+- Breaking for embedders (native ES modules):
+  `@nimbus-sh/core/runtime/async-module-lowering.js` is removed, and with it
+  `lowerEsModule`. New core modules: `runtime/native-esm.js`
+  (`readEsModule`), `runtime/cjs-module-exports.js` (Node's CommonJS
+  named-export discovery; an unresolvable re-export adds no names),
+  `runtime/cjs-module-lexer.js` (cjs-module-lexer 2.2.0, Node 22.22.3's,
+  vendored; core and worker now pin `cjs-module-lexer` 2.2.0), and
+  `runtime/esm-require-hoist.js`. New worker module: `facets/esm-stage.js`
+  (`stageEsModules`). `bundleTypescriptLoader` is renamed
+  `bundleCompiledLoader` and also answers `jsx`. fabric's
+  `encodeCommonJsPack` is replaced by `encodeCodePack(codeModules,
+  esModules)`, whose packs also carry ES modules. The interpreter's
+  `moduleRequests` returns `{ requests, unread }` instead of an array
+  (`unread`: `'syntax'` or `'unparsed'`), with optional `javaScript` and
+  parse-goal arguments. The transform store's key schema moves to
+  `nimbus-transform/5`, so earlier records miss once.
+- Known gaps in native ES modules: a typeless ES module written at runtime
+  and imported under two static query variants shares one instance; a module
+  that rebinds its `createRequire` alias with `var` before a top-level
+  `require()` can have that require hoisted; in the lifo (Bun) runtime, a
+  namespace without a default export gets `__esModule`, and a free
+  `require`/`__filename` in an ES module reads `undefined` instead of
+  throwing.
+- Auth: each session route owns its attach cookie, `__Host-nimbus_token-<sid>`,
+  selected by the parsed route on HTTP and WebSocket (host previews included).
+  Two iframes on one page no longer overwrite each other's credential. The
+  pre-change `__Host-nimbus_token` cookie still authenticates its own pinned
+  session and migrates to the route-owned name on next use. Header and query
+  credentials are never stored as cookies, and issuance capacity is refused
+  before a single-use bootstrap is spent. Re-attaching a held session replaces
+  its cookie without growing the jar; destroying a session through its public
+  DELETE expires exactly its cookie.
 - Breaking: VFS-2b uses one change notification for the namespace:
   `CompositeVFS.watchChanges(path, listener)` tells every change a view may
   see at a path or under it, on any mount, as batches of `VfsEvent`s (paths

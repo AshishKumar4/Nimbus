@@ -136,7 +136,7 @@ const attachRes = await fetch(attachUrl, { redirect: 'manual', headers: noCreden
 const setCookies = attachRes.headers.getSetCookie();
 const sessionCookie = setCookies
   .map((c) => c.split(';')[0])
-  .find((c) => c.startsWith('__Host-nimbus_token='));
+  .find((c) => c.startsWith(`__Host-nimbus_token-${sid}=`));
 
 a.check('attach exchange swaps the query token for a session cookie',
   attachRes.status === 302 && !!sessionCookie,

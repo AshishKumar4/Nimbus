@@ -11,7 +11,7 @@
 // from under it ("Internal error in Durable Object storage caused object to be
 // reset"), measured at ~25% of launches and ~54% under an extra request
 // stream. The same signature, from the same cause, is recorded against a
-// 45.7 MB single-turn write in vfs/facet-resident-store.ts.
+// 45.7 MB single-turn write in vfs/resident/index.ts.
 //
 // So the property is not "the image is written efficiently", it is "no turn
 // writes much" — a bound that must hold however large the image is.

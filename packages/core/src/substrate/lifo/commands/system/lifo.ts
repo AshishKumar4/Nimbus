@@ -15,6 +15,7 @@ import type { Command, CommandContext, CommandOutputStream } from '../types.js';
 import type { CommandRegistry } from '../registry.js';
 import { ProcessView } from '../../../../runtime/process-files.js';
 import type { Kernel } from '../../kernel/index.js';
+import { ISOLATE_NETWORK } from '../../../../_shared/workspace-network.js';
 import type { NpmCommandDeps, ShellExecuteFn } from './npm.js';
 import { npmInstallGlobal, getBinEntries, packagesIn, registerBinCommand } from './npm.js';
 import { RegistrySearchResponseSchema, renderSearchTable } from './registry-schemas.js';
@@ -180,7 +181,7 @@ async function lifoList(ctx: CommandContext): Promise<number> {
 
 // ─── search ───
 
-async function lifoSearch(ctx: CommandContext): Promise<number> {
+async function lifoSearch(ctx: CommandContext, kernel: Kernel | undefined): Promise<number> {
   const term = ctx.args.slice(1).join(' ');
   if (!term) {
     await ctx.stderr.write('Usage: lifo search <term>\n');
@@ -192,7 +193,8 @@ async function lifoSearch(ctx: CommandContext): Promise<number> {
   const url = `${registry}/-/v1/search?text=${encodeURIComponent(query)}&size=20`;
 
   try {
-    const response = await fetch(url, { signal: ctx.signal });
+    // Through the command's process's network (its host's egress, when it supplied one).
+    const response = await (kernel?.network ?? ISOLATE_NETWORK).forProcess(ctx.pid).fetch(url, { signal: ctx.signal });
     if (!response.ok) throw new Error(`Registry returned ${response.status}`);
 
     const data = RegistrySearchResponseSchema.parse(await response.json());
@@ -398,7 +400,7 @@ export function createLifoPkgCommand(
       case 'ls':
         return (await lifoList(ctx));
       case 'search':
-        return (await lifoSearch(ctx));
+        return (await lifoSearch(ctx, kernel));
       case 'init':
         return await lifoInit(ctx);
       case 'link':

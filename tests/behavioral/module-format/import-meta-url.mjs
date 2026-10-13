@@ -106,12 +106,11 @@ const _x = await Promise.resolve(1);
 console.log('RESULT=' + import.meta.url + ' join=' + (typeof join) + ' tla=' + _x);
 `;
 await t.run(`cat > /home/user/imeta-tla/sib.mjs << 'NIMBUS_HEREDOC_EOF'\n${tlaSrc}\nNIMBUS_HEREDOC_EOF`, 10_000);
-// Directly node the .mjs (becomes the ENTRY script via runtime-registry,
-// not the bundle path). To force the BUNDLE path, require it from a
-// consumer.js (relative require → file goes into the bundle prefetch
-// → transformEsmInBundle).
+// Directly node the .mjs (the entry), or reach it from a consumer.js, as
+// a module of the launch's map. A module with top-level await is
+// import()ed: require() of one throws ERR_REQUIRE_ASYNC_MODULE, as Node's does.
 await t.run(
-  `node -e "require('fs').writeFileSync('/home/user/imeta-tla/consumer.js', 'require(\\'./sib.mjs\\');')"`,
+  `node -e "require('fs').writeFileSync('/home/user/imeta-tla/consumer.js', 'import(\\'./sib.mjs\\');')"`,
   10_000,
 );
 const tlaResult = await t.run('cd /home/user/imeta-tla && node consumer.js', 30_000);

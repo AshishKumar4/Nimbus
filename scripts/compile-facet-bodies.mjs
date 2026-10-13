@@ -32,7 +32,9 @@ const outputs = [
       ['COMMONJS_CELL_HELPERS_SOURCE', null, [], [
         "export { moduleImporterUrl } from './packages/core/src/_shared/module-importer.ts';",
         "export { runtimeCodeKeySource, runtimeCodeSourceCharge } from './packages/core/src/_shared/runtime-code-identity.ts';",
+        "export { sourceColumn } from './packages/core/src/runtime/native-esm-runtime.ts';",
       ].join('\n')],
+      ['ESM_REQUIRED_SOURCE', './native-esm-runtime.js', ['requiredEsModule']],
     ],
   },
   {

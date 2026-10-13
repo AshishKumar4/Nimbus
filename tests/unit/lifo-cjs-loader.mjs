@@ -45,6 +45,8 @@ try {
     '/home/user/pkg/node_modules/@sc/dep/cjs.js': "module.exports = 'dep-cjs';",
     '/home/user/pkg/node_modules/@sc/dep/f.js': "module.exports = 'dep-feature';",
     '/home/user/pkg/lib/req.js': "module.exports = require('module').createRequire(__filename)('./util');",
+    '/home/user/pkg/bin/native.js': "const esm = require('../lib/native.mjs'); module.exports = async (ctx) => { esm.inc(); await ctx.stdout.write(esm.n + ' ' + esm.default + ' ' + esm.__esModule + '\\n'); return 0; };",
+    '/home/user/pkg/lib/native.mjs': 'export let n = 1; export function inc() { n++; } export default "native";',
   };
   for (const [path, body] of Object.entries(files)) {
     await ws.fs.mkdir(path.slice(0, path.lastIndexOf('/')), { recursive: true });
@@ -55,6 +57,15 @@ try {
   assert.equal(r.stderr, '');
   assert.equal(r.exitCode, 3, 'the command function returns the status');
   assert.equal(r.stdout, 'a b lib-util dep-cjs dep-feature y.z cycle:1 MODULE_NOT_FOUND\n');
+
+  // A lifo command uses the host realm, but its private module URLs still
+  // load ESM from the VFS and leave the host's own imports alone.
+  const view = ws.filesystem.view({ pid: 901, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } });
+  ws.registry.register('native', createLifoCommand('/home/user/pkg/bin/native.js', view));
+  const native = await ws.exec('native');
+  assert.deepEqual([native.exitCode, native.stdout, native.stderr], [0, '2 native true\n', '']);
+  const hostPath = await import('node:path');
+  assert.equal(hostPath.basename('/host/module.js'), 'module.js', 'host imports keep using the host loader');
 
   const node = await ws.exec(`cd /home/user && node -e "console.log(require('module').createRequire('/home/user/pkg/bin/x.js')('./util'), require('/home/user/pkg/lib/req.js'))"`);
   assert.equal(node.stderr, '');

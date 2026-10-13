@@ -59,8 +59,35 @@ export interface ExecTelemetryRecord {
      *  read costs one per READ_STREAM_CHUNK_BYTES, so this is the count that
      *  moves when reads are batched, coalesced or pipelined. */
     fsRpcReads: number;
+    /**
+     * Staged ES modules the interpreter evaluated instead of the registry
+     * (node-shims' adoption: a require() of a module not yet evaluated, and
+     * what then imports it).
+     */
+    esmAdoptions: number;
     /** Whether the prefetch bundle was served from cache (no VFS walk). */
     cacheHit: boolean;
+    /**
+     * What `bundleMs` spent where its cost is per module: the transform pass
+     * (cells stored, transformed, and its wall time) and the staging of ES
+     * modules (esm-stage.ts esmStageSize, its time included). Absent on a
+     * launch that had neither, and on a cache hit.
+     */
+    transforms?: {
+        cells: number;
+        stored: number;
+        transformed: number;
+        hostBytes: number;
+        ms: number;
+    };
+    esm?: Record<string, number>;
+    /** Where the build's time went, by phase, in ms (FacetVfsState.phases); absent on a cache hit. */
+    phases?: Record<string, number>;
+    /** What the build reached: files and their bytes (FacetVfsState.reachableCount, rawBytes); absent on a cache hit. */
+    closure?: {
+        files: number;
+        bytes: number;
+    };
     /**
      * Durable Object turns the bundle build was paged across — the alarm
      * round trips `TurnBudget` took before the process could start. 0 when the

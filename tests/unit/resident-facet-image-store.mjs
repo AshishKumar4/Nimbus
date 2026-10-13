@@ -23,8 +23,8 @@ import {
   FACET_IMAGE_DIR,
   facetImageDigest,
   facetImagePath,
-  encodeCommonJsPack,
-  decodeCommonJsPackBytes,
+  encodeCodePack,
+  decodeCodePackBytes,
   residentLoaderConfig,
 } from '../../packages/fabric/src/process-fabric.ts';
 import { createFacetWorld, createFacetCtx, captureProcessBoots } from './facet-host-harness.mjs';
@@ -69,7 +69,7 @@ const spawn = (code, name) => manager.spawnNode(code, {
 const bootedImage = async () =>
   world.bootSpecs.at(-1).code.vfsComposedModules['worker.js'];
 /** And the pack of this process's code cells, excluding immutable runtime modules. */
-const bootedPack = async () => world.bootSpecs.at(-1).code.vfsCommonJsPacks[0];
+const bootedPack = async () => world.bootSpecs.at(-1).code.vfsCodePacks[0];
 const name = (path) => path.split('/').pop();
 
 const a1 = await spawn('const a = 1;', 'a.js');
@@ -87,7 +87,7 @@ const storedSource = fs.readFileString(imageA.replace(/^\/+/, ''));
 assert.equal(imageA, facetImagePath(await facetImageDigest(storedSource)), 'the recipe is named by its own bytes');
 assert.deepEqual(await storedBootModules(world, fs), processImageModules(configs().at(-1)),
   'the facet booted from the stored recipe and shared assets, read when it loaded');
-const cells = decodeCommonJsPackBytes(fs.readFileUncached(packA));
+const cells = decodeCodePackBytes(fs.readFileUncached(packA));
 for (const [module, member] of Object.entries(world.bootSpecs.at(-1).code.assetModules)) {
   assert.equal(cells[module], undefined, 'the process pack never copies an immutable library');
   assert.equal(storedImages().includes(member.source.sha256 + '.js'), false, 'a library is not written as a process image');
@@ -180,12 +180,12 @@ await assert.rejects(
 // multi-byte one included, whose length the index counts in UTF-16 units.
 {
   const cells = { 'vfs/home/user/a.js': 'module.exports = "é — 😀";', 'entry/home/user/a.js': '', 'vfs/x': 'x' };
-  const pack = encodeCommonJsPack(cells).join('');
+  const pack = encodeCodePack(cells).join('');
   const packPath = facetImagePath(await facetImageDigest(pack));
   files.set(packPath, new TextEncoder().encode(pack));
   const loaded = await residentLoaderConfig({
     compatibilityDate: '2026-04-01', compatibilityFlags: [], mainModule: 'worker.js', modules: { 'worker.js': '' },
-    vfsCommonJsPacks: [packPath],
+    vfsCodePacks: [packPath],
   }, disk);
   for (const [moduleName, text] of Object.entries(cells)) {
     assert.deepEqual(loaded.modules[moduleName], { cjs: text }, `${moduleName} is its own { cjs } module`);

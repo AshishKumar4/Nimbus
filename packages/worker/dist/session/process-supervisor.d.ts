@@ -110,11 +110,7 @@ declare const ProcessSupervisor_base: (abstract new (...args: any[]) => {
         events: import("@nimbus-sh/core/_shared/cache-stats.js").CacheStatEvent[];
     }>;
     putCachedTarball(integrity: string, bytes: Uint8Array | ArrayBuffer): Promise<boolean>;
-    getPackument(name: string, options?: {
-        retries?: number;
-        timeoutMs?: number;
-        registry?: string;
-    } | undefined): Promise<import("../npm/r2-cache.js").PackumentReadThrough & {
+    getPackument(name: string, options?: import("../npm/r2-cache.js").PackumentReadOptions): Promise<import("../npm/r2-cache.js").PackumentReadThrough & {
         events: import("@nimbus-sh/core/_shared/cache-stats.js").CacheStatEvent[];
     }>;
     stdout(data: Uint8Array, at?: number, run?: number): Promise<void>;

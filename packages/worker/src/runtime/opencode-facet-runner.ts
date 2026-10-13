@@ -718,15 +718,14 @@ let __supervisor = null;
 // (core vfs-supervisor.ts answeringSupervisor).
 ${SUPERVISOR_ANSWERING_SRC}
 // The process's view of the filesystem: the same store and namespace a node
-// process boots on (vfs/facet-resident-store.ts), in this facet's heap and
-// bounded there. An opencode facet has no storage allowance of the session's
-// ledger to grow a SQLite store under. Bound and booted by __ocBootStore
-// before the opencode bundle is imported; the shims read it through
-// __nimbusResidentBundle.
+// process boots on (vfs/resident), in this facet's heap and bounded there. An
+// opencode facet has no storage allowance of the session's ledger to grow a
+// SQLite store under. Bound and booted by __ocBootStore before the opencode
+// bundle is imported; the shims read it through its bundle.
 let __MODULE_VFS_BUNDLE = ${opts.vfsBundle};
 const __MODULE_VFS_CURSOR = ${opts.vfsCursor};
-${nodeFacetSource(opts.sources, 'residentStore')}
-const __vfsBundle = __nimbusResidentBundle;
+const __resident = __nimbusResidentModule.createResidentStore();
+const __vfsBundle = __resident.bundle;
 ${VFS_CURSOR_SEED_SOURCE}
 ${nodeFacetSource(opts.sources, 'ledger')}
 const __vfsDirs = {};
@@ -1226,12 +1225,12 @@ async function __ocDispatchHttp(request) {
  * or to the launch's failure naming why.
  */
 async function __ocBootStore() {
-  __residentBindInMemory(${ONE_SHOT_STORE_MEMORY_BYTES});
-  __residentSetStorage(undefined, __supervisor);
-  __nsSetCred(cred);
-  __residentSetPlan([]);
-  __residentSetPushRoots([cwd || "/home/user", "/tmp"]);
-  const __booted = await __residentBoot(
+  __resident.bindInMemory(${ONE_SHOT_STORE_MEMORY_BYTES});
+  __resident.admission.setStorage(undefined, __supervisor);
+  __resident.namespace.setCred(cred);
+  __resident.sync.setPlan([]);
+  __resident.sync.setPushRoots([cwd || "/home/user", "/tmp"]);
+  const __booted = await __resident.sync.boot(
     () => { const __bundle = __MODULE_VFS_BUNDLE; __MODULE_VFS_BUNDLE = null; return __bundle; },
     __MODULE_VFS_CURSOR,
     __supervisor,
@@ -1239,7 +1238,7 @@ async function __ocBootStore() {
   if (__booted.cursor) {
     globalThis.__nimbusVfsCursor = { epoch: __booted.cursor.epoch, rev: __booted.cursor.rev };
   }
-  return __residentRequireNamespace(__supervisor, __booted.failure);
+  return __resident.sync.requireNamespace(__supervisor, __booted.failure);
 }
 
 export class NimbusProcess extends __NimbusDurableObject {
