@@ -3,7 +3,8 @@
  * commands they answer.
  *
  * `nimbus install <name>` unpacks a runtime into
- * `~/.nimbus/runtimes/<name>/<version>/` and this is what reads it back: the
+ * `/usr/lib/nimbus/<name>/<version>/` (runtime-store.ts) and this is what
+ * reads it back: the
  * manifests on disk, the runner each entrypoint names, and the registration
  * that turns the pair into an invokable command. It runs at install time and
  * again at every boot, because a Durable Object that was evicted comes back
@@ -36,6 +37,7 @@ import {
   type ManifestEntrypoint,
   type RuntimeManifest,
 } from './runtime-manifest.js';
+import { RUNTIME_STORE, runtimeLaunchers } from './runtime-store.js';
 
 /** Minimal shell-registry shape we depend on. */
 export interface MinShellRegistry {
@@ -126,30 +128,34 @@ export function runtimeEntrypoints(manifest: RuntimeManifest): RuntimeManifest['
   return out;
 }
 
-/** Compute the per-user install root for (name, version). Uses
- *  `process.env.HOME` if present; falls back to `/home/user`. */
-export function installRoot(homeDir: string, name: string, version: string): string {
-  // Strip leading slash so SqliteFS sees a relative-looking VFS path,
-  // matching the convention used elsewhere in src/session/init.ts.
-  const home = homeDir.replace(/^\/+/, '').replace(/\/+$/, '');
-  return `${home}/.nimbus/runtimes/${name}/${version}`;
+/** Where (name, version) is installed, as a key: `usr/lib/nimbus/<name>/<version>`. */
+export function installRoot(name: string, version: string): string {
+  return `${RUNTIME_STORE}/${name}/${version}`;
+}
+
+/**
+ * The names a runtime's commands are registered under: each entrypoint's,
+ * and `/usr/bin/<command>` for each that has a launcher, so a run by that
+ * path (or a `#!/usr/bin/<command>` line) is the command a run by name is.
+ */
+export function runtimeCommandNames(manifest: RuntimeManifest, root: string): Array<{ entrypoint: ManifestEntrypoint; names: string[] }> {
+  const entrypoints = runtimeEntrypoints(manifest);
+  const claimed = new Set(entrypoints.map((ep) => ep.binName));
+  const launchers = new Map(runtimeLaunchers(manifest, root, entrypoints).map((launcher) => [launcher.target, launcher.command]));
+  return entrypoints.map((entrypoint) => {
+    const launcher = launchers.get(`/${root}/bin/${entrypoint.binName}`);
+    return { entrypoint, names: launcher === undefined || claimed.has(launcher) ? [entrypoint.binName] : [entrypoint.binName, launcher] };
+  });
 }
 
 /** Read all installed manifests off SqliteFS. Used by both `--list`
  *  and boot-time rehydration. */
-export async function listInstalledManifests(
-  vfs: SqliteVFS,
-  homeDir: string,
-): Promise<Array<{ root: string; manifest: RuntimeManifest }>> {
-  return (await listInstalledManifestsView(vfs.as(CRED_KERNEL), homeDir));
+export async function listInstalledManifests(vfs: SqliteVFS): Promise<Array<{ root: string; manifest: RuntimeManifest }>> {
+  return (await listInstalledManifestsView(vfs.as(CRED_KERNEL)));
 }
 
-export async function listInstalledManifestsView(
-  fs: CredentialedVfs,
-  homeDir: string,
-): Promise<Array<{ root: string; manifest: RuntimeManifest }>> {
-  const home = homeDir.replace(/^\/+/, '').replace(/\/+$/, '');
-  const runtimesRoot = `${home}/.nimbus/runtimes`;
+export async function listInstalledManifestsView(fs: CredentialedVfs): Promise<Array<{ root: string; manifest: RuntimeManifest }>> {
+  const runtimesRoot = RUNTIME_STORE;
   const out: Array<{ root: string; manifest: RuntimeManifest }> = [];
   if (!await fs.exists(runtimesRoot)) return out;
   // Each entry under runtimesRoot is a <name>; each entry under that
@@ -233,28 +239,27 @@ export async function runtimePayloadIntact(
 export async function rehydrateInstalledRuntimesView(
   vfs: CredentialedVfs,
   registry: MinShellRegistry,
-  homeDir: string,
   runnerFor: RunnerLookup,
+  /** Each verified runtime, once its commands are registered (its launchers are linked). */
+  bound?: (root: string, manifest: RuntimeManifest) => Promise<void>,
 ): Promise<{ count: number; bins: string[] }> {
   const bins: string[] = [];
-  for (const { root, manifest } of await listInstalledManifestsView(vfs, homeDir)) {
+  for (const { root, manifest } of await listInstalledManifestsView(vfs)) {
     if (!await runtimePayloadIntact(vfs, root, manifest)) continue;
-    for (const ep of runtimeEntrypoints(manifest)) {
+    for (const { entrypoint: ep, names } of runtimeCommandNames(manifest, root)) {
       const factory = runnerFor(ep.runner);
       if (!factory) continue; // runner not registered yet — skip
       const handler = await factory(manifest, root, ep.binName, ep.kind);
-      registry.register(ep.binName, handler);
+      for (const name of names) registry.register(name, handler);
       bins.push(ep.binName);
     }
+    await bound?.(root, manifest);
   }
   return { count: bins.length, bins };
 }
 
-export async function listInstalledRuntimes(
-  vfs: SqliteVFS,
-  homeDir: string,
-): Promise<RuntimeSummary[]> {
-  return (await listInstalledManifests(vfs, homeDir)).map(({ root, manifest }) => ({
+export async function listInstalledRuntimes(vfs: SqliteVFS): Promise<RuntimeSummary[]> {
+  return (await listInstalledManifests(vfs)).map(({ root, manifest }) => ({
     name: manifest.name,
     version: manifest.version,
     root,

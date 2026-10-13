@@ -3,7 +3,7 @@
  *
  * A manifest names the files a runtime is made of, the shell commands it
  * provides, and the runner that answers them. `nimbus install <name>` writes
- * one into `~/.nimbus/runtimes/<name>/<version>/manifest.json`; every runner
+ * one into `/usr/lib/nimbus/<name>/<version>/manifest.json`; every runner
  * reads its own out of the session filesystem from there.
  *
  * The data contract only. Where the bytes come FROM is the publisher's
@@ -18,7 +18,7 @@ import { z } from 'zod/v4';
 import { PYODIDE_PACKAGE_ABI } from './os-contracts.js';
 
 export interface ManifestFile {
-  /** VFS path relative to ~/.nimbus/runtimes/<name>/<version>/. */
+  /** VFS path relative to /usr/lib/nimbus/<name>/<version>/. */
   path: string;
   /** Publisher-side key for the content blob. */
   content: string;

@@ -55,6 +55,7 @@ import { exitCodeForSignal } from '../substrate/lifo/shell/signals.js';
 import type { FacetHost } from '../runtime/facet-host.js';
 import { runtimeEntrypoints, type RunnerFactory } from '../runtime/installed-runtimes.js';
 import { RuntimeManager } from '../runtime/runtime-manager.js';
+import { moveHomeRuntimes } from '../runtime/runtime-store.js';
 import { makeNimbusVerbHandler } from '../runtime/nimbus-command.js';
 import {
   composeRuntimeSources,
@@ -467,11 +468,17 @@ export class NimbusWorkspace {
       const runtimes = new RuntimeManager({
         vfs: new ProcessView(runtimeLease.fs),
         registry,
-        getHome,
         source: options.runtimeSource
           ? composeRuntimeSources([suppliedRuntimeSource(options.runtimes ?? []), options.runtimeSource])
           : suppliedRuntimeSource(options.runtimes ?? []),
       });
+      // Runtimes an earlier release installed below the home move into the
+      // store (/usr/lib/nimbus), once, before anything installs or binds.
+      try {
+        moveHomeRuntimes(kernelFs, home);
+      } catch (error) {
+        console.error('[nimbus] runtimes below ~/.nimbus/runtimes were not moved to /usr/lib/nimbus:', error);
+      }
 
       if (facets) {
         registerWasmRuntimes({
@@ -961,6 +968,7 @@ const WORKSPACE_TABLES = [
 type SeedStep =
   | { op: 'exists'; as: 'kernel' | 'user'; path: string }
   | { op: 'stat'; as: 'kernel'; path: string }
+  | { op: 'lstat'; as: 'kernel'; path: string }
   | { op: 'readText'; as: 'kernel'; path: string }
   | { op: 'mkdir'; as: 'kernel' | 'user'; path: string; recursive?: boolean; mode?: number }
   | { op: 'chown'; as: 'kernel'; path: string; uid: number; gid: number }
@@ -969,6 +977,17 @@ type SeedStep =
 
 /** What a `stat` step answers. */
 interface SeedStat { uid: number; gid: number; mode: number }
+
+/** What an `lstat` step answers: the entry itself, not followed; null when there is none. */
+type SeedEntry = (SeedStat & { type: string }) | null;
+
+/**
+ * Root's own directories below `/usr`, as on Linux: made by root and kept
+ * root's, parent before child (a directory is re-asserted only once its
+ * parent is root's, so no user can replace it in between). `/usr/local` is
+ * the session user's, below them: npm's global prefix, needing no sudo.
+ */
+const USR_ROOT_DIRS = ['usr', 'usr/bin', 'usr/lib', 'usr/share', 'usr/lib/node_modules', 'usr/share/pkg', 'usr/share/pkg/node_modules'];
 
 /**
  * The base seed's one statement, driven by seedBaseFilesystem: on the
@@ -982,14 +1001,38 @@ function* baseSeed(home: string): Generator<SeedStep, void, unknown> {
   const stat = function* (path: string): Generator<SeedStep, SeedStat, unknown> {
     return (yield { op: 'stat', as: 'kernel', path }) as SeedStat;
   };
+  const lstat = function* (path: string): Generator<SeedStep, SeedEntry, unknown> {
+    return (yield { op: 'lstat', as: 'kernel', path }) as SeedEntry;
+  };
 
   // Top-level directories are the kernel's to make (`/` is 0755 root), and
   // handed to the session user, who owns their own tree: seeding them owned
   // by the kernel is what makes a workspace where `.fs` cannot write.
+  // `/etc` and `/usr` are root's, below.
   for (const top of SEEDED_TOP_LEVEL_DIRS) {
-    if (top === 'etc' || (yield* exists('kernel', top))) continue;
+    if (top === 'etc' || top === 'usr' || (yield* exists('kernel', top))) continue;
     yield { op: 'mkdir', as: 'kernel', path: top, mode: 0o777 & ~CRED_SESSION_USER.umask };
     yield { op: 'chown', as: 'kernel', path: top, uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid };
+  }
+  // /usr as on Linux: root's, re-asserted rather than only created, as /etc
+  // is. A session an earlier release made had them the user's; each that is
+  // a real directory becomes root's 0755, without what is in it (a package a
+  // user put in a global folder stays theirs). A link at one is left: the
+  // runtime store refuses to install through it (runtime-store.ts).
+  for (const dir of USR_ROOT_DIRS) {
+    const entry = yield* lstat(dir);
+    if (entry === null) {
+      yield { op: 'mkdir', as: 'kernel', path: dir, mode: 0o755 };
+      continue;
+    }
+    if (entry.type !== 'directory') continue;
+    if (entry.uid !== 0 || entry.gid !== 0) yield { op: 'chown', as: 'kernel', path: dir, uid: 0, gid: 0 };
+    if ((entry.mode & 0o7777) !== 0o755) yield { op: 'chmod', as: 'kernel', path: dir, mode: 0o755 };
+  }
+  // /usr/local is made by root and handed to the user, as the home is.
+  if (!(yield* exists('kernel', 'usr/local'))) {
+    yield { op: 'mkdir', as: 'kernel', path: 'usr/local', mode: 0o755 };
+    yield { op: 'chown', as: 'kernel', path: 'usr/local', uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid };
   }
   // The home is made the way useradd -m makes it: by root, wherever it is,
   // then handed to the user. Its parents stay root's.
@@ -1003,9 +1046,7 @@ function* baseSeed(home: string): Generator<SeedStep, void, unknown> {
   for (const dir of [
     ...homeChildren,
     'tmp', 'var/log',
-    'usr/bin', 'usr/lib', 'usr/lib/node_modules',
-    'usr/share', 'usr/share/pkg', 'usr/share/pkg/node_modules',
-    'usr/local', 'usr/local/lib', 'usr/local/lib/node_modules', 'usr/local/bin',
+    'usr/local/lib', 'usr/local/lib/node_modules', 'usr/local/bin',
   ]) {
     if (!(yield* exists('user', dir))) yield { op: 'mkdir', as: 'user', path: dir, recursive: true };
   }
@@ -1020,17 +1061,6 @@ function* baseSeed(home: string): Generator<SeedStep, void, unknown> {
     if ((etc.mode & 0o7777) !== 0o755) yield { op: 'chmod', as: 'kernel', path: 'etc', mode: 0o755 };
   }
 
-  if (!(yield* exists('kernel', 'etc/hostname'))) {
-    yield { op: 'writeFile', as: 'kernel', path: 'etc/hostname', content: `${DEFAULT_HOSTNAME}\n` };
-    yield { op: 'chown', as: 'kernel', path: 'etc/hostname', uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid };
-  }
-  if (!(yield* exists('kernel', 'etc/os-release'))) {
-    yield {
-      op: 'writeFile', as: 'kernel', path: 'etc/os-release',
-      content: `NAME="Nimbus"\nVERSION="${NIMBUS_VERSION}"\nID=nimbus\n` + 'PRETTY_NAME="Nimbus — Cloud Dev Environment"\n',
-    };
-    yield { op: 'chown', as: 'kernel', path: 'etc/os-release', uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid };
-  }
 
   // Root-owned 0644, and re-asserted rather than only created: these decide
   // what `id`, `chown` and `su` believe, so a user-writable /etc/passwd would
@@ -1050,6 +1080,10 @@ function* baseSeed(home: string): Generator<SeedStep, void, unknown> {
     yield { op: 'writeFile', as: 'kernel', path: 'etc/passwd', content: passwdFor(home) };
   }
   yield* accountFile('etc/group', 'root:x:0:\nuser:x:1000:user\n');
+  // The system's own, as on Linux: root's 0644, whatever an earlier release
+  // handed the user (their content stays).
+  yield* accountFile('etc/hostname', `${DEFAULT_HOSTNAME}\n`);
+  yield* accountFile('etc/os-release', `NAME="Nimbus"\nVERSION="${NIMBUS_VERSION}"\nID=nimbus\n` + 'PRETTY_NAME="Nimbus — Cloud Dev Environment"\n');
 
   // `$HOME` is expanded when the profile is sourced, so one profile serves
   // whatever home the session has.
@@ -1061,10 +1095,10 @@ function* baseSeed(home: string): Generator<SeedStep, void, unknown> {
     'export PATH=/usr/bin:/bin\nexport EDITOR=nano\n',
     `export PATH=${defaultPath(DEFAULT_HOME)}\nexport EDITOR=nano\n`,
   ];
-  if (!(yield* exists('kernel', 'etc/profile'))) {
-    yield { op: 'writeFile', as: 'kernel', path: 'etc/profile', content: defaultProfile };
-    yield { op: 'chown', as: 'kernel', path: 'etc/profile', uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid };
-  } else if (seededProfiles.includes((yield { op: 'readText', as: 'kernel', path: 'etc/profile' }) as string)) {
+  // Root's 0644, as on Linux: a user's own settings go in ~/.profile. One
+  // an earlier release handed the user keeps what they wrote in it.
+  yield* accountFile('etc/profile', defaultProfile);
+  if (seededProfiles.includes((yield { op: 'readText', as: 'kernel', path: 'etc/profile' }) as string)) {
     yield { op: 'writeFile', as: 'kernel', path: 'etc/profile', content: defaultProfile };
   }
 
@@ -1118,8 +1152,9 @@ async function seedOnNamespace(steps: Generator<SeedStep, void, unknown>, filesy
     const cred = call.as === 'kernel' ? CRED_KERNEL : CRED_SESSION_USER;
     // A directory above a mount point is the root's, as a wave's directory
     // record there is. A step is placed as its call looks its name up: every
-    // one follows a link at it but a lone mkdir (mkdir -p stats it first).
-    const follow = call.op !== 'mkdir' || call.recursive === true;
+    // one follows a link at it but an lstat and a lone mkdir (mkdir -p stats
+    // it first).
+    const follow = call.op === 'lstat' ? false : call.op !== 'mkdir' || call.recursive === true;
     if (filesystem.waves.placesHere(engine[call.as], [call.path], { aboveMounts: true, follow })) {
       answer = engineStep(engine[call.as], call);
     } else {
@@ -1131,6 +1166,11 @@ async function seedOnNamespace(steps: Generator<SeedStep, void, unknown>, filesy
           const found = await view.stat(path);
           if (found === null) throw new Error(`seed: ${path} vanished`);
           answer = { uid: found.uid ?? 0, gid: found.gid ?? 0, mode: found.mode ?? 0 };
+          break;
+        }
+        case 'lstat': {
+          const found = await view.stat(path, { follow: false });
+          answer = found === null ? null : { type: found.type, uid: found.uid ?? 0, gid: found.gid ?? 0, mode: found.mode ?? 0 };
           break;
         }
         case 'readText': answer = new TextDecoder().decode(await view.readFile(path)); break;
@@ -1150,6 +1190,10 @@ function engineStep(view: ReturnType<SqliteVFS['as']>, call: SeedStep): unknown 
   switch (call.op) {
     case 'exists': return view.exists(call.path);
     case 'stat': return view.stat(call.path);
+    case 'lstat': {
+      const found = view.statIfPresent(call.path, false);
+      return found === null ? null : { type: found.type, uid: found.uid, gid: found.gid, mode: found.mode };
+    }
     case 'readText': return view.readFileString(call.path);
     case 'mkdir': view.mkdir(call.path, { ...(call.recursive ? { recursive: true } : {}), ...(call.mode === undefined ? {} : { mode: call.mode }) }); return undefined;
     case 'chown': view.chown(call.path, call.uid, call.gid); return undefined;

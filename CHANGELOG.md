@@ -5,6 +5,28 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Breaking: `/usr` is laid out as on Linux. `/usr`, `/usr/bin`, `/usr/lib`
+  and `/usr/share`, and the global module folders `/usr/lib/node_modules`
+  and `/usr/share/pkg/node_modules`, are root's 0755, so writing into them
+  needs `sudo`; `/usr/local` stays the session user's, and `npm i -g`
+  installs there without it. `/etc/profile`, `/etc/hostname` and
+  `/etc/os-release` are root's 0644; put your own settings in
+  `~/.profile`. A session an earlier release made is moved over once, as
+  it opens: those directories become root's, without what was put in
+  them, and files keep what they hold.
+- Breaking: `nimbus install` puts a runtime where apt would: its tree in
+  `/usr/lib/nimbus/<name>/<version>`, owned by root, and a launcher for
+  each of its commands in `/usr/bin` (a link into the tree), so
+  `/usr/bin/python3` and `#!/usr/bin/python3` run it as `python3` does. A
+  configured `env.HOME` no longer chooses where runtimes go. The `root` a
+  runtime list or install reports, and the paths `nimbus install` prints,
+  are the new ones. Runtimes an earlier release installed below
+  `~/.nimbus/runtimes` are moved into place once, and a link is left
+  there. For embedders: `seedRuntimePackage`, `installRoot`,
+  `listInstalledManifests(View)`, `listInstalledRuntimes` and
+  `rehydrateInstalledRuntimesView` no longer take a home, and
+  `RuntimeManager` no longer takes `getHome`. `which clang` (and `cc`,
+  `clang++`, `wasm-ld`, `lld`) says `/usr/bin`, where its launcher is.
 - Fixed (security): the kernel kept the images resident processes boot
   from, its copies of inline wasm and of staged native bindings below
   `/var/lib/nimbus`, and `/var` is the session user's. A user who moved
