@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "4e4b3a5c0037e0667a4edb706891fe49be83c2c85e119dadf070ffaaeafcad8c",
+  "fingerprint": "afd8c15aa2bb93077006ef18099c52fabbaf5f8f4103297a4896e2f809ed20ba",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2142,8 +2142,8 @@
     "packages/worker/dist/facets/launch-learning-store.d.ts.map": "03f0435b9c6bfcd09415824066ec4c09cde49837c041956f19f149bbda4be8ba",
     "packages/worker/dist/facets/launch-learning-store.js": "f3f3eb5b8d842939155efbdf4b8ba62e698796baf22365866954029e7d9ccd1a",
     "packages/worker/dist/facets/manager.d.ts": "cf024e79897091d6782ffc1c7bf36a4bd622be96ced79d4bd7d6b44eb72a75cc",
-    "packages/worker/dist/facets/manager.d.ts.map": "3474a047415568bc5ce7eb694f2ad7bd722467b80fc82f35103395b5d426d7ae",
-    "packages/worker/dist/facets/manager.js": "00f21ef626601084c8b97043e63b3cb5ae5350d8aa588065cb426adad06ac3db",
+    "packages/worker/dist/facets/manager.d.ts.map": "2a8f50dc91f134b369778408fa5b2415bce9d901579376125e65adecd728ac19",
+    "packages/worker/dist/facets/manager.js": "246b67de2f44a04b514d9c7817941514fc675c141ab2b1fc19f06ad10ab39bee",
     "packages/worker/dist/facets/opencode-staging.d.ts": "91adb325e06e8ca0748860340218a0e31b5cb40b4f579059c66c32a56eb0e309",
     "packages/worker/dist/facets/opencode-staging.d.ts.map": "8afb7e2f13b198206e4ee438ac52cda06da61d6874c1b55f8ece7152b4edd15c",
     "packages/worker/dist/facets/opencode-staging.js": "d0113f0d4776a33fc7ec84ca0f7d996c23749cc063c6300c79f2ddf4b9bdcac8",
@@ -2869,7 +2869,7 @@
     "packages/worker/scripts/bundle-tailwind-play.mjs": "6fb9efce9fe8228354053163fbd5a042e7e3709a9553c251d82b4ba9f2bea1e2",
     "packages/worker/scripts/cf-git-patch.mjs": "f4539f526a13bd975e0120c92074597178dcac014f7880a9ed454a07aab98675",
     "packages/worker/scripts/cirrus-bundle-shared.mjs": "a11f865af9da5dab8294fbfc3d1ff0deeb3dcdda10874298e14289597927cd04",
-    "packages/worker/scripts/free-names.mjs": "f527beb1a2314f8cd04c0dd9568807452321c8494bad02ac3cc5f8eb7997b3de",
+    "packages/worker/scripts/free-names.mjs": "bdf9caa27bd71551e6cb614f0f8a3139a014c9c37ed30a216ec67663b676a485",
     "packages/worker/scripts/interpreter-bundle.mjs": "b71f11ee407b89c0d0d0308d37e0ec1ce29831c9b6c68004dab7e16471281fcf",
     "packages/worker/scripts/napi-wasm/astro-compiler/Cargo.lock": "090a5d238c8dbd6a5428d00e9648ad276e79e30210f5307e2c69e1775aca22fc",
     "packages/worker/scripts/napi-wasm/build.mjs": "45b17dfa68a17b6582d61eab755aff6b4d6c1e734d180e0aa8eff73ef1697387",
@@ -2955,7 +2955,7 @@
     "packages/worker/src/facets/exec-telemetry.ts": "ccf050b48be8dfdc3c7bc1c4b0798c918ba09d84aa0b2e9d15e1dbd6e5b1b281",
     "packages/worker/src/facets/helper-facet.ts": "571ad3b51685af1ad96e101809c311a8bdc60a8f0881853aac2da3db430145a9",
     "packages/worker/src/facets/launch-learning-store.ts": "0ba1ebe8b6e30ff694f70db7de5e06c0b536beed882c3f9e3db3068ec49851d8",
-    "packages/worker/src/facets/manager.ts": "b808f47409fc0146f2d7715b1e9f86b1f299cd27b42e9d083b27cf0f0314d3bd",
+    "packages/worker/src/facets/manager.ts": "c1e8c3dec1a31445733e30dc31b90fd5718d04404536cc49a9d083f626437437",
     "packages/worker/src/facets/opencode-staging.ts": "80ad777679a92d7d5758fe9764ae3d80df7568a3702084548fc472a005b6faca",
     "packages/worker/src/facets/oxc-transform.ts": "d843cf9eefc0c7352177c50d7c3afe18478f1f4d51988c9a7db9997f06c01b97",
     "packages/worker/src/facets/prebundle-pool.ts": "543fd016de8fe51e6c60eec26154a5079ce1a1a6e891e681fe2f95185faf7286",
