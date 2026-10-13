@@ -224,15 +224,23 @@ export declare function facetImagePathDigest(path: string): string | null;
  * Reads the members a boot spec named by path off the SESSION's disk — the
  * coordinator's, always, whichever substrate is doing the reading.
  *
- * The session supplies it, because it owns the filesystem and the credential
- * the kernel reads its own image store with; the fabric never learns either.
- * A host that runs inside the coordinator answers synchronously off the local
- * VFS; a host that runs elsewhere answers over the supervisor RPC. That is the
- * whole of the difference, and it is why the return type is widened rather
- * than the reader duplicated.
+ * The session supplies it, because it owns the filesystem and the process's
+ * credential; the fabric never learns either. A host that runs inside the
+ * coordinator answers off the local VFS; a host that runs elsewhere answers
+ * over the supervisor RPC. That is the whole of the
+ * difference, and it is why the return type is widened rather than the
+ * reader duplicated.
  */
 export interface ResidentDiskReader {
+    /** A member the spec names by path (a wasm module), read as the process. */
     readFile(path: string): Uint8Array | Promise<Uint8Array>;
+    /**
+     * A content-addressed image the session generated for the process (a code
+     * pack, a composed or text module), verified against the digest its path
+     * names. The coordinator reads it as the image store's owner, which sees
+     * its own writes before they publish; absent, it is read as readFile reads.
+     */
+    readImage?(path: string): Uint8Array | Promise<Uint8Array>;
 }
 /**
  * Complete a resident-process module map: read every member the spec named by
@@ -556,8 +564,9 @@ export interface ProcessHost {
  *
  * A factory rather than a finished {@link ProcessHost}, because the substrate
  * needs the disk its processes boot from and only the manager can produce one:
- * that reader answers as the credential that WROTE the boot images and
- * deliberately uncached, since they are the largest files a session holds.
+ * that reader answers, for the pid it boots, as that process's credential (a
+ * boot reads only what its process may read), and deliberately uncached,
+ * since they are the largest files a session holds.
  * Demanding a finished host would make every caller reproduce that policy, and
  * a second copy of a credential rule is a second thing to keep in step.
  *
@@ -565,7 +574,7 @@ export interface ProcessHost {
  * own selector (`processHostFor`) satisfies this type as it stands — the
  * workerd substrate is named, not wrapped.
  */
-export type ProcessHostFactory = (ctx: DurableObjectState, env: unknown, disk: () => ResidentDiskReader, network: () => WorkspaceNetwork, supervise?: Supervise) => ProcessHost;
+export type ProcessHostFactory = (ctx: DurableObjectState, env: unknown, disk: (pid: number) => ResidentDiskReader, network: () => WorkspaceNetwork, supervise?: Supervise) => ProcessHost;
 /**
  * The host's own SUPERVISOR for a one-shot, minted with its binding's props:
  * a capability the program is handed in the call that runs it, answered

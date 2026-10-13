@@ -3,7 +3,7 @@ import { createKillCommand } from '@nimbus-sh/core/substrate/lifo/commands/syste
 import { installSummary } from '@nimbus-sh/core/substrate/lifo/commands/system/npm-log.js';
 import { exitCodeForSignal, signalDisposition } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
-import { BASH_RUNNER, CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { BASH_RUNNER, CRED_KERNEL, CRED_SESSION_USER, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { handKernelArtifact, projectFs } from '../runtime/project-fs.js';
 import { makeEsbuildCommand } from '@nimbus-sh/core/runtime/esbuild-cli.js';
@@ -35,8 +35,11 @@ import { HeadlessTerminal } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { makeNimbusVerbHandler } from '@nimbus-sh/core/runtime/nimbus-command.js';
 export async function registerHostedCommands(self, workspace) {
     const sqliteFs = workspace.vfs;
+    // The nimbus verb's runtime installs are Nimbus's own system state.
     const kernelFs = sqliteFs.as(CRED_KERNEL);
-    const namespaceFs = workspace.filesystem.namespaceFs(CRED_KERNEL);
+    // The build service's default view, for a build that names none: the
+    // session's user, never the kernel. A command's own build names its view.
+    const ownerFs = workspace.filesystem.namespaceFs(CRED_SESSION_USER);
     const kernel = workspace.kernel;
     const shell = workspace.shell;
     const registry = workspace.registry;
@@ -350,7 +353,7 @@ export async function registerHostedCommands(self, workspace) {
             getEsbuild: () => {
                 if (!self.esbuildService) {
                     self.ensureSqliteFs();
-                    self.esbuildService = supervisorEsbuildService(self.ctx, self.env, namespaceFs);
+                    self.esbuildService = supervisorEsbuildService(self.ctx, self.env, ownerFs);
                 }
                 return self.esbuildService;
             },
@@ -499,7 +502,7 @@ export async function registerHostedCommands(self, workspace) {
             getEsbuild: () => {
                 if (!self.esbuildService) {
                     self.ensureSqliteFs();
-                    self.esbuildService = supervisorEsbuildService(self.ctx, self.env, namespaceFs);
+                    self.esbuildService = supervisorEsbuildService(self.ctx, self.env, ownerFs);
                 }
                 return self.esbuildService;
             },
@@ -535,7 +538,7 @@ export async function registerHostedCommands(self, workspace) {
                     getEsbuild: () => {
                         if (!self.esbuildService) {
                             self.ensureSqliteFs();
-                            self.esbuildService = supervisorEsbuildService(self.ctx, self.env, namespaceFs);
+                            self.esbuildService = supervisorEsbuildService(self.ctx, self.env, ownerFs);
                         }
                         return self.esbuildService;
                     },
@@ -619,7 +622,7 @@ export async function registerHostedCommands(self, workspace) {
         // Lazy-init esbuild
         if (!self.esbuildService) {
             self.ensureSqliteFs();
-            self.esbuildService = supervisorEsbuildService(self.ctx, self.env, namespaceFs);
+            self.esbuildService = supervisorEsbuildService(self.ctx, self.env, ownerFs);
         }
         // Parse --root flag; default to the shell cwd so `npm run dev` from
         // a project directory picks up that project's wrangler.jsonc.
@@ -637,9 +640,10 @@ export async function registerHostedCommands(self, workspace) {
             ctx.stderr.write(`${invokedAs}: the Worker dev server serves only projects on the workspace filesystem; /${rootPath} is on a mounted one\n`);
             return 1;
         }
-        // Stop existing
-        if (self.nimbusWrangler?.isRunning)
-            self.nimbusWrangler.stop();
+        // The dev server before this one stops, a start still under way included:
+        // left to finish, it would serve, watch and rebuild beside this one.
+        self.nimbusWrangler?.stop();
+        let starting = true;
         // Pre-flight: read the wrangler config ourselves and call out any
         // binding fields nimbus-wrangler can't provide. NimbusWrangler will
         // still try to bundle + load, but user sees up-front why their
@@ -657,10 +661,22 @@ export async function registerHostedCommands(self, workspace) {
                 '   causes a runtime TypeError. The bundle will still build and load.\n' +
                 '   \x1b[2mDeploy with real wrangler to get the real bindings.\x1b[0m\n\n');
         }
+        // The dev server reads its config, migrations and stores, and bundles
+        // its Worker, as the process that started it, for as long as it runs.
+        const cred = requireVfsCred(ctx.cred, invokedAs);
+        // Releases through worker 0.17.0 kept the KV and R2 stores as root: what
+        // is still root's is handed to the project's owner (handKernelArtifact).
+        // `.nimbus` alone, without what else is in it: in a HOME it holds the
+        // kernel's runtime store too.
+        await handKernelArtifact(workspace.filesystem, ctx.vfs, cred, `/${rootPath}/.nimbus`, { descend: false });
+        for (const store of ['.nimbus/kv', '.nimbus/r2']) {
+            await handKernelArtifact(workspace.filesystem, ctx.vfs, cred, `/${rootPath}/${store}`);
+        }
         self.nimbusWrangler = new NimbusWrangler({
             // The dev server's Worker goes out through the network of the command that started it.
             network: workspace.network.forProcess(ctx.pid),
-            vfs: kernelFs,
+            vfs: sqliteFs.as(cred),
+            bundleFs: workspace.filesystem.namespaceFs(cred),
             namespace: workspace.filesystem.vfs,
             esbuild: self.esbuildService,
             env: self.env,
@@ -668,7 +684,13 @@ export async function registerHostedCommands(self, workspace) {
             // synthesizing durable_objects bindings on the inner Worker.
             ctx: self.ctx,
             root: vfsRoot,
+            // While the command runs, its own stderr says why a start fails; after
+            // it returns, rebuilds report to the terminal.
             onLog: (msg) => {
+                if (starting) {
+                    ctx.stderr.write(msg);
+                    return;
+                }
                 if (terminal) {
                     try {
                         terminal.write(msg);
@@ -685,12 +707,15 @@ export async function registerHostedCommands(self, workspace) {
                 }
             },
         });
-        const ok = await self.nimbusWrangler.start();
+        const server = self.nimbusWrangler;
+        const ok = await server.start().finally(() => { starting = false; });
         if (!ok) {
-            ctx.stderr.write('  \x1b[31mFailed to start Worker dev server.\x1b[0m\n');
+            ctx.stderr.write(server.wasStopped
+                ? '  \x1b[33mWorker dev server stopped before it started.\x1b[0m\n'
+                : '  \x1b[31mFailed to start Worker dev server.\x1b[0m\n');
             return 1;
         }
-        const cfg = self.nimbusWrangler.stats;
+        const cfg = server.stats;
         // runtime primitive support (P5): banner advertises the canonical
         // `/__nimbus/worker/` route. The legacy `/worker/` URL is still
         // accepted for one release (Sunset 2027-01-01) but new sessions
@@ -989,7 +1014,7 @@ export async function registerHostedCommands(self, workspace) {
     // Register core npm — the install work itself goes through the port,
     // which owns the NpmInstaller, prefix dirs and bin materialisation.
     const coreNpmCmd = createNpmCommand(registry, shellExecute, kernel, {
-        installer: createNpmInstallPort(self),
+        installer: createNpmInstallPort(self, workspace.filesystem),
     });
     registry.register('npm', async (ctx) => {
         const args = ctx.args || [];

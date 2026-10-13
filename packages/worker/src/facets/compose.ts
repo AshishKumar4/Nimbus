@@ -41,7 +41,7 @@ import type { NimbusFilesystemAuthority } from '@nimbus-sh/core/runtime/os-contr
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
-import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { createPortCapability, type PortEntry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { execIdField } from '@nimbus-sh/core/runtime/process-table.js';
 import { FacetManager, type FacetManagerHooks, type WorkerRecipe } from './manager.js';
@@ -201,7 +201,7 @@ export function composeFacetManager(deps: FacetManagerDeps): ComposedFacetManage
   };
   const manager = new FacetManager(ctx, env, deps.processes, deps.portRegistry, processHostFor, { ...hooks, network: deps.network, supervise: deps.supervise });
   manager.setVfs(vfs, deps.filesystem);
-  manager.setEsbuildService(deps.esbuild ?? supervisorEsbuildService(ctx, env, deps.filesystem.namespaceFs(CRED_KERNEL)));
+  manager.setEsbuildService(deps.esbuild ?? supervisorEsbuildService(ctx, env, deps.filesystem.namespaceFs(CRED_SESSION_USER)));
   const { portRegistry } = deps;
   const capabilityHost = { ctx, portRegistry };
   return {

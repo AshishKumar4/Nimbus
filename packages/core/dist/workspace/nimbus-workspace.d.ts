@@ -239,7 +239,7 @@ export declare class NimbusWorkspace {
     readonly children: ChildProcessManager;
     private readonly supervisorOps;
     readonly filesystem: ProcessFiles;
-    private readonly runtimeLease;
+    private readonly hostLeases;
     /** Who the workspace shell acts as, and so every call's process. */
     private readonly identity;
     /**

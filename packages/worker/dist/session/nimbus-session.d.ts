@@ -790,7 +790,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
      * build instead of starting its own. See session/ws.ts bindShellSocket.
      */
     _wakeRebuild: Promise<void> | null;
-    ensureGlobalPrefixDirs(prefix: string): void;
+    ensureGlobalPrefixDirs(prefix: string, cred: Readonly<VfsCred>): void;
     /**
      * The starter content a fresh Nimbus session shows a user: the banner, the
      * sample files, and the Vite starter app.

@@ -141,6 +141,54 @@ try {
   assert.ok(leasesOpened > 0, 'the failed create opened the kernel lease it reads runtimes through');
   assert.equal(leasesDisposed, leasesOpened, 'a create() that throws disposes every host lease it opened');
 
+  // A lease refused after another was opened, or a release that fails,
+  // strands no other lease: create() releases what it opened and throws what
+  // ended it, and close() releases every lease though one release fails.
+  {
+    const fresh = createSqliteVfsTestHarness();
+    const freshVfs = new SqliteVFS(fresh.sql, fresh.ctx);
+    let live = 0;
+    let refused = false;
+    class OwnerLeaseRefused extends ProcessFiles {
+      openHost(cred, options) {
+        if (cred.uid !== 0 && !refused) { refused = true; throw new Error('owner lease refused'); }
+        const lease = super.openHost(cred, options);
+        live++;
+        return { fs: lease.fs, dispose: async () => { live--; await lease.dispose(); } };
+      }
+    }
+    await assert.rejects(
+      () => NimbusWorkspace.create({ sql: fresh.sql, transactions: fresh.ctx, generation: 1, vfs: freshVfs, filesystem: new OwnerLeaseRefused(freshVfs) }),
+      /owner lease refused/,
+    );
+    assert.ok(refused, 'the owner lease was asked for');
+    assert.equal(live, 0, 'the kernel lease opened before the refusal is released');
+  }
+  {
+    const fresh = createSqliteVfsTestHarness();
+    const freshVfs = new SqliteVFS(fresh.sql, fresh.ctx);
+    let live = 0;
+    class KernelReleaseFails extends ProcessFiles {
+      openHost(cred, options) {
+        const lease = super.openHost(cred, options);
+        live++;
+        return {
+          fs: lease.fs,
+          // The kernel lease's release throws before it returns a promise.
+          dispose: () => {
+            live--;
+            const released = lease.dispose();
+            if (cred.uid === 0) throw new Error('kernel lease release failed');
+            return released;
+          },
+        };
+      }
+    }
+    const embedded = await NimbusWorkspace.create({ sql: fresh.sql, transactions: fresh.ctx, generation: 1, vfs: freshVfs, filesystem: new KernelReleaseFails(freshVfs) });
+    await assert.rejects(() => embedded.close(), /kernel lease release failed/);
+    assert.equal(live, 0, 'close() releases every lease though one release fails');
+  }
+
   // And the disk is still a disk: the next workspace over the same sql comes
   // up and answers for what is installed.
   ws = await NimbusWorkspace.create({
