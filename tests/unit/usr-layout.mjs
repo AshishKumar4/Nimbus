@@ -89,8 +89,10 @@ const ETC = ['etc/profile', 'etc/hostname', 'etc/os-release'];
   kernel.writeFile('usr/bin/toy', 'echo mine\n', { mode: 0o755 });
   await ws.runtimes.installPackage(toyPackage(), { force: true });
   assert.equal(kernel.lstat('usr/bin/toy').type, 'file', 'a file at the launcher\'s name is left');
+  // The file is run, not the runtime (this bare workspace has no `sh` to run its script with).
   const itself = await ws.exec('/usr/bin/toy');
-  assert.equal(itself.stdout, 'mine\n', `and runs as itself: ${itself.exitCode} ${itself.stderr}`);
+  assert.doesNotMatch(itself.stdout, /ran toy/, 'the runtime does not run in its place');
+  assert.match(itself.stderr, /\/usr\/bin\/toy: sh: bad interpreter/, `the file runs as itself: ${itself.exitCode} ${itself.stderr}`);
   assert.equal((await ws.exec('toy')).stdout, 'ran toy from usr/lib/nimbus/toy/1.0.0\n', 'the name still runs the runtime');
   kernel.unlink('usr/bin/toy');
   await ws.runtimes.installPackage(toyPackage(), { force: true });
