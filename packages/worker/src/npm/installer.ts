@@ -37,7 +37,6 @@ import { direntTypeIn } from '@nimbus-sh/core/vfs/dirent-type.js';
 import { LruMap } from '@nimbus-sh/core/_shared/lru-map.js';
 import { handKernelArtifact, projectFs, type ProjectFs } from '../runtime/project-fs.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
-import { manifestsOf, prebundleCacheKey, prebundleRequest, sliceManifests, stillCurrent } from './cache-keys.js';
 import { NpmCache, type LockfileEntry } from './cache.js';
 import {
   hoistPlacements,
@@ -61,10 +60,9 @@ import {
   formatSwapNotice,
   emitRegistryEvent,
 } from '../facets/wasm-swap-registry.js';
-import { resolvePackageEntry } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { parseRegistryRequest } from '@nimbus-sh/core/_shared/npm-spec.js';
 import { createWaveWriter } from '@nimbus-sh/platform/wave-writer.js';
-import type { BundlePool, BundlePoolProvider } from '../facets/prebundle-pool.js';
+import type { BundlePoolProvider } from '../facets/prebundle-pool.js';
 import { Fanout, type FanoutRoute } from '@nimbus-sh/fabric/fanout.js';
 import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE, WAVE_WRITER_PREAMBLE } from '../loaders/generated-workers.js';
 import type { FacetPackageSpec } from './install-facet.js';
@@ -89,27 +87,19 @@ import {
 import { NPM_RESOLVE_PREAMBLE } from '../loaders/npm-resolve-preamble.js';
 import { NPM_INSTALL_PREAMBLE } from '../loaders/npm-install-preamble.js';
 import { NPM_INSTALL_BATCH_TASK, NPM_RESOLVE_ONE_TASK } from '../loaders/compiled-bodies.generated.js';
+import { packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
+import { transformParser } from '../runtime/barrel-synthesizer.js';
 import {
-  buildSliceForSpecifierWithCap,
-  type PrebundleSpec,
-  type PrebundleResult,
-} from './pre-bundle-facet.js';
-import { PREBUNDLE_DEFINE, sliceSources } from '@nimbus-sh/core/runtime/prebundle-slice.js';
-import {
-  PRE_BUNDLE_CONCURRENCY,
-  PRE_BUNDLE_SLICE_CAP_BYTES,
-} from '@nimbus-sh/platform/limits.js';
-import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
-import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier, splitBareSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
-import {
-  scanProjectImports,
-  transformParser,
-  namedImportSignature,
-  buildSyntheticEntry,
-  buildScopedSliceForSynthetic,
-  syntheticEntryPath,
-  PROJECT_SCAN,
-} from '../runtime/barrel-synthesizer.js';
+  barrelInput,
+  barrelPackage,
+  buildPrebundle,
+  isServerToolPackage,
+  scanProject,
+  storedPrebundle,
+  type BarrelInput,
+  type PrebundleContext,
+  type PrebundleOutcome,
+} from './browser-prebundle.js';
 import { enc } from '@nimbus-sh/core/_shared/bytes.js';
 import {
   createNpmBinManifest,
@@ -1925,15 +1915,12 @@ export class NpmInstaller {
   // ── Pre-bundling ──────────────────────────────────────────────────────
 
   /**
-   * Pre-bundle ESM modules that are actually imported by the project source.
-   * Scans .ts/.tsx/.jsx/.js files for bare import specifiers (including
-   * subpaths like `react/jsx-runtime`), then bundles each via esbuild.build()
-   * with the VFS plugin.
-   *
-   * Critical: each bundle must externalize react / scheduler / jsx-runtime
-   * as appropriate for the specifier being built. Without this, react-dom
-   * and jsx-runtime each get their own embedded React copy and cross-bundle
-   * JSX elements get rejected as "alien" — silent render failure.
+   * Warm the browser bundles of what the project's browser source imports
+   * from the packages this install put in node_modules (npm/browser-prebundle.ts,
+   * the dev server's path for the same rows), in the background, one at a
+   * time: each slice is walked in the supervisor just before its build, so at
+   * most one is held. Best effort: the dev server bundles on demand whatever
+   * is not warm.
    */
   private async prebundleUsedModules(
     projDir: string,
@@ -1941,310 +1928,49 @@ export class NpmInstaller {
     fs: CredentialedVfs,
     progress: (msg: string) => void,
   ): Promise<void> {
-    // Pre-bundle runs in the session's build facet (facets/prebundle-pool.ts),
-    // from slices the supervisor walks (npm/pre-bundle-facet.ts); the
-    // supervisor never holds a bundler.
-    //
-    // We gate on this.esbuild presence purely as a feature flag: a caller
-    // that constructs the installer without esbuild (e.g. minimal
-    // headless test) opts out of pre-bundling entirely. The session's
-    // bundle pool must also be present because the facets run in it.
+    // Built in the session's build facet: a caller without esbuild (whose
+    // parser scans the project) or without the pool does not warm.
     if (!this.esbuild || !this.bundlePool) return;
-    // What a pre-bundle row is keyed by beside its input: the code that
-    // built it and the request (npm/cache-keys.ts), the define the Vite dev
-    // server's own pre-bundles take, so either's row is the other's.
-    const read = (path: string) => {
-      try {
-        return fs.readFileString(path);
-      } catch {
-        return null;
-      }
+    const ctx: PrebundleContext = {
+      vfs: fs, root: projDir, cache: this.cache, pool: this.bundlePool, parse: transformParser(this.esbuild), esbuild: this.esbuild, serviceFallback: false,
     };
-    /** Whether `existing` is this request's pre-bundle, from the manifests it was built from as they read now. */
-    const current = async (specifier: string, existing: { bundleHash: string; sources: readonly string[] } | null): Promise<boolean> => {
-      if (!existing) return false;
-      return existing.bundleHash === await prebundleCacheKey(prebundleRequest(specifier, manifestsOf(existing.sources, read)));
-    };
-
-    const parse = transformParser(this.esbuild);
-    // Within PROJECT_SCAN, as the dev server scans it: the same decision for
-    // the same project, so one bundle row per specifier serves both. A scan
-    // that left files unread synthesizes no barrel (each is pre-bundled
-    // whole, as the dev server then serves it); the specifiers it found are
-    // pre-bundled, and any it missed are bundled on demand.
-    const projectScan = await scanProjectImports(fs, projDir, parse, PROJECT_SCAN);
-    const { bareSpecifiers: usedSpecifiers, namedImports } = projectScan;
-    if (projectScan.unread !== null) {
-      progress(`  the scan of the project for its imports left ${projectScan.unread} unread: barrel packages are pre-bundled whole, not from the names it found`);
+    const scan = await scanProject(ctx);
+    if (scan.unread !== null) {
+      progress(`  the scan of the project for its imports left ${scan.unread} unread: barrel packages are pre-bundled whole, not from the names it found`);
     }
-
-    // Vite plugins / postcss plugins / build-time tools NEVER ship to the
-    // browser — they're invoked server-side by vite's own plugin
-    // pipeline. Pre-bundling them as browser modules is wasted work
-    // and, for some plugins, fatal: e.g. @tailwindcss/vite (Tailwind
-    // v4) triggers a `readdir(".")` inside esbuild's WASM during its
-    // own init, hitting esbuild's "not implemented on js" fs shim.
-    // The error is caught at the result.errorText layer, but the
-    // surrounding heap churn from N concurrent pre-bundle attempts on a
-    // 248-dep project pushes a shared isolate over the soft cap and
-    // crashes the supervisor (Mini-PRD: DO shared isolate issues).
-    //
-    // Pattern matched against the package name (specifier root). Cases:
-    //   - @vitejs/plugin-* — official vite plugins (react, vue, etc.)
-    //   - vite-plugin-* — community vite plugins
-    //   - @tailwindcss/vite, @tailwindcss/postcss — Tailwind v4
-    //   - postcss, postcss-* — PostCSS pipeline
-    //   - autoprefixer, cssnano — common postcss plugins
-    //   - @rollup/plugin-* — vite uses rollup internally
-    //   - lightningcss, esbuild, esbuild-* — bundlers themselves
-    const isServerPluginPkg = (pkgName: string): boolean => {
-      if (pkgName === '@tailwindcss/vite' || pkgName === '@tailwindcss/postcss') return true;
-      if (pkgName === 'postcss' || pkgName === 'autoprefixer' || pkgName === 'cssnano') return true;
-      if (pkgName === 'lightningcss' || pkgName === 'esbuild' || pkgName === 'esbuild-wasm') return true;
-      if (pkgName.startsWith('@vitejs/plugin-')) return true;
-      if (pkgName.startsWith('vite-plugin-')) return true;
-      if (pkgName.startsWith('postcss-')) return true;
-      if (pkgName.startsWith('@rollup/plugin-')) return true;
-      if (pkgName.startsWith('rollup-plugin-')) return true;
-      return false;
-    };
-
-    // Determine which specifiers can actually be resolved to an installed package.
-    const toBuild = usedSpecifiers.filter(spec => {
-      const pkgName = packageNameFromSpecifier(spec);
-      if (isServerPluginPkg(pkgName)) return false;
-      return installed.has(pkgName);
-    });
-
-    if (toBuild.length === 0) return;
-
-    const nmDir = projDir + '/node_modules';
-
-    // ── Phase A: filter and resolve entry paths ────────────────────────
-    // Drop specifiers we already have a fresh cache entry for, and the
-    // ones whose entry resolves to a native/WASM payload (esbuild can't
-    // parse those as JS — a package whose `main` points directly at
-    // esbuild.wasm or a .node addon would otherwise fail at byte 0).
-    //
-    // For "barrel" packages — those that ship hundreds/thousands of
-    // tiny re-export files (lucide-react@0.460: ~3940 files,
-    // @phosphor-icons/react: similar, react-icons, @mui/icons-material,
-    // @heroicons/react…) — we DON'T skip pre-bundle. Instead we
-    // synthesize a tiny entry from the user's actual named-import set
-    // (e.g. `export { Home, FileText, Zap } from 'lucide-react';`) and
-    // bundle THAT through the standard facet path. esbuild tree-shakes
-    // unreferenced exports, producing a small bundle (~5–20 KiB for a
-    // typical icon set) shipped from our edge.
-    //
-    // This replaces the previous esm.sh CDN fallback (commit fc17847),
-    // which violated the 100% edge contract by making the browser
-    // fetch tree-shaken bytes from a third-party CDN. The synthesizer
-    // is general-purpose and works for any barrel package whose
-    // individual export files are side-effect-free.
-    //
-    // If the scanner found NO named imports for a barrel pkg
-    // (e.g. user does `import * from 'pkg'`, computed-name access, or
-    // dynamic import), the package is still queued via its real entry
-    // — the bundle will OOM the facet, surface a hard error, and the
-    // user sees a remediation message. NO silent CDN fallback.
-    type PendingSpec = {
-      specifier: string;
-      entryPath: string;
-      synthetic?: boolean;
-      inputHash?: string;
-      // For synthetic entries: the per-file paths the entry imports.
-      // Used to build a SCOPED slice (skips the package's full
-      // directory walk) so icon-libraries with thousands of files
-      // don't blow the 28 MiB slice cap.
-      syntheticReferencedFiles?: string[];
-    };
-    const pending: PendingSpec[] = [];
-    for (const specifier of toBuild) {
-      const existing = this.cache.getEsmBundle(specifier);
-
-      const entryPath = this.resolvePackageEntryPath(fs, specifier, nmDir);
-      if (!entryPath) continue;
-
-      if (/\.(wasm|node)$/i.test(entryPath)) {
-        progress(`  skipped pre-bundle for ${specifier} (native/WASM)`);
-        continue;
-      }
-
-      // Barrel-package heuristic. Count files under nmDir/<pkgName>
-      // (excluding nested node_modules — those are deps walked
-      // separately). Cheap: VFS readdir is sync + chunk-cached.
+    const pending: { specifier: string; barrel: BarrelInput | null }[] = [];
+    for (const specifier of scan.bareSpecifiers) {
       const pkgName = packageNameFromSpecifier(specifier);
-      const fileCount = countPackageFiles(fs, nmDir + '/' + pkgName);
-      const isBarrel = fileCount > BARREL_PKG_FILE_THRESHOLD;
-
-      if (isBarrel && specifier === pkgName && projectScan.unread === null) {
-        // Top-level barrel import. Synthesize.
-        const names = namedImports.get(pkgName);
-        const inputHash = namedImportSignature(pkgName, names);
-        if (!names || names.size === 0) {
-          // No statically-resolvable imports. We refuse to bundle the
-          // whole barrel (would OOM) AND we refuse to CDN-fallback
-          // (contract). Skip pre-bundle here; the on-demand path will
-          // hard-error with a remediation message if a request comes
-          // in for it. Users who hit this need to add a static named
-          // import for the icons they reference dynamically.
-          progress(
-            `  skipped pre-bundle for ${specifier}: barrel (${fileCount} files) ` +
-            `with no static named imports detected. Add explicit imports to enable bundling.`,
-          );
-          continue;
-        }
-        if (existing && existing.inputHash === inputHash && await current(specifier, existing)) {
-          continue;
-        }
-        const synth = buildSyntheticEntry(fs, nmDir, pkgName, names);
-        if (!synth) continue;
-        const entryPath = syntheticEntryPath(projDir, pkgName);
-        try {
-          fs.mkdir(entryPath.substring(0, entryPath.lastIndexOf('/')), { recursive: true });
-          fs.writeFile(entryPath, synth.code);
-        } catch (e: any) {
-          progress(
-            `  failed to write synthetic entry for ${specifier}: ${e?.message || e}`,
-          );
-          continue;
-        }
-        progress(
-          `  synthesized entry for ${specifier} (barrel: ${fileCount} files; ` +
-          `${names.size} static imports → tree-shaken bundle)`,
-        );
-        pending.push({
-          specifier,
-          entryPath,
-          synthetic: true,
-          syntheticReferencedFiles: synth.referencedFiles,
-          inputHash: inputHash ?? '',
-        });
-        continue;
-      }
-
-      if (existing && existing.inputHash === '' && await current(specifier, existing)) continue;
-      pending.push({ specifier, entryPath });
+      if (isServerToolPackage(pkgName) || !installed.has(pkgName)) continue;
+      const whole = barrelPackage(ctx, specifier);
+      const barrel = whole && barrelInput(whole, scan);
+      const stored = storedPrebundle(ctx, specifier, barrel);
+      if (stored && await stored) continue;
+      pending.push({ specifier, barrel });
     }
     if (pending.length === 0) return;
-    // Log heap pressure entering pre-bundle so /api/_diag/memory's peak
-    // tracker captures the supervisor baseline before the facet pool
-    // takes over. After A′ lands the supervisor heap should stay flat
-    // through this phase; if a future regression brings esbuild back
-    // onto the supervisor we'll see it spike here.
-    //
-    // P5 (production reliability): switched from process.memoryUsage() to the
-    // C'.1 deterministic estimator. process.memoryUsage() returns 0
-    // for every field inside a Durable Object class context (only
-    // dynamic-worker isolates under nodejs_compat get the real
-    // implementation — see @nimbus-sh/platform/diag-counters.js:4 and
-    // heap-estimate.ts:6). The previous "supervisor heap 0.0 MiB"
-    // line was actively misleading: it printed every time, regardless
-    // of what was actually in the heap, and could not be used to
-    // verify the A′ memory-containment work the message claims to
-    // surface. estimateSupervisorHeap sums known supervisor-side
-    // allocation sources from runtime counters that ARE accurate
-    // (DiagCounters singleton + SqliteVFS.getStats()).
+    // The supervisor's heap entering the phase, by the deterministic
+    // estimator (process.memoryUsage() reads 0 in a Durable Object).
     const memBefore = this._estimateSupervisorHeapMiB();
-    progress(
-      `Pre-bundling ${pending.length} modules... (supervisor heap ${memBefore.toFixed(1)} MiB)`,
-    );
-
-    // ── Phase B+C: lazy slice + dispatch (memory-bounded) ─────────────
-    //
-    // CRITICAL: slices are built JUST BEFORE dispatch, NOT all at once.
-    // Each slice can be up to SLICE_CAP_BYTES (28 MiB); with 8 pending
-    // specs, a naïve "build all then map" would peak at 224 MiB in the
-    // supervisor — well over the DO cap. Instead we run a hand-rolled
-    // `concurrency`-way worker loop that picks the next pending spec,
-    // builds its slice, submits to a facet, writes the result, then
-    // frees both slice and result before picking the next.
-    //
-    // Peak supervisor footprint during this phase:
-    //   max-in-flight = PRE_BUNDLE_CONCURRENCY (= 1)
-    //   per-in-flight = up to SLICE_CAP_BYTES (28 MiB) slice + few-MiB
-    //                   bundle output + spec metadata ≈ ~34 MiB
-    //   peak ≈ 1 × 34 = 34 MiB worst case across ALL slots,
-    //   plus ~30 MiB supervisor baseline = ~64 MiB.
-    //
-    // Why concurrency=1 (was 2 — see Mossaic crash repro):
-    //   The previous concurrency=2 calculation assumed a strict 128 MiB
-    //   per-DO budget. The Mini-PRD "DO shared isolate issues"
-    //   documents resets at <128 MiB on shared isolates: multiple
-    //   DOs from the same script can land in the same V8 isolate,
-    //   sharing its 128 MiB cap. On a Mossaic-scale project (248 deps,
-    //   31 pre-bundle specs, 12206 files), concurrency=2 + ongoing
-    //   install/dev work pushed a shared isolate over the soft cap and
-    //   crashed the supervisor (samples regression 9 -> 1 at t=24s
-    //   reproduced on prod cde155f).
-    //
-    //   Cutting concurrency to 1 halves the peak slice footprint
-    //   (28 MiB vs 56 MiB) at the cost of doubled wall-clock time —
-    //   acceptable because pre-bundle is fire-and-forget and runs in
-    //   the background. The user-visible install-command latency is
-    //   unchanged. The on-demand bundler still serves any spec whose
-    //   pre-bundle takes longer than the dev-server-needs-it window.
-    //
-    // Why SLICE_CAP_BYTES = 28 MiB:
-    //   - 28 MiB × 1 concurrency = 28 MiB peak slice memory in the
-    //     supervisor, + ~30 MiB baseline = ~58 MiB. Plenty of
-    //     headroom under a shared-isolate budget.
-    //   - 28 MiB also fits within workerd's 32 MiB RPC arg limit
-    //     (structured-clone overhead measured ~6% on prior installs;
-    //     28 + ~2 MiB overhead ≈ 30 MiB, under cap).
-    //   - Cap was 16 MiB previously; lucide-react's 1500-file source
-    //     tree exceeded that and got skipped from pre-bundle, then
-    //     fell to the on-demand bundler which OOM'd the supervisor
-    //     with CF error 1101 on /preview/@modules/lucide-react.
-    //     Raising to 28 MiB lets lucide-react pre-bundle cleanly so
-    //     the on-demand path is bypassed entirely for it. (Now
-    //     lucide-react is barrel-skipped at af8de12 and the cap
-    //     mostly applies to non-barrel large packages.)
-    //
-    // The bundler's wasm memory lives in the session's build facet
-    // (facets/prebundle-pool.ts → build-facet.ts `prebundle`), outside the
-    // supervisor; its staged parts load into the facet's module map once
-    // per isolate, so the supervisor keeps no copy. Per-spec try/catch
-    // handles failures — /preview/@modules/ on-demand bundling recovers.
-    //
-    // Defensive logger: onProgress is user-supplied and can throw
-    // (downstream WS write, JSON.stringify on a circular value, etc.).
-    // A throw here would unwind through the iteration, drop other
-    // slots' settled work, and surface in the supervisor as an
-    // unhandled rejection. Swallow with a console.error so the
-    // pre-bundle phase keeps running. Same pattern is used in the
-    // summary finally block below.
+    progress(`Pre-bundling ${pending.length} modules... (supervisor heap ${memBefore.toFixed(1)} MiB)`);
+    // onProgress is the caller's, and may throw: the phase goes on.
     const safeProgress = (msg: string): void => {
       try { progress(msg); } catch (e: any) {
         try { console.error('[pre-bundle] onProgress threw:', e?.message || e); } catch {}
       }
     };
-
-    // Acquired BEFORE any slice is built: acquiring loads the build facet,
-    // whose staged parts pass through the supervisor once, so they are
-    // gone again before a slice lease is held beside them.
-    let pool: BundlePool;
-    try {
-      pool = await this.bundlePool.acquire();
-    } catch (e: any) {
-      // Pool construction failures remain best-effort pre-bundle failures,
-      // not npm install failures.
-      safeProgress(`Pre-bundle skipped: failed to construct facet pool: ${e?.message || e}`);
-      return;
-    }
-
-    const queue = pending.slice(); // copy; will shift
+    const nmDir = projDir + '/node_modules';
     let okCount = 0;
     let attempted = 0;
     let errorCount = 0;
     let skippedCount = 0;
-    // Per-module error map for THIS batch. Replaces (not aggregates)
-    // diag-counters.preBundleFacet.errorsByModule on phase end so
-    // /api/_diag/memory surfaces "which modules failed THIS time" —
-    // critical for distinguishing lucide-react vs framer-motion vs
-    // others when investigating supervisor crashes. Bounded by
-    // pending.length.
+    // This batch's failures by module, for /api/_diag/memory.
     const errorsByModule: Record<string, string> = {};
+    const failed = (specifier: string, message: string, line: string): void => {
+      safeProgress(line);
+      errorCount++;
+      errorsByModule[specifier] = message;
+    };
     // The pre-bundles not attempted because node_modules went away under
     // the phase: its session destroyed (its storage deleted) or the
     // directory removed. Each would only fail on a store that is gone.
@@ -2263,258 +1989,72 @@ export class NpmInstaller {
         return Reflect.get(Object(error), 'code') === 'ENOENT' || this.store.storeDeleted();
       }
     };
-    const abandonRest = (current: number): void => {
-      if (abandoned > 0) return;
-      abandoned = current + queue.length;
-      queue.length = 0;
+    const abandonRest = (left: number): void => {
+      abandoned = left;
       safeProgress(`  pre-bundle stopped: ${nmDir} is gone (the session destroyed, or node_modules removed); ${abandoned} not pre-bundled`);
     };
-
-    const runSlot = async (slotIndex: number): Promise<void> => {
-      while (true) {
-        const next = queue.shift();
-        if (!next) return;
-        if (nodeModulesGone()) {
-          abandonRest(1);
-          return;
-        }
-        // Hold the slice's worst-case supervisor footprint until its facet
-        // RPC and cache write settle. FIFO byte credit prevents VFS reads,
-        // streamed install writes, or cirrus boot from independently claiming
-        // the same shared-isolate headroom.
-        const allocationLease = await acquireSupervisorAllocation(
-          PRE_BUNDLE_SLICE_CAP_BYTES,
-        );
-        try {
-          attempted++;
-
-          // Build slice for THIS spec only. Released by explicit nulling
-          // at the end of every code path through this iteration so the
-          // bytes are GC-eligible before the RPC layer has finished
-          // tearing down its own references for the previous spec. With concurrency=1 and 28 MiB caps, peak supervisor
-          // slice memory is ~34 MiB (slice + spec metadata).
-          //
-          // Defensive: buildSliceForSpecifierWithCap performs sync VFS
-          // reads that COULD throw on a corrupted inode tree, an unread-
-          // able chunk, or any other VFS-layer surprise. Without this
-          // try/catch, a slice-walker throw escapes runSlot, rejects the
-          // Promise.all, drops every other in-flight slot's settled
-          // work, and surfaces in the supervisor as an unhandled
-          // rejection — which workerd can promote to a DO restart on a
-          // shared isolate. Catch and treat as "skip this spec, log,
-          // continue."
-          let slice: ReturnType<typeof buildSliceForSpecifierWithCap> = null;
-          try {
-            if (next.synthetic && next.syntheticReferencedFiles) {
-              // SCOPED slice: only the files the synthetic entry directly
-              // references + their transitive relative imports + the
-              // package's package.json. Skips the full package walk so
-              // icon-libraries with thousands of files don't blow the
-              // 28 MiB cap. (lucide-react@0.460 ships ~5-15 MiB across
-              // 3940 files; full walk hits cap on Mossaic-scale projects
-              // with 70+ imported icons.)
-              const scoped = await buildScopedSliceForSynthetic(
-                fs, nmDir, packageNameFromSpecifier(next.specifier),
-                next.syntheticReferencedFiles, parse,
-              );
-              const built = { slice: scoped.entries, totalBytes: scoped.totalBytes };
-              // Append the synthetic entry file itself (lives outside
-              // the package dir; the scoped walker doesn't pick it up).
-              const bytes = fs.readFile(next.entryPath);
-              const parentDir = next.entryPath.substring(0, next.entryPath.lastIndexOf('/'));
-              built.slice.push({
-                path: '/' + parentDir.replace(/^\/+/, ''),
-                isDir: true,
-              });
-              built.slice.push({
-                path: '/' + next.entryPath.replace(/^\/+/, ''),
-                bytes,
-                isDir: false,
-              });
-              built.totalBytes += bytes.length + next.entryPath.length;
-              slice = built;
-            } else {
-              slice = buildSliceForSpecifierWithCap(
-                fs, next.specifier, nmDir, PRE_BUNDLE_SLICE_CAP_BYTES,
-              );
-            }
-          } catch (e: any) {
-            if (nodeModulesGone()) {
-              attempted--;
-              abandonRest(1);
-              return;
-            }
-            const msg = e?.message || String(e);
-            safeProgress(`  pre-bundle slice walk threw for ${next.specifier}: ${msg}`);
-            errorCount++;
-            errorsByModule[next.specifier] = msg;
-            continue;
-          }
-          if (!slice) {
-            safeProgress(
-              `  skipped pre-bundle for ${next.specifier}: slice exceeded ${(PRE_BUNDLE_SLICE_CAP_BYTES / (1024 * 1024)).toFixed(0)} MiB cap`,
-            );
-            skippedCount++;
-            continue;
-          }
-
-          // The request (its externals the shared runtime's, pure JS over a
-          // small list: extremely unlikely to throw, but cheap to guard since
-          // we're hardening this path comprehensively), and its key.
-          let request: ReturnType<typeof prebundleRequest>;
-          try {
-            request = prebundleRequest(next.specifier, sliceManifests(slice.slice, read));
-          } catch (e: any) {
-            const msg = e?.message || String(e);
-            safeProgress(`  pre-bundle externals threw for ${next.specifier}: ${msg}`);
-            errorCount++;
-            errorsByModule[next.specifier] = msg;
-            continue;
-          }
-          const key = await prebundleCacheKey(request);
-
-          // What the bundle can have read, recorded with it: the cache is
-          // shared, and a server serves it only to a principal who may read it all.
-          const sources = sliceSources(slice.slice);
-          let spec: PrebundleSpec | null = {
-            specifier: next.specifier,
-            entryPath: next.entryPath,
-            externals: [...request.externals],
-            slice: slice.slice,
-            bundlerVersion: key,
-            define: PREBUNDLE_DEFINE,
-          };
-          // Drop our supervisor-side reference to the slice array as soon
-          // as it's owned by `spec`. `spec` is the only thing that needs
-          // to keep it alive until the RPC structured-clone completes.
-          slice = null;
-
-          let result: PrebundleResult | null = null;
-          try {
-            result = await pool.prebundle(spec);
-          } catch (e: any) {
-            const msg = describeError(e);
-            safeProgress(`  pre-bundle failed for ${next.specifier}: ${msg}`);
-            errorCount++;
-            errorsByModule[next.specifier] = msg;
-          } finally {
-            // Drop the spec reference (which transitively held slice.slice)
-            // immediately after the RPC settles, regardless of outcome.
-            // This finally releases our supervisor-side handle the moment
-            // the await resolves so the next iteration starts from a
-            // low-water-mark heap.
-            spec = null;
-          }
-
-          if (!result || !result.ok) {
-            const why = result?.errorText || 'pool returned null';
-            if (nodeModulesGone()) {
-              attempted--;
-              abandonRest(1);
-              return;
-            }
-            if (result) {
-              safeProgress(`  pre-bundle failed for ${next.specifier}: ${why}`);
-              errorCount++;
-              errorsByModule[next.specifier] = why;
-            }
-            result = null;
-            continue;
-          }
-
-          if (result.warnings && result.warnings.length > 0) {
-            for (const w of result.warnings) {
-              safeProgress(`  [warn] ${next.specifier}: ${w}`);
-            }
-          }
-          // A package reinstalled while it was bundled: its bundle is not
-          // stored under the manifests the slice read (the next install, or
-          // the dev server on demand, bundles what is there now).
-          if (!stillCurrent(request.manifests, read)) {
-            if (nodeModulesGone()) {
-              attempted--;
-              abandonRest(1);
-              return;
-            }
-            safeProgress(`  pre-bundle of ${next.specifier} not cached: its package changed while it was bundled`);
-            result = null;
-            continue;
-          }
-          // Stamp into pkg_esm_bundles. Cache is supervisor-side SQLite,
-          // so the write happens here (not via writeBatch — that's VFS).
-          // Defensive: SQL writes can throw on schema mismatch / disk-full
-          // / closed-storage-handle. A throw here would unwind through the
-          // loop and rejected the Promise.all wrapper. Treat the failure
-          // as "pre-bundle succeeded but cache write failed" — okCount is
-          // not bumped, the spec falls through to on-demand bundling on
-          // first request, and the loop continues.
-          try {
-            this.cache.putEsmBundle({
-              specifier: next.specifier,
-              bundleHash: key,
-              esmCode: result.esmCode,
-              builtAt: Date.now(),
-              inputHash: next.inputHash ?? '',
-              sources,
-            });
-            okCount++;
-          } catch (e: any) {
-            if (nodeModulesGone()) {
-              attempted--;
-              abandonRest(1);
-              return;
-            }
-            const msg = e?.message || String(e);
-            safeProgress(`  pre-bundle cache-write failed for ${next.specifier}: ${msg}`);
-            errorCount++;
-            errorsByModule[next.specifier] = msg;
-          }
-          // result.esmCode is now durably in SQLite; drop our heap copy
-          // before the next iteration's slice walk allocates.
-          result = null;
-        } finally {
-          allocationLease.release();
-        }
-        void slotIndex;
-      }
-    };
-
     try {
-      // Promise.all rejects on the first slot rejection. Every per-slot
-      // failure mode that can throw inside runSlot is caught above
-      // (slice walk, externals, pool.prebundle, putEsmBundle) — but a
-      // future regression that adds an unguarded throw to runSlot
-      // would bubble out here. The outer try/finally guarantees the
-      // diag counters get updated for whatever partial run completed;
-      // the pool itself belongs to the session and outlives this phase.
-      // The catch below additionally logs so the failure mode is visible
-      // in supervisor logs.
-      await Promise.all(
-        Array.from({ length: PRE_BUNDLE_CONCURRENCY }, (_, i) => runSlot(i)),
-      );
-    } catch (e: any) {
-      const msg = e?.message || String(e);
-      safeProgress(`Pre-bundle aborted: ${msg}`);
+      for (let i = 0; i < pending.length; i++) {
+        const { specifier, barrel } = pending[i];
+        if (nodeModulesGone()) {
+          abandonRest(pending.length - i);
+          break;
+        }
+        attempted++;
+        let outcome: PrebundleOutcome<void>;
+        try {
+          outcome = await buildPrebundle(ctx, specifier, barrel, () => undefined);
+        } catch (error) {
+          if (nodeModulesGone()) {
+            attempted--;
+            abandonRest(pending.length - i);
+            break;
+          }
+          const message = describeError(error);
+          failed(specifier, message, `  pre-bundle failed for ${specifier}: ${message}`);
+          continue;
+        }
+        if (outcome.kind === 'built') {
+          for (const warning of outcome.warnings) safeProgress(`  [warn] ${specifier}: ${warning}`);
+        }
+        if (outcome.kind !== 'built' || outcome.changed || outcome.storeFailure !== null) {
+          if (nodeModulesGone()) {
+            attempted--;
+            abandonRest(pending.length - i);
+            break;
+          }
+        }
+        switch (outcome.kind) {
+          case 'built':
+            // A package reinstalled while it was bundled: its bundle is not
+            // stored under the manifests the slice read (the next install,
+            // or the dev server on demand, bundles what is there now).
+            if (outcome.changed) safeProgress(`  pre-bundle of ${specifier} not cached: its package changed while it was bundled`);
+            else if (outcome.storeFailure !== null) failed(specifier, outcome.storeFailure, `  pre-bundle cache-write failed for ${specifier}: ${outcome.storeFailure}`);
+            else okCount++;
+            break;
+          case 'refused':
+          case 'unresolved':
+            skippedCount++;
+            safeProgress(`  skipped pre-bundle for ${specifier}: ${outcome.kind === 'refused' ? outcome.message : 'its entry does not resolve in node_modules'}`);
+            break;
+          case 'unavailable':
+            // The pool is the session's: without it no pre-bundle can run.
+            attempted--;
+            safeProgress(`Pre-bundle skipped: ${outcome.message}`);
+            return;
+          case 'failed':
+            failed(specifier, outcome.message, `  pre-bundle failed for ${specifier}: ${outcome.message}`);
+            break;
+        }
+      }
     } finally {
-      // Fold pre-bundle outcomes into the diag counter singleton so
-      // /api/_diag/memory surfaces them (commit 3 observability).
-      // Aggregates across the DO's lifetime. Wrapped because
-      // recordPreBundleSummary is a global-state mutator and a future
-      // regression there could throw.
+      // The batch's outcomes, for /api/_diag/memory; a throw here must not unwind the phase.
       try {
-        recordPreBundleSummary({
-          attempted,
-          bundlesCompleted: okCount,
-          errors: errorCount,
-          skipped: skippedCount,
-          errorsByModule,
-        });
+        recordPreBundleSummary({ attempted, bundlesCompleted: okCount, errors: errorCount, skipped: skippedCount, errorsByModule });
       } catch (e: any) {
         try { console.error('[pre-bundle] recordPreBundleSummary threw:', e?.message || e); } catch {}
       }
-      // P5 (production reliability): switched both `memBefore` and `memAfter`
-      // to the C'.1 deterministic estimator (see entry-point note
-      // above). Both are floats in MiB; delta is post − pre.
       try {
         const memAfter = this._estimateSupervisorHeapMiB();
         const delta = memAfter - memBefore;
@@ -2525,65 +2065,6 @@ export class NpmInstaller {
         try { console.error('[pre-bundle] final-progress threw:', e?.message || e); } catch {}
       }
     }
-  }
-
-  /**
-   * Resolve a package's entry point to a VFS path.
-   */
-  /**
-   * Resolve a specifier (possibly with subpath, e.g. "react/jsx-runtime" or
-   * "react-dom/client") to an entry-point VFS path under node_modules.
-   *
-   * Algorithm:
-   *   1. Split specifier into pkgName and subpath
-   *      (e.g. "react-dom/client" → pkgName="react-dom", subpath="client";
-   *       "@scope/pkg/sub" → pkgName="@scope/pkg", subpath="sub")
-   *   2. Read node_modules/<pkgName>/package.json
-   *   3. Use resolvePackageEntry(pkg, './' + subpath) to consult exports field
-   *      with ESM conditions
-   *   4. Try extensions and index-file fallbacks
-   */
-  private resolvePackageEntryPath(fs: CredentialedVfs, specifier: string, nmDir: string): string | null {
-    const { name: pkgName, subpath } = splitBareSpecifier(specifier);
-
-    const pkgDir = nmDir + '/' + pkgName;
-    const pkgJsonPath = pkgDir + '/package.json';
-    if (!fs.exists(pkgJsonPath)) return null;
-
-    try {
-      const pkg = JSON.parse(fs.readFileString(pkgJsonPath));
-      // Use the full exports-field resolution with ESM browser conditions.
-      // For subpath imports like "react/jsx-runtime", pass './jsx-runtime'.
-      const subpathKey = subpath ? './' + subpath : '.';
-      let entry = resolvePackageEntry(pkg, subpathKey);
-
-      // Fallback: if no exports field or subpath not in exports, try direct
-      // file resolution (e.g. "react/jsx-runtime" → "react/jsx-runtime.js").
-      if (!entry && subpath) {
-        entry = './' + subpath;
-      } else if (!entry) {
-        entry = 'index.js';
-      }
-
-      const entryPath = pkgDir + '/' + entry.replace(/^\.\//, '');
-
-      // Try with extensions
-      const exts = ['', '.js', '.mjs', '.ts', '.tsx', '.cjs'];
-      for (const ext of exts) {
-        if (fs.exists(entryPath + ext) && !fs.isDirectory(entryPath + ext)) {
-          return entryPath + ext;
-        }
-      }
-
-      // Try index files
-      if (fs.isDirectory(entryPath)) {
-        for (const idx of ['index.js', 'index.mjs', 'index.ts', 'index.cjs']) {
-          if (fs.exists(entryPath + '/' + idx)) return entryPath + '/' + idx;
-        }
-      }
-    } catch { /* skip */ }
-
-    return null;
   }
 
   /** Monotonic count of transactionSync calls this DO's VFS has executed. */

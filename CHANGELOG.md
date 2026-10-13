@@ -18,6 +18,28 @@ published independently in the `@nimbus-sh` npm scope.
   names) and `bindings` (beside the process's own SUPERVISOR). Removed: the
   stateless fallback for hosts without Durable Object facets, where no
   resident process can run, and `/api/_diag/cirrus`.
+- Fixed (security): JS git refuses a tree entry whose path native git
+  refuses: a `.git` component in any case, `.` or `..`, and the names
+  NTFS (and, with `core.protectHFS`, HFS+) read as `.git`. `checkout` and
+  `reset --hard` write nothing and say git's `invalid path` error, `reset`
+  leaves the index, and a clone keeps its repository with nothing checked
+  out. A clone honours `core.protectHFS` and `core.protectNTFS` from `-c`
+  and the user's `~/.gitconfig`, as git's does. Before, a fetched commit
+  could write `.git/config` or a file above the worktree.
+- Fixed (security): a malformed tree object is git's error
+  (`too-short tree object`, `malformed mode in tree entry`, `empty
+  filename in tree entry`). One reader looped forever on such a tree,
+  growing until the session ran out of memory.
+- Fixed (security): when a git server refuses the request for a pack after
+  answering its discovery, clone, fetch, pull, push and a partial clone's
+  lazy fetch say `RPC failed` as git does, and never print the server's
+  answer. Before, they printed it whole, credentials it echoed included.
+- Changed: `npm install`'s background warming of browser bundles and the
+  Vite dev server's `/@modules/` bundles are one path. Install now warms a
+  package subpath the dev server can resolve (a directory with its own
+  `package.json`), skips a package whose entry is a native or WebAssembly
+  payload with the same reason the dev server gives, and holds only the
+  memory a slice needs while it builds.
 - Fixed: a peer-hosted resident whose boot reads stdin (a synchronous read of
   fd 0) was replayed against reads it never made: the hosting peer's own
   reads of the process's boot images counted as the process's, and its

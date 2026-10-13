@@ -10,12 +10,13 @@
  * idx are durable, so a read that follows finds the objects.
  */
 import { execGitNetwork } from './network-facet.js';
+/** The fetch failed: `result` says how (the command says it, its credentials taken out); the message is git's own. */
 export class PromisorFetchError extends Error {
-    remote;
+    request;
     result;
-    constructor(remote, result) {
-        super(`fatal: could not fetch missing objects from promisor remote '${remote}': ${result.error ?? 'unknown error'}`);
-        this.remote = remote;
+    constructor(request, result) {
+        super(`could not fetch ${request.oids[0]} from promisor remote`);
+        this.request = request;
         this.result = result;
         this.name = 'PromisorFetchError';
     }
@@ -36,6 +37,6 @@ workspaceNetwork) {
         ...(request.onMount === true ? { onMount: true } : {}),
     }, workspaceNetwork);
     if (!network.success)
-        throw new PromisorFetchError(request.remote, network);
+        throw new PromisorFetchError(request, network);
     return { fetched: network.fetchedObjects ?? 0, network };
 }

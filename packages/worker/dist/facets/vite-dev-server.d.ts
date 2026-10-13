@@ -242,6 +242,8 @@ export declare class ViteDevServer {
     private ctx;
     /** The session's pre-bundle pool; null = bundle through the EsbuildService. */
     private readonly bundlePool;
+    /** What this server's pre-bundles are built and served as (npm/browser-prebundle.ts). */
+    private readonly prebundle;
     /**
      * In-flight on-demand-bundle coalescing map. When the browser fires
      * multiple parallel requests for the same /preview/@modules/<spec>
@@ -288,23 +290,6 @@ export declare class ViteDevServer {
     /** What has been said once (warnOnce). */
     private warned;
     constructor(opts: ViteDevServerOptions);
-    /**
-     * The session's pre-bundle pool for on-demand bundling of
-     * /preview/@modules/<spec> requests that miss both the in-memory and
-     * pkg_esm_bundles caches. Null when no pool was provided (the
-     * EsbuildService fallback). Acquired BEFORE the slice lease — see
-     * PrebundlePool.acquire.
-     */
-    private ensureOnDemandPool;
-    /**
-     * The bundle_hash a pre-bundle of `specifier` from `sources` has when the
-     * code serving this server made it for this server's request
-     * (npm/cache-keys.ts): by the build facet (the install's, or the pooled
-     * path below), or by the service's build with no pool. The manifests
-     * among `sources` are read now: a row built before a reinstall is not
-     * this one's.
-     */
-    private bundleKeys;
     /** Detect TailwindCSS usage in the project */
     private detectTailwind;
     /**
@@ -318,10 +303,6 @@ export declare class ViteDevServer {
     private baseUrlValue;
     /** esbuild define set for a request served under `base`. */
     private defineFor;
-    /** Whether this server's principal may read `path`. */
-    /** `path`'s text, or null where this server cannot read it. */
-    private readText;
-    private mayRead;
     /**
      * Module-cache key for `key` under mount base `base`. The transformed text
      * embeds the base (module URLs, <base href>, BASE_URL, router basename), so
@@ -430,47 +411,22 @@ export declare class ViteDevServer {
      * `import { createRoot } from "react-dom/client"` would fail.
      */
     private servablePrebundle;
-    private getBarrelModuleCacheInfo;
     /**
-     * Whether a cached bundle answers this request. A bundle synthesized from
-     * some names (its inputHash set) answers only a barrel request for those
-     * names; any other request, a barrel's whose project scan left files
-     * unread among them, takes only a whole bundle.
+     * The barrel input of a /@modules request (npm/browser-prebundle.ts
+     * barrelInput): null at once for a specifier that names no barrel
+     * package; for one that does, the project is scanned, and a scan that
+     * left files unread is said, once per request.
      */
-    private cachedModuleMatchesBarrelInput;
+    private moduleBarrel;
     private serveModule;
     /**
-     * Cold path of serveModule: package resolution → on-demand facet
-     * bundle (synthetic-entry for barrels) → hard-error if bundle fails.
-     * NO CDN fallback (100% edge contract). Extracted so the coalescing
-     * wrapper in serveModule() reads cleanly. The slice this body builds is
-     * leased from the shared supervisor allocation budget for its worst
-     * case before it is built, shrunk to its real size once built, and
-     * released only after the facet result has been rewritten, cached and
-     * wrapped in the Response — the pre-bundler's per-slice pattern.
+     * Cold path of serveModule: the specifier's bundle built on demand
+     * (npm/browser-prebundle.ts buildPrebundle: a synthetic entry for a
+     * barrel), its Response made while the build's slice allocation is still
+     * held; a module that says why when there is none. NO CDN fallback (100%
+     * edge contract).
      */
     private serveModuleCold;
-    /**
-     * Resolve a bare package specifier (possibly with subpath) to a VFS file path.
-     *
-     * Algorithm:
-     *   1. Parse into pkgName + subpath (e.g. "pkg/sub/deep" → pkg="pkg", subpath="sub/deep")
-     *   2. Walk search dirs looking for node_modules/<pkg>/
-     *   3. PREFER exports-field resolution (modern packages) with conditions
-     *      [import, module, browser, default]
-     *   4. FALL BACK to legacy resolution (packages without exports field):
-     *      a. For subpath: try <nmDir>/<subpath>.{js,mjs,cjs,jsx,ts,tsx} — direct file
-     *      b. For subpath: try <nmDir>/<subpath>/index.{js,mjs,cjs,jsx,ts,tsx}
-     *      c. For subpath: try <nmDir>/<subpath>/package.json → read module/main
-     *      d. For root: try pkg.module / pkg.main, then tryResolveFile
-     *      e. For root: try <nmDir>/index.{ext}
-     *
-     * Step 4c is what makes `react-remove-scroll-bar/constants` work for legacy
-     * packages without an exports field — the subpath directory has its own
-     * package.json (or just an index.js that we pick up in 4b).
-     */
-    private resolvePackage;
-    private tryResolveFile;
     /**
      * Try to resolve a URL pathname to an actual file in the VFS by applying
      * Vite/webpack-style extension resolution. This is critical for ES module

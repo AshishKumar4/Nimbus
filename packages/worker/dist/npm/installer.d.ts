@@ -304,34 +304,14 @@ export declare class NpmInstaller {
      */
     private updatePackageJson;
     /**
-     * Pre-bundle ESM modules that are actually imported by the project source.
-     * Scans .ts/.tsx/.jsx/.js files for bare import specifiers (including
-     * subpaths like `react/jsx-runtime`), then bundles each via esbuild.build()
-     * with the VFS plugin.
-     *
-     * Critical: each bundle must externalize react / scheduler / jsx-runtime
-     * as appropriate for the specifier being built. Without this, react-dom
-     * and jsx-runtime each get their own embedded React copy and cross-bundle
-     * JSX elements get rejected as "alien" — silent render failure.
+     * Warm the browser bundles of what the project's browser source imports
+     * from the packages this install put in node_modules (npm/browser-prebundle.ts,
+     * the dev server's path for the same rows), in the background, one at a
+     * time: each slice is walked in the supervisor just before its build, so at
+     * most one is held. Best effort: the dev server bundles on demand whatever
+     * is not warm.
      */
     private prebundleUsedModules;
-    /**
-     * Resolve a package's entry point to a VFS path.
-     */
-    /**
-     * Resolve a specifier (possibly with subpath, e.g. "react/jsx-runtime" or
-     * "react-dom/client") to an entry-point VFS path under node_modules.
-     *
-     * Algorithm:
-     *   1. Split specifier into pkgName and subpath
-     *      (e.g. "react-dom/client" → pkgName="react-dom", subpath="client";
-     *       "@scope/pkg/sub" → pkgName="@scope/pkg", subpath="sub")
-     *   2. Read node_modules/<pkgName>/package.json
-     *   3. Use resolvePackageEntry(pkg, './' + subpath) to consult exports field
-     *      with ESM conditions
-     *   4. Try extensions and index-file fallbacks
-     */
-    private resolvePackageEntryPath;
     /** Monotonic count of transactionSync calls this DO's VFS has executed. */
     private storageCommitCount;
     /**
