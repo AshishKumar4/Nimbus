@@ -561,14 +561,33 @@ export function installAuthorityFilesystem(imports, options) {
             return after(fs.reopen({ handle: hold.handle }, closingLetGo(flagsOf(o))), handle => reopenedAs(o, handle));
         // A copy that holds no descriptor: its file is opened by the name it was read at, while that name has it.
         const again = () => after(openIdentified(fs, hold.name, hold.follow, flagsOf(o), was), handle => reopenedAs(o, handle));
-        if (!o.readOnly || hold.pin === undefined)
+        const pin = hold.pin;
+        if (pin === undefined)
             return again();
-        // A pinned one's copy is the filesystem's pin at the file's revision now.
-        return after(fs.stat(hold.name, { followSymlinks: hold.follow }), st => {
-            if (st === null || st.dev !== was.dev || st.ino !== was.ino)
-                fail('ENOENT');
-            return pinned(o, hold.name, st, again);
-        });
+        // Where the name no longer has it, the session's hold of a pinned one (PinnedContent.reopen), if its process took the name away.
+        const byHold = (error) => {
+            const held = error instanceof Error && 'code' in error && error.code === 'ENOENT' ? pin.reopen(flagsOf(o)) : null;
+            if (held === null)
+                throw error;
+            return held.then(handle => reopenedAs(o, handle));
+        };
+        const byName = () => {
+            if (!o.readOnly)
+                return again();
+            // A pinned one's copy is the filesystem's pin at the file's revision now.
+            return after(fs.stat(hold.name, { followSymlinks: hold.follow }), st => {
+                if (st === null || st.dev !== was.dev || st.ino !== was.ino)
+                    fail('ENOENT');
+                return pinned(o, hold.name, st, again);
+            });
+        };
+        try {
+            const opened = byName();
+            return opened instanceof Promise ? opened.catch(byHold) : opened;
+        }
+        catch (error) {
+            return byHold(error);
+        }
     };
     // A copy held at the session (residentHolds): its O_PATH open answers the
     // stat. A file that is not a copy's (large, a device) is opened through
