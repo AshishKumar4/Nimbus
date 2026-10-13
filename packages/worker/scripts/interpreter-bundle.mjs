@@ -99,8 +99,9 @@ function asCommonJs(esm, label) {
 
 /**
  * @param {{ start: string }} options  `start`: a directory @nimbus-sh/core resolves from.
- * @returns {Promise<{ primordials: string, parserModule: string, interpreter: string, ops: string, parser: string }>}
- *   `parserModule`: the parser module beside the interpreter; `parser`: acorn's module as the rewrite made it, before bundling.
+ * @returns {Promise<{ primordials: string, parserModule: string, interpreter: string, ops: string, parser: string, esmLate: string }>}
+ *   `parserModule`: the parser module beside the interpreter; `parser`: acorn's module as the rewrite made it, before bundling;
+ *   `esmLate`: the late graph's link (core runtime/esm-late-link.ts).
  */
 export async function bundleInterpreter({ start }) {
   const src = join(resolvePackageDir('@nimbus-sh/core', { start }), 'src/interpreter');
@@ -152,6 +153,8 @@ export async function bundleInterpreter({ start }) {
   if (typeof HOST_OPS_SOURCE !== 'string' || HOST_OPS_SOURCE.length === 0) {
     throw new Error('[interpreter-bundle] core src/interpreter/host-ops.ts has no HOST_OPS_SOURCE');
   }
+  // The late graph's link and Node's CommonJS lexer (core runtime/esm-late-link.ts): a module of its own.
+  const esmLate = await build({ ...common, entryPoints: [join(src, '../runtime/esm-late-link.ts')], format: 'esm' });
   const parserCommonJs = asCommonJs(parserModule.outputFiles[0].text, 'parser');
   const interpreterCommonJs = asCommonJs(interpreter.outputFiles[0].text, 'interpreter');
   const unexported = interpreterCommonJs.imports.filter((name) => !parserCommonJs.exports.includes(name));
@@ -162,5 +165,6 @@ export async function bundleInterpreter({ start }) {
     interpreter: interpreterCommonJs.text,
     ops: HOST_OPS_SOURCE,
     parser,
+    esmLate: asCommonJs(esmLate.outputFiles[0].text, 'esm-late').text,
   };
 }

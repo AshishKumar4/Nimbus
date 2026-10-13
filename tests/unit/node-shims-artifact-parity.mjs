@@ -42,6 +42,7 @@ const cases = [
   { name: 'NODE_LIB', source: 'generateNodeLibModule()', current: generateNodeLibModule() },
   { name: 'NODE_LIB_REST', source: 'generateNodeLibRestModule()', current: generateNodeLibRestModule() },
   { name: 'NODE_DNS', source: 'generateNodeDnsModule()', current: generateNodeDnsModule() },
+  { name: 'ESM_LATE', source: 'the late link bundle of core src', current: interpreter.esmLate },
   { name: 'NODE_REGISTRY', source: 'the registry bundle of core src', current: await bundleRegistry({ start: workerRoot }) },
 ];
 

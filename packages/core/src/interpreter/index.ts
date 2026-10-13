@@ -41,15 +41,11 @@ import {
 import { UnsupportedSyntax } from './unsupported.js';
 import { type ModuleRequest, programRequests } from './module-requests.js';
 import type { ModuleBindings } from '../runtime/esm-interop.js';
-import { type LateLinkHost, linkLateGraph } from '../runtime/esm-late-link.js';
 import { type InterpretedFrame, type StackUnit, stampStack, stackFrames } from './stack.js';
 
 export type { HostOps } from './host-ops.js';
 export { INTERPRETER_UNSUPPORTED, UnsupportedSyntax } from './unsupported.js';
 export { replLineBody } from './repl-line.js';
-// What only an interpreted module's imports need, carried here: the names
-// Node's loader finds in a CommonJS module, and the late graph's link.
-export { commonJsNames, starConflicts } from '../runtime/esm-late-link.js';
 export type { ModuleCell } from './modules.js';
 export type { ModuleRequest } from './module-requests.js';
 
@@ -217,11 +213,6 @@ export function moduleRequests(path: string, text: string, javaScript = false, g
     }
   }
   return { requests: programRequests(program) };
-}
-
-/** esm-late-link.ts linkLateGraph, reading each module with moduleRequests. */
-export function linkLate(host: LateLinkHost, key: string, url: string): number[] {
-  return linkLateGraph(host, moduleRequests, key, url);
 }
 
 /** moduleRequests' answer. */

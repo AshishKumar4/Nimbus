@@ -8,9 +8,9 @@
  * rejects and no body runs.
  *
  * node-shims gives the facts (LateLinkHost: the registry's rows, the
- * resolver, the files); this decides. The interpreter's runtime module
- * carries it, which every late graph loads anyway, so a launch that never
- * links one never compiles it.
+ * resolver, the files, the interpreter's reading of a module); this decides.
+ * It is a runtime module of its own (RUNTIME_ESM_LATE_MODULE, with Node's
+ * CommonJS lexer), so a launch whose imports never need it never compiles it.
  */
 
 import type { ModuleRequests } from '../interpreter/index.js';
@@ -71,10 +71,9 @@ export interface LateLinkHost {
   exportMessage(specifier: string, name: string, commonjs: boolean): string;
   /** `error` thrown as the loader's own (no arrow of the importer's). */
   decorate(error: Error): Error;
+  /** A module's requests and bindings, as the interpreter reads it with the loader's parse goal (interpreter/index.ts moduleRequests). */
+  requests(path: string, text: string, javaScript: boolean, goal: 'module' | 'commonjs' | 'detect'): ModuleRequests;
 }
-
-/** How the host reads a module's requests and bindings (interpreter/index.ts moduleRequests). */
-export type ReadRequests = (path: string, text: string, javaScript: boolean, goal: 'module' | 'commonjs' | 'detect') => ModuleRequests;
 
 /**
  * What a late module's static import loads, as the link reads its names: a
@@ -166,10 +165,10 @@ export function commonJsNames(host: LateLinkHost, key: string): readonly string[
  * staged modules it imports, in import order, for the caller to evaluate
  * before the interpreter does the rest.
  */
-export function linkLateGraph(host: LateLinkHost, read: ReadRequests, key: string, url: string): number[] {
+export function linkLateGraph(host: LateLinkHost, key: string, url: string): number[] {
   const order: number[] = [];
   const late: LateGraph = { modules: new Map(), rows: [] };
-  plan(host, read, key, url, new Set(), order, new Set(), late);
+  plan(host, key, url, new Set(), order, new Set(), late);
   checkBindings(host, late, url);
   return order;
 }
@@ -186,7 +185,7 @@ export function starConflicts(host: LateLinkHost, url: string): string[] {
   return names.filter((name) => resolveExport(host, late, target, name, new Set()) === AMBIGUOUS);
 }
 
-function plan(host: LateLinkHost, read: ReadRequests, key: string, url: string, seen: Set<string>, order: number[], checked: Set<number>, late: LateGraph): void {
+function plan(host: LateLinkHost, key: string, url: string, seen: Set<string>, order: number[], checked: Set<number>, late: LateGraph): void {
   if (seen.has(url)) return;
   seen.add(url);
   const staged = host.row('module', key);
@@ -194,7 +193,7 @@ function plan(host: LateLinkHost, read: ReadRequests, key: string, url: string, 
   if (text === null) return;
   // Read with the parse goal the loader gives it: an adopted staged module's, a module; another's, its format.
   const format = staged !== -1 ? 'module' : host.fileFormat(key);
-  const analysis = read(key, text, staged !== -1, format ?? 'detect');
+  const analysis = host.requests(key, text, staged !== -1, format ?? 'detect');
   // A module its parser could not read (a syntax error, TypeScript, JSX) is
   // loaded as the interpreter loads it, for that load's error, before any
   // body runs; a staged one is the launch's own to link.
@@ -234,10 +233,10 @@ function plan(host: LateLinkHost, read: ReadRequests, key: string, url: string, 
     // An unstaged module, or a query's or a fragment's instance (the interpreter's own): its closure is the late graph's too.
     if (id === -1 || search !== '' || hash !== '') {
       // What the interpreter loads as an ES module (a CommonJS module compiles when it evaluates, as Node's does).
-      if (resolution.format === 'module' || resolution.format === 'detect') plan(host, read, target, resolution.url, seen, order, checked, late);
+      if (resolution.format === 'module' || resolution.format === 'detect') plan(host, target, resolution.url, seen, order, checked, late);
       continue;
     }
-    checkLinks(host, read, id, seen, checked, late);
+    checkLinks(host, id, seen, checked, late);
     if (!order.includes(id)) order.push(id);
   }
 }
@@ -271,7 +270,7 @@ function lateTarget(host: LateLinkHost, resolution: LateResolution): LateTarget 
  * imported) is planned as the late graph's own. The graph's unevaluated
  * rows go to `late`.
  */
-function checkLinks(host: LateLinkHost, read: ReadRequests, id: number, seen: Set<string>, checked: Set<number>, late: LateGraph): void {
+function checkLinks(host: LateLinkHost, id: number, seen: Set<string>, checked: Set<number>, late: LateGraph): void {
   const visit = (at: number): void => {
     if (checked.has(at)) return;
     checked.add(at);
@@ -286,7 +285,7 @@ function checkLinks(host: LateLinkHost, read: ReadRequests, id: number, seen: Se
       if (missing === null) continue;
       if ('refusal' in missing) throw missing.refusal;
       const handed = new URL(missing.handedOn);
-      plan(host, read, decodeURIComponent(handed.pathname).replace(/^\/+/, ''), missing.handedOn, seen, [], checked, late);
+      plan(host, decodeURIComponent(handed.pathname).replace(/^\/+/, ''), missing.handedOn, seen, [], checked, late);
     }
   };
   visit(id);
