@@ -5978,6 +5978,9 @@ export class FacetManager {
             const admitted = admission.queued ? await takeCached() : null;
             if (admitted)
                 return { state: admitted, shared: null };
+            // It builds the filesystem as it is now, read again after its wait: a
+            // launch of its key arriving at that revision joins it.
+            inProgress.revision = revision;
             const readProfile = this.readProfile;
             const offered = [];
             const learnedFor = readProfile === null ? undefined : async (closure) => {
@@ -6095,6 +6098,10 @@ export class FacetManager {
             // What a launch of this key waiting for this build takes: a state of its own, released by it alone.
             return { state: vfsState, shared: { state: { ...vfsState }, revision } };
         };
+        // This build as launches of its key find it (prefetchBuilds), at the revision it reads.
+        const inProgress = {
+            revision, leader: entry.pid, done: Promise.resolve(null),
+        };
         // Its helpers wait for a worker as its process (withLaunchPreparation): a wait nothing can satisfy is one the ledger tells.
         const building = withLaunchPreparation(this.ctx, { pid: entry.pid }, async () => {
             // Held from the moment it is taken: the detector names its holders (_creditHolders).
@@ -6108,7 +6115,7 @@ export class FacetManager {
                 throw error;
             }
         });
-        const inProgress = { revision, leader: entry.pid, done: building.then((built) => built.shared, () => null) };
+        inProgress.done = building.then((built) => built.shared, () => null);
         if (shared)
             this.prefetchBuilds.set(key, inProgress);
         try {
