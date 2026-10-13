@@ -1185,13 +1185,14 @@ const __fsMod = (() => {
     if (tree) for (const key of [..._pendingModes]) if (key.startsWith(prefix)) _pendingModes.delete(key);
   }
 
+  /** A rename's: placed anew under the new names, owned by the rename until it is acknowledged. */
   function _moveLocalAttrs(oldK, newK) {
     const prefix = oldK + "/";
     for (const attrs of [_localModes, _localTimes]) {
       for (const [key, entry] of [...attrs]) {
         if (key !== oldK && !key.startsWith(prefix)) continue;
         attrs.delete(key);
-        attrs.set(newK + key.slice(oldK.length), entry);
+        _setLocalAttr(attrs, newK + key.slice(oldK.length), entry.value, true);
       }
     }
     for (const key of [..._pendingModes]) {
@@ -1200,34 +1201,31 @@ const __fsMod = (() => {
       _pendingModes.add(newK + key.slice(oldK.length));
     }
   }
-  /** \`extra.settled\`: answered already; else the next queued mutation settles it. "absentTree" drops the entries beneath. */
+  /**
+   * Who settles the entry: \`extra.settled\`, answered already; \`extra.landing\`,
+   * its bytes' landing (__nimbusVfsWriteLanded); else the next queued
+   * mutation, the structural operation placing it, which owns every name it
+   * places until its own acknowledgement. "absentTree" drops the entries beneath.
+   */
   function _nsOwnSet(k, state, extra) {
+    const before = _nsOwn.get(k);
     const entry = {
       state, from: extra?.from, link: extra?.link, target: extra?.target, hide: !!extra?.hide, mode: extra?.mode,
       settled: extra?.settled ? _barrierBegins : null,
       word: null,
     };
     entry.word = _nsWordOf(entry);
-    if (!_nsOwnPut(k, entry)) return;
-    if (state === "absentTree") _nsOwnDropBeneath(k);
-    if (!extra?.settled && state !== "file") _nsFresh.push(entry);
-  }
-  /**
-   * An entry kept under \`k\`: a new one, or one a rename moves, which keeps
-   * its identity and with it its settlement. False when the store has sealed
-   * the view: the structural operation still reaches its authority, as
-   * aborting midway would strand earlier entries with no mutation to retire
-   * them.
-   */
-  function _nsOwnPut(k, entry) {
-    const before = _nsOwn.get(k);
     try { __resident.namespace.overlayDelta(_nsOwnCost(k, entry) - (before ? _nsOwnCost(k, before) : 0)); }
     catch (error) {
-      if (__resident.admission.inHeap && error?.code === "ENOSPC") return false;
+      // The view is sealed by the store. Let the already-projected structural
+      // operation reach its authority/ack; aborting midway would strand
+      // earlier overlays with no owning mutation to retire them.
+      if (__resident.admission.inHeap && error?.code === "ENOSPC") return;
       throw error;
     }
     _nsOwn.set(k, entry);
-    return true;
+    if (state === "absentTree") _nsOwnDropBeneath(k);
+    if (!extra?.settled && !extra?.landing) _nsFresh.push(entry);
   }
   function _nsOwnDrop(k, entry) {
     _nsOwn.delete(k);
@@ -1483,7 +1481,7 @@ const __fsMod = (() => {
     // Known absent: the namespace names everything this credential can see,
     // except on a mount where the launch did not list it, which is unknown.
     if (_statLadder(absPath) !== undefined || _nsUnlisted(absPath, true, false) !== null) return;
-    _nsOwnSet(k, "file", { mode });
+    _nsOwnSet(k, "file", { mode, landing: true });
   }
   /**
    * The permission bits a call that may create a file asks for (its \`mode\`
@@ -4814,11 +4812,9 @@ const __fsMod = (() => {
     const replaced = _nsOwn.get(newN);
     if (replaced) _nsOwnDrop(newN, replaced);
     _nsOwnDropBeneath(newN);
-    // Each keeps its identity under the new name. One not settled yet
-    // settles with the move too: the authority takes the move after all that
-    // was queued beneath the old name.
+    // Placed anew, the rename's own: what an earlier mutation settles is the old placement.
     for (const [key, entry] of ownMoved) {
-      if (_nsOwnPut(key, entry) && entry.settled === null) _nsFresh.push(entry);
+      _nsOwnSet(key, entry.state, { from: entry.from, link: entry.link, target: entry.target, hide: entry.hide, mode: entry.mode });
     }
     if ((nsFrom !== null || movedLink !== undefined) && !_nsOwn.has(newN)) _nsOwnSet(newN, "alias", { from: nsFrom ?? undefined, link: movedLink });
     _nsOwnSet(oldN, "absentTree");
