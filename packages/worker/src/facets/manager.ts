@@ -36,7 +36,7 @@ import {
 import { moduleImporterUrl } from '@nimbus-sh/core/_shared/module-importer.js';
 import { isTypescriptDeclarationFile, stripsTypeScript } from '@nimbus-sh/core/_shared/typescript-specifiers.js';
 import { ReadAheadBudget, STDIN_SYNC_READ_BYTES, type ReadAheadAccount } from '@nimbus-sh/core/runtime/stdin-read.js';
-import { execIdField, type ProcessEntry, type ProcessRestart } from '@nimbus-sh/core/runtime/process-table.js';
+import { execIdField, parseExecId, type ProcessEntry, type ProcessRestart } from '@nimbus-sh/core/runtime/process-table.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { exitCodeForSignal, type SignalAbortReason } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { createNodeFacetRuntime, fetchNodeFacetSources, nodeFacetSource, type NodeFacetSources } from '../runtime/node-shims-artifact.js';
@@ -211,7 +211,7 @@ import { LEDGER_ROW_BYTES } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { ONE_SHOT_STORE_MEMORY_BYTES, RESIDENT_CHUNK_BYTES } from '../vfs/facet-resident-limits.js';
 import { residentCellCost } from '../vfs/resident/cell-cost.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
-import { CRED_KERNEL, isNativeBinPath, launchNamedPaths } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_KERNEL, isNativeBinPath, launchNamedPaths, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { streamedWasmImageDigest, wasmImageDigest, type WasmImageRecord } from './wasm-image-digest.js';
@@ -5201,6 +5201,12 @@ export interface LongRunningWorkerSpawnOptions {
   port?: number;
   /** The process whose command starts this one: its parent, whose credential and exec id it takes. Never journalled. */
   invokerPid?: number;
+  /**
+   * Who the process is when no invoker says: the argv its identity derives
+   * from, the credential it runs as and its exec id (a dev server restored
+   * from what it persisted). Exclusive with `invokerPid` and `resident`.
+   */
+  identity?: { argv: string[]; cred: VfsCred; execId?: string };
   /** Inline modules: source text, or small wasm carried by value. */
   modules?: Record<string, string | { wasm: ArrayBuffer }>;
   /**
@@ -5226,6 +5232,8 @@ export interface LongRunningWorkerSpawnOptions {
   compatibilityFlags?: string[];
   compatibilityDate?: string;
   env?: ResidentCodeSpec['env'];
+  /** Live bindings beside the process's own SUPERVISOR (ResidentCodeSpec.bindings); exclusive with `env` and `durable`. */
+  bindings?: ResidentCodeSpec['bindings'];
   globalOutbound?: ResidentCodeSpec['globalOutbound'];
   /** Forwarded verbatim to the runner's startProcess. */
   startArgs?: unknown;
@@ -5380,13 +5388,16 @@ interface ResidentLaunchRecord extends FencedWorkRecord {
   cred?: VfsCred;
 }
 
-/** Who a re-driven launch runs as: what its journal row carries in place of the invoker it no longer has. */
-/** Who a re-driven launch runs as, and what it restarts. */
-interface RedrivenIdentity {
+/**
+ * Who a launch runs as in place of an invoker: a re-drive's journal row, which
+ * also names what it restarts, or what a caller restores (a dev server's
+ * persisted identity).
+ */
+interface LaunchIdentity {
   cred: VfsCred;
   execId?: string;
   /** The process the session lost when it restarted, and what it was doing then. */
-  restart: { from: ProcessRestart; doing: string };
+  restart?: { from: ProcessRestart; doing: string };
 }
 
 export type ResidentRestartPolicy = 'never' | 'on-failure';
@@ -8546,7 +8557,7 @@ export class FacetManager {
       // Reported through onRedriveFailed, and the row is superseded.
       throw new Error('its journal entry predates the credential a re-drive runs under, so it is not started as anyone else');
     }
-    const identity: RedrivenIdentity = {
+    const identity: LaunchIdentity = {
       cred: record.cred,
       ...(record.execId === undefined ? {} : { execId: record.execId }),
       restart: {
@@ -8597,17 +8608,19 @@ export class FacetManager {
    * never holds one): it runs as the row says, records the process it
    * restarts and why, and says so as its first line of output. The terminal
    * a session's restart disconnected is not where the user looks for it.
+   * A restored launch runs as its identity says, and restarts nothing.
    */
   private _spawnLaunchEntry(
     command: string,
     argv: string[],
     cwd: string,
     invokerPid: number | undefined,
-    redriven: RedrivenIdentity | undefined,
+    who: LaunchIdentity | undefined,
   ): ProcessEntry {
-    if (redriven === undefined) return this.processes.spawn(command, argv, cwd, { parentPid: invokerPid });
-    const { restart, ...identity } = redriven;
-    const entry = this.processes.spawn(command, argv, cwd, { ...identity, restartedFrom: restart.from });
+    if (who === undefined) return this.processes.spawn(command, argv, cwd, { parentPid: invokerPid });
+    const { cred, execId, restart } = who;
+    const entry = this.processes.spawn(command, argv, cwd, { cred, execId, ...(restart === undefined ? {} : { restartedFrom: restart.from }) });
+    if (restart === undefined) return entry;
     const why = restart.from.cause === 'exited'
       ? `"${command}" exited with code ${restart.from.exitCode}, so it was restarted (restart on-failure)`
       : restart.from.cause === 'host-reset'
@@ -8643,7 +8656,7 @@ export class FacetManager {
     code: string,
     opts: ResidentSpawnOptions,
     attempt: number,
-    redriven?: RedrivenIdentity,
+    redriven?: LaunchIdentity,
   ): Promise<{ pid: number }> {
     await this.processes.reap();
     const command = opts.command || (opts.filename ? `node ${opts.filename}` : 'node <script>');
@@ -9228,15 +9241,25 @@ export class FacetManager {
     cwd: string,
     opts: LongRunningWorkerSpawnOptions,
     attempt: number,
-    redriven?: RedrivenIdentity,
+    redriven?: LaunchIdentity,
   ): Promise<SpawnedWorker> {
+    if (opts.identity !== undefined && (opts.invokerPid !== undefined || opts.resident !== undefined)) {
+      throw new Error('Nimbus: spawnWorker identity is exclusive with invokerPid and resident');
+    }
+    if (opts.bindings !== undefined && (opts.env !== undefined || opts.durable !== undefined || opts.resident !== undefined)) {
+      throw new Error('Nimbus: spawnWorker bindings go beside the default env: not with an explicit env, nor on a journalled launch, which could not re-mint them');
+    }
+    const identity = opts.identity === undefined ? undefined : {
+      cred: requireVfsCred(opts.identity.cred, 'spawnWorker identity'),
+      ...(opts.identity.execId === undefined ? {} : { execId: parseExecId(opts.identity.execId) }),
+    };
     if (opts.resident && !opts.durable) {
       opts = { ...opts, durable: { owner: await deriveResidentOwner(cwd, opts.resident.argv) } };
     }
     await this.processes.reap();
     // The table entry carries the same argv the identity is derived from, so
     // a runtime resident reads the same way through either path.
-    const entry = this._spawnLaunchEntry(command, opts.resident?.argv ?? [], cwd, opts.invokerPid, redriven);
+    const entry = this._spawnLaunchEntry(command, opts.identity?.argv.map(String) ?? opts.resident?.argv ?? [], cwd, opts.invokerPid, redriven ?? identity);
     // Stamp the process-table entry so /api/processes exposes this as a
     // long-running process.
     this.processes.setLongRunning(entry.pid);
@@ -9373,6 +9396,7 @@ export class FacetManager {
             vfsWasmModules: opts.vfsWasmModules,
             ...(opts.vfsTextModules !== undefined ? { vfsTextModules: opts.vfsTextModules } : {}),
             ...(opts.env !== undefined || launchEnv !== undefined ? { env: { ...opts.env, ...launchEnv } } : {}),
+            ...(opts.bindings !== undefined ? { bindings: opts.bindings } : {}),
             ...(opts.globalOutbound !== undefined ? { globalOutbound: opts.globalOutbound } : {}),
           },
         },

@@ -42,7 +42,7 @@ import { makeNimbusVerbHandler } from '@nimbus-sh/core/runtime/nimbus-command.js
 
 /** Internal runtime services; callers use composeHostedRuntime, not this recipe. */
 export type RuntimeCommandHost = Pick<SessionInternal,
-  '_emitShellExecDone' | '_setCpRegistry' | '_viteShimPid' | '_viteShimPort' | 'cirrusReal' | 'ensureFacetManager' | 'ensureNpmInstaller' | 'ensureSqliteFs' | 'esbuildService' | 'nimbusWrangler' | 'npmInstaller' | 'portRegistry' | 'processes' | 'sessionBasePath' | 'terminal' | 'viteBasePath' | 'viteDevServer' | 'wranglerAliasBannerShown'
+  '_emitShellExecDone' | '_setCpRegistry' | '_viteShimPid' | '_viteShimPort' | 'cirrusReal' | 'ensureFacetManager' | 'facetManager' | 'ensureNpmInstaller' | 'ensureSqliteFs' | 'esbuildService' | 'nimbusWrangler' | 'npmInstaller' | 'portRegistry' | 'processes' | 'sessionBasePath' | 'terminal' | 'viteBasePath' | 'viteDevServer' | 'wranglerAliasBannerShown'
 > & {
   readonly ctx: DurableObjectState;
   readonly env: RuntimeCatalogEnv;
@@ -82,15 +82,11 @@ export async function registerHostedCommands(self: RuntimeCommandHost, workspace
       if (signalDisposition(signal) !== 'terminate') return 'unsupported';
       // runtime primitive support (P11): the vite shim PID (registered by
       // P5's long-running spawn) also tears down the in-process
-      // viteDevServer / cirrusReal — facetManager.kill only handles real
-      // Worker-Loader facets, and would leave the shim running with its port
-      // registered against a dead PID.
+      // viteDevServer — facetManager.kill only handles real Worker-Loader
+      // facets, and would leave the shim running with its port registered
+      // against a dead PID.
       if (self._viteShimPid === pid) {
         try {
-          if (self.cirrusReal?.isRunning) {
-            self.cirrusReal.stop(self.ctx);
-            self.cirrusReal = null;
-          }
           if (self.viteDevServer?.isRunning) {
             self.viteDevServer.stop();
             self.viteDevServer = null;

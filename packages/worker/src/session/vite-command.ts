@@ -370,9 +370,7 @@ export function createViteCommand(self: ViteHost) {
     if (args[0] === 'stop') {
       let stopped = false;
       if (self.cirrusReal?.isRunning) {
-        self.cirrusReal.stop(self.ctx);
-        self.cirrusReal = null;
-        stopped = true;
+        stopped = self.facetManager.kill(self.cirrusReal.pid, 'TERM');
       }
       if (self.viteDevServer?.isRunning) {
         self.viteDevServer.stop();
