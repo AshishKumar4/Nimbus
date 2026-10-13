@@ -288,7 +288,8 @@ export declare function claimAdmission(ctx: object, pid?: number): EndLoaderFetc
  * transform facet, the esbuild facet, the build facet): within an admitted
  * launch it is that launch's worker (beginAdmittedFetch); otherwise it waits
  * its turn on the ledger, joining at once when that worker is already in
- * flight, as the process whose preparation it is (withLaunchPreparation).
+ * flight, as the process whose preparation it is (withLaunchPreparation, or
+ * a launch whose admission is given back while it prepares again).
  * End the hold from the caller's own `finally`, as beginLoaderFetch's.
  */
 export declare function beginHelperFetch(ctx: object, workerKey: string): Promise<EndLoaderFetch>;
