@@ -85,8 +85,16 @@ diff -r a/lib/sh/timers.c b/lib/sh/timers.c
  
 diff -r a/unwind_prot.c b/unwind_prot.c
 --- a/unwind_prot.c	2021-12-22 09:49:36.000000000 -0600
-+++ b/unwind_prot.c	2026-10-13 00:11:22.516480793 -0500
-@@ -99,9 +99,20 @@
++++ b/unwind_prot.c	2026-10-13 00:47:45.414383671 -0500
+@@ -46,6 +46,7 @@
+ #include "command.h"
+ #include "general.h"
+ #include "unwind_prot.h"
++#include "bashjmp.h"	/* Nimbus: procenv_t, for unwind_protect_procenv */
+ #include "sig.h"
+ #include "quit.h"
+ #include "bashintl.h"	/* for _() */
+@@ -99,9 +100,20 @@
  #define uwpfree(elt)	free(elt)
  #else
  #define uwpalloc(elt)	ocache_alloc (uwcache, UNWIND_ELT, elt)
@@ -108,7 +116,7 @@ diff -r a/unwind_prot.c b/unwind_prot.c
  void
  uwp_init ()
  {
-@@ -253,11 +264,17 @@
+@@ -253,11 +265,17 @@
  clear_unwind_protects_internal (flag, ignore)
       char *flag, *ignore;
  {
@@ -126,7 +134,7 @@ diff -r a/unwind_prot.c b/unwind_prot.c
    unwind_protect_list = (UNWIND_ELT *)NULL;
  }
  
-@@ -322,6 +339,8 @@
+@@ -322,6 +340,8 @@
  	{
  	  if (elt->head.cleanup == (Function *) restore_variable)
  	    restore_variable (&elt->sv.v);
@@ -135,7 +143,7 @@ diff -r a/unwind_prot.c b/unwind_prot.c
  	  else
  	    (*(elt->head.cleanup)) (elt->arg.v);
  	}
-@@ -353,6 +372,42 @@
+@@ -353,6 +373,42 @@
    unwind_protect_list = elt;
  }
  
