@@ -252,6 +252,13 @@ async function sessionDescriptors(p) {
   return live;
 }
 
+await check('a refused open of a file too large for a copy leaves no descriptor at the session', async () => {
+  const p = await processWith({ 'big.bin': 'x'.repeat(2 << 20) }, { session: true });
+  await p.kernel.chmod('/home/user/big.bin', 0);
+  for (let i = 0; i < 3; i++) assert.equal(await p.openErrno('home/user/big.bin'), E.ACCES);
+  assert.deepEqual(await sessionDescriptors(p), []);
+});
+
 await check('a copy holds nothing at the session until its process takes the name away; then its last descriptor lets the hold go', async () => {
   const p = await processWith({ 'u.txt': 'old' }, { session: true });
   const fd = await p.open('home/user/u.txt');

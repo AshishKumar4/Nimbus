@@ -40,6 +40,8 @@ const cases = [
   { script: 'printf old >/tmp/r; exec 4</tmp/r; printf new >/tmp/r; cat /dev/fd/4', stdout: 'new', exitCode: 0 },
   { script: 'printf x >/tmp/m; exec 4</tmp/m; chmod 000 /tmp/m; cat /dev/fd/4 2>/dev/null || echo denied', stdout: 'denied\n', exitCode: 0 },
   { script: 'printf old >/tmp/u; exec 4</tmp/u; rm /tmp/u; if printf changed >/dev/fd/4; then echo reopened; else echo failed; fi; cat /dev/fd/4', stdout: 'reopened\nchanged', exitCode: 0 },
+  // An unlinked file read, written, and read again through /dev/fd: its second read is the write's, not a copy of the first.
+  { script: 'printf old >/tmp/f; exec 4</tmp/f; rm /tmp/f; read -r -n 3 a </dev/fd/4; printf new >/dev/fd/4; read -r -n 3 b </dev/fd/4; echo "$a:$b"', stdout: 'old:new\n', exitCode: 0 },
   // Stat'd, it is that file's: its mode, by an absolute name or one relative to the cwd.
   { script: 'printf data >/tmp/p; chmod 400 /tmp/p; exec 4</tmp/p; stat -Lc %a /dev/fd/4', stdout: '400\n', exitCode: 0 },
   { script: 'cd /; printf d >/tmp/g; chmod 640 /tmp/g; exec 4</tmp/g; stat -Lc %a ./dev/fd/4', stdout: '640\n', exitCode: 0 },
