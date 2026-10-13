@@ -20,11 +20,6 @@ import assert from 'node:assert/strict';
 
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
-import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
-import { createDefaultRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
-import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
-import { ProcessRegistry } from '../../packages/core/src/substrate/lifo/shell/ProcessRegistry.ts';
-import { Shell } from '../../packages/core/src/substrate/lifo/shell/Shell.ts';
 import { exitCodeForSignal } from '../../packages/core/src/substrate/lifo/shell/signals.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
@@ -33,10 +28,11 @@ import { importWorkerBundle } from './lib/worker-bundle.mjs';
 const decoder = new TextDecoder();
 
 {
-  const { NimbusSession, SessionFilesystem, bindRuntimeServices } = await importWorkerBundle({
+  const { NimbusSession, SessionFilesystem, bindRuntimeServices, NimbusWorkspace } = await importWorkerBundle({
     'packages/worker/src/session/nimbus-session.ts': ['NimbusSession'],
     'packages/worker/src/session/session-filesystem.ts': ['SessionFilesystem'],
     'packages/worker/src/hosted/services.ts': ['bindRuntimeServices'],
+    'packages/core/src/workspace/nimbus-workspace.ts': ['NimbusWorkspace'],
   });
 
   const harness = createSqliteVfsTestHarness();
@@ -50,14 +46,12 @@ const decoder = new TextDecoder();
     rootVfs.chown(dir, 1000, 1000);
   }
 
-  const registry = createDefaultRegistry();
-  registerUnixCommands(registry, rawVfs);
   const launched = [];
-  registry.register('node', async (ctx) => {
+  const node = async (ctx) => {
     launched.push(ctx.args.join(' '));
     ctx.stdout.write('node ran\n');
     return 0;
-  });
+  };
 
   const processes = new SessionProcessSupervisor();
   const parent = processes.spawn('node', ['parent.js'], '/home/user');
@@ -70,9 +64,12 @@ const decoder = new TextDecoder();
   const session = Object.create(NimbusSession.prototype);
   session.ctx = { facets: {} };
   session.env = {};
-  Object.assign(session, bindRuntimeServices(session, {
+  const services = bindRuntimeServices(session, {
     ctx: session.ctx, env: session.env, notify() {}, async requestLaunchTurn() { return true; },
-  }));
+  });
+  const { childProcessHost, ...delegated } = services;
+  Object.defineProperty(session, 'childProcessHost', { value: childProcessHost });
+  Object.assign(session, delegated);
   session.processes = processes;
   session.filesystem = new SessionFilesystem(rawVfs, session);
   session.terminal = terminal;
@@ -84,7 +81,7 @@ const decoder = new TextDecoder();
   const manager = {
     setVfs() {},
     kill(pid, signal) {
-      sessionKills.push({ pid, signal, brokerStillRunning: session.facetProcessManager.isRunning(pid) });
+      sessionKills.push({ pid, signal, brokerStillRunning: session.childProcessManager.isRunning(pid) });
       const code = exitCodeForSignal(signal);
       if (!processes.kill(pid, code)) return false;
       session._reportExternalExit(pid, code, `SIG${signal}`);
@@ -92,24 +89,15 @@ const decoder = new TextDecoder();
     },
   };
   session.facetManagerComposed = { manager, apps: {}, pumpLaunches: async () => {} };
-  session.facetProcessManager = null;
+  session.childProcessManager = null;
   session.esbuildService = null;
-  session._setCpRegistry(registry);
-  const shellVfs = new ProcessFiles(rawVfs);
-  const sessionCred = processes.cred(parent.pid);
-  const shellFor = (pid, state) => {
-    const shell = new Shell(terminal, shellVfs, registry, { ...session.shell.getEnv(), ...state.env, $: String(pid) }, new ProcessRegistry(), {
-      pid, get cred() { return processes.cred(pid); }, setUmask: (mask) => processes.setUmask(pid, mask),
-    });
-    shell.setCwd(state.cwd);
-    return shell;
-  };
-  session.shell = new Shell(terminal, shellVfs, registry, { HOME: '/home/user', PATH: '/bin:/usr/bin' }, new ProcessRegistry(), {
-    pid: parent.pid, cred: sessionCred, setUmask: (mask) => { processes.setUmask(parent.pid, mask); },
-  });
-  session.shell.setCwd('/home/user');
-  // NimbusWorkspace.shellFor, over this harness's shell.
-  session.runtimeWorkspace = { shellFor };
+  session.runtimeWorkspace = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx,
+    vfs: rawVfs, filesystem: session.getFilesystemAuthority(), processes, childProcesses: childProcessHost, cwd: '/home/user' });
+  session.runtimeWorkspace.registry.register('node', node);
+  const registry = session.runtimeWorkspace.registry;
+  session._setCpRegistry(session.runtimeWorkspace.registry);
+  session.shell = session.runtimeWorkspace.shell;
+  assert.equal(session._ensureChildProcessManager(), session.runtimeWorkspace.children, 'the session delegates to the workspace-owned broker');
 
   const spawn = async (command, args, { env = {}, cwd = '/home/user' } = {}) => (await session._rpcCpSpawn({
     command, args, env, cwd, stdio: ['pipe', 'pipe', 'pipe'], parentPid: parent.pid,
@@ -121,6 +109,10 @@ const decoder = new TextDecoder();
     const output = await session._rpcCpDrainOutput(childPid);
     return { exitCode: waited.exitCode, signal: waited.signal, stdout: decoder.decode(output.stdout), stderr: decoder.decode(output.stderr) };
   };
+  session._setCpRegistry(null);
+  const earlyShell = await spawn('sh', ['-c', 'echo EARLY']);
+  assert.equal((await collect(earlyShell)).stdout, 'EARLY\n', 'a shell plan does not depend on the hosted registry being attached');
+  session._setCpRegistry(registry);
   await assert.rejects(spawn('does-not-exist-byte-test', []), error => error.code === 'ENOENT', 'command resolution fails the spawn, not a child exit 127');
   rootVfs.writeFile('home/user/no-exec-byte-test', '#!/bin/sh\ncat\n', { mode: 0o644 });
   await assert.rejects(spawn('/home/user/no-exec-byte-test', []), error => error.code === 'EACCES', 'a nonexecutable path fails the spawn');
@@ -139,6 +131,7 @@ const decoder = new TextDecoder();
   });
   {
     const pid = await spawn('byte-duplex', []);
+    assert.equal(session.runtimeWorkspace.children.isChild(pid), true, 'session spawns are owned by the workspace broker');
     let seq = 0;
     for (const bytes of [new Uint8Array([0xff, 0xfe, 0x00, 0x80]), new Uint8Array([0xc3, 0x28, 0xf0, 0x9f, 0x00])]) {
       assert.equal((await session._rpcCpStdinWrite(pid, bytes)).ok, true);

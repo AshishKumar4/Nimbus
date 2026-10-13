@@ -42,6 +42,7 @@ import { LearnedServers } from './server-hints.js';
 import type { ServerIdentity } from '@nimbus-sh/core/runtime/server-launch.js';
 import { StdinTaken } from '../runtime/stop-replay-host.js';
 import { type ReplayLaunch } from '../runtime/stop-replay-contracts.js';
+import { ReplaySessions } from '../runtime/replay-session.js';
 import type { ProcessInputPacket } from '@nimbus-sh/core/runtime/process-input.js';
 import { type ProcessHostFactory, type ResidentCodeSpec, type Supervise } from '@nimbus-sh/fabric/process-fabric.js';
 import { ProcessJournals } from '../session/process-journals.js';
@@ -1258,16 +1259,8 @@ export declare class FacetManager {
     private readonly outputGates;
     /** Per stdin channel of a process that can stop: what its current run took (stdinTakenBy). */
     private readonly stdinTaken;
-    /** Per process that can stop: what each of its runs was answered (journalCall). */
-    private readonly journals;
-    /**
-     * Connections a process that can stop opened through the session, by the
-     * token its socket names (netTls, outboundCall): where to, and the upgrade
-     * rendezvous between the guest asking and the outbound doing it.
-     */
-    private readonly netTargets;
-    /** A live fetch the outbound is making for a journaled answer: its result, by ticket. */
-    private readonly fetchTickets;
+    /** Per process that can stop: its journal, its connections and live fetches, across its runs (runtime/replay-session.ts). */
+    readonly replay: ReplaySessions;
     /**
      * The content-addressed boot-image store (fabric's image-store.ts),
      * writing through this session's kernel-credentialed VFS and rooted off the
@@ -1891,46 +1884,6 @@ export declare class FacetManager {
      * and a read by a stopped run takes nothing); undefined for any other channel.
      */
     stdinTakenBy(pid: number): StdinTaken | undefined;
-    /**
-     * A supervisor call from a process, answered through \`dispatch\`: for one
-     * that can stop, through its journal (runtime/stop-replay.ts ReplayJournal),
-     * which counts what it does outside itself and checks what a run after a
-     * stop is answered against the run before it.
-     */
-    journalCall(op: string, args: readonly unknown[] | undefined, pid: number | undefined, run: string | undefined, dispatch: () => Promise<unknown>): Promise<unknown>;
-    /** Whether this bound run is still recording: cache reads must not fill shared stores. */
-    journalRecording(pid: number | undefined, run: string | undefined): boolean;
-    stdinPrepared(pid: number, run: string | undefined): void;
-    cacheResult(pid: number, run: string | undefined, ticket: string, result: {
-        value?: unknown;
-        failure?: unknown;
-        failed?: boolean;
-    }): Promise<void>;
-    /** The run after a stop reached the read the run before it stopped at. */
-    replayBoundary(pid: number, run: string | undefined): Promise<void>;
-    /**
-     * A process that can stop opening a TLS connection through the session
-     * (\`open\`: where to; the outbound proxies it), and asking for its upgrade
-     * (\`upgrade\`: answered once the outbound has made the TLS session with the
-     * server). Opening one is something a second run would do again.
-     */
-    netTls(pid: number, run: string | undefined, action: string, token: string, payload: Record<string, unknown> | undefined): Promise<unknown>;
-    /**
-     * The outbound side of a process's network (SupervisorRPC.fetch/connect,
-     * the globalOutbound of a run that can stop):
-     *   effect(what)            a request that is not a read, a plain connection
-     *   fetch(key, what)        a read: { replay: response } or { live: ticket }
-     *   fetched(ticket, result) what the live read got; answered when the
-     *                           program may have it
-     *   connect(token)          where a TLS connection goes
-     *   awaitUpgrade(token)     resolves when the guest asks for the TLS session
-     *   upgraded(token, result) whether the outbound made it
-     */
-    outboundCall(pid: number, run: string | undefined, action: string, payload: Record<string, unknown> | undefined): Promise<unknown>;
-    private _startFetchBody;
-    private _netTarget;
-    /** A process ended: its connections' names are forgotten and their waits answered. */
-    private _dropNetTargets;
     /**
      * Feed a pipe to `pid`'s input channel as it arrives, a chunk at a time:
      * a full queue waits for the program to read, and the pipe's end ends the

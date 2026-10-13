@@ -14,7 +14,8 @@
  * answer is waited for first, so the guest parks on a settled promise). On
  * one that cannot, they wait for the answer, holding this thread, as the
  * same-isolate supervisor answered at once; its synchronous view's methods
- * always wait.
+ * always wait. Background child-process calls use promises on either host,
+ * so following a child's output cannot hold the parent before it writes stdin.
  */
 
 import { joinRealm } from './realm-guest.js';
@@ -70,17 +71,16 @@ const own = (value: unknown): unknown => {
 };
 
 /** The supervisor's methods (or its synchronous view's), each a call to the host. */
-function view(name: SupervisorView, methods: readonly string[]): Record<string, (...args: unknown[]) => unknown> {
-  const call = name === 'supervisor' && parking === 'jspi' ? joined.callAsync : joined.call;
-  return Object.fromEntries(methods.map((method) => [
-    method,
-    (...args: unknown[]) => call({ op: 'supervisor', view: name, method, args: args.map(own) }),
-  ]));
+function view(name: SupervisorView, methods: readonly string[], asynchronous: readonly string[] = []): Record<string, (...args: unknown[]) => unknown> {
+  return Object.fromEntries(methods.map((method) => {
+    const call = name === 'supervisor' && (parking === 'jspi' || asynchronous.includes(method)) ? joined.callAsync : joined.call;
+    return [method, (...args: unknown[]) => call({ op: 'supervisor', view: name, method, args: args.map(own) })];
+  }));
 }
 const bindings: FacetBindings = supervisor
   ? {
       SUPERVISOR: {
-        ...view('supervisor', supervisor.methods),
+        ...view('supervisor', supervisor.methods, supervisor.asynchronous),
         ...(supervisor.synchronous ? { synchronous: view('synchronous', supervisor.synchronous) } : {}),
       },
     }

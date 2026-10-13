@@ -23,7 +23,7 @@ tests.coverage = async () => {
 function bound(journal, bucket) {
   const ctx = { props: { doId: 's', pid: 7, writerId: 'a' } };
   const host = { env: { NPM_PACKUMENT_CACHE: bucket, NPM_TARBALL_CACHE: bucket },
-    facetManager: { journalRecording: () => journal.recording, cacheResult: (_pid, run, ticket, result) => journal.externalResult(ticket, result, run) },
+    facetManager: { replay: { cacheResult: (_pid, run, ticket, result) => journal.externalResult(ticket, result, run) } },
   };
   const methods = { getPackument: '_rpcGetPackument', getCachedTarball: '_rpcGetCachedTarball', putCachedTarball: '_rpcPutCachedTarball', cacheResult: '_rpcCacheResult' };
   const env = { ...host.env, NIMBUS_SESSION: { idFromName: (id) => id, idFromString: (id) => id, get: () => ({

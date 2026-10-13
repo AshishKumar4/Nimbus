@@ -416,7 +416,7 @@ through these boundaries instead of creating new owners with overlapping state.
 
 | Completion area | Reuse as source of truth | Current role | Completion work |
 |---|---|---|---|
-| Process and PTY | `SessionProcessSupervisor` over `ProcessTable`, `ProcessLogStore`, `ProcessInputStore`, `process-logs-api.ts`, `FacetProcessManager`, `node-shims.ts` child process RPC | One supervisor facade owns PID lifecycle, logs, input packets, process terminals, child-process broker, and attached npm-bin processes; all callers route through it | Add process groups, controlling TTY, raw/cooked mode, durable process metadata, and attach/detach replay on the facade's stage-2 seams |
+| Process and PTY | `SessionProcessSupervisor` over `ProcessTable`, `ProcessLogStore`, `ProcessInputStore`, `process-logs-api.ts`, `ChildProcessManager` (core, one for the worker and local hosts), `node-shims.ts` child process RPC | One supervisor facade owns PID lifecycle, logs, input packets, process terminals, child-process broker, and attached npm-bin processes; all callers route through it | Add process groups, controlling TTY, raw/cooked mode, durable process metadata, and attach/detach replay on the facade's stage-2 seams |
 | Filesystem | `SqliteVFS`, `RuntimeFsBridge`, `SqliteRuntimeFsBridge`, VFS events, `fs-watch.ts` | Durable SQLite-backed VFS with stateless `readRange`/`writeRange`/`truncate`, per-path revisions, and the runtime bridge wired into Node async fs | Move WASI, Python, and Ruby long-running IO onto the live bridge, and add hibernation-safe runtime handles and live runtime cache invalidation |
 | Networking and preview | `PortRegistry`, the typed `virtual-socket-kernel` module, Python/Ruby socket shims, session `/port` and `/preview` routes | Request/Response preview gateway plus in-facet loopback sockets for Python/Ruby, built from a typed kernel module with bounded queues and abort handling | Move Node and WASI onto the kernel, finish streaming/backpressure (stage 2), and add hibernation-aware port metadata |
 | Shell | Nimbus-owned LIFO parser, lexer, interpreter, expander, `Shell`, shell entrypoints, and Unix command registry | POSIX-like shell substrate with useful parser/interpreter behavior and command shims | Complete structured expansion, redirection, job control, `source`, `set`, `trap`, `wait`, shebang, and process-kernel integration; remove hot-path normalizers when replaced by AST semantics |
@@ -500,6 +500,13 @@ Runtime rules:
   A host without JSPI (Node 22.22, tested) cannot suspend the child. The
   writer finishes into the pipe budget and reports `0 141 0`. Output is the
   same; only that exit status differs.
+- A WASI guest's own child processes (`nimbus_proc` spawn, start, wait and kill
+  of a child) wait for the session, so they need JSPI too: Workers, Bun 1.4,
+  Node 24.20 and later (JSPI on by default from that release), Node 24 before
+  24.20 with `--experimental-wasm-jspi`, and Node 25 and later. Node 22 has no
+  `WebAssembly.Suspending`, even with that flag. There, a call that has to
+  wait is refused by name, and the calls that answer at once (`ids`, `pipe`,
+  `dup`, `dup2`) still work.
 - Ruby should converge through the live WASI path because ruby.wasm is
   WASI-backed.
 - Python/Pyodide should use a live mirror strategy: pull deltas before command

@@ -12,6 +12,7 @@ import { PID_GEN_STRIDE, execIdField, parseExecId, type ProcessEntry } from '@ni
 import type { LogChunk, ProcessLogReadOptions } from '@nimbus-sh/core/runtime/process-logs.js';
 import { notifyTerminalEvent, type TerminalLike } from '../runtime/process-logs-api.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import type { ChildProcessManager } from '@nimbus-sh/core/runtime/child-process-manager.js';
 import type { ComposedFacetManager } from '../facets/compose.js';
 import { PortRegistry, createPortCapability, type PortEntry } from '@nimbus-sh/core/runtime/port-registry.js';
 import type { RuntimeCatalogEnv } from '../runtime/runtime-catalog.js';
@@ -111,7 +112,7 @@ export interface ProgrammaticHost extends TimerHost {
   _cirrusHmrWsClients?: { clear(): void } | null;
   terminal?: (TerminalLike & { write(text: string): void; close(): void }) | null;
   kernel?: unknown;
-  facetProcessManager?: unknown;
+  childProcessManager?: ChildProcessManager | null;
   esbuildService?: unknown;
   /** The session's esbuild facet pool; torn down with the installer and dev server. */
   bundlePool?: { dispose(): void } | null;
@@ -1444,7 +1445,7 @@ async function resetInMemorySessionState(self: ProgrammaticHost): Promise<void> 
   self.shellProcessPid = null;
   self.terminal = null;
   self.facetManagerComposed = null;
-  self.facetProcessManager = null;
+  self.childProcessManager = null;
   self.esbuildService = null;
   self.viteDevServer = null;
   // The installer's pre-bundler and the dev server's on-demand path share

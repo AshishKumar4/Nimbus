@@ -43,7 +43,8 @@ import { compareEntry, matchStat, scanWorktree, type Worktree, type WorktreeStat
 
 /** The worktree writes a checkout makes, at absolute paths (createGitFs's checkout rules). */
 export interface CheckoutWriter {
-  writeFile(path: string, data: Uint8Array): Promise<void>;
+  /** A file made with `mode`; one there keeps its own (chmod sets it). */
+  writeFile(path: string, data: Uint8Array, mode: number): Promise<void>;
   symlink(target: string, path: string): Promise<void>;
   unlink(path: string): Promise<void>;
   rmdir(path: string): Promise<void>;
@@ -614,8 +615,9 @@ async function applyOps(ctx: SparsityContext, ops: readonly Op[], sparse: Sparse
       if (op.mode === 0o120000) {
         await writer.symlink(new TextDecoder().decode(data), file(op.path));
       } else {
-        await writer.writeFile(file(op.path), data);
-        await writer.chmod(file(op.path), op.mode === 0o100755 ? 0o755 : 0o644);
+        const fileMode = op.mode === 0o100755 ? 0o755 : 0o644;
+        await writer.writeFile(file(op.path), data, fileMode);
+        await writer.chmod(file(op.path), fileMode);
       }
     }
     added.add({ path: op.path, mode: op.mode, oid: op.oid, stat: await tree.fs.lstat(op.path) });

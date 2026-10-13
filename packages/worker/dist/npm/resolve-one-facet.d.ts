@@ -53,6 +53,7 @@
 import type { ResolvedPackage } from './resolver.js';
 import type { CacheStatEvent } from '@nimbus-sh/core/_shared/cache-stats.js';
 import type { FacetRegistryEvent } from './resolve-facet.js';
+import type { PackumentReadOptions } from './r2-cache.js';
 import { type RegistryCacheEntry } from './registry-record.js';
 /**
  * Argument shape: ONE package's resolution work.
@@ -171,11 +172,7 @@ export declare const resolveOnePackumentInFacet: (spec: ResolveOneSpec, env: {
          * a miss, and the cache fill — all supervisor-side. The facet reads
          * packuments and never writes them.
          */
-        getPackument: (name: string, options: {
-            retries: number;
-            timeoutMs: number;
-            registry: string;
-        }) => Promise<{
+        getPackument: (name: string, options: PackumentReadOptions) => Promise<{
             json: string | null;
             source: "r2-cache" | "network";
             events: Array<{

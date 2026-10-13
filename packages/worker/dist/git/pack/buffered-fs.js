@@ -357,7 +357,7 @@ export function createBufferedFs(supervisor, stats, authoritativeRoot, authorita
                 return null;
             return readSupervisorFile(resolved.path, p, resolved.entry && resolved.entry.kind === 'file' ? resolved.entry.size : null);
         },
-        async writeFile(p, data, executable) {
+        async writeFile(p, data, requested) {
             assertFlushHealthy();
             // Every buffered record owns its ArrayBuffer: the W7 stream transfers
             // what it enqueues, and isomorphic-git hands writeFile subarray views
@@ -376,8 +376,14 @@ export function createBufferedFs(supervisor, stats, authoritativeRoot, authorita
             return bufferMutation(async () => {
                 const now = Date.now();
                 ensureMetadataParents(p, now);
-                const mode = executable ? 0o755 : 0o644;
-                const fileMetadata = { kind: 'file', size: buf.length, mode, mtimeMs: now, ctimeMs: now, atimeMs: now };
+                // The session makes the file with the bits asked for (0666 when none, as
+                // a program's create) under its own creation policy: the process's
+                // umask, a default ACL, a setgid parent. This facet's own record of it
+                // is git's view, as every overlay stat here is: executable or not.
+                const mode = requested ?? 0o666;
+                const fileMetadata = {
+                    kind: 'file', size: buf.length, mode: (mode & 0o111) !== 0 ? 0o755 : 0o644, mtimeMs: now, ctimeMs: now, atimeMs: now,
+                };
                 setMetadata(p, fileMetadata);
                 if (fileApi !== null && buf.length > ROUTED_FILE_MAX) {
                     // What the waves hold before it lands first; then the file, as a program writes it.
