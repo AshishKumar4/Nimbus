@@ -1069,7 +1069,7 @@ const __fsMod = (() => {
   // made, with the mode it asked for). The namespace's walk applies each
   // where it reaches the name (_nsWalk). An entry retires once its mutation
   // has settled AND a barrier begun after that has applied: that barrier's
-  // delta shows it or anything later; a "file" once a delta has reported it.
+  // delta shows it or anything later; a "file" once the session has its bytes.
   function _nsActive() {
     return typeof __resident !== "undefined" && __resident.namespace.ready();
   }
@@ -1168,7 +1168,6 @@ const __fsMod = (() => {
     const entry = {
       state, from: extra?.from, link: extra?.link, target: extra?.target, hide: !!extra?.hide, mode: extra?.mode,
       settled: extra?.settled ? _barrierBegins : null,
-      since: state === "file" ? (extra?.since ?? _cursor.rev) : undefined,
       word: null,
     };
     entry.word = _nsWordOf(entry);
@@ -1213,7 +1212,7 @@ const __fsMod = (() => {
   }
   function _nsRetire(begin) {
     for (const [k, entry] of _nsOwn) {
-      if (entry.state === "file" ? _nsReported(k, entry) : entry.settled !== null && entry.settled < begin) _nsOwnDrop(k, entry);
+      if (entry.state === "file" ? !_nsParked(k) : entry.settled !== null && entry.settled < begin) _nsOwnDrop(k, entry);
     }
     for (const attrs of [_localModes, _localTimes]) {
       for (const [k, entry] of attrs) if (entry.settled !== null && entry.settled < begin) attrs.delete(k);
@@ -1234,16 +1233,9 @@ const __fsMod = (() => {
     return __resident.namespace.resolve(k, follow, _nsOwn.size === 0 ? undefined : _nsWord);
   }
 
-  /**
-   * Whether the table holds the session's own stat for a file this process
-   * made (its "file" entry): reported by a delta past the file's making, and
-   * under no directory of the process's that still hides the table.
-   */
-  function _nsReported(k, entry) {
-    const row = __resident.namespace.rowAt(k);
-    if (row === undefined || !(row.rev > entry.since && row.rev <= _cursor.rev)) return false;
-    for (let i = k.lastIndexOf("/"); i > 0; i = k.lastIndexOf("/", i - 1)) if (_nsOwn.get(k.slice(0, i))?.hide) return false;
-    return true;
+  /** Whether this process holds bytes for \`k\` the session has not taken yet. */
+  function _nsParked(k) {
+    return !!__vfsWrites && k in __vfsWrites && _denialCode(__vfsWrites[k]) === null;
   }
 
   /**
@@ -1336,7 +1328,9 @@ const __fsMod = (() => {
       meta = { type: "symlink", size: _byteLen(own.target), mode: 0o120777, uid: cred.uid, gid: cred.gid, own: true };
     } else if (own?.made === "directory") {
       meta = { type: "directory", size: 0, mode: 0o40000 | ((own.mode ?? 0o777) & ~__processUmask), uid: cred.uid, gid: cred.gid, own: true };
-    } else if (own?.made === "file") {
+    } else if (own?.made === "file" && _nsParked(found.path)) {
+      // A file this process made, while the session has not taken its bytes:
+      // its owner and the mode it asked for. From then on, the session's row.
       meta = { type: "file", size: 0, mode: 0o100000 | ((own.mode ?? 0o666) & ~__processUmask), uid: cred.uid, gid: cred.gid, own: true };
     } else if (found.row !== undefined) {
       meta = _nsRowMeta(found.row);
@@ -1428,7 +1422,14 @@ const __fsMod = (() => {
    * kept with the mode the call that made it asked for (before the umask).
    */
   function _noteCreation(k, mode = 0o666) {
-    if (typeof __resident === "undefined" || _nsOwn.get(k)?.state === "file") return;
+    if (typeof __resident === "undefined") return;
+    // A file it made whose bytes it still holds is still that file; one the
+    // session has taken is the session's, and this write is judged afresh.
+    const made = _nsOwn.get(k);
+    if (made?.state === "file") {
+      if (_nsParked(k)) return;
+      _nsOwnDrop(k, made);
+    }
     const absPath = "/" + k;
     // Known absent: the namespace names everything this credential can see,
     // except on a mount where the launch did not list it, which is unknown.
@@ -4749,7 +4750,7 @@ const __fsMod = (() => {
     if (replaced) _nsOwnDrop(newN, replaced);
     _nsOwnDropBeneath(newN);
     for (const [key, entry] of ownMoved) {
-      _nsOwnSet(key, entry.state, { from: entry.from, link: entry.link, target: entry.target, hide: entry.hide, mode: entry.mode, since: entry.since });
+      _nsOwnSet(key, entry.state, { from: entry.from, link: entry.link, target: entry.target, hide: entry.hide, mode: entry.mode });
     }
     if ((nsFrom !== null || movedLink !== undefined) && !_nsOwn.has(newN)) _nsOwnSet(newN, "alias", { from: nsFrom ?? undefined, link: movedLink });
     _nsOwnSet(oldN, "absentTree");
