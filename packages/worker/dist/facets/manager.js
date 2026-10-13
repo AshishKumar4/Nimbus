@@ -8218,8 +8218,8 @@ export class FacetManager {
     }
     /** `attempt` is the journal's re-drive budget, and `redriven` who a re-drive runs as, as `_spawnResident` carries them. */
     async _spawnWorker(workerCode, command, cwd, opts, attempt, redriven) {
-        if (opts.identity !== undefined && (opts.invokerPid !== undefined || opts.resident !== undefined)) {
-            throw new Error('Nimbus: spawnWorker identity is exclusive with invokerPid and resident');
+        if (opts.identity !== undefined && (opts.invokerPid !== undefined || opts.resident !== undefined || opts.durable !== undefined)) {
+            throw new Error('Nimbus: spawnWorker identity is exclusive with invokerPid, resident and durable');
         }
         if (opts.bindings !== undefined && (opts.env !== undefined || opts.durable !== undefined || opts.resident !== undefined)) {
             throw new Error('Nimbus: spawnWorker bindings go beside the default env: not with an explicit env, nor on a journalled launch, which could not re-mint them');

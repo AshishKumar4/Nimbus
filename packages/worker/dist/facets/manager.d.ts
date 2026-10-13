@@ -1037,7 +1037,9 @@ export interface LongRunningWorkerSpawnOptions {
     /**
      * Who the process is when no invoker says: the argv its identity derives
      * from, the credential it runs as and its exec id (a dev server restored
-     * from what it persisted). Exclusive with `invokerPid` and `resident`.
+     * from what it persisted). Exclusive with `invokerPid`, `resident` and
+     * `durable`: a journalled launch is re-driven as its row says, which keeps
+     * no such identity.
      */
     identity?: {
         argv: string[];
