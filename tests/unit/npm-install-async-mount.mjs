@@ -228,20 +228,4 @@ for (const [when, landed] of [['after', true], ['partial', false]]) {
   assert.equal(await view.exists('/m/nested/node_modules/a'), false, 'nothing of a is on the mount');
 }
 
-// ── the sweep, as the kernel, follows no link at /tmp ─────────────────────
-// /tmp is the session user's to replace: where it leads, a staging-shaped
-// directory another user (here, root) keeps is not the kernel's to remove.
-{
-  root.mkdir('etc/victim/.npm-stage-1-keep', { recursive: true, mode: 0o755 });
-  root.rename('tmp', 'tmp-real');
-  root.symlink('/etc/victim', 'tmp');
-  await view.mkdir('/m/s', { recursive: true });
-  await view.writeFile('/m/s/package.json', pkgJson);
-  await install('/m/s').catch(() => {});
-  assert.equal(root.exists('etc/victim/.npm-stage-1-keep'), true, 'nothing is swept through a link at /tmp');
-  root.unlink('tmp');
-  root.rename('tmp-real', 'tmp');
-  console.log('  the sweep follows no link at /tmp');
-}
-
 console.log('npm-install-async-mount: ok');

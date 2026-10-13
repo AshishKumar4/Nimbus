@@ -13,19 +13,17 @@ published independently in the `@nimbus-sh` npm scope.
   every file there it did not recognise. The stores are now below
   `/.nimbus`, in root's `/`, where no user can make, move or remove a
   name; the kernel checks that `/.nimbus` is its own directory, which no
-  one else may write, before each use, and removes the old stores below
-  `/var/lib/nimbus` once, through no link. `/var` is now the user's
-  alone: a process may hold a delegation of it.
+  one else may write, before each use. `/var` is now the user's alone: a
+  process may hold a delegation of it. The old stores are left below
+  `/var/lib/nimbus`, since a durable worker an earlier release made may
+  still boot from them; once none does, `sudo rm -r /var/lib/nimbus`
+  frees their space.
 - Fixed (security): `writeProtectedRootFile` followed links the session's
   user had made. A link at the file's name had the kernel overwrite the
   file it led to and make it root's, read-only; a link at the declared
   root or above it had the kernel make the directory it led to sticky and
   world-writable. A link at the file's name is now replaced by the file,
   and a root reached through a link is refused.
-- Fixed: `npm install` cleared what an earlier install left in `/tmp` as
-  the kernel through whatever `/tmp` led to, and `/tmp` is the session
-  user's to replace with a link. It clears as the kernel only in the real
-  `/tmp`, and elsewhere as the user who installs.
 - Fixed (security): helpers a command starts acted as the kernel, not as
   the command's process. `nimbus wrangler dev` read its config and D1
   migrations, kept its KV and R2 stores, and bundled its Worker as
