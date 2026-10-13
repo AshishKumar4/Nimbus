@@ -13,6 +13,8 @@
 // in both environments.
 
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
+import { posix } from 'node:path';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { generateSqliteShimCode, generateSqliteFacetPreamble } from '../../packages/worker/src/runtime/sqlite-shim.ts';
@@ -30,7 +32,8 @@ const wasmModule = await WebAssembly.compile(wasmBytes);
 
 // Build a fresh shim sandbox. __fsMod mirrors the process's node:fs the shim
 // closes over: `files` (path -> bytes) is its filesystem, `writes` what it
-// was asked to write.
+// was asked to write. __pathMod resolves against /home/user, the process's
+// cwd; __cryptoMod is node:crypto.
 function makeSandbox(files = new Map()) {
   // The shim attaches __nimbusSQL (first open) and __nimbusInitSqlite
   // (eager-boot API) to globalThis; reset between sandboxes so each test
@@ -57,10 +60,11 @@ function makeSandbox(files = new Map()) {
     },
   };
   const factory = new Function(
-    'globalThis', '__fsMod',
+    'globalThis', '__fsMod', '__pathMod', '__cryptoMod',
     '"use strict";' + code + '\n;return { sqlite: __sqliteMod };',
   );
-  const sandbox = factory(globalThis, fs);
+  const path = { resolve: (p) => posix.resolve('/home/user', p) };
+  const sandbox = factory(globalThis, fs, path, crypto);
   return { sqlite: sandbox.sqlite, files, writes };
 }
 
