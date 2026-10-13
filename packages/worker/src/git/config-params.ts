@@ -155,23 +155,28 @@ function gitdirOf(args: { path: string }): string | null {
  * repository sets extensions.worktreeConfig: git reads system, global,
  * local, worktree, then -c (withConfigOverrides, over this). Whether it is
  * set is the repository's own config's (`files`, cf-git reading only that
- * file), read once per repository until this command writes a config.
+ * file): in `known`, by gitdir, where the caller has read it already (the
+ * format guard reads every extension), else read here; forgotten when this
+ * command writes a config. A repository without it reads as it would
+ * without this layer, with no wait of its own.
  */
 export function withWorktreeConfig<G extends ConfigReader & { setConfig(args: { path: string }): Promise<void> }>(git: G, files: {
   getConfig(args: { fs: unknown; gitdir: string; path: string }): Promise<unknown>;
 }, fs: {
   promises: { readFile(path: string, options?: 'utf8' | { encoding: 'utf8' }): Promise<Uint8Array | string> };
-}): G {
-  const enabled = new Map<string, Promise<boolean>>();
-  const worktreeConfig = (args: { path: string }): Promise<string | null> | null => {
-    const gitdir = 'fs' in args && args.fs === fs ? gitdirOf(args) : null;
-    if (gitdir === null) return null;
-    let known = enabled.get(gitdir);
-    if (known === undefined) {
-      known = files.getConfig({ fs, gitdir, path: 'extensions.worktreeConfig' }).then((value) => configBool(value) === true, () => false);
-      enabled.set(gitdir, known);
+}, known: Map<string, boolean>): G {
+  const set = async (gitdir: string): Promise<boolean> => {
+    let on = known.get(gitdir);
+    if (on === undefined) {
+      on = configBool(await files.getConfig({ fs, gitdir, path: 'extensions.worktreeConfig' }).catch(() => undefined)) === true;
+      known.set(gitdir, on);
     }
-    return known.then((on) => (on ? gitdir : null));
+    return on;
+  };
+  /** The gitdir whose config.worktree a read may take, or null where it takes none. */
+  const layered = (args: { path: string }): string | null => {
+    const gitdir = 'fs' in args && args.fs === fs ? gitdirOf(args) : null;
+    return gitdir === null || known.get(gitdir) === false ? null : gitdir;
   };
   /** cf-git's read of `path` in `gitdir`'s config.worktree, offered as the config of a gitdir of its own. */
   const inWorktreeFile = (gitdir: string, path: string) => {
@@ -184,22 +189,28 @@ export function withWorktreeConfig<G extends ConfigReader & { setConfig(args: { 
     };
   };
   const calls = {
-    async getConfig(args: { path: string }) {
-      const gitdir = await worktreeConfig(args);
-      if (gitdir !== null) {
-        const own = await git.getConfig(inWorktreeFile(gitdir, args.path)).catch(() => undefined);
-        if (own !== undefined) return own;
-      }
-      return await git.getConfig(args);
+    getConfig(args: { path: string }): Promise<unknown> {
+      const gitdir = layered(args);
+      if (gitdir === null) return git.getConfig(args);
+      return (async () => {
+        if (await set(gitdir)) {
+          const own = await git.getConfig(inWorktreeFile(gitdir, args.path)).catch(() => undefined);
+          if (own !== undefined) return own;
+        }
+        return await git.getConfig(args);
+      })();
     },
-    async getConfigAll(args: { path: string }) {
-      const all = await git.getConfigAll(args);
-      const gitdir = await worktreeConfig(args);
-      if (gitdir === null) return all;
-      return [...all, ...await git.getConfigAll(inWorktreeFile(gitdir, args.path)).catch(() => [])];
+    getConfigAll(args: { path: string }): Promise<unknown[]> {
+      const gitdir = layered(args);
+      if (gitdir === null) return git.getConfigAll(args);
+      return (async () => {
+        const all = await git.getConfigAll(args);
+        if (!await set(gitdir)) return all;
+        return [...all, ...await git.getConfigAll(inWorktreeFile(gitdir, args.path)).catch(() => [])];
+      })();
     },
     async setConfig(args: { path: string }) {
-      enabled.clear();
+      known.clear();
       await git.setConfig(args);
     },
   };
