@@ -1,5 +1,5 @@
 import { ROOT_DIRECTORY_MODE, ROOT_INODE, type CredentialedVfs, type DelegationTerms, type SqliteVFS, type VfsNameResolution, type VfsOpenDescription } from '../vfs/sqlite-vfs.js';
-import { BUFFERED_WRITE_BYTES, describeMounted, flagsRefusal, openAccess, openFollows, openMounted } from '../vfs/mounted-description.js';
+import { BUFFERED_WRITE_BYTES, describeMounted, flagsRefusal, openAccess, openFollows, openMounted, reopenMounted } from '../vfs/mounted-description.js';
 import { closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost, settleHeldAt, type Description } from './descriptors.js';
 import type { WaveDescriptions, WriteStreamOptions } from './wave-contracts.js';
 import { WaveIngest } from './wave-ingest.js';
@@ -11,11 +11,13 @@ import { fsError, MAX_LINK_HOPS, modeAllows, walkBeneath, type FsError } from '.
 export { fsError, modeAllows, walkBeneath, type BeneathLookup } from './beneath-walk.js';
 import type {
   RuntimeFileHandle,
+  RuntimeOpenedFile,
   RuntimeFsPath,
   RuntimeReadOptions,
   RuntimeSynchronousFs,
   RuntimeFsBridge,
   RuntimeOpenFlags,
+  RuntimeReopenTarget,
   RuntimeVfsDirEntry,
   RuntimeVfsStat,
   VfsAcquireOptions,
@@ -377,7 +379,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   }
 
   /** `options.mutationOwner`: the exclusive-mutation lease an open for writing presents (a read-only open presents none). */
-  open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options: RuntimeMutationOwner = {}): RuntimeFileHandle {
+  open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options: RuntimeMutationOwner = {}): RuntimeOpenedFile {
     return called({ syscall: 'open', path }, () => {
       const normalizedFlags = openFlags(flags);
       const flagged = flagsRefusal(normalizedFlags);
@@ -394,14 +396,21 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       if (located.mount) {
         const namespace = located.namespace;
         // The synchronous face looks up through synchronous faces only (an asynchronous mount refused above): its answer is a value.
-        return this.descriptors.issue(syncValue(openMounted({
+        return syncValue(this.descriptors.open(syncValue(openMounted({
           name: located.path, flags: normalizedFlags, mode: flags.mode,
           refuse: (code, syscall) => fsError(code, syscall, path), scope: this.scope, pin: (name, follow) => namespace.pin(name, { follow, sync: true }),
           sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes,
-        })), normalizedFlags);
+        })), normalizedFlags));
       }
       const p = located.path;
       if (p === '') return this.openRoot(path, normalizedFlags);
+      if (flags.path === true) {
+        // There is no descriptor on the link itself, as open's below.
+        if (!normalizedFlags.followSymlinks && this.vfs.isSymlink(p)) throw fsError(normalizedFlags.directory ? 'ENOTDIR' : 'ELOOP', 'open', path);
+        const held = this.rawVfs.holdInode(p, this.vfs.cred, this.vfs.principal, this.vfs.holds);
+        if (normalizedFlags.directory && held.stat().type !== 'directory') { held.close(); throw fsError('ENOTDIR', 'open', path); }
+        return syncValue(this.descriptors.open(held, normalizedFlags, p, held.revision()));
+      }
       // open(2)'s rule, in Linux's order, as a mount's open decides it (openOnMount).
       if (normalizedFlags.exclusive && normalizedFlags.create && (this.vfs.isSymlink(p) || this.vfs.exists(p))) throw fsError('EEXIST', 'open', path);
       // There is no descriptor to open on the link itself: what it points at is exactly what the caller declined to open.
@@ -425,7 +434,9 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         this.owned(owner).truncate(p, 0);
       }
 
-      return this.descriptors.issue(this.rawVfs.openDescription(p, this.vfs.cred, { ...normalizedFlags, sync: flags.sync === true }, this.vfs.principal, this.vfs.holds, owner), normalizedFlags, p);
+      const node = this.rawVfs.openDescription(p, this.vfs.cred, { ...normalizedFlags, sync: flags.sync === true }, this.vfs.principal, this.vfs.holds, owner);
+      // Its revision is its name's, read off the description, not looked up again.
+      return syncValue(this.descriptors.open(node, normalizedFlags, p, node.revision()));
     });
   }
 
@@ -904,16 +915,45 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     return located.path;
   }
 
-  private openRoot(path: RuntimeFsPath, flags: RuntimeFileHandle['flags']): RuntimeFileHandle {
+  reopen(target: RuntimeReopenTarget, flags: RuntimeOpenFlags, options: RuntimeMutationOwner = {}): RuntimeOpenedFile {
+    const named = this.descriptors.openedAs(target.handle);
+    return called({ syscall: 'open', path: named }, () => {
+      const normalizedFlags = openFlags(flags);
+      const flagged = flagsRefusal(normalizedFlags);
+      if (flagged !== null) throw fsError(flagged, 'open', named);
+      // The file is there: O_CREAT|O_EXCL names one that exists.
+      if (normalizedFlags.create && normalizedFlags.exclusive) throw fsError('EEXIST', 'open', named);
+      const mutates = normalizedFlags.write || normalizedFlags.truncate || normalizedFlags.append;
+      const owner = mutates ? options.mutationOwner : undefined;
+      const held = this.descriptors.description(target.handle);
+      if (held.mounted) {
+        const namespace = owner === undefined ? this.namespace! : this.namespace!.scoped(() => {}, owner);
+        return syncValue(this.descriptors.open(syncValue(reopenMounted(held, {
+          flags: normalizedFlags, mode: flags.mode, refuse: (code, syscall) => fsError(code, syscall, named), scope: this.scope,
+          pin: (name, follow) => namespace.pin(name, { follow, sync: true }), sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes,
+        })), normalizedFlags));
+      }
+      if (held.ino === ROOT_INODE) return this.openRoot(named, normalizedFlags);
+      const node = this.rawVfs.reopenInode(held.ino, named, this.vfs.cred, { read: normalizedFlags.read, write: normalizedFlags.write || normalizedFlags.truncate, sync: flags.sync === true }, this.vfs.principal, this.vfs.holds, owner);
+      const kind = node.stat().type;
+      if (normalizedFlags.directory && kind !== 'directory') { node.close(); throw fsError('ENOTDIR', 'open', named); }
+      if (kind === 'directory' && (normalizedFlags.write || normalizedFlags.truncate || normalizedFlags.append)) { node.close(); throw fsError('EISDIR', 'open', named); }
+      if (normalizedFlags.truncate) node.truncate(0);
+      // Named as the descriptor it reopens was: an unlinked file has no name of its own.
+      return syncValue(this.descriptors.open(node, normalizedFlags, named, node.revision()));
+    });
+  }
+
+  private openRoot(path: RuntimeFsPath, flags: RuntimeFileHandle['flags']): RuntimeOpenedFile {
     if (flags.create && flags.exclusive) throw fsError('EEXIST', 'open', path);
     if (flags.create || flags.truncate || flags.append) throw fsError('EISDIR', 'open', path);
     const deny = (): never => { throw fsError('EPERM', 'fd', ''); };
     const node: VfsOpenDescription = {
-      ino: ROOT_INODE, path: () => '', stat: () => this.rootStat(),
+      ino: ROOT_INODE, path: () => '', stat: () => this.rootStat(), revision: () => this.rawVfs.revision(),
       read: deny, write: deny, truncate: deny, readdir: () => this.readdir(''),
       chmod: deny, chown: deny, utimes: deny, close: () => {},
     };
-    return this.descriptors.issue(node, flags);
+    return syncValue(this.descriptors.open(node, flags));
   }
 
   private ensureParent(path: string): void {

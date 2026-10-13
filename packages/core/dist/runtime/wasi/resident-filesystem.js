@@ -35,6 +35,7 @@
  *     absent: the adapter lists the directory and walks again.
  */
 import { fsError, modeAllows, walkBeneath } from '../beneath-walk.js';
+import { openIdentified } from './filesystem.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES, DIRECTORY_BATCH_LIMIT, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES } from '../../constants.js';
 import { RESIDENT_PAGE_BYTES } from '@nimbus-sh/platform/limits.js';
 import { delegationHolder } from './delegation-holder.js';
@@ -213,8 +214,7 @@ export function residentFilesystem(session, resident, delegation) {
     const readers = new Set();
     /** And those opened to write that nothing was written or cut through yet (git's /dev/null): no more do they. */
     const unwritten = new Set();
-    /** Of those, where each was opened, until its fstat says what it is: a directory, or a file too big to hold whole. */
-    const opened = new Map();
+    /** Of the read-only ones, the directories, and where their listing is. */
     const directories = new Map();
     /**
      * The session's read-only descriptors of files too big to hold whole (a
@@ -666,6 +666,7 @@ export function residentFilesystem(session, resident, delegation) {
             let released = false;
             return {
                 bytes: pin.bytes,
+                name: '/' + key,
                 release: () => {
                     if (released)
                         return;
@@ -758,6 +759,8 @@ export function residentFilesystem(session, resident, delegation) {
             throw fsError('ENOENT', 'realpath', path);
         return '/' + key;
     }), () => authority.realpath(path));
+    /** A descriptor of the holder's, as an open answers it: with its stat, the holder's. */
+    const heldOpen = (handle) => ({ ...handle, stat: statOf(holder.fstat(handle.id)) });
     fs.access = (path, mode) => answer('access', () => after(resolve(path, true), (key) => {
         if (key === DELEGATE || key === '')
             return DELEGATE;
@@ -811,13 +814,16 @@ export function residentFilesystem(session, resident, delegation) {
                     return beneath(root).slice(0, DIRECTORY_BATCH_LIMIT - 1)
                         .map((candidate) => ({ ...path, path: root === '' ? candidate : candidate.slice(root.length + 1) }));
                 });
-                return handle ?? DELEGATE;
+                if (handle === null)
+                    return DELEGATE;
+                // An open answers its stat (RuntimeOpenedFile): the one a prefetched directory's fstat answers here.
+                return { ...handle, stat: await fs.fstat(handle.id) };
             }), () => openOnSession(path, flags));
         }
         if (!readOnly && holder !== null) {
             // A file made or emptied in a subtree this process holds is decided here.
             const local = decide('open', () => after(keyFor(path, true), (key) => (key === DELEGATE ? DELEGATE
-                : after(holder.open(key, typeof path === 'string' ? path : path.path, flags), (handle) => handle ?? DELEGATE))));
+                : after(holder.open(key, typeof path === 'string' ? path : path.path, flags), (handle) => (handle === undefined ? DELEGATE : heldOpen(handle))))));
             return after(local, (handle) => (handle === DELEGATE ? openOnSession(path, flags) : handle));
         }
         return openOnSession(path, flags);
@@ -839,7 +845,7 @@ export function residentFilesystem(session, resident, delegation) {
                     if (there === undefined || there?.type === 'directory')
                         return DELEGATE;
                     delegated('open');
-                    return after(holder.openThrough(key, typeof path === 'string' ? path : path.path, flags), (handle) => { owed = true; return handle; });
+                    return after(holder.openThrough(key, typeof path === 'string' ? path : path.path, flags), (handle) => { owed = true; return heldOpen(handle); });
                 });
             };
             return after(through(), (handle) => {
@@ -856,7 +862,15 @@ export function residentFilesystem(session, resident, delegation) {
         delegated('open');
         return after(authority.open(path, flags), (handle) => {
             readers.add(handle.id);
-            opened.set(handle.id, keyOf(handle.path));
+            // What it is, its open said: a directory is listed here, and a file too big to hold whole is paged, while its name still leads to it.
+            const { type, dev, ino, size } = handle.stat;
+            if (dev === store.device) {
+                const key = keyOf(handle.path);
+                if (type === 'directory')
+                    directories.set(handle.id, { key, dev, ino });
+                else if (type === 'file' && size > WASI_RESIDENT_FILE_CAP_BYTES)
+                    paged.set(handle.id, { key, dev, ino });
+            }
             return handle;
         });
     };
@@ -875,19 +889,7 @@ export function residentFilesystem(session, resident, delegation) {
             return statOf(holder.fstat(handleId));
         }
         delegated('fstat');
-        return after(authority.fstat(handleId), (stat) => {
-            // A directory opened read-only is listed here while its name still leads to it.
-            const key = opened.get(handleId);
-            if (key !== undefined) {
-                opened.delete(handleId);
-                if (stat.type === 'directory' && stat.dev === store.device)
-                    directories.set(handleId, { key, dev: stat.dev, ino: stat.ino });
-                if (stat.type === 'file' && stat.dev === store.device && stat.size > WASI_RESIDENT_FILE_CAP_BYTES) {
-                    paged.set(handleId, { key, dev: stat.dev, ino: stat.ino });
-                }
-            }
-            return stat;
-        });
+        return authority.fstat(handleId);
     };
     /**
      * A write-through description's stat: the session's, of its description's
@@ -1013,7 +1015,6 @@ export function residentFilesystem(session, resident, delegation) {
             return after(authority.close(reader), report);
         }
         if (readers.delete(handleId)) {
-            opened.delete(handleId);
             directories.delete(handleId);
             paged.delete(handleId);
             delegated('close');
@@ -1052,6 +1053,27 @@ export function residentFilesystem(session, resident, delegation) {
                 return;
             }
             return Reflect.apply(bySessionStatus, fs, [handleId, status]);
+        });
+    }
+    // A descriptor of the holder's is reopened here where the holder decides it,
+    // else once what was decided is sent: a description written through by its
+    // session descriptor, any other by its file's name while that name has it.
+    const bySessionReopen = Reflect.get(fs, 'reopen');
+    if (typeof bySessionReopen === 'function') {
+        Reflect.set(fs, 'reopen', (target, flags, options) => {
+            const held = holder;
+            if (!held?.owns(target.handle))
+                return Reflect.apply(bySessionReopen, fs, [target, flags, options]);
+            const local = held.reopen(target.handle, flags);
+            if (local !== undefined) {
+                counts.local++;
+                return heldOpen(local);
+            }
+            const identity = held.fstat(target.handle);
+            const name = '/' + held.keyOf(target.handle);
+            return held.flush().then(() => held.sessionOf(target.handle)).then((session) => (session === undefined
+                ? openIdentified(fs, name, false, flags, identity)
+                : Reflect.apply(bySessionReopen, fs, [{ handle: session }, flags, options])));
         });
     }
     for (const name of ['fchmod', 'fchown', 'futimes', 'dup']) {

@@ -26,10 +26,12 @@ import {
 const OpenOptions = z.object({
   read: z.boolean().optional(), write: z.boolean().optional(), append: z.boolean().optional(),
   create: z.boolean().optional(), exclusive: z.boolean().optional(), directory: z.boolean().optional(),
-  truncate: z.boolean().optional(), followSymlinks: z.boolean().optional(), expectedRevision: z.number().int().nonnegative().optional(),
+  truncate: z.boolean().optional(), followSymlinks: z.boolean().optional(), path: z.boolean().optional(), expectedRevision: z.number().int().nonnegative().optional(),
   mode: z.number().int().nonnegative().max(0o7777).optional(),
   umask: z.number().int().nonnegative().max(0o777).optional(),
 });
+/** What a reopen opens again (RuntimeReopenTarget): an open descriptor's file. */
+const ReopenTarget = z.object({ handle: z.number().int() });
 /** A byte offset into a file: what a ranged write may start at. */
 const RangeOffset = z.number().int().nonnegative();
 /** What `deliverOnce` carries besides the mutation's args; its op is checked against the delivered set. */
@@ -393,6 +395,7 @@ const NATIVE_OPS = {
   // the store did (SqliteVFS holds none of its appends), so a refusal is that
   // write's, and a delivered write's receipt records its outcome.
   fsOpen: (e, t) => fsFor(e, t).open(FsPath.parse(e.args?.[0]), { ...OpenOptions.parse(e.args?.[1]), sync: true }, leaseOf(e)),
+  fsReopen: (e, t) => fsFor(e, t).reopen(ReopenTarget.parse(e.args?.[0]), { ...OpenOptions.parse(e.args?.[1]), sync: true }, leaseOf(e)),
   fsReadDirectories: (e, t) => readDirectoryBatch(fsFor(e, t), e.args?.[0]),
   fsRead: (e, t) => {
     const length = numberArg(e, 2);

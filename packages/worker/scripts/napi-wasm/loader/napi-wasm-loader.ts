@@ -49,6 +49,7 @@ import type {
   RuntimeFileHandle,
   RuntimeFsBridge,
   RuntimeFsPath,
+  RuntimeOpenedFile,
   RuntimeOpenFlags,
   RuntimeVfsStat,
 } from '../../../../core/src/runtime/os-contracts.js';
@@ -406,17 +407,25 @@ function nodeFsBridge(fs: NodeFs, handles: Map<number, BridgeHandle>, nextHandle
         return orNullWhenAbsent(error);
       }
     },
-    open: (p: RuntimeFsPath, flags: RuntimeOpenFlags): Awaitable<BridgeHandle> => {
+    // An open answers its file's stat (RuntimeOpenedFile), as fstat of the new descriptor would.
+    open: (p: RuntimeFsPath, flags: RuntimeOpenFlags): Awaitable<RuntimeOpenedFile> => {
       const path = resolve(p);
       if (flags.directory) {
         // A directory's metadata is always answerable without waiting.
-        if (!fs.statSync(path).isDirectory()) fail('ENOTDIR');
-        return register(path, flags, {});
+        const st = fs.statSync(path);
+        if (!st.isDirectory()) fail('ENOTDIR');
+        return { ...register(path, flags, {}), stat: toStat(st, path) };
       }
       const mode = flags.mode ?? 0o666;
       return attempt(
-        () => register(path, flags, { fd: fs.openSync(path, openFlags(flags), mode) }),
-        async () => register(path, flags, { file: await promises.open(path, openFlags(flags), mode) }),
+        () => {
+          const fd = fs.openSync(path, openFlags(flags), mode);
+          return { ...register(path, flags, { fd }), stat: toStat(fs.fstatSync(fd), path) };
+        },
+        async () => {
+          const file = await promises.open(path, openFlags(flags), mode);
+          return { ...register(path, flags, { file }), stat: toStat(await file.stat(), path) };
+        },
       );
     },
     fstat: (id: number): Awaitable<RuntimeVfsStat> => {

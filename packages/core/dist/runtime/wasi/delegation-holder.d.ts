@@ -140,6 +140,20 @@ export interface DelegationHolder {
     keyOf(handleId: number): string;
     /** Another descriptor of the same open file (its position shared). */
     dup(handleId: number): RuntimeFileHandle;
+    /**
+     * A new open of the file a descriptor of the holder's is on (an open of
+     * /proc/self/fd/N), its offset its own, when decided here: a file whose
+     * bytes are here, opened without O_APPEND. Undefined when the session is
+     * to decide it (by the file's identity, once what was decided is sent).
+     */
+    reopen(handleId: number, flags: {
+        read?: boolean;
+        write?: boolean;
+        append?: boolean;
+        create?: boolean;
+        exclusive?: boolean;
+        truncate?: boolean;
+    }): RuntimeFileHandle | undefined;
     /** Decide a mkdir at `key`: true when decided here (and done), false when the session is to. */
     mkdir(key: string, path: string, mode: number, umask?: number): boolean;
     /** Decide an unlink of `key` (a file or link): true when decided here. */

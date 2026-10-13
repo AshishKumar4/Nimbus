@@ -109,6 +109,8 @@ export interface VfsOpenDescription {
     readonly ino: number;
     path(): string;
     stat(): VfsStat;
+    /** What revision() of the name it is held by answers now, without a lookup; the clock once it has no name. */
+    revision(): number;
     read(offset: number, length: number): Uint8Array;
     write(offset: number, bytes: Uint8Array): number;
     truncate(size: number): void;
@@ -734,6 +736,16 @@ export declare class SqliteVFS {
     /** The exclusive-mutation lease the open presented: the description's own mutations (write, truncate, chmod, chown, utimes) present it too. */
     mutationOwner?: string): VfsOpenDescription;
     /**
+     * The file `path` names, held as an O_PATH open holds it: no access asked
+     * of it but the walk's. Its stat and revision, and a reopen (it is one of
+     * openNodes, which reopenInode finds), an unlinked file included, until it
+     * is closed; anything else answers EBADF. One object, where a description
+     * builds each of its calls.
+     */
+    holdInode(path: string, cred: VfsCred, principal?: Principal, holds?: () => ReadonlySet<string>): VfsOpenDescription;
+    /** holdInode's answer: describe()'s stat, revision, path and close, on its prototype. */
+    private static readonly HeldInode;
+    /**
      * A description of the file `ino` numbers, its access decided already: by
      * the open that made it (creat(2) of a mode without write still writes),
      * or by an open a process's wave made and the session kept
@@ -746,6 +758,19 @@ export declare class SqliteVFS {
         read: boolean;
         write: boolean;
     }, principal?: Principal, holds?: () => ReadonlySet<string>): VfsOpenDescription | null;
+    /**
+     * A new description of the file `ino` numbers, as an open of
+     * /proc/self/fd/N makes one: describeInode's file (an unlinked file a
+     * description holds included), `rights` checked against it as it is now.
+     * ENOENT once no description holds it and no name has it.
+     */
+    reopenInode(ino: number, path: string, cred: VfsCred, rights: {
+        read: boolean;
+        write: boolean;
+        sync?: boolean;
+    }, principal?: Principal, holds?: () => ReadonlySet<string>, mutationOwner?: string): VfsOpenDescription;
+    /** The inode `ino` numbers: the one an open description holds, else the one a name has; null when neither does. */
+    private inodeNumbered;
     private describe;
     /**
      * Hold `bytes`, written through `opened` at `offset`, in its file's
