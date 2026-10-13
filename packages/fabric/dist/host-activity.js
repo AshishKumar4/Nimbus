@@ -207,8 +207,8 @@ export class SentRequests {
  * The receiving end of SentRequests: one AbortController per request its
  * sender may still abandon, aborted when that abandon arrives, whether before
  * the request (kept until it comes) or after. Ids below the sender's `low`
- * are forgotten; an id already retired when its request arrives gets a
- * signal no abandon will reach.
+ * are forgotten; a request that arrives already retired was abandoned, and
+ * runs aborted.
  */
 export class HandledRequests {
     #requests = new Map();
@@ -231,8 +231,9 @@ export class HandledRequests {
                 this.#low = low;
             }
         }
+        // Retired before it arrived: only an abandon its sender heard retires a request not yet delivered.
         if (id < this.#low)
-            return new AbortController().signal;
+            return AbortSignal.abort(new DOMException('The caller left the request', 'AbortError'));
         let controller = this.#requests.get(id);
         if (!controller)
             this.#requests.set(id, controller = new AbortController());
@@ -364,7 +365,13 @@ const capability = ${key};
 // this adapter admitted carries this mark, which only the adapter can name.
 const admittedMark = Symbol('admitted');
 const failed = (error) => new Response(error instanceof Error ? error.message : String(error), { status: 500, headers: { [${failed}]: capability } });
-export class NimbusProcess extends Base {
+// The guest's encoded answer as HTTP carries it to its host: its bytes as
+// they are, which its host fetches unencoded too, so the registry decodes
+// them once, as it did the bytes an RPC hop carried.
+const sent = (response) => {
+  if (!(response instanceof Response) || response.body === null || response.headers.get('content-encoding') === null) return response;
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers: response.headers, encodeBody: 'manual' });
+};export class NimbusProcess extends Base {
   #incarnation = crypto.randomUUID();
   #watchers = new Set();
   #admit(request) {
@@ -411,7 +418,7 @@ export class NimbusProcess extends Base {
     }
     if (headers.get('upgrade')?.toLowerCase() === 'websocket') return super.fetch(admitted);
     admitted[admittedMark] = true;
-    try { return Promise.resolve(super.handleHttpRequest(admitted)).catch(failed); }
+    try { return Promise.resolve(super.handleHttpRequest(admitted)).then(sent, failed); }
     catch (error) { return failed(error); }
   }
 }`;

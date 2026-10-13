@@ -74,8 +74,8 @@ export declare class SentRequests {
  * The receiving end of SentRequests: one AbortController per request its
  * sender may still abandon, aborted when that abandon arrives, whether before
  * the request (kept until it comes) or after. Ids below the sender's `low`
- * are forgotten; an id already retired when its request arrives gets a
- * signal no abandon will reach.
+ * are forgotten; a request that arrives already retired was abandoned, and
+ * runs aborted.
  */
 export declare class HandledRequests {
     #private;
