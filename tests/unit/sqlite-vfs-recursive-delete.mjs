@@ -208,20 +208,17 @@ function counters(rawVfs) {
   layout(grouped.vfs);
   layout(solo.vfs);
 
-  const removedByGroup = grouped.vfs.removeRecursive('app/node_modules');
+  assert.deepEqual(grouped.vfs.removeRecursive('app/node_modules'), { removed: ['app/node_modules'], kept: [], failures: [] });
 
   const removeByHand = (vfs, path) => {
-    let count = 0;
     for (const entry of vfs.readdir(path)) {
       const child = `${path}/${entry.name}`;
-      count += entry.type === 'directory' ? removeByHand(vfs, child) : (vfs.unlink(child), 1);
+      if (entry.type === 'directory') removeByHand(vfs, child);
+      else vfs.unlink(child);
     }
     vfs.rmdir(path);
-    return count + 1;
   };
-  const removedByHand = removeByHand(solo.vfs, 'app/node_modules');
-
-  assert.equal(removedByGroup, removedByHand);
+  removeByHand(solo.vfs, 'app/node_modules');
   // Maintenance is bounded per call, so drain both to the same fixpoint before
   // comparing what content survived.
   for (let pass = 0; pass < 40; pass++) {
