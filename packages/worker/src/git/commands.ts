@@ -1039,13 +1039,12 @@ type GitLibrary = Awaited<ReturnType<typeof getGit>>;
  * The hooks (githooks(5)) git runs for what each built-in command does:
  * the built-in runs none, so a repository where one of its command's is
  * executable is real git's, handed over before any effect
- * (assertNoHooks). status and diff write a refreshed index back
- * (repo_update_index_if_able), which runs post-index-change; every ref
- * update runs reference-transaction.
+ * (assertNoHooks). Every index write runs post-index-change and every ref
+ * update reference-transaction. status and diff look for none: the index
+ * a refresh writes back (repo_update_index_if_able) is not worth a look on
+ * their hot path, so their post-index-change is the one hook not run.
  */
 const COMMAND_HOOKS: Readonly<Record<string, readonly string[]>> = {
-  status: ['post-index-change'],
-  diff: ['post-index-change'],
   add: ['post-index-change'],
   commit: ['pre-commit', 'prepare-commit-msg', 'commit-msg', 'post-commit', 'post-index-change', 'reference-transaction'],
   checkout: ['post-checkout', 'post-index-change', 'reference-transaction'],
@@ -1084,7 +1083,11 @@ async function assertNoHooks(
     const expanded = configured === '~' ? home : configured.startsWith('~/') ? home + configured.slice(1) : configured;
     dir = expanded.startsWith('/') ? expanded : `${repo.worktree ?? repo.gitdir}/${expanded}`;
   }
+  // One listing (none: no hooks), then access(X_OK) only for the command's hooks it names.
+  let present: Set<string>;
+  try { present = new Set((await ctx.vfs.readdir(normalizeVfsPath(dir))).map((entry) => entry.name)); } catch { return; }
   for (const hook of hooks) {
+    if (!present.has(hook)) continue;
     try { await ctx.vfs.access(normalizeVfsPath(`${dir}/${hook}`), X_OK); } catch { continue; }
     throw new UnsupportedGitOperation(`fatal: git ${sub} with a ${hook} hook is not supported here\n`, 128);
   }

@@ -159,7 +159,8 @@ const HOOKS = [
   ['post-checkout', '.git/hooks', true, null, [['checkout', 'topic'], 'real git'], [['commit', '-m', 'x', '--allow-empty'], 'built-in']],
   ['post-merge', '.git/hooks', true, null, [['merge', 'topic'], 'real git'], [['pull', 'origin', 'main'], 'real git'], [['fetch', 'origin'], 'built-in']],
   ['pre-push', '.git/hooks', true, null, [['push', 'origin', 'main'], 'real git'], [['fetch', 'origin'], 'built-in']],
-  ['post-index-change', '.git/hooks', true, null, [['status'], 'real git'], [['diff'], 'real git'], [['add', 'a.txt'], 'real git'], [['reset', 'a.txt'], 'real git'], [['log'], 'built-in']],
+  // status and diff look for no hook (their index refresh is on the hot path): the built-in's.
+  ['post-index-change', '.git/hooks', true, null, [['add', 'a.txt'], 'real git'], [['reset', 'a.txt'], 'real git'], [['status'], 'built-in'], [['diff'], 'built-in'], [['log'], 'built-in']],
   ['reference-transaction', '.git/hooks', true, null, [['branch', 'more'], 'real git'], [['tag', 'v9'], 'real git'], [['fetch', 'origin'], 'real git'], [['status'], 'built-in'], [['rev-parse', 'HEAD'], 'built-in']],
   ['pre-commit', 'githooks', true, ['core.hooksPath', 'githooks'], [['commit', '-m', 'x', '--allow-empty'], 'real git']],
   ['pre-commit', '.git/hooks', true, ['core.hooksPath', 'githooks'], [['commit', '-m', 'x', '--allow-empty'], 'built-in']],
