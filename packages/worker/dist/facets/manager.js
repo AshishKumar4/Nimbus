@@ -23,7 +23,7 @@ import { commonJsCellModuleName, commonJsCellReadsBack, columnMapModuleName, com
 import { moduleImporterUrl } from '@nimbus-sh/core/_shared/module-importer.js';
 import { isTypescriptDeclarationFile } from '@nimbus-sh/core/_shared/typescript-specifiers.js';
 import { ReadAheadBudget, STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
-import { execIdField } from '@nimbus-sh/core/runtime/process-table.js';
+import { execIdField, parseExecId } from '@nimbus-sh/core/runtime/process-table.js';
 import { exitCodeForSignal } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { createNodeFacetRuntime, fetchNodeFacetSources, nodeFacetSource } from '../runtime/node-shims-artifact.js';
 import { moduleSource } from '@nimbus-sh/platform/module-source.js';
@@ -96,7 +96,7 @@ import { LEDGER_ROW_BYTES } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { ONE_SHOT_STORE_MEMORY_BYTES, RESIDENT_CHUNK_BYTES } from '../vfs/facet-resident-limits.js';
 import { residentCellCost } from '../vfs/resident/cell-cost.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
-import { CRED_KERNEL, isNativeBinPath, launchNamedPaths } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_KERNEL, isNativeBinPath, launchNamedPaths, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { streamedWasmImageDigest, wasmImageDigest } from './wasm-image-digest.js';
 import { prefetchBundleStart, prefetchBundleEnd, setPrefetchCacheBytes, } from '@nimbus-sh/platform/diag-counters.js';
@@ -7663,12 +7663,15 @@ export class FacetManager {
      * never holds one): it runs as the row says, records the process it
      * restarts and why, and says so as its first line of output. The terminal
      * a session's restart disconnected is not where the user looks for it.
+     * A restored launch runs as its identity says, and restarts nothing.
      */
-    _spawnLaunchEntry(command, argv, cwd, invokerPid, redriven) {
-        if (redriven === undefined)
+    _spawnLaunchEntry(command, argv, cwd, invokerPid, who) {
+        if (who === undefined)
             return this.processes.spawn(command, argv, cwd, { parentPid: invokerPid });
-        const { restart, ...identity } = redriven;
-        const entry = this.processes.spawn(command, argv, cwd, { ...identity, restartedFrom: restart.from });
+        const { cred, execId, restart } = who;
+        const entry = this.processes.spawn(command, argv, cwd, { cred, execId, ...(restart === undefined ? {} : { restartedFrom: restart.from }) });
+        if (restart === undefined)
+            return entry;
         const why = restart.from.cause === 'exited'
             ? `"${command}" exited with code ${restart.from.exitCode}, so it was restarted (restart on-failure)`
             : restart.from.cause === 'host-reset'
@@ -8261,6 +8264,16 @@ export class FacetManager {
     }
     /** `attempt` is the journal's re-drive budget, and `redriven` who a re-drive runs as, as `_spawnResident` carries them. */
     async _spawnWorker(workerCode, command, cwd, opts, attempt, redriven) {
+        if (opts.identity !== undefined && (opts.invokerPid !== undefined || opts.resident !== undefined || opts.durable !== undefined)) {
+            throw new Error('Nimbus: spawnWorker identity is exclusive with invokerPid, resident and durable');
+        }
+        if (opts.bindings !== undefined && (opts.env !== undefined || opts.durable !== undefined || opts.resident !== undefined)) {
+            throw new Error('Nimbus: spawnWorker bindings go beside the default env: not with an explicit env, nor on a journalled launch, which could not re-mint them');
+        }
+        const identity = opts.identity === undefined ? undefined : {
+            cred: requireVfsCred(opts.identity.cred, 'spawnWorker identity'),
+            ...(opts.identity.execId === undefined ? {} : { execId: parseExecId(opts.identity.execId) }),
+        };
         if (opts.resident && !opts.durable) {
             opts = { ...opts, durable: { owner: await deriveResidentOwner(cwd, opts.resident.argv) } };
         }
@@ -8270,7 +8283,7 @@ export class FacetManager {
         await this.processes.reap();
         // The table entry carries the same argv the identity is derived from, so
         // a runtime resident reads the same way through either path.
-        const entry = this._spawnLaunchEntry(command, opts.resident?.argv ?? [], cwd, opts.invokerPid, redriven);
+        const entry = this._spawnLaunchEntry(command, opts.identity?.argv.map(String) ?? opts.resident?.argv ?? [], cwd, opts.invokerPid, redriven ?? identity);
         // Stamp the process-table entry so /api/processes exposes this as a
         // long-running process.
         this.processes.setLongRunning(entry.pid);
@@ -8407,6 +8420,7 @@ export class FacetManager {
                         vfsWasmModules: opts.vfsWasmModules,
                         ...(opts.vfsTextModules !== undefined ? { vfsTextModules: opts.vfsTextModules } : {}),
                         ...(opts.env !== undefined || launchEnv !== undefined ? { env: { ...opts.env, ...launchEnv } } : {}),
+                        ...(opts.bindings !== undefined ? { bindings: opts.bindings } : {}),
                         ...(opts.globalOutbound !== undefined ? { globalOutbound: opts.globalOutbound } : {}),
                     },
                 },

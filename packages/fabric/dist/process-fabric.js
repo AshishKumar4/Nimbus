@@ -139,6 +139,12 @@ export const ResidentCodeSpecSchema = z.object({
      * minted from the composed supervisor entrypoint).
      */
     env: z.record(z.string(), z.unknown()).optional(),
+    /**
+     * Bindings the default env carries beside the process's own SUPERVISOR
+     * (real Vite's HMR channel), by reference. An explicit `env` is the whole
+     * env, so the two are exclusive.
+     */
+    bindings: z.record(z.string(), z.unknown()).optional(),
     /** Absent inherits outbound, null denies it, a binding mediates it by reference. */
     globalOutbound: z.custom((value) => value !== null && (typeof value === 'object' || typeof value === 'function')
         && 'fetch' in value && typeof value.fetch === 'function').nullable().optional(),

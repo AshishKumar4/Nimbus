@@ -1,5 +1,6 @@
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { FILESYSTEM_ANSWERED_RPC_METHODS, bridgeOverSupervisor } from './filesystem-mirrors.generated.js';
+import { refusalData, supervisorRefusalError } from './filesystem-methods.js';
 // The method table (filesystem-methods.ts) and the typed mirrors core's
 // build writes from it (filesystem-mirrors.generated.ts).
 export { FILESYSTEM_RPC_METHODS, vfsSupervisor } from './filesystem-mirrors.generated.js';
@@ -33,21 +34,7 @@ export function isSupervisorAnsweredMethod(name) {
 export function supervisorRefusal(error) {
     if (!(error instanceof Error) || typeof Reflect.get(error, 'code') !== 'string')
         return undefined;
-    return errorData(error);
-}
-function errorData(error) {
-    const properties = {};
-    const errors = {};
-    for (const key of Object.getOwnPropertyNames(error)) {
-        if (key === 'message' || key === 'stack')
-            continue;
-        const value = Reflect.get(error, key);
-        if (value instanceof Error)
-            errors[key] = errorData(value);
-        else
-            properties[key] = value;
-    }
-    return { name: error.name, message: error.message, properties, errors };
+    return refusalData(error);
 }
 /**
  * `call`'s outcome as `answer` resolves it: its value, or its refusal. A
@@ -64,30 +51,6 @@ export async function supervisorAnswer(call) {
             throw error;
         return { refusal };
     }
-}
-/** Standard constructors the receiver of a thrown error rebuilds it with; any other is an Error bearing its name. */
-const STANDARD_ERRORS = {
-    EvalError, RangeError, ReferenceError, SyntaxError, TypeError, URIError,
-};
-/**
- * The error `refusal` was, as the facet received it when SupervisorRPC threw
- * it: a new error of the thrower's type, its message, its own properties, and
- * no stack of the thrower's (src/workerd/jsg/ser.c++, with
- * preserveStackInErrors off).
- */
-export function supervisorRefusalError(refusal) {
-    const Standard = Object.hasOwn(STANDARD_ERRORS, refusal.name) ? STANDARD_ERRORS[refusal.name] : undefined;
-    const error = new (Standard ?? Error)(refusal.message);
-    if (!Standard && refusal.name !== 'Error') {
-        Object.defineProperty(error, 'name', { value: refusal.name, configurable: true, writable: true });
-    }
-    for (const [key, value] of Object.entries(refusal.properties)) {
-        Object.defineProperty(error, key, { value, configurable: true, enumerable: true, writable: true });
-    }
-    for (const [key, value] of Object.entries(refusal.errors)) {
-        Object.defineProperty(error, key, { value: supervisorRefusalError(value), configurable: true, enumerable: true, writable: true });
-    }
-    return error;
 }
 /** Only an RPC stub has `answer` (it has every name); a same-isolate supervisor (vfsSupervisor) has none of it. */
 function isAnsweringStub(supervisor) {

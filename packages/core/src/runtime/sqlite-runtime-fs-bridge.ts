@@ -32,7 +32,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   private readonly vfs: CredentialedVfs;
 
   /** The namespace as this caller sees it: what a path off the SQLite root reaches. */
-  private readonly mounted: SyncVFS | undefined;
+  private readonly mounted: CompositeVFS['sync'] | undefined;
 
   private readonly descriptors: Descriptors;
 
@@ -608,26 +608,27 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     });
   }
 
-  remove(path: RuntimeFsPath, options: { recursive?: boolean; force?: boolean } = {}): void {
+  remove(path: RuntimeFsPath, options: { recursive?: boolean; force?: boolean; report?: boolean; keepVanishedAncestors?: boolean } = {}): void | VfsRemoval {
     return called({ syscall: 'remove', path }, () => {
       try {
         if (!options.recursive) { this.unlink(path); return; }
-        const located = this.locateMutation(path, false, 'remove');
-        if (located.mount) {
-          const mount = located.mount;
-          if (!mount.removeRecursive) removeTree(mount, located.path);
-          else {
-            // A walked removal carries on past an entry it cannot remove and
-            // reports it; rm -r fails with the first.
-            const failed = (mount.removeRecursive(located.path) as VfsRemoval | undefined)?.failures[0];
-            if (failed) throw failed.error;
-          }
-        }
-        else this.vfs.removeRecursive(located.path);
+        const located = this.locateMutation(path, false, options.report ? 'rm' : 'remove');
+        if (!options.report && !located.mount) { this.vfs.removeRecursive(located.path); return; }
+        const report = located.mount ? located.mount.removeRecursive(located.path, { keepVanishedAncestors: options.keepVanishedAncestors })
+          : this.namespace !== undefined ? this.namespace.sync.removeRecursive('/' + located.path, { keepVanishedAncestors: options.keepVanishedAncestors })
+            : this.removeStored(located.path, path);
+        if (options.report) return report;
+        const failed = report.failures[0];
+        if (failed) throw failed.error;
       } catch (error) {
         if (!(options.force && hasErrorCode(error, 'ENOENT'))) throw error;
       }
     });
+  }
+
+  private removeStored(key: string, path: RuntimeFsPath): VfsRemoval {
+    this.vfs.removeRecursive(key);
+    return { removed: [typeof path === 'string' ? path : path.path], kept: [], failures: [] };
   }
 
   copyFile(from: RuntimeFsPath, to: RuntimeFsPath): void {
@@ -896,7 +897,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
    * confined caller's /tmp/x is its private file, not the shared tmp/x.
    */
   private leaseAllows(path: string, owner?: string): void {
-    this.rawVfs.assertMutationAllowed(this.vfs.storageKey(normalizeVfsPath(path)), owner, this.vfs.holds);
+    this.rawVfs.assertMutationAllowed(path, owner, this.vfs.holds, this.vfs.cred);
   }
 
 
@@ -976,7 +977,7 @@ const DOT_DOT_SEGMENT = /(?:^|\/)\.\.(?:\/|$)/;
 /** A confined path, and whether a mount other than the SQLite root owns it. */
 type Located =
   /** `namespace`: the view `mount` is the synchronous face of (the lease it presents included). */
-  | { mount: SyncVFS; namespace: CompositeVFS; path: string; absent?: undefined }
+  | { mount: CompositeVFS['sync']; namespace: CompositeVFS; path: string; absent?: undefined }
   /** `absent`: the one walk on SQLite ended at an absent name (walkOnSqlite). */
   | { mount?: undefined; path: string; absent?: true };
 
@@ -985,19 +986,6 @@ function mountOp<F extends (...args: never[]) => unknown>(fn: F | undefined, ...
   if (typeof fn !== 'function') throw callError('ENOTSUP', args.length === 2 ? { syscall: args[0], path: args[1] } : args[0]);
   return fn;
 }
-
-/** Depth-first removal with base operations, for a backend without its own. */
-function removeTree(mount: SyncVFS, path: string): void {
-  const stat = mount.stat(path, { follow: false });
-  if (stat === null) throw fsError('ENOENT', 'rm', path);
-  if (stat.type === 'directory') {
-    for (const entry of mount.readdir(path)) removeTree(mount, `${path === '/' ? '' : path}/${entry.name}`);
-    mountOp(mount.rmdir, 'rmdir', path)(path);
-  } else {
-    mount.unlink(path);
-  }
-}
-
 
 /** One call as Node names it in its errors: the syscall, its path, and the second path of a call naming two. */
 interface FsCall {

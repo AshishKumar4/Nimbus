@@ -67,15 +67,11 @@ export async function registerHostedCommands(self, workspace) {
                 return 'unsupported';
             // runtime primitive support (P11): the vite shim PID (registered by
             // P5's long-running spawn) also tears down the in-process
-            // viteDevServer / cirrusReal — facetManager.kill only handles real
-            // Worker-Loader facets, and would leave the shim running with its port
-            // registered against a dead PID.
+            // viteDevServer — facetManager.kill only handles real Worker-Loader
+            // facets, and would leave the shim running with its port registered
+            // against a dead PID.
             if (self._viteShimPid === pid) {
                 try {
-                    if (self.cirrusReal?.isRunning) {
-                        self.cirrusReal.stop(self.ctx);
-                        self.cirrusReal = null;
-                    }
                     if (self.viteDevServer?.isRunning) {
                         self.viteDevServer.stop();
                         self.viteDevServer = null;

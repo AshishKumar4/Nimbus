@@ -15,14 +15,17 @@
  */
 
 import type { RuntimeFsBridge, RuntimeSynchronousFs } from './os-contracts.js';
+import type { VfsRemoval } from '../vfs/vfs.js';
 
 /**
  * How a method's answer crosses a supervisor hop: `value` as the hop hands
  * it; `bytes` an ArrayBuffer after the hop, made a Uint8Array again; `stream`
  * a W7 stream, which travels as the call's own result, never inside
- * `answer`'s argument list.
+ * `answer`'s argument list; `removal` a removal's report, each failure's
+ * error crossing as refusal data (sendRemoval) and made an error again
+ * (answerRemoval).
  */
-export type FilesystemAnswer = 'value' | 'bytes' | 'stream';
+export type FilesystemAnswer = 'value' | 'bytes' | 'stream' | 'removal';
 
 /** The bridge methods a supervisor answers: every one but the capabilities that stay in their isolate. */
 type BridgeMethod = Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'gateLaunch' | 'writeFileFrom'>;
@@ -55,7 +58,7 @@ export const FILESYSTEM_METHODS = {
   acquire: { rpc: 'fsAcquire', answer: 'value' },
   list: { rpc: 'fsList', answer: 'value' },
   realpath: { rpc: 'fsRealpath', answer: 'value' },
-  remove: { rpc: 'fsRemove', answer: 'value' },
+  remove: { rpc: 'fsRemove', answer: 'removal' },
   copyFile: { rpc: 'fsCopyFile', answer: 'value' },
   copyTree: { rpc: 'fsCopyTree', answer: 'value' },
   fstat: { rpc: 'fsFstat', answer: 'value' },
@@ -120,4 +123,90 @@ export function answerStream<T>(result: Promise<T> | T): Promise<T> {
 
 function asBytes<T extends Uint8Array | null>(value: T | ArrayBuffer): T | Uint8Array {
   return value instanceof ArrayBuffer ? new Uint8Array(value) : value;
+}
+
+// ── Refusals across a hop ────────────────────────────────────────────────
+
+/**
+ * A refusal as it crosses the hop: what workerd's enhanced_error_serialization
+ * carries of a thrown error, as data. `properties` are the error's own ones
+ * but `message` and `stack`: `code`, `errno`, `syscall`, `path`, `dest`,
+ * `detail`, whatever the host set (`name` too, when it is its own). An error
+ * among them (a `cause`) is in `errors`, as data of the same shape: inside
+ * a returned value it would cross as a structured clone, which keeps only
+ * its message.
+ */
+export interface SupervisorRefusal {
+  readonly name: string;
+  readonly message: string;
+  readonly properties: Readonly<Record<string, unknown>>;
+  readonly errors: Readonly<Record<string, SupervisorRefusal>>;
+}
+
+/** `error` as refusal data. */
+export function refusalData(error: Error): SupervisorRefusal {
+  const properties: Record<string, unknown> = {};
+  const errors: Record<string, SupervisorRefusal> = {};
+  for (const key of Object.getOwnPropertyNames(error)) {
+    if (key === 'message' || key === 'stack') continue;
+    const value: unknown = Reflect.get(error, key);
+    if (value instanceof Error) errors[key] = refusalData(value);
+    else properties[key] = value;
+  }
+  return { name: error.name, message: error.message, properties, errors };
+}
+
+/** Standard constructors the receiver of a thrown error rebuilds it with; any other is an Error bearing its name. */
+const STANDARD_ERRORS: Readonly<Record<string, ErrorConstructor>> = {
+  EvalError, RangeError, ReferenceError, SyntaxError, TypeError, URIError,
+};
+
+/**
+ * The error `refusal` was, as the facet received it when SupervisorRPC threw
+ * it: a new error of the thrower's type, its message, its own properties, and
+ * no stack of the thrower's (src/workerd/jsg/ser.c++, with
+ * preserveStackInErrors off).
+ */
+export function supervisorRefusalError(refusal: SupervisorRefusal): Error {
+  const Standard = Object.hasOwn(STANDARD_ERRORS, refusal.name) ? STANDARD_ERRORS[refusal.name] : undefined;
+  const error = new (Standard ?? Error)(refusal.message);
+  if (!Standard && refusal.name !== 'Error') {
+    Object.defineProperty(error, 'name', { value: refusal.name, configurable: true, writable: true });
+  }
+  for (const [key, value] of Object.entries(refusal.properties)) {
+    Object.defineProperty(error, key, { value, configurable: true, enumerable: true, writable: true });
+  }
+  for (const [key, value] of Object.entries(refusal.errors)) {
+    Object.defineProperty(error, key, { value: supervisorRefusalError(value), configurable: true, enumerable: true, writable: true });
+  }
+  return error;
+}
+
+/**
+ * A `removal` answer as it leaves for a hop: each failure's error as its
+ * refusal data, which crosses whole where the error, inside a returned value,
+ * would arrive with only its message.
+ */
+export function sendRemoval<T extends void | VfsRemoval>(result: Promise<T> | T): Promise<T> | T {
+  return pending(result) ? Promise.resolve(result).then(removalData) : removalData(result);
+}
+
+/** A `removal` answer after the hop: each failure's error made again (supervisorRefusalError). */
+export function answerRemoval<T extends void | VfsRemoval>(result: Promise<T> | T): Promise<T> | T {
+  return pending(result) ? Promise.resolve(result).then(removalErrors) : removalErrors(result);
+}
+
+function removalData<T extends void | VfsRemoval>(report: T): T {
+  if (report === undefined) return report;
+  const failures = report.failures.map(({ path, error }) => ({ path, error: error instanceof Error ? refusalData(error) : error }));
+  return { ...report, failures } as unknown as T;
+}
+
+function removalErrors<T extends void | VfsRemoval>(report: T): T {
+  if (report === undefined) return report;
+  const failures = report.failures.map(({ path, error }) => ({
+    path,
+    error: error instanceof Error ? error : supervisorRefusalError(error as unknown as SupervisorRefusal),
+  }));
+  return { ...report, failures } as unknown as T;
 }

@@ -12,7 +12,7 @@
 import assert from 'node:assert/strict';
 
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
-import { HIBERNATED_REAL, ROOT, VITE_PORT, hostRequest, makeWokenSession, pathRequest, readOnlyVfs } from './lib/vite-route-rig.mjs';
+import { HIBERNATED_REAL, REAL_VITE_STUB, ROOT, VITE_PORT, hostRequest, makeWokenSession, pathRequest, readOnlyVfs, withResidentLauncher } from './lib/vite-route-rig.mjs';
 
 const routes =
   await importWorkerBundle({ 'packages/worker/src/session/routes.ts': ['handleFetch', 'restorePersistedDevServer', 'acceptCirrusHmrWs'] }, {
@@ -22,34 +22,16 @@ const routes =
         contents: 'export const acquireHeavyAlloc = async () => () => {};\n'
           + 'export const acquireSupervisorReadAllocation = async () => () => {};\n',
       },
-      // A fake real-vite controller: no facet, no ASSETS, just enough shape
-      // for start-real-vite.ts to register it and for the port proxy to serve.
-      {
-        filter: /facets\/cirrus-real\.js$/,
-        contents: `
-            export function shouldUseRealVite() { return true; }
-            export class CirrusReal {
-              constructor(opts) { this.opts = opts; this._running = false; }
-              get isRunning() { return this._running; }
-              async start() { this._running = true; }
-              stop() { this._running = false; }
-              attachHmrClient() { return 'client-1'; }
-              async handleRequest(_req, innerPath) {
-                return new Response('real-vite served ' + innerPath + ' base=' + this.opts.basePath, {
-                  status: 200, headers: { 'X-Served-By': 'cirrus-real' },
-                });
-              }
-              get stats() { return { snapshot: null, viteVersion: 'test' }; }
-            }
-          `,
-      },
+      // A real-vite controller with no facet and no ASSETS: it launches
+      // through the session's manager, whose process the port proxy serves.
+      { filter: /facets\/cirrus-real\.js$/, contents: REAL_VITE_STUB },
     ],
   });
 const { handleFetch } = routes;
 
 // No vite.config.* on disk → start-real-vite skips esbuild bundling entirely.
 const makeVfs = () => readOnlyVfs(new Map([[`${ROOT}/package.json`, '{"name":"app"}']]));
-const wake = (storage = {}) => makeWokenSession(storage, { vfs: makeVfs, routes, pidBase: 200 });
+const wake = (storage = {}) => withResidentLauncher(makeWokenSession(storage, { vfs: makeVfs, routes, pidBase: 200 }));
 
 // 1. `/port/N/` (the host's forwarding target) restores real-vite, not the
 //    Cirrus shim, and serves through it.
