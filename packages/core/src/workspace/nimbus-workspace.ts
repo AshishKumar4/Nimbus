@@ -323,7 +323,7 @@ export class NimbusWorkspace {
     shellProcessPid: number,
     private readonly supervisorOps: (envelope: SupervisorOpEnvelope) => Promise<unknown>,
     readonly filesystem: ProcessFiles,
-    private readonly runtimeLease: import('../runtime/os-contracts.js').NimbusHostFilesystemLease,
+    private readonly hostLeases: readonly import('../runtime/os-contracts.js').NimbusHostFilesystemLease[],
     /** Who the workspace shell acts as, and so every call's process. */
     private readonly identity: ShellCommandIdentity,
   ) {
@@ -444,13 +444,18 @@ export class NimbusWorkspace {
 
     const getHome = () => shell.getEnv().HOME ?? DEFAULT_HOME;
     const kernelFs = vfs.as(CRED_KERNEL);
+    // The kernel's, for the runtime store; the session user's for what the
+    // owner put there: a lookup with no caller of its own, and the packages
+    // they installed globally, are read as they would read them.
     const runtimeLease = filesystem.openHost(CRED_KERNEL);
-    // Kernel-credentialed on purpose: this only INSPECTS a file to decide how
-    // to run it, and re-checks the caller's own execute permission at
-    // invocation time — the `authorize` wrapper in exec-dispatch.ts. It
-    // inspects through the namespace's awaiting face, so a script on an
-    // asynchronous mount runs by its path like any other.
-    installPathExecResolver(registry, new ProcessView(runtimeLease.fs), () => shell.getCwd());
+    const ownerLease = filesystem.openHost(CRED_SESSION_USER);
+    const hostLeases = [runtimeLease, ownerLease];
+    // A lookup without a caller's view INSPECTS a file to decide how to run
+    // it as the session user, and the caller's own execute permission is
+    // checked again at invocation — the `authorize` wrapper in
+    // exec-dispatch.ts. It inspects through the namespace's awaiting face, so
+    // a script on an asynchronous mount runs by its path like any other.
+    installPathExecResolver(registry, new ProcessView(ownerLease.fs), () => shell.getCwd());
 
     // Everything past the lease can throw — a runtime source that fails to
     // list, a package that will not install. The workspace it would have
@@ -535,7 +540,7 @@ export class NimbusWorkspace {
       // here: the workspace is composed with them registered (a failure
       // leaves those commands out, and says so).
       try {
-        await rehydrateGlobalPackages(new ProcessView(runtimeLease.fs), registry);
+        await rehydrateGlobalPackages(new ProcessView(ownerLease.fs), registry);
       } catch (error) {
         console.error('[nimbus] global npm commands were not restored:', error);
       }
@@ -558,17 +563,17 @@ export class NimbusWorkspace {
       workspace = new NimbusWorkspace(
         vfs, kernel, shell, registry, env, options.sql,
         processes, children, runtimes, shellProcessPid,
-        supervisorOps, filesystem, runtimeLease, identity,
+        supervisorOps, filesystem, hostLeases, identity,
       );
       return workspace;
     } catch (error) {
-      await runtimeLease.dispose();
+      for (const lease of hostLeases) await lease.dispose();
       throw error;
     }
   }
 
   async close(): Promise<void> {
-    await this.runtimeLease.dispose();
+    for (const lease of this.hostLeases) await lease.dispose();
   }
 
   /**

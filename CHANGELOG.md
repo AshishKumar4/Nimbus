@@ -5,6 +5,17 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed (security): helpers a command starts acted as the kernel, not as
+  the command's process. `nimbus wrangler dev` read its config and D1
+  migrations, kept its KV and R2 stores, and bundled its Worker as
+  `CRED_KERNEL`, so a project symlink made it read a file its user could
+  not; a resident process's boot read the `.wasm` files it named as the
+  kernel; `npm install -g` made its prefix and wrote its bin shims as the
+  kernel; and global npm and gem commands, and a command lookup with no
+  caller, were discovered by reading as the kernel. Each now acts as the
+  process that ran it (the session's user for discovery), and is refused
+  what that process is refused. The shared build service's default view is
+  the session's user's.
 - Fixed: `nimbus wrangler dev`'s Worker Loader binding (`worker_loaders`)
   cached a Worker loaded with `LOADER.get(id, …)` under its id alone, for
   the whole isolate: two Workers in co-located sessions that used the same

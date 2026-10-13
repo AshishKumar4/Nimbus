@@ -9,7 +9,7 @@ import {
   issueProcessNews,
   withLaunchAdmission,
 } from "@nimbus-sh/fabric/budgets.js";
-import { CRED_KERNEL, CRED_SESSION_USER, type NimbusFilesystemAuthority } from "@nimbus-sh/core/runtime/os-contracts.js";
+import { CRED_KERNEL, CRED_SESSION_USER, type NimbusFilesystemAuthority, type VfsCred } from "@nimbus-sh/core/runtime/os-contracts.js";
 import { ProcessFiles, ProcessView, X_OK } from "@nimbus-sh/core/runtime/process-files.js";
 import { resolutionOf } from '@nimbus-sh/core/shell/exec-dispatch.js';
 
@@ -241,8 +241,9 @@ export async function ensureNpmInstaller(self: RuntimeServiceHost, runtimeContex
     return self.npmInstaller;
   }
 
-export function ensureGlobalPrefixDirs(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext, prefix: string): void {
-    const fs = self.sqliteFs!.as(CRED_SESSION_USER);
+export function ensureGlobalPrefixDirs(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext, prefix: string, cred: Readonly<VfsCred>): void {
+    // Made as the installing process, which then installs into them.
+    const fs = self.sqliteFs!.as(cred);
     const dirs = [
       prefix,
       `${prefix}/lib`,

@@ -11,7 +11,6 @@
  * running command's pid — it authorizes the batch-facet writes.
  */
 import type { NpmInstallPort } from '@nimbus-sh/core/substrate/lifo/commands/system/npm.js';
-import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { materializeNpmBinShims } from '../npm/bin-links.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 import type { SessionInternal } from './internal.js';
@@ -25,8 +24,10 @@ export function createNpmInstallPort(self: InstallHost): NpmInstallPort {
       const globalBinDir = globalPrefix ? `${globalPrefix}/bin` : undefined;
       const sqliteFs = self.ensureSqliteFs();
       const installer = await self.ensureNpmInstaller();
+      // The prefix, the project and the bin shims are read and written as the running command.
+      const cred = self.processes.cred(spec.pid);
       // The session's own engine calls here wait for a delegation they meet: each is repeatable.
-      if (globalPrefix) await withRecall(() => self.ensureGlobalPrefixDirs(globalPrefix));
+      if (globalPrefix) await withRecall(() => self.ensureGlobalPrefixDirs(globalPrefix, cred));
       const installCwd = globalPrefix ? `${globalPrefix}/lib` : spec.projectDir;
 
       const result = await installer.install(installCwd, {
@@ -34,8 +35,7 @@ export function createNpmInstallPort(self: InstallHost): NpmInstallPort {
         production: spec.production,
         fromLockfile: spec.fromLockfile,
         pid: spec.pid,
-        // The project is read and written as the running command.
-        cred: self.processes.cred(spec.pid),
+        cred,
         registry: spec.registry,
         npmLog: spec.npmLog ?? undefined,
         onProgress: spec.onProgress,
@@ -55,7 +55,7 @@ export function createNpmInstallPort(self: InstallHost): NpmInstallPort {
         // install the linker skips what never landed, so a partial tree
         // exposes exactly the bins that installed.
         whileHeld: globalBinDir === undefined ? undefined : () => withRecall(() => materializeNpmBinShims(
-          sqliteFs.as(CRED_KERNEL),
+          sqliteFs.as(cred),
           `${installCwd}/node_modules`,
           globalBinDir,
         )),
