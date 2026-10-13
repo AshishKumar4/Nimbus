@@ -111,13 +111,19 @@ const outcome = async (iterable) => {
   const waitingNext = aborting.next().then(() => 'resolved', (error) => error.name);
   second.abort('again');
   const afterAbort = [await waitingNext, await aborting.next()];
+  // A signal that is not one: its first next() rejects with Node's error, then it is done; return() first ends it.
+  const invalid = fs.promises.watch('/home/user/file.bin', { signal: {} })[Symbol.asyncIterator]();
+  const refusal = await new Promise((resolve) => resolve(invalid.next())).then(() => 'resolved', (error) => error.code);
+  const invalidSignal = [refusal, await invalid.next()];
+  const unread = fs.promises.watch('/home/user/file.bin', { signal: {} })[Symbol.asyncIterator]();
+  invalidSignal.push(await new Promise((resolve) => resolve(unread.return())), await unread.next());
   // return() while a next() waits on an unchanged file ends both at once.
   const iterator = fs.promises.watch('/home/user/file.bin')[Symbol.asyncIterator]();
   const pending = iterator.next();
   await sleep(700);
   const returned = await Promise.race([iterator.return(), sleep(2000).then(() => 'timeout')]);
   const settled = await Promise.race([pending, sleep(2000).then(() => 'timeout')]);
-  console.log(JSON.stringify({ aborted, already, returned, settled, afterAbort }));
+  console.log(JSON.stringify({ aborted, already, returned, settled, afterAbort, invalidSignal }));
   process.exit(0);
 })();
 `;
@@ -145,6 +151,8 @@ const outcome = async (iterable) => {
     assert.deepEqual(seen.aborted, { name: 'AbortError', code: 'ABORT_ERR', cause: 'stop' },
       'an unchanged 3 MiB file yields nothing, and the signal ends the iterator with an AbortError');
     assert.deepEqual(seen.afterAbort, ['AbortError', { done: true }], 'its abort rejects the waiting next(), and after it, it is done');
+    assert.deepEqual(seen.invalidSignal, ['ERR_INVALID_ARG_TYPE', { done: true }, { done: true }, { done: true }],
+      'a signal that is not an AbortSignal is one rejection of the first next(), then done; return() before any next() ends it');
     assert.deepEqual([seen.returned, seen.settled], [{ done: true }, { done: true }],
       'return() while a next() waits ends the iterator and settles the waiting next()');
     assert.deepEqual(seen.already, { name: 'AbortError', code: 'ABORT_ERR', cause: 'stop' }, 'an already-aborted signal refuses it');
