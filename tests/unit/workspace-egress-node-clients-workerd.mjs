@@ -1,4 +1,5 @@
 // @serial
+// @tier slow — drives workerd and installs the Node HTTP and PostgreSQL clients.
 // A node program in a session whose workspace goes out through an egress
 // (apps/probe's TestEgress, NIMBUS_TEST_EGRESS=1): every common HTTPS client
 // reaches the egress, which alone answers egress-test.invalid: https.get,
@@ -41,12 +42,70 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { createServer as createTcpServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { localTerminal, startLocalProbe } from './lib/workerd-probe.mjs';
+import { NODE_UNUSED_SOCKETS } from './lib/node-unused-socket-program.mjs';
 
 /** The clients, at the same versions on both sides of the differentials. */
-const PACKAGES = ['axios@1.20.0', 'node-fetch@3.3.2', 'undici@6.29.0', 'ws@8.22.0'];
+const PACKAGES = ['axios@1.20.0', 'node-fetch@3.3.2', 'undici@6.29.0', 'ws@8.22.0', 'pg@8.16.3'];
+
+const PG_STARTUP = String.raw`
+(async () => {
+  const client = new (require('pg').Client)({ host: '127.0.0.1', port: Number(process.argv[2]),
+    user: 'nimbus', database: 'nimbus', password: 'unused', application_name: 'nimbus-identity', ssl: false });
+  try {
+    await client.connect();
+    throw new Error('the startup-only server cannot authenticate a client');
+  } catch (error) {
+    if (error.message !== 'Connection terminated unexpectedly') throw error;
+    console.log('PG_STARTUP ' + JSON.stringify(error.message));
+  } finally {
+    await client.end();
+  }
+})().catch((error) => { console.error(error); process.exitCode = 1; });
+`;
+
+/** A real TCP listener, not a Postgres implementation: receive its startup header and end the connection. */
+async function pgStartup(label, run) {
+  const sockets = new Set();
+  let receive;
+  let rejectReceive;
+  const header = new Promise((resolve, reject) => { receive = resolve; rejectReceive = reject; });
+  const server = createTcpServer((socket) => {
+    sockets.add(socket);
+    let bytes = Buffer.alloc(0);
+    socket.on('error', rejectReceive);
+    socket.on('close', () => {
+      sockets.delete(socket);
+      if (bytes.length < 8) rejectReceive(new Error(`${label}: socket closed before its PostgreSQL startup header`));
+    });
+    socket.on('data', (part) => {
+      bytes = Buffer.concat([bytes, part]);
+      if (bytes.length >= 8) {
+        receive([bytes.readUInt32BE(0), bytes.readUInt32BE(4)]);
+        socket.end();
+      }
+    });
+  });
+  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+  const port = server.address().port;
+  const timer = setTimeout(() => rejectReceive(new Error(`${label}: no PostgreSQL startup header reached the TCP listener`)), 20_000);
+  try {
+    const [result, received] = await Promise.all([run(port), header]);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.equal(labelled(result.stdout, 'PG_STARTUP'), 'Connection terminated unexpectedly');
+    assert.ok(received[0] > 8, 'PostgreSQL startup length includes its parameters');
+    assert.equal(received[1], 196608, 'the peer received PostgreSQL protocol 3.0, not an HTTP request');
+    console.log(`  ${label} pg startup: ${JSON.stringify(received)}`);
+    return received;
+  } finally {
+    clearTimeout(timer);
+    for (const socket of sockets) socket.destroy();
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+}
 
 const PROCESS_TAG = String.raw`
 console.log('TAG ' + JSON.stringify([Object.prototype.toString.call(process), Object.getOwnPropertyDescriptor(process, Symbol.toStringTag)]));
@@ -398,8 +457,10 @@ const probe = await startLocalProbe({ runtimes: [], vars: { NIMBUS_TEST_EGRESS: 
 try {
   const terminal = await localTerminal(probe, { install: [] });
   try {
+    const installAt = Date.now();
     const setup = await terminal.run(`mkdir -p /home/user/clients && cd /home/user/clients && npm init -y >/dev/null && npm install ${PACKAGES.join(' ')}`, 600_000);
     assert.equal(setup.status, 0, 'npm install through the egress:\n' + setup.stdout.slice(-1200));
+    console.log(`  Nimbus client installation: ${Date.now() - installAt} ms`);
 
     const curl = await terminal.run('curl -s https://egress-test.invalid/curl');
     assert.match(curl.stdout, /via-egress GET \/curl/, 'curl did not reach the egress:\n' + curl.stdout);
@@ -433,7 +494,7 @@ try {
     if (egressed === '1') {
       const host = await hostSide();
       try {
-        for (const [name, source] of [['tag.js', PROCESS_TAG], ['echo-server.js', ECHO_SERVER(4555)], ['axios.js', AXIOS], ['ws-echo.js', WS]]) {
+        for (const [name, source] of [['tag.js', PROCESS_TAG], ['echo-server.js', ECHO_SERVER(4555)], ['axios.js', AXIOS], ['ws-echo.js', WS], ['pg-startup.js', PG_STARTUP], ['unused-sockets.js', NODE_UNUSED_SOCKETS]]) {
           const encoded = Buffer.from(source).toString('base64');
           const wrote = await terminal.run(`node -e "require('fs').writeFileSync('/home/user/clients/${name}', Buffer.from('${encoded}', 'base64'))"`);
           assert.equal(wrote.status, 0, wrote.stdout);
@@ -443,6 +504,16 @@ try {
         console.log('  process tag: ' + JSON.stringify(tag[0]));
         assert.deepEqual(tag[0], tag[1], "the child's process is tagged as host Node's");
         assert.equal(tag[0][0], '[object process]');
+
+        const unused = await terminal.run('cd /home/user/clients && node unused-sockets.js');
+        const hostUnused = await host.run('unused-sockets.js', NODE_UNUSED_SOCKETS);
+        assert.equal(unused.status, 0, unused.stdout);
+        assert.equal(hostUnused.status, 0, hostUnused.stderr);
+        assert.deepEqual(labelled(unused.stdout, 'UNUSED_SOCKETS'), labelled(hostUnused.stdout, 'UNUSED_SOCKETS'),
+          'unused native sockets release their process interest as Node does');
+        const startup = await pgStartup('Nimbus', (port) => terminal.run(`cd /home/user/clients && node pg-startup.js ${port}`, 60_000));
+        const hostStartup = await pgStartup('Node', (port) => host.run('pg-startup.js', PG_STARTUP, [String(port)]));
+        assert.deepEqual(startup, hostStartup, 'standard pg sends the same startup header through Nimbus node:net as through native Node');
 
         // The server is a resident of the session; its launch returns to the prompt.
         const served = await terminal.run('cd /home/user/clients && node echo-server.js', 120_000);

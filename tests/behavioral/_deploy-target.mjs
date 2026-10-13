@@ -25,7 +25,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Terminal, stripAnsi } from './_driver.mjs';
-import { createProbeTarget } from './_session-transport.mjs';
+import { VERSION_HEADER, createProbeTarget } from './_session-transport.mjs';
 import { NIMBUS_STATE } from '../../scripts/ci/lib/state-dir.mjs';
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -232,9 +232,16 @@ export async function createSession(base, jwt, { signal } = {}) {
 // Old replies persisted for 25 s; complete cycles measured as fast as 452 ms.
 // 64 exceeds ceil(25_000 / 452) = 56. This is a count, never a settle timer.
 export const READINESS_CYCLES = 64;
+// The fastest complete session cycle measured. A stamped answer alone is far
+// faster, so a cycle of one is paced to this floor: the same count then spans
+// the same 25 s overlap, still on evidence, since any older answer restarts it.
+export const READINESS_CYCLE_FLOOR_MS = 452;
 // tw-hm-npm, 2026-10-07: slowest full cycle 2.85 s × 64 ≈ 182 s.
 // 240 s covers that plus the measured 25 s deploy overlap and 33 s headroom.
 export const READINESS_BUDGET_MS = 240_000;
+// The remote API's default path, which both apps serve; unauthenticated, its
+// refusal answers before any session or account state.
+const READINESS_RPC_PATH = '/api/nimbus/v1/sandboxes/nimbus-readiness/rpc';
 
 export class TargetNotReadyError extends Error {
   constructor(message) {
@@ -245,25 +252,58 @@ export class TargetNotReadyError extends Error {
 }
 
 /**
+ * The one readiness loop: READINESS_CYCLES consecutive cycles, each of which
+ * proved that `versionId` answered (`requireVersion`); a failed cycle or an
+ * answer from another version starts the count over. A cycle lasts at least
+ * `floorMs`. `cycle({ budget, requireVersion })` throws to fail.
+ */
+async function untilServed(versionId, cycle, { timeoutMs, floorMs, what, unresolved = () => '' }) {
+  if (!versionId) throw new TargetNotReadyError('readiness requires this upload\'s version id receipt');
+  const deadline = Date.now() + timeoutMs;
+  const budget = (max) => {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new Error('readiness deadline exceeded');
+    return Math.min(max, remaining);
+  };
+  const requireVersion = (observed, stage) => {
+    if (observed !== versionId) throw new Error(`${stage} answered version ${JSON.stringify(observed)}, expected uploaded version ${versionId}`);
+  };
+  let last = '';
+  let consecutive = 0;
+  while (Date.now() < deadline) {
+    const started = Date.now();
+    let ready = false;
+    try {
+      await cycle({ budget, requireVersion });
+      ready = true;
+    } catch (e) {
+      last = e instanceof Error ? e.message : String(e);
+    }
+    if (ready && Date.now() < deadline) {
+      consecutive++;
+      if (consecutive === READINESS_CYCLES) return { versionId, cycles: consecutive };
+      const pace = Math.min(floorMs - (Date.now() - started), deadline - Date.now());
+      if (pace > 0) await new Promise((resolve) => setTimeout(resolve, pace));
+      continue;
+    }
+    consecutive = 0;
+    const delay = Math.min(3_000, Math.max(0, deadline - Date.now()));
+    if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+  }
+  throw new TargetNotReadyError(`target never completed ${READINESS_CYCLES} consecutive ${what} on uploaded version ${versionId} within ${timeoutMs}ms: ${last}${unresolved()}`);
+}
+
+/**
  * The Worker can authenticate `/new` before its DO namespace/code is usable.
  * Readiness requires a real terminal command and the confirmed public destroy
  * result. A failed attempt owns its session until cleanup is acknowledged;
  * never mint another one while the previous cleanup is unconfirmed.
  */
 export async function waitForTarget(base, jwt, timeoutMs = READINESS_BUDGET_MS, versionId) {
-  if (!versionId) throw new TargetNotReadyError('readiness requires this upload\'s version id receipt');
-  const deadline = Date.now() + timeoutMs;
   const target = createProbeTarget({ base, token: jwt });
   const pendingCleanup = new Set();
-  const requireVersion = (observed, stage) => {
-    if (observed !== versionId) throw new Error(`${stage} answered version ${JSON.stringify(observed)}, expected uploaded version ${versionId}`);
-  };
-  const budget = (max) => {
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) throw new Error('readiness deadline exceeded');
-    return Math.min(max, remaining);
-  };
-  const destroy = async (sid) => {
+  const deadline = Date.now() + timeoutMs;
+  const destroy = async (sid, requireVersion) => {
     // Readiness is bounded above; cleanup may use at most 10 s afterwards.
     const timeout = Math.max(1_000, Math.min(10_000, deadline - Date.now()));
     const result = await target.delete(sid, { reason: 'target-readiness', signal: AbortSignal.timeout(timeout) });
@@ -273,12 +313,10 @@ export async function waitForTarget(base, jwt, timeoutMs = READINESS_BUDGET_MS, 
     pendingCleanup.delete(sid);
     requireVersion(result.versionId, `DELETE ${sid}`);
   };
-  let last = '';
-  let consecutive = 0;
-  while (Date.now() < deadline) {
-    let sid, terminal, ready = false;
+  const cycle = async ({ budget, requireVersion }) => {
+    let sid, terminal, failure = null;
     try {
-      for (const pending of pendingCleanup) await destroy(pending);
+      for (const pending of pendingCleanup) await destroy(pending, requireVersion);
       const session = await target.create({ signal: AbortSignal.timeout(budget(15_000)) });
       sid = session.sessionId;
       pendingCleanup.add(sid);
@@ -286,7 +324,7 @@ export async function waitForTarget(base, jwt, timeoutMs = READINESS_BUDGET_MS, 
       terminal = new Terminal(sid, { base, wsOptions: { headers: session.headers } });
       let upgradeVersion = null;
       const opened = terminal.connect(budget(15_000));
-      terminal.ws.on('upgrade', (response) => { upgradeVersion = response.headers['x-nimbus-probe-version'] ?? null; });
+      terminal.ws.on('upgrade', (response) => { upgradeVersion = response.headers[VERSION_HEADER] ?? null; });
       await opened;
       requireVersion(upgradeVersion, 'terminal WebSocket upgrade');
       await terminal.waitForPrompt(budget(30_000));
@@ -296,31 +334,43 @@ export async function waitForTarget(base, jwt, timeoutMs = READINESS_BUDGET_MS, 
       if (!/^__NIMBUS_READY_42__\r?$/m.test(stripAnsi(command.output))) {
         throw new Error(`terminal command did not produce readiness output: ${command.output.slice(-300)}`);
       }
-      ready = true;
     } catch (e) {
-      last = e instanceof Error ? e.message : String(e);
+      failure = e instanceof Error ? e.message : String(e);
     } finally {
       await terminal?.close();
       if (sid) {
-        try { await destroy(sid); }
+        try { await destroy(sid, requireVersion); }
         catch (e) {
-          ready = false;
           const cleanup = e instanceof Error ? e.message : String(e);
-          last = last ? `${last}; cleanup failed: ${cleanup}` : `cleanup failed: ${cleanup}`;
+          failure = failure ? `${failure}; cleanup failed: ${cleanup}` : `cleanup failed: ${cleanup}`;
         }
       }
     }
-    if (ready && pendingCleanup.size === 0 && Date.now() < deadline) {
-      consecutive++;
-      if (consecutive === READINESS_CYCLES) return { versionId, cycles: consecutive };
-      continue;
-    }
-    consecutive = 0;
-    const delay = Math.min(3_000, Math.max(0, deadline - Date.now()));
-    if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
-  }
-  const unresolved = pendingCleanup.size > 0 ? `; unconfirmed cleanup sessions: ${[...pendingCleanup].join(', ')}` : '';
-  throw new TargetNotReadyError(`target never completed ${READINESS_CYCLES} consecutive healthy cycles on uploaded version ${versionId} within ${timeoutMs}ms: ${last}${unresolved}`);
+    if (failure !== null) throw new Error(failure);
+    if (pendingCleanup.size > 0) throw new Error(`unconfirmed cleanup sessions: ${[...pendingCleanup].join(', ')}`);
+  };
+  return untilServed(versionId, cycle, {
+    timeoutMs, floorMs: 0, what: 'healthy cycles',
+    unresolved: () => pendingCleanup.size > 0 ? `; unconfirmed cleanup sessions: ${[...pendingCleanup].join(', ')}` : '',
+  });
+}
+
+/**
+ * A deployment readiness cannot open a session on (the hosted demo, whose
+ * sessions belong to signed-in users): ready once READINESS_CYCLES consecutive
+ * stamped answers came from `versionId`, each one the remote API's
+ * unauthenticated refusal, paced to READINESS_CYCLE_FLOOR_MS.
+ */
+export async function waitForVersion(base, versionId, { timeoutMs = READINESS_BUDGET_MS, floorMs = READINESS_CYCLE_FLOOR_MS, request = globalThis.fetch } = {}) {
+  const url = new URL(READINESS_RPC_PATH, base).href;
+  return untilServed(versionId, async ({ budget, requireVersion }) => {
+    const response = await request(url, {
+      method: 'POST', redirect: 'manual', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      signal: AbortSignal.timeout(budget(15_000)),
+    });
+    await response.body?.cancel();
+    requireVersion(response.headers.get(VERSION_HEADER), `POST ${READINESS_RPC_PATH} → ${response.status}`);
+  }, { timeoutMs, floorMs, what: 'stamped answers' });
 }
 
 // ── State ────────────────────────────────────────────────────────────

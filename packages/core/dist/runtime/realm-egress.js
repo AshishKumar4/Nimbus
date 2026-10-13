@@ -14,6 +14,7 @@
  * through the egress, as workerd's fetch follows a Fetcher's.
  */
 import { isWebSocketGuestEvent, isWebSocketHostEvent, RealmWebSockets } from './realm-websocket.js';
+import { applyRedirectPolicy, isRedirectStatus } from './http-redirect-policy.js';
 // Each side receives a structured clone it must narrow.
 const record = (value) => typeof value === 'object' && value !== null;
 const headerPairs = (value) => Array.isArray(value) && value.every((pair) => Array.isArray(pair) && pair.length === 2 && typeof pair[0] === 'string' && typeof pair[1] === 'string');
@@ -48,14 +49,8 @@ export function isEgressHostEvent(value) {
     }
 }
 // ── The host's side ─────────────────────────────────────────────────────────
-/** Statuses fetch follows a Location from. */
-const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 /** At most this many redirects followed, as fetch follows them. */
 const MAX_REDIRECTS = 20;
-/** Headers that describe a request body: dropped with the body when a redirect turns the request into a GET. */
-const REQUEST_BODY_HEADERS = ['content-encoding', 'content-language', 'content-location', 'content-type', 'content-length'];
-/** Headers fetch drops when a redirect leaves the origin. */
-const CROSS_ORIGIN_HEADERS = ['authorization', 'proxy-authorization', 'cookie', 'host'];
 /**
  * `request` through `network`, each hop its own request with redirect
  * 'manual', and the realm's redirect mode applied here: as workerd's fetch
@@ -66,15 +61,15 @@ const CROSS_ORIGIN_HEADERS = ['authorization', 'proxy-authorization', 'cookie', 
  * redirect' under 'error', 'redirect count exceeded' past 20.
  */
 async function fetchFollowing(network, request, signal) {
-    let url = new URL(request.url);
-    url.hash = '';
-    let method = request.method;
-    let body = request.body;
-    const headers = new Headers(request.headers.map(([name, value]) => [name, value]));
+    const hop = {
+        url: new URL(request.url), method: request.method, body: request.body,
+        headers: new Headers(request.headers.map(([name, value]) => [name, value])),
+    };
+    hop.url.hash = '';
     for (let followed = 0;; followed++) {
-        const response = await network.fetch(url.href, { method, headers, body, redirect: 'manual', signal });
-        const answered = { response, url: url.href, redirected: followed > 0 };
-        if (!REDIRECT_STATUSES.has(response.status) || request.redirect === 'manual')
+        const response = await network.fetch(hop.url.href, { method: hop.method, headers: hop.headers, body: hop.body, redirect: 'manual', signal });
+        const answered = { response, url: hop.url.href, redirected: followed > 0 };
+        if (!isRedirectStatus(response.status, 'fetch') || request.redirect === 'manual')
             return answered;
         if (request.redirect === 'error') {
             await response.body?.cancel();
@@ -86,20 +81,11 @@ async function fetchFollowing(network, request, signal) {
         await response.body?.cancel();
         if (followed === MAX_REDIRECTS)
             throw new Error('redirect count exceeded');
-        const next = new URL(location, url);
+        const next = new URL(location, hop.url);
         next.hash = '';
         if (next.protocol !== 'http:' && next.protocol !== 'https:')
             throw new Error('URL scheme must be a HTTP(S) scheme');
-        if ((response.status === 303 && method !== 'GET' && method !== 'HEAD') || ((response.status === 301 || response.status === 302) && method === 'POST')) {
-            method = 'GET';
-            body = null;
-            for (const name of REQUEST_BODY_HEADERS)
-                headers.delete(name);
-        }
-        if (next.origin !== url.origin)
-            for (const name of CROSS_ORIGIN_HEADERS)
-                headers.delete(name);
-        url = next;
+        applyRedirectPolicy(hop, response.status, next, 'fetch');
     }
 }
 const errorText = (error) => (error instanceof Error ? error.message : String(error));

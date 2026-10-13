@@ -189,6 +189,7 @@ export declare class Interpreter {
      */
     fork(): Interpreter;
     getLastExitCode(): number;
+    setLastExitCode(exitCode: number): void;
     executeScript(script: ScriptNode, terminalStdin?: TerminalInputStream): Promise<number>;
     private executeScriptWithIo;
     executeLine(input: string, terminalStdin?: TerminalInputStream, options?: {

@@ -8,25 +8,12 @@
  * only the trees no store already holds.
  */
 import { oidFromHex, oidToHex } from '../pack/format.js';
+import { TreeEntries } from '../pack/tree-object.js';
 import { encodeNode } from './cachetree.js';
 import { S_IFMT, comparePaths, decodePath } from './dircache.js';
 export const S_IFDIR = 0o040000;
 export const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 const encoder = new TextEncoder();
-/** A tree object's entries, in the tree's own order. */
-export function parseTree(data) {
-    const entries = [];
-    for (let at = 0; at < data.length;) {
-        const space = data.indexOf(0x20, at);
-        const nul = data.indexOf(0, space);
-        let mode = 0;
-        for (let i = at; i < space; i++)
-            mode = mode * 8 + (data[i] - 0x30);
-        entries.push({ name: decodePath(data.subarray(space + 1, nul)), mode, oid: oidToHex(data, nul + 1) });
-        at = nul + 21;
-    }
-    return entries;
-}
 /** The tree a tree-ish names: a commit's, or the tree itself. */
 export async function treeOf(store, oid) {
     for (;;) {
@@ -49,7 +36,10 @@ export async function readTree(store, oid) {
     const { type, data } = await store.read(oid);
     if (type !== 'tree')
         throw new Error(`object ${oid} is a ${type}, not a tree`);
-    return parseTree(data);
+    const entries = [];
+    for (const e = new TreeEntries(data); e.next();)
+        entries.push({ name: decodePath(data.subarray(e.nameAt, e.nameEnd)), mode: e.mode, oid: oidToHex(data, e.oidAt) });
+    return entries;
 }
 const isTree = (mode) => (mode & S_IFMT) === S_IFDIR;
 /**

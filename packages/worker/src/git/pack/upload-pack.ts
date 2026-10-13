@@ -13,7 +13,7 @@ import { retrying } from '@nimbus-sh/platform/retry.js';
 import { RETRY_ATTEMPTS, RETRY_BACKOFF_MS, STALL_MS, TRANSIENT_HTTP_STATUSES, UploadPackError, gitHttpHeaders, gitHttpRemote, type GitTransportAuth } from './transport.js';
 import { PktReader, pktLine, text } from './pkt-line.js';
 import { PackFormatError } from './format.js';
-import { plainTextMessage, type RemoteFailure } from './remote-failure.js';
+import { answeredFailure, transportFailure } from './remote-failure.js';
 
 export interface UploadPackOptions {
   url: string;
@@ -76,6 +76,7 @@ async function send(options: UploadPackOptions, path: string, init: RequestInit 
   const doFetch = options.fetch ?? fetch;
   const { url, auth } = gitHttpRemote(options);
   const request = { ...init, headers: gitHttpHeaders(auth, init.headers) };
+  const failed = init.method === 'POST' ? 'rpc' : 'discovery';
   // Headers that do not come within the stall time are a stall too.
   const stallMs = options.stallMs ?? STALL_MS;
   const attempt = async (): Promise<Response> => {
@@ -83,7 +84,7 @@ async function send(options: UploadPackOptions, path: string, init: RequestInit 
     const stalled = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
         const detail = 'no response for ' + Math.round(stallMs / 1000) + ' s';
-        reject(new UploadPackError(detail, undefined, { kind: 'transport', detail }));
+        reject(new UploadPackError(detail, undefined, transportFailure(failed, detail)));
       }, stallMs);
     });
     try {
@@ -104,7 +105,7 @@ async function send(options: UploadPackOptions, path: string, init: RequestInit 
   } catch (error) {
     if (error instanceof UploadPackError) throw error;
     const detail = error instanceof Error ? error.message : String(error);
-    throw new UploadPackError('the request failed: ' + detail, undefined, { kind: 'transport', detail });
+    throw new UploadPackError('the request failed: ' + detail, undefined, transportFailure(failed, detail));
   }
 }
 
@@ -116,8 +117,7 @@ export async function discover(options: UploadPackOptions, service: 'git-upload-
   });
   if (!response.ok || !response.body) {
     // The server's text, as git shows it, with the status.
-    const message = await plainTextMessage(response.headers.get('content-type'), response.body);
-    const failure: RemoteFailure = { kind: 'status', status: response.status, ...(message === undefined ? {} : { message }) };
+    const failure = await answeredFailure('discovery', response.status, response.headers.get('content-type'), response.body);
     if (response.status === 401 || response.status === 403) {
       throw new UploadPackError('authentication failed (HTTP ' + response.status + ')', response.status, failure);
     }
@@ -222,8 +222,8 @@ export async function requestPack(options: UploadPackOptions, advertised: Set<st
     },
   });
   if (!response.ok || !response.body) {
-    const detail = response.body ? (await response.text()).slice(0, 300) : '';
-    throw new UploadPackError('the request answered HTTP ' + response.status + (detail ? ': ' + detail : ''), response.status);
+    const failure = await answeredFailure('rpc', response.status, response.headers.get('content-type'), response.body);
+    throw new UploadPackError('the request answered HTTP ' + response.status, response.status, failure);
   }
   const reader = new PktReader(response.body.getReader(), options.stallMs);
   const result: PackResponse = { shallows: [], unshallows: [], pack: null };

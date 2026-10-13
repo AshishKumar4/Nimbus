@@ -17,6 +17,7 @@ import { type SparseMatcher } from '../pack/sparse.js';
 import { DirCache, type IndexEdit } from './dircache.js';
 import { Excludes } from './excludes.js';
 import { type ObjectStore } from './tree.js';
+import { type PathProtection } from './verify-path.js';
 import { type WalkCounters, type Worktree, type WorktreeFs } from './walk.js';
 /** The cf-git calls a repository makes. */
 export interface RepoGit {
@@ -149,6 +150,8 @@ export declare class WorktreeRepo {
      * read here.
      */
     sparseMatcher(): Promise<SparseMatcher | null>;
+    /** core.protectHFS and core.protectNTFS, the repository's over the global, else git's defaults (verify-path.ts). */
+    pathProtection(): Promise<PathProtection>;
     /** The worktree with the settings its comparisons take. */
     worktree(): Promise<Worktree>;
     /** The index, as git's repo_read_index leaves it: see clearPresentSkips. */

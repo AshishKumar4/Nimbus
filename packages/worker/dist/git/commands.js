@@ -9,8 +9,7 @@
  * namespace, as its credential: a repository on SQLite or on a mount alike.
  */
 import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
-import { GIT_WASI_ENV } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { engineKey, X_OK } from '@nimbus-sh/core/runtime/process-files.js';
+import { engineKey } from '@nimbus-sh/core/runtime/process-files.js';
 import { WaveIngest } from '@nimbus-sh/core/runtime/wave-ingest.js';
 import { projectFs } from '../runtime/project-fs.js';
 import { execGitNetwork, runGraphFilters } from './network-facet.js';
@@ -20,17 +19,17 @@ import { exitCodeForAbortSignal, SESSION_DESTROYED } from '@nimbus-sh/core/subst
 import { bridgeCleanupFs, cleanUpClone, deleteCloneJob, GIT_CLONE_JOB_MARKER, setCloneJobPhase, writeCloneJob, } from './clone-job.js';
 import { noSuchRemoteText, remoteFailureText, selectRemoteCredentials, urlCredentials } from './pack/remote-failure.js';
 import { base64Utf8 } from '@nimbus-sh/core/_shared/crypto.js';
-import { GitGlobalsError, parseConfigParameter, withConfigOverrides, withGlobalConfig } from './config-params.js';
-import { gitBackend, UnsupportedGitOperation } from './routing.js';
+import { GitGlobalsError, parseConfigParameter, withConfigOverrides } from './config-params.js';
 import { packsSeam } from './pack/store.js';
-import { fetchMissingObjects } from './promisor.js';
+import { PromisorFetchError, fetchMissingObjects } from './promisor.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 import { fsError, isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { dec, enc } from '@nimbus-sh/core/_shared/bytes.js';
 import { DEFAULT_CONTEXT, DEFAULT_RENAME_SCORE, absentSpec, binaryPath, bytesFromBinary, detectRenames, formatNameOnly, formatNameStatus, formatPatch, formatStat, parseRenameScore, pathLine, statFile, StatList, } from './unified-diff.js';
 import { CheckoutRefused, UnmergedIndex, switchTrees } from './worktree/checkout.js';
-import { parseSparseCheckoutArgs, sparseCheckout } from './sparse-checkout.js';
+import { invalidPathError, verifyPath } from './worktree/verify-path.js';
+import { sparseCheckout } from './sparse-checkout.js';
 import { DirCache, NewEntries, comparePaths } from './worktree/dircache.js';
 import { isValidRefName } from './worktree/refname.js';
 import { PairList } from './worktree/pairs.js';
@@ -229,7 +228,7 @@ export function parseGitGlobals(args, cwd) {
         else if (arg === '-C') {
             const path = args[++i];
             if (path === undefined)
-                throw new GitGlobalsError("git: option '-C' requires a value\n", 129);
+                throw new Error("option '-C' requires a value");
             dir = path.startsWith('/') ? path : dir + '/' + path;
             dir = '/' + dir.split('/').filter((seg) => seg && seg !== '.').join('/');
         }
@@ -242,7 +241,7 @@ export function parseGitGlobals(args, cwd) {
             // no pager to disable
         }
         else if (arg.startsWith('-') && arg !== '--version' && arg !== '-v' && arg !== '--help' && arg !== '-h') {
-            throw new UnsupportedGitOperation(`git: unknown option '${arg}'\n${GIT_USAGE}\n`, 129);
+            throw new Error(`unknown option '${arg}'\n${GIT_USAGE}`);
         }
         else {
             break;
@@ -251,14 +250,12 @@ export function parseGitGlobals(args, cwd) {
     return { sub: args[i], subArgs: args.slice(i + 1), dir, config };
 }
 const GIT_USAGE = 'usage: git [-C <path>] [-c <name>=<value>] [--no-pager] <command> [<args>]';
-function unsupportedOption(command, option) {
-    throw new UnsupportedGitOperation(`fatal: git ${command} ${option} is not supported here\n`, 128);
-}
-function requiredValue(args, at, option) {
-    const value = args[at];
-    if (value === undefined)
-        throw new GitGlobalsError(`error: option '${option}' requires a value\n`, 129);
-    return value;
+function getFlag(args, flag) {
+    const idx = args.indexOf(flag);
+    if (idx >= 0)
+        return args[idx + 1] || undefined;
+    const prefix = `${flag}=`;
+    return args.find((arg) => arg.startsWith(prefix))?.slice(prefix.length) || undefined;
 }
 export const CLONE_USAGE = 'usage: git clone [-q | --quiet] [--depth <n>] [--no-shallow] [--filter=<spec>] [--sparse] [--branch <name> | -b <name>] [--bg] <url> [dir]';
 const SIZE_SUFFIX = { '': 1, k: 1024, m: 1024 ** 2, g: 1024 ** 3 };
@@ -278,7 +275,15 @@ export function parseFetchDepth(args) {
             continue;
         if (found !== undefined)
             throw new Error('--depth, --deepen and --unshallow are mutually exclusive');
-        found = fetchDepth(flag, flag === '--unshallow' ? undefined : inline ?? args[++i]);
+        if (flag === '--unshallow') {
+            found = { depth: INFINITE_DEPTH, relative: false };
+            continue;
+        }
+        const value = inline ?? args[++i];
+        const depth = Number(value);
+        if (!Number.isSafeInteger(depth) || depth < 1)
+            throw new Error(`${flag} ${value ?? ''} is not a positive number`.trimEnd());
+        found = { depth, relative: flag === '--deepen' };
     }
     return found;
 }
@@ -296,23 +301,6 @@ export function parseCloneFilter(spec) {
     const tree = /^tree:(\d+)$/.exec(spec);
     if (tree)
         return 'tree:' + Number(tree[1]);
-    if (/^object:type=(blob|tree|commit|tag)$/.test(spec) || /^sparse:oid=.+$/.test(spec))
-        unsupportedOption('clone', `--filter=${spec}`);
-    if (spec.startsWith('combine:')) {
-        const filters = spec.slice('combine:'.length).split('+');
-        let valid = filters.length > 0 && filters[0] !== '';
-        for (const filter of filters) {
-            try {
-                parseCloneFilter(decodeURIComponent(filter));
-            }
-            catch (error) {
-                if (!(error instanceof UnsupportedGitOperation))
-                    valid = false;
-            }
-        }
-        if (valid)
-            unsupportedOption('clone', `--filter=${spec}`);
-    }
     throw new Error(`invalid filter-spec '${spec}': git clone here takes blob:none, blob:limit=<n>[kmg] or tree:<depth>`);
 }
 /**
@@ -368,7 +356,7 @@ export function parseInitArgs(args) {
     let branch;
     let directory;
     let dashdash = false;
-    const unknown = (what) => { throw new UnsupportedGitOperation(`error: unknown ${what}\n${INIT_USAGE}`, 129); };
+    const unknown = (what) => ({ error: `error: unknown ${what}\n${INIT_USAGE}`, code: 129 });
     for (let i = 0; i < args.length; i++) {
         const arg = args[i];
         if (dashdash || arg === '-' || !arg.startsWith('-')) {
@@ -400,7 +388,7 @@ export function parseInitArgs(args) {
                     return { error: "error: option `initial-branch' requires a value\n", code: 129 };
             }
             else if (/^(no-)?(template|separate-git-dir|object-format|ref-format|shared)$/.test(name)) {
-                unsupportedOption('init', `--${name}`);
+                return { error: `fatal: git init --${name} is not supported here\n`, code: 128 };
             }
             else {
                 return unknown(`option \`${name}'`);
@@ -439,17 +427,8 @@ export function parseCloneArgs(args) {
     let filter;
     let sparse = false;
     const positionals = [];
-    let dashdash = false;
     for (let i = 0; i < args.length; i++) {
         const arg = args[i];
-        if (dashdash) {
-            positionals.push(arg);
-            continue;
-        }
-        if (arg === '--') {
-            dashdash = true;
-            continue;
-        }
         const eq = arg.startsWith('--') ? arg.indexOf('=') : -1;
         const name = eq > 0 ? arg.slice(0, eq) : arg;
         const takeValue = () => {
@@ -480,14 +459,12 @@ export function parseCloneArgs(args) {
         else if (arg === '--no-sparse')
             sparse = false;
         else if (arg.startsWith('-')) {
-            throw new UnsupportedGitOperation(`fatal: unknown option '${arg}'\n${CLONE_USAGE}\n`, 128);
+            throw new Error(`unknown option '${arg}'\n${CLONE_USAGE}`);
         }
         else {
             positionals.push(arg);
         }
     }
-    if (positionals.length > 2)
-        throw new GitGlobalsError(CLONE_USAGE + '\n', 129);
     return {
         url: positionals[0],
         dest: positionals[1],
@@ -500,7 +477,12 @@ export function parseCloneArgs(args) {
         sparse,
     };
 }
-/** commit's -m (repeatable), -q and -a, bundled as git allows (`-qm msg`, `-mmsg`). */
+/** fetch, pull and push: `-q`/`--quiet` wherever it appears; the other words keep their order. */
+function takeQuiet(args) {
+    const rest = args.filter((arg) => arg !== '-q' && arg !== '--quiet');
+    return { quiet: rest.length !== args.length, rest };
+}
+/** commit's -m (repeatable), -q and -a, bundled as git allows (`-qm msg`, `-mmsg`); other options stay ignored. */
 function parseCommitArgs(args) {
     const messages = [];
     let quiet = false;
@@ -509,24 +491,20 @@ function parseCommitArgs(args) {
     let allowEmptyMessage = false;
     for (let i = 0; i < args.length; i++) {
         const arg = args[i];
-        if (arg === '--') {
-            if (i + 1 < args.length)
-                unsupportedOption('commit', 'pathspecs');
+        if (arg === '--')
             break;
-        }
         if (arg === '--quiet')
             quiet = true;
         else if (arg === '--all')
             all = true;
         else if (arg === '--allow-empty-message')
             allowEmptyMessage = true;
-        else if (arg === '--allow-empty') { /* Empty-tree commits are supported. */ }
         else if (arg === '--cleanup')
-            cleanup = requiredValue(args, ++i, arg);
+            cleanup = args[++i] ?? '';
         else if (arg.startsWith('--cleanup='))
             cleanup = arg.slice('--cleanup='.length);
         else if (arg === '--message')
-            messages.push(requiredValue(args, ++i, arg));
+            messages.push(args[++i] ?? '');
         else if (arg.startsWith('--message='))
             messages.push(arg.slice('--message='.length));
         else if (/^-[^-]/.test(arg)) {
@@ -536,328 +514,13 @@ function parseCommitArgs(args) {
                 else if (arg[j] === 'a')
                     all = true;
                 else if (arg[j] === 'm') {
-                    messages.push(j + 1 < arg.length ? arg.slice(j + 1) : requiredValue(args, ++i, '-m'));
+                    messages.push(j + 1 < arg.length ? arg.slice(j + 1) : args[++i] ?? '');
                     break;
                 }
-                else
-                    unsupportedOption('commit', `-${arg[j]}`);
             }
         }
-        else
-            unsupportedOption('commit', arg);
     }
-    // With no -m, git takes the message from an editor (GIT_EDITOR, core.editor, VISUAL, EDITOR): real git's.
-    if (messages.length === 0)
-        unsupportedOption('commit', 'without -m (its message from an editor)');
     return { messages, quiet, all, cleanup, allowEmptyMessage };
-}
-function parseLogArgs(args) {
-    let maxCount = 10;
-    let oneline = false;
-    const count = (value) => {
-        if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value))) {
-            throw new GitGlobalsError(`fatal: invalid count '${value}'\n`, 128);
-        }
-        maxCount = Number(value);
-    };
-    for (let i = 0; i < args.length; i++) {
-        const arg = args[i];
-        if (arg === '--') {
-            if (i + 1 < args.length)
-                unsupportedOption('log', 'pathspecs');
-            break;
-        }
-        if (arg === '--oneline')
-            oneline = true;
-        else if (arg === '-n' || arg === '--max-count')
-            count(requiredValue(args, ++i, arg));
-        else if (arg.startsWith('--max-count='))
-            count(arg.slice('--max-count='.length));
-        else if (/^-n=?\d+$/.test(arg))
-            count(arg.slice(2).replace(/^=/, ''));
-        else if (/^-\d+$/.test(arg))
-            count(arg.slice(1));
-        else
-            unsupportedOption('log', arg);
-    }
-    return { maxCount, oneline };
-}
-function parseBranchArgs(args) {
-    let showCurrent = false;
-    let list = false;
-    let all = false;
-    let del = false;
-    const operands = [];
-    let dashdash = false;
-    for (const arg of args) {
-        if (dashdash || arg === '-' || !arg.startsWith('-')) {
-            operands.push(arg);
-            continue;
-        }
-        if (arg === '--') {
-            dashdash = true;
-            continue;
-        }
-        if (arg === '--show-current')
-            showCurrent = true;
-        else if (arg === '--list')
-            list = true;
-        else if (arg === '-a') {
-            list = true;
-            all = true;
-        }
-        else if (arg === '-D')
-            del = true;
-        else {
-            throw new UnsupportedGitOperation(`error: unknown option '${arg}'\nusage: git branch [-a | --list | --show-current | -D <name> | <name>]\n`, 129);
-        }
-    }
-    if ((showCurrent && (list || del || operands.length)) || (list && (del || operands.length)) || operands.length > 1) {
-        unsupportedOption('branch', 'this operation');
-    }
-    if (del && operands.length === 0)
-        throw new GitGlobalsError('fatal: branch name required\n', 128);
-    return { showCurrent, list: list || (!del && operands.length === 0), all, del, name: operands[0] };
-}
-function parseCheckoutArgs(args) {
-    let quiet = false;
-    let create;
-    let ignoreSkipWorktree = false;
-    const operands = [];
-    let paths = [];
-    for (let i = 0; i < args.length; i++) {
-        const arg = args[i];
-        if (arg === '--') {
-            paths = args.slice(i + 1);
-            break;
-        }
-        if (arg === '-' || !arg.startsWith('-')) {
-            operands.push(arg);
-            continue;
-        }
-        if (arg === '--quiet') {
-            quiet = true;
-            continue;
-        }
-        if (arg === '--ignore-skip-worktree-bits') {
-            ignoreSkipWorktree = true;
-            continue;
-        }
-        if (arg.startsWith('--'))
-            unsupportedOption('checkout', arg);
-        for (let j = 1; j < arg.length; j++) {
-            const flag = arg[j];
-            if (flag === 'q')
-                quiet = true;
-            else if (flag === 'b') {
-                if (create !== undefined)
-                    throw new GitGlobalsError("error: switch `b' specified twice\n", 129);
-                create = j + 1 < arg.length ? arg.slice(j + 1) : requiredValue(args, ++i, '-b');
-                break;
-            }
-            else
-                unsupportedOption('checkout', `-${flag}`);
-        }
-    }
-    if (operands.length > 1 || (create !== undefined && (operands.length || paths.length)))
-        unsupportedOption('checkout', 'start-point or paths with -b');
-    if (ignoreSkipWorktree && paths.length === 0)
-        unsupportedOption('checkout', '--ignore-skip-worktree-bits without paths');
-    const ref = create ?? operands[0];
-    if (create === undefined && ref !== undefined)
-        validateRevision(ref);
-    return { quiet, create: create !== undefined, ref, paths, ignoreSkipWorktree };
-}
-function parseRemoteArgs(args) {
-    let verbose = false;
-    let dashdash = false;
-    const operands = [];
-    for (const arg of args) {
-        if (dashdash || arg === '-' || !arg.startsWith('-')) {
-            operands.push(arg);
-            continue;
-        }
-        if (arg === '--') {
-            dashdash = true;
-            continue;
-        }
-        if (arg === '--verbose' || /^-v+$/.test(arg))
-            verbose = true;
-        else
-            unsupportedOption('remote', arg);
-    }
-    const operation = operands[0];
-    if (operation === undefined)
-        return { operation: 'list', verbose, name: '', url: '' };
-    if (operation === 'add' && operands.length === 3)
-        return { operation, verbose, name: operands[1], url: operands[2] };
-    if ((operation === 'remove' || operation === 'rm') && operands.length === 2)
-        return { operation: 'remove', verbose, name: operands[1], url: '' };
-    if (operation === 'add' || operation === 'remove' || operation === 'rm') {
-        throw new GitGlobalsError(`usage: git remote ${operation} <name>${operation === 'add' ? ' <url>' : ''}\n`, 129);
-    }
-    unsupportedOption('remote', operation);
-}
-function fetchDepth(flag, value) {
-    if (flag === '--unshallow')
-        return { depth: INFINITE_DEPTH, relative: false };
-    const depth = Number(value);
-    if (!Number.isSafeInteger(depth) || depth < 1)
-        throw new Error(`${flag} ${value ?? ''} is not a positive number`.trimEnd());
-    return { depth, relative: flag === '--deepen' };
-}
-function parseTransportArgs(command, args, env) {
-    let quiet = false;
-    let dashdash = false;
-    let deepen;
-    const operands = [];
-    for (let i = 0; i < args.length; i++) {
-        const arg = args[i];
-        if (dashdash || arg === '-' || !arg.startsWith('-')) {
-            operands.push(arg);
-            continue;
-        }
-        if (arg === '--') {
-            dashdash = true;
-            continue;
-        }
-        if (arg === '--quiet' || /^-q+$/.test(arg)) {
-            quiet = true;
-            continue;
-        }
-        const eq = arg.indexOf('=');
-        const flag = eq < 0 ? arg : arg.slice(0, eq);
-        if (command === 'fetch' && FETCH_DEPTH_FLAGS.includes(flag)) {
-            if (deepen !== undefined)
-                throw new GitGlobalsError('fatal: --depth, --deepen and --unshallow are mutually exclusive\n', 128);
-            if (flag === '--unshallow' && eq >= 0)
-                unsupportedOption(command, arg);
-            const value = flag === '--unshallow' ? undefined : eq < 0 ? requiredValue(args, ++i, flag) : arg.slice(eq + 1);
-            try {
-                deepen = fetchDepth(flag, value);
-            }
-            catch (error) {
-                throw new GitGlobalsError(`fatal: ${error instanceof Error ? error.message : String(error)}\n`, 128);
-            }
-        }
-        else
-            unsupportedOption(command, arg);
-    }
-    if (operands.length > (command === 'fetch' ? 1 : 2))
-        unsupportedOption(command, 'refspecs');
-    // A pull's merge takes its message from an editor as git merge's does.
-    if (command === 'pull' && mergeAutoEdit(env))
-        unsupportedOption(command, 'with GIT_MERGE_AUTOEDIT (its message from an editor)');
-    const branch = operands[1];
-    if (branch !== undefined && /[:*^]|^\+/.test(branch))
-        unsupportedOption(command, `refspec '${branch}'`);
-    return { quiet, deepen, remote: operands[0] ?? 'origin', branch };
-}
-/**
- * Whether git's merge takes its commit message from an editor
- * (builtin/merge.c default_edit_option): GIT_MERGE_AUTOEDIT says so. Real
- * git here never sees a terminal (its stdio is no tty), so nothing else
- * does. A value git cannot read is git's to refuse.
- */
-function mergeAutoEdit(env) {
-    const value = env.GIT_MERGE_AUTOEDIT;
-    return value !== undefined && !['', 'false', 'no', 'off', '0'].includes(value.toLowerCase());
-}
-function parseMergeArgs(args, env) {
-    let quiet = false;
-    let noEdit = false;
-    let dashdash = false;
-    const operands = [];
-    for (const arg of args) {
-        if (dashdash || arg === '-' || !arg.startsWith('-')) {
-            operands.push(arg);
-            continue;
-        }
-        if (arg === '--') {
-            dashdash = true;
-            continue;
-        }
-        if (arg === '--quiet' || /^-q+$/.test(arg))
-            quiet = true;
-        else if (arg === '--no-edit')
-            noEdit = true;
-        else
-            unsupportedOption('merge', arg);
-    }
-    if (!noEdit && mergeAutoEdit(env))
-        unsupportedOption('merge', 'with GIT_MERGE_AUTOEDIT (its message from an editor)');
-    if (operands.length > 1)
-        unsupportedOption('merge', 'multiple heads');
-    if (operands.length === 0)
-        throw new GitGlobalsError('usage: git merge <branch>\n', 1);
-    validateRevision(operands[0]);
-    return { theirs: operands[0], quiet };
-}
-function parseConfigArgs(args) {
-    let get = false;
-    let unset = false;
-    let dashdash = false;
-    const operands = [];
-    for (const arg of args) {
-        // A set's value is opaque, even if it spells a scope or another action.
-        if (operands.length === 1 && !get && !unset) {
-            operands.push(arg);
-            continue;
-        }
-        if (dashdash || arg === '-' || !arg.startsWith('-')) {
-            operands.push(arg);
-            continue;
-        }
-        if (arg === '--') {
-            dashdash = true;
-            continue;
-        }
-        if (arg === '--get')
-            get = true;
-        else if (arg === '--unset')
-            unset = true;
-        else
-            unsupportedOption('config', arg);
-    }
-    if (operands.length === 0)
-        throw new GitGlobalsError('usage: git config <key> [value]\n', 1);
-    if (!operands[0].includes('.'))
-        unsupportedOption('config', operands[0]);
-    if (get && unset)
-        throw new GitGlobalsError('error: only one action at a time\n', 129);
-    if (operands.length > (get || unset ? 1 : 2))
-        unsupportedOption('config', 'value patterns or multiple values');
-    return { key: operands[0], value: get || unset ? undefined : operands[1], unset };
-}
-function parseCommandArgs(sub, args, env) {
-    switch (sub) {
-        case 'init': {
-            const parsed = parseInitArgs(args);
-            if ('error' in parsed)
-                throw new GitGlobalsError(parsed.error, parsed.code);
-            return { sub, parsed };
-        }
-        case 'clone': return { sub, parsed: parseCloneArgs([...args]) };
-        case 'status': return { sub, parsed: parseStatusArgs(args) };
-        case 'add': return { sub, parsed: parseAddArgs(args) };
-        case 'commit': return { sub, parsed: parseCommitArgs(args) };
-        case 'rev-parse': return { sub, parsed: parseRevParseArgs(args) };
-        case 'ls-files': return { sub, parsed: parseLsFilesArgs(args) };
-        case 'log': return { sub, parsed: parseLogArgs(args) };
-        case 'branch': return { sub, parsed: parseBranchArgs(args) };
-        case 'checkout': return { sub, parsed: parseCheckoutArgs(args) };
-        case 'diff': return { sub, parsed: parseDiffArgs(args, env.COLUMNS) };
-        case 'remote': return { sub, parsed: parseRemoteArgs(args) };
-        case 'fetch':
-        case 'pull':
-        case 'push': return { sub, parsed: parseTransportArgs(sub, args, env) };
-        case 'merge': return { sub, parsed: parseMergeArgs(args, env) };
-        case 'reset': return { sub, parsed: parseResetArgs(args) };
-        case 'tag': return { sub, parsed: parseTagArgs(args) };
-        case 'config': return { sub, parsed: parseConfigArgs(args) };
-        case 'sparse-checkout': return { sub, parsed: parseSparseCheckoutArgs(args) };
-        default: throw new UnsupportedGitOperation(`git: '${sub}' is not a git command. See 'git --help'.\n`, 1);
-    }
 }
 /**
  * The message `-m` options make (builtin/commit.c opt_parse_m): each value
@@ -906,17 +569,8 @@ async function writeBinary(stream, bin) {
 const commandCounters = new WeakMap();
 /** The engine one command's repositories write their objects' waves into, by its filesystem (one per command). */
 const commandEngines = new WeakMap();
-const commandRepos = new WeakMap();
 /** The repository at `root` as the worktree commands read it: its index, worktree and objects (through `fs`'s pack store). */
 function worktreeRepo(ctx, git, vfs, fs, gitdir, root) {
-    let repos = commandRepos.get(fs);
-    if (repos === undefined) {
-        repos = new Map();
-        commandRepos.set(fs, repos);
-    }
-    const existing = repos.get(gitdir);
-    if (existing !== undefined)
-        return existing;
     let counters = commandCounters.get(fs);
     if (!counters) {
         counters = newCounters();
@@ -925,9 +579,7 @@ function worktreeRepo(ctx, git, vfs, fs, gitdir, root) {
             counters.why = [];
         commandCounters.set(fs, counters);
     }
-    const repo = new WorktreeRepo(vfs, git, fs, root, gitdir, ctx.env, counters, commandEngines.get(fs) ?? null);
-    repos.set(gitdir, repo);
-    return repo;
+    return new WorktreeRepo(vfs, git, fs, root, gitdir, ctx.env, counters, commandEngines.get(fs) ?? null);
 }
 /**
  * add_to_index: the worktree's file or link at `path` as an index entry, its
@@ -1033,159 +685,21 @@ const NOT_A_REPOSITORY = 'fatal: not a git repository (or any of the parent dire
 const NOT_A_WORK_TREE = 'fatal: this operation must be run in a work tree\n';
 /** setup_git_directory's walk: from the cwd up, a `.git` inside each level, else the level itself as a git directory. */
 async function discoverRepo(vfs, cwd) {
-    // git's is_git_directory: HEAD, and objects and refs here or in the common directory it names.
     const isGitDir = async (key) => {
         const sub = (name) => (key ? `${key}/${name}` : name);
-        if (!await vfs.isFile(sub('HEAD')))
-            return false;
-        return await vfs.isFile(sub('commondir')) || (await vfs.isDirectory(sub('objects')) && await vfs.isDirectory(sub('refs')));
+        return await vfs.isFile(sub('HEAD')) && await vfs.isDirectory(sub('objects')) && await vfs.isDirectory(sub('refs'));
     };
     const segments = normalizeVfsPath(cwd).split('/').filter(Boolean);
-    const shared = async (gitdir) => await vfs.isFile(`${gitdir}/commondir`);
     for (let depth = segments.length; depth >= 0; depth--) {
         const dir = segments.slice(0, depth).join('/');
         const prefix = segments.slice(depth).join('/');
         const dotGit = dir ? `${dir}/.git` : '.git';
         if (await isGitDir(dotGit))
-            return { gitdir: `/${dotGit}`, worktree: `/${dir}`, prefix, linked: await shared(dotGit) };
-        // A .git file (gitdir: ...): git's repository is where it points, never an enclosing one's.
-        if (await vfs.isFile(dotGit))
-            return { gitdir: `/${dotGit}`, worktree: `/${dir}`, prefix, linked: true };
+            return { gitdir: `/${dotGit}`, worktree: `/${dir}`, prefix };
         if (await isGitDir(dir))
-            return { gitdir: `/${dir}`, worktree: null, prefix, linked: await shared(dir) };
+            return { gitdir: `/${dir}`, worktree: null, prefix };
     }
     return null;
-}
-/**
- * The repository formats the built-in implements, as git 2.53's setup.c
- * check_repository_format_gently reads them: format version 0 or 1;
- * extensions it honors (sha1 objects, files refs, worktreeConfig, a partial
- * clone's promisor, precious objects: it deletes none) or that change
- * nothing (noop, relativeWorktrees: it makes no linked worktree). Any
- * other extension a version 1 repository declares, a v1-only one in a
- * version 0 repository (git refuses both), and a layout it does not
- * implement (GitRepo.linked) are real git's: refused before anything is
- * read or written, so the front door hands the invocation over, or names
- * the refusal without real git. A version 0 repository's unknown
- * extensions are ignored, as git ignores them.
- */
-const V0_EXTENSIONS = {
-    noop: () => true,
-    preciousobjects: () => true,
-    partialclone: () => true,
-    worktreeconfig: () => true,
-};
-const V1_EXTENSIONS = {
-    'noop-v1': () => true,
-    objectformat: (value) => value.toLowerCase() === 'sha1',
-    compatobjectformat: () => false,
-    refstorage: (value) => value.toLowerCase() === 'files',
-    relativeworktrees: () => true,
-};
-/**
- * The hooks (githooks(5)) git runs for what each built-in command does:
- * the built-in runs none, so a repository where one of its command's is
- * executable is real git's, handed over before any effect
- * (assertNoHooks). Every index write runs post-index-change and every ref
- * update reference-transaction. status and diff are not here: the refresh
- * they write back is kept only if able (updateIndexIfAble), and is not
- * where writing it would run post-index-change.
- */
-const COMMAND_HOOKS = {
-    add: ['post-index-change'],
-    commit: ['pre-commit', 'prepare-commit-msg', 'commit-msg', 'post-commit', 'post-index-change', 'reference-transaction'],
-    checkout: ['post-checkout', 'post-index-change', 'reference-transaction'],
-    reset: ['post-index-change', 'reference-transaction'],
-    merge: ['pre-merge-commit', 'prepare-commit-msg', 'commit-msg', 'post-merge', 'post-index-change', 'reference-transaction'],
-    pull: ['pre-merge-commit', 'prepare-commit-msg', 'commit-msg', 'post-merge', 'post-index-change', 'reference-transaction'],
-    fetch: ['reference-transaction'],
-    push: ['pre-push', 'reference-transaction'],
-    branch: ['reference-transaction'],
-    tag: ['reference-transaction'],
-    remote: ['reference-transaction'],
-    'sparse-checkout': ['post-index-change'],
-};
-/**
- * The first of `hooks` the repository makes executable, null for none:
- * where git looks for them (core.hooksPath, from -c, the repository's and
- * the global config, a relative one from `top`, the directory hooks run
- * in; else $GIT_DIR/hooks), each found as git's find_hook finds it, by
- * access(X_OK) as the command's principal.
- */
-async function executableHook(ctx, git, fs, gitdir, top, hooks) {
-    const configured = await git.getConfig({ fs, gitdir, path: 'core.hooksPath' })
-        .then((value) => (typeof value === 'string' && value !== '' ? value : undefined), () => undefined);
-    let dir = `${gitdir}/hooks`;
-    if (configured !== undefined) {
-        const home = ctx.env.HOME ?? '';
-        const expanded = configured === '~' ? home : configured.startsWith('~/') ? home + configured.slice(1) : configured;
-        dir = expanded.startsWith('/') ? expanded : `${top}/${expanded}`;
-    }
-    // One listing (none: no hooks), then access(X_OK) only for the hooks it names.
-    let present;
-    try {
-        present = new Set((await ctx.vfs.readdir(normalizeVfsPath(dir))).map((entry) => entry.name));
-    }
-    catch {
-        return null;
-    }
-    for (const hook of hooks) {
-        if (!present.has(hook))
-            continue;
-        try {
-            await ctx.vfs.access(normalizeVfsPath(`${dir}/${hook}`), X_OK);
-        }
-        catch {
-            continue;
-        }
-        return hook;
-    }
-    return null;
-}
-/** Refuse, before any effect, a command whose hooks (COMMAND_HOOKS) the repository makes executable. */
-async function assertNoHooks(ctx, git, fs, repo, sub) {
-    const hooks = COMMAND_HOOKS[sub];
-    if (hooks === undefined)
-        return;
-    const hook = await executableHook(ctx, git, fs, repo.gitdir, repo.worktree ?? repo.gitdir, hooks);
-    if (hook !== null)
-        throw new UnsupportedGitOperation(`fatal: git ${sub} with a ${hook} hook is not supported here\n`, 128);
-}
-async function assertRepositoryImplemented(git, fs, repo) {
-    const where = repo.worktree ?? repo.gitdir;
-    if (repo.linked) {
-        throw new UnsupportedGitOperation(`fatal: '${where}' is a linked worktree or submodule checkout, which is not supported here\n`, 128);
-    }
-    // The repository's own configuration: git reads its format nowhere else.
-    const value = async (path) => {
-        try {
-            const got = await git.getConfig({ fs, gitdir: repo.gitdir, path });
-            return got === undefined || got === null ? undefined : String(got);
-        }
-        catch {
-            return undefined;
-        }
-    };
-    const version = Number(await value('core.repositoryformatversion') ?? 0);
-    if (!(version === 0 || version === 1)) {
-        throw new UnsupportedGitOperation(`fatal: repository format version ${version} is not supported here\n`, 128);
-    }
-    // Every extension the repository declares: git 2.53 refuses an unknown one in a version 1 repository, and ignores it in version 0.
-    for (const name of await git.getConfigNames({ fs, gitdir: repo.gitdir, section: 'extensions' })) {
-        const set = await value(`extensions.${name}`) ?? '';
-        const v1Only = Object.hasOwn(V1_EXTENSIONS, name);
-        const honored = V0_EXTENSIONS[name] ?? V1_EXTENSIONS[name];
-        if (honored === undefined) {
-            if (version === 0)
-                continue;
-            throw new UnsupportedGitOperation(`fatal: a repository with extensions.${name} is not supported here\n`, 128);
-        }
-        if (v1Only && version === 0) {
-            throw new UnsupportedGitOperation(`fatal: extensions.${name} in a version 0 repository is not supported here\n`, 128);
-        }
-        if (!honored(set))
-            throw new UnsupportedGitOperation(`fatal: a repository with extensions.${name} = ${set} is not supported here\n`, 128);
-    }
 }
 function ambiguousArgument(arg) {
     return `fatal: ambiguous argument '${arg}': unknown revision or path not in the working tree.\n`
@@ -1195,6 +709,8 @@ function ambiguousArgument(arg) {
 /** A revision as rev-parse reads one: a ref, or a full or uniquely abbreviated object name. */
 async function resolveRevision(git, fs, gitdir, rev, cache) {
     const name = rev === '@' ? 'HEAD' : rev;
+    if (/[~^:{}\\]|\.\.|^@/.test(name))
+        throw new Error(`unsupported revision syntax '${rev}'`);
     try {
         return await git.resolveRef({ fs, gitdir, ref: name });
     }
@@ -1227,50 +743,6 @@ async function abbreviatedRef(git, fs, gitdir, rev) {
         return null;
     }
 }
-function validateRevision(rev) {
-    if (rev !== '@' && /[~^:{}\\]|\.\.|^@/.test(rev)) {
-        throw new UnsupportedGitOperation(`fatal: unsupported revision syntax '${rev}'\n`, 128);
-    }
-}
-function parseRevParseArgs(args) {
-    const actions = [];
-    let paths = false;
-    for (const arg of args) {
-        if (arg === '--')
-            paths = true;
-        if (paths) {
-            actions.push({ kind: 'path', value: arg });
-            continue;
-        }
-        switch (arg) {
-            case '--verify':
-                actions.push({ kind: 'verify' });
-                break;
-            case '-q':
-            case '--quiet':
-                actions.push({ kind: 'quiet' });
-                break;
-            case '--abbrev-ref':
-                actions.push({ kind: 'abbrev-ref' });
-                break;
-            case '--show-toplevel':
-                actions.push({ kind: 'toplevel' });
-                break;
-            case '--git-dir':
-                actions.push({ kind: 'gitdir' });
-                break;
-            case '--is-inside-work-tree':
-                actions.push({ kind: 'inside-work-tree' });
-                break;
-            default:
-                if (arg.startsWith('-'))
-                    throw new UnsupportedGitOperation(`fatal: rev-parse: unsupported option '${arg}'\n`, 129);
-                validateRevision(arg);
-                actions.push({ kind: 'revision', value: arg });
-        }
-    }
-    return actions;
-}
 async function revParse(ctx, git, fs, vfs, args) {
     const repo = await discoverRepo(vfs, ctx.cwd);
     if (!repo) {
@@ -1297,34 +769,33 @@ async function revParse(ctx, git, fs, vfs, args) {
         return code;
     };
     const noSingleRevision = () => (quiet ? fail('', 1) : fail('fatal: Needed a single revision\n', 128));
-    for (const action of args) {
-        switch (action.kind) {
-            case 'path':
-                out += `${action.value}\n`;
-                continue;
-            case 'verify':
+    for (const arg of args) {
+        switch (arg) {
+            case '--verify':
                 verify = true;
                 continue;
-            case 'quiet':
+            case '-q':
+            case '--quiet':
                 quiet = true;
                 continue;
-            case 'abbrev-ref':
+            case '--abbrev-ref':
                 abbrevRef = true;
                 continue;
-            case 'toplevel':
+            case '--show-toplevel':
                 if (!repo.worktree)
                     return fail(NOT_A_WORK_TREE, 128);
                 out += `${repo.worktree}\n`;
                 continue;
-            case 'gitdir':
+            case '--git-dir':
                 // rev-parse names the git directory relative to the cwd only from the top.
                 out += `${repo.prefix ? repo.gitdir : repo.worktree ? '.git' : '.'}\n`;
                 continue;
-            case 'inside-work-tree':
+            case '--is-inside-work-tree':
                 out += `${repo.worktree ? 'true' : 'false'}\n`;
                 continue;
         }
-        const arg = action.value;
+        if (arg.startsWith('-'))
+            return fail(`fatal: rev-parse: unsupported option '${arg}'\n`, 129);
         const oid = await resolveRevision(git, fs, repo.gitdir, arg, cache);
         if (oid === null) {
             if (verify)
@@ -1445,7 +916,7 @@ function sparsePathsAdvice(paths) {
  * alone, and named (exit 1) if a pathspec or a new file reaches it, unless
  * --sparse.
  */
-function parseAddArgs(args) {
+async function addCommand(ctx, git, vfs, fs, args) {
     let dryRun = false;
     let verbose = false;
     let force = false;
@@ -1463,7 +934,7 @@ function parseAddArgs(args) {
             dashdash = true;
             continue;
         }
-        const flags = arg.startsWith('--') ? [arg] : [...arg.slice(1)];
+        const flags = arg.startsWith('--') ? [arg.split('=')[0]] : [...arg.slice(1)];
         for (const flag of flags) {
             switch (flag) {
                 case 'n':
@@ -1496,18 +967,16 @@ function parseAddArgs(args) {
                     break;
                 default:
                     if (ADD_UNSUPPORTED.has(flag)) {
-                        unsupportedOption('add', flag.length === 1 ? `-${flag}` : flag);
+                        await ctx.stderr.write(`fatal: git add ${flag.length === 1 ? `-${flag}` : flag} is not supported here\n`);
+                        return 128;
                     }
-                    throw new UnsupportedGitOperation(flag.length === 1
+                    await ctx.stderr.write(flag.length === 1
                         ? `error: unknown switch \`${flag}'\n${ADD_USAGE}`
-                        : `error: unknown option \`${flag.slice(2)}'\n${ADD_USAGE}`, 129);
+                        : `error: unknown option \`${flag.slice(2)}'\n${ADD_USAGE}`);
+                    return 129;
             }
         }
     }
-    return { dryRun, verbose, force, all, update, includeSparse, pathArgs };
-}
-async function addCommand(ctx, git, vfs, fs, parsed) {
-    const { dryRun, verbose, force, all, update, includeSparse, pathArgs } = parsed;
     const repo = await discoverRepo(vfs, ctx.cwd);
     if (!repo) {
         await ctx.stderr.write(NOT_A_REPOSITORY);
@@ -2060,7 +1529,7 @@ function tagPattern(pattern) {
  * a tag object as git writes it), replace (-f) and delete (-d), with git's
  * messages and exit codes.
  */
-function parseTagArgs(args) {
+async function tagCommand(ctx, git, fs, vfs, args) {
     let annotate = false;
     let force = false;
     let del = false;
@@ -2100,7 +1569,7 @@ function parseTagArgs(args) {
             continue;
         }
         if (arg === '--message') {
-            messages.push(requiredValue(args, ++i, arg));
+            messages.push(args[++i] ?? '');
             continue;
         }
         if (arg.startsWith('--file=')) {
@@ -2108,11 +1577,12 @@ function parseTagArgs(args) {
             continue;
         }
         if (arg === '--file') {
-            messageFile = requiredValue(args, ++i, arg);
+            messageFile = args[++i] ?? '';
             continue;
         }
         if (arg.startsWith('--')) {
-            throw new UnsupportedGitOperation(`error: unknown option \`${arg.slice(2)}'\n${TAG_USAGE}`, 129);
+            await ctx.stderr.write(`error: unknown option \`${arg.slice(2)}'\n${TAG_USAGE}`);
+            return 129;
         }
         for (let j = 1; j < arg.length; j++) {
             const flag = arg[j];
@@ -2132,7 +1602,8 @@ function parseTagArgs(args) {
             else if (flag === 'm' || flag === 'F') {
                 const value = arg.slice(j + 1) || args[++i];
                 if (value === undefined) {
-                    throw new GitGlobalsError(`error: switch \`${flag}' requires a value\n${TAG_USAGE}`, 129);
+                    await ctx.stderr.write(`error: switch \`${flag}' requires a value\n${TAG_USAGE}`);
+                    return 129;
                 }
                 if (flag === 'm')
                     messages.push(value);
@@ -2141,20 +1612,11 @@ function parseTagArgs(args) {
                 break;
             }
             else {
-                throw new UnsupportedGitOperation(`error: unknown switch \`${flag}'\n${TAG_USAGE}`, 129);
+                await ctx.stderr.write(`error: unknown switch \`${flag}'\n${TAG_USAGE}`);
+                return 129;
             }
         }
     }
-    if (messageFile === '-')
-        unsupportedOption('tag', '--file=-');
-    // An annotated tag made with no -m or -F takes its message from an editor: real git's.
-    if (annotate && messages.length === 0 && messageFile === null && !del && !list && lines === null && operands.length > 0) {
-        unsupportedOption('tag', '-a without -m or -F (its message from an editor)');
-    }
-    return { annotate, force, del, list, lines, messages, messageFile, operands };
-}
-async function tagCommand(ctx, git, fs, vfs, parsed) {
-    const { annotate, force, del, list, lines, messages, messageFile, operands } = parsed;
     const repo = await discoverRepo(vfs, ctx.cwd);
     if (!repo) {
         await ctx.stderr.write(NOT_A_REPOSITORY);
@@ -2228,6 +1690,11 @@ async function tagCommand(ctx, git, fs, vfs, parsed) {
             return 128;
         }
     }
+    if (annotate && messages.length === 0) {
+        // git would open an editor, and this git has none: what git says with no editor to run.
+        await ctx.stderr.write('error: Terminal is dumb, but EDITOR unset\nPlease supply the message using either -m or -F option.\n');
+        return 1;
+    }
     const object = await resolveRevision(git, fs, gitdir, target, cache);
     if (!object) {
         await ctx.stderr.write(`fatal: Failed to resolve '${target}' as a valid ref.\n`);
@@ -2272,7 +1739,7 @@ async function tagCommand(ctx, git, fs, vfs, parsed) {
 }
 const LS_FILES_USAGE = 'usage: git ls-files [-c | --cached] [-s | --stage] [-o | --others] [-m | --modified] [-d | --deleted] '
     + '[--exclude-standard] [-z] [--] [<path>...]\n';
-function parseLsFilesArgs(args) {
+async function lsFiles(ctx, git, vfs, fs, args) {
     let cached = false;
     let others = false;
     let modified = false;
@@ -2320,17 +1787,14 @@ function parseLsFilesArgs(args) {
                     stage = true;
                     break;
                 default:
-                    throw new UnsupportedGitOperation(`error: unknown option '${flag.replace(/^-+/, '')}'\n${LS_FILES_USAGE}`, 129);
+                    await ctx.stderr.write(`error: unknown option '${flag.replace(/^-+/, '')}'\n${LS_FILES_USAGE}`);
+                    return 129;
             }
         }
     }
     // With no selection ls-files shows the index; --stage shows it with each entry's mode, id and stage.
     if (!others && !modified && !deleted && !stage)
         cached = true;
-    return { cached, others, modified, deleted, excludeStandard, stage, z, pathArgs };
-}
-async function lsFiles(ctx, git, vfs, fs, parsed) {
-    const { cached, others, modified, deleted, excludeStandard, stage, z, pathArgs } = parsed;
     const repo = await discoverRepo(vfs, ctx.cwd);
     if (!repo) {
         await ctx.stderr.write(NOT_A_REPOSITORY);
@@ -2459,6 +1923,7 @@ async function moveWorktree(ctx, git, vfs, fs, repo, oid, { force = false, opera
             writer: checkoutWriter(vfs, repo.worktree),
             operation,
             sparse: await wrepo.sparseMatcher(),
+            protect: await wrepo.pathProtection(),
             // A checkout shows unpack-trees' warnings; a reset does not.
             warn: force ? undefined : async (text) => { await ctx.stderr.write(text); },
         }, head === EMPTY_TREE ? null : head, await treeOf(wrepo.store, oid), force);
@@ -2566,6 +2031,7 @@ async function checkoutPaths(ctx, git, vfs, fs, source, pathArgs, ignoreSkipWork
                 return 128;
             }
             const within = (dir) => inSpecs(specs, dir) || specs.some((spec) => spec.startsWith(`${dir}/`));
+            const protect = await wrepo.pathProtection();
             for await (const leaf of treeLeaves(wrepo.store, await treeOf(wrepo.store, oid), '', within)) {
                 if (!inSpecs(specs, leaf.path))
                     continue;
@@ -2574,6 +2040,11 @@ async function checkoutPaths(ctx, git, vfs, fs, source, pathArgs, ignoreSkipWork
                 const same = i >= 0 && dc.stage(i) === 0 && dc.oid(i) === leaf.oid && dc.mode(i) === leaf.mode && !dc.intentToAdd(i);
                 if (same && skipped(i))
                     continue;
+                // Any other is added to the index, which refuses a path verify_path refuses: its error, and it is not checked out.
+                if (!same && !verifyPath(leaf.path, leaf.mode, protect)) {
+                    await ctx.stderr.write(invalidPathError(leaf.path));
+                    continue;
+                }
                 take(leaf.path, leaf.oid, leaf.mode, same && dc.skipWorktree(i));
             }
         }
@@ -2768,10 +2239,9 @@ async function diffNoIndex(ctx, git, vfs, paths, output) {
 const DIFF_USAGE = 'usage: git diff [--cached] [<commit>] [--] [<path>...]\n'
     + '   or: git diff --no-index [--] <path> <path>\n'
     + 'options: --stat | --name-only | --name-status, -z, -U<n>, -M[<n>] | --no-renames\n';
-function parseDiffArgs(args, columns) {
+async function diffCommand(ctx, git, fs, vfs, args, partial) {
     let cached = false;
     let noIndex = false;
-    let patch = false;
     let dashdash = false;
     // Renames are on by default, as with git's diff.renames; null turns them off.
     let minimumScore = DEFAULT_RENAME_SCORE;
@@ -2779,7 +2249,7 @@ function parseDiffArgs(args, columns) {
         format: 'patch',
         z: false,
         context: DEFAULT_CONTEXT,
-        columns: parseInt(columns ?? '', 10) > 0 ? parseInt(columns ?? '', 10) : 80,
+        columns: parseInt(ctx.env.COLUMNS ?? '', 10) > 0 ? parseInt(ctx.env.COLUMNS, 10) : 80,
     };
     const positionals = [];
     const pathArgs = [];
@@ -2805,7 +2275,8 @@ function parseDiffArgs(args, columns) {
         if (findRenames) {
             const score = parseRenameScore(findRenames[1]);
             if (score === null) {
-                throw new GitGlobalsError(`error: invalid argument to find-renames\n${DIFF_USAGE}`, 129);
+                await ctx.stderr.write(`error: invalid argument to find-renames\n${DIFF_USAGE}`);
+                return 129;
             }
             minimumScore = score || DEFAULT_RENAME_SCORE;
             continue;
@@ -2828,40 +2299,40 @@ function parseDiffArgs(args, columns) {
             case '-p':
             case '-u':
             case '--patch':
-                patch = true;
-                continue;
             case '--no-ext-diff':
             case '--no-color': continue;
             case '--stat':
             case '--name-only':
             case '--name-status': {
-                const format = arg === '--stat' ? 'stat' : arg === '--name-only' ? 'name-only' : 'name-status';
+                const format = arg.slice(2);
                 if (output.format !== 'patch' && output.format !== format) {
-                    throw new UnsupportedGitOperation(`fatal: options '--${output.format}' and '${arg}' cannot be used together\n`, 128);
+                    await ctx.stderr.write(`fatal: options '--${output.format}' and '${arg}' cannot be used together\n`);
+                    return 128;
                 }
                 output.format = format;
                 continue;
             }
         }
-        throw new UnsupportedGitOperation(`error: unknown option '${arg.replace(/^-+/, '')}'\n${DIFF_USAGE}`, 129);
+        await ctx.stderr.write(`error: unknown option '${arg.replace(/^-+/, '')}'\n${DIFF_USAGE}`);
+        return 129;
     }
-    if (noIndex && cached)
-        throw new GitGlobalsError("fatal: options '--cached' and '--no-index' cannot be used together\n", 128);
-    if (patch && output.format === 'stat')
-        unsupportedOption('diff', 'combined patch and diffstat');
-    if (!noIndex)
-        for (const revision of positionals)
-            validateRevision(revision);
-    return { cached, noIndex, dashdash, minimumScore, output, positionals, pathArgs };
-}
-async function prepareDiff(ctx, git, fs, vfs, parsed) {
-    if (parsed.noIndex)
-        return;
-    const { dashdash, positionals, pathArgs } = parsed;
+    if (noIndex) {
+        if (cached) {
+            await ctx.stderr.write("fatal: options '--cached' and '--no-index' cannot be used together\n");
+            return 128;
+        }
+        return diffNoIndex(ctx, git, vfs, [...positionals, ...pathArgs], output);
+    }
     const repo = await discoverRepo(vfs, ctx.cwd);
-    if (!repo)
-        throw new GitGlobalsError(NOT_A_REPOSITORY, 128);
+    if (!repo) {
+        await ctx.stderr.write(NOT_A_REPOSITORY);
+        return 128;
+    }
     const root = repo.worktree;
+    if (!root) {
+        await ctx.stderr.write(NOT_A_WORK_TREE);
+        return 128;
+    }
     const cache = {};
     const revs = [];
     for (const arg of positionals) {
@@ -2872,37 +2343,29 @@ async function prepareDiff(ctx, git, fs, vfs, parsed) {
             continue;
         }
         if (dashdash) {
-            throw new GitGlobalsError(`fatal: bad revision '${arg}'\n`, 128);
+            await ctx.stderr.write(`fatal: bad revision '${arg}'\n`);
+            return 128;
         }
         if (!await vfs.exists(normalizeVfsPath(arg.startsWith('/') ? arg : `${ctx.cwd}/${arg}`))) {
-            throw new GitGlobalsError(ambiguousArgument(arg), 128);
+            await ctx.stderr.write(ambiguousArgument(arg));
+            return 128;
         }
         pathArgs.push(arg);
     }
     if (revs.length > 1) {
-        throw new UnsupportedGitOperation('fatal: diff between two commits is not supported; compare one commit with the worktree or the index\n', 128);
+        await ctx.stderr.write('fatal: diff between two commits is not supported; compare one commit with the worktree or the index\n');
+        return 128;
     }
-    if (!root)
-        throw new GitGlobalsError(NOT_A_WORK_TREE, 128);
-    parsed.comparison = { gitdir: repo.gitdir, root, revs };
-}
-async function diffCommand(ctx, git, fs, vfs, parsed, partial) {
-    const { cached, noIndex, minimumScore, output, positionals, pathArgs, comparison } = parsed;
-    if (noIndex)
-        return diffNoIndex(ctx, git, vfs, [...positionals, ...pathArgs], output);
-    if (comparison === undefined)
-        throw new Error('internal error: diff comparison not prepared');
-    const { gitdir, root, revs } = comparison;
-    const wrepo = worktreeRepo(ctx, git, vfs, fs, gitdir, root);
+    const wrepo = worktreeRepo(ctx, git, vfs, fs, repo.gitdir, root);
     const dc = await wrepo.readIndex();
     const base = cached
         ? { kind: 'tree', tree: revs.length ? await treeOf(wrepo.store, revs[0]) : await wrepo.headTree(), cached: true }
         : revs.length ? { kind: 'tree', tree: await treeOf(wrepo.store, revs[0]), cached: false } : { kind: 'index' };
     const pending = await changedPairs(wrepo, dc, base, repoPaths(pathArgs, ctx.cwd, root), ctx.stderr);
     // git diff writes back the stat it found stale on files whose content had not changed.
-    await wrepo.updateIndexIfAble(dc, async () => await executableHook(ctx, git, fs, gitdir, root, ['post-index-change']) !== null);
+    await wrepo.updateIndexIfAble(dc);
     // The blobs this diff reads, fetched together where a partial clone lacks them (git's diff_queued_diff_prefetch).
-    if ((output.format === 'patch' || output.format === 'stat' || minimumScore !== null) && await partial(gitdir)) {
+    if ((output.format === 'patch' || output.format === 'stat' || minimumScore !== null) && await partial(repo.gitdir)) {
         await wrepo.store.prefetch(pending.storeOids());
     }
     const tree = await wrepo.worktree();
@@ -2947,19 +2410,24 @@ const STATUS_UNSUPPORTED = new Set(['b', 'v', '--branch', '--long', '--verbose',
  * working tree clean" when there is nothing to show. Like git, it writes the
  * index back when it refreshed stat data or the index has racy entries.
  */
-function parseStatusArgs(args) {
+async function statusCommand(ctx, git, vfs, fs, args) {
     let format = 'nimbus';
     let z = false;
     let untracked = null;
     let renames = null;
     let dashdash = false;
     const pathArgs = [];
-    const unsupported = (flag) => unsupportedOption('status', flag.length === 1 ? `-${flag}` : flag);
-    const untrackedMode = (mode) => {
-        if (mode === 'no' || mode === 'normal' || mode === 'all')
+    const unsupported = async (flag) => {
+        await ctx.stderr.write(`fatal: git status ${flag.length === 1 ? `-${flag}` : flag} is not supported here\n`);
+        return 128;
+    };
+    const untrackedMode = async (mode) => {
+        if (mode === 'no' || mode === 'normal' || mode === 'all') {
             untracked = mode;
-        else
-            throw new GitGlobalsError(`fatal: Invalid untracked files mode '${mode}'\n`, 128);
+            return true;
+        }
+        await ctx.stderr.write(`fatal: Invalid untracked files mode '${mode}'\n`);
+        return false;
     };
     for (const arg of args) {
         if (dashdash || arg === '-' || !arg.startsWith('-')) {
@@ -2972,26 +2440,28 @@ function parseStatusArgs(args) {
         }
         if (arg.startsWith('--')) {
             const [flag, value] = arg.includes('=') ? [arg.slice(0, arg.indexOf('=')), arg.slice(arg.indexOf('=') + 1)] : [arg, null];
-            if (value !== null && ['--short', '--null', '--renames', '--no-renames'].includes(flag))
-                unsupported(arg);
             if (flag === '--short')
                 format = 'short';
             else if (flag === '--porcelain' && (value === null || value === 'v1' || value === '1'))
                 format = 'porcelain';
             else if (flag === '--porcelain')
-                unsupported(arg);
+                return await unsupported(arg);
             else if (flag === '--null')
                 z = true;
-            else if (flag === '--untracked-files')
-                untrackedMode(value ?? 'all');
+            else if (flag === '--untracked-files') {
+                if (!await untrackedMode(value ?? 'all'))
+                    return 128;
+            }
             else if (flag === '--renames')
                 renames = true;
             else if (flag === '--no-renames')
                 renames = false;
             else if (STATUS_UNSUPPORTED.has(flag))
-                unsupported(flag);
-            else
-                throw new UnsupportedGitOperation(`error: unknown option \`${arg.slice(2)}'\n${STATUS_USAGE}`, 129);
+                return await unsupported(flag);
+            else {
+                await ctx.stderr.write(`error: unknown option \`${arg.slice(2)}'\n${STATUS_USAGE}`);
+                return 129;
+            }
             continue;
         }
         for (let i = 1; i < arg.length; i++) {
@@ -3001,23 +2471,21 @@ function parseStatusArgs(args) {
             else if (flag === 'z')
                 z = true;
             else if (flag === 'u') {
-                untrackedMode(arg.slice(i + 1) || 'all');
+                if (!await untrackedMode(arg.slice(i + 1) || 'all'))
+                    return 128;
                 break;
             }
             else if (STATUS_UNSUPPORTED.has(flag))
-                unsupported(flag);
-            else
-                throw new UnsupportedGitOperation(`error: unknown switch \`${flag}'\n${STATUS_USAGE}`, 129);
+                return await unsupported(flag);
+            else {
+                await ctx.stderr.write(`error: unknown switch \`${flag}'\n${STATUS_USAGE}`);
+                return 129;
+            }
         }
     }
     // -z alone is porcelain v1.
     if (z && format === 'nimbus')
         format = 'porcelain';
-    return { format, z, untracked, renames, pathArgs };
-}
-async function statusCommand(ctx, git, vfs, fs, parsed) {
-    const { format, z, pathArgs } = parsed;
-    let { untracked, renames } = parsed;
     const repo = await discoverRepo(vfs, ctx.cwd);
     if (!repo) {
         await ctx.stderr.write(NOT_A_REPOSITORY);
@@ -3047,7 +2515,7 @@ async function statusCommand(ctx, git, vfs, fs, parsed) {
     });
     for (const line of status.errors)
         await ctx.stderr.write(`${line}\n`);
-    await wrepo.updateIndexIfAble(dc, async () => await executableHook(ctx, git, fs, repo.gitdir, root, ['post-index-change']) !== null);
+    await wrepo.updateIndexIfAble(dc);
     const prefix = repo.prefix ? `${repo.prefix}/` : '';
     // Lines go out as they are made, 64 KiB at a time: a status of every file is never one string.
     let out = '';
@@ -3165,11 +2633,16 @@ async function commitIndex(ctx, git, wrepo, message, idents) {
  * reset_index: index entries for `specs` ('' everything) become `tree`'s,
  * then the whole index is refreshed and what still differs from the worktree
  * printed under "Unstaged changes after reset:", unless `quiet`, and the
- * index written once.
+ * index written once. False, nothing written, when git dies on a path
+ * verify_path refuses (make_cache_entry).
  */
 async function resetIndex(ctx, wrepo, tree, specs, quiet) {
-    await wrepo.withIndexLock(async () => {
+    return await wrepo.withIndexLock(async () => {
         const dc = await indexFromTree(wrepo, tree, specs);
+        if (typeof dc === 'string') {
+            await ctx.stderr.write(`${invalidPathError(dc)}fatal: make_cache_entry failed for path '${dc}'\n`);
+            return false;
+        }
         const scan = await scanWorktree(await wrepo.worktree(), dc, { untracked: 'no', excludes: null });
         for (const line of scan.errors.tracked)
             await ctx.stderr.write(`${line}\n`);
@@ -3180,27 +2653,37 @@ async function resetIndex(ctx, wrepo, tree, specs, quiet) {
             await writeBinary(ctx.stdout, binaryPath(out));
         }
         await wrepo.writeIndex(dc);
+        return true;
     });
 }
 /**
  * read_from_tree: the index with `tree`'s entries for `specs`, an unchanged
  * one keeping its stat. A changed entry keeps its skip-worktree bit, and a
  * new one takes it outside a sparse checkout's cone (update_index_from_diff).
- * The index read is dropped here, so a reset holds one index, not two.
+ * The index read is dropped here, so a reset holds one index, not two. A
+ * path verify_path refuses is answered instead: git dies at the first.
  */
 async function indexFromTree(wrepo, tree, specs) {
     const old = await wrepo.readIndex();
     const removed = new Set();
     const added = new NewEntries();
+    const protect = await wrepo.pathProtection();
+    const refused = [];
     // Read only for a new path: the cone of a sparse checkout, or null.
     let sparse;
     await walkTreeAndIndex(wrepo.store, tree, old, specs, async (path, leaf, lo, hi) => {
+        if (refused.length > 0)
+            return;
         if (leaf && hi - lo === 1 && old.stage(lo) === 0 && old.oid(lo) === leaf.oid && old.mode(lo) === leaf.mode)
             return;
         for (let i = lo; i < hi; i++)
             removed.add(i);
         if (!leaf)
             return;
+        if (!verifyPath(path, leaf.mode, protect)) {
+            refused.push(path);
+            return;
+        }
         let skipWorktree;
         if (hi > lo && old.stage(lo) === 0) {
             skipWorktree = old.skipWorktree(lo);
@@ -3212,12 +2695,16 @@ async function indexFromTree(wrepo, tree, specs) {
         }
         added.add({ path, mode: leaf.mode, oid: leaf.oid, stat: null, skipWorktree });
     }, { cacheTree: old.cacheTree() });
+    if (refused.length > 0)
+        return refused[0];
     return removed.size || added.count ? DirCache.parse(old.encode({ removed, added }), old.timestamp) : old;
 }
 const RESET_USAGE = 'usage: git reset [--mixed | --soft | --hard] [-q] [<commit>]\n'
     + '   or: git reset [-q] [<tree-ish>] [--] <pathspec>...\n';
 /** `git reset`: --soft moves HEAD, --mixed (the default) the index with it, --hard the worktree too; paths reset index entries. */
-function parseResetArgs(args) {
+async function resetCommand(ctx, git, vfs, fs, args, 
+/** Fetch what a partial clone lacks of `commits`, as the worktree at `worktree` (null: bare) checks it out. */
+prefetch) {
     let mode = 'mixed';
     let quiet = false;
     const dashdash = args.indexOf('--');
@@ -3230,19 +2717,12 @@ function parseResetArgs(args) {
         else if (arg === '-q' || arg === '--quiet')
             quiet = true;
         else if (arg.startsWith('-')) {
-            throw new UnsupportedGitOperation(`error: unknown option \`${arg.replace(/^-+/, '')}'\n${RESET_USAGE}`, 129);
+            await ctx.stderr.write(`error: unknown option \`${arg.replace(/^-+/, '')}'\n${RESET_USAGE}`);
+            return 129;
         }
         else
             words.push(arg);
     }
-    if (words.length)
-        validateRevision(words[0]);
-    return { mode, quiet, words, dashdash: dashdash >= 0, pathArgs: dashdash >= 0 ? args.slice(dashdash + 1) : [] };
-}
-async function resetCommand(ctx, git, vfs, fs, parsed, 
-/** Fetch what a partial clone lacks of `commits`, as the worktree at `worktree` (null: bare) checks it out. */
-prefetch) {
-    const { mode, quiet, words, dashdash, pathArgs } = parsed;
     const repo = await discoverRepo(vfs, ctx.cwd);
     if (!repo) {
         await ctx.stderr.write(NOT_A_REPOSITORY);
@@ -3251,9 +2731,10 @@ prefetch) {
     // Before `--` the first word is a revision when it names one; the rest are paths.
     let rev = 'HEAD';
     let oid = words.length ? await resolveRevision(git, fs, repo.gitdir, words[0], {}) : null;
+    const pathArgs = [...(dashdash >= 0 ? args.slice(dashdash + 1) : [])];
     if (oid !== null)
         rev = words[0];
-    else if (dashdash && words.length) {
+    else if (dashdash >= 0 && words.length) {
         await ctx.stderr.write(`fatal: bad revision '${words[0]}'\n`);
         return 128;
     }
@@ -3274,8 +2755,7 @@ prefetch) {
             return 128;
         }
         const wrepo = worktreeRepo(ctx, git, vfs, fs, repo.gitdir, root);
-        await resetIndex(ctx, wrepo, await treeOf(wrepo.store, oid), repoPaths(pathArgs, ctx.cwd, root), quiet);
-        return 0;
+        return await resetIndex(ctx, wrepo, await treeOf(wrepo.store, oid), repoPaths(pathArgs, ctx.cwd, root), quiet) ? 0 : 128;
     }
     if (mode !== 'soft' && !root) {
         await ctx.stderr.write(NOT_A_WORK_TREE);
@@ -3289,11 +2769,21 @@ prefetch) {
     // The index and worktree become the target's (a forced checkout, type changes included) before the branch moves.
     if (mode === 'hard') {
         await prefetch(repo.gitdir, repo.worktree ?? null, [oid]);
-        await moveWorktree(ctx, git, vfs, fs, repo, oid, { force: true });
+        try {
+            await moveWorktree(ctx, git, vfs, fs, repo, oid, { force: true });
+        }
+        catch (error) {
+            // reset_index's unpack_trees stops at the first path verify_path refuses, having written nothing.
+            if (!(error instanceof CheckoutRefused) || error.refusal.invalid.length === 0)
+                throw error;
+            await ctx.stderr.write(`${invalidPathError(error.refusal.invalid[0])}fatal: Could not reset index file to revision '${rev}'.\n`);
+            return 128;
+        }
     }
     else if (mode === 'mixed') {
         const wrepo = worktreeRepo(ctx, git, vfs, fs, repo.gitdir, root);
-        await resetIndex(ctx, wrepo, await treeOf(wrepo.store, oid), [], quiet);
+        if (!await resetIndex(ctx, wrepo, await treeOf(wrepo.store, oid), [], quiet))
+            return 128;
     }
     const branch = await git.currentBranch({ fs, gitdir: repo.gitdir, fullname: true });
     await git.writeRef({ fs, dir: root ?? repo.gitdir, ref: branch ?? 'HEAD', value: oid, force: true });
@@ -3333,19 +2823,18 @@ async function knownRemote(ctx, git, fs, dir, remote, operation) {
     await ctx.stderr.write(noSuchRemoteText(remote));
     return undefined;
 }
-/**
- * A network command that failed. When the git server could not be reached,
- * or refused (pack/remote-failure.ts), git's message about the repository
- * at `url`, and git's 128; else what failed, and 1.
- */
 function remoteCredentials(ctx, url) {
     return selectRemoteCredentials(url, { username: ctx.env.GIT_USERNAME || '', password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '' });
 }
-async function networkFailure(ctx, what, result, url) {
-    if (result.gitFailure !== undefined) {
-        await ctx.stderr.write(result.gitFailure);
-        return 128;
-    }
+/**
+ * A network command that failed: when the git server could not be reached,
+ * or refused (pack/remote-failure.ts), git's message about the repository
+ * at `url`, and git's 128 (a push whose request for the pack failed, 1);
+ * else what failed, and 1.
+ */
+function networkFailureText(ctx, what, result, url) {
+    if (result.gitFailure !== undefined)
+        return { text: result.gitFailure, code: 128 };
     if (result.remoteFailure !== undefined && url !== undefined) {
         // The credentials offered, the session's or the URL's own; the secrets among them never printed.
         const inUrl = urlCredentials(url);
@@ -3355,11 +2844,15 @@ async function networkFailure(ctx, what, result, url) {
             password ? base64Utf8(`${username}:${password}`) : '',
             inUrl.password ? base64Utf8(`${inUrl.username}:${inUrl.password}`) : '']
             .filter((secret) => Boolean(secret));
-        await ctx.stderr.write(remoteFailureText(url, result.remoteFailure, { username, password: Boolean(password) }, secrets));
-        return 128;
+        const text = remoteFailureText(url, result.remoteFailure, { username, password: Boolean(password) }, secrets);
+        return { text, code: what === 'push' && result.remoteFailure.kind === 'rpc' ? 1 : 128 };
     }
-    await ctx.stderr.write(`\n[git] ${what} failed: ${result.error}\n`);
-    return 1;
+    return { text: `\n[git] ${what} failed: ${result.error}\n`, code: 1 };
+}
+async function networkFailure(ctx, what, result, url) {
+    const { text, code } = networkFailureText(ctx, what, result, url);
+    await ctx.stderr.write(text);
+    return code;
 }
 /**
  * `path` in the namespace as `view` sees it, every link resolved: the
@@ -3402,26 +2895,12 @@ network = ISOLATE_NETWORK,
  */
 filesystem, 
 /** The session's process table: a background clone runs as a process of its own. */
-processes, 
-/**
- * This invocation, run by real git (`nimbus install git`) instead: what
- * this implementation lacks is real git's (routing.ts), and so is every
- * git real git starts (its environment says GIT_WASI_ENV).
- */
-realGit) {
-    if (realGit !== undefined && ctx.env[GIT_WASI_ENV] === '1')
-        return realGit();
+processes) {
     let globals;
     try {
         globals = parseGitGlobals(ctx.args, getDir(ctx));
     }
     catch (e) {
-        if (e instanceof UnsupportedGitOperation) {
-            if (realGit !== undefined)
-                return realGit();
-            await ctx.stderr.write(e.diagnostic);
-            return e.code;
-        }
         if (e instanceof GitGlobalsError) {
             await ctx.stderr.write(e.lines);
             return e.code;
@@ -3430,29 +2909,6 @@ realGit) {
         return 129;
     }
     const { sub, subArgs } = globals;
-    if (realGit !== undefined && gitBackend(sub) === 'wasi')
-        return realGit();
-    let command = null;
-    try {
-        if (sub && !['--version', '-v', '--help', '-h'].includes(sub))
-            command = parseCommandArgs(sub, subArgs, ctx.env);
-        else if (subArgs.length)
-            unsupportedOption('help', 'additional arguments');
-    }
-    catch (error) {
-        if (error instanceof UnsupportedGitOperation) {
-            if (realGit !== undefined)
-                return realGit();
-            await ctx.stderr.write(error.diagnostic);
-            return error.code;
-        }
-        if (error instanceof GitGlobalsError) {
-            await ctx.stderr.write(error.lines);
-            return error.code;
-        }
-        await ctx.stderr.write(`fatal: ${error instanceof Error ? error.message : String(error)}\n`);
-        return 128;
-    }
     // The directory as git's getcwd() sees it, every link resolved: a
     // worktree reached through a link (a mount's link into SQLite, say) is
     // the directory it names, whose top is not itself a link.
@@ -3482,16 +2938,17 @@ realGit) {
     let git;
     // This command's filesystem, once made: what its worktree work cost is kept by it.
     let commandFs = null;
-    let executing = false;
     try {
-        git = await getGit();
+        // `-c`'s settings over the files', for this command.
+        git = withConfigOverrides(await getGit(), globals.config);
     }
     catch (e) {
         ctx.stderr.write(`git: failed to load git module: ${e?.message}\n`);
         return 1;
     }
     // `git init <path>` works on that path, every other subcommand on the cwd.
-    const initPath = command?.sub === 'init' ? command.parsed.directory : undefined;
+    const initArgs = sub === 'init' ? parseInitArgs(subArgs) : null;
+    const initPath = initArgs !== null && !('error' in initArgs) ? initArgs.directory : undefined;
     const initDir = initPath === undefined ? dir : initPath.startsWith('/') ? initPath : dir + '/' + initPath;
     try {
         // The repository through the command's view of the namespace, as its
@@ -3532,8 +2989,6 @@ realGit) {
             return true;
         };
         const fs = sessionGitFs(repoVfs, null, promisor);
-        const fileGit = git;
-        git = withConfigOverrides(withGlobalConfig(git, fs, ctx.env, dir), globals.config);
         commandFs = fs;
         // The engine, as this command's principal: a repository on it takes its objects in waves (WorktreeRepo.objectWriter).
         commandEngines.set(fs, {
@@ -3555,52 +3010,17 @@ realGit) {
         // partial state for the finished clone's.
         if (sub !== 'init' && sub !== 'clone') {
             const repo = await discoverRepo(repoVfs, dir);
-            // The repository's format is its own config file's, as git reads it: no -c or global value stands in.
-            if (repo !== null)
-                await assertRepositoryImplemented(await getGit(), fs, repo);
-            if (repo !== null && command !== null)
-                await assertNoHooks(ctx, git, fs, repo, command.sub);
             if (repo !== null && await repoVfs.exists(`${repo.gitdir}/${GIT_CLONE_JOB_MARKER}`)) {
                 await ctx.stderr.write(`fatal: '${repo.worktree ?? repo.gitdir}' is still being cloned\n`);
                 return 128;
             }
-            if (repo?.worktree && command !== null) {
-                let readsIndex = false;
-                switch (command.sub) {
-                    case 'status':
-                    case 'commit':
-                    case 'ls-files':
-                    case 'merge':
-                    case 'pull':
-                    case 'sparse-checkout':
-                        readsIndex = true;
-                        break;
-                    case 'add':
-                        readsIndex = command.parsed.pathArgs.length > 0 || command.parsed.all === true || command.parsed.update;
-                        break;
-                    case 'checkout':
-                        readsIndex = command.parsed.paths.length > 0 || command.parsed.create
-                            || (command.parsed.ref !== undefined && command.parsed.ref !== 'HEAD');
-                        break;
-                    case 'reset':
-                        readsIndex = command.parsed.mode !== 'soft';
-                        break;
-                    case 'diff':
-                        readsIndex = !command.parsed.noIndex;
-                        break;
-                }
-                if (readsIndex)
-                    await worktreeRepo(ctx, git, repoVfs, fs, repo.gitdir, repo.worktree).prepare();
-            }
         }
-        if (command === null)
-            return 1;
-        if (command.sub === 'diff')
-            await prepareDiff(ctx, git, fs, repoVfs, command.parsed);
-        executing = true;
-        switch (command.sub) {
+        switch (sub) {
             case 'init': {
-                const initArgs = command.parsed;
+                if (initArgs === null || 'error' in initArgs) {
+                    ctx.stderr.write(initArgs?.error ?? INIT_USAGE);
+                    return initArgs?.code ?? 129;
+                }
                 if (initPath) {
                     // Ensure the target directory exists
                     const stripped = initDir.replace(/^\/+/, '');
@@ -3639,7 +3059,7 @@ realGit) {
                 return 0;
             }
             case 'clone': {
-                const { url, dest: destArg, depth, isBg, branch, quiet, filter, sparse } = command.parsed;
+                const { url, dest: destArg, depth, isBg, branch, quiet, filter, sparse } = parseCloneArgs(subArgs);
                 const progress = quiet ? { write() { } } : ctx.stdout;
                 if (!url) {
                     ctx.stderr.write(CLONE_USAGE + '\n');
@@ -3678,6 +3098,11 @@ realGit) {
                 // mutations there by it, as it does on SQLite. A delegation it
                 // overlaps is recalled first (withRecall). It goes when the clone's
                 // process is stopped (stoppable): a destroy stops the clone first.
+                // The names its checkout refuses beyond verify_path's own, as git's
+                // clone reads them: `-c` and the user's global config. The
+                // destination has no config yet, and the repository the command is
+                // run in is not the clone's.
+                const protect = await worktreeRepo(ctx, git, repoVfs, fs, `${dest}/.git`, dest).pathProtection();
                 const leaseRoot = place.mount ? await firstMissing(ctx.vfs, target) : target;
                 const mutationLease = await withRecall(() => vfs.as(ctx.cred).acquireExclusiveMutation(leaseRoot, { includeMissingAncestors: !place.mount, stoppable: true }));
                 // A piece of the clone that hung may still write: the facet runner
@@ -3703,6 +3128,7 @@ realGit) {
                                 depth,
                                 filter,
                                 sparse,
+                                protect,
                                 quiet,
                                 exclusiveDestination: true,
                                 exclusiveMutationRoot: mutationLease.root,
@@ -3858,11 +3284,11 @@ realGit) {
                 }
             }
             case 'status':
-                return await statusCommand(ctx, git, repoVfs, fs, command.parsed);
+                return await statusCommand(ctx, git, repoVfs, fs, subArgs);
             case 'add':
-                return await addCommand(ctx, git, repoVfs, fs, command.parsed);
+                return await addCommand(ctx, git, repoVfs, fs, subArgs);
             case 'commit': {
-                const { messages, quiet, all, cleanup, allowEmptyMessage } = command.parsed;
+                const { messages, quiet, all, cleanup, allowEmptyMessage } = parseCommitArgs(subArgs);
                 let configured;
                 if (cleanup === null) {
                     try {
@@ -3878,7 +3304,7 @@ realGit) {
                     await ctx.stderr.write(`fatal: Invalid cleanup mode ${requested}\n`);
                     return 128;
                 }
-                const raw = joinMessageOptions(messages);
+                const raw = messages.length ? joinMessageOptions(messages) : 'commit\n';
                 const message = mode === 'verbatim' ? raw : cleanupMessage(raw, mode === 'strip');
                 if (!message && !allowEmptyMessage) {
                     await ctx.stderr.write('Aborting commit due to empty commit message.\n');
@@ -3912,9 +3338,9 @@ realGit) {
                 return 0;
             }
             case 'rev-parse':
-                return await revParse(ctx, git, fs, repoVfs, command.parsed);
+                return await revParse(ctx, git, fs, repoVfs, subArgs);
             case 'ls-files':
-                return await lsFiles(ctx, git, repoVfs, fs, command.parsed);
+                return await lsFiles(ctx, git, repoVfs, fs, subArgs);
             case 'sparse-checkout': {
                 const repo = await discoverRepo(repoVfs, dir);
                 if (!repo) {
@@ -3945,12 +3371,11 @@ realGit) {
                     },
                     stdout: async (text) => { await ctx.stdout.write(text); },
                     stderr: async (text) => { await ctx.stderr.write(text); },
-                }, command.parsed);
+                }, subArgs);
             }
             case 'log': {
-                const { maxCount, oneline } = command.parsed;
-                if (maxCount === 0)
-                    return 0;
+                const maxCount = parseInt(getFlag(subArgs, '-n') || getFlag(subArgs, '--max-count') || '10');
+                const oneline = subArgs.includes('--oneline');
                 const commits = await git.log({ fs, dir, depth: maxCount });
                 for (const c of commits) {
                     if (oneline) {
@@ -3966,21 +3391,25 @@ realGit) {
                 return 0;
             }
             case 'branch': {
-                const { showCurrent, list, all, del, name } = command.parsed;
-                if (showCurrent) {
+                if (subArgs[0] === '--show-current') {
                     // Empty output on a detached HEAD, like git.
                     const current = await git.currentBranch({ fs, dir });
                     if (current)
                         ctx.stdout.write(`${current}\n`);
                     return 0;
                 }
-                if (list) {
+                const unknown = subArgs.find((a) => a.startsWith('-') && !['-a', '--list', '-d', '-D'].includes(a));
+                if (unknown) {
+                    ctx.stderr.write(`error: unknown option '${unknown}'\nusage: git branch [-a | --list | --show-current | -d <name> | -D <name> | <name>]\n`);
+                    return 129;
+                }
+                if (subArgs.length === 0 || subArgs[0] === '-a' || subArgs[0] === '--list') {
                     const branches = await git.listBranches({ fs, dir });
                     const current = await git.currentBranch({ fs, dir });
                     for (const b of branches) {
                         ctx.stdout.write(b === current ? `\x1b[32m* ${b}\x1b[0m\n` : `  ${b}\n`);
                     }
-                    if (all) {
+                    if (subArgs.includes('-a')) {
                         try {
                             const remotes = await git.listBranches({ fs, dir, remote: 'origin' });
                             for (const b of remotes)
@@ -3989,31 +3418,38 @@ realGit) {
                         catch { }
                     }
                 }
-                else if (del) {
+                else if (subArgs.includes('-d') || subArgs.includes('-D')) {
+                    const name = subArgs.find(a => !a.startsWith('-'));
                     if (name) {
                         await git.deleteBranch({ fs, dir, ref: name });
                         ctx.stdout.write(`Deleted branch ${name}\n`);
                     }
                 }
                 else {
-                    if (name === undefined)
-                        return 1;
+                    const name = subArgs[0];
                     await git.branch({ fs, dir, ref: name });
                     ctx.stdout.write(`Created branch ${name}\n`);
                 }
                 return 0;
             }
             case 'checkout': {
-                const { quiet, create, ref, paths, ignoreSkipWorktree } = command.parsed;
-                if (paths.length)
-                    return await checkoutPaths(ctx, git, repoVfs, fs, ref ?? null, paths, ignoreSkipWorktree);
+                // `--` with paths after it restores those paths; a bare `--` only ends the options.
+                const dashdash = subArgs.indexOf('--');
+                const options = dashdash >= 0 ? subArgs.slice(0, dashdash) : subArgs;
+                if (dashdash >= 0 && dashdash < subArgs.length - 1) {
+                    const source = options.find(a => !a.startsWith('-'));
+                    return await checkoutPaths(ctx, git, repoVfs, fs, source ?? null, subArgs.slice(dashdash + 1), options.includes('--ignore-skip-worktree-bits'));
+                }
+                const quiet = options.includes('-q') || options.includes('--quiet');
+                const ref = options.find(a => !a.startsWith('-'));
                 // `git checkout` and `git checkout HEAD` switch to where HEAD already is: nothing changes.
-                if ((!ref || ref === 'HEAD') && !create)
+                if ((!ref || ref === 'HEAD') && !options.includes('-b'))
                     return 0;
                 if (!ref) {
                     ctx.stderr.write("error: switch `b' requires a value\n");
                     return 129;
                 }
+                const create = options.includes('-b');
                 if (create)
                     await git.branch({ fs, dir, ref });
                 try {
@@ -4032,21 +3468,20 @@ realGit) {
                 return 0;
             }
             case 'diff':
-                return await diffCommand(ctx, git, fs, repoVfs, command.parsed, partial);
+                return await diffCommand(ctx, git, fs, repoVfs, subArgs, partial);
             case 'remote': {
-                const { operation, verbose, name, url } = command.parsed;
-                if (operation === 'add') {
-                    await git.addRemote({ fs, dir, remote: name, url });
-                    ctx.stdout.write(`Remote '${name}' added\n`);
+                if (subArgs[0] === 'add' && subArgs[1] && subArgs[2]) {
+                    await git.addRemote({ fs, dir, remote: subArgs[1], url: subArgs[2] });
+                    ctx.stdout.write(`Remote '${subArgs[1]}' added\n`);
                 }
-                else if (operation === 'remove') {
-                    await git.deleteRemote({ fs, dir, remote: name });
-                    ctx.stdout.write(`Remote '${name}' removed\n`);
+                else if (subArgs[0] === 'remove' || subArgs[0] === 'rm') {
+                    await git.deleteRemote({ fs, dir, remote: subArgs[1] });
+                    ctx.stdout.write(`Remote '${subArgs[1]}' removed\n`);
                 }
                 else {
                     const remotes = await git.listRemotes({ fs, dir });
                     for (const r of remotes) {
-                        ctx.stdout.write(verbose ? `${r.remote}\t${r.url} (fetch)\n` : `${r.remote}\n`);
+                        ctx.stdout.write(subArgs.includes('-v') ? `${r.remote}\t${r.url} (fetch)\n` : `${r.remote}\n`);
                     }
                 }
                 return 0;
@@ -4054,7 +3489,18 @@ realGit) {
             case 'fetch': {
                 const place = await placeRepository(dir);
                 const target = place.dir;
-                const { quiet, deepen, remote } = command.parsed;
+                const { quiet, rest: fetchArgs } = takeQuiet(subArgs);
+                let deepen;
+                try {
+                    deepen = parseFetchDepth(fetchArgs);
+                }
+                catch (e) {
+                    ctx.stderr.write(`fatal: ${e.message}\n`);
+                    return 128;
+                }
+                const rest = fetchArgs.filter((arg, i) => !FETCH_DEPTH_FLAGS.includes(arg.split('=')[0]) &&
+                    !(i > 0 && ['--depth', '--deepen'].includes(fetchArgs[i - 1])));
+                const remote = rest[0] || 'origin';
                 const fetchUrl = await knownRemote(ctx, git, fs, dir, remote, 'fetch');
                 if (fetchUrl === undefined)
                     return 128;
@@ -4092,8 +3538,9 @@ realGit) {
                 // checkout policy, as `git merge` runs it.
                 const place = await placeRepository(dir);
                 const target = place.dir;
-                const { quiet, remote } = command.parsed;
-                const branch = command.parsed.branch ?? await git.currentBranch({ fs, dir }) ?? 'main';
+                const { quiet, rest } = takeQuiet(subArgs);
+                const remote = rest[0] || 'origin';
+                const branch = rest[1] || await git.currentBranch({ fs, dir }) || 'main';
                 // Its fetch, git's child, fails (128); pull says 1.
                 const pullUrl = await knownRemote(ctx, git, fs, dir, remote, 'fetch');
                 if (pullUrl === undefined)
@@ -4137,8 +3584,9 @@ realGit) {
             case 'push': {
                 const place = await placeRepository(dir);
                 const target = place.dir;
-                const { quiet, remote } = command.parsed;
-                const branch = command.parsed.branch ?? await git.currentBranch({ fs, dir }) ?? 'main';
+                const { quiet, rest } = takeQuiet(subArgs);
+                const remote = rest[0] || 'origin';
+                const branch = rest[1] || await git.currentBranch({ fs, dir }) || 'main';
                 const pushUrl = await knownRemote(ctx, git, fs, dir, remote, 'push');
                 if (pushUrl === undefined)
                     return 128;
@@ -4171,30 +3619,27 @@ realGit) {
                 return await networkFailure(ctx, 'push', result, pushUrl);
             }
             case 'merge': {
-                const { theirs, quiet } = command.parsed;
+                const theirs = subArgs.find(a => !a.startsWith('-'));
+                if (!theirs) {
+                    ctx.stderr.write('usage: git merge <branch>\n');
+                    return 1;
+                }
+                const quiet = subArgs.includes('-q') || subArgs.includes('--quiet');
                 return await mergeCommand(ctx, git, fs, repoVfs, dir, theirs, quiet, partial);
             }
             case 'reset':
-                return await resetCommand(ctx, git, repoVfs, fs, command.parsed, async (gitdir, worktree, commits) => await prefetchCommits(git, fs, gitdir, commits, partial, worktree === null ? null : await worktreeRepo(ctx, git, repoVfs, fs, gitdir, worktree).sparseMatcher()));
+                return await resetCommand(ctx, git, repoVfs, fs, subArgs, async (gitdir, worktree, commits) => await prefetchCommits(git, fs, gitdir, commits, partial, worktree === null ? null : await worktreeRepo(ctx, git, repoVfs, fs, gitdir, worktree).sparseMatcher()));
             case 'tag':
-                return await tagCommand(ctx, git, fs, repoVfs, command.parsed);
+                return await tagCommand(ctx, git, fs, repoVfs, subArgs);
             case 'config': {
-                const { key, value, unset } = command.parsed;
-                if (unset) {
-                    const values = await fileGit.getConfigAll({ fs, dir, path: key });
-                    if (values.length === 0)
-                        return 5;
-                    if (values.length > 1) {
-                        await ctx.stderr.write(`warning: ${key} has multiple values\n`);
-                        return 5;
-                    }
-                    await fileGit.setConfig({ fs, dir, path: key, value: undefined });
-                }
-                else if (value !== undefined) {
+                const key = subArgs.find(a => !a.startsWith('-'));
+                const value = subArgs[subArgs.indexOf(key || '') + 1];
+                if (key && value) {
+                    const [section, ...rest] = key.split('.');
                     // Set: git says nothing.
                     await git.setConfig({ fs, dir, path: key, value });
                 }
-                else {
+                else if (key) {
                     // A key not set is git's exit 1, and nothing printed.
                     let val;
                     try {
@@ -4207,31 +3652,33 @@ realGit) {
                         return 1;
                     ctx.stdout.write(`${val === null ? '' : val}\n`);
                 }
+                else {
+                    ctx.stderr.write('usage: git config <key> [value]\n');
+                    return 1;
+                }
                 return 0;
             }
-            default: throw new Error('internal error: git command not dispatched');
+            default:
+                ctx.stderr.write(`git: '${sub}' is not a git command. See 'git --help'.\n`);
+                return 1;
         }
     }
     catch (e) {
-        if (e instanceof UnsupportedGitOperation) {
-            if (!executing && realGit !== undefined)
-                return realGit();
-            await ctx.stderr.write(e.diagnostic);
-            return e.code;
-        }
-        if (e instanceof GitGlobalsError) {
-            await ctx.stderr.write(e.lines);
-            return e.code;
-        }
         // The reader went away (`git diff | head`): git dies of SIGPIPE, silently.
         if (e?.code === 'EPIPE')
             return 141;
+        // A partial clone's lazy fetch failed: its fetch's words, then git's (promisor_remote_get_direct).
+        if (e instanceof PromisorFetchError) {
+            const { text } = networkFailureText(ctx, 'fetch', e.result, e.request.url);
+            await ctx.stderr.write(`${text}fatal: ${e.message}\n`);
+            return 128;
+        }
         ctx.stderr.write(`fatal: ${e?.message || e}\n`);
         return 128;
     }
     finally {
         const counters = commandFs && commandCounters.get(commandFs);
-        if (executing && counters && ctx.env.NIMBUS_GIT_COUNTERS)
+        if (counters && ctx.env.NIMBUS_GIT_COUNTERS)
             await ctx.stderr.write(`[git] ${JSON.stringify(counters)}\n`);
     }
 }

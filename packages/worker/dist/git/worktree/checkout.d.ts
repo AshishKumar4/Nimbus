@@ -38,6 +38,7 @@ import type { Excludes } from './excludes.js';
 import { type ObjectStore } from './tree.js';
 import type { SparseMatcher } from '../pack/sparse.js';
 import { type Worktree } from './walk.js';
+import { type PathProtection } from './verify-path.js';
 /** The worktree writes a checkout makes, at absolute paths (createGitFs's checkout rules). */
 export interface CheckoutWriter {
     /** A file made with `mode`; one there keeps its own (chmod sets it). */
@@ -61,6 +62,8 @@ export interface SparsityContext {
 }
 /** What a refused checkout names, by git's kinds. */
 export interface Refusal {
+    /** Paths git's verify_path refuses the target's entries (add_index_entry), each its own error. */
+    invalid: string[];
     local: string[];
     directories: string[];
     untracked: string[];
@@ -86,6 +89,8 @@ export interface SwitchContext extends SparsityContext {
     operation: CheckoutOperation;
     /** The worktree's sparse checkout (WorktreeRepo.sparseMatcher), or null. */
     sparse?: SparseMatcher | null;
+    /** The names verify_path refuses beyond its own (WorktreeRepo.pathProtection). */
+    protect: PathProtection;
 }
 /**
  * Move the worktree from `head` (a tree; null when forced or unborn) to

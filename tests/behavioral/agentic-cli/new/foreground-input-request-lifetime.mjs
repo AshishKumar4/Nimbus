@@ -29,6 +29,7 @@ try {
   await t.close(); await sleep(4000);
   t=new Terminal(sid); await t.connect(); await t.waitForPrompt(30_000);
   a.check('a disconnected command completes and replays',hasOutputLine(termBody(t.buf),'REPLAY_AFTER_DISCONNECT'),t.buf.slice(-500));
+  await t.run('cd /tmp; export REQUEST_LIFETIME_FINAL=finished');
   const before=(await diagMemory(sid))?.hib?.isolateGen;
   await t.close();
   for(let n=0;n<7;n++)await sleep(10_000);
@@ -36,6 +37,8 @@ try {
   const after=(await diagMemory(sid))?.hib?.isolateGen;
   a.check('completed command releases the object to hibernate',typeof before==='number'&&typeof after==='number'&&after>before,`${before} -> ${after}`);
   a.check('input after hibernation still works',hasOutputLine(termBody((await t.run('echo HIBERNATED_INPUT')).output),'HIBERNATED_INPUT'));
+  a.check('final cwd survives hibernation',hasOutputLine(termBody((await t.run('pwd')).output),'/tmp'));
+  a.check('final environment survives hibernation',hasOutputLine(termBody((await t.run('echo "$REQUEST_LIFETIME_FINAL"')).output),'finished'));
 } finally {
   await t.close().catch(()=>{});
   a.check('session deleted',(await deleteSession(sid)).ok);

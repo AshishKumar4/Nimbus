@@ -1,6 +1,7 @@
 import type { ShellInputSubmission, ShellIntegrationEvent } from '../../../shell/input-submission.js';
 
 export interface ITerminal {
+  readonly signal?: AbortSignal;
   write(data: string): void;
   writeln(data: string): void;
   onData(callback: (data: string, submission?: ShellInputSubmission) => void | Promise<void>): void;

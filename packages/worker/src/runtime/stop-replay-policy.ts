@@ -108,8 +108,8 @@ export const REPLAY_OPERATION_POLICY = {
   // Waits for the session's publication of what the process wrote, and implements that boundary itself.
   fsPublished: control,
   innerDoFetch: effect, innerDoCall: effect, fanoutExecute: effect, processHostProbe: effect,
-  hostProcess: effect, awaitHostedOpen: effect, awaitHostedBoot: effect,
-  routeHostedHttp: effect, cancelHostProcess: effect, hostLost: effect, hmrRelay: effect,
+  hostProcess: effect, awaitHostedBoot: effect,
+  routeHostedHttp: effect, abandonHostedHttp: effect, cancelHostProcess: effect, hmrRelay: effect,
   hmrNextEvent: effect, replayBoundary: control, netTls: effect, outbound: control,
 } satisfies Record<SupervisorOpName, ReplayPolicy>;
 

@@ -3,11 +3,17 @@ export const DEFAULT_HOST_DISPATCH_METHOD = 'supervisorOp';
 let composition = null;
 let ctxExports = null;
 /**
- * A program's filesystem errors reach it across workerd RPC, from the host
- * that answers its supervisor binding, and the program branches on the POSIX
- * `code` each one carries. workerd carries an error's own properties across
- * RPC only when the sending AND the receiving isolate have
- * `enhanced_error_serialization`, on by compatibility date from 2026-04-21:
+ * The compatibility flags a host composes the fabric under, refused without.
+ * Composing refuses wherever it composes (module scope: the Worker fails at
+ * startup; NimbusWorkspace.create: that call throws), naming the fix. Off
+ * workerd (bun, node) there is no `Cloudflare` global to read, and neither
+ * flag has anything to act on.
+ *
+ * `enhanced_error_serialization`: a program's filesystem errors reach it
+ * across workerd RPC, from the host that answers its supervisor binding, and
+ * the program branches on the POSIX `code` each one carries. workerd carries
+ * an error's own properties across RPC only when the sending AND the
+ * receiving isolate have the flag, on by compatibility date from 2026-04-21:
  * the serializer writes a native error as a host object with its own
  * properties only under the flag (src/workerd/jsg/ser.c++,
  * Serializer::IsHostObject), and the receiver reads that detail back only
@@ -15,32 +21,41 @@ let ctxExports = null;
  * https://developers.cloudflare.com/workers/runtime-apis/rpc/error-handling/.
  * Programs load at CF_COMPAT_DATE, past it. The host runs at its embedder's
  * date, and below it every ENOENT would reach every program as a bare message
- * it maps to EIO. So composing refuses such a host, wherever it composes
- * (module scope: the Worker fails at startup; NimbusWorkspace.create: that
- * call throws), and names both fixes: the flag alone keeps
- * every other behavior of the embedder's date. Off workerd (bun, node) there
- * is no RPC hop and no `Cloudflare` global to read.
+ * it maps to EIO. The flag alone keeps every other behavior of that date.
+ *
+ * `enable_request_signal`, which no compatibility date enables: a process
+ * owns work for a response until its client is done with it, and a client
+ * that goes away is seen only as the incoming request's `signal` aborting
+ * (src/workerd/io/worker-entrypoint.c++, "The client has disconnected").
+ * Without it a response whose client left keeps its process's work, and the
+ * host that runs it, held until the process writes again, or for good.
  */
-function requireEnhancedErrorSerialization() {
+function requireHostFlags() {
     // `typeof` of an undeclared global is 'undefined', not a ReferenceError.
     if (typeof Cloudflare === 'undefined')
         return;
-    if (Cloudflare.compatibilityFlags.enhanced_error_serialization === true)
-        return;
-    throw new Error('fabric: this Worker runs without the enhanced_error_serialization compatibility flag, so the '
-        + "code on a program's filesystem error (ENOENT, EEXIST, ...) would not survive the RPC back "
-        + 'to it. Add "enhanced_error_serialization" to compatibility_flags in your wrangler config, '
-        + 'or set compatibility_date to 2026-04-21 or later.');
+    if (Cloudflare.compatibilityFlags.enhanced_error_serialization !== true) {
+        throw new Error('fabric: this Worker runs without the enhanced_error_serialization compatibility flag, so the '
+            + "code on a program's filesystem error (ENOENT, EEXIST, ...) would not survive the RPC back "
+            + 'to it. Add "enhanced_error_serialization" to compatibility_flags in your wrangler config, '
+            + 'or set compatibility_date to 2026-04-21 or later.');
+    }
+    if (Cloudflare.compatibilityFlags.enable_request_signal !== true) {
+        throw new Error('fabric: this Worker runs without the enable_request_signal compatibility flag, so a process '
+            + 'cannot see a client leave the response it is serving, and keeps that work held. Add '
+            + '"enable_request_signal" to compatibility_flags in your wrangler config; no compatibility '
+            + 'date enables it.');
+    }
 }
 /**
  * Compose once per isolate. A second call with the same values is a no-op;
  * a second call with different values throws, naming both, so an embedder
  * whose composition lost to an earlier import learns it at startup rather
  * than from a facet that reached the wrong host. A host without
- * `enhanced_error_serialization` is refused.
+ * `enhanced_error_serialization` or `enable_request_signal` is refused.
  */
 export function composeFabric(value) {
-    requireEnhancedErrorSerialization();
+    requireHostFlags();
     if (!composition) {
         composition = value;
         return;

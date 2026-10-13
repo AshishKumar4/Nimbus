@@ -34,6 +34,7 @@ import { normalizeVfsPath, stripLeadingSlashes, vfsPathExtension } from '@nimbus
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 import { direntTypeOf } from '@nimbus-sh/core/vfs/dirent-type.js';
+import { relayRpcBody, responseScope } from '@nimbus-sh/core/runtime/port-registry.js';
 import { clearPortCapability, listPortReservations, readPortReservation, readPortReservationByOwner, releasePortReservation, restoreReservedPortCapability, } from '../session/port-capability.js';
 import { deriveResidentOwner, launchArgv } from './resident-identity.js';
 import { z } from 'zod/v4';
@@ -88,6 +89,7 @@ import { acquireDurableFacetSlot, freeDurableFacetSlot, } from './durable-slots.
 import { persistDurableWorkerImage, purgeDurableWorkerImages, } from './durable-images.js';
 import { SQLITE_WASM_MODULE_NAME, } from '../runtime/opencode-facet-runner.js';
 import { parsePortFromArgv, resolveLongRunningPort } from '@nimbus-sh/core/runtime/long-running-handle.js';
+import { hostActivity, hostAdapterBytes } from '@nimbus-sh/fabric/host-activity.js';
 import { DEFAULT_FACET_BUNDLE_PROFILE, } from '@nimbus-sh/core/runtime/bundle-profile.js';
 import { CF_COMPAT_DATE, DEFAULT_HOME, GUEST_COMPAT_FLAGS, VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES, BUNDLE_MAX_ENCODED_BYTES, PREFETCH_CACHE_MAX_BYTES, FS_LIST_PAGE_LIMIT, CHUNK_SIZE, } from '@nimbus-sh/core/constants.js';
 import { LEDGER_ROW_BYTES } from '@nimbus-sh/core/runtime/storage-ledger.js';
@@ -315,7 +317,7 @@ function __nimbusReportBlockedState() {
 // child as much as a callback would be. Once the evaluation settles, the
 // loop gives a settling chain its warm-up turns again; a rejected
 // evaluation is uncaught as it rejects.
-async function __nimbusRunEntrypointToExit(__entryResult, __deadlineMs) {
+async function __nimbusRunEntrypointToExit(__entryResult, __deadlineMs, __beforeExit) {
   let __evaluating = Boolean(__entryResult) && typeof __entryResult.then === "function";
   let __grace = 0;
   if (__evaluating) {
@@ -331,7 +333,36 @@ async function __nimbusRunEntrypointToExit(__entryResult, __deadlineMs) {
     if (__grace > 0) { __grace--; return 1 + __nimbusLiveHandles(); }
     return __nimbusLiveHandles();
   };
-  return await __nimbusRunEventLoop(__count, __nimbusProcessExitPromise, __deadlineMs, 4, __nimbusReportBlockedState);
+  if (!__beforeExit) return await __nimbusRunEventLoop(__count, __nimbusProcessExitPromise, __deadlineMs, 4, __nimbusReportBlockedState);
+  const __limited = Number.isFinite(__deadlineMs);
+  const __startedAt = __limited ? Date.now() : 0;
+  for (;;) {
+    const __remaining = __limited ? Math.max(0, __deadlineMs - (Date.now() - __startedAt)) : __deadlineMs;
+    const __drained = await __nimbusRunEventLoop(__count, __nimbusProcessExitPromise, __remaining, 4, __nimbusReportBlockedState);
+    if (__drained.pending || !await __beforeExit()) return __drained;
+  }
+}
+
+async function __nimbusBeforeExitHasWork() {
+  if (__nimbusProgramStopped || !__processMod.listenerCount("beforeExit")) return false;
+  const __rawSetTimeout = globalThis.__nimbusRawSetTimeout || globalThis.setTimeout;
+  // Already-returned writes still publish, but are not new Node work.
+  const __nodeHandles = () => Math.max(0, __nimbusLiveHandles() - __nimbusHandleCount("__nimbusAcknowledgedVfsOps"));
+  for (;;) {
+    try { __processMod.emit("beforeExit", __processMod.exitCode || 0); }
+    catch (error) { __nimbusUncaughtException(error, false); }
+    let __continued = __nodeHandles() > 0;
+    for (let __pass = 0; __pass < 4; __pass++) {
+      await new Promise((resolve) => __rawSetTimeout(resolve, 0));
+      __continued ||= __nodeHandles() > 0;
+    }
+    if (__nimbusProgramStopped) return false;
+    if (__continued && __nimbusLiveHandles() > 0) return true;
+    if (!__continued) {
+      await __nimbusRunEventLoop(__nimbusLiveHandles, __nimbusProcessExitPromise, Infinity, 0);
+      return false;
+    }
+  }
 }
 
 // Whether the program holds no live handle once a settling chain has had the
@@ -349,17 +380,25 @@ async function __nimbusHoldsNoHandle() {
 // (a timer firing or cleared, an operation settling, a server closed or
 // unref'd, stdin let go) calls __nimbusHandleReleased, and a release that
 // leaves none is the program's natural end.
-function __nimbusNaturalExit() {
+function __nimbusNaturalExit(__beforeExit) {
   return new Promise((resolve) => {
     let __checking = false;
     const __released = () => {
       if (__checking) return;
       __checking = true;
-      __nimbusHoldsNoHandle().then((__none) => {
+      __nimbusHoldsNoHandle().then(async (__none) => {
+        if (__none && __beforeExit && await __beforeExit()) __none = false;
         __checking = false;
         if (!__none) return;
         if (globalThis.__nimbusHandleReleased === __released) globalThis.__nimbusHandleReleased = undefined;
         resolve();
+      }).catch((error) => {
+        __checking = false;
+        __nimbusUncaughtException(error, false);
+        if (__nimbusProgramStopped) {
+          if (globalThis.__nimbusHandleReleased === __released) globalThis.__nimbusHandleReleased = undefined;
+          resolve();
+        } else __released();
       });
     };
     globalThis.__nimbusHandleReleased = __released;
@@ -738,6 +777,18 @@ ${STOP_REPLAY_SOURCE}
 // only other way a string becomes code in a Worker is \`new Function\` at
 // module evaluation, which compiled the whole closure before the program ran.
 ${runtime.code}
+
+// These getters retain only identity, not a run's filesystem and shims.
+function __nimbusInstallNodeNavigator(__version) {
+  let __languages;
+  const __languageList = () => __languages ??= Object.freeze([new Intl.DateTimeFormat().resolvedOptions().locale]);
+  Object.defineProperties(globalThis.navigator, {
+    userAgent: { get: () => 'Node.js/' + __version.slice(1).split('.')[0], enumerable: true, configurable: true },
+    platform: { get: () => 'Linux x86_64', enumerable: true, configurable: true },
+    language: { get: () => __languageList()[0], enumerable: true, configurable: true },
+    languages: { get: __languageList, enumerable: true, configurable: true },
+  });
+}
 `;
 }
 /**
@@ -858,6 +909,7 @@ ${RESIDENCY_MISS_REPORT}
     try { globalThis.process = __processMod; } catch {}
     try { globalThis.Buffer = __BufferMod; } catch {}
     try { globalThis.global = globalThis; } catch {}
+    __nimbusInstallNodeNavigator(__processMod.version);
     // undici's fetch (bundled by e.g. create-cloudflare) detaches
     // performance.markResourceTiming and calls it with no receiver,
     // which workerd rejects with "Illegal invocation" and crashes the
@@ -991,7 +1043,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
         if (__thrown instanceof __ProcessExit) throw __thrown;
         __nimbusUncaughtException(__thrown, ${entry.esModule});
       }
-      const __drain = await __nimbusRunEntrypointToExit(__entryResult, __entryBudgetMs);
+      const __drain = await __nimbusRunEntrypointToExit(__entryResult, __entryBudgetMs, __nimbusBeforeExitHasWork);
       __drainPasses = __drain.passes;
       if (__nimbusProcessExitCode !== null) exitCode = __nimbusProcessExitCode;
 
@@ -1056,7 +1108,9 @@ ${nodeProgramRuntime(sources, entry.esModule)}
       try {
         await __nimbusDrainVfsWrites(__supervisor);
       } catch (e) {
-        const trace = (e && e.stack) || (e && e.message) || String(e);
+        const message = (e && e.message) || String(e);
+        const stack = (e && e.stack) || message;
+        const trace = stack.includes(message) ? stack : message + "\\n" + stack;
         stderr += trace + "\\n";
         exitCode = 1;
         if (!captureOutput) await __nimbusReleaseStderr(trace + "\\n");
@@ -1086,7 +1140,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
     return __NimbusHostResponse.json({
       exitCode,
       stdout: (__supervisor && !captureOutput) ? "" : stdout,
-      stderr: (__supervisor && !captureOutput) ? "" : stderr,
+      stderr: (__supervisor && !captureOutput) ? __nimbusUnreportedStderr : stderr,
       // Unconditional, unlike diag: the supervisor stages these paths into
       // the next bundle for the same entry, so withholding them behind a
       // debug flag would leave the miss to repeat forever.
@@ -1204,7 +1258,7 @@ export function facetWasmImportsSource(wasmImports) {
 export async function generateLongRunningNodeCode(userCode, vfsState, opts, usesSqlite, sources, pacer) {
     const bundleSource = await facetVfsBundleSourceFor(vfsState, pacer);
     const entry = entryModule(userCode, opts.filename, opts.cwd || DEFAULT_HOME, opts.esModule, bundleSource, opts.preamble);
-    const safeArgs = JSON.stringify({
+    const args = {
         argv: opts.argv || [],
         nodeCommandLine: opts.node ?? null,
         env: opts.env || {},
@@ -1214,12 +1268,12 @@ export async function generateLongRunningNodeCode(userCode, vfsState, opts, uses
         stdin: opts.stdin || '',
         attachedTty: opts.attachedTty === true,
         cred: opts.cred,
-    });
+    };
     const runtime = createNodeFacetRuntime(sources, { ...bundleSource, stackEntry: entry.stackEntry });
     const source = moduleSource `
 import { DurableObject } from "cloudflare:workers";
 ${nodeProgramModule(bundleSource, runtime, usesSqlite, vfsState.stagedBindings, opts.wasmImports ?? [])}
-const __NIMBUS_ARGS = ${safeArgs};
+const __NIMBUS_ARGS = ${jsonDataLiteral(args)};
 
 // \`let\`, not \`const\`, so the parsed bundle can be dropped once the store has
 // adopted it. Holding both is the double materialisation: the module map's text
@@ -1462,7 +1516,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
         if (__nimbusProcessExitCode !== null) exitCode = __nimbusProcessExitCode;
         // Finished during its boot (\`--help\`, a CLI run that also serves):
         // the boot answers with its exit, as an explicit exit's does.
-        else if (!__nimbusHeldWithoutHandles) __nimbusEndedAtBoot = await __nimbusHoldsNoHandle();
+        else if (!__nimbusHeldWithoutHandles) __nimbusEndedAtBoot = await __nimbusHoldsNoHandle() && !await __nimbusBeforeExitHasWork();
       }
     } catch (e) {
       if (e instanceof __ProcessExit) {
@@ -1528,7 +1582,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
           finalCode = __nimbusEndedAtBoot ? 0 : Number(await __nimbusProcessExitPromise);
         } else {
           // process.exit, or the natural end: no live handle left.
-          finalCode = Number(await Promise.race([__nimbusProcessExitPromise, __nimbusNaturalExit().then(() => 0)]));
+          finalCode = Number(await Promise.race([__nimbusProcessExitPromise, __nimbusNaturalExit(__nimbusBeforeExitHasWork).then(() => 0)]));
         }
         if (__nimbusProcessExitCode === null) {
           finalCode = __nimbusExitAtEnd();
@@ -1600,13 +1654,7 @@ export class NimbusProcess extends DurableObject {
     // Its write log is kept in its own store (process-fs-journal.ts).
     globalThis.__nimbusFsJournalSql = ctx.storage.sql;
   }
-  // Pending while this isolate lives: the coordinator learns of its death
-  // (out of memory, out of CPU) by this call's rejection. Its resolver is
-  // kept on the object, so a collection never finds the promise unsettleable
-  // (which the runtime answers by rejecting it: "Promise will never complete").
-  held() {
-    return new Promise((resolve) => { (this.__nimbusHeld ??= []).push(resolve); });
-  }
+
   async startProcess(startArgs) {
     // Held so an HTTP-first entry (a restart re-entered by a routed request)
     // starts from the same payload startProcess would have used.
@@ -2082,6 +2130,35 @@ function describeBundleCells(cells, limit = 8) {
     return shown.map(([path, bytes]) => `${path} (${bytes} bytes)`).join(', ') + (rest > 0 ? `, +${rest} more` : '');
 }
 /**
+ * JSON data as the JavaScript expression that evaluates to it: its JSON text,
+ * except that an own `__proto__` key is written computed (`["__proto__"]`),
+ * since in an object literal `"__proto__":` sets the prototype instead of
+ * making the key. Data without one is its JSON text, byte for byte, so the
+ * counters that size generated sources from JSON encodings stay exact.
+ */
+function jsonDataLiteral(value) {
+    return holdsProtoKey(value) ? dataLiteral(JSON.parse(JSON.stringify(value))) : JSON.stringify(value);
+}
+function holdsProtoKey(value) {
+    if (value === null || typeof value !== 'object')
+        return false;
+    if (!Array.isArray(value) && Object.hasOwn(value, '__proto__'))
+        return true;
+    return Object.values(value).some(holdsProtoKey);
+}
+/** Parsed JSON data as `jsonDataLiteral` writes it. */
+function dataLiteral(data) {
+    if (data === null || typeof data !== 'object')
+        return JSON.stringify(data);
+    if (Array.isArray(data))
+        return `[${data.map(dataLiteral).join(',')}]`;
+    return `{${Object.entries(data).map(([key, item]) => `${key === '__proto__' ? '["__proto__"]' : JSON.stringify(key)}:${dataLiteral(item)}`).join(',')}}`;
+}
+/** Bytes a bundle key costs the generated source: its JSON text, computed when it is `__proto__`. */
+function _bundleKeyBytes(path) {
+    return _jsonEncodedBytes(path) + (path === '__proto__' ? 2 : 0);
+}
+/**
  * hardening-r5: emit a JS expression that revives binary cells from base64
  * and preserves permission-denial cells alongside ordinary strings.
  *
@@ -2091,6 +2168,8 @@ function describeBundleCells(cells, limit = 8) {
 function _serializeBundleForFacet(bundle) {
     const strCells = {};
     const binCells = {};
+    Object.setPrototypeOf(strCells, null);
+    Object.setPrototypeOf(binCells, null);
     const deniedPaths = [];
     for (const [k, v] of Object.entries(bundle)) {
         if (typeof v === 'string') {
@@ -2113,10 +2192,7 @@ function _serializeBundleForFacet(bundle) {
     }
     // The IIFE revives binary cells in-place. atob → binary string →
     // Uint8Array (Uint8Array.from(str, c=>c.charCodeAt(0))).
-    // Note: when binCells is empty (the overwhelming common case —
-    // source code is all text) the IIFE collapses to a JSON literal,
-    // costing only the IIFE wrapper bytes (~30) per facet boot.
-    return `(function(){const __b=${JSON.stringify(strCells)};const __x=${JSON.stringify(binCells)};const __d=${JSON.stringify(deniedPaths)};for(const __k in __x){__b[__k]=Uint8Array.from(atob(__x[__k]),__c=>__c.charCodeAt(0));}for(const __k of __d){__b[__k]={error:"EACCES"};}return __b;})()`;
+    return `(function(){const __b=${jsonDataLiteral(strCells)};Object.setPrototypeOf(__b,null);const __x=${jsonDataLiteral(binCells)};const __d=${JSON.stringify(deniedPaths)};for(const __k in __x){__b[__k]=Uint8Array.from(atob(__x[__k]),__c=>__c.charCodeAt(0));}for(const __k of __d){__b[__k]={error:"EACCES"};}return __b;})()`;
 }
 const FACET_VFS_MODULE_PREFIX = '__nimbus_vfs_bundle_';
 const FACET_VFS_MODULE_SOURCE_MARGIN = 1024;
@@ -2166,10 +2242,10 @@ const _FACET_MODULE_ENVELOPE_BYTES = _encodedSourceBytes(_facetBundleModuleSourc
  */
 function _facetBundleCellBytes(path, cell) {
     if (typeof cell === 'string') {
-        return _jsonEncodedBytes(path) + 1 + _jsonEncodedBytes(cell);
+        return _bundleKeyBytes(path) + 1 + _jsonEncodedBytes(cell);
     }
     if (cell instanceof Uint8Array) {
-        return _jsonEncodedBytes(path) + 1 + 4 * Math.ceil(cell.byteLength / 3) + 2;
+        return _bundleKeyBytes(path) + 1 + 4 * Math.ceil(cell.byteLength / 3) + 2;
     }
     // A denial cell rides in the path array, which carries no key.
     return _jsonEncodedBytes(path);
@@ -2242,6 +2318,7 @@ export async function buildFacetVfsBundleSource(bundle, forceSideModules = false
     // build), so each is taken as its module is written and the map is never
     // held twice. Otherwise the caller's bundle is left as it was.
     const data = consume ? bundle : {};
+    Object.setPrototypeOf(data, null);
     for (const path of Object.keys(bundle)) {
         const cell = bundle[path];
         const emit = emits?.get(path);
@@ -2333,6 +2410,7 @@ async function serializeFacetVfsData(bundle, forceSideModules, pacer, consume) {
     const imports = [];
     const aliases = [];
     let chunk = {};
+    Object.setPrototypeOf(chunk, null);
     let chunkPaths = [];
     let estimatedBytes = 0;
     // A chunk becomes its side module the moment it is full, so the cells it
@@ -2357,6 +2435,7 @@ async function serializeFacetVfsData(bundle, forceSideModules, pacer, consume) {
             for (const path of chunkPaths)
                 delete bundle[path];
         chunk = {};
+        Object.setPrototypeOf(chunk, null);
         chunkPaths = [];
         estimatedBytes = 0;
         // Each side module is an independent serialization of its own cells, so
@@ -2378,7 +2457,7 @@ async function serializeFacetVfsData(bundle, forceSideModules, pacer, consume) {
         chunkPaths.push(path);
     }
     await flushChunk();
-    const expression = `(function(__parts){const __out={};for(const __part of __parts){` +
+    const expression = `(function(__parts){const __out=Object.create(null);for(const __part of __parts){` +
         `for(const [__k,__v] of Object.entries(__part)){const __prev=__out[__k];` +
         `if(__prev===undefined){__out[__k]=__v;}` +
         `else if(typeof __prev==="string"&&typeof __v==="string"){__out[__k]=__prev+__v;}` +
@@ -4048,6 +4127,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
         throw new ClosureBoundExceededError(prefetch);
     }
     const bundle = { ...prefetch.bundle };
+    Object.setPrototypeOf(bundle, null);
     const closurePaths = new Set(Object.keys(prefetch.bundle).filter((path) => !prefetch.speculative.has(path)));
     // Non-executable read evidence and other sessions' profiles may use only
     // the room the required executable graph leaves. Neither may displace it.
@@ -4269,6 +4349,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
     let rawTotal = 0;
     /** What the bound evicts, held until its images and reads are named below. */
     const evictedCells = {};
+    Object.setPrototypeOf(evictedCells, null);
     for (const [path, cell] of Object.entries(bundle)) {
         const bytes = codeOnly.has(path) ? 0 : _bundleCellRawBytes(cell);
         rawBytes.set(path, bytes);
@@ -4732,6 +4813,7 @@ export class FacetManager {
         this.learnedServers = new LearnedServers(ctx.storage);
         this.env = parseFacetManagerEnv(env);
         this.processes = processes;
+        this.processes.setWorkObservation(() => hostActivity(ctx).acquire());
         this.portRegistry = portRegistry;
         this.hooks = hooks;
         // The workspace's network (FacetManagerHooks.network); a manager no workspace composed uses the isolate's.
@@ -4901,15 +4983,6 @@ export class FacetManager {
         this.ctx.waitUntil(handle.done
             .catch((e) => this._end(pid, { code: 1, cause: `${what} failed: ${errorMessage(e)}` }))
             .finally(() => this.releaseProcessRpcResources(pid)));
-    }
-    /**
-     * The actor hosting `workerKey` reports, from its own next incarnation,
-     * that the platform reset it under the process (fabric
-     * PeerHost.watchFired). True when it was this session's open process, which
-     * is now lost (ProcessHost.hostLost).
-     */
-    hostLost(workerKey, capability) {
-        return this.processHost.hostLost?.(workerKey, capability) ?? false;
     }
     /**
      * The platform reset the host of a running process (ProcessHostLost): the
@@ -5921,11 +5994,12 @@ export class FacetManager {
     }
     /**
      * What a resident's map holds beside its generated text: its sidecars, its
-     * staged bindings' loader and trampoline, and the wasm images and bindings
-     * it reads by path at boot, at their size on the session's disk.
+     * staged bindings' loader and trampoline, the host's adapter around its
+     * worker.js, and the wasm images and bindings it reads by path at boot, at
+     * their size on the session's disk.
      */
     _residentMemberBytes(sqliteModules, staged, wasmImports) {
-        let bytes = moduleMemberBytes(sqliteModules);
+        let bytes = moduleMemberBytes(sqliteModules) + hostAdapterBytes('worker.js');
         if (staged)
             bytes += mapTextBytes(staged.loader) + staged.trampoline.byteLength;
         const fs = this.vfs?.as(CRED_KERNEL);
@@ -7293,8 +7367,10 @@ export class FacetManager {
      * fails or stops (to wait for stdin) is its launcher's to handle; a
      * lifetime resident's caller watches its lifecycle itself.
      */
-    _watchHost(pid, handle, diesAlone) {
+    _watchHost(pid, handle, diesAlone, controlFailure) {
         handle.done.catch((error) => {
+            if (controlFailure?.(error))
+                return;
             if (error instanceof ProcessHostLost) {
                 this._endByHostLoss(pid, error);
                 return;
@@ -7346,7 +7422,7 @@ export class FacetManager {
      * decides anything about where a program runs.
      */
     async _startResidentProcess(pid, spec) {
-        const { run, ...process } = spec;
+        const { run, controlFailure, ...process } = spec;
         const handle = await this.processFabric.startResidentProcess({
             pid,
             workerKey: `nimbus-process:${this.ctx.id.toString()}:${pid}${run !== undefined && run > 1 ? `:run${run}` : ''}`,
@@ -7358,7 +7434,7 @@ export class FacetManager {
             },
             ...process,
         });
-        this._watchHost(pid, handle, spec.startContract === 'boot' && spec.journaled === true);
+        this._watchHost(pid, handle, spec.startContract === 'boot' && spec.journaled === true, controlFailure);
         return handle;
     }
     /** A booted resident died without anyone ending it: it exits 1, its reason on its stderr. */
@@ -7406,6 +7482,7 @@ export class FacetManager {
         while (this.launchTasks.size > 0)
             await Promise.allSettled([...this.launchTasks]);
         await Promise.all(this.rowAmendments.values());
+        await this.processHost.close?.();
     }
     /** Allocate a free loopback port for a resident server facet (from 4096 up). */
     _allocateLoopbackPort() {
@@ -7625,6 +7702,14 @@ export class FacetManager {
         await this.processes.reap();
         const command = opts.command || (opts.filename ? `node ${opts.filename}` : 'node <script>');
         const cwd = opts.cwd || '/home/user';
+        if (!this.processHost.imageDelivery.storageSharedWithSession) {
+            const argv = launchArgv({ execArgv: opts.node?.execArgv, argv: opts.argv });
+            const derived = await deriveResidentOwner(cwd, argv);
+            const declared = opts.port === undefined ? null : await readPortReservation(this.ctx, opts.port);
+            const owner = declared?.kind === 'explicit' && declared.owner !== null ? declared.owner : derived;
+            if (await readPortReservationByOwner(this.ctx, owner))
+                this.processHost.assertDurableStorage();
+        }
         let entry;
         if (opts.skipSpawn && opts.callerPid != null) {
             const found = this.processes.get(opts.callerPid);
@@ -7681,7 +7766,8 @@ export class FacetManager {
     _runResidentLaunch(entry, code, command, opts, attempt) {
         if (this.launchesClosed)
             return Promise.reject(new Error('Launch scheduler is closed'));
-        return this.trackLaunchTask(this._runResidentLaunchBody(entry, code, command, opts, attempt));
+        const preparing = this.processes.holdWork(entry.pid);
+        return this.trackLaunchTask(this._runResidentLaunchBody(entry, code, command, opts, attempt).finally(preparing));
     }
     async _runResidentLaunchBody(entry, code, command, opts, attempt) {
         const cwd = opts.cwd || '/home/user';
@@ -7968,11 +8054,13 @@ export class FacetManager {
                     // pid the session has finished reporting on.
                     this._assertLaunchStillOwned(entry.pid);
                     try {
+                        const launchingNonce = stopNonce, launchingRun = rerun?.replay.run ?? 1;
                         handle = await this._startResidentProcess(entry.pid, {
                             // The attached-TTY runner holds startProcess open for the process's
                             // life; the server/watch runner returns once it is up.
                             startContract: opts.attachedTty ? 'lifetime' : 'boot',
                             journaled: true,
+                            ...(stoppable ? { controlFailure: (error) => stopRecordOf(error, launchingNonce, launchingRun) !== null } : {}),
                             startArgs: {
                                 pid: entry.pid, vfsCursor, dataPlan,
                                 ...(Object.keys(lazyReads).length > 0 ? { lazyReads } : {}),
@@ -8176,6 +8264,9 @@ export class FacetManager {
         if (opts.resident && !opts.durable) {
             opts = { ...opts, durable: { owner: await deriveResidentOwner(cwd, opts.resident.argv) } };
         }
+        if (opts.durable && (!opts.resident || await readPortReservationByOwner(this.ctx, opts.durable.owner))) {
+            this.processHost.assertDurableStorage();
+        }
         await this.processes.reap();
         // The table entry carries the same argv the identity is derived from, so
         // a runtime resident reads the same way through either path.
@@ -8350,7 +8441,17 @@ export class FacetManager {
                 pid: entry.pid,
                 boot,
                 facet: {
-                    fetch: (request) => target.handleHttpRequest(request),
+                    // The caller reads the body across RPC; the process's work for it ends with the relay.
+                    fetch: async (request) => {
+                        const { scope, owner } = responseScope(request.signal);
+                        try {
+                            return relayRpcBody(await target.handleHttpRequest(request, scope), request.method, owner);
+                        }
+                        catch (error) {
+                            owner.fail();
+                            throw error;
+                        }
+                    },
                     connect: async (request) => {
                         if (typeof target.handleWebSocketRequest !== 'function') {
                             throw new Error(`Nimbus: worker pid ${entry.pid} accepts no WebSocket upgrades`);

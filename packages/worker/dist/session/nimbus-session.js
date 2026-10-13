@@ -54,7 +54,9 @@ import { initSession as _w11InitSession } from './init.js';
 // _w5SafePersistRing) extracted.
 // S7: webSocket lifecycle (message, close, error, F1 discriminator,
 // _w5SafePersistRing) extracted.
-import { wsMessage as _wsDoMessage, wsClose as _wsDoClose, wsError as _wsDoError, safePersistRing as _wsDoSafePersistRing, wsKind } from './ws.js';
+import { wsMessage as _wsDoMessage, wsClose as _wsDoClose, wsError as _wsDoError, safePersistRing as _wsDoSafePersistRing, wsKind, terminalInput } from './ws.js';
+import { hostNamespaceBinding } from '@nimbus-sh/fabric/host-dispatch.js';
+import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 // S8: Supervisor RPC + W8 cp* + legacy VFS impls extracted.
 // S8: Supervisor RPC + W8 cp* + legacy VFS impls extracted.
 import * as _rpc from './rpc.js';
@@ -206,6 +208,9 @@ The editor opens this file in Markdown preview mode by default. Use
 \`Ctrl+P\` to open files and \`Ctrl+S\` to save edits.
 `;
 }
+function isTerminalInputDispatcher(stub) {
+    return typeof Reflect.get(stub, '_rpcTerminalInput') === 'function';
+}
 export class NimbusSession extends CloudflareDurableObject {
     #runtimeServices;
     get childProcessHost() { return this.#runtimeServices.childProcessHost; }
@@ -317,10 +322,11 @@ export class NimbusSession extends CloudflareDurableObject {
      *  CF DO docs). The alarm itself lives in DO storage at key
      *  `w1_next_alarm_reasons`. */
     _w1JanitorAt = null;
-    /** W1: idempotency flag for the resident keep-alive alarm cycle — the
-     *  recurring event that holds this object in memory for as long as a
-     *  resident process runs (hibernation.ts ensureResidentKeepalive). */
-    _w1KeepaliveArmed = false;
+    /** W1: the resident keep-alive alarm cycle while armed — the recurring
+     *  event that holds this object in memory for as long as a resident
+     *  process runs and its client is present — and the host activity it owns
+     *  (hibernation.ts armResidentKeepalive). */
+    _w1Keepalive = null;
     /** W1: when a runtime client last reached this session over HTTP/WS; the keep-alive
      *  holds the object only while traffic was observed within
      *  RESIDENT_KEEPALIVE_DETACHED_MS (hibernation.ts residentClientPresent). */
@@ -546,7 +552,7 @@ export class NimbusSession extends CloudflareDurableObject {
      * (retention sweep), 'resident-launch' and 'resident-keepalive'.
      */
     async alarm(alarmInfo) {
-        return _w9DoDispatchAlarm(this, this.ctx, () => this._pumpResidentLaunches(), alarmInfo, () => this.peerHost.watchFired());
+        return _w9DoDispatchAlarm(this, this.ctx, () => this._pumpResidentLaunches(), alarmInfo);
     }
     /**
      * Grant the fresh turn a suspended launch asked for.
@@ -845,7 +851,7 @@ export class NimbusSession extends CloudflareDurableObject {
     // resident process on THIS object (fabric PeerHost).
     _peerHost = null;
     get peerHost() {
-        return this._peerHost ??= _rpc.peerHostFor(this.ctx, this.env, (at) => timers(this, this.ctx).arm('hosting-watch', at));
+        return this._peerHost ??= _rpc.peerHostFor(this.ctx, this.env);
     }
     _rpcProcessHostProbe() {
         return _rpc._rpcProcessHostProbe(this);
@@ -853,26 +859,14 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcHostProcess(boot, opts) {
         return _rpc._rpcHostProcess(this, boot, opts);
     }
-    async _rpcAwaitHostedOpen(workerKey) {
-        return _rpc._rpcAwaitHostedOpen(this, workerKey);
-    }
     async _rpcAwaitHostedBoot(workerKey) {
         return _rpc._rpcAwaitHostedBoot(this, workerKey);
     }
+    async _rpcAbandonHostedHttp(workerKey, capability, id) {
+        return _rpc._rpcAbandonHostedHttp(this, workerKey, capability, id);
+    }
     async _rpcRouteHostedHttp(workerKey, request) {
         return _rpc._rpcRouteHostedHttp(this, workerKey, request);
-    }
-    async _rpcHostLost(workerKey, capability) {
-        // The host asks until it gets an answer; a session that cannot stand up
-        // to act on the report holds no process of that host, and says so.
-        try {
-            this.ensureSqliteFs();
-            this.ensureFacetManager();
-        }
-        catch {
-            return false;
-        }
-        return _rpc._rpcHostLost(this, workerKey, capability);
     }
     async _rpcCancelHostProcess(workerKey) {
         return _rpc._rpcCancelHostProcess(this, workerKey);
@@ -1200,6 +1194,43 @@ export class NimbusSession extends CloudflareDurableObject {
     // S7: bodies extracted to ./ws.ts. Class retains the
     // method NAMES per plan §IX.4 R1 (DO RPC fabric needs them). Visibility
     // relaxed for the methods (default-public; was async/private).
+    terminalInputDispatcher = null;
+    terminalInputPending = 0;
+    dispatchTerminalInput(frame) {
+        const terminal = this.terminal;
+        if (!terminal || terminal.signal.aborted)
+            return;
+        if (!this.terminalInputDispatcher) {
+            const stub = hostNamespaceBinding(this.env, 'terminal input').get(this.ctx.id);
+            if (!isTerminalInputDispatcher(stub)) {
+                disposeRpcResource(stub);
+                throw new Error('Nimbus: the session exposes no terminal input RPC');
+            }
+            this.terminalInputDispatcher = stub;
+        }
+        const stub = this.terminalInputDispatcher;
+        this.terminalInputPending++;
+        void (async () => {
+            try {
+                await stub._rpcTerminalInput(frame, terminal.id);
+            }
+            catch (error) {
+                if (!terminal.signal.aborted) {
+                    console.error('[nimbus] terminal input request failed:', error);
+                    terminal.writeln(`terminal input failed: ${error instanceof Error ? error.message : String(error)}`);
+                }
+            }
+            finally {
+                if (--this.terminalInputPending === 0) {
+                    this.terminalInputDispatcher = null;
+                    disposeRpcResource(stub);
+                }
+            }
+        })();
+    }
+    _rpcTerminalInput(frame, terminalId) {
+        return terminalInput(this, frame, terminalId);
+    }
     async webSocketMessage(ws, message) {
         const { kind } = wsKind(ws);
         if (kind === 'shell' || kind === 'process-logs' || kind === 'cirrus-hmr')
@@ -1207,9 +1238,13 @@ export class NimbusSession extends CloudflareDurableObject {
         return _wsDoMessage(this, ws, message);
     }
     async webSocketClose(ws, code, reason, wasClean) {
+        if (wsKind(ws).kind === 'cirrus-hmr')
+            noteClientActivity(this, this.ctx);
         return _wsDoClose(this, ws, code, reason, wasClean);
     }
     async webSocketError(ws, error) {
+        if (wsKind(ws).kind === 'cirrus-hmr')
+            noteClientActivity(this, this.ctx);
         return _wsDoError(this, ws, error);
     }
     /** W9: synchronous flush on close. Delegator → ./session/hibernation.ts (S4). */

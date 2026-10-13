@@ -12,6 +12,7 @@ import { enc } from '@nimbus-sh/core/_shared/bytes.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { createGitFs } from '../git-fs.js';
 import type { GitNetworkOp, GitNetworkOpts, GraphFiltersStep } from '../network-facet.js';
+import type { PathProtection } from '../worktree/verify-path.js';
 import { GIT_CLONE_JOB_MARKER } from '../clone-job.js';
 import { createBufferedFs, overlayEntryOf, type OverlayEntry } from './buffered-fs.js';
 import {
@@ -67,6 +68,7 @@ interface FacetRequest {
   relative?: boolean;
   filter?: string;
   sparse?: boolean;
+  protect?: PathProtection;
   auth?: { username: string; password: string };
   jobId?: unknown;
   optionsHash?: unknown;
@@ -414,6 +416,7 @@ export const networkWorker = {
               commit: requireOid(history.commit, 'streamed commit'),
               blobsPerBatch: opts.blobsPerBatch,
               sparse: opts.sparse === true,
+              protect: opts.protect,
             });
           } else if (history.step === 'plan') {
             step = await historyPlan(context, { lists: history.lists, present: history.present, blobsPerBatch: opts.historyBlobsPerBatch });
@@ -513,6 +516,7 @@ export const networkWorker = {
           blobsPerBatch: opts.blobsPerBatch,
           budgetUnits: opts.historyBudgetUnits,
           sparse: opts.sparse === true,
+          protect: opts.protect,
         }, advertisement);
         const prepared = 'stream' in started ? { stream: started.stream } : { fast: started };
         return respond(true, { prepared, metadataOverlay: overlayStats() });

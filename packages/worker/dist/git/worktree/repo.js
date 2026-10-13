@@ -7,8 +7,8 @@
  * object, by one flow (objectWriter): one at a time, or for a command that
  * writes many (add's blobs) in the shared wave writer's waves, straight into
  * the engine. The worktree goes through the command's view of the
- * namespace. Configuration is cf-git's reading of .git/config, with the
- * global files and command overrides supplied by the command.
+ * namespace. Configuration is cf-git's reading of .git/config, and for
+ * core.excludesFile the global files git reads as well.
  */
 import { deflateSync } from 'node:zlib';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
@@ -18,7 +18,7 @@ import { coneMatcher, parseConeSparseCheckout } from '../pack/sparse.js';
 import { DirCache, compareBytes, objectId } from './dircache.js';
 import { Excludes, parsePatternList } from './excludes.js';
 import { EMPTY_TREE, treeOf } from './tree.js';
-import { UnsupportedGitOperation } from '../routing.js';
+import { DEFAULT_PATH_PROTECTION } from './verify-path.js';
 import { matchStat, newCounters, worktreeBlobId } from './walk.js';
 /** git's core.looseCompression when unset: Z_BEST_SPEED. */
 const LOOSE_COMPRESSION = 1;
@@ -74,8 +74,6 @@ export class WorktreeRepo {
     engine;
     /** This command holds its repository's index lock. */
     locked = false;
-    indexWritten = false;
-    preparedIndex = null;
     store;
     fs;
     cache = {};
@@ -329,6 +327,14 @@ export class WorktreeRepo {
             throw new Error('fatal: a sparse checkout without cone mode is not supported');
         return coneMatcher(cone, configBool(await this.worktreeSetting('core.ignorecase')) === true);
     }
+    /** core.protectHFS and core.protectNTFS, the repository's over the global, else git's defaults (verify-path.ts). */
+    async pathProtection() {
+        const setting = async (key) => configBool(await this.config(key) ?? await this.globalConfig(key));
+        return {
+            hfs: await setting('core.protecthfs') ?? DEFAULT_PATH_PROTECTION.hfs,
+            ntfs: await setting('core.protectntfs') ?? DEFAULT_PATH_PROTECTION.ntfs,
+        };
+    }
     /** The worktree with the settings its comparisons take. */
     async worktree() {
         this.worktreeConfig ??= {
@@ -341,31 +347,10 @@ export class WorktreeRepo {
     }
     /** The index, as git's repo_read_index leaves it: see clearPresentSkips. */
     async readIndex() {
-        const dc = this.preparedIndex ?? await DirCache.read(this.vfs, `${this.gitdir}/index${this.indexWritten ? '.lock' : ''}`);
-        this.preparedIndex = null;
+        const dc = await DirCache.read(this.vfs, `${this.gitdir}/index`);
         if (dc.hasSkipWorktree())
             await this.clearPresentSkips(dc);
         return dc;
-    }
-    /** Capability is checked before branch creation, staging, fetch or checkout. Reuse the index read there. */
-    async prepare() {
-        if (await this.isSparse()) {
-            if (configBool(await this.worktreeSetting('core.sparseCheckoutCone')) !== true) {
-                throw new UnsupportedGitOperation('fatal: a sparse checkout without cone mode is not supported\n', 128);
-            }
-            let patterns = '';
-            try {
-                patterns = new TextDecoder().decode(await this.vfs.readFile(`${this.gitdir}/info/sparse-checkout`));
-            }
-            catch (error) {
-                if (!isAbsent(error))
-                    throw error;
-            }
-            if (parseConeSparseCheckout(patterns) === null) {
-                throw new UnsupportedGitOperation('fatal: a sparse checkout without cone mode is not supported\n', 128);
-            }
-        }
-        this.preparedIndex = await DirCache.read(this.vfs, `${this.gitdir}/index`);
     }
     /**
      * clear_skip_worktree_from_present_files, as git does on every index read:
@@ -445,6 +430,26 @@ export class WorktreeRepo {
             return [];
         }
     }
+    /** A global config value: ~/.gitconfig over $XDG_CONFIG_HOME/git/config, as git reads them. */
+    async globalConfig(path) {
+        const home = this.env.HOME;
+        const xdg = this.env.XDG_CONFIG_HOME || (home ? `${home}/.config` : '');
+        if (home) {
+            try {
+                const value = await this.configIn(`${home}/.gitconfig`, path);
+                if (value !== undefined)
+                    return value;
+            }
+            catch { /* no such file */ }
+        }
+        if (xdg) {
+            try {
+                return await this.git.getConfig({ fs: this.gitFs, gitdir: `${xdg}/git`, path });
+            }
+            catch { /* no such file */ }
+        }
+        return undefined;
+    }
     /**
      * setup_standard_excludes: core.excludesFile (or $XDG_CONFIG_HOME/git/ignore,
      * else ~/.config/git/ignore), then $GIT_DIR/info/exclude, then each
@@ -453,7 +458,7 @@ export class WorktreeRepo {
      */
     async excludes(dc) {
         const home = this.env.HOME;
-        const configured = await this.config('core.excludesfile');
+        const configured = await this.config('core.excludesfile') ?? await this.globalConfig('core.excludesfile');
         let file = typeof configured === 'string' ? configured : '';
         if (file.startsWith('~/') && home)
             file = `${home}${file.slice(1)}`;
@@ -517,38 +522,15 @@ export class WorktreeRepo {
         const tail = previous.then(() => new Promise((resolve) => { release = resolve; }));
         indexLocks.set(this.gitdir, tail);
         await previous;
-        const lock = `${this.gitdir}/index.lock`;
-        let acquired = false;
+        this.locked = true;
         try {
-            await this.vfs.writeFile(lock, new Uint8Array(0), { exclusive: true });
-            acquired = true;
-            this.locked = true;
-            // The unlocked preparation may have preceded another writer.
-            if (this.preparedIndex !== null) {
-                const now = await this.currentTrailer();
-                const before = this.preparedIndex.trailer;
-                if (now === null || before === null ? now !== before : compareBytes(now, before) !== 0)
-                    this.preparedIndex = null;
-            }
-            const result = await fn();
-            if (this.indexWritten) {
-                await this.vfs.rename(lock, `${this.gitdir}/index`);
-                acquired = false;
-            }
-            return result;
+            return await fn();
         }
         finally {
             this.locked = false;
-            this.indexWritten = false;
-            try {
-                if (acquired)
-                    await this.vfs.unlink(lock);
-            }
-            finally {
-                release();
-                if (indexLocks.get(this.gitdir) === tail)
-                    indexLocks.delete(this.gitdir);
-            }
+            release();
+            if (indexLocks.get(this.gitdir) === tail)
+                indexLocks.delete(this.gitdir);
         }
     }
     /** write_locked_index: `dc` with `edit` applied, its racily clean entries smudged. Only under the lock. */
@@ -556,9 +538,7 @@ export class WorktreeRepo {
         if (!this.locked)
             throw new Error('internal error: the index is written only under its lock');
         const bytes = dc.encode(edit, await this.racilySmudged(dc, edit));
-        await this.vfs.writeFile(`${this.gitdir}/index.lock`, bytes);
-        this.preparedIndex = null;
-        this.indexWritten = true;
+        await this.vfs.writeFile(`${this.gitdir}/index`, bytes);
     }
     /** The checksum the index file ends with now, null when there is none. */
     async currentTrailer() {
@@ -578,29 +558,19 @@ export class WorktreeRepo {
      * repo_update_index_if_able: a status or diff, which read the index without
      * the lock, writes back what it refreshed (or an index with racy entries)
      * only if the index is still the one it read; a writer that came between
-     * wins, and the refresh is simply not kept. Nor is it where writing it
-     * would run a hook (`hooked`): git runs post-index-change for every index
-     * it writes, and the built-in runs none.
+     * wins, and the refresh is simply not kept.
      */
-    async updateIndexIfAble(dc, hooked) {
+    async updateIndexIfAble(dc) {
         let racy = false;
         for (let i = 0; i < dc.count && !racy; i++)
             racy = dc.isRacy(i);
         if (!dc.refreshed && !dc.cacheTreeChanged && !racy)
             return;
-        if (await hooked())
-            return;
-        try {
-            await this.withIndexLock(async () => {
-                const now = await this.currentTrailer();
-                const same = now === null || dc.trailer === null ? now === dc.trailer : compareBytes(now, dc.trailer) === 0;
-                if (same)
-                    await this.writeIndex(dc);
-            });
-        }
-        catch (error) {
-            if (!isVfsError(error, 'EEXIST'))
-                throw error;
-        }
+        await this.withIndexLock(async () => {
+            const now = await this.currentTrailer();
+            const same = now === null || dc.trailer === null ? now === dc.trailer : compareBytes(now, dc.trailer) === 0;
+            if (same)
+                await this.writeIndex(dc);
+        });
     }
 }

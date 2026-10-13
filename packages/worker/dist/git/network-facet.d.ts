@@ -28,9 +28,8 @@ import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network
 import type { RemoteFailure } from './pack/remote-failure.js';
 import type { WaveStats } from '@nimbus-sh/platform/wave-writer.js';
 import { type MetadataOverlayStats, type SupervisorRpcCounters } from './pack/facet-supervisor.js';
-import type { FetchPackRequest, FetchPackStep, PushPackRequest, fetchPackResume, listRefs, pushPack } from './pack/remote.js';
-export type GitNetworkOp = 'clone' | 'fetch' | 'push' | 'fetch-objects' | 'graph-filters' | 'remote-list' | 'remote-fetch' | 'remote-push';
-type RemoteResult = Awaited<ReturnType<typeof listRefs>> | FetchPackStep | Awaited<ReturnType<typeof pushPack>>;
+import type { PathProtection } from './worktree/verify-path.js';
+export type GitNetworkOp = 'clone' | 'fetch' | 'push' | 'fetch-objects' | 'graph-filters';
 /** One step of a clone's changed-path filters pass (git/pack/graph-filters.ts). */
 export type GraphFiltersStep = {
     step: 'plan';
@@ -55,12 +54,6 @@ export type GraphFiltersStep = {
     pass: string;
 };
 export interface GitNetworkOpts {
-    forPush?: boolean;
-    remoteFetch?: Omit<FetchPackRequest, 'jobId'> & {
-        resume?: Parameters<typeof fetchPackResume>[1]['pending'];
-    };
-    remotePush?: PushPackRequest;
-    remotePushPack?: ReadableStream<Uint8Array> | null;
     op: GitNetworkOp;
     /** For graph-filters: commits a piece is asked for, and its wall-time budget (tuning). */
     graphFilterPieceCommits?: number;
@@ -133,6 +126,8 @@ export interface GitNetworkOpts {
     filter?: string;
     /** `git clone --sparse`: a cone-mode sparse checkout of the top's files only. */
     sparse?: boolean;
+    /** clone: the names its checkout refuses beyond verify_path's own, as its command is configured. */
+    protect?: PathProtection;
     /** Fast clone, full history: blobs per history request (tuning; history.ts by default). */
     historyBlobsPerBatch?: number;
     /** Fast clone, full history: root trees per history request (tuning; history.ts by default). */
@@ -175,7 +170,6 @@ export interface GitNetworkPhaseDiagnostic {
 }
 export type GitNetworkErrorCode = 'GitCloneBudgetExceeded';
 export interface GitNetworkResult {
-    remote?: RemoteResult;
     success: boolean;
     error?: string;
     elapsed: number;
@@ -254,5 +248,4 @@ export declare function execGitNetwork(ctx: DurableObjectState, env: any, opts: 
  * whose network worker (pack/network-worker.ts) it exports.
  */
 export declare function assembleGitNetworkFacetSource(): string;
-export {};
 //# sourceMappingURL=network-facet.d.ts.map

@@ -54,6 +54,9 @@ const TAPE = { seed: [1, 2, 3, 4], now: [], perf: [], random: '', reads: [], wri
   const record = { v: 3, kind: 'stdin', run: 2, until: 'data', stopAt: 3, tape: TAPE, out: [] };
   const message = (r, nonce = NONCE) => new Error(STOP_RECORD_PREFIX + nonce + ' ' + JSON.stringify(r));
   assert.deepEqual(stopRecordOf(message(record), NONCE, 2), record);
+  assert.deepEqual(stopRecordOf(new Error('transport wrapper', { cause: message(record) }), NONCE, 2), record, 'a transport cause retains the authenticated control record');
+  const cycle = new Error('no stop'); cycle.cause = cycle;
+  assert.equal(stopRecordOf(cycle, NONCE, 2), null);
   assert.deepEqual(stopRecordOf(new Error('Error: ' + message(record).message), NONCE, 2), record, 'wherever the platform puts it in the message');
   assert.equal(stopRecordOf(message(record, 'not-this-runs-nonce-0000000000'), NONCE, 2), null, 'another nonce: not this run\'s stop');
   assert.equal(stopRecordOf(new Error(STOP_RECORD_PREFIX + JSON.stringify(record)), NONCE, 2), null, 'no nonce: forged');

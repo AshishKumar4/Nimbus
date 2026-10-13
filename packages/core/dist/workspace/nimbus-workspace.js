@@ -390,7 +390,7 @@ export class NimbusWorkspace {
         // released.
         const stop = new AbortController();
         const signal = options.signal ? AbortSignal.any([options.signal, stop.signal]) : stop.signal;
-        const stopped = this.processes.holdWork(pid, (reason) => stop.abort(reason));
+        const stopped = this.processes.holdWork(pid, (reason) => stop.abort(reason), signal);
         let exitCode = 1;
         try {
             const result = await runCommand(shell, command, { ...(named ? options : { ...options, cwd: undefined, env: undefined }), signal });
@@ -430,7 +430,7 @@ export class NimbusWorkspace {
             setUmask: (mask) => processes.setUmask(pid, mask),
             runAs: this.shell.getRunAsHost(),
             accountWork: (worker) => processes.beginWork(worker),
-            holdWork: (worker, stop) => processes.holdWork(worker, stop),
+            holdWork: (worker, stop, signal) => processes.holdWork(worker, stop, signal),
         });
         const hostSignals = this.shell.getHostProcessSignals();
         if (hostSignals)
@@ -449,6 +449,10 @@ export class NimbusWorkspace {
      */
     withNamedShell(id, options, body) {
         return this.namedShells.hold(id, options, body);
+    }
+    /** Read a named shell's saved cwd and exact UTF-16 environment, or null if it has no saved state. */
+    shellState(id) {
+        return this.namedShells.read(id);
     }
     /** The hosting object forwards its supervisorOp RPC to this method. */
     supervisorOp(envelope) {
@@ -556,10 +560,10 @@ function workspaceShellIdentity(processes, shellProcess, getShell) {
         const endAwait = processes.beginAwait(parent.pid, child.pid);
         const endWork = processes.beginWork(child.pid);
         // Its program is this workspace's work behind its pid: a kill stops it.
-        const stop = new AbortController();
-        const stopped = processes.holdWork(child.pid, (reason) => stop.abort(reason));
+        const stopped = processes.holdWork(child.pid, undefined, parent.signal);
         let exitCode = 1;
         try {
+            stopped.signal.throwIfAborted();
             // The child inherits its parent's descriptors, environment and directory.
             const ended = await getShell().runProgram(argv, {
                 identity: commandIdentityFor(child.pid),
@@ -571,7 +575,7 @@ function workspaceShellIdentity(processes, shellProcess, getShell) {
                 terminalStdin: parent.terminalStdin,
                 isFdTerminal: parent.isFdTerminal,
                 isFdPipe: parent.isFdPipe,
-                signal: parent.signal ? AbortSignal.any([parent.signal, stop.signal]) : stop.signal,
+                signal: stopped.signal,
                 runAs: runAsProcess,
             });
             exitCode = ended.status;
@@ -594,7 +598,7 @@ function workspaceShellIdentity(processes, shellProcess, getShell) {
         },
         runAs: runAsProcess,
         accountWork: (worker) => processes.beginWork(worker),
-        holdWork: (worker, stop) => processes.holdWork(worker, stop),
+        holdWork: (worker, stop, signal) => processes.holdWork(worker, stop, signal),
     });
     return commandIdentityFor(shellProcess.pid);
 }

@@ -106,11 +106,10 @@ export declare const SUPERVISOR_OP_TABLE: {
     readonly fanoutExecute: null;
     readonly processHostProbe: null;
     readonly hostProcess: null;
-    readonly awaitHostedOpen: null;
     readonly awaitHostedBoot: null;
     readonly routeHostedHttp: null;
+    readonly abandonHostedHttp: null;
     readonly cancelHostProcess: null;
-    readonly hostLost: null;
     readonly hmrRelay: null;
     readonly hmrNextEvent: null;
     readonly replayBoundary: null;

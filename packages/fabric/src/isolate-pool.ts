@@ -27,10 +27,9 @@
 
 import { loaderOutbound, requireNetwork, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
-import { supervisorEntrypoint, hostRoute, type HostRoute } from './composition.js';
-import { supervisorLoaderKey, mintProcessSupervisor, type SupervisorBindingProps } from './supervisor-props.js';
+import { supervisorEntrypoint, type HostRoute } from './composition.js';
+import { infrastructureSupervisorProps, supervisorLoaderKey, mintProcessSupervisor, type SupervisorBindingProps } from './supervisor-props.js';
 import { applyFacetLimits, facetCallDeadlineMs, facetLimits, facetLoaderKey, type FacetKind } from './facet-limits.js';
-import { supervisorDeliveryProps } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import { unsettledEnd } from '@nimbus-sh/core/_shared/process-fs-client.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { hashSource } from './vendor/serialize.js';
@@ -57,15 +56,6 @@ import type { FacetBindings } from '@nimbus-sh/core/runtime/facet-host.js';
 import type { ModuleContent, WorkerLoader } from './vendor/types.js';
 import { hostWasmIdentity } from './host-wasm.js';
 
-// The only no-run supervisor constructor: local to the infrastructure factory.
-// Its network is the pool's (IsolatePoolOptions.network): a facet's SUPERVISOR calls that reach the
-// network for the workspace (an npm packument read) go out through the same egress as the facet.
-function infrastructureSupervisorProps(ctx: DurableObjectState, pid: number, options: { doId?: string; route?: HostRoute; network: WorkspaceNetwork }) {
-  const own = ctx.id.toString(), doId = options.doId ?? own;
-  const egress = options.network.egress === undefined ? {} : { egress: options.network.egress, networkId: options.network.id };
-  return { doId, pid, route: options.route ?? hostRoute() ?? undefined,
-    ...(pid > 0 && doId === own ? supervisorDeliveryProps(ctx) : {}), bindingKind: 'infrastructure' as const, ...egress };
-}
 
 /** The one binding a pool needs off whichever env its host hands it. */
 export interface IsolatePoolEnv {
@@ -593,6 +583,10 @@ export class IsolatePool {
         // via supervisorDoIdOverride so SUPERVISOR.* RPCs route back
         // to the user's session DO, not the peer DO. Default to the
         // local ctx.id (single-DO callers and the in-DO in-DO fanout path).
+        // A helper's binding acts as no run, on the pool's network
+        // (IsolatePoolOptions.network): its SUPERVISOR calls that reach the
+        // network for the workspace (an npm packument read) go out through
+        // the same egress as the facet.
         const supervisor = opts?.processSupervisor ?? infrastructureSupervisorProps(ctx, opts?.supervisorPid ?? 0, {
           doId: opts?.supervisorDoIdOverride,
           route: opts?.supervisorRoute,

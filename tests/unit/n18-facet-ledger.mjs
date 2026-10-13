@@ -8,6 +8,7 @@
 // deleteFacetStorage drops them.
 
 import assert from 'node:assert/strict';
+import { answerHostWatch } from './lib/host-watch-socket.mjs';
 import { processes, deleteFacetStorage, residentFacetOf } from '../../packages/fabric/src/workerd-facet-host.ts';
 import { StorageLedger } from '../../packages/core/src/runtime/storage-ledger.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
@@ -31,6 +32,7 @@ function makeCtx(databaseSize) {
         return {
           async startProcess() { return { ok: true, databaseSize }; },
           async handleHttpRequest() { return new Response('ok'); },
+          fetch: answerHostWatch(),
         };
       },
       abort() {},
@@ -107,6 +109,7 @@ const ledgerOf = (ctx) => new StorageLedger(ctx.storage.sql).view();
     return {
       async startProcess(startArgs) { args = startArgs; return { ok: true, databaseSize: 1_500_000, storageCap: 4_000_000 }; },
       async handleHttpRequest() { return new Response('ok'); },
+      fetch: answerHostWatch(),
     };
   };
   const facet = processes(ctx, env).spawn(

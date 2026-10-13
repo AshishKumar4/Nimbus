@@ -12,6 +12,7 @@ import { PackFormatError } from './format.js';
 import { discover, type Advertisement, type UploadPackOptions } from './upload-pack.js';
 import { gitHttpHeaders, gitHttpRemote, UploadPackError } from './transport.js';
 import { PktReader, pktLine, text } from './pkt-line.js';
+import { answeredFailure, transportFailure } from './remote-failure.js';
 
 /** One ref update: the remote checks `old` as it applies it; all zeros for `new` deletes. */
 export interface ReceiveCommand {
@@ -114,11 +115,13 @@ export async function sendPack(options: UploadPackOptions, advertisement: Advert
       duplex: 'half',
     } as RequestInit);
   } catch (error) {
-    throw new UploadPackError('the push failed: ' + (error instanceof Error ? error.message : String(error)));
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new UploadPackError('the push failed: ' + detail, undefined, transportFailure('rpc', detail));
   }
+  // An RPC's answer is not shown, as git shows none (it may echo the credentials sent).
   if (!response.ok || !response.body) {
-    const detail = response.body ? (await response.text()).slice(0, 300) : '';
-    throw new UploadPackError('the push answered HTTP ' + response.status + (detail ? ': ' + detail : ''), response.status);
+    const failure = await answeredFailure('rpc', response.status, response.headers.get('content-type'), response.body);
+    throw new UploadPackError('the push answered HTTP ' + response.status, response.status, failure);
   }
   const reader = new PktReader(response.body.getReader(), options.stallMs);
   const lines = capabilities.includes('side-band-64k')

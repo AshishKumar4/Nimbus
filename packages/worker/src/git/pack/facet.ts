@@ -12,7 +12,7 @@ export type { PackStore, ProcessedObject, PackProcessResult, PackCheckpoint } fr
 export { encodeIdxV2, ENTRY_BYTES } from './idx.js';
 export { discover, requestPack } from './upload-pack.js';
 export { UploadPackError } from './transport.js';
-export { CheckoutPlan, encodeBatch, decodeBatch, parseTree } from './plan.js';
+export { CheckoutPlan, encodeBatch, decodeBatch } from './plan.js';
 export { oidToHex, oidFromHex, PackFormatError } from './format.js';
 export { cloneDiscover, cloneFast, cloneBatch, cloneFinish, clonePlanFromStore, fetchObjects } from './clone.js';
 export { historyStep, historyResume, historyPlan, treeSlices } from './history.js';

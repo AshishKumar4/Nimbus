@@ -17,6 +17,8 @@
 //      modules, text modules and main module.
 
 import assert from 'node:assert/strict';
+import { HOST_WATCH_MODULE } from '../../packages/fabric/src/host-activity.ts';
+import { importModuleSet, processImageModules } from './lib/module-map-bundle.mjs';
 
 import { resolveDurableWorkerImage } from '../../packages/worker/src/facets/durable-images.ts';
 import { PID_GEN_STRIDE } from '../../packages/core/src/runtime/process-table.ts';
@@ -27,16 +29,10 @@ import { launchManager, launchSession } from './lib/facet-launch-harness.mjs';
 
 adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
 
-/**
- * The program the facet world evaluates: it reports the module map it was
- * booted with, and its request handler echoes which main module it is.
- */
-const evaluate = (config, { facetName }) => ({
-  async startProcess() { return { ok: true, facetName, mainModule: config.mainModule }; },
-  async handleHttpRequest(request) {
-    return Response.json({ facetName, mainModule: config.mainModule, url: request.url });
-  },
-});
+const evaluate = async (config, { facetName }) => {
+  const { NimbusProcess } = await importModuleSet(config.modules, config.mainModule);
+  return new NimbusProcess({ id: { toString: () => facetName } }, config.env);
+};
 
 const createSession = () => launchSession();
 
@@ -44,7 +40,7 @@ const createSession = () => launchSession();
 function createInstance(session, generation, label) {
   const notices = [];
   const { ctx, world, processes, manager } = launchManager(label, {
-    evaluate, session, generation,
+    evaluate, session, generation, evaluatesAdapter: true,
     hooks: {
       notify: (line) => { notices.push(line); },
       resolveWorkerLaunchFallback: (recipe) => resolveDurableWorkerImage(session.vfs, recipe),
@@ -63,7 +59,14 @@ async function putTextModule(vfs, source) {
   return path;
 }
 
-const RUNNER = 'import { answer } from "./lib.js"; export default { fetch: () => new Response(answer) };';
+const RUNNER = `import { DurableObject } from "cloudflare:workers";
+import { answer } from "./lib.js";
+import { helper } from "./helper.js";
+export class NimbusProcess extends DurableObject {
+  startProcess() { return { ok: true, facetName: this.ctx.id.toString(), mainModule: "runner.js", answer, helper }; }
+  fetch(request) { return this.handleHttpRequest(request); }
+  handleHttpRequest(request) { return Response.json({ ...this.startProcess(), url: request.url }); }
+}`;
 const LIB = 'export const answer = "forty-two";';
 const HELPER = 'export const helper = true;';
 
@@ -80,10 +83,9 @@ const HELPER = 'export const helper = true;';
   });
 
   assert.ok(spawned.pid > PID_GEN_STRIDE, 'a pid of this generation');
-  assert.deepEqual(spawned.boot, { ok: true, facetName: spawned.boot.facetName, mainModule: 'runner.js' }, 'the boot payload is the runner\'s');
+  assert.deepEqual(spawned.boot, { ok: true, facetName: spawned.boot.facetName, mainModule: 'runner.js', answer: 'forty-two', helper: true }, 'the configured entry ran the named runner and its imports');
   assert.equal(gen1.world.configs.size, 1, 'one module map was built');
   const [config] = [...gen1.world.configs.values()];
-  assert.equal(config.mainModule, 'runner.js', 'the isolate boots from the named main module');
   assert.equal(config.modules['runner.js'], RUNNER, 'and workerCode sits under that name');
   assert.equal(config.modules['helper.js'], HELPER, 'inline modules ride by value');
   assert.equal(config.modules['lib.js'], LIB, 'the text module landed under its module name, read by path');
@@ -95,7 +97,9 @@ const HELPER = 'export const helper = true;';
   const answered = await spawned.facet.fetch(new Request('http://worker.local/hello?x=1'));
   assert.equal(answered.status, 200);
   const body = await answered.json();
-  assert.equal(body.mainModule, 'runner.js', 'the facet routed to the process that booted from runner.js');
+  assert.equal(body.mainModule, 'runner.js', 'the facet routed to the configured runner');
+  assert.equal(body.answer, 'forty-two', 'the routed runner used its by-path import');
+  assert.equal(body.helper, true, 'the routed runner used its inline import');
   assert.equal(body.url, 'http://worker.local/hello?x=1', 'the request reached the handle intact');
   assert.equal(body.facetName, spawned.boot.facetName, 'and it is the same facet the boot ran in');
 
@@ -139,14 +143,21 @@ const HELPER = 'export const helper = true;';
   // reads the row it left and re-drives the launch from the image store.
   const gen2 = createInstance(session, 2, 'redrive');
   await gen2.manager.pumpResidentLaunches();
-  for (let i = 0; i < 400 && gen2.world.configs.size === 0; i++) await new Promise((r) => setTimeout(r, 5));
+  const redriven = () => {
+    const rows = [...session.storage.keys()].filter((key) => key.startsWith('resident-launch:'));
+    const pid = rows.length === 1 ? Number(rows[0].slice('resident-launch:'.length)) : 0;
+    return pid > 2 * PID_GEN_STRIDE && gen2.processes.get(pid)?.state === 'running';
+  };
+  for (let i = 0; i < 400 && !redriven(); i++) await new Promise((r) => setTimeout(r, 5));
+  assert.ok(redriven(), 'the evaluated runner booted and the journal handed off to its new pid');
 
   assert.equal(gen2.notices.length, 1, 'the user is told once');
   assert.match(gen2.notices[0], /restarted while "durable app" was running — restarting it/);
   assert.equal(gen2.world.configs.size, 1, 'the re-driven launch built its module map and booted');
   const [second] = [...gen2.world.configs.values()];
   assert.equal(second.mainModule, first.mainModule, 'the same main module');
-  assert.deepEqual(second.modules, first.modules, 'the same modules — inline and text alike');
+  assert.deepEqual(processImageModules(second), processImageModules(first), 'the same program modules — inline and text alike');
+  assert.notEqual(second.modules[HOST_WATCH_MODULE], first.modules[HOST_WATCH_MODULE], 'a new process has a fresh host capability');
   assert.equal(second.modules['runner.js'], RUNNER);
   assert.equal(second.modules['lib.js'], LIB, 'the text module was restored by path from the journalled image');
   assert.equal(second.modules['helper.js'], HELPER);
