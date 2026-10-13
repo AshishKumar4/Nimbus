@@ -80,7 +80,8 @@ manager.setVfs(vfs, processFiles(vfs));
 const fs = vfs.as(CRED_KERNEL);
 fs.mkdir('home/user/app', { recursive: true, mode: 0o755 });
 fs.writeFile('home/user/app/server.js', 'module.exports = 1;\n', { mode: 0o644 });
-fs.writeFile('home/user/app/promoted.js', 'module.exports = 2;\n', { mode: 0o644 });
+// Past the pool's small-request reserve (CHUNK_SIZE): a map made from it waits on the budget itself.
+fs.writeFile('home/user/app/promoted.js', `module.exports = ${JSON.stringify('p'.repeat(512 * 1024))}.length;\n`, { mode: 0o644 });
 
 const budget = () => readSupervisorAllocationBudget();
 const launchHeld = (pid) => loaderLedgerStats(ctx).holders[`launch:${pid}`] ?? [];
