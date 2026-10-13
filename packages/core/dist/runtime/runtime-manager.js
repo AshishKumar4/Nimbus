@@ -3,8 +3,9 @@
  *
  * Where the runtimes come from is the injected `RuntimeSource` (npm packages
  * the embedder imported, an R2 catalog adapter, or a composition of both);
- * where they land is always `~/.nimbus/runtimes/<name>/<version>/` through
- * `seedRuntimePackage`; what makes them invokable is the runner factory map
+ * where they land is always `/usr/lib/nimbus/<name>/<version>/` through
+ * `seedRuntimePackage`, with a launcher per command in `/usr/bin`
+ * (runtime-store.ts); what makes them invokable is the runner factory map
  * this instance owns. All three are per-instance because a second workspace
  * in the same process must not inherit the first one's runners or touch its
  * registry — the module-global table this replaces did both.
@@ -20,17 +21,17 @@
  * install is forgotten so the next attempt retries.
  */
 import { errorText } from '../_shared/error-text.js';
-import { listInstalledManifestsView, rehydrateInstalledRuntimesView, runtimeAbiForManifest, runtimeEntrypoints, } from './installed-runtimes.js';
+import { listInstalledManifestsView, rehydrateInstalledRuntimesView, runtimeAbiForManifest, runtimeCommandNames, runtimeEntrypoints, } from './installed-runtimes.js';
+import { linkLaunchers, prepareRuntimeStore, RUNTIME_STORE, runtimeLaunchers, unlinkLaunchers } from './runtime-store.js';
 import { seedRuntimePackage, splitRuntimeSpec, } from './runtime-package.js';
 export class RuntimeManager {
     vfs;
     registry;
-    getHome;
     source;
     runnerFactories = new Map();
     /**
-     * The newest queued op per target, keyed `${home}/${name}/${version}` for
-     * installs and `${home}/${name}` for an uninstall's removal marker. Entries
+     * The newest queued op per target, keyed `${name}/${version}` for
+     * installs and `${name}` for an uninstall's removal marker. Entries
      * live only while their `done` promise is unsettled.
      */
     inflight = new Map();
@@ -44,7 +45,6 @@ export class RuntimeManager {
     constructor(options) {
         this.vfs = options.vfs;
         this.registry = options.registry;
-        this.getHome = options.getHome;
         this.source = options.source;
     }
     /** The factory a manifest entrypoint's `runner` key resolves to. A later
@@ -57,7 +57,7 @@ export class RuntimeManager {
      *  on disk. Trees that fail the payload digest check are skipped, not
      *  bound — the install path repairs them on demand. */
     rehydrate() {
-        return rehydrateInstalledRuntimesView(this.vfs, this.registry, this.getHome(), (key) => this.runnerFactories.get(key));
+        return rehydrateInstalledRuntimesView(this.vfs, this.registry, (key) => this.runnerFactories.get(key), (root, manifest) => linkLaunchers(this.vfs, runtimeLaunchers(manifest, root, runtimeEntrypoints(manifest))));
     }
     /**
      * Install `spec` and register its bins. Throws when the spec resolves to
@@ -121,9 +121,6 @@ export class RuntimeManager {
         return this.installPrepared(async () => runtimePackage, options);
     }
     installPrepared(resolve, options) {
-        // One home per call, captured before any await: the key and the writes
-        // must name the same tree even if the environment shifts mid-install.
-        const home = this.getHome();
         // The resolve promise alone is what `uninstall` waits on: only it can
         // still produce a key this call has not registered yet.
         const resolution = resolve();
@@ -138,8 +135,8 @@ export class RuntimeManager {
             }
             const manifest = runtimePackage.manifest;
             const name = manifest.name;
-            const key = `${home}/${name}/${manifest.version}`;
-            const nameKey = `${home}/${name}`;
+            const key = `${name}/${manifest.version}`;
+            const nameKey = name;
             const prior = this.inflight.get(key);
             const removal = this.inflight.get(nameKey);
             if (prior?.kind === 'install' && removal === undefined && !options?.force) {
@@ -151,7 +148,7 @@ export class RuntimeManager {
             // join a prior write: one owes the caller a real reinstall, the
             // other a tree that still exists afterward.
             const after = removal?.done ?? prior?.done ?? Promise.resolve();
-            const attempt = after.then(() => this.write(runtimePackage, home, options), () => this.write(runtimePackage, home, options));
+            const attempt = after.then(() => this.write(runtimePackage, options), () => this.write(runtimePackage, options));
             const entry = { kind: 'install', done: attempt };
             this.inflight.set(key, entry);
             attempt.then(() => { if (this.inflight.get(key) === entry)
@@ -161,24 +158,28 @@ export class RuntimeManager {
         };
         return start();
     }
-    async write(runtimePackage, home, options) {
+    async write(runtimePackage, options) {
         const manifest = runtimePackage.manifest;
         const name = manifest.name;
         const entrypoints = runtimeEntrypoints(manifest);
         const totalBytes = manifest.files.reduce((a, f) => a + f.size, 0);
         options?.onProgress?.(`[${name}] manifest: ${manifest.files.length} files, ${(totalBytes / 1024 / 1024).toFixed(1)} MiB`);
-        const seeded = await seedRuntimePackage(this.vfs, home, runtimePackage, {
+        await prepareRuntimeStore(this.vfs);
+        const seeded = await seedRuntimePackage(this.vfs, runtimePackage, {
             force: options?.force,
             onProgress: options?.onProgress,
         });
         const bins = [];
-        for (const ep of entrypoints) {
+        for (const { entrypoint: ep, names } of runtimeCommandNames(manifest, seeded.root)) {
             const factory = this.runnerFactories.get(ep.runner);
             if (!factory)
                 continue;
-            this.registry.register(ep.binName, await factory(manifest, seeded.root, ep.binName, ep.kind));
+            const handler = await factory(manifest, seeded.root, ep.binName, ep.kind);
+            for (const name of names)
+                this.registry.register(name, handler);
             bins.push(ep.binName);
         }
+        await linkLaunchers(this.vfs, runtimeLaunchers(manifest, seeded.root, entrypoints));
         if (options?.onProgress) {
             if (seeded.written) {
                 options.onProgress(`[${name}] installed at ${seeded.root} (${(totalBytes / 1024 / 1024).toFixed(1)} MiB)`);
@@ -195,9 +196,8 @@ export class RuntimeManager {
      *  provides are rebound so removing one of two installs loses no
      *  commands — and cannot resurrect a corrupt one. */
     async uninstall(spec) {
-        const home = this.getHome();
         const { name, versionOverride } = splitRuntimeSpec(spec);
-        const nameKey = `${home}/${name}`;
+        const nameKey = name;
         // Wait for resolutions still open — their canonical key is not
         // registered yet — then chain behind every queued op on this name and
         // register the removal as the newest one, so later installs queue
@@ -208,7 +208,7 @@ export class RuntimeManager {
             .filter(([key]) => key === nameKey || key.startsWith(`${nameKey}/`))
             .map(([, op]) => op.done);
         const removal = Promise.allSettled(pending)
-            .then(async () => (await this.remove(name, versionOverride, home)));
+            .then(async () => (await this.remove(name, versionOverride)));
         const entry = { kind: 'remove', done: removal };
         this.inflight.set(nameKey, entry);
         try {
@@ -219,13 +219,15 @@ export class RuntimeManager {
                 this.inflight.delete(nameKey);
         }
     }
-    async remove(name, versionOverride, home) {
-        const matches = (await listInstalledManifestsView(this.vfs, home)).filter((entry) => entry.manifest.name === name
+    async remove(name, versionOverride) {
+        const matches = (await listInstalledManifestsView(this.vfs)).filter((entry) => entry.manifest.name === name
             && (versionOverride === null || entry.manifest.version === versionOverride));
         for (const match of matches) {
-            for (const ep of runtimeEntrypoints(match.manifest)) {
-                this.registry.unregister?.(ep.binName);
+            for (const { names } of runtimeCommandNames(match.manifest, match.root)) {
+                for (const command of names)
+                    this.registry.unregister?.(command);
             }
+            await unlinkLaunchers(this.vfs, runtimeLaunchers(match.manifest, match.root, runtimeEntrypoints(match.manifest)));
             if (await this.vfs.exists(match.root))
                 await this.vfs.remove(match.root, { recursive: true });
         }
@@ -234,14 +236,12 @@ export class RuntimeManager {
         // The same digest verifier rehydration uses decides what may bind, so a
         // corrupted survivor stays unbound rather than inheriting the freed bins.
         if (versionOverride !== null && matches.length > 0) {
-            await rehydrateInstalledRuntimesView(this.vfs, this.registry, home, (key) => this.runnerFactories.get(key));
+            await this.rehydrate();
         }
-        // Empty `runtimes/<name>`/`runtimes` dirs go too.
-        const base = `${home.replace(/^\/+/, '').replace(/\/+$/, '')}/.nimbus/runtimes`;
-        for (const dir of [`${base}/${name}`, base]) {
-            if ((await this.vfs.exists(dir)) && (await this.vfs.readdir(dir)).length === 0)
-                (await this.vfs.rmdir(dir));
-        }
+        // An empty `<store>/<name>` goes too; the store stays.
+        const dir = `${RUNTIME_STORE}/${name}`;
+        if ((await this.vfs.exists(dir)) && (await this.vfs.readdir(dir)).length === 0)
+            (await this.vfs.rmdir(dir));
     }
     /**
      * Register `bin` as a stub that runs `install(bin)` on first use and then
@@ -276,7 +276,7 @@ export class RuntimeManager {
         return this.source.resolve(spec);
     }
     async list() {
-        return (await listInstalledManifestsView(this.vfs, this.getHome())).map(({ root, manifest }) => ({
+        return (await listInstalledManifestsView(this.vfs)).map(({ root, manifest }) => ({
             name: manifest.name,
             version: manifest.version,
             root,

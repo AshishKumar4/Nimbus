@@ -143,10 +143,13 @@ async function readSymlinkTarget(vfs, path) {
  * For our facet-direct runtimes (clang, node, bun, python, ruby,
  * git, npm, etc.), we don't have real on-disk binaries — they
  * dispatch through the registry. To preserve script compatibility,
- * we return canonical POSIX paths under /usr/local/bin and /usr/bin:
+ * we return canonical POSIX paths under /usr/local/bin and /usr/bin.
+ * An installable runtime's are in /usr/bin, where `nimbus install` puts its
+ * launchers (runtime-store.ts), which a PATH search finds once installed:
  *
- *   clang, clang++, cc                → /usr/local/bin/clang
- *   wasm-ld, lld                      → /usr/local/bin/wasm-ld
+ *   clang, cc                         → /usr/bin/clang
+ *   clang++                           → /usr/bin/clang++
+ *   wasm-ld, lld                      → /usr/bin/wasm-ld
  *   node, nodejs                      → /usr/local/bin/node
  *   bun                               → /usr/local/bin/bun
  *   npm, npx                          → /usr/local/bin/npm
@@ -167,12 +170,13 @@ async function readSymlinkTarget(vfs, path) {
  * VFS-resolved path over the canonical fallback.
  */
 const _CANONICAL_BIN_PATHS = {
+    // /usr/bin (an installable runtime's launchers)
+    clang: '/usr/bin/clang',
+    'clang++': '/usr/bin/clang++',
+    cc: '/usr/bin/clang',
+    'wasm-ld': '/usr/bin/wasm-ld',
+    lld: '/usr/bin/wasm-ld',
     // /usr/local/bin (locally-installed runtimes)
-    clang: '/usr/local/bin/clang',
-    'clang++': '/usr/local/bin/clang++',
-    cc: '/usr/local/bin/clang',
-    'wasm-ld': '/usr/local/bin/wasm-ld',
-    lld: '/usr/local/bin/wasm-ld',
     node: '/usr/local/bin/node',
     nodejs: '/usr/local/bin/node',
     bun: '/usr/local/bin/bun',

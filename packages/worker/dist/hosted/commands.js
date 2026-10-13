@@ -98,7 +98,7 @@ export async function registerHostedCommands(self, workspace) {
     shell.setHostProcessSignals(hostSignals);
     self._setCpRegistry(registry);
     registry.register('chsh', makeChshCommand({
-        isBashInstalled: async (home) => (await listInstalledRuntimes(sqliteFs, home)).some((runtime) => runtime.name === 'bash'),
+        isBashInstalled: async () => (await listInstalledRuntimes(sqliteFs)).some((runtime) => runtime.name === 'bash'),
     }));
     // ── Git integration (isomorphic-git) ──
     // ctx + env are passed for clone/fetch/pull which run in a facet to avoid

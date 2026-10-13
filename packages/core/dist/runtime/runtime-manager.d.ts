@@ -3,8 +3,9 @@
  *
  * Where the runtimes come from is the injected `RuntimeSource` (npm packages
  * the embedder imported, an R2 catalog adapter, or a composition of both);
- * where they land is always `~/.nimbus/runtimes/<name>/<version>/` through
- * `seedRuntimePackage`; what makes them invokable is the runner factory map
+ * where they land is always `/usr/lib/nimbus/<name>/<version>/` through
+ * `seedRuntimePackage`, with a launcher per command in `/usr/bin`
+ * (runtime-store.ts); what makes them invokable is the runner factory map
  * this instance owns. All three are per-instance because a second workspace
  * in the same process must not inherit the first one's runners or touch its
  * registry — the module-global table this replaces did both.
@@ -26,7 +27,6 @@ import { type RuntimeAvailability, type RuntimePackage, type RuntimeSource, type
 export interface RuntimeManagerOptions {
     vfs: CredentialedVfs;
     registry: MinShellRegistry;
-    getHome(): string;
     source: RuntimeSource;
 }
 type InstalledBins = SeededRuntime & {
@@ -35,12 +35,11 @@ type InstalledBins = SeededRuntime & {
 export declare class RuntimeManager {
     private readonly vfs;
     private readonly registry;
-    private readonly getHome;
     private readonly source;
     private readonly runnerFactories;
     /**
-     * The newest queued op per target, keyed `${home}/${name}/${version}` for
-     * installs and `${home}/${name}` for an uninstall's removal marker. Entries
+     * The newest queued op per target, keyed `${name}/${version}` for
+     * installs and `${name}` for an uninstall's removal marker. Entries
      * live only while their `done` promise is unsettled.
      */
     private readonly inflight;

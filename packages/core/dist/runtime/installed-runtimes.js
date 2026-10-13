@@ -3,7 +3,8 @@
  * commands they answer.
  *
  * `nimbus install <name>` unpacks a runtime into
- * `~/.nimbus/runtimes/<name>/<version>/` and this is what reads it back: the
+ * `/usr/lib/nimbus/<name>/<version>/` (runtime-store.ts) and this is what
+ * reads it back: the
  * manifests on disk, the runner each entrypoint names, and the registration
  * that turns the pair into an invokable command. It runs at install time and
  * again at every boot, because a Durable Object that was evicted comes back
@@ -20,6 +21,7 @@ import { sha256Incremental } from '../_shared/crypto.js';
 import { isVfsError } from '../vfs/vfs-error.js';
 import { BASH_RUNNER, CRED_KERNEL, NIMBUS_ABI_TARGET, NIMBUS_RUNTIME_ABIS, NATIVE_UNSUPPORTED_ABI, } from './os-contracts.js';
 import { parseRuntimeManifest, } from './runtime-manifest.js';
+import { RUNTIME_STORE, runtimeLaunchers } from './runtime-store.js';
 export function runtimeAbiForManifest(manifest) {
     const byName = NIMBUS_RUNTIME_ABIS[manifest.name];
     if (byName)
@@ -74,22 +76,31 @@ export function runtimeEntrypoints(manifest) {
     }
     return out;
 }
-/** Compute the per-user install root for (name, version). Uses
- *  `process.env.HOME` if present; falls back to `/home/user`. */
-export function installRoot(homeDir, name, version) {
-    // Strip leading slash so SqliteFS sees a relative-looking VFS path,
-    // matching the convention used elsewhere in src/session/init.ts.
-    const home = homeDir.replace(/^\/+/, '').replace(/\/+$/, '');
-    return `${home}/.nimbus/runtimes/${name}/${version}`;
+/** Where (name, version) is installed, as a key: `usr/lib/nimbus/<name>/<version>`. */
+export function installRoot(name, version) {
+    return `${RUNTIME_STORE}/${name}/${version}`;
+}
+/**
+ * The names a runtime's commands are registered under: each entrypoint's,
+ * and `/usr/bin/<command>` for each that has a launcher, so a run by that
+ * path (or a `#!/usr/bin/<command>` line) is the command a run by name is.
+ */
+export function runtimeCommandNames(manifest, root) {
+    const entrypoints = runtimeEntrypoints(manifest);
+    const claimed = new Set(entrypoints.map((ep) => ep.binName));
+    const launchers = new Map(runtimeLaunchers(manifest, root, entrypoints).map((launcher) => [launcher.target, launcher.command]));
+    return entrypoints.map((entrypoint) => {
+        const launcher = launchers.get(`/${root}/bin/${entrypoint.binName}`);
+        return { entrypoint, names: launcher === undefined || claimed.has(launcher) ? [entrypoint.binName] : [entrypoint.binName, launcher] };
+    });
 }
 /** Read all installed manifests off SqliteFS. Used by both `--list`
  *  and boot-time rehydration. */
-export async function listInstalledManifests(vfs, homeDir) {
-    return (await listInstalledManifestsView(vfs.as(CRED_KERNEL), homeDir));
+export async function listInstalledManifests(vfs) {
+    return (await listInstalledManifestsView(vfs.as(CRED_KERNEL)));
 }
-export async function listInstalledManifestsView(fs, homeDir) {
-    const home = homeDir.replace(/^\/+/, '').replace(/\/+$/, '');
-    const runtimesRoot = `${home}/.nimbus/runtimes`;
+export async function listInstalledManifestsView(fs) {
+    const runtimesRoot = RUNTIME_STORE;
     const out = [];
     if (!await fs.exists(runtimesRoot))
         return out;
@@ -175,24 +186,28 @@ export async function runtimePayloadIntact(fs, root, manifest) {
  * legacy manifest-first install interrupted mid-write or a corruption, and
  * the manager's install path repairs it on demand rather than running it.
  */
-export async function rehydrateInstalledRuntimesView(vfs, registry, homeDir, runnerFor) {
+export async function rehydrateInstalledRuntimesView(vfs, registry, runnerFor, 
+/** Each verified runtime, once its commands are registered (its launchers are linked). */
+bound) {
     const bins = [];
-    for (const { root, manifest } of await listInstalledManifestsView(vfs, homeDir)) {
+    for (const { root, manifest } of await listInstalledManifestsView(vfs)) {
         if (!await runtimePayloadIntact(vfs, root, manifest))
             continue;
-        for (const ep of runtimeEntrypoints(manifest)) {
+        for (const { entrypoint: ep, names } of runtimeCommandNames(manifest, root)) {
             const factory = runnerFor(ep.runner);
             if (!factory)
                 continue; // runner not registered yet — skip
             const handler = await factory(manifest, root, ep.binName, ep.kind);
-            registry.register(ep.binName, handler);
+            for (const name of names)
+                registry.register(name, handler);
             bins.push(ep.binName);
         }
+        await bound?.(root, manifest);
     }
     return { count: bins.length, bins };
 }
-export async function listInstalledRuntimes(vfs, homeDir) {
-    return (await listInstalledManifests(vfs, homeDir)).map(({ root, manifest }) => ({
+export async function listInstalledRuntimes(vfs) {
+    return (await listInstalledManifests(vfs)).map(({ root, manifest }) => ({
         name: manifest.name,
         version: manifest.version,
         root,
