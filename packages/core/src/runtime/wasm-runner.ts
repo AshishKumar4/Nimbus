@@ -353,7 +353,7 @@ export function makeWasmRunner(deps: {
     if (processFs) {
       // Session root = cwd of the shell invocation. Falls back to /home/user.
       const root = (opts.cwd || '/home/user').replace(/^\/+/, '');
-      wasiFs = { root, preopens: [{ wasiPath: '/', vfsPath: root }], cred: { uid: cred.uid, gid: cred.gid, groups: [...cred.groups] } };
+      wasiFs = { root, preopens: [{ wasiPath: '/', vfsPath: root }], cred };
     }
 
     /**

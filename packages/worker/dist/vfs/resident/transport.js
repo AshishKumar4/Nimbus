@@ -8,7 +8,7 @@ import { FS_LIST_PAGE_LIMIT, FS_LIST_TREE_MAX_ENTRIES, FS_READ_BATCH_PATH_LIMIT,
 import { RESIDENT_ROW_BYTES, namespaceRowBytes, residentBytes } from './cell-cost.js';
 import { nsDescribes, nsKey, nsSplit } from './namespace.js';
 import { RESIDENT_CHUNK_BYTES } from '../facet-resident-limits.js';
-import { RK_BINARY } from './tables.js';
+import { RK_BINARY, RK_OWN_WRITE } from './tables.js';
 /**
  * The `fsReadBatch` bounds, as the filler must respect them.
  *
@@ -137,6 +137,17 @@ export function createTransport(coherence, admission, namespace, cells) {
      * reconcile: a row dated at the global cursor is indistinguishable from a row
      * whose path moved at that same revision.
      */
+    /**
+     * Whether the namespace holds a later revision of `path` than `rev`: bytes
+     * read at `rev` are older than what a barrier admitted while the read was
+     * in flight (read-ahead goes on beside the program's own calls), and are not
+     * installed, or a later read would be served them by their length alone.
+     */
+    const outdated = (t, path, rev) => {
+        const [parent, name] = nsSplit(path);
+        const listed = t.nsGet(parent, name);
+        return listed !== undefined && Number(listed.rev) > rev;
+    };
     const fetchFiles = async (supervisor, wantedFiles) => {
         // Content already held under another path, or wanted twice in this batch,
         // is fetched once: equal keys are equal bytes (the second copy is local).
@@ -185,6 +196,8 @@ export function createTransport(coherence, admission, namespace, cells) {
         const landed = new Map();
         let filled = 0, failed = 0, fetchedBytes = 0;
         const failedPaths = new Set();
+        /** The revision each path is read at. */
+        const revOf = new Map(ranges.map((range) => [range.path, range.rev]));
         for (let at = 0; at < ranges.length;) {
             const batch = [];
             let bytes = 0;
@@ -237,6 +250,11 @@ export function createTransport(coherence, admission, namespace, cells) {
                     failedPaths.add(range.path);
                     continue;
                 }
+                // Not a byte of it beneath a newer revision of the file (another fill's head and chunks).
+                if (outdated(t, range.path, range.rev)) {
+                    failedPaths.add(range.path);
+                    continue;
+                }
                 fetchedBytes += chunk.byteLength;
                 if (!cells.putChunk(t, range.path, range.part, chunk)) {
                     failedPaths.add(range.path);
@@ -255,11 +273,18 @@ export function createTransport(coherence, admission, namespace, cells) {
         // nothing will ever serve.
         for (const path of failedPaths) {
             failed++;
+            // A head at this read's revision or later (another fill, own bytes) is
+            // not this read's to drop; an older one may sit over chunks this read
+            // wrote, and goes with them.
+            const held = t.fileRev(path);
+            const rev = revOf.get(path);
+            if (held !== undefined && (held === RK_OWN_WRITE || (rev !== undefined && held >= rev)))
+                continue;
             t.chunkDelete(path);
             t.fileDelete(path);
         }
         for (const file of later) {
-            if (cells.copyByKey(t, file.path, file.ckey, file.rev))
+            if (!outdated(t, file.path, file.rev) && cells.copyByKey(t, file.path, file.ckey, file.rev))
                 copied++;
             else
                 failed++;

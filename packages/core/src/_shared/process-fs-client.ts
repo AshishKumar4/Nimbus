@@ -265,6 +265,8 @@ export interface ProcessFsClient {
    * ask the session.
    */
   readTrusted(): boolean;
+  /** Ownership/log check only, never a clock check: combine with trust established at an actual I/O resumption. */
+  readUnchanged(owner: string): boolean;
   /** A barrier's ACQUIRE asking for the read lease too (VfsAcquireOptions.lease), now; null when it takes none. */
   readLeaseAsk(): ReadLeaseAsk | null;
   /**
@@ -996,8 +998,6 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   };
   /** The run ended (settle): it takes no read lease again. */
   let runEnded = false;
-  /** Read leases granted to a barrier asked before the run ended, on their way back: settle waits for them. */
-  const givingBack = new Set<Promise<void>>();
 
   /**
    * The read lease's recalls, for as long as it is the process's: each poll
@@ -1292,16 +1292,25 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     async settle() {
       settling = true;
       runEnded = true;
-      // Given back before the run is over: a writer after it never waits on its trust.
-      if (readLease !== null) await giveBackReadLease(readLease.owner);
-      await Promise.all([...givingBack]);
+      // Given back before the run is over, so a writer after it never waits
+      // on its trust; not waited for: its answer tells the run nothing (it
+      // is the session's to end with the process anyway), and what the
+      // process says next reaches the session after it.
+      if (readLease !== null) void giveBackReadLease(readLease.owner);
       if (claiming !== null) await claiming;
       try {
         // Until nothing more is logged (a flush's drain may log more).
         while (answered < logged) await client.flush();
       } finally {
         if (idleTimer !== null) { timers.clearTimeout(idleTimer); idleTimer = null; }
-        for (const grant of live()) await close(grant);
+        // Each grant closed, its log sent with the rest; its release, as the
+        // read lease's, is sent and not waited for.
+        for (const grant of live()) {
+          grant.closing = true;
+          options.freezing?.(grant.root);
+        }
+        await client.flush();
+        for (const grant of live()) void end(grant);
         settling = false;
       }
       if (processGone !== null) await retirePending().catch(() => {});
@@ -1319,6 +1328,9 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       // margin (confirmed >= asked).
       return readLease !== null && readLease.logged === logged && now() < readLease.until;
     },
+    readUnchanged(owner) {
+      return !runEnded && readLease?.owner === owner && readLease.logged === logged;
+    },
     readLeaseAsk() {
       if (session.grants === undefined || runEnded) return null;
       return { at: now(), logged: answered === logged ? logged : -1 };
@@ -1331,9 +1343,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       }
       // Granted to a barrier asked before the run ended: given back too.
       if (runEnded) {
-        const back = giveBackReadLease(lease.owner);
-        givingBack.add(back);
-        void back.finally(() => givingBack.delete(back));
+        void giveBackReadLease(lease.owner);
         return;
       }
       readLease = { owner: lease.owner, until: 0, confirmedAt: now(), logged: -1 };

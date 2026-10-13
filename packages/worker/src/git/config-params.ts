@@ -5,6 +5,8 @@
  * so each read of a key `-c` set answers it; nothing is written.
  */
 
+import { errnoCodeOf, fsError } from '@nimbus-sh/core/vfs/vfs-error.js';
+
 /** A refusal of git's own options, in git's words, and the exit it takes. */
 export class GitGlobalsError extends Error {
   constructor(readonly lines: string, readonly code: number) {
@@ -57,6 +59,21 @@ export function parseConfigParameter(text: string): [key: string, value: string 
   return [stored, value];
 }
 
+/**
+ * git_config_bool's spellings, from a file or command override: a key with no
+ * `=` is null in the override (git's true), and an explicit empty value is ''
+ * (git's false). cf-git may already have decoded a stored value to a boolean.
+ */
+export function configBool(value: unknown): boolean | undefined {
+  if (value === null) return true;
+  if (typeof value === 'boolean') return value;
+  if (typeof value !== 'string') return undefined;
+  const text = value.toLowerCase();
+  if (['true', 'yes', 'on', '1'].includes(text)) return true;
+  if (['false', 'no', 'off', '0', ''].includes(text)) return false;
+  return undefined;
+}
+
 /** A config key as `-c` stores it: section and variable name in lower case, the subsection kept. */
 function configKey(path: string): string {
   const first = path.indexOf('.');
@@ -69,6 +86,145 @@ function configKey(path: string): string {
 interface ConfigReader {
   getConfig(args: { path: string }): Promise<unknown>;
   getConfigAll(args: { path: string }): Promise<unknown[]>;
+}
+
+/** The global files in git's order, read by cf-git's canonical config parser. */
+export function withGlobalConfig<G extends ConfigReader>(git: G, fs: {
+  promises: { readFile(path: string, options?: 'utf8' | { encoding: 'utf8' }): Promise<Uint8Array | string> };
+}, env: Record<string, string>, cwd: string): G {
+  const home = env.HOME;
+  const xdg = env.XDG_CONFIG_HOME || (home ? `${home}/.config` : '');
+  const files = (env.GIT_CONFIG_GLOBAL !== undefined ? [env.GIT_CONFIG_GLOBAL]
+    : [...(xdg ? [`${xdg}/git/config`] : []), ...(home ? [`${home}/.gitconfig`] : [])])
+    .map((file) => file.startsWith('/') ? file : `${cwd}/${file}`);
+  if (files.length === 0) return git;
+  const contents = new Map<string, ReturnType<typeof fs.promises.readFile>>();
+  // One the user cannot read is none (git's access_or_die with ACCESS_EACCES_OK, for the user's own files).
+  const read = (file: string, options?: 'utf8' | { encoding: 'utf8' }) => {
+    let content = contents.get(file);
+    if (content === undefined) {
+      content = fs.promises.readFile(file, options).catch((error: unknown) => {
+        if (errnoCodeOf(error) === 'EACCES') throw fsError('ENOENT', 'open', file);
+        throw error;
+      });
+      contents.set(file, content);
+    }
+    return content;
+  };
+  const values = new Map<string, ReturnType<ConfigReader['getConfigAll']>>();
+  const globals = (path: string): ReturnType<ConfigReader['getConfigAll']> => {
+    const key = configKey(path);
+    let found = values.get(key);
+    if (found === undefined) {
+      found = (async () => {
+        const all: Awaited<ReturnType<ConfigReader['getConfigAll']>> = [];
+        for (const file of files) {
+          const gitdir = `${file}.nimbus`;
+          const request = {
+            path,
+            gitdir,
+            fs: { promises: { ...fs.promises, readFile: (name: string, options?: 'utf8' | { encoding: 'utf8' }) => read(name === `${gitdir}/config` ? file : name, options) } },
+          };
+          all.push(...await git.getConfigAll(request));
+        }
+        return all;
+      })();
+      values.set(key, found);
+    }
+    return found;
+  };
+  const reads: ConfigReader = {
+    async getConfig(args) {
+      const local = await git.getConfig(args);
+      if (local !== undefined || ('fs' in args && args.fs !== fs)) return local;
+      const all = await globals(args.path);
+      return all[all.length - 1];
+    },
+    async getConfigAll(args) {
+      const local = await git.getConfigAll(args);
+      if ('fs' in args && args.fs !== fs) return local;
+      return [...await globals(args.path), ...local];
+    },
+  };
+  return new Proxy(git, {
+    get: (target, property, receiver) =>
+      property === 'getConfig' || property === 'getConfigAll' ? reads[property] : Reflect.get(target, property, receiver),
+  });
+}
+
+/** The repository a read names: its gitdir, else its worktree's .git (as cf-git takes `dir`). */
+function gitdirOf(args: { path: string }): string | null {
+  if ('gitdir' in args && typeof args.gitdir === 'string') return args.gitdir;
+  if ('dir' in args && typeof args.dir === 'string') return `${args.dir}/.git`;
+  return null;
+}
+
+/**
+ * `git` with a repository's config.worktree over its config where the
+ * repository sets extensions.worktreeConfig: git reads system, global,
+ * local, worktree, then -c (withConfigOverrides, over this). Whether it is
+ * set is the repository's own config's (`files`, cf-git reading only that
+ * file): in `known`, by gitdir, where the caller has read it already (the
+ * format guard reads every extension), else read here; forgotten when this
+ * command writes a config. A repository without it reads as it would
+ * without this layer, with no wait of its own.
+ */
+export function withWorktreeConfig<G extends ConfigReader & { setConfig(args: { path: string }): Promise<void> }>(git: G, files: {
+  getConfig(args: { fs: unknown; gitdir: string; path: string }): Promise<unknown>;
+}, fs: {
+  promises: { readFile(path: string, options?: 'utf8' | { encoding: 'utf8' }): Promise<Uint8Array | string> };
+}, known: Map<string, boolean>): G {
+  const set = async (gitdir: string): Promise<boolean> => {
+    let on = known.get(gitdir);
+    if (on === undefined) {
+      on = configBool(await files.getConfig({ fs, gitdir, path: 'extensions.worktreeConfig' })) === true;
+      known.set(gitdir, on);
+    }
+    return on;
+  };
+  /** The gitdir whose config.worktree a read may take, or null where it takes none. */
+  const layered = (args: { path: string }): string | null => {
+    const gitdir = 'fs' in args && args.fs === fs ? gitdirOf(args) : null;
+    return gitdir === null || known.get(gitdir) === false ? null : gitdir;
+  };
+  /** cf-git's read of `path` in `gitdir`'s config.worktree, offered as the config of a gitdir of its own. */
+  const inWorktreeFile = (gitdir: string, path: string) => {
+    const file = `${gitdir}/config.worktree`;
+    const own = `${file}.nimbus`;
+    return {
+      path,
+      gitdir: own,
+      fs: { promises: { ...fs.promises, readFile: (name: string, options?: 'utf8' | { encoding: 'utf8' }) => fs.promises.readFile(name === `${own}/config` ? file : name, options) } },
+    };
+  };
+  const calls = {
+    getConfig(args: { path: string }): Promise<unknown> {
+      const gitdir = layered(args);
+      if (gitdir === null) return git.getConfig(args);
+      return (async () => {
+        if (await set(gitdir)) {
+          const own = await git.getConfig(inWorktreeFile(gitdir, args.path));
+          if (own !== undefined) return own;
+        }
+        return await git.getConfig(args);
+      })();
+    },
+    getConfigAll(args: { path: string }): Promise<unknown[]> {
+      const gitdir = layered(args);
+      if (gitdir === null) return git.getConfigAll(args);
+      return (async () => {
+        const all = await git.getConfigAll(args);
+        if (!await set(gitdir)) return all;
+        return [...all, ...await git.getConfigAll(inWorktreeFile(gitdir, args.path))];
+      })();
+    },
+    async setConfig(args: { path: string }) {
+      known.clear();
+      await git.setConfig(args);
+    },
+  };
+  // A copy, not another Proxy: every call a command makes on git would pass one more trap.
+  return { ...git, ...calls };
 }
 
 /**

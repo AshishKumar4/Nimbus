@@ -149,6 +149,7 @@ import { createAdmission, type Admission } from './admission.js';
 import { createCells, type Cells } from './cells.js';
 import { createCoherence, type Coherence } from './coherence.js';
 import { createLazy, type Lazy } from './lazy.js';
+import { createPages, type Pages } from './pages.js';
 import { createNamespace, type Namespace } from './namespace.js';
 import { createSync, type Sync } from './sync.js';
 import { createTransport, type Transport } from './transport.js';
@@ -184,6 +185,7 @@ export interface ResidentStore {
   readonly cells: Cells;
   readonly transport: Transport;
   readonly sync: Sync;
+  readonly pages: Pages;
   readonly lazy: Lazy;
 }
 
@@ -195,7 +197,8 @@ export function createResidentStore(options: ResidentStoreOptions = {}): Residen
   const cells = createCells(coherence, admission, namespace, observeRead);
   const transport = createTransport(coherence, admission, namespace, cells);
   const sync = createSync(coherence, admission, namespace, cells, transport);
-  const lazy = createLazy(coherence, admission, namespace, cells, transport, sync);
+  const pages = createPages(coherence, admission);
+  const lazy = createLazy(coherence, admission, namespace, cells, transport, sync, pages);
 
   const bindTables = (t: ResidentTables, heap: HeapTables | null): void => {
     // A store can outlive its process. Own rows left by an earlier one are
@@ -204,6 +207,7 @@ export function createResidentStore(options: ResidentStoreOptions = {}): Residen
     t.dropOwn();
     coherence.bind(t, heap);
     namespace.bind(t);
+    pages.reset();
   };
 
   return {
@@ -230,6 +234,7 @@ export function createResidentStore(options: ResidentStoreOptions = {}): Residen
     cells,
     transport,
     sync,
+    pages,
     lazy,
   };
 }

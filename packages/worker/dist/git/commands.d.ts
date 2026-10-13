@@ -10,7 +10,7 @@
  */
 import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { WaveIngest } from '@nimbus-sh/core/runtime/wave-ingest.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
@@ -123,6 +123,12 @@ filesystem?: {
     readonly waves: WaveIngest;
 }, 
 /** The session's process table: a background clone runs as a process of its own. */
-processes?: Pick<SessionProcessSupervisor, 'spawn' | 'holdWork' | 'exit'>): Promise<number>;
+processes?: Pick<SessionProcessSupervisor, 'spawn' | 'holdWork' | 'exit'>, 
+/**
+ * This invocation, run by real git (`nimbus install git`) instead: what
+ * this implementation lacks is real git's (routing.ts), and so is every
+ * git real git starts (its environment says GIT_WASI_ENV).
+ */
+realGit?: () => Promise<number>): Promise<number>;
 export {};
 //# sourceMappingURL=commands.d.ts.map

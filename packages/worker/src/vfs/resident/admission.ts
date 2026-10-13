@@ -31,6 +31,8 @@ export interface Admission {
   setStorage(storage: unknown, supervisor: ResidentSupervisor | null | undefined): void;
   /** The cap this store enforces, for startProcess to report. */
   storageCap(): number | null;
+  /** What the session's ledger said a user may still write, at its last answer; null before one. */
+  readonly available: number | null;
   pin(bytes: number): boolean;
   unpin(bytes: number): void;
   /** Room a one-shot's held own writes may take beside everything else. */
@@ -71,6 +73,7 @@ export function createAdmission(coherence: Coherence): Admission {
    * not fit, and the caller then reads through the session instead.
    */
   let pinnedBytes = 0;
+  let available: number | null = null;
 
   /**
    * Room promised to fills in flight. A fault-in asks for its file's room
@@ -174,6 +177,7 @@ export function createAdmission(coherence: Coherence): Admission {
       try {
         const answer = await asked.fsStorageGrant!(named, want, dbBytes());
         cap! += Number(answer && answer.granted) || 0;
+        if (answer && typeof answer.available === 'number') available = answer.available;
       } catch {}
     })().finally(() => { grantAsk = null; });
     return grantAsk.then(() => dbBytes() + reservedBytes + bytes <= cap!);
@@ -211,12 +215,14 @@ export function createAdmission(coherence: Coherence): Admission {
     },
     setStorage(storage, given) {
       supervisor = given || null;
-      const allowance = storage as { facet?: unknown; grant?: unknown } | null | undefined;
+      const allowance = storage as { facet?: unknown; grant?: unknown; available?: unknown } | null | undefined;
+      available = allowance && typeof allowance.available === 'number' ? allowance.available : null;
       if (!allowance || typeof allowance.facet !== 'string' || typeof allowance.grant !== 'number') return;
       facet = allowance.facet;
       cap = dbBytes() + allowance.grant;
     },
     storageCap() { return cap; },
+    get available() { return available; },
     pin(bytes) {
       if (!inHeap || !fits(bytes, false)) return false;
       pinnedBytes += bytes;
@@ -266,7 +272,10 @@ export function createAdmission(coherence: Coherence): Admission {
     async reportSize() {
       const asked = supervisor;
       if (cap === null || facet === null || !asked || typeof asked.fsStorageGrant !== 'function') return;
-      try { await asked.fsStorageGrant(facet, 0, dbBytes()); } catch {}
+      try {
+        const answer = await asked.fsStorageGrant(facet, 0, dbBytes());
+        if (answer && typeof answer.available === 'number') available = answer.available;
+      } catch {}
     },
   };
 }

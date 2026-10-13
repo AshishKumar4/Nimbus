@@ -26,6 +26,27 @@
 
 import { retryDelayMs, retrying } from '@nimbus-sh/platform/retry.js';
 import type { HttpClient } from '../../../vendor/git-http.generated.js';
+import { base64Utf8 } from '@nimbus-sh/core/_shared/crypto.js';
+import { selectRemoteCredentials, type RemoteFailure } from './remote-failure.js';
+
+export interface GitTransportAuth { username: string; password: string }
+
+/** URL normalization and credential selection shared by upload-pack and receive-pack. */
+export function gitHttpRemote(options: { url: string; auth?: GitTransportAuth }): { url: string; auth: GitTransportAuth } {
+  const auth = selectRemoteCredentials(options.url, options.auth);
+  const parsed = URL.canParse(options.url) ? new URL(options.url) : null;
+  let url = options.url;
+  if (parsed && (parsed.username !== '' || parsed.password !== '')) {
+    parsed.username = ''; parsed.password = ''; url = parsed.href;
+  }
+  return { url: url.endsWith('/') ? url.slice(0, -1) : url, auth };
+}
+
+export function gitHttpHeaders(auth: GitTransportAuth | undefined, extra: Record<string, string>): Record<string, string> {
+  const result: Record<string, string> = { 'user-agent': 'git/nimbus', ...extra };
+  if (auth && (auth.username || auth.password)) result.authorization = 'Basic ' + base64Utf8(auth.username + ':' + auth.password);
+  return result;
+}
 
 
 export const RETRY_ATTEMPTS = 3;
@@ -76,4 +97,11 @@ export function retryingGitHttp(base: HttpClient, schedule: readonly number[] = 
       });
     },
   };
+}
+
+export class UploadPackError extends Error {
+  constructor(message: string, readonly status?: number, readonly failure?: RemoteFailure) {
+    super(UPLOAD_PACK_ERROR_PREFIX + message);
+    this.name = 'UploadPackError';
+  }
 }

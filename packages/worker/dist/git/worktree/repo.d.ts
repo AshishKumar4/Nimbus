@@ -7,8 +7,8 @@
  * object, by one flow (objectWriter): one at a time, or for a command that
  * writes many (add's blobs) in the shared wave writer's waves, straight into
  * the engine. The worktree goes through the command's view of the
- * namespace. Configuration is cf-git's reading of .git/config, and for
- * core.excludesFile the global files git reads as well.
+ * namespace. Configuration is cf-git's reading of .git/config, with the
+ * global files and command overrides supplied by the command.
  */
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/runtime/wave-contracts.js';
 import type { ProjectFs } from '../../runtime/project-fs.js';
@@ -70,12 +70,6 @@ export interface ObjectWriter {
     write(type: 'blob' | 'tree' | 'commit' | 'tag', data: Uint8Array): Promise<string>;
     flush(): Promise<void>;
 }
-/**
- * git_config_bool's spellings, from a file or command override: a key with no
- * `=` is null in the override (git's true), and an explicit empty value is ''
- * (git's false). cf-git may already have decoded a stored value to a boolean.
- */
-export declare function configBool(value: unknown): boolean | undefined;
 export declare class WorktreeRepo {
     readonly vfs: ProjectFs;
     readonly git: RepoGit;
@@ -87,6 +81,8 @@ export declare class WorktreeRepo {
     private readonly engine;
     /** This command holds its repository's index lock. */
     private locked;
+    private indexWritten;
+    private preparedIndex;
     readonly store: ObjectStore;
     readonly fs: WorktreeFs;
     private readonly cache;
@@ -122,8 +118,6 @@ export declare class WorktreeRepo {
      * that name.
      */
     private configFile;
-    /** `path` in the config file `file`, as cf-git reads it. */
-    private configIn;
     /**
      * init_worktree_config: extensions.worktreeConfig set, core.bare (when
      * true) and core.worktree moved from config to config.worktree, unless
@@ -132,12 +126,6 @@ export declare class WorktreeRepo {
     initWorktreeConfig(): Promise<void>;
     /** repo_config_set_worktree_gently: `path` in config.worktree (the extension being set). */
     setWorktreeSetting(path: string, value: string): Promise<void>;
-    /**
-     * A setting as git reads it for this worktree: config.worktree's when
-     * extensions.worktreeConfig is set (where clone --sparse and
-     * sparse-checkout write theirs), over the repository's config.
-     */
-    worktreeSetting(path: string): Promise<unknown>;
     /** core.sparseCheckout: whether the worktree is a sparse checkout. */
     isSparse(): Promise<boolean>;
     /**
@@ -148,12 +136,14 @@ export declare class WorktreeRepo {
      * read here.
      */
     sparseMatcher(): Promise<SparseMatcher | null>;
-    /** core.protectHFS and core.protectNTFS, the repository's over the global, else git's defaults (verify-path.ts). */
+    /** core.protectHFS and core.protectNTFS as the command's config reads them (-c, the repository's, the global), else git's defaults (verify-path.ts). */
     pathProtection(): Promise<PathProtection>;
     /** The worktree with the settings its comparisons take. */
     worktree(): Promise<Worktree>;
     /** The index, as git's repo_read_index leaves it: see clearPresentSkips. */
     readIndex(): Promise<DirCache>;
+    /** Capability is checked before branch creation, staging, fetch or checkout. Reuse the index read there. */
+    prepare(): Promise<void>;
     /**
      * clear_skip_worktree_from_present_files, as git does on every index read:
      * in a sparse checkout (but with sparse.expectFilesOutsideOfPatterns), a
@@ -177,8 +167,6 @@ export declare class WorktreeRepo {
     headTree(): Promise<string>;
     /** A pattern file's list, or none when it cannot be read. */
     private patternFile;
-    /** A global config value: ~/.gitconfig over $XDG_CONFIG_HOME/git/config, as git reads them. */
-    private globalConfig;
     /**
      * setup_standard_excludes: core.excludesFile (or $XDG_CONFIG_HOME/git/ignore,
      * else ~/.config/git/ignore), then $GIT_DIR/info/exclude, then each
@@ -205,8 +193,10 @@ export declare class WorktreeRepo {
      * repo_update_index_if_able: a status or diff, which read the index without
      * the lock, writes back what it refreshed (or an index with racy entries)
      * only if the index is still the one it read; a writer that came between
-     * wins, and the refresh is simply not kept.
+     * wins, and the refresh is simply not kept. Nor is it where writing it
+     * would run a hook (`hooked`): git runs post-index-change for every index
+     * it writes, and the built-in runs none.
      */
-    updateIndexIfAble(dc: DirCache): Promise<void>;
+    updateIndexIfAble(dc: DirCache, hooked: () => Promise<boolean>): Promise<void>;
 }
 //# sourceMappingURL=repo.d.ts.map

@@ -20,7 +20,8 @@ import { type EntryStat } from '../worktree/dircache.js';
 import { type PathProtection } from '../worktree/verify-path.js';
 import { oidFromHex } from './format.js';
 import { PackStreamProcessor, type PackProcessResult } from './processor.js';
-import { type Advertisement, type GitTransportAuth } from './upload-pack.js';
+import { type Advertisement } from './upload-pack.js';
+import type { GitTransportAuth } from './transport.js';
 /** The supervisor calls a clone makes beyond its wave writer's. */
 export interface CloneSupervisor {
     fsWriteRange(path: string, offset: number, bytes: Uint8Array): Promise<unknown>;
@@ -45,9 +46,15 @@ export interface CloneReceipt extends EntryStat {
 export interface CloneContext {
     supervisor: CloneSupervisor;
     /** A wave writer rooted at the clone; `onReceipts` sees each published wave's files. */
-    writer(onReceipts?: (receipts: CloneReceipt[]) => void): CloneWriter;
+    writer(onReceipts?: (receipts: CloneReceipt[]) => void, directoryRoot?: string): CloneWriter;
     /** The worktree's VFS path; record paths are relative to it. */
     dir: string;
+    /** Raw helper fetches use Git's directories, not a clone's worktree-relative paths. */
+    storage?: {
+        gitDir: string;
+        commonDir: string;
+        objectDir: string;
+    };
     url: string;
     auth?: GitTransportAuth;
     /** The ownership marker every wave re-asserts (repo-relative path). */
@@ -161,6 +168,7 @@ export declare function settledBefore(context: CloneContext, tmpName: string, re
     extra: unknown;
 } | null>;
 export declare function join(dir: string, path: string): string;
+export declare function packDirectory(context: CloneContext): string;
 export interface StorePackOptions {
     cacheBytes?: number;
     recentBytes?: number;
@@ -195,7 +203,7 @@ export interface PendingPack {
 }
 export type StoredPack = {
     result: PackProcessResult;
-    summary: PackSummary;
+    summary: PackSummary | null;
 } | {
     pending: PendingPack;
 };

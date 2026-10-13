@@ -9,5 +9,7 @@ export declare function wasiOutputRelay(target: WasiOutputTarget): {
     stderrBytes: (bytes: Uint8Array) => void | Promise<void>;
     ready: () => Promise<void> | undefined;
     drain: () => Promise<string | null>;
+    /** Whether the output's reader went away (EPIPE), as a pipe's does: where a native writer would get SIGPIPE. */
+    brokenPipe: () => boolean;
 };
 //# sourceMappingURL=stdio.d.ts.map

@@ -21,7 +21,7 @@ const files = new ProcessFiles(vfs);
 const root = '/home/user/repo';
 
 /** Run git; `view` is the command's filesystem (a gated one, to stop it mid-walk). */
-async function git(args, view = files.view({ pid: 1, cred: CRED_SESSION_USER })) {
+async function git(args, view = files.view({ pid: 1, cred: CRED_SESSION_USER }), { expect = 0 } = {}) {
   let stdout = '';
   let stderr = '';
   const code = await runGitCommand({
@@ -31,7 +31,7 @@ async function git(args, view = files.view({ pid: 1, cred: CRED_SESSION_USER }))
     stderr: { write(s) { stderr += s; } },
     vfs: view,
   }, vfs);
-  assert.equal(code, 0, `git ${args.join(' ')}: ${stderr}`);
+  assert.equal(code, expect, `git ${args.join(' ')}: ${stderr}`);
   return stdout;
 }
 
@@ -82,4 +82,39 @@ for (let i = 0; i < 10; i++) user.writeFile(`home/user/repo/n${i}.txt`, `n${i}\n
 await Promise.all(Array.from({ length: 10 }, (_, i) => git(['add', `n${i}.txt`], files.view({ pid: 10 + i, cred: CRED_SESSION_USER }))));
 const staged = (await git(['status', '--porcelain'])).split('\n').filter((line) => /^A  n\d\.txt$/.test(line));
 assert.equal(staged.length, 10, `ten adds at once staged ${staged.length} of ten`);
+
+// A lock held by another implementation is never overwritten or removed.
+const index = user.readFile('home/user/repo/.git/index');
+user.writeFile('home/user/repo/.git/index.lock', 'real git owns this lock');
+user.writeFile('home/user/repo/locked.txt', 'locked\n');
+await git(['add', 'locked.txt'], undefined, { expect: 128 });
+assert.equal(user.readFileString('home/user/repo/.git/index.lock'), 'real git owns this lock');
+assert.deepEqual(user.readFile('home/user/repo/.git/index'), index);
+await git(['status', '--porcelain']);
+assert.equal(user.readFileString('home/user/repo/.git/index.lock'), 'real git owns this lock', 'a refresh skips a busy index');
+user.unlink('home/user/repo/.git/index.lock');
+
+// Exclusive creation protects the real git side; publication is a rename,
+// so a failed write leaves the old index and releases only our own lock.
+const calls = [];
+const failing = new Proxy(files.view({ pid: 22, cred: CRED_SESSION_USER }), {
+  get(target, key) {
+    const value = Reflect.get(target, key, target);
+    if (typeof value !== 'function') return value;
+    return async (...args) => {
+      if (key === 'writeFile' && args[0].endsWith('/index.lock')) {
+        calls.push(args[2]);
+        if (args[1].length) throw new Error('injected index write failure');
+      }
+      return await value.apply(target, args);
+    };
+  },
+});
+await git(['add', 'locked.txt'], failing, { expect: 128 });
+assert.deepEqual(user.readFile('home/user/repo/.git/index'), index);
+assert.equal(user.exists('home/user/repo/.git/index.lock'), false, 'our failed lock is removed');
+assert.equal(calls[0].exclusive, true, 'lock creation is exclusive, not an exists check');
+await git(['add', 'locked.txt']);
+assert.equal(user.exists('home/user/repo/.git/index.lock'), false, 'successful publication consumes the lock');
+assert.equal(await git(['ls-files', '--', 'locked.txt']), 'locked.txt\n');
 console.log('git-index-lock: a status refresh never writes over an add; ten adds at once keep all ten');

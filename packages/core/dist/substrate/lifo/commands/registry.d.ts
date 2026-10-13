@@ -35,7 +35,14 @@ export declare function resolveContext(cwd: string, env: Readonly<Record<string,
 export declare class CommandRegistry {
     private commands;
     private lazy;
+    private builtins;
     register(name: string, command: Command): void;
+    /**
+     * A command the shell is built with. One registered under the same name
+     * (an installed runtime's) answers instead, until it is unregistered: then
+     * this one answers again.
+     */
+    registerBuiltin(name: string, command: Command): void;
     registerLazy(name: string, loader: () => Promise<{
         default: Command;
     }>): void;

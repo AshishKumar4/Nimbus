@@ -2,6 +2,7 @@ import { installAuthorityFilesystem, processGoneMessage, WASI_ACCEPTED_PATH_PREF
 import { answeringSupervisor, supervisorFilesystem } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '@nimbus-sh/core/constants.js';
 import { residentFilesystem, } from '@nimbus-sh/core/runtime/wasi/resident-filesystem.js';
+import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { sqlJournal } from '@nimbus-sh/core/_shared/process-fs-journal.js';
 import { WASI_RESIDENT_STORE_BYTES } from '@nimbus-sh/platform/limits.js';
 import { processHost } from '@nimbus-sh/core/runtime/wasi/processes.js';
@@ -15,6 +16,7 @@ const __WASI_EACCES = 2;
 const __WASI_EBADF = 8;
 const __WASI_ECONNREFUSED = 14;
 const __WASI_EEXIST = 20;
+const __WASI_EFAULT = 21;
 const __WASI_EHOSTUNREACH = 23;
 const __WASI_EINTR = 27;
 const __WASI_EINVAL = 28;
@@ -117,7 +119,7 @@ const __WASI_STREAM_DEV = 1n << 32n;
 // before init answers EBADF against an empty descriptor table, which is true,
 // rather than trapping the guest.
 function __wasiEmptyFS() {
-    return { root: '', residentFileCap: WASI_RESIDENT_FILE_CAP_BYTES, cred: null, pid: 0 };
+    return { root: '', umask: CRED_SESSION_USER.umask, residentFileCap: WASI_RESIDENT_FILE_CAP_BYTES, cred: null, pid: 0 };
 }
 let __wasiFS = __wasiEmptyFS();
 let __wasiPreopens = [];
@@ -153,17 +155,47 @@ let __wasiProcessGone = null;
 // socket's bytes, an accepted connection, a poll wakeup): the next answer then
 // takes the ACQUIRE barrier first, the causal rule a node process keeps.
 let __wasiResident = null;
+/**
+ * The store the last process of this facet left at the end of its run (a
+ * warm facet, FacetSpec.warm): whose names it holds, the device the session's
+ * filesystem reports, and the directories it opened. The next process of the
+ * same credential continues it.
+ */
+let __wasiKept = null;
+/**
+ * Syscalls this facet's watchdog gave up on (withParkDeadline): each may
+ * still complete, whenever, into this facet's store and descriptor table.
+ * One is enough to make the facet unfit for another process: its store is
+ * not kept, and __wasiReusable says so to whoever leases the facet.
+ */
+let __wasiAbandoned = 0;
+/** Whether another process may run in this facet after this one (FacetSpec.warm): no syscall here was abandoned. */
+export function __wasiReusable() {
+    return __wasiAbandoned === 0;
+}
+/** Who a store's names were walked as. */
+function __wasiWho(cred) {
+    return `${cred.uid}:${cred.gid}:${[...cred.groups].sort((a, b) => a - b).join(',')}`;
+}
 /** The resident filesystem over `sup`, booting its store; its calls go to the session until the boot lands. */
 function __wasiStartResident(sup, cred) {
     const supervisor = answeringSupervisor(sup);
     const authority = supervisorFilesystem(sup);
+    const kept = __wasiKept !== null && __wasiKept.who === __wasiWho(cred) ? __wasiKept : null;
+    __wasiKept = null;
     // The store a node process reads its synchronous calls from, here listed on
-    // demand: this process's own (vfs/resident).
-    const store = createResidentStore();
-    store.bindInMemory(WASI_RESIDENT_STORE_BYTES);
+    // demand (vfs/resident): the facet's last process's, kept, or a new one.
+    const store = kept?.store ?? createResidentStore();
     store.admission.setStorage(undefined, supervisor);
-    let view = null;
-    const ready = (async () => {
+    // A kept store answers as it stood at its cursor: the process's first
+    // answer takes the barrier from there (inbound, below), so it reads
+    // everything that happened since, as a barrier inside one process does.
+    let view = kept === null ? null : store.lazy.namespaceView(supervisor, kept.device, cred);
+    if (view !== null && !view.ready())
+        view = null;
+    if (view === null)
+        store.bindInMemory(WASI_RESIDENT_STORE_BYTES);
+    const ready = view !== null ? Promise.resolve(view) : (async () => {
         // The session's own filesystem is the one the store answers for: its root reports its device.
         const root = await authority.stat('/');
         if (root === null || !(await store.lazy.bootLazy(supervisor)))
@@ -180,9 +212,13 @@ function __wasiStartResident(sup, cred) {
         list: (key) => (view === null ? Promise.resolve(false) : view.list(key)),
         lookup: (keys, content) => (view === null ? Promise.resolve(false) : view.lookup(keys, content)),
         listTree: (key) => (view === null ? Promise.resolve(false) : view.listTree(key)),
-        content: (key) => (view === null ? undefined : view.content(key)),
+        content: (key, revision) => (view === null ? undefined : view.content(key, revision)),
         fill: (key, entry) => (view === null ? Promise.resolve(null) : view.fill(key, entry)),
+        pages: (key, revision, size, first, last) => (view === null ? Promise.resolve(null) : view.pages(key, revision, size, first, last)),
+        fillMany: (files) => (view === null ? Promise.resolve() : view.fillMany(files)),
         barrier: () => (view === null ? Promise.resolve(false) : view.barrier()),
+        cursor: () => view?.cursor() ?? null,
+        admit: (answer) => view === null ? Promise.resolve(false) : view.admit(answer),
         reserve: (bytes) => view !== null && view.reserve(bytes),
         release: (bytes) => { view?.release(bytes); },
     };
@@ -207,10 +243,16 @@ function __wasiStartResident(sup, cred) {
     const journalSql = Reflect.get(globalThis, '__nimbusFsJournalSql');
     const fs = residentFilesystem(authority, booting, {
         session,
+        ...(typeof sup.fsReadDirectories === 'function' ? {
+            readDirectories: (request) => supervisor.fsReadDirectories(request),
+        } : {}),
         isHomeRoot: isHomeDirectory,
         ...(journalSql === undefined ? {} : { journal: sqlJournal(journalSql) }),
+        ...(kept === null || view === null ? {} : { walked: kept.walked }),
     });
-    return { fs, ready };
+    if (kept !== null && view !== null)
+        fs.inbound();
+    return { store, fs, ready };
 }
 /** Whether `key` is a home directory itself (`home/<name>`): never held, so the editor and shell there recall nothing. */
 function isHomeDirectory(key) {
@@ -231,7 +273,7 @@ function __wasiFilesystem(parking) {
     if (cred === null || !canPark)
         return supervisorFilesystem(sup);
     if (__wasiResident === null || __wasiResident.sup !== sup)
-        __wasiResident = { sup, ...__wasiStartResident(sup, cred) };
+        __wasiResident = { sup, who: __wasiWho(cred), ...__wasiStartResident(sup, cred) };
     return __wasiResident.fs;
 }
 export async function __wasiPrepareFilesystem(roots) {
@@ -263,11 +305,18 @@ export async function __wasiSettleWrites() {
     let failed = null;
     try {
         if (__wasiResident !== null) {
-            const failures = await __wasiResident.fs.settle();
+            const resident = __wasiResident;
+            const failures = await resident.fs.settle();
             if (failures.length > 0)
                 failed = failures
                     .map((f) => `${f.path}: not written (${f.error instanceof Error ? f.error.message : String(f.error)})`)
                     .join('; ');
+            // A run that ended with its store answering, and everything it wrote
+            // answered, leaves the store to the next process in this facet.
+            const view = await resident.ready;
+            if (failed === null && __wasiAbandoned === 0 && view !== null && view.ready()) {
+                __wasiKept = { who: resident.who, store: resident.store, device: view.device, walked: resident.fs.walked() };
+            }
         }
     }
     catch (error) {
@@ -326,6 +375,7 @@ export function __wasiInitFS(opts) {
     __wasiProcessGone = null;
     __wasiFS = {
         root: __wasiCanonicalize(opts.root || ''),
+        umask: (opts.cred?.umask ?? CRED_SESSION_USER.umask) & 0o777,
         // Largest regular file the codec answers from a resident copy.
         residentFileCap: Number(opts.residentFileCap ?? WASI_RESIDENT_FILE_CAP_BYTES),
         cred: opts.cred ? { uid: Number(opts.cred.uid), gid: Number(opts.cred.gid), groups: [...(opts.cred.groups || [])].map(Number) } : null,
@@ -342,6 +392,11 @@ export function __wasiInitFS(opts) {
     // are handed this Map, and a swap would leave half of them writing into a
     // table nothing reads.
     __wasiPreopens = [];
+    // A descriptor the last process left open gives its pinned bytes back to
+    // the store (a warm facet's store outlives the process).
+    for (const entry of fdTable.values())
+        if (entry.kind === 'resident')
+            entry.release?.();
     fdTable.clear();
     fdTable.set(0, { kind: 'stdin' });
     fdTable.set(1, { kind: 'stdout' });
@@ -703,6 +758,8 @@ function withParkDeadline(fn, mayTimeOut) {
                 if (settled)
                     return;
                 settled = true;
+                __wasiAbandoned++;
+                __wasiResident?.fs.cancelPendingDirectories();
                 call.current = false;
                 resolve(__WASI_EAGAIN);
             }, __WASI_PARK_DEADLINE_MS);
@@ -1008,10 +1065,22 @@ export function __wasiMakeImports(opts) {
                     off += p.length;
                 }
             }
-            const taken = appendStream(stream, combined);
+            // The output's reader gone (a pipe's: the relay's EPIPE) is the write's EPIPE, as a native write's is.
+            const brokenPipe = (error) => {
+                if (error?.code === 'EPIPE')
+                    return __WASI_EPIPE;
+                throw error;
+            };
+            let taken;
+            try {
+                taken = appendStream(stream, combined);
+            }
+            catch (error) {
+                return brokenPipe(error);
+            }
             writeU32LE(nwrittenPtr, total);
             // A sink that pushes back hands a promise; any other value it returns is no answer.
-            return taken && typeof taken.then === 'function' ? Promise.resolve(taken).then(() => __WASI_ESUCCESS) : __WASI_ESUCCESS;
+            return taken && typeof taken.then === 'function' ? Promise.resolve(taken).then(() => __WASI_ESUCCESS, brokenPipe) : __WASI_ESUCCESS;
         },
         fd_seek(fd, _offsetArg, _whence, _newOffsetPtr) {
             // Seeking a pipe/tty is ESPIPE — lets guests detect non-seekable
@@ -1853,6 +1922,18 @@ export function __wasiMakeImports(opts) {
     // the codec answers its files and directories; a stream's (stdio, a pipe,
     // a socket) status is preview1's, with the mode its kind has.
     const fsImport = {
+        umask(mask, out) {
+            try {
+                writeU32LE(out, __wasiFS.umask);
+            }
+            catch (error) {
+                if (error instanceof RangeError)
+                    return __WASI_EFAULT;
+                throw error;
+            }
+            __wasiFS.umask = mask & 0o777;
+            return __WASI_ESUCCESS;
+        },
         fd_stat(fd, out) {
             const kind = fdTable.get(fd)?.kind;
             const format = kind === 'stdin' || kind === 'stdout' || kind === 'stderr' ? 0o020620
@@ -1882,6 +1963,7 @@ export function __wasiMakeImports(opts) {
         allocateFd: __wasiAllocateFd,
         abi: opts.abi,
         synchronous: opts.parking === 'none',
+        umask: () => __wasiFS.umask,
         residentBytes: __wasiFS.residentFileCap,
         extension: fsImport,
         processGone: (refusal) => { __wasiProcessGone ??= refusal; },

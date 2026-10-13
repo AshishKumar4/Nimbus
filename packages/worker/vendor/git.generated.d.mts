@@ -17,5 +17,8 @@ export declare const git: Omit<typeof Upstream, 'add' | 'remove' | 'commit' | 's
   stage(options: Pick<Add, 'fs' | 'dir' | 'gitdir' | 'cache' | 'force' | 'parallel'> & {
     add?: string[]; remove?: string[];
   }): Promise<void>;
+  getConfigNames(options: Pick<Parameters<typeof Upstream.getConfig>[0], 'fs' | 'dir' | 'gitdir'> & {
+    section: string; subsection?: string | null;
+  }): Promise<string[]>;
 };
 export * as gitHttp from './git-http.generated.js';

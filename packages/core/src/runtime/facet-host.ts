@@ -76,6 +76,15 @@ export interface FacetSpec {
    * compiled compiler serves all of them.
    */
   reuse?: 'session' | 'global';
+  /**
+   * The caller's lease of one warm facet. Facets opened with the same key
+   * may run in the same scope, and find there what the last call left (a
+   * WASI process's resident store); the caller runs one call at a time on a
+   * key, and stops using a key whose call failed. A warm facet holds no
+   * process's capability: the {@link FacetSpec.syscalls} capability is
+   * handed to each call. A host may still start each facet afresh.
+   */
+  warm?: string;
 }
 
 /** The session a facet's syscalls reach, and who they reach it as. */

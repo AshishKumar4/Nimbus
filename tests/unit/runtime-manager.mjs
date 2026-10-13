@@ -16,6 +16,7 @@ import { RuntimeManager } from '../../packages/core/src/runtime/runtime-manager.
 import { ProcessView } from '../../packages/core/src/runtime/process-files.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { suppliedRuntimeSource } from '../../packages/core/src/runtime/runtime-package.ts';
+import { CommandRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
 
 const KERNEL = { uid: 0, gid: 0, groups: [0], umask: 0o022 };
 const HOME = '/home/user';
@@ -240,6 +241,25 @@ const toyRunner = () => async () => 0;
 
   const again = await manager.install('toy');
   assert.equal(again.written, true, 'reinstall answered a stale memo');
+}
+
+// ── An installed command over a built-in one of its name ──────────────────
+// It answers while installed; uninstalled, the built-in answers again (the
+// shell's real registry: git's built-in front door under real git's `git`).
+{
+  const vfs = openVfs();
+  const pkg = fakePackage({ 'bin/toy': '# t\n' });
+  const registry = new CommandRegistry();
+  const manager = new RuntimeManager({ vfs: new ProcessView(new ProcessFiles(vfs).openHost(KERNEL).fs), registry, getHome: () => HOME, source: suppliedRuntimeSource([pkg]) });
+  manager.registerRunner('toy-runner', () => async () => 2);
+  registry.registerBuiltin('toy', async () => 1);
+  const run = async () => (await registry.resolve('toy'))({});
+  assert.equal(await run(), 1, 'the built-in, before an install');
+  await manager.install('toy');
+  assert.equal(await run(), 2, 'the installed command, over it');
+  await manager.uninstall('toy');
+  assert.equal(await run(), 1, 'the built-in again, after the uninstall');
+  assert.ok(registry.has('toy') && registry.list().includes('toy'));
 }
 
 // ── A stub installs on first use and dispatches the real handler ──────────

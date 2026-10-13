@@ -28,6 +28,7 @@ export function createAdmission(coherence) {
      * not fit, and the caller then reads through the session instead.
      */
     let pinnedBytes = 0;
+    let available = null;
     /**
      * Room promised to fills in flight. A fault-in asks for its file's room
      * before the bytes arrive (reserve), and the room is its own until the put
@@ -133,6 +134,8 @@ export function createAdmission(coherence) {
             try {
                 const answer = await asked.fsStorageGrant(named, want, dbBytes());
                 cap += Number(answer && answer.granted) || 0;
+                if (answer && typeof answer.available === 'number')
+                    available = answer.available;
             }
             catch { }
         })().finally(() => { grantAsk = null; });
@@ -173,12 +176,14 @@ export function createAdmission(coherence) {
         setStorage(storage, given) {
             supervisor = given || null;
             const allowance = storage;
+            available = allowance && typeof allowance.available === 'number' ? allowance.available : null;
             if (!allowance || typeof allowance.facet !== 'string' || typeof allowance.grant !== 'number')
                 return;
             facet = allowance.facet;
             cap = dbBytes() + allowance.grant;
         },
         storageCap() { return cap; },
+        get available() { return available; },
         pin(bytes) {
             if (!inHeap || !fits(bytes, false))
                 return false;
@@ -236,7 +241,9 @@ export function createAdmission(coherence) {
             if (cap === null || facet === null || !asked || typeof asked.fsStorageGrant !== 'function')
                 return;
             try {
-                await asked.fsStorageGrant(facet, 0, dbBytes());
+                const answer = await asked.fsStorageGrant(facet, 0, dbBytes());
+                if (answer && typeof answer.available === 'number')
+                    available = answer.available;
             }
             catch { }
         },
