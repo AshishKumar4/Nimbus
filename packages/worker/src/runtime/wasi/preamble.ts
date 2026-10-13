@@ -796,10 +796,9 @@ function __wasiSocketFill(entry: SocketFdEntry): Promise<Errno | null> {
       await entry.socket.opened;
       const { value, done } = await entry.reader.read();
       if (done) { entry.eof = true; return null; }
-      const chunk = value instanceof Uint8Array ? value : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
       const unread = entry.readBuf.subarray(entry.readBufOffset);
-      if (unread.length === 0) entry.readBuf = chunk;
-      else { const joined = new Uint8Array(unread.length + chunk.length); joined.set(unread); joined.set(chunk, unread.length); entry.readBuf = joined; }
+      if (unread.length === 0) entry.readBuf = value;
+      else { const joined = new Uint8Array(unread.length + value.length); joined.set(unread); joined.set(value, unread.length); entry.readBuf = joined; }
       entry.readBufOffset = 0;
       return null;
     } catch (e) {
