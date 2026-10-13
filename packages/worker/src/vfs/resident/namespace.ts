@@ -310,7 +310,7 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
           const ownTarget = own?.get(prefix);
           if (ownTarget === undefined && !links.has(prefix)) continue;
           if (i === segs.length && !followLeaf) break;
-          let linked = ownTarget;
+          let linked: unknown = ownTarget;
           if (linked === undefined) {
             const row = nsRowAt(t, prefix);
             if (!row || row.kind !== NS_LINK) break;
