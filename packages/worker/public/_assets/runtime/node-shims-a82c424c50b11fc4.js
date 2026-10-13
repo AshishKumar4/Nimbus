@@ -3192,7 +3192,9 @@ const __fsMod = (() => {
   // where it reaches the name (_nsWalk). An entry retires once its mutation
   // has settled AND a barrier begun after that has applied: that barrier's
   // delta shows it or anything later. A "file" settles when the session has
-  // its bytes (__nimbusVfsWriteLanded), and unsettles when it is written again.
+  // its bytes (__nimbusVfsWriteLanded), and unsettles when it is written again;
+  // the session's stat of it, noted where the walk reaches it, retires it too
+  // (_noteLearnedStat).
   function _nsActive() {
     return typeof __resident !== "undefined" && __resident.namespace.ready();
   }
@@ -3922,10 +3924,7 @@ const __fsMod = (() => {
     if (ticket.reported > (written === undefined ? ticket.rev : Math.max(written, ticket.rev))) return false;
     const k = _strip(absPath);
     __resident.namespace.noteLiveStat(k, stat, written);
-    // The session's own stat of a file this process made answers from now on
-    // (the owner of a file it took for new, and wrote over, is the session's)
-    // where the walk reaches the row it noted: not beneath a directory it made
-    // just now, nor when it has written the file again since.
+    // Not beneath a directory it made just now, whose names are its own.
     const made = _nsOwn.get(k);
     if (stat !== null && made?.state === "file" && !_nsParked(k)) {
       const held = __resident.namespace.lookup(k, false, (at) => (at === k ? undefined : _nsWord(at)));
