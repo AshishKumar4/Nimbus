@@ -80,9 +80,15 @@ const ETC = ['etc/profile', 'etc/hostname', 'etc/os-release'];
   assert.equal(kernel.exists('home/user/.nimbus/runtimes'), false, 'nothing below HOME');
   assert.equal((await ws.exec('toy')).stdout, 'ran toy from usr/lib/nimbus/toy/1.0.0\n');
   assert.equal((await ws.exec('/usr/bin/toy')).stdout, 'ran toy from usr/lib/nimbus/toy/1.0.0\n', 'the launcher runs it by path');
-  // Its target keeps the mode it was installed with: a marker, not a program
-  // a guest Bash could run as a script.
+  // Its target is a marker, not a program a guest Bash could run as a script:
+  // one an earlier tree left executable is made not to be.
   assert.equal(kernel.stat('usr/lib/nimbus/toy/1.0.0/bin/toy').mode & 0o111, 0, 'the marker is not made executable');
+  kernel.chmod('usr/lib/nimbus/toy/1.0.0/bin/toy', 0o755);
+  await ws.runtimes.rehydrate();
+  assert.equal(kernel.stat('usr/lib/nimbus/toy/1.0.0/bin/toy').mode & 0o111, 0, 'an executable marker is made not to be');
+  // And `which` and `type` find the command at its launcher all the same.
+  assert.equal((await ws.exec('which toy')).stdout, '/usr/bin/toy\n');
+  assert.equal((await ws.exec('type toy')).stdout, 'toy is /usr/bin/toy\n');
 
   // A file someone put at a launcher's name is never replaced, and runs as itself.
   kernel.unlink('usr/bin/toy');
@@ -111,6 +117,15 @@ const ETC = ['etc/profile', 'etc/hostname', 'etc/os-release'];
   // A package whose runner this workspace lacks links no launcher.
   await ws.runtimes.installPackage(toyPackage({ name: 'retired', runner: 'retired-runner' }));
   assert.equal(kernel.readlink('usr/bin/toy'), '/usr/lib/nimbus/toy/1.0.0/bin/toy', 'a runtime nothing runs takes no launcher');
+
+  // Uninstall takes the launcher's path with it, though what is there is no longer its link.
+  kernel.unlink('usr/bin/toy');
+  kernel.writeFile('usr/bin/toy', 'echo mine\n', { mode: 0o755 });
+  const removedOverFile = await ws.exec('nimbus uninstall toy');
+  assert.equal(removedOverFile.exitCode, 0, removedOverFile.stderr);
+  assert.doesNotMatch((await ws.exec('/usr/bin/toy')).stdout, /ran toy/, 'the path no longer runs the uninstalled runtime');
+  kernel.unlink('usr/bin/toy');
+  await ws.runtimes.installPackage(toyPackage());
 
   // Uninstall takes the launcher with it.
   const removed = await ws.exec('nimbus uninstall toy');
