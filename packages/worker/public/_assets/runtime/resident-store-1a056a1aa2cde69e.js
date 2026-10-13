@@ -1020,34 +1020,54 @@ var __nimbusResidentModule = (() => {
       links.delete(k);
       unlisted.delete(k);
     };
-    const lookup = (k, followLeaf, ownLinks) => {
+    const lookup = (k, followLeaf, own) => {
       const t = coherence.require();
-      const own = ownLinks !== void 0 && ownLinks.size > 0 ? ownLinks : void 0;
+      if (own === void 0 && links.size === 0) return { path: k, table: k, row: nsRowAt(t, k) };
       let path = k;
-      for (let hops = 0; hops <= NS_MAX_HOPS; hops++) {
-        let redirected = false;
-        if (links.size > 0 || own !== void 0) {
-          const segs = path.split("/");
-          for (let i = 1; i <= segs.length; i++) {
-            const prefix = segs.slice(0, i).join("/");
-            const ownTarget = own?.get(prefix);
-            if (ownTarget === void 0 && !links.has(prefix)) continue;
-            if (i === segs.length && !followLeaf) break;
-            let linked = ownTarget;
-            if (linked === void 0) {
-              const row = nsRowAt(t, prefix);
-              if (!row || row.kind !== NS_LINK) break;
-              linked = row.target;
+      walk: for (let hops = 0; hops <= NS_MAX_HOPS; hops++) {
+        const segs = path === "" ? [] : path.split("/");
+        let table = "";
+        for (let i = 1; i <= segs.length; i++) {
+          const prefix = segs.slice(0, i).join("/");
+          const leaf = i === segs.length;
+          const step = table === null ? null : table ? table + "/" + segs[i - 1] : segs[i - 1];
+          const word = own?.(prefix);
+          let target;
+          if (word !== void 0 && "absent" in word) {
+            return { path, table: null, row: void 0, own: word };
+          } else if (word !== void 0 && "target" in word) {
+            if (leaf && !followLeaf) return { path, table: null, row: void 0, own: word };
+            target = word.target;
+          } else if (word !== void 0 && "from" in word) {
+            if (word.link !== void 0 && leaf && !followLeaf) {
+              const at = nsRowAt(t, word.link) !== void 0 ? word.link : prefix;
+              return { path, table: at, row: nsRowAt(t, at), own: word };
             }
-            const rest = segs.slice(i).join("/");
-            const target = joinTarget(prefix, linked);
-            path = rest ? target ? target + "/" + rest : rest : target;
-            redirected = true;
-            break;
+            if (word.from === void 0) return { path, table: null, row: void 0, own: { absent: true } };
+            if (word.link !== void 0) target = "/" + word.from;
+            else {
+              table = word.from;
+              if (leaf) return { path, table, row: nsRowAt(t, table), own: word };
+              continue;
+            }
+          } else if (word !== void 0) {
+            table = word.hide ? null : prefix;
+            if (leaf) return { path, table: prefix, row: nsRowAt(t, prefix), own: word };
+            continue;
+          } else {
+            if (step === null) return { path, table: null, row: void 0 };
+            table = step;
+            if (!links.has(step) || leaf && !followLeaf) continue;
+            const row = nsRowAt(t, step);
+            if (!row || row.kind !== NS_LINK) continue;
+            target = row.target;
           }
+          const rest = segs.slice(i).join("/");
+          const joined = joinTarget(prefix, target);
+          path = rest ? joined ? joined + "/" + rest : rest : joined;
+          continue walk;
         }
-        if (redirected) continue;
-        return { path, row: nsRowAt(t, path) };
+        return { path, table, row: table === null ? void 0 : nsRowAt(t, table) };
       }
       return "ELOOP";
     };
@@ -1101,21 +1121,22 @@ var __nimbusResidentModule = (() => {
       forget,
       lookup,
       /** `lookup`, with null when nothing is there. */
-      resolve(k, followLeaf, ownLinks) {
-        const found = lookup(k, followLeaf, ownLinks);
-        return found === "ELOOP" || found.row !== void 0 ? found : null;
+      resolve(k, followLeaf, own) {
+        const found = lookup(k, followLeaf, own);
+        if (found === "ELOOP") return found;
+        return found.row !== void 0 && found.table !== null ? { path: found.table, row: found.row } : null;
       },
       /**
        * The mount point when the namespace cannot say what `k` is: its lookup
        * misses at or under a directory the listing did not name (or, with
        * `listing`, lands on or under one). Null when it knows.
        */
-      unknown(k, followLeaf, listing, ownLinks) {
+      unknown(k, followLeaf, listing, own) {
         if (unlisted.size === 0) return null;
-        const found = lookup(k, followLeaf, ownLinks);
-        if (found === "ELOOP") return null;
-        if (found.row === void 0) return unlistedOver(found.path, false);
-        return listing ? unlistedOver(found.path, true) : null;
+        const found = lookup(k, followLeaf, own);
+        if (found === "ELOOP" || found.own !== void 0 || found.table === null) return null;
+        if (found.row === void 0) return unlistedOver(found.table, false);
+        return listing ? unlistedOver(found.table, true) : null;
       },
       /** The entries directly under directory `k` (already resolved); the mode says what a file kind is. */
       children,
@@ -1202,9 +1223,9 @@ var __nimbusResidentModule = (() => {
         const held = nsRowAt(t, k);
         if (held !== void 0 && held.rev >= rev) return;
         const now = Date.now();
+        const slash = k.lastIndexOf("/");
+        const parent = held === void 0 ? nsRowAt(t, slash < 0 ? "" : k.slice(0, slash)) : void 0;
         tryPut(t, k, {
-          // A file the process created: its umask's mode, until the delta reports
-          // the authority's own stat for it.
           type: "file",
           size,
           mode: held ? held.mode : 33206 & ~Number(cred?.umask ?? 18),
@@ -1213,7 +1234,9 @@ var __nimbusResidentModule = (() => {
           atime: now,
           mtime: now,
           ctime: now,
-          ino: held ? held.ino : 0
+          ino: held ? held.ino : 0,
+          dev: held ? held.dev : parent?.dev,
+          nlink: held ? held.nlink : 1
         }, rev, null);
       },
       /**

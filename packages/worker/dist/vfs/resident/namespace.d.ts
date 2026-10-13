@@ -33,9 +33,38 @@ import type { RuntimeVfsStat, VfsInvalidatedPath, VfsListEntry } from '@nimbus-s
 import { type NsRow, type ResidentTables } from './tables.js';
 /** What a row is made from: a stat the session reported, or one the process's own write stands in with until it does. */
 export type NsStat = Pick<RuntimeVfsStat, 'type' | 'size' | 'mode' | 'uid' | 'gid' | 'atime' | 'mtime' | 'ctime' | 'ino'> & Partial<Pick<RuntimeVfsStat, 'dev' | 'nlink' | 'revision'>>;
+/**
+ * What the process's own effects say of a name, ahead of the table (the
+ * shims' overlay): it removed it (`absent`); it made a symlink there
+ * (`target`); it renamed the table's entry at `from` to it (`from` undefined:
+ * a moved link that resolves to nothing; `link`: the moved entry is a symlink,
+ * whose own row is at that key); or it made a directory or file there
+ * (`made`; `hide`: rows the table holds beneath it are not this directory's).
+ */
+export type OwnWord = {
+    readonly absent: true;
+} | {
+    readonly target: string;
+} | {
+    readonly from: string | undefined;
+    readonly link?: string;
+} | {
+    readonly made: 'directory' | 'file';
+    readonly hide?: boolean;
+};
+/** The process's word on a name (by the name the walk reached), or undefined. */
+export type OwnView = (k: string) => OwnWord | undefined;
+/**
+ * Where a walk lands: the name reached (the process's own naming, links
+ * followed), where the table holds it (`table`, null where no row of the
+ * table's can be: under a directory the process made, or at its own entry),
+ * the table's row there, and the process's own word on the name.
+ */
 export interface Lookup {
     path: string;
+    table: string | null;
     row: NsRow | undefined;
+    own?: OwnWord;
 }
 export type Resolved = {
     path: string;
@@ -67,13 +96,10 @@ export interface Namespace {
     deleteTree(t: ResidentTables, k: string, self: boolean): void;
     /** Drop one row and what the table keeps of it in heap. */
     forget(t: ResidentTables, k: string): void;
-    /**
-     * `ownLinks`: the process's own symlinks the table does not hold yet (its
-     * overlay's), link path → target, followed ahead of the table's.
-     */
-    lookup(k: string, followLeaf: boolean, ownLinks?: ReadonlyMap<string, string>): Lookup | 'ELOOP';
-    resolve(k: string, followLeaf: boolean, ownLinks?: ReadonlyMap<string, string>): Resolved | null;
-    unknown(k: string, followLeaf: boolean, listing: boolean, ownLinks?: ReadonlyMap<string, string>): string | null;
+    /** `own`: the process's own effects, applied at each name the walk reaches (OwnView). */
+    lookup(k: string, followLeaf: boolean, own?: OwnView): Lookup | 'ELOOP';
+    resolve(k: string, followLeaf: boolean, own?: OwnView): Resolved | null;
+    unknown(k: string, followLeaf: boolean, listing: boolean, own?: OwnView): string | null;
     children(k: string): {
         name: string;
         kind: number;
