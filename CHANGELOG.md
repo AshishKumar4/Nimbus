@@ -15,6 +15,12 @@ published independently in the `@nimbus-sh` npm scope.
   in a fresh isolate costs about 6 ms CPU, the fs write path's one-time
   compile; writes are no longer lost. A Node `fs` write over an existing file
   no longer reads the file it replaces (about 0.4 ms less per MiB).
+- Fixed: `nimbus wrangler dev`'s Worker Loader binding (`worker_loaders`)
+  cached a Worker loaded with `LOADER.get(id, …)` under its id alone, for
+  the whole isolate: two Workers in co-located sessions that used the same
+  id shared one, and the second ran the first's code. A keyed Worker is now
+  its loader's own: each build's binding has its own, so a rebuild loads
+  its keyed Workers afresh.
 - Fixed: a module a Node program writes and then imports links as Node's
   does before any of its graph runs. An import of a name its module does
   not export is Node's SyntaxError, with no module body run first; before,
