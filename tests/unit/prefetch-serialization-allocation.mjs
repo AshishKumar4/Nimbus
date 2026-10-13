@@ -7,11 +7,13 @@
 // production cell serializer without replacing its work or the bytes it
 // makes:
 //   - each build serializes under its own admission, and three distinct
-//     launches at once peak at one build's heap plus the admitted budget;
+//     launches at once peak, live (after a collection), at one launch's
+//     plus the admitted budget; the peak in use between collections is
+//     reported, not gated;
 //   - launches of one key at once build once; a build queued across a write
 //     builds the new generation; a failure gives its admission back;
-//   - three ~17 MiB builds sharing the pool all finish, peaking at one
-//     build's heap plus the admitted budget, and one that fails or is
+//   - three ~17 MiB builds sharing the pool all finish, peaking, live, at
+//     one launch's plus the admitted budget, and one that fails or is
 //     killed while it holds its admission stops none of the others;
 //   - two launches of one ~17 MiB program at once (past the cache's entry
 //     bound) build once.
@@ -33,7 +35,12 @@ const legacyWrap = cells.wrapCommonJsCell;
 const reservations = [];
 // The heap's bytes in use: its objects, and the buffers of strings and arrays JSC keeps beside them (extraMemorySize).
 const used = () => { const stats = heapStats(); return stats.heapSize + stats.extraMemorySize; };
+// What is live: the bytes in use after a full collection. The gate is on these, as a memory limit is
+// (V8 in workerd, and JSC under pressure, collect before declaring it out of memory); `peak`, sampled
+// between collections, also counts what the next collection frees, and is reported, not gated.
+const live = () => { Bun.gc(true); return used(); };
 let peak = 0;
+let livePeak = 0;
 let failSerialization = false;
 // What a ~17 MiB build does as it starts serializing its cell (the three-caller
 // cases below): fail, or be killed, while it holds its admission. And how many
@@ -46,11 +53,13 @@ mock.module(cellsPath, () => ({ ...cells,
     if (big !== undefined) {
       bigSerialized.set(big, (bigSerialized.get(big) ?? 0) + 1);
       peak = Math.max(peak, used());
+      livePeak = Math.max(livePeak, live());
       onBigCell.get(big)?.();
     }
     if (args[0].includes('PREFETCH_LEASE_EVIDENCE')) {
       reservations.push(readSupervisorAllocationBudget().current);
       peak = Math.max(peak, used());
+      livePeak = Math.max(livePeak, live());
       if (failSerialization) throw new Error('injected serializer failure');
     }
     return legacyWrap(...args);
@@ -72,15 +81,22 @@ for (let i = 0; i < 4; i++) {
   fs.mkdir(`home/user/tree${i}`, { recursive: true, mode: 0o755 });
   fs.writeFile(`home/user/tree${i}/cell.js`, `// PREFETCH_LEASE_EVIDENCE\nmodule.exports = "${'x'.repeat(10 * 1024 * 1024)}";\n`, { mode: 0o644 });
 }
-const launchTree = (i) => manager.exec("require('./cell.js')", { filename: `/home/user/tree${i}/run.js`, cwd: `/home/user/tree${i}`, captureOutput: true });
-/** The heap's peak over its settled base while `run` runs. */
+/** `launch`, its live bytes read as it ends. */
+const ended = (launch) => launch.then((result) => { livePeak = Math.max(livePeak, live()); return result; },
+  (error) => { livePeak = Math.max(livePeak, live()); throw error; });
+const launchTree = (i) => ended(manager.exec("require('./cell.js')", { filename: `/home/user/tree${i}/run.js`, cwd: `/home/user/tree${i}`, captureOutput: true }));
+/**
+ * The live peak over the settled base while `run` runs (read as each build
+ * starts serializing and as each launch ends), and the peak in use sampled
+ * between collections (`churn`).
+ */
 const peakOver = async (run) => {
-  Bun.gc(true);
-  const base = used();
+  const base = live();
   peak = base;
+  livePeak = base;
   const result = await run();
-  peak = Math.max(peak, used());
-  return { result, over: peak - base };
+  livePeak = Math.max(livePeak, live());
+  return { result, over: livePeak - base, churn: Math.max(peak, used()) - base };
 };
 const sampled = setInterval(() => { peak = Math.max(peak, used()); }, 1);
 const started = performance.now();
@@ -93,13 +109,13 @@ try {
   const results = together.result;
   const capacity = readSupervisorAllocationBudget().capacity;
   console.log('PREFETCH_SERIALIZATION ' + JSON.stringify({ callers: 3, elapsedMs: performance.now() - started,
-    singlePeakOverBase: single.over, peakOverBase: together.over, capacity, reservations, results: results.map(({ exitCode, stderr }) => ({ exitCode, stderr })) }));
+    singlePeakOverBase: single.over, peakOverBase: together.over, singleChurn: single.churn, churn: together.churn, capacity, reservations, results: results.map(({ exitCode, stderr }) => ({ exitCode, stderr })) }));
   assert.ok(results.every(result => result.exitCode === 0), JSON.stringify(results));
   assert.equal(reservations.length, 3, 'every distinct launch serialized its large cell');
   assert.ok(reservations.every(bytes => bytes >= VFS_BUNDLE_MAX_BYTES && bytes <= capacity),
     `each build serializes under its own admission (${reservations.join(', ')} held; one build's is ${VFS_BUNDLE_MAX_BYTES})`);
   assert.ok(together.over <= single.over + capacity,
-    `three builds at once peak at one build's bytes plus the admitted budget (${together.over} > ${single.over} + ${capacity})`);
+    `three launches at once peak, live, at one launch's bytes plus the admitted budget (${together.over} > ${single.over} + ${capacity})`);
   assert.equal(readSupervisorAllocationBudget().current, 0, 'completed builds release their allocation');
   fs.mkdir('home/user/shared', { recursive: true, mode: 0o755 });
   fs.writeFile('home/user/shared/cell.js', '// PREFETCH_LEASE_EVIDENCE\nmodule.exports=1;', { mode: 0o644 });
@@ -151,12 +167,12 @@ try {
     assert.equal(budget.current, 0, `every admission was given back (${JSON.stringify(budget)})`);
     assert.equal(budget.queued, 0, `nothing is left queued (${JSON.stringify(budget)})`);
   };
-  const three = (names) => names.map((name) => manager.exec("require('./cell.js')", bigTree(name)));
+  const three = (names) => names.map((name) => ended(manager.exec("require('./cell.js')", bigTree(name))));
   let peakHeld = 0;
   const watchHeld = setInterval(() => { peakHeld = Math.max(peakHeld, readSupervisorAllocationBudget().current); }, 1);
   try {
     // One ~17 MiB build alone, for its bytes; then three at once peak at one build's plus the admitted budget.
-    const alone = await peakOver(() => manager.exec("require('./cell.js')", bigTree('alone')));
+    const alone = await peakOver(() => ended(manager.exec("require('./cell.js')", bigTree('alone'))));
     assert.equal(alone.result.exitCode, 0, alone.result.stderr);
     const bigThree = await peakOver(() => settleWithin(three(['a', 'b', 'c']), 120_000));
     const settled = bigThree.result;
@@ -164,10 +180,10 @@ try {
     assert.deepEqual(settled.map((r) => r.status === 'fulfilled' ? r.value.exitCode : String(r.reason)), [0, 0, 0]);
     assert.ok(peakHeld <= readSupervisorAllocationBudget().capacity, `the pool's ceiling held (${peakHeld})`);
     const capacity = readSupervisorAllocationBudget().capacity;
-    console.log('PREFETCH_SERIALIZATION_BIG ' + JSON.stringify({ singlePeakOverBase: alone.over, peakOverBase: bigThree.over, capacity }));
+    console.log('PREFETCH_SERIALIZATION_BIG ' + JSON.stringify({ singlePeakOverBase: alone.over, peakOverBase: bigThree.over, singleChurn: alone.churn, churn: bigThree.churn, capacity }));
     assert.ok(alone.over > BIG, `one ~17 MiB build is measured (${alone.over} bytes over its base)`);
     assert.ok(bigThree.over <= alone.over + capacity,
-      `three ~17 MiB builds at once peak at one build's bytes plus the admitted budget (${bigThree.over} > ${alone.over} + ${capacity})`);
+      `three ~17 MiB launches at once peak, live, at one launch's bytes plus the admitted budget (${bigThree.over} > ${alone.over} + ${capacity})`);
     drained();
 
     // Two launches of one ~17 MiB program at once: past the cache's entry
