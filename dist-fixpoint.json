@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "0e4bfa97c5b66c5a34187bbfa3e91d3389a0dddc660030a8548fcddddbbc1b0a",
+  "fingerprint": "f16a6215b815239eb23d3cbcc2c9c24ac32f4283a8daad2353d2f07f766d5cea",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2680,8 +2680,8 @@
     "packages/worker/dist/session/shell-socket.d.ts.map": "926ae551bf3e1854ff2507eda8d16f08f79d266a2bbcd631696759d3ca1c9182",
     "packages/worker/dist/session/shell-socket.js": "276b0c65157a8ad3b8a2a9c7d6705b81ea043c1dba38d8820871b242cc3f57aa",
     "packages/worker/dist/session/start-real-vite.d.ts": "2ad2f45e64310050986b81a2069d5f037d702973b4147be21c5257194f774160",
-    "packages/worker/dist/session/start-real-vite.d.ts.map": "76f7ecf079db4da6ed0adc764cb4cd7de5d6a6f99ebe4c878b57bdec1e8ba52d",
-    "packages/worker/dist/session/start-real-vite.js": "9662869535787fc9c2eee8351701c206e611857535d50fd1a6a5792fef33bb05",
+    "packages/worker/dist/session/start-real-vite.d.ts.map": "1deb717ded376ddf9be5dbfc9cc78a018fd79911a1b651095c01e7ddb085ad66",
+    "packages/worker/dist/session/start-real-vite.js": "dea3a3454be44ec21bd9a26dcf6abec8a945f95252f29efb0e2fe758b23a2998",
     "packages/worker/dist/session/state-store.d.ts": "fc25f71555309e0e403477bba5dd8814c48f955a4231ffa562ecf2bb8fdca7e5",
     "packages/worker/dist/session/state-store.d.ts.map": "50fc0d71dc973a67e162e99172ba7ca57ea91fcbc0c05aa59effe6efc56b8e6c",
     "packages/worker/dist/session/state-store.js": "b7f707e7dfe8b377fd83d9153da10c830c57dd33952ec8bdd52e2843e3cefb8a",
@@ -3141,7 +3141,7 @@
     "packages/worker/src/session/serving-port.ts": "e232266119cbf85e8d60a73e0eeb1acfa929a195d865f4d6699ef7c597ba2f12",
     "packages/worker/src/session/session-filesystem.ts": "c9a096774c9eba748553c7461ff7b56c6142ad8e587e28ffa912d323d0b1971a",
     "packages/worker/src/session/shell-socket.ts": "72eac5d4c71842938ddb1e25264135a401c12222e273d5755ab692061b65e6aa",
-    "packages/worker/src/session/start-real-vite.ts": "e0741ab6e1eafb554c0772b62f39a3aa544b26959960f665df9521dcf71a309a",
+    "packages/worker/src/session/start-real-vite.ts": "75acbcedd7f9668800c0decbb33e6748295ec07d34e873cc8da95e0865e0cb86",
     "packages/worker/src/session/state-store.ts": "bd51787fe3eabefb7f5caab9b0418d22232b5271f6f56325b61497efdb939ca2",
     "packages/worker/src/session/supervisor-calls.ts": "90278e6949162154bf2a5f432c8b569e5c408436551d07cfac0a1f1ad19e8e52",
     "packages/worker/src/session/supervisor-op.ts": "56a324372b0130cad998aa51dc6d2ee6b69455b8cbabe95325472d1c2a5feaa3",
