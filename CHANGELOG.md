@@ -17,7 +17,9 @@ published independently in the `@nimbus-sh` npm scope.
   session reported the file.
   `fs.promises.watch` yields a file's changes, not one every 500 ms for a
   large unchanged file, and ends when its `signal` aborts (an `AbortError`)
-  or the loop stops. A program's own `chmod` and `utimes` no longer outlive
+  or the loop stops. It starts watching on its first `next()`, so one that is
+  never read keeps nothing running, and once ended it yields nothing more.
+  A program's own `chmod` and `utimes` no longer outlive
   the file: `stat` shows another user's later change, and a file removed and
   made again has a new file's mode and times. `stat` answers the file's real
   device and link count (`dev`, `nlink`) instead of one made-up device.
