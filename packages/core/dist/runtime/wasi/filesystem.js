@@ -219,16 +219,15 @@ export function installAuthorityFilesystem(imports, options) {
     // Content by inode, valid while the stat revision matches the one it was read at.
     const resident = options.resident ?? new Map();
     const residentBytes = options.residentBytes ?? 0;
-    /** The bytes of the file `opened` is on, read through it unless the copy at its revision is kept. */
-    const residentContent = (fs, opened) => {
-        const st = opened.stat;
+    /** The bytes of the file `st` describes: `read`'s, unless the copy at its revision is kept. */
+    const residentContent = (st, read) => {
         if (options.retainResident === false)
-            return fs.read(opened.id, 0, st.size);
+            return read();
         const key = `${st.dev}:${st.ino}`;
         const cached = resident.get(key);
         if (cached && cached.revision === st.revision)
             return cached.bytes;
-        return after(fs.read(opened.id, 0, st.size), bytes => {
+        return after(read(), bytes => {
             resident.set(key, { revision: st.revision, bytes });
             return bytes;
         });
@@ -462,9 +461,27 @@ export function installAuthorityFilesystem(imports, options) {
             u32(out, id);
             return 0;
         };
-        // A file the session opened read-only: a copy here, held by its descriptor, when it is small enough.
-        const adopt = (handle) => residentable(handle.stat) ? after(residentContent(fs, handle), bytes => copy(handle.stat, bytes, { handle: handle.id })) : opened(handle);
-        const answer = readOnly ? adopt : opened;
+        // A file the session opened read-only: a copy here, held by its descriptor,
+        // when it is small enough; `content` reads its bytes. A copy that cannot be
+        // read lets its descriptor go, and the guest gets the refusal.
+        const adopt = (content) => (handle) => {
+            if (!residentable(handle.stat))
+                return opened(handle);
+            const refused = (error) => { closeUnawaited(fs, handle.id); throw error; };
+            try {
+                const bytes = residentContent(handle.stat, () => content(handle));
+                return bytes instanceof Promise ? bytes.then(read => copy(handle.stat, read, { handle: handle.id }), refused) : copy(handle.stat, bytes, { handle: handle.id });
+            }
+            catch (error) {
+                return refused(error);
+            }
+        };
+        // An open's copy is read by the name it opened, as any read of that name
+        // is (a host that stages content answers that read); a reopen's through
+        // its new descriptor, as its file may have no name.
+        const byName = () => after(fs.readFile(target), bytes => bytes ?? fail('ENOENT'));
+        const throughIt = (handle) => fs.read(handle.id, 0, handle.stat.size);
+        const answer = readOnly ? adopt(throughIt) : opened;
         // The filesystem's pin on the bytes at `st`'s revision, as the copy; `otherwise` where it pins none (they changed, the budget is spent, the mode refuses the read).
         const pinned = (name, st, otherwise) => pinsContent(fs) ? after(fs.pinContent(name, st), pin => (pin === null ? otherwise() : copy(st, pin.bytes, { pinned: pin }))) : otherwise();
         // A file a descriptor holds is opened again as itself, never by a name a
@@ -493,7 +510,7 @@ export function installAuthorityFilesystem(imports, options) {
         // past that budget the descriptor is the session's. Any other opens the
         // file, which answers its stat, and the copy is read through that descriptor.
         if (!pinsContent(fs))
-            return after(fs.open(target, opening), adopt);
+            return after(fs.open(target, opening), adopt(byName));
         return after(fs.stat(target, { followSymlinks }), st => {
             if (st === null)
                 fail('ENOENT');
