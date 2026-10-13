@@ -981,10 +981,20 @@ export async function rpcDeleteFile(self, path, options = {}, cred) {
     const p = `/${String(path).replace(/^\/+/, '')}`;
     const fs = self.getFilesystemAuthority().namespaceFs(cred === undefined ? CRED_SESSION_USER : requireVfsCred(cred, 'files.delete'));
     // A delegation it meets is recalled first.
+    // The leaf is classified without following it, as unlink(2) resolves it:
+    // a symlink is removed, never searched through to its target.
     await withRecall(() => {
-        if (!fs.exists(p))
-            return;
-        if (fs.isDirectory(p)) {
+        let leaf;
+        try {
+            leaf = fs.lstat(p);
+        }
+        catch (error) {
+            const code = error.code;
+            if (code === 'ENOENT' || code === 'ENOTDIR')
+                return;
+            throw error;
+        }
+        if (leaf.type === 'directory') {
             if (!options.recursive)
                 fs.rmdir(p);
             else
