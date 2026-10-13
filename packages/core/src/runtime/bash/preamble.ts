@@ -581,7 +581,7 @@ function makeProc(s: BashSession, pid: number, ppid: number, fds: Map<number, Ba
   const U8 = () => new Uint8Array(proc.inst.exports.memory.buffer);
   proc.DV = DV; proc.U8 = U8;
   /** Unwind the whole stack, from the import calling this, into the arena's top. */
-  const startUnwind = (): void => { proc.inst.exports.asyncify_start_unwind(proc.captures.unwindAt(proc.inst.exports.memory, s.stats, proc.pid)); };
+  const startUnwind = (): void => { proc.inst.exports.asyncify_start_unwind(proc.captures.unwindAt(proc.inst.exports.memory, stackPointer(), s.stats, proc.pid)); };
   /** The shadow stack pointer at the import calling this: its caller's frame bottom (nimbus-proc.c's wrappers keep no frame). */
   const stackPointer = (): number => Number(proc.inst.exports.__stack_pointer.value);
   const wstr = (p: number, str: string) => { const b = te.encode(str); U8().set(b, p); return b.length; };
@@ -705,15 +705,13 @@ function makeProc(s: BashSession, pid: number, ppid: number, fds: Map<number, Ba
     setjmp: (env) => {
       if (c.rewinding) { proc.inst.exports.asyncify_stop_rewind(); c.rewinding = false; return; }
       const sp = stackPointer();
-      proc.captures.sweep(sp);
-      proc.captures.setting(env);
+      proc.captures.setting(proc.inst.exports.memory, env);
       c.reason = 'capture'; c.captureEnv = env; c.captureSp = sp;
       startUnwind();
     },
     // The current stack is unwound and discarded; the target is resolved once it is (step).
     longjmp: (env, val) => {
       if (c.rewinding) { proc.inst.exports.asyncify_stop_rewind(); c.rewinding = false; return; }
-      proc.captures.sweep(stackPointer());
       c.reason = 'longjmp'; c.ljEnv = env; c.ljVal = val;
       startUnwind();
     },
@@ -844,16 +842,10 @@ function makeProc(s: BashSession, pid: number, ppid: number, fds: Map<number, Ba
     sock_recv: suspend('sock_recv', wasi.sock_recv),
     sock_shutdown: suspend('sock_shutdown', wasi.sock_shutdown),
   };
-  // Every copy bash makes of a jmp_buf, and every end of a saved one (wasm/bash/patches/procenv.patch).
+  // Every copy bash makes of a jmp_buf, and every end of a saved one (wasm/bash/patches/procenv.patch): recorded, applied at the next unwind.
   const nimbus_procenv = {
-    copy: (dst: number, src: number) => {
-      proc.captures.sweep(stackPointer());
-      proc.captures.copied(proc.inst.exports.memory, dst, src);
-    },
-    drop: (at: number) => {
-      proc.captures.sweep(stackPointer());
-      proc.captures.dropped(at);
-    },
+    copy: (dst: number, src: number) => { proc.captures.copy(dst, src); },
+    drop: (at: number) => { proc.captures.drop(at); },
   };
   proc.inst = new WebAssembly.Instance(s.mod, { wasi_snapshot_preview1: suspendedWasi, nimbus_proc, nimbus_procenv, env: envImports }) as BashInstance;
   s.stack ??= checkedStack(s.mod, proc.inst);
