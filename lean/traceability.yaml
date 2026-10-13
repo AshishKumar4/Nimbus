@@ -762,6 +762,8 @@ requirements:
       - Nimbus.Vfs.CompositeRemoval.attempt_frame
       - Nimbus.Vfs.CompositeRemoval.step_frame
       - Nimbus.Vfs.CompositeRemoval.fold_frame
+      - Nimbus.Vfs.CompositeRemoval.vanished_fold_frame
+      - Nimbus.Vfs.CompositeRemoval.run_frame
       - Nimbus.Vfs.CompositeRemoval.walk_subtree_frame
       - Nimbus.Vfs.CompositeRemoval.walk_single_mount
     tsRefs:
@@ -775,7 +777,7 @@ requirements:
       - lean/fixtures/composite-vfs.json :: tests/unit/composite-vfs-refinement.mjs
     remainingEvidence:
       - The original 204 cases retain their indices and seeded initial inputs; directed GNU cases add read-only mounts and injected lstat, scandir and removal answers. Native removal is used only on writable non-composed trees; pins remain fallback-only.
-      - Kept paths in an unreadable subtree are the observed refused entry and its known ancestors, not undiscovered descendants; the hidden backend rows remain unchanged. ENOENT faults model an external subtree disappearance at the indicated call. Failure order is natural postorder in the model walk; fixture projection sorts failures just as the refinement bridge does and retains every failure.
+      - Kept paths in an unreadable subtree are the observed refused entry and its known ancestors, not undiscovered descendants; the hidden backend rows remain unchanged. ENOENT faults model an external subtree disappearance at the indicated call, threaded through discovery so a later mount of the same backend sees it. Failure order is natural postorder in the model walk; fixture projection sorts failures just as the refinement bridge does and retains every failure.
       - GNU coreutils 9.7 matrix receipt gnu-rm-20261012192730-7ffd1364 confirms writable/read-only mount, empty/nonempty unreadable directory, operand failures and symlink rules; child disappearance and EIO follow remove.c:391-432,547-575, with the same strict-ENOENT policy bit as the TypeScript walk.
       - With a capability present the model asserts support only; revision semantics are Coherence's
       - Main's rulings: the copy primitive answers ENOTSUP for / or an ancestor of a live mount (cp -r falls back to a crossing walk, a command-level test); a directory onto anything existing is EEXIST; lookup precedes the capability check (ENOENT before ENOTSUP), except a writeFileIfRevision expecting revision 0, create-if-absent, which only the backend can make atomic (2026-10-11)

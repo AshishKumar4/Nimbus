@@ -416,7 +416,15 @@ def directedRemoval : List Json :=
         (["outside"], .dir), (["outside", "secret"], .file 9)])]
       [(0, walkedCaps)] (rm),
     removalCase "gnu-root-whole-call-busy" ms [(0, mountRoot), (1, mounted)]
-      [(0, fullCaps 0), (1, fullCaps 1)] [(0, .removeRecursive "/" false)] ]
+      [(0, fullCaps 0), (1, fullCaps 1)] [(0, .removeRecursive "/" false)],
+    removalCase "api-shared-backend-disappearance-observed-by-later-mount"
+      [⟨["tree", "a"], 1, none⟩, ⟨["tree", "b"], 1, none⟩]
+      [(0, mountRoot), (1, [(["leaf"], .file 2)])]
+      [(0, fullCaps 0), (1, { walkedCaps with faults := { stat := [(["leaf"], "ENOENT")] } })] (rm),
+    removalCase "rm-r-shared-backend-disappearance-does-not-skip-later-mount-rmdir"
+      [⟨["tree", "a"], 1, none⟩, ⟨["tree", "b"], 1, none⟩]
+      [(0, mountRoot), (1, [(["leaf"], .file 2)])]
+      [(0, fullCaps 0), (1, { walkedCaps with faults := { stat := [(["leaf"], "ENOENT")] } })] (rm true) ]
 
 def fixture : String :=
   fixtureText [("fixture", .str "composite-vfs"), ("model", .str "Nimbus.Vfs.Composite.exec"),

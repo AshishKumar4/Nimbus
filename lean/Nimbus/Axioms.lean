@@ -674,6 +674,8 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.CompositeRemoval.attempt_frame
 #print axioms Nimbus.Vfs.CompositeRemoval.step_frame
 #print axioms Nimbus.Vfs.CompositeRemoval.fold_frame
+#print axioms Nimbus.Vfs.CompositeRemoval.vanished_fold_frame
+#print axioms Nimbus.Vfs.CompositeRemoval.run_frame
 #print axioms Nimbus.Vfs.CompositeRemoval.walk_subtree_frame
 #print axioms Nimbus.Vfs.CompositeRemoval.walk_single_mount
 
