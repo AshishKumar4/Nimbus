@@ -91,14 +91,15 @@ const wasm = new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0]);
   console.log("  an earlier release's stores below /var are left as they were");
 }
 
-// ── a delegation of /var holds up no launch ───────────────────────────────
+// ── a delegation of /var holds up no store ────────────────────────────────
 // /var is the user's: a process may hold it, and the kernel's stores are not there.
 {
-  const { files, processes, spawn } = session('kernel-stores-var-delegation');
+  const { files, processes, manager, pid } = session('kernel-stores-var-delegation');
   const holder = processes.spawn('git', ['git'], '/home/user').pid;
   files.bind({ pid: holder, cred: CRED_SESSION_USER }).acquireExclusiveMutation('/var', { delegate: { reads: true } });
-  await spawn('const a = 1;', 'a.js');
-  console.log('  a delegation of /var holds up no launch');
+  assert.equal(manager._stageWasmImageBytes([wasm], pid).length, 1, 'an inline wasm image is staged');
+  assert.notEqual(await manager._residentStagedBindingMembers([STAGED_BINDINGS[0].key], pid, pacer), null, 'and a staged binding');
+  console.log('  a delegation of /var holds up no store');
 }
 
 // ── a /.nimbus that is not the kernel's own directory is refused ───────────

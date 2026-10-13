@@ -246,6 +246,15 @@ for (const [when, landed] of [['after', true], ['partial', false]]) {
   assert.equal(root.exists('tmp/.npm-stage-3-moved/.nimbus/runtime.wasm'), true, "root's file in a stage is left");
   assert.equal(root.exists('tmp/.npm-stage-3-moved/mine'), false, 'what its owner may remove goes');
   root.removeRecursive('tmp/.npm-stage-3-moved');
+  // A stage's group is no proof its owner is in it (a setgid /tmp gives
+  // each the directory's): the owner is acted as with no group's authority.
+  vfs.as(OTHER).mkdir('tmp/.npm-stage-4-setgid', { recursive: true });
+  root.chown('tmp/.npm-stage-4-setgid', OTHER.uid, 0);
+  root.mkdir('tmp/.npm-stage-4-setgid/g', { mode: 0o770 });
+  root.writeFile('tmp/.npm-stage-4-setgid/g/root-group', 'root', { mode: 0o660 });
+  await install('/m/t');
+  assert.equal(root.exists('tmp/.npm-stage-4-setgid/g/root-group'), true, "a file only root's group may remove is left");
+  root.removeRecursive('tmp/.npm-stage-4-setgid');
   console.log('  the sweep removes each stage as the user who owns it');
 }
 
