@@ -17,7 +17,7 @@ import { clearSessionAiCredential, createSessionAiModel, describeSessionAiConnec
 import { ensureProgrammaticReady, rpcExec, rpcEnsureRuntimes, rpcInstallRuntime, rpcExposeApp, rpcKillProcess, rpcListApps, rpcListPorts, rpcListProcesses, rpcProcessLogs, rpcStartProcess, } from './programmatic.js';
 import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { appendTextPart, interruptRunningTools, textFromParts, upsertStoredMessage, upsertToolPart, AGENT_OAUTH_RESULT_CHANNEL, } from './agent-contract.js';
-import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 const MESSAGES_KEY = 'nimbus:agent:messages';
@@ -791,7 +791,7 @@ function toolSchema(properties, required) {
         additionalProperties: false,
     });
 }
-async function runTool(self, name, args) {
+export async function runTool(self, name, args) {
     try {
         if (name === 'exec') {
             return rpcExec(self, String(args.command || ''), {
@@ -802,13 +802,14 @@ async function runTool(self, name, args) {
         if (name === 'read_file') {
             await ensureProgrammaticReady(self);
             const path = normalizeAgentVfsPath(args.path || '/home/user');
-            // Each file tool waits for a delegation it meets to be recalled (withRecall).
-            return { path: '/' + path, content: await withRecall(() => self.sqliteFs.as(CRED_KERNEL).readFileString(path)) };
+            // Each file tool acts as the session's user, as the user's own shell does,
+            // and waits for a delegation it meets to be recalled (withRecall).
+            return { path: '/' + path, content: await withRecall(() => self.sqliteFs.as(CRED_SESSION_USER).readFileString(path)) };
         }
         if (name === 'write_file') {
             await ensureProgrammaticReady(self);
             const path = normalizeAgentVfsPath(args.path || '/home/user/file.txt');
-            const vfs = self.sqliteFs.as(CRED_KERNEL);
+            const vfs = self.sqliteFs.as(CRED_SESSION_USER);
             await withRecall(() => {
                 ensureParentDirs(vfs, path);
                 vfs.writeFile(path, String(args.content ?? ''));
@@ -819,7 +820,7 @@ async function runTool(self, name, args) {
             await ensureProgrammaticReady(self);
             const path = normalizeAgentVfsPath(args.path || '/home/user');
             const base = trimTrailingSlash(path);
-            const entries = (await withRecall(() => self.sqliteFs.as(CRED_KERNEL).readdir(path))).map((entry) => ({
+            const entries = (await withRecall(() => self.sqliteFs.as(CRED_SESSION_USER).readdir(path))).map((entry) => ({
                 name: entry.name,
                 type: entry.type,
                 path: '/' + base + '/' + entry.name,

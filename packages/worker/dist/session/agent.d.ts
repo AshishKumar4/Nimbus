@@ -31,6 +31,7 @@ export declare function handleAgentRequest(self: Host, request: Request, url: UR
  * at or before `now`) is refused the same way. Null for anything else.
  */
 export declare function parseAgentOAuthStateParam(state: string | null, env: Record<string, unknown>, now?: number): Promise<OAuthStatePayload | null>;
+export declare function runTool(self: Host, name: string, args: any): Promise<unknown>;
 /** The `state` an OAuth flow carries: `<payload>.<signature>`, both base64url. */
 export declare function signAgentOAuthState(payload: OAuthStatePayload, env: Record<string, unknown>): Promise<string>;
 export {};

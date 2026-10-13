@@ -2,6 +2,13 @@
  * @nimbus-sh/sdk/sandbox - programmatic Nimbus sandbox handle.
  */
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+/**
+ * The identities `files.as` takes by name: the session's user (what every
+ * file method uses by default), and the kernel, which an embedder holding
+ * the DO binding asks for when it means to act past the user's permissions.
+ */
+export { CRED_KERNEL, CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
+export type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type ExecChunk, type ExecExit, type ExecStream, type ExecOutput } from '@nimbus-sh/core/runtime/exec-stream.js';
 import { type SessionRpc as NimbusSessionSurface, type SessionExecOptions, type SessionRunCodeOptions, type SessionRestartPolicy as NimbusRestartPolicy, type SessionAppVisibility as NimbusAppVisibility, type SessionAppTarget as NimbusAppTarget, type SessionApp, type SessionExposedApp, type SessionTerminalSize as NimbusTerminalSize, type SessionDestroyOptions as NimbusDestroyOptions, type SessionDestroyResult as NimbusDestroyResult, type SessionStartResult as NimbusStartResult, type SessionProcess as NimbusProcess, type SessionProcessLogChunk as NimbusProcessLogChunk, type SessionProcessExit as NimbusProcessExitInfo, type SessionProcessLogsOptions as NimbusProcessLogsOptions, type SessionProcessLogs as NimbusProcessLogsResult, type SessionPort as NimbusPort, type SessionFileStat as NimbusFileStat, type SessionDirectoryEntry, type SessionRuntimeSummary as NimbusRuntimeSummary, type SessionAvailableRuntime as NimbusAvailableRuntime } from '@nimbus-sh/core/runtime/session-protocol.js';
 export type { NimbusSessionSurface, NimbusRestartPolicy, NimbusAppVisibility, NimbusAppTarget, NimbusTerminalSize, NimbusDestroyOptions, NimbusDestroyResult, NimbusStartResult, NimbusProcess, NimbusProcessLogChunk, NimbusProcessExitInfo, NimbusProcessLogsOptions, NimbusProcessLogsResult, NimbusPort, NimbusFileStat, NimbusRuntimeSummary, NimbusAvailableRuntime, };
@@ -165,12 +172,12 @@ export declare class NimbusSandbox {
     }): Promise<NimbusExecResult>;
     destroy(options?: NimbusDestroyOptions): Promise<NimbusDestroyResult>;
     /**
-     * The session file plane. Every method acts as the session's default
-     * identity for a pid-less caller: the session user for reads, writes,
-     * stat, list, mkdir, rename and chmod. `delete` acts as the kernel for a
-     * caller holding the DO binding (the embedder's trusted surface) and as the
-     * session user over the remote endpoint, where a token authenticates the
-     * session, not the kernel. `files.as(cred)` returns the same API bound
+     * The session file plane. Every method acts as the session's user:
+     * reads, writes, stat, list, mkdir, rename, chmod and delete, as the
+     * session's editor, agent and HTTP file routes do. An embedder holding the
+     * DO binding acts as the kernel only by asking for it,
+     * `files.as(CRED_KERNEL)`, for example to remove a file it provisioned in
+     * a sticky directory. `files.as(cred)` returns the same API bound
      * to `cred` instead, the view `SqliteVFS.as(cred)` gives in-process: a
      * file the identity cannot read answers EACCES, one it owns answers.
      * Over the remote endpoint a `cred` is refused by the dispatcher, as it is
