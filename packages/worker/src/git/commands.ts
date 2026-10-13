@@ -1040,9 +1040,9 @@ type GitLibrary = Awaited<ReturnType<typeof getGit>>;
  * the built-in runs none, so a repository where one of its command's is
  * executable is real git's, handed over before any effect
  * (assertNoHooks). Every index write runs post-index-change and every ref
- * update reference-transaction. status and diff look for none: the index
- * a refresh writes back (repo_update_index_if_able) is not worth a look on
- * their hot path, so their post-index-change is the one hook not run.
+ * update reference-transaction. status and diff are not here: the refresh
+ * they write back is kept only if able (updateIndexIfAble), and is not
+ * where writing it would run post-index-change.
  */
 const COMMAND_HOOKS: Readonly<Record<string, readonly string[]>> = {
   add: ['post-index-change'],
@@ -1060,37 +1060,51 @@ const COMMAND_HOOKS: Readonly<Record<string, readonly string[]>> = {
 };
 
 /**
- * Refuse, before any effect, a command whose hooks the repository makes
- * executable (COMMAND_HOOKS): where git looks for them (core.hooksPath,
- * from -c, the repository's and the global config, a relative one from
- * the directory hooks run in; else $GIT_DIR/hooks), each found as git's
- * find_hook finds it, by access(X_OK) as the command's principal.
+ * The first of `hooks` the repository makes executable, null for none:
+ * where git looks for them (core.hooksPath, from -c, the repository's and
+ * the global config, a relative one from `top`, the directory hooks run
+ * in; else $GIT_DIR/hooks), each found as git's find_hook finds it, by
+ * access(X_OK) as the command's principal.
  */
+async function executableHook(
+  ctx: Ctx,
+  git: Pick<CfGit, 'getConfig'>,
+  fs: GitFs,
+  gitdir: string,
+  top: string,
+  hooks: readonly string[],
+): Promise<string | null> {
+  const configured: string | undefined = await git.getConfig({ fs, gitdir, path: 'core.hooksPath' })
+    .then((value) => (typeof value === 'string' && value !== '' ? value : undefined), () => undefined);
+  let dir = `${gitdir}/hooks`;
+  if (configured !== undefined) {
+    const home = ctx.env.HOME ?? '';
+    const expanded = configured === '~' ? home : configured.startsWith('~/') ? home + configured.slice(1) : configured;
+    dir = expanded.startsWith('/') ? expanded : `${top}/${expanded}`;
+  }
+  // One listing (none: no hooks), then access(X_OK) only for the hooks it names.
+  let present: Set<string>;
+  try { present = new Set((await ctx.vfs.readdir(normalizeVfsPath(dir))).map((entry) => entry.name)); } catch { return null; }
+  for (const hook of hooks) {
+    if (!present.has(hook)) continue;
+    try { await ctx.vfs.access(normalizeVfsPath(`${dir}/${hook}`), X_OK); } catch { continue; }
+    return hook;
+  }
+  return null;
+}
+
+/** Refuse, before any effect, a command whose hooks (COMMAND_HOOKS) the repository makes executable. */
 async function assertNoHooks(
   ctx: Ctx,
-  git: Pick<GitLibrary, 'getConfig'>,
-  fs: Parameters<GitLibrary['getConfig']>[0]['fs'],
+  git: Pick<CfGit, 'getConfig'>,
+  fs: GitFs,
   repo: GitRepo,
   sub: string,
 ): Promise<void> {
   const hooks = COMMAND_HOOKS[sub];
   if (hooks === undefined) return;
-  let configured: unknown;
-  try { configured = await git.getConfig({ fs, gitdir: repo.gitdir, path: 'core.hooksPath' }); } catch { configured = undefined; }
-  let dir = `${repo.gitdir}/hooks`;
-  if (typeof configured === 'string' && configured !== '') {
-    const home = ctx.env.HOME ?? '';
-    const expanded = configured === '~' ? home : configured.startsWith('~/') ? home + configured.slice(1) : configured;
-    dir = expanded.startsWith('/') ? expanded : `${repo.worktree ?? repo.gitdir}/${expanded}`;
-  }
-  // One listing (none: no hooks), then access(X_OK) only for the command's hooks it names.
-  let present: Set<string>;
-  try { present = new Set((await ctx.vfs.readdir(normalizeVfsPath(dir))).map((entry) => entry.name)); } catch { return; }
-  for (const hook of hooks) {
-    if (!present.has(hook)) continue;
-    try { await ctx.vfs.access(normalizeVfsPath(`${dir}/${hook}`), X_OK); } catch { continue; }
-    throw new UnsupportedGitOperation(`fatal: git ${sub} with a ${hook} hook is not supported here\n`, 128);
-  }
+  const hook = await executableHook(ctx, git, fs, repo.gitdir, repo.worktree ?? repo.gitdir, hooks);
+  if (hook !== null) throw new UnsupportedGitOperation(`fatal: git ${sub} with a ${hook} hook is not supported here\n`, 128);
 }
 
 async function assertRepositoryImplemented(
@@ -2614,7 +2628,7 @@ async function diffCommand(
     : revs.length ? { kind: 'tree', tree: await treeOf(wrepo.store, revs[0]), cached: false } : { kind: 'index' };
   const pending = await changedPairs(wrepo, dc, base, repoPaths(pathArgs, ctx.cwd, root), ctx.stderr);
   // git diff writes back the stat it found stale on files whose content had not changed.
-  await wrepo.updateIndexIfAble(dc);
+  await wrepo.updateIndexIfAble(dc, async () => await executableHook(ctx, git, fs, gitdir, root, ['post-index-change']) !== null);
   // The blobs this diff reads, fetched together where a partial clone lacks them (git's diff_queued_diff_prefetch).
   if ((output.format === 'patch' || output.format === 'stat' || minimumScore !== null) && await partial(gitdir)) {
     await wrepo.store.prefetch(pending.storeOids());
@@ -2741,7 +2755,7 @@ async function statusCommand(ctx: Ctx, git: CfGit, vfs: ProjectFs, fs: GitFs, pa
     renames,
   });
   for (const line of status.errors) await ctx.stderr.write(`${line}\n`);
-  await wrepo.updateIndexIfAble(dc);
+  await wrepo.updateIndexIfAble(dc, async () => await executableHook(ctx, git, fs, repo.gitdir, root, ['post-index-change']) !== null);
   const prefix = repo.prefix ? `${repo.prefix}/` : '';
   // Lines go out as they are made, 64 KiB at a time: a status of every file is never one string.
   let out = '';

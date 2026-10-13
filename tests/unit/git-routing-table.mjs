@@ -14,7 +14,9 @@
 //   - a command whose hooks (githooks(5)) the repository makes executable
 //     is real git's: the built-in runs no hook. Where git looks for them
 //     (core.hooksPath, a relative one from the worktree's top) is honored,
-//     and a hook that is not executable is not run by git either.
+//     and a hook that is not executable is not run by git either. status
+//     and diff, which write an index only if able, stay the built-in's and
+//     keep no refresh where writing it would run post-index-change.
 
 import assert from 'node:assert/strict';
 
@@ -159,7 +161,7 @@ const HOOKS = [
   ['post-checkout', '.git/hooks', true, null, [['checkout', 'topic'], 'real git'], [['commit', '-m', 'x', '--allow-empty'], 'built-in']],
   ['post-merge', '.git/hooks', true, null, [['merge', 'topic'], 'real git'], [['pull', 'origin', 'main'], 'real git'], [['fetch', 'origin'], 'built-in']],
   ['pre-push', '.git/hooks', true, null, [['push', 'origin', 'main'], 'real git'], [['fetch', 'origin'], 'built-in']],
-  // status and diff look for no hook (their index refresh is on the hot path): the built-in's.
+  // status and diff write an index only if able: the built-in's, writing none (below).
   ['post-index-change', '.git/hooks', true, null, [['add', 'a.txt'], 'real git'], [['reset', 'a.txt'], 'real git'], [['status'], 'built-in'], [['diff'], 'built-in'], [['log'], 'built-in']],
   ['reference-transaction', '.git/hooks', true, null, [['branch', 'more'], 'real git'], [['tag', 'v9'], 'real git'], [['fetch', 'origin'], 'real git'], [['status'], 'built-in'], [['rev-parse', 'HEAD'], 'built-in']],
   ['pre-commit', 'githooks', true, ['core.hooksPath', 'githooks'], [['commit', '-m', 'x', '--allow-empty'], 'real git']],
@@ -176,6 +178,30 @@ for (const [hook, dir, executable, config, ...forms] of HOOKS) {
   }
   user.unlink(path);
   if (config) user.writeFile('home/user/repo/.git/config', user.readFileString('home/user/repo/.git/config').replace(`[core]\n\thooksPath = ${config[1]}\n`, ''));
+}
+// The refresh a status or diff writes back runs post-index-change in git:
+// where that hook is executable the built-in keeps none, as git keeps none
+// it cannot lock, and so runs no hook. Without it, the refresh is kept.
+const index = 'home/user/repo/.git/index';
+const indexChange = 'home/user/repo/.git/hooks/post-index-change';
+let later = Date.now() + 60_000;
+// a.txt's stat moves on, its content does not: the refresh is due.
+const touch = () => { later += 1000; user.utimes('home/user/repo/a.txt', later, later); };
+assert.equal(await engine(['add', 'a.txt']), 'built-in');
+user.writeFile(indexChange, '#!/bin/sh\nexit 0\n');
+user.chmod(indexChange, 0o755);
+for (const words of [['status'], ['diff']]) {
+  const before = user.readFile(index);
+  touch();
+  if (await engine(words) !== 'built-in') wrong.push(`built-in expected with an executable post-index-change: git ${words.join(' ')}`);
+  else if (Buffer.compare(user.readFile(index), before) !== 0) wrong.push(`git ${words.join(' ')} wrote the index with an executable post-index-change`);
+}
+user.unlink(indexChange);
+for (const words of [['status'], ['diff']]) {
+  const before = user.readFile(index);
+  touch();
+  assert.equal(await engine(words), 'built-in');
+  if (Buffer.compare(user.readFile(index), before) === 0) wrong.push(`git ${words.join(' ')} kept no refresh, with no hook`);
 }
 assert.deepEqual(wrong, [], wrong.join('\n'));
 console.log(`git-routing-table: ${BUILT_IN.length} forms built-in, ${REAL_GIT.length} real git, ${HOOKS.length} hook cases`);

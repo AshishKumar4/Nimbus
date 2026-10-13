@@ -10,7 +10,11 @@ published independently in the `@nimbus-sh` npm scope.
   built-in git does not fully implement (for example `log --graph`,
   `commit` with paths, `branch -d`'s merged check, `push -u`, `rebase`,
   `stash`, a SHA-256 repository); `status`, `add`, `diff`, a plain `commit`
-  and `checkout` stay on the built-in git. Remote helpers (`git-remote-http`
+  and `checkout` stay on the built-in git. A command whose hooks the
+  repository makes executable, or whose message comes from an editor, runs
+  on real git, since the built-in runs neither; `status` and `diff` stay
+  built-in and do not write back their index refresh where a
+  `post-index-change` hook is executable. Remote helpers (`git-remote-http`
   and `git-remote-https`), hooks and aliases work through the session's one
   child-process broker. On a host whose engine cannot suspend WebAssembly
   (Node 22), a git child process is refused by name instead.
