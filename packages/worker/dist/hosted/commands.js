@@ -134,7 +134,7 @@ export async function registerHostedCommands(self, workspace) {
                     throw error;
                 }
             },
-        }, createRemoteEngine({ ctx: self.ctx, env: self.env, pid: ctx.pid, network: workspace.network, signal: ctx.signal }), createLocalGit(self._ensureFacetProcessManager(), ctx));
+        }, createRemoteEngine({ ctx: self.ctx, env: self.env, pid: ctx.pid, network: workspace.network, signal: ctx.signal }), createLocalGit(self._ensureChildProcessManager(), ctx));
     };
     registry.registerBuiltin('git-remote-http', remoteHelper);
     registry.registerBuiltin('git-remote-https', remoteHelper);

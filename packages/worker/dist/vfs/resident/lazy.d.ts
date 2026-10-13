@@ -11,6 +11,7 @@ import type { Admission } from './admission.js';
 import type { Cells } from './cells.js';
 import type { Coherence } from './coherence.js';
 import { type Namespace } from './namespace.js';
+import type { Pages } from './pages.js';
 import type { ResidentCred } from './permissions.js';
 import type { ResidentSupervisor } from './supervisor.js';
 import type { Sync } from './sync.js';
@@ -19,5 +20,5 @@ export interface Lazy {
     bootLazy(supervisor: ResidentSupervisor | null | undefined): Promise<boolean>;
     namespaceView(supervisor: ResidentSupervisor, device: number, cred: ResidentCred): ResidentNamespace;
 }
-export declare function createLazy(coherence: Coherence, admission: Admission, namespace: Namespace, cells: Cells, transport: Transport, sync: Sync): Lazy;
+export declare function createLazy(coherence: Coherence, admission: Admission, namespace: Namespace, cells: Cells, transport: Transport, sync: Sync, pages: Pages): Lazy;
 //# sourceMappingURL=lazy.d.ts.map

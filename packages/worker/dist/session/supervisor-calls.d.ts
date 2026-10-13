@@ -235,6 +235,7 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
     /** N18: `bytes` more for this process's facet store, reporting what it measures. */
     fsStorageGrant(facet: string, bytes: number, databaseSize: number): Promise<{
         granted: number;
+        available?: number;
     }>;
     fsList(after?: string | null, limit?: number | null): Promise<VfsListPage>;
     /** Everything beneath directory `root`, in one page and one revision; E2BIG past `maxEntries` (session/rpc.ts _rpcFsListTree). */

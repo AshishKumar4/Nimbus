@@ -52,6 +52,7 @@ declare const SupervisorRPC_base: (abstract new (...args: any[]) => {
     fsRevision(path?: string): Promise<number>;
     fsStorageGrant(facet: string, bytes: number, databaseSize: number): Promise<{
         granted: number;
+        available?: number;
     }>;
     fsList(after?: string | null, limit?: number | null): Promise<import("@nimbus-sh/core/runtime/os-contracts.js").VfsListPage>;
     fsListTree(root: string, maxEntries: number): Promise<import("@nimbus-sh/core/runtime/os-contracts.js").VfsListTree>;

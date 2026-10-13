@@ -38,6 +38,9 @@ var __nimbusResidentModule = (() => {
   var SUPERVISOR_HEAP_CEILING_BYTES = 64 * 1024 * 1024;
   var FACET_OWN_WRITE_MEMORY_BYTES = 32 * 1024 * 1024;
   var WASI_RESIDENT_STORE_BYTES = 32 * 1024 * 1024;
+  var RESIDENT_PAGE_BYTES = 64 * 1024;
+  var RESIDENT_PAGE_CACHE_BYTES = 512 * 1024 * 1024;
+  var RESIDENT_PAGE_CACHE_FREE_SHARE = 0.25;
   var SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES = 40 * 1024 * 1024;
   var SUPERVISOR_READ_RESERVE_BYTES = 1024 * 1024;
   var MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES = 8 * 1024 * 1024;
@@ -132,6 +135,7 @@ var __nimbusResidentModule = (() => {
     let namespaceOverlayBytes = 0;
     let namespaceReserveBytes = 0;
     let pinnedBytes = 0;
+    let available = null;
     const reservations = /* @__PURE__ */ new Map();
     let reservedBytes = 0;
     const reserveQueue = [];
@@ -191,6 +195,7 @@ var __nimbusResidentModule = (() => {
         try {
           const answer = await asked.fsStorageGrant(named, want, dbBytes());
           cap += Number(answer && answer.granted) || 0;
+          if (answer && typeof answer.available === "number") available = answer.available;
         } catch {
         }
       })().finally(() => {
@@ -227,12 +232,16 @@ var __nimbusResidentModule = (() => {
       setStorage(storage, given) {
         supervisor = given || null;
         const allowance = storage;
+        available = allowance && typeof allowance.available === "number" ? allowance.available : null;
         if (!allowance || typeof allowance.facet !== "string" || typeof allowance.grant !== "number") return;
         facet = allowance.facet;
         cap = dbBytes() + allowance.grant;
       },
       storageCap() {
         return cap;
+      },
+      get available() {
+        return available;
       },
       pin(bytes) {
         if (!inHeap || !fits(bytes, false)) return false;
@@ -294,7 +303,8 @@ var __nimbusResidentModule = (() => {
         const asked = supervisor;
         if (cap === null || facet === null || !asked || typeof asked.fsStorageGrant !== "function") return;
         try {
-          await asked.fsStorageGrant(facet, 0, dbBytes());
+          const answer = await asked.fsStorageGrant(facet, 0, dbBytes());
+          if (answer && typeof answer.available === "number") available = answer.available;
         } catch {
         }
       }
@@ -325,7 +335,7 @@ var __nimbusResidentModule = (() => {
   }
 
   // src/vfs/resident/tables.ts
-  var RESIDENT_SCHEMA = "3";
+  var RESIDENT_SCHEMA = "4";
   var RK_TEXT = 0;
   var RK_BINARY = 1;
   var RK_DENIED = 2;
@@ -344,7 +354,7 @@ var __nimbusResidentModule = (() => {
     for (const _row of sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'meta'")) schema = "";
     if (schema !== null) for (const row of sql.exec("SELECT v FROM meta WHERE k = 'schema'")) schema = String(row.v);
     if (schema !== RESIDENT_SCHEMA) {
-      for (const table of ["chunk", "file", "ns", "meta"]) sql.exec("DROP TABLE IF EXISTS " + table);
+      for (const table of ["chunk", "file", "ns", "meta", "page"]) sql.exec("DROP TABLE IF EXISTS " + table);
     }
     sql.exec(
       "CREATE TABLE IF NOT EXISTS file (path TEXT PRIMARY KEY, kind INTEGER NOT NULL, size INTEGER NOT NULL, chunks INTEGER NOT NULL, rev INTEGER NOT NULL CHECK (rev >= -1), ckey TEXT)"
@@ -353,6 +363,10 @@ var __nimbusResidentModule = (() => {
     sql.exec(
       "CREATE TABLE IF NOT EXISTS chunk (path TEXT NOT NULL, part INTEGER NOT NULL, txt TEXT, bin BLOB, PRIMARY KEY (path, part))"
     );
+    sql.exec(
+      "CREATE TABLE IF NOT EXISTS page (path TEXT NOT NULL, rev INTEGER NOT NULL, part INTEGER NOT NULL, bin BLOB NOT NULL, used INTEGER NOT NULL, PRIMARY KEY (path, rev, part)) WITHOUT ROWID"
+    );
+    sql.exec("CREATE INDEX IF NOT EXISTS page_used ON page (used)");
     sql.exec("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)");
     sql.exec("INSERT OR REPLACE INTO meta (k, v) VALUES ('schema', ?)", RESIDENT_SCHEMA);
     sql.exec(
@@ -469,7 +483,33 @@ var __nimbusResidentModule = (() => {
         sql.exec("DELETE FROM chunk");
         sql.exec("DELETE FROM file");
         sql.exec("DELETE FROM ns");
-        sql.exec("DELETE FROM meta");
+        sql.exec("DELETE FROM meta WHERE k <> 'schema'");
+        sql.exec("DELETE FROM page");
+      },
+      pageGet(path, rev, part) {
+        return rowOf(sql.exec("SELECT bin FROM page WHERE path = ? AND rev = ? AND part = ?", path, rev, part))?.bin;
+      },
+      pageUse(path, rev, part, used) {
+        sql.exec("UPDATE page SET used = ? WHERE path = ? AND rev = ? AND part = ?", used, path, rev, part);
+      },
+      pagePut(path, rev, part, bin, used) {
+        const had = first(sql.exec("SELECT length(bin) AS n FROM page WHERE path = ? AND rev = ? AND part = ?", path, rev, part));
+        sql.exec("INSERT OR REPLACE INTO page (path, rev, part, bin, used) VALUES (?, ?, ?, ?, ?)", path, rev, part, bin, used);
+        return had === void 0 ? 0 : num(had.n);
+      },
+      pageDelete(path, rev, part) {
+        sql.exec("DELETE FROM page WHERE path = ? AND rev = ? AND part = ?", path, rev, part);
+      },
+      pageOldest(limit) {
+        return rowsOf(sql.exec("SELECT path, rev, part, length(bin) AS size FROM page ORDER BY used, path, rev, part LIMIT ?", limit));
+      },
+      pageBytes() {
+        const row = first(sql.exec("SELECT coalesce(sum(length(bin)), 0) AS n FROM page"));
+        return row === void 0 ? 0 : num(row.n);
+      },
+      pageMaxUsed() {
+        const row = first(sql.exec("SELECT coalesce(max(used), 0) AS n FROM page"));
+        return row === void 0 ? 0 : num(row.n);
       },
       nsPut(parent, name, kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target, dev, nlink) {
         sql.exec(
@@ -535,6 +575,8 @@ var __nimbusResidentModule = (() => {
     const meta = /* @__PURE__ */ new Map();
     const ns = /* @__PURE__ */ new Map();
     const byKey = /* @__PURE__ */ new Map();
+    const pages = /* @__PURE__ */ new Map();
+    const pageKey = (path, rev, part) => path + "\0" + rev + "\0" + part;
     let sorted = null;
     let used = 0;
     let names = 0;
@@ -781,10 +823,48 @@ var __nimbusResidentModule = (() => {
         meta.clear();
         ns.clear();
         byKey.clear();
+        pages.clear();
         sorted = null;
         used = 0;
         names = 0;
         namespaceBytes = 0;
+      },
+      pageGet(path, rev, part) {
+        return pages.get(pageKey(path, rev, part))?.bin.slice();
+      },
+      pageUse(path, rev, part, stamp) {
+        const row = pages.get(pageKey(path, rev, part));
+        if (row !== void 0) row.used = stamp;
+      },
+      pagePut(path, rev, part, bin, stamp) {
+        const key = pageKey(path, rev, part);
+        const had = pages.get(key);
+        const bytes = residentBytes(bin).slice();
+        if (had !== void 0) used -= RESIDENT_ROW_BYTES + had.bin.byteLength;
+        pages.set(key, { path, rev, part, bin: bytes, used: stamp });
+        used += RESIDENT_ROW_BYTES + bytes.byteLength;
+        return had === void 0 ? 0 : had.bin.byteLength;
+      },
+      pageDelete(path, rev, part) {
+        const key = pageKey(path, rev, part);
+        const had = pages.get(key);
+        if (had === void 0) return;
+        pages.delete(key);
+        used -= RESIDENT_ROW_BYTES + had.bin.byteLength;
+      },
+      pageOldest(limit) {
+        const rows = [...pages.values()].sort((a, b) => a.used - b.used || cmp(a.path, b.path) || a.rev - b.rev || a.part - b.part);
+        return rows.slice(0, limit).map((row) => ({ path: row.path, rev: row.rev, part: row.part, size: row.bin.byteLength }));
+      },
+      pageBytes() {
+        let n = 0;
+        for (const row of pages.values()) n += row.bin.byteLength;
+        return n;
+      },
+      pageMaxUsed() {
+        let n = 0;
+        for (const row of pages.values()) n = Math.max(n, row.used);
+        return n;
       },
       nsPut(parent, name, kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target, dev, nlink) {
         let dir = ns.get(parent);
@@ -1781,10 +1861,11 @@ var __nimbusResidentModule = (() => {
 
   // src/vfs/resident/lazy.ts
   var LOOKUP_CONTENT_BYTES = 256 * 1024;
-  function createLazy(coherence, admission, namespace, cells, transport, sync) {
+  function createLazy(coherence, admission, namespace, cells, transport, sync, pages) {
     const beginLazy = (t, cursor) => {
       namespace.beginLazy();
       t.clear();
+      pages.reset();
       cells.dropHeld(true);
       coherence.writeCursor(t, cursor);
       coherence.unseal();
@@ -1868,7 +1949,11 @@ var __nimbusResidentModule = (() => {
           list: (k) => transport.listDirectory(supervisor, k),
           lookup: (keys, content) => transport.lookupKeys(supervisor, keys, content ? LOOKUP_CONTENT_BYTES : 0),
           listTree: (k) => transport.listSubtree(supervisor, k),
-          content(k) {
+          content(k, revision) {
+            if (revision !== void 0) {
+              const stamped = cells.provenance(k);
+              if (stamped !== void 0 && stamped !== RK_OWN_WRITE && stamped < revision) return void 0;
+            }
             const cell = cells.get(k);
             if (cell === void 0 || typeof cell === "object" && "error" in cell) return void 0;
             return typeof cell === "string" ? encoder.encode(cell) : cell;
@@ -1877,14 +1962,116 @@ var __nimbusResidentModule = (() => {
             const cursor = coherence.cursor();
             if (cursor === null) return null;
             await transport.fetchFiles(supervisor, [{ path: k, size: entry.size, rev: entry.revision, epoch: cursor.epoch, ckey: null }]);
-            const bytes = view.content(k);
+            const bytes = view.content(k, entry.revision);
             return bytes === void 0 ? null : bytes;
           },
+          pages: (k, rev, size, first, last) => pages.read(supervisor, k, rev, size, first, last),
+          // Many files in batched round trips (read-ahead, core runtime/wasi/resident-filesystem.ts).
+          async fillMany(files) {
+            const cursor = coherence.cursor();
+            if (cursor === null || files.length === 0) return;
+            await transport.fetchFiles(supervisor, files.map(([k, entry]) => ({ path: k, size: entry.size, rev: entry.revision, epoch: cursor.epoch, ckey: null })));
+          },
           barrier: () => lazyBarrier(supervisor),
+          cursor: () => coherence.cursor(),
+          // An ACQUIRE answer the caller took itself, applied as the barrier applies one.
+          async admit(answer) {
+            if (!answer || typeof answer.epoch !== "string" || typeof answer.rev !== "number") return false;
+            const before = coherence.cursor();
+            if (before && answer.epoch === before.epoch && answer.rev < before.rev) return false;
+            await sync.applyAcquire(supervisor, answer);
+            if (!answer.poison && namespace.ready()) return true;
+            beginLazy(coherence.tables("admit"), { epoch: answer.epoch, rev: answer.rev });
+            return false;
+          },
           reserve: (bytes) => admission.pin(bytes),
           release: (bytes) => admission.unpin(bytes)
         };
         return view;
+      }
+    };
+  }
+
+  // src/vfs/resident/pages.ts
+  function createPages(coherence, admission) {
+    let clock = null;
+    let total = null;
+    const held = () => total ??= coherence.require().pageBytes();
+    const tick = () => {
+      clock ??= coherence.require().pageMaxUsed();
+      return ++clock;
+    };
+    const bound = () => {
+      const half = admission.inHeap && admission.cap !== null ? Math.floor(admission.cap / 2) : Infinity;
+      const share = admission.available === null ? Infinity : Math.floor(RESIDENT_PAGE_CACHE_FREE_SHARE * (held() + admission.available));
+      return Math.min(RESIDENT_PAGE_CACHE_BYTES, half, share);
+    };
+    const get = (path, rev, part) => {
+      const t = coherence.require();
+      const bin = t.pageGet(path, rev, part);
+      if (bin === void 0) return void 0;
+      t.pageUse(path, rev, part, tick());
+      return residentBytes(bin);
+    };
+    const put = (path, rev, part, bytes) => {
+      const t = coherence.require();
+      const size = bytes.byteLength;
+      const limit = bound();
+      if (size > limit) return false;
+      while (held() + size > limit) {
+        const oldest = t.pageOldest(16);
+        if (oldest.length === 0) break;
+        for (const row of oldest) {
+          t.pageDelete(row.path, row.rev, row.part);
+          total = held() - row.size;
+          if (total + size <= limit) break;
+        }
+      }
+      if (!admission.fits(size + RESIDENT_ROW_BYTES, false)) return false;
+      const replaced = t.pagePut(path, rev, part, bytes, tick());
+      total = held() + size - replaced;
+      return true;
+    };
+    return {
+      async read(supervisor, k, rev, size, first, last) {
+        const cursor = coherence.cursor();
+        if (cursor === null || typeof supervisor.fsReadBatch !== "function") return null;
+        const out = new Array(last - first + 1);
+        const missing = [];
+        for (let part = first; part <= last; part++) {
+          const page = get(k, rev, part);
+          if (page !== void 0) out[part - first] = page;
+          else missing.push(part);
+        }
+        const perBatch = Math.max(1, Math.min(FS_READ_BATCH_PATH_LIMIT, Math.floor(FS_READ_BATCH_REQUEST_BYTES / RESIDENT_PAGE_BYTES)));
+        for (let at = 0; at < missing.length; at += perBatch) {
+          const batch = missing.slice(at, at + perBatch);
+          const ranges = batch.map((part) => {
+            const offset = part * RESIDENT_PAGE_BYTES;
+            return { path: "/" + k, offset, length: Math.min(RESIDENT_PAGE_BYTES, Math.max(0, size - offset)), expectedEpoch: cursor.epoch, expectedRevision: rev };
+          });
+          await admission.ensureRoom(ranges.reduce((n, r) => n + r.length + RESIDENT_ROW_BYTES, 0));
+          let results;
+          try {
+            results = await supervisor.fsReadBatch(ranges);
+          } catch {
+            return null;
+          }
+          if (!Array.isArray(results) || results.length !== ranges.length) return null;
+          for (let i = 0; i < batch.length; i++) {
+            const entry = results[i];
+            if (!entry || entry.error || entry.bytes == null) return null;
+            const bytes = residentBytes(entry.bytes);
+            if (bytes.byteLength !== ranges[i].length) return null;
+            out[batch[i] - first] = bytes;
+            put(k, rev, batch[i], bytes);
+          }
+        }
+        return { pages: out, fetched: missing.length };
+      },
+      reset() {
+        clock = null;
+        total = null;
       }
     };
   }
@@ -1962,6 +2149,11 @@ var __nimbusResidentModule = (() => {
       namespace.deleteTree(t, dir, false);
       for (const entry of seen) namespace.put(t, nsKey(entry.path), entry.stat, entry.rev, entry.linkTarget, entry.unlisted ?? null);
     };
+    const outdated = (t, path, rev) => {
+      const [parent, name] = nsSplit(path);
+      const listed = t.nsGet(parent, name);
+      return listed !== void 0 && Number(listed.rev) > rev;
+    };
     const fetchFiles = async (supervisor, wantedFiles) => {
       const t = coherence.tables("fetchFiles");
       const requested = wantedFiles.length;
@@ -2004,6 +2196,7 @@ var __nimbusResidentModule = (() => {
       const landed = /* @__PURE__ */ new Map();
       let filled = 0, failed = 0, fetchedBytes = 0;
       const failedPaths = /* @__PURE__ */ new Set();
+      const revOf = new Map(ranges.map((range) => [range.path, range.rev]));
       for (let at = 0; at < ranges.length; ) {
         const batch = [];
         let bytes = 0;
@@ -2045,6 +2238,10 @@ var __nimbusResidentModule = (() => {
             failedPaths.add(range.path);
             continue;
           }
+          if (outdated(t, range.path, range.rev)) {
+            failedPaths.add(range.path);
+            continue;
+          }
           fetchedBytes += chunk.byteLength;
           if (!cells.putChunk(t, range.path, range.part, chunk)) {
             failedPaths.add(range.path);
@@ -2060,11 +2257,14 @@ var __nimbusResidentModule = (() => {
       }
       for (const path of failedPaths) {
         failed++;
+        const held = t.fileRev(path);
+        const rev = revOf.get(path);
+        if (held !== void 0 && (held === RK_OWN_WRITE || rev !== void 0 && held >= rev)) continue;
         t.chunkDelete(path);
         t.fileDelete(path);
       }
       for (const file of later) {
-        if (cells.copyByKey(t, file.path, file.ckey, file.rev)) copied++;
+        if (!outdated(t, file.path, file.rev) && cells.copyByKey(t, file.path, file.ckey, file.rev)) copied++;
         else failed++;
       }
       if (ranges.length > 0) await admission.reportSize();
@@ -2589,11 +2789,13 @@ var __nimbusResidentModule = (() => {
     const cells = createCells(coherence, admission, namespace, observeRead);
     const transport = createTransport(coherence, admission, namespace, cells);
     const sync = createSync(coherence, admission, namespace, cells, transport);
-    const lazy = createLazy(coherence, admission, namespace, cells, transport, sync);
+    const pages = createPages(coherence, admission);
+    const lazy = createLazy(coherence, admission, namespace, cells, transport, sync, pages);
     const bindTables = (t, heap) => {
       t.dropOwn();
       coherence.bind(t, heap);
       namespace.bind(t);
+      pages.reset();
     };
     return {
       bundle: cells.bundle,
@@ -2618,6 +2820,7 @@ var __nimbusResidentModule = (() => {
       cells,
       transport,
       sync,
+      pages,
       lazy
     };
   }
