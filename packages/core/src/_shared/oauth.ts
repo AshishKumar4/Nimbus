@@ -85,8 +85,14 @@ const CloudflareOAuthTokenResponseSchema = z.object({
 }).passthrough();
 export type NimbusCloudflareOAuthTokenResponse = z.infer<typeof CloudflareOAuthTokenResponseSchema>;
 const CloudflareAccountsResponseSchema = z.object({
-  result: z.array(z.object({ id: z.string(), name: z.string().optional() }).passthrough()).default([]),
-}).merge(CloudflareErrorPayloadSchema);
+  result: z.array(z.object({ id: z.string(), name: z.string().optional() }).passthrough()),
+});
+
+class CloudflareAccountLookupError extends Error {
+  constructor(readonly status: number, detail: string, options?: ErrorOptions) {
+    super(`Cloudflare account lookup failed (HTTP ${status}): ${detail}`, options);
+  }
+}
 
 export async function requestNimbusCloudflareOAuthToken(
   config: { oauthClientId: string; oauthClientSecret?: string }, fields: Record<string, string>,
@@ -97,7 +103,7 @@ export async function requestNimbusCloudflareOAuthToken(
   if (config.oauthClientSecret) headers.set('Authorization', 'Basic ' + base64Utf8(`${config.oauthClientId}:${config.oauthClientSecret}`));
   const response = await fetch(NIMBUS_CF_OAUTH_TOKEN_URL, { method: 'POST', headers, body });
   const payload = await responseJson(response);
-  if (!response.ok) throw new Error(`Cloudflare token exchange failed: ${cloudflareErrorDetail(payload, response.statusText)}`);
+  if (!response.ok) throw new Error(`Cloudflare token exchange failed: ${cloudflareErrorDetail(payload, response.statusText).detail}`);
   const parsed = CloudflareOAuthTokenResponseSchema.safeParse(payload);
   if (!parsed.success) throw new Error('Cloudflare token exchange returned an invalid OAuth token payload');
   return parsed.data;
@@ -106,16 +112,23 @@ export async function requestNimbusCloudflareOAuthToken(
 export async function fetchNimbusCloudflareUserInfo(accessToken: string): Promise<unknown> {
   const response = await fetch(NIMBUS_CF_OAUTH_USERINFO_URL, { headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' } });
   const payload = await responseJson(response);
-  if (!response.ok) throw new Error(cloudflareErrorDetail(payload, 'userinfo request failed'));
+  if (!response.ok) throw new Error(cloudflareErrorDetail(payload, 'userinfo request failed').detail);
   return payload;
 }
 
 export async function fetchNimbusCloudflareAccounts(accessToken: string): Promise<NimbusCloudflareAccount[]> {
   const response = await fetch(`${NIMBUS_CLOUDFLARE_API}/accounts`, { headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' } });
-  const payload = await responseJson(response);
-  const parsed = CloudflareAccountsResponseSchema.safeParse(payload);
-  if (!response.ok) throw new Error(cloudflareErrorDetail(payload, 'accounts request failed'));
-  return (parsed.success ? parsed.data.result : []).map((account) => ({ id: account.id, name: account.name || account.id }))
+  const parsed = await response.json().then((payload) => {
+    if (!response.ok) {
+      const failure = cloudflareErrorDetail(payload, response.statusText || 'accounts request failed');
+      throw new CloudflareAccountLookupError(response.status, failure.detail, { cause: failure.cause });
+    }
+    return CloudflareAccountsResponseSchema.safeParse(payload);
+  }, (cause) => {
+    throw new CloudflareAccountLookupError(response.status, 'response is not valid JSON', { cause });
+  });
+  if (!parsed.success) throw new CloudflareAccountLookupError(response.status, 'response has an invalid account result', { cause: parsed.error });
+  return parsed.data.result.map((account) => ({ id: account.id, name: account.name?.trim() || account.id }))
     .filter((account) => isNimbusCloudflareAccountId(account.id));
 }
 
@@ -145,7 +158,10 @@ async function responseJson(response: Response): Promise<unknown> {
   return response.json().catch(() => null);
 }
 
-function cloudflareErrorDetail(payload: unknown, fallback: string): string {
+function cloudflareErrorDetail(payload: unknown, fallback: string) {
   const parsed = CloudflareErrorPayloadSchema.safeParse(payload);
-  return parsed.success ? parsed.data.error_description || parsed.data.error || parsed.data.errors?.find((error) => error.message)?.message || fallback : fallback;
+  return {
+    detail: parsed.success ? parsed.data.error_description || parsed.data.error || parsed.data.errors?.find((error) => error.message)?.message || fallback : fallback,
+    cause: parsed.success ? undefined : parsed.error,
+  };
 }

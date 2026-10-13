@@ -22,7 +22,7 @@ import { isWebSocketUpgradeRequest } from '@nimbus-sh/core/_shared/websocket-upg
 import { z } from 'zod/v4';
 import type { HostRoute } from './composition.js';
 import { ProcessHostLost, type ResidentBootSpec, type ResidentDiskReader, type ResidentSupervisorProps } from './process-fabric.js';
-import { bindingSupervisor, supervisorBindingProps } from './supervisor-props.js';
+import { infrastructureSupervisor, infrastructureSupervisorProps, supervisorBindingProps, type InfrastructureSupervisorProps } from './supervisor-props.js';
 import { withResolvers } from './turn-budget.js';
 import { processes, abortFacet, deleteFacetStorage, type ResidentFacet, type ResidentFacetEnv } from './workerd-facet-host.js';
 import { HandledRequests, HOST_INCARNATION_HEADER } from './host-activity.js';
@@ -203,7 +203,10 @@ interface HostingRecord {
  * supervisor RPC carries and no substrate should be able to read more than the
  * process it hosts. Boot-spec members are reachable under it by construction:
  * the image store is kernel-owned mode 0644 precisely so any process can read
- * it, and the installed runtime images are world-readable too.
+ * it, and the installed runtime images are world-readable too. The reads are
+ * this peer's, not the process's run's, so they go through a binding no run
+ * acts through: a run whose boot is stopped and replayed (stop/replay) is
+ * judged by what it received itself, and it received none of these.
  */
 const RESIDENT_READ_RANGE_BYTES = 4 * 1024 * 1024;
 
@@ -212,8 +215,8 @@ interface SupervisorFileReader {
   fsReadRangeUncached(path: string, offset: number, length: number): Promise<Uint8Array | null>;
 }
 
-function peerDiskReader(supervisor: ResidentSupervisorProps): ResidentDiskReader {
-  const fs = bindingSupervisor(supervisor) as SupervisorFileReader;
+function peerDiskReader(reads: InfrastructureSupervisorProps): ResidentDiskReader {
+  const fs = infrastructureSupervisor(reads) as SupervisorFileReader;
   return { readFile: (path) => readSupervisorFile(fs, path) };
 }
 
@@ -280,13 +283,17 @@ export class PeerHost {
     const spec = this.options.bootSpec.parse(boot);
     const { workerKey } = hostOpts;
     if (this.records.get(workerKey)?.closed === false) throw new Error('Nimbus: the peer already owns this process');
+    const network = hostOpts.network === undefined ? ISOLATE_NETWORK : workspaceNetwork(hostOpts.network.egress, hostOpts.network.id);
     const supervisor: ResidentSupervisorProps = {
       ...supervisorBindingProps(this.ctx, hostOpts.pid, {
-        writerId: hostOpts.writerId, doId: hostOpts.coordinatorDoId, route: hostOpts.route,
-        network: hostOpts.network === undefined ? ISOLATE_NETWORK : workspaceNetwork(hostOpts.network.egress, hostOpts.network.id),
+        writerId: hostOpts.writerId, doId: hostOpts.coordinatorDoId, route: hostOpts.route, network,
       }),
       ...(hostOpts.hostIncarnation === undefined ? {} : { hostIncarnation: hostOpts.hostIncarnation }),
     };
+    // This peer's own reads for the process (its boot images): the process's pid, way back and network, no run.
+    const reads = infrastructureSupervisorProps(this.ctx, hostOpts.pid, {
+      doId: hostOpts.coordinatorDoId, route: supervisor.route, network: network.forProcess(hostOpts.pid),
+    });
 
     const opened = withResolvers<ResidentFacet>();
     const started = withResolvers<unknown>();
@@ -335,7 +342,7 @@ export class PeerHost {
       if (record.closed) throw new Error('Nimbus: the peer process was cancelled before opening');
       let located: Promise<void> | undefined;
       facet = processes(this.ctx, this.env).spawn(
-        () => peerDiskReader(supervisor),
+        () => peerDiskReader(reads),
         supervisor,
         {
           pid: hostOpts.pid,

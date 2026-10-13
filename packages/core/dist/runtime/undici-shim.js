@@ -56,8 +56,9 @@
  *
  * Runtime scope dependencies (in scope where the shim block is interpolated):
  *   - globalThis.fetch — ALREADY patched by node-shims.ts (loopback + AI egress)
- *   - __streamMod (Readable.fromWeb, pipeline), __eventsMod, env
+ *   - __streamMod (Readable.fromWeb, pipeline), __eventsMod, __BufferMod, env
  */
+import { HTTP_REDIRECT_POLICY_SOURCE } from './compiled-bodies.generated.js';
 /**
  * The names the shim's module has beside \`default\`: what an ES module may
  * import from 'undici' (worker facets/esm-stage.ts builds its facade with
@@ -78,6 +79,7 @@ export const UNDICI_SHIM_EXPORTS = Object.freeze([
 export function generateUndiciShimCode() {
     return `
 const __undiciMod = (() => {
+  const { isRedirectStatus, applyRedirectPolicy } = ${HTTP_REDIRECT_POLICY_SOURCE};
   // The patched global fetch, captured now. Captured rather than dereferenced
   // per call so that user code doing \`globalThis.fetch = undici.fetch\` — a real
   // pattern — cannot build an infinite delegation loop. This is the binding
@@ -241,10 +243,20 @@ const __undiciMod = (() => {
     if (typeof Blob !== "undefined" && body instanceof Blob) return body;
     if (typeof FormData !== "undefined" && body instanceof FormData) return body;
     if (typeof URLSearchParams !== "undefined" && body instanceof URLSearchParams) return body;
+    // A Web stream is sent as it is produced: its producer may wait for the server.
     if (typeof ReadableStream !== "undefined" && body instanceof ReadableStream) return body;
-    // A Node Readable (or any async iterable) — drain it into the request.
-    if (typeof body[Symbol.asyncIterator] === "function") return collect(body);
+    // A Node Readable or any other iterable: drained into the request.
+    if (typeof body[Symbol.asyncIterator] === "function" || typeof body[Symbol.iterator] === "function") return collect(body);
     throw new errors.InvalidArgumentError("undici: unsupported request body type");
+  };
+
+  /** A hop's body length, as undici checks a Content-Length against it; null for what fetch encodes (FormData, URLSearchParams). */
+  const bodyLength = (body) => {
+    if (body === undefined) return 0;
+    if (typeof body === "string") return __BufferMod.byteLength(body, "utf8");
+    if (body instanceof Uint8Array || body instanceof ArrayBuffer) return body.byteLength;
+    if (typeof Blob !== "undefined" && body instanceof Blob) return body.size;
+    return null;
   };
 
   /**
@@ -304,26 +316,73 @@ const __undiciMod = (() => {
   const request = async (url, options) => {
     const opts = options || {};
     assertInertDispatcher(opts.dispatcher, "request({ dispatcher })");
-    let target = targetUrl(url, opts);
-    const method = String(opts.method || "GET").toUpperCase();
-    const headers = requestHeaders(opts.headers);
-    const body = await requestBody(opts.body);
-    let budget = Number(opts.maxRedirections) || 0;
+    // Node 22's real RedirectHandler is installed only for a nonzero count.
+    // Do not coerce strings/fractions into a different redirect policy.
+    const maxRedirections = opts.maxRedirections || 0;
+    if (maxRedirections && (!Number.isInteger(maxRedirections) || maxRedirections < 0)) {
+      throw new errors.InvalidArgumentError("maxRedirections must be a positive number");
+    }
+    const hop = {
+      url: targetUrl(url, opts),
+      method: String(opts.method || "GET").toUpperCase(),
+      headers: requestHeaders(opts.headers),
+      body: await requestBody(opts.body),
+    };
+    // How undici 6's RedirectHandler sends a body again (lib/handler/redirect-handler.js).
+    // The first request sends the caller's body. A Node stream is marked used
+    // once read, so a redirect after it is not followed. Any other iterable
+    // but a string or a byte view is wrapped: each later request sends the
+    // wrapper, which iterates the body again (an array gives its bytes again,
+    // a spent generator or stream nothing) and is then used, so no redirect
+    // after it is followed until a followed 303 drops the body. A string,
+    // bytes, a Blob, FormData and URLSearchParams are the same every hop.
+    const source = opts.body;
+    const sentOnce = source != null && typeof source.pipe === "function" && typeof source.on === "function";
+    const wrapped = !sentOnce && source != null && typeof source === "object"
+      && !(source instanceof Uint8Array) && !(source instanceof ArrayBuffer)
+      && !(typeof FormData !== "undefined" && source instanceof FormData)
+      && !(typeof URLSearchParams !== "undefined" && source instanceof URLSearchParams)
+      && (typeof source[Symbol.asyncIterator] === "function" || typeof source[Symbol.iterator] === "function");
+    let wrapperUsed = false;
 
     let response;
-    for (;;) {
-      response = await __fetch(target.href, {
-        method,
-        headers,
-        body,
+    for (let followed = 0; ; followed++) {
+      // A socket transport normally synthesizes Host. Fetch's in-process HTTP
+      // route has no wire to do that, so regenerate it here after the policy
+      // removed the previous hop's Host, including on same-origin redirects.
+      if (!hop.headers.has("host")) hop.headers.set("host", hop.url.host);
+      if (followed > 0 && hop.body !== undefined) {
+        // undici refuses a body that is not as long as its Content-Length, a spent one sent again included.
+        const declared = hop.headers.get("content-length");
+        const length = declared === null ? null : bodyLength(hop.body);
+        if (length !== null && Number(declared) !== length) {
+          throw new errors.RequestContentLengthMismatchError("Request body length does not match content-length header");
+        }
+        if (wrapped) wrapperUsed = true;
+      }
+      response = await __fetch(hop.url.href, {
+        method: hop.method,
+        headers: hop.headers,
+        body: hop.body,
         signal: opts.signal || undefined,
         redirect: "manual",
       });
-      if (budget <= 0) break;
+      // undici 6 checks this on every response at the cap, even a final 200.
+      if (maxRedirections > 0 && opts.throwOnMaxRedirect && followed >= maxRedirections) {
+        await response.body?.cancel();
+        throw new Error("max redirects");
+      }
+      const disturbed = hop.body !== undefined && (sentOnce ? __streamMod.isDisturbed(source) : wrapperUsed);
+      if (followed >= maxRedirections || disturbed) break;
       const location = response.headers.get("location");
-      if (response.status < 300 || response.status > 399 || !location) break;
-      budget -= 1;
-      target = new URL(location, target);
+      if (!isRedirectStatus(response.status, "undici") || !location) break;
+      await response.body?.cancel();
+      const next = new URL(location, hop.url);
+      applyRedirectPolicy(hop, response.status, next, "undici");
+      // The wrapper's iteration: a Web stream the first request read is spent, anything else is iterated again.
+      if (hop.body !== undefined && wrapped) {
+        hop.body = typeof ReadableStream !== "undefined" && source instanceof ReadableStream ? new Uint8Array(0) : await collect(source);
+      }
     }
 
     const resHeaders = responseHeaders(response);

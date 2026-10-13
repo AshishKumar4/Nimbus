@@ -47,21 +47,21 @@ export interface ConnectionSocket {
 }
 
 /** The hosting actor's hibernation surface. */
-export interface ConnectionsContext {
-  acceptWebSocket(ws: ConnectionSocket, tags?: string[]): void;
-  getWebSockets(tag?: string): ConnectionSocket[];
-  getTags(ws: ConnectionSocket): string[];
+export interface ConnectionsContext<S extends ConnectionSocket = ConnectionSocket> {
+  acceptWebSocket(ws: S, tags?: string[]): void;
+  getWebSockets(tag?: string): S[];
+  getTags(ws: S): string[];
 }
 
 /** The per-connection hub of one hosting actor. Cheap accessor; it holds no
  *  state of its own, which is the point. */
-export function connections<T>(ctx: ConnectionsContext, schema: z.ZodType<T>): Connections<T> {
+export function connections<T, S extends ConnectionSocket = ConnectionSocket>(ctx: ConnectionsContext<S>, schema: z.ZodType<T>): Connections<T, S> {
   return new Connections(ctx, schema);
 }
 
-export class Connections<T> {
+export class Connections<T, S extends ConnectionSocket = ConnectionSocket> {
   constructor(
-    private readonly ctx: ConnectionsContext,
+    private readonly ctx: ConnectionsContext<S>,
     private readonly schema: z.ZodType<T>,
   ) {}
 
@@ -70,7 +70,7 @@ export class Connections<T> {
    * it. The attachment validates BEFORE anything else happens, so a rejected
    * newcomer cannot evict the live connection it failed to replace.
    */
-  accept(ws: ConnectionSocket, opts: { key: string; tags?: string[]; attachment: T }): void {
+  accept(ws: S, opts: { key: string; tags?: string[]; attachment: T }): void {
     const validated = this.schema.parse(opts.attachment);
     for (const old of this.ctx.getWebSockets(opts.key)) {
       if (old.readyState === WS_OPEN) old.close(1000, 'replaced by a new connection');
@@ -80,7 +80,7 @@ export class Connections<T> {
   }
 
   /** The open socket holding a tag, re-derived from the platform. */
-  get(tag: string): ConnectionSocket | null {
+  get(tag: string): S | null {
     for (const ws of this.ctx.getWebSockets(tag)) {
       if (ws.readyState === WS_OPEN) return ws;
     }
@@ -88,12 +88,12 @@ export class Connections<T> {
   }
 
   /** Every open socket (optionally: holding a tag). */
-  list(tag?: string): ConnectionSocket[] {
+  list(tag?: string): S[] {
     return this.ctx.getWebSockets(tag).filter((ws) => ws.readyState === WS_OPEN);
   }
 
   /** A socket's tags — identity key first, then whatever accept added. */
-  tags(ws: ConnectionSocket): string[] {
+  tags(ws: S): string[] {
     return this.ctx.getTags(ws);
   }
 
@@ -102,17 +102,17 @@ export class Connections<T> {
    * written by a previous deploy is untrusted input, and a null is honest
    * where a cast would be a lie.
    */
-  read(ws: ConnectionSocket): T | null {
+  read(ws: S): T | null {
     const parsed = this.schema.safeParse(ws.deserializeAttachment());
     return parsed.success ? parsed.data : null;
   }
 
   /** Replace the attachment, validated on the way in. */
-  write(ws: ConnectionSocket, attachment: T): void {
+  write(ws: S, attachment: T): void {
     this.writeSerialized(ws, this.schema.parse(attachment));
   }
 
-  private writeSerialized(ws: ConnectionSocket, validated: T): void {
+  private writeSerialized(ws: S, validated: T): void {
     try {
       ws.serializeAttachment(validated);
     } catch (e) {

@@ -173,6 +173,23 @@ cases.readReceiptLifetime = async () => {
   assert.equal(d.readsServing, 1);
   d.endReadRun(7, 'c'); deliver({ size: 3 }); await pending;
   assert.equal(d.readsServing, 0); assert.equal(d.readReceipts, 0, 'a late completion cannot resurrect a retired scope');
+  // A read no run made (a peer reading the process's boot images through an
+  // infrastructure binding) is the host's: a run's scope neither refuses it
+  // as stale nor keeps its receipt, and its repeats still join.
+  d.startReadRun(7, 'd', options);
+  let hostCalls = 0;
+  const hostId = crypto.randomUUID();
+  const hostRead = () => d.joinRead(7, hostId, 'stat', () => {}, () => new Promise((resolve) => setTimeout(() => resolve({ size: ++hostCalls }), 5)), undefined).answer;
+  const [one, two] = await Promise.all([hostRead(), hostRead()]);
+  assert.deepEqual([one, two, hostCalls], [{ size: 1 }, { size: 1 }, 1], 'a host read is served, once');
+  assert.equal(d.readReceipts, 0, 'and keeps no receipt in the run');
+  // A forgotten process takes its host reads with it: a late one's repeat reads again.
+  let late;
+  d.joinRead(7, hostId, 'stat', () => {}, () => new Promise((resolve) => { late = resolve; }), undefined);
+  d.forget(7);
+  assert.equal(d.readsServing, 0, 'forgetting a process drops its host reads');
+  late({ size: 0 });
+  d.endReadRun(7, 'd');
   // No journal: preserve the old read behavior and common-path memory cost.
   let ordinary = 0;
   const normal = () => d.joinRead(8, id, 'stat', () => {}, async () => ++ordinary, 'ordinary').answer;

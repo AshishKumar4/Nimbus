@@ -449,6 +449,10 @@ export class NimbusWorkspace {
     withNamedShell(id, options, body) {
         return this.namedShells.hold(id, options, body);
     }
+    /** Read a named shell's saved cwd and exact UTF-16 environment, or null if it has no saved state. */
+    shellState(id) {
+        return this.namedShells.read(id);
+    }
     /** The hosting object forwards its supervisorOp RPC to this method. */
     supervisorOp(envelope) {
         return this.supervisorOps(envelope);
