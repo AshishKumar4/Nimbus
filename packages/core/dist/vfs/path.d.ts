@@ -9,6 +9,8 @@ export declare function pathsOverlap(left: string, right: string): boolean;
 /** Return the canonical VFS parent key, or an empty string for root-level paths. */
 /** The directory a storage key (already normalized) is under: '' at the root. */
 export declare function parentKey(key: string): string;
+/** The directory a path is in, by its last '/': '/' for a path directly under the root (or none). */
+export declare function parentOf(path: string): string;
 export declare function parentVfsPath(path: string): string;
 /** Strip leading slashes only — does not touch internal segments. */
 export declare function stripLeadingSlashes(p: string): string;
