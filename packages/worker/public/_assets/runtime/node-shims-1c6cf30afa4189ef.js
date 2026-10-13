@@ -9671,6 +9671,9 @@ const __sqliteMod = (() => {
 // ═══════════════════════════════════════════════════════════════════════
 
 const __undiciMod = (() => {
+  const { isRedirectStatus, applyRedirectPolicy } = (()=>{function o(e,n){return n==="command"?e>=300&&e<400:e===301||e===302||e===303||e===307||e===308||n==="undici"&&e===300}function c(e,n,r,d){let i=d==="undici"?n===303&&e.method!=="HEAD":(n===301||n===302)&&e.method==="POST"||n===303&&e.method!=="HEAD"&&(d==="command"||e.method!=="GET");if(i&&(e.method="GET",e.body=void 0),d==="undici"&&n===303)for(let t of[...e.headers.keys()])t.toLowerCase().startsWith("content-")&&e.headers.delete(t);else if(d==="fetch"&&i)for(let t of["content-encoding","content-language","content-location","content-type","content-length"])e.headers.delete(t);else if(d==="command"&&e.body===void 0)for(let t of["content-type","content-length","transfer-encoding","expect"])e.headers.delete(t);if(r.origin!==e.url.origin){for(let t of["authorization","cookie","proxy-authorization"])e.headers.delete(t);d==="command"?e.headers.delete("cookie2"):e.headers.delete("host")}d==="undici"&&e.headers.delete("host"),e.url=r}
+
+return {"applyRedirectPolicy":c,"isRedirectStatus":o};})();
   // The patched global fetch, captured now. Captured rather than dereferenced
   // per call so that user code doing `globalThis.fetch = undici.fetch` — a real
   // pattern — cannot build an infinite delegation loop. This is the binding
@@ -9897,26 +9900,44 @@ const __undiciMod = (() => {
   const request = async (url, options) => {
     const opts = options || {};
     assertInertDispatcher(opts.dispatcher, "request({ dispatcher })");
-    let target = targetUrl(url, opts);
-    const method = String(opts.method || "GET").toUpperCase();
-    const headers = requestHeaders(opts.headers);
-    const body = await requestBody(opts.body);
-    let budget = Number(opts.maxRedirections) || 0;
+    // Node 22's real RedirectHandler is installed only for a nonzero count.
+    // Do not coerce strings/fractions into a different redirect policy.
+    const maxRedirections = opts.maxRedirections || 0;
+    if (maxRedirections && (!Number.isInteger(maxRedirections) || maxRedirections < 0)) {
+      throw new errors.InvalidArgumentError("maxRedirections must be a positive number");
+    }
+    const hop = {
+      url: targetUrl(url, opts),
+      method: String(opts.method || "GET").toUpperCase(),
+      headers: requestHeaders(opts.headers),
+      body: await requestBody(opts.body),
+    };
+    // Buffering a Node Readable here does not make it replayable in undici:
+    // the real handler refuses to redirect a disturbed stream/async iterable.
+    const replayableBody = !opts.body || (typeof opts.body.pipe === "function"
+      ? !__streamMod.isDisturbed(opts.body)
+      : typeof opts.body.pipeTo !== "function" && typeof opts.body[Symbol.asyncIterator] !== "function");
 
     let response;
-    for (;;) {
-      response = await __fetch(target.href, {
-        method,
-        headers,
-        body,
+    for (let followed = 0; ; followed++) {
+      response = await __fetch(hop.url.href, {
+        method: hop.method,
+        headers: hop.headers,
+        body: hop.body,
         signal: opts.signal || undefined,
         redirect: "manual",
       });
-      if (budget <= 0) break;
+      // undici 6 checks this on every response at the cap, even a final 200.
+      if (maxRedirections > 0 && opts.throwOnMaxRedirect && followed >= maxRedirections) {
+        await response.body?.cancel();
+        throw new Error("max redirects");
+      }
+      if (followed >= maxRedirections || !replayableBody) break;
       const location = response.headers.get("location");
-      if (response.status < 300 || response.status > 399 || !location) break;
-      budget -= 1;
-      target = new URL(location, target);
+      if (!isRedirectStatus(response.status, "undici") || !location) break;
+      await response.body?.cancel();
+      const next = new URL(location, hop.url);
+      applyRedirectPolicy(hop, response.status, next, "undici");
     }
 
     const resHeaders = responseHeaders(response);

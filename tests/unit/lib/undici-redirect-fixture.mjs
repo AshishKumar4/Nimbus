@@ -59,6 +59,7 @@ for (let index = 0; index < 2; index++) {
 }
 `.trim();
 
+/** @type {{ status: number, target: string, method: string, bytes?: boolean, flat?: boolean, stream?: boolean }[]} */
 export const REDIRECT_CASES = [
   ...[300, 301, 302, 303, 307, 308].flatMap((status) => ['cross', 'same'].map((target) => ({ status, target, method: 'POST' }))),
   ...['PUT', 'DELETE', 'GET', 'HEAD'].map((method) => ({ status: 303, target: 'cross', method })),
