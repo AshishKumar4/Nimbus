@@ -5719,6 +5719,33 @@ export class FacetManager {
         }
         return refs;
     }
+    /**
+     * The cache's entry for `key` at `revision`, if one is held. An entry built
+     * at an older revision can never be SERVED again — the lookup requires an
+     * exact match — so from the first write after it was admitted it is
+     * retained garbage, held in the isolate that is measurably
+     * memory-constrained. Dropped here, before the build that replaces it
+     * allocates, so the stale filesystem graph and the new one never co-reside.
+     */
+    _takePrefetchEntry(key, revision, spec) {
+        let evictedStale = false;
+        for (const [staleKey, stale] of this.prefetchBundleCache) {
+            if (stale.revision === revision)
+                continue;
+            this.prefetchBundleCache.delete(staleKey);
+            this.prefetchCacheBytes -= stale.bytes;
+            evictedStale = true;
+        }
+        if (evictedStale)
+            setPrefetchCacheBytes(this.prefetchCacheBytes);
+        const cached = this.prefetchBundleCache.get(key);
+        if (!cached || cached.revision !== revision || spec.maxBundleBytes !== undefined)
+            return null;
+        // Refresh LRU recency.
+        this.prefetchBundleCache.delete(key);
+        this.prefetchBundleCache.set(key, cached);
+        return { ...cached.vfsState, cacheHit: true, cacheRetained: true };
+    }
     async _buildProcessBundle(entry, spec, pacer) {
         if (!this.vfs) {
             return { bundle: {}, reachableCount: 0, truncated: false };
@@ -5744,38 +5771,16 @@ export class FacetManager {
         // `-e` code is staged as an ES module or not, as the command line says.
         const evaluatedModule = spec.esModule === true && (spec.scriptPath === undefined || spec.scriptPath === '<eval>' || spec.scriptPath === '[stdin]');
         const key = `${profile}\x00${moduleScope}\x00${credKey}\x00${spec.cwd}\x00${spec.scriptPath ?? ''}\x00${_fnv1a(spec.entryCode)}\x00${JSON.stringify(launch)}\x00${evaluatedModule ? 1 : 0}`;
-        let revision = 0;
-        /**
-         * The entry for `key` at the filesystem's revision (read into `revision`), if one is held. An
-         * entry built at an older revision can never be SERVED again — the
-         * lookup requires an exact match — so from the first write after it was
-         * admitted it is retained garbage, held in the isolate that is measurably
-         * memory-constrained. Dropped here, before the build that replaces it
-         * allocates, so the stale filesystem graph and the new one never co-reside.
-         */
+        // A report still being recorded may drop this entry: let it land first.
+        await this.learning.settled();
+        let revision = await vfs.revision();
+        /** The entry for `key` at the filesystem's revision now, read again (after a wait). */
         const takeCached = async () => {
-            // A report still being recorded may drop this entry: let it land first.
             await this.learning.settled();
             revision = await vfs.revision();
-            let evictedStale = false;
-            for (const [staleKey, stale] of this.prefetchBundleCache) {
-                if (stale.revision === revision)
-                    continue;
-                this.prefetchBundleCache.delete(staleKey);
-                this.prefetchCacheBytes -= stale.bytes;
-                evictedStale = true;
-            }
-            if (evictedStale)
-                setPrefetchCacheBytes(this.prefetchCacheBytes);
-            const cached = this.prefetchBundleCache.get(key);
-            if (!cached || cached.revision !== revision || spec.maxBundleBytes !== undefined)
-                return null;
-            // Refresh LRU recency.
-            this.prefetchBundleCache.delete(key);
-            this.prefetchBundleCache.set(key, cached);
-            return { ...cached.vfsState, cacheHit: true, cacheRetained: true };
+            return this._takePrefetchEntry(key, revision, spec);
         };
-        const cached = await takeCached();
+        const cached = this._takePrefetchEntry(key, revision, spec);
         if (cached)
             return cached;
         // A build of the same launch at the same revision is in flight: its entry is this launch's once it is admitted.

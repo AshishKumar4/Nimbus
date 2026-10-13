@@ -1664,6 +1664,15 @@ export declare class FacetManager {
      * analysis (collectClosureWasmImages).
      */
     private _staticRefsOf;
+    /**
+     * The cache's entry for `key` at `revision`, if one is held. An entry built
+     * at an older revision can never be SERVED again — the lookup requires an
+     * exact match — so from the first write after it was admitted it is
+     * retained garbage, held in the isolate that is measurably
+     * memory-constrained. Dropped here, before the build that replaces it
+     * allocates, so the stale filesystem graph and the new one never co-reside.
+     */
+    private _takePrefetchEntry;
     private _buildProcessBundle;
     /**
      * Generate a launch's map under the ceiling on it. `others` is what the rest
