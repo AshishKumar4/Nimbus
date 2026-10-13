@@ -345,14 +345,13 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
   // Content by inode, valid while the stat revision matches the one it was read at.
   const resident = options.resident ?? new Map<string, { revision: number; bytes: Uint8Array }>();
   const residentBytes = options.residentBytes ?? 0;
-  /** The bytes of the file `opened` is on, read through it unless the copy at its revision is kept. */
-  const residentContent = (fs: Fs, opened: RuntimeOpenedFile): Awaitable<Uint8Array> => {
-    const st = opened.stat;
-    if (options.retainResident === false) return fs.read(opened.id, 0, st.size);
+  /** The bytes of the file `st` describes: `read`'s, unless the copy at its revision is kept. */
+  const residentContent = (st: RuntimeVfsStat, read: () => Awaitable<Uint8Array>): Awaitable<Uint8Array> => {
+    if (options.retainResident === false) return read();
     const key = `${st.dev}:${st.ino}`;
     const cached = resident.get(key);
     if (cached && cached.revision === st.revision) return cached.bytes;
-    return after(fs.read(opened.id, 0, st.size), bytes => {
+    return after(read(), bytes => {
       resident.set(key, { revision: st.revision, bytes });
       return bytes;
     });
@@ -534,10 +533,23 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
       fds.set(id, { kind: 'resident', stat, bytes, hold, opens: 1, position: 0, rights: requested, rightsInheriting: childRights, fdflags: status });
       u32(out, id); return 0;
     };
-    // A file the session opened read-only: a copy here, held by its descriptor, when it is small enough.
-    const adopt = (handle: RuntimeOpenedFile): SyscallResult =>
-      residentable(handle.stat) ? after(residentContent(fs, handle), bytes => copy(handle.stat, bytes, { handle: handle.id })) : opened(handle);
-    const answer: (handle: RuntimeOpenedFile) => SyscallResult = readOnly ? adopt : opened;
+    // A file the session opened read-only: a copy here, held by its descriptor,
+    // when it is small enough; `content` reads its bytes. A copy that cannot be
+    // read lets its descriptor go, and the guest gets the refusal.
+    const adopt = (content: (handle: RuntimeOpenedFile) => Awaitable<Uint8Array>) => (handle: RuntimeOpenedFile): SyscallResult => {
+      if (!residentable(handle.stat)) return opened(handle);
+      const refused = (error: unknown): never => { closeUnawaited(fs, handle.id); throw error; };
+      try {
+        const bytes = residentContent(handle.stat, () => content(handle));
+        return bytes instanceof Promise ? bytes.then(read => copy(handle.stat, read, { handle: handle.id }), refused) : copy(handle.stat, bytes, { handle: handle.id });
+      } catch (error) { return refused(error); }
+    };
+    // An open's copy is read by the name it opened, as any read of that name
+    // is (a host that stages content answers that read); a reopen's through
+    // its new descriptor, as its file may have no name.
+    const byName = (): Awaitable<Uint8Array> => after(fs.readFile(target), bytes => bytes ?? fail('ENOENT'));
+    const throughIt = (handle: RuntimeOpenedFile): Awaitable<Uint8Array> => fs.read(handle.id, 0, handle.stat.size);
+    const answer: (handle: RuntimeOpenedFile) => SyscallResult = readOnly ? adopt(throughIt) : opened;
     // The filesystem's pin on the bytes at `st`'s revision, as the copy; `otherwise` where it pins none (they changed, the budget is spent, the mode refuses the read).
     const pinned = (name: RuntimeFsPath, st: RuntimeVfsStat, otherwise: () => SyscallResult): SyscallResult =>
       pinsContent(fs) ? after(fs.pinContent(name, st), pin => (pin === null ? otherwise() : copy(st, pin.bytes, { pinned: pin }))) : otherwise();
@@ -561,7 +573,7 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     // is the copy: it pins them for the descriptor under its own budget, and
     // past that budget the descriptor is the session's. Any other opens the
     // file, which answers its stat, and the copy is read through that descriptor.
-    if (!pinsContent(fs)) return after(fs.open(target, opening), adopt);
+    if (!pinsContent(fs)) return after(fs.open(target, opening), adopt(byName));
     return after(fs.stat(target, { followSymlinks }), st => {
       if (st === null) fail('ENOENT');
       return residentable(st) ? pinned(target, st, open) : open();

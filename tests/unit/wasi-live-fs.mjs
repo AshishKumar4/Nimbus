@@ -306,18 +306,19 @@ const ROOT_INIT = (extra = {}) => ({
 }
 
 // ── 12. A read-only open is answered from a resident copy, per revision ─────
-// One open per open (it answers the stat) and one read per revision, through
-// the open's descriptor; the descriptor calls in between (fstat, seek, read)
-// never reach the supervisor, and the last close lets the descriptor go. A
-// rewrite moves the stat revision, so the next open reads again; a writable
-// open never uses it.
+// One open per open (it answers the stat) and one read of the file per
+// revision; the descriptor calls in between (fstat, seek, read) never reach
+// the supervisor, and the last close lets the open's descriptor go. A rewrite
+// moves the stat revision, so the next open reads again; a writable open
+// never uses it.
 {
   const RDONLY = 0x1fbffeben; // what wasi-libc requests for O_RDONLY
   const sup = memorySupervisor({ 'home/user/mod.py': 'first' });
   const revisions = new Map();
   const base = sup.stat;
   sup.stat = async (p) => { const st = await base(p); return st && { ...st, revision: revisions.get(typeof p === 'string' ? p : p.path) ?? 1 }; };
-  const calls = { stat: 0, fsOpen: 0, fsFstat: 0, fsRead: 0, fsSeek: 0, fsClose: 0 };
+  sup.readFileBytes = async (p) => sup.store.get(typeof p === 'string' ? p : p.path) ?? null;
+  const calls = { stat: 0, fsOpen: 0, fsFstat: 0, readFileBytes: 0, fsRead: 0, fsSeek: 0, fsClose: 0 };
   for (const name of Object.keys(calls)) { const call = sup[name]; sup[name] = (...args) => { calls[name]++; return call(...args); }; }
   const h = host(ROOT_INIT(), sup);
   const readAll = async (fd) => { const r = await h.read(fd); assert.equal(r.errno, ESUCCESS); await h.wasiImport.fd_close(fd); return r.text; };
@@ -328,7 +329,7 @@ const ROOT_INIT = (extra = {}) => ({
   assert.equal(await readAll(first.fd), 'first');
   const second = await h.open('home/user/mod.py', { rights: RDONLY });
   assert.equal(await readAll(second.fd), 'first');
-  assert.deepEqual(calls, { stat: 2, fsOpen: 2, fsFstat: 0, fsRead: 1, fsSeek: 0, fsClose: 2 },
+  assert.deepEqual(calls, { stat: 2, fsOpen: 2, fsFstat: 0, readFileBytes: 1, fsRead: 0, fsSeek: 0, fsClose: 2 },
     'two opens and closes read the content once: the stat each open answers is the supervisor\'s one stat, and nothing else of the descriptor crosses');
 
   sup.store.set('home/user/mod.py', enc.encode('second'));
