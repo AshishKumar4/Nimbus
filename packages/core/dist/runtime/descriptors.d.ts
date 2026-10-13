@@ -9,7 +9,7 @@
  */
 import { type Awaitable } from '../vfs/vfs.js';
 import type { VfsOpenDescription } from '../vfs/sqlite-vfs.js';
-import type { RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat } from './os-contracts.js';
+import type { RuntimeFileHandle, RuntimeOpenedFile, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat } from './os-contracts.js';
 /** The engine's description of a file on SQLite (SqliteVFS.openDescription): every answer at once. */
 export type EngineDescription = VfsOpenDescription & {
     readonly mounted?: undefined;
@@ -138,6 +138,12 @@ export declare class Descriptors {
     synchronous?: boolean);
     /** A descriptor for `node`, new, at offset 0, opened at `path` (the description's own name for its file unless the opener has it). */
     issue(node: Description, flags: RuntimeFileHandle['flags'], path?: string): RuntimeFileHandle;
+    /**
+     * issue's descriptor as an open answers it: with its file's stat, as fstat
+     * answers it, its revision `revision` where the open went by a name (the
+     * name's).
+     */
+    open(node: Description, flags: RuntimeFileHandle['flags'], path?: string, revision?: number): Awaitable<RuntimeOpenedFile>;
     /** The description `id` names, to answer from (EBADF when none, or once the scope is closed). */
     description(id: number): Description;
     private opened;
@@ -156,6 +162,8 @@ export declare class Descriptors {
     fsync(id?: number): Awaitable<void>;
     /** The absolute path a descriptor was opened at. */
     path(id: number): string;
+    /** The name descriptor `id` was opened by: what its errors name, its file having none now perhaps. */
+    openedAs(id: number): string;
     fstat(id: number): Awaitable<RuntimeVfsStat>;
     dup(id: number): RuntimeFileHandle;
     seek(id: number, offset: number, whence: 'set' | 'current' | 'end'): Awaitable<number>;

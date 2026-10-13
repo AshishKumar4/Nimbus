@@ -85,6 +85,14 @@ export interface MountedDescriptionOptions extends MountedOpen, MountedDescripti
 }
 /** open(2) of a mounted file, and the description its descriptors share: one pin, for both. */
 export declare function openMounted(options: MountedDescriptionOptions): Awaitable<MountedFileDescription>;
+/**
+ * A new description of the file `description` is on (Linux's open of
+ * /proc/self/fd/N), on its mount: the file at the name it is held by, so
+ * long as that name still holds it (ESTALE once it holds another, as a
+ * description held by its name refuses), with `options.flags`' access and an
+ * offset of its own. O_TRUNC cuts it only once it is known to be that file.
+ */
+export declare function reopenMounted(description: MountedFileDescription, options: Omit<MountedDescriptionOptions, 'name'>): Awaitable<MountedFileDescription>;
 /** The description of `file`, opened already (openOnMount), its number `ino`: what its descriptors share. */
 export declare function describeMounted(context: MountedDescriptionContext, file: HeldFile, ino: number): MountedFileDescription;
 //# sourceMappingURL=mounted-description.d.ts.map

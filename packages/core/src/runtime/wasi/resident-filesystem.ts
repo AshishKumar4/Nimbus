@@ -39,12 +39,16 @@ import type {
   Awaitable,
   RuntimeFileHandle,
   RuntimeFsBridge,
+  RuntimeOpenedFile,
   RuntimeFsPath,
+  RuntimeMutationOwner,
   RuntimeOpenFlags,
+  RuntimeReopenTarget,
   RuntimeVfsDirEntry,
   RuntimeVfsStat,
 } from '../os-contracts.js';
 import { fsError, modeAllows, walkBeneath } from '../beneath-walk.js';
+import { openIdentified } from './filesystem.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES, DIRECTORY_BATCH_LIMIT, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES } from '../../constants.js';
 import { RESIDENT_PAGE_BYTES } from '@nimbus-sh/platform/limits.js';
 import { delegationHolder, type DelegationHolder } from './delegation-holder.js';
@@ -124,6 +128,8 @@ export interface ResidentNamespace {
 export interface PinnedContent {
   bytes: Uint8Array;
   release(): void;
+  /** The name it was pinned at, which an open of /dev/fd/N opens it again by while that name has it (openIdentified). */
+  name: string;
 }
 
 export interface ResidentFilesystem extends RuntimeFsBridge {
@@ -429,8 +435,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   const readers = new Set<number>();
   /** And those opened to write that nothing was written or cut through yet (git's /dev/null): no more do they. */
   const unwritten = new Set<number>();
-  /** Of those, where each was opened, until its fstat says what it is: a directory, or a file too big to hold whole. */
-  const opened = new Map<number, string>();
+  /** Of the read-only ones, the directories, and where their listing is. */
   const directories = new Map<number, OpenDirectory>();
   /**
    * The session's read-only descriptors of files too big to hold whole (a
@@ -835,6 +840,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       let released = false;
       return {
         bytes: pin.bytes,
+        name: '/' + key,
         release: () => {
           if (released) return;
           released = true;
@@ -911,6 +917,9 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     return '/' + key;
   }), () => authority.realpath(path));
 
+  /** A descriptor of the holder's, as an open answers it: with its stat, the holder's. */
+  const heldOpen = (handle: RuntimeFileHandle): RuntimeOpenedFile => ({ ...handle, stat: statOf(holder!.fstat(handle.id)) });
+
   fs.access = (path, mode) => answer<void>('access', () => after(resolve(path, true), (key) => {
     if (key === DELEGATE || key === '') return DELEGATE;
     if (key === null) throw fsError('ELOOP', 'access', path);
@@ -924,7 +933,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   fs.open = (path, flags: RuntimeOpenFlags) => {
     const readOnly = !flags.write && !flags.create && !flags.truncate && !flags.append && !flags.exclusive;
     if (directoryPool && readOnly && flags.read === true && flags.directory === true && flags.followSymlinks !== false && flags.expectedRevision === undefined) {
-      return answer<RuntimeFileHandle>('open', () => after(resolve(path, true), async (key) => {
+      return answer<RuntimeOpenedFile>('open', () => after(resolve(path, true), async (key) => {
         if (key === DELEGATE || key === null || key === '' || entryAt(key)?.type !== 'directory') return DELEGATE;
         if (walkRoot === null || (key !== walkRoot && !key.startsWith(walkRoot + '/'))) walkRoot = key;
         const within = walkRoot;
@@ -955,33 +964,35 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
           return beneath(root).slice(0, DIRECTORY_BATCH_LIMIT - 1)
             .map((candidate) => ({ ...path, path: root === '' ? candidate : candidate.slice(root.length + 1) }));
         });
-        return handle ?? DELEGATE;
+        if (handle === null) return DELEGATE;
+        // An open answers its stat (RuntimeOpenedFile): the one a prefetched directory's fstat answers here.
+        return { ...handle, stat: await fs.fstat(handle.id) };
       }), () => openOnSession(path, flags));
     }
     if (!readOnly && holder !== null) {
       // A file made or emptied in a subtree this process holds is decided here.
-      const local = decide<RuntimeFileHandle>('open', () => after(keyFor(path, true), (key) => (key === DELEGATE ? DELEGATE
-        : after(holder!.open(key, typeof path === 'string' ? path : path.path, flags), (handle) => handle ?? DELEGATE))));
+      const local = decide<RuntimeOpenedFile>('open', () => after(keyFor(path, true), (key) => (key === DELEGATE ? DELEGATE
+        : after(holder!.open(key, typeof path === 'string' ? path : path.path, flags), (handle) => (handle === undefined ? DELEGATE : heldOpen(handle))))));
       return after(local, (handle) => (handle === DELEGATE ? openOnSession(path, flags) : handle));
     }
     return openOnSession(path, flags);
   };
 
-  const openOnSession = (path: RuntimeFsPath, flags: RuntimeOpenFlags): RuntimeFileHandle | Promise<RuntimeFileHandle> => {
+  const openOnSession = (path: RuntimeFsPath, flags: RuntimeOpenFlags): RuntimeOpenedFile | Promise<RuntimeOpenedFile> => {
     const readOnly = !flags.write && !flags.create && !flags.truncate && !flags.append && !flags.exclusive;
     if (!readOnly) {
       // A file of the session's own filesystem is opened to write through
       // the process's client (an open call, answered with its stat), and
       // written through by its number; a directory, a file the store cannot
       // place, or one on a mount is the session's descriptor.
-      const through = (): RuntimeFileHandle | Delegate | Promise<RuntimeFileHandle | Delegate> => {
+      const through = (): RuntimeOpenedFile | Delegate | Promise<RuntimeOpenedFile | Delegate> => {
         if (holder === null || !store.ready() || flags.directory) return DELEGATE;
         return after(keyFor(path, false), (key) => {
           if (key === DELEGATE) return DELEGATE;
           const there = entryAt(key);
           if (there === undefined || there?.type === 'directory') return DELEGATE;
           delegated('open');
-          return after(holder!.openThrough(key, typeof path === 'string' ? path : path.path, flags), (handle) => { owed = true; return handle; });
+          return after(holder!.openThrough(key, typeof path === 'string' ? path : path.path, flags), (handle) => { owed = true; return heldOpen(handle); });
         });
       };
       return after(through(), (handle) => {
@@ -996,7 +1007,13 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     delegated('open');
     return after(authority.open(path, flags), (handle) => {
       readers.add(handle.id);
-      opened.set(handle.id, keyOf(handle.path));
+      // What it is, its open said: a directory is listed here, and a file too big to hold whole is paged, while its name still leads to it.
+      const { type, dev, ino, size } = handle.stat;
+      if (dev === store.device) {
+        const key = keyOf(handle.path);
+        if (type === 'directory') directories.set(handle.id, { key, dev, ino });
+        else if (type === 'file' && size > WASI_RESIDENT_FILE_CAP_BYTES) paged.set(handle.id, { key, dev, ino });
+      }
       return handle;
     });
   };
@@ -1014,18 +1031,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       return statOf(holder.fstat(handleId));
     }
     delegated('fstat');
-    return after(authority.fstat(handleId), (stat) => {
-      // A directory opened read-only is listed here while its name still leads to it.
-      const key = opened.get(handleId);
-      if (key !== undefined) {
-        opened.delete(handleId);
-        if (stat.type === 'directory' && stat.dev === store.device) directories.set(handleId, { key, dev: stat.dev, ino: stat.ino });
-        if (stat.type === 'file' && stat.dev === store.device && stat.size > WASI_RESIDENT_FILE_CAP_BYTES) {
-          paged.set(handleId, { key, dev: stat.dev, ino: stat.ino });
-        }
-      }
-      return stat;
-    });
+    return authority.fstat(handleId);
   };
 
   /**
@@ -1139,7 +1145,6 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       return after(authority.close(reader), report);
     }
     if (readers.delete(handleId)) {
-      opened.delete(handleId);
       directories.delete(handleId);
       paged.delete(handleId);
       delegated('close');
@@ -1172,6 +1177,24 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     Reflect.set(fs, 'setStatus', (handleId: number, status: { append?: boolean }) => {
       if (holder?.owns(handleId)) { counts.local++; holder.setStatus(handleId, status); return; }
       return Reflect.apply(bySessionStatus, fs, [handleId, status]);
+    });
+  }
+
+  // A descriptor of the holder's is reopened here where the holder decides it,
+  // else once what was decided is sent: a description written through by its
+  // session descriptor, any other by its file's name while that name has it.
+  const bySessionReopen: unknown = Reflect.get(fs, 'reopen');
+  if (typeof bySessionReopen === 'function') {
+    Reflect.set(fs, 'reopen', (target: RuntimeReopenTarget, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner) => {
+      const held = holder;
+      if (!held?.owns(target.handle)) return Reflect.apply(bySessionReopen, fs, [target, flags, options]);
+      const local = held.reopen(target.handle, flags);
+      if (local !== undefined) { counts.local++; return heldOpen(local); }
+      const identity = held.fstat(target.handle);
+      const name = '/' + held.keyOf(target.handle);
+      return held.flush().then(() => held.sessionOf(target.handle)).then((session) => (session === undefined
+        ? openIdentified(fs, name, false, flags, identity)
+        : Reflect.apply(bySessionReopen, fs, [{ handle: session }, flags, options])));
     });
   }
 

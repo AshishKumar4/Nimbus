@@ -43,11 +43,11 @@ import type {
   BashWasiFsImports,
   BashWasiImports,
 } from './types.js';
-import { after, installAuthorityFilesystem, processGoneMessage, refusalErrno } from '../wasi/filesystem.js';
+import { after, closeResident, descriptorNamed, installAuthorityFilesystem, processGoneMessage, refusalErrno, shareResident, type AuthorityFd } from '../wasi/filesystem.js';
 import { supervisorFilesystem } from '../vfs-supervisor.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
 import { PIPE_CAPACITY, decideRead, decideWrite, heldExitSettles, holdsExit, pipeBudget, pipeLimitMessage, readerStops } from './pipe-rules.js';
-import type { RuntimeFsBridge, RuntimeFsPath, RuntimeSynchronousFs } from '../os-contracts.js';
+import type { Awaitable, RuntimeFsBridge, RuntimeFsPath, RuntimeSynchronousFs } from '../os-contracts.js';
 import type { SyscallResult, WasiSupervisorStub } from '../wasi/types.js';
 import { wasiOutputRelay, type WasiOutputTarget } from '../wasi/stdio.js';
 import { outputControlReader } from '../wasi/output-control.js';
@@ -91,7 +91,7 @@ const pipeHost = (s: BashSession): 'jspi' | 'local' => (s.parking === 'jspi' ? '
 let S: BashSession | null = null;
 let filesystem: RuntimeFsBridge | null = null;
 let outputSupervisor: WasiOutputTarget | null = null;
-let inputSupervisor: { cpReadStdin(pid: number, waitMs: number, acquire: undefined, maxBytes: number): import('../os-contracts.js').Awaitable<{ data: Uint8Array; ended: boolean }> } | null = null;
+let inputSupervisor: Pick<WasiSupervisorStub, 'cpReadStdin'> | null = null;
 
 function norm(p: string): string {
   const parts = [];
@@ -182,6 +182,26 @@ function wakeWriters(pp: BashPipe): void {
 // lowestFd must never re-issue it for a regular file.
 function lowestFd(proc: BashProc): number { let fd = 0; while (proc.fds.has(fd) || fd === 3) fd++; return fd; }
 function bumpPipe(s: BashSession, e: { pipeId: number; end: 'r' | 'w' }, d: number): void { const pp = s.pipes.get(e.pipeId) as BashPipe; if (e.end === 'r') pp.readers += d; else pp.writers += d; }
+/**
+ * What a second descriptor on entry `e` holds (dup, dup2, a fork's copy), for
+ * any kind but an authority file's (the authority's own dup): the same open,
+ * as dup(2) shares an open file description and its offset. A resident copy
+ * is shared; a pipe end's count is the caller's to bump. At once, with no
+ * await: a fork's pipe ends are counted before anything else runs.
+ */
+function shareEntry(e: Exclude<BashFdEntry, AuthorityFd>): BashFdEntry {
+  return e.kind === 'resident' ? shareResident(e) : { ...e };
+}
+/** A new descriptor on what `proc`'s stream or pipe descriptor `fd` holds, as dup(2); null for any other kind (AuthorityFilesystemOptions.duplicate). */
+function duplicateStream(s: BashSession, proc: BashProc, fd: number): number | null {
+  const e = proc.fds.get(fd);
+  if (e === undefined || (e.kind !== 'pipe' && e.kind !== 'stdin' && e.kind !== 'stdout' && e.kind !== 'stderr')) return null;
+  const copy = { ...e };
+  const next = lowestFd(proc);
+  proc.fds.set(next, copy);
+  if (copy.kind === 'pipe') bumpPipe(s, copy, 1);
+  return next;
+}
 function closeFd(s: BashSession, proc: BashProc, fd: number): void {
   const e = proc.fds.get(fd);
   if (!e) return;
@@ -190,6 +210,7 @@ function closeFd(s: BashSession, proc: BashProc, fd: number): void {
   // this process's claim on it, and letting the rejection reach s.error
   // would report the whole slice as failed instead of its exit code.
   if (e.kind === 'authority') queueSessionTask(s, Promise.resolve(s.fs.close(e.handle.id)).catch(() => {}));
+  if (e.kind === 'resident') closeResident(e, s.fs);
   if (e.kind === 'pipe') {
     bumpPipe(s, e, -1); const pp = s.pipes.get(e.pipeId) as BashPipe; wakePipe(s, pp); wakeWriters(pp);
     if (e.end === 'r') settleHeldExits(s, pp);
@@ -354,7 +375,7 @@ function makeWasiFs(s: BashSession, proc: BashProc, DV: () => DataView, U8: () =
     random_get(p: number,n: number): BashErrno { for(let i=0;i<n;i+=65536)crypto.getRandomValues(U8().subarray(p+i,p+Math.min(i+65536,n)));return 0; },
     proc_exit(code: number) { throw new Exit(code); },
   };
-  installAuthorityFilesystem(imports, { fs: () => s.fs, memory, fds: proc.fds, allocateFd: () => lowestFd(proc), synchronous, umask: () => s.cred.umask, residentBytes: WASI_RESIDENT_FILE_CAP_BYTES, resident, processGone: s.gone });
+  installAuthorityFilesystem(imports, { fs: () => s.fs, memory, fds: proc.fds, allocateFd: () => lowestFd(proc), synchronous, umask: () => s.cred.umask, residentBytes: WASI_RESIDENT_FILE_CAP_BYTES, residentTables: () => [...s.procs.values()].map((each) => each.fds), resident, processGone: s.gone, duplicate: (fd) => duplicateStream(s, proc, fd) });
   installPreopenRehoming(proc, imports);
   return imports;
 }
@@ -535,9 +556,10 @@ function blockTarget(s: BashSession, proc: BashProc, fd: number | undefined): Ba
 // Bash's pending read/fork table shares the unread remainder within this VM.
 function requestSharedInput(s: BashSession): void {
   if (!s.sharedInput || s.inputPending || s.stdin.closed || s.stdin.queued) return;
-  const read = inputSupervisor?.cpReadStdin;
-  if (!read) throw new Error('bash requires the shared process stdin capability');
-  const pending = Promise.resolve(read.call(inputSupervisor, s.processPid, 5000, undefined, 64 * 1024)).then(packet => {
+  const supervisor = inputSupervisor;
+  if (!supervisor?.cpReadStdin) throw new Error('bash requires the shared process stdin capability');
+  // Called on its receiver: on a workerd RPC stub, Function.prototype.call is itself a remote method name.
+  const pending = Promise.resolve(supervisor.cpReadStdin(s.processPid, 5000, undefined, 64 * 1024)).then(packet => {
     if (packet.data?.length) { s.stdin.chunks.push(packet.data); s.stdin.queued += packet.data.length; }
     if (packet.ended) s.stdin.closed = true;
     s.inputPending = undefined;
@@ -766,10 +788,11 @@ function makeProc(s: BashSession, pid: number, ppid: number, fds: Map<number, Ba
     // handed back to bash as a live descriptor.
     dup: suspend('dup', async (o: number) => {
       const e = proc.fds.get(o); if (!e) return -E.BADF;
+      const stream = duplicateStream(s, proc, o);
+      if (stream !== null) return stream;
       try {
         const nf = lowestFd(proc);
-        proc.fds.set(nf, e.kind === 'authority' ? { ...e, handle: await s.fs.dup(e.handle.id) } : { ...e });
-        if (e.kind === 'pipe') bumpPipe(s, e, 1);
+        proc.fds.set(nf, e.kind === 'authority' ? { ...e, handle: await s.fs.dup(e.handle.id) } : shareEntry(e));
         return nf;
       } catch (error) { return -refusalErrno(error, s.gone); }
     }),
@@ -779,7 +802,7 @@ function makeProc(s: BashSession, pid: number, ppid: number, fds: Map<number, Ba
       try {
         // The old descriptor is released only once the duplicate exists, so a
         // failed dup2 leaves the target fd exactly as POSIX requires: untouched.
-        const copy = e.kind === 'authority' ? { ...e, handle: await s.fs.dup(e.handle.id) } : { ...e };
+        const copy = e.kind === 'authority' ? { ...e, handle: await s.fs.dup(e.handle.id) } : shareEntry(e);
         const displaced = proc.fds.get(n);
         if (displaced?.kind === 'preopen') {
           // `exec 3>file` claims the descriptor wasi-libc cached as its
@@ -971,7 +994,11 @@ function step(s: BashSession, proc: BashProc): void {
     if (e instanceof Signalled) { finishProc(s, proc, 0, e.signal); return; }
     throw e;
   }
-  if (c.reason === null) { finishProc(s, proc, 0); return; }
+  if (c.reason === null) {
+    // A rewind that never reached its landing ran the guest off its end: not an exit.
+    if (c.rewinding) throw new Error(`bash-runner: pid ${proc.pid} returned from _start mid-rewind, its longjmp or resume target lost`);
+    finishProc(s, proc, 0); return;
+  }
   ex.asyncify_stop_unwind();
   const r = c.reason; c.reason = null;
   const dv = proc.DV();
@@ -1175,6 +1202,20 @@ async function doExec(s: BashSession, proc: BashProc): Promise<void> {
     return { directory: entry.handle.id, path };
   };
   const descriptor = (fd: number) => { const entry = proc.fds.get(fd); if (entry?.kind !== 'authority') throw Object.assign(new Error('EBADF'), { code: 'EBADF' }); return entry.handle.id; };
+  const metadata = (out: number, mode: number, uid: number, gid: number): number => {
+    DV().setUint32(out, mode, true); DV().setUint32(out + 4, uid, true); DV().setUint32(out + 8, gid, true); return 0;
+  };
+  // fstat's: a file's own, a stream's or a pipe's by its kind (no inode: a terminal's or a FIFO's mode, the session's owner).
+  const descriptorMetadata = (fd: number, out: number): Awaitable<number> => {
+    const entry = proc.fds.get(fd);
+    if (entry === undefined) return E.BADF;
+    if (entry.kind === 'resident') return metadata(out, entry.stat.mode ?? 0, entry.stat.uid, entry.stat.gid);
+    if (entry.kind === 'pipe') return metadata(out, 0o010600, s.cred.uid, s.cred.gid);
+    if (entry.kind === 'stdin' || entry.kind === 'stdout' || entry.kind === 'stderr') return metadata(out, 0o020620, s.cred.uid, s.cred.gid);
+    const stat = entry.kind === 'authority' ? () => fs.fstat(entry.handle.id) : entry.kind === 'preopen' ? () => fs.stat(entry.vfsPath) : null;
+    if (stat === null) return E.BADF;
+    return result(stat, st => st ? metadata(out, st.mode ?? 0, st.uid, st.gid) : E.NOENT);
+  };
   // The call is produced inside the guard, not handed to it: resolving the fd
   // is itself a syscall step that can fail, and an EBADF raised while building
   // the arguments has to answer the guest as an errno rather than escape the
@@ -1186,10 +1227,14 @@ async function doExec(s: BashSession, proc: BashProc): Promise<void> {
   const native = {
     startup_cwd: (ptr: number, capacity: number) => { const bytes = te.encode(proc.cwd); if (!capacity) return bytes.length; if (capacity <= bytes.length) return -37; U8().set(bytes, ptr); U8()[ptr + bytes.length] = 0; return bytes.length; },
     identity: (field: number) => { if ((field & 7) === 4) { const previous = s.cred.umask; s.cred = { ...s.cred, umask: field >>> 3 }; return previous; } return [s.cred.uid, s.cred.gid, proc.pid, proc.ppid][field] ?? 0; },
-    stat_metadata: (fd: number, ptr: number, length: number, follow: number, out: number) => result(() => ptr ? fs.stat(at(fd, readPath(ptr, length)), { followSymlinks: !!follow }) : fs.fstat(descriptor(fd)), stat => {
-      if (!stat) return E.NOENT;
-      DV().setUint32(out, stat.mode, true); DV().setUint32(out + 4, stat.uid, true); DV().setUint32(out + 8, stat.gid, true); return 0;
-    }),
+    stat_metadata: (fd: number, ptr: number, length: number, follow: number, out: number) => {
+      if (!ptr) return descriptorMetadata(fd, out);
+      const path = readPath(ptr, length);
+      // A path naming a descriptor (/dev/fd/N) is that descriptor's, resolved as path_filestat_get resolves it.
+      const named = descriptorNamed(proc.fds, fd === -1 ? -1 : proc.preopenMoved.get(fd) ?? fd, path, proc.cwd);
+      if (named !== null) return proc.fds.has(named) ? descriptorMetadata(named, out) : E.NOENT;
+      return result(() => fs.stat(at(fd, path), { followSymlinks: !!follow }), st => st ? metadata(out, st.mode ?? 0, st.uid, st.gid) : E.NOENT);
+    },
     chmod: (ptr: number, length: number, mode: number) => result(() => fs.chmod(at(-1, readPath(ptr, length)), mode), () => 0),
     fchmod: (fd: number, mode: number) => result(() => fs.fchmod(descriptor(fd), mode), () => 0),
     chown: (fd: number, ptr: number, length: number, uid: number, gid: number, follow: number) => result(() => ptr ? fs.chown(at(fd, readPath(ptr, length)), uid, gid, { followSymlinks: !!follow }) : fs.fchown(descriptor(fd), uid, gid), () => 0),
@@ -1258,7 +1303,7 @@ async function doFork(s: BashSession, parent: BashProc): Promise<void> {
   const childPid = s.pidNext++;
   const childFds = new Map();
   for (const [fd, e] of parent.fds) {
-    childFds.set(fd, e.kind === 'authority' ? { ...e, handle: await s.fs.dup(e.handle.id) } : { ...e });
+    childFds.set(fd, e.kind === 'authority' ? { ...e, handle: await s.fs.dup(e.handle.id) } : shareEntry(e));
     if (e.kind === 'pipe') bumpPipe(s, e, 1);
   }
   const pmem = parent.inst.exports.memory;
@@ -1485,7 +1530,7 @@ globalThis.__bashStep = async function __bashStep(raw: unknown, supervisor?: Was
     if (supervisor) {
       filesystem = supervisorFilesystem(supervisor, a.parking === 'none' ? supervisor.synchronous : undefined);
       outputSupervisor = supervisor as unknown as WasiOutputTarget;
-      inputSupervisor = supervisor as unknown as typeof inputSupervisor;
+      inputSupervisor = supervisor;
     }
     return globalThis.__bashBoot(raw as BashBootArgs);
   }

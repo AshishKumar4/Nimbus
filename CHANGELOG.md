@@ -23,6 +23,44 @@ published independently in the `@nimbus-sh` npm scope.
   the file: `stat` shows another user's later change, and a file removed and
   made again has a new file's mode and times. `stat` answers the file's real
   device and link count (`dev`, `nlink`) instead of one made-up device.
+- Fixed: in a WASI program (an uploaded program, CPython), a filesystem call
+  the session took more than 10 s to answer failed with EAGAIN, which no
+  filesystem call returns on Linux: `os.makedirs` raised `BlockingIOError`
+  when the process's first change waited on the session. It now waits for
+  the answer. Only a socket's or a poll's wait still ends with EAGAIN at the
+  10 s park deadline.
+- Fixed: in a WASI program (bash and its commands, CPython, any compiled
+  program), `/dev/fd/N`, `/proc/self/fd/N`, `/dev/stdin`, `/dev/stdout` and
+  `/dev/stderr` now name the process's own descriptor, as on Linux. A pipe or
+  a stream is shared. A file is opened again with the new open's flags, so it
+  gets its own offset, and `>/dev/stdout` truncates a file that stdout writes
+  to. It is the file itself, even one renamed or unlinked since, never
+  whatever file now has its old name, opened as it is now: its current
+  content, under its current permissions. A small file opened read-only
+  that another program (not the shell, or not the uploaded program itself)
+  renamed or removed since cannot be opened again this way yet (ENOENT).
+  `stat` of the path is that descriptor's stat. Process substitution works:
+  `source <(...)`, `done < <(...)`, `diff <(...) <(...)`. Before, `/dev/fd/N`
+  was not found, `/dev/stdin` read as empty, and writes to `/dev/stdout` and
+  `/dev/stderr` were silently discarded.
+- A WASI program's open of a file makes one round trip to the session, not
+  two: the open answers the file's stat.
+- Fixed: in the wasm bash, `exec 3<file; read a <&3; read b <&3` read the
+  first line twice for a small file, and a subshell's read did not move its
+  parent's offset. A duplicate (`<&3`, `dup2`) and a child now share their
+  descriptor's offset, as on Linux.
+- Fixed: a bash run whose non-local jump lost its target (an `exit` or
+  `return` inside `eval`, a sourced file, or an EXIT trap) now fails with
+  "bash-runner: pid N returned from _start mid-rewind, its longjmp or resume
+  target lost". It used to report exit status 0. The jump itself is fixed
+  with the next bash runtime build (bash-runner@4).
+- Fixed: on Cloudflare, piping into the installed GNU bash (`printf x | bash
+  -c 'read -r y'`) failed with "The RPC receiver does not implement the
+  method "call"". bash now reads its piped stdin.
+- Fixed: CPython, Ruby and clang read their piped stdin (`printf x | python3
+  -c 'import sys; print(sys.stdin.read())'`). The WASI layer now reads every
+  runtime's fd 0 from its process's input channel; before, only the generic
+  wasm runner wired it, and the others read an empty stdin.
 - Fixed: a Node program's launch holds its share of the session's memory
   budget while it packs the files it staged, and until its module map is
   made, not only while it gathers them, so several launches at once queue

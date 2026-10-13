@@ -14,7 +14,7 @@
  */
 import type { Errno, SyscallResult, WasiSupervisorStub } from '../wasi/types.js';
 import type { RuntimeFsBridge, VfsCred } from '../os-contracts.js';
-import type { AuthorityFd, AuthorityPreopen } from '../wasi/filesystem.js';
+import type { AuthorityFd, AuthorityPreopen, ResidentFd } from '../wasi/filesystem.js';
 /**
  * The errno set this scheduler answers with — the same one every Nimbus syscall
  * layer answers with. This was `Errno | 63`, and the `| 63` was the whole
@@ -67,7 +67,7 @@ export interface BashSlice {
  */
 export type BashFdEntry = {
     kind: 'stdin' | 'stdout' | 'stderr';
-} | AuthorityPreopen | AuthorityFd | {
+} | AuthorityPreopen | AuthorityFd | ResidentFd | {
     kind: 'pipe';
     pipeId: number;
     end: 'r' | 'w';

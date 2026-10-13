@@ -205,9 +205,10 @@ export async function readDirectoryBatch(fs: RuntimeFsBridge, input: unknown): P
         let handle: RuntimeFileHandle | undefined;
         try {
           const before = await withRecall(() => fs.stat(path));
-          handle = await withRecall(() => fs.open(path, { read: true, directory: true, followSymlinks: true }));
+          // The open answers its stat (RuntimeOpenedFile); the description carries the handle alone.
+          const { stat, ...bare } = await withRecall(() => fs.open(path, { read: true, directory: true, followSymlinks: true }));
+          handle = bare;
           live();
-          const stat = await withRecall(() => fs.fstat(handle!.id));
           let key: string | null;
           try { key = await withRecall(() => bound.place(path, handle!)); }
           catch (error) { if (!SPECULATIVE_REFUSALS.has(String(codeOf(error)))) throw error; key = null; }
