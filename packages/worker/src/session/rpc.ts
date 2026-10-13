@@ -1566,7 +1566,7 @@ export function _rpcProcessHostProbe(self: PeerHostRpcHost): { isolateToken: str
 export function _rpcHostProcess(self: PeerHostRpcHost, boot: unknown, opts: unknown): Promise<HostedReply<{ ok: boolean; incarnation: string }>> {
   return self.peerHost.host(boot, opts);
 }
-export function _rpcAwaitHostedBoot(self: PeerHostRpcHost, workerKey: string): Promise<HostedReply<{ payload: unknown }>> {
+export function _rpcAwaitHostedBoot(self: PeerHostRpcHost, workerKey: string): Promise<HostedReply<{ payload: unknown } | { refused: unknown }>> {
   return self.peerHost.awaitBoot(workerKey);
 }
 export function _rpcRouteHostedHttp(self: PeerHostRpcHost, workerKey: string, wire: HostedHttpRequest): Promise<HostedReply<HostedHttpResponse>> {
