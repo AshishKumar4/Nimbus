@@ -115,14 +115,18 @@ const run = async (origin = process.argv[2]) => {
     };
     const input = entry.flat ? Object.entries(headers).flat() : headers;
     const before = JSON.stringify(input);
-    const response = await request(origin + '/hop?status=' + entry.status + '&target=' + entry.target, {
-      method: entry.method, headers: input,
-      body: body === undefined ? undefined : bodyOf(entry.kind, body),
-      maxRedirections: 3,
-    });
-    const received = JSON.parse(response.headers['x-observed']);
-    await response.body.dump();
-    results.push({ ...entry, statusCode: response.statusCode, received, unchanged: JSON.stringify(input) === before });
+    try {
+      const response = await request(origin + '/hop?status=' + entry.status + '&target=' + entry.target, {
+        method: entry.method, headers: input,
+        body: body === undefined ? undefined : bodyOf(entry.kind, body),
+        maxRedirections: 3,
+      });
+      const received = JSON.parse(response.headers['x-observed']);
+      await response.body.dump();
+      results.push({ ...entry, statusCode: response.statusCode, received, unchanged: JSON.stringify(input) === before });
+    } catch (error) {
+      results.push({ ...entry, error: error.code ?? error.name, message: error.message });
+    }
   }
   const limits = [];
   for (const options of [{}, { maxRedirections: 0, throwOnMaxRedirect: true },
@@ -171,6 +175,7 @@ export function redirectFailures(report) {
     const entry = REDIRECT_CASES[i];
     const result = report.results[i];
     if (!result) continue;
+    if (result.error) { failures.push(`${JSON.stringify(entry)}: ${result.error} ${result.message}`); continue; }
     const label = `${entry.status} ${entry.method} ${entry.target}${entry.flat ? ' flat headers' : ''}${entry.kind ? ` ${entry.kind} body` : ''}`;
     const followed = [300, 301, 302, 303, 307, 308].includes(entry.status) && !SENT_ONCE.includes(entry.kind);
     const rewrite = followed && entry.status === 303 && entry.method !== 'HEAD';
