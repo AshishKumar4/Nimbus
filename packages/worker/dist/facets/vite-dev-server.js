@@ -25,18 +25,16 @@ import { scanCjsExports } from '@nimbus-sh/core/runtime/cjs-export-names.js';
 import { createModuleLexer } from '@nimbus-sh/core/runtime/module-lexer.js';
 import { parseTsconfig } from '@nimbus-sh/core/runtime/tsconfck.js';
 import { viteEsbuildPluginOptions, viteEsbuildSettings, viteTransformOptions, withJsxInject, } from '@nimbus-sh/core/runtime/vite-esbuild-options.js';
-import { getSharedRuntimeExternals, vfsBuildInputs } from '@nimbus-sh/core/runtime/esbuild-service.js';
-import { manifestsOf, prebundleCacheKey, prebundleRequest, recordingManifests, serviceBuildCacheKey, sliceManifests, stillCurrent, userModuleTransformCacheKey, } from '../npm/cache-keys.js';
-import { PREBUNDLE_DEFINE, VITE_DEV_DEFINE, sliceSources } from '@nimbus-sh/core/runtime/prebundle-slice.js';
-import { R_OK } from '@nimbus-sh/core/runtime/process-files.js';
+import { userModuleTransformCacheKey } from '../npm/cache-keys.js';
+import { VITE_DEV_DEFINE } from '@nimbus-sh/core/runtime/prebundle-slice.js';
 import { NpmCache } from '../npm/cache.js';
 import { sha256Base64Url } from '@nimbus-sh/core/_shared/crypto.js';
 import { LruMap } from '@nimbus-sh/core/_shared/lru-map.js';
-import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
-import { VITE_MODULE_CACHE_MAX_ENTRIES, ON_DEMAND_SLICE_CAP_BYTES } from '@nimbus-sh/core/constants.js';
-import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
-import { scanProjectImports, transformParser, namedImportSignature, buildSyntheticEntry, buildScopedSliceForSynthetic, syntheticEntryPath, PROJECT_SCAN, } from '../runtime/barrel-synthesizer.js';
-import { resolvePackageEntry, resolveExports } from '@nimbus-sh/core/_shared/exports-resolver.js';
+import { VITE_MODULE_CACHE_MAX_ENTRIES } from '@nimbus-sh/core/constants.js';
+import { packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
+import { transformParser } from '../runtime/barrel-synthesizer.js';
+import { answersBarrel, barrelInput, buildPrebundle, resolvePrebundleEntry, scanProject, storedPrebundle, } from '../npm/browser-prebundle.js';
+import { resolveExports } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { injectRouterBasename, shouldProcessForRouter } from '@nimbus-sh/core/runtime/router-basename.js';
 import { devStylesheet } from './dev-stylesheet.js';
 import { isViteConfigPath, readViteConfigFile } from './vite-config-file.js';
@@ -1214,17 +1212,6 @@ const HONOURED_ESBUILD_OPTIONS = new Set([
 /** A tsconfig's JSX settings: where one is set, the project decides its JSX. */
 const TSCONFIG_JSX_FIELDS = ['jsx', 'jsxFactory', 'jsxFragmentFactory', 'jsxImportSource'];
 const isStringRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value) && Object.values(value).every((v) => typeof v === 'string');
-/**
- * The options a pre-bundle is built with through the service's build(), the
- * path with no bundle pool: the installer's define, as the pooled build's.
- */
-const SERVICE_PREBUNDLE_OPTIONS = Object.freeze({
-    bundle: true,
-    format: 'esm',
-    platform: 'browser',
-    target: 'esnext',
-    define: PREBUNDLE_DEFINE,
-});
 export class ViteDevServer {
     vfs;
     namespace;
@@ -1332,32 +1319,12 @@ export class ViteDevServer {
         this.define = { ...VITE_DEV_DEFINE, ...(opts.define || {}) };
         this.detectTailwind();
     }
-    /**
-     * The session's pre-bundle pool for on-demand bundling of
-     * /preview/@modules/<spec> requests that miss both the in-memory and
-     * pkg_esm_bundles caches. Null when no pool was provided (the
-     * EsbuildService fallback). Acquired BEFORE the slice lease — see
-     * PrebundlePool.acquire.
-     */
-    async ensureOnDemandPool() {
-        if (!this.bundlePool)
-            return null;
-        return this.bundlePool.acquire();
-    }
-    /**
-     * The bundle_hash a pre-bundle of `specifier` from `sources` has when the
-     * code serving this server made it for this server's request
-     * (npm/cache-keys.ts): by the build facet (the install's, or the pooled
-     * path below), or by the service's build with no pool. The manifests
-     * among `sources` are read now: a row built before a reinstall is not
-     * this one's.
-     */
-    bundleKeys(specifier, sources) {
-        const pooled = prebundleRequest(specifier, manifestsOf(sources, (path) => this.readText(path)));
-        return Promise.all([
-            prebundleCacheKey(pooled),
-            serviceBuildCacheKey(this.esbuild.transformHostId, { ...pooled, options: SERVICE_PREBUNDLE_OPTIONS }),
-        ]);
+    /** What this server's pre-bundles are built and served as (npm/browser-prebundle.ts). */
+    prebundleContext() {
+        return {
+            vfs: this.vfs, root: this.root, cache: this.npmCache, pool: this.bundlePool,
+            parse: transformParser(this.esbuild), esbuild: this.esbuild, serviceFallback: true,
+        };
     }
     /** Detect TailwindCSS usage in the project */
     detectTailwind() {
@@ -1414,25 +1381,6 @@ export class ViteDevServer {
     /** esbuild define set for a request served under `base`. */
     defineFor(base) {
         return { ...this.define, 'import.meta.env.BASE_URL': this.baseUrlValue(base) };
-    }
-    /** Whether this server's principal may read `path`. */
-    /** `path`'s text, or null where this server cannot read it. */
-    readText(path) {
-        try {
-            return this.vfs.readFileString(path);
-        }
-        catch {
-            return null;
-        }
-    }
-    mayRead(path) {
-        try {
-            this.vfs.access(path, R_OK);
-            return true;
-        }
-        catch {
-            return false;
-        }
     }
     /**
      * Module-cache key for `key` under mount base `base`. The transformed text
@@ -1930,50 +1878,25 @@ export class ViteDevServer {
     servablePrebundle(bundled, base) {
         return synthesizeCjsNamedExports(rewriteAllImports(rewriteExternalRequires(bundled, base), this.aliases, base));
     }
-    async getBarrelModuleCacheInfo(specifier) {
-        const pkgName = packageNameFromSpecifier(specifier);
-        if (specifier !== pkgName)
-            return null;
-        const pkgDir = this.root + '/node_modules/' + pkgName;
-        const fileCount = countPackageFiles(this.vfs, pkgDir);
-        if (fileCount <= BARREL_PKG_FILE_THRESHOLD)
-            return null;
-        // Bounded, as every scan of the project in the session's isolate. A
-        // scan that left files unread may miss a name one of them imports, and
-        // an entry synthesized from it would bundle without that export: such
-        // a barrel is bundled whole, as any package is, said once per request.
-        const scan = await scanProjectImports(this.vfs, this.root, transformParser(this.esbuild), PROJECT_SCAN);
-        if (scan.unread !== null) {
-            this.log('warn', `[vite-dev] ${pkgName} is a barrel package (${fileCount} files), but the scan of the project for the names it imports left ${scan.unread} unread; bundling ${pkgName} whole rather than from an entry that could miss one`);
-            return null;
-        }
-        const names = scan.namedImports.get(pkgName) ?? null;
-        return {
-            pkgName,
-            fileCount,
-            names,
-            inputHash: namedImportSignature(pkgName, names),
-        };
-    }
     /**
-     * Whether a cached bundle answers this request. A bundle synthesized from
-     * some names (its inputHash set) answers only a barrel request for those
-     * names; any other request, a barrel's whose project scan left files
-     * unread among them, takes only a whole bundle.
+     * The barrel input of a /@modules request (npm/browser-prebundle.ts
+     * barrelInput): the project is scanned only for a barrel package, and a
+     * scan that left files unread is said, once per request.
      */
-    cachedModuleMatchesBarrelInput(inputHash, barrelInfo) {
-        if (!barrelInfo)
-            return !inputHash;
-        return !!barrelInfo.inputHash && inputHash === barrelInfo.inputHash;
+    moduleBarrel(specifier) {
+        const ctx = this.prebundleContext();
+        return barrelInput(ctx, specifier, () => scanProject(ctx), (pkgName, fileCount, left) => {
+            this.log('warn', `[vite-dev] ${pkgName} is a barrel package (${fileCount} files), but the scan of the project for the names it imports left ${left} unread; bundling ${pkgName} whole rather than from an entry that could miss one`);
+        });
     }
     async serveModule(specifier, headers, base) {
         const JS_CT = 'application/javascript; charset=utf-8';
         const generation = this.configGeneration;
         const cacheKey = this.ck(base, `@modules/${specifier}`);
-        const barrelInfo = await this.getBarrelModuleCacheInfo(specifier);
+        const barrel = await this.moduleBarrel(specifier);
         // 1. In-memory cache (hot path — already bundled)
         const memCached = this.moduleCache.get(cacheKey);
-        if (memCached && this.cachedModuleMatchesBarrelInput(memCached.inputHash, barrelInfo)) {
+        if (memCached && answersBarrel(memCached.inputHash, barrel)) {
             return new Response(memCached.code, {
                 headers: { ...headers, 'Content-Type': JS_CT },
             });
@@ -1981,43 +1904,25 @@ export class ViteDevServer {
         else if (memCached) {
             this.moduleCache.delete(cacheKey);
         }
-        // 2. SQLite pre-bundle cache (warm path — from npm install pre-bundling)
-        //    Pre-bundled modules may contain leaked bare imports if they were built
-        //    with `external` peer deps (see npm-installer.prebundleUsedModules).
-        //    Run them through rewriteAllImports so any remaining bare specifiers
-        //    get the correct /preview/@modules/ URL prefix, then synthesize named
-        //    exports if the bundle only exports default (CJS-only packages).
-        if (this.npmCache) {
-            const esmBundle = this.npmCache.getEsmBundle(specifier);
-            // The cache is the workspace's, shared by every server whoever started
-            // it: a bundle is served only to a principal who may read everything it
-            // was built from, so one that names nothing it was built from is never
-            // served. Otherwise this server builds its own, as itself. And only a
-            // bundle the code serving now made for this request (bundleKeys):
-            // another's (an older engine, another define, a package since
-            // reinstalled) is treated as missing and re-bundled on the cold path.
-            if (esmBundle &&
-                this.cachedModuleMatchesBarrelInput(esmBundle.inputHash, barrelInfo) &&
-                esmBundle.sources.length > 0 &&
-                esmBundle.sources.every((path) => this.mayRead(path)) &&
-                (await this.bundleKeys(specifier, esmBundle.sources)).includes(esmBundle.bundleHash)) {
-                // The persisted bundle is base-independent raw esbuild output; the
-                // base-dependent rewrites (module URLs) are applied here, per request.
-                const code = this.servablePrebundle(esmBundle.esmCode, base);
-                this.cacheModule(generation, cacheKey, { code, timestamp: Date.now(), inputHash: esmBundle.inputHash });
-                return new Response(code, {
-                    headers: { ...headers, 'Content-Type': JS_CT },
-                });
-            }
+        // 2. The workspace's stored pre-bundle (the installer's warming or an
+        //    earlier request), raw: the base-dependent rewrites are this
+        //    request's (servablePrebundle).
+        const stored = await storedPrebundle(this.prebundleContext(), specifier, barrel);
+        if (stored) {
+            const code = this.servablePrebundle(stored.esmCode, base);
+            this.cacheModule(generation, cacheKey, { code, timestamp: Date.now(), inputHash: stored.inputHash });
+            return new Response(code, {
+                headers: { ...headers, 'Content-Type': JS_CT },
+            });
         }
         // ── Cold path coalescing ──────────────────────────────────────
         // Multiple parallel browser requests for the same module are
         // common on first preview load; coalesce so exactly ONE bundle
-        // attempt runs per spec. Across DIFFERENT specs, the cold path
-        // leases its slice bytes from the shared supervisor allocation
-        // budget before building, so it queues behind every other heavy
-        // owner in this isolate (the pre-bundler included) instead of
-        // stacking slices beside them. See `pendingBundles`.
+        // attempt runs per spec. Across DIFFERENT specs, the build leases
+        // its slice bytes from the shared supervisor allocation budget, so
+        // it queues behind every other heavy owner in this isolate (the
+        // installer's warming included) instead of stacking slices beside
+        // them. See `pendingBundles`.
         //
         // The shared promise resolves to a Response nobody consumes
         // directly: a Response body is readable once, so every coalesced
@@ -2025,7 +1930,7 @@ export class ViteDevServer {
         const inflight = this.pendingBundles.get(cacheKey);
         if (inflight)
             return inflight.then((response) => response.clone());
-        const coldPromise = this.serveModuleCold(specifier, headers, base, barrelInfo);
+        const coldPromise = this.serveModuleCold(specifier, headers, base, barrel);
         this.pendingBundles.set(cacheKey, coldPromise);
         // Drop the coalescing entry once settled. Subsequent requests
         // for the same spec will hit the moduleCache (set inside the
@@ -2034,348 +1939,53 @@ export class ViteDevServer {
         return coldPromise.then((response) => response.clone());
     }
     /**
-     * Cold path of serveModule: package resolution → on-demand facet
-     * bundle (synthetic-entry for barrels) → hard-error if bundle fails.
-     * NO CDN fallback (100% edge contract). Extracted so the coalescing
-     * wrapper in serveModule() reads cleanly. The slice this body builds is
-     * leased from the shared supervisor allocation budget for its worst
-     * case before it is built, shrunk to its real size once built, and
-     * released only after the facet result has been rewritten, cached and
-     * wrapped in the Response — the pre-bundler's per-slice pattern.
+     * Cold path of serveModule: the specifier's bundle built on demand
+     * (npm/browser-prebundle.ts buildPrebundle: a synthetic entry for a
+     * barrel), its Response made while the build's slice allocation is still
+     * held; a module that says why when there is none. NO CDN fallback (100%
+     * edge contract).
      */
-    async serveModuleCold(specifier, headers, base, knownBarrelInfo = null) {
+    async serveModuleCold(specifier, headers, base, barrel) {
         const JS_CT = 'application/javascript; charset=utf-8';
         const cacheKey = this.ck(base, `@modules/${specifier}`);
         const generation = this.configGeneration;
-        // 3. On-demand bundle (cold path — resolve from node_modules, bundle via esbuild)
-        //
-        // Architecture: this used to call this.esbuild.build(...) in the
-        // supervisor isolate. For large modules (lucide-react, ~18 MiB
-        // unpacked) that OOM'd the supervisor and surfaced as CF error
-        // 1101 on /preview/@modules/lucide-react, taking down the entire
-        // preview. We now dispatch the bundle work to the session's build
-        // facet from a slice — the same pool and isolate the install-time
-        // pre-bundler uses. The supervisor never runs a bundler.
-        //
-        // Falls back to the EsbuildService (its build host) ONLY if no bundle
-        // pool was provided (legacy callers / tests).
-        const resolved = this.resolvePackage(specifier);
-        // Why no bundle came of it, for the module served instead.
-        let failure = resolved ? null : 'its entry module could not be resolved in node_modules';
-        // Barrel packages (lucide-react, @phosphor-icons/react, react-icons,
-        // @mui/icons-material, …) ship hundreds/thousands of tiny re-export
-        // files. Bundling the whole barrel OOMs esbuild's 128 MiB facet.
-        // Instead we synthesize a tiny entry from the user's actual named
-        // imports (`export { Home, FileText } from 'pkg'`) and bundle THAT
-        // through the standard facet path — esbuild tree-shakes the rest.
-        // 100% edge: NO esm.sh / CDN fallback.
-        if (resolved) {
-            const pkgName = packageNameFromSpecifier(specifier);
-            const pkgDir = this.root + '/node_modules/' + pkgName;
-            const barrelInfo = knownBarrelInfo ?? await this.getBarrelModuleCacheInfo(specifier);
-            const fileCount = barrelInfo?.fileCount ?? countPackageFiles(this.vfs, pkgDir);
-            const isBarrel = !!barrelInfo && specifier === pkgName;
-            let bundled = null;
-            const externals = getSharedRuntimeExternals(specifier);
-            const onDemandPool = await this.ensureOnDemandPool().catch(() => null);
-            // Determine the entry path the facet should bundle:
-            //   - non-barrel:  the package's resolved main entry
-            //   - barrel:      a synthesized entry written to VFS that
-            //                  re-exports just the named imports the user's
-            //                  source uses. esbuild tree-shakes the rest.
-            let bundleEntryPath = resolved;
-            // A module its principal may not read is refused (403), not bundled
-            // from whatever of its package the principal can see.
-            this.vfs.access(resolved, R_OK);
-            // What the bundle was built from, recorded with it in the shared cache,
-            // and its key there (bundleKeys): what built it, for which request.
-            let bundledSources = [];
-            let bundledHash = '';
-            // The manifests it was built from, as the build read them: checked still current before it is stored.
-            let bundledManifests = [];
-            // Whether the build read a manifest as other than recorded (recordingManifests).
-            let bundledMoved = false;
-            let synthetic = false;
-            let syntheticReferencedFiles = null;
-            if (isBarrel) {
-                const names = barrelInfo.names;
-                if (!names || names.size === 0) {
-                    // No statically-resolvable imports. We refuse to CDN-fallback
-                    // (100% edge contract) AND we refuse to bundle the whole
-                    // barrel (would OOM the facet). barrel fallback support: return
-                    // a 200 module that throws as it runs (failingModule) so the
-                    // error surfaces in the BROWSER (where the user is looking) AND
-                    // on the dev-server log (Process tab) — instead of an opaque
-                    // 500 in the network panel.
-                    const diag = `[vite-dev] cannot bundle ${specifier}: barrel package (${fileCount} files) ` +
-                        `with no static named imports detected in user source. ` +
-                        `Dynamic imports / computed-name access can't be tree-shaken. ` +
-                        `Add explicit imports like ` +
-                        `\`import { IconName } from '${pkgName}'\` so Nimbus can synthesize ` +
-                        `a tree-shakable entry.`;
-                    this.log('error', diag);
-                    return new Response(failingModule(diag, []), {
-                        status: 200,
-                        headers: { ...headers, 'Content-Type': JS_CT, 'X-Nimbus-Bundle-Status': 'no-static-imports' },
-                    });
-                }
-                const nmDirOnDemand = this.root + '/node_modules';
-                const synth = buildSyntheticEntry(this.vfs, nmDirOnDemand, pkgName, names);
-                if (!synth) {
-                    // barrel fallback support: emit an honest 200 stub instead of a
-                    // 500. The stub has the same effect at runtime (any access
-                    // throws), but the network response is a parseable JS module
-                    // so the browser's module loader doesn't crash with an
-                    // unrelated "failed to fetch" error that obscures the real
-                    // diagnostic.
-                    const diag = `Nimbus: synthetic entry generation failed for ${specifier} (barrel: ${fileCount} files; ${names.size} static imports). The package's index does not match any pattern Nimbus's barrel synthesizer understands (export {…} from, export * from, top-level decls). File a bug.`;
-                    this.log('error', diag);
-                    return new Response(failingModule(diag, names), {
-                        status: 200,
-                        headers: { ...headers, 'Content-Type': JS_CT, 'X-Nimbus-Bundle-Status': 'synth-null' },
-                    });
-                }
-                const synthPath = syntheticEntryPath(this.root, pkgName);
-                try {
-                    this.vfs.mkdir(synthPath.substring(0, synthPath.lastIndexOf('/')), { recursive: true });
-                    this.vfs.writeFile(synthPath, synth.code);
-                }
-                catch (e) {
-                    // barrel fallback support: same 200-stub pattern as the synth-null
-                    // branch above. VFS write failure is rare but distinct from a
-                    // synthesizer gap, so we keep the diagnostic header value
-                    // separate for log triage.
-                    const msg = `[vite-dev] failed to write synthetic entry for ${specifier}: ${e?.message || e}`;
-                    this.log('error', msg);
-                    return new Response(failingModule(msg, names), {
-                        status: 200,
-                        headers: { ...headers, 'Content-Type': JS_CT, 'X-Nimbus-Bundle-Status': 'vfs-write-failed' },
-                    });
-                }
-                bundleEntryPath = synthPath;
-                synthetic = true;
-                // Stash the referenced files so the slice-build below uses
-                // a SCOPED slice instead of the standard whole-package walk.
-                syntheticReferencedFiles = synth.referencedFiles;
-                this.log('warn', `[vite-dev] synthesized entry for ${specifier} ` +
-                    `(barrel: ${fileCount} files; ${names.size} static imports → tree-shaken bundle)`);
-            }
-            // Held from before the slice is built until the Response wrapping
-            // its bundle exists — see the method doc. Null on the legacy path.
-            let sliceLease = null;
-            try {
-                if (onDemandPool) {
-                    // Facet path — the supervisor holds no bundler.
-                    try {
-                        const { buildSliceForSpecifierWithCap } = await import('../npm/pre-bundle-facet.js');
-                        const SLICE_CAP_BYTES = ON_DEMAND_SLICE_CAP_BYTES;
-                        const projDir = this.root;
-                        const nmDir = projDir + '/node_modules';
-                        // Lease the slice's worst-case supervisor footprint BEFORE it is
-                        // allocated. FIFO byte credit is what stops this slice from
-                        // stacking beside a pre-bundle slice, a streamed install write or
-                        // a VFS read that independently claimed the same shared-isolate
-                        // headroom. The pool was acquired above, so nothing this waits
-                        // on is waiting on us.
-                        sliceLease = await acquireSupervisorAllocation(SLICE_CAP_BYTES);
-                        let slice = null;
-                        if (synthetic && syntheticReferencedFiles) {
-                            // SCOPED slice: only the files the synthetic entry directly
-                            // references (+ transitive relative imports + package.json).
-                            // Skips the full package walk so icon-libraries with
-                            // thousands of files don't blow the 28 MiB cap.
-                            const scoped = await buildScopedSliceForSynthetic(this.vfs, nmDir, pkgName, syntheticReferencedFiles, transformParser(this.esbuild));
-                            const built = {
-                                slice: scoped.entries,
-                                totalBytes: scoped.totalBytes,
-                            };
-                            try {
-                                const bytes = this.vfs.readFile(bundleEntryPath);
-                                const parentDir = bundleEntryPath.substring(0, bundleEntryPath.lastIndexOf('/'));
-                                built.slice.push({ path: '/' + parentDir.replace(/^\/+/, ''), isDir: true });
-                                built.slice.push({
-                                    path: '/' + bundleEntryPath.replace(/^\/+/, ''),
-                                    bytes,
-                                    isDir: false,
-                                });
-                                built.totalBytes += bytes.length + bundleEntryPath.length;
-                            }
-                            catch (e) {
-                                this.log('error', '[vite-dev] synthetic entry unreadable for ' + specifier + ': ' + (e?.message || e));
-                            }
-                            slice = built;
-                        }
-                        else {
-                            slice = buildSliceForSpecifierWithCap(this.vfs, specifier, nmDir, SLICE_CAP_BYTES);
-                        }
-                        if (slice) {
-                            // The real size is known now: give back the credit the slice
-                            // did not use so smaller owners can proceed beside it. The
-                            // lease only shrinks to a positive size no larger than itself.
-                            if (slice.totalBytes > 0 && slice.totalBytes < sliceLease.bytes) {
-                                sliceLease.shrinkTo(slice.totalBytes);
-                            }
-                            // Build the spec, then drop our supervisor-side handle to
-                            // the slice array immediately — `spec` is the only thing
-                            // that needs to keep it alive until the RPC structured-clone
-                            // completes. Mirrors the install-time runSlot pattern (see
-                            // commit 40cfc01); the lease above keeps every other budget
-                            // owner from allocating beside it until the Response exists.
-                            const sources = sliceSources(slice.slice);
-                            // The installer's define (base-neutral: the @modules bundle is
-                            // persisted raw and shared across mounts, module URLs get the
-                            // per-request base at serve time), so either's row is the
-                            // other's; its manifests as the slice read them.
-                            const request = prebundleRequest(specifier, sliceManifests(slice.slice, (path) => this.readText(path)));
-                            const bundleHash = await prebundleCacheKey(request);
-                            let spec = {
-                                specifier,
-                                entryPath: bundleEntryPath,
-                                externals: [...request.externals],
-                                slice: slice.slice,
-                                bundlerVersion: bundleHash,
-                                define: PREBUNDLE_DEFINE,
-                            };
-                            slice = null;
-                            let result = null;
-                            try {
-                                result = await onDemandPool.prebundle(spec);
-                            }
-                            finally {
-                                spec = null;
-                            }
-                            if (result && result.ok && result.esmCode) {
-                                bundled = result.esmCode;
-                                bundledSources = sources;
-                                bundledHash = bundleHash;
-                                bundledManifests = request.manifests;
-                            }
-                            else if (result && result.errorText) {
-                                this.log('error', '[vite-dev] facet bundle failed for ' + specifier + ': ' + result.errorText);
-                                failure = 'its bundle failed: ' + result.errorText;
-                            }
-                            result = null;
-                        }
-                        else {
-                            this.log('error', '[vite-dev] slice walker exceeded cap for ' + specifier);
-                            failure = `its files exceed the ${(SLICE_CAP_BYTES / (1024 * 1024)).toFixed(0)} MiB a bundle may be built from`;
-                        }
-                    }
-                    catch (e) {
-                        this.log('error', '[vite-dev] on-demand facet dispatch failed for ' + specifier + ': ' + (e?.message || e));
-                        failure = String(e?.message || e);
-                    }
-                }
-                else {
-                    // Fallback — the EsbuildService's build (its build host). Used
-                    // only when no bundle pool was provided.
-                    try {
-                        // The build reads through `fs`, which records each source's
-                        // manifests as it reads it: the bundle is keyed on what it was
-                        // built from, not on what they read as once it is done.
-                        const recording = recordingManifests((path) => this.readText(path));
-                        const vfs = this.vfs;
-                        const fs = {
-                            exists: (path) => vfs.exists(path),
-                            isDirectory: (path) => vfs.isDirectory(path),
-                            readFile: (path) => {
-                                const bytes = vfs.readFile(path);
-                                recording.saw(path, path.endsWith('/package.json') ? new TextDecoder().decode(bytes) : undefined);
-                                return bytes;
-                            },
-                            readFileString: (path) => {
-                                const text = vfs.readFileString(path);
-                                recording.saw(path, text);
-                                return text;
-                            },
-                        };
-                        const result = await this.esbuild.build([bundleEntryPath], {
-                            ...SERVICE_PREBUNDLE_OPTIONS,
-                            define: { ...SERVICE_PREBUNDLE_OPTIONS.define },
-                            external: externals.length > 0 ? externals : undefined,
-                            fs,
-                        });
-                        if (result.outputFiles?.length) {
-                            bundled = result.outputFiles[0].contents;
-                            bundledSources = vfsBuildInputs(result.metafile);
-                            bundledManifests = recording.manifests(bundledSources);
-                            bundledMoved = recording.moved();
-                            bundledHash = await serviceBuildCacheKey(this.esbuild.transformHostId, {
-                                ...prebundleRequest(specifier, bundledManifests), options: SERVICE_PREBUNDLE_OPTIONS,
-                            });
-                        }
-                    }
-                    catch (e) {
-                        this.log('error', '[vite-dev] esbuild bundle failed for ' + specifier + ': ' + (e?.message || e));
-                        failure = String(e?.message || e);
-                    }
-                }
-                if (bundled !== null) {
-                    // Persist the RAW esbuild output. It is base-independent — the only
-                    // base-dependent step is the module-URL rewrite below, applied at
-                    // serve time — so one persisted bundle serves every mount (the
-                    // `/preview/` path and the `<port>--<sid>` host alike). Caching the
-                    // post-rewrite text instead would pin the bundle to whichever base
-                    // built it first and 404 the other. Cache ONLY successful bundles;
-                    // a failed build left `bundled` null and never reaches here.
-                    // A bundle whose sources are unknown would never be served from the cache.
-                    // One whose manifests moved under the build (a reinstall while it
-                    // ran) is served to this request, not stored under them.
-                    const current = !bundledMoved && stillCurrent(bundledManifests, (path) => this.readText(path));
-                    if (!current)
-                        this.log('warn', `[vite-dev] ${specifier} changed while it was bundled: served, not cached`);
-                    if (this.npmCache && bundledSources.length > 0 && current) {
-                        try {
-                            this.npmCache.putEsmBundle({
-                                specifier,
-                                // Keyed by what built it (the pool's build facet, or the
-                                // service), for which request.
-                                bundleHash: bundledHash,
-                                esmCode: bundled,
-                                builtAt: Date.now(),
-                                inputHash: barrelInfo?.inputHash ?? '',
-                                sources: bundledSources,
-                            });
-                        }
-                        catch { /* non-fatal */ }
-                    }
-                    const code = this.servablePrebundle(bundled, base);
-                    this.cacheModule(generation, cacheKey, { code, timestamp: Date.now(), inputHash: barrelInfo?.inputHash ?? '' });
-                    return new Response(code, {
-                        headers: { ...headers, 'Content-Type': JS_CT },
-                    });
-                }
-            }
-            finally {
-                sliceLease?.release();
-            }
-            // Bundle failed — fall through to the hard-error response below.
-            // Previously fell through to a CDN fallback (esm.sh) but that
-            // violated the 100% edge contract.
+        const outcome = await buildPrebundle(this.prebundleContext(), specifier, barrel, (bundled) => {
+            const code = this.servablePrebundle(bundled, base);
+            this.cacheModule(generation, cacheKey, { code, timestamp: Date.now(), inputHash: barrel?.inputHash ?? '' });
+            return new Response(code, { headers: { ...headers, 'Content-Type': JS_CT } });
+        });
+        if (outcome.kind === 'built') {
+            if (outcome.changed)
+                this.log('warn', `[vite-dev] ${specifier} changed while it was bundled: served, not cached`);
+            if (barrel)
+                this.log('warn', `[vite-dev] synthesized entry for ${specifier} (barrel: ${barrel.fileCount} files; ${barrel.names?.size ?? 0} static imports → tree-shaken bundle)`);
+            return outcome.served;
         }
-        // 4. NOT-INSTALLED → STUB; BUNDLE-FAILED → HARD ERROR.
-        //    NO CDN fallback (100% edge contract).
-        //
-        // Two distinct failure modes need different responses:
+        // A barrel that cannot be synthesized: a 200 module that throws as it
+        // runs (failingModule), so the cause surfaces in the BROWSER and on the
+        // dev server's log, not as an opaque 500 in the network panel.
+        if (outcome.kind === 'refused' && outcome.status !== 'native') {
+            this.log('error', `[vite-dev] ${outcome.message}`);
+            return new Response(failingModule(outcome.message, outcome.names), {
+                status: 200,
+                headers: { ...headers, 'Content-Type': JS_CT, 'X-Nimbus-Bundle-Status': outcome.status },
+            });
+        }
+        const failure = outcome.kind === 'unresolved' ? 'its entry module could not be resolved in node_modules' : outcome.message;
+        if (outcome.kind !== 'unresolved')
+            this.log('error', `[vite-dev] bundle failed for ${specifier}: ${failure}`);
+        // NOT-INSTALLED → STUB; BUNDLE-FAILED → HARD ERROR. NO CDN fallback.
         //
         // a. Package not installed locally. This is common for OPTIONAL
         //    peer-deps surfaced by transitive imports — e.g. framer-motion
         //    does `try { import('@emotion/is-prop-valid') } catch {}` for a
-        //    runtime feature flag. Pre-bundle's slice walker marks the
-        //    unresolved import as external; the browser then fetches
-        //    /preview/@modules/@emotion/is-prop-valid. Returning a 503
-        //    with `throw new Error(...)` would fail the entire module graph
-        //    BEFORE framer-motion's try/catch runs (the throw happens at
-        //    module-load time, not at function-call time). Instead we serve
-        //    a tiny stub:
-        //
-        //        export default undefined;
-        //        export const __nimbus_optional_dep_stub = true;
-        //
-        //    The browser-side library's runtime feature-detect picks up the
-        //    undefined and gracefully degrades. NO crash, NO CDN hit, NO
-        //    accidental "you forgot to install X" silent failure (we log
-        //    a clear warning to the supervisor for visibility).
+        //    runtime feature flag. The slice walker marks the unresolved
+        //    import as external; the browser then fetches
+        //    /preview/@modules/@emotion/is-prop-valid. A module that throws
+        //    would fail the entire module graph BEFORE framer-motion's
+        //    try/catch runs (the throw happens at module-load time). Instead
+        //    we serve a tiny stub whose default is undefined, which the
+        //    library's feature-detect degrades on, and log it.
         //
         // b. Package IS installed but bundling failed (slice cap, a build
         //    facet reset twice, unresolvable internal import). Serve a module
@@ -2399,17 +2009,18 @@ export class ViteDevServer {
             });
         }
         const diag = `[vite-dev] cannot serve /preview/@modules/${specifier}: ` +
-            `Nimbus could not bundle it: ${failure ?? 'its bundle produced no output'}. Reload the page to try again; ` +
+            `Nimbus could not bundle it: ${failure}. Reload the page to try again; ` +
             `the dev server's log (Process tab) has the details.`;
         this.log('error', diag);
         // A module that links against whatever its importers ask of it and
         // throws `diag` as it runs (failingModule): the browser shows this
         // cause, not a missing export of an empty stub. Not cached, so a
         // reload bundles again.
-        const names = new Set(resolved ? moduleExportNames(this.vfs, resolved) : []);
+        const entry = resolvePrebundleEntry(this.vfs, this.root, specifier);
+        const names = new Set(entry ? moduleExportNames(this.vfs, entry) : []);
         if (specifier === pkgName) {
             try {
-                const scan = await scanProjectImports(this.vfs, this.root, transformParser(this.esbuild), PROJECT_SCAN);
+                const scan = await scanProject(this.prebundleContext());
                 if (scan.unread !== null)
                     this.log('warn', `[vite-dev] the module served for ${specifier} declares the names the project imports from it as far as its scan read: it left ${scan.unread} unread`);
                 for (const name of scan.namedImports.get(pkgName) ?? [])
@@ -2426,139 +2037,6 @@ export class ViteDevServer {
                 'X-Nimbus-Bundle-Status': 'bundle-failed',
             },
         });
-    }
-    /**
-     * Resolve a bare package specifier (possibly with subpath) to a VFS file path.
-     *
-     * Algorithm:
-     *   1. Parse into pkgName + subpath (e.g. "pkg/sub/deep" → pkg="pkg", subpath="sub/deep")
-     *   2. Walk search dirs looking for node_modules/<pkg>/
-     *   3. PREFER exports-field resolution (modern packages) with conditions
-     *      [import, module, browser, default]
-     *   4. FALL BACK to legacy resolution (packages without exports field):
-     *      a. For subpath: try <nmDir>/<subpath>.{js,mjs,cjs,jsx,ts,tsx} — direct file
-     *      b. For subpath: try <nmDir>/<subpath>/index.{js,mjs,cjs,jsx,ts,tsx}
-     *      c. For subpath: try <nmDir>/<subpath>/package.json → read module/main
-     *      d. For root: try pkg.module / pkg.main, then tryResolveFile
-     *      e. For root: try <nmDir>/index.{ext}
-     *
-     * Step 4c is what makes `react-remove-scroll-bar/constants` work for legacy
-     * packages without an exports field — the subpath directory has its own
-     * package.json (or just an index.js that we pick up in 4b).
-     */
-    resolvePackage(specifier) {
-        let pkgName;
-        let subpath;
-        if (specifier.startsWith('@')) {
-            const parts = specifier.split('/');
-            pkgName = parts.slice(0, 2).join('/');
-            subpath = parts.slice(2).join('/');
-        }
-        else {
-            const parts = specifier.split('/');
-            pkgName = parts[0];
-            subpath = parts.slice(1).join('/');
-        }
-        const searchDirs = [this.root, 'home/user', 'usr/share/pkg'];
-        for (const dir of searchDirs) {
-            const nmDir = dir + '/node_modules/' + pkgName;
-            if (!this.vfs.exists(nmDir))
-                continue;
-            // Read the owning package.json once.
-            const pkgJsonPath = nmDir + '/package.json';
-            let pkg = null;
-            if (this.vfs.exists(pkgJsonPath)) {
-                try {
-                    pkg = JSON.parse(this.vfs.readFileString(pkgJsonPath));
-                }
-                catch { /* malformed */ }
-            }
-            // 1. EXPORTS-FIELD RESOLUTION (modern packages like zustand, vfile).
-            //    Only attempt if the package actually declares exports. For a subpath
-            //    that isn't in exports, resolveExports returns null — we fall through
-            //    to legacy resolution rather than treating the miss as fatal.
-            if (pkg?.exports) {
-                const entry = resolvePackageEntry(pkg, subpath ? './' + subpath : '.');
-                if (entry) {
-                    // Normalize to collapse any ../ segments from relative entry paths.
-                    const resolved = this.tryResolveFile(normalizeVfsPath(nmDir + '/' + entry.replace(/^\.\//, '')));
-                    if (resolved)
-                        return resolved;
-                }
-            }
-            // 2. LEGACY SUBPATH (no exports field, or exports didn't cover this subpath).
-            //    Packages like react-remove-scroll-bar expose their structure directly
-            //    through `files` and flat directory layout. This block walks the
-            //    usual Node.js legacy resolution:
-            //      a) <subpath>.{ext}          — direct file
-            //      b) <subpath>/index.{ext}    — directory with index
-            //      c) <subpath>/package.json   — nested package.json (pkg/module/main)
-            //
-            //    Branch (c) is critical for packages like react-remove-scroll-bar
-            //    whose `constants/package.json` points OUT of the directory with
-            //    `"module": "../dist/es2015/constants.js"`. The resulting path
-            //    `constants/../dist/es2015/constants.js` MUST be normalized to
-            //    `dist/es2015/constants.js` before VFS lookup.
-            if (subpath) {
-                // (a) + (b) combined — tryResolveFile handles both
-                const direct = this.tryResolveFile(normalizeVfsPath(nmDir + '/' + subpath));
-                if (direct)
-                    return direct;
-                // (c) nested package.json
-                const nestedPkgPath = nmDir + '/' + subpath + '/package.json';
-                if (this.vfs.exists(nestedPkgPath)) {
-                    try {
-                        const nested = JSON.parse(this.vfs.readFileString(nestedPkgPath));
-                        const entry = nested.module || nested.main || 'index.js';
-                        // Normalize to collapse ../ segments — critical when a nested
-                        // package.json redirects to a sibling directory (common pattern
-                        // for legacy packages shipping both es5 and es2015 builds).
-                        const resolved = this.tryResolveFile(normalizeVfsPath(nmDir + '/' + subpath + '/' + entry.replace(/^\.\//, '')));
-                        if (resolved)
-                            return resolved;
-                    }
-                    catch { /* malformed */ }
-                }
-            }
-            // 3. ROOT ENTRY (no subpath) via module/main fields.
-            if (!subpath && pkg) {
-                const entry = pkg.module || pkg.main;
-                if (entry) {
-                    const resolved = this.tryResolveFile(normalizeVfsPath(nmDir + '/' + entry.replace(/^\.\//, '')));
-                    if (resolved)
-                        return resolved;
-                }
-            }
-            // 4. Last resort — <pkgRoot>/index.{ext}
-            const fallback = this.tryResolveFile(nmDir + '/index');
-            if (fallback)
-                return fallback;
-        }
-        return null;
-    }
-    tryResolveFile(base) {
-        // Defense in depth: normalize input even if callers already did. The VFS
-        // treats `..` as a literal path component (no traversal resolution at
-        // lookup time), so any un-normalized `../` in the path will miss.
-        const norm = normalizeVfsPath(base);
-        // Covers .cjs and .mts/.cts too — legacy packages use .cjs,
-        // some modern packages use .mts for their ESM build.
-        const exts = ['', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.mts', '.cts', '.json'];
-        for (const ext of exts) {
-            const p = norm + ext;
-            if (this.vfs.exists(p) && !this.vfs.isDirectory(p))
-                return p;
-        }
-        // Directory index fallback.
-        if (this.vfs.exists(norm) && this.vfs.isDirectory(norm)) {
-            const idxExts = ['index.js', 'index.mjs', 'index.cjs', 'index.ts', 'index.tsx', 'index.jsx'];
-            for (const idx of idxExts) {
-                const p = norm + '/' + idx;
-                if (this.vfs.exists(p) && !this.vfs.isDirectory(p))
-                    return p;
-            }
-        }
-        return null;
     }
     // ── File serving ──────────────────────────────────────────────────────
     /**
