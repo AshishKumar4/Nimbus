@@ -22,8 +22,8 @@ const encoder = new TextEncoder();
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const USER = CRED_SESSION_USER.uid;
 
-/** A runtime package whose one command is `toy`, run by `toy-runner`. */
-function toyPackage() {
+/** A runtime package whose one command is `toy`, run by `runner`. */
+function toyPackage({ name = 'toy', version = '1.0.0', runner = 'toy-runner' } = {}) {
   const contents = { 'bin/toy': '# toy launcher marker\n', 'share/toy/data': 'data\n' };
   const files = Object.entries(contents).map(([path, text], i) => ({
     path, content: `blobs/toy/${i}`, sha256: sha256(encoder.encode(text)), size: encoder.encode(text).length,
@@ -32,8 +32,8 @@ function toyPackage() {
   const blobs = new Map(files.map((file, i) => [file.content, encoder.encode(Object.values(contents)[i])]));
   return {
     manifest: {
-      name: 'toy', version: '1.0.0', license: 'MIT', wasi_namespace: 'wasi_snapshot_preview1', files,
-      entrypoints: [{ binName: 'toy', runner: 'toy-runner', args: [] }],
+      name, version, license: 'MIT', wasi_namespace: 'wasi_snapshot_preview1', files,
+      entrypoints: [{ binName: 'toy', runner, args: [] }],
     },
     readBlob: (file) => blobs.get(file.content),
   };
@@ -78,20 +78,37 @@ const ETC = ['etc/profile', 'etc/hostname', 'etc/os-release'];
   assert.equal(kernel.lstat('usr/bin/toy').type, 'symlink', 'the launcher is a link');
   assert.equal(kernel.readlink('usr/bin/toy'), '/usr/lib/nimbus/toy/1.0.0/bin/toy');
   assert.equal(kernel.exists('home/user/.nimbus/runtimes'), false, 'nothing below HOME');
-  for (const line of ['toy', '/usr/bin/toy', 'which toy']) {
-    const ran = await ws.exec(line);
-    assert.equal(ran.exitCode, 0, `${line}: ${ran.stderr}`);
-  }
+  assert.equal((await ws.exec('toy')).stdout, 'ran toy from usr/lib/nimbus/toy/1.0.0\n');
   assert.equal((await ws.exec('/usr/bin/toy')).stdout, 'ran toy from usr/lib/nimbus/toy/1.0.0\n', 'the launcher runs it by path');
-  assert.equal((await ws.exec('which toy')).stdout, '/usr/bin/toy\n');
+  // Its target keeps the mode it was installed with: a marker, not a program
+  // a guest Bash could run as a script.
+  assert.equal(kernel.stat('usr/lib/nimbus/toy/1.0.0/bin/toy').mode & 0o111, 0, 'the marker is not made executable');
 
-  // A file of the user's own at a launcher's name is never replaced.
+  // A file someone put at a launcher's name is never replaced, and runs as itself.
   kernel.unlink('usr/bin/toy');
   kernel.writeFile('usr/bin/toy', '#!/bin/sh\necho mine\n', { mode: 0o755 });
   await ws.runtimes.installPackage(toyPackage(), { force: true });
   assert.equal(kernel.lstat('usr/bin/toy').type, 'file', 'a file at the launcher\'s name is left');
+  assert.equal((await ws.exec('/usr/bin/toy')).stdout, 'mine\n', 'and runs as itself');
+  assert.equal((await ws.exec('toy')).stdout, 'ran toy from usr/lib/nimbus/toy/1.0.0\n', 'the name still runs the runtime');
   kernel.unlink('usr/bin/toy');
   await ws.runtimes.installPackage(toyPackage(), { force: true });
+
+  // Two versions installed at once: one launcher, the version its name runs.
+  const [, second] = await Promise.all([
+    ws.runtimes.installPackage(toyPackage({ version: '2.0.0' })),
+    ws.runtimes.installPackage(toyPackage({ version: '3.0.0' })),
+  ]);
+  const serving = (await ws.exec('toy')).stdout.trim().split(' from ')[1];
+  assert.equal(kernel.readlink('usr/bin/toy'), `/${serving}/bin/toy`, 'the launcher leads to the version the name runs');
+  assert.equal((await ws.exec('/usr/bin/toy')).stdout, `ran toy from ${serving}\n`);
+  void second;
+  await ws.exec('nimbus uninstall toy@2.0.0');
+  await ws.exec('nimbus uninstall toy@3.0.0');
+
+  // A package whose runner this workspace lacks links no launcher.
+  await ws.runtimes.installPackage(toyPackage({ name: 'retired', runner: 'retired-runner' }));
+  assert.equal(kernel.readlink('usr/bin/toy'), '/usr/lib/nimbus/toy/1.0.0/bin/toy', 'a runtime nothing runs takes no launcher');
 
   // Uninstall takes the launcher with it.
   const removed = await ws.exec('nimbus uninstall toy');
@@ -140,6 +157,61 @@ const ETC = ['etc/profile', 'etc/hostname', 'etc/os-release'];
   assert.equal(again.vfs.as(CRED_KERNEL).readlink('home/user/.nimbus/runtimes'), '/usr/lib/nimbus');
   db.close();
   console.log('  a session an earlier release made moves over, once');
+}
+
+// ── what a user owned under /usr before is not the kernel's to follow ─────
+{
+  const db = new Database(':memory:');
+  const kernel0 = (await open(db)).vfs.as(CRED_KERNEL);
+  for (const dir of [...ROOTS].reverse()) kernel0.chown(dir, USER, USER);
+  const user0 = (await open(db)).vfs.as(CRED_SESSION_USER);
+  // As an earlier release let the user: /usr/lib a link to its home, and a
+  // runtime of its own making in a store directory of its own.
+  user0.rename('usr/lib', 'usr/lib-old');
+  user0.symlink('/home/user', 'usr/lib');
+  user0.mkdir('usr/share/x/nimbus', { recursive: true });
+  const ws = await open(db);
+  const kernel = ws.vfs.as(CRED_KERNEL);
+  assert.equal(kernel.lstat('usr/lib').type, 'symlink', 'the link is left');
+  assert.equal(kernel.exists('home/user/node_modules'), false, 'nothing is made through it');
+  assert.equal(kernel.lstat('home/user').uid, USER, 'nor is what it leads to taken');
+  await assert.rejects(ws.runtimes.installPackage(toyPackage()), /usr\/lib/, 'nothing installs through it');
+  db.close();
+  console.log('  what a user owned under /usr before is not the kernel\'s to follow');
+}
+{
+  const db = new Database(':memory:');
+  const kernel0 = (await open(db)).vfs.as(CRED_KERNEL);
+  kernel0.chown('usr/lib', USER, USER);
+  const user0 = kernel0; void user0;
+  const user = (await open(db)).vfs.as(CRED_SESSION_USER);
+  // A runtime of the user's own making in a store the user made.
+  const pkg = toyPackage({ name: 'forged' });
+  user.mkdir('usr/lib/nimbus/forged/1.0.0/bin', { recursive: true });
+  user.mkdir('usr/lib/nimbus/forged/1.0.0/share/toy', { recursive: true });
+  for (const file of pkg.manifest.files) user.writeFile(`usr/lib/nimbus/forged/1.0.0/${file.path}`, pkg.readBlob(file));
+  user.writeFile('usr/lib/nimbus/forged/1.0.0/manifest.json', JSON.stringify(pkg.manifest));
+  const ws = await open(db);
+  const kernel = ws.vfs.as(CRED_KERNEL);
+  assert.equal(kernel.lstat('usr/lib/nimbus').uid, 0, 'the store becomes root\'s');
+  assert.equal(kernel.lstat('usr/lib/nimbus/forged').uid, USER, 'without what is in it');
+  assert.equal(kernel.statIfPresent('usr/bin/toy', false), null, 'a runtime the user made takes no launcher');
+  assert.equal((await ws.exec('toy')).exitCode, 127, 'and is not bound');
+  assert.deepEqual((await ws.runtimes.list()).map((r) => r.name), [], 'nor listed');
+  db.close();
+  console.log('  a runtime the user made in the store is not the system\'s');
+}
+
+// ── a runtime's name and version are one name each ────────────────────────
+{
+  const db = new Database(':memory:');
+  const ws = await open(db);
+  const kernel = ws.vfs.as(CRED_KERNEL);
+  const before = kernel.readFileString('etc/profile');
+  await assert.rejects(ws.runtimes.installPackage(toyPackage({ name: '../../..', version: 'etc' })), /name|version/);
+  assert.equal(kernel.readFileString('etc/profile'), before, 'nothing is written outside the store');
+  db.close();
+  console.log('  a runtime\'s name and version are one name each');
 }
 
 // ── a link at a directory of the store refuses the install ────────────────
