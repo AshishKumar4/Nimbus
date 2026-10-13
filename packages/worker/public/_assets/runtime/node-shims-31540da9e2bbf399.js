@@ -19031,17 +19031,21 @@ async function __nimbusEsmImport(id) {
   }
 }
 // The interpreter's evaluation of staged module `id` (an adoption), as
-// import() gives it. A graph workerd did not link (`linked` false: it
-// reaches a module staging handed on, or one the interpreter took) is
-// checked first as a late graph is (core esm-late-link.ts): every imported
-// name, before any of it runs. The interpreter evaluates it as before.
+// import() gives it. One it evaluated already is that evaluation's, its
+// graph not resolved again. A graph workerd did not link (`linked` false:
+// it reaches a module staging handed on, or one the interpreter took) is
+// checked first as a late graph is (core esm-late-link.ts linkAdopted):
+// every imported name, before any of it runs, unless a link checked it
+// already. The interpreter evaluates it as before.
 async function __nimbusEsmInterpret(id, linked) {
   const key = __nimbusEsm.table[id][1];
   const url = __nimbusEsmUrl("/" + key);
   const known = __esmNamespaces.get(url);
   if (known !== undefined) return known;
+  const evaluated = __nimbusEsmRecords[id];
+  if (evaluated?.state === __ESM_ADOPTED && evaluated.module !== undefined && evaluated.namespace !== null) return evaluated.namespace;
   const pending = (async () => {
-    if (!linked) __nimbusLateLink(key, url);
+    if (!linked) __nimbusRegistryRequire("./nimbus/esm-late.js").linkAdopted(__nimbusLateLinkHost, id, key, url);
     let exports;
     try {
       exports = __loadModule(key, key, false, undefined, true);

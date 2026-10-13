@@ -108,7 +108,23 @@ export function linkLateGraph(host, key, url) {
     const late = { modules: new Map(), rows: [] };
     plan(host, key, url, new Set(), order, new Set(), late);
     checkBindings(host, late, url);
+    for (const row of late.rows)
+        checkedRows.add(row);
     return order;
+}
+/** The staged rows whose graphs a link checked, every imported name in them: none is checked again. */
+const checkedRows = new Set();
+/**
+ * Links staged row `id` (its module at `key`, `url`), which the interpreter
+ * adopts because workerd could not link its graph (it reaches a module
+ * staging handed on, or one the interpreter took), as a late graph is
+ * linked: unless a link already checked it (the late graph that imports it).
+ */
+export function linkAdopted(host, id, key, url) {
+    if (checkedRows.has(id))
+        return;
+    linkLateGraph(host, key, url);
+    checkedRows.add(id);
 }
 /** The names the `export *`s of the interpreted module at `url` reach two different bindings of, which its namespace omits. */
 export function starConflicts(host, url) {

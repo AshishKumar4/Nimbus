@@ -76,6 +76,13 @@ export declare function commonJsNames(host: LateLinkHost, key: string): readonly
  * before the interpreter does the rest.
  */
 export declare function linkLateGraph(host: LateLinkHost, key: string, url: string): number[];
+/**
+ * Links staged row `id` (its module at `key`, `url`), which the interpreter
+ * adopts because workerd could not link its graph (it reaches a module
+ * staging handed on, or one the interpreter took), as a late graph is
+ * linked: unless a link already checked it (the late graph that imports it).
+ */
+export declare function linkAdopted(host: LateLinkHost, id: number, key: string, url: string): void;
 /** The names the `export *`s of the interpreted module at `url` reach two different bindings of, which its namespace omits. */
 export declare function starConflicts(host: LateLinkHost, url: string): string[];
 //# sourceMappingURL=esm-late-link.d.ts.map
