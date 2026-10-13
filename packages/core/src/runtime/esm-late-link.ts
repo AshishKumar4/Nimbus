@@ -64,8 +64,8 @@ export interface LateLinkHost {
    * else Node's error, as the loader's own (no arrow of the importer's).
    */
   resolve(specifier: string, parentUrl: string, type: string | null | undefined): LateResolution;
-  /** A builtin's exports. */
-  builtin(name: string): object | null | undefined;
+  /** A builtin's export names: `default`, and its own (a function's too). */
+  builtinNames(name: string): readonly string[];
   /** The file require() loads for `specifier` from the module at `parentPath`, or null. */
   cjsResolve(specifier: string, parentPath: string): string | null;
   /** Node's message for `name`, which the module `specifier` names does not export. */
@@ -266,9 +266,7 @@ function plan(host: LateLinkHost, key: string, url: string, seen: Set<string>, o
 function lateTarget(host: LateLinkHost, resolution: LateResolution): LateTarget | null {
   if (resolution.format === 'builtin' && resolution.builtin !== undefined) {
     const id = host.row('builtin', resolution.builtin);
-    if (id !== -1) return { row: id };
-    const exports = host.builtin(resolution.builtin);
-    return { url: resolution.url, names: ['default', ...(typeof exports === 'object' && exports !== null ? Object.keys(exports) : [])], commonjs: false };
+    return id !== -1 ? { row: id } : { url: resolution.url, names: host.builtinNames(resolution.builtin), commonjs: false };
   }
   if (resolution.path === undefined) return null;
   const key = resolution.path.replace(/^\/+/, '');
