@@ -40,7 +40,9 @@ import type {
   RuntimeFileHandle,
   RuntimeFsBridge,
   RuntimeFsPath,
+  RuntimeMutationOwner,
   RuntimeOpenFlags,
+  RuntimeReopenTarget,
   RuntimeVfsDirEntry,
   RuntimeVfsStat,
 } from '../os-contracts.js';
@@ -842,6 +844,19 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     Reflect.set(fs, 'setStatus', (handleId: number, status: { append?: boolean }) => {
       if (holder?.owns(handleId)) { counts.local++; holder.setStatus(handleId, status); return; }
       return Reflect.apply(bySessionStatus, fs, [handleId, status]);
+    });
+  }
+
+  // A descriptor of the holder's is reopened here where the holder decides it,
+  // else at the session by the file's identity, once what was decided is sent.
+  const bySessionReopen: unknown = Reflect.get(fs, 'reopen');
+  if (typeof bySessionReopen === 'function') {
+    Reflect.set(fs, 'reopen', (target: RuntimeReopenTarget, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner) => {
+      if (!('handle' in target) || !holder?.owns(target.handle)) return Reflect.apply(bySessionReopen, fs, [target, flags, options]);
+      const local = holder.reopen(target.handle, flags);
+      if (local !== undefined) { counts.local++; return local; }
+      const { dev, ino } = holder.fstat(target.handle);
+      return holder.flush().then(() => Reflect.apply(bySessionReopen, fs, [{ dev, ino }, flags, options]));
     });
   }
 

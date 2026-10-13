@@ -174,6 +174,8 @@ export interface ProcessHost {
   close(fd: number): SyscallResult | null;
   /** Whether `fd` is a pipe descriptor. */
   isPipe(fd: number): boolean;
+  /** A new descriptor on what pipe or stream descriptor `fd` holds, as dup(2); null for any other kind (AuthorityFilesystemOptions.duplicate). */
+  duplicate(fd: number): number | null;
   /**
    * When pipe descriptor `fd` (isPipe) is ready for `want`, for poll_oneoff:
    * at once when it is, else a wait that answers when it becomes so, or null
@@ -408,14 +410,9 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
     },
 
     dup(fd, outPtr) {
-      const entry = opts.fds.get(fd);
-      if (!entry) return E.BADF;
-      // Pipes and the guest's own streams; a file's descriptor is the codec's, and not shared this way.
-      if (entry.kind !== 'pipe' && entry.kind !== 'stdin' && entry.kind !== 'stdout' && entry.kind !== 'stderr') return E.NOSYS;
-      const copy = { ...entry };
-      if (copy.kind === 'pipe') hold(copy);
-      const next = opts.allocateFd();
-      opts.fds.set(next, copy);
+      if (!opts.fds.has(fd)) return E.BADF;
+      const next = duplicate(fd);
+      if (next === null) return E.NOSYS;
       view().setInt32(outPtr, next, true);
       return E.SUCCESS;
     },
@@ -628,6 +625,17 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
     return parkedWait((wake) => pipe.waiters.push(wake), answer).ready.then((read) => read ?? E.INTR);
   };
 
+  // Pipes and the guest's own streams; a file's descriptor is the codec's, and not shared this way.
+  const duplicate: ProcessHost['duplicate'] = (fd) => {
+    const entry = opts.fds.get(fd);
+    if (!entry || (entry.kind !== 'pipe' && entry.kind !== 'stdin' && entry.kind !== 'stdout' && entry.kind !== 'stderr')) return null;
+    const copy = { ...entry };
+    if (copy.kind === 'pipe') hold(copy);
+    const next = opts.allocateFd();
+    opts.fds.set(next, copy);
+    return next;
+  };
+
   const write: ProcessHost['write'] = (fd, iovs, iovsLen, nwritten) => {
     const entry = pipeEntry(fd);
     if (!entry) return null;
@@ -683,5 +691,5 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
     return check() ?? parkedWait((wake) => pipe.waiters.push(wake), check);
   };
 
-  return { imports, read, write, close, isPipe: (fd) => pipeEntry(fd) !== null, readiness, dispose: () => { disposed = true; } };
+  return { imports, read, write, close, isPipe: (fd) => pipeEntry(fd) !== null, duplicate, readiness, dispose: () => { disposed = true; } };
 }

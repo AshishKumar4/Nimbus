@@ -190,6 +190,13 @@ export interface DelegationHolder {
   keyOf(handleId: number): string;
   /** Another descriptor of the same open file (its position shared). */
   dup(handleId: number): RuntimeFileHandle;
+  /**
+   * A new open of the file a descriptor of the holder's is on (an open of
+   * /proc/self/fd/N), its offset its own, when decided here: a file whose
+   * bytes are here, opened without O_APPEND. Undefined when the session is
+   * to decide it (by the file's identity, once what was decided is sent).
+   */
+  reopen(handleId: number, flags: { read?: boolean; write?: boolean; append?: boolean; create?: boolean; exclusive?: boolean; truncate?: boolean }): RuntimeFileHandle | undefined;
   /** Decide a mkdir at `key`: true when decided here (and done), false when the session is to. */
   mkdir(key: string, path: string, mode: number): boolean;
   /** Decide an unlink of `key` (a file or link): true when decided here. */
@@ -703,6 +710,22 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       const id = nextHandle--;
       handles.set(id, handle);
       return { id, path: handle.path } as RuntimeFileHandle;
+    },
+
+    reopen: (handleId, flags) => {
+      const handle = handleOf(handleId);
+      if (handle.file.through !== undefined || flags.append) return undefined;
+      const entry = handle.file.detached ?? decided.get(handle.file.key) ?? store.entry(handle.file.key);
+      if (!entry) throw fsError('EBADF', 'open', handle.path);
+      if (flags.create && flags.exclusive) throw fsError('EEXIST', 'open', handle.path);
+      if (!modeAllows(entry, (flags.read ? 4 : 0) | (flags.write || flags.truncate ? 2 : 0), store.cred)) throw fsError('EACCES', 'open', handle.path);
+      const id = nextHandle--;
+      handles.set(id, { file: handle.file, readable: !!flags.read, writable: !!flags.write, append: false, position: 0, path: handle.path });
+      if (flags.truncate) holder.ftruncate(id, 0);
+      return {
+        id, path: handle.path, position: 0, closed: false,
+        flags: { read: !!flags.read, write: !!flags.write, append: false, create: !!flags.create, exclusive: !!flags.exclusive, directory: false, truncate: !!flags.truncate, followSymlinks: true },
+      };
     },
 
     mkdir: (key, path, mode) => {

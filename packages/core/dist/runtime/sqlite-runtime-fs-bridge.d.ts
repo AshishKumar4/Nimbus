@@ -4,7 +4,7 @@ import { WaveIngest } from './wave-ingest.js';
 import { type CompositeVFS } from '../vfs/composite.js';
 import { type Awaitable } from '../vfs/vfs.js';
 export { fsError, modeAllows, walkBeneath, type BeneathLookup } from './beneath-walk.js';
-import type { RuntimeFileHandle, RuntimeFsPath, RuntimeReadOptions, RuntimeSynchronousFs, RuntimeFsBridge, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat, VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeMutationOwner, ExclusiveMutationGrant, ExclusiveMutationRequest } from './os-contracts.js';
+import type { RuntimeFileHandle, RuntimeFsPath, RuntimeReadOptions, RuntimeSynchronousFs, RuntimeFsBridge, RuntimeOpenFlags, RuntimeReopenTarget, RuntimeVfsDirEntry, RuntimeVfsStat, VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeMutationOwner, ExclusiveMutationGrant, ExclusiveMutationRequest } from './os-contracts.js';
 export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     private readonly rawVfs;
     private readonly scope;
@@ -183,6 +183,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     private leaseAllows;
     /** Operations with SQLite-only semantics (journals, atomic renames, mutation leases) refuse kernel mounts. */
     private sqlitePath;
+    reopen(target: RuntimeReopenTarget, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner): RuntimeFileHandle;
     private openRoot;
     private ensureParent;
     /** ENOENT or ENOTDIR for `call` when `path`'s parent is missing or not a directory. */

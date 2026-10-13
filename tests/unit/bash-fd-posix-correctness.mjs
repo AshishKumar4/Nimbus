@@ -80,5 +80,18 @@ const check = (name, ok, detail = '') => {
     JSON.stringify({ stdout: r.stdout, stderr: r.stderr, state: r.state }));
 }
 
+// ── 6. A duplicate shares its original's offset ─────────────────────────────
+{
+  // dup(2), dup2(2) and fork share one open file description: a read through
+  // one moves the offset the others read from. `read <&3` reads through a
+  // dup2 onto fd 0; `( ... )` through the child's copy. A small file's
+  // descriptor is a copy the codec answers itself, which each duplicate used
+  // to copy again, offset and all, so the same line was read twice.
+  const r = await runScript('exec 3</tmp/l; read a <&3; read b <&3; echo "$a $b"; (read c <&3; echo "child [$c]"); exec 5</tmp/m; (read x <&5); read y <&5; echo "after child: $y"',
+    { files: { 'tmp/l': 'one\ntwo\n', 'tmp/m': '1\n2\n3\n' }, dirs: ['tmp'], modes: { tmp: 7, 'tmp/l': 6, 'tmp/m': 6 } });
+  check('a duplicate and a child share the offset of the descriptor they came from',
+    r.stdout === 'one two\nchild []\nafter child: 2\n', JSON.stringify({ stdout: r.stdout, stderr: r.stderr }));
+}
+
 console.log(`\n  ──── bash-fd-posix-correctness: ${pass} pass / ${failed.length} fail`);
 process.exit(failed.length > 0 ? 1 : 0);

@@ -18,6 +18,11 @@ const OpenOptions = z.object({
     truncate: z.boolean().optional(), followSymlinks: z.boolean().optional(), expectedRevision: z.number().int().nonnegative().optional(),
     mode: z.number().int().nonnegative().max(0o7777).optional(),
 });
+/** What a reopen opens again (RuntimeReopenTarget): an open descriptor's file, or a file by its identity. */
+const ReopenTarget = z.union([
+    z.object({ handle: z.number().int() }),
+    z.object({ dev: z.number().int().nonnegative(), ino: z.number().int().positive() }),
+]);
 /** A byte offset into a file: what a ranged write may start at. */
 const RangeOffset = z.number().int().nonnegative();
 /** What `deliverOnce` carries besides the mutation's args; its op is checked against the delivered set. */
@@ -225,6 +230,7 @@ const NATIVE_OPS = {
     // the store did (SqliteVFS holds none of its appends), so a refusal is that
     // write's, and a delivered write's receipt records its outcome.
     fsOpen: (e, t) => fsFor(e, t).open(FsPath.parse(e.args?.[0]), { ...OpenOptions.parse(e.args?.[1]), sync: true }, leaseOf(e)),
+    fsReopen: (e, t) => fsFor(e, t).reopen(ReopenTarget.parse(e.args?.[0]), { ...OpenOptions.parse(e.args?.[1]), sync: true }, leaseOf(e)),
     fsRead: (e, t) => {
         const length = numberArg(e, 2);
         return readHydrating(t.hydrated, () => t.readLease(length, () => Promise.resolve(fsFor(e, t).read(numberArg(e, 0), nullableNumberArg(e, 1), length))));

@@ -58,7 +58,7 @@ export const REPLAY_OPERATION_POLICY = {
     // The cache's physical facet name is not exposed by Node; its grant is.
     fsStorageGrant: { kind: 'observation', args: (a) => a.slice(1) },
     wsOpen: effect, wsPoll: read, wsSend: effect, wsClose: effect,
-    fsOpen: { kind: 'open' }, fsRead: read, fsWrite: effect, fsClose: read,
+    fsOpen: { kind: 'open' }, fsReopen: { kind: 'open' }, fsRead: read, fsWrite: effect, fsClose: read,
     fsReadRange: read, fsReadRangeUncached: read, fsReadBatch: read,
     fsWriteRange: effect,
     fsTruncate: effect, writeBatch: effect, writeBatchStream: mutation,

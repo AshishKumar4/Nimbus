@@ -21,15 +21,39 @@ export interface AuthorityFd {
  */
 export interface ResidentFd {
   kind: 'resident';
+  /** The file's stat at its open: its identity (dev, ino), which a path naming this descriptor opens again by. */
   stat: RuntimeVfsStat;
   bytes: Uint8Array;
-  /** Given back when the descriptor goes, when the filesystem pinned the bytes for it (pinContent). */
-  release?: () => void;
+  /** The filesystem's pin on the bytes, when it pinned them (pinContent). */
+  pin?: ResidentPin;
+  /**
+   * Descriptors on this open: dup(2), dup2(2) and a fork's copy share it,
+   * and with it its offset (shareResident, closeResident).
+   */
+  opens: number;
   position: number;
   rights: bigint;
   rightsInheriting: bigint;
   fdflags: number;
 }
+/** A pin on a resident copy's bytes, and the opens of the copy that hold it (a reopen of one shares its bytes): the last gives it back. */
+export interface ResidentPin {
+  holds: number;
+  release(): void;
+}
+
+/** Another descriptor on a resident open, as dup(2) makes one: the same offset, the same pin. */
+export function shareResident(open: ResidentFd): ResidentFd {
+  open.opens++;
+  return open;
+}
+
+/** One descriptor on a resident open closed; the last gives back its hold on the pin, and the last hold the pin. */
+export function closeResident(open: ResidentFd): void {
+  if (--open.opens > 0 || open.pin === undefined) return;
+  if (--open.pin.holds === 0) open.pin.release();
+}
+
 export interface AuthorityPreopen {
   kind: 'preopen';
   vfsPath: string;
@@ -183,6 +207,49 @@ export interface AuthorityFilesystemOptions {
    * descriptor goes to what the table held.
    */
   extension?: Partial<NimbusFsImports>;
+  /**
+   * A new descriptor, at the next free number, on what the host's own
+   * descriptor `fd` holds (a standard stream, a pipe end), as dup(2) makes
+   * one; null when that kind cannot be shared (a socket). A path naming a
+   * descriptor (descriptorNamed) opens a stream the host holds through this;
+   * without it, those paths are the filesystem's.
+   */
+  duplicate?(fd: number): number | null;
+}
+
+const STANDARD_STREAMS: Readonly<Record<string, number>> = { '/dev/stdin': 0, '/dev/stdout': 1, '/dev/stderr': 2 };
+
+/**
+ * The descriptor `path` names, as Linux's /dev/fd/N, /proc/self/fd/N and
+ * /dev/std{in,out,err} do; null for any other path. No filesystem holds what
+ * these name: each is the process's own descriptor. A relative `path` is
+ * relative to descriptor `fd` of `fds` (a preopen, or a directory the codec
+ * holds), or to `cwd` for AT_FDCWD (-1). Every call that takes a path asks
+ * this one question: path_open, path_filestat_get, the extension's path_stat
+ * and bash's stat_metadata.
+ *
+ * Linux's answer to what such a path opens: the file or directory itself
+ * is opened again, with the new open's flags (a new description, its own
+ * offset, O_TRUNC and O_APPEND honored), even one renamed or unlinked
+ * since; a stream or a pipe end is shared. Stat'd, it is that descriptor's
+ * stat.
+ */
+export function descriptorNamed(fds: ReadonlyMap<number, FilesystemFd>, fd: number, path: string, cwd?: string): number | null {
+  let absolute = path;
+  if (!path.startsWith('/')) {
+    const base = fds.get(fd);
+    const directory = fd === -1 ? cwd
+      : base?.kind === 'preopen' ? base.wasiPath
+      : base?.kind === 'authority' && base.type === 'directory' ? '/' + base.handle.path
+      : undefined;
+    if (directory === undefined) return null;
+    absolute = directory + '/' + path;
+  }
+  const normal = '/' + absolute.split('/').filter((segment) => segment !== '' && segment !== '.').join('/');
+  const stream = Object.hasOwn(STANDARD_STREAMS, normal) ? STANDARD_STREAMS[normal] : undefined;
+  if (stream !== undefined) return stream;
+  const numbered = /^\/(?:dev\/fd|proc\/self\/fd)\/(\d{1,9})$/.exec(normal);
+  return numbered === null ? null : Number(numbered[1]);
 }
 
 /**
@@ -259,17 +326,28 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
   };
   // wasi-libc resolves a path against its longest matching preopen and passes
   // only the remainder, so deciding whether the guest named a socket means
-  // rebuilding the absolute path exactly as the host's path_open does.
+  // rebuilding the absolute path exactly as the host's path_open does. A
+  // path this codec cannot decode is its own to reject, with the errno its
+  // body would have produced.
   const socketPath = (fd: number, ptr: number, length: number): boolean => {
     let guest: string;
-    // A path this codec cannot decode is its own to reject, with the errno its
-    // body would have produced.
     try { guest = path(ptr, length); } catch { return false; }
     const base = fds.get(fd);
     if (!guest.startsWith('/') && base?.kind === 'preopen') {
       guest = base.wasiPath.endsWith('/') ? base.wasiPath + guest : base.wasiPath + '/' + guest;
     }
     return socketPathPrefixes.some(prefix => guest.startsWith(prefix));
+  };
+  /**
+   * The descriptor a path beneath `fd` names (descriptorNamed), when the host
+   * takes part (duplicate); ENOENT for one the process does not hold, as
+   * Linux answers for /dev/fd/N.
+   */
+  const named = (fd: number, ptr: number, length: number): number | null => {
+    if (options.duplicate === undefined) return null;
+    const descriptor = descriptorNamed(fds, fd, path(ptr, length));
+    if (descriptor !== null && !fds.has(descriptor)) fail('ENOENT');
+    return descriptor;
   };
   const at = (fd: number, p: string): RuntimeFsPath => {
     if (p.startsWith('/')) fail('ENOTCAPABLE');
@@ -383,9 +461,15 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
   imports.path_open = guard(imports.path_open, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, lookup: number, p: number, n: number, flags: number, rights: bigint, inherit: bigint, status: number, out: number) => {
     if (status & ~5) fail('ENOTSUP');
     pathRight(fd, 13);
+    const descriptor = named(fd, p, n);
+    const reopened = descriptor === null ? undefined : fds.get(descriptor);
+    if (descriptor !== null && reopened?.kind !== 'authority' && reopened?.kind !== 'resident' && reopened?.kind !== 'preopen') {
+      u32(out, options.duplicate?.(descriptor) ?? fail('ENXIO')); return 0;
+    }
     if (flags & 1) pathRight(fd, 10);
     if (flags & 8) pathRight(fd, 19);
-    const target = at(fd, path(p, n));
+    // A preopen named by a descriptor path is its root, by name, as everything beneath it is.
+    const target = reopened?.kind === 'preopen' ? reopened.vfsPath : at(fd, path(p, n));
     const parent = preopen(fd) ?? entry(fd);
     const requested = BigInt(rights), childRights = BigInt(inherit);
     const allowed = parent.rightsInheriting;
@@ -395,14 +479,26 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     // fd_allocate, fd_filestat_set_size. wasi-libc asks for sync and status
     // rights on every open, and a resident copy answers those itself.
     const readOnly = !(requested & ((1n << 6n) | (1n << 8n) | (1n << 22n))) && !(flags & 15) && !(status & 1);
-    const open = (): SyscallResult => after(fs.open(target, { read: !!(requested & 2n), write: !!(requested & 64n), append: !!(status & 1),
+    const opening = { read: !!(requested & 2n), write: !!(requested & 64n), append: !!(status & 1),
       create: !!(flags & 1), directory: !!(flags & 2), exclusive: !!(flags & 4), truncate: !!(flags & 8), followSymlinks,
-      mode: creationMode(0o666) }), handle =>
-      after(fs.fstat(handle.id), st => {
-        const id = options.allocateFd();
-        fds.set(id, { kind: 'authority', handle, type: st.type, rights: requested, rightsInheriting: childRights, fdflags: status });
-        u32(out, id); return 0;
-      }));
+      mode: creationMode(0o666) };
+    const opened = (handle: RuntimeFileHandle): SyscallResult => after(fs.fstat(handle.id), st => {
+      const id = options.allocateFd();
+      fds.set(id, { kind: 'authority', handle, type: st.type, rights: requested, rightsInheriting: childRights, fdflags: status });
+      u32(out, id); return 0;
+    });
+    // A file a descriptor holds is opened again as itself, never by a name a
+    // rename or an unlink may have given to another (RuntimeFsBridge.reopen).
+    if (reopened?.kind === 'authority') return after(fs.reopen({ handle: reopened.handle.id }, opening), opened);
+    if (reopened?.kind === 'resident') {
+      if (!readOnly) return after(fs.reopen({ dev: reopened.stat.dev, ino: reopened.stat.ino }, opening), opened);
+      // Read again from its own start: the same bytes, another hold on their pin.
+      if (reopened.pin !== undefined) reopened.pin.holds++;
+      const id = options.allocateFd();
+      fds.set(id, { kind: 'resident', stat: reopened.stat, bytes: reopened.bytes, ...(reopened.pin === undefined ? {} : { pin: reopened.pin }), opens: 1, position: 0, rights: requested, rightsInheriting: childRights, fdflags: status });
+      u32(out, id); return 0;
+    }
+    const open = (): SyscallResult => after(fs.open(target, opening), opened);
     if (!readOnly || residentBytes === 0) return open();
     return after(fs.stat(target, { followSymlinks }), st => {
       if (st === null) fail('ENOENT');
@@ -421,20 +517,26 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
         return after(Reflect.apply(pinContent, fs, [target, st]) as Awaitable<PinnedContent | null>, (pinned) => {
           if (pinned === null) return open();
           const id = options.allocateFd();
-          fds.set(id, { kind: 'resident', stat: st, bytes: pinned.bytes, release: pinned.release, position: 0, rights: requested, rightsInheriting: childRights, fdflags: status });
+          fds.set(id, { kind: 'resident', stat: st, bytes: pinned.bytes, pin: { holds: 1, release: pinned.release }, opens: 1, position: 0, rights: requested, rightsInheriting: childRights, fdflags: status });
           u32(out, id); return 0;
         });
       }
       return after(residentContent(fs, target, st), bytes => {
         const id = options.allocateFd();
-        fds.set(id, { kind: 'resident', stat: st, bytes, position: 0, rights: requested, rightsInheriting: childRights, fdflags: status });
+        fds.set(id, { kind: 'resident', stat: st, bytes, opens: 1, position: 0, rights: requested, rightsInheriting: childRights, fdflags: status });
         u32(out, id); return 0;
       });
     });
   }, args => !socketPath(args[0], args[2], args[3]));
-  imports.path_filestat_get = guard(imports.path_filestat_get, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, flags: number, p: number, n: number, out: number) =>
-    { pathRight(fd, 18); return after(fs.stat(at(fd, path(p, n)), { followSymlinks: !!(flags & 1) }), st => writeStat(out, st ?? fail('ENOENT'))); });
   imports.fd_filestat_get = guard(imports.fd_filestat_get, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, out: number) => { pathRight(fd, 21); return after(stat(fs, fd), st => writeStat(out, st)); }, owns);
+  // A path naming a descriptor is that descriptor's stat, whoever answers it.
+  const descriptorStat = imports.fd_filestat_get;
+  imports.path_filestat_get = guard(imports.path_filestat_get, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, flags: number, p: number, n: number, out: number) => {
+    pathRight(fd, 18);
+    const descriptor = named(fd, p, n);
+    if (descriptor !== null) return descriptorStat(descriptor, out);
+    return after(fs.stat(at(fd, path(p, n)), { followSymlinks: !!(flags & 1) }), st => writeStat(out, st ?? fail('ENOENT')));
+  });
   imports.fd_read = guard(imports.fd_read, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, p: number, n: number, out: number) => read(fs, fd, p, n, null, out), owns);
   imports.fd_pread = guard(imports.fd_pread, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, p: number, n: number, off: bigint, out: number) => read(fs, fd, p, n, num(off), out), owns);
   imports.fd_write = guard(imports.fd_write, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, p: number, n: number, out: number) => write(fs, fd, p, n, null, out), owns);
@@ -444,7 +546,7 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     // the guest nothing to open, so it survives the close, as in the host body.
     if (preopen(fd)) return 0;
     const e = entry(fd);
-    if (e.kind === 'resident') { e.release?.(); fds.delete(fd); return 0; }
+    if (e.kind === 'resident') { closeResident(e); fds.delete(fd); return 0; }
     return after(fs.close(e.handle.id), () => { fds.delete(fd); return 0; });
   }, owns);
   imports.fd_renumber = guard(imports.fd_renumber, (fs: RuntimeFsBridge | RuntimeSynchronousFs, from: number, to: number) => {
@@ -455,7 +557,7 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     if (target?.kind === 'preopen') fail('ENOTCAPABLE');
     // dup2 closes what it lands on, and only the owner of that fd knows how:
     // a socket's stream and a pipe's writer count are the host's to release.
-    if (target?.kind === 'resident') target.release?.();
+    if (target?.kind === 'resident') closeResident(target);
     const released = !target || target.kind === 'resident' ? undefined
       : target.kind === 'authority' ? fs.close(target.handle.id)
       : hostClose?.(to);
@@ -564,9 +666,14 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     after(fs.futimes(handle(fd).handle.id, ...times(st, a, m, flags)), () => 0)); }, owns);
   const ext = options.extension;
   if (ext) {
-    ext.path_stat = guard(ext.path_stat, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, flags: number, p: number, n: number, out: number) =>
-      { pathRight(fd, 18); return after(fs.stat(at(fd, path(p, n)), { followSymlinks: !!(flags & 1) }), st => writeNimbusStat(out, st ?? fail('ENOENT'))); });
     ext.fd_stat = guard(ext.fd_stat, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, out: number) => { pathRight(fd, 21); return after(stat(fs, fd), st => writeNimbusStat(out, st)); }, owns);
+    const descriptorNimbusStat = ext.fd_stat;
+    ext.path_stat = guard(ext.path_stat, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, flags: number, p: number, n: number, out: number) => {
+      pathRight(fd, 18);
+      const descriptor = named(fd, p, n);
+      if (descriptor !== null) return descriptorNimbusStat(descriptor, out);
+      return after(fs.stat(at(fd, path(p, n)), { followSymlinks: !!(flags & 1) }), st => writeNimbusStat(out, st ?? fail('ENOENT')));
+    });
     ext.path_chmod = guard(ext.path_chmod, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, flags: number, p: number, n: number, mode: number) => {
       pathRight(fd, 20);
       if (!(flags & 1)) fail('ENOTSUP');

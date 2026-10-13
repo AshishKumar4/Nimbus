@@ -5,11 +5,43 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: in a WASI program (bash and its commands, CPython, any compiled
+  program), `/dev/fd/N`, `/proc/self/fd/N`, `/dev/stdin`, `/dev/stdout` and
+  `/dev/stderr` now name the process's own descriptor, as on Linux. A pipe or
+  a stream is shared. A file is opened again with the new open's flags, so it
+  gets its own offset, and `>/dev/stdout` truncates a file that stdout writes
+  to. It is the file itself, even one renamed or unlinked since, never
+  whatever file now has its old name. `stat` of the path is that descriptor's
+  stat. Process substitution works:
+  `source <(...)`, `done < <(...)`, `diff <(...) <(...)`. Before, `/dev/fd/N`
+  was not found, `/dev/stdin` read as empty, and writes to `/dev/stdout` and
+  `/dev/stderr` were silently discarded.
+- Fixed: in the wasm bash, `exec 3<file; read a <&3; read b <&3` read the
+  first line twice for a small file, and a subshell's read did not move its
+  parent's offset. A duplicate (`<&3`, `dup2`) and a child now share their
+  descriptor's offset, as on Linux.
+- Fixed: a bash run whose non-local jump lost its target (an `exit` or
+  `return` inside `eval`, a sourced file, or an EXIT trap) now fails with
+  "bash-runner: pid N returned from _start mid-rewind, its longjmp or resume
+  target lost". It used to report exit status 0. The jump itself is fixed
+  with the next bash runtime build (bash-runner@4).
+- Fixed: on Cloudflare, piping into the installed GNU bash (`printf x | bash
+  -c 'read -r y'`) failed with "The RPC receiver does not implement the
+  method "call"". bash now reads its piped stdin.
+- Fixed: CPython, Ruby and clang read their piped stdin (`printf x | python3
+  -c 'import sys; print(sys.stdin.read())'`). The WASI layer now reads every
+  runtime's fd 0 from its process's input channel; before, only the generic
+  wasm runner wired it, and the others read an empty stdin.
+- Fixed (security): the shell's Ctrl+P palette put file names into the page as
+  HTML. A file named like `<img src=x onerror=...>`, for example from a cloned
+  repository, ran script in the shell page when the palette opened. Palette
+  entries are now plain text, and its error line is escaped.
 - Fixed: `utimesSync`, `lutimesSync` and `futimesSync` in a Node program reach
   the session; they changed only what the program itself saw.
 - Fixed: a file JS git checks out, and a loose object it writes, is made with
   its final mode (0644 or 0755, 0444); it was made 0666 less the umask and
   changed after, so under a permissive umask others could write it meanwhile.
+
 ## 2026-10-12: platform 0.8.2, core 0.18.0, fabric 0.13.0, worker 0.16.0, loom 0.2.5, sdk 0.13.1, react 0.3.1, cli 0.2.5, create-nimbus-app 0.2.2
 
 - Fixed: an npm install no longer fails for up to an hour after a dependency

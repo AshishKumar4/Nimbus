@@ -39,6 +39,7 @@ export const FILESYSTEM_METHODS = {
   access: { rpc: 'access', answer: 'value' },
   chown: { rpc: 'chown', answer: 'value' },
   open: { rpc: 'fsOpen', answer: 'value' },
+  reopen: { rpc: 'fsReopen', answer: 'value' },
   read: { rpc: 'fsRead', answer: 'bytes' },
   write: { rpc: 'fsWrite', answer: 'value' },
   close: { rpc: 'fsClose', answer: 'value' },

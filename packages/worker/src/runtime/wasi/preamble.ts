@@ -822,7 +822,14 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
   const procParks = opts.parking !== 'none' && typeof WebAssembly !== 'undefined' && typeof WebAssembly.Suspending === 'function';
   const proc = processHost({
     fds: fdTable,
-    input: opts.stdinRead,
+    // The guest's stdin is its process's input channel, read through the
+    // supervisor it adopted; a guest with neither (a pure computation) is at
+    // its end. Every runtime on this layer gets it: CPython's, ruby's and
+    // clang's never passed a reader of their own, and read nothing.
+    input: (maxBytes) => {
+      const sup = __wasiSup, pid = __wasiFS.pid;
+      return sup?.cpReadStdin && pid ? sup.cpReadStdin(pid, 8000, undefined, maxBytes) : { data: new Uint8Array(0), ended: true };
+    },
     allocateFd: __wasiAllocateFd,
     memory: opts.getMemory,
     supervisor: () => __wasiSup,
@@ -1789,6 +1796,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     residentBytes: __wasiFS.residentFileCap,
     extension: fsImport,
     processGone: (refusal) => { __wasiProcessGone ??= refusal; },
+    duplicate: (fd) => proc.duplicate(fd),
   });
   // fd_filestat_get as answered, before the guest's table is made Suspending:
   // a Suspending function called from JS is not a wasm call, and traps.

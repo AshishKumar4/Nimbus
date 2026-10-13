@@ -60,6 +60,7 @@ declare const SupervisorRPC_base: (abstract new (...args: any[]) => {
     wsSend(id: number, text: string | null, bytes: Uint8Array | null): Promise<void>;
     wsClose(id: number, code?: number, reason?: string): Promise<void>;
     fsOpen(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath, flags: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeOpenFlags): Promise<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFileHandle>;
+    fsReopen(target: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeReopenTarget, flags: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeOpenFlags, options?: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeMutationOwner | undefined): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["reopen"]>>>;
     fsRead(handleId: number, offset: number | null, length: number): Promise<Uint8Array>;
     fsWrite(handleId: number, offset: number | null, bytes: Uint8Array | ArrayBuffer | number[]): Promise<number>;
     fsFstat(handleId: number): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["fstat"]>>>;

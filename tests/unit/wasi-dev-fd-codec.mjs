@@ -1,0 +1,201 @@
+#!/usr/bin/env bun
+/**
+ * wasi-dev-fd-codec — a path naming a descriptor (/dev/fd/N) opens what that
+ * descriptor holds as Linux does, through the shared WASI codec over a real
+ * process's filesystem: the session's SQLite authority behind the real
+ * resident store (vfs/resident/index.ts), as a JSPI guest has it.
+ *
+ * The file itself is opened again, with the new open's flags: its own
+ * description (a fresh offset), O_TRUNC honored, and, for a copy the codec
+ * answers from the store, a hold on the bytes' pin, charged to the store's
+ * budget for as long as either descriptor lives. Never a name: a file
+ * renamed since, at the session or in a subtree the process holds, is the
+ * one opened, and the new file at its old name is left alone.
+ *
+ * Red before: the open dup'd (a resident copy took the original's bytes
+ * with no pin, an authority file's copy shared the original's offset and
+ * ignored O_TRUNC); then it reopened the old name, and truncated whatever
+ * file had it now.
+ */
+
+import assert from 'node:assert/strict';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { residentFilesystem } from '../../packages/core/src/runtime/wasi/resident-filesystem.ts';
+import { installAuthorityFilesystem } from '../../packages/core/src/runtime/wasi/filesystem.ts';
+import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { WASI_RESIDENT_STORE_BYTES } from '../../packages/platform/src/limits.ts';
+
+const enc = new TextEncoder();
+const dec = new TextDecoder();
+const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
+const E = { SUCCESS: 0, NOENT: 44 };
+const RIGHT_READ = 2n, RIGHT_SEEK = 4n, RIGHT_WRITE = 64n;
+const O_TRUNC = 8, FDFLAG_APPEND = 1;
+
+/** A process over a session seeded with `files` (beneath /home/user), its store's charge counted; `holding`: it holds /home/user from its first change. */
+async function processWith(files, { holding = false } = {}) {
+  const harness = createSqliteVfsTestHarness();
+  const session = new ProcessFiles(new SqliteVFS(harness.sql, harness.ctx));
+  const kernel = session.bind({ pid: 1, cred: CRED_KERNEL });
+  for (const dir of ['/home', '/home/user']) { await kernel.mkdir(dir, { recursive: true }); await kernel.chown(dir, 1000, 1000); }
+  for (const [name, text] of Object.entries(files)) { await kernel.writeFile(`/home/user/${name}`, enc.encode(text)); await kernel.chown(`/home/user/${name}`, 1000, 1000); }
+  const authority = session.bind({ pid: 2, cred: USER });
+  const storeSource = createResidentStore();
+  storeSource.bindInMemory(WASI_RESIDENT_STORE_BYTES);
+  const supervisor = {
+    fsAcquire: (...args) => authority.acquire(...args),
+    fsList: (...args) => authority.list(...args),
+    readdir: (path) => authority.readdir(path),
+    readlink: (path) => authority.readlink(path),
+    stat: (path, options) => authority.stat(path, options),
+    async fsReadBatch(requests) {
+      const out = [];
+      for (const request of requests) {
+        try {
+          if (request.lstat) out.push({ stat: await authority.stat(request.path, { followSymlinks: false }) });
+          else out.push({ bytes: await authority.readRange(request.path, request.offset, request.length) });
+        } catch (error) { out.push({ error }); }
+      }
+      return out;
+    },
+  };
+  storeSource.admission.setStorage(undefined, supervisor);
+  assert.equal(await storeSource.lazy.bootLazy(supervisor), true);
+  const view = storeSource.lazy.namespaceView(supervisor, (await authority.stat('/')).dev, USER);
+  let charged = 0;
+  const counted = {
+    get device() { return view.device; },
+    get cred() { return view.cred; },
+    ready: () => view.ready(),
+    entry: (key) => view.entry(key),
+    children: (key) => view.children(key),
+    list: (key) => view.list(key),
+    lookup: (keys, content) => view.lookup(keys, content),
+    listTree: (key) => view.listTree(key),
+    content: (key) => view.content(key),
+    fill: (key, entry) => view.fill(key, entry),
+    barrier: () => view.barrier(),
+    reserve: (bytes) => { const fits = view.reserve(bytes); if (fits) charged += bytes; return fits; },
+    release: (bytes) => { charged -= bytes; view.release(bytes); },
+  };
+  const port = {
+    openWriter: async () => null,
+    writeBatchStream: async (stream, _fence, owner) => authority.writeStream(stream, owner === undefined ? {} : { mutationOwner: owner }),
+    grants: {
+      acquire: async (path, delegate) => authority.acquireExclusiveMutation(path, { delegate }),
+      release: async (owner) => { authority.releaseExclusiveMutation(owner); },
+      awaitRecall: (owner, waitMs) => authority.awaitRecall(owner, waitMs),
+      recalled: async (owner, kind) => { authority.recalled(owner, kind); },
+    },
+  };
+  const fs = holding
+    ? residentFilesystem(authority, counted, { session: port, isHomeRoot: (key) => key === 'home/user', grantAfter: 0 })
+    : residentFilesystem(authority, counted);
+
+  const memory = new WebAssembly.Memory({ initial: 2 });
+  const fds = new Map([[3, { kind: 'preopen', vfsPath: '', wasiPath: '/' }]]);
+  let next = 4;
+  const imports = {};
+  installAuthorityFilesystem(imports, {
+    fs: () => fs, memory: () => memory, fds, allocateFd: () => next++, synchronous: false,
+    residentBytes: 1 << 20, duplicate: () => null,
+  });
+  const view32 = () => new DataView(memory.buffer);
+  const name = (text) => { const b = enc.encode(text); new Uint8Array(memory.buffer).set(b, 4096); return b.length; };
+  return {
+    fds, authority, charged: () => charged,
+    /** path_open of `path` beneath the root preopen: the new descriptor. */
+    async open(path, { rights = RIGHT_READ | RIGHT_SEEK, oflags = 0, fdflags = 0 } = {}) {
+      const errno = await imports.path_open(3, 1, 4096, name(path), oflags, rights, 0n, fdflags, 64);
+      assert.equal(errno, E.SUCCESS, `path_open ${path}`);
+      return view32().getUint32(64, true);
+    },
+    async read(fd, length) {
+      view32().setUint32(128, 8192, true); view32().setUint32(132, length, true);
+      assert.equal(await imports.fd_read(fd, 128, 1, 136), E.SUCCESS);
+      return dec.decode(new Uint8Array(memory.buffer, 8192, view32().getUint32(136, true)));
+    },
+    async write(fd, text) {
+      const b = enc.encode(text);
+      new Uint8Array(memory.buffer).set(b, 8192);
+      view32().setUint32(128, 8192, true); view32().setUint32(132, b.length, true);
+      assert.equal(await imports.fd_write(fd, 128, 1, 136), E.SUCCESS);
+    },
+    close: async (fd) => assert.equal(await imports.fd_close(fd), E.SUCCESS),
+    async rename(from, to) {
+      const a = enc.encode(from), b = enc.encode(to);
+      new Uint8Array(memory.buffer).set(a, 4096); new Uint8Array(memory.buffer).set(b, 6144);
+      assert.equal(await imports.path_rename(3, 4096, a.length, 3, 6144, b.length), E.SUCCESS, `rename ${from} ${to}`);
+    },
+    settle: () => fs.settle(),
+  };
+}
+
+const failures = [];
+const check = async (what, run) => { try { await run(); console.log(`  ✓ ${what}`); } catch (error) { failures.push(`${what}: ${error.message}`); console.log(`  ✗ ${what}`); } };
+
+await check('a resident copy opened through /dev/fd holds its own pin', async () => {
+  const text = 'resident bytes';
+  const p = await processWith({ 'r.txt': text });
+  const original = await p.open('home/user/r.txt');
+  assert.equal(p.fds.get(original).kind, 'resident', 'a small read-only open is answered from the store');
+  assert.equal(await p.read(original, 4), 'resi');
+  const copy = await p.open(`dev/fd/${original}`);
+  assert.equal(p.fds.get(copy).kind, 'resident');
+  assert.equal(p.charged(), text.length, 'one pin on the bytes, charged once');
+  await p.close(original);
+  assert.equal(p.charged(), text.length, 'the copy still holds the bytes, and they stay charged');
+  assert.equal(await p.read(copy, 64), text, 'the copy reads from its own start');
+  await p.close(copy);
+  assert.equal(p.charged(), 0, 'the last descriptor gives the charge back');
+});
+
+await check('an authority file opened through /dev/fd with O_TRUNC is truncated, its offset its own', async () => {
+  const p = await processWith({ 'w.txt': 'abc' });
+  const original = await p.open('home/user/w.txt', { rights: RIGHT_READ | RIGHT_WRITE | RIGHT_SEEK, fdflags: FDFLAG_APPEND });
+  assert.equal(p.fds.get(original).kind, 'authority');
+  const copy = await p.open(`dev/fd/${original}`, { rights: RIGHT_WRITE | RIGHT_SEEK, oflags: O_TRUNC });
+  await p.write(copy, 'x');
+  await p.close(copy);
+  await p.write(original, 'y');
+  await p.close(original);
+  await p.settle();
+  assert.equal(dec.decode(await p.authority.readFile('/home/user/w.txt')), 'xy', 'truncated by the second open; the first appends after it');
+});
+
+await check('a renamed file opened through /dev/fd is that file, not the new one at its old name', async () => {
+  const p = await processWith({ 'a.txt': 'old' });
+  const original = await p.open('home/user/a.txt', { rights: RIGHT_READ | RIGHT_WRITE | RIGHT_SEEK });
+  await p.rename('home/user/a.txt', 'home/user/b.txt');
+  const replacement = await p.open('home/user/a.txt', { rights: RIGHT_WRITE | RIGHT_SEEK, oflags: 1 | O_TRUNC });
+  await p.write(replacement, 'new');
+  await p.close(replacement);
+  const copy = await p.open(`dev/fd/${original}`, { rights: RIGHT_WRITE | RIGHT_SEEK, oflags: O_TRUNC });
+  await p.write(copy, 'changed');
+  await p.close(copy);
+  await p.close(original);
+  await p.settle();
+  assert.equal(dec.decode(await p.authority.readFile('/home/user/a.txt')), 'new');
+  assert.equal(dec.decode(await p.authority.readFile('/home/user/b.txt')), 'changed');
+});
+
+await check('a file a held subtree decided, renamed there, is the one /dev/fd opens', async () => {
+  const p = await processWith({}, { holding: true });
+  const original = await p.open('home/user/h.txt', { rights: RIGHT_READ | RIGHT_WRITE | RIGHT_SEEK, oflags: 1 | O_TRUNC });
+  await p.write(original, 'held');
+  await p.rename('home/user/h.txt', 'home/user/i.txt');
+  const copy = await p.open(`dev/fd/${original}`, { rights: RIGHT_READ | RIGHT_WRITE | RIGHT_SEEK, oflags: O_TRUNC });
+  await p.write(copy, 'x');
+  await p.close(copy);
+  assert.equal(await p.read(original, 64), '', 'the original reads on from its own offset, past the cut');
+  await p.close(original);
+  await p.settle();
+  assert.equal(dec.decode(await p.authority.readFile('/home/user/i.txt')), 'x');
+  assert.equal(await p.authority.stat('/home/user/h.txt'), null);
+});
+
+assert.deepEqual(failures, []);
+console.log('wasi-dev-fd-codec: ok');

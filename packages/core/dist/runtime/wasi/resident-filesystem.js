@@ -729,6 +729,22 @@ export function residentFilesystem(session, resident, delegation) {
             return Reflect.apply(bySessionStatus, fs, [handleId, status]);
         });
     }
+    // A descriptor of the holder's is reopened here where the holder decides it,
+    // else at the session by the file's identity, once what was decided is sent.
+    const bySessionReopen = Reflect.get(fs, 'reopen');
+    if (typeof bySessionReopen === 'function') {
+        Reflect.set(fs, 'reopen', (target, flags, options) => {
+            if (!('handle' in target) || !holder?.owns(target.handle))
+                return Reflect.apply(bySessionReopen, fs, [target, flags, options]);
+            const local = holder.reopen(target.handle, flags);
+            if (local !== undefined) {
+                counts.local++;
+                return local;
+            }
+            const { dev, ino } = holder.fstat(target.handle);
+            return holder.flush().then(() => Reflect.apply(bySessionReopen, fs, [{ dev, ino }, flags, options]));
+        });
+    }
     for (const name of ['fchmod', 'fchown', 'futimes', 'dup']) {
         const passed = Reflect.get(fs, name);
         if (typeof passed !== 'function')

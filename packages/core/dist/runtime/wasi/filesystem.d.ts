@@ -20,15 +20,30 @@ export interface AuthorityFd {
  */
 export interface ResidentFd {
     kind: 'resident';
+    /** The file's stat at its open: its identity (dev, ino), which a path naming this descriptor opens again by. */
     stat: RuntimeVfsStat;
     bytes: Uint8Array;
-    /** Given back when the descriptor goes, when the filesystem pinned the bytes for it (pinContent). */
-    release?: () => void;
+    /** The filesystem's pin on the bytes, when it pinned them (pinContent). */
+    pin?: ResidentPin;
+    /**
+     * Descriptors on this open: dup(2), dup2(2) and a fork's copy share it,
+     * and with it its offset (shareResident, closeResident).
+     */
+    opens: number;
     position: number;
     rights: bigint;
     rightsInheriting: bigint;
     fdflags: number;
 }
+/** A pin on a resident copy's bytes, and the opens of the copy that hold it (a reopen of one shares its bytes): the last gives it back. */
+export interface ResidentPin {
+    holds: number;
+    release(): void;
+}
+/** Another descriptor on a resident open, as dup(2) makes one: the same offset, the same pin. */
+export declare function shareResident(open: ResidentFd): ResidentFd;
+/** One descriptor on a resident open closed; the last gives back its hold on the pin, and the last hold the pin. */
+export declare function closeResident(open: ResidentFd): void;
 export interface AuthorityPreopen {
     kind: 'preopen';
     vfsPath: string;
@@ -119,7 +134,31 @@ export interface AuthorityFilesystemOptions {
      * descriptor goes to what the table held.
      */
     extension?: Partial<NimbusFsImports>;
+    /**
+     * A new descriptor, at the next free number, on what the host's own
+     * descriptor `fd` holds (a standard stream, a pipe end), as dup(2) makes
+     * one; null when that kind cannot be shared (a socket). A path naming a
+     * descriptor (descriptorNamed) opens a stream the host holds through this;
+     * without it, those paths are the filesystem's.
+     */
+    duplicate?(fd: number): number | null;
 }
+/**
+ * The descriptor `path` names, as Linux's /dev/fd/N, /proc/self/fd/N and
+ * /dev/std{in,out,err} do; null for any other path. No filesystem holds what
+ * these name: each is the process's own descriptor. A relative `path` is
+ * relative to descriptor `fd` of `fds` (a preopen, or a directory the codec
+ * holds), or to `cwd` for AT_FDCWD (-1). Every call that takes a path asks
+ * this one question: path_open, path_filestat_get, the extension's path_stat
+ * and bash's stat_metadata.
+ *
+ * Linux's answer to what such a path opens: the file or directory itself
+ * is opened again, with the new open's flags (a new description, its own
+ * offset, O_TRUNC and O_APPEND honored), even one renamed or unlinked
+ * since; a stream or a pipe end is shared. Stat'd, it is that descriptor's
+ * stat.
+ */
+export declare function descriptorNamed(fds: ReadonlyMap<number, FilesystemFd>, fd: number, path: string, cwd?: string): number | null;
 /**
  * st_mode of a stat: its type's format bits, and its permission bits, or
  * Node's defaults (0755 for a directory, 0644 otherwise) where the backend

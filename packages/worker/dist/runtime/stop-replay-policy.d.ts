@@ -127,6 +127,9 @@ export declare const REPLAY_OPERATION_POLICY: {
     fsOpen: {
         kind: "open";
     };
+    fsReopen: {
+        kind: "open";
+    };
     fsRead: {
         readonly kind: "observation";
     };
