@@ -546,7 +546,8 @@ function defaultEnv(home) {
 }
 /** Every lease released, though one release fails; the first failure is thrown once all have been tried. */
 async function releaseHostLeases(leases) {
-    const failed = (await Promise.allSettled(leases.map((lease) => lease.dispose()))).find((outcome) => outcome.status === 'rejected');
+    // Each asked in its own promise, so one that throws at once stops no other.
+    const failed = (await Promise.allSettled(leases.map(async (lease) => lease.dispose()))).find((outcome) => outcome.status === 'rejected');
     if (failed)
         throw failed.reason;
 }

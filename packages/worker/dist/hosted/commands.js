@@ -666,7 +666,10 @@ export async function registerHostedCommands(self, workspace) {
         const cred = requireVfsCred(ctx.cred, invokedAs);
         // Releases through worker 0.17.0 kept the KV and R2 stores as root: what
         // is still root's is handed to the project's owner (handKernelArtifact).
-        for (const store of ['.nimbus', '.nimbus/kv', '.nimbus/r2']) {
+        // `.nimbus` alone, without what else is in it: in a HOME it holds the
+        // kernel's runtime store too.
+        await handKernelArtifact(workspace.filesystem, ctx.vfs, cred, `/${rootPath}/.nimbus`, { descend: false });
+        for (const store of ['.nimbus/kv', '.nimbus/r2']) {
             await handKernelArtifact(workspace.filesystem, ctx.vfs, cred, `/${rootPath}/${store}`);
         }
         self.nimbusWrangler = new NimbusWrangler({

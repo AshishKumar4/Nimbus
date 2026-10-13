@@ -41,8 +41,11 @@ export declare function projectFs(view: ProcessView): ProjectFs;
  * readable file with no other name (no hard link), or a world-searchable
  * directory, descending only through directories that move. Never through a
  * link, nothing on a mount, nothing for a root caller, and nothing in a
- * directory root owns.
+ * directory root owns. `descend: false` hands a directory without what is
+ * in it: a directory other state shares.
  */
-export declare function handKernelArtifact(filesystem: ProcessFiles, view: ProcessView, cred: VfsCred, path: string): Promise<void>;
+export declare function handKernelArtifact(filesystem: ProcessFiles, view: ProcessView, cred: VfsCred, path: string, { descend }?: {
+    descend?: boolean;
+}): Promise<void>;
 export {};
 //# sourceMappingURL=project-fs.d.ts.map

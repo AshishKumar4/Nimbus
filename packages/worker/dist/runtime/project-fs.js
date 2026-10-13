@@ -80,9 +80,10 @@ export function projectFs(view) {
  * readable file with no other name (no hard link), or a world-searchable
  * directory, descending only through directories that move. Never through a
  * link, nothing on a mount, nothing for a root caller, and nothing in a
- * directory root owns.
+ * directory root owns. `descend: false` hands a directory without what is
+ * in it: a directory other state shares.
  */
-export async function handKernelArtifact(filesystem, view, cred, path) {
+export async function handKernelArtifact(filesystem, view, cred, path, { descend = true } = {}) {
     if (cred.uid === 0)
         return;
     const at = '/' + normalizeVfsPath(path);
@@ -107,10 +108,10 @@ export async function handKernelArtifact(filesystem, view, cred, path) {
         }
         if (owner.uid === 0 || owner.type !== 'directory')
             return;
-        hand(kernel, `${dir}/${at.slice(cut + 1)}`, owner.uid, owner.gid);
+        hand(kernel, `${dir}/${at.slice(cut + 1)}`, owner.uid, owner.gid, descend);
     });
 }
-function hand(kernel, key, uid, gid) {
+function hand(kernel, key, uid, gid, descend) {
     let st;
     try {
         st = kernel.lstat(key);
@@ -130,6 +131,8 @@ function hand(kernel, key, uid, gid) {
     if (st.type !== 'directory' || (st.mode & 0o005) !== 0o005)
         return;
     kernel.chown(key, uid, gid);
+    if (!descend)
+        return;
     for (const entry of kernel.readdir(key))
-        hand(kernel, `${key}/${entry.name}`, uid, gid);
+        hand(kernel, `${key}/${entry.name}`, uid, gid, true);
 }
