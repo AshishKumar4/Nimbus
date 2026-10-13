@@ -130,6 +130,7 @@ const INPUTS = {
   fsSeek: () => [fileHandle.id, seekTo, 'set'],
   fsSetStatus: () => [fileHandle.id, { append: true }],
   fsReaddirHandle: async () => [(await openHandle(handleDir, { read: true, directory: true })).id],
+  fsReadDirectories: [{ channel: crypto.randomUUID(), sequence: 1, epoch: null, cursor: 0, open: [handleDir], retire: [], claim: [], lease: false }],
   fsFtruncate: () => [fileHandle.id, size],
   fsFchmod: () => [fileHandle.id, mode],
   fsFchown: () => [fileHandle.id, uid, gid],
@@ -405,6 +406,13 @@ const nativeAssert = {
     assert.equal(duplicate.flags.append, true, 'fsSetStatus set append on the open descriptor');
   },
   fsReaddirHandle: (r) => assert.deepEqual(r.map((e) => e.name), ['child'], 'fsReaddirHandle lists the directory handle'),
+  fsReadDirectories: async (r) => {
+    assert.equal(r.opened.length, 1, 'fsReadDirectories opens the directory it was asked for');
+    assert.equal(r.opened[0].key, 'home/user/hdir', 'at its canonical placement');
+    const listed = await ops.dispatch({ op: 'fsReaddirHandle', args: [r.opened[0].handle.id], pid });
+    assert.deepEqual(listed.map((e) => e.name), ['child'], 'through a real descriptor of the process');
+    assert.equal(typeof r.acquire.epoch, 'string', 'with the namespace answer it was asked at');
+  },
   fsFtruncate: () => assert.equal(kernelVfs.stat('home/user/owned/handle').size, size, 'fsFtruncate sized the open file'),
   fsFchmod: () => assert.equal(kernelVfs.stat('home/user/owned/handle').mode & 0o777, mode, 'fsFchmod applied'),
   fsFutimes: () => {

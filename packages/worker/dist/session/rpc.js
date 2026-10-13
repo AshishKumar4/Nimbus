@@ -309,9 +309,13 @@ export async function _rpcWriteFile(self, path, content, pid, cred) {
  * rename or remove this one. That is the whole mechanism; there is no special
  * case anywhere in the filesystem for it.
  *
- * Deliberately absent from the remote HTTP RPC dispatcher: the point is a file
- * the sandboxed program cannot forge, so only an embedder holding the DO stub
- * may write it.
+ * Deliberately absent from the remote HTTP RPC dispatcher, so only an
+ * embedder holding the DO stub may write it.
+ *
+ * It guards against accidents, not against the session's code: the session's
+ * user has passwordless root (`sudo`, `su`), and a program that runs `sudo`
+ * can replace or remove this file. Do not rely on it to keep a value from code
+ * running in the session (docs/sandbox-sdk.md, "Users and Permissions").
  */
 export async function _rpcWriteProtectedRootFile(self, rootPath, path, content) {
     self.ensureSqliteFs();
@@ -522,15 +526,18 @@ export async function _rpcFsStorageGrant(self, facet, bytes, databaseSize, pid) 
     const recorded = ledger.view().facets[args.facet] ?? 0;
     if (args.databaseSize > recorded)
         ledger.report(args.facet, args.databaseSize);
+    // What a user may still write, as df reports it: a store sizes what it
+    // only caches (its pages) by it.
+    const available = () => { const view = ledger.view(); return Math.max(0, view.limit - ledger.kernelReserve - view.used); };
     if (args.bytes === 0)
-        return { granted: 0 };
+        return { granted: 0, available: available() };
     try {
         ledger.fill(args.facet, args.bytes);
-        return { granted: args.bytes };
+        return { granted: args.bytes, available: available() };
     }
     catch (error) {
         if (isVfsError(error, 'ENOSPC'))
-            return { granted: 0 };
+            return { granted: 0, available: available() };
         throw error;
     }
 }
@@ -1200,7 +1207,7 @@ export async function _rpcTransform(self, code, loader) {
         self.ensureSqliteFs();
         if (!self.sqliteFs)
             throw new Error('Session VFS is not initialized');
-        self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_KERNEL));
+        self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER));
     }
     try {
         const result = await self.esbuildService.transform(code, {

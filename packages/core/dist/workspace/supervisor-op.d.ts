@@ -196,6 +196,7 @@ declare const NATIVE_OPS: {
     readFile: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<string | null>;
     fsOpen: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").RuntimeOpenedFile>;
     fsReopen: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").RuntimeOpenedFile>;
+    fsReadDirectories: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<import("../runtime/read-directory-batch.js").ReadDirectoryBatchResult>;
     fsRead: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<Uint8Array<ArrayBufferLike>>;
     fsWrite: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<number>;
     fsClose: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;

@@ -90,6 +90,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     mkdir(path: RuntimeFsPath, options?: {
         recursive?: boolean;
         mode?: number;
+        umask?: number;
     } & RuntimeMutationOwner): void;
     /**
      * Whether anything may be at `located`: a mounted name (its mount
@@ -186,8 +187,6 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     /** Operations with SQLite-only semantics (journals, atomic renames, mutation leases) refuse kernel mounts. */
     private sqlitePath;
     reopen(target: RuntimeReopenTarget, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner): RuntimeOpenedFile;
-    /** RuntimeOpenFlags.closing: each closed, a refusal of one dropped. */
-    private closeQuietly;
     private openRoot;
     private ensureParent;
     /** ENOENT or ENOTDIR for `call` when `path`'s parent is missing or not a directory. */

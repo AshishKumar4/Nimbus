@@ -4,11 +4,15 @@ export function wasiOutputRelay(target) {
     let chain = null;
     let inFlight = 0;
     let lost = null;
+    /** The session's refusal because the reader of fd 1 or 2 went away (a pipe's): every later write gets it, EPIPE. */
+    let broken = null;
     const send = (fd, bytes) => {
         if (bytes.byteLength === 0)
             return;
         let at = 0;
         const admit = () => {
+            if (broken !== null)
+                throw broken;
             if (lost !== null)
                 throw new Error(lost);
             while (at < bytes.byteLength) {
@@ -34,7 +38,11 @@ export function wasiOutputRelay(target) {
                 }
                 if (delivered && typeof delivered.then === 'function') {
                     const pending = Promise.resolve(delivered)
-                        .catch((error) => { lost ??= error instanceof Error ? error.message : String(error); })
+                        .catch((error) => {
+                        if (error?.code === 'EPIPE')
+                            broken ??= error;
+                        lost ??= error instanceof Error ? error.message : String(error);
+                    })
                         .finally(() => { inFlight -= size; if (chain === pending)
                         chain = null; });
                     chain = pending;
@@ -50,5 +58,7 @@ export function wasiOutputRelay(target) {
         stderrBytes: (bytes) => send(2, bytes),
         ready: () => inFlight >= WASI_OUTPUT_IN_FLIGHT_BYTES ? chain ?? undefined : undefined,
         drain: () => (chain ?? Promise.resolve()).then(() => lost),
+        /** Whether the output's reader went away (EPIPE), as a pipe's does: where a native writer would get SIGPIPE. */
+        brokenPipe: () => broken !== null,
     };
 }

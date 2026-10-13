@@ -357,8 +357,6 @@ export class SqliteRuntimeFsBridge {
     }
     /** `options.mutationOwner`: the exclusive-mutation lease an open for writing presents (a read-only open presents none). */
     open(path, flags, options = {}) {
-        if (flags.closing)
-            this.closeQuietly(flags.closing);
         return called({ syscall: 'open', path }, () => {
             const normalizedFlags = openFlags(flags);
             const flagged = flagsRefusal(normalizedFlags);
@@ -421,7 +419,7 @@ export class SqliteRuntimeFsBridge {
             if (exists)
                 this.vfs.access(p, openAccess(normalizedFlags, directory));
             if (!exists) {
-                this.owned(owner).writeFile(p, new Uint8Array(0), { mode: flags.mode });
+                this.owned(owner).writeFile(p, new Uint8Array(0), { mode: flags.mode, umask: flags.umask });
             }
             else if (normalizedFlags.truncate) {
                 this.owned(owner).truncate(p, 0);
@@ -498,7 +496,7 @@ export class SqliteRuntimeFsBridge {
             // permission check on its parent (`/` has none).
             if (this.mayExist(located))
                 throw fsError('EEXIST', 'mkdir', path);
-            this.owned(owner).mkdir(located.path, { recursive: !!options.recursive, mode: options.mode });
+            this.owned(owner).mkdir(located.path, { recursive: !!options.recursive, mode: options.mode, umask: options.umask });
         });
     }
     /**
@@ -935,8 +933,6 @@ export class SqliteRuntimeFsBridge {
         return located.path;
     }
     reopen(target, flags, options = {}) {
-        if (flags.closing)
-            this.closeQuietly(flags.closing);
         const named = this.descriptors.openedAs(target.handle);
         return called({ syscall: 'open', path: named }, () => {
             const normalizedFlags = openFlags(flags);
@@ -973,15 +969,6 @@ export class SqliteRuntimeFsBridge {
             // Named as the descriptor it reopens was: an unlinked file has no name of its own.
             return syncValue(this.descriptors.open(node, normalizedFlags, named, node.revision()));
         });
-    }
-    /** RuntimeOpenFlags.closing: each closed, a refusal of one dropped. */
-    closeQuietly(handles) {
-        for (const id of handles) {
-            try {
-                this.close(id);
-            }
-            catch { /* not the caller's to hear of */ }
-        }
     }
     openRoot(path, flags) {
         if (flags.create && flags.exclusive)

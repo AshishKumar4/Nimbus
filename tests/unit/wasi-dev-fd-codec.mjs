@@ -23,7 +23,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { residentFilesystem } from '../../packages/core/src/runtime/wasi/resident-filesystem.ts';
-import { installAuthorityFilesystem, ResidentHolds } from '../../packages/core/src/runtime/wasi/filesystem.ts';
+import { installAuthorityFilesystem } from '../../packages/core/src/runtime/wasi/filesystem.ts';
 import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { WASI_RESIDENT_STORE_BYTES } from '../../packages/platform/src/limits.ts';
@@ -37,14 +37,18 @@ const O_TRUNC = 8, FDFLAG_APPEND = 1;
 
 /**
  * A process over a session seeded with `files` (beneath /home/user), its store's charge counted; `holding`: it holds
- * /home/user from its first change; `session`: the codec is straight over the session, its copies held there, as bash's are.
+ * /home/user from its first change; `session`: the codec is straight over the session, as bash's is.
  */
-async function processWith(files, { holding = false, session: direct = false, keep } = {}) {
+async function processWith(files, { holding = false, session: direct = false } = {}) {
   const harness = createSqliteVfsTestHarness();
   const session = new ProcessFiles(new SqliteVFS(harness.sql, harness.ctx));
   const kernel = session.bind({ pid: 1, cred: CRED_KERNEL });
   for (const dir of ['/home', '/home/user']) { await kernel.mkdir(dir, { recursive: true }); await kernel.chown(dir, 1000, 1000); }
-  for (const [name, text] of Object.entries(files)) { await kernel.writeFile(`/home/user/${name}`, enc.encode(text)); await kernel.chown(`/home/user/${name}`, 1000, 1000); }
+  for (const [name, text] of Object.entries(files)) {
+    const parent = name.includes('/') ? `/home/user/${name.slice(0, name.lastIndexOf('/'))}` : null;
+    if (parent !== null) { await kernel.mkdir(parent, { recursive: true }); await kernel.chown(parent, 1000, 1000); }
+    await kernel.writeFile(`/home/user/${name}`, enc.encode(text)); await kernel.chown(`/home/user/${name}`, 1000, 1000);
+  }
   const authority = session.bind({ pid: 2, cred: USER });
   const storeSource = createResidentStore();
   storeSource.bindInMemory(WASI_RESIDENT_STORE_BYTES);
@@ -104,7 +108,7 @@ async function processWith(files, { holding = false, session: direct = false, ke
   const imports = {};
   installAuthorityFilesystem(imports, {
     fs: () => fs, memory: () => memory, fds, allocateFd: () => next++, synchronous: false,
-    residentBytes: 1 << 20, duplicate: () => null, ...(direct ? { residentHolds: new ResidentHolds(keep) } : {}),
+    residentBytes: 1 << 20, duplicate: () => null,
   });
   const view32 = () => new DataView(memory.buffer);
   const name = (text) => { const b = enc.encode(text); new Uint8Array(memory.buffer).set(b, 4096); return b.length; };
@@ -241,69 +245,53 @@ await check('a resident copy is not opened again once its mode refuses the read'
   assert.equal(await p.openErrno(`dev/fd/${original}`), E.ACCES);
 });
 
-await check('a copy\'s hold is kept for the next copy at its name, and closed with an open once another takes its place', async () => {
-  const p = await processWith({ 'c.txt': 'copy', 'd.txt': 'next', 'e.txt': 'third' }, { session: true, keep: 1 });
-  const first = await p.open('home/user/c.txt');
-  const entry = p.fds.get(first);
-  assert.equal(entry.kind, 'resident', 'a small read-only open is a copy');
-  const held = entry.hold.handle;
-  assert.equal((await p.authority.fstat(held)).ino, entry.stat.ino, 'the session holds the copy\'s file');
-  await p.close(first);
-  const again = await p.open('home/user/c.txt');
-  assert.equal(p.fds.get(again).hold.handle, held, 'the next copy at the name takes the hold again');
-  assert.equal(await p.read(again, 64), 'copy');
+/** The session descriptors process `p` holds, found as fstat finds them. */
+async function sessionDescriptors(p) {
+  const live = [];
+  for (let id = 0; id < 128; id++) if ((await outcome(() => p.authority.fstat(id))).value !== undefined) live.push(id);
+  return live;
+}
+
+await check('a refused open of a file too large for a copy leaves no descriptor at the session', async () => {
+  const p = await processWith({ 'big.bin': 'x'.repeat(2 << 20) }, { session: true });
+  await p.kernel.chmod('/home/user/big.bin', 0);
+  for (let i = 0; i < 3; i++) assert.equal(await p.openErrno('home/user/big.bin'), E.ACCES);
+  assert.deepEqual(await sessionDescriptors(p), []);
+});
+
+await check('a copy holds nothing at the session until its process takes the name away; then its last descriptor lets the hold go', async () => {
+  const p = await processWith({ 'u.txt': 'old' }, { session: true });
+  const fd = await p.open('home/user/u.txt');
+  assert.equal(p.fds.get(fd).kind, 'resident', 'a small read-only open is a copy');
+  assert.deepEqual(await sessionDescriptors(p), [], 'a copy alone holds no descriptor');
+  await p.unlink('home/user/u.txt');
+  assert.equal((await sessionDescriptors(p)).length, 1, 'the unlink held the file first');
+  const writer = await p.open(`dev/fd/${fd}`, { rights: RIGHT_WRITE | RIGHT_SEEK, oflags: O_TRUNC });
+  await p.write(writer, 'changed');
+  await p.close(writer);
+  const again = await p.open(`dev/fd/${fd}`);
+  assert.equal(await p.read(again, 64), 'changed', 'the unlinked file, written');
   await p.close(again);
-  await p.close(await p.open('home/user/d.txt'));
-  assert.equal((await p.authority.fstat(held)).ino, entry.stat.ino, 'kept past its place, it is closed by the next open, not a call of its own');
-  await p.open('home/user/e.txt');
-  assert.equal((await outcome(() => p.authority.fstat(held))).code, 'EBADF', 'which closed it');
-});
-
-await check('a hold kept at a name is not the copy of another file the name has since', async () => {
-  const p = await processWith({ 'r.txt': 'before', 'new.txt': 'after' }, { session: true });
-  const first = await p.open('home/user/r.txt');
-  const before = p.fds.get(first);
-  await p.close(first);
-  await p.rename('home/user/new.txt', 'home/user/r.txt');
-  const again = await p.open('home/user/r.txt');
-  assert.notEqual(p.fds.get(again).stat.ino, before.stat.ino, 'the name\'s file now');
-  assert.notEqual(p.fds.get(again).hold.handle, before.hold.handle, 'held anew');
-  assert.equal(await p.read(again, 64), 'after');
-  assert.equal((await p.authority.fstat(p.fds.get(again).hold.handle)).ino, p.fds.get(again).stat.ino);
-});
-
-await check('a /dev/fd reopen closes the holds let go before it', async () => {
-  const p = await processWith({ 'q.txt': 'q' }, { session: true });
-  const fd = await p.open('home/user/q.txt');
-  const first = await p.open(`dev/fd/${fd}`);
-  const firstHold = p.fds.get(first).hold.handle;
-  await p.close(first);
-  const second = await p.open(`dev/fd/${fd}`);
-  assert.equal((await outcome(() => p.authority.fstat(firstHold))).code, 'EBADF', 'the next reopen closed it');
-  await p.close(second);
-});
-
-await check('holds let go with no open after them are closed past a bound, not kept to the end', async () => {
-  const p = await processWith({ 'b.txt': 'b' }, { session: true });
-  const fd = await p.open('home/user/b.txt');
-  const copies = [];
-  for (let i = 0; i < 80; i++) copies.push(await p.open(`dev/fd/${fd}`));
-  const firstHold = p.fds.get(copies[0]).hold.handle;
-  for (const copy of copies) await p.close(copy);
-  assert.equal((await outcome(() => p.authority.fstat(firstHold))).code, 'EBADF', 'closed, though no open came after');
-});
-
-await check('a kept hold whose name fails its stat is not lost', async () => {
-  const p = await processWith({ 'k.txt': 'k', 'other.txt': 'o' }, { session: true, keep: 1 });
-  const fd = await p.open('home/user/k.txt');
-  const held = p.fds.get(fd).hold.handle;
   await p.close(fd);
-  await p.kernel.chmod('/home/user', 0);
-  assert.equal(await p.openErrno('home/user/k.txt'), E.ACCES, 'its name cannot be walked');
-  await p.kernel.chmod('/home/user', 0o755);
-  await p.close(await p.open('home/user/other.txt'));
-  await p.open('home/user/other.txt');
-  assert.equal((await outcome(() => p.authority.fstat(held))).code, 'EBADF', 'the hold the failed open took is closed');
+  assert.deepEqual(await sessionDescriptors(p), [], 'its last descriptor let the hold go');
+});
+
+await check('a copy whose name its process renamed another file over reopens itself through the hold', async () => {
+  const p = await processWith({ 'r.txt': 'before', 'new.txt': 'after' }, { session: true });
+  const fd = await p.open('home/user/r.txt');
+  await p.rename('home/user/new.txt', 'home/user/r.txt');
+  const again = await p.open(`dev/fd/${fd}`);
+  assert.equal(await p.read(again, 64), 'before');
+  const named = await p.open('home/user/r.txt');
+  assert.equal(await p.read(named, 64), 'after', 'the name\'s file is the new one');
+});
+
+await check('a copy under a directory its process renamed reopens itself through the hold', async () => {
+  const p = await processWith({ 'd/f.txt': 'inside' }, { session: true });
+  const fd = await p.open('home/user/d/f.txt');
+  await p.rename('home/user/d', 'home/user/e');
+  const again = await p.open(`dev/fd/${fd}`);
+  assert.equal(await p.read(again, 64), 'inside');
 });
 
 await check('a pinned copy this process unlinked is reopened for writing through /dev/fd, as the file it was', async () => {

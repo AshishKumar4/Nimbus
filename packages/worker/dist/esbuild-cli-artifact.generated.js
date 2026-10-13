@@ -10,8 +10,8 @@
  * ESBUILD_CLI_BUILD_ID is a content-hash prefix, ESBUILD_CLI_SHA256 the
  * digest every fetch is verified against.
  *
- * Size: 37.04 KiB
+ * Size: 37.06 KiB
  */
-export const ESBUILD_CLI_ASSET_PATH = "/_assets/runtime/esbuild-cli-0090ad458373c882.js";
-export const ESBUILD_CLI_BUILD_ID = "0090ad458373c882";
-export const ESBUILD_CLI_SHA256 = "0090ad458373c8829373df178ffd3338cfa23ca4d8435d9bd375c5f20447926c";
+export const ESBUILD_CLI_ASSET_PATH = "/_assets/runtime/esbuild-cli-6afeae675052a856.js";
+export const ESBUILD_CLI_BUILD_ID = "6afeae675052a856";
+export const ESBUILD_CLI_SHA256 = "6afeae675052a8569c483d30321f1ee03b1a486071727bc1d18094a4df02083d";

@@ -4,8 +4,9 @@ import type { FacetBindings } from './facet-host.js';
 import type { CPythonFacetResult } from './cpython-runner.js';
 import type { RubyFacetCallArgs } from './ruby-runner.js';
 import type { BashBootArgs, BashFeedArgs } from './bash/types.js';
-import type { WasiAbi } from './wasi-instance.js';
-import type { WasiCred, WasiInitOptions, WasiInstanceBundle, WasiMakeImportsOptions } from './wasi/types.js';
+import type { WasiAbi, WasiFsSnapshot } from './wasi-instance.js';
+import type { WasiInitOptions, WasiInstanceBundle, WasiMakeImportsOptions } from './wasi/types.js';
+import type { VfsCred } from './os-contracts.js';
 import type { ResidentFilesystemStats } from './wasi/resident-filesystem.js';
 export type BashStepArgs = BashBootArgs | BashFeedArgs;
 /** The step the classic submit transport carries: args object in, slice out.
@@ -74,7 +75,7 @@ export interface ClangFacetResult {
 export const clangFacetCall = async function clangFacetCall(inArgs: {
     primaryName: string;
     argv: string[];
-    cred: WasiCred;
+    cred: VfsCred;
     processPid: number;
 }, facetEnv: FacetBindings): Promise<ClangFacetResult> {
     const wasm = Reflect.get(globalThis, '__NIMBUS_WASM') as Record<string, unknown> | undefined;
@@ -144,6 +145,7 @@ declare const __wasiSupervisorOutput: (sup: unknown) => {
     stdoutBytes(bytes: Uint8Array): void | Promise<void>;
     stderrBytes(bytes: Uint8Array): void | Promise<void>;
     drain(): Promise<string | null>;
+    brokenPipe(): boolean;
 };
 declare const __wasiFsStats: (() => ResidentFilesystemStats | null) | undefined;
 /** The green-thread scheduler — see runtime/wasi-threads.ts. */
@@ -206,18 +208,7 @@ export const wasmFacetCall = async function wasmFacetCall(args: {
             maximum: number;
         };
     };
-    wasiFs?: {
-        root: string;
-        preopens: Array<{
-            wasiPath: string;
-            vfsPath: string;
-        }>;
-        cred?: {
-            uid: number;
-            gid: number;
-            groups: number[];
-        };
-    };
+    wasiFs?: WasiFsSnapshot;
 }, facetEnv?: {
     SUPERVISOR?: unknown;
 }): Promise<WasmCallResult> {

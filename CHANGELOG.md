@@ -20,10 +20,10 @@ published independently in the `@nimbus-sh` npm scope.
   gets its own offset, and `>/dev/stdout` truncates a file that stdout writes
   to. It is the file itself, even one renamed or unlinked since, never
   whatever file now has its old name, opened as it is now: its current
-  content, under its current permissions. In an uploaded program or CPython,
-  a small file opened read-only that another process renamed or removed since
-  cannot be opened again this way yet (ENOENT); one its own process renamed
-  or removed can. `stat` of the path is that descriptor's stat. Process substitution works:
+  content, under its current permissions. A small file opened read-only
+  that another program (not the shell, or not the uploaded program itself)
+  renamed or removed since cannot be opened again this way yet (ENOENT).
+  `stat` of the path is that descriptor's stat. Process substitution works:
   `source <(...)`, `done < <(...)`, `diff <(...) <(...)`. Before, `/dev/fd/N`
   was not found, `/dev/stdin` read as empty, and writes to `/dev/stdout` and
   `/dev/stderr` were silently discarded.
@@ -45,6 +45,86 @@ published independently in the `@nimbus-sh` npm scope.
   -c 'import sys; print(sys.stdin.read())'`). The WASI layer now reads every
   runtime's fd 0 from its process's input channel; before, only the generic
   wasm runner wired it, and the others read an empty stdin.
+- Added: real git 2.53, built for WASI, in the default runtime catalog.
+  `git` runs it for every command, option or repository format the
+  built-in git does not fully implement (for example `log --graph`,
+  `commit` with paths, `branch -d`'s merged check, `push -u`, `rebase`,
+  `stash`, a SHA-256 repository); `status`, `add`, `diff`, a plain `commit`
+  and `checkout` stay on the built-in git. A command whose hooks the
+  repository makes executable, or whose message comes from an editor, runs
+  on real git, since the built-in runs neither; `status` and `diff` stay
+  built-in and do not write back their index refresh where a
+  `post-index-change` hook is executable. Remote helpers (`git-remote-http`
+  and `git-remote-https`), hooks and aliases work through the session's one
+  child-process broker. On a host whose engine cannot suspend WebAssembly
+  (Node 22), a git child process is refused by name instead.
+- Fixed: a program's end no longer waits on the session to answer the
+  release of its read lease and of the subtrees it held; only its last
+  writes are waited for.
+- Fixed: a `node:sqlite` database keeps what a connection wrote when it is
+  closed. A connection opened after another's `close()` in the same run sees
+  it (it read the run's starting copy), a write made through `all()` or
+  `get()`, such as `INSERT ... RETURNING`, or one SQLite does not count, such
+  as `ANALYZE`'s statistics, is kept (only `run()` and `exec()` were), and a
+  relative name is the file it named when the connection opened. The model
+  is the whole database image: close writes the connection's image back to
+  its file, through the program's `fs`, unless it is the image that was read,
+  so a database only read is not written; a program killed before `close()`
+  loses that connection's changes, and two connections or processes writing
+  one file each write their own image, the last close winning. A write the
+  program may not make fails `close()` as `fs.writeFileSync` would; one the
+  session refuses later is reported as any refused write is. node:sqlite is
+  powered by `fs`, so a close that writes costs what writing that file
+  through `fs` costs: about 0.85 ms CPU per database a close writes, and a
+  SQLite-only program's first write in a fresh isolate about 6 ms more, the
+  fs write path's one-time compile. Writes are no longer lost. A Node `fs`
+  write over an existing file no longer reads the file it replaces (about
+  0.4 ms less per MiB).
+- Fixed (security): helpers a command starts acted as the kernel, not as
+  the command's process. `nimbus wrangler dev` read its config and D1
+  migrations, kept its KV and R2 stores, and bundled its Worker as
+  `CRED_KERNEL`, so a project symlink made it read a file its user could
+  not; a resident process's boot read the `.wasm` files it named as the
+  kernel; `npm install -g` wrote its bin shims as the kernel; and global
+  npm and gem commands, and a command lookup with no caller, were
+  discovered by reading as the kernel. Each now acts as the process that
+  ran it (the session's user for discovery), and is refused what that
+  process is refused. Shims and stores an earlier release left as root are
+  handed to the owner of the directory holding them, the first time they
+  are written. The shared build service's default view is the session's
+  user's.
+- Changed: `npm install -g` makes a missing prefix (`<prefix>/lib`,
+  `<prefix>/bin`) as the process that runs it, where it always used the
+  session's user: `sudo npm install -g --prefix <new dir>` now makes it
+  root's, as on Linux.
+- Fixed: `nimbus wrangler dev` could serve an old build after a rebuild
+  or a restart. A rebuild still bundling when `wrangler dev` was run again
+  (or when a later rebuild overtook it) went on: it printed "Worker built"
+  while the new server was still building, so opening the Worker then
+  showed the waiting page, and it ended the new server's Durable Objects
+  and put its own old classes in their place. A superseded build now says
+  and changes nothing, "Worker built" is printed once the build serves,
+  and `wrangler dev` stops the server before it even while that one is
+  still starting.
+- Fixed (security): the session's owner surfaces acted as the kernel. The
+  browser editor's saves, reads and listings, the agent's `read_file`,
+  `write_file` and `list_files`, and `POST /api/write-file` and
+  `/api/mkdir` read and wrote as `CRED_KERNEL`. So they could replace a
+  kernel-owned file the session's user cannot change, such as one an
+  embedder provisioned in a sticky directory, and read another user's
+  private files. They now act as the session's user, and are refused what
+  that user's own shell is refused. These rules, like protected files,
+  guard against accidents and against the session's own tools: the
+  session's user has passwordless root through `sudo`, so they do not stand
+  against a program in the session that uses it (documented in the SDK
+  guide, "Users and Permissions").
+- Breaking: `files.delete` with no credential now acts as the session's
+  user, like every other file method, instead of the kernel. An embedder
+  that deletes past the user's permissions asks for it by name:
+  `sandbox.files.as(CRED_KERNEL).delete(path)`. `CRED_KERNEL`,
+  `CRED_SESSION_USER` and the `VfsCred` type are exported from
+  `@nimbus-sh/sdk`. Over the remote endpoint a deletion already acted as
+  the session's user.
 - Security: a sticky directory (mode 1777, such as `/tmp`) protects its
   entries from every removal. Removing an ancestor (`rm -r`,
   `fs.rmSync(..., { recursive: true })`) or deleting through a batch could

@@ -61,7 +61,7 @@ import {
   type ResidentFilesystemStats,
   type ResidentNamespace,
 } from '@nimbus-sh/core/runtime/wasi/resident-filesystem.js';
-import type { RuntimeFsBridge, RuntimeVfsDirEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_SESSION_USER, type RuntimeFsBridge, type RuntimeVfsDirEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { ProcessFsSession } from '@nimbus-sh/core/_shared/process-fs-client.js';
 import { sqlJournal, type JournalSql } from '@nimbus-sh/core/_shared/process-fs-journal.js';
 import type { WaveFence } from '@nimbus-sh/platform/wave-writer.js';
@@ -69,7 +69,7 @@ import { WASI_RESIDENT_STORE_BYTES } from '@nimbus-sh/platform/limits.js';
 import { processHost, type ChildNews, type PipeReadiness } from '@nimbus-sh/core/runtime/wasi/processes.js';
 import { wasiOutputRelay, type WasiOutputTarget } from '@nimbus-sh/core/runtime/wasi/stdio.js';
 import { outputControlReader } from '@nimbus-sh/core/runtime/wasi/output-control.js';
-import { createResidentStore } from '../../vfs/resident/index.js';
+import { createResidentStore, type ResidentStore } from '../../vfs/resident/index.js';
 declare const __wasiCreateChildNews: (send: (report: { blocked: boolean; frontier: number; seq: number }) => void) => ChildNews;
 
 
@@ -80,6 +80,7 @@ const __WASI_EACCES         = 2;
 const __WASI_EBADF          = 8;
 const __WASI_ECONNREFUSED   = 14;
 const __WASI_EEXIST         = 20;
+const __WASI_EFAULT         = 21;
 const __WASI_EHOSTUNREACH   = 23;
 const __WASI_EINTR          = 27;
 const __WASI_EINVAL         = 28;
@@ -183,7 +184,7 @@ const __WASI_STREAM_DEV = 1n << 32n;
 // before init answers EBADF against an empty descriptor table, which is true,
 // rather than trapping the guest.
 function __wasiEmptyFS(): WasiFsState {
-  return { root: '', residentFileCap: WASI_RESIDENT_FILE_CAP_BYTES, cred: null, pid: 0 };
+  return { root: '', umask: CRED_SESSION_USER.umask, residentFileCap: WASI_RESIDENT_FILE_CAP_BYTES, cred: null, pid: 0 };
 }
 let __wasiFS: WasiFsState = __wasiEmptyFS();
 let __wasiPreopens: Array<{ fd: number; wasiPath: string; vfsPath: string }> = [];
@@ -222,19 +223,51 @@ let __wasiProcessGone: string | null = null;
 // `inbound()` is called wherever input from outside enters the guest (a
 // socket's bytes, an accepted connection, a poll wakeup): the next answer then
 // takes the ACQUIRE barrier first, the causal rule a node process keeps.
-let __wasiResident: { sup: WasiSupervisorStub; fs: ResidentFilesystem; ready: Promise<ResidentNamespace | null> } | null = null;
+let __wasiResident: { sup: WasiSupervisorStub; who: string; store: ResidentStore; fs: ResidentFilesystem; ready: Promise<ResidentNamespace | null> } | null = null;
+
+/**
+ * The store the last process of this facet left at the end of its run (a
+ * warm facet, FacetSpec.warm): whose names it holds, the device the session's
+ * filesystem reports, and the directories it opened. The next process of the
+ * same credential continues it.
+ */
+let __wasiKept: { who: string; store: ResidentStore; device: number; walked: readonly string[] } | null = null;
+
+/**
+ * Syscalls this facet's watchdog gave up on (withParkDeadline): each may
+ * still complete, whenever, into this facet's store and descriptor table.
+ * One is enough to make the facet unfit for another process: its store is
+ * not kept, and __wasiReusable says so to whoever leases the facet.
+ */
+let __wasiAbandoned = 0;
+
+/** Whether another process may run in this facet after this one (FacetSpec.warm): no syscall here was abandoned. */
+export function __wasiReusable(): boolean {
+  return __wasiAbandoned === 0;
+}
+
+/** Who a store's names were walked as. */
+function __wasiWho(cred: WasiCred): string {
+  return `${cred.uid}:${cred.gid}:${[...cred.groups].sort((a, b) => a - b).join(',')}`;
+}
 
 /** The resident filesystem over `sup`, booting its store; its calls go to the session until the boot lands. */
-function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): { fs: ResidentFilesystem; ready: Promise<ResidentNamespace | null> } {
+function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): { store: ResidentStore; fs: ResidentFilesystem; ready: Promise<ResidentNamespace | null> } {
   const supervisor = answeringSupervisor(sup);
   const authority = supervisorFilesystem(sup);
+  const kept = __wasiKept !== null && __wasiKept.who === __wasiWho(cred) ? __wasiKept : null;
+  __wasiKept = null;
   // The store a node process reads its synchronous calls from, here listed on
-  // demand: this process's own (vfs/resident).
-  const store = createResidentStore();
-  store.bindInMemory(WASI_RESIDENT_STORE_BYTES);
+  // demand (vfs/resident): the facet's last process's, kept, or a new one.
+  const store = kept?.store ?? createResidentStore();
   store.admission.setStorage(undefined, supervisor);
-  let view: ResidentNamespace | null = null;
-  const ready = (async () => {
+  // A kept store answers as it stood at its cursor: the process's first
+  // answer takes the barrier from there (inbound, below), so it reads
+  // everything that happened since, as a barrier inside one process does.
+  let view: ResidentNamespace | null = kept === null ? null : store.lazy.namespaceView(supervisor, kept.device, cred);
+  if (view !== null && !view.ready()) view = null;
+  if (view === null) store.bindInMemory(WASI_RESIDENT_STORE_BYTES);
+  const ready = view !== null ? Promise.resolve(view) : (async () => {
     // The session's own filesystem is the one the store answers for: its root reports its device.
     const root = await authority.stat('/');
     if (root === null || !(await store.lazy.bootLazy(supervisor))) return null;
@@ -250,9 +283,14 @@ function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): { fs: Res
     list: (key: string) => (view === null ? Promise.resolve(false) : view.list(key)),
     lookup: (keys: string[], content: boolean) => (view === null ? Promise.resolve(false) : view.lookup(keys, content)),
     listTree: (key: string) => (view === null ? Promise.resolve(false) : view.listTree(key)),
-    content: (key: string) => (view === null ? undefined : view.content(key)),
+    content: (key: string, revision?: number) => (view === null ? undefined : view.content(key, revision)),
     fill: (key: string, entry: ResidentEntry) => (view === null ? Promise.resolve(null) : view.fill(key, entry)),
+    pages: (key: string, revision: number, size: number, first: number, last: number) =>
+      (view === null ? Promise.resolve(null) : view.pages(key, revision, size, first, last)),
+    fillMany: (files) => (view === null ? Promise.resolve() : view.fillMany(files)),
     barrier: () => (view === null ? Promise.resolve(false) : view.barrier()),
+    cursor: () => view?.cursor() ?? null,
+    admit: (answer) => view === null ? Promise.resolve(false) : view.admit(answer),
     reserve: (bytes: number) => view !== null && view.reserve(bytes),
     release: (bytes: number) => { view?.release(bytes); },
   };
@@ -277,10 +315,15 @@ function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): { fs: Res
   const journalSql: JournalSql | undefined = Reflect.get(globalThis, '__nimbusFsJournalSql');
   const fs = residentFilesystem(authority, booting, {
     session,
+    ...(typeof sup.fsReadDirectories === 'function' ? {
+      readDirectories: (request) => supervisor.fsReadDirectories!(request),
+    } : {}),
     isHomeRoot: isHomeDirectory,
     ...(journalSql === undefined ? {} : { journal: sqlJournal(journalSql) }),
+    ...(kept === null || view === null ? {} : { walked: kept.walked }),
   });
-  return { fs, ready };
+  if (kept !== null && view !== null) fs.inbound();
+  return { store, fs, ready };
 }
 
 /** The stub's wave calls (SupervisorRPC.openWaveWriter, writeBatchStream). */
@@ -306,7 +349,7 @@ function __wasiFilesystem(parking: WasiMakeImportsOptions['parking']): RuntimeFs
   // same-isolate supervisor answers synchronously and is used as it is.
   const canPark = typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function';
   if (cred === null || !canPark) return supervisorFilesystem(sup);
-  if (__wasiResident === null || __wasiResident.sup !== sup) __wasiResident = { sup, ...__wasiStartResident(sup, cred) };
+  if (__wasiResident === null || __wasiResident.sup !== sup) __wasiResident = { sup, who: __wasiWho(cred), ...__wasiStartResident(sup, cred) };
   return __wasiResident.fs;
 }
 
@@ -338,10 +381,17 @@ export async function __wasiSettleWrites(): Promise<string | null> {
   let failed: string | null = null;
   try {
     if (__wasiResident !== null) {
-      const failures = await __wasiResident.fs.settle();
+      const resident = __wasiResident;
+      const failures = await resident.fs.settle();
       if (failures.length > 0) failed = failures
         .map((f) => `${f.path}: not written (${f.error instanceof Error ? f.error.message : String(f.error)})`)
         .join('; ');
+      // A run that ended with its store answering, and everything it wrote
+      // answered, leaves the store to the next process in this facet.
+      const view = await resident.ready;
+      if (failed === null && __wasiAbandoned === 0 && view !== null && view.ready()) {
+        __wasiKept = { who: resident.who, store: resident.store, device: view.device, walked: resident.fs.walked() };
+      }
     }
   } catch (error) {
     if (__wasiProcessGone === null) throw error;
@@ -396,6 +446,7 @@ export function __wasiInitFS(opts: WasiInitOptions): void {
   __wasiProcessGone = null;
   __wasiFS = {
     root: __wasiCanonicalize(opts.root || ''),
+    umask: (opts.cred?.umask ?? CRED_SESSION_USER.umask) & 0o777,
     // Largest regular file the codec answers from a resident copy.
     residentFileCap: Number(opts.residentFileCap ?? WASI_RESIDENT_FILE_CAP_BYTES),
     cred: opts.cred ? { uid: Number(opts.cred.uid), gid: Number(opts.cred.gid), groups: [...(opts.cred.groups || [])].map(Number) } : null,
@@ -411,6 +462,9 @@ export function __wasiInitFS(opts: WasiInitOptions): void {
   // are handed this Map, and a swap would leave half of them writing into a
   // table nothing reads.
   __wasiPreopens = [];
+  // A descriptor the last process left open gives its pinned bytes back to
+  // the store (a warm facet's store outlives the process).
+  for (const entry of fdTable.values()) if (entry.kind === 'resident' && 'name' in entry.hold) entry.hold.pin?.release();
   fdTable.clear();
   fdTable.set(0, { kind: 'stdin' });
   fdTable.set(1, { kind: 'stdout' });
@@ -758,6 +812,8 @@ function withParkDeadline(fn: WasiSyscallFn): WasiSyscallFn {
       const timer = setTimeout(() => {
         if (settled) return;
         settled = true;
+        __wasiAbandoned++;
+        __wasiResident?.fs.cancelPendingDirectories();
         call.current = false;
         resolve(__WASI_EAGAIN);
       }, __WASI_PARK_DEADLINE_MS);
@@ -1018,10 +1074,16 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
         let off = 0;
         for (const p of parts) { combined.set(p, off); off += p.length; }
       }
-      const taken = appendStream(stream, combined);
+      // The output's reader gone (a pipe's: the relay's EPIPE) is the write's EPIPE, as a native write's is.
+      const brokenPipe = (error: unknown): Errno => {
+        if ((error as { code?: unknown } | null)?.code === 'EPIPE') return __WASI_EPIPE as Errno;
+        throw error;
+      };
+      let taken: void | Promise<void>;
+      try { taken = appendStream(stream, combined); } catch (error) { return brokenPipe(error); }
       writeU32LE(nwrittenPtr, total);
       // A sink that pushes back hands a promise; any other value it returns is no answer.
-      return taken && typeof taken.then === 'function' ? Promise.resolve(taken).then(() => __WASI_ESUCCESS) : __WASI_ESUCCESS;
+      return taken && typeof taken.then === 'function' ? Promise.resolve(taken).then((): Errno => __WASI_ESUCCESS, brokenPipe) : __WASI_ESUCCESS;
     },
 
     fd_seek(fd, _offsetArg, _whence, _newOffsetPtr) {
@@ -1800,6 +1862,12 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
   // the codec answers its files and directories; a stream's (stdio, a pipe,
   // a socket) status is preview1's, with the mode its kind has.
   const fsImport: Partial<NimbusFsImports> = {
+    umask(mask, out) {
+      try { writeU32LE(out, __wasiFS.umask); }
+      catch (error) { if (error instanceof RangeError) return __WASI_EFAULT; throw error; }
+      __wasiFS.umask = mask & 0o777;
+      return __WASI_ESUCCESS;
+    },
     fd_stat(fd, out) {
       const kind = fdTable.get(fd)?.kind;
       const format = kind === 'stdin' || kind === 'stdout' || kind === 'stderr' ? 0o020620
@@ -1827,6 +1895,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     allocateFd: __wasiAllocateFd,
     abi: opts.abi,
     synchronous: opts.parking === 'none',
+    umask: () => __wasiFS.umask,
     residentBytes: __wasiFS.residentFileCap,
     extension: fsImport,
     processGone: (refusal) => { __wasiProcessGone ??= refusal; },

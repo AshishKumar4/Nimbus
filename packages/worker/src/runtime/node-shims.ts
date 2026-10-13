@@ -1061,6 +1061,24 @@ const __fsMod = (() => {
     return undefined;
   }
 
+  /**
+   * The denial _bundleLookup would answer for \`absPath\` (_denialCode), or
+   * null, without reading the bytes it holds there: a check before a write
+   * reassembled and copied the file it was about to replace.
+   */
+  function _denialAt(absPath) {
+    const k = _strip(absPath);
+    if (__vfsWrites && k in __vfsWrites) return _denialCode(__vfsWrites[k]);
+    if (typeof __resident === "undefined") return _denialCode(_bundleLookup(absPath));
+    const cells = __resident.cells;
+    if (cells.has(k)) return cells.denied(k) ? "EACCES" : null;
+    if (_nsActive()) {
+      const held = _nsHeldKey(k);
+      if (held !== null && held !== k && cells.has(held)) return cells.denied(held) ? "EACCES" : null;
+    }
+    return null;
+  }
+
   // Whether the store is bound: every embedding of these shims boots one (a
   // facet's SQLite, or a one-shot's heap), and this is the single place that asks.
   function _residentStorePresent() {
@@ -3770,7 +3788,7 @@ const __fsMod = (() => {
     // refused (and the parked bytes dropped) if the authority refuses it.
     const k = _parkWholeWrite(p, data, !!supervisor, mode);
     if (!supervisor) return;
-    const bytes = __nimbusVfsCellBytes(__vfsWrites[k]).slice();
+    const bytes = _cellCopy(__vfsWrites[k]);
     const decided = _decidedHere(absPath, bytes.byteLength);
     // Logged now, in program order; decided here, it is answered once logged.
     const logged = _logParked(absPath, { type: "call", call: { call: "writeFile", path: k, mode, data: bytes } }, { acknowledged: decided });
@@ -4129,8 +4147,7 @@ const __fsMod = (() => {
   /** \`live\`: the caller asks the authority next, so a path the namespace cannot judge is left to it. */
   function _ensureWritable(absPath, syscall, p, live, dest) {
     _ensureAncestorsTraversable(absPath, syscall, p, dest);
-    const cell = _bundleLookup(absPath);
-    const denial = _denialCode(cell);
+    const denial = _denialAt(absPath);
     if (denial) throw _fsErr(denial, syscall, p, dest);
     // Judged on what the authority says of the path (or of a file this
     // process made), never on the bytes held under its name.
@@ -4249,7 +4266,12 @@ const __fsMod = (() => {
   function writeFileSync(p, data, opts) {
     const mode = _createMode(opts, "open", p);
     const k = _parkWholeWrite(p, data, false, mode);
-    _logParked("/" + k, { type: "call", call: { call: "writeFile", path: k, mode, data: __nimbusVfsCellBytes(__vfsWrites[k]).slice() } }, { acknowledged: true });
+    _logParked("/" + k, { type: "call", call: { call: "writeFile", path: k, mode, data: _cellCopy(__vfsWrites[k]) } }, { acknowledged: true });
+  }
+
+  /** A cell's bytes as a copy of the log's own: a string's encoding is one already, bytes are copied once. */
+  function _cellCopy(cell) {
+    return typeof cell === "string" ? __nimbusVfsCellBytes(cell) : cell.slice();
   }
 
   /**

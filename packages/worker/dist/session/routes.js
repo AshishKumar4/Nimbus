@@ -60,6 +60,7 @@ import { renderNoDevServerHtml } from './helpers.js';
 import { handleAgentRequest } from './agent.js';
 import { captureSessionAiCredential } from './ai.js';
 import { CRED_KERNEL, CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { seedBaseFilesystem } from '@nimbus-sh/core/workspace';
 // The L2 key builders are imported rather than re-derived so the bench
 // endpoints below can never drift from the key shape the cache actually
 // uses (they did: the packument purge used a stale `/p/` segment).
@@ -176,7 +177,7 @@ export async function restorePersistedDevServer(self, onlyPort) {
         if (!self.esbuildService) {
             if (!self.sqliteFs)
                 throw new Error('Session VFS is not initialized');
-            self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_KERNEL));
+            self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER));
         }
         // Prefer the current request's basePath (just captured from the
         // X-Nimbus-Base header) over the stored one — the latter is only
@@ -918,14 +919,13 @@ async function routeFetch(self, request) {
             const body = await parseJsonBody(request, W7BenchBodySchema);
             const entry = self.processes.spawn('_test:w7-bench', ['_test'], '/');
             try {
-                // The producers publish below a directory their process owns, in a
-                // session no terminal may have set up.
+                // The producers publish below a directory their process makes, in
+                // the home the base seed makes in a session no terminal has set up.
                 const root = `home/user/w7-bench-${Date.now()}`;
                 const cred = self.processes.cred(entry.pid);
-                const kernel = self.ensureSqliteFs().as(CRED_KERNEL);
-                kernel.mkdir(root, { recursive: true, mode: 0o755 });
-                kernel.chown(root, cred.uid, cred.gid);
+                await withRecall(() => seedBaseFilesystem(self.ensureSqliteFs()));
                 const writer = self.ensureSqliteFs().as(cred);
+                writer.mkdir(root, { recursive: true, mode: 0o755 });
                 const result = await runWaveBench(self.ctx, self.env, { pid: entry.pid, root, ...body }, {
                     writeStream: (stream) => self.getFilesystemAuthority().waves.writeStream(writer, stream),
                     sql: self.ctx.storage.sql,
@@ -1201,7 +1201,8 @@ async function routeFetch(self, request) {
     // requests are rejected by the browser before reaching the Worker.
     if (url.pathname === '/api/write-file' && request.method === 'POST') {
         try {
-            const fs = self.getFilesystemAuthority().namespaceFs(CRED_KERNEL);
+            // An owner surface: it acts as the session's user, never the kernel.
+            const fs = self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER);
             const body = await parseJsonBody(request, WriteFileBodySchema);
             const path = body.path.replace(/^\/+/, '');
             // A delegation it meets is recalled first; the whole write is repeatable.
@@ -1221,7 +1222,7 @@ async function routeFetch(self, request) {
         try {
             const body = await parseJsonBody(request, MkdirBodySchema);
             const path = body.path.replace(/^\/+/, '');
-            await withRecall(() => self.getFilesystemAuthority().namespaceFs(CRED_KERNEL).mkdir(`/${path}`, { recursive: true }));
+            await withRecall(() => self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER).mkdir(`/${path}`, { recursive: true }));
             return Response.json({ ok: true, path });
         }
         catch (e) {
@@ -1241,7 +1242,7 @@ async function routeFetch(self, request) {
             if (!self.esbuildService) {
                 if (!self.sqliteFs)
                     throw new Error('Session VFS is not initialized');
-                self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_KERNEL));
+                self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER));
             }
             const basePath = self.viteBasePath;
             // process metadata support: allocate a PID + port even on the
@@ -1380,7 +1381,7 @@ async function routeFetch(self, request) {
         // Polished placeholder — auto-reloads when vite starts.
         // Checks the VFS for the starter app so we can offer a context-aware hint.
         const hasSeed = await withRecall(() => {
-            const fs = self.getFilesystemAuthority().namespaceFs(CRED_KERNEL);
+            const fs = self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER);
             return fs.exists(`/${SEED_PROJECT_DIR}`) && fs.exists(`/${SEED_PROJECT_DIR}/package.json`);
         }).catch(() => false);
         const hint = hasSeed
@@ -1413,7 +1414,7 @@ async function routeFetch(self, request) {
             // names so users coming from either `wrangler dev` or
             // `nimbus-wrangler dev` see a familiar hint.
             const hasWranglerConfig = await withRecall(() => {
-                const fs = self.getFilesystemAuthority().namespaceFs(CRED_KERNEL);
+                const fs = self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER);
                 return fs.exists('/home/user/wrangler.jsonc') ||
                     fs.exists('/home/user/wrangler.json') ||
                     fs.exists('/home/user/wrangler.toml');

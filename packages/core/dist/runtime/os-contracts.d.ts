@@ -117,14 +117,10 @@ export interface RuntimeOpenFlags {
      * its reads and writes are EBADF.
      */
     path?: boolean;
-    /**
-     * The caller's descriptors this open closes first, each as close() does,
-     * a refusal of one dropped: closes nothing waits on (a resident copy's
-     * hold), sent with the next open rather than as calls of their own.
-     */
-    closing?: readonly number[];
     /** Creation mode, masked by the binding's umask like mkdir's; ignored when the file exists. */
     mode?: number;
+    /** A process's live mask for this create, in place of its binding's initial mask. */
+    umask?: number;
     expectedRevision?: number;
     /**
      * O_SYNC: each write is in the store before it returns. Without it an
@@ -136,7 +132,7 @@ export interface RuntimeOpenFlags {
 export interface RuntimeFileHandle {
     id: number;
     path: string;
-    flags: Required<Omit<RuntimeOpenFlags, 'expectedRevision' | 'mode' | 'sync' | 'path' | 'closing'>> & {
+    flags: Required<Omit<RuntimeOpenFlags, 'expectedRevision' | 'mode' | 'umask' | 'sync' | 'path'>> & {
         expectedRevision?: number;
     };
     position: number;
@@ -356,6 +352,7 @@ export interface RuntimeFsBridge {
     mkdir(path: RuntimeFsPath, options?: {
         recursive?: boolean;
         mode?: number;
+        umask?: number;
     } & RuntimeMutationOwner): Awaitable<void>;
     unlink(path: RuntimeFsPath, options?: RuntimeMutationOwner): Awaitable<void>;
     rmdir(path: RuntimeFsPath, options?: RuntimeMutationOwner): Awaitable<void>;
@@ -750,7 +747,29 @@ export declare const NIMBUS_RUNTIME_ABIS: Readonly<Record<string, RuntimePackage
  * catalog is shared by every deployment reading it and a workspace binds only
  * the build its preamble was written against.
  */
-export declare const BASH_RUNNER = "bash-runner@4";
+export declare const BASH_RUNNER = "bash-runner@3";
+/** Git's first runtime build imports the shared Nimbus filesystem/process extensions. */
+export declare const GIT_RUNNER = "git-runner";
+/**
+ * Set in real git's environment (the git runner): a `git` it starts (a
+ * hook's, a subcommand's) carries it, and is real git too, wherever a
+ * built-in git routes `git` between itself and real git.
+ */
+export declare const GIT_WASI_ENV = "NIMBUS_GIT_WASI";
+/**
+ * The import modules a wasm runtime built in this tree may import: WASI
+ * preview1, and the Nimbus extensions this tree's WASI hosts provide —
+ * nimbus_fs (a file's mode and owner, chmod: runtime/wasi/types.ts
+ * NimbusFsImports) and nimbus_proc (the process's children, pipes and
+ * credential: the shared WASI layer's runtime/wasi/processes.ts; bash's
+ * runner provides its own table under the name, runtime/bash/preamble.ts,
+ * bound by BASH_RUNNER). The git build's verify stage checks its image
+ * against this list (packages/worker/wasm/git/build-git.sh). An image
+ * importing an extension needs a host that provides it, so the runtime names
+ * a runner key no older host registers: git's first build names
+ * {@link GIT_RUNNER}.
+ */
+export declare const WASI_RUNTIME_IMPORT_MODULES: readonly string[];
 /** Name-to-name package rewrite at the resolver/installer boundary. */
 export interface PackageSwapEntry {
     /** Original package name the user (or a transitive dep) asked for. */

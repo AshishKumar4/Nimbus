@@ -111,6 +111,7 @@ export declare const REPLAY_OPERATION_POLICY: {
     fsStorageGrant: {
         kind: "observation";
         args: (a: readonly unknown[]) => unknown[];
+        answer: (value: unknown) => unknown;
     };
     wsOpen: {
         readonly kind: "effect";
@@ -138,6 +139,9 @@ export declare const REPLAY_OPERATION_POLICY: {
     };
     fsClose: {
         readonly kind: "observation";
+    };
+    fsReadDirectories: {
+        readonly kind: "effect";
     };
     fsReadRange: {
         readonly kind: "observation";

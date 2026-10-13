@@ -7,7 +7,8 @@
  * takes as a pid plus a separate flag saying whether to bind one at all; the
  * port collapses the pair, since a facet with the binding and no pid can read
  * the session and never write to it. `reuse` is the pool's `cacheScope` under
- * the name the port gives it: who a warm facet may answer for. The one thing
+ * the name the port gives it: who a warm facet may answer for; `warm` is its
+ * `scope`, with the capability handed per call. The one thing
  * the host binds rather than renames is the network: every facet it opens goes
  * out through the workspace's (its egress, when it has one), so no runtime
  * opening a facet can leave it out.
@@ -44,6 +45,8 @@ export function loaderFacetHost(env, ctx, network) {
                 supervisorPid: spec.syscalls?.pid,
                 processSupervisor: spec.syscalls ? supervisorBindingProps(ctx, spec.syscalls.pid, { writerId: crypto.randomUUID(), network }) : undefined,
                 cacheScope: spec.reuse,
+                scope: spec.warm,
+                supervisorPerCall: spec.warm !== undefined,
                 network,
             });
         },

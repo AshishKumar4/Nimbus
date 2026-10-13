@@ -106,9 +106,13 @@ export declare function _rpcWriteFile(self: RpcHost, path: string, content: stri
  * rename or remove this one. That is the whole mechanism; there is no special
  * case anywhere in the filesystem for it.
  *
- * Deliberately absent from the remote HTTP RPC dispatcher: the point is a file
- * the sandboxed program cannot forge, so only an embedder holding the DO stub
- * may write it.
+ * Deliberately absent from the remote HTTP RPC dispatcher, so only an
+ * embedder holding the DO stub may write it.
+ *
+ * It guards against accidents, not against the session's code: the session's
+ * user has passwordless root (`sudo`, `su`), and a program that runs `sudo`
+ * can replace or remove this file. Do not rely on it to keep a value from code
+ * running in the session (docs/sandbox-sdk.md, "Users and Permissions").
  */
 export declare function _rpcWriteProtectedRootFile(self: RpcHost, rootPath: string, path: string, content: string | Uint8Array): Promise<void>;
 export declare function _rpcStat(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<SessionFileStat | null>;
@@ -224,6 +228,7 @@ export type FsAcquiredAnswer = {
  */
 export declare function _rpcFsStorageGrant(self: RpcHost, facet: string, bytes: number, databaseSize: number, pid?: number): Promise<{
     granted: number;
+    available?: number;
 }>;
 /** What a process passes to fsAcquire: the cursor its resident set is at. */
 export type FsAcquireArgs = z.infer<typeof FsAcquireArgsSchema>;

@@ -50,6 +50,7 @@ export declare const SUPERVISOR_OP_TABLE: {
     readonly wsClose: null;
     readonly fsOpen: "once";
     readonly fsReopen: "once";
+    readonly fsReadDirectories: "once";
     readonly fsRead: null;
     readonly fsWrite: "once";
     readonly fsClose: "once";

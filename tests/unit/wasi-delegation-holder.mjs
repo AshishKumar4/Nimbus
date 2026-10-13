@@ -134,6 +134,32 @@ async function create(fs, path, text) {
   assert.equal(dec.decode(s.kernel.readFile('home/user/proj/out/f3.txt')), 'file 3\n');
 }
 
+// A changed umask is captured by each create, not by the subtree's grant.
+{
+  const s = session();
+  await s.fs.mkdir('/home/user/proj/modes', { mode: 0o777, umask: 0 });
+  const cases = [
+    { name: 'private', umask: 0o077, expected: 0o600 },
+    { name: 'public', umask: 0, expected: 0o666 },
+    { name: 'group', umask: 0o007, expected: 0o660 },
+    { name: 'normal', umask: 0o022, expected: 0o644 },
+  ];
+  for (const { name, umask, expected } of cases) {
+    const path = `/home/user/proj/modes/${name}`;
+    const handle = await s.fs.open(path, { write: true, create: true, exclusive: true, mode: 0o666, umask });
+    await s.fs.write(handle.id, null, enc.encode(name));
+    await s.fs.close(handle.id);
+    assert.equal((await s.fs.stat(path)).mode & 0o777, expected, `${name}: the holder sees the live mask`);
+  }
+  assert.equal(s.fs.stats().delegated.open ?? 0, 0, 'changing masks adds no per-create round trip');
+  await s.fs.settle();
+  assert.equal(s.kernel.stat('home/user/proj/modes').mode & 0o777, 0o777);
+  for (const { name, expected } of cases) {
+    assert.equal(s.kernel.stat(`home/user/proj/modes/${name}`).mode & 0o777, expected, `${name}: the logged mask survives later changes`);
+    assert.equal(s.kernel.readFileString(`home/user/proj/modes/${name}`), name);
+  }
+}
+
 // ── A grant renewed mid-run (its range spent): every file lands, grown or not ──
 {
   const s = session({ grantInos: 8 });

@@ -68,6 +68,8 @@ import {
 import { fsError, modeAllows, SqliteRuntimeFsBridge, walkBeneath } from './sqlite-runtime-fs-bridge.js';
 import { closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost, settleHeldAt, type DescriptorScope } from './descriptors.js';
 import { BUFFERED_WRITE_BYTES, flagsRefusal, openFollows, openMounted, reopenMounted } from '../vfs/mounted-description.js';
+import { registerDirectoryReadBridge, directoryReadHandleClosed } from './read-directory-batch.js';
+import { readLeaseCovers, SESSION_KERNEL_ROOTS } from '../_shared/read-lease-cover.js';
 
 function immutableCredential(cred: Readonly<VfsCred>): VfsCred {
   const checked = requireVfsCred(cred, 'filesystem binding');
@@ -652,7 +654,15 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     // Every other method forwards to the guarded bridge.
     const listing = pid === undefined ? () => undefined : (create: boolean) => this.listingOf(pid, create);
     const clock = () => this.engine.revision();
-    return new AwaitingProcessBridge(guarded, view, clock, cred, new Descriptors(scope, clock), scope, listing, this.bufferedWriteBytes, signal);
+    const bridge = new AwaitingProcessBridge(guarded, view, clock, cred, new Descriptors(scope, clock), scope, listing, this.bufferedWriteBytes, signal);
+    registerDirectoryReadBridge(bridge, scope, async (path) => {
+      const real = await bridge.realpath(path);
+      if (real === '/' || view.composes(real)) return null;
+      const route = await view.route(real, { follow: true });
+      const key = normalizeVfsPath(real);
+      return route.point === '/' && route.source !== null && readLeaseCovers(key, true, SESSION_KERNEL_ROOTS) ? key : null;
+    });
+    return bridge;
   }
 }
 
@@ -1071,20 +1081,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
     return this.scope.handles.get(handleId)?.node.awaits === true;
   }
 
-  /** RuntimeOpenFlags.closing, its own descriptors and the bridge's alike, each closed where it is: `given` without it. */
-  private closing(given: RuntimeOpenFlags): RuntimeOpenFlags {
-    if (!given.closing) return given;
-    for (const id of given.closing) {
-      try {
-        const closing = this.close(id);
-        if (closing instanceof Promise) closing.catch(() => {});
-      } catch { /* not the caller's to hear of */ }
-    }
-    return { ...given, closing: undefined };
-  }
-
-  open(path: RuntimeFsPath, given: RuntimeOpenFlags, options?: RuntimeMutationOwner) {
-    const flags = this.closing(given);
+  open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner) {
     return this.either([path], () => this.bridge.open(path, flags, options), async () => {
       const opened = openFlags(flags);
       const flagged = flagsRefusal(opened);
@@ -1108,8 +1105,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
     });
   }
 
-  reopen(target: RuntimeReopenTarget, given: RuntimeOpenFlags, options?: RuntimeMutationOwner) {
-    const flags = this.closing(given);
+  reopen(target: RuntimeReopenTarget, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner) {
     if (!this.awaits(target.handle)) return this.bridge.reopen(target, flags, options);
     // A file on a mount that answers by awaiting: reopened there, by the name it is held by.
     this.live();
@@ -1151,6 +1147,8 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
   }
 
   close(handleId: number) {
+    // A prefetched directory's accounting ends with its description's id, however it closes.
+    directoryReadHandleClosed(this.scope, handleId);
     return this.awaits(handleId) ? this.descriptors.close(handleId) : this.bridge.close(handleId);
   }
 
@@ -1330,14 +1328,14 @@ export class ProcessView implements VFS {
    * (open(O_CREAT|O_TRUNC, mode), then the bytes): an existing file keeps its
    * mode, and a new one is never visible at another mode.
    */
-  async writeFile(path: string, data: Uint8Array | string, options?: { mode?: number }): Promise<void> {
-    if (options?.mode === undefined) {
+  async writeFile(path: string, data: Uint8Array | string, options?: { mode?: number; exclusive?: boolean }): Promise<void> {
+    if (options?.mode === undefined && options?.exclusive !== true) {
       await this.call('open', path, () => this.fs.writeFile(path, data));
       return;
     }
     const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
     await this.call('open', path, async () => {
-      const handle = await this.fs.open(path, { write: true, create: true, truncate: true, mode: options.mode });
+      const handle = await this.fs.open(path, { write: true, create: true, truncate: true, mode: options?.mode, exclusive: options?.exclusive });
       try {
         let offset = 0;
         while (offset < bytes.length) {

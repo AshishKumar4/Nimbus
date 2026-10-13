@@ -58,6 +58,7 @@ const commandContext = (filesystem, env) => runtimeContext(filesystem, { args: [
   ctx.args = ['-c', 'print(1)'];
   assert.equal(await run(ctx), 0);
   assert.equal(harness.calls[0].userEnv.HOME, '/home/pyodide');
+  assert.deepEqual(harness.calls[0].cred, ctx.cred, 'the interpreter inherits the complete process credential');
   // pip's packages are imported from the site-packages under that HOME.
   assert.match(JSON.stringify(harness.calls[0]), /\/home\/pyodide\/\.nimbus-python\/site-packages/);
   const defaultCtx = commandContext(filesystem, {});
@@ -95,7 +96,7 @@ const commandContext = (filesystem, env) => runtimeContext(filesystem, { args: [
   // resident store and sends changes as waves (initFS cred). Red before: none
   // was passed, and every file call was a round trip.
   const ctxCred = commandContext(filesystem, {}).cred;
-  assert.deepEqual(harness.calls[0].cred, { uid: ctxCred.uid, gid: ctxCred.gid, groups: [...ctxCred.groups] });
+  assert.deepEqual(harness.calls[0].cred, ctxCred);
   // With no HOME in the command's environment, the session user's home.
   assert.equal(await run(commandContext(filesystem, {})), 0);
   assert.equal(harness.calls[1].userEnv.HOME, '/home/session');

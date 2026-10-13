@@ -18,8 +18,10 @@ import { FULL_CONE, coneMatcher, coneOf, coneSparseCheckout, parseConeSparseChec
 import { quotePath } from './unified-diff.js';
 import { updateSparsity, type CheckoutWriter } from './worktree/checkout.js';
 import { S_IFGITLINK, S_IFMT, compareBytes, type DirCache } from './worktree/dircache.js';
-import { configBool, type WorktreeRepo } from './worktree/repo.js';
+import { configBool } from './config-params.js';
+import type { WorktreeRepo } from './worktree/repo.js';
 import { scanWorktree } from './worktree/walk.js';
+import { UnsupportedGitOperation } from './routing.js';
 
 export interface SparseCheckoutContext {
   wrepo: WorktreeRepo;
@@ -66,6 +68,24 @@ const encoder = new TextEncoder();
 /** A refusal: git's die(), its message, exit 128. */
 class Fatal extends Error {}
 
+export function parseSparseCheckoutArgs(args: readonly string[]) {
+  const [sub, ...rest] = args;
+  if (sub === undefined) return { sub, flags: new Set<string>(), rest: [] };
+  if (sub === 'clean' || sub === 'check-rules') {
+    throw new UnsupportedGitOperation(`fatal: git sparse-checkout ${sub} is not supported here\n`, 128);
+  }
+  if (!Object.hasOwn(SUBCOMMANDS, sub)) throw new UnsupportedGitOperation(`error: unknown subcommand: \`${sub}'\n${USAGE}\n`, 129);
+  const known = sub === 'set' ? ['--cone', '--no-cone', '--sparse-index', '--no-sparse-index', '--skip-checks', '--stdin']
+    : sub === 'add' ? ['--skip-checks', '--stdin', '--no-stdin']
+    : sub === 'init' || sub === 'reapply' ? ['--cone', '--no-cone', '--sparse-index', '--no-sparse-index'] : [];
+  const parsed = parseOptions(rest, known);
+  if (parsed.unknown !== undefined) throw new UnsupportedGitOperation(`error: unknown option \`${parsed.unknown.replace(/^-+/, '')}'\n${usageText(sub)}`, 129);
+  if (parsed.flags.has('--stdin')) throw new UnsupportedGitOperation(`fatal: git sparse-checkout ${sub} --stdin is not supported here\n`, 128);
+  if (parsed.flags.has('--no-cone')) throw new UnsupportedGitOperation(NOT_CONE, 128);
+  if (parsed.flags.has('--sparse-index')) throw new UnsupportedGitOperation('fatal: a sparse index (--sparse-index) is not supported here\n', 128);
+  return { sub, flags: parsed.flags, rest: parsed.rest };
+}
+
 /** The subcommand's options, as parse_options takes them: each known flag, then the rest; null after an unknown one. */
 function parseOptions(args: readonly string[], known: readonly string[]): { flags: Set<string>; rest: string[]; unknown?: string } {
   const flags = new Set<string>();
@@ -74,21 +94,18 @@ function parseOptions(args: readonly string[], known: readonly string[]): { flag
   for (const arg of args) {
     if (ended || !arg.startsWith('-') || arg === '-') rest.push(arg);
     else if (arg === '--') ended = true;
-    else if (known.includes(arg)) flags.add(arg);
+    else if (known.includes(arg)) {
+      flags.delete(arg.startsWith('--no-') ? `--${arg.slice(5)}` : `--no-${arg.slice(2)}`);
+      flags.add(arg);
+    }
     else return { flags, rest, unknown: arg };
   }
   return { flags, rest };
 }
 
 /** A flag pair as OPT_BOOL reads it: 1, 0, or -1 when neither is given (the last one wins). */
-function tristate(args: readonly string[], on: string, off: string): number {
-  let value = -1;
-  for (const arg of args) {
-    if (arg === '--') break;
-    if (arg === on) value = 1;
-    else if (arg === off) value = 0;
-  }
-  return value;
+function tristate(flags: Set<string>, on: string, off: string): number {
+  return flags.has(on) ? 1 : flags.has(off) ? 0 : -1;
 }
 
 /**
@@ -203,7 +220,7 @@ async function readPatterns(wrepo: WorktreeRepo): Promise<string | null> {
 async function modes(wrepo: WorktreeRepo): Promise<{ sparse: boolean; cone: boolean }> {
   return {
     sparse: await wrepo.isSparse(),
-    cone: configBool(await wrepo.worktreeSetting('core.sparseCheckoutCone')) === true,
+    cone: configBool(await wrepo.config('core.sparseCheckoutCone')) === true,
   };
 }
 
@@ -321,7 +338,7 @@ async function updateWorkingDirectory(ctx: SparseCheckoutContext, sparse: Sparse
 /** write_patterns_and_update: the worktree moved to the cone of `dirs`, then the file that says so written. */
 async function writePatternsAndUpdate(ctx: SparseCheckoutContext, dirs: readonly string[]): Promise<number> {
   const { wrepo } = ctx;
-  const ignoreCase = configBool(await wrepo.worktreeSetting('core.ignorecase')) === true;
+  const ignoreCase = configBool(await wrepo.config('core.ignorecase')) === true;
   await updateWorkingDirectory(ctx, coneMatcher(coneOf(dirs), ignoreCase), true);
   await wrepo.vfs.mkdir(`${wrepo.gitdir}/info`, { recursive: true });
   await wrepo.vfs.writeFile(`${wrepo.gitdir}/info/sparse-checkout`, encoder.encode(coneSparseCheckout(dirs)));
@@ -353,27 +370,21 @@ const CHANGES = new Set(['set', 'add', 'reapply', 'disable', 'init']);
  * once, the second sees the first's whole result, never its patterns over
  * the other's worktree.
  */
-export async function sparseCheckout(ctx: SparseCheckoutContext, args: readonly string[]): Promise<number> {
-  const sub = args[0];
+export async function sparseCheckout(ctx: SparseCheckoutContext, args: ReturnType<typeof parseSparseCheckoutArgs>): Promise<number> {
+  const { sub } = args;
   return sub !== undefined && CHANGES.has(sub)
     ? await ctx.wrepo.withIndexLock(() => runSubcommand(ctx, args))
     : await runSubcommand(ctx, args);
 }
 
-async function runSubcommand(ctx: SparseCheckoutContext, args: readonly string[]): Promise<number> {
-  const [sub, ...rest] = args;
+async function runSubcommand(ctx: SparseCheckoutContext, args: ReturnType<typeof parseSparseCheckoutArgs>): Promise<number> {
+  const { sub, flags, rest } = args;
   const { wrepo } = ctx;
-  const unknown = async (option: string) => {
-    await ctx.stderr(`error: unknown option \`${option.replace(/^-+/, '')}'\n${usageText(sub)}`);
-    return 129;
-  };
   try {
     switch (sub) {
       case 'list': {
         const current = await modes(wrepo);
         if (!current.sparse) throw new Fatal('fatal: this worktree is not sparse\n');
-        const { unknown: bad } = parseOptions(rest, []);
-        if (bad !== undefined) return await unknown(bad);
         const text = await readPatterns(wrepo);
         if (text === null) {
           await ctx.stderr('warning: this worktree is not sparse (sparse-checkout file may not exist)\n');
@@ -386,43 +397,31 @@ async function runSubcommand(ctx: SparseCheckoutContext, args: readonly string[]
       }
       case 'set':
       case 'add': {
-        const known = sub === 'set'
-          ? ['--cone', '--no-cone', '--sparse-index', '--no-sparse-index', '--skip-checks', '--stdin']
-          : ['--skip-checks', '--stdin', '--no-stdin'];
         if (sub === 'add' && !await wrepo.isSparse()) throw new Fatal('fatal: no sparse-checkout to add to\n');
-        const { flags, rest: dirs, unknown: bad } = parseOptions(rest, known);
-        if (bad !== undefined) return await unknown(bad);
-        if (flags.has('--stdin')) throw new Fatal(`fatal: git sparse-checkout ${sub} --stdin is not supported here\n`);
         if (sub === 'add') {
           if (!(await modes(wrepo)).cone) throw new Fatal(NOT_CONE);
         } else {
-          await updateModes(wrepo, tristate(rest, '--cone', '--no-cone'), tristate(rest, '--sparse-index', '--no-sparse-index'));
+          await updateModes(wrepo, tristate(flags, '--cone', '--no-cone'), tristate(flags, '--sparse-index', '--no-sparse-index'));
         }
-        const given = coneDirectories(await sanitize(ctx, dirs, flags.has('--skip-checks'), await wrepo.readIndex()));
+        const given = coneDirectories(await sanitize(ctx, rest, flags.has('--skip-checks'), await wrepo.readIndex()));
         return await writePatternsAndUpdate(ctx, sub === 'add' ? [...await recordedDirectories(wrepo), ...given] : given);
       }
       case 'reapply': {
         if (!await wrepo.isSparse()) throw new Fatal('fatal: must be in a sparse-checkout to reapply sparsity patterns\n');
-        const { unknown: bad } = parseOptions(rest, ['--cone', '--no-cone', '--sparse-index', '--no-sparse-index']);
-        if (bad !== undefined) return await unknown(bad);
-        await updateModes(wrepo, tristate(rest, '--cone', '--no-cone'), tristate(rest, '--sparse-index', '--no-sparse-index'));
+        await updateModes(wrepo, tristate(flags, '--cone', '--no-cone'), tristate(flags, '--sparse-index', '--no-sparse-index'));
         const sparse = await wrepo.sparseMatcher();
         if (sparse === null) throw new Fatal(NOT_CONE);
         await updateWorkingDirectory(ctx, sparse, true);
         return 0;
       }
       case 'disable': {
-        const { unknown: bad } = parseOptions(rest, []);
-        if (bad !== undefined) return await unknown(bad);
         // Every entry back in the worktree, whatever the configuration says now; then sparse checkout off.
         await updateWorkingDirectory(ctx, coneMatcher(FULL_CONE), false);
         await setConfig(wrepo, false);
         return 0;
       }
       case 'init': {
-        const { unknown: bad } = parseOptions(rest, ['--cone', '--no-cone', '--sparse-index', '--no-sparse-index']);
-        if (bad !== undefined) return await unknown(bad);
-        await updateModes(wrepo, tristate(rest, '--cone', '--no-cone'), tristate(rest, '--sparse-index', '--no-sparse-index'));
+        await updateModes(wrepo, tristate(flags, '--cone', '--no-cone'), tristate(flags, '--sparse-index', '--no-sparse-index'));
         // A sparse-checkout file there already is the cone.
         if (await readPatterns(wrepo) !== null) {
           const sparse = await wrepo.sparseMatcher();
@@ -432,15 +431,10 @@ async function runSubcommand(ctx: SparseCheckoutContext, args: readonly string[]
         }
         return await writePatternsAndUpdate(ctx, []);
       }
-      case 'clean':
-      case 'check-rules':
-        throw new Fatal(`fatal: git sparse-checkout ${sub} is not supported here\n`);
       case undefined:
         await ctx.stderr(`error: need a subcommand\n${USAGE}\n`);
         return 129;
-      default:
-        await ctx.stderr(`error: unknown subcommand: \`${sub}'\n${USAGE}\n`);
-        return 129;
+      default: throw new Error('internal error: git sparse-checkout command not dispatched');
     }
   } catch (error) {
     if (!(error instanceof Fatal)) throw error;

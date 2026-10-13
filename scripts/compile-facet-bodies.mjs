@@ -24,6 +24,7 @@ const outputs = [
       ['RUBY_CALL_TASK', './facet-tasks.js', 'rubyFacetCall'],
       ['BASH_STEP_TASK', './facet-tasks.js', 'bashFacetStep'],
       ['BASH_REQUEST_TASK', './facet-tasks.js', 'bashRequestStep'],
+      ['GIT_CALL_TASK', './git-facet-task.js', 'gitFacetCall'],
     ],
     bodies: [
       ['ESBUILD_FACET_RUNTIME_SOURCE', './esbuild-service.js', ['buildWithEsbuild']],

@@ -1,6 +1,6 @@
 /**
  * exec-dispatch — POSIX execve semantics for path-shaped shell invocations
- * (`./x`, `/abs/x`, `../x`). Pure decision logic; the resolve-hook in
+ * (`./x`, `/abs/x`, `dir/x`). Pure decision logic; the resolve-hook in
  * session/init.ts turns decisions into commands (wasm-runner, shebang
  * interpreter, sh fallback, or an error writer).
  *
@@ -246,8 +246,8 @@ export function installPathExecResolver(
       resolutions.set(program, { kind: 'program', path });
       return program;
     }
-    if (!name.startsWith('./') && !name.startsWith('/') && !name.startsWith('../')) return undefined;
-
+    // A name with a slash anywhere is a path from the cwd, as execvp takes
+    // it (git runs a hook as `.git/hooks/post-commit`).
     const resolved = '/' + resolveVfsPath(name, normalizeVfsPath(context.cwd));
     let inspected: Inspected;
     try {

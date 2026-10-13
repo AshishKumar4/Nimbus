@@ -380,7 +380,6 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
 
   /** `options.mutationOwner`: the exclusive-mutation lease an open for writing presents (a read-only open presents none). */
   open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options: RuntimeMutationOwner = {}): RuntimeOpenedFile {
-    if (flags.closing) this.closeQuietly(flags.closing);
     return called({ syscall: 'open', path }, () => {
       const normalizedFlags = openFlags(flags);
       const flagged = flagsRefusal(normalizedFlags);
@@ -430,7 +429,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       if (directory && (normalizedFlags.truncate || normalizedFlags.append)) throw fsError('EISDIR', 'open', path);
       if (exists) this.vfs.access(p, openAccess(normalizedFlags, directory));
       if (!exists) {
-        this.owned(owner).writeFile(p, new Uint8Array(0), { mode: flags.mode });
+        this.owned(owner).writeFile(p, new Uint8Array(0), { mode: flags.mode, umask: flags.umask });
       } else if (normalizedFlags.truncate) {
         this.owned(owner).truncate(p, 0);
       }
@@ -474,7 +473,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     });
   }
 
-  mkdir(path: RuntimeFsPath, options: { recursive?: boolean; mode?: number } & RuntimeMutationOwner = {}): void {
+  mkdir(path: RuntimeFsPath, options: { recursive?: boolean; mode?: number; umask?: number } & RuntimeMutationOwner = {}): void {
     return called({ syscall: 'mkdir', path }, () => {
       const owner = options.mutationOwner;
       let located: Located;
@@ -501,7 +500,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       // mkdir of what is there is EEXIST, as mkdir(2) says, before any
       // permission check on its parent (`/` has none).
       if (this.mayExist(located)) throw fsError('EEXIST', 'mkdir', path);
-      this.owned(owner).mkdir(located.path, { recursive: !!options.recursive, mode: options.mode });
+      this.owned(owner).mkdir(located.path, { recursive: !!options.recursive, mode: options.mode, umask: options.umask });
     });
   }
 
@@ -917,7 +916,6 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   }
 
   reopen(target: RuntimeReopenTarget, flags: RuntimeOpenFlags, options: RuntimeMutationOwner = {}): RuntimeOpenedFile {
-    if (flags.closing) this.closeQuietly(flags.closing);
     const named = this.descriptors.openedAs(target.handle);
     return called({ syscall: 'open', path: named }, () => {
       const normalizedFlags = openFlags(flags);
@@ -944,13 +942,6 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       // Named as the descriptor it reopens was: an unlinked file has no name of its own.
       return syncValue(this.descriptors.open(node, normalizedFlags, named, node.revision()));
     });
-  }
-
-  /** RuntimeOpenFlags.closing: each closed, a refusal of one dropped. */
-  private closeQuietly(handles: readonly number[]): void {
-    for (const id of handles) {
-      try { this.close(id); } catch { /* not the caller's to hear of */ }
-    }
   }
 
   private openRoot(path: RuntimeFsPath, flags: RuntimeFileHandle['flags']): RuntimeOpenedFile {
