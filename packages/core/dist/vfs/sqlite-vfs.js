@@ -10416,19 +10416,6 @@ export class SqliteVFS {
         return { inodes: inodeCount };
     }
     /**
-     * Every inode at or under each root, deepest first.
-     *
-     * The path index answers "what is under this prefix?" in the size of the
-     * subtree (subtreeRange). The scan it replaces answered it in the size of
-     * the whole filesystem, and every mutation resolved its deletions twice —
-     * once to preflight the plan, once to commit it — so removing a tree of N
-     * entries one path at a time cost N(N+1) comparisons: ~4.8 × 10^8 for a
-     * 19,429-file tree, on the object's only thread.
-     *
-     * The subtree is held whole, so only callers that commit it whole use this:
-     * a batch's deletions and a rename. A removal pages (subtree, descending).
-     */
-    /**
      * Each entry a batch deletes below the roots it names (`below`), as
      * unlink(2) and rmdir(2) would judge it: the directory holding it (deleted
      * with it) written and searched by `cred`, and, when that directory is
@@ -10442,7 +10429,7 @@ export class SqliteVFS {
         const byPath = new Map(deleted.map((inode) => [inode.path, inode]));
         const searched = new Set();
         for (const inode of below) {
-            const parent = byPath.get(parentKey(inode.path));
+            const parent = byPath.get(parentKey(inode.path)) ?? this.inodes.get(parentKey(inode.path));
             if (parent === undefined)
                 continue;
             if (!searched.has(parent)) {
@@ -10453,7 +10440,20 @@ export class SqliteVFS {
             this.checkStickyParent(parent, inode, cred, inode.path);
         }
     }
-    /** `below`: given, it also gets the inodes that are under a root and not a root themselves. */
+    /**
+     * Every inode at or under each root, deepest first.
+     *
+     * The path index answers "what is under this prefix?" in the size of the
+     * subtree (subtreeRange). The scan it replaces answered it in the size of
+     * the whole filesystem, and every mutation resolved its deletions twice —
+     * once to preflight the plan, once to commit it — so removing a tree of N
+     * entries one path at a time cost N(N+1) comparisons: ~4.8 × 10^8 for a
+     * 19,429-file tree, on the object's only thread.
+     *
+     * The subtree is held whole, so only callers that commit it whole use this:
+     * a batch's deletions and a rename. A removal pages (subtree, descending).
+     * `below`, given, also gets the ones under a root that are not roots.
+     */
     collectSubtreeInodes(roots, below) {
         if (roots.length === 0)
             return [];
