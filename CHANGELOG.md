@@ -5,6 +5,15 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed (Node `fs`): `fs.promises.realpath` and callback `fs.realpath`
+  resolve symlinks and refuse a missing path with `ENOENT`, as
+  `realpathSync` does; they returned the path as written.
+  `fs.promises.watch` yields a file's changes, not one every 500 ms for a
+  large unchanged file, and ends when its `signal` aborts (an `AbortError`)
+  or the loop stops. A program's own `chmod` and `utimes` no longer outlive
+  the file: `stat` shows another user's later change, and a file removed and
+  made again has a new file's mode and times. `stat` answers the file's real
+  device and link count (`dev`, `nlink`) instead of one made-up device.
 ## 2026-10-12: platform 0.8.2, core 0.18.0, fabric 0.13.0, worker 0.16.0, loom 0.2.5, sdk 0.13.1, react 0.3.1, cli 0.2.5, create-nimbus-app 0.2.2
 
 - Fixed (security): the shell's Ctrl+P palette put file names into the page as
