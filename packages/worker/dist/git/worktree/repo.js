@@ -578,13 +578,17 @@ export class WorktreeRepo {
      * repo_update_index_if_able: a status or diff, which read the index without
      * the lock, writes back what it refreshed (or an index with racy entries)
      * only if the index is still the one it read; a writer that came between
-     * wins, and the refresh is simply not kept.
+     * wins, and the refresh is simply not kept. Nor is it where writing it
+     * would run a hook (`hooked`): git runs post-index-change for every index
+     * it writes, and the built-in runs none.
      */
-    async updateIndexIfAble(dc) {
+    async updateIndexIfAble(dc, hooked) {
         let racy = false;
         for (let i = 0; i < dc.count && !racy; i++)
             racy = dc.isRacy(i);
         if (!dc.refreshed && !dc.cacheTreeChanged && !racy)
+            return;
+        if (await hooked())
             return;
         try {
             await this.withIndexLock(async () => {

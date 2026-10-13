@@ -204,8 +204,10 @@ export declare class WorktreeRepo {
      * repo_update_index_if_able: a status or diff, which read the index without
      * the lock, writes back what it refreshed (or an index with racy entries)
      * only if the index is still the one it read; a writer that came between
-     * wins, and the refresh is simply not kept.
+     * wins, and the refresh is simply not kept. Nor is it where writing it
+     * would run a hook (`hooked`): git runs post-index-change for every index
+     * it writes, and the built-in runs none.
      */
-    updateIndexIfAble(dc: DirCache): Promise<void>;
+    updateIndexIfAble(dc: DirCache, hooked: () => Promise<boolean>): Promise<void>;
 }
 //# sourceMappingURL=repo.d.ts.map
