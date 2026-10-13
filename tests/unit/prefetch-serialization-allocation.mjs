@@ -18,7 +18,7 @@
 import assert from 'node:assert/strict';
 import { mock } from 'bun:test';
 import { heapStats } from 'bun:jsc';
-import { readSupervisorAllocationBudget, acquireSupervisorAllocation } from '../../packages/platform/src/heavy-alloc-coord.ts';
+import { readSupervisorAllocationBudget, acquireSupervisorAllocation, registerAllocObserver } from '../../packages/platform/src/heavy-alloc-coord.ts';
 import { VFS_BUNDLE_MAX_BYTES } from '../../packages/core/src/constants.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
@@ -63,6 +63,10 @@ const execLoader = {
 };
 const env = { LOADER: execLoader };
 const { manager, vfs, processes } = launchManager('prefetch-serialization-credit', { env });
+// The session's disposable read cache gives way while transient payloads are
+// admitted, as the session wires it (worker session/session-filesystem.ts):
+// the bound is on what a launch holds, not on what the cache keeps.
+registerAllocObserver({ onAcquire: () => vfs.shrinkForInstall(), onRelease: () => vfs.restoreAfterInstall() });
 const fs = vfs.as(CRED_KERNEL);
 for (let i = 0; i < 4; i++) {
   fs.mkdir(`home/user/tree${i}`, { recursive: true, mode: 0o755 });
