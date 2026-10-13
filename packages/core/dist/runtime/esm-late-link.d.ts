@@ -89,6 +89,6 @@ export declare function commonJsNames(host: LateLinkHost, key: string): readonly
  * before the interpreter does the rest.
  */
 export declare function linkLateGraph(host: LateLinkHost, read: ReadRequests, key: string, url: string): number[];
-/** The names the `export *`s of the interpreted module at `url` (staged row `row`, or -1) reach two different bindings of. */
-export declare function starConflicts(host: LateLinkHost, url: string, row: number): string[];
+/** The names the `export *`s of the interpreted module at `url` reach two different bindings of, which its namespace omits. */
+export declare function starConflicts(host: LateLinkHost, url: string): string[];
 //# sourceMappingURL=esm-late-link.d.ts.map

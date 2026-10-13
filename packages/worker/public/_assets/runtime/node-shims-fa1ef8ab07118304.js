@@ -16195,7 +16195,7 @@ function __nimbusMakeRequire(module, fromDir = __nimbusModuleDir(module), requir
   const require = function require(id) {
     if (arguments.length > 1 && arguments[1] === "nimbus:static-import") return __requireFrom(id, fromDir, module, false, arguments[2]);
     if (arguments.length > 1 && arguments[1] === "nimbus:star-conflicts") {
-      return __nimbusEsmStarConflicts(module.__nimbusImportMeta?.url ?? builtins.url.pathToFileURL(module.filename).href);
+      return __nimbusRegistryRequire("./nimbus/interpreter.js").starConflicts(__nimbusLateLinkHost, module.__nimbusImportMeta?.url ?? builtins.url.pathToFileURL(module.filename).href);
     }
     return __requireFrom(id, fromDir, module, required);
   };
@@ -19307,12 +19307,6 @@ const __nimbusLateLinkHost = {
 function __nimbusLateLink(key, url) {
   return __nimbusRegistryRequire("./nimbus/interpreter.js").linkLate(__nimbusLateLinkHost, key, url);
 }
-// The names an interpreted module's (at `url`) export *s reach two bindings of, which its namespace omits.
-function __nimbusEsmStarConflicts(url) {
-  const plain = url.startsWith("file:") && !url.includes("?") && !url.includes("#");
-  const row = plain ? __nimbusEsmId("module", builtins.url.fileURLToPath(url).replace(/^\/+/, "")) : -1;
-  return __nimbusRegistryRequire("./nimbus/interpreter.js").starConflicts(__nimbusLateLinkHost, url, row);
-}
 function __esmLoadInterpreted(resolution, key, evaluationKey, esm) {
   let ns;
   {
@@ -19786,22 +19780,16 @@ function __nimbusResolveImport(specifier, parentUrl, type) {
 function __requireFrom(id, fromDir, parent, required = true, type = null) {
   if (typeof id !== "string") throw invalidArgType("id", "string", id);
   if (id === "") throw new nodeErrorCodes.ERR_INVALID_ARG_VALUE("id", id, "must be a non-empty string");
-  if (!required) {
-    // A staged N-API binding is its package, to an import as to require().
-    const staged = __stagedBinding(id);
-    if (staged) return __nimbusObjectNamespace(__loadStagedBinding(staged, fromDir));
-    const notCarried = __stagedBindingNotCarried(id, fromDir);
-    if (notCarried) throw notCarried;
-    return __nimbusStaticImport(id, builtins.url.pathToFileURL(parent?.filename ?? "/" + String(fromDir).replace(/^\/+/, "") + "/[import]").href, parent, type);
-  }
-  const builtin = __nimbusBuiltinId(id);
+  // An import of a builtin is the ES loader's (__nimbusStaticImport); of a facet's package or a staged N-API binding, its namespace.
+  const builtin = required ? __nimbusBuiltinId(id) : null;
   if (builtin !== null) return builtins[builtin];
-  if (__nimbusFacetProvidedPackages.has(id)) return builtins[id];
-  if (id.startsWith("node:")) throw nodeError(Error, "ERR_UNKNOWN_BUILTIN_MODULE", "No such built-in module: " + id);
-  const staged = __stagedBinding(id);
-  if (staged) return __loadStagedBinding(staged, fromDir);
+  const binding = __nimbusFacetProvidedPackages.has(id) ? null : __stagedBinding(id);
+  const provided = binding ? __loadStagedBinding(binding, fromDir) : __nimbusFacetProvidedPackages.has(id) ? builtins[id] : undefined;
+  if (provided !== undefined) return required ? provided : __nimbusObjectNamespace(provided);
+  if (required && id.startsWith("node:")) throw nodeError(Error, "ERR_UNKNOWN_BUILTIN_MODULE", "No such built-in module: " + id);
   const notCarried = __stagedBindingNotCarried(id, fromDir);
   if (notCarried) throw notCarried;
+  if (!required) return __nimbusStaticImport(id, builtins.url.pathToFileURL(parent?.filename ?? "/" + String(fromDir).replace(/^\/+/, "") + "/[import]").href, parent, type);
   const resolved = __resolveFrom(id, fromDir, parent?.filename);
   if (!resolved) throw __nimbusModuleNotFound(id, parent);
   return __loadModule(resolved, resolved, required, parent);
