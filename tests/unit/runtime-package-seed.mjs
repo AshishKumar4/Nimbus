@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // A runtime package installs like an install, and refuses like one.
 //
-// `seedRuntimePackage` is the second publisher behind `~/.nimbus/runtimes`:
+// `seedRuntimePackage` is the second publisher behind `/usr/lib/nimbus`:
 // npm carries the bytes where Cloudflare's package manager carries them out of
 // R2. Both write the same tree, so what is asserted here is the tree — the
 // layout `installed-runtimes.ts` reads back — rather than any call it made.
@@ -20,7 +20,6 @@ import { seedRuntimePackage } from '../../packages/core/src/runtime/runtime-pack
 import { listInstalledManifestsView } from '../../packages/core/src/runtime/installed-runtimes.ts';
 
 const KERNEL = { uid: 0, gid: 0, groups: [0], umask: 0o022 };
-const HOME = '/home/user';
 const encoder = new TextEncoder();
 
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -67,9 +66,9 @@ const openVfs = () => {
     'LICENSE': 'MIT\n',
   });
 
-  const seeded = await seedRuntimePackage(fs, HOME, pkg);
+  const seeded = await seedRuntimePackage(fs, pkg);
   assert.deepEqual(seeded, {
-    name: 'toy', version: '1.0.0', root: 'home/user/.nimbus/runtimes/toy/1.0.0', written: true,
+    name: 'toy', version: '1.0.0', root: 'usr/lib/nimbus/toy/1.0.0', written: true,
   });
 
   for (const file of pkg.manifest.files) {
@@ -79,15 +78,15 @@ const openVfs = () => {
 
   // The point of the shared layout: the reader that rehydrates a Durable
   // Object after eviction finds this exactly as it finds an R2 install.
-  const installed = (await listInstalledManifestsView(fs, HOME));
+  const installed = (await listInstalledManifestsView(fs));
   assert.equal(installed.length, 1);
   assert.equal(installed[0].root, seeded.root);
   assert.equal(installed[0].manifest.entrypoints[0].binName, 'toy');
-  console.log('  ok  a package installs at ~/.nimbus/runtimes/<name>/<version>/ and reads back');
+  console.log('  ok  a package installs at /usr/lib/nimbus/<name>/<version>/ and reads back');
 
   // Idempotent on the rule the package manager uses: a manifest already there
   // means the install completed.
-  const again = await seedRuntimePackage(fs, HOME, pkg);
+  const again = await seedRuntimePackage(fs, pkg);
   assert.equal(again.written, false);
   console.log('  ok  seeding twice installs once');
 }
@@ -101,7 +100,7 @@ const openVfs = () => {
   pkg.blobs.set(target.content, encoder.encode('substituted bytes\n'));
 
   await assert.rejects(
-    () => seedRuntimePackage(fs, HOME, pkg),
+    () => seedRuntimePackage(fs, pkg),
     (error) => {
       assert.match(error.message, /toy@1\.0\.0: sha256 mismatch for share\/toy\/toy\.wasm/);
       assert.match(error.message, new RegExp(target.sha256));
@@ -112,8 +111,8 @@ const openVfs = () => {
 
   // And nothing claims the install completed, so the next attempt refetches
   // rather than reporting a runtime that is half there.
-  assert.equal(fs.exists('home/user/.nimbus/runtimes/toy/1.0.0/manifest.json'), false);
-  assert.equal((await listInstalledManifestsView(fs, HOME)).length, 0);
+  assert.equal(fs.exists('usr/lib/nimbus/toy/1.0.0/manifest.json'), false);
+  assert.equal((await listInstalledManifestsView(fs)).length, 0);
   console.log('  ok  a blob that does not match its digest is refused, and leaves no install');
 }
 
@@ -132,7 +131,7 @@ const openVfs = () => {
     readBlob: (file) => (++reads === 1 ? encoder.encode('poisoned cache entry\n') : pkg.readBlob(file)),
   };
 
-  const seeded = await seedRuntimePackage(fs, HOME, cached);
+  const seeded = await seedRuntimePackage(fs, cached);
   assert.equal(reads, 2);
   assert.equal(fs.readFileString(`${seeded.root}/${target.path}`), 'the real bytes\n');
   console.log('  ok  a blob that fails its digest once is read again, and installs from the second read');
@@ -145,7 +144,7 @@ const openVfs = () => {
   const pkg = fakePackage({ 'share/toy/toy.wasm': 'bytes\n' });
   pkg.manifest.files[0].sha256 = 'not-a-digest';
 
-  await assert.rejects(() => seedRuntimePackage(fs, HOME, pkg));
+  await assert.rejects(() => seedRuntimePackage(fs, pkg));
   console.log('  ok  a manifest core cannot parse is refused before anything is written');
 }
 
@@ -244,7 +243,7 @@ for (const bytes of [false, true]) {
   const vfs = openVfs();
   const fs = meteredFs(vfs, meter);
 
-  const seeded = await seedRuntimePackage(fs, HOME, pkg);
+  const seeded = await seedRuntimePackage(fs, pkg);
 
   const total = sizes.reduce((a, b) => a + b, 0);
   assert.equal(meter.written, total);
@@ -255,7 +254,7 @@ for (const bytes of [false, true]) {
     assert.equal(createHash('sha256').update(vfs.as(KERNEL).readFile(`${seeded.root}/${file.path}`)).digest('hex'), file.sha256);
   }
   assert.deepEqual(partialsUnder(vfs.as(KERNEL), `${seeded.root}/share/toy`), []);
-  assert.equal((await seedRuntimePackage(fs, HOME, pkg)).written, false, 'a streamed install did not verify as installed');
+  assert.equal((await seedRuntimePackage(fs, pkg)).written, false, 'a streamed install did not verify as installed');
   console.log(`  ok  a ${(total / MiB).toFixed(1)} MiB ${bytes ? 'byte ' : ''}stream installs holding at most ${(meter.peakRetained / MiB).toFixed(2)} MiB at once`);
 }
 
@@ -272,7 +271,7 @@ for (const bytes of [false, true]) {
   const size = 16 * MiB;
   const pkg = streamedPackage([size], { meter: newMeter(), bytes: true });
   const before = harness.transactionCount;
-  const seeded = await seedRuntimePackage(vfs.as(KERNEL), HOME, pkg);
+  const seeded = await seedRuntimePackage(vfs.as(KERNEL), pkg);
   const transactions = harness.transactionCount - before;
   const count = (sql, ...params) => Number(harness.db.query(sql).get(...params).n);
   const live = count(
@@ -292,12 +291,12 @@ for (const bytes of [false, true]) {
   pkg.manifest.files[0].sha256 = generatedDigest(3 * MiB - 1);
   const vfs = openVfs();
   const fs = vfs.as(KERNEL);
-  const root = 'home/user/.nimbus/runtimes/toy/1.0.0';
+  const root = 'usr/lib/nimbus/toy/1.0.0';
 
-  await assert.rejects(() => seedRuntimePackage(fs, HOME, pkg), /sha256 mismatch for share\/toy\/blob-0\.bin/);
+  await assert.rejects(() => seedRuntimePackage(fs, pkg), /sha256 mismatch for share\/toy\/blob-0\.bin/);
   assert.equal(fs.exists(`${root}/share/toy/blob-0.bin`), false, 'bytes that failed their digest sit at the runtime path');
   assert.deepEqual(partialsUnder(fs, `${root}/share/toy`), []);
-  assert.equal((await listInstalledManifestsView(fs, HOME)).length, 0);
+  assert.equal((await listInstalledManifestsView(fs)).length, 0);
   console.log('  ok  a streamed blob that fails its digest is refused and leaves nothing at its path');
 }
 
@@ -309,19 +308,11 @@ for (const bytes of [false, true]) {
   const pkg = fakePackage({ 'bin/toy': 'abc' });
   pkg.manifest.files[0].size = 2;
   const fs = openVfs().as(KERNEL);
-  await assert.rejects(() => seedRuntimePackage(fs, HOME, pkg), /sha256 mismatch for bin\/toy — manifest expects 2 bytes/);
-  assert.equal(fs.exists('home/user/.nimbus/runtimes/toy/1.0.0/bin/toy'), false);
+  await assert.rejects(() => seedRuntimePackage(fs, pkg), /sha256 mismatch for bin\/toy — manifest expects 2 bytes/);
+  assert.equal(fs.exists('usr/lib/nimbus/toy/1.0.0/bin/toy'), false);
   console.log('  ok  a blob longer than its manifest declares is refused even when its digest matches');
 }
 
-// ── A home spelled noncanonically installs where the canonical one does ─────
-{
-  const pkg = fakePackage({ 'bin/toy': '# marker\n' });
-  const fs = openVfs().as(KERNEL);
-  await seedRuntimePackage(fs, '/home//user/', pkg);
-  assert.equal(fs.readFileString('home/user/.nimbus/runtimes/toy/1.0.0/bin/toy'), '# marker\n');
-  console.log('  ok  a noncanonical home installs at the canonical root');
-}
 
 // ── A source or a write failing partway leaves nothing installed ────────────
 for (const [label, failure, bytes] of [
@@ -339,10 +330,10 @@ for (const [label, failure, bytes] of [
   }
   const vfs = openVfs();
   const fs = meteredFs(vfs, meter, { failAfterBytes: failure.failAfterBytes });
-  const root = 'home/user/.nimbus/runtimes/toy/1.0.0';
+  const root = 'usr/lib/nimbus/toy/1.0.0';
 
-  await assert.rejects(() => seedRuntimePackage(fs, HOME, pkg), /source dropped the connection|ENOSPC/);
-  assert.equal((await listInstalledManifestsView(fs, HOME)).length, 0, `${label}: a partial install lists as installed`);
+  await assert.rejects(() => seedRuntimePackage(fs, pkg), /source dropped the connection|ENOSPC/);
+  assert.equal((await listInstalledManifestsView(fs)).length, 0, `${label}: a partial install lists as installed`);
   assert.equal(vfs.as(KERNEL).exists(`${root}/share/toy/blob-1.bin`), false, `${label}: a partial blob reached its path`);
   assert.deepEqual(partialsUnder(vfs.as(KERNEL), `${root}/share/toy`), []);
   assert.equal(meter.open, 0, `${label}: a blob read outlived the failed install`);

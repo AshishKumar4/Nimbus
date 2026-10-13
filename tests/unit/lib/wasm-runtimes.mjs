@@ -55,7 +55,7 @@ export function missingRuntimeFile() {
   return missing ? missing[0] : null;
 }
 
-export const installRoot = (r) => `home/user/.nimbus/runtimes/${r.name}/${r.version}`;
+export const installRoot = (r) => `usr/lib/nimbus/${r.name}/${r.version}`;
 
 /**
  * Write a runtime into the workspace exactly as an install does: the files

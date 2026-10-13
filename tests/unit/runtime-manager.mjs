@@ -18,7 +18,6 @@ import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { suppliedRuntimeSource } from '../../packages/core/src/runtime/runtime-package.ts';
 
 const KERNEL = { uid: 0, gid: 0, groups: [0], umask: 0o022 };
-const HOME = '/home/user';
 const encoder = new TextEncoder();
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
@@ -67,7 +66,6 @@ const makeManager = (vfs, source) => {
   const manager = new RuntimeManager({
     vfs: new ProcessView(new ProcessFiles(vfs).openHost(KERNEL).fs),
     registry,
-    getHome: () => HOME,
     source,
   });
   return { manager, registry };
@@ -142,7 +140,7 @@ const toyRunner = () => async () => 0;
   const vfs = openVfs();
   const fs = vfs.as(KERNEL);
   const pkg = fakePackage({ 'bin/toy': '# t\n', 'share/toy/x.txt': 'payload\n' });
-  const root = 'home/user/.nimbus/runtimes/toy/1.0.0';
+  const root = 'usr/lib/nimbus/toy/1.0.0';
   // The legacy R2 installer wrote manifest.json first: a crash here used to
   // report "already installed" over a payload that never arrived.
   fs.mkdir(root, { recursive: true });
@@ -236,7 +234,7 @@ const toyRunner = () => async () => 0;
   await manager.uninstall('toy');
   assert.equal((await manager.list()).length, 0);
   assert.ok(!registry.commands.has('toy'), 'uninstall left the bin registered');
-  assert.ok(!fs.exists('home/user/.nimbus/runtimes/toy'), 'uninstall left the tree');
+  assert.ok(!fs.exists('usr/lib/nimbus/toy'), 'uninstall left the tree');
 
   const again = await manager.install('toy');
   assert.equal(again.written, true, 'reinstall answered a stale memo');
@@ -273,7 +271,7 @@ const toyRunner = () => async () => 0;
   manager.registerRunner('toy-runner', toyRunner);
   await manager.install('toy');
 
-  const root = 'home/user/.nimbus/runtimes/toy/1.0.0';
+  const root = 'usr/lib/nimbus/toy/1.0.0';
   // Same length, different bytes: a size-only check would bind this.
   fs.writeFile(`${root}/share/toy/x.txt`, 'abd\n');
   const seeded = await manager.install('toy');
@@ -289,7 +287,7 @@ const toyRunner = () => async () => 0;
   const { manager } = makeManager(vfs, suppliedRuntimeSource([pkg]));
   manager.registerRunner('toy-runner', toyRunner);
   await manager.install('toy');
-  fs.writeFile('home/user/.nimbus/runtimes/toy/1.0.0/bin/toy', '# tampered\n');
+  fs.writeFile('usr/lib/nimbus/toy/1.0.0/bin/toy', '# tampered\n');
 
   const second = makeManager(vfs, suppliedRuntimeSource([pkg]));
   second.manager.registerRunner('toy-runner', toyRunner);
@@ -306,7 +304,7 @@ const toyRunner = () => async () => 0;
   const vfs = openVfs();
   const fs = vfs.as(KERNEL);
   const pkg = fakePackage({ 'bin/toy': '# t\n', 'share/toy/x.txt': 'x\n' });
-  const root = 'home/user/.nimbus/runtimes/toy/1.0.0';
+  const root = 'usr/lib/nimbus/toy/1.0.0';
   const { manager } = makeManager(vfs, suppliedRuntimeSource([pkg]));
   manager.registerRunner('toy-runner', toyRunner);
   await manager.install('toy');
@@ -365,32 +363,6 @@ const toyRunner = () => async () => 0;
   assert.equal(retried.written, true, 'the retry contended with the failed attempt');
 }
 
-// ── The home a resolution saw is the home the write lands in ────────────────
-{
-  const vfs = openVfs();
-  const fs = vfs.as(KERNEL);
-  const pkg = fakePackage({ 'bin/toy': '# t\n' });
-  let home = '/home/user';
-  let release;
-  const gate = new Promise((r) => { release = r; });
-  const source = {
-    list: async () => [],
-    resolve: async () => { await gate; return pkg; },
-  };
-  const registry = makeRegistry();
-  const manager = new RuntimeManager({
-    vfs: new ProcessView(new ProcessFiles(vfs).openHost(KERNEL).fs), registry, getHome: () => home, source,
-  });
-  manager.registerRunner('toy-runner', toyRunner);
-
-  const pending = manager.install('toy');
-  home = '/home/other'; // the environment shifts mid-resolve
-  release();
-  const seeded = await pending;
-  assert.equal(seeded.root, 'home/user/.nimbus/runtimes/toy/1.0.0');
-  assert.ok(!fs.exists('home/other'), 'a mid-install HOME change retargeted the write');
-}
-
 // ── Uninstall during a resolve does not wait for unrelated writes ───────────
 {
   const vfs = openVfs();
@@ -408,7 +380,7 @@ const toyRunner = () => async () => 0;
     resolve: async (spec) => (spec === 'big' ? slow : spec === 'toy' ? toy : null),
   };
   const registry = makeRegistry();
-  const manager = new RuntimeManager({ vfs: new ProcessView(new ProcessFiles(vfs).openHost(KERNEL).fs), registry, getHome: () => HOME, source });
+  const manager = new RuntimeManager({ vfs: new ProcessView(new ProcessFiles(vfs).openHost(KERNEL).fs), registry, source });
   manager.registerRunner('toy-runner', toyRunner);
   await manager.install('toy');
 
@@ -444,7 +416,7 @@ const toyRunner = () => async () => 0;
   release();
   await Promise.all([pending, removing]);
   assert.equal((await manager.list()).length, 0, 'uninstall raced the in-flight write');
-  assert.ok(!fs.exists('home/user/.nimbus/runtimes/toy'), 'the tree survived removal');
+  assert.ok(!fs.exists('usr/lib/nimbus/toy'), 'the tree survived removal');
 }
 
 // ── Force queued behind a no-write reuse still rewrites ─────────────────────
@@ -476,7 +448,7 @@ const toyRunner = () => async () => 0;
   assert.equal((await manager.list()).length, 2);
 
   // Corrupt v1's payload, then remove v2: the freed bin must not rebind v1.
-  fs.writeFile('home/user/.nimbus/runtimes/toy/1.0.0/bin/toy', '# tampered\n');
+  fs.writeFile('usr/lib/nimbus/toy/1.0.0/bin/toy', '# tampered\n');
   await manager.uninstall('toy@2.0.0');
   assert.equal((await manager.list()).length, 1);
   assert.ok(!registry.commands.has('toy'), 'removing v2 rebound a corrupted v1');

@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // ruby/install-ruby — `nimbus install ruby` lays down the ruby+stdlib
-// wasm in the per-user VFS at ~/.nimbus/runtimes/ruby/3.3.4/ and
+// wasm in the session VFS at /usr/lib/nimbus/ruby/3.3.4/ and
 // registers the `ruby` + `ruby3` bins. Asserts the install completed
 // + the wasm blob is present with the sha-pinned size.
 
@@ -20,7 +20,7 @@ await t.waitForPrompt(60_000);
 {
   const { elapsed, output } = await t.run('nimbus install ruby', 180_000);
   const stripped = stripAnsi(output);
-  const installedOk = /installed at .*\/\.nimbus\/runtimes\/ruby\/3\.3\.4/.test(stripped)
+  const installedOk = /installed at .*usr\/lib\/nimbus\/ruby\/3\.3\.4/.test(stripped)
     || /ruby.*installed/i.test(stripped);
   const notCmdNotFound = !/nimbus: command not found/.test(stripped);
   a.check('nimbus install ruby completes with success marker',
@@ -30,7 +30,7 @@ await t.waitForPrompt(60_000);
 
 // 2. Manifest exists with correct name + version.
 {
-  const { output } = await t.run('cat ~/.nimbus/runtimes/ruby/3.3.4/manifest.json', 15_000);
+  const { output } = await t.run('cat /usr/lib/nimbus/ruby/3.3.4/manifest.json', 15_000);
   const stripped = stripAnsi(output);
   const start = stripped.indexOf('{');
   const end = stripped.lastIndexOf('}');
@@ -51,7 +51,7 @@ const EXPECTED_SIZES = {
   'share/ruby/ruby+stdlib.wasm': 35992842,
 };
 {
-  const { output: lsOut } = await t.run('ls -la ~/.nimbus/runtimes/ruby/3.3.4/share/ruby/', 15_000);
+  const { output: lsOut } = await t.run('ls -la /usr/lib/nimbus/ruby/3.3.4/share/ruby/', 15_000);
   const stripped = stripAnsi(lsOut);
   for (const [path, expectedSize] of Object.entries(EXPECTED_SIZES)) {
     const basename = path.split('/').pop();
@@ -65,7 +65,7 @@ const EXPECTED_SIZES = {
 
 // 4. ruby and ruby3 bin paths exist.
 {
-  const { output } = await t.run('ls -la ~/.nimbus/runtimes/ruby/3.3.4/bin/', 10_000);
+  const { output } = await t.run('ls -la /usr/lib/nimbus/ruby/3.3.4/bin/', 10_000);
   const stripped = stripAnsi(output);
   a.check('bin/ruby exists', /\bruby$/m.test(stripped),
     JSON.stringify(stripped.slice(-200)));
