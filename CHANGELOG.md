@@ -5,6 +5,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Security: a sticky directory (mode 1777, such as `/tmp`) protects its
+  entries from every removal. Removing an ancestor (`rm -r`,
+  `fs.rmSync(..., { recursive: true })`) or deleting through a batch could
+  remove another user's file in a sticky directory below it; only the top
+  operand was checked. Changed: `rm -r` of a tree in the session's own store
+  now does what it does on a mounted directory and on Linux: an entry it may
+  not remove stays, with the directories holding it, and everything else
+  goes; it refused the whole tree before removing anything.
 - Fixed: walked recursive removal attempts unreadable entries, continues past
   failures, and reports each entry that remains. The shell reports vanished
   children unless `rm -f` was requested.

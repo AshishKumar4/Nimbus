@@ -74,7 +74,7 @@ function counters(rawVfs) {
     after = page.next;
   } while (after !== null);
   vfs.rename('tree/pkg-0', 'tree/moved');
-  assert.equal(vfs.removeRecursive('tree/pkg-1'), 22);
+  assert.deepEqual(vfs.removeRecursive('tree/pkg-1'), { removed: ['tree/pkg-1'], kept: [], failures: [] });
   assert.deepEqual(inodeTableScans(harness, from), [], 'a walk read the whole inode table');
   const stats = rawVfs.getStats();
   assert.equal(stats.inodes.cacheCapacity, 16);
@@ -144,7 +144,7 @@ function counters(rawVfs) {
 
   const reopened = openVfs(createSqliteVfsTestHarness(harness.db)).rawVfs;
   assert.deepEqual(counters(reopened), counters(rawVfs));
-  assert.equal(vfs.removeRecursive('a'), before.files + before.directories);
+  assert.deepEqual(vfs.removeRecursive('a'), { removed: ['a'], kept: [], failures: [] });
   assert.deepEqual(counters(rawVfs), { files: 0, directories: 0, usedBytes: 0 });
   assert.equal(rawVfs._verifyCounters(), null);
 }
@@ -269,7 +269,7 @@ function counters(rawVfs) {
     for (const event of batch) if (event.type === 'unlink' || event.type === 'unlinkDir') order.push(event.path);
   });
   const from = harness.statements.length;
-  assert.equal(vfs.removeRecursive('w/big'), created.length);
+  assert.deepEqual(vfs.removeRecursive('w/big'), { removed: ['w/big'], kept: [], failures: [] });
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.deepEqual(inodeTableScans(harness, from), []);
   assert.equal(order.length, created.length);

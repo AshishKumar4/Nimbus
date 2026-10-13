@@ -86,7 +86,7 @@ function counters(rawVfs) {
   vfs.writeFile('a-b/other.txt', 'sibling');
   vfs.writeFile('abc', 'sibling');
 
-  assert.equal(vfs.removeRecursive('a'), 5);
+  assert.deepEqual(vfs.removeRecursive('a'), { removed: ['a'], kept: [], failures: [] });
 
   const reconstructed = reopenVfs(harness);
   for (const gone of ['a', 'a/b', 'a/b/c', 'a/b/c/deep.txt', 'a/keep-me']) {
@@ -127,7 +127,7 @@ function counters(rawVfs) {
   seedTree(vfs, 'small', 1, 4); // the tree actually removed: 7 entries
 
   const from = harness.statements.length;
-  assert.equal(vfs.removeRecursive('small'), 7);
+  assert.deepEqual(vfs.removeRecursive('small'), { removed: ['small'], kept: [], failures: [] });
   assert.deepEqual(inodeTableScans(harness, from), [], 'removing a subtree read the whole inode table');
   assert.equal(vfs.exists('big/pkg-39/lib/file-19.js'), true);
 }
@@ -137,7 +137,7 @@ function counters(rawVfs) {
   const { vfs } = openVfs();
   assert.throws(() => vfs.removeRecursive('missing'), /ENOENT/);
   vfs.writeFile('solo.txt', 'x');
-  assert.equal(vfs.removeRecursive('solo.txt'), 1);
+  assert.deepEqual(vfs.removeRecursive('solo.txt'), { removed: ['solo.txt'], kept: [], failures: [] });
   assert.equal(vfs.exists('solo.txt'), false);
 }
 
@@ -147,7 +147,7 @@ function counters(rawVfs) {
   vfs.mkdir('target/inner', { recursive: true });
   vfs.writeFile('target/inner/kept.txt', 'x');
   vfs.symlink('target', 'link');
-  assert.equal(vfs.removeRecursive('link'), 1);
+  assert.deepEqual(vfs.removeRecursive('link'), { removed: ['link'], kept: [], failures: [] });
   assert.equal(vfs.exists('target/inner/kept.txt'), true);
   assert.equal(vfs.isSymlink('link'), false);
 }
@@ -158,10 +158,10 @@ function counters(rawVfs) {
   const paths = seedTree(vfs, 'tree', 24, 25); // 24 × (2 dirs + 25 files) + root
   const maintenanceBefore = rawVfs.getStats().sql.phases.maintenanceMs.count;
   const before = harness.transactionCount;
-  const removed = vfs.removeRecursive('tree');
+  assert.deepEqual(vfs.removeRecursive('tree'), { removed: ['tree'], kept: [], failures: [] });
   const transactions = harness.transactionCount - before;
+  const removed = paths.length;
 
-  assert.equal(removed, paths.length);
   assert.ok(
     transactions <= removed / 8,
     `${transactions} transactions for ${removed} entries: a regression to per-entry commits`,
@@ -366,7 +366,7 @@ const CRED_USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
       assert.equal(afterCrash.exists(path), true, `${path} lost to a fault at ${statement}`);
     }
 
-    assert.equal(vfs.removeRecursive('crash'), paths.length);
+    assert.deepEqual(vfs.removeRecursive('crash'), { removed: ['crash'], kept: [], failures: [] });
     assert.equal(reopenVfs(harness).exists('crash'), false);
     assert.equal(rawVfs._verifyCounters(), null);
   }
@@ -406,7 +406,7 @@ const CRED_USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
   }
   assert.equal(rawVfs._verifyCounters(), null);
 
-  assert.equal(vfs.removeRecursive('partial'), survivors.length);
+  assert.deepEqual(vfs.removeRecursive('partial'), { removed: ['partial'], kept: [], failures: [] });
   assert.equal(reopenVfs(harness).exists('partial'), false);
 }
 
@@ -438,7 +438,7 @@ const CRED_USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
   );
 
   rawVfs.releaseExclusiveMutation(lease.owner);
-  assert.equal(vfs.removeRecursive('leased'), survivors.length);
+  assert.deepEqual(vfs.removeRecursive('leased'), { removed: ['leased'], kept: [], failures: [] });
   assert.equal(reopenVfs(harness).exists('leased'), false);
   assert.equal(rawVfs._verifyCounters(), null);
 }
