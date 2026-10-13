@@ -3922,11 +3922,15 @@ const __fsMod = (() => {
     if (ticket.reported > (written === undefined ? ticket.rev : Math.max(written, ticket.rev))) return false;
     const k = _strip(absPath);
     __resident.namespace.noteLiveStat(k, stat, written);
-    // The session's own stat of a file this process made: it answers from now
-    // on (the owner of a file the process took for new, and wrote over, is
-    // the session's), unless the process has written it again since.
+    // The session's own stat of a file this process made answers from now on
+    // (the owner of a file it took for new, and wrote over, is the session's)
+    // where the walk reaches the row it noted: not beneath a directory it made
+    // just now, nor when it has written the file again since.
     const made = _nsOwn.get(k);
-    if (stat !== null && made?.state === "file" && !_nsParked(k)) _nsOwnDrop(k, made);
+    if (stat !== null && made?.state === "file" && !_nsParked(k)) {
+      const held = __resident.namespace.lookup(k, false, (at) => (at === k ? undefined : _nsWord(at)));
+      if (held !== "ELOOP" && held.table === k && held.row !== undefined) _nsOwnDrop(k, made);
+    }
     return true;
   }
 
