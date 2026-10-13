@@ -3102,7 +3102,7 @@ processes) {
                 // clone reads them: `-c` and the user's global config. The
                 // destination has no config yet, and the repository the command is
                 // run in is not the clone's.
-                const protect = await worktreeRepo(ctx, git, vfs, fs, `${dest}/.git`, dest).pathProtection();
+                const protect = await worktreeRepo(ctx, git, repoVfs, fs, `${dest}/.git`, dest).pathProtection();
                 const leaseRoot = place.mount ? await firstMissing(ctx.vfs, target) : target;
                 const mutationLease = await withRecall(() => vfs.as(ctx.cred).acquireExclusiveMutation(leaseRoot, { includeMissingAncestors: !place.mount, stoppable: true }));
                 // A piece of the clone that hung may still write: the facet runner
