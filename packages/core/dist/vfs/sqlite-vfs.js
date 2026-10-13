@@ -10459,7 +10459,9 @@ export class SqliteVFS {
             return [];
         const collected = [];
         const visited = new Set();
-        const named = below === undefined ? undefined : new Set(roots);
+        // A lone root (an unlink, an rmdir) is named by comparison, not a set.
+        const named = below === undefined || roots.length === 1 ? undefined : new Set(roots);
+        const lone = below !== undefined && roots.length === 1 ? roots[0] : undefined;
         for (const root of roots) {
             const under = subtreeWhere(root);
             const rows = [
@@ -10473,7 +10475,7 @@ export class SqliteVFS {
                 visited.add(path);
                 const inode = this.inodes.peek(path) ?? this.inodeFromRow(row);
                 collected.push(inode);
-                if (named !== undefined && !named.has(path))
+                if (lone !== undefined ? path !== lone : named !== undefined && !named.has(path))
                     below.push(inode);
             }
         }
