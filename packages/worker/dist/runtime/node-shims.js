@@ -1069,7 +1069,8 @@ const __fsMod = (() => {
   // made, with the mode it asked for). The namespace's walk applies each
   // where it reaches the name (_nsWalk). An entry retires once its mutation
   // has settled AND a barrier begun after that has applied: that barrier's
-  // delta shows it or anything later; a "file" once the session has its bytes.
+  // delta shows it or anything later. A "file" settles when the session has
+  // its bytes (__nimbusVfsWriteLanded), and unsettles when it is written again.
   function _nsActive() {
     return typeof __resident !== "undefined" && __resident.namespace.ready();
   }
@@ -1203,6 +1204,13 @@ const __fsMod = (() => {
     }
   }
   function _nsWord(k) { return _nsOwn.get(k)?.word; }
+  /** A chmod of a file or directory this process made: its own entry's mode with it, for as long as the entry answers. */
+  function _nsOwnMode(k, mode) {
+    const entry = typeof __resident === "undefined" ? undefined : _nsOwn.get(k);
+    if (entry === undefined || (entry.state !== "file" && entry.state !== "dir")) return;
+    entry.mode = mode;
+    entry.word = _nsWordOf(entry);
+  }
   function _nsOwnCost(k, entry) { return __nimbusResidentModule.namespaceRowBytes("", k, (entry.from ?? "") + (entry.link ?? "") + (entry.target ?? "")); }
   /** Hand the overlay entries made since the last mutation to the one being queued. */
   function _nsTakeFresh() {
@@ -1212,7 +1220,7 @@ const __fsMod = (() => {
   }
   function _nsRetire(begin) {
     for (const [k, entry] of _nsOwn) {
-      if (entry.state === "file" ? !_nsParked(k) : entry.settled !== null && entry.settled < begin) _nsOwnDrop(k, entry);
+      if (entry.settled !== null && entry.settled < begin) _nsOwnDrop(k, entry);
     }
     for (const attrs of [_localModes, _localTimes]) {
       for (const [k, entry] of attrs) if (entry.settled !== null && entry.settled < begin) attrs.delete(k);
@@ -1318,7 +1326,7 @@ const __fsMod = (() => {
    * metadata.
    */
   function _nsMeta(k, follow) {
-    if (k === "") return _nsRowMeta(__resident.namespace.resolve("", true).row);
+    if (k === "") return { ..._nsRowMeta(__resident.namespace.resolve("", true).row), key: "" };
     const found = _nsWalk(k, follow);
     if (found === "ELOOP") return "ELOOP";
     const own = found.own;
@@ -1328,10 +1336,10 @@ const __fsMod = (() => {
       meta = { type: "symlink", size: _byteLen(own.target), mode: 0o120777, uid: cred.uid, gid: cred.gid, own: true };
     } else if (own?.made === "directory") {
       meta = { type: "directory", size: 0, mode: 0o40000 | ((own.mode ?? 0o777) & ~__processUmask), uid: cred.uid, gid: cred.gid, own: true };
-    } else if (own?.made === "file" && _nsParked(found.path)) {
-      // A file this process made, while the session has not taken its bytes:
-      // its owner and the mode it asked for. From then on, the session's row.
-      meta = { type: "file", size: 0, mode: 0o100000 | ((own.mode ?? 0o666) & ~__processUmask), uid: cred.uid, gid: cred.gid, own: true };
+    } else if (own?.made === "file") {
+      // A file this process made: its owner and the mode it asked for (or
+      // chmod set since), until a barrier reports the session's own stat.
+      meta = { type: "file", size: Number(found.row?.size ?? 0), mode: 0o100000 | ((own.mode ?? 0o666) & ~__processUmask), uid: cred.uid, gid: cred.gid, own: true };
     } else if (found.row !== undefined) {
       meta = _nsRowMeta(found.row);
     } else {
@@ -1423,13 +1431,9 @@ const __fsMod = (() => {
    */
   function _noteCreation(k, mode = 0o666) {
     if (typeof __resident === "undefined") return;
-    // A file it made whose bytes it still holds is still that file; one the
-    // session has taken is the session's, and this write is judged afresh.
+    // A file it made is still that file, and a new write to it is not yet the session's.
     const made = _nsOwn.get(k);
-    if (made?.state === "file") {
-      if (_nsParked(k)) return;
-      _nsOwnDrop(k, made);
-    }
+    if (made?.state === "file") { made.settled = null; return; }
     const absPath = "/" + k;
     // Known absent: the namespace names everything this credential can see,
     // except on a mount where the launch did not list it, which is unknown.
@@ -3589,6 +3593,9 @@ const __fsMod = (() => {
   globalThis.__nimbusVfsWriteLanded = (key) => {
     const k = String(key).replace(/^\\/+/, "");
     _acceptedHere.add(k);
+    // A file it made is the session's once a barrier begun after this reports it.
+    const made = typeof __resident === "undefined" ? undefined : _nsOwn.get(k);
+    if (made?.state === "file" && !_nsParked(k)) made.settled = _barrierBegins;
   };
 
   // The authority refused a parked write (vfs-write-ledger): the record may
@@ -4097,6 +4104,7 @@ const __fsMod = (() => {
   function _chmodQueued(absPath, mode, syscall, p) {
     const k = _strip(absPath);
     _setLocalAttr(_localModes, k, mode, true);
+    _nsOwnMode(k, mode);
     return _queueStructuralMutation(absPath, syscall, p, () => _vfsOp({ type: "setattr", path: k, attrs: { mode } }));
   }
 
@@ -4111,6 +4119,7 @@ const __fsMod = (() => {
     const m = _coerceMode(mode, "chmod", p);
     if (localExists) _ensureModeOwner(absPath, "chmod", p);
     _setLocalAttr(_localModes, _strip(absPath), m, false);
+    _nsOwnMode(_strip(absPath), m);
     _pendingModes.add(_strip(absPath));
     if (supervisor) {
       await _flushLocalPathToSupervisor(absPath, supervisor);
@@ -4993,8 +5002,9 @@ const __fsMod = (() => {
     const meta = _nsMeta(k, true);
     if (meta === "ELOOP") throw _fsErr("ELOOP", "realpath", p);
     if (meta === "absent") throw _absentErr(absPath, "realpath", p, "fs.promises.realpath");
-    const real = _nsHeldKey(k);
-    return real === null || real === k ? absPath : "/" + real;
+    // The name the walk reached, as the program names it (a rename it made
+    // included), not where the table keeps it.
+    return meta.key === k ? absPath : "/" + meta.key;
   }
   realpathSync.native = realpathSync;
 
@@ -5396,7 +5406,7 @@ const __fsMod = (() => {
     // The authority answered, so what it said is what the sync view keeps:
     // its stat when something is there, and when nothing is, the file this
     // open creates is the process's own.
-    if (!liveMeta && supervisor && !localStat && typeof __resident !== "undefined") _nsOwnSet(_strip(absPath), "file", { mode: createMode });
+    if (!liveMeta && supervisor && !localStat && typeof __resident !== "undefined") _nsOwnSet(_strip(absPath), "file", { mode: createMode, settled: true });
     if (!exists) {
       await _writeFileAsync(path, new Uint8Array(0), { mode: createMode });
       size = 0;
@@ -6498,46 +6508,53 @@ const __fsMod = (() => {
     statfs: async (p, opts) => _statfsAsync(p, opts),
     // The watch engine as an async iterator: each change queued until asked
     // for, ended by return() (a waiting next() with it) or by its signal, an
-    // AbortError. Like Node's generator, it checks its options on first next().
+    // AbortError delivered once. Like Node's generator, nothing starts, and
+    // its options are not checked, until the first next().
     watch: (filename, opts) => {
       const signal = opts?.signal;
-      const aborted = () => new (__nimbusNodeLib().require("internal/errors").AbortError)(undefined, { cause: signal.reason });
-      let refused = null;
-      try { if (signal !== undefined) __nimbusNodeLib().require("internal/validators").validateAbortSignal(signal, "options.signal"); }
-      catch (error) { refused = error; }
       const queue = [];
       const waiting = [];
       let stop = null;
-      let done = refused !== null || signal?.aborted === true;
+      let state = "new"; // "new" | "watching" | "done"
+      const aborted = () => new (__nimbusNodeLib().require("internal/errors").AbortError)(undefined, { cause: signal.reason });
       const finish = () => {
-        done = true;
+        state = "done";
+        queue.length = 0;
         if (stop !== null) { stop(); stop = null; }
         signal?.removeEventListener("abort", onAbort);
       };
       const onAbort = () => {
+        const pending = waiting.splice(0);
         finish();
+        if (pending.length === 0) { state = "aborted"; return; }
         const error = aborted();
-        for (const pending of waiting.splice(0)) pending.reject(error);
+        for (const one of pending) one.reject(error);
       };
-      if (!done) {
+      const start = () => {
+        if (signal !== undefined) __nimbusNodeLib().require("internal/validators").validateAbortSignal(signal, "options.signal");
+        if (signal?.aborted) { finish(); throw aborted(); }
+        state = "watching";
         stop = _watchPath(filename, (eventType, name) => {
           const event = { eventType, filename: name };
           const pending = waiting.shift();
           if (pending) pending.resolve({ value: event, done: false }); else queue.push(event);
         });
         signal?.addEventListener("abort", onAbort, { once: true });
-      }
+      };
       const iterator = {
         next() {
-          if (refused !== null) { const error = refused; refused = null; return Promise.reject(error); }
-          if (signal?.aborted) { finish(); return Promise.reject(aborted()); }
+          if (state === "new") {
+            try { start(); } catch (error) { finish(); return Promise.reject(error); }
+          }
+          if (state === "aborted") { state = "done"; return Promise.reject(aborted()); }
+          if (state === "done") return Promise.resolve({ value: undefined, done: true });
           if (queue.length > 0) return Promise.resolve({ value: queue.shift(), done: false });
-          if (done) return Promise.resolve({ value: undefined, done: true });
           return new Promise((resolve, reject) => { waiting.push({ resolve, reject }); });
         },
         return() {
+          const pending = waiting.splice(0);
           finish();
-          for (const pending of waiting.splice(0)) pending.resolve({ value: undefined, done: true });
+          for (const one of pending) one.resolve({ value: undefined, done: true });
           return Promise.resolve({ value: undefined, done: true });
         },
         throw(error) {
