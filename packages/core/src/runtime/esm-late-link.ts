@@ -25,16 +25,18 @@ export interface LateResolution {
 }
 
 /**
- * A staged module row's facts, as its source reads: its own names, the rows
- * its `export *`s reach, by static import that reads names the row it loads,
- * its specifier as written and the names, and its names that are another
- * row's (the name, the row, the name there; null for its namespace).
+ * A module's facts, as its source reads, by what its static imports load:
+ * its own names, and the binding of each that is its own; what its
+ * `export *`s load; each static import that reads names, with its specifier
+ * as written; and its names that are another module's (the name, what loads
+ * that module, the name there; null for its namespace).
  */
-interface ModuleRowFacts {
+interface ModuleFacts {
   readonly exports: readonly string[];
-  readonly stars: readonly number[];
-  readonly imports: readonly (readonly [row: number, specifier: string, ...names: string[]])[];
-  readonly reexports: readonly (readonly [exported: string, row: number, name: string | null])[];
+  readonly locals: readonly (readonly [exported: string, local: string])[];
+  readonly stars: readonly (LateTarget | null)[];
+  readonly imports: readonly LateEdge[];
+  readonly reexports: readonly (readonly [exported: string, target: LateTarget | null, name: string | null])[];
 }
 
 export interface LateLinkHost {
@@ -95,9 +97,9 @@ interface LateEdge {
 }
 
 /** A late module, by what its static imports read (known: its bindings were read). */
-interface LateNode {
+interface LateNode extends ModuleFacts {
   readonly known: boolean;
-  readonly exports: readonly string[];
+  readonly locals: [exported: string, local: string][];
   readonly stars: (LateTarget | null)[];
   readonly imports: LateEdge[];
   readonly reexports: [exported: string, target: LateTarget | null, name: string | null][];
@@ -126,13 +128,13 @@ function rowNames(host: LateLinkHost, row: number): readonly string[] | null {
 }
 
 /** Staged module rows' facts, by row, read from their sources when a link first needs them. */
-const rowFacts = new Map<number, ModuleRowFacts | null>();
+const rowFacts = new Map<number, ModuleFacts | null>();
 
 /** A staged module row's facts, or null where its source does not tell them. */
-function moduleFacts(host: LateLinkHost, row: number): ModuleRowFacts | null {
+function moduleFacts(host: LateLinkHost, row: number): ModuleFacts | null {
   const known = rowFacts.get(row);
   if (known !== undefined) return known;
-  let facts: ModuleRowFacts | null = null;
+  let facts: ModuleFacts | null = null;
   const key = host.rowKey(row);
   const text = host.source(key, row);
   const analysis = text === null ? null : host.requests(key, text, true, 'module');
@@ -141,22 +143,30 @@ function moduleFacts(host: LateLinkHost, row: number): ModuleRowFacts | null {
   const specifiers: string[] = [];
   for (const request of analysis?.requests ?? []) if (request.kind === 'static') specifiers.push(request.specifier);
   if (bindings !== undefined && bindings.imports.length === targets.length && specifiers.length === targets.length) {
+    // What static import `at` loads: a row, or the late module at the URL staging handed it on to (a query's or a fragment's instance).
+    const loads = (at: number): LateTarget | null => {
+      if (targets[at] >= 0) return { row: targets[at] };
+      const missing = host.missing(-2 - targets[at]);
+      return missing !== null && 'handedOn' in missing ? { url: missing.handedOn } : null;
+    };
     const exports: string[] = [];
     for (let i = 0; i < bindings.exports.length; i++) exports.push(bindings.exports[i]);
-    const stars: number[] = [];
-    for (let i = 0; i < bindings.stars.length; i++) if (targets[bindings.stars[i]] >= 0) stars.push(targets[bindings.stars[i]]);
-    const imports: [number, string, ...string[]][] = [];
+    const locals: [string, string][] = [];
+    for (let i = 0; i < bindings.locals.length; i++) locals.push([bindings.locals[i][0], bindings.locals[i][1]]);
+    const stars: (LateTarget | null)[] = [];
+    for (let i = 0; i < bindings.stars.length; i++) stars.push(loads(bindings.stars[i]));
+    const imports: LateEdge[] = [];
     for (let at = 0; at < targets.length; at++) {
       const names: string[] = [];
       for (let i = 0; i < bindings.imports[at].length; i++) names.push(bindings.imports[at][i]);
-      if (targets[at] >= 0 && names.length > 0) imports.push([targets[at], specifiers[at], ...names]);
+      if (names.length > 0) imports.push({ target: loads(at), specifier: specifiers[at], names });
     }
-    const reexports: [string, number, string | null][] = [];
+    const reexports: [string, LateTarget | null, string | null][] = [];
     for (let i = 0; i < bindings.reexports.length; i++) {
       const [exported, at, name] = bindings.reexports[i];
-      if (targets[at] >= 0) reexports.push([exported, targets[at], name]);
+      reexports.push([exported, loads(at), name]);
     }
-    facts = { exports, stars, imports, reexports };
+    facts = { exports, locals, stars, imports, reexports };
   }
   rowFacts.set(row, facts);
   return facts;
@@ -226,8 +236,12 @@ function plan(host: LateLinkHost, key: string, url: string, seen: Set<string>, o
   for (const request of analysis.requests) if (request.kind === 'static') statics++;
   const known = bindings !== undefined && bindings.imports.length === statics;
   const exports: string[] = [];
-  if (known) for (let i = 0; i < bindings.exports.length; i++) exports.push(bindings.exports[i]);
-  const node: LateNode = { known, exports, stars: [], imports: [], reexports: [] };
+  const locals: [string, string][] = [];
+  if (known) {
+    for (let i = 0; i < bindings.exports.length; i++) exports.push(bindings.exports[i]);
+    for (let i = 0; i < bindings.locals.length; i++) locals.push([bindings.locals[i][0], bindings.locals[i][1]]);
+  }
+  const node: LateNode = { known, exports, locals, stars: [], imports: [], reexports: [] };
   late.modules.set(url, node);
   lateModules.set(url, node);
   let at = -1;
@@ -348,8 +362,7 @@ function checkBindings(host: LateLinkHost, late: LateGraph, rootUrl: string): vo
 function edgesOf(host: LateLinkHost, late: LateGraph, target: LateTarget): readonly LateEdge[] {
   if (target.row === undefined) return late.modules.get(target.url)?.imports ?? [];
   const facts = host.rowKind(target.row) === 'module' ? moduleFacts(host, target.row) : null;
-  if (facts === null) return [];
-  return facts.imports.map(([row, specifier, ...names]) => ({ target: { row }, specifier, names }));
+  return facts === null ? [] : facts.imports;
 }
 
 /** A name its module's `export *`s reach two different bindings of. */
@@ -357,23 +370,17 @@ const AMBIGUOUS = 'ambiguous';
 
 interface Binding {
   readonly module: string;
-  /** The binding's name in its module; '*' for its namespace. */
+  /** The binding's own name in its module (one binding under two exported names is one); '*' for its namespace. */
   readonly binding: string;
 }
 
-/** A late or staged module's own names, `export *`s and indirect entries; null where not known here. */
-function factsOf(host: LateLinkHost, late: LateGraph, target: LateTarget) {
+/** A late or staged module's facts; null where not known here. */
+function factsOf(host: LateLinkHost, late: LateGraph, target: LateTarget): ModuleFacts | null {
   if (target.row === undefined) {
     const node = late.modules.get(target.url);
     return node === undefined || !node.known ? null : node;
   }
-  const facts = moduleFacts(host, target.row);
-  if (facts === null) return null;
-  return {
-    exports: facts.exports,
-    stars: facts.stars.map((row): LateTarget => ({ row })),
-    reexports: facts.reexports.map(([exported, row, name]): [string, LateTarget, string | null] => [exported, { row }, name]),
-  };
+  return moduleFacts(host, target.row);
 }
 
 /**
@@ -400,7 +407,7 @@ function resolveExport(host: LateLinkHost, late: LateGraph, target: LateTarget |
     if (from === null) return undefined;
     return { module: from.row !== undefined ? `r${from.row}` : `u${from.url}`, binding: '*' };
   }
-  if (facts.exports.includes(name)) return { module, binding: name };
+  for (const [exported, local] of facts.locals) if (exported === name) return { module, binding: local };
   if (name === 'default') return null;
   let found: Binding | null = null;
   let unknown = false;

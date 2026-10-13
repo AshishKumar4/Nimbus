@@ -8,7 +8,8 @@
 //     cjs-module-lexer's, and their values the ones it had once it ran;
 //   - `export *` of two modules that export one name from different
 //     bindings exports neither (an import of it is a SyntaxError), and two
-//     routes to one binding are one name;
+//     routes to one binding are one name, under whatever names they reach
+//     it by; an `export *` of a query's instance exports its names;
 //   - import attributes are checked as Node's loader checks them: JSON needs
 //     `type: 'json'`, JavaScript and builtins must not have it, an unknown
 //     key or type is refused, on an import and an export-from alike.
@@ -45,6 +46,9 @@ const STAR_CASES = [
   ['./star-named.mjs', "import { x } from './barrel.mjs';\nconsole.log('star-named ran', x);\n"],
   ['./star-same.mjs', "import { x } from './same-barrel.mjs';\nimport * as ns from './same-barrel.mjs';\nconsole.log('star-same', x, Object.keys(ns).join());\n"],
   ['./star-own.mjs', "import { x } from './own-barrel.mjs';\nconsole.log('star-own', x);\n"],
+  ['./star-two-names.mjs', "import { value } from './two-names-barrel.mjs';\nimport * as ns from './two-names-barrel.mjs';\nconsole.log('star-two-names', value, Object.keys(ns).join());\n"],
+  ['./star-instance.mjs', "import { onlyA } from './instance-bridge.mjs';\nconsole.log('star-instance', onlyA);\n"],
+  ['./star-instance-missing.mjs', "import { nothing } from './instance-bridge.mjs';\nconsole.log('star-instance-missing ran', nothing);\n"],
 ];
 const ATTRIBUTE_CASES = [
   ['./json-missing.mjs', "import d from './data.json';\nconsole.log('json-missing ran', d);\n"],
@@ -77,17 +81,27 @@ const FILES = {
   'star/barrel.mjs': "export * from './a.mjs';\nexport * from './b.mjs';\n",
   'star/same-barrel.mjs': "export * from './a.mjs';\nexport * from './via-a.mjs';\n",
   'star/own-barrel.mjs': "export * from './a.mjs';\nexport * from './b.mjs';\nexport const x = 'own';\n",
-  // barrel.mjs and same-barrel.mjs are staged (the registry's export *); the
-  // late barrels are written at run time (the interpreter's).
-  'star/main.mjs': "if (globalThis.never) { await import('./barrel.mjs'); await import('./same-barrel.mjs'); }\n" + late([
+  // One binding, two names, a route to each.
+  'star/leaf.mjs': "const x = 'leaf';\nexport { x as a, x as b };\n",
+  'star/left.mjs': "export { a as value } from './leaf.mjs';\n",
+  'star/right.mjs': "export { b as value } from './leaf.mjs';\n",
+  'star/two-names-barrel.mjs': "export * from './left.mjs';\nexport * from './right.mjs';\n",
+  // A query's instance, which staging hands on to the interpreter.
+  'star/instance-bridge.mjs': "export * from './a.mjs?instance';\n",
+  // The barrels are staged (the registry's export *); the late barrels are
+  // written at run time (the interpreter's).
+  'star/main.mjs': "if (globalThis.never) { await import('./barrel.mjs'); await import('./same-barrel.mjs'); await import('./two-names-barrel.mjs'); await import('./instance-bridge.mjs'); }\n" + late([
     ['./late-barrel.mjs', "export * from './a.mjs';\nexport * from './b.mjs';\n"],
     ['./late-same-barrel.mjs', "export * from './a.mjs';\nexport * from './via-a.mjs';\n"],
     ...STAR_CASES,
     ['./late-star-ns.mjs', "import * as ns from './late-barrel.mjs';\nconsole.log('late-star-ns', 'x' in ns, Object.keys(ns).join());\n"],
     ['./late-star-named.mjs', "import { x } from './late-barrel.mjs';\nconsole.log('late-star-named ran', x);\n"],
     ['./late-star-same.mjs', "import { x } from './late-same-barrel.mjs';\nconsole.log('late-star-same', x);\n"],
+    ['./late-two-names-barrel.mjs', "export * from './left.mjs';\nexport * from './right.mjs';\n"],
+    ['./late-star-two-names.mjs', "import { value } from './late-two-names-barrel.mjs';\nconsole.log('late-star-two-names', value);\n"],
   ]),
-  ...Object.fromEntries(['a.mjs', 'b.mjs', 'via-a.mjs', 'barrel.mjs', 'same-barrel.mjs', 'own-barrel.mjs'].map((name) => [`star-staged/${name}`, null])),
+  ...Object.fromEntries(['a.mjs', 'b.mjs', 'via-a.mjs', 'barrel.mjs', 'same-barrel.mjs', 'own-barrel.mjs', 'leaf.mjs', 'left.mjs', 'right.mjs',
+    'two-names-barrel.mjs', 'instance-bridge.mjs'].map((name) => [`star-staged/${name}`, null])),
   ...Object.fromEntries(STAR_CASES.map(([name, text]) => [`star-staged/${name.slice(2)}`, text])),
   'star-staged/main.mjs': staged(STAR_CASES),
 

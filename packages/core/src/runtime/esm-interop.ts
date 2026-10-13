@@ -304,6 +304,12 @@ export interface ModuleBindings {
    * Its other names are bindings of its own.
    */
   readonly reexports: readonly (readonly [exported: string, request: number, name: string | null])[];
+  /**
+   * Its names that are bindings of its own (ResolveExport's local entries):
+   * the name and the binding's, `*default*` for an `export default` of an
+   * expression. Two names of one binding resolve to one binding.
+   */
+  readonly locals: readonly (readonly [exported: string, local: string])[];
 }
 
 /** The bindings of a module linked as `link`. */
@@ -327,22 +333,28 @@ export function esmBindings(link: EsmLink, lists: EsmLists): ModuleBindings {
   const types = lists.list<string | null>();
   for (let i = 0; i < link.requests.length; i++) lists.push(types, link.requests[i].type);
   const reexports = lists.list<readonly [string, number, string | null]>();
+  const locals = lists.list<readonly [string, string]>();
   for (let i = 0; i < link.exports.length; i++) {
     const entry = link.exports[i];
     if (entry.kind === 'reexport') lists.push(reexports, [entry.exported, entry.request, entry.name]);
     else if (entry.kind === 'namespace') lists.push(reexports, [entry.exported, link.namespaces[entry.namespace].request, null]);
-    else if (entry.kind === 'binding') {
+    else if (entry.kind === 'default') lists.push(locals, [entry.exported, '*default*']);
+    else {
       // An export of an imported binding is that module's.
+      let imported = false;
       for (let r = 0; r < link.requests.length; r++) {
         const bindings = link.requests[r].bindings;
         for (let j = 0; j < bindings.length; j++) {
           const binding = bindings[j];
-          if (binding.local === entry.local) lists.push(reexports, [entry.exported, r, binding.kind === 'named' ? binding.imported : null]);
+          if (binding.local !== entry.local) continue;
+          lists.push(reexports, [entry.exported, r, binding.kind === 'named' ? binding.imported : null]);
+          imported = true;
         }
       }
+      if (!imported) lists.push(locals, [entry.exported, entry.local]);
     }
   }
-  return { exports, imports, stars: link.stars, types, reexports };
+  return { exports, imports, stars: link.stars, types, reexports, locals };
 }
 
 /** `entries` sorted by exported name, stably: a merge sort, which calls nothing of the realm's. */
