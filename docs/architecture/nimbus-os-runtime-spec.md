@@ -107,6 +107,40 @@ Resource ceilings and filesystem delivery are separate contracts. Raising a
 ceiling does not establish that a deferred or batched write has reached its
 owner, and must not be presented as a fix for lost writes.
 
+### Launch lock order: credit, builds, workers
+
+A Node launch draws on three things another launch may hold: the
+supervisor's transient credit (C, `heavy-alloc-coord.ts`, one pool for the
+isolate), another launch's in-flight build of the same bundle (B, the
+manager's `prefetchBuilds`, owned by its leader), and a Dynamic Worker slot (S,
+the ledger in `packages/fabric/src/budgets.ts`). The order is C or B before S:
+
+- A launch settles its bundle first, holding no worker: it takes C (its
+  build's admission, or for a state it did not build its map's share), or
+  joins B. Only then does it take S: an exec's launch admission
+  (`withLaunchAdmission`), a resident's residency. A launch started inside an
+  admission it inherits (a broker's for a running program's child, an exec's
+  promoted to a resident at its first listen) gives that worker back while it
+  prepares and takes it again after.
+- Helpers its build calls (transform, build) take S as that launch's process
+  (`withLaunchPreparation`) while it holds C: the same order.
+- Holding S, a launch waits on no C and no B. Its map is made under the share
+  it took before S; a rebuild under the code ceiling reuses the share its map
+  kept; a run after a stop builds its bundle and takes its map's share before
+  it is admitted again.
+
+No cycle can form among launches: every wait is either for C or B holding
+nothing, or for S holding C, and a process holding nothing is on no cycle. The
+order cannot remove one wait: a running program holds its S while it waits
+on a child process, whose launch may wait for C. That is a process wait, and
+the ledger's detector sees it as one wait-for graph across all three: a
+process waiting for C waits on the launches holding C (unknown, and never
+refused, where credit is held outside the session's launches), one joined to
+B waits on B's leader (`waitOutsideLedger`), and a build's helper waits for S
+as its launch. A closed cycle is refused as a cycle of workers is: the newest
+queued S wait a stuck process depends on, normally a build's helper, fails
+with EAGAIN, and its build frees C.
+
 ## Current State
 
 ### Implemented And Substantial

@@ -51,8 +51,8 @@ export declare class SupervisorAllocationBudget {
      * stops a large read overlapping a large write.
      */
     acquireWithoutLifecycle(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease>;
-    /** Reserve bytes now or not at all, driving the lifecycle as acquire does. */
-    tryAcquire(bytes: number): ResizableCreditLease | null;
+    /** Reserve bytes now or not at all, driving the lifecycle as acquire does (or not, `drivesLifecycle` false). */
+    tryAcquire(bytes: number, drivesLifecycle?: boolean): ResizableCreditLease | null;
     private _acquire;
     private wrap;
 }
@@ -88,6 +88,17 @@ export declare function tryAcquireSupervisorAllocation(bytes: number): Resizable
  * there to fill.
  */
 export declare function acquireSupervisorReadAllocation(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease>;
+/**
+ * Reserve bytes for a short-lived copy of what the session already holds
+ * (a launch's module map made from a staged state), now or not at all, or
+ * by waiting (`signal`): the byte credit bounds how many such copies are
+ * live at once, but the disposable VFS cache is not shrunk for one, as it
+ * is not for a read. Shrinking it for every launch of a program already
+ * built cost each one its cache, and the copy is no install.
+ */
+export declare function tryAcquireSupervisorCopyAllocation(bytes: number): ResizableCreditLease | null;
+/** {@link tryAcquireSupervisorCopyAllocation}, waiting for room. */
+export declare function acquireSupervisorCopyAllocation(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease>;
 /**
  * Reserve the full budget for an allocation whose retained size is not known
  * accurately enough to overlap safely with other heavy work.

@@ -59,7 +59,7 @@ import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/platf
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { TurnBudget, PacedWork, turnChunkMaxBytes, withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
 import { generation, onColdStart } from '@nimbus-sh/fabric/generation.js';
-import { DYNAMIC_WORKER_CODE_LIMIT_BYTES, isDynamicWorkerDeadlock, suspendLaunchAdmission, withLaunchAdmission } from '@nimbus-sh/fabric/budgets.js';
+import { DYNAMIC_WORKER_CODE_LIMIT_BYTES, isDynamicWorkerDeadlock, suspendLaunchAdmission, waitOutsideLedger, withLaunchAdmission, withLaunchPreparation } from '@nimbus-sh/fabric/budgets.js';
 import { FencedWork, FENCED_WORK_KEY_PREFIX, RESIDENT_PROVEN_MS, } from '@nimbus-sh/fabric/fenced-work.js';
 import { rewriteProvidedCommonJsModules } from '@nimbus-sh/core/runtime/provided-packages.js';
 import { bundleCompiledLoader, esbuildDiagnosticShim, isBundleModuleCandidate, looksLikeEsm, needsBundleCellTransform, transformBundleCells, transformEntryScript, } from '@nimbus-sh/core/runtime/bundle-cell-transform.js';
@@ -95,9 +95,9 @@ import { CF_COMPAT_DATE, DEFAULT_HOME, GUEST_COMPAT_FLAGS, VFS_BUNDLE_MAX_FILES,
 import { LEDGER_ROW_BYTES } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { ONE_SHOT_STORE_MEMORY_BYTES, RESIDENT_CHUNK_BYTES } from '../vfs/facet-resident-limits.js';
 import { residentCellCost } from '../vfs/resident/cell-cost.js';
-import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
+import { MAX_RPC_SAFE_PAYLOAD_BYTES, SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES } from '@nimbus-sh/platform/limits.js';
 import { CRED_KERNEL, isNativeBinPath, launchNamedPaths, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
+import { acquireSupervisorAllocation, acquireSupervisorCopyAllocation, readSupervisorAllocationBudget, tryAcquireSupervisorAllocation, tryAcquireSupervisorCopyAllocation, } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { streamedWasmImageDigest, wasmImageDigest } from './wasm-image-digest.js';
 import { prefetchBundleStart, prefetchBundleEnd, setPrefetchCacheBytes, } from '@nimbus-sh/platform/diag-counters.js';
 const launchAdapters = new WeakMap();
@@ -4068,37 +4068,118 @@ export async function toolConfigRoots(vfs, cwd, scriptPath) {
  *
  */
 export async function buildPrefetchBundle(vfs, options) {
-    // This build accumulates raw VFS contents in the supervisor heap, and did it
-    // with nothing watching: the estimator read 9.4 MiB while these bytes were
-    // resetting the DO three times. Take the budget the enrichment passes are
-    // allowed to spend, so a build queues behind other heavy work instead of
-    // racing it, and attribute it so it lands under `prefetchBundleBytes` rather
-    // than in the unattributed remainder.
-    const lease = await acquireSupervisorAllocation(VFS_BUNDLE_MAX_BYTES);
-    prefetchBundleStart(VFS_BUNDLE_MAX_BYTES);
+    return await withPrefetchAllocation(async (admission) => {
+        const state = await gatherPrefetchBundle(vfs, options);
+        admission.fit(state.rawBytes ?? 0);
+        return state;
+    });
+}
+/**
+ * What a launch's build and module map hold live at their peak, per byte of
+ * the closure they are made from: its cells, their serialized source and the
+ * map made from it. Measured live (after a collection) as a build starts
+ * serializing and as its launch ends: a ~17 MiB closure's launch at 45 MB
+ * over its base (2.5 times).
+ */
+const PREFETCH_PEAK_PER_BYTE = 3;
+/** What work made from a closure of `closureBytes` holds at its peak, within the budget. */
+function prefetchNeed(closureBytes) {
+    return Math.min(SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, Math.max(1, Math.ceil(closureBytes * PREFETCH_PEAK_PER_BYTE)));
+}
+/**
+ * An admission (Kinu #29): `bytes` of the supervisor's admitted transient
+ * budget, by default the whole of it, taken at once, until its work has
+ * measured the closure it is made from (`fit`), then PREFETCH_PEAK_PER_BYTE
+ * times that at most, the rest given back to the work queued behind it. A
+ * launch's build gathers its cells and serializes them under one, and keeps
+ * it until its module map is generated (FacetManager.buildAdmissions), so no
+ * other build runs beside them beyond what the budget holds. Nothing asks
+ * the pool while holding one (two builds holding their cells while a third
+ * queued for more deadlocked every one), and a launch asks it before it
+ * holds a worker, never after (FacetManager's lock order: credit, or a
+ * build joined, before a worker). One that has to wait for room waits under
+ * `wait`: a launch whose process ends meanwhile is never admitted.
+ */
+async function admitPrefetch(wait, bytes = SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, copy = false) {
+    const now = tryAdmitPrefetch(bytes, copy);
+    if (now !== null)
+        return now;
+    const waiting = wait?.();
     try {
-        try {
-            return await _buildPrefetchBundle(vfs, options);
+        const lease = await (copy ? acquireSupervisorCopyAllocation : acquireSupervisorAllocation)(bytes, waiting?.signal);
+        // Room came as its launch ended: given back, not used.
+        if (waiting?.signal.aborted) {
+            lease.release();
+            throw waiting.signal.reason;
         }
-        catch (error) {
-            // The modules earlier runs executed are what an earlier run got through
-            // without; they must not stop this one starting. A launch they (or
-            // their emits, which the walk does not count) take past the bound is
-            // built again with them as optional roots (RequiredModuleRoot.optional):
-            // each staged whole as far as the bound allows, and what does not fit
-            // loads late, as the run that learned it loaded it. Only a launch that
-            // overflows pays the second build.
-            const learned = options.executedModules ?? [];
-            if (!(error instanceof ClosureBoundExceededError) || learned.length === 0 || learned.every((root) => root.optional))
-                throw error;
-            console.warn(`[facet-manager] the modules earlier runs executed take ${options.scriptPath ?? 'the entry code'}'s map past `
-                + `its ${options.maxBundleBytes ?? VFS_BUNDLE_MAX_BYTES}-byte bound (${error.outcome.lastPath}); they are staged as optional roots, as far as the bound allows`);
-            return await _buildPrefetchBundle(vfs, { ...options, executedModules: learned.map((root) => ({ ...root, optional: true })) });
-        }
+        return admissionOf(lease, bytes, true);
     }
     finally {
-        prefetchBundleEnd(VFS_BUNDLE_MAX_BYTES);
-        lease.release();
+        waiting?.dispose();
+    }
+}
+/**
+ * admitPrefetch's admission where there is room now, at once (no await);
+ * null where it would wait. A `copy` (a map made from a state already
+ * staged) takes the credit without shrinking the VFS cache.
+ */
+function tryAdmitPrefetch(bytes, copy = false) {
+    const lease = copy ? tryAcquireSupervisorCopyAllocation(bytes) : tryAcquireSupervisorAllocation(bytes);
+    return lease === null ? null : admissionOf(lease, bytes, false);
+}
+function admissionOf(admitted, bytes, queued) {
+    // Attributed so it lands under `prefetchBundleBytes`, not the unattributed remainder.
+    let held = bytes;
+    prefetchBundleStart(held);
+    return {
+        queued,
+        held: () => held,
+        fit(closureBytes) {
+            const need = prefetchNeed(closureBytes);
+            if (held === 0 || need >= held)
+                return;
+            admitted.shrinkTo(need);
+            prefetchBundleEnd(held - need);
+            held = need;
+        },
+        release() {
+            if (held === 0)
+                return;
+            prefetchBundleEnd(held);
+            held = 0;
+            admitted.release();
+        },
+    };
+}
+/** `work` under an admission of its own (admitPrefetch's `wait` and `bytes`), given back as it ends. */
+async function withPrefetchAllocation(work, wait, bytes) {
+    const admission = await admitPrefetch(wait, bytes);
+    try {
+        return await work(admission);
+    }
+    finally {
+        admission.release();
+    }
+}
+/** The launch's cells, gathered from `vfs` (callers hold withPrefetchAllocation's admission). */
+async function gatherPrefetchBundle(vfs, options) {
+    try {
+        return await _buildPrefetchBundle(vfs, options);
+    }
+    catch (error) {
+        // The modules earlier runs executed are what an earlier run got through
+        // without; they must not stop this one starting. A launch they (or
+        // their emits, which the walk does not count) take past the bound is
+        // built again with them as optional roots (RequiredModuleRoot.optional):
+        // each staged whole as far as the bound allows, and what does not fit
+        // loads late, as the run that learned it loaded it. Only a launch that
+        // overflows pays the second build.
+        const learned = options.executedModules ?? [];
+        if (!(error instanceof ClosureBoundExceededError) || learned.length === 0 || learned.every((root) => root.optional))
+            throw error;
+        console.warn(`[facet-manager] the modules earlier runs executed take ${options.scriptPath ?? 'the entry code'}'s map past `
+            + `its ${options.maxBundleBytes ?? VFS_BUNDLE_MAX_BYTES}-byte bound (${error.outcome.lastPath}); they are staged as optional roots, as far as the bound allows`);
+        return await _buildPrefetchBundle(vfs, { ...options, executedModules: learned.map((root) => ({ ...root, optional: true })) });
     }
 }
 async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE, moduleScope = 'node', observedReads, pacer, maxBundleBytes = VFS_BUNDLE_MAX_BYTES, learnedFor, executedModules, transformStore, conditions = [], stripTypes = null, preloads = [], entryEsModule, staticRefs, }) {
@@ -4749,6 +4830,31 @@ export class FacetManager {
     static PREFETCH_CACHE_MAX = 16;
     /** Live sum of the entries' `bytes`, mirrored to the diag gauge on change. */
     prefetchCacheBytes = 0;
+    /**
+     * Cache-miss builds in flight, by key and the revision they read, and the
+     * launch building it (`leader`): a launch of the same key waits for one,
+     * holding nothing, then takes its entry, or (one the cache did not retain)
+     * its own copy of the state, built at the revision `done` names (null: it
+     * built nothing of its own).
+     */
+    prefetchBuilds = new Map();
+    /**
+     * A launch's share of the supervisor's credit (admitPrefetch), by pid:
+     * its build's, held from the build until its module map is generated, or
+     * for a state it did not build its map's (_holdMapShare); either taken
+     * before it holds a worker. What it built is live until then, and no
+     * other build runs beside it beyond what the budget holds. Given back once
+     * the map is made (_generateUnderCeiling), kept for a rebuild under the
+     * ceiling, and given back as its launch ends however it ends.
+     */
+    buildAdmissions = new Map();
+    _releaseBuildAdmission(pid) {
+        const admission = this.buildAdmissions.get(pid);
+        if (admission === undefined)
+            return;
+        this.buildAdmissions.delete(pid);
+        admission.release();
+    }
     /**
      * What each command's runs learned for its next launch: the modules they
      * tried to execute and the files they read that the launch lacked, and the
@@ -5775,10 +5881,37 @@ export class FacetManager {
         }
         return refs;
     }
-    async _buildProcessBundle(entry, spec, pacer) {
-        if (!this.vfs) {
-            return { bundle: {}, reachableCount: 0, truncated: false };
+    /**
+     * The cache's entry for `key` at `revision`, if one is held. An entry built
+     * at an older revision can never be SERVED again — the lookup requires an
+     * exact match — so from the first write after it was admitted it is
+     * retained garbage, held in the isolate that is measurably
+     * memory-constrained. Dropped here, before the build that replaces it
+     * allocates, so the stale filesystem graph and the new one never co-reside.
+     */
+    _takePrefetchEntry(key, revision, spec) {
+        let evictedStale = false;
+        for (const [staleKey, stale] of this.prefetchBundleCache) {
+            if (stale.revision === revision)
+                continue;
+            this.prefetchBundleCache.delete(staleKey);
+            this.prefetchCacheBytes -= stale.bytes;
+            evictedStale = true;
         }
+        if (evictedStale)
+            setPrefetchCacheBytes(this.prefetchCacheBytes);
+        const cached = this.prefetchBundleCache.get(key);
+        if (!cached || cached.revision !== revision || spec.maxBundleBytes !== undefined)
+            return null;
+        // Refresh LRU recency.
+        this.prefetchBundleCache.delete(key);
+        this.prefetchBundleCache.set(key, cached);
+        return { ...cached.vfsState, cacheHit: true, cacheRetained: true };
+    }
+    async _buildProcessBundle(entry, spec, pacer) {
+        // No filesystem: an empty bundle, its map's share taken as any other's.
+        if (!this.vfs)
+            return this._holdMapShare(entry, { bundle: {}, reachableCount: 0, truncated: false });
         if (!this.filesystem)
             throw new Error('Process filesystem authority is not initialized');
         this.imageStore.ensureDir(entry.pid);
@@ -5800,146 +5933,191 @@ export class FacetManager {
         // `-e` code is staged as an ES module or not, as the command line says.
         const evaluatedModule = spec.esModule === true && (spec.scriptPath === undefined || spec.scriptPath === '<eval>' || spec.scriptPath === '[stdin]');
         const key = `${profile}\x00${moduleScope}\x00${credKey}\x00${spec.cwd}\x00${spec.scriptPath ?? ''}\x00${_fnv1a(spec.entryCode)}\x00${JSON.stringify(launch)}\x00${evaluatedModule ? 1 : 0}`;
-        const revision = (await vfs.revision());
-        // An entry built at an older revision can never be SERVED again — the
-        // lookup below requires an exact match — so from the first write after it
-        // was admitted it is retained garbage, held in the isolate that is
-        // measurably memory-constrained. Dropped here, before the build that
-        // replaces it allocates, so the stale filesystem graph and the new one
-        // never co-reside.
-        let evictedStale = false;
-        for (const [staleKey, stale] of this.prefetchBundleCache) {
-            if (stale.revision === revision)
-                continue;
-            this.prefetchBundleCache.delete(staleKey);
-            this.prefetchCacheBytes -= stale.bytes;
-            evictedStale = true;
-        }
-        if (evictedStale)
-            setPrefetchCacheBytes(this.prefetchCacheBytes);
         // A report still being recorded may drop this entry: let it land first.
         await this.learning.settled();
-        const cached = this.prefetchBundleCache.get(key);
-        if (cached && cached.revision === revision && spec.maxBundleBytes === undefined) {
-            // Refresh LRU recency.
-            this.prefetchBundleCache.delete(key);
-            this.prefetchBundleCache.set(key, cached);
-            return { ...cached.vfsState, cacheHit: true, cacheRetained: true };
-        }
-        const readProfile = this.readProfile;
-        const offered = [];
-        const learnedFor = readProfile === null ? undefined : async (closure) => {
-            const roots = this._profileRoots(closure, spec.cwd);
-            if (roots.length === 0)
-                return [];
-            offered.push(...await readProfile.lookup(roots, this._packageIdentity(cred), READ_PROFILE_LAUNCH_BYTES));
-            return offered.map((entry) => entry.path);
+        let revision = await vfs.revision();
+        /** The entry for `key` at the filesystem's revision now, read again (after a wait). */
+        const takeCached = async () => {
+            await this.learning.settled();
+            revision = await vfs.revision();
+            return this._takePrefetchEntry(key, revision, spec);
         };
-        const learning = await this.learning.forLaunch(key);
-        // What earlier runs executed roots the required graph; what they read
-        // stays data. A module whose file is readable but was not in the map
-        // arrives as runtime code with its text; its imports are roots too, so a
-        // launch does not discover one static dependency per run (Nuxt/Vinext).
-        const executed = learning.executedModules.map((path) => ({ path }));
-        for (const code of learning.code.values()) {
-            if (code.kind === 'module' && !code.path.startsWith('data:')) {
-                executed.push({ path: code.path.replace(/^\/+/, ''), text: code.text });
+        const cached = this._takePrefetchEntry(key, revision, spec);
+        if (cached)
+            return this._holdMapShare(entry, cached);
+        // A build of the same launch at the same revision is in flight: its entry is this launch's once it is admitted.
+        // (A rebuild under the ceiling takes no entry, and waits for none.)
+        const shared = spec.maxBundleBytes === undefined;
+        const inFlight = shared ? this.prefetchBuilds.get(key) : undefined;
+        if (inFlight !== undefined && inFlight.revision === revision) {
+            // Joined holding nothing: its leader (a standalone resident's build, say) may need a worker for its helpers.
+            const outside = waitOutsideLedger(this.ctx, entry.pid, () => [inFlight.leader]);
+            let built;
+            try {
+                built = await inFlight.done;
             }
+            finally {
+                outside();
+            }
+            const published = await takeCached();
+            if (published)
+                return this._holdMapShare(entry, published);
+            // Not retained (past the entry bound): that build's own result, if the filesystem is still at the revision it read.
+            if (built !== null && built.revision === revision)
+                return this._holdMapShare(entry, { ...built.state, cacheHit: true, cacheRetained: false });
         }
-        const vfsState = await buildPrefetchBundle(vfs, {
-            scriptPath: spec.scriptPath,
-            cwd: spec.cwd,
-            entryCode: spec.entryCode,
-            esbuild: this.esbuild ?? undefined,
-            staticRefs: (path) => this._staticRefsOf(vfs, cred, path, pacer),
-            bundleProfile: profile,
-            moduleScope,
-            observedReads: new Set(learning.dataReads),
-            pacer,
-            learnedFor,
-            // Under the ceiling's bound, what earlier runs executed is staged as far as it allows (_rebuildUnderCeiling).
-            executedModules: spec.maxBundleBytes === undefined ? executed : executed.map((root) => ({ ...root, optional: true })),
-            ...(spec.maxBundleBytes !== undefined ? { maxBundleBytes: spec.maxBundleBytes } : {}),
-            transformStore: this._transformStore(),
-            conditions: launch.conditions,
-            stripTypes: launch.stripTypes,
-            preloads: [
-                ...launch.require.map((specifier) => ({ preload: 'require', specifier })),
-                ...launch.import.map((specifier) => ({ preload: 'import', specifier })),
-            ],
-            ...(evaluatedModule ? { entryEsModule: entryEsModuleKey(spec.scriptPath, spec.cwd) } : {}),
-        });
-        if (offered.length > 0) {
-            const staged = [];
-            const unresolved = [];
-            for (const entry of offered) {
-                if (vfsState.bundle[entry.path] !== undefined) {
-                    staged.push(entry);
-                    continue;
+        // Kinu #29: the cells are gathered and serialized under one admission,
+        // kept until the launch's module map is made, so cache-miss builds queue
+        // for room through all three. A launch admitted after a wait, while
+        // another of its key published, takes that entry. A build again for this
+        // launch under the ceiling builds under the share its map kept: it may
+        // hold a worker, and waits for no credit.
+        const held = this.buildAdmissions.get(entry.pid);
+        this.buildAdmissions.delete(entry.pid);
+        const buildUnder = async (admission) => {
+            const admitted = admission.queued ? await takeCached() : null;
+            if (admitted)
+                return { state: admitted, shared: null };
+            const readProfile = this.readProfile;
+            const offered = [];
+            const learnedFor = readProfile === null ? undefined : async (closure) => {
+                const roots = this._profileRoots(closure, spec.cwd);
+                if (roots.length === 0)
+                    return [];
+                offered.push(...await readProfile.lookup(roots, this._packageIdentity(cred), READ_PROFILE_LAUNCH_BYTES));
+                return offered.map((entry) => entry.path);
+            };
+            const learning = await this.learning.forLaunch(key);
+            // What earlier runs executed roots the required graph; what they read
+            // stays data. A module whose file is readable but was not in the map
+            // arrives as runtime code with its text; its imports are roots too, so a
+            // launch does not discover one static dependency per run (Nuxt/Vinext).
+            const executed = learning.executedModules.map((path) => ({ path }));
+            for (const code of learning.code.values()) {
+                if (code.kind === 'module' && !code.path.startsWith('data:')) {
+                    executed.push({ path: code.path.replace(/^\/+/, ''), text: code.text });
                 }
-                // Not staged: over the budget, or nothing a regular file answers (then it is pruned).
-                const stat = await Promise.resolve(vfs.stat('/' + entry.path, { followSymlinks: false })).catch(() => null);
-                if (stat === null || stat.type !== 'file')
-                    unresolved.push(entry.path);
             }
-            vfsState.profileOffer = { staged, unresolved };
-        }
-        vfsState.bundleKey = key;
-        vfsState.bundlePaths = Object.keys(vfsState.bundle);
-        // The only consumers of the raw cells past serialization are these two
-        // answers, so they come first; the serialization then consumes the cells.
-        vfsState.usesNodeSqlite = bundleUsesNodeSqlite(spec.entryCode, vfsState.bundle);
-        // What the closure names, and what the launched bin's own dependency tree
-        // installs: a binding is compiled with the launch or not at all, and a
-        // program can reach its owner by a specifier no walk follows.
-        const declaredWalk = { probes: 0 };
-        const declaredBindings = await stagedBindingsDeclaredBy(declaredBindingFs(vfs), spec.scriptPath, undefined, declaredWalk);
-        const namedBindings = stagedBindingsRequiredBy(Object.entries(vfsState.bundle));
-        const requiredBindings = new Set([...namedBindings, ...declaredBindings]);
-        vfsState.stagedBindings = STAGED_BINDINGS.filter((b) => requiredBindings.has(b.key)).map((b) => b.key);
-        if (this.debugEnabled) {
-            this.processes.appendOutput(entry.pid, 'stderr', `[nimbus-debug] staged bindings: [${vfsState.stagedBindings.join(', ')}]`
-                + ` (named by the closure: [${namedBindings.join(', ')}]; declared by the bin's dependencies: [${declaredBindings.join(', ')}],`
-                + ` ${declaredWalk.probes} filesystem questions)\n`);
-        }
-        // Wasm a package inlines as base64 in its own source (Vite's copy of
-        // es-module-lexer) never passes through the filesystem, so the closure
-        // walk's by-path records cannot name it; it is staged here instead.
-        // And so do the images earlier runs compiled from bytes in memory (learnedWasmImages).
-        const inlineWasm = this._stageWasmImageBytes([...findInlineWasmImages(vfsState.bundle), ...learnedWasmImages(learning.code)], entry.pid);
-        if (inlineWasm.length > 0)
-            vfsState.wasmImages = [...(vfsState.wasmImages ?? []), ...inlineWasm];
-        // And what the module map costs the facet's store, which adopts it at boot
-        // (N18): taken now, while the cells exist, for every launch this state
-        // serves (a cache hit included).
-        vfsState.moduleStorageBytes = moduleMapStorageBytes(vfsState.bundle, vfsState.codeOnly);
-        const serializeFrom = Date.now();
-        vfsState.bundleSource = await buildFacetVfsBundleSource(vfsState.bundle, vfsState.bundleSideModulesRequired, pacer, {
-            consume: true,
-            emits: vfsState.emits,
-            esm: vfsState.esm,
-            codeOnly: vfsState.codeOnly,
-            dataModules: vfsState.dataModules,
-            runtimeCode: await this._stagedRuntimeCode(learning, vfs, pacer, moduleScope, launch.stripTypes),
+            const vfsState = await gatherPrefetchBundle(vfs, {
+                scriptPath: spec.scriptPath,
+                cwd: spec.cwd,
+                entryCode: spec.entryCode,
+                esbuild: this.esbuild ?? undefined,
+                staticRefs: (path) => this._staticRefsOf(vfs, cred, path, pacer),
+                bundleProfile: profile,
+                moduleScope,
+                observedReads: new Set(learning.dataReads),
+                pacer,
+                learnedFor,
+                // Under the ceiling's bound, what earlier runs executed is staged as far as it allows (_rebuildUnderCeiling).
+                executedModules: spec.maxBundleBytes === undefined ? executed : executed.map((root) => ({ ...root, optional: true })),
+                ...(spec.maxBundleBytes !== undefined ? { maxBundleBytes: spec.maxBundleBytes } : {}),
+                transformStore: this._transformStore(),
+                conditions: launch.conditions,
+                stripTypes: launch.stripTypes,
+                preloads: [
+                    ...launch.require.map((specifier) => ({ preload: 'require', specifier })),
+                    ...launch.import.map((specifier) => ({ preload: 'import', specifier })),
+                ],
+                ...(evaluatedModule ? { entryEsModule: entryEsModuleKey(spec.scriptPath, spec.cwd) } : {}),
+            });
+            admission.fit(vfsState.rawBytes ?? 0);
+            if (offered.length > 0) {
+                const staged = [];
+                const unresolved = [];
+                for (const entry of offered) {
+                    if (vfsState.bundle[entry.path] !== undefined) {
+                        staged.push(entry);
+                        continue;
+                    }
+                    // Not staged: over the budget, or nothing a regular file answers (then it is pruned).
+                    const stat = await Promise.resolve(vfs.stat('/' + entry.path, { followSymlinks: false })).catch(() => null);
+                    if (stat === null || stat.type !== 'file')
+                        unresolved.push(entry.path);
+                }
+                vfsState.profileOffer = { staged, unresolved };
+            }
+            vfsState.bundleKey = key;
+            vfsState.bundlePaths = Object.keys(vfsState.bundle);
+            // The only consumers of the raw cells past serialization are these two
+            // answers, so they come first; the serialization then consumes the cells.
+            vfsState.usesNodeSqlite = bundleUsesNodeSqlite(spec.entryCode, vfsState.bundle);
+            // What the closure names, and what the launched bin's own dependency tree
+            // installs: a binding is compiled with the launch or not at all, and a
+            // program can reach its owner by a specifier no walk follows.
+            const declaredWalk = { probes: 0 };
+            const declaredBindings = await stagedBindingsDeclaredBy(declaredBindingFs(vfs), spec.scriptPath, undefined, declaredWalk);
+            const namedBindings = stagedBindingsRequiredBy(Object.entries(vfsState.bundle));
+            const requiredBindings = new Set([...namedBindings, ...declaredBindings]);
+            vfsState.stagedBindings = STAGED_BINDINGS.filter((b) => requiredBindings.has(b.key)).map((b) => b.key);
+            if (this.debugEnabled) {
+                this.processes.appendOutput(entry.pid, 'stderr', `[nimbus-debug] staged bindings: [${vfsState.stagedBindings.join(', ')}]`
+                    + ` (named by the closure: [${namedBindings.join(', ')}]; declared by the bin's dependencies: [${declaredBindings.join(', ')}],`
+                    + ` ${declaredWalk.probes} filesystem questions)\n`);
+            }
+            // Wasm a package inlines as base64 in its own source (Vite's copy of
+            // es-module-lexer) never passes through the filesystem, so the closure
+            // walk's by-path records cannot name it; it is staged here instead.
+            // And so do the images earlier runs compiled from bytes in memory (learnedWasmImages).
+            const inlineWasm = this._stageWasmImageBytes([...findInlineWasmImages(vfsState.bundle), ...learnedWasmImages(learning.code)], entry.pid);
+            if (inlineWasm.length > 0)
+                vfsState.wasmImages = [...(vfsState.wasmImages ?? []), ...inlineWasm];
+            // And what the module map costs the facet's store, which adopts it at boot
+            // (N18): taken now, while the cells exist, for every launch this state
+            // serves (a cache hit included).
+            vfsState.moduleStorageBytes = moduleMapStorageBytes(vfsState.bundle, vfsState.codeOnly);
+            const serializeFrom = Date.now();
+            vfsState.bundleSource = await buildFacetVfsBundleSource(vfsState.bundle, vfsState.bundleSideModulesRequired, pacer, {
+                consume: true,
+                emits: vfsState.emits,
+                esm: vfsState.esm,
+                codeOnly: vfsState.codeOnly,
+                dataModules: vfsState.dataModules,
+                runtimeCode: await this._stagedRuntimeCode(learning, vfs, pacer, moduleScope, launch.stripTypes),
+            });
+            if (vfsState.phases)
+                vfsState.phases.serialize = Date.now() - serializeFrom;
+            vfsState.cacheHit = false;
+            // Serialization is total: bundleSource/serializedManifest/serializedMetadata
+            // carry every byte the raw cells and objects do, and both generators read
+            // only the serialized forms. Retaining both doubled what an entry costs
+            // for its whole lifetime — measured for pi at 502af77, per entry: raw
+            // 17,253,610 + source 18,262,324 + manifest 600,060 + metadata 3,841,244
+            // = 39,957,238 B, of which the raw halves are 21,694,914 B held to answer
+            // `usesNodeSqlite`. Dropping them is a pure release: nothing downstream of
+            // this method reads them, and a cache MISS rebuilds from the VFS rather
+            // than from anything discarded here.
+            //
+            // Released BEFORE admission so the byte bound prices what the entry costs
+            // from here on, not the peak it passed through on the way in.
+            releaseSerializedSources(vfsState);
+            vfsState.cacheRetained = this._admitPrefetchCacheEntry(key, revision, vfsState);
+            // What a launch of this key waiting for this build takes: a state of its own, released by it alone.
+            return { state: vfsState, shared: { state: { ...vfsState }, revision } };
+        };
+        // Its helpers wait for a worker as its process (withLaunchPreparation): a wait nothing can satisfy is one the ledger tells.
+        const building = withLaunchPreparation(this.ctx, { pid: entry.pid }, async () => {
+            // Held from the moment it is taken: the detector names its holders (_creditHolders).
+            const admission = held ?? await admitPrefetch(() => this._launchEnds(entry.pid));
+            this.buildAdmissions.set(entry.pid, admission);
+            try {
+                return await buildUnder(admission);
+            }
+            catch (error) {
+                this._releaseBuildAdmission(entry.pid);
+                throw error;
+            }
         });
-        if (vfsState.phases)
-            vfsState.phases.serialize = Date.now() - serializeFrom;
-        vfsState.cacheHit = false;
-        // Serialization is total: bundleSource/serializedManifest/serializedMetadata
-        // carry every byte the raw cells and objects do, and both generators read
-        // only the serialized forms. Retaining both doubled what an entry costs
-        // for its whole lifetime — measured for pi at 502af77, per entry: raw
-        // 17,253,610 + source 18,262,324 + manifest 600,060 + metadata 3,841,244
-        // = 39,957,238 B, of which the raw halves are 21,694,914 B held to answer
-        // `usesNodeSqlite`. Dropping them is a pure release: nothing downstream of
-        // this method reads them, and a cache MISS rebuilds from the VFS rather
-        // than from anything discarded here.
-        //
-        // Released BEFORE admission so the byte bound prices what the entry costs
-        // from here on, not the peak it passed through on the way in.
-        releaseSerializedSources(vfsState);
-        vfsState.cacheRetained = this._admitPrefetchCacheEntry(key, revision, vfsState);
-        return vfsState;
+        const inProgress = { revision, leader: entry.pid, done: building.then((built) => built.shared, () => null) };
+        if (shared)
+            this.prefetchBuilds.set(key, inProgress);
+        try {
+            return (await building).state;
+        }
+        finally {
+            if (this.prefetchBuilds.get(key) === inProgress)
+                this.prefetchBuilds.delete(key);
+        }
     }
     /**
      * Generate a launch's map under the ceiling on it. `others` is what the rest
@@ -5949,31 +6127,60 @@ export class FacetManager {
      * keeps and is made again from the state without the rest; one over it
      * with none of it throws ModuleMapOverCeilingError.
      */
-    async _generateUnderCeiling(pid, vfsState, others, generate) {
-        const room = DYNAMIC_WORKER_CODE_LIMIT_BYTES - others;
-        let generated = await generate(vfsState);
-        const bytes = generatedMapTextBytes(generated, room);
-        if (bytes === null || bytes <= room)
-            return generated;
-        const source = vfsState.bundleSource;
-        const keys = source ? JSON.parse(source.runtimeCode) : [];
-        const learned = keys.map((key) => [key, mapTextBytes(generated.codeModules[runtimeCodeModuleName(key)] ?? '')]);
-        generated = undefined;
-        const { kept, over } = learnedRuntimeCodeWithin(bytes, learned, room);
-        if (over > 0 || !source)
-            throw new ModuleMapOverCeilingError(over);
-        const keep = new Set(kept);
-        const codeModules = { ...source.codeModules };
-        for (const key of keys)
-            if (!keep.has(key))
-                delete codeModules[runtimeCodeModuleName(key)];
-        const message = `the module map is ${(bytes + others).toLocaleString('en-US')} bytes with the code earlier runs learned, over the `
-            + `${DYNAMIC_WORKER_CODE_LIMIT_BYTES.toLocaleString('en-US')}-byte ceiling: it stages ${kept.length} of its ${keys.length} pieces, `
-            + 'the first its runs needed, and runs the rest interpreted, as the run that learned them did';
-        console.warn(`[facet-manager] pid ${pid}: ${message}`);
-        if (this.debugEnabled)
-            this.processes.appendOutput(pid, 'stderr', `[nimbus-debug] ${message}\n`);
-        return generate({ ...vfsState, bundleSource: { ...source, codeModules, runtimeCode: JSON.stringify(kept) } });
+    _generateUnderCeiling(pid, vfsState, others, generate) {
+        // Under the launch's share of the credit, taken before its worker
+        // (_buildProcessBundle: its build's, or its map's): a map made while a
+        // worker is held waits for no credit.
+        const admission = this.buildAdmissions.get(pid);
+        if (admission === undefined)
+            return Promise.reject(new Error(`Nimbus: the module map for pid ${pid} has no share of the credit`));
+        this.buildAdmissions.delete(pid);
+        return this._generateWithin(pid, vfsState, others, generate, admission);
+    }
+    /**
+     * _generateUnderCeiling's work, under its admission, which it gives back
+     * as it ends; over the ceiling, it is kept for the rebuild under it
+     * (_rebuildUnderCeiling), which then waits for no credit.
+     */
+    async _generateWithin(pid, vfsState, others, generate, admission) {
+        let keptForRebuild = false;
+        try {
+            const room = DYNAMIC_WORKER_CODE_LIMIT_BYTES - others;
+            let generated = await generate(vfsState);
+            const bytes = generatedMapTextBytes(generated, room);
+            if (bytes === null || bytes <= room)
+                return generated;
+            const source = vfsState.bundleSource;
+            const keys = source ? JSON.parse(source.runtimeCode) : [];
+            const learned = keys.map((key) => [key, mapTextBytes(generated.codeModules[runtimeCodeModuleName(key)] ?? '')]);
+            generated = undefined;
+            const { kept, over } = learnedRuntimeCodeWithin(bytes, learned, room);
+            if (over > 0 || !source)
+                throw new ModuleMapOverCeilingError(over);
+            const keep = new Set(kept);
+            const codeModules = { ...source.codeModules };
+            for (const key of keys)
+                if (!keep.has(key))
+                    delete codeModules[runtimeCodeModuleName(key)];
+            const message = `the module map is ${(bytes + others).toLocaleString('en-US')} bytes with the code earlier runs learned, over the `
+                + `${DYNAMIC_WORKER_CODE_LIMIT_BYTES.toLocaleString('en-US')}-byte ceiling: it stages ${kept.length} of its ${keys.length} pieces, `
+                + 'the first its runs needed, and runs the rest interpreted, as the run that learned them did';
+            console.warn(`[facet-manager] pid ${pid}: ${message}`);
+            if (this.debugEnabled)
+                this.processes.appendOutput(pid, 'stderr', `[nimbus-debug] ${message}\n`);
+            return await generate({ ...vfsState, bundleSource: { ...source, codeModules, runtimeCode: JSON.stringify(kept) } });
+        }
+        catch (error) {
+            if (error instanceof ModuleMapOverCeilingError) {
+                this.buildAdmissions.set(pid, admission);
+                keptForRebuild = true;
+            }
+            throw error;
+        }
+        finally {
+            if (!keptForRebuild)
+                admission.release();
+        }
     }
     /**
      * Build a launch's state again when its map was over the ceiling with none
@@ -6308,62 +6515,75 @@ export class FacetManager {
         // same kill, forwarded onto the controller the runOnce request carries.
         const onShellAbort = () => abortController.abort();
         opts.signal?.addEventListener('abort', onShellAbort, { once: true });
-        // Let in once on the ledger, as its launch, before its preparation: the
-        // run claims that admission (runOneShot), and a burst of programs builds
-        // no more maps at once than may run. Killed or refused while it waits, it
+        // The lock order (Kinu #29): its bundle first, under the supervisor's
+        // credit or another launch's build of it, holding no worker; then let in
+        // once on the ledger, as its launch, and its run claims that admission
+        // (runOneShot). Once it holds a worker it waits for no credit and on no
+        // build: its map's share is held already. Its build's helpers wait for a
+        // worker as its process (_buildProcessBundle), so a wait nothing can
+        // satisfy is one the ledger tells. Killed or refused while it waits, it
         // never ran.
         let admitted = false;
-        this.launching.set(entry.pid, { stage: 'admission', since: Date.now() });
+        let prepareFailed = false;
+        this.launching.set(entry.pid, { stage: 'prepare', since: Date.now() });
+        // Paced like a resident launch: a tree too large for one turn costs
+        // turns, and the pacer's stillWanted check ends a build whose process was
+        // killed while it was suspended. The invocation that granted the last
+        // chunk awaits `chunkEnded` (PacedWork.pump), so it owns the launch until
+        // the pacer settles: once the program is loaded and about to be entered
+        // (_execViaLoader's onLoaded), as a resident launch settles once its
+        // process has booted, and in the finally below for a launch that ends
+        // sooner. Not at the end of the build, which would release that turn
+        // with the module map still to assemble and load on it; and not at the
+        // end of the run, which held the session's launch alarm for as long as
+        // the program ran, so a child it launched and waited on, needing a turn
+        // of its own, never got one.
+        const pacer = this._launchPacer(entry.pid);
         try {
+            const diagOn = isExecDiagEnabled();
+            const __bundleStart = diagOn ? Date.now() : 0;
+            const bundleSpec = { scriptPath: opts.filename, cwd: opts.cwd || '/home/user', entryCode: code, esModule: opts.esModule, bundleProfile: opts.bundleProfile, moduleScope: opts.moduleScope, node: opts.node };
+            // A launch a broker let in before asking (a running program's child,
+            // hosted/services.ts) gives that worker back for its preparation, and
+            // takes it again for its run.
+            const brokered = suspendLaunchAdmission(this.ctx, entry.pid);
+            let vfsState;
+            try {
+                vfsState = await this._buildProcessBundle(entry, bundleSpec, pacer);
+            }
+            catch (err) {
+                // Its failure ends the process here (below), not in the catch further down.
+                prepareFailed = true;
+                // The require closure that cannot fit the snapshot bound is the
+                // process's own answer, not a build failure: exit 1 with a stderr
+                // that names the entry, the staged bytes at the stop, the bound,
+                // and the remedy — the same shape the got/next guards print.
+                pacer.settle();
+                stdinPump?.stop();
+                foreground?.release();
+                if (err instanceof ClosureBoundExceededError) {
+                    const o = err.outcome;
+                    const mib = (n) => `${(n / 1048576).toFixed(1)} MiB`;
+                    const stderr = `require closure for ${o.entry} exceeds the snapshot bound: ` +
+                        `${mib(o.bytesSeen)} staged when ${o.lastPath} crossed the ` +
+                        `${mib(o.bound)} bound; the process was not started.\n` +
+                        `Run it as a server or split the entry; there is no flag to bypass.`;
+                    this._end(entry.pid, { code: 1, cause: stderr });
+                    return { exitCode: 1, stdout: '', stderr };
+                }
+                // A failed build is thrown to the caller exactly as before. What must
+                // not be left behind is the process entry: it was spawned above and
+                // would otherwise sit 'running' forever for a process that never
+                // started. A build ended by a kill finds its entry already exited and
+                // reports nothing twice.
+                this._end(entry.pid, { code: 1, cause: `assembling the filesystem bundle for \`${command}\` failed: ${errorMessage(err)}` });
+                throw err;
+            }
+            this.launching.set(entry.pid, { stage: 'admission', since: Date.now() });
+            await brokered?.(abortController.signal);
             return await withLaunchAdmission(this.ctx, { pid: entry.pid }, abortController.signal, async () => {
                 admitted = true;
-                this.launching.set(entry.pid, { stage: 'prepare', since: Date.now() });
-                const diagOn = isExecDiagEnabled();
-                const __bundleStart = diagOn ? Date.now() : 0;
-                // Paced like a resident launch: a tree too large for one turn costs
-                // turns, and the pacer's stillWanted check ends a build whose process was
-                // killed while it was suspended. The invocation that granted the last
-                // chunk awaits `chunkEnded` (PacedWork.pump), so it owns the launch until
-                // the pacer settles: once the program is loaded and about to be entered
-                // (_execViaLoader's onLoaded), as a resident launch settles once its
-                // process has booted, and in the finally below for a launch that ends
-                // sooner. Not at the end of the build, which would release that turn
-                // with the module map still to assemble and load on it; and not at the
-                // end of the run, which held the session's launch alarm for as long as
-                // the program ran, so a child it launched and waited on, needing a turn
-                // of its own, never got one.
-                const pacer = this._launchPacer(entry.pid);
-                const bundleSpec = { scriptPath: opts.filename, cwd: opts.cwd || '/home/user', entryCode: code, esModule: opts.esModule, bundleProfile: opts.bundleProfile, moduleScope: opts.moduleScope, node: opts.node };
-                let vfsState;
-                try {
-                    vfsState = await this._buildProcessBundle(entry, bundleSpec, pacer);
-                }
-                catch (err) {
-                    // The require closure that cannot fit the snapshot bound is the
-                    // process's own answer, not a build failure: exit 1 with a stderr
-                    // that names the entry, the staged bytes at the stop, the bound,
-                    // and the remedy — the same shape the got/next guards print.
-                    pacer.settle();
-                    stdinPump?.stop();
-                    foreground?.release();
-                    if (err instanceof ClosureBoundExceededError) {
-                        const o = err.outcome;
-                        const mib = (n) => `${(n / 1048576).toFixed(1)} MiB`;
-                        const stderr = `require closure for ${o.entry} exceeds the snapshot bound: ` +
-                            `${mib(o.bytesSeen)} staged when ${o.lastPath} crossed the ` +
-                            `${mib(o.bound)} bound; the process was not started.\n` +
-                            `Run it as a server or split the entry; there is no flag to bypass.`;
-                        this._end(entry.pid, { code: 1, cause: stderr });
-                        return { exitCode: 1, stdout: '', stderr };
-                    }
-                    // A failed build is thrown to the caller exactly as before. What must
-                    // not be left behind is the process entry: it was spawned above and
-                    // would otherwise sit 'running' forever for a process that never
-                    // started. A build ended by a kill finds its entry already exited and
-                    // reports nothing twice.
-                    this._end(entry.pid, { code: 1, cause: `assembling the filesystem bundle for \`${command}\` failed: ${errorMessage(err)}` });
-                    throw err;
-                }
+                this.launching.set(entry.pid, { stage: 'load', since: Date.now() });
                 // What it reports missing as it runs is filed against this bundle.
                 if (vfsState.bundleKey)
                     this.launchBundles.set(entry.pid, { key: vfsState.bundleKey, refused: new Set() });
@@ -6479,8 +6699,19 @@ export class FacetManager {
                             result = resumed.exit;
                             break;
                         }
-                        // The replay is a new Worker in flight. Rejoin the admission queue
-                        // before rebuilding its module map or asking a preparation helper.
+                        // The stopped run's module map was released once it loaded, unless
+                        // the prefetch cache keeps it: the next run builds it again, a hit
+                        // when nothing it holds has changed since. Built, and its map's
+                        // share of the credit held, before it holds a worker again (the
+                        // lock order); its helpers wait as its process meanwhile.
+                        if (vfsState.generatedSourcesReleased) {
+                            vfsState = await this._buildProcessBundle(entry, bundleSpec, pacer);
+                            dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
+                        }
+                        else {
+                            await this._holdMapShare(entry, vfsState);
+                        }
+                        // The replay is a new Worker in flight: it rejoins the admission queue.
                         try {
                             await resumeAdmission?.(abortController.signal);
                         }
@@ -6497,13 +6728,6 @@ export class FacetManager {
                         }
                         this.processes.setUmask(entry.pid, startUmask);
                         launch = { ...launch, ...resumed.next, stopNonce: crypto.randomUUID() };
-                        // The stopped run's module map was released once it loaded, unless
-                        // the prefetch cache keeps it: the next run builds it again, a hit
-                        // when nothing it holds has changed since.
-                        if (vfsState.generatedSourcesReleased) {
-                            vfsState = await this._buildProcessBundle(entry, bundleSpec, pacer);
-                            dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
-                        }
                     }
                     await this._recordLaunchLearning(vfsState.bundleKey, {
                         code: result.runtimeCode, executedModules: result.moduleMisses, dataReads: result.residencyMisses,
@@ -6582,8 +6806,10 @@ export class FacetManager {
             });
         }
         catch (err) {
-            if (admitted)
+            if (admitted || prepareFailed)
                 throw err;
+            // Refused or killed while it waited for a worker, its bundle built.
+            pacer.settle();
             stdinPump?.stop();
             foreground?.release();
             if (abortController.signal.aborted) {
@@ -6597,6 +6823,7 @@ export class FacetManager {
         finally {
             this.launching.delete(entry.pid);
             opts.signal?.removeEventListener('abort', onShellAbort);
+            this._releaseBuildAdmission(entry.pid);
         }
     }
     /** The one-shot launches not yet running (their stage and its age) and the launches waiting for a turn. */
@@ -7204,11 +7431,16 @@ export class FacetManager {
         if (this.vfs)
             this.imageStore.ensureDir(entry.pid);
         const processVfs = this.filesystem ? this.filesystem.bind({ pid: entry.pid, cred: entry.cred }) : null;
-        const vfsState = processVfs
-            ? await buildPrefetchBundle(processVfs, { cwd: opts.cwd, entryCode: '', esbuild: this.esbuild || undefined })
-            : { bundle: {}, reachableCount: 0, truncated: false };
-        const vfsBundle = _serializeBundleForFacet(vfsState.bundle);
-        assertStagedBundleFitsRpcPayload(vfsBundle, vfsState.bundle);
+        // Gathered and serialized under one admission (Kinu #29).
+        const { vfsState, vfsBundle } = await withPrefetchAllocation(async (admission) => {
+            const gathered = processVfs
+                ? await gatherPrefetchBundle(processVfs, { cwd: opts.cwd, entryCode: '', esbuild: this.esbuild || undefined })
+                : { bundle: {}, reachableCount: 0, truncated: false };
+            admission.fit(gathered.rawBytes ?? 0);
+            const serialized = _serializeBundleForFacet(gathered.bundle);
+            assertStagedBundleFitsRpcPayload(serialized, gathered.bundle);
+            return { vfsState: gathered, vfsBundle: serialized };
+        }, () => this._launchEnds(entry.pid));
         const stageSpec = {
             mode,
             argv: opts.argv,
@@ -7430,6 +7662,50 @@ export class FacetManager {
         if (this.processes.get(pid)?.state === 'running')
             return;
         throw new Error(`Nimbus: the launch for pid ${pid} was cancelled while it was suspended`);
+    }
+    /**
+     * What `pid`'s launch waits for room under (admitPrefetch), holding no
+     * worker (the lock order: credit, or a build joined, before a worker):
+     * aborted once its process ends, so a launch killed or destroyed while it
+     * queued is never admitted after its end; and told to the ledger as a
+     * wait on the credit's holders (waitOutsideLedger), so a cycle through a
+     * running program waiting on its child is refused as a cycle of workers is.
+     */
+    _launchEnds(pid) {
+        this._assertLaunchStillOwned(pid);
+        const ended = new AbortController();
+        const unsubscribe = this.processes.subscribeTerminal(pid, () => {
+            ended.abort(new Error(`Nimbus: the launch for pid ${pid} was cancelled while it waited for room`));
+        });
+        const outside = waitOutsideLedger(this.ctx, pid, () => this._creditHolders());
+        return { signal: ended.signal, dispose: () => { outside(); unsubscribe(); } };
+    }
+    /** The launches holding the supervisor's credit, or null where some of it is held by other work (another session's, a write wave). */
+    _creditHolders() {
+        let own = 0;
+        for (const admission of this.buildAdmissions.values())
+            own += admission.held();
+        return readSupervisorAllocationBudget().current > own ? null : [...this.buildAdmissions.keys()];
+    }
+    /**
+     * A launch's share of the credit for the module map it makes from `state`
+     * (another launch's build, the cache's), taken before it holds a worker:
+     * the share it holds already (its build's, kept for a rebuild) is it. A
+     * copy of what is staged: the VFS cache is not shrunk for it.
+     */
+    _holdMapShare(entry, state) {
+        if (this.buildAdmissions.has(entry.pid))
+            return state;
+        const need = prefetchNeed(state.rawBytes ?? 0);
+        const now = tryAdmitPrefetch(need, true);
+        if (now !== null) {
+            this.buildAdmissions.set(entry.pid, now);
+            return state;
+        }
+        return admitPrefetch(() => this._launchEnds(entry.pid), need, true).then((admission) => {
+            this.buildAdmissions.set(entry.pid, admission);
+            return state;
+        });
     }
     /**
      * The one way this manager boots a resident process. Every resident process
@@ -7785,9 +8061,30 @@ export class FacetManager {
         if (this.launchesClosed)
             return Promise.reject(new Error('Launch scheduler is closed'));
         const preparing = this.processes.holdWork(entry.pid);
-        return this.trackLaunchTask(this._runResidentLaunchBody(entry, code, command, opts, attempt).finally(preparing));
+        // Its bundle first, under the credit, then its residency's worker (the
+        // lock order); its preparation's helpers wait for a worker as its process.
+        // A launch admission it is started in (a broker's, for the child whose
+        // command this is; an exec's, promoted at its first listen) is given back
+        // while it prepares and taken again before its boot (`admitted`), which
+        // claims it: a launch holding a worker waits for no credit and on no build.
+        // A deferred launch (an attached TTY: spawnNode answers before it boots)
+        // outlives the admission it was started in, which its starter closes: it
+        // gives it back for good, and its boot takes a slot of its own, as a
+        // resident started in none does (_startResidentProcess).
+        const inherited = suspendLaunchAdmission(this.ctx);
+        let admitted = async () => { };
+        let stopWaiting = () => { };
+        if (inherited !== undefined && !opts.attachedTty) {
+            const ended = new AbortController();
+            stopWaiting = this.processes.subscribeTerminal(entry.pid, () => {
+                ended.abort(new Error(`Nimbus: the launch for pid ${entry.pid} was cancelled while it waited for a worker`));
+            });
+            admitted = () => inherited(ended.signal);
+        }
+        const launch = withLaunchPreparation(this.ctx, { pid: entry.pid }, () => this._runResidentLaunchBody(entry, code, command, opts, attempt, admitted));
+        return this.trackLaunchTask(launch.finally(() => { stopWaiting(); preparing(); }));
     }
-    async _runResidentLaunchBody(entry, code, command, opts, attempt) {
+    async _runResidentLaunchBody(entry, code, command, opts, attempt, admitted) {
         const cwd = opts.cwd || '/home/user';
         const pacer = this._launchPacer(entry.pid);
         // Journalled before the first byte of work. A launch that FAILS deletes
@@ -7889,7 +8186,7 @@ export class FacetManager {
             throw e;
         }
         try {
-            await this._residentLaunchBody(entry, code, command, cwd, opts, pacer, durableFacetName, launchEnv);
+            await this._residentLaunchBody(entry, code, command, cwd, opts, pacer, admitted, durableFacetName, launchEnv);
         }
         catch (e) {
             // Bundle construction and source staging precede the launch body's
@@ -7904,6 +8201,7 @@ export class FacetManager {
         }
         finally {
             pacer.settle();
+            this._releaseBuildAdmission(entry.pid);
         }
         // Booted and running: its budget is whole again once it has run
         // RESIDENT_PROVEN_MS in this instance (_proveByUptime). If the process
@@ -7916,7 +8214,9 @@ export class FacetManager {
             this._proveByUptime(entry.pid);
         }
     }
-    async _residentLaunchBody(entry, code, command, cwd, opts, pacer, durableFacetName, launchEnv) {
+    async _residentLaunchBody(entry, code, command, cwd, opts, pacer, 
+    /** Its inherited launch admission taken again (_runResidentLaunch), once its bundle and map are settled. */
+    admitted, durableFacetName, launchEnv) {
         const diagOn = isExecDiagEnabled();
         const __bundleStart = diagOn ? Date.now() : 0;
         if (this.debugEnabled)
@@ -8071,6 +8371,8 @@ export class FacetManager {
                     // already exited would leave a facet nothing owns, running against a
                     // pid the session has finished reporting on.
                     this._assertLaunchStillOwned(entry.pid);
+                    // Its worker, the launch admission it was started in, before its boot claims it.
+                    await admitted();
                     try {
                         const launchingNonce = stopNonce, launchingRun = rerun?.replay.run ?? 1;
                         handle = await this._startResidentProcess(entry.pid, {

@@ -31,7 +31,7 @@ function handoff({ took = null, resident = async () => {}, signal, stdin, stdinF
     },
     stdinReadAhead: new ReadAheadBudget(STDIN_SYNC_READ_BYTES + 1),
     outputGates: new Map(), replay: new ReplaySessions(), stdinTaken: new Map(),
-    launchBundles: new Map(), launching: new Map(),
+    launchBundles: new Map(), launching: new Map(), buildAdmissions: new Map(),
     learnedServers: { learn: async (server) => { learned.push(server); } },
     _launchPacer: () => ({ settle() {}, chunks: 0 }),
     _buildProcessBundle: async () => ({ generatedSourcesReleased: false, bundleKey: 'test' }),

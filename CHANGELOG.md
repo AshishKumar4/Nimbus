@@ -23,6 +23,16 @@ published independently in the `@nimbus-sh` npm scope.
   the file: `stat` shows another user's later change, and a file removed and
   made again has a new file's mode and times. `stat` answers the file's real
   device and link count (`dev`, `nlink`) instead of one made-up device.
+- Fixed: a Node program's launch holds its share of the session's memory
+  budget while it packs the files it staged, and until its module map is
+  made, not only while it gathers them, so several launches at once queue
+  instead of building side by side past the budget. Launches of the same
+  program at once build it once. A launch killed, or whose session is
+  destroyed, while it waits for room is never admitted. A launch takes its
+  memory, or waits for another launch's build of its program, before it
+  takes a Dynamic Worker, never after, so launches waiting on each other
+  across the two can no longer hang (the order is in the runtime spec's
+  Facet Resource Contract).
 - Added: real git 2.53, built for WASI, in the default runtime catalog.
   `git` runs it for every command, option or repository format the
   built-in git does not fully implement (for example `log --graph`,
