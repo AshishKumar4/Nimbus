@@ -328,7 +328,12 @@ async function buildInFacet(
     // imports, and the entry itself (outside the package), not the whole
     // package, so a package of thousands of files fits the cap.
     const scoped = await buildScopedSliceForSynthetic(ctx.vfs, nmDir, packageNameFromSpecifier(specifier), entry.referencedFiles, ctx.parse);
-    const bytes = ctx.vfs.readFile(entry.entryPath);
+    let bytes: Uint8Array;
+    try {
+      bytes = ctx.vfs.readFile(entry.entryPath);
+    } catch (error) {
+      return `its synthetic entry ${entry.entryPath} could not be read back: ${describeError(error)}`;
+    }
     const parentDir = entry.entryPath.substring(0, entry.entryPath.lastIndexOf('/'));
     scoped.entries.push({ path: '/' + parentDir.replace(/^\/+/, ''), isDir: true });
     scoped.entries.push({ path: '/' + entry.entryPath.replace(/^\/+/, ''), bytes, isDir: false });
