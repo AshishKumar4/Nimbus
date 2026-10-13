@@ -4,8 +4,8 @@
  * facet as staged assets (node-shims-artifact-parity keeps those equal to
  * src). The shims are the caller's: the real generateShimsCode(), or a marker
  * where a test only needs to find where they land. The interpreter, its
- * primordials, its parser and its host module are the staged ones: building
- * them takes esbuild. Node's library is src's.
+ * primordials, its parser, its host module and the late link are the staged
+ * ones: building them takes esbuild. Node's library is src's.
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -15,7 +15,7 @@ import { VFS_WRITE_LEDGER_SOURCE } from '../../../packages/core/src/_shared/vfs-
 import { generateNodeLibModule, generateNodeLibRestModule, generateNodeDnsModule } from '../../../packages/worker/src/runtime/node-lib-module.ts';
 import { COMMONJS_CELL_RUNTIME_SOURCE } from '../../../packages/core/src/_shared/commonjs-cell.ts';
 import {
-  JS_INTERPRETER_ENTRY, JS_INTERPRETER_OPS_ENTRY, JS_INTERPRETER_PRIMORDIALS_ENTRY, JS_PARSER_ENTRY, RESIDENT_STORE_ENTRY,
+  ESM_LATE_ENTRY, JS_INTERPRETER_ENTRY, JS_INTERPRETER_OPS_ENTRY, JS_INTERPRETER_PRIMORDIALS_ENTRY, JS_PARSER_ENTRY, RESIDENT_STORE_ENTRY,
 } from '../../../packages/worker/src/node-shims-artifact.generated.ts';
 
 const PUBLIC = fileURLToPath(new URL('../../../packages/worker/public', import.meta.url));
@@ -34,5 +34,6 @@ export function nodeFacetSources(shims) {
     nodeLib: generateNodeLibModule(),
     nodeLibRest: generateNodeLibRestModule(),
     nodeDns: generateNodeDnsModule(),
+    esmLate: readFileSync(join(PUBLIC, ESM_LATE_ENTRY), 'utf8'),
   };
 }

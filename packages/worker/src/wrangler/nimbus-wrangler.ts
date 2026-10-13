@@ -593,12 +593,15 @@ export class NimbusWrangler {
           ? parseInt(String((this.loaderEnv as any).NIMBUS_INNER_LOADER_DEPTH_CURRENT), 10) || 0
           : 0;
         const nextDepth = currentDepth + 1;
+        // This build's own name for its keyed workers (NimbusLoaderRPC.get):
+        // another Worker, or this one's next build, never reuses one of them.
+        const namespace = crypto.randomUUID();
         for (const wl of this.config.worker_loaders) {
           const binding = wl.binding;
           if (!binding) continue;
           // A Worker it loads goes out through the Worker's own network (NimbusLoaderRPC).
           claim('worker_loaders', binding, ctxExports.NimbusLoaderRPC({
-            props: { depth: nextDepth, ...(this.network.egress === undefined ? {} : { egress: this.network.egress, networkId: this.network.id }) },
+            props: { depth: nextDepth, namespace: `${namespace}:${binding}`, ...(this.network.egress === undefined ? {} : { egress: this.network.egress, networkId: this.network.id }) },
           }));
         }
       }

@@ -119,7 +119,6 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         report?: boolean;
         keepVanishedAncestors?: boolean;
     }): void | VfsRemoval;
-    private removeStored;
     copyFile(from: RuntimeFsPath, to: RuntimeFsPath): void;
     copyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: {
         preserve?: boolean;

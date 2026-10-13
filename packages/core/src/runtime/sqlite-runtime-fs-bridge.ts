@@ -613,10 +613,11 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       try {
         if (!options.recursive) { this.unlink(path); return; }
         const located = this.locateMutation(path, false, options.report ? 'rm' : 'remove');
-        if (!options.report && !located.mount) { this.vfs.removeRecursive(located.path); return; }
-        const report = located.mount ? located.mount.removeRecursive(located.path, { keepVanishedAncestors: options.keepVanishedAncestors })
-          : this.namespace !== undefined ? this.namespace.sync.removeRecursive('/' + located.path, { keepVanishedAncestors: options.keepVanishedAncestors })
-            : this.removeStored(located.path, path);
+        const policy = { keepVanishedAncestors: options.keepVanishedAncestors };
+        // A tree in the store, its report not asked for, goes without the namespace's routing.
+        const report = located.mount ? located.mount.removeRecursive(located.path, policy)
+          : options.report && this.namespace !== undefined ? this.namespace.sync.removeRecursive('/' + located.path, policy)
+            : this.vfs.removeRecursive('/' + located.path, policy);
         if (options.report) return report;
         const failed = report.failures[0];
         if (failed) throw failed.error;
@@ -624,11 +625,6 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         if (!(options.force && hasErrorCode(error, 'ENOENT'))) throw error;
       }
     });
-  }
-
-  private removeStored(key: string, path: RuntimeFsPath): VfsRemoval {
-    this.vfs.removeRecursive(key);
-    return { removed: [typeof path === 'string' ? path : path.path], kept: [], failures: [] };
   }
 
   copyFile(from: RuntimeFsPath, to: RuntimeFsPath): void {

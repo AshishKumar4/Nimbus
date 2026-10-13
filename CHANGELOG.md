@@ -21,6 +21,63 @@ published independently in the `@nimbus-sh` npm scope.
 - Fixed: a program's end no longer waits on the session to answer the
   release of its read lease and of the subtrees it held; only its last
   writes are waited for.
+- Fixed (security): the session's owner surfaces acted as the kernel. The
+  browser editor's saves, reads and listings, the agent's `read_file`,
+  `write_file` and `list_files`, and `POST /api/write-file` and
+  `/api/mkdir` read and wrote as `CRED_KERNEL`. So they could replace a
+  kernel-owned file the session's user cannot change, such as one an
+  embedder provisioned in a sticky directory, and read another user's
+  private files. They now act as the session's user, and are refused what
+  that user's own shell is refused. These rules, like protected files,
+  guard against accidents and against the session's own tools: the
+  session's user has passwordless root through `sudo`, so they do not stand
+  against a program in the session that uses it (documented in the SDK
+  guide, "Users and Permissions").
+- Breaking: `files.delete` with no credential now acts as the session's
+  user, like every other file method, instead of the kernel. An embedder
+  that deletes past the user's permissions asks for it by name:
+  `sandbox.files.as(CRED_KERNEL).delete(path)`. `CRED_KERNEL`,
+  `CRED_SESSION_USER` and the `VfsCred` type are exported from
+  `@nimbus-sh/sdk`. Over the remote endpoint a deletion already acted as
+  the session's user.
+- Security: a sticky directory (mode 1777, such as `/tmp`) protects its
+  entries from every removal. Removing an ancestor (`rm -r`,
+  `fs.rmSync(..., { recursive: true })`) or deleting through a batch could
+  remove another user's file in a sticky directory below it; only the top
+  operand was checked. Changed: `rm -r` of a tree in the session's own store
+  now does what it does on a mounted directory and on Linux: an entry it may
+  not remove stays, with the directories holding it, and everything else
+  goes; it refused the whole tree before removing anything.
+- Fixed: `nimbus wrangler dev`'s Worker Loader binding (`worker_loaders`)
+  cached a Worker loaded with `LOADER.get(id, …)` under its id alone, for
+  the whole isolate: two Workers in co-located sessions that used the same
+  id shared one, and the second ran the first's code. A keyed Worker is now
+  its loader's own: each build's binding has its own, so a rebuild loads
+  its keyed Workers afresh.
+- Fixed: a module a Node program writes and then imports links as Node's
+  does before any of its graph runs. An import of a name its module does
+  not export is Node's SyntaxError, with no module body run first; before,
+  a sibling's body ran, or the name was just undefined.
+- Fixed: such a module imports a CommonJS module as Node does: `default` is
+  `module.exports` even when it sets `__esModule`, its other names are the
+  ones Node's lexer finds, and their values are taken once the module has
+  run. `export *` of two different bindings of one name exports neither,
+  and importing that name is Node's SyntaxError.
+- Fixed: import attributes are checked as Node checks them on every
+  import: JSON needs `with { type: 'json' }`, JavaScript and builtins refuse
+  it, and an unknown type is refused. A static import's unknown attribute
+  key is ignored, as Node ignores it; it was refused.
+
+## 2026-10-13: platform 0.9.0, core 0.19.0, fabric 0.14.0, worker 0.17.0, config 0.3.1, loom 0.3.0, sdk 0.14.0, react 0.3.2, cli 0.2.6, create-nimbus-app 0.2.3
+
+- Fixed: in a WASI program (an uploaded program, CPython), a socket read that
+  followed a poll which gave up on the socket could lose a chunk that arrived
+  just before the socket closed. A read or an accept that the 10 s park
+  deadline answered with EAGAIN wrote into the guest's buffer, or adopted a
+  connection, when its input arrived later; the input now waits for the next
+  call. A threaded program reading a pipe its other thread writes no longer
+  waits 8 s for EINTR. An open after `fd_renumber` or `dup2` no longer
+  replaces the descriptor moved there.
 - Fixed: walked recursive removal attempts unreadable entries, continues past
   failures, and reports each entry that remains. The shell reports vanished
   children unless `rm -f` was requested.

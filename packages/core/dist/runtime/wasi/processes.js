@@ -34,7 +34,7 @@
 import { refusalErrno as filesystemErrno } from './filesystem.js';
 import { PIPE_CAPACITY, decideWrite } from '../bash/pipe-rules.js';
 /** WASI errno values these imports answer with. */
-const E = { SUCCESS: 0, AGAIN: 6, BADF: 8, CHILD: 12, INTR: 27, INVAL: 28, IO: 29, NOSYS: 52, NOTSUP: 58, PIPE: 64, SRCH: 71 };
+const E = { SUCCESS: 0, AGAIN: 6, BADF: 8, CHILD: 12, INTR: 27, INVAL: 28, IO: 29, NOSYS: 52, PIPE: 64, SRCH: 71 };
 const FDFLAGS_NONBLOCK = 4;
 /** Signal numbers as wasi-libc's emulated signals number them, and their names. */
 const SIGNALS = { 1: 'SIGHUP', 2: 'SIGINT', 3: 'SIGQUIT', 9: 'SIGKILL', 13: 'SIGPIPE', 15: 'SIGTERM' };
@@ -110,17 +110,14 @@ export function processHost(opts) {
     };
     /**
      * An import that has to wait for its answer, in a guest that cannot be
-     * suspended (a promise returned where an i32 belongs would read as 0,
-     * success): refused by name before it does anything, as an errno through
-     * the ABI, so the guest's own error path runs and cleans up (git removes
-     * its index.lock); never a trap through its C frames. Its name, and why,
-     * go to the guest's stderr.
+     * suspended: refused by name before it does anything. A promise returned
+     * where an i32 belongs would read as 0, success.
      */
-    const encoder = new TextEncoder();
-    const refused = (name) => {
-        void opts.output(2, encoder.encode(`nimbus_proc.${name} has to wait for its answer, and this guest cannot be suspended: `
-            + 'a WASI guest\'s child processes need JSPI (WebAssembly.Suspending and WebAssembly.promising)\n'));
-        return E.NOTSUP;
+    const mustWait = (name) => {
+        if (opts.parks)
+            return;
+        throw new Error(`nimbus_proc.${name} has to wait for its answer, and this guest cannot be suspended: `
+            + 'a WASI guest\'s child processes need JSPI (WebAssembly.Suspending and WebAssembly.promising)');
     };
     const notify = (child) => {
         for (const waiter of child.waiters.splice(0))
@@ -164,7 +161,7 @@ export function processHost(opts) {
         return pipe.end().catch(() => { });
     };
     /** The answer once `dropped` (a drop's wait, if it has one) is done. */
-    const after = (dropped) => (dropped ? dropped.then(() => E.SUCCESS) : E.SUCCESS);
+    const after = (dropped) => (dropped ? opts.park(dropped.then(() => E.SUCCESS)) : E.SUCCESS);
     /** The strings in a NUL-separated buffer the guest passed. */
     const strings = (ptr, len) => {
         if (len === 0)
@@ -329,8 +326,7 @@ export function processHost(opts) {
             const argv = strings(argvPtr, argvLen);
             if (argv.length === 0)
                 return E.INVAL;
-            if (!opts.parks)
-                return refused('spawn');
+            mustWait('spawn');
             const env = {};
             for (const entry of strings(envPtr, envLen)) {
                 const at = entry.indexOf('=');
@@ -361,7 +357,7 @@ export function processHost(opts) {
             for (const target of [stdout, stderr])
                 if (target !== null && typeof target !== 'number')
                     target.pipe.writers++;
-            return (async () => {
+            return opts.park((async () => {
                 // The child sees what this process wrote before it started.
                 await opts.release();
                 let childPid;
@@ -454,7 +450,7 @@ export function processHost(opts) {
                 })();
                 view().setInt32(pidPtr, childPid, true);
                 return E.SUCCESS;
-            })();
+            })());
         },
         start(pid) {
             const child = children.get(pid);
@@ -471,9 +467,8 @@ export function processHost(opts) {
             const now = answer();
             if (now !== null)
                 return now;
-            if (!opts.parks)
-                return refused('start');
-            return parkedWait((wake) => child.waiters.push(wake), answer).ready.then((started) => started ?? E.INTR);
+            mustWait('start');
+            return opts.park(parkedWait((wake) => child.waiters.push(wake), answer).ready.then((started) => started ?? E.INTR));
         },
         wait(pid, options, statusPtr, waitedPtr) {
             const candidates = pid === -1 || pid === 0 ? [...children.values()] : [children.get(pid)].filter((c) => c !== undefined);
@@ -502,10 +497,9 @@ export function processHost(opts) {
                 view().setInt32(waitedPtr, 0, true);
                 return E.SUCCESS;
             }
-            if (!opts.parks)
-                return refused('wait');
-            return parkedWait((wake) => { for (const child of candidates)
-                child.waiters.push(wake); }, reap).ready.then((reaped) => reaped ?? E.INTR);
+            mustWait('wait');
+            return opts.park(parkedWait((wake) => { for (const child of candidates)
+                child.waiters.push(wake); }, reap).ready.then((reaped) => reaped ?? E.INTR));
         },
         kill(pid, signal) {
             const sup = supervisor();
@@ -518,9 +512,8 @@ export function processHost(opts) {
             const name = SIGNALS[signal];
             if (!name)
                 return E.INVAL;
-            if (!opts.parks)
-                return refused('kill');
-            return Promise.resolve(sup.cpKill(pid, name)).then((delivered) => (delivered ? E.SUCCESS : E.SRCH));
+            mustWait('kill');
+            return opts.park(Promise.resolve(sup.cpKill(pid, name)).then((delivered) => (delivered ? E.SUCCESS : E.SRCH)));
         },
     };
     const read = (fd, iovs, iovsLen, nread) => {
@@ -549,7 +542,7 @@ export function processHost(opts) {
             try {
                 const packet = opts.input(room);
                 return packet && typeof packet.then === 'function'
-                    ? Promise.resolve(packet).then(finish, () => E.IO) : finish(packet);
+                    ? opts.park(Promise.resolve(packet).then(finish, () => E.IO)) : finish(packet);
             }
             catch {
                 return E.IO;
@@ -584,7 +577,7 @@ export function processHost(opts) {
             return now;
         if (((entry.fdflags ?? 0) & FDFLAGS_NONBLOCK) !== 0)
             return E.AGAIN;
-        return parkedWait((wake) => pipe.waiters.push(wake), answer).ready.then((read) => read ?? E.INTR);
+        return opts.park(parkedWait((wake) => pipe.waiters.push(wake), answer).ready.then((read) => read ?? E.INTR));
     };
     const write = (fd, iovs, iovsLen, nwritten) => {
         const entry = pipeEntry(fd);
@@ -601,12 +594,12 @@ export function processHost(opts) {
         if (pipe.readers === 0)
             return E.PIPE;
         if (pipe.forward) {
-            return pipe.forward(bytes).then((ok) => {
+            return opts.park(pipe.forward(bytes).then((ok) => {
                 if (!ok)
                     return E.PIPE;
                 view().setUint32(nwritten, bytes.byteLength, true);
                 return E.SUCCESS;
-            });
+            }));
         }
         const admit = () => {
             const decision = decideWrite({ queued: pipe.buffered, readers: pipe.readers, writers: pipe.writers }, bytes.byteLength, 'jspi', PIPE_CAPACITY, PIPE_CAPACITY);
@@ -626,7 +619,7 @@ export function processHost(opts) {
             return now;
         if (((entry.fdflags ?? 0) & FDFLAGS_NONBLOCK) !== 0)
             return E.AGAIN;
-        return parkedWait((wake) => pipe.waiters.push(wake), admit).ready.then((written) => written ?? E.INTR);
+        return opts.park(parkedWait((wake) => pipe.waiters.push(wake), admit).ready.then((written) => written ?? E.INTR));
     };
     const close = (fd) => {
         const entry = pipeEntry(fd);

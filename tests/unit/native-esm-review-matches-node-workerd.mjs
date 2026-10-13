@@ -67,6 +67,30 @@ const FILES = {
   // regardless of which loader first evaluated the module.
   'namespace-require-first/dep.mjs': 'export const x = 1;\n',
   'namespace-require-first/main.cjs': "const r = require('./dep.mjs');\nimport('./dep.mjs').then((i) => console.log(r === i));\n",
+  // A module require() evaluated is the one a later import() gets, its
+  // graph not resolved again: a dependency deleted since is not looked for.
+  'adopted-then-unlinked/child.mjs': "export const c = 'child';\n",
+  'adopted-then-unlinked/root.mjs': "import { c } from './child.mjs';\nexport const r = c;\n",
+  'adopted-then-unlinked/main.cjs': [
+    "const { unlinkSync } = require('node:fs');",
+    "const r = require('./root.mjs');",
+    "unlinkSync(require('node:path').join(__dirname, 'child.mjs'));",
+    "import('./root.mjs').then((i) => console.log('same', r === i, i.r), (e) => console.log('rejected', e.code, e.message));",
+  ].join('\n') + '\n',
+  // A module the interpreter evaluates through a late graph, still in its
+  // top-level await, is the one a later import() waits for: its namespace
+  // once its evaluation completes, not before.
+  'adopted-pending-tla/seed.mjs': 'export const seed = 1;\n',
+  'adopted-pending-tla/slow.mjs': "import { seed } from './seed.mjs';\nexport let done = false;\nawait new Promise((resolve) => setTimeout(resolve, 300));\ndone = seed === 1;\n",
+  'adopted-pending-tla/main.cjs': [
+    "const { writeFileSync } = require('node:fs');",
+    "require('./seed.mjs');",
+    "writeFileSync(require('node:path').join(__dirname, 'bridge.mjs'), \"import './slow.mjs';\\n\");",
+    "const bridge = import('./bridge.mjs');",
+    '// Once the bridge has begun slow.mjs, which is in its top-level await.',
+    "setTimeout(() => import('./slow.mjs').then((slow) => console.log('slow done', slow.done), (e) => console.log('rejected', e.code, e.message)), 30);",
+    'bridge.catch((e) => console.log(\'bridge rejected\', e.message));',
+  ].join('\n') + '\n',
   'namespace-import-first/dep.mjs': 'export const x = 1;\n',
   'namespace-import-first/main.mjs': "import { createRequire } from 'node:module';\nconst i = await import('./dep.mjs');\nconst r = createRequire(import.meta.url)('./dep.mjs');\nconsole.log(r === i);\n",
   // Finishing an asynchronous dependency does not make it (or its
@@ -221,6 +245,47 @@ const FILES = {
     "await import('./generated.mjs');",
     "console.log('done');",
   ].join('\n') + '\n',
+  // A late graph whose staged module imports a name its target does not
+  // export links no body either: Node's SyntaxError, before a.mjs runs.
+  'late-link-export/a.mjs': "console.log('A');\n",
+  'late-link-export/bad.mjs': "import { absent } from './empty.mjs';\nconsole.log('bad', absent);\n",
+  'late-link-export/empty.mjs': 'export {};\n',
+  'late-link-export/main.mjs': [
+    "import { writeFileSync } from 'node:fs';",
+    "if (globalThis.never) { await import('./a.mjs'); await import('./bad.mjs'); }",
+    "writeFileSync(new URL('./generated.mjs', import.meta.url), \"import './a.mjs';\\nimport './bad.mjs';\\n\");",
+    "try { await import('./generated.mjs'); } catch (e) { console.log('rejected', e.name, e.message); }",
+    // The runtime-written module's own import of a missing name: no body runs before its SyntaxError.
+    "writeFileSync(new URL('./generated-own.mjs', import.meta.url), \"import './a.mjs';\\nimport { absent } from './empty.mjs';\\n\");",
+    "try { await import('./generated-own.mjs'); } catch (e) { console.log('rejected', e.name, e.message); }",
+  ].join('\n') + '\n',
+  // A late module's named imports link by the names their targets export:
+  // through `export *` (never its default), from a CommonJS module by its
+  // names (one a staged module imports, so the launch made its facade), from
+  // another late module; a namespace needs none. A late module require()d
+  // links by them too.
+  'late-link-names/named.mjs': "export const x = 1;\nexport default 2;\n",
+  'late-link-names/star.mjs': "export * from './named.mjs';\n",
+  'late-link-names/plain.mjs': "export const y = 1;\n",
+  'late-link-names/cjs.cjs': "exports.k = 1;\n",
+  'late-link-names/uses-cjs.mjs': "export { k } from './cjs.cjs';\n",
+  'late-link-names/main.mjs': [
+    "import { writeFileSync } from 'node:fs';",
+    "import { createRequire } from 'node:module';",
+    "if (globalThis.never) { await import('./named.mjs'); await import('./star.mjs'); await import('./plain.mjs'); await import('./uses-cjs.mjs'); }",
+    'const late = async (name, text) => {',
+    '  writeFileSync(new URL(name, import.meta.url), text);',
+    "  try { await import(name); } catch (e) { console.log(name, 'rejected', e.name, e.message); }",
+    '};',
+    "await late('./ok.mjs', \"import { x } from './star.mjs';\\nimport d from './named.mjs';\\nimport * as ns from './plain.mjs';\\nimport { k } from './cjs.cjs';\\nconsole.log('ok', x, d, Object.keys(ns), k);\\n\");",
+    "await late('./no-default.mjs', \"import d from './plain.mjs';\\nconsole.log('no-default ran', d);\\n\");",
+    "await late('./star-default.mjs', \"import s from './star.mjs';\\nconsole.log('star-default ran', s);\\n\");",
+    "await late('./cjs-name.mjs', \"import { nope } from './cjs.cjs';\\nconsole.log('cjs-name ran', nope);\\n\");",
+    "writeFileSync(new URL('./dep.mjs', import.meta.url), \"export const here = 1;\\n\");",
+    "await late('./late-dep.mjs', \"import { absent } from './dep.mjs';\\nconsole.log('late-dep ran', absent);\\n\");",
+    "writeFileSync(new URL('./required.mjs', import.meta.url), \"import { absent } from './plain.mjs';\\nconsole.log('required ran', absent);\\n\");",
+    "try { createRequire(import.meta.url)('./required.mjs'); } catch (e) { console.log('require rejected', e.name, e.message); }",
+  ].join('\n') + '\n',
   // A late graph with a module that does not parse links no body: the
   // import() rejects with its SyntaxError.
   'late-link-syntax/a.mjs': "console.log('A');\n",
@@ -278,6 +343,8 @@ const COMMANDS = [
   'node late-stop/main.mjs',
   'node namespace-require-first/main.cjs',
   'node namespace-import-first/main.mjs',
+  'node adopted-then-unlinked/main.cjs',
+  'node adopted-pending-tla/main.cjs',
   'node completed-tla/main.mjs',
   'node function-origin/sub/entry.mjs',
   'node static-query/main.mjs',
@@ -294,6 +361,8 @@ const COMMANDS = [
   'node late-link-staged/main.mjs',
   'node late-link-soft/main.mjs',
   'node late-link-syntax/main.mjs',
+  'node late-link-export/main.mjs',
+  'node late-link-names/main.mjs',
   'node adopted-tla/main.mjs',
   'node json-query-esmodule/main.mjs',
   'node prepopulated-cache/main.cjs',

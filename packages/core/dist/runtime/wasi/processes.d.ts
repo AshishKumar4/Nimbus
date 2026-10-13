@@ -31,7 +31,7 @@
  * Every import answers 0 or a positive WASI errno; the C side
  * (git-wasi-compat.c) turns that into errno.
  */
-import type { FdEntry, SyscallResult, WasiSupervisorStub, WasiInputPacket } from './types.js';
+import type { Errno, FdEntry, SyscallResult, WasiSupervisorStub, WasiInputPacket } from './types.js';
 import type { Awaitable } from '../os-contracts.js';
 /**
  * The longest a guest waits on a child in one call. A wasm stack suspended
@@ -104,6 +104,12 @@ export interface ProcessHostOptions {
     } | null;
     /** Whether the guest can be suspended in an import (JSPI), so that an import may answer by promise. */
     parks: boolean;
+    /**
+     * Every answer by promise goes through here: a threaded guest's run token
+     * is handed back while it waits, so the peer that would end the wait runs.
+     * A poll's readiness is not: the poll that awaits it hands the token back.
+     */
+    park(wait: Promise<Errno>): Promise<Errno>;
 }
 /** What a poll of a pipe end finds: bytes waiting (or room), whether the other end is gone; null once it gave up. */
 export interface PipeReadiness {

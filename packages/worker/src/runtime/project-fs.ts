@@ -78,10 +78,11 @@ export function projectFs(view: ProcessView): ProjectFs {
     unlink: (key) => view.unlink(at(key)),
     rename: (from, to) => view.rename(at(from), at(to)),
     rmdir: (key) => view.rmdir(at(key)),
-    // As the engine's: the whole tree goes, or the call fails.
-    removeRecursive: async (key) => {
-      await view.remove(at(key), { recursive: true });
-      return 1;
+    // As the engine's report, its first failure thrown: what may go goes, and a refusal is the call's.
+    removeRecursive: async (key, options) => {
+      const report = await view.removeRecursive(at(key), options);
+      if (report.failures.length > 0) throw report.failures[0].error;
+      return report;
     },
     symlink: (target, key) => view.symlink(target, at(key)),
     readlink: (key) => view.readlink(at(key)),

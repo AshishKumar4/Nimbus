@@ -78,6 +78,8 @@ export interface SocketFdEntry extends FdEntryCommon {
     eof: boolean;
     closed: boolean;
     halfClosedWr: boolean;
+    /** The socket's one pending read, which every reader of it awaits (__wasiSocketFill). */
+    filling?: Promise<Errno | null>;
 }
 export interface ListenerFdEntry extends FdEntryCommon {
     kind: 'listener';

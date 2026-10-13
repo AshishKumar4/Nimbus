@@ -50,6 +50,14 @@ export function esmRowName(row: EsmModuleRow, id: number): string {
   return row[0] === 'module' ? commonJsCellModuleName(row[1]) : `${ESM_FACADE_DIR}${id}.js`;
 }
 
+/**
+ * A row's export names, as the late link reads them (ESM_BINDINGS_MODULE,
+ * core runtime/esm-late-link.ts): a facade's or a JSON module's, which
+ * staging already knows; null for a staged module, whose names the late
+ * link reads from its source if it ever needs them.
+ */
+export type EsmRowBindings = readonly string[] | null;
+
 /** A specifier Node's loader refuses: the error its import fails with. */
 export interface EsmMissing {
   readonly name: string;
@@ -69,6 +77,8 @@ export interface EsmStage {
   readonly table: EsmModuleRow[];
   /** What each refused specifier fails with, by the number of the missing module it names (ESM_MISSING_DIR). */
   readonly missing: EsmMissing[];
+  /** Each row's export names, by id (EsmRowBindings). */
+  readonly bindings: EsmRowBindings[];
   /** How long staging took, in milliseconds: the launch's debug line. */
   readonly ms: number;
 }
@@ -165,8 +175,9 @@ export async function stageEsModules(
   const ids = new Map<string, number>();
   for (let id = 0; id < table.length; id++) ids.set(`module:${table[id]![1]}`, id);
   const names = new Map<string, Set<string>>();
-  /** The row of a facade or JSON module, added the first time it is named. */
-  const member = (kind: 'commonjs' | 'builtin' | 'json', key: string, source: (id: number, name: string) => string): number => {
+  const bindings: EsmRowBindings[] = [];
+  /** The row of a facade or JSON module, which exports `exported` beside `default`, added the first time it is named. */
+  const member = (kind: 'commonjs' | 'builtin' | 'json', key: string, exported: readonly string[], source: (id: number, name: string) => string): number => {
     let id = ids.get(`${kind}:${key}`);
     if (id === undefined) {
       id = table.length;
@@ -174,6 +185,7 @@ export async function stageEsModules(
       const name = esmRowName(row, id);
       table.push(row);
       members[name] = source(id, name);
+      bindings[id] = ['default', ...exported];
       ids.set(`${kind}:${key}`, id);
     }
     return id;
@@ -273,11 +285,9 @@ export async function stageEsModules(
     resolver.assertLoadable(resolution);
     if (resolution.format === 'builtin') {
       const builtin = (resolution.builtin ?? resolution.url).replace(/^node:/, '');
-      if (!FACET_PROVIDED_PACKAGES.includes(builtin)) {
-        return member('builtin', builtin, (id, name) => builtinFacadeModule(name, id, NODE_BUILTIN_EXPORTS[builtin] ?? []));
-      }
       // A package the process provides loads as the process's own module, with its names.
-      return member('builtin', builtin, (id, name) => builtinFacadeModule(name, id, PROVIDED_PACKAGE_EXPORTS[builtin] ?? []));
+      const exported = (FACET_PROVIDED_PACKAGES.includes(builtin) ? PROVIDED_PACKAGE_EXPORTS[builtin] : NODE_BUILTIN_EXPORTS[builtin]) ?? [];
+      return member('builtin', builtin, exported, (id, name) => builtinFacadeModule(name, id, exported));
     }
     if (resolution.path === undefined) throw new Error(`Nimbus: ${resolution.url} has no file to stage`);
     // A query's or fragment's module is an instance of its own (Node keys
@@ -298,12 +308,12 @@ export async function stageEsModules(
       if (text === null) throw notStaged(resolution.path, resolution.url);
       // Node's JSON translator: the object require() gives for the same
       // file, one in require.cache whichever loads it first.
-      return member('json', key, (id, name) => jsonFacadeModule(name, id));
+      return member('json', key, [], (id, name) => jsonFacadeModule(name, id));
     }
     // CommonJS by Node's format for it, loaded by require().
     if (!isCode(key)) throw notStaged(resolution.path, resolution.url);
     const exported = await exportNames(resolution.path);
-    return member('commonjs', key, (id, name) => commonJsFacadeModule(name, id, exported));
+    return member('commonjs', key, exported, (id, name) => commonJsFacadeModule(name, id, exported));
   };
 
   // A `.js` that is a module by its syntax alone, outside node_modules,
@@ -384,7 +394,8 @@ export async function stageEsModules(
     }));
     id++;
   }
-  return { modules, members, table, missing, ms: Date.now() - started };
+  for (let row = 0; row < table.length; row++) bindings[row] ??= null;
+  return { modules, members, table, missing, bindings, ms: Date.now() - started };
 }
 
 /**

@@ -29,7 +29,7 @@
 import { VfsEventEmitter, type VfsEvent } from './events.js';
 import { type BatchWritePayload, type VfsInodeKind } from '@nimbus-sh/platform/w7-frame.js';
 export { RecallRequired, recallOf, withRecall } from './recall.js';
-import { type Principal, type VfsDirentType, type VfsWriteEvent } from './vfs.js';
+import { type Principal, type VfsDirentType, type VfsRemoval, type VfsWriteEvent } from './vfs.js';
 import { type WaveScope, type WriteBatchStreamResult, type WriteStreamOptions } from '../runtime/wave-contracts.js';
 import { StorageLedger, type StorageLedgerView } from '../runtime/storage-ledger.js';
 import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListEntry, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
@@ -255,10 +255,12 @@ export interface CredentialedVfs {
     unlink(path: string): void;
     rmdir(path: string): void;
     /**
-     * Remove a path and everything beneath it, in bounded transactions.
-     * Returns the number of entries removed.
+     * rm -r of a path: what went, what stayed and why (VfsRemoval), as the
+     * walk (removal-walk.ts) decides it, in bounded transactions.
      */
-    removeRecursive(path: string): number;
+    removeRecursive(path: string, options?: {
+        keepVanishedAncestors?: boolean;
+    }): VfsRemoval;
     rename(oldPath: string, newPath: string): void;
     copyFile(src: string, dest: string): void;
     /**
@@ -1572,6 +1574,14 @@ export declare class SqliteVFS {
     private readdir;
     private unlink;
     private rmdir;
+    /** What unlink(2) of `path` by `cred` removes, once it may: it refuses as unlink does. */
+    private unlinked;
+    /**
+     * What rmdir(2) of `path` by `cred` removes, once it may: it refuses as
+     * rmdir does. `going`: entries already decided to go with it, which do not
+     * keep it from being empty.
+     */
+    private rmdired;
     /**
      * Remove a path and everything beneath it, in bounded transactions.
      *
@@ -1588,8 +1598,28 @@ export declare class SqliteVFS {
      * before the directory holding it, every committed prefix is a consistent
      * smaller tree — exactly the state an interrupted per-entry walk left
      * behind. The subtree is read a page at a time, never held whole.
+     *
+     * That is the walk's own result whenever nothing in the tree can be
+     * refused: everything goes. Where something may be (mayRefuseRemoval), the
+     * tree is walked entry by entry (removal-walk.ts), as rm -r walks it: what
+     * may go goes, and the report says what stayed and why.
      */
     private removeRecursive;
+    /**
+     * Whether rm -r of `path` may have something refused: the operand's own
+     * removal, or, in a directory of the tree, its reading or its entries'
+     * removal (a directory the caller may not read, search and write, or a
+     * sticky one the caller does not own). Root is refused nothing here.
+     */
+    private mayRefuseRemoval;
+    /**
+     * The walk's steps (removal-walk.ts) as `cred`'s own calls, each refusal
+     * named as SqliteFiles names it. A removal is decided at once, as unlink
+     * and rmdir decide it, and committed with the ones decided before it, a
+     * bounded group at a time (flush), as the plain removal commits. A group
+     * that fails to commit ends the walk with its error (failedCommit).
+     */
+    private removalSteps;
     /**
      * Every inode strictly under `root`, a bounded page at a time: the live
      * tree, or the tree as of generation `at` (pageAt, live and history
@@ -2378,6 +2408,15 @@ export declare class SqliteVFS {
     private assertTransactionFits;
     private _writeBatchOnce;
     /**
+     * Each entry a batch deletes below the roots it names (`below`), as
+     * unlink(2) and rmdir(2) would judge it: the directory holding it (deleted
+     * with it) written and searched by `cred`, and, when that directory is
+     * sticky, it or the entry `cred`'s. A batch deleting a tree deletes every
+     * entry of it, so each is judged; the roots are judged where they are
+     * named (authorizeBatchNow).
+     */
+    private authorizeDeletions;
+    /**
      * Every inode at or under each root, deepest first.
      *
      * The path index answers "what is under this prefix?" in the size of the
@@ -2389,6 +2428,8 @@ export declare class SqliteVFS {
      *
      * The subtree is held whole, so only callers that commit it whole use this:
      * a batch's deletions and a rename. A removal pages (subtree, descending).
+     * `below`, given, also gets the ones met under a root before (or without)
+     * being met as a root themselves.
      */
     private collectSubtreeInodes;
     /**
