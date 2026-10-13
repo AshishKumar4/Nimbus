@@ -132,24 +132,26 @@ function isHfsDot(path: string, i: number, word: string): boolean {
 
 /**
  * verify_path: whether git lets a repo-relative `path`, its entry's `mode`,
- * into its index. Only a component's start, a '/' and (protecting NTFS) a
- * '\\' are looked at, so the separators are found by indexOf.
+ * into its index: each component's start checked, then its characters
+ * passed over to the next '/', a '\\' after its first character (protecting
+ * NTFS) checked as a separator.
  */
 export function verifyPath(path: string, mode: number, protect: PathProtection): boolean {
   const link = (mode & 0o170000) === 0o120000;
-  // NTFS reads a backslash as a separator: .git after one is .git (not after one a component starts with, as git reads it).
-  if (protect.ntfs) {
-    for (let b = path.indexOf('\\'); b >= 0; b = path.indexOf('\\', b + 1)) {
-      if (b > 0 && at(path, b - 1) !== SLASH && (isNtfsDotgit(path, b + 1) || (link && isNtfsDotgitmodules(path, b + 1)))) return false;
-    }
-  }
+  const length = path.length;
   for (let i = 0; ;) {
-    if (protect.hfs && (isHfsDot(path, i, 'git') || (link && isHfsDot(path, i, 'gitmodules')))) return false;
-    if (protect.ntfs && (isNtfsDotgit(path, i) || (link && isNtfsDotgitmodules(path, i)))) return false;
-    const first = at(path, i);
+    const first = i < length ? path.charCodeAt(i) : 0;
     if (first === 0 || first === SLASH || (first === DOT && !dotfileAllowed(path, i + 1, link))) return false;
-    const slash = path.indexOf('/', i + 1);
-    if (slash < 0) return true;
-    i = slash + 1;
+    if (protect.hfs && (isHfsDot(path, i, 'git') || (link && isHfsDot(path, i, 'gitmodules')))) return false;
+    // .git and git~1 start with '.', 'g' or 'G'.
+    if (protect.ntfs && (((first === DOT || first === 0x67 || first === 0x47) && isNtfsDotgit(path, i)) || (link && isNtfsDotgitmodules(path, i)))) return false;
+    let j = i + 1;
+    for (; j < length; j++) {
+      const c = path.charCodeAt(j);
+      if (c === SLASH) break;
+      if (c === BACKSLASH && protect.ntfs && (isNtfsDotgit(path, j + 1) || (link && isNtfsDotgitmodules(path, j + 1)))) return false;
+    }
+    if (j === length) return true;
+    i = j + 1;
   }
 }
