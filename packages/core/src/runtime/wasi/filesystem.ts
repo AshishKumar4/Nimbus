@@ -201,20 +201,22 @@ export function keepCopiesBefore(fs: RuntimeFsBridge | RuntimeSynchronousFs, pat
     try { st = fs.stat(name, { followSymlinks: false }); } catch { return; }
     const keepAt = (found: RuntimeVfsStat | null): Awaitable<void> => {
       if (found === null) return;
-      // One hold per file, every copy of it sharing it.
-      const files = new Map<string, { name: RuntimeFsPath; copies: ResidentFd[] }>();
+      // One hold per file, every copy of it sharing it; a copy closed while the stat was asked is gone.
+      const files = new Map<string, { name: RuntimeFsPath; follow: boolean; copies: ResidentFd[] }>();
       for (const e of unkept) {
-        if (e.kept !== undefined || !('name' in e.hold)) continue;
+        if (e.opens === 0 || e.kept !== undefined || !('name' in e.hold)) continue;
         const file = found.type === 'directory' || (found.dev === e.stat.dev && found.ino === e.stat.ino);
         if (!file) continue;
         const key = `${e.stat.dev}:${e.stat.ino}`;
         const group = files.get(key);
         if (group !== undefined) group.copies.push(e);
-        else files.set(key, { name: found.type === 'directory' ? e.hold.name : name, copies: [e] });
+        // Beneath a directory, by the name the copy was read at, followed as it was then; else the name taken away, which is the file itself.
+        else if (found.type === 'directory') files.set(key, { name: e.hold.name, follow: e.hold.follow, copies: [e] });
+        else files.set(key, { name, follow: false, copies: [e] });
       }
       const holding: Awaitable<unknown>[] = [];
-      for (const { name: at, copies } of files.values()) {
-        const kept: KeptFile = { held: holdFile(fs, at, copies[0].stat), copies: copies.length };
+      for (const { name: at, follow, copies } of files.values()) {
+        const kept: KeptFile = { held: holdFile(fs, at, follow, copies[0].stat), copies: copies.length };
         for (const e of copies) e.kept = kept;
         holding.push(kept.held);
       }
@@ -225,15 +227,15 @@ export function keepCopiesBefore(fs: RuntimeFsBridge | RuntimeSynchronousFs, pat
   return steps.some((step) => step instanceof Promise) ? Promise.all(steps).then(() => {}) : undefined;
 }
 
-/** An O_PATH open of `name`, kept when it is the file `stat` describes. */
-function holdFile(fs: RuntimeFsBridge | RuntimeSynchronousFs, name: RuntimeFsPath, stat: RuntimeVfsStat): Awaitable<{ readonly handle: number; readonly fs: RuntimeFsBridge | RuntimeSynchronousFs } | null> {
+/** An O_PATH open of `name` (`follow`: its last link followed), kept when it is the file `stat` describes. */
+function holdFile(fs: RuntimeFsBridge | RuntimeSynchronousFs, name: RuntimeFsPath, follow: boolean, stat: RuntimeVfsStat): Awaitable<{ readonly handle: number; readonly fs: RuntimeFsBridge | RuntimeSynchronousFs } | null> {
   const kept = (opened: RuntimeOpenedFile) => {
     if (opened.stat.dev === stat.dev && opened.stat.ino === stat.ino) return { handle: opened.id, fs };
     closeUnawaited(fs, opened.id);
     return null;
   };
   try {
-    const opened = fs.open(name, { path: true, followSymlinks: false });
+    const opened = fs.open(name, { path: true, followSymlinks: follow });
     return opened instanceof Promise ? opened.then(kept, () => null) : kept(opened);
   } catch { return null; }
 }
