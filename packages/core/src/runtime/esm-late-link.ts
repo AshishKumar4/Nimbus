@@ -43,10 +43,8 @@ export interface LateLinkHost {
   row(kind: 'module' | 'commonjs' | 'json' | 'builtin', key: string): number;
   /** A staged row's kind: 'module', or a facade's ('commonjs', 'json', 'builtin'). */
   rowKind(row: number): string;
-  /** A staged module row's bindings, or null where unknown. */
-  moduleFacts(row: number): ModuleRowFacts | null;
-  /** A facade row's export names, or null where unknown. */
-  rowNames(row: number): readonly string[] | null;
+  /** The launch's row bindings, as staging wrote them (worker facets/esm-stage.ts EsmRowBindings): JSON, by row. */
+  rowBindings(): string;
   /** A staged module row's static targets: a row, or -2 - i for the staging refused as missing(i). */
   rowTargets(row: number): readonly number[];
   /** Whether a staged row has run, or the interpreter took it over. */
@@ -111,6 +109,38 @@ interface LateGraph {
   readonly rows: number[];
 }
 
+/** A row's bindings: a module's, a facade's names, or null where unknown. */
+type RowBindings = ModuleRowFacts | readonly string[] | null;
+
+/** The launch's row bindings, read once. */
+let rowBindings: readonly RowBindings[] | undefined;
+
+function bindingsOf(host: LateLinkHost, row: number): RowBindings {
+  if (rowBindings === undefined) {
+    try {
+      const parsed: readonly RowBindings[] = JSON.parse(host.rowBindings());
+      rowBindings = parsed;
+    } catch {
+      rowBindings = [];
+    }
+  }
+  return rowBindings[row] ?? null;
+}
+
+const isModuleRow = (bindings: ModuleRowFacts | readonly string[]): bindings is ModuleRowFacts => Array.isArray(bindings[0]);
+
+/** A staged module row's bindings, or null where unknown. */
+function moduleFacts(host: LateLinkHost, row: number): ModuleRowFacts | null {
+  const bindings = bindingsOf(host, row);
+  return bindings !== null && isModuleRow(bindings) ? bindings : null;
+}
+
+/** A facade row's export names, or null where unknown. */
+function rowNames(host: LateLinkHost, row: number): readonly string[] | null {
+  const bindings = bindingsOf(host, row);
+  return bindings !== null && !isModuleRow(bindings) ? bindings : null;
+}
+
 /** Every late module a link has read, by URL: what an interpreted module's `export *` asks of (starConflicts). */
 const lateModules = new Map<string, LateNode>();
 
@@ -124,7 +154,7 @@ const commonJsNameCache = new Map<string, Set<string>>();
  */
 export function commonJsNames(host: LateLinkHost, key: string): readonly string[] {
   const facade = host.row('commonjs', key);
-  const staged = facade === -1 ? null : host.rowNames(facade);
+  const staged = facade === -1 ? null : rowNames(host, facade);
   if (staged !== null) return staged;
   return [...cjsModuleExportNames(`/${key}`, { source: (path) => host.source(path.replace(/^\/+/, ''), -1), resolve: host.cjsResolve }, commonJsNameCache)];
 }
@@ -298,7 +328,7 @@ function checkBindings(host: LateLinkHost, late: LateGraph, rootUrl: string): vo
 
 function edgesOf(host: LateLinkHost, late: LateGraph, target: LateTarget): readonly LateEdge[] {
   if (target.row === undefined) return late.modules.get(target.url)?.imports ?? [];
-  const facts = host.rowKind(target.row) === 'module' ? host.moduleFacts(target.row) : null;
+  const facts = host.rowKind(target.row) === 'module' ? moduleFacts(host, target.row) : null;
   if (facts === null) return [];
   return facts[2].map(([row, specifier, ...names]) => ({ target: { row }, specifier, names }));
 }
@@ -318,7 +348,7 @@ function factsOf(host: LateLinkHost, late: LateGraph, target: LateTarget) {
     const node = late.modules.get(target.url);
     return node === undefined || !node.known ? null : node;
   }
-  const facts = host.moduleFacts(target.row);
+  const facts = moduleFacts(host, target.row);
   if (facts === null) return null;
   return {
     exports: facts[0],
@@ -337,7 +367,7 @@ function resolveExport(host: LateLinkHost, late: LateGraph, target: LateTarget |
   if (target.names !== undefined) return target.names.includes(name) ? { module: `u${target.url}`, binding: name } : null;
   const module = target.row !== undefined ? `r${target.row}` : `u${target.url}`;
   if (target.row !== undefined && host.rowKind(target.row) !== 'module') {
-    const names = host.rowNames(target.row);
+    const names = rowNames(host, target.row);
     return names === null ? undefined : names.includes(name) ? { module, binding: name } : null;
   }
   // A circular import request: nothing more to find this way.
@@ -370,7 +400,7 @@ function resolveExport(host: LateLinkHost, late: LateGraph, target: LateTarget |
 function exportedNames(host: LateLinkHost, late: LateGraph, target: LateTarget | null, seen: Set<string>): readonly string[] | null {
   if (target === null) return null;
   if (target.names !== undefined) return target.names;
-  if (target.row !== undefined && host.rowKind(target.row) !== 'module') return host.rowNames(target.row);
+  if (target.row !== undefined && host.rowKind(target.row) !== 'module') return rowNames(host, target.row);
   const module = target.row !== undefined ? `r${target.row}` : `u${target.url}`;
   if (seen.has(module)) return [];
   seen.add(module);
