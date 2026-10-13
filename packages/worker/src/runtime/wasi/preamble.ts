@@ -804,7 +804,7 @@ function __wasiSocketFill(entry: SocketFdEntry): Promise<Errno | null> {
       entry.readBufOffset = 0;
       return null;
     } catch (e) {
-      const msg = ((e as Error) && (e as Error).message) ? (e as Error).message : String(e);
+      const msg = e instanceof Error && e.message ? e.message : String(e);
       if (/refused|ECONNREFUSED/i.test(msg)) return __WASI_ECONNREFUSED;
       if (/unreach|EHOSTUNREACH/i.test(msg)) return __WASI_EHOSTUNREACH;
       return __WASI_EIO;
