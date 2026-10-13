@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "fb0ca72eceb737d856400dbda0b97407cf3113b6702f61832be8009030fa2bf5",
+  "fingerprint": "9f3dfa946a75c800217131883fa9095d5f2e1f35277e1aca1ffc756738403018",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1754,7 +1754,7 @@
     "packages/fabric/dist/outbox.js": "284e996c0b310e02a4310fb433b2521d226d9ad5a130cdab8b9896f0b4d0b3c9",
     "packages/fabric/dist/peer-host.d.ts": "6715dea3558f74719ca807d66bcc513d785c6c5187bcbd1502850c129eaed355",
     "packages/fabric/dist/peer-host.d.ts.map": "af0581fff8e5229cc34b77b290a3689b2ee9c519944e1e00065b657ff23a9317",
-    "packages/fabric/dist/peer-host.js": "96e92e80d72bd754e27853eb4394994d6cdeb44f023a823ff760c2cfe4842105",
+    "packages/fabric/dist/peer-host.js": "c216e0939747d0ec3a7a0e357383bf418517f1a8172f52a3553b6f4fe9a15e8c",
     "packages/fabric/dist/process-fabric.d.ts": "b371b5addd371c7dc01c0c32d908e5f5cbf4f656f7b51a7cd906900bbd061b3a",
     "packages/fabric/dist/process-fabric.d.ts.map": "1e756bd41fa0bc6f825ff22494755d57efe8ce19132ff8acf4eed1561c32d62a",
     "packages/fabric/dist/process-fabric.js": "6d4ce2dc11b2a0275d9e0382fd9b30b6ae69dce27a2c415904701157e37cab02",
@@ -1817,7 +1817,7 @@
     "packages/fabric/src/node-async-hooks.d.ts": "3038f7d5bffd3203f4289b7155ad17e45181b6454dd00d67db1571deb7f0bc05",
     "packages/fabric/src/one-shot-entry.ts": "bec081d683b6f082f5014dee506acb63e620d374ad501537c1c8b4cadba8d70c",
     "packages/fabric/src/outbox.ts": "1846ad24a607a2a3808da682a2f2e96f24e5e4bf04f58d26e99612266f624384",
-    "packages/fabric/src/peer-host.ts": "e4d55e0332985bff0cc5c38f9549ea033a8c9cadd49e46e83032895bd5b24e25",
+    "packages/fabric/src/peer-host.ts": "65bc86da4af806c1e1fb72c7914124dcb0bf808e88d7da7a7ba8bc9c9f61ab05",
     "packages/fabric/src/process-fabric.ts": "8df8e0eae6ad252f94e9e483f352b13ee04f7426aa86a030aa7b56b30496a7b7",
     "packages/fabric/src/process-host.ts": "5e1167f6b019ef0715de7416ce6cb671adcd9d6ea2916862c05a6b76da9be323",
     "packages/fabric/src/sealed.ts": "4a7c5b7b26979c136273dc6f29b8a4c8762462c4cdf7e989ba72cf54152a8154",

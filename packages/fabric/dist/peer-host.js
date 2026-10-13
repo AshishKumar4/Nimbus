@@ -439,7 +439,7 @@ export class PeerHost {
                     throw new LostHostedProcess(errorText(record.failure));
                 if (record.closed)
                     throw new Error('Nimbus: the hosted process is no longer running');
-                return this.socket(request, record.watchers, lease.release);
+                return this.socket(request, record.watchers, () => lease.release());
             }
             catch (error) {
                 lease.release();
