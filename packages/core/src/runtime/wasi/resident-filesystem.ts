@@ -848,16 +848,20 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   }
 
   // A descriptor of the holder's is reopened here where the holder decides it,
-  // else, once what was decided is sent, by its file's name while that name has it.
+  // else once what was decided is sent: a description written through by its
+  // session descriptor, any other by its file's name while that name has it.
   const bySessionReopen: unknown = Reflect.get(fs, 'reopen');
   if (typeof bySessionReopen === 'function') {
     Reflect.set(fs, 'reopen', (target: RuntimeReopenTarget, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner) => {
-      if (!holder?.owns(target.handle)) return Reflect.apply(bySessionReopen, fs, [target, flags, options]);
-      const local = holder.reopen(target.handle, flags);
+      const held = holder;
+      if (!held?.owns(target.handle)) return Reflect.apply(bySessionReopen, fs, [target, flags, options]);
+      const local = held.reopen(target.handle, flags);
       if (local !== undefined) { counts.local++; return heldOpen(local); }
-      const identity = holder.fstat(target.handle);
-      const name = '/' + holder.keyOf(target.handle);
-      return holder.flush().then(() => openIdentified(fs, name, flags, identity));
+      const identity = held.fstat(target.handle);
+      const name = '/' + held.keyOf(target.handle);
+      return held.flush().then(() => held.sessionOf(target.handle)).then((session) => (session === undefined
+        ? openIdentified(fs, name, flags, identity)
+        : Reflect.apply(bySessionReopen, fs, [{ handle: session }, flags, options])));
     });
   }
 
