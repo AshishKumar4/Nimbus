@@ -262,9 +262,9 @@ export declare function withLaunchAdmission<T>(ctx: object, process: LedgerProce
  * Calling resume twice joins one readmission, never takes two holds. If the
  * process ends instead, the launch's finally finds nothing held.
  * Undefined outside a launch admission (a shell's one-shot owns only its
- * run hold, which has already ended).
+ * run hold, which has already ended), or outside `pid`'s when one is named.
  */
-export declare function suspendLaunchAdmission(ctx: object): ((signal?: AbortSignal) => Promise<void>) | undefined;
+export declare function suspendLaunchAdmission(ctx: object, pid?: number): ((signal?: AbortSignal) => Promise<void>) | undefined;
 /**
  * Within an admitted launch on `ctx`'s ledger, a hold on that launch's own
  * worker for a helper's call made in its preparation: holds on one key nest
