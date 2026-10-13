@@ -81,13 +81,14 @@ const FILES = {
   // top-level await, is the one a later import() waits for: its namespace
   // once its evaluation completes, not before.
   'adopted-pending-tla/seed.mjs': 'export const seed = 1;\n',
-  'adopted-pending-tla/slow.mjs': "import { seed } from './seed.mjs';\nexport let done = false;\nawait new Promise((resolve) => setTimeout(resolve, 50));\ndone = seed === 1;\n",
+  'adopted-pending-tla/slow.mjs': "import { seed } from './seed.mjs';\nexport let done = false;\nawait new Promise((resolve) => setTimeout(resolve, 300));\ndone = seed === 1;\n",
   'adopted-pending-tla/main.cjs': [
     "const { writeFileSync } = require('node:fs');",
     "require('./seed.mjs');",
     "writeFileSync(require('node:path').join(__dirname, 'bridge.mjs'), \"import './slow.mjs';\\n\");",
     "const bridge = import('./bridge.mjs');",
-    "import('./slow.mjs').then((slow) => console.log('slow done', slow.done), (e) => console.log('rejected', e.code, e.message));",
+    '// Once the bridge has begun slow.mjs, which is in its top-level await.',
+    "setTimeout(() => import('./slow.mjs').then((slow) => console.log('slow done', slow.done), (e) => console.log('rejected', e.code, e.message)), 30);",
     'bridge.catch((e) => console.log(\'bridge rejected\', e.message));',
   ].join('\n') + '\n',
   'namespace-import-first/dep.mjs': 'export const x = 1;\n',
