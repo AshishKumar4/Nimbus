@@ -289,6 +289,7 @@ export async function prefetchForRequire(
     catch (cause) { throw new WalkControlFailure('Dependency walk interrupted', { cause }); }
   };
   const bundle: Record<string, string> = {};
+  Object.setPrototypeOf(bundle, null);
   const speculative = new Set<string>();
   const visited = new Set<string>();
   let bytesSeen = 0;

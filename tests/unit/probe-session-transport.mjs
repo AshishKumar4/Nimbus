@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
-import { createProbeTarget, deletionResult } from '../behavioral/_session-transport.mjs';
+import { VERSION_HEADER, createProbeTarget, deletionResult } from '../behavioral/_session-transport.mjs';
 
 const calls = [];
 let anon = 0;
 const request = async (url, init) => {
   calls.push({ url, ...init });
   if (url.endsWith('/new')) {
-    if (init.headers.Authorization) return new Response(null, { status: 302, headers: { location: '/s/authenticated/', 'x-nimbus-probe-version': 'v1' } });
+    if (init.headers.Authorization) return new Response(null, { status: 302, headers: { location: '/s/authenticated/', [VERSION_HEADER]: 'v1' } });
     return Response.json({ code: 'E_DEMO_LOGIN_REQUIRED' }, { status: 401 });
   }
   if (url.endsWith('/api/demo/anon-session')) {
@@ -14,7 +14,7 @@ const request = async (url, init) => {
     return Response.json({ sessionId: `anon-${id}`, wsUrl: `wss://one.test/s/anon-${id}/?nimbus_token=token-${id}` });
   }
   return Response.json({ ok: true, result: { ok: true, killed: 0, destroyedAt: 1, reason: 'probe' } },
-    { headers: { 'x-nimbus-probe-version': 'v1' } });
+    { headers: { [VERSION_HEADER]: 'v1' } });
 };
 const one = createProbeTarget({ base: 'https://one.test', request });
 const two = createProbeTarget({ base: 'https://two.test', token: 'root-two', cookie: 'tenant=two', request });

@@ -42,6 +42,7 @@ export class SessionProcessSupervisor {
     terminators = new Map();
     /** The work this session runs on each pid's own descriptors (holdWork): how to stop each piece, and whether it was. */
     held = new Map();
+    observeWork = null;
     /** Fires after every appendOutput/markExit once log persistence is wired. */
     logActivity = null;
     /** Fires when a log retention deadline may have appeared; see setLogPersist. */
@@ -260,6 +261,15 @@ export class SessionProcessSupervisor {
     setTerminator(pid, terminate) {
         this.terminators.set(pid, terminate);
     }
+    /** Runtime composition adopts work already in flight, never cancelled work. */
+    setWorkObservation(observe) {
+        this.observeWork = observe;
+        for (const [pid, pieces] of this.held)
+            for (const work of pieces) {
+                work.observation?.release();
+                work.observation = !work.stopped && !work.signal?.aborted ? observe(pid) : undefined;
+            }
+    }
     /**
      * This session runs work on `pid`'s own descriptors (a shell job, a
      * command run in the session): `stop` ends it, given the kill's reason
@@ -274,23 +284,38 @@ export class SessionProcessSupervisor {
      * host was lost: nothing of it here is left to unwind) is released at its
      * end.
      */
-    holdWork(pid, stop) {
-        const work = { stop, stopped: false };
+    holdWork(pid, stop, signal) {
+        const owner = new AbortController();
+        const abort = () => owner.abort(signal?.reason);
+        signal?.addEventListener('abort', abort, { once: true });
+        if (signal?.aborted)
+            abort();
+        const work = {
+            stop: (reason) => { owner.abort(reason); stop?.(reason); },
+            stopped: false, signal: owner.signal,
+            observation: owner.signal.aborted ? undefined : this.observeWork?.(pid),
+        };
+        const stopObserving = () => work.observation?.release();
+        owner.signal.addEventListener('abort', stopObserving, { once: true });
         let pieces = this.held.get(pid);
         if (!pieces)
             this.held.set(pid, pieces = new Set());
         pieces.add(work);
         let done = false;
-        return () => {
+        const release = () => {
             if (done)
                 return;
             done = true;
+            signal?.removeEventListener('abort', abort);
+            owner.signal.removeEventListener('abort', stopObserving);
+            stopObserving();
             const now = this.held.get(pid);
             now?.delete(work);
             if (now?.size === 0)
                 this.held.delete(pid);
             this.releaseEnded(pid);
         };
+        return Object.assign(release, { signal: owner.signal });
     }
     /** Stop the work behind `pid`: its terminator, and every piece held for it, once each, for `reason`. */
     terminate(pid, reason) {
@@ -304,6 +329,7 @@ export class SessionProcessSupervisor {
             if (work.stopped)
                 continue;
             work.stopped = true;
+            work.observation?.release();
             try {
                 work.stop(reason);
             }

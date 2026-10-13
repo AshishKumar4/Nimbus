@@ -33,11 +33,12 @@
  * the Durable Object classes, which is what lets the pool be unit-tested
  * in a plain Node/Bun process.
  */
+import type { WorkerCode } from './worker-code.js';
 export type EntrypointLoopbackFactory = <Stub = unknown>(options: {
     props: object;
 }) => Stub;
 export type CtxExports = Record<string, EntrypointLoopbackFactory | undefined>;
-export type StagedBootAssembler = (env: unknown, stage: unknown) => Promise<object>;
+export type StagedBootAssembler = (env: unknown, stage: unknown) => Promise<WorkerCode>;
 export interface FabricComposition {
     supervisorEntrypoint: string;
     stagedBootAssembler?: StagedBootAssembler;
@@ -67,7 +68,7 @@ export declare const DEFAULT_HOST_DISPATCH_METHOD = "supervisorOp";
  * a second call with different values throws, naming both, so an embedder
  * whose composition lost to an earlier import learns it at startup rather
  * than from a facet that reached the wrong host. A host without
- * `enhanced_error_serialization` is refused.
+ * `enhanced_error_serialization` or `enable_request_signal` is refused.
  */
 export declare function composeFabric(value: FabricComposition): void;
 export declare function adoptCtxExports(value: CtxExports): void;

@@ -45,6 +45,7 @@ import { encodeWriteBatch, type W7Attrs, type W7Call } from '@nimbus-sh/platform
 import type { ExclusiveMutationGrant, RecallKind } from '../runtime/os-contracts.js';
 import { WAVE_BYTES, WAVE_PATHS, WAVE_PATH_BYTES, openWaveEpoch, sendWaveAttempts, waveAttemptsOf, type WaveFence, type WaveTimers } from '@nimbus-sh/platform/wave-writer.js';
 import { WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
+import { classifyMessage } from '@nimbus-sh/platform/oom-classify.js';
 import { SYSCALL_VERDICTS, type VfsErrorCode } from '../vfs/vfs-error.js';
 import type { WaveMutation, WriteBatchStreamResult, WriteStreamReceipt } from '../runtime/wave-contracts.js';
 import { memoryJournal, type ProcessFsJournal, type ProcessFsJournalSource, type ProcessFsNumbering } from './process-fs-journal.js';
@@ -701,6 +702,10 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       if (escaped !== null) await escaped;
       writer = await writerFor(entries);
     } catch (error) {
+      if (error instanceof Error && classifyMessage(error.message) === 'subrequest_cap') {
+        exhaustedInvocation(entries, error);
+        return;
+      }
       if (error instanceof Error && isProcessGone(error)) {
         endedProcess(entries, error, epoch?.writer ?? null);
         return;
@@ -752,6 +757,10 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       });
     } catch (error) {
       // Lost past every re-send, or refused before any op (the epoch gone): their fate is unknown.
+      if (error instanceof Error && classifyMessage(error.message) === 'subrequest_cap') {
+        exhaustedInvocation(entries, error);
+        return;
+      }
       if (error instanceof Error && isProcessGone(error)) {
         endedProcess(entries, error, writer);
         return;
@@ -842,6 +851,17 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     }
     journal.dropThrough(ended[ended.length - 1]!.jid);
     if (writer !== null) retiring.push(writer);
+    epoch = null;
+  };
+
+  const exhaustedInvocation = (entries: Entry[], refusal: Error): void => {
+    processGone ??= fsError('EIO', refusal.message, '');
+    const stopped = [...entries, ...queue.splice(0)];
+    for (const entry of stopped) {
+      if (entry.op !== null) { heapBytes -= entry.bytes; entry.op = null; }
+      fail(entry, 'EIO', refusal.message);
+    }
+    if (!journal.durable) journal.dropThrough(stopped[stopped.length - 1]!.jid);
     epoch = null;
   };
 
@@ -1252,7 +1272,8 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     },
     rawSocket() {
       const ask = options.session.published;
-      if (processGone !== null || ask === undefined) return null;
+      if (processGone !== null) return Promise.reject(processGone);
+      if (ask === undefined) return null;
       if (escaped === null) {
         // Its answer is the session's word on what it holds of the process's,
         // this client's waves and what it never saw (its launch's writes) alike.

@@ -6,7 +6,7 @@
  * of the shell that runs it (BuiltinExecutionContext.shell).
  */
 import type { JobTable } from './jobs.js';
-import { cloneArrays } from './variables.js';
+import { cloneArrays, cloneEnv } from './variables.js';
 
 export interface ShellOptions {
   errexit: boolean;
@@ -41,8 +41,10 @@ export interface ShellState {
 
 /** A shell's state at `cwd`, its variables `env` (PWD set), nothing else defined. */
 export function createShellState(env: Record<string, string>, cwd: string, jobTable: JobTable): ShellState {
+  const shellEnv = cloneEnv(env);
+  shellEnv.PWD = cwd;
   return withCwd({
-    env: { ...env, PWD: cwd },
+    env: shellEnv,
     arrays: new Map(),
     options: { errexit: false, nounset: false, pipefail: false },
     traps: new Map(),
@@ -59,7 +61,7 @@ export function createShellState(env: Record<string, string>, cwd: string, jobTa
  */
 export function forkShellState(parent: ShellState): ShellState {
   return withCwd({
-    env: { ...parent.env },
+    env: cloneEnv(parent.env),
     arrays: cloneArrays(parent.arrays),
     options: { ...parent.options },
     traps: new Map(Array.from(parent.traps.entries()).filter(([, action]) => action === '')),
@@ -95,7 +97,7 @@ export interface ShellStateFrame {
 export function snapshotShellState(state: ShellState): ShellStateFrame {
   return {
     cwd: state.getCwd(),
-    env: { ...state.env },
+    env: cloneEnv(state.env),
     arrays: cloneArrays(state.arrays),
     options: { ...state.options },
     traps: new Map(state.traps.entries()),

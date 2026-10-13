@@ -336,31 +336,37 @@ export async function wsMessage(self, ws, message) {
         }
         const terminalMessage = TerminalMessageSchema.safeParse(value);
         if (self.terminal && terminalMessage.success) {
-            const terminal = self.terminal;
-            const completion = terminal.handleMessage(terminalMessage.data);
-            if (completion) {
-                const task = completion.catch((error) => {
-                    console.error('[nimbus] terminal input failed:', errorText(error));
-                    terminal.writeln(`terminal input failed: ${errorText(error)}`);
-                }).finally(() => snapshotShellState(self));
-                const ctx = self.ctx;
-                // Hand the command's completion to waitUntil so its failure is observed and
-                // the final snapshot runs, without holding the WebSocket event open or
-                // serializing later input. DurableObjectState.waitUntil does not extend the
-                // object's lifetime (Cloudflare docs, api/state/#waituntil).
-                if (ctx?.waitUntil)
-                    ctx.waitUntil(task);
-                else
-                    await task;
-            }
+            self.dispatchTerminalInput(JSON.stringify(terminalMessage.data));
         }
         // ── B'.1 snapshot ───────────────────────────────────────────────
-        // Capture immediate keystroke changes; async input completion takes a final snapshot above.
+        // The input's own request takes a final snapshot on completion.
         snapshotShellState(self);
     }
     catch (e) {
         // Never let a message parsing error crash the DO
         console.error('[nimbus] webSocketMessage error:', e?.message);
+    }
+}
+export async function terminalInput(self, frame, terminalId) {
+    const terminal = self.terminal;
+    if (!terminal || terminal.id !== terminalId || terminal.signal.aborted)
+        return;
+    let release;
+    const closed = new Promise((resolve) => { release = resolve; });
+    terminal.signal.addEventListener('abort', release, { once: true });
+    try {
+        await Promise.race([terminal.handleMessage(TerminalMessageSchema.parse(JSON.parse(frame))), closed]);
+    }
+    catch (error) {
+        if (!terminal.signal.aborted) {
+            console.error('[nimbus] terminal input failed:', errorText(error));
+            terminal.writeln(`terminal input failed: ${errorText(error)}`);
+        }
+    }
+    finally {
+        terminal.signal.removeEventListener('abort', release);
+        if (!terminal.signal.aborted && self.terminal === terminal)
+            snapshotShellState(self);
     }
 }
 async function routeProcessLogClientMessage(self, ws, attach, message) {
