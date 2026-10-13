@@ -154,7 +154,7 @@ try {
   // name (without); nothing is committed either way.
   {
     const before = await ws.exec('cd repo && git rev-parse HEAD && git status --porcelain');
-    const got = await ws.exec(`cd repo && git -c core.editor=false commit -q --allow-empty`);
+    const got = await ws.exec(`cd repo && ${exports} TZ=UTC git -c core.editor=false commit -q --allow-empty`);
     const parks = typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function';
     if (parks) {
       let host;
