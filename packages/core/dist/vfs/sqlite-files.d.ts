@@ -10,7 +10,7 @@
  * code.
  */
 import { type CredentialedVfs, type SqliteVFS } from './sqlite-vfs.js';
-import type { SyncVFS, VFS, VfsCasResult, VfsChanges, VfsCred, VfsDirent, VfsOpenFile, VfsRevision, VfsStat, VfsViewOptions, VfsWriteObserver } from './vfs.js';
+import type { SyncVFS, VFS, VfsCasResult, VfsChanges, VfsCred, VfsDirent, VfsOpenFile, VfsRemoval, VfsRevision, VfsStat, VfsViewOptions, VfsWriteObserver } from './vfs.js';
 import { type VfsEvent } from './events.js';
 export declare class SqliteFiles implements VFS {
     private readonly engine;
@@ -64,7 +64,10 @@ export declare class SqliteFiles implements VFS {
     unlink(path: string): void;
     rmdir(path: string): void;
     rename(from: string, to: string): void;
-    removeRecursive(path: string): void;
+    /** rm -r, with its report (SqliteVFS's, the walk's own result). */
+    removeRecursive(path: string, options?: {
+        keepVanishedAncestors?: boolean;
+    }): VfsRemoval;
     symlink(target: string, path: string): void;
     readlink(path: string): string;
     chmod(path: string, mode: number): void;
