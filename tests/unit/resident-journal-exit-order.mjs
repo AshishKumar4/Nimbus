@@ -13,6 +13,7 @@
 // signal's default action told the exit at once, before any drain.
 
 import assert from 'node:assert/strict';
+import { hostActivity } from '../../packages/fabric/src/host-activity.ts';
 
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
 import { resolveDurableWorkerImage } from '../../packages/worker/src/facets/durable-images.ts';
@@ -72,8 +73,7 @@ const facets = {
     };
     return {
       startProcess: (args) => program.startProcess(args),
-      handleHttpRequest: (request) => program.handleHttpRequest(request),
-      held: () => program.held(),
+      fetch: (request, init) => program.fetch(request, init),
       numberings: async () => (await reader()).numberings(),
       number: async (numbering) => (await reader()).number(numbering),
       readAfter: async (after, maxBytes) => (await reader()).readAfter(after, maxBytes),
@@ -148,9 +148,7 @@ assert.equal(facetStores.has(row.facet), false, 'the drained store was kept');
 console.log('  [1] killed: its exit is told once its log is drained, and its book row and store go');
 
 // ── A booted resident dies on its own (out of memory): drained, then its exit ──
-// Its class holds held() open while its isolate lives; the rejection is the
-// process lost. Red before: nothing heard a booted resident's death, so it
-// stayed "running" and its log was never drained.
+// Active work observes its host; a loss drains the journal before its exit.
 kernel.mkdir('home/user/app/out3', { recursive: true, mode: 0o755 });
 kernel.chown('home/user/app/out3', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
 const oom = await manager.spawnNode("require('http').createServer(() => {}).listen(8082);", {
@@ -171,8 +169,11 @@ const out3 = () => kernel.readdir('home/user/app/out3').length;
 const out3AtExit = new Map();
 const realExit = processes.exit.bind(processes);
 processes.exit = (pid, code) => { if (pid === oom.pid && !out3AtExit.has(pid)) out3AtExit.set(pid, out3()); return realExit(pid, code); };
+const observing = hostActivity(ctx).acquire();
+for (const observation of hostActivity(ctx).observations) await observation.current?.ready;
 world.die(oomRow.facet);
 await settle(() => processes.get(oom.pid)?.state !== 'running');
+observing.release();
 processes.exit = realExit;
 assert.equal(processes.get(oom.pid)?.state, 'exited', 'a resident that died stayed running');
 // Its isolate was lost to the platform: the host-loss status (facet-host-loss), told after its log drained.

@@ -1,6 +1,7 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { HostRoute } from '@nimbus-sh/platform/composition.js';
 import { traced } from '@nimbus-sh/platform/tracing.js';
+import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { hostNamespaceBinding, hostOpDispatch } from '@nimbus-sh/fabric/host-dispatch.js';
 import { idempotent } from '@nimbus-sh/fabric/do-calls.js';
 import type { SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-op.js';
@@ -50,7 +51,10 @@ function routeOf(props: unknown): HostRoute | undefined {
  * `nimbus.session.*` span, under the RPC span of the attempt that reached it.
  */
 function sendToHost(props: unknown, env: unknown, envelope: SupervisorOpEnvelope, resend?: Resend): Promise<unknown> {
-  if (!resend) return hostOpDispatch(hostStub(props, env), 'SupervisorRPC', routeOf(props))(envelope);
+  if (!resend) {
+    const host = hostStub(props, env);
+    return useRpcResource(Promise.resolve(host), (stub) => hostOpDispatch(stub, 'SupervisorRPC', routeOf(props))(envelope));
+  }
   const operation = envelope.delivery?.op ?? envelope.op;
   // The binding's props, minted by supervisorBindingProps: attribute values only, nothing trusted.
   const doId = typeof props === 'object' && props !== null && 'doId' in props && typeof props.doId === 'string'

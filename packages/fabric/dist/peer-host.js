@@ -14,12 +14,14 @@
 import { ISOLATE_NETWORK, workspaceNetwork, } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { isWebSocketUpgradeRequest } from '@nimbus-sh/core/_shared/websocket-upgrade.js';
-import { RESIDENT_KEEPALIVE_MS } from '@nimbus-sh/platform/limits.js';
 import { z } from 'zod/v4';
-import { hostNamespaceBinding, hostOpDispatch } from './host-dispatch.js';
-import { infrastructureSupervisor, infrastructureSupervisorProps, supervisorBindingProps } from './supervisor-props.js';
+import { ProcessHostLost } from './process-fabric.js';
+import { bindingSupervisor, supervisorBindingProps } from './supervisor-props.js';
 import { withResolvers } from './turn-budget.js';
-import { processes } from './workerd-facet-host.js';
+import { processes, abortFacet, deleteFacetStorage } from './workerd-facet-host.js';
+import { HandledRequests, HOST_INCARNATION_HEADER } from './host-activity.js';
+import { responseScope } from '@nimbus-sh/core/runtime/port-registry.js';
+import { isHostReset } from '@nimbus-sh/platform/oom-classify.js';
 /**
  * This workerd process's identity. Module scope, so two Durable Objects
  * reporting the same token are in the same process — which is exactly the CPU
@@ -63,6 +65,11 @@ const HostProcessOptsSchema = z.object({
     /** Opaque arguments forwarded to the runner's startProcess. */
     startArgs: z.unknown().optional(),
 });
+export const HOSTED_WATCH_HEADER = 'x-nimbus-hosted-watch';
+export const HOSTED_RESIDENCY_HEADER = 'x-nimbus-hosted-residency';
+export const HOSTED_FAILURE_HEADER = 'x-nimbus-hosted-failure';
+class LostHostedProcess extends Error {
+}
 /**
  * Which hosted process a fetched upgrade is for. An upgrade cannot travel as
  * RPC arguments, so the two values `_rpcRouteHostedHttp` would have taken ride
@@ -83,6 +90,8 @@ export const HOSTED_WEBSOCKET_CAPABILITY_HEADER = 'x-nimbus-hosted-websocket-cap
 export function isHostedWebSocket(request) {
     return Boolean(request.headers.get(HOSTED_WEBSOCKET_KEY_HEADER));
 }
+export function isHostedWatch(request) { return request.headers.has(HOSTED_WATCH_HEADER); }
+export function isHostedResidency(request) { return request.headers.has(HOSTED_RESIDENCY_HEADER); }
 /**
  * How long a boot-payload or routed-HTTP leg waits for its process's host
  * record. Normally zero: the coordinator issues `hostProcess` first and it
@@ -95,11 +104,7 @@ const HOSTED_RECORD_WAIT_MS = 30_000;
  * coordinator, while it holds it. Never rename (a migration).
  */
 const HOSTING_KEY_PREFIX = 'hosting:';
-/**
- * How often a host holding a process looks for its own reset: the resident
- * keep-alive's cadence, so the session learns of it within one cadence.
- */
-export const HOSTING_WATCH_MS = RESIDENT_KEEPALIVE_MS;
+const CANCELLED_HOSTING_KEY_PREFIX = 'hosting-cancelled:';
 /**
  * Whole-file reads for a boot spec's by-path members, in ranges. This is the
  * one thing a peer does differently from a coordinator, and it is a PARAMETER
@@ -116,14 +121,11 @@ export const HOSTING_WATCH_MS = RESIDENT_KEEPALIVE_MS;
  * supervisor RPC carries and no substrate should be able to read more than the
  * process it hosts. Boot-spec members are reachable under it by construction:
  * the image store is kernel-owned mode 0644 precisely so any process can read
- * it, and the installed runtime images are world-readable too. The reads are
- * this peer's, not the process's run's, so they go through a binding no run
- * acts through: a run whose boot is stopped and replayed (stop/replay) is
- * judged by what it received itself, and it received none of these.
+ * it, and the installed runtime images are world-readable too.
  */
 const RESIDENT_READ_RANGE_BYTES = 4 * 1024 * 1024;
-function peerDiskReader(reads) {
-    const fs = infrastructureSupervisor(reads);
+function peerDiskReader(supervisor) {
+    const fs = bindingSupervisor(supervisor);
     return { readFile: (path) => readSupervisorFile(fs, path) };
 }
 async function readSupervisorFile(fs, path) {
@@ -152,6 +154,7 @@ async function readSupervisorFile(fs, path) {
 export class PeerHost {
     ctx;
     options;
+    incarnation = crypto.randomUUID();
     records = new Map();
     waiters = new Map();
     env;
@@ -169,108 +172,122 @@ export class PeerHost {
     probe() {
         return { isolateToken: isolateToken() };
     }
-    /**
-     * Host a resident process. Held open by the coordinator for the process's
-     * whole life, and it is that held call which keeps this object resident —
-     * the hosting watch is armed to report a reset, never to wake a host back
-     * up. Resolves when the coordinator releases the process; rejects if it
-     * could not be opened at all.
-     *
-     * The runner's start CONTRACT never crosses. The coordinator's fabric decides
-     * from it when the process is over and releases, which cancels this call — so
-     * this leg holds uniformly and has no idea whether it is hosting a TUI or a
-     * server.
-     *
-     * If the coordinator dies, workerd cancels this inbound call, the facet is
-     * released in the `finally` below, and the process dies with it: a hosting
-     * peer never outlives its parent session.
-     */
+    /** A hosting record's current physical actor, without admitting guest work. */
+    async inspect(workerKey) {
+        const record = this.records.get(workerKey);
+        const stored = await this.ctx.storage.get(HOSTING_KEY_PREFIX + workerKey);
+        const facet = record && !record.closed ? (await record.facet).name : null;
+        return { found: facet !== null || stored !== undefined, incarnation: this.incarnation, facet,
+            coordinator: stored?.coordinatorDoId ?? null, residencies: record?.residencies.size ?? 0, watchers: record?.watchers.size ?? 0 };
+    }
+    /** Open once and answer. Observation and release are independently owned calls. */
     async host(boot, opts) {
         const hostOpts = HostProcessOptsSchema.parse(opts);
         const spec = this.options.bootSpec.parse(boot);
         const { workerKey } = hostOpts;
-        const network = hostOpts.network === undefined ? ISOLATE_NETWORK : workspaceNetwork(hostOpts.network.egress, hostOpts.network.id);
+        if (this.records.get(workerKey)?.closed === false)
+            throw new Error('Nimbus: the peer already owns this process');
         const supervisor = {
             ...supervisorBindingProps(this.ctx, hostOpts.pid, {
-                writerId: hostOpts.writerId, doId: hostOpts.coordinatorDoId, route: hostOpts.route, network,
+                writerId: hostOpts.writerId, doId: hostOpts.coordinatorDoId, route: hostOpts.route,
+                network: hostOpts.network === undefined ? ISOLATE_NETWORK : workspaceNetwork(hostOpts.network.egress, hostOpts.network.id),
             }),
             ...(hostOpts.hostIncarnation === undefined ? {} : { hostIncarnation: hostOpts.hostIncarnation }),
         };
-        // This peer's own reads for the process (its boot images): the process's pid, way back and network, no run.
-        const reads = infrastructureSupervisorProps(this.ctx, hostOpts.pid, {
-            doId: hostOpts.coordinatorDoId, route: supervisor.route, network: network.forProcess(hostOpts.pid),
-        });
-        const cancelled = withResolvers();
         const opened = withResolvers();
         const started = withResolvers();
         // Nothing awaits these unless a leg asks for them; keep the runtime from
         // reporting them as unhandled while the process is healthy.
         opened.promise.catch(() => { });
         started.promise.catch(() => { });
-        this.register(workerKey, {
+        const hostingKey = `${HOSTING_KEY_PREFIX}${workerKey}`;
+        let releasing;
+        let ownsRow = false;
+        const record = {
             facet: opened.promise,
             started: started.promise,
             webSocketCapability: hostOpts.webSocketCapability,
-            cancel: () => cancelled.resolve(),
-        });
-        // What this host's next incarnation needs to tell the session it lost the
-        // process: kept while it hosts, with the alarm that will look
-        // (watchFired). Both are in place before the process exists; a host that
-        // cannot keep them does not host it.
-        const hostingKey = `${HOSTING_KEY_PREFIX}${workerKey}`;
+            handled: new HandledRequests(),
+            closed: false,
+            watchers: new Map(),
+            residencies: new Map(),
+            release: () => {
+                record.closed = true;
+                return releasing ??= (async () => {
+                    for (const [socket, release] of record.watchers) {
+                        release();
+                        socket.close(1000, 'process released');
+                    }
+                    for (const [socket, release] of record.residencies) {
+                        release();
+                        socket.close();
+                    }
+                    const facet = await opened.promise.catch(() => null);
+                    await facet?.release();
+                    if (ownsRow)
+                        await this.ctx.storage.delete(hostingKey);
+                })();
+            },
+        };
+        this.register(workerKey, record);
         const hosting = {
             coordinatorDoId: hostOpts.coordinatorDoId,
             ...(hostOpts.route === undefined ? {} : { route: hostOpts.route }),
             workerKey,
             capability: hostOpts.webSocketCapability,
+            incarnation: this.incarnation,
         };
         let facet;
         try {
+            if (await this.ctx.storage.get(CANCELLED_HOSTING_KEY_PREFIX + workerKey))
+                throw new Error('Nimbus: the peer process was cancelled before opening');
+            if (await this.ctx.storage.get(hostingKey))
+                throw new LostHostedProcess('the peer restarted without its previous process');
+            if (record.closed)
+                throw new Error('Nimbus: the peer process was cancelled before opening');
+            ownsRow = true;
             await this.ctx.storage.put(hostingKey, hosting);
-            await this.armWatch();
-            facet = processes(this.ctx, this.env).spawn(() => peerDiskReader(reads), supervisor, {
+            if (record.closed)
+                throw new Error('Nimbus: the peer process was cancelled before opening');
+            let located;
+            facet = processes(this.ctx, this.env).spawn(() => peerDiskReader(supervisor), supervisor, {
                 pid: hostOpts.pid,
                 workerKey,
                 boot: spec,
                 writerId: hostOpts.writerId,
                 startArgs: hostOpts.startArgs,
+                created: (name) => {
+                    hosting.facet = name;
+                    located = this.ctx.storage.put(hostingKey, hosting);
+                    located.catch(() => { });
+                },
             });
             opened.resolve(facet);
             facet.started.then(started.resolve, started.reject);
-            // The facet lost here fails the held leg, which is how the session hears of it.
-            await Promise.race([cancelled.promise, facet.lost]);
-            return { ok: true };
+            facet.lost.catch((error) => {
+                record.failure = error instanceof Error ? error : new Error(String(error));
+                for (const [socket, release] of record.watchers) {
+                    release();
+                    socket.close(1011, 'process host lost');
+                }
+                for (const [socket, release] of record.residencies) {
+                    release();
+                    socket.close();
+                }
+            });
+            await located;
+            if (record.closed)
+                throw new Error('Nimbus: the peer process was cancelled while opening');
+            return { ok: true, incarnation: this.incarnation };
         }
         catch (e) {
             opened.reject(e);
             started.reject(e);
+            await record.release();
+            if (e instanceof LostHostedProcess)
+                return { hostLost: e.message };
             throw e;
         }
-        finally {
-            // The record OUTLIVES the process on purpose, and a peer hosts exactly one
-            // (its name carries the pid), so this is one entry per host for the life of
-            // the instance. Dropping it would make a request that arrives after a kill
-            // wait out `HOSTED_RECORD_WAIT_MS` and then blame the wrong thing; keeping
-            // it routes that request into the released facet, which is exactly what a
-            // coordinator-hosted one does — it says the process is no longer running.
-            await facet?.release();
-            await this.ctx.storage.delete(hostingKey);
-        }
-    }
-    /**
-     * Settle once the process is OPEN on this peer, or reject with whatever
-     * stopped it from opening.
-     *
-     * This exists so a host failure surfaces at the same place on both substrates.
-     * Opening a facet of your own DO either throws or does not, before the fabric
-     * has a handle; opening one on a peer is a message, and without this the
-     * coordinator would return a handle for a process that never existed and only
-     * discover it later, through `done`.
-     */
-    async awaitOpen(workerKey) {
-        const record = await this.awaitRecord(workerKey);
-        await record.facet;
-        return { ok: true };
     }
     /**
      * Read back the runner's startProcess payload. `host` started it; this
@@ -279,8 +296,24 @@ export class PeerHost {
      * settles at exit, exactly as the local one does.
      */
     async awaitBoot(workerKey) {
-        const record = await this.awaitRecord(workerKey);
-        return { payload: await record.started };
+        return this.answer(workerKey, async () => {
+            const record = await this.awaitRecord(workerKey);
+            // The leaf's boot answers for itself, as a facet's does to its own
+            // coordinator: its refusal (a run's stop, which resets the leaf) is
+            // that boot's answer, never this peer's loss.
+            try {
+                return { payload: await record.started };
+            }
+            catch (error) {
+                return { refused: error };
+            }
+        });
+    }
+    /** The coordinator abandons request `id` of a process this peer hosts (SentRequests): its leaf's call is cancelled. */
+    async abandonHttp(workerKey, capability, id) {
+        const record = this.records.get(workerKey);
+        if (record && !record.closed && record.webSocketCapability === capability)
+            record.handled.abandon(id);
     }
     /**
      * Inbound HTTP for a port owned by a process this peer hosts.
@@ -295,32 +328,52 @@ export class PeerHost {
      *
      * The response body is re-piped through an identity stream owned by THIS
      * isolate before it is returned, for the same reason the parts exist at all:
-     * what leaves here must not be an object the loaded worker owns.
+     * what leaves here must not be an object the loaded worker owns. That
+     * pipe's end is when this host's work for the response is done; the
+     * coordinator abandons the request by its id (abandonHttp), which cancels its leaf's call,
+     * before its headers or after, and the leaf's guest ending its body ends
+     * the pipe.
      */
     async routeHttp(workerKey, wire) {
-        const record = await this.awaitRecord(workerKey);
-        const facet = await record.facet;
-        const headers = new Headers();
-        for (const [k, v] of wire.headers)
-            headers.append(k, v);
-        const init = { method: wire.method, headers };
-        if (wire.body) {
-            init.body = wire.body;
-            init.duplex = 'half';
-        }
-        const response = await facet.handleHttpRequest(new Request(wire.url, init));
-        let body = null;
-        if (response.body) {
-            const { readable, writable } = new IdentityTransformStream();
-            this.ctx.waitUntil(response.body.pipeTo(writable).catch(() => { }));
-            body = readable;
-        }
-        return {
-            status: response.status,
-            statusText: response.statusText,
-            headers: headerPairs(response.headers),
-            body,
-        };
+        return this.answer(workerKey, async () => {
+            const record = await this.awaitRecord(workerKey);
+            if (record.webSocketCapability !== wire.capability)
+                throw new LostHostedProcess('the peer no longer owns this process incarnation');
+            const facet = await record.facet;
+            const headers = new Headers();
+            for (const [k, v] of wire.headers)
+                headers.append(k, v);
+            const init = { method: wire.method, headers };
+            if (wire.body) {
+                init.body = wire.body;
+                init.duplex = 'half';
+            }
+            // The leaf's call runs under the signal its coordinator abandons the
+            // request by (HandledRequests). This relay's own end is its pipe's.
+            const { scope, owner } = responseScope(new AbortController().signal);
+            let response;
+            try {
+                response = await facet.handleHttpRequest(new Request(wire.url, init), scope, record.handled.signal(wire));
+            }
+            catch (error) {
+                owner.fail();
+                throw error;
+            }
+            let body = null;
+            if (response.body) {
+                const { readable, writable } = new IdentityTransformStream();
+                this.ctx.waitUntil(response.body.pipeTo(writable).then(() => owner.settle(), () => owner.fail()));
+                body = readable;
+            }
+            else
+                owner.settle();
+            return {
+                status: response.status,
+                statusText: response.statusText,
+                headers: headerPairs(response.headers),
+                body,
+            };
+        });
     }
     /**
      * The peer end of the upgrade hop (isHostedWebSocket). Reached by `fetch`
@@ -338,85 +391,131 @@ export class PeerHost {
             return new Response('Expected WebSocket', { status: 426 });
         const workerKey = request.headers.get(HOSTED_WEBSOCKET_KEY_HEADER) ?? '';
         const capability = request.headers.get(HOSTED_WEBSOCKET_CAPABILITY_HEADER);
-        if (!capability)
+        if (!capability || !await this.authorized(workerKey, capability))
             return new Response('Not found', { status: 404 });
         const headers = new Headers(request.headers);
         headers.delete(HOSTED_WEBSOCKET_KEY_HEADER);
         headers.delete(HOSTED_WEBSOCKET_CAPABILITY_HEADER);
-        const record = await this.awaitRecord(workerKey);
-        if (record.webSocketCapability !== capability)
-            return new Response('Not found', { status: 404 });
-        const facet = await record.facet;
-        return facet.handleWebSocketRequest(new Request(request.url, { method: request.method, headers }));
+        const result = await this.answer(workerKey, async () => {
+            const record = await this.awaitRecord(workerKey);
+            const facet = await record.facet;
+            return facet.handleWebSocketRequest(new Request(request.url, { method: request.method, headers }));
+        });
+        return result instanceof Response ? result : this.gone(capability, result.hostLost);
     }
     /**
      * Deterministic kill of a hosted process — the same teardown a coordinator
      * applies to a facet of its own, and it does not answer until it has
-     * happened. The facet is released HERE rather than left to the held call's
-     * `finally`, because a caller that has to guess whether the process is really
-     * gone cannot retire the writer identity behind it.
+     * happened: a caller that has to guess whether the process is gone cannot
+     * retire the writer identity behind it.
      */
     async cancel(workerKey) {
+        const pending = this.records.get(workerKey);
+        if (pending)
+            pending.closed = true;
+        // A delayed host RPC must still be refused after this reply and a coordinator reset.
+        await this.ctx.storage.put(CANCELLED_HOSTING_KEY_PREFIX + workerKey, true);
         const record = this.records.get(workerKey);
-        if (!record)
-            return { cancelled: false };
-        const facet = await record.facet.catch(() => null);
-        await facet?.release();
-        try {
-            record.cancel();
+        if (record)
+            await record.release();
+        const key = `${HOSTING_KEY_PREFIX}${workerKey}`;
+        const stored = await this.ctx.storage.get(key);
+        if (!stored)
+            return { cancelled: record !== undefined };
+        if (stored.facet) {
+            abortFacet(this.ctx, stored.facet, new Error('Nimbus: the coordinator released its previous process'));
+            deleteFacetStorage(this.ctx, stored.facet);
         }
-        catch { /* best-effort */ }
+        else if (!stored.incarnation)
+            console.warn(`[nimbus] dropped legacy peer record '${workerKey}': its peer facet could not be named`);
+        await this.ctx.storage.delete(key);
         return { cancelled: true };
     }
-    /**
-     * The hosting alarm. A row whose process this incarnation does not hold is
-     * one the platform reset this object under (a new incarnation remembers
-     * nothing of the processes it held, and the held leg that would have said so
-     * may stay open, measured 2026-10-07): the session is told at once, and the
-     * row is dropped once the session has answered, whatever it answered. A row
-     * the session did not hear about is kept, and so is the watch: the next
-     * alarm tells it again. A failure to read or drop the rows is retried the
-     * same way, since the dispatcher forgets a reason whose handler throws.
-     * Answers when to look again, or null when nothing is left to watch.
-     */
-    async watchFired() {
-        const again = Date.now() + HOSTING_WATCH_MS;
-        try {
-            const rows = await this.ctx.storage.list({ prefix: HOSTING_KEY_PREFIX });
-            let watching = false;
-            for (const [key, row] of rows) {
-                if (this.records.has(row.workerKey)) {
-                    watching = true;
-                    continue;
-                }
-                try {
-                    const ns = hostNamespaceBinding(this.env, 'ProcessFabric host', row.route);
-                    await hostOpDispatch(ns.get(ns.idFromString(row.coordinatorDoId)), 'ProcessFabric host', row.route)({
-                        op: 'hostLost',
-                        args: [row.workerKey, row.capability],
-                    });
-                }
-                catch (error) {
-                    console.warn(`[process-host] could not tell session ${row.coordinatorDoId.slice(-12)} that its process ${row.workerKey} was lost; trying again:`, errorText(error));
-                    watching = true;
-                    continue;
-                }
-                await this.ctx.storage.delete(key);
+    /** One abortable observation bridges coordinator activity to this actor. */
+    async watch(request) {
+        const key = request.headers.get(HOSTED_WATCH_HEADER) ?? '';
+        const capability = request.headers.get(HOSTED_WEBSOCKET_CAPABILITY_HEADER);
+        if (!capability || !await this.authorized(key, capability))
+            return new Response('Not found', { status: 404 });
+        const result = await this.answer(key, async () => {
+            const record = await this.awaitRecord(key);
+            const facet = await record.facet;
+            const lease = facet.acquireActivity(request.signal);
+            try {
+                await lease.ready;
+                request.signal.throwIfAborted();
+                if (record.failure)
+                    throw new LostHostedProcess(errorText(record.failure));
+                if (record.closed)
+                    throw new Error('Nimbus: the hosted process is no longer running');
+                return this.socket(request, record.watchers, () => lease.release());
             }
-            return watching ? again : null;
-        }
-        catch (error) {
-            console.warn('[process-host] the hosting watch could not read or drop its records; trying again:', errorText(error));
-            return again;
-        }
+            catch (error) {
+                lease.release();
+                throw error;
+            }
+        });
+        return result instanceof Response ? result : this.gone(capability, result.hostLost);
     }
-    /** One that cannot be armed throws, and the host refuses the process rather than hold one nothing would report the loss of. */
-    async armWatch() {
+    /** The coordinator retains its endpoint unaccepted; only the peer receives events. */
+    async reside(request) {
+        const key = request.headers.get(HOSTED_RESIDENCY_HEADER) ?? '';
+        const capability = request.headers.get(HOSTED_WEBSOCKET_CAPABILITY_HEADER);
+        if (!capability || !await this.authorized(key, capability))
+            return new Response('Not found', { status: 404 });
+        const result = await this.answer(key, async () => {
+            const record = await this.awaitRecord(key);
+            await record.facet;
+            request.signal.throwIfAborted();
+            return this.socket(request, record.residencies, () => { }, () => {
+                if (record.closed || record.residencies.size)
+                    return;
+                this.ctx.waitUntil(this.cancel(key).catch((error) => console.error('Nimbus: coordinator residency teardown failed', error)));
+            });
+        });
+        return result instanceof Response ? result : this.gone(capability, result.hostLost);
+    }
+    socket(request, sockets, releaseOwner, afterEnd) {
+        const [client, server] = Object.values(new WebSocketPair());
+        let released = false;
+        const release = () => {
+            if (released)
+                return;
+            released = true;
+            request.signal.removeEventListener('abort', ended);
+            sockets.delete(server);
+            releaseOwner();
+        };
+        const ended = () => { if (released)
+            return; release(); afterEnd?.(); server.close(); };
+        sockets.set(server, release);
+        server.addEventListener('close', ended);
+        server.addEventListener('error', ended);
+        server.accept();
+        request.signal.addEventListener('abort', ended, { once: true });
+        return new Response(null, { status: 101, webSocket: client, headers: { [HOST_INCARNATION_HEADER]: this.incarnation } });
+    }
+    async authorized(key, capability) {
+        const record = this.records.get(key);
+        if (record)
+            return record.webSocketCapability === capability;
+        return (await this.ctx.storage.get(`${HOSTING_KEY_PREFIX}${key}`))?.capability === capability;
+    }
+    gone(capability, reason) {
+        return new Response(reason, { status: 410, headers: { [HOSTED_FAILURE_HEADER]: capability, [HOST_INCARNATION_HEADER]: this.incarnation } });
+    }
+    async answer(key, work) {
         try {
-            await this.options.scheduleWatch(Date.now() + HOSTING_WATCH_MS);
+            return await work();
         }
         catch (error) {
-            throw new Error(`Nimbus: this host could not arm the alarm that reports its own reset, so it does not host the process: ${errorText(error)}`);
+            const failure = this.records.get(key)?.failure;
+            // A replaced leaf's refusal (ProcessHostLost) names its cause, which the coordinator wraps again.
+            if (failure || error instanceof LostHostedProcess || isHostReset(error))
+                return { hostLost: errorText(failure ?? error) };
+            if (error instanceof ProcessHostLost)
+                return { hostLost: errorText(error.cause) };
+            throw error;
         }
     }
     register(workerKey, record) {
@@ -441,10 +540,22 @@ export class PeerHost {
      * accumulate map entries and 30-second timers here by the thousand. Once
      * something is known, an unknown key is refused immediately instead.
      */
-    awaitRecord(workerKey) {
+    async awaitRecord(workerKey) {
         const existing = this.records.get(workerKey);
-        if (existing)
-            return Promise.resolve(existing);
+        if (existing) {
+            if (existing.failure)
+                throw new LostHostedProcess(errorText(existing.failure));
+            if (existing.closed)
+                throw new Error('Nimbus: the hosted process is no longer running');
+            return existing;
+        }
+        if (await this.ctx.storage.get(CANCELLED_HOSTING_KEY_PREFIX + workerKey))
+            throw new Error('Nimbus: the hosted process is no longer running');
+        if (await this.ctx.storage.get(`${HOSTING_KEY_PREFIX}${workerKey}`))
+            throw new LostHostedProcess('the peer restarted without its process');
+        const arrived = this.records.get(workerKey);
+        if (arrived)
+            return this.awaitRecord(workerKey);
         if (this.records.size > 0 || (this.waiters.size > 0 && !this.waiters.has(workerKey))) {
             return Promise.reject(new Error(`Nimbus: peer hosts no process for key '${workerKey}'`));
         }
