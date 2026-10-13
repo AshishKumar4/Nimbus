@@ -6091,7 +6091,8 @@ export class FacetManager {
             // What a launch of this key waiting for this build takes: a state of its own, released by it alone.
             return { state: vfsState, shared: { state: { ...vfsState }, revision } };
         };
-        const building = (async () => {
+        // Its helpers wait for a worker as its process (withLaunchPreparation): a wait nothing can satisfy is one the ledger tells.
+        const building = withLaunchPreparation(this.ctx, { pid: entry.pid }, async () => {
             // Held from the moment it is taken: the detector names its holders (_creditHolders).
             const admission = held ?? await admitPrefetch(() => this._launchEnds(entry.pid));
             this.buildAdmissions.set(entry.pid, admission);
@@ -6102,7 +6103,7 @@ export class FacetManager {
                 this._releaseBuildAdmission(entry.pid);
                 throw error;
             }
-        })();
+        });
         const inProgress = { revision, leader: entry.pid, done: building.then((built) => built.shared, () => null) };
         if (shared)
             this.prefetchBuilds.set(key, inProgress);
@@ -6513,13 +6514,12 @@ export class FacetManager {
         // credit or another launch's build of it, holding no worker; then let in
         // once on the ledger, as its launch, and its run claims that admission
         // (runOneShot). Once it holds a worker it waits for no credit and on no
-        // build: its map's share is held already. Its preparation's helpers wait
-        // for a worker as its process (withLaunchPreparation), so a wait nothing
-        // can satisfy is one the ledger tells. Killed or refused while it waits,
-        // it never ran.
+        // build: its map's share is held already. Its build's helpers wait for a
+        // worker as its process (_buildProcessBundle), so a wait nothing can
+        // satisfy is one the ledger tells. Killed or refused while it waits, it
+        // never ran.
         let admitted = false;
         let prepareFailed = false;
-        const prepared = (body) => withLaunchPreparation(this.ctx, { pid: entry.pid }, body);
         this.launching.set(entry.pid, { stage: 'prepare', since: Date.now() });
         // Paced like a resident launch: a tree too large for one turn costs
         // turns, and the pacer's stillWanted check ends a build whose process was
@@ -6544,7 +6544,7 @@ export class FacetManager {
             const brokered = suspendLaunchAdmission(this.ctx, entry.pid);
             let vfsState;
             try {
-                vfsState = await prepared(() => this._buildProcessBundle(entry, bundleSpec, pacer));
+                vfsState = await this._buildProcessBundle(entry, bundleSpec, pacer);
             }
             catch (err) {
                 // Its failure ends the process here (below), not in the catch further down.
