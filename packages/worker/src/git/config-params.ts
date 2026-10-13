@@ -157,7 +157,9 @@ function gitdirOf(args: { path: string }): string | null {
  * set is the repository's own config's (`files`, cf-git reading only that
  * file), read once per repository until this command writes a config.
  */
-export function withWorktreeConfig<G extends ConfigReader & { setConfig(args: { path: string }): Promise<void> }>(git: G, files: ConfigReader, fs: {
+export function withWorktreeConfig<G extends ConfigReader & { setConfig(args: { path: string }): Promise<void> }>(git: G, files: {
+  getConfig(args: { fs: unknown; gitdir: string; path: string }): Promise<unknown>;
+}, fs: {
   promises: { readFile(path: string, options?: 'utf8' | { encoding: 'utf8' }): Promise<Uint8Array | string> };
 }): G {
   const enabled = new Map<string, Promise<boolean>>();
