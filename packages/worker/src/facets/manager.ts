@@ -8184,6 +8184,15 @@ export class FacetManager {
     });
     // The manifests ride as the JSON they are kept as, not stringified again per run.
     const body = `${fields.slice(0, -1)},"manifests":${manifests}}`;
+    // Its map is generated as the facet loads, its run holding the launch's
+    // worker (claimAdmission), where no wait may be: its share of the budget
+    // is taken here, before, where a wait for room gives the worker back
+    // (_launchEnds). A build's is held already (buildAdmissions); the exec's
+    // finally gives either back.
+    if (!this.buildAdmissions.has(entry.pid)) {
+      const need = prefetchNeed(vfsState.rawBytes ?? 0);
+      this.buildAdmissions.set(entry.pid, tryAdmitPrefetch(need) ?? await admitPrefetch(() => this._launchEnds(entry.pid), need));
+    }
 
     try {
       return await this.processHost.runOnce(
