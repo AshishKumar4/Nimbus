@@ -179,7 +179,8 @@ try {
   // hook it cannot run, and its index.lock is removed. With JSPI the hook
   // runs, as host git's does.
   {
-    await step('a pre-commit hook', { files: { '.git/hooks/pre-commit': '#!/bin/sh\nexit 0\n', 'a.txt': 'hooked\n' }, git: [] });
+    await step('a file the hook\'s commit changes', { files: { 'hooked.txt': 'one\n' }, git: [['add', 'hooked.txt'], ['commit', '-q', '-m', 'hooked file']] });
+    await step('a pre-commit hook', { files: { '.git/hooks/pre-commit': '#!/bin/sh\nexit 0\n', 'hooked.txt': 'two\n' }, git: [] });
     chmodSync(join(hostDir, 'repo/.git/hooks/pre-commit'), 0o755);
     await sessionChmod('755', '.git/hooks/pre-commit');
     const before = await ws.exec('cd repo && git rev-parse HEAD && git ls-files -s');
@@ -200,8 +201,8 @@ try {
     rmSync(join(hostDir, 'repo/.git/hooks/pre-commit'));
     assert.equal((await ws.exec('rm repo/.git/hooks/pre-commit')).exitCode, 0);
     if (!parks) {
-      execFileSync('git', ['checkout', '--', 'a.txt'], { cwd: join(hostDir, 'repo'), env: hostEnv });
-      assert.equal((await ws.exec(`cd repo && ${exports} git checkout -- a.txt`)).exitCode, 0);
+      execFileSync('git', ['checkout', '--', 'hooked.txt'], { cwd: join(hostDir, 'repo'), env: hostEnv });
+      assert.equal((await ws.exec(`cd repo && ${exports} git checkout -- hooked.txt`)).exitCode, 0);
     }
     steps.push(parks ? 'a pre-commit hook' : 'a pre-commit hook, refused through the ABI');
   }
