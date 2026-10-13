@@ -81,6 +81,9 @@ function nodeStats(st: GitFsStat) {
 }
 
 
+/** A readFile with no path: cf-git's probe of the API (createGitFs). */
+const NO_PATH = fsError('EINVAL', 'open', '');
+
 /**
  * cf-git's `fs` over `backend`, with `packs` (pack/store.ts) its packs seam.
  * Each call is the backend's promise, shaped by one `then` where it needs
@@ -94,10 +97,15 @@ export function createGitFs<P>(backend: GitFsBackend, packs: P) {
   return {
     packs,
     promises: {
-      readFile: (filepath: string, options?: unknown): Promise<Uint8Array | string> => backend.readFile(normalizeVfsPath(filepath)).then((data) => {
-        if (data === null) throw fsError('ENOENT', 'open', filepath);
-        return wantsUtf8(options) ? dec.decode(data) : data;
-      }),
+      // cf-git's FileSystem asks readFile() with no path whether this is a
+      // promise API (isPromiseFs, twice for each of its calls): answered
+      // here, not by a read of the filesystem's root that fails.
+      readFile: (filepath: string, options?: unknown): Promise<Uint8Array | string> => typeof filepath !== 'string'
+        ? Promise.reject(NO_PATH)
+        : backend.readFile(normalizeVfsPath(filepath)).then((data) => {
+          if (data === null) throw fsError('ENOENT', 'open', filepath);
+          return wantsUtf8(options) ? dec.decode(data) : data;
+        }),
       writeFile(filepath: string, data: Uint8Array | ArrayBuffer | string, options?: { mode?: unknown }): Promise<void> {
         const bytes = typeof data === 'string' || data instanceof Uint8Array ? data : new Uint8Array(data);
         const mode = Number(options?.mode);
