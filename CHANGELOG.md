@@ -55,6 +55,13 @@ published independently in the `@nimbus-sh` npm scope.
   RPC or fire a five-second hosting-watch alarm. Cold cleanup drops legacy
   throwaway-only hosting records without a physical facet name, logs that the
   peer facet could not be named, and never guesses which facet to delete.
+- Fixed (security): the remote sandbox API deleted files as the kernel. A
+  `sandbox:use` token's `deleteFile` reached the session without a
+  credential, and an absent credential acts as `CRED_KERNEL`, so a remote
+  caller could delete files the session's user cannot, such as host-governed
+  files in sticky directories. A remote deletion now acts as the session's
+  user, as its writes already did; a colocated embedder calling the session
+  binding directly keeps the kernel default.
 
 ## 2026-10-12: platform 0.8.2, core 0.18.0, fabric 0.13.0, worker 0.16.0, loom 0.2.5, sdk 0.13.1, react 0.3.1, cli 0.2.5, create-nimbus-app 0.2.2
 
