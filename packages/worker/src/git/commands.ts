@@ -3278,9 +3278,17 @@ export async function runGitCommand(
     };
     const fs = sessionGitFs(repoVfs, null, promisor);
     const fileGit = git;
-    // Which repositories set extensions.worktreeConfig, by gitdir: the format guard's reading, else the reader's own.
+    // The command's config reader: -c over the files, the global under the
+    // repository's, and a repository's config.worktree where it sets
+    // extensions.worktreeConfig (withWorktreeConfig). That layer is taken
+    // only where config.worktree may be read: a clone or a sparse checkout
+    // (which may set the extension) or a repository that sets it (the format
+    // guard's reading, by gitdir). Any other command pays nothing for it.
     const worktreeConfigs = new Map<string, boolean>();
-    git = withConfigOverrides(withWorktreeConfig(withGlobalConfig(git, fs, ctx.env, dir), fileGit, fs, worktreeConfigs), globals.config);
+    const reader = (worktree: boolean) => withConfigOverrides(worktree
+      ? withWorktreeConfig(withGlobalConfig(fileGit, fs, ctx.env, dir), fileGit, fs, worktreeConfigs)
+      : withGlobalConfig(fileGit, fs, ctx.env, dir), globals.config);
+    git = reader(sub === 'clone' || sub === 'sparse-checkout');
     commandFs = fs;
     // The engine, as this command's principal: a repository on it takes its objects in waves (WorktreeRepo.objectWriter).
     commandEngines.set(fs, {
@@ -3302,7 +3310,11 @@ export async function runGitCommand(
     if (sub !== 'init' && sub !== 'clone') {
       const repo = await discoverRepo(repoVfs, dir);
       // The repository's format is its own config file's, as git reads it: no -c or global value stands in.
-      if (repo !== null) worktreeConfigs.set(repo.gitdir, (await assertRepositoryImplemented(await getGit(), fs, repo)).worktreeConfig);
+      if (repo !== null) {
+        const { worktreeConfig } = await assertRepositoryImplemented(await getGit(), fs, repo);
+        worktreeConfigs.set(repo.gitdir, worktreeConfig);
+        if (worktreeConfig) git = reader(true);
+      }
       if (repo !== null && command !== null) await assertNoHooks(ctx, git, fs, repo, command.sub);
       if (repo !== null && await repoVfs.exists(`${repo.gitdir}/${GIT_CLONE_JOB_MARKER}`)) {
         await ctx.stderr.write(`fatal: '${repo.worktree ?? repo.gitdir}' is still being cloned\n`);
