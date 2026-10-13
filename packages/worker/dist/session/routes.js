@@ -176,7 +176,7 @@ export async function restorePersistedDevServer(self, onlyPort) {
         if (!self.esbuildService) {
             if (!self.sqliteFs)
                 throw new Error('Session VFS is not initialized');
-            self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_KERNEL));
+            self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER));
         }
         // Prefer the current request's basePath (just captured from the
         // X-Nimbus-Base header) over the stored one — the latter is only
@@ -1241,7 +1241,7 @@ async function routeFetch(self, request) {
             if (!self.esbuildService) {
                 if (!self.sqliteFs)
                     throw new Error('Session VFS is not initialized');
-                self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_KERNEL));
+                self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER));
             }
             const basePath = self.viteBasePath;
             // process metadata support: allocate a PID + port even on the

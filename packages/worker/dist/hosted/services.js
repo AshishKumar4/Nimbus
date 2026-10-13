@@ -3,7 +3,7 @@ import { normalizeChildCommand, shellChildRunner, textBytes } from "@nimbus-sh/c
 import { runChildCommand, runChildShell } from '@nimbus-sh/core/workspace/child-process-runner.js';
 import { isRuntimeInstallHint } from "../shell/npm-bin-entrypoints.js";
 import { bindProcessTable, isDynamicWorkerDeadlock, issueProcessNews, withLaunchAdmission, } from "@nimbus-sh/fabric/budgets.js";
-import { CRED_KERNEL, CRED_SESSION_USER } from "@nimbus-sh/core/runtime/os-contracts.js";
+import { CRED_SESSION_USER } from "@nimbus-sh/core/runtime/os-contracts.js";
 import { ProcessFiles, ProcessView, X_OK } from "@nimbus-sh/core/runtime/process-files.js";
 import { resolutionOf } from '@nimbus-sh/core/shell/exec-dispatch.js';
 import { resolveContext } from "@nimbus-sh/core/substrate/lifo/commands/registry.js";
@@ -186,7 +186,7 @@ export async function ensureNpmInstaller(self, runtimeContext, onProgress) {
     if (!self.esbuildService) {
         if (!self.sqliteFs)
             throw new Error('Session VFS is not initialized');
-        self.esbuildService = supervisorEsbuildService(runtimeContext.ctx, runtimeContext.env, self.getFilesystemAuthority().namespaceFs(CRED_KERNEL));
+        self.esbuildService = supervisorEsbuildService(runtimeContext.ctx, runtimeContext.env, self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER));
     }
     // Lazy-load the installer (+ its ~216 KB resolver/facet/loader-pool
     // subgraph) on first npm use so it stays out of the cold script-eval

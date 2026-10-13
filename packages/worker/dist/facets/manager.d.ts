@@ -1999,14 +1999,16 @@ export declare class FacetManager {
      */
     private _watchHost;
     /**
-     * The reader the fabric completes a boot spec's by-path members with.
+     * The reader the fabric completes process `pid`'s boot spec's by-path
+     * members with.
      *
-     * Reads as CRED_KERNEL because that is who WROTE them: the generated images
-     * are kernel-owned (`_imageBlobs`) and the runtime wasm images
-     * are installed by the kernel. Uncached because these are the session's
-     * largest files — a ruby interpreter image is 34.3 MiB — and pinning one in
-     * the VFS content LRU for the life of the session is what once crashed the
-     * supervisor.
+     * Reads as the process, as a peer host's reader already does (its no-run
+     * binding acts for the pid): the boot names project images the process
+     * chose, so it reads only what the process may. The kernel's own images
+     * (`_imageBlobs`, installed runtimes) are world-readable. Uncached because
+     * these are the session's largest files — a ruby interpreter image is
+     * 34.3 MiB — and pinning one in the VFS content LRU for the life of the
+     * session is what once crashed the supervisor.
      */
     private _residentDisk;
     /**

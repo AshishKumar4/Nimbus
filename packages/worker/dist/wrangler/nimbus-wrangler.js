@@ -136,6 +136,7 @@ function renderWorkerRunningHtml(opts) {
 export class NimbusWrangler {
     network;
     vfs;
+    bundleFs;
     namespace;
     esbuild;
     loaderEnv;
@@ -153,6 +154,7 @@ export class NimbusWrangler {
     doClassMap = new Map();
     constructor(opts) {
         this.vfs = opts.vfs;
+        this.bundleFs = opts.bundleFs;
         this.namespace = opts.namespace;
         this.esbuild = opts.esbuild;
         this.loaderEnv = opts.env;
@@ -324,6 +326,8 @@ export class NimbusWrangler {
                     'child_process', 'worker_threads', 'perf_hooks', 'zlib',
                     'assert', 'fs/promises', 'process',
                 ],
+                // Through the starting process's view, not the build service's default.
+                fs: this.bundleFs,
             };
             let timeoutHandle = null;
             const result = await Promise.race([
