@@ -156,6 +156,7 @@ export interface AuthorityFilesystemOptions {
   fs(): RuntimeFsBridge | null;
   memory(): WebAssembly.Memory;
   fds: Map<number, FilesystemFd>;
+  /** The lowest number not in `fds`: it is taken once its entry is set, so set it before asking again. */
   allocateFd(): number;
   abi?: 'preview0' | 'preview1';
   synchronous: boolean;
