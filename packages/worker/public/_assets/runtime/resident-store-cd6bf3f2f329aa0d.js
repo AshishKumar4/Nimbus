@@ -308,17 +308,17 @@ var __nimbusResidentModule = (() => {
       return true;
     const permissions = entry.mode & 511;
     if (cred.uid === 0)
-      return (requested & 1) === 0 || (permissions & 73) !== 0;
+      return (requested & 1) === 0 || (permissions & 73) !== 0 || entry.type === "directory";
     const shift = cred.uid === entry.uid ? 6 : cred.gid === entry.gid || cred.groups.includes(entry.gid) ? 3 : 0;
     return (permissions >> shift & requested) === requested;
   }
 
   // src/vfs/resident/permissions.ts
   var groupsOf = (cred) => Array.isArray(cred.groups) ? cred.groups.map(Number) : [];
-  function namespaceAllows(cred, meta, want) {
+  function namespaceAllows(cred, meta, type, want) {
     if (!cred) return true;
     return posixAccess(
-      { mode: Number(meta?.mode), uid: Number(meta?.uid), gid: Number(meta?.gid) },
+      { mode: Number(meta?.mode), uid: Number(meta?.uid), gid: Number(meta?.gid), type },
       want,
       { uid: Number(cred.uid), gid: Number(cred.gid), groups: groupsOf(cred) }
     );
@@ -1051,10 +1051,9 @@ var __nimbusResidentModule = (() => {
       }
       return "ELOOP";
     };
-    const allows = (meta, want) => namespaceAllows(cred, meta, want);
     const traversable = (row) => {
       if (!row || row.kind !== NS_DIR) return false;
-      return allows(row, 1);
+      return namespaceAllows(cred, row, "directory", 1);
     };
     const children = (k) => coherence.require().nsChildren(k).map((row) => ({ name: String(row.name), kind: Number(row.kind), mode: Number(row.mode) }));
     return {
@@ -1130,7 +1129,7 @@ var __nimbusResidentModule = (() => {
        */
       readable(stat) {
         if (!stat || !Number.isInteger(Number(stat.mode)) || !Number.isInteger(Number(stat.uid)) || !Number.isInteger(Number(stat.gid))) return false;
-        return allows(stat, 4);
+        return namespaceAllows(cred, stat, "file", 4);
       },
       /**
        * Apply one delta entry that carries a stat. Returns a directory whose

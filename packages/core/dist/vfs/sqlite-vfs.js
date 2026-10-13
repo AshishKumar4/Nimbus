@@ -44,8 +44,9 @@ import { posixAccess } from './posix-access.js';
 import { RecallRequired, recallOf, withRecall } from './recall.js';
 import { SESSION_KERNEL_ROOTS, readLeaseCovers } from '../_shared/read-lease-cover.js';
 export { RecallRequired, recallOf, withRecall } from './recall.js';
-import { readDeclaredSource } from './vfs.js';
-import { errnoCodeOf, vfsError } from './vfs-error.js';
+import { readDeclaredSource, syncValue } from './vfs.js';
+import { errnoCodeOf, toVfsError, vfsError } from './vfs-error.js';
+import { walkRemoval } from './removal-walk.js';
 import { inodeKind, linkedSignal, untilAborted, validateFileChunks, validateInodeShape, withUmask, } from '../runtime/wave-contracts.js';
 import { LEDGER_ROW_BYTES, StorageLedger, databaseBytesOf } from '../runtime/storage-ledger.js';
 import { CDC_MIN, ContentCutter, EMPTY_CONTENT_KEY, ManifestDigest, chunkHash, cutContent, hex, } from './content-chunking.js';
@@ -2201,7 +2202,7 @@ export class SqliteVFS {
             acquire: (epoch, cursor, options) => this.acquire(epoch, cursor, bound, options),
             unlink: (path) => this.unlink(path, bound),
             rmdir: (path) => this.rmdir(path, bound),
-            removeRecursive: (path) => this.removeRecursive(path, bound),
+            removeRecursive: (path, options) => this.removeRecursive(path, bound, options),
             rename: (oldPath, newPath) => this.rename(oldPath, newPath, bound),
             copyFile: (src, dest) => this.copyFile(src, dest, bound),
             copyTree: (src, dest, options) => this.copyTreeNow(this.planCopyTree(src, dest, bound, options)),
@@ -2313,10 +2314,10 @@ export class SqliteVFS {
         return view;
     }
     accessInode(inode, want, cred) {
-        return this.accessMode(inode.mode, inode.uid, inode.gid, want, cred);
+        return this.accessMode(inode.mode, inode.uid, inode.gid, inode.kind, want, cred);
     }
-    accessMode(mode, uid, gid, want, cred) {
-        return posixAccess({ mode, uid, gid }, want, cred);
+    accessMode(mode, uid, gid, type, want, cred) {
+        return posixAccess({ mode, uid, gid, type }, want, cred);
     }
     /**
      * Walk `path` to its inode, following links, in the caller's own names.
@@ -2598,7 +2599,7 @@ export class SqliteVFS {
      * removing a name in it needs write and search there like any directory.
      */
     checkRootWritable(path, cred) {
-        if (!this.accessMode(ROOT_DIRECTORY_MODE, 0, 0, 0o3, cred))
+        if (!this.accessMode(ROOT_DIRECTORY_MODE, 0, 0, 'directory', 0o3, cred))
             throw vfsKeyError('EACCES', normalizeVfsPath(path));
     }
     checkParentAccess(path, cred) {
@@ -4935,6 +4936,13 @@ export class SqliteVFS {
         return results;
     }
     unlink(path, cred) {
+        this.writeBatch({ inodes: [], chunks: [], deletePaths: [this.unlinked(path, cred).path] }, cred);
+    }
+    rmdir(path, cred) {
+        this.writeBatch({ inodes: [], chunks: [], deletePaths: [this.rmdired(path, cred).path] }, cred);
+    }
+    /** What unlink(2) of `path` by `cred` removes, once it may: it refuses as unlink does. */
+    unlinked(path, cred) {
         const resolved = this.checkAccess(path, 0, cred, { followLeaf: false });
         this.assertMutationsAllowed([this.lexicalKey(path, cred).value, resolved.path]);
         const inode = resolved.inode;
@@ -4944,9 +4952,14 @@ export class SqliteVFS {
         this.checkStickyParentMutation(resolved.path, inode, cred);
         if (inode.isDir)
             throw vfsKeyError('EISDIR', resolved.path);
-        this.writeBatch({ inodes: [], chunks: [], deletePaths: [resolved.path] }, cred);
+        return { path: resolved.path, inode };
     }
-    rmdir(path, cred) {
+    /**
+     * What rmdir(2) of `path` by `cred` removes, once it may: it refuses as
+     * rmdir does. `going`: entries already decided to go with it, which do not
+     * keep it from being empty.
+     */
+    rmdired(path, cred, going) {
         const np = this.storageKey(entryVfsPath(path).path, cred).value;
         // Everything below acts on the directory the name resolves to, the one
         // whose permissions are checked.
@@ -4958,12 +4971,15 @@ export class SqliteVFS {
             throw vfsKeyError('ENOENT', path);
         this.checkStickyParentMutation(resolved.path, inode, cred);
         // Empty is one seek of the parent index.
-        if ([...this.sql.exec('SELECT 1 FROM vfs_inodes WHERE parent_path = ? LIMIT 1', resolved.path)].length > 0) {
-            throw vfsKeyError('ENOTEMPTY', path);
-        }
+        const children = going === undefined
+            ? this.sql.exec('SELECT path FROM vfs_inodes WHERE parent_path = ? LIMIT 1', resolved.path)
+            : this.sql.exec('SELECT path FROM vfs_inodes WHERE parent_path = ?', resolved.path);
+        for (const row of children)
+            if (!going?.has(String(row.path)))
+                throw vfsKeyError('ENOTEMPTY', path);
         if (!inode.isDir)
             throw vfsKeyError('ENOTDIR', path);
-        this.writeBatch({ inodes: [], chunks: [], deletePaths: [resolved.path] }, cred);
+        return { path: resolved.path, inode };
     }
     /**
      * Remove a path and everything beneath it, in bounded transactions.
@@ -4981,8 +4997,13 @@ export class SqliteVFS {
      * before the directory holding it, every committed prefix is a consistent
      * smaller tree — exactly the state an interrupted per-entry walk left
      * behind. The subtree is read a page at a time, never held whole.
+     *
+     * That is the walk's own result whenever nothing in the tree can be
+     * refused: everything goes. Where something may be (mayRefuseRemoval), the
+     * tree is walked entry by entry (removal-walk.ts), as rm -r walks it: what
+     * may go goes, and the report says what stayed and why.
      */
-    removeRecursive(path, cred) {
+    removeRecursive(path, cred, options) {
         const entry = entryVfsPath(path);
         const resolved = this.checkAccess(entry.path, 0, cred, { followLeaf: false });
         if (entry.directory && resolved.inode?.kind !== 'directory')
@@ -4990,17 +5011,17 @@ export class SqliteVFS {
         this.assertMutationsAllowed([this.lexicalKey(path, cred).value, resolved.path]);
         if (!resolved.inode)
             throw vfsKeyError('ENOENT', normalizeVfsPath(path));
-        this.checkParentAccess(resolved.path, cred);
-        this.checkStickyParentMutation(resolved.path, resolved.inode, cred);
-        // The directories the recursive walk used to enumerate are exactly the
-        // directory inodes of the subtree, and enumerating one needed read
-        // permission. Answering from the index would otherwise skip that check.
-        // All of them pass before the first group commits.
-        for (const inode of followedBy(this.subtree(resolved.path, { desc: true, directoriesOnly: true }), resolved.inode)) {
-            if (inode.isDir && !this.accessInode(inode, 0o4, cred))
-                throw vfsKeyError('EACCES', inode.path);
+        if (this.mayRefuseRemoval(resolved.path, resolved.inode, cred)) {
+            const steps = this.removalSteps(cred);
+            const report = syncValue(walkRemoval(steps, {
+                rel: path, at: (r) => r, keepVanishedAncestors: options?.keepVanishedAncestors === true,
+                missing: () => vfsKeyError('ENOENT', normalizeVfsPath(path)),
+                passes: (cause) => recallOf(cause) !== null || steps.failedCommit(cause),
+            }));
+            steps.flush();
+            this.runContentMaintenanceSafely(1);
+            return report;
         }
-        let removed = 0;
         let group = [];
         let budget = this.newPlan();
         const flush = () => {
@@ -5013,7 +5034,6 @@ export class SqliteVFS {
             // guard through commitBatch, so each check is contemporaneous with the
             // transaction that acts on it.
             this.commitBatch({ inodes: [], chunks: [], deletePaths: paths }, cred);
-            removed += paths.length;
         };
         for (const inode of followedBy(this.subtree(resolved.path, { desc: true }), resolved.inode)) {
             // Close the group before the entry that would overflow it. The estimate
@@ -5025,7 +5045,86 @@ export class SqliteVFS {
         }
         flush();
         this.runContentMaintenanceSafely(1);
-        return removed;
+        return { removed: [path], kept: [], failures: [] };
+    }
+    /**
+     * Whether rm -r of `path` may have something refused: the operand's own
+     * removal, or, in a directory of the tree, its reading or its entries'
+     * removal (a directory the caller may not read, search and write, or a
+     * sticky one the caller does not own). Root is refused nothing here.
+     */
+    mayRefuseRemoval(path, inode, cred) {
+        if (cred.uid === 0)
+            return false;
+        try {
+            this.checkParentAccess(path, cred);
+            this.checkStickyParentMutation(path, inode, cred);
+        }
+        catch (error) {
+            if (recallOf(error) !== null)
+                throw error;
+            return true;
+        }
+        for (const dir of followedBy(this.subtree(path, { desc: true, directoriesOnly: true }), inode)) {
+            if (!dir.isDir)
+                continue;
+            if (!this.accessInode(dir, 0o7, cred))
+                return true;
+            if ((dir.mode & 0o1000) !== 0 && dir.uid !== cred.uid)
+                return true;
+        }
+        return false;
+    }
+    /**
+     * The walk's steps (removal-walk.ts) as `cred`'s own calls, each refusal
+     * named as SqliteFiles names it. A removal is decided at once, as unlink
+     * and rmdir decide it, and committed with the ones decided before it, a
+     * bounded group at a time (flush), as the plain removal commits. A group
+     * that fails to commit ends the walk with its error (failedCommit).
+     */
+    removalSteps(cred) {
+        const call = (syscall, path, op) => {
+            try {
+                return op();
+            }
+            catch (error) {
+                throw toVfsError(error, syscall, path);
+            }
+        };
+        const going = new Set();
+        let group = [];
+        let budget = this.newPlan();
+        let failed;
+        const flush = () => {
+            if (group.length === 0)
+                return;
+            const paths = group;
+            group = [];
+            budget = this.newPlan();
+            try {
+                this.commitBatch({ inodes: [], chunks: [], deletePaths: paths }, cred);
+            }
+            catch (error) {
+                failed = error;
+                throw error;
+            }
+            for (const path of paths)
+                going.delete(path);
+        };
+        return {
+            lstat: (r) => call('lstat', r, () => this.statIfPresent(r, cred, false)),
+            readdir: (r) => call('scandir', r, () => this.readdir(r, cred)),
+            remove: (r, dir) => {
+                const target = call(dir ? 'rmdir' : 'unlink', r, () => (dir ? this.rmdired(r, cred, going) : this.unlinked(r, cred)));
+                if (budget.wouldExceedDeletion() !== null)
+                    flush();
+                budget.addDeletedPath(target.path, target.inode);
+                group.push(target.path);
+                going.add(target.path);
+            },
+            flush,
+            failedCommit: (cause) => failed !== undefined && cause === failed,
+        };
     }
     /**
      * Every inode strictly under `root`, a bounded page at a time: the live
@@ -7708,6 +7807,8 @@ export class SqliteVFS {
         const unplaceable = (key) => vfsError('ENOTDIR', key, 'not a directory the entry can be placed in');
         const checkedParents = new Set();
         const placedParents = new Set();
+        // The sticky directories a deletion is in, as checkParent met them (checkStickyParent).
+        const stickyParents = new Map();
         const checkParent = (path, placing) => {
             const parent = parentKey(path);
             if (parent === '') {
@@ -7720,6 +7821,8 @@ export class SqliteVFS {
             checked.add(parent);
             const existing = this.inodes.get(parent);
             if (existing) {
+                if (!placing && (existing.mode & 0o1000) !== 0)
+                    stickyParents.set(parent, existing);
                 if (placing && existing.kind !== 'directory')
                     throw unplaceable(parent);
                 const resolved = this.checkAccess(parent, 0o3, cred);
@@ -7731,7 +7834,7 @@ export class SqliteVFS {
             if (!staged || !staged.isDir)
                 throw vfsKeyError('ENOENT', parent);
             checkParent(parent, placing);
-            if (!this.accessMode(staged.mode, staged.uid ?? 1000, staged.gid ?? 1000, 0o3, cred)) {
+            if (!this.accessMode(staged.mode, staged.uid ?? 1000, staged.gid ?? 1000, 'directory', 0o3, cred)) {
                 throw vfsKeyError('EACCES', parent);
             }
         };
@@ -7758,8 +7861,12 @@ export class SqliteVFS {
                 followLeaf: false,
                 allowMissingLeaf: true,
             }).inode;
-            if (existing)
+            if (existing) {
                 checkParent(normalized, false);
+                const sticky = stickyParents.size === 0 ? undefined : stickyParents.get(parentKey(normalized));
+                if (sticky !== undefined)
+                    this.checkStickyParent(sticky, existing, cred, normalized);
+            }
         }
         for (const entry of inodes) {
             if (priors.has(entry.path) ? priors.get(entry.path) : this.inodes.get(entry.path))
@@ -7824,7 +7931,7 @@ export class SqliteVFS {
         this.assertMutationsAllowed(Array.from(batchMutationPaths(payload), (path) => this.lexicalKey(path, cred).value));
         const normalized = this.authorizeBatch(payload, cred);
         this.assertMutationsAllowed(batchMutationPaths(normalized));
-        return this._writeBatchWithRetry(normalized, { source: 'strict-batch', limitMode: 'bounded' }, true, onCommit);
+        return this._writeBatchWithRetry(normalized, cred, { source: 'strict-batch', limitMode: 'bounded' }, true, onCommit);
     }
     /**
      * Write a file too large for one transaction: its FastCDC chunks stage into
@@ -8186,8 +8293,11 @@ export class SqliteVFS {
             else if (call.call === 'rm') {
                 // fs.rm: a name not there is no refusal when forced.
                 try {
-                    if (call.recursive)
-                        this.removeRecursive(call.path, cred);
+                    if (call.recursive) {
+                        const failed = this.removeRecursive(call.path, cred).failures[0];
+                        if (failed)
+                            throw failed.error;
+                    }
                     else
                         this.unlink(call.path, cred);
                 }
@@ -8755,8 +8865,8 @@ export class SqliteVFS {
             this.activeHolds = prior;
         }
     }
-    _writeBatchWithRetry(payload, execution, enforceLimits, onCommit) {
-        const prepared = this.prepareBatchTransaction(payload, onCommit !== undefined);
+    _writeBatchWithRetry(payload, cred, execution, enforceLimits, onCommit) {
+        const prepared = this.prepareBatchTransaction(payload, cred, onCommit !== undefined);
         if (prepared.plan.inodes.length === 0 && prepared.plan.deletes.length === 0)
             return { inodes: 0, chunks: 0 };
         if (enforceLimits)
@@ -10079,8 +10189,11 @@ export class SqliteVFS {
      * to chunk ids inside it.
      */
     /** `commitRow`: the transaction's commit callback writes a checkpoint row, which the plan counts. */
-    prepareBatchTransaction(payload, commitRow = false) {
-        const deletedInodes = this.collectSubtreeInodes(payload.deletePaths ?? []);
+    prepareBatchTransaction(payload, cred, commitRow = false) {
+        const below = cred.uid === 0 ? undefined : [];
+        const deletedInodes = this.collectSubtreeInodes(payload.deletePaths ?? [], below);
+        if (below !== undefined)
+            this.authorizeDeletions(below, deletedInodes, cred);
         const deletedInodesByPath = new Map(deletedInodes.map((inode) => [inode.path, inode]));
         const builder = this.newPlan(commitRow);
         const deletedPaths = new Set(payload.deletePaths ?? []);
@@ -10304,6 +10417,31 @@ export class SqliteVFS {
         return { inodes: inodeCount };
     }
     /**
+     * Each entry a batch deletes below the roots it names (`below`), as
+     * unlink(2) and rmdir(2) would judge it: the directory holding it (deleted
+     * with it) written and searched by `cred`, and, when that directory is
+     * sticky, it or the entry `cred`'s. A batch deleting a tree deletes every
+     * entry of it, so each is judged; the roots are judged where they are
+     * named (authorizeBatchNow).
+     */
+    authorizeDeletions(below, deleted, cred) {
+        if (below.length === 0)
+            return;
+        const byPath = new Map(deleted.map((inode) => [inode.path, inode]));
+        const searched = new Set();
+        for (const inode of below) {
+            const parent = byPath.get(parentKey(inode.path)) ?? this.inodes.get(parentKey(inode.path));
+            if (parent === undefined)
+                continue;
+            if (!searched.has(parent)) {
+                if (!this.accessInode(parent, 0o3, cred))
+                    throw vfsKeyError('EACCES', parent.path);
+                searched.add(parent);
+            }
+            this.checkStickyParent(parent, inode, cred, inode.path);
+        }
+    }
+    /**
      * Every inode at or under each root, deepest first.
      *
      * The path index answers "what is under this prefix?" in the size of the
@@ -10315,8 +10453,10 @@ export class SqliteVFS {
      *
      * The subtree is held whole, so only callers that commit it whole use this:
      * a batch's deletions and a rename. A removal pages (subtree, descending).
+     * `below`, given, also gets the ones met under a root before (or without)
+     * being met as a root themselves.
      */
-    collectSubtreeInodes(roots) {
+    collectSubtreeInodes(roots, below) {
         if (roots.length === 0)
             return [];
         const collected = [];
@@ -10332,7 +10472,10 @@ export class SqliteVFS {
                 if (visited.has(path))
                     continue;
                 visited.add(path);
-                collected.push(this.inodes.peek(path) ?? this.inodeFromRow(row));
+                const inode = this.inodes.peek(path) ?? this.inodeFromRow(row);
+                collected.push(inode);
+                if (below !== undefined && path !== root)
+                    below.push(inode);
             }
         }
         // A child's path is always longer than its parent's, so length order

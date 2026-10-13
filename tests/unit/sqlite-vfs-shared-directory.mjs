@@ -107,7 +107,8 @@ fixture(({ h, v, k, a, b, mode }) => {
   assert.equal(k.readlink('team/draft/link'),'/private/missing'); assert.equal(k.exists('private/missing'),false);
   assert.equal(a.stat('team/draft/own').ino,ino); assert.equal(v.at('old').readFileString('private/draft/own'),'own');
   assert.throws(()=>b.rename('team/draft','team/stolen'),{code:'EPERM'});
-  assert.throws(()=>b.removeRecursive('team/draft'),{code:'EPERM'});
+  const refused=b.removeRecursive('team/draft');
+  assert.deepEqual(refused.failures.map(({path,error})=>[path,error.code]),[['team/draft','EPERM']]); assert.equal(k.exists('team/draft'),true);
   k.chmod('team/draft',0o755); assert.equal(mode('team/draft'),0o2775);
   h.failOnTransactionStatement(1);
   assert.throws(()=>k.chmod('team',0o755)); h.clearFault();

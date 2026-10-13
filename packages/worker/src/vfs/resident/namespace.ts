@@ -329,13 +329,10 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
     return 'ELOOP';
   };
 
-  /** Whether the credential may `want` (r=4, w=2, x=1) what `meta` describes. */
-  const allows = (meta: ModeMeta | undefined, want: number): boolean => namespaceAllows(cred, meta, want);
-
   /** Whether the credential may search directory `row` (POSIX x). */
   const traversable = (row: NsRow | undefined): boolean => {
     if (!row || row.kind !== NS_DIR) return false;
-    return allows(row, 1);
+    return namespaceAllows(cred, row, 'directory', 1);
   };
 
   const children = (k: string): { name: string; kind: number; mode: number }[] => coherence.require().nsChildren(k)
@@ -408,7 +405,7 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
      */
     readable(stat) {
       if (!stat || !Number.isInteger(Number(stat.mode)) || !Number.isInteger(Number(stat.uid)) || !Number.isInteger(Number(stat.gid))) return false;
-      return allows(stat, 4);
+      return namespaceAllows(cred, stat, 'file', 4);
     },
     /**
      * Apply one delta entry that carries a stat. Returns a directory whose

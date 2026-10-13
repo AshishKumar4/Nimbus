@@ -74,7 +74,7 @@ function counters(rawVfs) {
     after = page.next;
   } while (after !== null);
   vfs.rename('tree/pkg-0', 'tree/moved');
-  assert.equal(vfs.removeRecursive('tree/pkg-1'), 22);
+  assert.deepEqual(vfs.removeRecursive('tree/pkg-1'), { removed: ['tree/pkg-1'], kept: [], failures: [] });
   assert.deepEqual(inodeTableScans(harness, from), [], 'a walk read the whole inode table');
   const stats = rawVfs.getStats();
   assert.equal(stats.inodes.cacheCapacity, 16);
@@ -144,7 +144,7 @@ function counters(rawVfs) {
 
   const reopened = openVfs(createSqliteVfsTestHarness(harness.db)).rawVfs;
   assert.deepEqual(counters(reopened), counters(rawVfs));
-  assert.equal(vfs.removeRecursive('a'), before.files + before.directories);
+  assert.deepEqual(vfs.removeRecursive('a'), { removed: ['a'], kept: [], failures: [] });
   assert.deepEqual(counters(rawVfs), { files: 0, directories: 0, usedBytes: 0 });
   assert.equal(rawVfs._verifyCounters(), null);
 }
@@ -236,8 +236,10 @@ function counters(rawVfs) {
 }
 
 // ── A removal larger than one page of the subtree ─────────────────────────
-// Each directory's entries go before it, however the pages fall, and
-// every directory is checked readable before the first group commits.
+// Each directory's entries go before it, however the pages fall. A
+// directory the caller may not read, on the last page of a descending walk,
+// stays with what is in it and the directory holding it, and everything
+// else goes.
 {
   const PATHS = 4400; // past one 4096-row page
   const { harness, rawVfs, vfs } = openVfs(undefined, { inodeCacheEntries: 64 });
@@ -245,31 +247,42 @@ function counters(rawVfs) {
   vfs.chown('w', 1000, 1000);
   vfs.mkdir('w/big/aaa-opaque', { recursive: true });
   vfs.writeFile('w/big/aaa-opaque/kept', 'x');
-  const created = ['w/big', 'w/big/aaa-opaque', 'w/big/aaa-opaque/kept'];
-  for (let dir = 0; created.length < PATHS; dir++) {
-    const parent = `w/big/d-${String(dir).padStart(3, '0')}`;
-    const inodes = [{ path: parent, parentPath: 'w/big', isDir: true, size: 0, mtime: 1, mode: 0o755, chunkCount: 0 }];
-    for (let f = 0; f < 40; f++) {
-      inodes.push({ path: `${parent}/f-${f}`, parentPath: parent, isDir: false, size: 0, mtime: 1, mode: 0o644, chunkCount: 0 });
+  const opaque = ['w/big', 'w/big/aaa-opaque', 'w/big/aaa-opaque/kept'];
+  /** Directories of 40 files under w/big until the tree holds PATHS entries; their paths. */
+  const fill = () => {
+    const made = [];
+    for (let dir = 0; opaque.length + made.length < PATHS; dir++) {
+      const parent = `w/big/d-${String(dir).padStart(3, '0')}`;
+      const inodes = [{ path: parent, parentPath: 'w/big', isDir: true, size: 0, mtime: 1, mode: 0o755, chunkCount: 0 }];
+      for (let f = 0; f < 40; f++) {
+        inodes.push({ path: `${parent}/f-${f}`, parentPath: parent, isDir: false, size: 0, mtime: 1, mode: 0o644, chunkCount: 0 });
+      }
+      vfs.writeBatch({ inodes, chunks: [] });
+      made.push(...inodes.map((inode) => inode.path));
     }
-    vfs.writeBatch({ inodes, chunks: [] });
-    created.push(...inodes.map((inode) => inode.path));
-  }
+    return made;
+  };
+  fill();
   rawVfs.getStats();
   // Sorts first, so a descending walk reaches it on the last page.
   vfs.chown('w/big', 1000, 1000);
   vfs.chown('w/big/aaa-opaque', 1000, 1000);
   vfs.chmod('w/big/aaa-opaque', 0o333);
-  const user = rawVfs.as(CRED_USER);
-  assert.throws(() => user.removeRecursive('w/big'), /EACCES: w\/big\/aaa-opaque/);
-  assert.equal(rawVfs.getStats().inodes.total, created.length + 1, 'a refused removal removed something'); // + w
+  const refused = rawVfs.as(CRED_USER).removeRecursive('w/big');
+  assert.deepEqual(
+    { kept: refused.kept, failures: refused.failures.map(({ path, error }) => [path, error.code, error.syscall]) },
+    { kept: ['w/big', 'w/big/aaa-opaque'], failures: [['w/big/aaa-opaque', 'EACCES', 'scandir']] },
+  );
+  assert.equal(rawVfs.getStats().inodes.total, opaque.length + 1, 'everything else went'); // + w
+  vfs.chmod('w/big/aaa-opaque', 0o755);
+  const created = [...opaque, ...fill()];
 
   const order = [];
   rawVfs.events.on((batch) => {
     for (const event of batch) if (event.type === 'unlink' || event.type === 'unlinkDir') order.push(event.path);
   });
   const from = harness.statements.length;
-  assert.equal(vfs.removeRecursive('w/big'), created.length);
+  assert.deepEqual(vfs.removeRecursive('w/big'), { removed: ['w/big'], kept: [], failures: [] });
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.deepEqual(inodeTableScans(harness, from), []);
   assert.equal(order.length, created.length);

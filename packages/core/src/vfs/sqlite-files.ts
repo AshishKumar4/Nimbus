@@ -10,7 +10,7 @@
  * code.
  */
 import { ROOT_DIRECTORY_MODE, ROOT_INODE, type CredentialedVfs, type SqliteVFS, type VfsStat as SqliteStat } from './sqlite-vfs.js';
-import type { SyncVFS, VFS, VfsCasResult, VfsChanges, VfsCred, VfsDirent, VfsOpenFile, VfsRevision, VfsStat, VfsViewOptions, VfsWriteObserver } from './vfs.js';
+import type { SyncVFS, VFS, VfsCasResult, VfsChanges, VfsCred, VfsDirent, VfsOpenFile, VfsRemoval, VfsRevision, VfsStat, VfsViewOptions, VfsWriteObserver } from './vfs.js';
 import { syscallError, toVfsError, VfsError, VFS_ERRNO, type VfsErrorCode } from './vfs-error.js';
 import { projectChange, type VfsEvent } from './events.js';
 import { normalizeVfsPath } from './path.js';
@@ -230,8 +230,9 @@ export class SqliteFiles implements VFS {
     this.run('rename', from, () => this.view.rename(from, to), to);
   }
 
-  removeRecursive(path: string): void {
-    this.run('rm', path, () => { this.view.removeRecursive(path); });
+  /** rm -r, with its report (SqliteVFS's, the walk's own result). */
+  removeRecursive(path: string, options?: { keepVanishedAncestors?: boolean }): VfsRemoval {
+    return this.run('rm', path, () => this.view.removeRecursive(path, options));
   }
 
   symlink(target: string, path: string): void {
