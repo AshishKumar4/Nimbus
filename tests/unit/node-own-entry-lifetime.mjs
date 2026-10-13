@@ -6,10 +6,12 @@
 // Red before: a rename re-made the records beneath the name, unsettled, so a
 // file whose write the session had already acknowledged kept its own mode
 // past every later barrier, and statSync answered it over a peer's chmod
-// that promises.stat reported.
+// that promises.stat reported. Carrying the records' own settlement instead
+// let a barrier that came while the rename was still on its way retire the
+// new names, and neither name was there.
 import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createAuthority, facetSupervisor, launchResident, runScenarios, residentDataPlan } from './lib/resident-body.mjs';
+import { createAuthority, facetSupervisor, launchResident, runScenarios, residentDataPlan, until } from './lib/resident-body.mjs';
 
 const PROGRAM = `
 const fs = require("fs");
@@ -17,10 +19,13 @@ globalThis.__probe = { fs, resume: () => new Promise((resolve) => setTimeout(res
 require("http").createServer((q, s) => s.end("up")).listen(3000);
 `;
 
-async function boot() {
+/** \`overrides\` may be a function of the session's own answer to an op (facetSupervisor's \`forward\`). */
+async function boot(overrides = {}) {
   const authority = createAuthority();
   authority.kfs.mkdir('home/user/app', { recursive: true, mode: 0o755 });
-  const handle = facetSupervisor(authority, {});
+  let forward;
+  const handle = facetSupervisor(authority, typeof overrides === 'function' ? overrides((name, args) => forward(name, args)) : overrides);
+  forward = handle.forward;
   await launchResident({
     authority,
     program: PROGRAM,
@@ -70,6 +75,38 @@ await runScenarios(import.meta.path, {
     assert.equal((fs.statSync('/home/user/app/later/f').mode & 0o777).toString(8), '600', 'its own mode until then');
     await fs.promises.realpath('/home/user/app/later/f');
     assert.deepEqual(await afterPeerChmod(box, '/home/user/app/later/f'), ['640', '640']);
+  },
+
+  async 'a barrier while a rename is on its way leaves the new names there and the old one gone'() {
+    // The rename's wave is held before the session has it, while a peer's
+    // change and a barrier that reports it come and go.
+    let holding = false;
+    const held = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    const box = await boot((forward) => ({
+      writeBatchStream: async (...args) => {
+        if (holding) { holding = false; held.resolve(); await release.promise; }
+        return forward('writeBatchStream', args);
+      },
+    }));
+    const { authority, probe } = box;
+    const { fs } = probe;
+    fs.mkdirSync('/home/user/app/tree');
+    fs.writeFileSync('/home/user/app/tree/f', 'f', { mode: 0o600 });
+    await fs.promises.realpath('/home/user/app/tree/f');
+    holding = true;
+    fs.renameSync('/home/user/app/tree', '/home/user/app/moved');
+    await held.promise;
+    await authority.peer.writeFile('home/user/app/other', 'o');
+    const reported = authority.rawVfs.revision();
+    const resumed = probe.resume();
+    await until(() => globalThis.__nimbusVfsCursor.rev >= reported, 'the barrier applied the peer\'s change');
+    const during = [fs.existsSync('/home/user/app/moved/f'), fs.existsSync('/home/user/app/tree'), fs.readdirSync('/home/user/app').sort()];
+    assert.deepEqual(during, [true, false, ['moved', 'other']], 'while the rename is out: the new names, not the old');
+    release.resolve();
+    await resumed;
+    await fs.promises.realpath('/home/user/app/moved/f');
+    assert.deepEqual(await afterPeerChmod(box, '/home/user/app/moved/f'), ['640', '640']);
   },
 
   async 'a tree removed and made again: a peer chmod shows'() {
