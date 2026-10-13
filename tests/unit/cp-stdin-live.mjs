@@ -12,9 +12,8 @@
 // parent ends it.
 
 import assert from 'node:assert/strict';
-import { FacetProcessManager } from '../../packages/worker/src/facets/process.ts';
+import { ChildProcessManager, shellChildRunner } from '../../packages/core/src/runtime/child-process-manager.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
-import { staticStdinReader } from '../../packages/core/src/shell/stdin-adapter.ts';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -27,17 +26,14 @@ async function cat(stdin, hooks) {
   return 0;
 }
 
-const manager = new FacetProcessManager({
+const manager = new ChildProcessManager({
   processes,
-  vfsForProcess: () => ({ exists: async () => true, isDirectory: async () => false, readFileString: async () => 'cat\n' }),
-  commandRegistry: {
-    async resolve(name) { return { kind: name === 'cat' ? 'pure-builtin' : 'facet-direct' }; },
-    runPureBuiltin: (_pid, _name, _args, _env, _cwd, stdin, hooks) => cat(stdin, hooks),
-  },
-  shellExecutor: { execute: (_pid, _line, _env, _cwd, stdin, hooks) => cat(stdin, hooks) },
-  facetMgr: {
-    // A program by name or path runs through the registry: a script's shell, here its `cat`.
-    execStream: (payload, opts, hooks) => cat(opts.stdin ?? staticStdinReader(JSON.parse(payload).stdin), hooks),
+  terminate(pid) { return processes.kill(pid, 143); },
+  async resolve(request) {
+    const vfs = { exists: async () => true, isDirectory: async () => false, readFileString: async () => 'cat\n' };
+    return shellChildRunner(request, vfs, ({ stdin, output }) => cat(stdin, output)) ?? {
+      run: ({ stdin, output }) => cat(stdin, output),
+    };
   },
 });
 

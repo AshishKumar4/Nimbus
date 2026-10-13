@@ -72,8 +72,9 @@ import { disposeRpcResources } from '@nimbus-sh/platform/rpc-dispose.js';
 import { SUPERVISOR_ANSWERING_SRC } from '@nimbus-sh/core/runtime/supervisor-answering.generated.js';
 import { STOP_REPLAY_SOURCE } from '../runtime/stop-replay.js';
 import { encodeBase64, OwnedPieces, ReplayOutputGate, StdinTaken, stopRecordOf } from '../runtime/stop-replay-host.js';
-import { answerDigest, ReplayJournal } from '../runtime/stop-replay-journal.js';
-import { REPLAY_FETCH_MAX_BYTES, REPLAY_PREFIX_MAX_BYTES, REPLAY_JOURNAL_MAX_ENTRIES, REPLAY_READ_RECEIPT_MAX_BYTES, STOP_LIMIT } from '../runtime/stop-replay-contracts.js';
+import { answerDigest } from '../runtime/stop-replay-journal.js';
+import { REPLAY_PREFIX_MAX_BYTES, REPLAY_JOURNAL_MAX_ENTRIES, REPLAY_READ_RECEIPT_MAX_BYTES, STOP_LIMIT } from '../runtime/stop-replay-contracts.js';
+import { ReplaySessions } from '../runtime/replay-session.js';
 import { openSupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import { sqliteWasmModuleEntry } from './opencode-staging.js';
 import { FACET_IMAGE_WRITE_SLICE_BYTES, ImageStore, } from '@nimbus-sh/fabric/image-store.js';
@@ -4601,16 +4602,8 @@ export class FacetManager {
     outputGates = new Map();
     /** Per stdin channel of a process that can stop: what its current run took (stdinTakenBy). */
     stdinTaken = new Map();
-    /** Per process that can stop: what each of its runs was answered (journalCall). */
-    journals = new Map();
-    /**
-     * Connections a process that can stop opened through the session, by the
-     * token its socket names (netTls, outboundCall): where to, and the upgrade
-     * rendezvous between the guest asking and the outbound doing it.
-     */
-    netTargets = new Map();
-    /** A live fetch the outbound is making for a journaled answer: its result, by ticket. */
-    fetchTickets = new Map();
+    /** Per process that can stop: its journal, its connections and live fetches, across its runs (runtime/replay-session.ts). */
+    replay = new ReplaySessions();
     /**
      * The content-addressed boot-image store (fabric's image-store.ts),
      * writing through this session's kernel-credentialed VFS and rooted off the
@@ -4830,6 +4823,8 @@ export class FacetManager {
         // ended the process, and the delete must not be a floating promise there.
         this.processes.setOnTerminal((pid) => {
             this.launchBundles.delete(pid);
+            // However it ended, nothing of its replay is waited on any more.
+            this.replay.close(pid);
             this.residentProfileOffers.delete(pid);
             // Its writers' cursors go with it, unless its log is still to be
             // drained (which numbers against them, and forgets them after).
@@ -6320,12 +6315,12 @@ export class FacetManager {
                 if (stoppable || promotable)
                     this.outputGates.set(entry.pid, new ReplayOutputGate());
                 if (stoppable) {
-                    this.journals.set(entry.pid, new ReplayJournal(() => {
+                    const { journal } = this.replay.open(entry.pid, () => {
                         this.outputGates.get(entry.pid)?.close();
                         divergence.abort();
-                    }));
+                    });
                     if (opts.stdinFile)
-                        this.journals.get(entry.pid).bindStdinFile({ path: opts.stdinFile.path, offset: opts.stdinFile.offset, limit: STDIN_SYNC_READ_BYTES });
+                        journal.bindStdinFile({ path: opts.stdinFile.path, offset: opts.stdinFile.offset, limit: STDIN_SYNC_READ_BYTES });
                 }
                 if (inputChannel > 0)
                     this.stdinTaken.set(inputChannel, new StdinTaken(held, STDIN_SYNC_READ_BYTES));
@@ -6356,7 +6351,7 @@ export class FacetManager {
                     // What the session has of a captured run's output: the last stopped
                     // run's, until a run after it gets past the read it stopped at (N8).
                     let acceptedCapture = { stdout: '', stderr: '' };
-                    const journal = this.journals.get(entry.pid);
+                    const journal = this.replay.get(entry.pid)?.journal;
                     for (let stops = 0;; stops++) {
                         let outcome;
                         try {
@@ -6503,11 +6498,8 @@ export class FacetManager {
                     this.stdinTaken.delete(inputChannel);
                     held.give();
                     this.outputGates.delete(entry.pid);
-                    if (stoppable) {
-                        this.journals.get(entry.pid)?.close();
-                        this.journals.delete(entry.pid);
-                        this._dropNetTargets(entry.pid);
-                    }
+                    if (stoppable)
+                        this.replay.close(entry.pid);
                 }
             });
         }
@@ -6711,7 +6703,7 @@ export class FacetManager {
             tape: stop.tape,
             stopAt: stop.stopAt,
             prefix: stopped.prefix ? { stdout: encodeBase64(stopped.prefix.stdout), stderr: encodeBase64(stopped.prefix.stderr) } : null,
-            observations: this.journals.get(pid)?.observations,
+            observations: this.replay.get(pid)?.journal.observations,
         };
         // A \`< file\` the stopped run read synchronously but the launch had not
         // staged: the next run reads it ahead. Nothing is waited for.
@@ -6827,256 +6819,6 @@ export class FacetManager {
      */
     stdinTakenBy(pid) {
         return this.stdinTaken.get(pid);
-    }
-    /**
-     * A supervisor call from a process, answered through \`dispatch\`: for one
-     * that can stop, through its journal (runtime/stop-replay.ts ReplayJournal),
-     * which counts what it does outside itself and checks what a run after a
-     * stop is answered against the run before it.
-     */
-    journalCall(op, args, pid, run, dispatch) {
-        const journal = pid === undefined ? undefined : this.journals.get(pid);
-        // A call that names no run is the session's own on the process's behalf
-        // (the stat a `< file` relaunch makes), not something a run was told.
-        if (!journal || run === undefined || op === 'replayBoundary' || op === 'netTls' || op === 'outbound')
-            return dispatch();
-        if (op === 'getCachedTarball' || op === 'getPackument')
-            return journal.externalRead(op, args, run);
-        return journal.handle(op, args, run, dispatch);
-    }
-    /** Whether this bound run is still recording: cache reads must not fill shared stores. */
-    journalRecording(pid, run) {
-        const journal = pid === undefined ? undefined : this.journals.get(pid);
-        return !!journal && journal.admits(run) && journal.recording;
-    }
-    stdinPrepared(pid, run) { this.journals.get(pid)?.prepared(run); }
-    async cacheResult(pid, run, ticket, result) {
-        const journal = this.journals.get(pid);
-        if (!journal)
-            throw new Error('no such cache observation');
-        await journal.externalResult(ticket, result, run);
-    }
-    /** The run after a stop reached the read the run before it stopped at. */
-    async replayBoundary(pid, run) {
-        await this.journals.get(pid)?.boundary(run);
-    }
-    /**
-     * A process that can stop opening a TLS connection through the session
-     * (\`open\`: where to; the outbound proxies it), and asking for its upgrade
-     * (\`upgrade\`: answered once the outbound has made the TLS session with the
-     * server). Opening one is something a second run would do again.
-     */
-    async netTls(pid, run, action, token, payload) {
-        const journal = this.journals.get(pid);
-        if (!journal || !journal.admits(run) || !/^[0-9a-f]{32}$/.test(token))
-            throw new Error('netTls: no such process or connection');
-        if (action === 'open') {
-            const host = String(payload?.host ?? ''), port = Number(payload?.port);
-            if (host.length === 0 || !Number.isInteger(port) || port <= 0 || port > 65535)
-                throw new Error('netTls: bad target');
-            const refused = await journal.beforeEffect(`tls.connect ${host}:${port}`);
-            if (refused)
-                throw refused;
-            this._netTarget(token, pid).host = host;
-            this._netTarget(token, pid).port = port;
-            this._netTarget(token, pid).register();
-            return true;
-        }
-        if (action === 'upgrade') {
-            const target = this._netTarget(token, pid);
-            const servername = typeof payload?.servername === 'string' ? payload.servername : undefined;
-            target.ask(servername === undefined ? {} : { servername });
-            return await target.answered;
-        }
-        throw new Error(`netTls: unknown action ${action}`);
-    }
-    /**
-     * The outbound side of a process's network (SupervisorRPC.fetch/connect,
-     * the globalOutbound of a run that can stop):
-     *   effect(what)            a request that is not a read, a plain connection
-     *   fetch(key, what)        a read: { replay: response } or { live: ticket }
-     *   fetched(ticket, result) what the live read got; answered when the
-     *                           program may have it
-     *   connect(token)          where a TLS connection goes
-     *   awaitUpgrade(token)     resolves when the guest asks for the TLS session
-     *   upgraded(token, result) whether the outbound made it
-     */
-    async outboundCall(pid, run, action, payload) {
-        const journal = this.journals.get(pid);
-        if (!journal || !journal.admits(run))
-            throw new Error('outbound: this run of the process has stopped');
-        switch (action) {
-            case 'effect': {
-                const refused = await journal.beforeEffect(String(payload?.what ?? 'a request'));
-                if (refused)
-                    throw refused;
-                // The run cannot be replayed now: the outbound need not ask again.
-                return { unrecorded: true };
-            }
-            case 'fetch': {
-                // Nothing is recorded for a run that cannot be replayed (D1).
-                if (!journal.recording)
-                    return { unrecorded: true };
-                const key = String(payload?.key ?? '');
-                const what = String(payload?.what ?? 'a request');
-                let plan;
-                const planned = new Promise((resolve) => { plan = resolve; });
-                const ticket = crypto.randomUUID();
-                let deliver;
-                const fetched = new Promise((resolve) => { deliver = resolve; });
-                let replayed = false;
-                let response;
-                const done = journal.answer('fetchHeader ' + key, what + ' headers', async (expected) => {
-                    if (expected?.response) {
-                        replayed = true;
-                        response = expected.response;
-                        const { status, statusText, headers, hasBody } = response;
-                        return { status, statusText, headers, hasBody };
-                    }
-                    plan({ live: ticket });
-                    const result = await fetched;
-                    if ('error' in result) {
-                        // A pre-headers platform rejection has not crossed as a
-                        // Response. Keep the live error, but never replay an incomplete
-                        // failure shape (the body-error protocol below records one).
-                        journal.disqualify(`${what} failed before its headers (${result.error})`);
-                        throw new Error(result.error);
-                    }
-                    response = { ...result, body: new Uint8Array(0) };
-                    return result;
-                }, () => response);
-                const live = { pid, run, key, what, deliver, done, response: undefined };
-                this.fetchTickets.set(ticket, live);
-                done.then(() => {
-                    live.response = response;
-                    if (replayed) {
-                        if (response?.hasBody)
-                            this._startFetchBody(ticket, live, journal);
-                        else
-                            this.fetchTickets.delete(ticket);
-                        plan({ replay: response, ticket });
-                    }
-                }, (error) => { this.fetchTickets.delete(ticket); plan({ error: errorMessage(error) }); });
-                return await planned;
-            }
-            case 'fetched': {
-                const ticket = String(payload?.ticket ?? '');
-                const live = this.fetchTickets.get(ticket);
-                if (!live || live.pid !== pid || live.run !== run)
-                    throw new Error('outbound: no such request');
-                const result = payload?.result;
-                live.deliver(result);
-                try {
-                    await live.done;
-                }
-                catch (error) {
-                    this.fetchTickets.delete(ticket);
-                    throw error;
-                }
-                if (!('error' in result) && result.hasBody)
-                    this._startFetchBody(ticket, live, journal);
-                else
-                    this.fetchTickets.delete(ticket);
-                return true;
-            }
-            case 'fetchBody': {
-                const ticket = String(payload?.ticket ?? '');
-                const live = this.fetchTickets.get(ticket);
-                if (!live || live.pid !== pid || live.run !== run || !live.body)
-                    throw new Error('outbound: no such response body');
-                this.fetchTickets.delete(ticket);
-                live.body.deliver(payload?.result);
-                await live.body.done;
-                journal.bodyFinished(ticket);
-                return true;
-            }
-            case 'connect': {
-                const token = String(payload?.token ?? '');
-                if (!/^[0-9a-f]{32}$/.test(token)) {
-                    // A plain connection (not one the TLS shim opened): proxied, and
-                    // something a second run would do again.
-                    const refused = await journal.beforeEffect(`connect ${token}`);
-                    if (refused)
-                        throw refused;
-                    return { plain: true, unrecorded: true };
-                }
-                const target = this._netTarget(token, pid);
-                const registered = await Promise.race([target.registered.then(() => true), new Promise((r) => setTimeout(() => r(false), 10_000))]);
-                if (!registered)
-                    throw new Error('outbound: no connection was opened under this name');
-                return { host: target.host, port: target.port };
-            }
-            case 'awaitUpgrade': {
-                const target = this._netTarget(String(payload?.token ?? ''), pid);
-                return await target.asked;
-            }
-            case 'upgraded': {
-                const target = this._netTarget(String(payload?.token ?? ''), pid);
-                const result = payload?.result;
-                target.answer(result && result.ok ? { ok: true } : { ok: false, error: String(result?.error ?? 'the TLS session could not be made') });
-                return true;
-            }
-            default:
-                throw new Error(`outbound: unknown action ${action}`);
-        }
-    }
-    _startFetchBody(ticket, live, journal) {
-        if (live.body)
-            return;
-        journal.bodyStarted(ticket, live.what);
-        let deliver;
-        const pending = new Promise((resolve) => { deliver = resolve; });
-        const done = journal.answer('fetchBody ' + live.key, live.what + ' body', async () => {
-            const result = await pending;
-            if ('tooLarge' in result)
-                journal.disqualify(`received a response larger than ${REPLAY_FETCH_MAX_BYTES / 1048576} MiB (${live.what})`);
-            else if (live.response) {
-                if ('error' in result) {
-                    live.response.bodyError = result.error;
-                    live.response.bodyFailure = result.failure;
-                }
-                if ('body' in result) {
-                    live.response.body = result.body;
-                    live.response.chunks = result.chunks;
-                    journal.bodyBytes(result.body.byteLength);
-                }
-            }
-            return result;
-        });
-        // The ticket owns the pending answer even if its client is aborted.
-        done.catch(() => { });
-        live.body = { deliver, done };
-    }
-    _netTarget(token, pid) {
-        let target = this.netTargets.get(token);
-        if (target === undefined) {
-            let register, ask, answer;
-            const registered = new Promise((resolve) => { register = resolve; });
-            const asked = new Promise((resolve) => { ask = resolve; });
-            const answered = new Promise((resolve) => { answer = resolve; });
-            target = { pid, host: '', port: 0, registered, register, asked, ask, answered, answer };
-            this.netTargets.set(token, target);
-        }
-        if (target.pid !== pid)
-            throw new Error('no such connection');
-        return target;
-    }
-    /** A process ended: its connections' names are forgotten and their waits answered. */
-    _dropNetTargets(pid) {
-        for (const [token, target] of this.netTargets) {
-            if (target.pid !== pid)
-                continue;
-            target.ask(null);
-            target.answer({ ok: false, error: 'the process ended' });
-            this.netTargets.delete(token);
-        }
-        for (const [ticket, live] of this.fetchTickets) {
-            if (live.pid !== pid)
-                continue;
-            live.deliver({ error: 'the process ended' });
-            live.body?.deliver({ error: 'the process ended' });
-            this.fetchTickets.delete(ticket);
-        }
     }
     /**
      * Feed a pipe to `pid`'s input channel as it arrives, a chunk at a time:
@@ -7631,12 +7373,12 @@ export class FacetManager {
         // The run this writer is reads the process's stdin, and no run before it,
         // and is the one its supervisor calls are answered for.
         this.stdinTaken.get(pid)?.start(writerId);
-        this.journals.get(pid)?.start(writerId);
+        this.replay.get(pid)?.journal.start(writerId);
         const entry = this.processes.get(pid);
         if (!entry || entry.state !== 'running') {
             throw new Error(`Nimbus: cannot activate append writer for non-running process ${pid}`);
         }
-        const journal = this.journals.get(pid);
+        const journal = this.replay.get(pid)?.journal;
         if (journal)
             openSupervisorDeliveries(this.ctx).startReadRun(pid, writerId, {
                 maxEntries: REPLAY_JOURNAL_MAX_ENTRIES,
@@ -8207,10 +7949,10 @@ export class FacetManager {
             if (stdinWriter) {
                 this.outputGates.set(entry.pid, new ReplayOutputGate());
                 this.stdinTaken.set(entry.pid, new StdinTaken(heldStdin, STDIN_SYNC_READ_BYTES));
-                this.journals.set(entry.pid, new ReplayJournal(() => {
+                this.replay.open(entry.pid, () => {
                     this.outputGates.get(entry.pid)?.close();
                     strayed?.();
-                }));
+                });
             }
             // Each boot starts from the umask the process started with.
             const startUmask = entry.cred.umask;
@@ -8325,7 +8067,7 @@ export class FacetManager {
                     catch (e) {
                         // The boot stopped itself at a synchronous read of stdin that has to
                         // wait: wait for the input, then boot it again.
-                        const journal = this.journals.get(entry.pid);
+                        const journal = this.replay.get(entry.pid)?.journal;
                         let stop = stoppable ? stopRecordOf(e, stopNonce, rerun?.replay.run ?? 1) : null;
                         if (stop === null && journal?.diverged)
                             stop = { v: 3, kind: 'diverged', run: rerun?.replay.run ?? 1, out: [], why: journal.diverged };
@@ -8368,9 +8110,7 @@ export class FacetManager {
                 if (stdinWriter) {
                     this.outputGates.delete(entry.pid);
                     // Booted: from here it is a running server, never run again.
-                    this.journals.get(entry.pid)?.close();
-                    this.journals.delete(entry.pid);
-                    this._dropNetTargets(entry.pid);
+                    this.replay.close(entry.pid);
                 }
             }
             if (opts.port && opts.port > 0 && opts.port < 65536) {

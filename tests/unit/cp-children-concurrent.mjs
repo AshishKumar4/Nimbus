@@ -20,7 +20,7 @@
 // drops the terminator without running it, so the program ran on.
 
 import assert from 'node:assert/strict';
-import { FacetProcessManager } from '../../packages/worker/src/facets/process.ts';
+import { ChildProcessManager } from '../../packages/core/src/runtime/child-process-manager.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { DynamicWorkerDeadlockError } from '../../packages/fabric/src/budgets.ts';
 import { exitCodeForSignal } from '../../packages/core/src/substrate/lifo/shell/signals.ts';
@@ -32,18 +32,20 @@ const parent = processes.spawn('node', ['parent.js'], '/home/user');
 
 /** pid → the facet program's run: running, how it ended, and how the test ends it. */
 const runs = new Map();
-const manager = new FacetProcessManager({
+const manager = new ChildProcessManager({
   processes,
-  vfsForProcess() { throw new Error('no script file is read'); },
-  commandRegistry: { async resolve() { return { kind: 'facet-direct' }; } },
-  facetMgr: {
-    async execStream(payload, _options, hooks) {
-      const { processPid, args } = JSON.parse(payload);
-      if (args[0] === 'refused') throw new DynamicWorkerDeadlockError(processPid, [1, 2]);
+  async resolve() { return {
+    async run({ pid: processPid, args, output: hooks, onStarted }) {
+      if (args[0] === 'refused') {
+        const error = new DynamicWorkerDeadlockError(processPid, [1, 2]);
+        return { code: error.code, errno: error.errno };
+      }
       if (args[0] === 'refused-after-start') {
-        hooks.onStarted();
+        onStarted();
         hooks.onStdout(encoder.encode('READY\n'));
-        throw new DynamicWorkerDeadlockError(processPid, [1, 2]);
+        const error = new DynamicWorkerDeadlockError(processPid, [1, 2]);
+        hooks.onStderr(encoder.encode(`facet error: ${error.code}: ${error.message}\n`));
+        return 1;
       }
       const run = { running: true, ended: null };
       runs.set(processPid, run);
@@ -55,9 +57,9 @@ const manager = new FacetProcessManager({
       run.running = false;
       return run.ended === 'aborted' ? 130 : 0;
     },
-    // The session's kill, as FacetManager.kill: the table, whose kill runs the pid's terminator.
-    kill(pid, signal) { return processes.kill(pid, exitCodeForSignal(signal)); },
-  },
+  }; },
+  // The session's kill, as FacetManager.kill: the table, whose kill runs the pid's terminator.
+  terminate(pid, signal) { return processes.kill(pid, exitCodeForSignal(signal)); },
 });
 const spawn = async (...args) => (await manager.spawn({
   parentPid: parent.pid, command: 'node', args, cwd: '/home/user', env: {}, stdio: ['pipe', 'pipe', 'pipe'],

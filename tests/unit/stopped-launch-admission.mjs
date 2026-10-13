@@ -4,6 +4,7 @@
 // then reacquired before preparation or a run. The nested run hold ends
 // as runOneShot ends it after ctx.abort.
 import assert from 'node:assert/strict';
+import { ReplaySessions } from '../../packages/worker/src/runtime/replay-session.ts';
 import { mock } from 'bun:test';
 import { ReadAheadBudget, STDIN_SYNC_READ_BYTES } from '../../packages/core/src/runtime/stdin-read.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
@@ -18,6 +19,7 @@ import {
   DO_DYNAMIC_WORKER_LIMIT,
   loaderLedgerStats,
   issueProcessNews,
+  isDynamicWorkerDeadlock,
   setProcessBlocked,
   suspendLaunchAdmission,
   withLaunchAdmission,
@@ -45,8 +47,8 @@ function launch({ stops = 1, signal, ctx = {}, processes = new SessionProcessSup
       }),
     },
     stdinReadAhead: new ReadAheadBudget(STDIN_SYNC_READ_BYTES + 1),
-    outputGates: new Map(), journals: new Map(), stdinTaken: new Map(),
-    netTargets: new Map(), fetchTickets: new Map(), launchBundles: new Map(), launching: new Map(),
+    outputGates: new Map(), replay: new ReplaySessions(), stdinTaken: new Map(),
+    launchBundles: new Map(), launching: new Map(),
     _launchPacer: () => ({ settle() {}, chunks: 0 }),
     _buildProcessBundle: async () => {
       preparation.push(held());
@@ -178,7 +180,7 @@ for (const queued of [false, true]) {
 // last; when root blocks too the ledger refuses R. This is an exit of a
 // running child, not an initial spawn error, all the way through the broker.
 {
-  const { FacetProcessManager } = await import('../../packages/worker/src/facets/process.ts');
+  const { ChildProcessManager } = await import('../../packages/core/src/runtime/child-process-manager.ts');
   const ctx = {}, processes = new SessionProcessSupervisor();
   const root = processes.spawn('root', [], '/');
   const endRoot = beginLoaderFetch(ctx, 'root', undefined, root.pid);
@@ -186,22 +188,25 @@ for (const queued of [false, true]) {
   bindProcessTable(ctx, processes, (decide) => decisions.push(decide));
   const made = deferred();
   let r;
-  const broker = new FacetProcessManager({
+  const broker = new ChildProcessManager({
     processes,
-    vfsForProcess() { throw new Error('no script file'); },
     issueNews: (pid) => issueProcessNews(ctx, pid),
-    commandRegistry: { async resolve() { return { kind: 'facet-direct' }; } },
-    facetMgr: {
-      async execStream(payload, _opts, hooks) {
-        const { processPid } = JSON.parse(payload);
+    terminate(pid) { return processes.kill(pid, 143); },
+    async resolve() { return {
+      async run({ pid: processPid, output: hooks, onStarted }) {
         r = launch({ ctx, processes, entry: processes.get(processPid), stdout: 'READY\n', captureOutput: false,
-          onAdmitted: () => hooks.onStarted(),
+          onAdmitted: onStarted,
           deliverOutput: async (_pid, stream, bytes) => stream === 'stdout' ? hooks.onStdout(bytes) : hooks.onStderr(bytes),
         });
         made.resolve();
-        return (await r.done).exitCode;
+        try { return (await r.done).exitCode; }
+        catch (error) {
+          if (!isDynamicWorkerDeadlock(error)) throw error;
+          hooks.onStderr(new TextEncoder().encode(`facet error: ${error.code}: ${error.message}\n`));
+          return 1;
+        }
       },
-    },
+    }; },
   });
   const { childPid } = await broker.spawn({ parentPid: root.pid, command: 'node', args: ['R'], cwd: '/', env: {}, stdio: ['pipe', 'pipe', 'pipe'] });
   await made.promise;

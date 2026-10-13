@@ -145,6 +145,15 @@ export const MAX_R2_TARBALL_BYTES = 30 * 1024 * 1024;
 
 // ── Types ───────────────────────────────────────────────────────────────
 
+/** How a packument is read: through the cache, or (`revalidate`) past it to the registry, however fresh the cached copy. */
+export interface PackumentReadOptions {
+  retries?: number;
+  timeoutMs?: number;
+  registry?: string;
+  /** The cached copy cannot answer what is asked: ask the registry (past its CDN) before saying nothing does. */
+  revalidate?: boolean;
+}
+
 /** Outcome of `R2CacheClient.readThroughPackument`. */
 export interface PackumentReadThrough {
   /** Corgi packument JSON text, or null when `status`/`failure` is set. */
@@ -169,6 +178,10 @@ export interface CachedPackument {
    *  expired entries are returned only as a stale-while-error fallback,
    *  never as a hot-path hit. */
   expired: boolean;
+  /** The registry's ETag for this body, which a refetch is made conditional on; absent where none was kept. */
+  etag?: string;
+  /** Where it was read from R2: R2's own version of the object, which a renewal is conditional on. */
+  stored?: string;
 }
 
 /** Optional R2 binding shape (we treat null as "not provisioned"). */
@@ -178,13 +191,17 @@ type R2BucketLike = {
     text(): Promise<string>;
     uploaded?: Date;
     customMetadata?: Record<string, string>;
+    /** R2's own version of the object. */
+    etag?: string;
   } | null>;
+  /** Null where `onlyIf` does not hold: nothing is written. */
   put(
     key: string,
     body: Uint8Array | ArrayBuffer | string,
     opts?: {
       httpMetadata?: { contentType?: string };
       customMetadata?: Record<string, string>;
+      onlyIf?: { etagMatches: string };
     },
   ): Promise<unknown>;
   delete(key: string): Promise<unknown>;
@@ -609,7 +626,12 @@ export class R2CacheClient {
    * to L2 until the R2 entry's customMetadata.expiresAt
    * (fillPackumentL2).
    */
-  async getPackument(name: string, registry: string = NPM_REGISTRY_ORIGIN): Promise<CachedPackument | null> {
+  async getPackument(
+    name: string,
+    registry: string = NPM_REGISTRY_ORIGIN,
+    /** Also what a refetch is made conditional on (etag, stored), which an expired entry always carries. */
+    validators = false,
+  ): Promise<CachedPackument | null> {
     // ── L2 fast path (per-colo) ───────────────────────────────────
     const l2Key = new Request(packumentL2Url(name, registry));
     const l2Hit = await l2Get(l2Key);
@@ -638,7 +660,9 @@ export class R2CacheClient {
       const expired = expiresAt > 0
         ? now >= expiresAt
         : ageMs >= PACKUMENT_TTL_MS;
-      return { json, ageMs, expired };
+      if (!expired && !validators) return { json, ageMs, expired };
+      const etag = l2Hit.headers.get('x-nimbus-etag');
+      return etag ? { json, ageMs, expired, etag } : { json, ageMs, expired };
     }
     this._recordMiss('L2', 'packument');
     // ── L3 path (cross-tenant) ────────────────────────────────────
@@ -666,10 +690,15 @@ export class R2CacheClient {
     // two callers reading the same key back-to-back during the fill
     // window do not both miss L2 and double-fetch L3; the cost (~1-3 ms
     // in workerd local, sub-ms at edge) is paid only on cold reads.
+    const etag = obj.customMetadata?.etag;
     if (!expired && !this.readOnly) {
-      await this.fillPackumentL2(l2Key, json, expiresAt > 0 ? expiresAt : now + PACKUMENT_TTL_MS);
+      await this.fillPackumentL2(l2Key, json, expiresAt > 0 ? expiresAt : now + PACKUMENT_TTL_MS, etag);
     }
-    return { json, ageMs, expired };
+    if (!expired && !validators) return { json, ageMs, expired };
+    const hit: CachedPackument = { json, ageMs, expired };
+    if (etag) hit.etag = etag;
+    if (obj.etag) hit.stored = obj.etag;
+    return hit;
   }
 
   /**
@@ -678,13 +707,14 @@ export class R2CacheClient {
    * read can re-check the boundary even if the cache layer extends the
    * entry. Best-effort: a failed put is silent.
    */
-  private async fillPackumentL2(l2Key: Request, json: string, expiresAt: number): Promise<void> {
+  private async fillPackumentL2(l2Key: Request, json: string, expiresAt: number, etag?: string): Promise<void> {
     const ttlSec = Math.max(1, Math.floor((expiresAt - Date.now()) / 1000));
     await l2Put(l2Key, new Response(json, {
       headers: {
         'Content-Type': 'application/json',
         'Cache-Control': `public, max-age=${ttlSec}`,
         'X-Nimbus-ExpiresAt': String(expiresAt),
+        ...(etag ? { 'X-Nimbus-ETag': etag } : {}),
       },
     }));
   }
@@ -711,7 +741,7 @@ export class R2CacheClient {
    */
   async readThroughPackument(
     name: string,
-    options?: { retries?: number; timeoutMs?: number; registry?: string },
+    options?: PackumentReadOptions,
     /**
      * The workspace's network. Under an egress the shared cache is neither
      * read (the egress sees every registry read) nor filled (what an egress
@@ -721,13 +751,33 @@ export class R2CacheClient {
   ): Promise<PackumentReadThrough> {
     const registry = options?.registry ?? NPM_REGISTRY_ORIGIN;
     const shared = network.egress === undefined;
-    const cached = shared ? await this.getPackument(name, registry) : null;
-    if (cached && !cached.expired && cached.json) {
+    const revalidate = options?.revalidate === true;
+    const cached = shared ? await this.getPackument(name, registry, revalidate) : null;
+    if (cached && !cached.expired && cached.json && !revalidate) {
       return { json: cached.json, source: 'r2-cache' };
     }
+    return this.fetchPackument(name, registry, cached, options, network);
+  }
 
+  /**
+   * The registry's answer for a packument the cache did not answer
+   * (`cached`: its copy, expired, or one a resolve could not answer, whose
+   * ETag the request is conditional on; `revalidate`: past the registry's
+   * CDN as well), and the cache filled with it.
+   */
+  private async fetchPackument(
+    name: string,
+    registry: string,
+    cached: CachedPackument | null,
+    options: PackumentReadOptions | undefined,
+    network: WorkspaceNetwork,
+  ): Promise<PackumentReadThrough> {
+    const shared = network.egress === undefined;
     const url = packumentUrl(name, registry);
     const timeoutMs = options?.timeoutMs ?? 15_000;
+    const headers: Record<string, string> = { Accept: 'application/vnd.npm.install-v1+json' };
+    if (cached?.etag) headers['If-None-Match'] = cached.etag;
+    if (options?.revalidate) headers['Cache-Control'] = 'no-cache';
     let resp: Response;
     try {
       // One try is the request and, for a 2xx, reading its body: a body
@@ -742,17 +792,34 @@ export class R2CacheClient {
           // libc). It omits `exports`; that is read from the tarball's
           // package.json in the VFS at require time, where the resolver's
           // packument copy is `?? null` anyway.
-          const answer = await fetchVia(url, {
-            headers: { Accept: 'application/vnd.npm.install-v1+json' },
-            signal: ctl.signal,
-          });
-          return answer.ok ? new Response(await answer.text(), { status: answer.status }) : answer;
+          const answer = await fetchVia(url, { headers, signal: ctl.signal });
+          if (!answer.ok) return answer;
+          const etag = answer.headers.get('etag');
+          return new Response(await answer.text(), { status: answer.status, headers: etag ? { etag } : {} });
         } finally {
           clearTimeout(timer);
         }
       }, { retries: options?.retries });
     } catch (e) {
       return { json: null, source: 'network', failure: errorText(e) };
+    }
+    if (resp.status === 304 && cached?.etag !== undefined) {
+      // Unchanged since it was cached: the cached body stands. An expired
+      // copy is kept as a fresh answer would be (what the 200 would cost,
+      // less its body), but only where the stored entry is still the one
+      // validated: a newer body written meanwhile stays. R2 by its own
+      // version of the object (conditional put); the colo copy by its ETag.
+      if (!this.readOnly && shared && cached.expired) {
+        const expiresAt = Date.now() + PACKUMENT_TTL_MS;
+        // Read from R2: renewed there first, and the colo only where that held.
+        const renewed = cached.stored === undefined || await this.putPackument(name, cached.json, registry, expiresAt, cached.etag, cached.stored);
+        if (renewed) {
+          const l2Key = new Request(packumentL2Url(name, registry));
+          const colo = await l2Get(l2Key);
+          if (colo === null || colo.headers.get('x-nimbus-etag') === cached.etag) await this.fillPackumentL2(l2Key, cached.json, expiresAt, cached.etag);
+        }
+      }
+      return { json: cached.json, source: 'r2-cache' };
     }
     if (resp.ok) {
       const json = await resp.text();
@@ -763,8 +830,9 @@ export class R2CacheClient {
       // session read R2 back: a session each for registry, R2, then L2.
       if (!this.readOnly && shared) {
         const expiresAt = Date.now() + PACKUMENT_TTL_MS;
-        await this.putPackument(name, json, registry, expiresAt);
-        await this.fillPackumentL2(new Request(packumentL2Url(name, registry)), json, expiresAt);
+        const etag = resp.headers.get('etag') ?? undefined;
+        await this.putPackument(name, json, registry, expiresAt, etag);
+        await this.fillPackumentL2(new Request(packumentL2Url(name, registry)), json, expiresAt, etag);
       }
       return { json, source: 'network' };
     }
@@ -778,8 +846,8 @@ export class R2CacheClient {
 
   /**
    * Write a packument JSON to R2 with a TTL stamp (`expiresAt`, by default
-   * the packument TTL from now) in customMetadata. No-op if the bucket
-   * binding is missing.
+   * the packument TTL from now) and the registry's ETag in customMetadata.
+   * No-op if the bucket binding is missing.
    *
    * Only `readThroughPackument` (and the debug bench seeder) call this:
    * it is a storage primitive, never an RPC. See readThroughPackument
@@ -793,14 +861,18 @@ export class R2CacheClient {
     json: string,
     registry: string = NPM_REGISTRY_ORIGIN,
     expiresAt: number = Date.now() + PACKUMENT_TTL_MS,
+    etag?: string,
+    /** Write only over this version of the stored object (R2's own etag). */
+    over?: string,
   ): Promise<boolean> {
     if (!this.packumentBucket) return false;
     try {
-      await this.packumentBucket.put(packumentKey(name, registry), json, {
+      const written = await this.packumentBucket.put(packumentKey(name, registry), json, {
         httpMetadata: { contentType: 'application/json' },
-        customMetadata: { expiresAt: String(expiresAt) },
+        customMetadata: { expiresAt: String(expiresAt), ...(etag ? { etag } : {}) },
+        ...(over !== undefined ? { onlyIf: { etagMatches: over } } : {}),
       });
-      return true;
+      return over === undefined || written !== null;
     } catch {
       return false;
     }

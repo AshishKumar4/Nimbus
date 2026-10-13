@@ -8,7 +8,7 @@
 
 import assert from 'node:assert/strict';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
-import { FacetProcessManager } from '../../packages/worker/src/facets/process.ts';
+import { ChildProcessManager } from '../../packages/core/src/runtime/child-process-manager.ts';
 import { WebSocketTerminal } from '../../packages/worker/src/facets/ws-terminal.ts';
 import { _emitShellExecDone, _rpcReportExit, _rpcStdout } from '../../packages/worker/src/session/rpc.ts';
 
@@ -123,18 +123,18 @@ function holdingGate() {
   let childPid = 0;
   let ran = () => {};
   const wrote = new Promise((r) => { ran = r; });
-  const broker = new FacetProcessManager({
-    processes, vfsForProcess() {}, facetMgr: { kill() { return true; } },
-    commandRegistry: {
-      async resolve() { return { kind: 'pure-builtin' }; },
-      async runPureBuiltin(pid, _name, _args, _env, _cwd, _stdin, hooks) {
+  const broker = new ChildProcessManager({
+    processes, terminate() { return true; },
+    async resolve() { return {
+      async run({ pid, output: hooks, onStarted }) {
+        onStarted();
         gate.hold(pid);
         const written = hooks.onStdout(bytes('piped'));
         ran();
         await written;
         return 0;
       },
-    },
+    }; },
   });
   ({ childPid } = await broker.spawn({ parentPid: parent, command: 'producer', args: [], env: {}, cwd: '/', stdio: ['ignore', 'pipe', 'ignore'] }));
   await wrote;
@@ -164,16 +164,16 @@ function holdingGate() {
   const gate = holdingGate();
   processes.setOutputGate(gate.gate);
   const killed = [];
-  const broker = new FacetProcessManager({
-    processes, vfsForProcess() {}, facetMgr: { kill(pid) { killed.push(pid); return true; } },
-    commandRegistry: {
-      async resolve() { return { kind: 'pure-builtin' }; },
-      async runPureBuiltin(pid, name) {
+  const broker = new ChildProcessManager({
+    processes, terminate(pid) { killed.push(pid); return true; },
+    async resolve() { return {
+      async run({ pid, command: name, onStarted }) {
+        onStarted();
         gate.hold(pid);
         if (name === 'silent') return 0;
         await new Promise(() => {});
       },
-    },
+    }; },
   });
   const unpublished = async (childPid, what) => {
     assert.equal((await broker.wait(childPid, 0)).done, false, `${what}: not done while held`);

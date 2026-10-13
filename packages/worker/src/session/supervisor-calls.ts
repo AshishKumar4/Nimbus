@@ -62,7 +62,7 @@ import { recordFailure } from '../runtime/stop-replay-body.js';
 // Phase 2 A'.2 — supervisor in-flight RPC payload byte tracking.
 import { rpcPayloadStart, rpcPayloadEnd } from '@nimbus-sh/platform/diag-counters.js';
 // W4: R2 cross-tenant npm cache (tarballs + packuments)
-import type { PackumentReadThrough } from '../npm/r2-cache.js';
+import type { PackumentReadOptions, PackumentReadThrough } from '../npm/r2-cache.js';
 import { R2CacheClient, MAX_R2_TARBALL_BYTES } from '../npm/r2-cache.js';
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsListTree, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle, RecallKind } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -835,7 +835,7 @@ export function supervisorCalls<Base extends Class>(base: Base) {
      */
     async getPackument(
       name: string,
-      options?: { retries?: number; timeoutMs?: number; registry?: string },
+      options?: PackumentReadOptions,
     ): Promise<PackumentReadThrough & { events: CacheStatEvent[] }> {
       const plan = this._infrastructureCache('getPackument', [name, options]) ? { readOnly: false }
         : await this._call(this._op<{ ticket?: string; readOnly: boolean }>('getPackument', [name, options]));
@@ -929,7 +929,7 @@ export function supervisorCalls<Base extends Class>(base: Base) {
     //
     // The parent facet's `child_process.spawn` shim (node-shims.ts) calls
     // these methods. They delegate to NimbusSession._rpcCp* methods which
-    // route through the shared FacetProcessManager.
+    // route through the shared ChildProcessManager.
     //
 
     async cpSpawn(req: any): Promise<{ childPid: number }> {

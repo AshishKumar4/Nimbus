@@ -208,6 +208,7 @@ The editor opens this file in Markdown preview mode by default. Use
 }
 export class NimbusSession extends CloudflareDurableObject {
     #runtimeServices;
+    get childProcessHost() { return this.#runtimeServices.childProcessHost; }
     // this.ctx and this.env are provided by the DurableObject base class
     runtimeWorkspace = null;
     runtimeReady = null;
@@ -250,7 +251,7 @@ export class NimbusSession extends CloudflareDurableObject {
         return this.facetManagerComposed?.manager ?? null;
     }
     /** W8: child_process broker. Lazy — only constructed when first cp* RPC arrives. */
-    facetProcessManager = null;
+    childProcessManager = null;
     /**
      * Supervisor-owned outbound WebSockets. A facet's socket is terminated here
      * so an inbound frame reaches it as a supervisor reply — the only shape a
@@ -1089,11 +1090,9 @@ export class NimbusSession extends CloudflareDurableObject {
      */
     _ensureWebSocketRelay() { return this.#runtimeServices._ensureWebSocketRelay(); }
     /**
-     * W8: lazily construct the FacetProcessManager when the first cp* RPC
-     * arrives. Wired with adapters that bridge the Nimbus shell command
-     * registry to the FacetProcessManager's CommandRegistryLike contract.
+     * Lazily bind the core child broker to this session's runners and cleanup.
      */
-    _ensureFacetProcessManager() { return this.#runtimeServices._ensureFacetProcessManager(); }
+    _ensureChildProcessManager() { return this.#runtimeServices._ensureChildProcessManager(); }
     /**
      * Set the shell command registry for the W8 broker to dispatch
      * resolved commands. Called from the shell-init path right after

@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 // Regressions for replies crossing the session boundary of a stoppable run.
 import assert from 'node:assert/strict';
+import { ReplaySessions } from '../../packages/worker/src/runtime/replay-session.ts';
 import { mock } from 'bun:test';
 import { ReplayJournal } from '../../packages/worker/src/runtime/stop-replay-journal.ts';
 import { REPLAY_JOURNAL_MAX_ENTRIES, REPLAY_READ_RECEIPT_MAX_BYTES } from '../../packages/worker/src/runtime/stop-replay-contracts.ts';
@@ -99,7 +100,7 @@ cases.joinedRead = async () => {
   const host = {
     ensureSqliteFs() {}, sqliteFs: new SqliteVFS(h.sql, h.ctx), processes,
     supervisorDeliveries: new SupervisorDeliveries(),
-    facetManager: { journalCall: (op, args, _pid, run, dispatch) => j.handle(op, args, run, dispatch) },
+    facetManager: { replay: { call: (op, args, _pid, run, dispatch) => j.handle(op, args, run, dispatch) } },
     _rpcFsAcquire: () => { served++; return new Promise((resolve) => { complete = resolve; }); },
   };
   const start = (run) => { j.start(run); host.supervisorDeliveries.startReadRun?.(pid, run, {
@@ -207,8 +208,9 @@ cases.readReceiptBounds = async () => {
 };
 cases.readReceiptOwner = async () => {
   const { FacetManager } = await import('../../packages/worker/src/facets/manager.ts');
-  const j = new ReplayJournal(() => {}), ctx = {};
-  const owner = { ctx, journals: new Map([[7, j]]), stdinTaken: new Map(), outputGates: new Map(),
+  const replay = new ReplaySessions(), ctx = {};
+  const j = replay.open(7, () => {}).journal;
+  const owner = { ctx, replay, stdinTaken: new Map(), outputGates: new Map(),
     processes: { get: () => ({ state: 'running' }) } };
   // The actual manager activation/retirement methods, not a test-owned
   // retention registration, connect the receipt lifetime to the writer.
