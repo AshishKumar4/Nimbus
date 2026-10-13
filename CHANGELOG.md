@@ -11,7 +11,10 @@ published independently in the `@nimbus-sh` npm scope.
   `INSERT ... RETURNING`, is saved on close (only `run()` and `exec()` were).
   The database is read and written as the program's own file, so a refused
   write fails `close()` instead of being dropped silently, and a database the
-  program only read is not written back.
+  program only read is not written back. A SQLite-only program's first write
+  in a fresh isolate costs about 6 ms CPU, the fs write path's one-time
+  compile; writes are no longer lost. A Node `fs` write over an existing file
+  no longer reads the file it replaces (about 0.4 ms less per MiB).
 - Fixed: a module a Node program writes and then imports links as Node's
   does before any of its graph runs. An import of a name its module does
   not export is Node's SyntaxError, with no module body run first; before,
