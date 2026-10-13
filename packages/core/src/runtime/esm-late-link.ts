@@ -144,9 +144,12 @@ export function linkLateGraph(host: LateLinkHost, read: ReadRequests, key: strin
   return order;
 }
 
-/** The names the `export *`s of the interpreted module at `url` (staged row `row`, or -1) reach two different bindings of. */
-export function starConflicts(host: LateLinkHost, url: string, row: number): string[] {
+/** The names the `export *`s of the interpreted module at `url` reach two different bindings of, which its namespace omits. */
+export function starConflicts(host: LateLinkHost, url: string): string[] {
   const late: LateGraph = { modules: lateModules, rows: [] };
+  // A staged module the interpreter evaluates, by its file; not a query's or a fragment's instance.
+  const { protocol, search, hash, pathname } = new URL(url);
+  const row = protocol === 'file:' && search === '' && hash === '' ? host.row('module', decodeURIComponent(pathname).replace(/^\/+/, '')) : -1;
   const target: LateTarget | null = lateModules.has(url) ? { url } : row !== -1 ? { row } : null;
   const names = target === null ? null : exportedNames(host, late, target, new Set());
   if (target === null || names === null) return [];
