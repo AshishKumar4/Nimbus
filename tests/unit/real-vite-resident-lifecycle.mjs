@@ -131,7 +131,14 @@ try {
   console.log('  [1] vite returns with Vite booted in one resident process, its port routed to it');
 
   // ── 2. kill <pid> ───────────────────────────────────────────────────────
+  // An end forgets only its own server's intent: one a start that overlapped
+  // it wrote since is kept.
+  const own = await restoreIntent();
+  await ctx.storage.put('vite-config', { ...own, pid: own.pid + 1 });
   assert.deepEqual(await sh(`kill ${first.pid}`), { code: 0, out: '', err: '' });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal((await restoreIntent())?.pid, own.pid + 1, "an end keeps another server's intent");
+  await ctx.storage.delete('vite-config');
   await ended(first.pid, 143, first.facet, 'kill');
   console.log('  [2] kill ends it 143 and frees its port and facet');
 
