@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import { NimbusWorkspace, seedBaseFilesystem } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createNpmInstallPort } from '../../packages/worker/src/session/npm-install-port.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
@@ -42,7 +43,9 @@ const USER = CRED_SESSION_USER.uid;
 }
 
 // ── npm install -g writes its bin shims as the process that ran it ────────
-{
+// Over a prefix of its own, and over one where a release through worker
+// 0.17.0 left the shims and their manifest as root.
+for (const legacy of [false, true]) {
   const harness = createSqliteVfsTestHarness();
   const vfs = new SqliteVFS(harness.sql, harness.ctx);
   const kernel = vfs.as(CRED_KERNEL);
@@ -52,10 +55,16 @@ const USER = CRED_SESSION_USER.uid;
   user.mkdir('usr/local/lib/node_modules/tool');
   user.writeFile('usr/local/lib/node_modules/tool/package.json', JSON.stringify({ name: 'tool', version: '1.0.0', bin: { tool: 'cli.js' } }));
   user.writeFile('usr/local/lib/node_modules/tool/cli.js', 'console.log(1)\n');
+  if (legacy) {
+    kernel.writeFile('usr/local/bin/tool', '#!/bin/sh\n', { mode: 0o755 });
+    kernel.writeFile('usr/local/bin/.nimbus-bin-map.json', '{}\n', { mode: 0o644 });
+  }
   const processes = new SessionProcessSupervisor();
   const entry = processes.spawn('npm install -g tool', ['npm', 'install', '-g', 'tool'], '/home/user', { cred: CRED_SESSION_USER });
+  const files = new ProcessFiles(vfs);
   const port = createNpmInstallPort({
     ensureSqliteFs: () => vfs,
+    getFilesystemAuthority: () => files,
     // The tree is already in place: this installer only links its bins.
     ensureNpmInstaller: async () => ({
       async install(_cwd, options) {
@@ -70,7 +79,9 @@ const USER = CRED_SESSION_USER.uid;
   const shim = kernel.stat('usr/local/bin/tool');
   assert.equal(shim.uid, USER, "the shim is the installing process's, not root's");
   assert.equal(shim.mode & 0o777, 0o755, 'and executable');
-  console.log('  npm install -g writes its bin shims as the process that ran it');
+  assert.equal(kernel.stat('usr/local/bin/.nimbus-bin-map.json').uid, USER, 'and so is the manifest');
+  assert.match(kernel.readFileString('usr/local/bin/tool'), /cli\.js/, 'the shim is the one this install wrote');
 }
+console.log('  npm install -g writes its bin shims as the process that ran it');
 
 console.log('owner-installs-credential: ok');

@@ -73,6 +73,25 @@ const rootOnly = (path, text) => {
   console.log('  wrangler dev reads its config as the process that ran it');
 }
 
+// ── wrangler dev's stores, kept as root by earlier releases, are its user's ──
+{
+  user.mkdir('home/user/s/src', { recursive: true });
+  user.writeFile('home/user/s/src/index.js', 'export default { fetch() { return new Response("ok"); } };\n');
+  user.writeFile('home/user/s/wrangler.jsonc', JSON.stringify({
+    name: 's', main: 'src/index.js', compatibility_date: '2026-09-26',
+    kv_namespaces: [{ binding: 'KV', id: 'kv' }], r2_buckets: [{ binding: 'R2', bucket_name: 'r2' }],
+  }));
+  // As a release through worker 0.17.0 left them.
+  const dirs = ['home/user/s/.nimbus', 'home/user/s/.nimbus/kv', 'home/user/s/.nimbus/kv/KV', 'home/user/s/.nimbus/r2', 'home/user/s/.nimbus/r2/R2'];
+  for (const dir of dirs) kernel.mkdir(dir, { mode: 0o755 });
+  const objects = ['home/user/s/.nimbus/kv/KV/key', 'home/user/s/.nimbus/r2/R2/object'];
+  for (const object of objects) kernel.writeFile(object, 'stored', { mode: 0o644 });
+  await runtime.exec('wrangler dev', { cwd: '/home/user/s' });
+  for (const path of [...dirs, ...objects]) assert.equal(kernel.stat(path).uid, CRED_SESSION_USER.uid, `${path} is handed to its user`);
+  await runtime.exec('wrangler stop', { cwd: '/home/user/s' });
+  console.log("  wrangler dev's stores, kept as root by earlier releases, are its user's");
+}
+
 // ── wrangler dev bundles through the view it is given ──────────────────────
 {
   const builds = [];
