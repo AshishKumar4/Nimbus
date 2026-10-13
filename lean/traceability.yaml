@@ -729,11 +729,12 @@ requirements:
       - The buffered handle's cap (8 bytes in the fixture), its flush order (pending writes in order, appends at the end as it then is) and the kill loss report's shape are the model's choices, sent to the Filesystem lane
       - Leases are modeled with one root link and flat subtrees; the review's findings 4 and 6 were not available to this lane beyond Main's summary
   VFS-COMP-003:
-    statement: Through the composite, removeRecursive never crosses into another mount and refuses /, a live mount point or an ancestor of one with EBUSY, and its fallback walk's report is exact (every subtree entry reported once, removed ones gone, kept ones present); readRange, writeFileIfRevision and readFileAtRevision answer ENOTSUP on a backend without them and are never emulated; a writeFileIfRevision expecting revision 0 (create-if-absent) of a missing final component reaches that check rather than ENOENT; copy across mounts changes only the target's backend; a live mount point stats its backend root's mode, synthesized only when the backend reports none.
+    statement: Through the composite, removeRecursive follows GNU rm -r semantics by entering live mounted subtrees, reporting EROFS per refused read-only child, attempting a mount's rmdir (EBUSY) only after every child was removed, and keeping failed entries and their ancestors without further ancestor removals or failure lines; / alone remains whole-call EBUSY. Its write frame is exactly limited to backends routed at or under the operand, and a non-composed tree retains the single-backend frame. The readable fallback still partitions every subtree entry exactly and reports maximal removed roots; the fault-aware walk unlinks a child after a failed lstat, attempts rmdir after a failed scandir (removing an empty unreadable directory), and counts an ENOENT child as gone, optionally keeping its ancestors for rm -r without -f rather than API, Node or rm -rf. readRange, writeFileIfRevision and readFileAtRevision answer ENOTSUP on a backend without them and are never emulated; a writeFileIfRevision expecting revision 0 of a missing final component reaches that check rather than ENOENT; copy across mounts changes only the target's backend; a live mount point stats its backend root's mode, synthesized only when the backend reports none.
     status: proved-and-refined
     theorems:
       - Nimbus.Vfs.CompositeOps.fallback_report_exact
       - Nimbus.Vfs.CompositeOps.roots_exact
+      - Nimbus.Vfs.CompositeOps.fallback_failures_exact
       - Nimbus.Vfs.CompositeOps.removeRecursive_stays_in_mount
       - Nimbus.Vfs.CompositeOps.unsupported_is_enotsup
       - Nimbus.Vfs.CompositeOps.create_if_absent_reaches_backend
@@ -743,12 +744,46 @@ requirements:
       - Nimbus.Vfs.CompositeOps.frame_set
       - Nimbus.Vfs.CompositeOps.keeps_mono
       - Nimbus.Vfs.CompositeOps.execC_refines
+      - Nimbus.Vfs.CompositeRemoval.mem_mergePaths
+      - Nimbus.Vfs.CompositeRemoval.kept_skips
+      - Nimbus.Vfs.CompositeRemoval.ancestors_exact
+      - Nimbus.Vfs.CompositeRemoval.child_failure_skips_ancestors
+      - Nimbus.Vfs.CompositeRemoval.gone_kept_mono
+      - Nimbus.Vfs.CompositeRemoval.step_kept_mono
+      - Nimbus.Vfs.CompositeRemoval.fold_kept_mono
+      - Nimbus.Vfs.CompositeRemoval.failed_ancestor_skipped_after_siblings
+      - Nimbus.Vfs.CompositeRemoval.gone_failures
+      - Nimbus.Vfs.CompositeRemoval.attempt_failure_path
+      - Nimbus.Vfs.CompositeRemoval.step_failures_exact
+      - Nimbus.Vfs.CompositeRemoval.vanished_policy
+      - Nimbus.Vfs.CompositeRemoval.lstat_failure_unlinks
+      - Nimbus.Vfs.CompositeRemoval.unreadable_still_rmdir
+      - Nimbus.Vfs.CompositeRemoval.unreadable_empty_removed
+      - Nimbus.Vfs.CompositeRemoval.readonly_child_refused
+      - Nimbus.Vfs.CompositeRemoval.mount_rmdir_busy
+      - Nimbus.Vfs.CompositeRemoval.erase_mounts
+      - Nimbus.Vfs.CompositeRemoval.erase_other
+      - Nimbus.Vfs.CompositeRemoval.erase_exact
+      - Nimbus.Vfs.CompositeRemoval.attempt_frame
+      - Nimbus.Vfs.CompositeRemoval.step_frame
+      - Nimbus.Vfs.CompositeRemoval.fold_frame
+      - Nimbus.Vfs.CompositeRemoval.vanished_fold_frame
+      - Nimbus.Vfs.CompositeRemoval.run_frame
+      - Nimbus.Vfs.CompositeRemoval.walk_subtree_frame
+      - Nimbus.Vfs.CompositeRemoval.walk_single_mount
     tsRefs:
-      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.invalidatedSince
+      - packages/core/src/vfs/composite.ts#CompositeVFS.removeRecursive
+      - packages/core/src/vfs/composite.ts#CompositeVFS.readRange
+      - packages/core/src/vfs/composite.ts#CompositeVFS.writeFileIfRevision
+      - packages/core/src/vfs/composite.ts#CompositeVFS.readFileAtRevision
+      - packages/core/src/vfs/composite.ts#CompositeVFS.copy
+      - packages/core/src/vfs/composite.ts#CompositeVFS.stat
     refinement:
       - lean/fixtures/composite-vfs.json :: tests/unit/composite-vfs-refinement.mjs
     remainingEvidence:
-      - Pins (entries a fallback's unlink/rmdir refuse) are the model's only failure source; native removeRecursive ignores them and the fixture pins only backends without it
+      - The original 204 cases retain their indices and seeded initial inputs; directed GNU cases add read-only mounts and injected lstat, scandir and removal answers. Native removal is used only on writable non-composed trees; pins remain fallback-only.
+      - Kept paths in an unreadable subtree are the observed refused entry and its known ancestors, not undiscovered descendants; the hidden backend rows remain unchanged. ENOENT faults model an external subtree disappearance at the indicated call, threaded through discovery so a later mount of the same backend sees it. Failure order is natural postorder in the model walk; fixture projection sorts failures just as the refinement bridge does and retains every failure.
+      - GNU coreutils 9.7 matrix receipt gnu-rm-20261012192730-7ffd1364 confirms writable/read-only mount, empty/nonempty unreadable directory, operand failures and symlink rules; child disappearance and EIO follow remove.c:391-432,547-575, with the same strict-ENOENT policy bit as the TypeScript walk.
       - With a capability present the model asserts support only; revision semantics are Coherence's
       - Main's rulings: the copy primitive answers ENOTSUP for / or an ancestor of a live mount (cp -r falls back to a crossing walk, a command-level test); a directory onto anything existing is EEXIST; lookup precedes the capability check (ENOENT before ENOTSUP), except a writeFileIfRevision expecting revision 0, create-if-absent, which only the backend can make atomic (2026-10-11)
   VFS-COMP-004:

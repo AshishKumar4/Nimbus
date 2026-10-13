@@ -97,7 +97,9 @@ export class WorkspaceFs implements VFS {
   }
   async truncate(path: string, size: number): Promise<void> { return await this.view.truncate(this.resolve(path), size); }
   /** rm -r, with what went and what is still there (ProcessView.removeRecursive). */
-  async removeRecursive(path: string): Promise<VfsRemoval> { return await this.view.removeRecursive(this.entry(path, 'rm')); }
+  async removeRecursive(path: string, options?: { keepVanishedAncestors?: boolean }): Promise<VfsRemoval> {
+    return await this.view.removeRecursive(this.entry(path, 'rm'), options);
+  }
   /** `target` is the link's text, taken from the link's directory when it is followed, never from `cwd`. */
   async symlink(target: string, path: string): Promise<void> { return await this.view.symlink(target, this.resolve(path)); }
   async readlink(path: string): Promise<string> { return await this.view.readlink(this.resolve(path)); }

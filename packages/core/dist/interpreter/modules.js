@@ -1,5 +1,5 @@
 import { reflectApply, resume, resumeThrowing, withElement } from './intrinsics.js';
-import { ROOT_ENV, TDZ, tdzError } from './runtime.js';
+import { ROOT_ENV } from './runtime.js';
 import { initializeStack, popStack, pushStack, stampStack, suspendedStack } from './stack.js';
 /** The wrapper function that runs `plan`. */
 export function moduleCell(plan, ops, helpers) {
@@ -45,39 +45,30 @@ export function moduleCell(plan, ops, helpers) {
         });
     };
 }
-/** The export getters installed; each request required in order, its interop made; then the import namespaces, then `export *`. */
+/**
+ * The export getters installed; each request required in order, its
+ * namespace in its slot; then `export *`, but the names two of them reach
+ * different bindings of (the loader's answer). Its graph's names were
+ * checked before any of it ran, by whoever loads it (node-shims' late link
+ * plan).
+ */
 function link(plan, env, requireArg, helpers, exportsObject, define) {
-    const { exports, requests, namespaces, stars } = plan;
-    for (let i = 0; i < exports.length; i++)
-        reflectApply(define, undefined, [exports[i].name, exportGetter(env, exports[i], helpers)]);
+    const { exports, requests, stars } = plan;
+    for (let i = 0; i < exports.length; i++) {
+        const read = exports[i].read;
+        reflectApply(define, undefined, [exports[i].name, () => read(env)]);
+    }
     for (let i = 0; i < requests.length; i++) {
-        const { source, module, interop } = requests[i];
-        const m = reflectApply(helpers.load, undefined, [requireArg, source]);
+        const { source, type, module } = requests[i];
+        const m = reflectApply(helpers.load, undefined, [requireArg, source, type]);
         if (module >= 0)
             env[module] = m;
-        if (interop >= 0)
-            env[interop] = reflectApply(helpers.interop, undefined, [m]);
     }
-    for (let i = 0; i < namespaces.length; i++)
-        env[namespaces[i].slot] = reflectApply(helpers.namespace, undefined, [env[namespaces[i].from]]);
+    if (stars.length === 0)
+        return;
+    const omitted = reflectApply(helpers.conflicts, undefined, [requireArg]);
     for (let i = 0; i < stars.length; i++)
-        reflectApply(helpers.star, undefined, [exportsObject, define, env[stars[i]]]);
-}
-/** The getter of `entry` over one evaluation's frame. */
-function exportGetter(env, entry, helpers) {
-    if (entry.kind === 'read') {
-        const read = entry.read;
-        return () => read(env);
-    }
-    const { name, slot, from } = entry;
-    return () => {
-        if (env[slot] === undefined) {
-            if (env[from] === TDZ)
-                throw tdzError(name);
-            env[slot] = reflectApply(helpers.namespace, undefined, [env[from]]);
-        }
-        return env[slot];
-    };
+        reflectApply(helpers.star, undefined, [exportsObject, define, env[stars[i]], omitted]);
 }
 /** Runs a module body's generator, made by `start`, as an async function would: one await per yielded value. */
 async function drive(env, start) {

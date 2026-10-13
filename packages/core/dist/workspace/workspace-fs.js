@@ -95,7 +95,9 @@ export class WorkspaceFs {
     }
     async truncate(path, size) { return await this.view.truncate(this.resolve(path), size); }
     /** rm -r, with what went and what is still there (ProcessView.removeRecursive). */
-    async removeRecursive(path) { return await this.view.removeRecursive(this.entry(path, 'rm')); }
+    async removeRecursive(path, options) {
+        return await this.view.removeRecursive(this.entry(path, 'rm'), options);
+    }
     /** `target` is the link's text, taken from the link's directory when it is followed, never from `cwd`. */
     async symlink(target, path) { return await this.view.symlink(target, this.resolve(path)); }
     async readlink(path) { return await this.view.readlink(this.resolve(path)); }

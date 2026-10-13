@@ -6,6 +6,7 @@ import { traced } from '@nimbus-sh/platform/tracing.js';
 import { WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
 import { CRED_SESSION_USER, requireVfsCred } from '../runtime/os-contracts.js';
 import { ProcessFiles } from '../runtime/process-files.js';
+import { sendRemoval } from '../runtime/filesystem-methods.js';
 import { supervisorDeliveredOp, supervisorDeliveryAnswer, supervisorJoinedReadOp, SUPERVISOR_DELIVER_OP, } from './supervisor-delivery.js';
 const FsPath = z.union([
     z.string(),
@@ -177,11 +178,10 @@ export const SUPERVISOR_OP_ROUTES = {
     fanoutExecute: { method: '_rpcFanoutExecute', args: [0, 1, 2] },
     processHostProbe: { method: '_rpcProcessHostProbe', args: [] },
     hostProcess: { method: '_rpcHostProcess', args: [0, 1] },
-    awaitHostedOpen: { method: '_rpcAwaitHostedOpen', args: [0] },
     awaitHostedBoot: { method: '_rpcAwaitHostedBoot', args: [0] },
     routeHostedHttp: { method: '_rpcRouteHostedHttp', args: [0, 1] },
+    abandonHostedHttp: { method: '_rpcAbandonHostedHttp', args: [0, 1, 2] },
     cancelHostProcess: { method: '_rpcCancelHostProcess', args: [0] },
-    hostLost: { method: '_rpcHostLost', args: [0, 1] },
     hmrRelay: { method: '_rpcHmrRelay', args: [0, 1] },
     hmrNextEvent: { method: '_rpcHmrNextEvent', args: [0] },
     // A process that can stop at a read of stdin (worker runtime/stop-replay.ts).
@@ -242,7 +242,13 @@ const NATIVE_OPS = {
     fsFutimes: (e, t) => fsFor(e, t).futimes(numberArg(e, 0), numberArg(e, 1), numberArg(e, 2)),
     fsSync: (e, t) => fsFor(e, t).fsync(e.args?.[0] === undefined ? undefined : numberArg(e, 0)),
     fsRealpath: (e, t) => fsFor(e, t).realpath(FsPath.parse(e.args?.[0])),
-    fsRemove: (e, t) => fsFor(e, t).remove(FsPath.parse(e.args?.[0]), z.object({ recursive: z.boolean().optional(), force: z.boolean().optional() }).optional().parse(e.args?.[1])),
+    // Its report leaves for the hop with each failure's error as data (sendRemoval).
+    fsRemove: (e, t) => sendRemoval(fsFor(e, t).remove(FsPath.parse(e.args?.[0]), z.object({
+        recursive: z.boolean().optional(),
+        force: z.boolean().optional(),
+        report: z.boolean().optional(),
+        keepVanishedAncestors: z.boolean().optional(),
+    }).optional().parse(e.args?.[1]))),
     fsCopyFile: (e, t) => fsFor(e, t).copyFile(FsPath.parse(e.args?.[0]), FsPath.parse(e.args?.[1])),
     fsCopyTree: (e, t) => fsFor(e, t).copyTree(FsPath.parse(e.args?.[0]), FsPath.parse(e.args?.[1]), z.object({ preserve: z.boolean().optional() }).optional().parse(e.args?.[2])),
     fsAcquireExclusiveMutation: (e, t) => fsFor(e, t).acquireExclusiveMutation(FsPath.parse(e.args?.[0]), z.object({

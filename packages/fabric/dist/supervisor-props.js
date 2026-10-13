@@ -57,6 +57,19 @@ export function workspaceOutbound(config, network) {
 export function egressMarker(network) {
     return network.egress === undefined ? {} : { NIMBUS_EGRESS: true };
 }
+/**
+ * The props of a SUPERVISOR binding no run acts through: a host's own work,
+ * never a process's. It acts as `pid` (0 is none) for authority, but nothing
+ * read through it is an observation of that process's run (stop/replay).
+ * Minted in the Durable Object whose state is `ctx`, reaching `options.doId`
+ * (this object by default) by `options.route`, on `options.network`.
+ */
+export function infrastructureSupervisorProps(ctx, pid, options) {
+    const own = ctx.id.toString(), doId = options.doId ?? own;
+    const egress = options.network.egress === undefined ? {} : { egress: options.network.egress, networkId: options.network.id };
+    return { doId, pid, route: options.route ?? hostRoute() ?? undefined,
+        ...(pid > 0 && doId === own ? supervisorDeliveryProps(ctx) : {}), bindingKind: 'infrastructure', ...egress };
+}
 /** The one mint for SUPERVISOR/outbound capabilities handed to a process. */
 export function mintProcessSupervisor(mint, props) {
     if (props.bindingKind !== 'process' || typeof props.writerId !== 'string' || props.writerId.length === 0) {
@@ -77,6 +90,14 @@ export function bindingSupervisor(props, exports) {
         throw new Error(`Nimbus: ctx.exports.${props.route?.supervisorEntrypoint ?? supervisorEntrypointName() ?? '<supervisor entrypoint>'} unavailable`);
     }
     return mintProcessSupervisor(mint, props);
+}
+/** A binding no run acts through (infrastructureSupervisorProps), minted as bindingSupervisor mints a process's. */
+export function infrastructureSupervisor(props, exports) {
+    const mint = supervisorEntrypoint(exports, props.route?.supervisorEntrypoint);
+    if (!mint) {
+        throw new Error(`Nimbus: ctx.exports.${props.route?.supervisorEntrypoint ?? supervisorEntrypointName() ?? '<supervisor entrypoint>'} unavailable`);
+    }
+    return mint({ props });
 }
 /**
  * `key`, for a loader cache entry whose worker holds a binding with `props`:

@@ -38,6 +38,8 @@ export type RuntimeFiles = ProcessView & {
 };
 export declare function composeHostedRuntime(options: HostedRuntimeOptions): Promise<{
     supervisorOp: (envelope: SupervisorOpEnvelope) => Promise<unknown>;
+    /** Private native-fetch legs for an embedder's service-binding fetch entrypoint. */
+    hostedFetch: (request: Request) => Promise<Response | null>;
     /** The SDK's session surface for `Nimbus.fromSession`, optionally bound to one shell and identity. */
     session: (scope?: HostedSessionScope) => HostedSession;
     onScheduled: (task: HostedRuntimeTask) => Promise<void>;

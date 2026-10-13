@@ -5,10 +5,10 @@
  * Two callers share it: the `vite` shell builtin (opt-in via NIMBUS_REAL_VITE=1
  * or `nimbusDevServer: 'real'`) and the hibernation-restore path in
  * session/routes.ts. Booting is heavy — it pre-bundles the user's vite.config
- * against the VFS, allocates the facet payload, and boots a dynamic-worker
- * facet — so it must not be duplicated: a woken session has to rebuild the
- * server exactly as the command did, or the two disagree on what real-vite
- * looks like.
+ * against the VFS, allocates the facet payload, and launches the server as one
+ * of the session's resident processes — so it must not be duplicated: a woken
+ * session has to rebuild the server exactly as the command did, or the two
+ * disagree on what real-vite looks like.
  *
  * It also persists what restore needs into the SAME `vite-config` key the
  * Cirrus shim writes, tagged `devServer: 'real'` so restore rebuilds real-vite
@@ -20,10 +20,8 @@ import { execIdField } from '@nimbus-sh/core/runtime/process-table.js';
 import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { rewriteCirrusViteConfigBundle } from '@nimbus-sh/core/runtime/cirrus-vite-config-rewriter.js';
 import { CirrusReal } from '../facets/cirrus-real.js';
-import { makeLongRunningPortStub } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import { acquireHeavyAlloc } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { VITE_CONFIG_KEY } from './keys.js';
-import { registerServingPort } from './serving-port.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 /** What a dev server's pid is persisted as, and given back on restore. */
 export function devServerIdentity(entry) {
@@ -48,20 +46,24 @@ export function persistedIdentity(value) {
         ...(typeof identity.execId === 'string' ? { execId: identity.execId } : {}),
     };
 }
+/** Per session host: the server whose restore intent VITE_CONFIG_KEY holds now. */
+const intentOf = new WeakMap();
 /**
- * Boot a cirrus-real dev server on `self`, register its port, and persist the
- * config restore needs. `self` is the session host (RoutesHost/InitHost = any).
+ * Boot a cirrus-real dev server on `self` as a resident process serving its
+ * port, and persist the config restore needs. One already running is ended
+ * first. `self` is the session host (RoutesHost/InitHost = any).
  */
 export async function startRealVite(self, opts) {
+    self.ensureFacetManager();
     if (self.cirrusReal?.isRunning)
-        self.cirrusReal.stop(self.ctx);
+        self.facetManager.kill(self.cirrusReal.pid, 'TERM');
     // The user's vite.config is found and bundled as the principal the server
     // runs as: a config importing a file that principal may not read is refused.
     const callerFs = self.sqliteFs.as(opts.identity.cred);
     // Reserve the full supervisor allocation budget so a fire-and-forget
     // pre-bundle or VFS payload cannot overlap the cirrus-real boot payload
     // (user-vite-config esbuild bundle, plugin-react bundle, syntheticCode with
-    // snapshotFiles inlined, LOADER.load worker bundle). Peak pressure on a
+    // snapshotFiles inlined, the resident's module map). Peak pressure on a
     // shared isolate is what kills us, not steady state. Released in a finally so
     // a throw in the boot path doesn't permanently hold the shared budget.
     const heavyAllocRelease = await acquireHeavyAlloc(opts.signal);
@@ -130,25 +132,21 @@ export async function startRealVite(self, opts) {
             namespace: self.getFilesystemAuthority().vfs,
             userConfigBundle,
             extraSyntheticFiles,
-            network: self.runtimeWorkspace.network,
         });
         self.cirrusReal = cirrusReal;
-        // Reserve a PID so `ps`/logs show it like any other facet.
-        // Its facet's syscalls answer under this pid's credential.
-        const entry = self.processes.spawn('vite (real, ' + opts.root + ')', opts.identity.argv, opts.identity.cwd, { longRunning: true, cred: opts.identity.cred, execId: opts.identity.execId });
-        // start() is async — it ASSETS-fetches the Vite/plugin-react bundles on
-        // first invocation (cached per-isolate after).
-        await cirrusReal.start(self.ctx, entry.pid);
-        // Primitive #3 — register the port the same way the Cirrus shim does; the
-        // only difference is which handler.handleRequest the stub forwards into.
-        const cirrusStub = makeLongRunningPortStub(cirrusReal);
-        self.portRegistry.bindFacetStub(entry.pid, cirrusStub);
-        await registerServingPort(self, entry.pid, opts.port);
-        self._viteShimPid = entry.pid;
-        self._viteShimPort = opts.port;
+        // The server's process answers its syscalls under the identity's
+        // credential, and is up once Vite listens.
+        await cirrusReal.start(self.ctx, self.facetManager, self.processes, opts.identity);
         // Persist so the session recovers after hibernation — same key the shim
         // uses, tagged so restore rebuilds real-vite. configDir is recorded so the
         // restore can re-bundle the same vite.config from the (persisted) VFS.
+        // The intent lasts as long as the server: its end (a kill, vite stop, a
+        // lost host, a replacing vite) forgets it, so nothing restores a server
+        // that ended. A session that sleeps never ends it, and wakes to restore it.
+        // An end forgets only its own server's intent: a start that overlapped
+        // this one may have written its own since (intentOf).
+        const pid = cirrusReal.pid;
+        intentOf.set(self, pid);
         try {
             await self.ctx.storage.put(VITE_CONFIG_KEY, {
                 devServer: 'real',
@@ -156,10 +154,20 @@ export async function startRealVite(self, opts) {
                 port: opts.port,
                 basePath: opts.basePath,
                 configDir: opts.configDir,
-                identity: devServerIdentity(entry),
+                identity: devServerIdentity(self.processes.get(pid)),
             });
         }
         catch { /* persistence is best-effort; the server still serves now */ }
+        const forget = () => {
+            if (intentOf.get(self) !== pid)
+                return;
+            intentOf.delete(self);
+            self.ctx.storage.delete(VITE_CONFIG_KEY).catch(() => { });
+        };
+        if (self.processes.get(pid)?.state !== 'running')
+            forget();
+        else
+            self.processes.subscribeTerminal(pid, forget);
         return { cirrusReal, userConfigBundle, cfgPath };
     }
     finally {

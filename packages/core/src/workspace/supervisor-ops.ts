@@ -105,11 +105,10 @@ export const SUPERVISOR_OP_TABLE = {
   fanoutExecute: null,
   processHostProbe: null,
   hostProcess: null,
-  awaitHostedOpen: null,
   awaitHostedBoot: null,
   routeHostedHttp: null,
+  abandonHostedHttp: null,
   cancelHostProcess: null,
-  hostLost: null,
   hmrRelay: null,
   hmrNextEvent: null,
   replayBoundary: null,
@@ -150,8 +149,8 @@ export const SUPERVISOR_JOINED_READ_OPS: readonly SupervisorJoinedReadOpName[] =
 const SUPERVISOR_OPS_WITHIN: ReadonlySet<SupervisorOpName> = new Set<SupervisorOpName>([
   ...SUPERVISOR_DELIVERED_OPS, ...SUPERVISOR_JOINED_READ_OPS,
   'setUmask', 'fsStorageGrant', 'fsRead', 'writeBatchStream', 'openWaveWriter', 'retireWaveWriter', 'fsAwaitRecall', 'fsPublished',
-  'wsPoll', 'cpReadStdin', 'cpReadOutput', 'cpDrainOutput', 'cpWait', 'cpBlocked', 'hmrNextEvent', 'awaitHostedOpen', 'awaitHostedBoot',
-  'stdinFileRead', 'stdinPrepared', 'replayBoundary', 'cacheResult', 'reportRuntimeCode', 'processHostProbe', 'hostLost',
+  'wsPoll', 'cpReadStdin', 'cpReadOutput', 'cpDrainOutput', 'cpWait', 'cpBlocked', 'hmrNextEvent', 'awaitHostedBoot',
+  'stdinFileRead', 'stdinPrepared', 'replayBoundary', 'cacheResult', 'reportRuntimeCode', 'processHostProbe',
   'transform', 'allocatePort', 'getCachedTarball',
 ]);
 

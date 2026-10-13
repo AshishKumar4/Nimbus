@@ -168,6 +168,8 @@ declare class VirtualListener {
     push(conn: VirtualConnection): void;
     accept(): Promise<VirtualConnection>;
     take(): VirtualConnection | null;
+    /** `conn`, accepted and not taken up, is the next accept's: a waiting one's, else the queue's first. */
+    restore(conn: VirtualConnection): void;
     /** `conn` leaves the queue, unaccepted: its request is over. */
     withdraw(conn: VirtualConnection): void;
     pending(): number;
@@ -188,6 +190,13 @@ export declare class VirtualSocketKernel {
     listen(port: number): number;
     closeListener(port: number): void;
     accept(port: number): Promise<AcceptedVirtualConnection>;
+    /**
+     * Give back a connection `accept` handed out that its caller did not take
+     * up (a WASI accept the park deadline answered first): the next accept on
+     * the port takes it. With the port closed meanwhile, it is aborted, as a
+     * queued one is.
+     */
+    unaccept(port: number, accepted: AcceptedVirtualConnection): void;
     acceptNow(port: number): AcceptedVirtualConnection | null;
     /**
      * Open a client connection to `port` on the session's loopback.

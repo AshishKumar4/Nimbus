@@ -27,7 +27,7 @@ import {
   type SourceRealm, expressionFunctionBody, parseRuntimeFunction, runtimeFunctionSource, type RuntimeFunctionKind,
   scriptExpression,
 } from '../_shared/runtime-function-source.js';
-import { Compiler, type UnitContext, type UnitHost } from './compile.js';
+import { Compiler, programBindings, type UnitContext, type UnitHost } from './compile.js';
 import { type ModuleCell, type ModuleHelpers, moduleCell } from './modules.js';
 import type { HostOps, NativeFunction } from './host-ops.js';
 import { InterpreterRuntime, ROOT_ENV, frameTemplate, isObject } from './runtime.js';
@@ -40,6 +40,7 @@ import {
 } from './intrinsics.js';
 import { UnsupportedSyntax } from './unsupported.js';
 import { type ModuleRequest, programRequests } from './module-requests.js';
+import type { ModuleBindings } from '../runtime/esm-interop.js';
 import { type InterpretedFrame, type StackUnit, stampStack, stackFrames } from './stack.js';
 
 export type { HostOps } from './host-ops.js';
@@ -195,7 +196,8 @@ export function moduleRequests(path: string, text: string, javaScript = false, g
   if (!javaScript && UNPARSED_EXTENSIONS[extensionOf(path)]) return { requests: [], unread: 'unparsed' };
   if (goal !== undefined) {
     try {
-      return { requests: programRequests(formatProgram(text, goal === 'detect' ? undefined : goal).program) };
+      const { module, program } = formatProgram(text, goal === 'detect' ? undefined : goal);
+      return { requests: programRequests(program), ...(module ? { bindings: programBindings(program) } : {}) };
     } catch {
       return { requests: [], unread: 'syntax' };
     }
@@ -216,6 +218,8 @@ export function moduleRequests(path: string, text: string, javaScript = false, g
 /** moduleRequests' answer. */
 export interface ModuleRequests {
   readonly requests: ModuleRequest[];
+  /** Read with a parse goal, of a module: what its static requests must export, by their order, and what it exports. */
+  readonly bindings?: ModuleBindings;
   /** Why the text asks for nothing that was read: absent where it was read. */
   readonly unread?: 'syntax' | 'unparsed';
 }

@@ -8,7 +8,7 @@ const __nativeBuiltin = ((host) => typeof __nimbusNativeBuiltins === "undefined"
 // What process.exit throws to end the program where it stands; its host
 // catches it as the exit.
 class __ProcessExit extends Error {
-  constructor(code) { super("process.exit(" + code + ")"); this.code = code; }
+  constructor(code) { super("process.exit(" + code + ")"); this.code = code & 255; }
 }
 // Node's internal errors (core _shared/node-error.ts), first: the shims, the
 // preambles below and the code they load make them by name, and the cell
@@ -9670,6 +9670,9 @@ const __sqliteMod = (() => {
 // ═══════════════════════════════════════════════════════════════════════
 
 const __undiciMod = (() => {
+  const { isRedirectStatus, applyRedirectPolicy } = (()=>{function o(e,n){return n==="command"?e>=300&&e<400:e===301||e===302||e===303||e===307||e===308||n==="undici"&&e===300}function c(e,n,r,d){let i=d==="undici"?n===303&&e.method!=="HEAD":(n===301||n===302)&&e.method==="POST"||n===303&&e.method!=="HEAD"&&(d==="command"||e.method!=="GET");if(i&&(e.method="GET",e.body=void 0),d==="undici"&&n===303)for(let t of[...e.headers.keys()])t.toLowerCase().startsWith("content-")&&e.headers.delete(t);else if(d==="fetch"&&i)for(let t of["content-encoding","content-language","content-location","content-type","content-length"])e.headers.delete(t);else if(d==="command"&&e.body===void 0)for(let t of["content-type","content-length","transfer-encoding","expect"])e.headers.delete(t);if(r.origin!==e.url.origin){for(let t of["authorization","cookie","proxy-authorization"])e.headers.delete(t);d==="command"?e.headers.delete("cookie2"):e.headers.delete("host")}d==="undici"&&e.headers.delete("host"),e.url=r}
+
+return {"applyRedirectPolicy":c,"isRedirectStatus":o};})();
   // The patched global fetch, captured now. Captured rather than dereferenced
   // per call so that user code doing `globalThis.fetch = undici.fetch` — a real
   // pattern — cannot build an infinite delegation loop. This is the binding
@@ -9833,10 +9836,20 @@ const __undiciMod = (() => {
     if (typeof Blob !== "undefined" && body instanceof Blob) return body;
     if (typeof FormData !== "undefined" && body instanceof FormData) return body;
     if (typeof URLSearchParams !== "undefined" && body instanceof URLSearchParams) return body;
+    // A Web stream is sent as it is produced: its producer may wait for the server.
     if (typeof ReadableStream !== "undefined" && body instanceof ReadableStream) return body;
-    // A Node Readable (or any async iterable) — drain it into the request.
-    if (typeof body[Symbol.asyncIterator] === "function") return collect(body);
+    // A Node Readable or any other iterable: drained into the request.
+    if (typeof body[Symbol.asyncIterator] === "function" || typeof body[Symbol.iterator] === "function") return collect(body);
     throw new errors.InvalidArgumentError("undici: unsupported request body type");
+  };
+
+  /** A hop's body length, as undici checks a Content-Length against it; null for what fetch encodes (FormData, URLSearchParams). */
+  const bodyLength = (body) => {
+    if (body === undefined) return 0;
+    if (typeof body === "string") return __BufferMod.byteLength(body, "utf8");
+    if (body instanceof Uint8Array || body instanceof ArrayBuffer) return body.byteLength;
+    if (typeof Blob !== "undefined" && body instanceof Blob) return body.size;
+    return null;
   };
 
   /**
@@ -9896,26 +9909,73 @@ const __undiciMod = (() => {
   const request = async (url, options) => {
     const opts = options || {};
     assertInertDispatcher(opts.dispatcher, "request({ dispatcher })");
-    let target = targetUrl(url, opts);
-    const method = String(opts.method || "GET").toUpperCase();
-    const headers = requestHeaders(opts.headers);
-    const body = await requestBody(opts.body);
-    let budget = Number(opts.maxRedirections) || 0;
+    // Node 22's real RedirectHandler is installed only for a nonzero count.
+    // Do not coerce strings/fractions into a different redirect policy.
+    const maxRedirections = opts.maxRedirections || 0;
+    if (maxRedirections && (!Number.isInteger(maxRedirections) || maxRedirections < 0)) {
+      throw new errors.InvalidArgumentError("maxRedirections must be a positive number");
+    }
+    const hop = {
+      url: targetUrl(url, opts),
+      method: String(opts.method || "GET").toUpperCase(),
+      headers: requestHeaders(opts.headers),
+      body: await requestBody(opts.body),
+    };
+    // How undici 6's RedirectHandler sends a body again (lib/handler/redirect-handler.js).
+    // The first request sends the caller's body. A Node stream is marked used
+    // once read, so a redirect after it is not followed. Any other iterable
+    // but a string or a byte view is wrapped: each later request sends the
+    // wrapper, which iterates the body again (an array gives its bytes again,
+    // a spent generator or stream nothing) and is then used, so no redirect
+    // after it is followed until a followed 303 drops the body. A string,
+    // bytes, a Blob, FormData and URLSearchParams are the same every hop.
+    const source = opts.body;
+    const sentOnce = source != null && typeof source.pipe === "function" && typeof source.on === "function";
+    const wrapped = !sentOnce && source != null && typeof source === "object"
+      && !(source instanceof Uint8Array) && !(source instanceof ArrayBuffer)
+      && !(typeof FormData !== "undefined" && source instanceof FormData)
+      && !(typeof URLSearchParams !== "undefined" && source instanceof URLSearchParams)
+      && (typeof source[Symbol.asyncIterator] === "function" || typeof source[Symbol.iterator] === "function");
+    let wrapperUsed = false;
 
     let response;
-    for (;;) {
-      response = await __fetch(target.href, {
-        method,
-        headers,
-        body,
+    for (let followed = 0; ; followed++) {
+      // A socket transport normally synthesizes Host. Fetch's in-process HTTP
+      // route has no wire to do that, so regenerate it here after the policy
+      // removed the previous hop's Host, including on same-origin redirects.
+      if (!hop.headers.has("host")) hop.headers.set("host", hop.url.host);
+      if (followed > 0 && hop.body !== undefined) {
+        // undici refuses a body that is not as long as its Content-Length, a spent one sent again included.
+        const declared = hop.headers.get("content-length");
+        const length = declared === null ? null : bodyLength(hop.body);
+        if (length !== null && Number(declared) !== length) {
+          throw new errors.RequestContentLengthMismatchError("Request body length does not match content-length header");
+        }
+        if (wrapped) wrapperUsed = true;
+      }
+      response = await __fetch(hop.url.href, {
+        method: hop.method,
+        headers: hop.headers,
+        body: hop.body,
         signal: opts.signal || undefined,
         redirect: "manual",
       });
-      if (budget <= 0) break;
+      // undici 6 checks this on every response at the cap, even a final 200.
+      if (maxRedirections > 0 && opts.throwOnMaxRedirect && followed >= maxRedirections) {
+        await response.body?.cancel();
+        throw new Error("max redirects");
+      }
+      const disturbed = hop.body !== undefined && (sentOnce ? __streamMod.isDisturbed(source) : wrapperUsed);
+      if (followed >= maxRedirections || disturbed) break;
       const location = response.headers.get("location");
-      if (response.status < 300 || response.status > 399 || !location) break;
-      budget -= 1;
-      target = new URL(location, target);
+      if (!isRedirectStatus(response.status, "undici") || !location) break;
+      await response.body?.cancel();
+      const next = new URL(location, hop.url);
+      applyRedirectPolicy(hop, response.status, next, "undici");
+      // The wrapper's iteration: a Web stream the first request read is spent, anything else is iterated again.
+      if (hop.body !== undefined && wrapped) {
+        hop.body = typeof ReadableStream !== "undefined" && source instanceof ReadableStream ? new Uint8Array(0) : await collect(source);
+      }
     }
 
     const resHeaders = responseHeaders(response);
@@ -13731,20 +13791,21 @@ function __nimbusOutputGate() {
 // Send a line to the session's stderr for this process, at its gate: every
 // diagnostic Nimbus prints for a process, as its own output is. Answers once
 // sent (never rejects); the run's pending writes wait for it too.
+let __nimbusUnreportedStderr = "";
 function __nimbusReleaseStderr(line) {
   if (!__supervisor || typeof __supervisor.stderr !== "function") return Promise.resolve();
   const send = () => __nimbusUseRpcResult(__supervisor.stderr(__nimbusOutEnc.encode(line)), () => undefined);
   const gate = __nimbusOutputGate();
   let task;
-  try { task = gate === null ? send() : gate.then(send); } catch { return Promise.resolve(); }
-  task = Promise.resolve(task).catch(() => {});
+  try { task = gate === null ? send() : gate.then(send); } catch { __nimbusUnreportedStderr += line; return Promise.resolve(); }
+  task = Promise.resolve(task).catch(() => { __nimbusUnreportedStderr += line; });
   if (typeof __pendingIO !== "undefined" && Array.isArray(__pendingIO)) __pendingIO.push(task);
   return task;
 }
 
 function __nimbusReportProcessExit(code, reason) {
   if (__nimbusProcessExitReported) return;
-  __nimbusProcessExitCode = Number(code ?? 0);
+  __nimbusProcessExitCode = Number(code ?? 0) & 255;
   __nimbusProgramStopped = true;
   try { if (typeof globalThis.__nimbusStopProgramTimers === "function") globalThis.__nimbusStopProgramTimers(); } catch {}
   try { if (__nimbusProcessExitResolve) __nimbusProcessExitResolve(__nimbusProcessExitCode); } catch {}
@@ -14089,7 +14150,7 @@ function __nimbusExitAtEnd() {
     __processMod._exiting = true;
     __nimbusEmitExit(__processMod.exitCode || 0);
   }
-  return __processMod.exitCode || 0;
+  return (__processMod.exitCode || 0) & 255;
 }
 
 // ── What nothing caught ──
@@ -15258,9 +15319,21 @@ Object.defineProperty(builtins, "http", {
       const inbound = new __nativeHttpRequest(request, { headers, signal: AbortSignal.any([request.signal, controller.signal]) });
       let detach = () => {};
       let timer;
-      let nativeResponse;
       const captureResponse = (incoming, response) => {
-        nativeResponse = response;
+        // A request abandoned or timed out ends as a dropped socket ends it in
+        // Node (_http_server.js socketOnClose): the request destroyed with an
+        // 'aborted' reset, then its response closed with no 'finish' and no
+        // more writes.
+        const dropped = () => {
+          incoming.destroy(Object.assign(new Error("aborted"), { code: "ECONNRESET" }));
+          response.destroy();
+        };
+        if (inbound.signal.aborted) dropped();
+        else inbound.signal.addEventListener("abort", dropped, { once: true });
+        // A response that ends unfinished takes its connection with it, and
+        // its request is aborted, as Node's socketOnClose does: the platform
+        // can cancel the response body before the caller's leaving arrives.
+        response.once("close", () => { if (!response.writableFinished) dropped(); });
         // workerd's #toReqRes keeps only the text before the first unquoted
         // comma of these fields (splitHeaderValue, meant to pick the first of
         // fetch-joined duplicates), so a guest saw "If-Modified-Since: Tue"
@@ -15301,7 +15374,6 @@ Object.defineProperty(builtins, "http", {
       timer = setTimeout(() => {
         deadline.resolve(new __nativeHttpResponse("Nimbus: HTTP handler sent no response headers in time", { status: 504 }));
         detach();
-        nativeResponse?.destroy();
         controller.abort();
       }, Number(globalThis.__nimbusHttpHeaderTimeoutMs) || 30000);
       try {
@@ -16189,9 +16261,14 @@ function __nimbusModuleNotFound(request, parent) {
 // resolving from `fromDir` (its file's directory). `required` false is an
 // ES module's, which only its static imports call.
 function __nimbusMakeRequire(module, fromDir = __nimbusModuleDir(module), required = true) {
-  // An interpreted ES module's static import passes its marker (esm-interop.ts ESM_LOAD_HELPER).
+  // An interpreted ES module's static import passes its marker and its type
+  // attribute (esm-interop.ts ESM_LOAD_HELPER); its `export *` asks what it leaves out (ESM_CONFLICTS_HELPER).
   const require = function require(id) {
-    return __requireFrom(id, fromDir, module, required && !(arguments.length > 1 && arguments[1] === "nimbus:static-import"));
+    if (arguments.length > 1 && arguments[1] === "nimbus:static-import") return __requireFrom(id, fromDir, module, false, arguments[2]);
+    if (arguments.length > 1 && arguments[1] === "nimbus:star-conflicts") {
+      return __nimbusRegistryRequire("./nimbus/esm-late.js").starConflicts(__nimbusLateLinkHost, module.__nimbusImportMeta?.url ?? builtins.url.pathToFileURL(module.filename).href);
+    }
+    return __requireFrom(id, fromDir, module, required);
   };
   function resolve(request, options) {
     if (typeof request !== "string") throw invalidArgType("request", "string", request);
@@ -17561,14 +17638,25 @@ function packageSelfReferenceSubpath(pkg, specifier) {
 }
 
 var NOT_NORMAL = /\/$|\/\/|(?:^|\/)\.\.?(?:\/|$)/;
+function plainVfsPath(path) {
+  return NOT_NORMAL.test(path) ? null : path.charCodeAt(0) === 47 ? path.slice(1) : path;
+}
 function normalizeVfsPath(p) {
   const text = String(p ?? "");
-  if (!NOT_NORMAL.test(text)) return text.charCodeAt(0) === 47 ? text.slice(1) : text;
-  const segments = text.split("/");
+  const plain = plainVfsPath(text);
+  if (plain !== null) return plain;
+  return normalizedSegments(text, false);
+}
+function normalizedSegments(path, lookup) {
+  const segments = path.split("/");
+  const leaf = segments[segments.length - 1];
+  if (lookup && (leaf === "" || leaf === ".")) return null;
   const out = [];
   for (const seg of segments) {
-    if (seg === "..") out.pop();
-    else if (seg !== "." && seg !== "") out.push(seg);
+    if (seg === "..") {
+      if (lookup) return null;
+      out.pop();
+    } else if (seg !== "." && seg !== "") out.push(seg);
   }
   return out.join("/");
 }
@@ -17973,6 +18061,15 @@ const __nimbusAdvised = new WeakSet();
 // The ES modules the interpreter evaluated from files outside the map, with
 // their compiled cells: a later require() asks whether their graphs await.
 const __nimbusRuntimeEsModules = new WeakMap();
+// Whether module `key` (format `format`) loaded as `instance` is an ES module: by its format, else staged or detected as one.
+function __nimbusLoadedEsModule(key, instance, format) {
+  if (format === "module") return true;
+  if (format !== "detect") return false;
+  if (__nimbusEsmId("module", key) !== -1) return true;
+  const cacheKey = instance === key ? "/" + key : instance;
+  const mod = __NodeModule._cache[cacheKey] ?? __nimbusEsmInstances.get(cacheKey);
+  return mod !== undefined && __nimbusRuntimeEsModules.has(mod);
+}
 // Whether a runtime ES module's graph awaits at its top level (its text read again).
 function __nimbusRuntimeGraphAwaits(key, cell) {
   const text = __readFileOr(key, null);
@@ -18101,6 +18198,8 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
         evaluating = true;
         throw __nimbusRequireAsync(parent, filename);
       }
+      // A require() of an ES module links its graph before any of it runs, as its import() does.
+      if (required && runtimeEsModule) __nimbusLateLink(normalizedPath, moduleUrl);
       // An imported .js its syntax made an ES module warns as a staged one does.
       if (!required && format === undefined && filename.endsWith(".js") && __nimbusDetectedModule(cell)) {
         const scope = __esmResolver.packageScopeSync(__nimbusEsmUrl(filename));
@@ -18561,14 +18660,16 @@ const __esmResolver = createEsmResolver({
   isBuiltin(specifier) {
     return __nimbusBuiltinId(specifier) !== null || __nimbusFacetProvidedPackages.has(specifier.replace(/^node:/, ""));
   },
-  cjsResolve(specifier, parentPath) {
-    try {
-      const dir = parentPath.slice(0, parentPath.lastIndexOf("/")).replace(/^\/+/, "");
-      const found = __resolveFrom(specifier, dir);
-      return found ? "/" + String(found).replace(/^\/+/, "") : null;
-    } catch { return null; }
-  },
+  cjsResolve: __nimbusCjsResolve,
 }, { conditions: __nimbusConditions, stripTypes: !__nimbusTypeScriptAsJavaScript, cwd: () => __processMod.cwd() });
+// The file require() loads for `specifier` from the module at `parentPath`, or null.
+function __nimbusCjsResolve(specifier, parentPath) {
+  try {
+    const dir = parentPath.slice(0, parentPath.lastIndexOf("/")).replace(/^\/+/, "");
+    const found = __resolveFrom(specifier, dir);
+    return found ? "/" + String(found).replace(/^\/+/, "") : null;
+  } catch { return null; }
+}
 const __esmNamespaces = new Map();
 /** A module namespace: its names sorted, read through to the exports. */
 function __esmNamespaceOf(names, read) {
@@ -18578,6 +18679,39 @@ function __esmNamespaceOf(names, read) {
   }
   Object.defineProperty(ns, Symbol.toStringTag, { value: "Module" });
   return Object.preventExtensions(ns);
+}
+// A builtin's (or a staged N-API binding's) namespace: `value` as default, its own names read through.
+function __nimbusObjectNamespace(value) {
+  const names = new Set(value && (typeof value === "object" || typeof value === "function") ? Object.keys(value) : []);
+  names.add("default");
+  return __esmNamespaceOf(names, (name) => name === "default" ? value : value[name]);
+}
+function __nimbusCommonJsNames(key) {
+  return __nimbusRegistryRequire("./nimbus/esm-late.js").commonJsNames(__nimbusLateLinkHost, key);
+}
+// An import of a module that is not an ES module, loaded as `exports`, as Node's translators make it, one per URL:
+// JSON's value as default; a builtin as default, its names read through; CommonJS's module.exports as default
+// (whatever its __esModule) and each lexed name's own value once it ran (createCJSModuleWrap).
+function __nimbusTranslatedNamespace(resolution, exports) {
+  const cached = __esmNamespaces.get(resolution.url);
+  if (cached !== undefined) return cached;
+  let ns;
+  if (resolution.format === "json") {
+    ns = __esmNamespaceOf(["default"], () => exports);
+  } else if (resolution.format === "builtin") {
+    ns = __nimbusObjectNamespace(exports);
+  } else {
+    const names = __nimbusCommonJsNames(resolution.path.replace(/^\/+/, ""));
+    const values = new Map();
+    for (const name of names) {
+      if (name === "default" || !Object.prototype.hasOwnProperty.call(exports, name)) continue;
+      // A getter may throw: the name is then undefined, as Node's.
+      try { values.set(name, exports[name]); } catch {}
+    }
+    ns = __esmNamespaceOf(new Set(["default", ...names]), (name) => name === "default" ? exports : values.get(name));
+  }
+  __esmNamespaces.set(resolution.url, ns);
+  return ns;
 }
 // Node's defaultLoad: a module the ES loader has no job for must have a format.
 // Its jobs are keyed by URL and attribute type; only an implicit-type one can
@@ -18916,7 +19050,7 @@ async function __nimbusEsmImport(id) {
   if (record.state === __ESM_DONE && record.namespace !== null) return record.namespace;
   const row = __nimbusEsm.table[id];
   if (row[0] === "module" && record.state === 0) __nimbusEsmWarnTypeless(id);
-  if (row[0] === "module" && __nimbusEsmTainted(id)) return __nimbusEsmInterpret(id);
+  if (row[0] === "module" && __nimbusEsmTainted(id)) return __nimbusEsmInterpret(id, false);
   let batch = null;
   let since = __nimbusEsmBatches;
   try {
@@ -18943,11 +19077,10 @@ async function __nimbusEsmImport(id) {
   } catch (error) {
     // Its evaluation was cancelled or stopped short of a module (a require()
     // took a module of it; an earlier evaluation stopped at a sibling's
-    // throw), or it links to a module the launch did not stage: the
-    // interpreter's.
-    if (row[0] === "module" && (__nimbusIsEsmStop(error) || __nimbusEsmMissingOf(error)?.code === "ERR_NIMBUS_NOT_STAGED")) {
-      return __nimbusEsmInterpret(id);
-    }
+    // throw), its graph linked; or it links to a module the launch did not
+    // stage: the interpreter's.
+    if (row[0] === "module" && __nimbusIsEsmStop(error)) return __nimbusEsmInterpret(id, true);
+    if (row[0] === "module" && __nimbusEsmMissingOf(error)?.code === "ERR_NIMBUS_NOT_STAGED") return __nimbusEsmInterpret(id, false);
     // The body that threw: one its evaluation began and did not complete
     // (marked already where a later body's check stopped). It keeps what it
     // threw, for a require() of it. A body suspended in its top-level await
@@ -18979,13 +19112,27 @@ async function __nimbusEsmImport(id) {
     throw __nimbusEsmLinkError(error, id);
   }
 }
-// The interpreter's evaluation of staged module `id` (an adoption), as import() gives it.
-async function __nimbusEsmInterpret(id) {
+// The interpreter's evaluation of staged module `id` (an adoption), as
+// import() gives it. One it evaluated already (or is evaluating, in its
+// top-level await) is that evaluation's, its graph not resolved again. A graph workerd did not link (`linked` false:
+// it reaches a module staging handed on, or one the interpreter took) is
+// checked first as a late graph is (core esm-late-link.ts linkAdopted):
+// every imported name, before any of it runs, unless a link checked it
+// already. The interpreter evaluates it as before.
+async function __nimbusEsmInterpret(id, linked) {
   const key = __nimbusEsm.table[id][1];
   const url = __nimbusEsmUrl("/" + key);
   const known = __esmNamespaces.get(url);
   if (known !== undefined) return known;
+  // Its namespace once its evaluation completes: one still in its top-level await is waited for, its rejection given.
+  const evaluated = __nimbusEsmRecords[id];
+  if (evaluated?.state === __ESM_ADOPTED && evaluated.module !== undefined && evaluated.namespace !== null) {
+    const evaluation = __moduleEvaluations.get(key);
+    if (evaluation === undefined) return evaluated.namespace;
+    return evaluation.then(() => evaluated.namespace, (e) => { __nimbusExplainCommonJSGlobalLike(e, url, true); throw e; });
+  }
   const pending = (async () => {
+    if (!linked) __nimbusRegistryRequire("./nimbus/esm-late.js").linkAdopted(__nimbusLateLinkHost, id, key, url);
     let exports;
     try {
       exports = __loadModule(key, key, false, undefined, true);
@@ -19092,9 +19239,7 @@ function __nimbusEsmExportError(error, id, requested, name) {
     try { requestedUrl = new URL(requested, __NIMBUS_BUNDLE_URL + module.name).href; } catch {}
     const target = __nimbusEsm.table[__nimbusEsm.table[at][2].find((t) => t >= 0 && __NIMBUS_BUNDLE_URL + __nimbusEsmName(t) === requestedUrl) ?? -1];
     if (target === undefined) continue;
-    error.message = target[0] === "commonjs"
-      ? "Named export '" + name + "' not found. The requested module '" + specifier + "' is a CommonJS module, which may not support all module.exports as named exports.\nCommonJS modules can always be imported via the default export, for example using:\n\nimport pkg from '" + specifier + "';\nconst { " + name + " } = pkg;\n"
-      : "The requested module '" + specifier + "' does not provide an export named '" + name + "'";
+    error.message = __nimbusEsmExportMessage(specifier, name, target[0] === "commonjs");
     // Node's arrow: the imported name, on the declaration's line.
     const arrow = __nimbusArrowOf(module, text, nameStart, nameEnd);
     // Its frames as they were, under the message as Node words it.
@@ -19103,6 +19248,13 @@ function __nimbusEsmExportError(error, id, requested, name) {
     __nimbusDecorated.add(error);
     return;
   }
+}
+// A missing export, as Node words it for the specifier the importing module
+// wrote: a CommonJS module's in Node's words for one.
+function __nimbusEsmExportMessage(specifier, name, commonjs) {
+  return commonjs
+    ? "Named export '" + name + "' not found. The requested module '" + specifier + "' is a CommonJS module, which may not support all module.exports as named exports.\nCommonJS modules can always be imported via the default export, for example using:\n\nimport pkg from '" + specifier + "';\nconst { " + name + " } = pkg;\n"
+    : "The requested module '" + specifier + "' does not provide an export named '" + name + "'";
 }
 // The program's ES entry, imported: its evaluation is its job, and what
 // escapes it is explained as Node's loader explains it.
@@ -19128,10 +19280,7 @@ function __esmLoad(resolution) {
   if (resolution.format === "builtin") {
     const id = __nimbusEsmId("builtin", resolution.builtin);
     if (id !== -1) return __nimbusEsmImport(id);
-    const mod = builtins[resolution.builtin];
-    const names = new Set(mod && (typeof mod === "object" || typeof mod === "function") ? Object.keys(mod) : []);
-    names.add("default");
-    ns = __esmNamespaceOf(names, (name) => name === "default" ? mod : mod[name]);
+    return __nimbusTranslatedNamespace(resolution, builtins[resolution.builtin]);
   } else if (resolution.format === "data") {
     const url = new URL(resolution.url);
     const comma = url.pathname.indexOf(',');
@@ -19153,13 +19302,9 @@ function __esmLoad(resolution) {
         url: resolution.url,
         resolve: (id) => globalThis.__nimbusImportMetaResolve(id, resolution.url),
       } });
-      const requireData = (id) => {
-        const resolved = __esmResolver.resolveSync(String(id), resolution.url);
-        __esmResolver.assertLoadable(resolved);
-        if (resolved.format === "builtin") return builtins[resolved.builtin];
-        if (resolved.path) return __loadModule(resolved.path.replace(/^\/+/, ""), resolved.url, false);
-        throw nodeError(Error, "ERR_REQUIRE_ASYNC_MODULE", "Synchronous nested data-module import is unsupported");
-      };
+      // Its static imports (ESM_LOAD_HELPER: the specifier, the marker, the type attribute). A data:
+      // module's `export *` has no facts here to leave a name out by.
+      const requireData = (id, marker, type = null) => marker === "nimbus:star-conflicts" ? [] : __nimbusStaticImport(String(id), resolution.url, undefined, type);
       let result;
       try {
         result = cell(mod.exports, requireData, mod, undefined, undefined);
@@ -19202,92 +19347,47 @@ function __esmLoad(resolution) {
   return ns;
 }
 // Evaluate, in import order, the staged ES modules the interpreted module at
-// `key` statically imports, and those its unstaged imports do, so the
-// interpreter finds them evaluated rather than evaluating them itself: once
-// the late graph's whole static closure links, staged modules, query and
-// fragment instances and all. A graph that does not link runs none of its
-// bodies, as Node's does: its import() rejects with the first refusal.
+// `key`'s late graph imports, once the whole graph links (core
+// esm-late-link.ts), so the interpreter finds them evaluated. A graph that
+// does not link runs none of its bodies: its import() rejects.
 async function __nimbusEsmLinkStaged(key) {
-  const order = [];
-  __nimbusEsmLinkPlan(key, __nimbusEsmUrl("/" + key), new Set(), order, new Set());
+  const order = __nimbusLateLink(key, __nimbusEsmUrl("/" + key));
   // What one throws ends the evaluation of what imports it, as Node's
   // does: no later import of it evaluates, and the import() rejects.
   for (const id of order) {
     if (__nimbusEsmRecord(id).state !== __ESM_DONE && !__nimbusEsmTainted(id)) await __nimbusEsmImport(id);
   }
 }
-// The staged modules a late graph imports, in import order (into
-// `order`); throws the refusal of a static import anywhere in its closure
-// that does not resolve or load. Each module once by its URL (a query's or
-// a fragment's instance is its own); `checked`, the staged rows whose
-// graphs link.
-function __nimbusEsmLinkPlan(key, url, seen, order, checked) {
-  if (seen.has(url)) return;
-  seen.add(url);
-  const staged = __nimbusEsmId("module", key);
-  const text = staged === -1 ? __readFileOr(key, null) : __nimbusEsmSourceText(staged);
-  if (text === null) return;
-  // Read with the parse goal the loader gives it: an adopted staged module's, a module; another's, its format.
-  const format = staged !== -1 ? "module" : __nimbusFileFormat("/" + key);
-  const analysis = __nimbusModuleRequests(key, text, staged !== -1, format ?? "detect");
-  // A module of the graph its parser could not read (a syntax error, or
-  // TypeScript or JSX) is loaded as the interpreter loads it, for the error
-  // that load gives, before any body runs; one it does load (code staged for
-  // it) is the launch's own to link.
-  if (analysis.unread !== undefined && staged === -1) __nimbusRuntimeModule(key, text, format);
-  for (const request of analysis.requests) {
-    if (request.kind !== "static") continue;
-    let resolution;
-    try {
-      resolution = __esmResolver.resolveSync(request.specifier, url);
-      __nimbusAssertLoadable(resolution, undefined);
-    } catch (error) {
-      // As the interpreter's static import refuses it: before the importer runs, with no arrow of its.
-      __nimbusDecorated.add(error);
-      throw error;
-    }
-    if (!resolution.path) continue;
-    const target = resolution.path.replace(/^\/+/, "");
-    const { search, hash } = new URL(resolution.url);
-    const id = __nimbusEsmId("module", target);
-    // An unstaged module, or a query's or fragment's instance (the
-    // interpreter's own): its closure is the late graph's too.
-    if (id === -1 || search !== "" || hash !== "") {
-      // What the interpreter loads as an ES module (a CommonJS module compiles when it evaluates, as Node's does).
-      if (resolution.format === "module" || resolution.format === "detect") {
-        __nimbusEsmLinkPlan(target, resolution.url, seen, order, checked);
-      }
-      continue;
-    }
-    __nimbusEsmCheckLinks(id, seen, checked);
-    if (!order.includes(id)) order.push(id);
-  }
-}
-// Throws the refusal of a static import staged module `id`'s graph (what
-// of it is unevaluated) makes that staging refused for good. One staging
-// handed on (ERR_NIMBUS_NOT_STAGED: a query's or a fragment's instance,
-// which the interpreter evaluates where it is imported) is checked as the
-// late graph's own, and runs no body here.
-function __nimbusEsmCheckLinks(id, seen, checked) {
-  const visit = (at) => {
-    if (checked.has(at)) return;
-    checked.add(at);
-    const row = __nimbusEsm.table[at];
-    const state = __nimbusEsmRecords[at]?.state;
-    if (row[0] !== "module" || state === __ESM_DONE || state === __ESM_ADOPTED) return;
-    for (const target of row[2]) {
-      if (target >= 0) { visit(target); continue; }
-      const missing = __nimbusEsm.missing[-2 - target];
-      if (missing === undefined) continue;
-      if (missing.code === "ERR_NIMBUS_NOT_STAGED" && typeof missing.url === "string") {
-        const handed = new URL(missing.url);
-        __nimbusEsmLinkPlan(decodeURIComponent(handed.pathname).replace(/^\/+/, ""), missing.url, seen, [], checked);
-        continue;
-      }
-      throw __nimbusEsmRefusal(missing);
-    }
-  };
-  visit(id);
+// The facts of the launch a late graph's link reads (core esm-late-link.ts LateLinkHost).
+const __nimbusLateLinkHost = {
+  row: __nimbusEsmId,
+  rowKind: (row) => __nimbusEsm.table[row][0],
+  rowKey: (row) => __nimbusEsm.table[row][1],
+  rowBindings: () => __nimbusReadBundleFile(__NIMBUS_BUNDLE_FILES + "nimbus/esm.bindings", "utf8"),
+  rowTargets: (row) => __nimbusEsm.table[row][2],
+  rowSettled: (row) => __nimbusEsmRecords[row]?.state === __ESM_DONE || __nimbusEsmRecords[row]?.state === __ESM_ADOPTED,
+  missing: (i) => {
+    const missing = __nimbusEsm.missing[i];
+    if (missing === undefined) return null;
+    if (missing.code === "ERR_NIMBUS_NOT_STAGED" && typeof missing.url === "string") return { handedOn: missing.url };
+    return { refusal: __nimbusEsmRefusal(missing) };
+  },
+  source: (key, row) => row === -1 ? __readFileOr(key, null) : __nimbusEsmSourceText(row),
+  fileFormat: (key) => __nimbusFileFormat("/" + key),
+  loadUnread: (key, text, format) => { __nimbusRuntimeModule(key, text, format); },
+  resolve: __nimbusResolveImport,
+  builtinNames: (name) => Object.keys(__nimbusObjectNamespace(builtins[name])),
+  cjsResolve: __nimbusCjsResolve,
+  exportMessage: __nimbusEsmExportMessage,
+  decorate: (error) => {
+    __nimbusDecorated.add(error);
+    return error;
+  },
+  requests: (path, text, javaScript, goal) => __nimbusModuleRequests(path, text, javaScript, goal),
+};
+// Links the late graph of the module at `key` (`url`); the staged rows it imports, in order.
+function __nimbusLateLink(key, url) {
+  return __nimbusRegistryRequire("./nimbus/esm-late.js").linkLateGraph(__nimbusLateLinkHost, key, url);
 }
 function __esmLoadInterpreted(resolution, key, evaluationKey, esm) {
   let ns;
@@ -19301,19 +19401,10 @@ function __esmLoadInterpreted(resolution, key, evaluationKey, esm) {
       __nimbusExplainCommonJSGlobalLike(e, resolution.url, false);
       throw e;
     }
-    const namespace = () => {
-      if (resolution.format === "json") return __esmNamespaceOf(["default"], () => exports);
-      // An interpreted ES module's exports: its own names, live.
-      if (exports && typeof exports === "object" && exports.__esModule === true) {
-        return __esmNamespaceOf(Object.keys(exports).filter((name) => name !== "__esModule"), (name) => exports[name]);
-      }
-      // CommonJS: module.exports is the default, its names the named exports.
-      const mod = exports;
-      const names = new Set(mod && (typeof mod === "object" || typeof mod === "function") ? Object.keys(mod) : []);
-      names.delete("default");
-      names.add("default");
-      return __esmNamespaceOf(names, (name) => name === "default" ? mod : mod[name]);
-    };
+    // An interpreted ES module's exports: its own names, live; another's, its translator's.
+    const namespace = () => __nimbusLoadedEsModule(key, evaluationKey, resolution.format)
+      ? __esmNamespaceOf(Object.keys(exports).filter((name) => name !== "__esModule"), (name) => exports[name])
+      : __nimbusTranslatedNamespace(resolution, exports);
     // A module with top-level await: the import resolves once its evaluation
     // completes, and rejects with what it throws.
     const evaluation = __moduleEvaluations.get(evaluationKey);
@@ -19753,53 +19844,60 @@ function __nimbusEsmJobCached(path) {
   const state = id === -1 ? 0 : __nimbusEsmRecords[id]?.state ?? 0;
   return state === __ESM_DONE || state === __ESM_ADOPTED;
 }
-// Module.prototype.require from `parent`, its requests resolving from `fromDir`.
-function __requireFrom(id, fromDir, parent, required = true) {
+// `specifier` from `parentUrl` resolved as an import and loadable, and (`type` not undefined) checked
+// against its type attribute, as Node's loader does; else its error, the loader's own (no arrow of the importer's).
+function __nimbusResolveImport(specifier, parentUrl, type) {
+  try {
+    const resolution = __esmResolver.resolveSync(specifier, parentUrl);
+    __nimbusAssertLoadable(resolution, type ?? undefined);
+    if (type !== undefined) __esmResolver.validateAttributes(resolution.url, resolution.format, type === null ? {} : { type });
+    return resolution;
+  } catch (error) {
+    __nimbusDecorated.add(error);
+    throw error;
+  }
+}
+// Module.prototype.require from `parent`, its requests resolving from `fromDir`;
+// not `required`, an interpreted ES module's static import, with its `type` attribute.
+function __requireFrom(id, fromDir, parent, required = true, type = null) {
   if (typeof id !== "string") throw invalidArgType("id", "string", id);
   if (id === "") throw new nodeErrorCodes.ERR_INVALID_ARG_VALUE("id", id, "must be a non-empty string");
-  const builtin = __nimbusBuiltinId(id);
+  // An import of a builtin is the ES loader's (__nimbusStaticImport); of a facet's package or a staged N-API binding, its namespace.
+  const builtin = required ? __nimbusBuiltinId(id) : null;
   if (builtin !== null) return builtins[builtin];
-  if (__nimbusFacetProvidedPackages.has(id)) return builtins[id];
-  if (id.startsWith("node:")) throw nodeError(Error, "ERR_UNKNOWN_BUILTIN_MODULE", "No such built-in module: " + id);
-  const staged = __stagedBinding(id);
-  if (staged) return __loadStagedBinding(staged, fromDir);
+  const binding = __nimbusFacetProvidedPackages.has(id) ? null : __stagedBinding(id);
+  const provided = binding ? __loadStagedBinding(binding, fromDir) : __nimbusFacetProvidedPackages.has(id) ? builtins[id] : undefined;
+  if (provided !== undefined) return required ? provided : __nimbusObjectNamespace(provided);
+  if (required && id.startsWith("node:")) throw nodeError(Error, "ERR_UNKNOWN_BUILTIN_MODULE", "No such built-in module: " + id);
   const notCarried = __stagedBindingNotCarried(id, fromDir);
   if (notCarried) throw notCarried;
-
-  // An interpreted ES module's static import is the ES loader's: Node's
-  // ESM resolution, which refuses before the importer runs (no arrow of the importer's).
-  if (!required) {
-    const parentUrl = builtins.url.pathToFileURL(parent?.filename ?? "/" + String(fromDir).replace(/^\/+/, "") + "/[import]").href;
-    let resolution;
-    try {
-      resolution = __esmResolver.resolveSync(id, parentUrl);
-      __nimbusAssertLoadable(resolution, undefined);
-    } catch (error) {
-      __nimbusDecorated.add(error);
-      throw error;
-    }
-    if (resolution.format === "builtin") return builtins[resolution.builtin];
-    const key = resolution.path.replace(/^\/+/, "");
-    const esModule = resolution.format === "module" || (resolution.format === "detect" && __nimbusEsmId("module", key) !== -1);
-    // A CommonJS module still loading is one whose require() of an ES
-    // module led here: Node's loader refuses the cycle (require(esm)).
-    const loading = esModule ? undefined : __NodeModule._cache["/" + key];
-    if (loading !== undefined && __nimbusExecutingCommonJs.has(loading)) {
-      throw nodeError(Error, "ERR_REQUIRE_CYCLE_MODULE", "Cannot import CommonJS Module " + id + " in a cycle." + (parent?.filename ? " (from " + parent.filename + ")" : ""));
-    }
-    // A query's or fragment's ES module or JSON is its own instance, by its
-    // URL; a CommonJS module (by its extension, its package type or its
-    // syntax) is one module by its file, whatever the URL (Node's CommonJS
-    // translator keys its cache by filename).
-    const { search, hash } = new URL(resolution.url);
-    const instance = (search !== "" || hash !== "") && (esModule || resolution.format === "json") ? resolution.url : key;
-    const exports = __loadModule(key, instance, false, parent, esModule);
-    // A JSON module's namespace has its value as default alone, whatever it holds.
-    return resolution.format === "json" ? __esmNamespaceOf(["default"], () => exports) : exports;
-  }
+  if (!required) return __nimbusStaticImport(id, builtins.url.pathToFileURL(parent?.filename ?? "/" + String(fromDir).replace(/^\/+/, "") + "/[import]").href, parent, type);
   const resolved = __resolveFrom(id, fromDir, parent?.filename);
   if (!resolved) throw __nimbusModuleNotFound(id, parent);
   return __loadModule(resolved, resolved, required, parent);
+}
+// An interpreted ES module's static import, as Node's ES loader makes it: resolved (refused with no arrow of the
+// importer's), checked against its `type` attribute, loaded, and given as its module's namespace.
+function __nimbusStaticImport(id, parentUrl, parent, type) {
+  const resolution = __nimbusResolveImport(id, parentUrl, type ?? null);
+  if (resolution.format === "builtin") return __nimbusTranslatedNamespace(resolution, builtins[resolution.builtin]);
+  if (!resolution.path) throw nodeError(Error, "ERR_REQUIRE_ASYNC_MODULE", "A static import of " + resolution.url + " has no file to load synchronously");
+  const key = resolution.path.replace(/^\/+/, "");
+  const esModule = resolution.format === "module" || (resolution.format === "detect" && __nimbusEsmId("module", key) !== -1);
+  // A CommonJS module still loading is one whose require() of an ES
+  // module led here: Node's loader refuses the cycle (require(esm)).
+  const loading = esModule ? undefined : __NodeModule._cache["/" + key];
+  if (loading !== undefined && __nimbusExecutingCommonJs.has(loading)) {
+    throw nodeError(Error, "ERR_REQUIRE_CYCLE_MODULE", "Cannot import CommonJS Module " + id + " in a cycle." + (parent?.filename ? " (from " + parent.filename + ")" : ""));
+  }
+  // A query's or fragment's ES module or JSON is its own instance, by its
+  // URL; a CommonJS module (by its extension, its package type or its
+  // syntax) is one module by its file, whatever the URL (Node's CommonJS
+  // translator keys its cache by filename).
+  const { search, hash } = new URL(resolution.url);
+  const instance = (search !== "" || hash !== "") && (esModule || resolution.format === "json") ? resolution.url : key;
+  const exports = __loadModule(key, instance, false, parent, esModule);
+  return __nimbusLoadedEsModule(key, instance, resolution.format) ? exports : __nimbusTranslatedNamespace(resolution, exports);
 }
 
 // V8's errors compiling CommonJS that an ES module would not have

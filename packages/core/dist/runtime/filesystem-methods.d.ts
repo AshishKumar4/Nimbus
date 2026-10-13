@@ -14,13 +14,16 @@
  * the table.
  */
 import type { RuntimeFsBridge, RuntimeSynchronousFs } from './os-contracts.js';
+import type { VfsRemoval } from '../vfs/vfs.js';
 /**
  * How a method's answer crosses a supervisor hop: `value` as the hop hands
  * it; `bytes` an ArrayBuffer after the hop, made a Uint8Array again; `stream`
  * a W7 stream, which travels as the call's own result, never inside
- * `answer`'s argument list.
+ * `answer`'s argument list; `removal` a removal's report, each failure's
+ * error crossing as refusal data (sendRemoval) and made an error again
+ * (answerRemoval).
  */
-export type FilesystemAnswer = 'value' | 'bytes' | 'stream';
+export type FilesystemAnswer = 'value' | 'bytes' | 'stream' | 'removal';
 export declare const FILESYSTEM_METHODS: {
     readonly stat: {
         readonly rpc: "stat";
@@ -132,7 +135,7 @@ export declare const FILESYSTEM_METHODS: {
     };
     readonly remove: {
         readonly rpc: "fsRemove";
-        readonly answer: "value";
+        readonly answer: "removal";
     };
     readonly copyFile: {
         readonly rpc: "fsCopyFile";
@@ -220,4 +223,36 @@ export declare function answerValue<T>(result: Promise<T> | T): Promise<T> | T;
 export declare function answerBytes<T extends Uint8Array | null>(result: Promise<T | ArrayBuffer> | T | ArrayBuffer): Promise<T | Uint8Array> | T | Uint8Array;
 /** A `stream` answer: always a Promise. */
 export declare function answerStream<T>(result: Promise<T> | T): Promise<T>;
+/**
+ * A refusal as it crosses the hop: what workerd's enhanced_error_serialization
+ * carries of a thrown error, as data. `properties` are the error's own ones
+ * but `message` and `stack`: `code`, `errno`, `syscall`, `path`, `dest`,
+ * `detail`, whatever the host set (`name` too, when it is its own). An error
+ * among them (a `cause`) is in `errors`, as data of the same shape: inside
+ * a returned value it would cross as a structured clone, which keeps only
+ * its message.
+ */
+export interface SupervisorRefusal {
+    readonly name: string;
+    readonly message: string;
+    readonly properties: Readonly<Record<string, unknown>>;
+    readonly errors: Readonly<Record<string, SupervisorRefusal>>;
+}
+/** `error` as refusal data. */
+export declare function refusalData(error: Error): SupervisorRefusal;
+/**
+ * The error `refusal` was, as the facet received it when SupervisorRPC threw
+ * it: a new error of the thrower's type, its message, its own properties, and
+ * no stack of the thrower's (src/workerd/jsg/ser.c++, with
+ * preserveStackInErrors off).
+ */
+export declare function supervisorRefusalError(refusal: SupervisorRefusal): Error;
+/**
+ * A `removal` answer as it leaves for a hop: each failure's error as its
+ * refusal data, which crosses whole where the error, inside a returned value,
+ * would arrive with only its message.
+ */
+export declare function sendRemoval<T extends void | VfsRemoval>(result: Promise<T> | T): Promise<T> | T;
+/** A `removal` answer after the hop: each failure's error made again (supervisorRefusalError). */
+export declare function answerRemoval<T extends void | VfsRemoval>(result: Promise<T> | T): Promise<T> | T;
 //# sourceMappingURL=filesystem-methods.d.ts.map

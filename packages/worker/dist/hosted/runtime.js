@@ -2,9 +2,11 @@ import { requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { SUPERVISOR_OP_ROUTES, createSupervisorBridgeStore } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { openSupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
+import { isHostedWatch, isHostedWebSocket, isHostedResidency } from '@nimbus-sh/fabric/peer-host.js';
+import { hostActivity } from '@nimbus-sh/fabric/host-activity.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { answerSupervisorOp, buildSessionSupervisorOps } from '../session/supervisor-op.js';
-import { armLogJanitor, armResidentKeepalive, installLogPersistence, logJanitorFired, noteResidentClient, residentKeepaliveFired } from '../session/hibernation.js';
+import { armLogJanitor, armResidentKeepalive, endResidentKeepalive, installLogPersistence, logJanitorFired, noteResidentClient, residentKeepaliveFired } from '../session/hibernation.js';
 import { takeLegacyResetNotice } from '../session/legacy-reset.js';
 import { appendScrollback, ensureSessionStateSchema, loadScrollback, loadShellState, persistShellState } from '../session/state-store.js';
 import { wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
@@ -31,7 +33,7 @@ class RuntimeOwner {
     closing = null;
     _w9PersistWired = false;
     _w9SchemaInit = false;
-    _w1KeepaliveArmed = false;
+    _w1Keepalive = null;
     _w1JanitorAt = null;
     _w1LastClientActivityAt = 0;
     _viteShimPid = null;
@@ -71,6 +73,7 @@ class RuntimeOwner {
         ensureSessionStateSchema(options.ctx);
         // A process's answers leave as the rest of its output does: once what it wrote is published.
         options.ports.setOutput(options.workspace.processes);
+        options.ports.setClientSocketActivity(() => noteResidentClient(this, this.keepaliveCycle));
         this.terminal = new WebSocketTerminal(null, (data) => {
             appendScrollback(options.ctx, data, Date.now());
             persistShellState(options.ctx, { cwd: this.shell.getCwd(), env: this.shell.getEnv() });
@@ -84,7 +87,7 @@ class RuntimeOwner {
             resolveWorkerLaunch: options.resolveWorkerLaunch,
             filesystem: () => options.workspace.filesystem,
             network: () => options.workspace.network,
-            armResidentKeepalive: () => armResidentKeepalive(this, (at) => this.scheduleKeepalive(at)),
+            armResidentKeepalive: () => armResidentKeepalive(this, this.keepaliveCycle),
             supervisorOp: (envelope) => this.supervisorOp(envelope),
         });
         options.workspace.shell.bindTerminal(this.terminal);
@@ -123,6 +126,7 @@ class RuntimeOwner {
             if (saved.env)
                 Object.assign(this.shell.getEnv(), saved.env);
             await registerHostedCommands(this, this.options.workspace);
+            await this.ensureFacetManager().pumpLaunches();
             await this.options.workspace.start();
         })();
         return this.readyPromise;
@@ -143,17 +147,11 @@ class RuntimeOwner {
     }
     _notifySession(line) { this.terminal.write(`${line}\r\n`); }
     /**
-     * What this object serves a sibling coordinator hosting a process on it. Its
-     * hosting watch goes through the embedder's lifecycle: the embedder owns
-     * this object's alarm, and its `onScheduled('hosting-watch')` hands it back.
+     * What this object serves a sibling coordinator; work owns observation,
+     * never an alarm on the embedder's lifecycle.
      */
     get peerHost() {
-        return this._peerHost ??= rpc.peerHostFor(this.ctx, this.env, (at) => this.scheduleHostingWatch(at));
-    }
-    scheduleHostingWatch(at) {
-        const pending = this.schedule('hosting-watch', at);
-        this.options.lifecycle.waitUntil(pending);
-        return pending;
+        return this._peerHost ??= rpc.peerHostFor(this.ctx, this.env);
     }
     _scheduleLaunchTurn(notBefore = Date.now()) {
         const pending = this.schedule('resident-launch', Math.max(Date.now(), notBefore));
@@ -161,12 +159,18 @@ class RuntimeOwner {
         return pending;
     }
     noteClientActivity() {
-        noteResidentClient(this, (at) => this.scheduleKeepalive(at));
+        noteResidentClient(this, this.keepaliveCycle);
     }
-    scheduleKeepalive(at) {
-        const pending = this.schedule('resident-keepalive', at);
-        this.options.lifecycle.waitUntil(pending);
-        return pending.then(() => true, () => false);
+    /** The embedder's lifecycle schedules the cycle; the runtime's own host activity is what it owns. */
+    get keepaliveCycle() {
+        return {
+            schedule: (at) => {
+                const pending = this.schedule('resident-keepalive', at);
+                this.options.lifecycle.waitUntil(pending);
+                return pending.then(() => true, () => false);
+            },
+            observe: () => hostActivity(this.ctx).acquire(),
+        };
     }
     schedule(reason, at) {
         if (this._w1SessionDestroyed)
@@ -237,18 +241,16 @@ class RuntimeOwner {
         }
         else if (task === 'resident-keepalive') {
             const next = residentKeepaliveFired(this, Date.now());
-            if (next !== null && !(await this.scheduleKeepalive(next)))
-                this._w1KeepaliveArmed = false;
+            if (next !== null && !(await this.keepaliveCycle.schedule(next)))
+                endResidentKeepalive(this);
         }
         else if (task === 'log-flush') {
             this.flushScheduled = false;
             this.processes.flushLogs();
         }
         else if (task === 'hosting-watch') {
-            // A failure to look again throws to the embedder's alarm, which retries it.
-            const next = await this.peerHost.watchFired();
-            if (next !== null)
-                await this.scheduleHostingWatch(next);
+            // Consume a scheduler entry left by the old polling watch, without rearming it.
+            return;
         }
         else {
             const next = logJanitorFired(this);
@@ -317,6 +319,8 @@ class RuntimeOwner {
     }
     close() {
         this.closing ??= Promise.resolve().then(async () => {
+            // The cycle is over with the runtime; the alarm that would end it is cancelled below.
+            endResidentKeepalive(this);
             const failures = [];
             const clean = async (action) => {
                 try {
@@ -337,7 +341,6 @@ class RuntimeOwner {
                 await clean(() => { this.portRegistry.unregisterByPid(process.pid); });
             }
             await clean(() => this.viteDevServer?.stop());
-            await clean(() => this.cirrusReal?.stop(this.ctx));
             await clean(() => this.nimbusWrangler?.stop());
             await clean(() => this.bundlePool?.dispose());
             await clean(() => this.processes.flushLogs());
@@ -414,6 +417,16 @@ export async function composeHostedRuntime(options) {
         runtimes: owner.runtimeManager,
         ...client,
         supervisorOp: (envelope) => owner.supervisorOp(envelope),
+        /** Private native-fetch legs for an embedder's service-binding fetch entrypoint. */
+        hostedFetch: (request) => {
+            if (isHostedResidency(request))
+                return owner.peerHost.reside(request);
+            if (isHostedWatch(request))
+                return owner.peerHost.watch(request);
+            if (isHostedWebSocket(request))
+                return owner.peerHost.routeWebSocket(request);
+            return Promise.resolve(null);
+        },
         /** The SDK's session surface for `Nimbus.fromSession`, optionally bound to one shell and identity. */
         session: (scope = {}) => {
             owner.assertOpen();

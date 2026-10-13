@@ -2,6 +2,7 @@ import { type RuntimeFunctionKind } from '../_shared/runtime-function-source.js'
 import { type ModuleCell, type ModuleHelpers } from './modules.js';
 import type { HostOps, NativeFunction } from './host-ops.js';
 import { type ModuleRequest } from './module-requests.js';
+import type { ModuleBindings } from '../runtime/esm-interop.js';
 import { type InterpretedFrame } from './stack.js';
 export type { HostOps } from './host-ops.js';
 export { INTERPRETER_UNSUPPORTED, UnsupportedSyntax } from './unsupported.js';
@@ -91,6 +92,8 @@ export declare function moduleRequests(path: string, text: string, javaScript?: 
 /** moduleRequests' answer. */
 export interface ModuleRequests {
     readonly requests: ModuleRequest[];
+    /** Read with a parse goal, of a module: what its static requests must export, by their order, and what it exports. */
+    readonly bindings?: ModuleBindings;
     /** Why the text asks for nothing that was read: absent where it was read. */
     readonly unread?: 'syntax' | 'unparsed';
 }

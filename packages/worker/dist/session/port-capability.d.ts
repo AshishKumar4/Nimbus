@@ -184,6 +184,7 @@ export interface SessionPortHost {
     } | null;
     cirrusReal?: {
         isRunning: boolean;
+        port: number;
     } | null;
     restorePersistedDevServer?: (onlyPort?: number) => Promise<void>;
     acceptCirrusHmrWs?: (request: Request) => Response;

@@ -28,6 +28,7 @@
  */
 import { Parser, parseExpressionAt, tokenizer, tokTypes } from 'acorn';
 import { applySourceEdits, isAstNode, MODULE_PARSE_OPTIONS, parseStatements } from './javascript-ast.js';
+import { importType } from './esm-interop.js';
 import { createModuleLexer } from './module-lexer.js';
 import { ambiguousSlashes, htmlComments, lineEnd, Lines, parenthesisEnd, skipTrivia } from './import-lexer-hazards.js';
 export const DYNAMIC_IMPORT_HELPER = '__nimbusDynamicImport';
@@ -121,9 +122,10 @@ function lexedImportSites(code) {
             if (entry.n === undefined)
                 return null;
             const site = { start: entry.s - 1, end: entry.e + 1 };
-            const attributes = Object.fromEntries(entry.at ?? []);
-            const clause = Object.keys(attributes).length > 0 ? attributesClause(source, site, entry.se) : undefined;
-            statics.push({ ...site, specifier: entry.n, attributes, ...(clause ? { clause } : {}) });
+            // Its `type` alone, as importType reads the grammar's: V8 drops the other keys of a static import.
+            const type = (entry.at ?? []).find(([key]) => key === 'type')?.[1] ?? null;
+            const clause = (entry.at ?? []).length > 0 ? attributesClause(source, site, entry.se) : undefined;
+            statics.push({ ...site, specifier: entry.n, attributes: type === null ? {} : { type }, ...(clause ? { clause } : {}) });
         }
         else {
             // A phase import (`import source`, `import defer`): the grammar's to refuse or read.
@@ -200,15 +202,10 @@ export function readModuleImportSites(code) {
             const source = statement.source;
             if (!source || typeof source.value !== 'string')
                 return;
-            const attributes = {};
-            for (const attribute of statement.attributes ?? []) {
-                const key = attribute.key.type === 'Identifier' ? attribute.key.name : String(attribute.key.value);
-                if (typeof attribute.value.value === 'string')
-                    attributes[key] = attribute.value.value;
-            }
+            const type = importType(statement);
             const last = statement.attributes?.[statement.attributes.length - 1];
             const clause = last === undefined ? undefined : attributesClauseAfter(code, source, last.end);
-            statics.push({ start: source.start, end: source.end, specifier: source.value, attributes, ...(clause ? { clause } : {}) });
+            statics.push({ start: source.start, end: source.end, specifier: source.value, attributes: type === null ? {} : { type }, ...(clause ? { clause } : {}) });
         },
     });
     calls.sort((a, b) => a.start - b.start);

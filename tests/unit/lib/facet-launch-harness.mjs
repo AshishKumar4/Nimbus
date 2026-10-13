@@ -32,17 +32,19 @@ export function launchSession({ disk = createSqliteVfsTestHarness() } = {}) {
  * An instance of `session` named `label`. `generation` sets its pid base
  * (an instance after a reset allocates past the last one's pids); `env`
  * adds bindings beside LOADER and ASSETS; `hooks` are the manager's;
- * `crashable` is the facet ctx's (its storage writes can be lost).
+ * `crashable` is the facet ctx's (its storage writes can be lost);
+ * `evaluatesAdapter` is the facet world's (createFacetWorld).
  *
  * @param {string} label
  * @param {{ evaluate?: () => object, session?: ReturnType<typeof launchSession>, env?: object, hooks?: object,
- *   generation?: number, processes?: SessionProcessSupervisor, ports?: PortRegistry, crashable?: boolean }} [options]
+ *   generation?: number, processes?: SessionProcessSupervisor, ports?: PortRegistry, crashable?: boolean,
+ *   evaluatesAdapter?: boolean }} [options]
  */
 export function launchManager(label, {
   evaluate = idleProgram, session = launchSession(), env = {}, hooks = {}, generation,
-  processes = new SessionProcessSupervisor(), ports = new PortRegistry(), crashable = false,
+  processes = new SessionProcessSupervisor(), ports = new PortRegistry(), crashable = false, evaluatesAdapter = false,
 } = {}) {
-  const world = createFacetWorld(evaluate);
+  const world = createFacetWorld(evaluate, { evaluatesAdapter });
   if (generation !== undefined) processes.setPidBase(generation * PID_GEN_STRIDE);
   const ctx = createFacetCtx(world, label, session.storage, { crashable });
   const manager = new FacetManager(
