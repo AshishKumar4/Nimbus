@@ -3,35 +3,39 @@
  * decodes them (tree-walk.c decode_tree_entry): "<octal mode> <name>\0<id>"
  * each, in the tree's order.
  *
- * Every reader of a tree decodes it here, each making its own entry from the
- * entry's mode, as git's walk canonicalizes it (canon_mode), and its name and
- * id as spans of the tree's bytes, so a name is never re-encoded. A malformed
- * tree is git's error, and the decoding always ends: a tree whose last 21
- * bytes are not a NUL and an id holds no whole entry.
+ * Every reader of a tree walks it here, one entry at a time, and makes what
+ * it needs of the entry: its mode, as git's walk canonicalizes it
+ * (canon_mode), and its name and id as spans of the tree's bytes, so a name
+ * is never re-encoded. A malformed tree is git's error, and the walk always
+ * ends: a tree whose last 21 bytes are not a NUL and an id holds no whole
+ * entry.
  */
 import { OID_BYTES } from './format.js';
-/** canon_mode: a file 100644 or 100755, a link, a tree, and anything else a gitlink. */
-function canonMode(mode) {
-    switch (mode & 0o170000) {
-        case 0o100000: return mode & 0o100 ? 0o100755 : 0o100644;
-        case 0o120000: return 0o120000;
-        case 0o040000: return 0o040000;
-        default: return 0o160000;
-    }
-}
 /**
- * A tree object's entries, in its order, each as `entry` makes it from its
- * mode, its id at tree[oidAt, oidAt + OID_BYTES) and its name at
- * tree[nameAt, nameEnd); git's error, thrown, for a malformed tree.
+ * A walk of `tree`: each next() reads one entry into mode, its name at
+ * tree[nameAt, nameEnd) and its id at tree[oidAt, oidAt + OID_BYTES), and is
+ * false past the last; git's error, thrown, for a malformed tree.
  */
-export function decodeTree(tree, entry) {
-    const entries = [];
-    const end = tree.byteLength;
-    // Each name ends at a NUL at or before this one, so no name or id runs past the tree.
-    if (end > 0 && (end < OID_BYTES + 3 || tree[end - OID_BYTES - 1] !== 0))
-        throw new Error('too-short tree object');
-    for (let p = 0; p < end;) {
-        if (end - p < OID_BYTES + 3)
+export class TreeEntries {
+    tree;
+    mode = 0;
+    nameAt = 0;
+    nameEnd = 0;
+    oidAt = 0;
+    at = 0;
+    constructor(tree) {
+        this.tree = tree;
+        const end = tree.byteLength;
+        // Each name ends at a NUL at or before this one, so no name or id runs past the tree.
+        if (end > 0 && (end < OID_BYTES + 3 || tree[end - OID_BYTES - 1] !== 0))
+            throw new Error('too-short tree object');
+    }
+    next() {
+        const tree = this.tree;
+        let p = this.at;
+        if (p === tree.byteLength)
+            return false;
+        if (tree.byteLength - p < OID_BYTES + 3)
             throw new Error('too-short tree object');
         if (tree[p] === 0x20)
             throw new Error('malformed mode in tree entry');
@@ -45,8 +49,13 @@ export function decodeTree(tree, entry) {
         if (tree[p] === 0)
             throw new Error('empty filename in tree entry');
         const nameEnd = tree.indexOf(0, p);
-        entries.push(entry(canonMode(mode), nameEnd + 1, p, nameEnd));
-        p = nameEnd + 1 + OID_BYTES;
+        // canon_mode: a file 100644 or 100755, a link, a tree, and anything else a gitlink.
+        const type = mode & 0o170000;
+        this.mode = type === 0o100000 ? (mode & 0o100 ? 0o100755 : 0o100644) : type === 0o120000 || type === 0o040000 ? type : 0o160000;
+        this.nameAt = p;
+        this.nameEnd = nameEnd;
+        this.oidAt = nameEnd + 1;
+        this.at = nameEnd + 1 + OID_BYTES;
+        return true;
     }
-    return entries;
 }

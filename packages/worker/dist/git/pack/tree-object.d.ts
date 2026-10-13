@@ -3,16 +3,26 @@
  * decodes them (tree-walk.c decode_tree_entry): "<octal mode> <name>\0<id>"
  * each, in the tree's order.
  *
- * Every reader of a tree decodes it here, each making its own entry from the
- * entry's mode, as git's walk canonicalizes it (canon_mode), and its name and
- * id as spans of the tree's bytes, so a name is never re-encoded. A malformed
- * tree is git's error, and the decoding always ends: a tree whose last 21
- * bytes are not a NUL and an id holds no whole entry.
+ * Every reader of a tree walks it here, one entry at a time, and makes what
+ * it needs of the entry: its mode, as git's walk canonicalizes it
+ * (canon_mode), and its name and id as spans of the tree's bytes, so a name
+ * is never re-encoded. A malformed tree is git's error, and the walk always
+ * ends: a tree whose last 21 bytes are not a NUL and an id holds no whole
+ * entry.
  */
 /**
- * A tree object's entries, in its order, each as `entry` makes it from its
- * mode, its id at tree[oidAt, oidAt + OID_BYTES) and its name at
- * tree[nameAt, nameEnd); git's error, thrown, for a malformed tree.
+ * A walk of `tree`: each next() reads one entry into mode, its name at
+ * tree[nameAt, nameEnd) and its id at tree[oidAt, oidAt + OID_BYTES), and is
+ * false past the last; git's error, thrown, for a malformed tree.
  */
-export declare function decodeTree<T>(tree: Uint8Array, entry: (mode: number, oidAt: number, nameAt: number, nameEnd: number) => T): T[];
+export declare class TreeEntries {
+    private readonly tree;
+    mode: number;
+    nameAt: number;
+    nameEnd: number;
+    oidAt: number;
+    private at;
+    constructor(tree: Uint8Array);
+    next(): boolean;
+}
 //# sourceMappingURL=tree-object.d.ts.map

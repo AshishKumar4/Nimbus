@@ -8,7 +8,7 @@
  * only the trees no store already holds.
  */
 import { oidFromHex, oidToHex } from '../pack/format.js';
-import { decodeTree } from '../pack/tree-object.js';
+import { TreeEntries } from '../pack/tree-object.js';
 import { encodeNode } from './cachetree.js';
 import { S_IFMT, comparePaths, decodePath } from './dircache.js';
 export const S_IFDIR = 0o040000;
@@ -36,7 +36,10 @@ export async function readTree(store, oid) {
     const { type, data } = await store.read(oid);
     if (type !== 'tree')
         throw new Error(`object ${oid} is a ${type}, not a tree`);
-    return decodeTree(data, (mode, oidAt, nameAt, nameEnd) => ({ name: decodePath(data.subarray(nameAt, nameEnd)), mode, oid: oidToHex(data, oidAt) }));
+    const entries = [];
+    for (const e = new TreeEntries(data); e.next();)
+        entries.push({ name: decodePath(data.subarray(e.nameAt, e.nameEnd)), mode: e.mode, oid: oidToHex(data, e.oidAt) });
+    return entries;
 }
 const isTree = (mode) => (mode & S_IFMT) === S_IFDIR;
 /**

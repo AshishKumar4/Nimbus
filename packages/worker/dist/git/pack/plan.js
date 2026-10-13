@@ -17,7 +17,7 @@
  * all); a path outside its cone is marked skip-worktree and never written.
  */
 import { OID_BYTES, PackFormatError, oidFromHex, oidToHex } from './format.js';
-import { decodeTree } from './tree-object.js';
+import { TreeEntries } from './tree-object.js';
 import { DEFAULT_PATH_PROTECTION, verifyPath } from '../worktree/verify-path.js';
 export const MODE_TREE = 0o040000;
 export const MODE_FILE = 0o100644;
@@ -94,23 +94,26 @@ export class CheckoutPlan {
      */
     static fromTrees(rootTree, tree, sparse, protect = DEFAULT_PATH_PROTECTION) {
         const columns = new Columns();
-        const entries = (data) => decodeTree(data, (mode, oidAt, nameAt, nameEnd) => ({ mode, oidAt, name: utf8.decode(data.subarray(nameAt, nameEnd)) }));
-        const stack = [{ data: rootTree, entries: entries(rootTree), next: 0, prefix: '' }];
+        // verify_path goes component by component, so a name is verified once: a directory's refusal is every path's below it.
+        const stack = [{ data: rootTree, entries: new TreeEntries(rootTree), prefix: '', refusing: false }];
         let refused = null;
         while (stack.length > 0) {
             const frame = stack[stack.length - 1];
-            if (frame.next === frame.entries.length) {
+            const entry = frame.entries;
+            if (!entry.next()) {
                 stack.pop();
                 continue;
             }
-            const entry = frame.entries[frame.next++];
-            const path = frame.prefix + entry.name;
+            const name = utf8.decode(frame.data.subarray(entry.nameAt, entry.nameEnd));
+            const path = frame.prefix + name;
             if (entry.mode === MODE_TREE) {
                 const data = tree(frame.data, entry.oidAt);
-                stack.push({ data, entries: entries(data), next: 0, prefix: path + '/' });
+                stack.push({ data, entries: new TreeEntries(data), prefix: path + '/', refusing: frame.refusing || !verifyPath(name, MODE_TREE, protect) });
                 continue;
             }
-            if (refused === null && !verifyPath(path, entry.mode, protect))
+            // A link's mode reaches every component (no .gitmodules above it): its whole path is verified.
+            const refuses = entry.mode === MODE_SYMLINK ? !verifyPath(path, MODE_SYMLINK, protect) : frame.refusing || !verifyPath(name, entry.mode, protect);
+            if (refused === null && refuses)
                 refused = path;
             const skip = sparse !== undefined && !sparse.includes(path);
             columns.add(utf8Encoder.encode(path), entry.mode, frame.data, entry.oidAt, skip);
