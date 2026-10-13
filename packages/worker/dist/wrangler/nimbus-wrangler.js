@@ -181,14 +181,16 @@ export class NimbusWrangler {
             return false;
         }
         // 2. Build and load the worker; once it serves, 3. watch for file changes.
-        const ok = await this.buildAndLoad(() => {
+        const building = this.buildAndLoad(() => {
             this.running = true;
             this.unsubVfs = this.namespace.watchChanges('/', (events) => {
                 this.handleVfsEvents(events);
             });
         });
-        // A stop() that came after it served, before this resumed, stopped it.
-        return ok && !this.stopped;
+        // The generation this start's build took: a stop() or another start
+        // that came after it served, before this resumed, superseded it.
+        const generation = this.generation;
+        return (await building) && generation === this.generation;
     }
     /** Whether stop() was called since the last start(): a start it cut short failed for that reason. */
     get wasStopped() { return this.stopped; }
