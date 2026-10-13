@@ -41,9 +41,11 @@ function bindingsOf(text) {
   assert.ok(bindings, 'its bindings are read');
   assert.equal(bindings.imports.length, requests.filter((request) => request.kind === 'static').length, 'one entry per static specifier');
   assert.equal(statics.length, bindings.imports.length, 'staging reads the same static specifiers');
-  assert.deepEqual(statics.map((site) => site.attributes), [...bindings.types].map((type) => (type === null ? {} : { type })), 'a site checks its type alone');
-  const reexports = [...bindings.reexports].map((entry) => [...entry]).sort(([a], [b]) => (a < b ? -1 : 1));
-  return { imports: bindings.imports.map((names) => [...names]), stars: [...bindings.stars], exports: [...bindings.exports].sort(), types: [...bindings.types], reexports };
+  // The interpreter's lists (SafeLists: no prototype), read as arrays.
+  const list = (items) => Array.from(items);
+  assert.deepEqual(statics.map((site) => site.attributes), list(bindings.types).map((type) => (type === null ? {} : { type })), 'a site checks its type alone');
+  const reexports = list(bindings.reexports).map((entry) => list(entry)).sort(([a], [b]) => (a < b ? -1 : 1));
+  return { imports: list(bindings.imports).map((names) => list(names)), stars: list(bindings.stars), exports: list(bindings.exports).sort(), types: list(bindings.types), reexports };
 }
 
 assert.deepEqual(bindingsOf(DECLARATIONS.join('\n')), { imports: IMPORTS, stars: [4], exports: EXPORTS, types: TYPES, reexports: REEXPORTS }, 'a module');
