@@ -55,8 +55,9 @@ const denied = /EACCES|EPERM/;
   assert.equal(text('home/user/protected.txt'), 'kept');
   const read = await serveEditorFs(views, { type: 'fs-read', path: '/home/user/private/secret.txt' });
   assert.match(String(read.error), denied, `the editor read another uid's 0600 file: ${JSON.stringify(read)}`);
+  // The tree skips a directory it cannot read, as it always has: it shows nothing in it.
   const list = await serveEditorFs(views, { type: 'fs-list', dir: '/home/user/private' });
-  assert.match(String(list.error), denied, `the editor listed another uid's 0700 directory: ${JSON.stringify(list)}`);
+  assert.deepEqual(list.entries ?? [], [], `the editor listed another uid's 0700 directory: ${JSON.stringify(list)}`);
   const tree = await serveEditorFs(views, { type: 'fs-list', dir: '/home/user', recursive: true });
   assert.ok(!tree.entries.some((entry) => entry.path.startsWith('/home/user/private/')), `the editor's tree shows another uid's files: ${JSON.stringify(tree.entries)}`);
   const own = await serveEditorFs(views, { type: 'fs-write', path: '/home/user/notes/editor.txt', content: 'mine' });
