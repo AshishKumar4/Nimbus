@@ -14,6 +14,17 @@ published independently in the `@nimbus-sh` npm scope.
   the file: `stat` shows another user's later change, and a file removed and
   made again has a new file's mode and times. `stat` answers the file's real
   device and link count (`dev`, `nlink`) instead of one made-up device.
+
+## 2026-10-13: platform 0.9.0, core 0.19.0, fabric 0.14.0, worker 0.17.0, config 0.3.1, loom 0.3.0, sdk 0.14.0, react 0.3.2, cli 0.2.6, create-nimbus-app 0.2.3
+
+- Fixed: in a WASI program (an uploaded program, CPython), a socket read that
+  followed a poll which gave up on the socket could lose a chunk that arrived
+  just before the socket closed. A read or an accept that the 10 s park
+  deadline answered with EAGAIN wrote into the guest's buffer, or adopted a
+  connection, when its input arrived later; the input now waits for the next
+  call. A threaded program reading a pipe its other thread writes no longer
+  waits 8 s for EINTR. An open after `fd_renumber` or `dup2` no longer
+  replaces the descriptor moved there.
 - Fixed: walked recursive removal attempts unreadable entries, continues past
   failures, and reports each entry that remains. The shell reports vanished
   children unless `rm -f` was requested.
