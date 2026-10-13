@@ -130,20 +130,26 @@ function isHfsDot(path: string, i: number, word: string): boolean {
   return c === 0 || c === SLASH;
 }
 
-/** verify_path: whether git lets a repo-relative `path`, its entry's `mode`, into its index. */
+/**
+ * verify_path: whether git lets a repo-relative `path`, its entry's `mode`,
+ * into its index. Only a component's start, a '/' and (protecting NTFS) a
+ * '\\' are looked at, so the separators are found by indexOf.
+ */
 export function verifyPath(path: string, mode: number, protect: PathProtection): boolean {
   const link = (mode & 0o170000) === 0o120000;
+  // NTFS reads a backslash as a separator: .git after one is .git (not after one a component starts with, as git reads it).
+  if (protect.ntfs) {
+    for (let b = path.indexOf('\\'); b >= 0; b = path.indexOf('\\', b + 1)) {
+      if (b > 0 && at(path, b - 1) !== SLASH && (isNtfsDotgit(path, b + 1) || (link && isNtfsDotgitmodules(path, b + 1)))) return false;
+    }
+  }
   for (let i = 0; ;) {
-    // A component starts at i.
     if (protect.hfs && (isHfsDot(path, i, 'git') || (link && isHfsDot(path, i, 'gitmodules')))) return false;
     if (protect.ntfs && (isNtfsDotgit(path, i) || (link && isNtfsDotgitmodules(path, i)))) return false;
-    const first = at(path, i++);
-    if (first === 0 || first === SLASH || (first === DOT && !dotfileAllowed(path, i, link))) return false;
-    for (;;) {
-      const c = at(path, i++);
-      if (c === 0) return true;
-      if (c === SLASH) break;
-      if (c === BACKSLASH && protect.ntfs && (isNtfsDotgit(path, i) || (link && isNtfsDotgitmodules(path, i)))) return false;
-    }
+    const first = at(path, i);
+    if (first === 0 || first === SLASH || (first === DOT && !dotfileAllowed(path, i + 1, link))) return false;
+    const slash = path.indexOf('/', i + 1);
+    if (slash < 0) return true;
+    i = slash + 1;
   }
 }

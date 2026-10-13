@@ -222,6 +222,7 @@ const allowed = {
   'git~1, core.protectNTFS off': [(o) => sub(o, 'git~1'), ['-c', 'core.protectNTFS=false']],
   '.g\u200cit, core.protectHFS off': [(o) => sub(o, '.g\u200cit'), []],
   '.gitmodules as a file': [(o) => o.tree(treeBytes([['100644', '.gitmodules', o.evil], ['100644', 'a.txt', o.a]])), []],
+  'a backslash a name starts with, .git after it': [(o) => o.tree(treeBytes([['100644', '\\.git', o.evil], ['100644', 'a.txt', o.a]])), []],
 };
 for (const [label, [make, config]] of Object.entries(allowed)) {
   for (const args of [['checkout', '-q', 'evil'], ['reset', '-q', '--hard', 'evil']]) await same(label, make, [...config, ...args]);

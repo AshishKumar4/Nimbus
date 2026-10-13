@@ -44,7 +44,9 @@ export class TreeEntries {
       mode = ((mode << 3) | (c - 0x30)) & 0xffff;
     }
     if (tree[p] === 0) throw new Error('empty filename in tree entry');
-    const nameEnd = tree.indexOf(0, p);
+    // The NUL at the tree's end - 21 ends the scan at the latest.
+    let nameEnd = p;
+    while (tree[nameEnd] !== 0) nameEnd++;
     // canon_mode: a file 100644 or 100755, a link, a tree, and anything else a gitlink.
     const type = mode & 0o170000;
     this.mode = type === 0o100000 ? (mode & 0o100 ? 0o100755 : 0o100644) : type === 0o120000 || type === 0o040000 ? type : 0o160000;
