@@ -1490,19 +1490,13 @@ export declare class FacetManager {
      * _kernelFor, for the kernel's own stores (KERNEL_STORE_ROOT). That root is
      * checked, not assumed, each time: made if absent, and refused unless it is
      * the kernel's own real directory that no one else may write (only root,
-     * through sudo, could have made it anything else). The first use also
-     * removes the stores an earlier release kept below `/var`.
+     * through sudo, could have made it anything else). The stores releases
+     * through worker 0.17.0 kept below `/var/lib/nimbus` are left: a durable
+     * worker one made may still boot from a path there, and a root-owned
+     * directory at that name, below the user's `/var`, is no proof the kernel
+     * made it.
      */
     private _kernelStoreFor;
-    private legacyStoresRemoved;
-    /**
-     * Remove the stores a release through worker 0.17.0 kept below `/var`, as
-     * the kernel, through no link: each directory from `/var` to the store is
-     * looked at without following it, and only real directories lead on, to a
-     * store that is the kernel's own. One synchronous turn, so nothing changes
-     * between a look and the removal. What cannot be removed stays.
-     */
-    private _removeLegacyStores;
     /** Give the bundle's module pass the host's esbuild, as composeFacetManager does. */
     setEsbuildService(esbuild: EsbuildService): void;
     /**

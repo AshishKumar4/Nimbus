@@ -607,12 +607,6 @@ const KERNEL_STORE_ROOT = '/.nimbus';
 /** Where inlined wasm images are staged, one kernel-owned file per content key. */
 const INLINE_WASM_DIR = `${KERNEL_STORE_ROOT}/inline-wasm`;
 /**
- * Where releases through worker 0.17.0 kept those stores: below `/var`, which
- * the session's user owns. Removed once, through no link (_removeLegacyStores).
- */
-const LEGACY_STORE_PARENT = 'var/lib/nimbus';
-const LEGACY_STORES = ['facet-images', 'inline-wasm', 'staged'];
-/**
  * A base64 string literal whose first bytes are wasm's `\0asm` magic
  * (`AGFzbQ`), long enough to be a module. Quotes bound the match, so the scan
  * reads what wasm IS and matches no call shape.
@@ -5216,8 +5210,11 @@ export class FacetManager {
      * _kernelFor, for the kernel's own stores (KERNEL_STORE_ROOT). That root is
      * checked, not assumed, each time: made if absent, and refused unless it is
      * the kernel's own real directory that no one else may write (only root,
-     * through sudo, could have made it anything else). The first use also
-     * removes the stores an earlier release kept below `/var`.
+     * through sudo, could have made it anything else). The stores releases
+     * through worker 0.17.0 kept below `/var/lib/nimbus` are left: a durable
+     * worker one made may still boot from a path there, and a root-owned
+     * directory at that name, below the user's `/var`, is no proof the kernel
+     * made it.
      */
     _kernelStoreFor(pid) {
         const fs = this._kernelFor(pid);
@@ -5229,37 +5226,7 @@ export class FacetManager {
         if (root?.type !== 'directory' || root.uid !== 0 || (root.mode & 0o022) !== 0) {
             throw new Error(`Nimbus: ${KERNEL_STORE_ROOT} is not the kernel's own directory (a ${root?.type ?? 'missing entry'} owned by uid ${root?.uid}, mode ${((root?.mode ?? 0) & 0o7777).toString(8)}); its stores are not written through it`);
         }
-        if (!this.legacyStoresRemoved) {
-            this.legacyStoresRemoved = true;
-            this._removeLegacyStores(fs);
-        }
         return fs;
-    }
-    legacyStoresRemoved = false;
-    /**
-     * Remove the stores a release through worker 0.17.0 kept below `/var`, as
-     * the kernel, through no link: each directory from `/var` to the store is
-     * looked at without following it, and only real directories lead on, to a
-     * store that is the kernel's own. One synchronous turn, so nothing changes
-     * between a look and the removal. What cannot be removed stays.
-     */
-    _removeLegacyStores(fs) {
-        const parts = LEGACY_STORE_PARENT.split('/');
-        for (let i = 1; i <= parts.length; i++) {
-            const dir = fs.stat(`/${parts.slice(0, i).join('/')}`, { followSymlinks: false });
-            if (dir?.type !== 'directory')
-                return;
-        }
-        for (const store of LEGACY_STORES) {
-            const path = `/${LEGACY_STORE_PARENT}/${store}`;
-            const st = fs.stat(path, { followSymlinks: false });
-            if (st?.type !== 'directory' || st.uid !== 0)
-                continue;
-            try {
-                fs.remove(path, { recursive: true });
-            }
-            catch { /* left for the user's own rm */ }
-        }
     }
     /** Give the bundle's module pass the host's esbuild, as composeFacetManager does. */
     setEsbuildService(esbuild) { this.esbuild = esbuild; }
@@ -7478,7 +7445,9 @@ export class FacetManager {
         const kernel = vfs.as(CRED_KERNEL);
         return {
             readFile: (path) => withRecall(() => fs.readFileUncached(path)),
-            readImage: (path) => kernel.readFileUncached(path),
+            // A durable worker an earlier release made may name one below /var,
+            // which a process may hold: that read waits for it, as readFile's does.
+            readImage: (path) => withRecall(() => kernel.readFileUncached(path)),
         };
     }
     /**

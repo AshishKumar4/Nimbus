@@ -335,24 +335,13 @@ export async function _rpcWriteProtectedRootFile(self, rootPath, path, content) 
     const parts = root.split('/');
     for (let i = 1; i <= parts.length; i++) {
         const dir = parts.slice(0, i).join('/');
-        let type;
-        try {
-            type = fs.lstat(dir).type;
-        }
-        catch {
-            throw new Error('protected file session root does not exist');
-        }
+        const type = fs.statIfPresent(dir, false)?.type;
         if (type === 'symlink')
             throw new Error(`protected file session root passes through a link at /${dir}`);
         if (type !== 'directory')
             throw new Error('protected file session root does not exist');
     }
-    let leaf = null;
-    try {
-        leaf = fs.lstat(protectedPath);
-    }
-    catch { /* absent: written fresh */ }
-    if (leaf?.type === 'symlink')
+    if (fs.statIfPresent(protectedPath, false)?.type === 'symlink')
         fs.unlink(protectedPath);
     fs.chown(root, CRED_KERNEL.uid, CRED_KERNEL.gid);
     fs.chmod(root, 0o1777);
