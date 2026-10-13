@@ -8741,6 +8741,8 @@ export class SqliteVFS {
     const unplaceable = (key: string): Error => vfsError('ENOTDIR', key, 'not a directory the entry can be placed in');
     const checkedParents = new Set<string>();
     const placedParents = new Set<string>();
+    // The sticky directories a deletion is in, as checkParent met them (checkStickyParent).
+    const stickyParents = new Map<string, INode>();
     const checkParent = (path: string, placing: boolean): void => {
       const parent = parentKey(path);
       if (parent === '') { this.checkRootWritable(path, cred); return; }
@@ -8749,6 +8751,7 @@ export class SqliteVFS {
       checked.add(parent);
       const existing = this.inodes.get(parent);
       if (existing) {
+        if (!placing && (existing.mode & 0o1000) !== 0) stickyParents.set(parent, existing);
         if (placing && existing.kind !== 'directory') throw unplaceable(parent);
         const resolved = this.checkAccess(parent, 0o3, cred);
         if (placing && resolved.path !== parent) throw unplaceable(parent);
@@ -8785,7 +8788,8 @@ export class SqliteVFS {
       }).inode;
       if (existing) {
         checkParent(normalized, false);
-        this.checkStickyParentMutation(normalized, existing, cred);
+        const sticky = stickyParents.get(parentKey(normalized));
+        if (sticky !== undefined) this.checkStickyParent(sticky, existing, cred, normalized);
       }
     }
     for (const entry of inodes) {
@@ -11212,8 +11216,9 @@ export class SqliteVFS {
    */
   /** `commitRow`: the transaction's commit callback writes a checkpoint row, which the plan counts. */
   private prepareBatchTransaction(payload: BatchWritePayload, cred: VfsCred, commitRow = false): PreparedBatchTransaction {
-    const deletedInodes = this.collectSubtreeInodes(payload.deletePaths ?? []);
-    this.authorizeDeletions(payload.deletePaths ?? [], deletedInodes, cred);
+    const below: INode[] = [];
+    const deletedInodes = this.collectSubtreeInodes(payload.deletePaths ?? [], below);
+    this.authorizeDeletions(below, deletedInodes, cred);
     const deletedInodesByPath = new Map(deletedInodes.map((inode) => [inode.path, inode]));
     const builder = this.newPlan(commitRow);
     const deletedPaths = new Set(payload.deletePaths ?? []);
@@ -11448,21 +11453,18 @@ export class SqliteVFS {
    * a batch's deletions and a rename. A removal pages (subtree, descending).
    */
   /**
-   * Each entry a batch deletes below the roots it names, as unlink(2) and
-   * rmdir(2) would judge it: the directory holding it (deleted with it)
-   * written and searched by `cred`, and, when that directory is sticky, it or
-   * the entry `cred`'s. A batch deleting a tree deletes every entry of it, so
-   * each is judged; the roots are judged where they are named
-   * (authorizeBatchNow).
+   * Each entry a batch deletes below the roots it names (`below`), as
+   * unlink(2) and rmdir(2) would judge it: the directory holding it (deleted
+   * with it) written and searched by `cred`, and, when that directory is
+   * sticky, it or the entry `cred`'s. A batch deleting a tree deletes every
+   * entry of it, so each is judged; the roots are judged where they are
+   * named (authorizeBatchNow).
    */
-  private authorizeDeletions(roots: readonly string[], deleted: readonly INode[], cred: VfsCred): void {
-    if (cred.uid === 0) return;
-    const named = new Set(roots);
-    if (deleted.every((inode) => named.has(inode.path))) return;
+  private authorizeDeletions(below: readonly INode[], deleted: readonly INode[], cred: VfsCred): void {
+    if (cred.uid === 0 || below.length === 0) return;
     const byPath = new Map(deleted.map((inode) => [inode.path, inode]));
     const searched = new Set<INode>();
-    for (const inode of deleted) {
-      if (named.has(inode.path)) continue;
+    for (const inode of below) {
       const parent = byPath.get(parentKey(inode.path));
       if (parent === undefined) continue;
       if (!searched.has(parent)) {
@@ -11473,10 +11475,12 @@ export class SqliteVFS {
     }
   }
 
-  private collectSubtreeInodes(roots: readonly string[]): INode[] {
+  /** `below`: given, it also gets the inodes that are under a root and not a root themselves. */
+  private collectSubtreeInodes(roots: readonly string[], below?: INode[]): INode[] {
     if (roots.length === 0) return [];
     const collected: INode[] = [];
     const visited = new Set<string>();
+    const named = below === undefined ? undefined : new Set(roots);
     for (const root of roots) {
       const under = subtreeWhere(root)!;
       const rows = [
@@ -11487,7 +11491,9 @@ export class SqliteVFS {
         const path = String(row.path);
         if (visited.has(path)) continue;
         visited.add(path);
-        collected.push(this.inodes.peek(path) ?? this.inodeFromRow(row));
+        const inode = this.inodes.peek(path) ?? this.inodeFromRow(row);
+        collected.push(inode);
+        if (named !== undefined && !named.has(path)) below!.push(inode);
       }
     }
     // A child's path is always longer than its parent's, so length order
