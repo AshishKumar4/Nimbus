@@ -59,6 +59,8 @@
  *   - __streamMod (Readable.fromWeb, pipeline), __eventsMod, env
  */
 
+import { HTTP_REDIRECT_POLICY_SOURCE } from './compiled-bodies.generated.js';
+
 /**
  * The names the shim's module has beside \`default\`: what an ES module may
  * import from 'undici' (worker facets/esm-stage.ts builds its facade with
@@ -80,6 +82,7 @@ export const UNDICI_SHIM_EXPORTS: readonly string[] = Object.freeze([
 export function generateUndiciShimCode(): string {
   return `
 const __undiciMod = (() => {
+  const { isRedirectStatus, applyRedirectPolicy } = ${HTTP_REDIRECT_POLICY_SOURCE};
   // The patched global fetch, captured now. Captured rather than dereferenced
   // per call so that user code doing \`globalThis.fetch = undici.fetch\` — a real
   // pattern — cannot build an infinite delegation loop. This is the binding
@@ -306,26 +309,44 @@ const __undiciMod = (() => {
   const request = async (url, options) => {
     const opts = options || {};
     assertInertDispatcher(opts.dispatcher, "request({ dispatcher })");
-    let target = targetUrl(url, opts);
-    const method = String(opts.method || "GET").toUpperCase();
-    const headers = requestHeaders(opts.headers);
-    const body = await requestBody(opts.body);
-    let budget = Number(opts.maxRedirections) || 0;
+    // Node 22's real RedirectHandler is installed only for a nonzero count.
+    // Do not coerce strings/fractions into a different redirect policy.
+    const maxRedirections = opts.maxRedirections || 0;
+    if (maxRedirections && (!Number.isInteger(maxRedirections) || maxRedirections < 0)) {
+      throw new errors.InvalidArgumentError("maxRedirections must be a positive number");
+    }
+    const hop = {
+      url: targetUrl(url, opts),
+      method: String(opts.method || "GET").toUpperCase(),
+      headers: requestHeaders(opts.headers),
+      body: await requestBody(opts.body),
+    };
+    // Buffering a Node Readable here does not make it replayable in undici:
+    // the real handler refuses to redirect a disturbed stream/async iterable.
+    const replayableBody = !opts.body || (typeof opts.body.pipe === "function"
+      ? !__streamMod.isDisturbed(opts.body)
+      : typeof opts.body.pipeTo !== "function" && typeof opts.body[Symbol.asyncIterator] !== "function");
 
     let response;
-    for (;;) {
-      response = await __fetch(target.href, {
-        method,
-        headers,
-        body,
+    for (let followed = 0; ; followed++) {
+      response = await __fetch(hop.url.href, {
+        method: hop.method,
+        headers: hop.headers,
+        body: hop.body,
         signal: opts.signal || undefined,
         redirect: "manual",
       });
-      if (budget <= 0) break;
+      // undici 6 checks this on every response at the cap, even a final 200.
+      if (maxRedirections > 0 && opts.throwOnMaxRedirect && followed >= maxRedirections) {
+        await response.body?.cancel();
+        throw new Error("max redirects");
+      }
+      if (followed >= maxRedirections || !replayableBody) break;
       const location = response.headers.get("location");
-      if (response.status < 300 || response.status > 399 || !location) break;
-      budget -= 1;
-      target = new URL(location, target);
+      if (!isRedirectStatus(response.status, "undici") || !location) break;
+      await response.body?.cancel();
+      const next = new URL(location, hop.url);
+      applyRedirectPolicy(hop, response.status, next, "undici");
     }
 
     const resHeaders = responseHeaders(response);

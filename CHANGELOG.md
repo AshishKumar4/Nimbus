@@ -5,6 +5,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed (security): `undici.request()` no longer forwards explicit Authorization,
+  Cookie or Proxy-Authorization headers across an origin-changing redirect.
+  Redirects now match Node 22's bundled undici: Host is regenerated on every
+  hop, 303 drops the body and content headers (keeping HEAD), 301/302 and
+  307/308 retain the method and replayable body, and redirect limits honor
+  `throwOnMaxRedirect`.
 - Fixed: `utimesSync`, `lutimesSync` and `futimesSync` in a Node program reach
   the session; they changed only what the program itself saw.
 - Fixed: a file JS git checks out, and a loose object it writes, is made with
