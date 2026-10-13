@@ -12,7 +12,7 @@
 import { ISOLATE_NETWORK, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { GIT_WASI_ENV, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { engineKey, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
+import { engineKey, X_OK, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { WaveIngest } from '@nimbus-sh/core/runtime/wave-ingest.js';
 import { projectFs, type ProjectFs } from '../runtime/project-fs.js';
 import { execGitNetwork, runGraphFilters, type GitNetworkResult } from './network-facet.js';
@@ -1034,6 +1034,61 @@ const V1_EXTENSIONS: Readonly<Record<string, (value: string) => boolean>> = {
 };
 
 type GitLibrary = Awaited<ReturnType<typeof getGit>>;
+
+/**
+ * The hooks (githooks(5)) git runs for what each built-in command does:
+ * the built-in runs none, so a repository where one of its command's is
+ * executable is real git's, handed over before any effect
+ * (assertNoHooks). status and diff write a refreshed index back
+ * (repo_update_index_if_able), which runs post-index-change; every ref
+ * update runs reference-transaction.
+ */
+const COMMAND_HOOKS: Readonly<Record<string, readonly string[]>> = {
+  status: ['post-index-change'],
+  diff: ['post-index-change'],
+  add: ['post-index-change'],
+  commit: ['pre-commit', 'prepare-commit-msg', 'commit-msg', 'post-commit', 'post-index-change', 'reference-transaction'],
+  checkout: ['post-checkout', 'post-index-change', 'reference-transaction'],
+  reset: ['post-index-change', 'reference-transaction'],
+  merge: ['pre-merge-commit', 'prepare-commit-msg', 'commit-msg', 'post-merge', 'post-index-change', 'reference-transaction'],
+  pull: ['pre-merge-commit', 'prepare-commit-msg', 'commit-msg', 'post-merge', 'post-index-change', 'reference-transaction'],
+  fetch: ['reference-transaction'],
+  push: ['pre-push', 'reference-transaction'],
+  branch: ['reference-transaction'],
+  tag: ['reference-transaction'],
+  remote: ['reference-transaction'],
+  'sparse-checkout': ['post-index-change'],
+};
+
+/**
+ * Refuse, before any effect, a command whose hooks the repository makes
+ * executable (COMMAND_HOOKS): where git looks for them (core.hooksPath,
+ * from -c, the repository's and the global config, a relative one from
+ * the directory hooks run in; else $GIT_DIR/hooks), each found as git's
+ * find_hook finds it, by access(X_OK) as the command's principal.
+ */
+async function assertNoHooks(
+  ctx: Ctx,
+  git: Pick<GitLibrary, 'getConfig'>,
+  fs: Parameters<GitLibrary['getConfig']>[0]['fs'],
+  repo: GitRepo,
+  sub: string,
+): Promise<void> {
+  const hooks = COMMAND_HOOKS[sub];
+  if (hooks === undefined) return;
+  let configured: unknown;
+  try { configured = await git.getConfig({ fs, gitdir: repo.gitdir, path: 'core.hooksPath' }); } catch { configured = undefined; }
+  let dir = `${repo.gitdir}/hooks`;
+  if (typeof configured === 'string' && configured !== '') {
+    const home = ctx.env.HOME ?? '';
+    const expanded = configured === '~' ? home : configured.startsWith('~/') ? home + configured.slice(1) : configured;
+    dir = expanded.startsWith('/') ? expanded : `${repo.worktree ?? repo.gitdir}/${expanded}`;
+  }
+  for (const hook of hooks) {
+    try { await ctx.vfs.access(normalizeVfsPath(`${dir}/${hook}`), X_OK); } catch { continue; }
+    throw new UnsupportedGitOperation(`fatal: git ${sub} with a ${hook} hook is not supported here\n`, 128);
+  }
+}
 
 async function assertRepositoryImplemented(
   git: Pick<GitLibrary, 'getConfig' | 'getConfigNames'>,
@@ -3179,6 +3234,7 @@ export async function runGitCommand(
       const repo = await discoverRepo(repoVfs, dir);
       // The repository's format is its own config file's, as git reads it: no -c or global value stands in.
       if (repo !== null) await assertRepositoryImplemented(await getGit(), fs, repo);
+      if (repo !== null && command !== null) await assertNoHooks(ctx, git, fs, repo, command.sub);
       if (repo !== null && await repoVfs.exists(`${repo.gitdir}/${GIT_CLONE_JOB_MARKER}`)) {
         await ctx.stderr.write(`fatal: '${repo.worktree ?? repo.gitdir}' is still being cloned\n`);
         return 128;

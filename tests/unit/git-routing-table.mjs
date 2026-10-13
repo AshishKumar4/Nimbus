@@ -10,7 +10,11 @@
 //   - a form whose message git takes from an editor (a commit with no -m,
 //     an annotated tag with no -m or -F, a merge or pull with
 //     GIT_MERGE_AUTOEDIT) is real git's, which runs the editor; the
-//     built-in made a message up.
+//     built-in made a message up;
+//   - a command whose hooks (githooks(5)) the repository makes executable
+//     is real git's: the built-in runs no hook. Where git looks for them
+//     (core.hooksPath, a relative one from the worktree's top) is honored,
+//     and a hook that is not executable is not run by git either.
 
 import assert from 'node:assert/strict';
 
@@ -145,5 +149,32 @@ const wrong = [];
 for (const words of BUILT_IN) if (await engine(words) !== 'built-in') wrong.push(`built-in expected: git ${words.join(' ')}`);
 for (const words of REAL_GIT) if (await engine(words) !== 'real git') wrong.push(`real git expected: git ${words.join(' ')}`);
 for (const [env, words, who] of AUTOEDIT) if (await engine(words, env) !== who) wrong.push(`${who} expected: ${JSON.stringify(env)} git ${words.join(' ')}`);
+
+// Hooks: each case writes one hook where git looks for it, then asks who answers each form.
+const HOOKS = [
+  // [hook, its directory in the repository, executable, config to set, [form, who]...]
+  ['pre-commit', '.git/hooks', true, null, [['commit', '-m', 'x', '--allow-empty'], 'real git'], [['status'], 'built-in'], [['add', 'a.txt'], 'built-in']],
+  ['pre-commit', '.git/hooks', false, null, [['commit', '-m', 'x', '--allow-empty'], 'built-in']],
+  ['commit-msg', '.git/hooks', true, null, [['commit', '-m', 'x', '--allow-empty'], 'real git'], [['merge', 'topic'], 'real git'], [['checkout', 'topic'], 'built-in']],
+  ['post-checkout', '.git/hooks', true, null, [['checkout', 'topic'], 'real git'], [['commit', '-m', 'x', '--allow-empty'], 'built-in']],
+  ['post-merge', '.git/hooks', true, null, [['merge', 'topic'], 'real git'], [['pull', 'origin', 'main'], 'real git'], [['fetch', 'origin'], 'built-in']],
+  ['pre-push', '.git/hooks', true, null, [['push', 'origin', 'main'], 'real git'], [['fetch', 'origin'], 'built-in']],
+  ['post-index-change', '.git/hooks', true, null, [['status'], 'real git'], [['diff'], 'real git'], [['add', 'a.txt'], 'real git'], [['reset', 'a.txt'], 'real git'], [['log'], 'built-in']],
+  ['reference-transaction', '.git/hooks', true, null, [['branch', 'more'], 'real git'], [['tag', 'v9'], 'real git'], [['fetch', 'origin'], 'real git'], [['status'], 'built-in'], [['rev-parse', 'HEAD'], 'built-in']],
+  ['pre-commit', 'githooks', true, ['core.hooksPath', 'githooks'], [['commit', '-m', 'x', '--allow-empty'], 'real git']],
+  ['pre-commit', '.git/hooks', true, ['core.hooksPath', 'githooks'], [['commit', '-m', 'x', '--allow-empty'], 'built-in']],
+];
+for (const [hook, dir, executable, config, ...forms] of HOOKS) {
+  const path = `home/user/repo/${dir}/${hook}`;
+  user.mkdir(`home/user/repo/${dir}`, { recursive: true });
+  user.writeFile(path, '#!/bin/sh\nexit 0\n');
+  user.chmod(path, executable ? 0o755 : 0o644);
+  if (config) user.writeFile('home/user/repo/.git/config', user.readFileString('home/user/repo/.git/config') + `[core]\n\thooksPath = ${config[1]}\n`);
+  for (const [words, who] of forms) {
+    if (await engine(words) !== who) wrong.push(`${who} expected with ${executable ? 'an executable' : 'a non-executable'} ${dir}/${hook}${config ? ` (${config.join(' = ')})` : ''}: git ${words.join(' ')}`);
+  }
+  user.unlink(path);
+  if (config) user.writeFile('home/user/repo/.git/config', user.readFileString('home/user/repo/.git/config').replace(`[core]\n\thooksPath = ${config[1]}\n`, ''));
+}
 assert.deepEqual(wrong, [], wrong.join('\n'));
-console.log(`git-routing-table: ${BUILT_IN.length} forms built-in, ${REAL_GIT.length} real git`);
+console.log(`git-routing-table: ${BUILT_IN.length} forms built-in, ${REAL_GIT.length} real git, ${HOOKS.length} hook cases`);
