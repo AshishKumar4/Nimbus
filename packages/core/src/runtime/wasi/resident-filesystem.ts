@@ -110,6 +110,12 @@ export interface PinnedContent {
   release(): void;
   /** The name it was pinned at, which an open of /dev/fd/N opens it again by while that name has it (openIdentified). */
   name: string;
+  /**
+   * Opens the file again where its name no longer has it: by the session's
+   * hold of it, taken when this process took the name away (an unlink, a
+   * rename from or over it). Null when no hold was taken.
+   */
+  reopen(flags: RuntimeOpenFlags): Promise<RuntimeOpenedFile> | null;
 }
 
 export interface ResidentFilesystem extends RuntimeFsBridge {
@@ -200,6 +206,20 @@ type Resolution = string | null | Delegate;
 interface Pin {
   bytes: Uint8Array;
   holders: number;
+}
+
+/**
+ * A file some pin holds bytes of, across its revisions: the name it was
+ * pinned at, and the session's O_PATH descriptor of it once this process
+ * took that name away (an unlink, a rename from or over it), so the file
+ * outlives the name as long as a pin does.
+ */
+interface PinnedFile {
+  key: string;
+  dev: number;
+  ino: number;
+  pins: number;
+  hold: Promise<number | null> | null;
 }
 
 /** A directory the session opened for this process, read-only: listed here while its name still leads to it. */
@@ -356,6 +376,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   const directories = new Map<number, OpenDirectory>();
   /** Bytes pinned for the codec's own descriptors (pinContent). */
   const pins = new Map<string, Pin>();
+  /** The files those pins are of, by identity. */
+  const pinnedFiles = new Map<string, PinnedFile>();
   /** A write-through description's reader: the session's read-only descriptor of its file, opened at its first read. */
   const throughReaders = new Map<number, number>();
 
@@ -601,9 +623,14 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     if (!modeAllows(entry, 4, store.cred)) return null;
     // A file this process writes through is the session's to read (its writes are answered there first).
     if (holder?.writing(entry.ino) !== undefined || entry.revision !== stat.revision) return null;
-    const pinKey = `${identity(entry.dev, entry.ino)}:${entry.revision}`;
+    const fileKey = identity(entry.dev, entry.ino);
+    const pinKey = `${fileKey}:${entry.revision}`;
     const pinned = (pin: Pin): PinnedContent => {
       pin.holders++;
+      let file = pinnedFiles.get(fileKey);
+      if (file === undefined) pinnedFiles.set(fileKey, file = { key, dev: entry.dev, ino: entry.ino, pins: 0, hold: null });
+      file.pins++;
+      const of = file;
       let released = false;
       return {
         bytes: pin.bytes,
@@ -611,9 +638,23 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
         release: () => {
           if (released) return;
           released = true;
+          if (--of.pins === 0) {
+            pinnedFiles.delete(fileKey);
+            void of.hold?.then((handle) => { if (handle !== null) closeUnawaited(authority, handle); });
+          }
           if (--pin.holders > 0) return;
           pins.delete(pinKey);
           store.release(pin.bytes.byteLength);
+        },
+        reopen: (flags) => {
+          const hold = of.hold;
+          if (hold === null) return null;
+          return hold.then((handle) => {
+            if (handle === null) throw fsError('ENOENT', 'open', '/' + of.key);
+            // What this process decided of the file is the session's first.
+            const reopen = () => authority.reopen({ handle }, flags);
+            return holder === null ? reopen() : holder.flush().then(reopen);
+          });
         },
       };
     };
@@ -966,6 +1007,33 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     return after(local, (done) => (done !== DELEGATE ? undefined
       : names !== undefined ? byClient('rename', { type: 'rename', from: names[0], to: names[1] }) : bySessionRename(from, to)));
   };
+  /**
+   * Before this process takes the name `key` away (an unlink of it, a rename
+   * of it or over it; `under`: a directory's, every name beneath it too), the
+   * files a pin holds there are held at the session by an O_PATH descriptor,
+   * sent first on the same stub so the session has the hold before the change.
+   * Not waited on. A file that is another by the time it lands is not held.
+   */
+  const holdPinnedAt = (key: string, under: boolean): void => {
+    for (const file of pinnedFiles.values()) {
+      if (file.hold !== null || (file.key !== key && !(under && file.key.startsWith(key + '/')))) continue;
+      file.hold = Promise.resolve(authority.open('/' + file.key, { path: true, followSymlinks: false })).then((held) => {
+        if (held.stat.dev === file.dev && held.stat.ino === file.ino) return held.id;
+        closeUnawaited(authority, held.id);
+        return null;
+      }, () => null);
+    }
+  };
+  /** `change`, after the pinned files at the names `paths` (resolved as `change` resolves them) are held. */
+  const keepingPins = (paths: readonly [RuntimeFsPath, boolean][], change: () => Awaitable<void>): Awaitable<void> => {
+    if (pinnedFiles.size === 0) return change();
+    const held = paths.map(([path, under]) => after(keyFor(path, false), (key) => { if (key !== DELEGATE) holdPinnedAt(key, under); }));
+    return held.some((step) => step instanceof Promise) ? Promise.all(held).then(change) : change();
+  };
+  const unlinkDropping = fs.unlink;
+  fs.unlink = (path) => keepingPins([[path, false]], () => unlinkDropping(path));
+  const renameDropping = fs.rename;
+  fs.rename = (from, to) => keepingPins([[from, true], [to, false]], () => renameDropping(from, to));
   // Nothing of these is decided here: by the client when the store places the name.
   const byName = <A extends unknown[]>(name: 'rmdir' | 'symlink', passed: (...args: A) => Awaitable<void>, pathAt: number, op: (key: string, args: A) => ProcessFsOp) =>
     (...args: A): Awaitable<void> => {
