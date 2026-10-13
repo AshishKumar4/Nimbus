@@ -2552,7 +2552,9 @@ export class SqliteVFS {
     stat(): VfsStat {
       this.published();
       this.vfs.settleAppend(this.live().ino);
-      return { ...this.vfs.statOf(this.opened.inode), nlink: this.opened.path === null ? 0 : 1 };
+      const stat = this.vfs.statOf(this.opened.inode);
+      if (this.opened.path === null) stat.nlink = 0;
+      return stat;
     }
 
     revision(): number {

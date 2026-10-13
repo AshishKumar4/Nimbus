@@ -48,7 +48,7 @@ import type {
   RuntimeVfsStat,
 } from '../os-contracts.js';
 import { fsError, modeAllows, walkBeneath } from '../beneath-walk.js';
-import { openIdentified } from './filesystem.js';
+import { closeUnawaited, openIdentified } from './filesystem.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
 import { delegationHolder, type DelegationHolder } from './delegation-holder.js';
 import type { ProcessFsJournal, ProcessFsOp, ProcessFsSession, ProcessFsStats } from '../../_shared/process-fs-client.js';
@@ -687,7 +687,10 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   /** A descriptor of the holder's, as an open answers it: with its stat, the holder's. */
   const heldOpen = (handle: RuntimeFileHandle): RuntimeOpenedFile => ({ ...handle, stat: statOf(holder!.fstat(handle.id)) });
 
-  fs.open = (path, flags: RuntimeOpenFlags) => {
+  fs.open = (path, given: RuntimeOpenFlags) => {
+    // The holder's descriptors and the session's alike: each closed where it is (RuntimeOpenFlags.closing).
+    if (given.closing) for (const id of given.closing) closeUnawaited(fs, id);
+    const flags: RuntimeOpenFlags = given.closing ? { ...given, closing: undefined } : given;
     const readOnly = !flags.write && !flags.create && !flags.truncate && !flags.append && !flags.exclusive;
     if (!readOnly && holder !== null) {
       // A file made or emptied in a subtree this process holds is decided here.

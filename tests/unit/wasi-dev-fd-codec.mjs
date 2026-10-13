@@ -23,7 +23,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { residentFilesystem } from '../../packages/core/src/runtime/wasi/resident-filesystem.ts';
-import { installAuthorityFilesystem } from '../../packages/core/src/runtime/wasi/filesystem.ts';
+import { installAuthorityFilesystem, ResidentHolds } from '../../packages/core/src/runtime/wasi/filesystem.ts';
 import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { WASI_RESIDENT_STORE_BYTES } from '../../packages/platform/src/limits.ts';
@@ -35,8 +35,11 @@ const E = { SUCCESS: 0, ACCES: 2, NOENT: 44 };
 const RIGHT_READ = 2n, RIGHT_SEEK = 4n, RIGHT_WRITE = 64n;
 const O_TRUNC = 8, FDFLAG_APPEND = 1;
 
-/** A process over a session seeded with `files` (beneath /home/user), its store's charge counted; `holding`: it holds /home/user from its first change. */
-async function processWith(files, { holding = false } = {}) {
+/**
+ * A process over a session seeded with `files` (beneath /home/user), its store's charge counted; `holding`: it holds
+ * /home/user from its first change; `session`: the codec is straight over the session, its copies held there, as bash's are.
+ */
+async function processWith(files, { holding = false, session: direct = false } = {}) {
   const harness = createSqliteVfsTestHarness();
   const session = new ProcessFiles(new SqliteVFS(harness.sql, harness.ctx));
   const kernel = session.bind({ pid: 1, cred: CRED_KERNEL });
@@ -91,8 +94,8 @@ async function processWith(files, { holding = false } = {}) {
       recalled: async (owner, kind) => { authority.recalled(owner, kind); },
     },
   };
-  const fs = holding
-    ? residentFilesystem(authority, counted, { session: port, isHomeRoot: (key) => key === 'home/user', grantAfter: 0 })
+  const fs = direct ? authority
+    : holding ? residentFilesystem(authority, counted, { session: port, isHomeRoot: (key) => key === 'home/user', grantAfter: 0 })
     : residentFilesystem(authority, counted);
 
   const memory = new WebAssembly.Memory({ initial: 2 });
@@ -101,7 +104,7 @@ async function processWith(files, { holding = false } = {}) {
   const imports = {};
   installAuthorityFilesystem(imports, {
     fs: () => fs, memory: () => memory, fds, allocateFd: () => next++, synchronous: false,
-    residentBytes: 1 << 20, duplicate: () => null,
+    residentBytes: 1 << 20, duplicate: () => null, ...(direct ? { residentHolds: new ResidentHolds() } : {}),
   });
   const view32 = () => new DataView(memory.buffer);
   const name = (text) => { const b = enc.encode(text); new Uint8Array(memory.buffer).set(b, 4096); return b.length; };
@@ -132,7 +135,7 @@ async function processWith(files, { holding = false } = {}) {
       new Uint8Array(memory.buffer).set(a, 4096); new Uint8Array(memory.buffer).set(b, 6144);
       assert.equal(await imports.path_rename(3, 4096, a.length, 3, 6144, b.length), E.SUCCESS, `rename ${from} ${to}`);
     },
-    settle: () => fs.settle(),
+    settle: () => (direct ? undefined : fs.settle()),
   };
 }
 
@@ -231,6 +234,20 @@ await check('a resident copy is not opened again once its mode refuses the read'
   const original = await p.open('home/user/m.txt');
   await p.fs.chmod('/home/user/m.txt', 0);
   assert.equal(await p.openErrno(`dev/fd/${original}`), E.ACCES);
+});
+
+await check('a copy held at the session lets its hold go with the next open, not a call of its own', async () => {
+  const p = await processWith({ 'c.txt': 'copy', 'd.txt': 'next' }, { session: true });
+  const fd = await p.open('home/user/c.txt');
+  const entry = p.fds.get(fd);
+  assert.equal(entry.kind, 'resident', 'a small read-only open is a copy');
+  const held = entry.hold.handle;
+  assert.equal((await p.authority.fstat(held)).ino, entry.stat.ino, 'the session holds the copy\'s file');
+  assert.equal(await p.read(fd, 64), 'copy');
+  await p.close(fd);
+  assert.equal((await p.authority.fstat(held)).ino, entry.stat.ino, 'and still holds it, closed, until the next open');
+  await p.open('home/user/d.txt');
+  assert.equal((await outcome(() => p.authority.fstat(held))).code, 'EBADF', 'which closed it');
 });
 
 assert.deepEqual(failures, []);

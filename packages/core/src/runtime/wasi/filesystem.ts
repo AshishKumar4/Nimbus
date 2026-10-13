@@ -169,6 +169,26 @@ function pinsContent(fs: RuntimeFsBridge | RuntimeSynchronousFs): fs is Resident
   return typeof Reflect.get(fs, 'pinContent') === 'function';
 }
 
+/**
+ * The session descriptors that hold resident copies (residentHolds), for one
+ * filesystem: a hold its copy let go waits here, and the next open closes it
+ * (RuntimeOpenFlags.closing), as a close of its own would be a second call
+ * to the session for every copy.
+ */
+export class ResidentHolds {
+  private released: number[] = [];
+
+  release(handle: number): void { this.released.push(handle); }
+
+  /** The holds the next open closes, handed out once. */
+  take(): readonly number[] | undefined {
+    if (this.released.length === 0) return undefined;
+    const taken = this.released;
+    this.released = [];
+    return taken;
+  }
+}
+
 /** A session descriptor nothing of the guest's waits to see closed: closed, a refusal of it dropped. */
 export function closeUnawaited(fs: RuntimeFsBridge | RuntimeSynchronousFs, handle: number): void {
   try {
@@ -231,13 +251,14 @@ export interface AuthorityFilesystemOptions {
    */
   residentBytes?: number;
   /**
-   * Whether a resident copy holds its file at the session, by an O_PATH
-   * descriptor (RuntimeOpenFlags.path) its open answers the stat with: the
-   * file itself, renamed or unlinked since, is what /dev/fd/N opens again.
-   * Without (a host that cannot hold one, or pins bytes itself), a copy is
-   * opened again by the name it was read at, while that name has it.
+   * Where a resident copy's hold of its file at the session goes when the
+   * copy is let go: an O_PATH descriptor (RuntimeOpenFlags.path) its open
+   * answers the stat with, so the file itself, renamed or unlinked since, is
+   * what /dev/fd/N opens again. Without (a host that cannot hold one, or
+   * pins bytes itself), a copy is opened again by the name it was read at,
+   * while that name has it.
    */
-  residentHolds?: boolean;
+  residentHolds?: ResidentHolds;
   /**
    * Whether a resident copy outlives its descriptor (default true). A guest
    * whose host process already holds the filesystem's content (a node
@@ -327,6 +348,14 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
   // maximum), where the constructor takes any offset within the buffer.
   const guestBytes = (ptr: number, length: number) => new Uint8Array(options.memory().buffer, ptr, length);
   const view = () => new DataView(options.memory().buffer);
+  const holds = options.residentHolds;
+  /** A session descriptor nothing waits on, let go: with the next open where copies hold their files, else closed now. */
+  const letGo = (fs: Fs, handle: number): void => { if (holds) holds.release(handle); else closeUnawaited(fs, handle); };
+  /** `flags`, closing what was let go since the last open (RuntimeOpenFlags.closing). */
+  const closingLetGo = (flags: RuntimeOpenFlags): RuntimeOpenFlags => {
+    const closing = holds?.take();
+    return closing === undefined ? flags : { ...flags, closing };
+  };
   const u32 = (ptr: number, value: number) => view().setUint32(ptr, value, true);
   const u64 = (ptr: number, value: bigint | number) => view().setBigUint64(ptr, BigInt(value), true);
   const path = (ptr: number, length: number): string => {
@@ -552,7 +581,7 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     const byName = (): Awaitable<Uint8Array> => after(fs.readFile(target), bytes => bytes ?? fail('ENOENT'));
     /** `work` with the session's descriptor `held`, which is let go when it fails. */
     const holding = <T>(held: number, work: () => Awaitable<T>): Awaitable<T> => {
-      const refused = (error: unknown): never => { closeUnawaited(fs, held); throw error; };
+      const refused = (error: unknown): never => { letGo(fs, held); throw error; };
       try {
         const result = work();
         return result instanceof Promise ? result.catch(refused) : result;
@@ -586,14 +615,14 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
         return pinned(hold.name, st, again);
       });
     }
-    const open = (): SyscallResult => after(fs.open(target, opening), opened);
+    const open = (): SyscallResult => after(fs.open(target, closingLetGo(opening)), opened);
     if (!readOnly || residentBytes === 0) return open();
     // A copy held at the session (residentHolds): its O_PATH open answers the
     // stat. A file that is not a copy's (large, a device) is opened through
     // the hold, which is let go.
-    if (options.residentHolds) {
-      return after(fs.open(target, { path: true, followSymlinks }), held => adopt(held, byName,
-        () => after(holding(held.id, () => fs.reopen({ handle: held.id }, opening)), file => { closeUnawaited(fs, held.id); return opened(file); })));
+    if (holds) {
+      return after(fs.open(target, closingLetGo({ path: true, followSymlinks })), held => adopt(held, byName,
+        () => after(holding(held.id, () => fs.reopen({ handle: held.id }, opening)), file => { letGo(fs, held.id); return opened(file); })));
     }
     return after(fs.stat(target, { followSymlinks }), st => {
       if (st === null) fail('ENOENT');
@@ -629,7 +658,7 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     if (e.kind === 'resident') {
       fds.delete(fd);
       const held = closeResident(e);
-      if (held !== null) closeUnawaited(fs, held);
+      if (held !== null) letGo(fs, held);
       return 0;
     }
     return after(fs.close(e.handle.id), () => { fds.delete(fd); return 0; });
@@ -643,7 +672,7 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     // dup2 closes what it lands on, and only the owner of that fd knows how:
     // a socket's stream and a pipe's writer count are the host's to release.
     const held = target?.kind === 'resident' ? closeResident(target) : null;
-    if (held !== null) closeUnawaited(fs, held);
+    if (held !== null) letGo(fs, held);
     const released = !target || target.kind === 'resident' ? undefined
       : target.kind === 'authority' ? fs.close(target.handle.id)
       : hostClose?.(to);

@@ -380,6 +380,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
 
   /** `options.mutationOwner`: the exclusive-mutation lease an open for writing presents (a read-only open presents none). */
   open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options: RuntimeMutationOwner = {}): RuntimeOpenedFile {
+    if (flags.closing) this.closeQuietly(flags.closing);
     return called({ syscall: 'open', path }, () => {
       const normalizedFlags = openFlags(flags);
       const flagged = flagsRefusal(normalizedFlags);
@@ -946,6 +947,13 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       // Named as the descriptor it reopens was: an unlinked file has no name of its own.
       return syncValue(this.descriptors.open(node, normalizedFlags, named, node.revision()));
     });
+  }
+
+  /** RuntimeOpenFlags.closing: each closed, a refusal of one dropped. */
+  private closeQuietly(handles: readonly number[]): void {
+    for (const id of handles) {
+      try { this.close(id); } catch { /* not the caller's to hear of */ }
+    }
   }
 
   private openRoot(path: RuntimeFsPath, flags: RuntimeFileHandle['flags']): RuntimeOpenedFile {

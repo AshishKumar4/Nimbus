@@ -14,7 +14,7 @@
  */
 import type { Errno, SyscallResult, WasiSupervisorStub } from '../wasi/types.js';
 import type { RuntimeFsBridge, VfsCred } from '../os-contracts.js';
-import type { AuthorityFd, AuthorityPreopen, ResidentFd } from '../wasi/filesystem.js';
+import type { AuthorityFd, AuthorityPreopen, ResidentFd, ResidentHolds } from '../wasi/filesystem.js';
 
 /**
  * The errno set this scheduler answers with — the same one every Nimbus syscall
@@ -302,6 +302,8 @@ export interface BashSession {
   coreutils: Map<string, WebAssembly.Module>;
   coreutilsRoot: string;
   fs: RuntimeFsBridge;
+  /** The session descriptors its processes' resident copies hold, let go with the next open. */
+  holds: ResidentHolds;
   cred: Readonly<VfsCred>;
   parking: 'jspi' | 'none';
   /**

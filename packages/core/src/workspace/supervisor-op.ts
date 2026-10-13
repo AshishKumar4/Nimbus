@@ -30,6 +30,7 @@ const OpenOptions = z.object({
   read: z.boolean().optional(), write: z.boolean().optional(), append: z.boolean().optional(),
   create: z.boolean().optional(), exclusive: z.boolean().optional(), directory: z.boolean().optional(),
   truncate: z.boolean().optional(), followSymlinks: z.boolean().optional(), path: z.boolean().optional(), expectedRevision: z.number().int().nonnegative().optional(),
+  closing: z.array(z.number().int()).optional(),
   mode: z.number().int().nonnegative().max(0o7777).optional(),
 });
 /** What a reopen opens again (RuntimeReopenTarget): an open descriptor's file. */

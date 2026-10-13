@@ -43,7 +43,7 @@ import type {
   BashWasiFsImports,
   BashWasiImports,
 } from './types.js';
-import { after, closeResident, closeUnawaited, descriptorNamed, installAuthorityFilesystem, processGoneMessage, refusalErrno, shareResident, type AuthorityFd } from '../wasi/filesystem.js';
+import { after, closeResident, descriptorNamed, ResidentHolds, installAuthorityFilesystem, processGoneMessage, refusalErrno, shareResident, type AuthorityFd } from '../wasi/filesystem.js';
 import { supervisorFilesystem } from '../vfs-supervisor.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
 import { PIPE_CAPACITY, decideRead, decideWrite, heldExitSettles, holdsExit, pipeBudget, pipeLimitMessage, readerStops } from './pipe-rules.js';
@@ -124,7 +124,7 @@ function newSession(args: BashBootArgs): BashSession {
   const target = outputSupervisor;
   if (!target) throw new Error('bash requires a process stdio capability');
   const session: BashSession = {
-    mod, coreutils, coreutilsRoot: norm(args.coreutilsRoot), fs: filesystem, cwd, cred: args.cred, parking: args.parking, pipeBudget: pipeBudget(args.memoryBudgetBytes), pending: new Set(),
+    mod, coreutils, coreutilsRoot: norm(args.coreutilsRoot), fs: filesystem, cwd, cred: args.cred, parking: args.parking, pipeBudget: pipeBudget(args.memoryBudgetBytes), pending: new Set(), holds: new ResidentHolds(),
     argv: args.argv, environ: args.environ,
     stdinTty: !!args.stdinTty,
     stdin: { chunks: args.stdinData ? [te.encode(args.stdinData)] : [], queued: 0, closed: !!args.stdinClosed, waiters: [] },
@@ -210,9 +210,9 @@ function closeFd(s: BashSession, proc: BashProc, fd: number): void {
   // this process's claim on it, and letting the rejection reach s.error
   // would report the whole slice as failed instead of its exit code.
   if (e.kind === 'authority') queueSessionTask(s, Promise.resolve(s.fs.close(e.handle.id)).catch(() => {}));
-  // A copy's descriptor: nothing of the guest's waits on it, nor does the scheduler.
+  // A copy's hold: closed with the session's next open (ResidentHolds), as nothing waits on it.
   const held = e.kind === 'resident' ? closeResident(e) : null;
-  if (held !== null) closeUnawaited(s.fs, held);
+  if (held !== null) s.holds.release(held);
   if (e.kind === 'pipe') {
     bumpPipe(s, e, -1); const pp = s.pipes.get(e.pipeId) as BashPipe; wakePipe(s, pp); wakeWriters(pp);
     if (e.end === 'r') settleHeldExits(s, pp);
@@ -377,7 +377,7 @@ function makeWasiFs(s: BashSession, proc: BashProc, DV: () => DataView, U8: () =
     random_get(p: number,n: number): BashErrno { for(let i=0;i<n;i+=65536)crypto.getRandomValues(U8().subarray(p+i,p+Math.min(i+65536,n)));return 0; },
     proc_exit(code: number) { throw new Exit(code); },
   };
-  installAuthorityFilesystem(imports, { fs: () => s.fs, memory, fds: proc.fds, allocateFd: () => lowestFd(proc), synchronous, umask: () => s.cred.umask, residentBytes: WASI_RESIDENT_FILE_CAP_BYTES, residentHolds: true, resident, processGone: s.gone, duplicate: (fd) => duplicateStream(s, proc, fd) });
+  installAuthorityFilesystem(imports, { fs: () => s.fs, memory, fds: proc.fds, allocateFd: () => lowestFd(proc), synchronous, umask: () => s.cred.umask, residentBytes: WASI_RESIDENT_FILE_CAP_BYTES, residentHolds: s.holds, resident, processGone: s.gone, duplicate: (fd) => duplicateStream(s, proc, fd) });
   installPreopenRehoming(proc, imports);
   return imports;
 }
