@@ -2425,7 +2425,8 @@ export declare class SqliteVFS {
      *
      * The subtree is held whole, so only callers that commit it whole use this:
      * a batch's deletions and a rename. A removal pages (subtree, descending).
-     * `below`, given, also gets the ones under a root that are not roots.
+     * `below`, given, also gets the ones met under a root before (or without)
+     * being met as a root themselves.
      */
     private collectSubtreeInodes;
     /**

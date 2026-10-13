@@ -7863,7 +7863,7 @@ export class SqliteVFS {
             }).inode;
             if (existing) {
                 checkParent(normalized, false);
-                const sticky = stickyParents.get(parentKey(normalized));
+                const sticky = stickyParents.size === 0 ? undefined : stickyParents.get(parentKey(normalized));
                 if (sticky !== undefined)
                     this.checkStickyParent(sticky, existing, cred, normalized);
             }
@@ -10190,9 +10190,10 @@ export class SqliteVFS {
      */
     /** `commitRow`: the transaction's commit callback writes a checkpoint row, which the plan counts. */
     prepareBatchTransaction(payload, cred, commitRow = false) {
-        const below = [];
+        const below = cred.uid === 0 ? undefined : [];
         const deletedInodes = this.collectSubtreeInodes(payload.deletePaths ?? [], below);
-        this.authorizeDeletions(below, deletedInodes, cred);
+        if (below !== undefined)
+            this.authorizeDeletions(below, deletedInodes, cred);
         const deletedInodesByPath = new Map(deletedInodes.map((inode) => [inode.path, inode]));
         const builder = this.newPlan(commitRow);
         const deletedPaths = new Set(payload.deletePaths ?? []);
@@ -10424,7 +10425,7 @@ export class SqliteVFS {
      * named (authorizeBatchNow).
      */
     authorizeDeletions(below, deleted, cred) {
-        if (cred.uid === 0 || below.length === 0)
+        if (below.length === 0)
             return;
         const byPath = new Map(deleted.map((inode) => [inode.path, inode]));
         const searched = new Set();
@@ -10452,16 +10453,14 @@ export class SqliteVFS {
      *
      * The subtree is held whole, so only callers that commit it whole use this:
      * a batch's deletions and a rename. A removal pages (subtree, descending).
-     * `below`, given, also gets the ones under a root that are not roots.
+     * `below`, given, also gets the ones met under a root before (or without)
+     * being met as a root themselves.
      */
     collectSubtreeInodes(roots, below) {
         if (roots.length === 0)
             return [];
         const collected = [];
         const visited = new Set();
-        // A lone root (an unlink, an rmdir) is named by comparison, not a set.
-        const named = below === undefined || roots.length === 1 ? undefined : new Set(roots);
-        const lone = below !== undefined && roots.length === 1 ? roots[0] : undefined;
         for (const root of roots) {
             const under = subtreeWhere(root);
             const rows = [
@@ -10475,7 +10474,7 @@ export class SqliteVFS {
                 visited.add(path);
                 const inode = this.inodes.peek(path) ?? this.inodeFromRow(row);
                 collected.push(inode);
-                if (lone !== undefined ? path !== lone : named !== undefined && !named.has(path))
+                if (below !== undefined && path !== root)
                     below.push(inode);
             }
         }
