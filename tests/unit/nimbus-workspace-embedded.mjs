@@ -174,10 +174,12 @@ try {
         live++;
         return {
           fs: lease.fs,
-          dispose: async () => {
+          // The kernel lease's release throws before it returns a promise.
+          dispose: () => {
             live--;
-            await lease.dispose();
+            const released = lease.dispose();
             if (cred.uid === 0) throw new Error('kernel lease release failed');
+            return released;
           },
         };
       }
