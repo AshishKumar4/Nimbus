@@ -7566,6 +7566,10 @@ export class FacetManager {
       const diagOn = isExecDiagEnabled();
       const __bundleStart = diagOn ? Date.now() : 0;
       const bundleSpec: ProcessBundleSpec = { scriptPath: opts.filename, cwd: opts.cwd || '/home/user', entryCode: code, esModule: opts.esModule, bundleProfile: opts.bundleProfile, moduleScope: opts.moduleScope, node: opts.node };
+      // A launch a broker let in before asking (a running program's child,
+      // hosted/services.ts) gives that worker back for its preparation, and
+      // takes it again for its run.
+      const brokered = suspendLaunchAdmission(this.ctx, entry.pid);
       let vfsState: FacetVfsState;
       try {
         vfsState = await prepared(() => this._buildProcessBundle(entry, bundleSpec, pacer));
@@ -7599,6 +7603,7 @@ export class FacetManager {
         throw err;
       }
       this.launching.set(entry.pid, { stage: 'admission', since: Date.now() });
+      await brokered?.(abortController.signal);
       return await prepared(() => withLaunchAdmission(this.ctx, { pid: entry.pid }, abortController.signal, async () => {
         admitted = true;
         this.launching.set(entry.pid, { stage: 'load', since: Date.now() });

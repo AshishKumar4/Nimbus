@@ -799,11 +799,11 @@ export async function withLaunchAdmission<T>(
  * Calling resume twice joins one readmission, never takes two holds. If the
  * process ends instead, the launch's finally finds nothing held.
  * Undefined outside a launch admission (a shell's one-shot owns only its
- * run hold, which has already ended).
+ * run hold, which has already ended), or outside `pid`'s when one is named.
  */
-export function suspendLaunchAdmission(ctx: object): ((signal?: AbortSignal) => Promise<void>) | undefined {
+export function suspendLaunchAdmission(ctx: object, pid?: number): ((signal?: AbortSignal) => Promise<void>) | undefined {
   const admission = launchAdmission.getStore();
-  if (admission?.ctx !== ctx) return undefined;
+  if (admission?.ctx !== ctx || (pid !== undefined && admission.process.pid !== pid)) return undefined;
   if (admission.claimed || admission.end === undefined || admission.closed) {
     throw new Error('Nimbus: only a stopped launch with no run in flight can release its admission');
   }
