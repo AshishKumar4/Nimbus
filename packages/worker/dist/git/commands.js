@@ -21,13 +21,14 @@ import { noSuchRemoteText, remoteFailureText, selectRemoteCredentials, urlCreden
 import { base64Utf8 } from '@nimbus-sh/core/_shared/crypto.js';
 import { GitGlobalsError, parseConfigParameter, withConfigOverrides } from './config-params.js';
 import { packsSeam } from './pack/store.js';
-import { fetchMissingObjects } from './promisor.js';
+import { PromisorFetchError, fetchMissingObjects } from './promisor.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 import { fsError, isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { dec, enc } from '@nimbus-sh/core/_shared/bytes.js';
 import { DEFAULT_CONTEXT, DEFAULT_RENAME_SCORE, absentSpec, binaryPath, bytesFromBinary, detectRenames, formatNameOnly, formatNameStatus, formatPatch, formatStat, parseRenameScore, pathLine, statFile, StatList, } from './unified-diff.js';
 import { CheckoutRefused, UnmergedIndex, switchTrees } from './worktree/checkout.js';
+import { invalidPathError, verifyPath } from './worktree/verify-path.js';
 import { sparseCheckout } from './sparse-checkout.js';
 import { DirCache, NewEntries, comparePaths } from './worktree/dircache.js';
 import { isValidRefName } from './worktree/refname.js';
@@ -1922,6 +1923,7 @@ async function moveWorktree(ctx, git, vfs, fs, repo, oid, { force = false, opera
             writer: checkoutWriter(vfs, repo.worktree),
             operation,
             sparse: await wrepo.sparseMatcher(),
+            protect: await wrepo.pathProtection(),
             // A checkout shows unpack-trees' warnings; a reset does not.
             warn: force ? undefined : async (text) => { await ctx.stderr.write(text); },
         }, head === EMPTY_TREE ? null : head, await treeOf(wrepo.store, oid), force);
@@ -2029,6 +2031,7 @@ async function checkoutPaths(ctx, git, vfs, fs, source, pathArgs, ignoreSkipWork
                 return 128;
             }
             const within = (dir) => inSpecs(specs, dir) || specs.some((spec) => spec.startsWith(`${dir}/`));
+            const protect = await wrepo.pathProtection();
             for await (const leaf of treeLeaves(wrepo.store, await treeOf(wrepo.store, oid), '', within)) {
                 if (!inSpecs(specs, leaf.path))
                     continue;
@@ -2037,6 +2040,11 @@ async function checkoutPaths(ctx, git, vfs, fs, source, pathArgs, ignoreSkipWork
                 const same = i >= 0 && dc.stage(i) === 0 && dc.oid(i) === leaf.oid && dc.mode(i) === leaf.mode && !dc.intentToAdd(i);
                 if (same && skipped(i))
                     continue;
+                // Any other is added to the index, which refuses a path verify_path refuses: its error, and it is not checked out.
+                if (!same && !verifyPath(leaf.path, leaf.mode, protect)) {
+                    await ctx.stderr.write(invalidPathError(leaf.path));
+                    continue;
+                }
                 take(leaf.path, leaf.oid, leaf.mode, same && dc.skipWorktree(i));
             }
         }
@@ -2625,11 +2633,16 @@ async function commitIndex(ctx, git, wrepo, message, idents) {
  * reset_index: index entries for `specs` ('' everything) become `tree`'s,
  * then the whole index is refreshed and what still differs from the worktree
  * printed under "Unstaged changes after reset:", unless `quiet`, and the
- * index written once.
+ * index written once. False, nothing written, when git dies on a path
+ * verify_path refuses (make_cache_entry).
  */
 async function resetIndex(ctx, wrepo, tree, specs, quiet) {
-    await wrepo.withIndexLock(async () => {
+    return await wrepo.withIndexLock(async () => {
         const dc = await indexFromTree(wrepo, tree, specs);
+        if (typeof dc === 'string') {
+            await ctx.stderr.write(`${invalidPathError(dc)}fatal: make_cache_entry failed for path '${dc}'\n`);
+            return false;
+        }
         const scan = await scanWorktree(await wrepo.worktree(), dc, { untracked: 'no', excludes: null });
         for (const line of scan.errors.tracked)
             await ctx.stderr.write(`${line}\n`);
@@ -2640,27 +2653,37 @@ async function resetIndex(ctx, wrepo, tree, specs, quiet) {
             await writeBinary(ctx.stdout, binaryPath(out));
         }
         await wrepo.writeIndex(dc);
+        return true;
     });
 }
 /**
  * read_from_tree: the index with `tree`'s entries for `specs`, an unchanged
  * one keeping its stat. A changed entry keeps its skip-worktree bit, and a
  * new one takes it outside a sparse checkout's cone (update_index_from_diff).
- * The index read is dropped here, so a reset holds one index, not two.
+ * The index read is dropped here, so a reset holds one index, not two. A
+ * path verify_path refuses is answered instead: git dies at the first.
  */
 async function indexFromTree(wrepo, tree, specs) {
     const old = await wrepo.readIndex();
     const removed = new Set();
     const added = new NewEntries();
+    const protect = await wrepo.pathProtection();
+    const refused = [];
     // Read only for a new path: the cone of a sparse checkout, or null.
     let sparse;
     await walkTreeAndIndex(wrepo.store, tree, old, specs, async (path, leaf, lo, hi) => {
+        if (refused.length > 0)
+            return;
         if (leaf && hi - lo === 1 && old.stage(lo) === 0 && old.oid(lo) === leaf.oid && old.mode(lo) === leaf.mode)
             return;
         for (let i = lo; i < hi; i++)
             removed.add(i);
         if (!leaf)
             return;
+        if (!verifyPath(path, leaf.mode, protect)) {
+            refused.push(path);
+            return;
+        }
         let skipWorktree;
         if (hi > lo && old.stage(lo) === 0) {
             skipWorktree = old.skipWorktree(lo);
@@ -2672,6 +2695,8 @@ async function indexFromTree(wrepo, tree, specs) {
         }
         added.add({ path, mode: leaf.mode, oid: leaf.oid, stat: null, skipWorktree });
     }, { cacheTree: old.cacheTree() });
+    if (refused.length > 0)
+        return refused[0];
     return removed.size || added.count ? DirCache.parse(old.encode({ removed, added }), old.timestamp) : old;
 }
 const RESET_USAGE = 'usage: git reset [--mixed | --soft | --hard] [-q] [<commit>]\n'
@@ -2730,8 +2755,7 @@ prefetch) {
             return 128;
         }
         const wrepo = worktreeRepo(ctx, git, vfs, fs, repo.gitdir, root);
-        await resetIndex(ctx, wrepo, await treeOf(wrepo.store, oid), repoPaths(pathArgs, ctx.cwd, root), quiet);
-        return 0;
+        return await resetIndex(ctx, wrepo, await treeOf(wrepo.store, oid), repoPaths(pathArgs, ctx.cwd, root), quiet) ? 0 : 128;
     }
     if (mode !== 'soft' && !root) {
         await ctx.stderr.write(NOT_A_WORK_TREE);
@@ -2745,11 +2769,21 @@ prefetch) {
     // The index and worktree become the target's (a forced checkout, type changes included) before the branch moves.
     if (mode === 'hard') {
         await prefetch(repo.gitdir, repo.worktree ?? null, [oid]);
-        await moveWorktree(ctx, git, vfs, fs, repo, oid, { force: true });
+        try {
+            await moveWorktree(ctx, git, vfs, fs, repo, oid, { force: true });
+        }
+        catch (error) {
+            // reset_index's unpack_trees stops at the first path verify_path refuses, having written nothing.
+            if (!(error instanceof CheckoutRefused) || error.refusal.invalid.length === 0)
+                throw error;
+            await ctx.stderr.write(`${invalidPathError(error.refusal.invalid[0])}fatal: Could not reset index file to revision '${rev}'.\n`);
+            return 128;
+        }
     }
     else if (mode === 'mixed') {
         const wrepo = worktreeRepo(ctx, git, vfs, fs, repo.gitdir, root);
-        await resetIndex(ctx, wrepo, await treeOf(wrepo.store, oid), [], quiet);
+        if (!await resetIndex(ctx, wrepo, await treeOf(wrepo.store, oid), [], quiet))
+            return 128;
     }
     const branch = await git.currentBranch({ fs, gitdir: repo.gitdir, fullname: true });
     await git.writeRef({ fs, dir: root ?? repo.gitdir, ref: branch ?? 'HEAD', value: oid, force: true });
@@ -2789,19 +2823,18 @@ async function knownRemote(ctx, git, fs, dir, remote, operation) {
     await ctx.stderr.write(noSuchRemoteText(remote));
     return undefined;
 }
-/**
- * A network command that failed. When the git server could not be reached,
- * or refused (pack/remote-failure.ts), git's message about the repository
- * at `url`, and git's 128; else what failed, and 1.
- */
 function remoteCredentials(ctx, url) {
     return selectRemoteCredentials(url, { username: ctx.env.GIT_USERNAME || '', password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '' });
 }
-async function networkFailure(ctx, what, result, url) {
-    if (result.gitFailure !== undefined) {
-        await ctx.stderr.write(result.gitFailure);
-        return 128;
-    }
+/**
+ * A network command that failed: when the git server could not be reached,
+ * or refused (pack/remote-failure.ts), git's message about the repository
+ * at `url`, and git's 128 (a push whose request for the pack failed, 1);
+ * else what failed, and 1.
+ */
+function networkFailureText(ctx, what, result, url) {
+    if (result.gitFailure !== undefined)
+        return { text: result.gitFailure, code: 128 };
     if (result.remoteFailure !== undefined && url !== undefined) {
         // The credentials offered, the session's or the URL's own; the secrets among them never printed.
         const inUrl = urlCredentials(url);
@@ -2811,11 +2844,15 @@ async function networkFailure(ctx, what, result, url) {
             password ? base64Utf8(`${username}:${password}`) : '',
             inUrl.password ? base64Utf8(`${inUrl.username}:${inUrl.password}`) : '']
             .filter((secret) => Boolean(secret));
-        await ctx.stderr.write(remoteFailureText(url, result.remoteFailure, { username, password: Boolean(password) }, secrets));
-        return 128;
+        const text = remoteFailureText(url, result.remoteFailure, { username, password: Boolean(password) }, secrets);
+        return { text, code: what === 'push' && result.remoteFailure.kind === 'rpc' ? 1 : 128 };
     }
-    await ctx.stderr.write(`\n[git] ${what} failed: ${result.error}\n`);
-    return 1;
+    return { text: `\n[git] ${what} failed: ${result.error}\n`, code: 1 };
+}
+async function networkFailure(ctx, what, result, url) {
+    const { text, code } = networkFailureText(ctx, what, result, url);
+    await ctx.stderr.write(text);
+    return code;
 }
 /**
  * `path` in the namespace as `view` sees it, every link resolved: the
@@ -3624,6 +3661,12 @@ processes) {
         // The reader went away (`git diff | head`): git dies of SIGPIPE, silently.
         if (e?.code === 'EPIPE')
             return 141;
+        // A partial clone's lazy fetch failed: its fetch's words, then git's (promisor_remote_get_direct).
+        if (e instanceof PromisorFetchError) {
+            const { text } = networkFailureText(ctx, 'fetch', e.result, e.request.url);
+            await ctx.stderr.write(`${text}fatal: ${e.message}\n`);
+            return 128;
+        }
         ctx.stderr.write(`fatal: ${e?.message || e}\n`);
         return 128;
     }

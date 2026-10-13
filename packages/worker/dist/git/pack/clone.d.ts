@@ -103,6 +103,8 @@ export interface ClonePrepared {
     /** The remote's tags, and which of their ids prepare's pack held (TagWatch). */
     tags: CloneTag[];
     tagsFound: string[];
+    /** git's error for the path its checkout refuses (CheckoutPlan.refused): the checkout fails, once every object is in. */
+    checkoutErrors?: string[];
 }
 /** An advertised tag: its ref, the id it names, and what that peels to. */
 export interface CloneTag {

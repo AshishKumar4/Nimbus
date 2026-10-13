@@ -17,19 +17,12 @@
  * all); a path outside its cone is marked skip-worktree and never written.
  */
 import type { SparseMatcher } from './sparse.js';
+import { type PathProtection } from '../worktree/verify-path.js';
 export declare const MODE_TREE = 16384;
 export declare const MODE_FILE = 33188;
 export declare const MODE_EXECUTABLE = 33261;
 export declare const MODE_SYMLINK = 40960;
 export declare const MODE_GITLINK = 57344;
-export interface TreeEntry {
-    mode: number;
-    name: string;
-    /** Offset of the entry's 20-byte id in the tree's bytes. */
-    oidAt: number;
-}
-/** A tree object's entries, in the tree's own order. */
-export declare function parseTree(tree: Uint8Array): TreeEntry[];
 /** `bytes` copied into a longer buffer. */
 export declare function growBytes(bytes: Uint8Array, length: number): Uint8Array;
 export declare class CheckoutPlan {
@@ -40,13 +33,18 @@ export declare class CheckoutPlan {
     private readonly skips;
     private readonly pathStarts;
     private readonly pathBytes;
+    /** The first path git's verify_path refuses, or null: then the checkout fails and writes nothing. */
+    readonly refused: string | null;
     private constructor();
     /**
      * Walk `rootTree`'s tree, each subtree read with `tree(oid)`. With
      * `sparse`, a path outside its cone is skip-worktree; every tree is still
-     * walked, as the index holds every path.
+     * walked, as the index holds every path. A path `protect`'s verify_path
+     * refuses fails the checkout, as unpack_trees fails before it writes
+     * anything: every entry is then left unwritten, and the first such path
+     * named (a clone's checkout stops at it).
      */
-    static fromTrees(rootTree: Uint8Array, tree: (oid: Uint8Array, at: number) => Uint8Array, sparse?: SparseMatcher): CheckoutPlan;
+    static fromTrees(rootTree: Uint8Array, tree: (oid: Uint8Array, at: number) => Uint8Array, sparse?: SparseMatcher, protect?: PathProtection): CheckoutPlan;
     /** Bytes held, for the memory account. */
     get byteLength(): number;
     mode(index: number): number;

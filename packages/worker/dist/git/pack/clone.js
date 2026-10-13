@@ -15,7 +15,8 @@
  * Every pack arrives once, is decoded once, and is stored as it arrives;
  * nothing reads it back but a delta whose base has left the cache.
  */
-import { decodeBatch, encodeBatch, parseTree, CheckoutPlan, MODE_GITLINK, MODE_SYMLINK, MODE_TREE } from './plan.js';
+import { decodeBatch, encodeBatch, CheckoutPlan, MODE_GITLINK, MODE_SYMLINK, MODE_TREE } from './plan.js';
+import { decodeTree } from './tree-object.js';
 import { coneMatcher, coneOf, coneSparseCheckout } from './sparse.js';
 import { ENTRY_BYTES, entryOffset } from './idx.js';
 import { installPack, RangedPackFile, readRange, resumeInstall } from './install.js';
@@ -25,6 +26,7 @@ import { GRAPH_RECORDS_DIR } from './commit-graph.js';
 import { MissingBaseError, PackObjectResolver, runAsync } from './reader.js';
 import { encodeIndexEntry, encodeIndexFile, splitIndexEntries } from '../worktree/dircache.js';
 import { encodeNode } from '../worktree/cachetree.js';
+import { invalidPathError } from '../worktree/verify-path.js';
 import { oidFromHex, oidToHex, PACK_TRAILER_BYTES, PackFormatError } from './format.js';
 import { PackStreamProcessor } from './processor.js';
 import { discover, requestPack } from './upload-pack.js';
@@ -268,12 +270,13 @@ function cacheTreeOf(name, root, trees) {
         throw new PackFormatError('the pack lacks tree ' + root);
     let count = 0;
     const subtrees = [];
-    for (const entry of parseTree(data)) {
-        if (entry.mode !== MODE_TREE) {
+    const entries = decodeTree(data, (mode, oidAt, nameAt, nameEnd) => (mode === MODE_TREE ? { name: decoder.decode(data.subarray(nameAt, nameEnd)), oid: oidToHex(data, oidAt) } : null));
+    for (const entry of entries) {
+        if (entry === null) {
             count++;
             continue;
         }
-        const child = cacheTreeOf(entry.name, oidToHex(data, entry.oidAt), trees);
+        const child = cacheTreeOf(entry.name, entry.oid, trees);
         count += child.count;
         subtrees.push(child.built);
     }
@@ -286,9 +289,9 @@ function treesComplete(trees, root) {
         const data = trees.get(pending.pop());
         if (data === undefined)
             return false;
-        for (const entry of parseTree(data))
-            if (entry.mode === MODE_TREE)
-                pending.push(oidToHex(data, entry.oidAt));
+        for (const oid of decodeTree(data, (mode, oidAt) => (mode === MODE_TREE ? oidToHex(data, oidAt) : null)))
+            if (oid !== null)
+                pending.push(oid);
     }
     return true;
 }
@@ -514,6 +517,7 @@ export async function cloneFast(context, request, advertisement) {
         packs,
         tags,
         tagsFound: [...watch.found],
+        ...(plan.refused === null ? {} : { checkoutErrors: [invalidPathError(plan.refused)] }),
     };
 }
 /**
@@ -674,9 +678,9 @@ async function readTrees(store, root) {
         if (bytes > PLAN_TREE_BYTES)
             throw new PackFormatError('the commit\'s trees pass ' + PLAN_TREE_BYTES + ' bytes');
         trees.set(oid, object.data);
-        for (const entry of parseTree(object.data))
-            if (entry.mode === MODE_TREE)
-                pending.push(oidToHex(object.data, entry.oidAt));
+        for (const oid of decodeTree(object.data, (mode, oidAt) => (mode === MODE_TREE ? oidToHex(object.data, oidAt) : null)))
+            if (oid !== null)
+                pending.push(oid);
     }
     return trees;
 }
@@ -716,6 +720,7 @@ export async function clonePlanFromStore(context, request) {
         packs: [],
         tags: [],
         tagsFound: [],
+        ...(plan.refused === null ? {} : { checkoutErrors: [invalidPathError(plan.refused)] }),
     };
 }
 export function concat(parts) {

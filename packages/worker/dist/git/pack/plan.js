@@ -17,6 +17,8 @@
  * all); a path outside its cone is marked skip-worktree and never written.
  */
 import { OID_BYTES, PackFormatError, oidFromHex, oidToHex } from './format.js';
+import { decodeTree } from './tree-object.js';
+import { DEFAULT_PATH_PROTECTION, verifyPath } from '../worktree/verify-path.js';
 export const MODE_TREE = 0o040000;
 export const MODE_FILE = 0o100644;
 export const MODE_EXECUTABLE = 0o100755;
@@ -24,32 +26,6 @@ export const MODE_SYMLINK = 0o120000;
 export const MODE_GITLINK = 0o160000;
 const utf8 = new TextDecoder('utf-8', { fatal: false });
 const utf8Encoder = new TextEncoder();
-/** A tree object's entries, in the tree's own order. */
-export function parseTree(tree) {
-    const entries = [];
-    let p = 0;
-    while (p < tree.byteLength) {
-        let mode = 0;
-        while (p < tree.byteLength && tree[p] !== 0x20) {
-            const digit = tree[p++] - 0x30;
-            if (digit < 0 || digit > 7)
-                throw new PackFormatError('tree entry mode is not octal');
-            mode = mode * 8 + digit;
-        }
-        const nameStart = ++p;
-        while (p < tree.byteLength && tree[p] !== 0)
-            p++;
-        if (p + 1 + OID_BYTES > tree.byteLength)
-            throw new PackFormatError('tree entry is truncated');
-        const name = utf8.decode(tree.subarray(nameStart, p));
-        if (name.length === 0 || name === '.' || name === '..' || name.includes('/') || name === '.git') {
-            throw new PackFormatError('tree entry name ' + JSON.stringify(name) + ' is not a path component');
-        }
-        entries.push({ mode, name, oidAt: p + 1 });
-        p += 1 + OID_BYTES;
-    }
-    return entries;
-}
 /** Growable columns. */
 class Columns {
     oids = new Uint8Array(OID_BYTES * 1024);
@@ -94,26 +70,33 @@ export class CheckoutPlan {
     skips;
     pathStarts;
     pathBytes;
+    refused;
     constructor(count, oids, modes, 
     /** 1 for a skip-worktree entry (outside a sparse checkout's cone). */
-    skips, pathStarts, pathBytes) {
+    skips, pathStarts, pathBytes, 
+    /** The first path git's verify_path refuses, or null: then the checkout fails and writes nothing. */
+    refused) {
         this.count = count;
         this.oids = oids;
         this.modes = modes;
         this.skips = skips;
         this.pathStarts = pathStarts;
         this.pathBytes = pathBytes;
+        this.refused = refused;
     }
     /**
      * Walk `rootTree`'s tree, each subtree read with `tree(oid)`. With
      * `sparse`, a path outside its cone is skip-worktree; every tree is still
-     * walked, as the index holds every path.
+     * walked, as the index holds every path. A path `protect`'s verify_path
+     * refuses fails the checkout, as unpack_trees fails before it writes
+     * anything: every entry is then left unwritten, and the first such path
+     * named (a clone's checkout stops at it).
      */
-    static fromTrees(rootTree, tree, sparse) {
+    static fromTrees(rootTree, tree, sparse, protect = DEFAULT_PATH_PROTECTION) {
         const columns = new Columns();
-        const stack = [
-            { data: rootTree, entries: parseTree(rootTree), next: 0, prefix: '' },
-        ];
+        const entries = (data) => decodeTree(data, (mode, oidAt, nameAt, nameEnd) => ({ mode, oidAt, name: utf8.decode(data.subarray(nameAt, nameEnd)) }));
+        const stack = [{ data: rootTree, entries: entries(rootTree), next: 0, prefix: '' }];
+        let refused = null;
         while (stack.length > 0) {
             const frame = stack[stack.length - 1];
             if (frame.next === frame.entries.length) {
@@ -124,18 +107,17 @@ export class CheckoutPlan {
             const path = frame.prefix + entry.name;
             if (entry.mode === MODE_TREE) {
                 const data = tree(frame.data, entry.oidAt);
-                stack.push({ data, entries: parseTree(data), next: 0, prefix: path + '/' });
+                stack.push({ data, entries: entries(data), next: 0, prefix: path + '/' });
                 continue;
             }
-            if (entry.mode !== MODE_FILE && entry.mode !== MODE_EXECUTABLE && entry.mode !== MODE_SYMLINK &&
-                entry.mode !== MODE_GITLINK && entry.mode !== 0o100664) {
-                throw new PackFormatError('tree entry ' + path + ' has mode ' + entry.mode.toString(8));
-            }
-            // git reads the old group-writable mode as a plain file.
+            if (refused === null && !verifyPath(path, entry.mode, protect))
+                refused = path;
             const skip = sparse !== undefined && !sparse.includes(path);
-            columns.add(utf8Encoder.encode(path), entry.mode === 0o100664 ? MODE_FILE : entry.mode, frame.data, entry.oidAt, skip);
+            columns.add(utf8Encoder.encode(path), entry.mode, frame.data, entry.oidAt, skip);
         }
-        return new CheckoutPlan(columns.count, columns.oids.slice(0, columns.count * OID_BYTES), columns.modes.slice(0, columns.count), columns.skips.slice(0, columns.count), columns.pathStarts.slice(0, columns.count + 1), columns.pathBytes.slice(0, columns.pathStarts[columns.count]));
+        if (refused !== null)
+            columns.skips.fill(1);
+        return new CheckoutPlan(columns.count, columns.oids.slice(0, columns.count * OID_BYTES), columns.modes.slice(0, columns.count), columns.skips.slice(0, columns.count), columns.pathStarts.slice(0, columns.count + 1), columns.pathBytes.slice(0, columns.pathStarts[columns.count]), refused);
     }
     /** Bytes held, for the memory account. */
     get byteLength() {
