@@ -5238,7 +5238,9 @@ export interface LongRunningWorkerSpawnOptions {
   /**
    * Who the process is when no invoker says: the argv its identity derives
    * from, the credential it runs as and its exec id (a dev server restored
-   * from what it persisted). Exclusive with `invokerPid` and `resident`.
+   * from what it persisted). Exclusive with `invokerPid`, `resident` and
+   * `durable`: a journalled launch is re-driven as its row says, which keeps
+   * no such identity.
    */
   identity?: { argv: string[]; cred: VfsCred; execId?: string };
   /** Inline modules: source text, or small wasm carried by value. */
@@ -9282,8 +9284,8 @@ export class FacetManager {
     attempt: number,
     redriven?: LaunchIdentity,
   ): Promise<SpawnedWorker> {
-    if (opts.identity !== undefined && (opts.invokerPid !== undefined || opts.resident !== undefined)) {
-      throw new Error('Nimbus: spawnWorker identity is exclusive with invokerPid and resident');
+    if (opts.identity !== undefined && (opts.invokerPid !== undefined || opts.resident !== undefined || opts.durable !== undefined)) {
+      throw new Error('Nimbus: spawnWorker identity is exclusive with invokerPid, resident and durable');
     }
     if (opts.bindings !== undefined && (opts.env !== undefined || opts.durable !== undefined || opts.resident !== undefined)) {
       throw new Error('Nimbus: spawnWorker bindings go beside the default env: not with an explicit env, nor on a journalled launch, which could not re-mint them');
