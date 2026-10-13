@@ -3518,6 +3518,7 @@ const __fsMod = (() => {
       const landing = _nsHeldKey(k);
       if (landing !== null && landing !== k) return _nsList(landing);
     }
+    const prefix = k ? k + "/" : "";
     if (own !== "absent" && !(own && own.hide) && !(own && own.dir && _nsOwn.get(k)?.hide)) {
       const real = _nsResolve(own && own.alias !== undefined ? own.alias : k, true);
       if (real && real !== "ELOOP") {
@@ -3525,8 +3526,14 @@ const __fsMod = (() => {
           names.set(child.name, child.kind === 1 ? "directory" : child.kind === 2 ? "symlink" : _direntTypeOfMode(child.mode, "file"));
         }
       }
+    } else if (own !== "absent") {
+      // A directory this process made: of what the table holds under its
+      // name, only what this process made there since (its writes, once the
+      // store holds them dated), as _nsMeta answers them.
+      for (const child of __resident.namespace.children(k)) {
+        if (_createdHere.has(prefix + child.name)) names.set(child.name, child.kind === 1 ? "directory" : child.kind === 2 ? "symlink" : _direntTypeOfMode(child.mode, "file"));
+      }
     }
-    const prefix = k ? k + "/" : "";
     if (__vfsWrites) {
       for (const wk in __vfsWrites) {
         if (!wk.startsWith(prefix)) continue;
