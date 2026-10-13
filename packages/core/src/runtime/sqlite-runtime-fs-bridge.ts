@@ -921,6 +921,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   }
 
   reopen(target: RuntimeReopenTarget, flags: RuntimeOpenFlags, options: RuntimeMutationOwner = {}): RuntimeOpenedFile {
+    if (flags.closing) this.closeQuietly(flags.closing);
     const named = this.descriptors.openedAs(target.handle);
     return called({ syscall: 'open', path: named }, () => {
       const normalizedFlags = openFlags(flags);

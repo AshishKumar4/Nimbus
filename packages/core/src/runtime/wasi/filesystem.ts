@@ -181,6 +181,8 @@ function pinsContent(fs: RuntimeFsBridge | RuntimeSynchronousFs): fs is Resident
  * call to the session.
  */
 export class ResidentHolds {
+  /** Holds waiting for an open to close them; past this many they are closed at once, with calls of their own. */
+  static readonly RELEASED_MAX = 64;
   private released: number[] = [];
   private readonly kept = new Map<string, { readonly handle: number; readonly dev: number; readonly ino: number }>();
 
@@ -192,14 +194,14 @@ export class ResidentHolds {
     return follow ? at : `${at}\0nofollow`;
   }
 
-  /** `hold`, its copy of the file `stat` describes let go. */
-  letGo(hold: SessionHold, stat: { readonly dev: number; readonly ino: number }): void {
-    if (hold.key === undefined) { this.released.push(hold.handle); return; }
+  /** `hold`, its copy of the file `stat` describes let go, on `fs`. */
+  letGo(fs: RuntimeFsBridge | RuntimeSynchronousFs, hold: SessionHold, stat: { readonly dev: number; readonly ino: number }): void {
+    if (hold.key === undefined) { this.release(fs, hold.handle); return; }
     const replaced = this.kept.get(hold.key);
-    if (replaced !== undefined) { this.kept.delete(hold.key); this.released.push(replaced.handle); }
+    if (replaced !== undefined) { this.kept.delete(hold.key); this.release(fs, replaced.handle); }
     this.kept.set(hold.key, { handle: hold.handle, dev: stat.dev, ino: stat.ino });
     if (this.kept.size > this.keep) {
-      for (const [key, oldest] of this.kept) { this.kept.delete(key); this.released.push(oldest.handle); break; }
+      for (const [key, oldest] of this.kept) { this.kept.delete(key); this.release(fs, oldest.handle); break; }
     }
   }
 
@@ -210,8 +212,12 @@ export class ResidentHolds {
     return kept;
   }
 
-  /** A hold no copy will take again. */
-  release(handle: number): void { this.released.push(handle); }
+  /** A hold no copy will take again, on `fs`: closed with the next open, or now once RELEASED_MAX wait. */
+  release(fs: RuntimeFsBridge | RuntimeSynchronousFs, handle: number): void {
+    this.released.push(handle);
+    if (this.released.length < ResidentHolds.RELEASED_MAX) return;
+    for (const waiting of this.take() ?? []) closeUnawaited(fs, waiting);
+  }
 
   /** The holds the next open closes, handed out once. */
   take(): readonly number[] | undefined {
@@ -386,9 +392,9 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
   const view = () => new DataView(options.memory().buffer);
   const holds = options.residentHolds;
   /** A session descriptor nothing waits on, let go: with the next open where copies hold their files, else closed now. */
-  const letGo = (fs: Fs, handle: number): void => { if (holds) holds.release(handle); else closeUnawaited(fs, handle); };
+  const letGo = (fs: Fs, handle: number): void => { if (holds) holds.release(fs, handle); else closeUnawaited(fs, handle); };
   /** A copy's hold, the copy of the file `stat` describes let go: kept or released by `holds` (ResidentHolds.letGo). */
-  const letCopyGo = (fs: Fs, hold: SessionHold, stat: RuntimeVfsStat): void => { if (holds) holds.letGo(hold, stat); else closeUnawaited(fs, hold.handle); };
+  const letCopyGo = (fs: Fs, hold: SessionHold, stat: RuntimeVfsStat): void => { if (holds) holds.letGo(fs, hold, stat); else closeUnawaited(fs, hold.handle); };
   /** `flags`, closing what was let go since the last open (RuntimeOpenFlags.closing). */
   const closingLetGo = (flags: RuntimeOpenFlags): RuntimeOpenFlags => {
     const closing = holds?.take();
@@ -631,9 +637,9 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
   // under the access asked as the file is now.
   const openAgain = (o: PathOpen, reopened: AuthorityFd | ResidentFd): SyscallResult => {
     const fs = o.fs;
-    if (reopened.kind === 'authority') return after(fs.reopen({ handle: reopened.handle.id }, flagsOf(o)), handle => reopenedAs(o, handle));
+    if (reopened.kind === 'authority') return after(fs.reopen({ handle: reopened.handle.id }, closingLetGo(flagsOf(o))), handle => reopenedAs(o, handle));
     const { hold, stat: was } = reopened;
-    if ('handle' in hold) return after(fs.reopen({ handle: hold.handle }, flagsOf(o)), handle => reopenedAs(o, handle));
+    if ('handle' in hold) return after(fs.reopen({ handle: hold.handle }, closingLetGo(flagsOf(o))), handle => reopenedAs(o, handle));
     // A copy that holds no descriptor: its file is opened by the name it was read at, while that name has it.
     const again = (): SyscallResult => after(openIdentified(fs, hold.name, hold.follow, flagsOf(o), was), handle => reopenedAs(o, handle));
     if (!o.readOnly || hold.pin === undefined) return again();
@@ -685,11 +691,15 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
       const kept = holds.takeKept(key);
       if (kept === undefined) return openHeld(o, holds, key);
       // A hold kept at this name is the copy's again while the name has its file: a stat, as main's copy cost.
-      return after(fs.stat(target, { followSymlinks: follow }), st => {
+      // Taken out of the keeping for the stat, it is released when the stat fails.
+      const reuse = (st: RuntimeVfsStat | null): SyscallResult => {
         if (st !== null && st.dev === kept.dev && st.ino === kept.ino && residentable(st)) return heldCopy(o, st, kept.handle, () => byName(o), key);
-        holds.release(kept.handle);
+        holds.release(fs, kept.handle);
         return st === null ? fail('ENOENT') : openHeld(o, holds, key);
-      });
+      };
+      let st: Awaitable<RuntimeVfsStat | null>;
+      try { st = fs.stat(target, { followSymlinks: follow }); } catch (error) { holds.release(fs, kept.handle); throw error; }
+      return st instanceof Promise ? st.then(reuse, (error: unknown) => { holds.release(fs, kept.handle); throw error; }) : reuse(st);
     }
     return after(fs.stat(target, { followSymlinks: follow }), st => {
       if (st === null) fail('ENOENT');

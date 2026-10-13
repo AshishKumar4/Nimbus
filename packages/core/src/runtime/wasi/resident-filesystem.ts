@@ -855,7 +855,10 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   // session descriptor, any other by its file's name while that name has it.
   const bySessionReopen: unknown = Reflect.get(fs, 'reopen');
   if (typeof bySessionReopen === 'function') {
-    Reflect.set(fs, 'reopen', (target: RuntimeReopenTarget, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner) => {
+    Reflect.set(fs, 'reopen', (target: RuntimeReopenTarget, given: RuntimeOpenFlags, options?: RuntimeMutationOwner) => {
+      // The holder's descriptors and the session's alike: each closed where it is (RuntimeOpenFlags.closing).
+      if (given.closing) for (const id of given.closing) closeUnawaited(fs, id);
+      const flags: RuntimeOpenFlags = given.closing ? { ...given, closing: undefined } : given;
       const held = holder;
       if (!held?.owns(target.handle)) return Reflect.apply(bySessionReopen, fs, [target, flags, options]);
       const local = held.reopen(target.handle, flags);

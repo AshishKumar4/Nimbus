@@ -213,7 +213,7 @@ function closeFd(s: BashSession, proc: BashProc, fd: number): void {
   // A copy's hold: kept for the next copy at its name, or closed with the session's next open (ResidentHolds).
   if (e.kind === 'resident') {
     const held = closeResident(e);
-    if (held !== null) s.holds.letGo(held, e.stat);
+    if (held !== null) s.holds.letGo(s.fs, held, e.stat);
   }
   if (e.kind === 'pipe') {
     bumpPipe(s, e, -1); const pp = s.pipes.get(e.pipeId) as BashPipe; wakePipe(s, pp); wakeWriters(pp);
