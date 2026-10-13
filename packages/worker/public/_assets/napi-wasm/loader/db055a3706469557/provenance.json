@@ -2,11 +2,7 @@
   "artifact": "napi-wasm",
   "source": {
     "inputs": {
-<<<<<<<< HEAD:packages/worker/public/_assets/napi-wasm/loader/4ca17891c710e319/provenance.json
-      "packages/core/src/runtime/wasi/filesystem.ts": "8d92548a180f6ee51338bb45e1498e545f7a3e9d35cc29aa80ee912980c5045e",
-========
-      "packages/core/src/runtime/wasi/filesystem.ts": "a5467ffba88e5fa06e102fc5a2047a77cf10a71a809ad8764280a1abd4dead04",
->>>>>>>> origin/main:packages/worker/public/_assets/napi-wasm/loader/e4fa881b00f28e85/provenance.json
+      "packages/core/src/runtime/wasi/filesystem.ts": "c49a28d10abef6fdc6c228b90869277613b0ce52c66f6c311cc208bd9007b9a1",
       "packages/core/src/vfs/dirent-type.ts": "f22395b71aab1211b5f55eded1f996c0719d05c1b838025fc3651ba61e253185",
       "packages/core/src/vfs/vfs-error.ts": "0470e3d0a43c1b5c6f8b5daebeea895f6858307203a72f984fde4d6e01041008",
       "packages/core/src/vfs/vfs.ts": "b5bea1dc45fbcd0fb3b758c559ed4a291de193509f6b70a3a7580bd9ee84515e",
@@ -168,13 +164,8 @@
   ],
   "outputs": {
     "napi-wasm-loader.mjs": {
-<<<<<<<< HEAD:packages/worker/public/_assets/napi-wasm/loader/4ca17891c710e319/provenance.json
-      "bytes": 212722,
-      "sha256": "b5e50e69350f7dec0183779d6acf0650b3b4ae8f6d48c4c53bdf6b96ca286d09"
-========
-      "bytes": 208555,
-      "sha256": "e0f4e817306ce0ae97fa53d58a9bedb475c50193ba30c8d493f755a51ae03b38"
->>>>>>>> origin/main:packages/worker/public/_assets/napi-wasm/loader/e4fa881b00f28e85/provenance.json
+      "bytes": 212704,
+      "sha256": "aa19196d1c109822735a1150d25d9136729b2f035b381f86cd538371f2dfd38e"
     },
     "wasi-trampoline.wasm": {
       "bytes": 1961,
