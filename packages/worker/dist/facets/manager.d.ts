@@ -1472,7 +1472,7 @@ export declare class FacetManager {
     };
     /**
      * The image store's disk for process `pid`'s images: this session's VFS,
-     * as the kernel writing on its behalf (_kernelFor) — the store is written
+     * as the kernel writing on its behalf (_kernelStoreFor) — the store is written
      * by the kernel and read by processes through supervisor bindings that
      * enforce their own credential. Mode 0644 at creation (0666 under the
      * kernel's umask), as POSIX has it, is what makes the read succeed for any
@@ -1486,6 +1486,23 @@ export declare class FacetManager {
      * (SqliteVFS.readRecallAt) is its to read before it is published.
      */
     private _kernelFor;
+    /**
+     * _kernelFor, for the kernel's own stores (KERNEL_STORE_ROOT). That root is
+     * checked, not assumed, each time: made if absent, and refused unless it is
+     * the kernel's own real directory that no one else may write (only root,
+     * through sudo, could have made it anything else). The first use also
+     * removes the stores an earlier release kept below `/var`.
+     */
+    private _kernelStoreFor;
+    private legacyStoresRemoved;
+    /**
+     * Remove the stores a release through worker 0.17.0 kept below `/var`, as
+     * the kernel, through no link: each directory from `/var` to the store is
+     * looked at without following it, and only real directories lead on, to a
+     * store that is the kernel's own. One synchronous turn, so nothing changes
+     * between a look and the removal. What cannot be removed stays.
+     */
+    private _removeLegacyStores;
     /** Give the bundle's module pass the host's esbuild, as composeFacetManager does. */
     setEsbuildService(esbuild: EsbuildService): void;
     /**
