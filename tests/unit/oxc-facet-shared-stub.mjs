@@ -175,7 +175,7 @@ const request = { code: 'const n: number = 1; export default n;', options: { loa
     assert.equal(result.failed, false, `${path}: ${result.code.slice(0, 200)}`);
     assert.equal(result.code, cells[i].source, 'the native module stays as written');
     assert.deepEqual(JSON.parse(result.sites), {
-      calls: [], metas: [], statics: [], moduleSyntax: true, bindings: { exports: [`x${i}`], imports: [], stars: [] },
+      calls: [], metas: [], statics: [], moduleSyntax: true, bindings: { exports: [`x${i}`], imports: [], stars: [], types: [], reexports: [] },
     });
   }
   assert.equal(instances.created, 0, 'native ES modules instantiate no Oxc engine');
@@ -193,7 +193,7 @@ const request = { code: 'const n: number = 1; export default n;', options: { loa
   assert.equal(staged.code, stripped);
   assert.equal(staged.esModule, 'node');
   assert.deepEqual(JSON.parse(staged.map), {
-    calls: [], metas: [], statics: [], moduleSyntax: true, bindings: { exports: ['t'], imports: [], stars: [] },
+    calls: [], metas: [], statics: [], moduleSyntax: true, bindings: { exports: ['t'], imports: [], stars: [], types: [], reexports: [] },
   });
   console.log('  ok  stripped TypeScript ES modules stage without a transform engine or lowering retry');
 }
