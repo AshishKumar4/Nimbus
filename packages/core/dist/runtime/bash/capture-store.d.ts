@@ -14,14 +14,11 @@
  * nimbus_procenv.copy and every end of a saved copy through
  * nimbus_procenv.drop (wasm/bash/patches/procenv.patch). So the store keeps a
  * registry, buffer address → capture, and a count per capture of the buffers
- * that name it. A hook only records what it saw; the records are applied, in
- * order, before the store is next asked anything (every unwind asks first),
- * so a hook costs a record, cold or not, rather than a lookup. A buffer on
- * the stack ends without a hook, when its frame returns or a longjmp skips
- * it: below the stack pointer, it is dead (swept at every unwind, over the
- * stack's buffers only). A buffer written over without a hook no longer
- * holds its capture's words; that only keeps the capture longer, so it is
- * looked for only when an unwind needs room.
+ * that name it. A buffer on the stack ends without a hook, when its frame
+ * returns or a longjmp skips it: below the stack pointer, it is dead
+ * (sweep, at every hook, over the stack's buffers only). A buffer written
+ * over without a hook no longer holds its capture's words; that only keeps
+ * the capture longer, so it is looked for only when an unwind needs room.
  * A capture no buffer names is freed, and its space is taken back from the
  * top, or by sliding the live captures down once freed space below the top
  * passes PACK_SLACK, so the arena a process touches stays near what is live
@@ -80,19 +77,21 @@ export declare class CaptureStore {
      * down when less than MIN_ROOM is left. Only between a rewind's end and
      * the next unwind, when captures are the only unwound data.
      */
-    unwindAt(memory: WebAssembly.Memory, sp: number, stats: CaptureStats, pid: number): number;
+    unwindAt(memory: WebAssembly.Memory, stats: CaptureStats, pid: number): number;
+    /** Before each hook's effect: the stack's buffers below `sp`, the current stack pointer, ended with their frames. */
+    sweep(sp: number): void;
     /** setjmp(env) is about to capture: env stops naming what it named. */
-    setting(memory: WebAssembly.Memory, env: number): void;
+    setting(env: number): void;
     /**
      * Keep the stack setjmp(env) just unwound at top as a capture: write env
      * to name it, and count env. `sp`: setjmp's caller's stack pointer.
      * Answers where the capture is, ready to rewind.
      */
     take(memory: WebAssembly.Memory, env: number, sp: number, stats: CaptureStats, pid: number): number;
-    /** nimbus_procenv.copy(dst, src), after the copy: dst is to name what src named (#apply). */
-    copy(dst: number, src: number): void;
-    /** nimbus_procenv.drop(at): the saved buffer at `at` is to end (#apply). */
-    drop(at: number): void;
+    /** nimbus_procenv.copy(dst, src), after the copy: dst names what src named. */
+    copied(memory: WebAssembly.Memory, dst: number, src: number): void;
+    /** nimbus_procenv.drop(at): the saved buffer at `at` ends. */
+    dropped(at: number): void;
     /**
      * The capture longjmp(env, value) jumps to, its landing given `value`,
      * made ready to rewind; after the current stack was unwound and

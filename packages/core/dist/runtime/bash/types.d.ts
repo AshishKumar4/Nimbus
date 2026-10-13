@@ -15,6 +15,7 @@
 import type { Errno, SyscallResult, WasiSupervisorStub } from '../wasi/types.js';
 import type { RuntimeFsBridge, VfsCred } from '../os-contracts.js';
 import type { AuthorityFd, AuthorityPreopen, ResidentFd, ResidentHolds } from '../wasi/filesystem.js';
+import type { CaptureStats, CaptureStore, StackBounds } from './capture-store.js';
 /**
  * The errno set this scheduler answers with — the same one every Nimbus syscall
  * layer answers with. This was `Errno | 63`, and the `| 63` was the whole
@@ -167,9 +168,10 @@ export interface BashProcCtx {
     reason: BashUnwindReason | null;
     rewinding: boolean;
     captureEnv: number;
+    /** 'capture': setjmp's caller's stack pointer, which a longjmp to the capture restores. */
+    captureSp: number;
     ljEnv: number;
     ljVal: number;
-    nextSlot: number;
     resume: number;
     /** 'waitpid': the wait status handed back on the rewind. */
     resumeStatus: number;
@@ -191,6 +193,10 @@ export interface BashWasmExports {
     memory: WebAssembly.Memory;
     _start(): void;
     __nimbus_signal_disposition(signal: number): number;
+    /** The shadow stack: [__data_end, __heap_base); __stack_pointer its current bottom (capture-store.ts). */
+    __stack_pointer: WebAssembly.Global;
+    __data_end: WebAssembly.Global;
+    __heap_base: WebAssembly.Global;
     asyncify_start_unwind(buf: number): void;
     asyncify_stop_unwind(): void;
     asyncify_start_rewind(buf: number): void;
@@ -227,16 +233,13 @@ export interface BashProc {
     /** The owning session, so a resumed process can find its run queue. */
     __s: BashSession;
     ctx: BashProcCtx;
-    /** Base of the asyncify stack-capture arena. */
-    MAIN_BUF: number;
-    /** Base of the setjmp slot array, immediately after MAIN_BUF. */
-    SLOT0: number;
+    /** Its unwind arena and the setjmp captures it holds (capture-store.ts). */
+    captures: CaptureStore;
+    /** Bumped each time its instance is reused for another process: a fork in flight checks its parent is still the same one. */
+    incarnation: number;
     pendingRead: BashPendingRead | null;
     /** A write parked at a pipe's capacity was woken: the rewound fd_write goes ahead. */
     writeResumed: boolean;
-    /** jmp_buf address → the slot index its most recent setjmp captured into. */
-    slotByEnv: Map<number, number>;
-    freeSlots: number[];
     /** Files its instance's reads keep resident (AuthorityFilesystemOptions.resident), cleared when it is reused. */
     resident: Map<string, {
         revision: number;
@@ -244,8 +247,6 @@ export interface BashProc {
     }>;
     DV(): DataView;
     U8(): Uint8Array;
-    slotAddr(i: number): number;
-    initHdr(a: number, sz: number): void;
 }
 /** A process parked in waitpid. */
 export interface BashWaitEntry {
@@ -267,18 +268,20 @@ export interface BashHeldExit {
     pipes: Set<BashPipe>;
     sigpipe: boolean;
 }
-export interface BashStats {
+export interface BashStats extends CaptureStats {
     /** Bash instances this session instantiated. */
     instances: number;
     /** Forks that took an exited process's instance instead of instantiating one. */
     reused: number;
     memPeak: number;
-    mainHi: number;
-    slotHi: number;
+    /** Bytes the last fork copied from its parent's memory. */
+    forkCopied: number;
 }
 /** Everything one bash session owns. Persists across feeds on a warm isolate. */
 export interface BashSession {
     mod: WebAssembly.Module;
+    /** The module's shadow stack, checked at its first instance (capture-store.ts). */
+    stack?: StackBounds;
     /** Command name → the wasm module that answers to it, busybox applets included. */
     coreutils: Map<string, WebAssembly.Module>;
     coreutilsRoot: string;

@@ -670,7 +670,7 @@ function makeProc(s, pid, ppid, fds) {
     proc.DV = DV;
     proc.U8 = U8;
     /** Unwind the whole stack, from the import calling this, into the arena's top. */
-    const startUnwind = () => { proc.inst.exports.asyncify_start_unwind(proc.captures.unwindAt(proc.inst.exports.memory, stackPointer(), s.stats, proc.pid)); };
+    const startUnwind = () => { proc.inst.exports.asyncify_start_unwind(proc.captures.unwindAt(proc.inst.exports.memory, s.stats, proc.pid)); };
     /** The shadow stack pointer at the import calling this: its caller's frame bottom (nimbus-proc.c's wrappers keep no frame). */
     const stackPointer = () => Number(proc.inst.exports.__stack_pointer.value);
     const wstr = (p, str) => { const b = te.encode(str); U8().set(b, p); return b.length; };
@@ -820,7 +820,8 @@ function makeProc(s, pid, ppid, fds) {
                 return;
             }
             const sp = stackPointer();
-            proc.captures.setting(proc.inst.exports.memory, env);
+            proc.captures.sweep(sp);
+            proc.captures.setting(env);
             c.reason = 'capture';
             c.captureEnv = env;
             c.captureSp = sp;
@@ -833,6 +834,7 @@ function makeProc(s, pid, ppid, fds) {
                 c.rewinding = false;
                 return;
             }
+            proc.captures.sweep(stackPointer());
             c.reason = 'longjmp';
             c.ljEnv = env;
             c.ljVal = val;
@@ -1000,10 +1002,16 @@ function makeProc(s, pid, ppid, fds) {
         sock_recv: suspend('sock_recv', wasi.sock_recv),
         sock_shutdown: suspend('sock_shutdown', wasi.sock_shutdown),
     };
-    // Every copy bash makes of a jmp_buf, and every end of a saved one (wasm/bash/patches/procenv.patch): recorded, applied at the next unwind.
+    // Every copy bash makes of a jmp_buf, and every end of a saved one (wasm/bash/patches/procenv.patch).
     const nimbus_procenv = {
-        copy: (dst, src) => { proc.captures.copy(dst, src); },
-        drop: (at) => { proc.captures.drop(at); },
+        copy: (dst, src) => {
+            proc.captures.sweep(stackPointer());
+            proc.captures.copied(proc.inst.exports.memory, dst, src);
+        },
+        drop: (at) => {
+            proc.captures.sweep(stackPointer());
+            proc.captures.dropped(at);
+        },
     };
     proc.inst = new WebAssembly.Instance(s.mod, { wasi_snapshot_preview1: suspendedWasi, nimbus_proc, nimbus_procenv, env: envImports });
     s.stack ??= checkedStack(s.mod, proc.inst);
