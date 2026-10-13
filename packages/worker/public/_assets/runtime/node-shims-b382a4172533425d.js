@@ -18675,20 +18675,6 @@ function __nimbusEsmId(kind, key) {
   }
   return __nimbusEsmIds.get(kind + ":" + key) ?? -1;
 }
-// What Node's linker checks of row `id` (worker facets/esm-stage.ts
-// EsmRowBindings), or null where unknown: read from the map once, when a
-// graph a program produced after its launch began first links.
-let __nimbusEsmRowBindings;
-function __nimbusEsmBindingsOf(id) {
-  if (__nimbusEsmRowBindings === undefined) {
-    try {
-      __nimbusEsmRowBindings = JSON.parse(__nimbusReadBundleFile(__NIMBUS_BUNDLE_FILES + "nimbus/esm.bindings", "utf8"));
-    } catch {
-      __nimbusEsmRowBindings = [];
-    }
-  }
-  return __nimbusEsmRowBindings[id] ?? null;
-}
 // What became of each module: its meta instance evaluated (linked into an
 // evaluation, a "batch"), its body begun, its body done (its namespace
 // registered), its body stopped by Nimbus before it began (its record's
@@ -19281,8 +19267,7 @@ async function __nimbusEsmLinkStaged(key) {
 const __nimbusLateLinkHost = {
   row: __nimbusEsmId,
   rowKind: (row) => __nimbusEsm.table[row][0],
-  moduleFacts: __nimbusEsmBindingsOf,
-  rowNames: __nimbusEsmBindingsOf,
+  rowBindings: () => __nimbusReadBundleFile(__NIMBUS_BUNDLE_FILES + "nimbus/esm.bindings", "utf8"),
   rowTargets: (row) => __nimbusEsm.table[row][2],
   rowSettled: (row) => __nimbusEsmRecords[row]?.state === __ESM_DONE || __nimbusEsmRecords[row]?.state === __ESM_ADOPTED,
   missing: (i) => {

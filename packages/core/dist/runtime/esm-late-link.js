@@ -13,6 +13,31 @@
  * links one never compiles it.
  */
 import { cjsModuleExportNames } from './cjs-module-exports.js';
+/** The launch's row bindings, read once. */
+let rowBindings;
+function bindingsOf(host, row) {
+    if (rowBindings === undefined) {
+        try {
+            const parsed = JSON.parse(host.rowBindings());
+            rowBindings = parsed;
+        }
+        catch {
+            rowBindings = [];
+        }
+    }
+    return rowBindings[row] ?? null;
+}
+const isModuleRow = (bindings) => Array.isArray(bindings[0]);
+/** A staged module row's bindings, or null where unknown. */
+function moduleFacts(host, row) {
+    const bindings = bindingsOf(host, row);
+    return bindings !== null && isModuleRow(bindings) ? bindings : null;
+}
+/** A facade row's export names, or null where unknown. */
+function rowNames(host, row) {
+    const bindings = bindingsOf(host, row);
+    return bindings !== null && !isModuleRow(bindings) ? bindings : null;
+}
 /** Every late module a link has read, by URL: what an interpreted module's `export *` asks of (starConflicts). */
 const lateModules = new Map();
 /** The CommonJS modules' names Node's lexer found, by path. */
@@ -24,7 +49,7 @@ const commonJsNameCache = new Map();
  */
 export function commonJsNames(host, key) {
     const facade = host.row('commonjs', key);
-    const staged = facade === -1 ? null : host.rowNames(facade);
+    const staged = facade === -1 ? null : rowNames(host, facade);
     if (staged !== null)
         return staged;
     return [...cjsModuleExportNames(`/${key}`, { source: (path) => host.source(path.replace(/^\/+/, ''), -1), resolve: host.cjsResolve }, commonJsNameCache)];
@@ -228,7 +253,7 @@ function checkBindings(host, late, rootUrl) {
 function edgesOf(host, late, target) {
     if (target.row === undefined)
         return late.modules.get(target.url)?.imports ?? [];
-    const facts = host.rowKind(target.row) === 'module' ? host.moduleFacts(target.row) : null;
+    const facts = host.rowKind(target.row) === 'module' ? moduleFacts(host, target.row) : null;
     if (facts === null)
         return [];
     return facts[2].map(([row, specifier, ...names]) => ({ target: { row }, specifier, names }));
@@ -241,7 +266,7 @@ function factsOf(host, late, target) {
         const node = late.modules.get(target.url);
         return node === undefined || !node.known ? null : node;
     }
-    const facts = host.moduleFacts(target.row);
+    const facts = moduleFacts(host, target.row);
     if (facts === null)
         return null;
     return {
@@ -262,7 +287,7 @@ function resolveExport(host, late, target, name, resolving) {
         return target.names.includes(name) ? { module: `u${target.url}`, binding: name } : null;
     const module = target.row !== undefined ? `r${target.row}` : `u${target.url}`;
     if (target.row !== undefined && host.rowKind(target.row) !== 'module') {
-        const names = host.rowNames(target.row);
+        const names = rowNames(host, target.row);
         return names === null ? undefined : names.includes(name) ? { module, binding: name } : null;
     }
     // A circular import request: nothing more to find this way.
@@ -309,7 +334,7 @@ function exportedNames(host, late, target, seen) {
     if (target.names !== undefined)
         return target.names;
     if (target.row !== undefined && host.rowKind(target.row) !== 'module')
-        return host.rowNames(target.row);
+        return rowNames(host, target.row);
     const module = target.row !== undefined ? `r${target.row}` : `u${target.url}`;
     if (seen.has(module))
         return [];

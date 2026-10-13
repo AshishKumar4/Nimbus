@@ -38,10 +38,8 @@ export interface LateLinkHost {
     row(kind: 'module' | 'commonjs' | 'json' | 'builtin', key: string): number;
     /** A staged row's kind: 'module', or a facade's ('commonjs', 'json', 'builtin'). */
     rowKind(row: number): string;
-    /** A staged module row's bindings, or null where unknown. */
-    moduleFacts(row: number): ModuleRowFacts | null;
-    /** A facade row's export names, or null where unknown. */
-    rowNames(row: number): readonly string[] | null;
+    /** The launch's row bindings, as staging wrote them (worker facets/esm-stage.ts EsmRowBindings): JSON, by row. */
+    rowBindings(): string;
     /** A staged module row's static targets: a row, or -2 - i for the staging refused as missing(i). */
     rowTargets(row: number): readonly number[];
     /** Whether a staged row has run, or the interpreter took it over. */
