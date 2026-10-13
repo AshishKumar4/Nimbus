@@ -34,7 +34,8 @@ class Columns {
     pathStarts = new Uint32Array(1025);
     pathBytes = new Uint8Array(64 * 1024);
     count = 0;
-    add(path, mode, oid, oidAt, skip) {
+    /** An entry at path `prefix` + `name`: its bytes as the trees hold them. */
+    add(prefix, name, mode, oid, oidAt, skip) {
         if (this.count === this.modes.length) {
             const capacity = this.count * 2;
             this.oids = growBytes(this.oids, capacity * OID_BYTES);
@@ -47,14 +48,15 @@ class Columns {
             this.pathStarts = starts;
         }
         const start = this.pathStarts[this.count];
-        if (start + path.byteLength > this.pathBytes.byteLength) {
-            this.pathBytes = growBytes(this.pathBytes, Math.max(this.pathBytes.byteLength * 2, start + path.byteLength));
-        }
-        this.pathBytes.set(path, start);
+        const end = start + prefix.byteLength + name.byteLength;
+        if (end > this.pathBytes.byteLength)
+            this.pathBytes = growBytes(this.pathBytes, Math.max(this.pathBytes.byteLength * 2, end));
+        this.pathBytes.set(prefix, start);
+        this.pathBytes.set(name, start + prefix.byteLength);
         this.oids.set(oid.subarray(oidAt, oidAt + OID_BYTES), this.count * OID_BYTES);
         this.modes[this.count] = mode;
         this.skips[this.count] = skip ? 1 : 0;
-        this.pathStarts[++this.count] = start + path.byteLength;
+        this.pathStarts[++this.count] = end;
     }
 }
 /** `bytes` copied into a longer buffer. */
@@ -95,7 +97,7 @@ export class CheckoutPlan {
     static fromTrees(rootTree, tree, sparse, protect = DEFAULT_PATH_PROTECTION) {
         const columns = new Columns();
         // verify_path goes component by component, so a name is verified once: a directory's refusal is every path's below it.
-        const stack = [{ data: rootTree, entries: new TreeEntries(rootTree), prefix: '', refusing: false }];
+        const stack = [{ data: rootTree, entries: new TreeEntries(rootTree), prefix: '', prefixBytes: new Uint8Array(0), refusing: false }];
         let refused = null;
         while (stack.length > 0) {
             const frame = stack[stack.length - 1];
@@ -104,19 +106,26 @@ export class CheckoutPlan {
                 stack.pop();
                 continue;
             }
-            const name = utf8.decode(frame.data.subarray(entry.nameAt, entry.nameEnd));
-            const path = frame.prefix + name;
+            const raw = frame.data.subarray(entry.nameAt, entry.nameEnd);
+            const name = utf8.decode(raw);
+            // A path's bytes are its name's as decoded: a name not UTF-8 is held as its replacement characters.
+            const nameBytes = name.includes('\uFFFD') ? utf8Encoder.encode(name) : raw;
             if (entry.mode === MODE_TREE) {
                 const data = tree(frame.data, entry.oidAt);
-                stack.push({ data, entries: new TreeEntries(data), prefix: path + '/', refusing: frame.refusing || !verifyPath(name, MODE_TREE, protect) });
+                const prefixBytes = new Uint8Array(frame.prefixBytes.byteLength + nameBytes.byteLength + 1);
+                prefixBytes.set(frame.prefixBytes);
+                prefixBytes.set(nameBytes, frame.prefixBytes.byteLength);
+                prefixBytes[prefixBytes.byteLength - 1] = 0x2f;
+                const refusing = frame.refusing || !verifyPath(name, MODE_TREE, protect);
+                stack.push({ data, entries: new TreeEntries(data), prefix: frame.prefix + name + '/', prefixBytes, refusing });
                 continue;
             }
             // A link's mode reaches every component (no .gitmodules above it): its whole path is verified.
-            const refuses = entry.mode === MODE_SYMLINK ? !verifyPath(path, MODE_SYMLINK, protect) : frame.refusing || !verifyPath(name, entry.mode, protect);
+            const refuses = entry.mode === MODE_SYMLINK ? !verifyPath(frame.prefix + name, MODE_SYMLINK, protect) : frame.refusing || !verifyPath(name, entry.mode, protect);
             if (refused === null && refuses)
-                refused = path;
-            const skip = sparse !== undefined && !sparse.includes(path);
-            columns.add(utf8Encoder.encode(path), entry.mode, frame.data, entry.oidAt, skip);
+                refused = frame.prefix + name;
+            const skip = sparse !== undefined && !sparse.includes(frame.prefix + name);
+            columns.add(frame.prefixBytes, nameBytes, entry.mode, frame.data, entry.oidAt, skip);
         }
         if (refused !== null)
             columns.skips.fill(1);
