@@ -8,9 +8,9 @@
 // those RPCs now takes an optional `cred`, validated with the one VfsCred
 // validator (`requireVfsCred`), and absent it keeps exactly the identity it
 // has always had: the session user (uid 1000) for read, write, stat, list,
-// mkdir, rename and chmod — see `callerCred` in session/rpc.ts — and the
-// kernel for `files.delete` (`rpcDeleteFile`). Those defaults are the
-// embedder's trusted surface and are asserted here unchanged.
+// mkdir, rename, chmod and `files.delete` (`rpcDeleteFile`) — see
+// `callerCred` in session/rpc.ts. The kernel acts only when a caller names it
+// (owner-surface-credential).
 //
 // Fixture: a directory owned 0700 by uid 1001 holding a file owned 0600 by
 // uid 1001. The session-user default and a stranger (uid 1002) get EACCES;
@@ -119,7 +119,7 @@ const SECRET = 'home/user/priv/secret.txt';
   assert.equal(kernel.stat('home/user/plain.txt').uid, CRED_SESSION_USER.uid, 'the default identity is unchanged');
 }
 
-// ── delete: the default is the kernel, and it is unchanged ────────────────
+// ── delete: the default is the session user; the kernel is asked for ──────
 {
   const { host, kernel } = makeHost();
   await eacces(rpcDeleteFile(host, SECRET, {}, STRANGER), 'delete through a 0700 directory as a stranger');
@@ -129,15 +129,19 @@ const SECRET = 'home/user/priv/secret.txt';
 
   kernel.writeFile('home/user/priv/again.txt', 'x', { mode: 0o600 });
   kernel.chown('home/user/priv/again.txt', OWNER.uid, OWNER.gid);
-  await rpcDeleteFile(host, 'home/user/priv/again.txt');
-  assert.equal(kernel.exists('home/user/priv/again.txt'), false, "the pid-less default (kernel) deletes it — today's behaviour");
-  // Removing `priv` itself needs write on its parent, which uid 1000 owns:
-  // the owner of the subtree is refused exactly as POSIX refuses it, and the
-  // kernel default takes it out.
+  await eacces(rpcDeleteFile(host, 'home/user/priv/again.txt'), 'the pid-less default, the session user, through a 0700 directory it does not own');
+  assert.equal(kernel.exists('home/user/priv/again.txt'), true, 'refused, so still there');
+  await rpcDeleteFile(host, 'home/user/priv/again.txt', {}, CRED_KERNEL);
+  assert.equal(kernel.exists('home/user/priv/again.txt'), false, 'the kernel, asked for by name, deletes it');
+  // Removing `priv` itself needs write on its parent, which uid 1000 owns, and
+  // a walk through `priv`, which only its owner may: the owner of the subtree
+  // and the session user are each refused exactly as POSIX refuses them, and
+  // the kernel, asked for by name, takes it out.
   await eacces(rpcDeleteFile(host, 'home/user/priv', { recursive: true }, OWNER), 'recursive removal of a directory in a parent the owner cannot write');
+  await eacces(rpcDeleteFile(host, 'home/user/priv', { recursive: true }), 'recursive removal through a directory the session user cannot enter');
   assert.equal(kernel.exists('home/user/priv'), true);
-  await rpcDeleteFile(host, 'home/user/priv', { recursive: true });
-  assert.equal(kernel.exists('home/user/priv'), false, 'recursive removal by the kernel default');
+  await rpcDeleteFile(host, 'home/user/priv', { recursive: true }, CRED_KERNEL);
+  assert.equal(kernel.exists('home/user/priv'), false, 'recursive removal by the kernel, asked for by name');
 }
 
 // ── what is refused ───────────────────────────────────────────────────────
