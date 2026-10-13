@@ -343,9 +343,9 @@ export class WorktreeRepo {
     return coneMatcher(cone, configBool(await this.worktreeSetting('core.ignorecase')) === true);
   }
 
-  /** core.protectHFS and core.protectNTFS, the repository's over the global, else git's defaults (verify-path.ts). */
+  /** core.protectHFS and core.protectNTFS as the command's config reads them (-c, the repository's, the global), else git's defaults (verify-path.ts). */
   async pathProtection(): Promise<PathProtection> {
-    const setting = async (key: string) => configBool(await this.config(key) ?? await this.globalConfig(key));
+    const setting = async (key: string) => configBool(await this.config(key));
     return {
       hfs: await setting('core.protecthfs') ?? DEFAULT_PATH_PROTECTION.hfs,
       ntfs: await setting('core.protectntfs') ?? DEFAULT_PATH_PROTECTION.ntfs,
