@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "c7b9a60ed4c2ce5474decb28ad27160f5abb12f80877a36ef7d5f947dcfe3a83",
+  "fingerprint": "dc103275ecea9986442d07a444d54fb48b1ad334e5f7c384bfe5b25c4cdd78c3",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -617,8 +617,8 @@
     "packages/core/dist/runtime/ruby-socket-shim.d.ts.map": "ad7b952c242b2deb56091a37b8303271be41f2efbd0e6e76db5bbed2d709b3be",
     "packages/core/dist/runtime/ruby-socket-shim.js": "e7788c6276d5ea68a99ff320e2e61cc15eb2f300fff06e2a3a77f584576afbac",
     "packages/core/dist/runtime/runtime-manager.d.ts": "b75fa2516b501f5754a5ffb3fee7105c8c5a036333de069bea059449069aff41",
-    "packages/core/dist/runtime/runtime-manager.d.ts.map": "6915038d7ed67f3f7f727cf52695dbf7ee5ebaa34f3dd24229ad867c1ebd6b47",
-    "packages/core/dist/runtime/runtime-manager.js": "aebffe8154fdb3bcd1eed0ede0ea8bfe2ba42116a2854b07f7db138c8ef13c01",
+    "packages/core/dist/runtime/runtime-manager.d.ts.map": "3b7cbca705ad70e31555e26967cb59c980d3199340fcaafab67462feb64b972e",
+    "packages/core/dist/runtime/runtime-manager.js": "551973e68f0a657c53ee9c7cee2e621bbc312c2c1380f5101f63dba47d8239ba",
     "packages/core/dist/runtime/runtime-manifest.d.ts": "6f6b5cea9ca14965a7f2a4f072c694e80b77a0e802b12abbbabea301a300dbba",
     "packages/core/dist/runtime/runtime-manifest.d.ts.map": "9f5486d91aae5cbb19c26492a383e724f8c65dd0d3b87c65620b099d0d31f0a7",
     "packages/core/dist/runtime/runtime-manifest.js": "74e8816d52e6dbc0676876c080ad7dcfb1e97a715cfd6a2ae39bb44f8f2e995c",
@@ -1499,7 +1499,7 @@
     "packages/core/src/runtime/ruby-green-threads.ts": "7701efca15303c30d1ecd7bb9151a952c79e77ed2c5db3dc0819bbe4775f5eb6",
     "packages/core/src/runtime/ruby-runner.ts": "8cad12e206766ef3623ab8cf11a2878de07fa60fdbbfd53dce537d4e0031467e",
     "packages/core/src/runtime/ruby-socket-shim.ts": "1aebdd31f52fdcb318258fca76bbc88f9b35b912aa924d8933bbb3ac6819cd1e",
-    "packages/core/src/runtime/runtime-manager.ts": "efb10fc0eefdb6da3f86ff868e6fbffbca574441aab13204337d6f9325a53c3d",
+    "packages/core/src/runtime/runtime-manager.ts": "6832543a5b9dadeb5fe8b8d16bc4ac37c2b673eba7fb042f5d15de1c2f0271c8",
     "packages/core/src/runtime/runtime-manifest.ts": "6c71b49d16ac83647cf3f41699710f41f8468cb91676186e0e472cf16f86da5b",
     "packages/core/src/runtime/runtime-package.ts": "53d7d4a75a6a35a7f30683ee9298cc0ba0990932991c8a17ea2b10ca6d893609",
     "packages/core/src/runtime/runtime-registry.ts": "9163d807876df01cd3fd5c0b5d246655b665577add01bc7049a36cd3e8d4c987",
