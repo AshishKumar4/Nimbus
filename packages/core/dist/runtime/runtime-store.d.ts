@@ -33,8 +33,15 @@ export interface RuntimeStoreFs {
     symlink(target: string, path: string): Promise<void>;
     readlink(path: string): Promise<string>;
     unlink(path: string): Promise<void>;
-    chmod(path: string, mode: number): Promise<void>;
 }
+/** Whether `entry` (looked at without following it) is a directory only root may change. */
+export declare function rootsOwn(entry: {
+    type: string;
+    uid?: number;
+    mode?: number;
+} | null): boolean;
+/** The directories from `/` to the store: each must be root's own (rootsOwn) for the store to be read or written. */
+export declare const RUNTIME_STORE_DIRS: readonly string[];
 /**
  * Make the store ready to write: each directory from `/usr` down made by
  * root if it is missing, and refused unless it is root's own real directory
@@ -43,6 +50,8 @@ export interface RuntimeStoreFs {
 export declare function prepareRuntimeStore(fs: RuntimeStoreFs): Promise<void>;
 /** A runtime command's launcher in `/usr/bin`. */
 export interface RuntimeLauncher {
+    /** The command it launches, as its entrypoint names it. */
+    binName: string;
     /** The name it runs by path, as the registry knows it: `/usr/bin/<command>`. */
     command: string;
     /** The launcher, as a key: `usr/bin/<command>`. */
@@ -50,20 +59,19 @@ export interface RuntimeLauncher {
     /** What it links to: the tree's own `bin/<command>`. */
     target: string;
 }
-/** A runtime's launchers: `/usr/bin/<command>` for each command its tree has a `bin/<command>` for. */
-export declare function runtimeLaunchers(manifest: RuntimeManifest, root: string, entrypoints: readonly {
-    binName: string;
-}[]): RuntimeLauncher[];
+/** A runtime's launchers: `/usr/bin/<command>` for each of `commands` its tree has a `bin/<command>` for. */
+export declare function runtimeLaunchers(manifest: RuntimeManifest, root: string, commands: Iterable<string>): RuntimeLauncher[];
 /**
- * Point each launcher at `root`'s tree, whose `bin/<command>` is made
- * executable (0755, as a package's binaries are) so a search of PATH finds
- * it. A launcher of ours that leads to another version is replaced; anything
- * else at that name (a file or link someone put there with sudo) is left,
- * and the command runs by name only.
+ * Point each launcher at its tree, and answer the ones that lead there: a
+ * launcher of ours that leads to another version is replaced; anything else
+ * at that name (a file or link someone put there with sudo) is left, and the
+ * command runs by name only. The tree's `bin/<command>` keeps the mode it was
+ * installed with: a marker the shell's registry runs by name, not a program a
+ * guest Bash could run as a script.
  */
-export declare function linkLaunchers(fs: RuntimeStoreFs, launchers: readonly RuntimeLauncher[]): Promise<void>;
-/** Remove each launcher that leads into `root`'s tree. */
-export declare function unlinkLaunchers(fs: RuntimeStoreFs, launchers: readonly RuntimeLauncher[]): Promise<void>;
+export declare function linkLaunchers(fs: RuntimeStoreFs, launchers: readonly RuntimeLauncher[]): Promise<RuntimeLauncher[]>;
+/** Remove each launcher that leads into its tree, and answer the ones removed. */
+export declare function unlinkLaunchers(fs: RuntimeStoreFs, launchers: readonly RuntimeLauncher[]): Promise<RuntimeLauncher[]>;
 /**
  * Move the runtimes an earlier release installed below `<home>/.nimbus/runtimes`
  * into the store, as the kernel, once, and leave a link at the old path so

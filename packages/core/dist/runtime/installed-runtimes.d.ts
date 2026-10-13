@@ -21,7 +21,7 @@ import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { RuntimePackageFs as CredentialedVfs } from './runtime-package.js';
 import type { Command } from '../substrate/lifo/commands/types.js';
 import type { ResolveContext } from '../substrate/lifo/commands/registry.js';
-import { type RuntimePackageAbi } from './os-contracts.js';
+import { type Awaitable, type RuntimePackageAbi } from './os-contracts.js';
 import { type ManifestEntrypoint, type RuntimeManifest } from './runtime-manifest.js';
 /** Minimal shell-registry shape we depend on. */
 export interface MinShellRegistry {
@@ -68,22 +68,31 @@ export declare const RUNTIME_EXTRA_ENTRYPOINTS: Readonly<Record<string, readonly
 export declare function runtimeEntrypoints(manifest: RuntimeManifest): RuntimeManifest['entrypoints'];
 /** Where (name, version) is installed, as a key: `usr/lib/nimbus/<name>/<version>`. */
 export declare function installRoot(name: string, version: string): string;
-/**
- * The names a runtime's commands are registered under: each entrypoint's,
- * and `/usr/bin/<command>` for each that has a launcher, so a run by that
- * path (or a `#!/usr/bin/<command>` line) is the command a run by name is.
- */
-export declare function runtimeCommandNames(manifest: RuntimeManifest, root: string): Array<{
-    entrypoint: ManifestEntrypoint;
-    names: string[];
-}>;
+/** What the store is listed through: a view that can look at a name without following it. */
+export type InstalledRuntimesFs = Pick<CredentialedVfs, 'exists' | 'readdir' | 'readFileString'> & {
+    stat(path: string, options?: {
+        follow?: boolean;
+    }): Awaitable<{
+        type: string;
+        uid?: number;
+        mode?: number;
+    } | null>;
+};
 /** Read all installed manifests off SqliteFS. Used by both `--list`
  *  and boot-time rehydration. */
 export declare function listInstalledManifests(vfs: SqliteVFS): Promise<Array<{
     root: string;
     manifest: RuntimeManifest;
 }>>;
-export declare function listInstalledManifestsView(fs: CredentialedVfs): Promise<Array<{
+/**
+ * The runtimes in the store that are the system's: what the store, each
+ * name's and each version's directory are root's own (rootsOwn, looked at
+ * without following them), and a manifest.json root wrote. Anything else
+ * (a tree a user made in a store an earlier release left theirs, a link)
+ * is not listed, so nothing binds, links or removes it as the kernel; a
+ * store that is not root's lists nothing.
+ */
+export declare function listInstalledManifestsView(fs: InstalledRuntimesFs): Promise<Array<{
     root: string;
     manifest: RuntimeManifest;
 }>>;
@@ -111,9 +120,9 @@ export declare function runtimePayloadIntact(fs: CredentialedVfs, root: string, 
  * legacy manifest-first install interrupted mid-write or a corruption, and
  * the manager's install path repairs it on demand rather than running it.
  */
-export declare function rehydrateInstalledRuntimesView(vfs: CredentialedVfs, registry: MinShellRegistry, runnerFor: RunnerLookup, 
-/** Each verified runtime, once its commands are registered (its launchers are linked). */
-bound?: (root: string, manifest: RuntimeManifest) => Promise<void>): Promise<{
+export declare function rehydrateInstalledRuntimesView(vfs: CredentialedVfs & InstalledRuntimesFs, registry: MinShellRegistry, runnerFor: RunnerLookup, 
+/** Each verified runtime, once its commands are registered: their handlers, by name (its launchers are linked). */
+bound?: (root: string, manifest: RuntimeManifest, handlers: ReadonlyMap<string, Command>) => Promise<void>): Promise<{
     count: number;
     bins: string[];
 }>;

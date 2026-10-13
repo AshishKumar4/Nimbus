@@ -18,10 +18,9 @@
  * must not share either.
  */
 import { sha256Incremental } from '../_shared/crypto.js';
-import { isVfsError } from '../vfs/vfs-error.js';
 import { BASH_RUNNER, CRED_KERNEL, NIMBUS_ABI_TARGET, NIMBUS_RUNTIME_ABIS, NATIVE_UNSUPPORTED_ABI, } from './os-contracts.js';
 import { parseRuntimeManifest, } from './runtime-manifest.js';
-import { RUNTIME_STORE, runtimeLaunchers } from './runtime-store.js';
+import { RUNTIME_STORE, RUNTIME_STORE_DIRS, rootsOwn } from './runtime-store.js';
 export function runtimeAbiForManifest(manifest) {
     const byName = NIMBUS_RUNTIME_ABIS[manifest.name];
     if (byName)
@@ -80,53 +79,45 @@ export function runtimeEntrypoints(manifest) {
 export function installRoot(name, version) {
     return `${RUNTIME_STORE}/${name}/${version}`;
 }
-/**
- * The names a runtime's commands are registered under: each entrypoint's,
- * and `/usr/bin/<command>` for each that has a launcher, so a run by that
- * path (or a `#!/usr/bin/<command>` line) is the command a run by name is.
- */
-export function runtimeCommandNames(manifest, root) {
-    const entrypoints = runtimeEntrypoints(manifest);
-    const claimed = new Set(entrypoints.map((ep) => ep.binName));
-    const launchers = new Map(runtimeLaunchers(manifest, root, entrypoints).map((launcher) => [launcher.target, launcher.command]));
-    return entrypoints.map((entrypoint) => {
-        const launcher = launchers.get(`/${root}/bin/${entrypoint.binName}`);
-        return { entrypoint, names: launcher === undefined || claimed.has(launcher) ? [entrypoint.binName] : [entrypoint.binName, launcher] };
-    });
-}
 /** Read all installed manifests off SqliteFS. Used by both `--list`
  *  and boot-time rehydration. */
 export async function listInstalledManifests(vfs) {
-    return (await listInstalledManifestsView(vfs.as(CRED_KERNEL)));
+    const kernel = vfs.as(CRED_KERNEL);
+    return await listInstalledManifestsView({
+        exists: (path) => kernel.exists(path),
+        readdir: (path) => kernel.readdir(path),
+        readFileString: (path) => kernel.readFileString(path),
+        stat: (path, options) => kernel.statIfPresent(path, options?.follow !== false),
+    });
 }
+/**
+ * The runtimes in the store that are the system's: what the store, each
+ * name's and each version's directory are root's own (rootsOwn, looked at
+ * without following them), and a manifest.json root wrote. Anything else
+ * (a tree a user made in a store an earlier release left theirs, a link)
+ * is not listed, so nothing binds, links or removes it as the kernel; a
+ * store that is not root's lists nothing.
+ */
 export async function listInstalledManifestsView(fs) {
-    const runtimesRoot = RUNTIME_STORE;
     const out = [];
-    if (!await fs.exists(runtimesRoot))
-        return out;
-    // Each entry under runtimesRoot is a <name>; each entry under that
-    // is a <version>; each <version> dir has a manifest.json. This fs has no
-    // stat, so an entry its listing cannot type is opened as a directory: a
-    // file fails that listing (ENOTDIR), or has no manifest.json under it.
-    for (const nameEntry of await fs.readdir(runtimesRoot)) {
-        if (nameEntry.type !== 'directory' && nameEntry.type !== 'unknown')
+    const own = async (path) => rootsOwn(await fs.stat(path, { follow: false }));
+    for (const dir of RUNTIME_STORE_DIRS) {
+        if (!(await own(dir)))
+            return out;
+    }
+    // Each entry in the store is a <name>; each entry under that is a
+    // <version>; each <version> dir has a manifest.json.
+    for (const nameEntry of await fs.readdir(RUNTIME_STORE)) {
+        const nameDir = `${RUNTIME_STORE}/${nameEntry.name}`;
+        if (!(await own(nameDir)))
             continue;
-        const nameDir = `${runtimesRoot}/${nameEntry.name}`;
-        let versions;
-        try {
-            versions = await fs.readdir(nameDir);
-        }
-        catch (error) {
-            if (nameEntry.type === 'unknown' && isVfsError(error, 'ENOTDIR'))
-                continue;
-            throw error;
-        }
-        for (const verEntry of versions) {
-            if (verEntry.type !== 'directory' && verEntry.type !== 'unknown')
-                continue;
+        for (const verEntry of await fs.readdir(nameDir)) {
             const verDir = `${nameDir}/${verEntry.name}`;
             const manifestPath = `${verDir}/manifest.json`;
-            if (!await fs.exists(manifestPath))
+            if (!(await own(verDir)))
+                continue;
+            const marker = await fs.stat(manifestPath, { follow: false });
+            if (marker?.type !== 'file' || marker.uid !== 0)
                 continue;
             try {
                 const manifest = parseRuntimeManifest(JSON.parse(await fs.readFileString(manifestPath)));
@@ -187,22 +178,23 @@ export async function runtimePayloadIntact(fs, root, manifest) {
  * the manager's install path repairs it on demand rather than running it.
  */
 export async function rehydrateInstalledRuntimesView(vfs, registry, runnerFor, 
-/** Each verified runtime, once its commands are registered (its launchers are linked). */
+/** Each verified runtime, once its commands are registered: their handlers, by name (its launchers are linked). */
 bound) {
     const bins = [];
     for (const { root, manifest } of await listInstalledManifestsView(vfs)) {
         if (!await runtimePayloadIntact(vfs, root, manifest))
             continue;
-        for (const { entrypoint: ep, names } of runtimeCommandNames(manifest, root)) {
+        const handlers = new Map();
+        for (const ep of runtimeEntrypoints(manifest)) {
             const factory = runnerFor(ep.runner);
             if (!factory)
                 continue; // runner not registered yet — skip
             const handler = await factory(manifest, root, ep.binName, ep.kind);
-            for (const name of names)
-                registry.register(name, handler);
+            registry.register(ep.binName, handler);
+            handlers.set(ep.binName, handler);
             bins.push(ep.binName);
         }
-        await bound?.(root, manifest);
+        await bound?.(root, manifest, handlers);
     }
     return { count: bins.length, bins };
 }

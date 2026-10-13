@@ -44,7 +44,7 @@ import { resolveWorkspaceChild } from './child-process-runner.js';
 import { exitCodeForSignal } from '../substrate/lifo/shell/signals.js';
 import { runtimeEntrypoints } from '../runtime/installed-runtimes.js';
 import { RuntimeManager } from '../runtime/runtime-manager.js';
-import { moveHomeRuntimes } from '../runtime/runtime-store.js';
+import { moveHomeRuntimes, RUNTIME_STORE } from '../runtime/runtime-store.js';
 import { makeNimbusVerbHandler } from '../runtime/nimbus-command.js';
 import { composeRuntimeSources, suppliedRuntimeSource, } from '../runtime/runtime-package.js';
 import { registerUnixCommands } from '../shell/unix-commands.js';
@@ -715,10 +715,11 @@ const WORKSPACE_TABLES = [
 /**
  * Root's own directories below `/usr`, as on Linux: made by root and kept
  * root's, parent before child (a directory is re-asserted only once its
- * parent is root's, so no user can replace it in between). `/usr/local` is
- * the session user's, below them: npm's global prefix, needing no sudo.
+ * parent is root's, so no user can replace it in between), the runtime
+ * store among them. `/usr/local` is the session user's, below them: npm's
+ * global prefix, needing no sudo.
  */
-const USR_ROOT_DIRS = ['usr', 'usr/bin', 'usr/lib', 'usr/share', 'usr/lib/node_modules', 'usr/share/pkg', 'usr/share/pkg/node_modules'];
+const USR_ROOT_DIRS = ['usr', 'usr/bin', 'usr/lib', 'usr/share', 'usr/lib/node_modules', RUNTIME_STORE, 'usr/share/pkg', 'usr/share/pkg/node_modules'];
 /**
  * The base seed's one statement, driven by seedBaseFilesystem: on the
  * engine directly, or on a namespace, where each step lands where a
@@ -747,12 +748,17 @@ function* baseSeed(home) {
     // /usr as on Linux: root's, re-asserted rather than only created, as /etc
     // is. A session an earlier release made had them the user's; each that is
     // a real directory becomes root's 0755, without what is in it (a package a
-    // user put in a global folder stays theirs). A link at one is left: the
-    // runtime store refuses to install through it (runtime-store.ts).
+    // user put in a global folder stays theirs). A link or a file at one is
+    // left, and nothing below it is looked at: every name below would be
+    // reached through it (the runtime store refuses to be, runtime-store.ts).
+    const rootsDirs = new Set(['']);
     for (const dir of USR_ROOT_DIRS) {
+        if (!rootsDirs.has(dir.slice(0, Math.max(0, dir.lastIndexOf('/')))))
+            continue;
         const entry = yield* lstat(dir);
         if (entry === null) {
             yield { op: 'mkdir', as: 'kernel', path: dir, mode: 0o755 };
+            rootsDirs.add(dir);
             continue;
         }
         if (entry.type !== 'directory')
@@ -761,9 +767,10 @@ function* baseSeed(home) {
             yield { op: 'chown', as: 'kernel', path: dir, uid: 0, gid: 0 };
         if ((entry.mode & 0o7777) !== 0o755)
             yield { op: 'chmod', as: 'kernel', path: dir, mode: 0o755 };
+        rootsDirs.add(dir);
     }
     // /usr/local is made by root and handed to the user, as the home is.
-    if (!(yield* exists('kernel', 'usr/local'))) {
+    if (rootsDirs.has('usr') && !(yield* exists('kernel', 'usr/local'))) {
         yield { op: 'mkdir', as: 'kernel', path: 'usr/local', mode: 0o755 };
         yield { op: 'chown', as: 'kernel', path: 'usr/local', uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid };
     }
