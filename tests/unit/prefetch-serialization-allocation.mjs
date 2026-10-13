@@ -164,10 +164,14 @@ try {
     fs.writeFile(`home/user/big-${name}/cell.js`, `// PREFETCH_BIG_EVIDENCE ${name}\nmodule.exports = "${'z'.repeat(BIG)}".length;\n`, { mode: 0o644 });
     return { filename: `/home/user/big-${name}/run.js`, cwd: `/home/user/big-${name}`, captureOutput: true };
   };
-  const settleWithin = (runs, ms) => Promise.race([
-    Promise.allSettled(runs),
-    new Promise((resolve) => setTimeout(() => resolve('deadlocked'), ms)),
-  ]);
+  // Its timer cleared once the runs settle: a pending one kept the test alive for its full 120 s.
+  const settleWithin = (runs, ms) => {
+    let timer;
+    return Promise.race([
+      Promise.allSettled(runs),
+      new Promise((resolve) => { timer = setTimeout(() => resolve('deadlocked'), ms); }),
+    ]).finally(() => clearTimeout(timer));
+  };
   const drained = () => {
     const budget = readSupervisorAllocationBudget();
     assert.equal(budget.current, 0, `every admission was given back (${JSON.stringify(budget)})`);
