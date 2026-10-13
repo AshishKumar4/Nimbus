@@ -1312,7 +1312,7 @@ const __fsMod = (() => {
       type: kind === 1 ? "directory" : kind === 2 ? "symlink" : "file",
       size: Number(row.size), mode: Number(row.mode), uid: Number(row.uid), gid: Number(row.gid),
       atime: Number(row.atime), mtime: Number(row.mtime), ctime: Number(row.ctime),
-      ino: Number(row.ino),
+      ino: Number(row.ino), dev: Number(row.dev), nlink: Number(row.nlink),
     };
   }
 
@@ -1988,14 +1988,17 @@ const __fsMod = (() => {
   Stats.prototype._checkModeProperty = function (property) {
     return (this.mode & _S_IFMT) === property;
   };
-  // The one filesystem's device number; a block is Linux's 512 bytes, allocated 4096 at a time.
+  // The device a stat without one is on: metadata with no filesystem behind
+  // it (a heap-only embedder's bundle). A block is Linux's 512 bytes,
+  // allocated 4096 at a time.
   const _STAT_DEVICE = 2049;
   const _STAT_BLKSIZE = 4096;
-  // A path's Stats: a directory has its own link and its entry's, a file one.
-  function _newStats(mode, uid, gid, ino, size, atimeMs, mtimeMs, ctimeMs, nlink) {
+  // A path's Stats: its identity (device, inode, links) as its filesystem
+  // gives it; without one, a directory has its own link and its entry's, a file one.
+  function _newStats(mode, uid, gid, ino, size, atimeMs, mtimeMs, ctimeMs, nlink, dev) {
     const blocks = Math.ceil(size / _STAT_BLKSIZE) * (_STAT_BLKSIZE / 512);
     const links = nlink ?? ((mode & _S_IFMT) === 0o040000 ? 2 : 1);
-    return new Stats(_STAT_DEVICE, mode, links, Number(uid), Number(gid), 0, _STAT_BLKSIZE, ino ?? 0, size, blocks, atimeMs, mtimeMs, ctimeMs, ctimeMs);
+    return new Stats(dev ?? _STAT_DEVICE, mode, links, Number(uid), Number(gid), 0, _STAT_BLKSIZE, ino ?? 0, size, blocks, atimeMs, mtimeMs, ctimeMs, ctimeMs);
   }
   // A stat call's answer, BigIntStats in nanoseconds where \`bigint\` (its
   // options' bigint, read before its I/O, as Node reads it).
@@ -2027,7 +2030,18 @@ const __fsMod = (() => {
       : Number.isFinite(_ownWriteTimes[k]) ? _ownWriteTimes[k]
       : (_ownWriteTimes[k] = Date.now());
     const atimeMs = Number.isFinite(time?.atimeMs) ? time.atimeMs : mtimeMs;
-    return _newStats(_statMode(k, isDir, isSymlink, mode), uid, gid, undefined, size, atimeMs, mtimeMs, mtimeMs);
+    // Not yet in the namespace: on the device of the directory it is in, one
+    // link, as its filesystem will say.
+    return _newStats(_statMode(k, isDir, isSymlink, mode), uid, gid, undefined, size, atimeMs, mtimeMs, mtimeMs, 1, _nsDeviceAbove(k));
+  }
+  /** The device of the nearest directory above \`k\` the namespace holds, if any. */
+  function _nsDeviceAbove(k) {
+    if (!_nsActive()) return undefined;
+    for (let i = k.lastIndexOf("/"); ; i = k.lastIndexOf("/", i - 1)) {
+      const found = __resident.namespace.resolve(i > 0 ? k.slice(0, i) : "", true);
+      if (found && found !== "ELOOP" && Number(found.row.dev) > 0) return Number(found.row.dev);
+      if (i <= 0) return undefined;
+    }
   }
 
   function _supervisor() {
@@ -3295,7 +3309,8 @@ const __fsMod = (() => {
     const atimeMs = Number.isFinite(own?.atimeMs) ? own.atimeMs : Number(meta?.atime ?? meta?.mtime ?? now);
     const ctimeMs = Number(meta?.ctime ?? meta?.mtime ?? now);
     const mode = _statMode(key, isDir, isSymlink, Number(meta?.mode ?? (isDir ? 0o755 : 0o644)));
-    return _newStats(mode, meta?.uid, meta?.gid, meta?.ino === undefined ? undefined : Number(meta.ino), Number(meta?.size || 0), atimeMs, mtimeMs, ctimeMs);
+    const identity = (value) => value === undefined || value === null ? undefined : Number(value);
+    return _newStats(mode, meta?.uid, meta?.gid, identity(meta?.ino), Number(meta?.size || 0), atimeMs, mtimeMs, ctimeMs, identity(meta?.nlink), identity(meta?.dev));
   }
 
   // Each exact dirent type's S_IFMT bits and Node predicate (core's vfs/dirent-type.ts).
