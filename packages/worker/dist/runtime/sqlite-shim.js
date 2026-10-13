@@ -23,22 +23,25 @@
  *   2. Defines `__sqliteMod` = { DatabaseSync, ... } registered as
  *      builtins.sqlite, which only node:sqlite names (node-shims.ts __nimbusBuiltinId).
  *
- * Persistence model: a file-backed DatabaseSync is the process's file, read
- * and written through the process's own filesystem (`__fsMod`): it loads
- * the file's bytes with readFileSync on open (a missing file is a new
- * database), and on close writes `db.export()` back with writeFileSync when
- * the database changed. So the next open in the same run sees what the
- * close wrote, and the session gets it in program order, as any other write.
- * Whole-DB image, single in-memory connection, no page-level disk IO, no
- * cross-process WAL.
+ * Persistence model: a file-backed DatabaseSync is the process's file, the
+ * one its name denoted when it opened, read and written through the
+ * process's own filesystem (`__fsMod`). Open loads the file's bytes with
+ * readFileSync (a missing file is a new database); close exports the image
+ * and writes it back with writeFileSync unless its bytes are the ones
+ * loaded. So the next open in the same run sees what the close wrote, and
+ * the session gets it in program order, as any other write. Whole-DB image,
+ * single in-memory connection: a connection's changes reach the file only on
+ * close, and two connections to one file each write their own image.
  *
  * Scope (opencode's method matrix): DatabaseSync(path|:memory:, options)
  * with .prepare/.exec/.close/.loadExtension(throws); StatementSync with
  * .all/.run/.get/.setReadBigInts/.setReturnArrays. Anything else throws a
  * clear "node:sqlite: <method> not supported" — never faked.
  *
- * Runtime scope dependency (in scope where SHIMS is interpolated):
+ * Runtime scope dependencies (in scope where SHIMS is interpolated):
  *   - __fsMod: the process's node:fs (readFileSync, writeFileSync)
+ *   - __pathMod: the process's node:path (resolve, against its cwd)
+ *   - __cryptoMod: node:crypto (createHash), to know an image unchanged
  */
 import { SQLJS_GLUE_FN_BODY } from '../sqlite-wasm-bundle.generated.js';
 /**
@@ -158,6 +161,11 @@ const __sqliteMod = (() => {
     return __getSQL();
   };
 
+  // An image's identity: its length and SHA-256, compared at close.
+  function __imageDigest(bytes) {
+    return bytes.length + ":" + __cryptoMod.createHash("sha256").update(bytes).digest("hex");
+  }
+
   // The database file's bytes, or null for a database not yet written
   // (missing or empty). Any other refusal is the open's own.
   function __readDbBytes(path) {
@@ -205,7 +213,6 @@ const __sqliteMod = (() => {
     }
 
     all(...params) {
-      this.__db.__noteRead();
       const stmt = this.__prepare(params);
       const rows = [];
       try {
@@ -220,7 +227,6 @@ const __sqliteMod = (() => {
     }
 
     get(...params) {
-      this.__db.__noteRead();
       const stmt = this.__prepare(params);
       try {
         if (!stmt.step()) return undefined;
@@ -240,7 +246,6 @@ const __sqliteMod = (() => {
       } finally {
         stmt.free();
       }
-      this.__db.__dirty = true;
       const changes = handle.getRowsModified();
       const lastRowId = __lastInsertRowid(handle);
       return {
@@ -340,38 +345,21 @@ const __sqliteMod = (() => {
       this.__memory = !this.__path || this.__path === ":memory:";
       this.__open = false;
       this.__raw = null;
-      // Whether a close has anything to write back (__changed): run() and
-      // exec() may change what SQLite does not count (ANALYZE's statistics, a
-      // VACUUM's layout), so either marks the database dirty. A row method may
-      // change it too (INSERT ... RETURNING): its connection's state is taken
-      // before the first one runs, and a close compares it.
-      this.__dirty = false;
-      this.__written = null;
+      // The file the name denoted at open, and the digest of the bytes last
+      // read from or written to it (null: none were, so close creates it).
+      this.__file = null;
+      this.__loaded = null;
       const open = opts.open === undefined ? true : !!opts.open;
       if (open) this.__doOpen();
     }
 
     __doOpen() {
       const SQL = __getSQL();
-      const bytes = this.__memory ? null : __readDbBytes(this.__path);
+      this.__file = this.__memory ? null : __pathMod.resolve(this.__path);
+      const bytes = this.__memory ? null : __readDbBytes(this.__file);
       this.__raw = bytes ? new SQL.Database(bytes) : new SQL.Database();
+      this.__loaded = bytes ? __imageDigest(bytes) : null;
       this.__open = true;
-    }
-
-    __noteRead() {
-      if (!this.__memory && !this.__dirty && this.__written === null) this.__written = this.__state();
-    }
-
-    // The database's content as SQLite counts it: the rows any statement
-    // changed (whichever method ran it, an INSERT ... RETURNING through all()
-    // included), its schema, and the header fields a program sets.
-    __state() {
-      const stmt = this.__raw.prepare("SELECT total_changes(), (SELECT schema_version FROM pragma_schema_version()), (SELECT user_version FROM pragma_user_version()), (SELECT application_id FROM pragma_application_id())");
-      try { stmt.step(); return stmt.get().join(","); } finally { stmt.free(); }
-    }
-
-    __changed() {
-      return this.__dirty || (this.__written !== null && this.__state() !== this.__written);
     }
 
     open() {
@@ -394,7 +382,6 @@ const __sqliteMod = (() => {
       // PRAGMAs are honored against the single in-memory connection (or
       // no-op where not meaningful for an in-memory whole-DB snapshot).
       this.__raw.run(String(sql));
-      this.__dirty = true;
     }
 
     function() {
@@ -422,13 +409,14 @@ const __sqliteMod = (() => {
     }
 
     // Write the database's image back to its file, through the process's
-    // filesystem, when it changed since it was opened or last written.
+    // filesystem, unless its bytes are the ones last read or written there.
     __flush() {
-      if (this.__memory || !this.__open || !this.__changed()) return;
-      const bytes = this.__raw.export();
-      __fsMod.writeFileSync(this.__path, bytes);
-      this.__dirty = false;
-      this.__written = null;
+      if (this.__memory || !this.__open) return;
+      const image = this.__raw.export();
+      const digest = __imageDigest(image);
+      if (digest === this.__loaded) return;
+      __fsMod.writeFileSync(this.__file, image);
+      this.__loaded = digest;
     }
 
     close() {
