@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "091e5f7b1680bf746fdff97032cca91c1f9d3fab63e9496177b1f9bbeb36663b",
+  "fingerprint": "7607f8eec1fe8c7815218037154fbec2045cf33af8407459477b419090cefb1b",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2435,8 +2435,8 @@
     "packages/worker/dist/router/public-directory.d.ts.map": "bd34e0443a85c5ef03fb9a1a1abd543c6a71bf9b287a9fdfba049fc1da71ec0e",
     "packages/worker/dist/router/public-directory.js": "9f4cc1486f809a4fbbc145becca06db919c11ed743ae46cd34cd01f0f020b03d",
     "packages/worker/dist/router/remote-api.d.ts": "a939203a03268c608eb043687a7cab6963695c29d15c5c1cf804ed5c17c262cc",
-    "packages/worker/dist/router/remote-api.d.ts.map": "b21dcd244313a89f7a5ee3e4ad6ad5dbcc9e9873ced0857e7d7d050017fc1db7",
-    "packages/worker/dist/router/remote-api.js": "5a4e33b55c5d0f5311c3213a119fae591da56d9ae5107c787f5a3b6b2e4a26ea",
+    "packages/worker/dist/router/remote-api.d.ts.map": "d686385aa8282dfb4a0e00ec3dc8ad5b81433201f1c31cf8aedeca9aa5d4b1bd",
+    "packages/worker/dist/router/remote-api.js": "ddcdda29015434babec94711de2d0ed7c8692a80532c2a22bc60db61d5c60a6d",
     "packages/worker/dist/runtime/barrel-synthesizer.d.ts": "dc9fb9e0778ef4a51db5c4196763a97c23fdabd212f36165364b50270f7fc05b",
     "packages/worker/dist/runtime/barrel-synthesizer.d.ts.map": "ea9efd145ddc7828d662ff8bee0840596fcac84c6a257c5e0b419b8ea4635d38",
     "packages/worker/dist/runtime/barrel-synthesizer.js": "da729e4f7b2cf835aa46a4bf919b3145db20f38a00fd98d5dc516f3633a333fd",
@@ -3053,7 +3053,7 @@
     "packages/worker/src/router/index.ts": "f1d8ce2d5cbc9a26bff429cc80ab34ce5df6a1c7ddc7d7a47c2e426042fae37c",
     "packages/worker/src/router/public-directory-do.ts": "f9a2d68ceb8c4bf27cb7c14764d110afb019b2ba00d3bdb77e83eda70cd7b50a",
     "packages/worker/src/router/public-directory.ts": "03090bb1f15b812602b15fc18825907d2ceb686eb4fcd102b192401c0f25ef70",
-    "packages/worker/src/router/remote-api.ts": "db9cbbe6ed4db28368365c7baacd2ca54e93f31d80bb2203bae2129c2d197701",
+    "packages/worker/src/router/remote-api.ts": "0a1898f47740fed77b110918a475207a8872fc690dccb94f445dba8339c15836",
     "packages/worker/src/runtime/barrel-synthesizer.ts": "8bb8dd500a08090f461fda18efe92c135b5cc3ce4ee254c26fbb89b786f8058f",
     "packages/worker/src/runtime/bash-repl.ts": "7033d79b0fcb005b082d90c0bc0c0e90d5b4abcaa5c7748091ac5c7ae227ad40",
     "packages/worker/src/runtime/bun-runner.ts": "b0e6d8eb2170fac6fe545ea8ab252382a36a20a5bcac01a63192e56a20f5d3b0",
