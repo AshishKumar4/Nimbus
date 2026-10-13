@@ -9,6 +9,7 @@
  */
 
 import { oidFromHex, oidToHex } from '../pack/format.js';
+import { TreeEntries } from '../pack/tree-object.js';
 import { encodeNode, type BuiltSubtree } from './cachetree.js';
 import { S_IFMT, comparePaths, decodePath, type DirCache } from './dircache.js';
 
@@ -41,20 +42,6 @@ export interface Leaf {
 
 const encoder = new TextEncoder();
 
-/** A tree object's entries, in the tree's own order. */
-export function parseTree(data: Uint8Array): TreeEntry[] {
-  const entries: TreeEntry[] = [];
-  for (let at = 0; at < data.length;) {
-    const space = data.indexOf(0x20, at);
-    const nul = data.indexOf(0, space);
-    let mode = 0;
-    for (let i = at; i < space; i++) mode = mode * 8 + (data[i] - 0x30);
-    entries.push({ name: decodePath(data.subarray(space + 1, nul)), mode, oid: oidToHex(data, nul + 1) });
-    at = nul + 21;
-  }
-  return entries;
-}
-
 /** The tree a tree-ish names: a commit's, or the tree itself. */
 export async function treeOf(store: ObjectStore, oid: string): Promise<string> {
   for (;;) {
@@ -72,7 +59,9 @@ export async function readTree(store: ObjectStore, oid: string): Promise<TreeEnt
   if (oid === EMPTY_TREE) return [];
   const { type, data } = await store.read(oid);
   if (type !== 'tree') throw new Error(`object ${oid} is a ${type}, not a tree`);
-  return parseTree(data);
+  const entries: TreeEntry[] = [];
+  for (const e = new TreeEntries(data); e.next();) entries.push({ name: decodePath(data.subarray(e.nameAt, e.nameEnd)), mode: e.mode, oid: oidToHex(data, e.oidAt) });
+  return entries;
 }
 
 const isTree = (mode: number) => (mode & S_IFMT) === S_IFDIR;

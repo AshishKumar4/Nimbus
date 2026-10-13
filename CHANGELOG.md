@@ -20,6 +20,44 @@ published independently in the `@nimbus-sh` npm scope.
   as Linux does. It keeps busy mount points and their ancestors.
 - Fixed: credentialed SQLite paths follow links before `..`, matching the
   namespace while keeping plain lookups on their indexed fast path.
+- Changed: real Vite (`NIMBUS_REAL_VITE=1 vite`) runs as one of the session's
+  resident processes, with the lifecycle every resident has. `vite` returns
+  once Vite listens, and a Vite that fails to boot fails the command instead
+  of its first page. Time moves with it: `vite` takes about 0.4 s longer,
+  the first page about 1 s less (start to first page about 0.4 s less), and
+  the page's first modules about 70-80 ms more each, the entry's transform no
+  longer hidden behind the boot's wait. Fixed: a server whose isolate the platform resets ends
+  with 137 and frees its port; before, its pid stayed running. A second
+  `vite` ends the server it replaces; before, that pid stayed running. A
+  server that ended (`kill`, `vite stop`, a lost isolate) stays ended;
+  before, the next request to the preview or its port started it again. A
+  session that sleeps and wakes still restores the server it was running. `spawnWorker` takes
+  `identity` (the argv, credential and exec id of a process no invoker
+  names) and `bindings` (beside the process's own SUPERVISOR). Removed: the
+  stateless fallback for hosts without Durable Object facets, where no
+  resident process can run, and `/api/_diag/cirrus`.
+- Fixed (security): JS git refuses a tree entry whose path native git
+  refuses: a `.git` component in any case, `.` or `..`, and the names
+  NTFS (and, with `core.protectHFS`, HFS+) read as `.git`. `checkout` and
+  `reset --hard` write nothing and say git's `invalid path` error, `reset`
+  leaves the index, and a clone keeps its repository with nothing checked
+  out. A clone honours `core.protectHFS` and `core.protectNTFS` from `-c`
+  and the user's `~/.gitconfig`, as git's does. Before, a fetched commit
+  could write `.git/config` or a file above the worktree.
+- Fixed (security): a malformed tree object is git's error
+  (`too-short tree object`, `malformed mode in tree entry`, `empty
+  filename in tree entry`). One reader looped forever on such a tree,
+  growing until the session ran out of memory.
+- Fixed (security): when a git server refuses the request for a pack after
+  answering its discovery, clone, fetch, pull, push and a partial clone's
+  lazy fetch say `RPC failed` as git does, and never print the server's
+  answer. Before, they printed it whole, credentials it echoed included.
+- Changed: `npm install`'s background warming of browser bundles and the
+  Vite dev server's `/@modules/` bundles are one path. Install now warms a
+  package subpath the dev server can resolve (a directory with its own
+  `package.json`), skips a package whose entry is a native or WebAssembly
+  payload with the same reason the dev server gives, and holds only the
+  memory a slice needs while it builds.
 - Fixed: a peer-hosted resident whose boot reads stdin (a synchronous read of
   fd 0) was replayed against reads it never made: the hosting peer's own
   reads of the process's boot images counted as the process's, and its
