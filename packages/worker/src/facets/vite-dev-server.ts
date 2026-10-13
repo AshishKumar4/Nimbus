@@ -1383,6 +1383,8 @@ export class ViteDevServer {
   private ctx: DurableObjectState | null = null;
   /** The session's pre-bundle pool; null = bundle through the EsbuildService. */
   private readonly bundlePool: BundlePoolProvider | null;
+  /** What this server's pre-bundles are built and served as (npm/browser-prebundle.ts). */
+  private readonly prebundle: PrebundleContext;
   /**
    * In-flight on-demand-bundle coalescing map. When the browser fires
    * multiple parallel requests for the same /preview/@modules/<spec>
@@ -1452,6 +1454,10 @@ export class ViteDevServer {
     if (opts.sql) {
       this.npmCache = new NpmCache(opts.sql);
     }
+    this.prebundle = {
+      vfs: this.vfs, root: this.root, cache: this.npmCache, pool: this.bundlePool,
+      parse: transformParser(this.esbuild), esbuild: this.esbuild, serviceFallback: true,
+    };
     // Merge user defines with standard Vite defines.
     // process.env.NODE_ENV is set explicitly so bundled CJS packages (like React's
     // `if (process.env.NODE_ENV !== "production")` guards) get the correct branch.
@@ -1463,14 +1469,6 @@ export class ViteDevServer {
     // rest of the defines are base-independent and computed once.
     this.define = { ...VITE_DEV_DEFINE, ...(opts.define || {}) };
     this.detectTailwind();
-  }
-
-  /** What this server's pre-bundles are built and served as (npm/browser-prebundle.ts). */
-  private prebundleContext(): PrebundleContext {
-    return {
-      vfs: this.vfs, root: this.root, cache: this.npmCache, pool: this.bundlePool,
-      parse: transformParser(this.esbuild), esbuild: this.esbuild, serviceFallback: true,
-    };
   }
 
   /** Detect TailwindCSS usage in the project */
@@ -2037,9 +2035,8 @@ export class ViteDevServer {
    * scan that left files unread is said, once per request.
    */
   private async moduleBarrel(specifier: string): Promise<BarrelInput | null> {
-    const ctx = this.prebundleContext();
-    const whole = barrelPackage(ctx, specifier);
-    return whole && barrelInput(whole, await scanProject(ctx), (pkgName, fileCount, left) => {
+    const whole = barrelPackage(this.prebundle, specifier);
+    return whole && barrelInput(whole, await scanProject(this.prebundle), (pkgName, fileCount, left) => {
       this.log('warn', `[vite-dev] ${pkgName} is a barrel package (${fileCount} files), but the scan of the project for the names it imports left ${left} unread; bundling ${pkgName} whole rather than from an entry that could miss one`);
     });
   }
@@ -2063,7 +2060,7 @@ export class ViteDevServer {
     // 2. The workspace's stored pre-bundle (the installer's warming or an
     //    earlier request), raw: the base-dependent rewrites are this
     //    request's (servablePrebundle).
-    const check = storedPrebundle(this.prebundleContext(), specifier, barrel);
+    const check = storedPrebundle(this.prebundle, specifier, barrel);
     const stored = check && await check;
     if (stored) {
       const code = this.servablePrebundle(stored.esmCode, base);
@@ -2115,7 +2112,7 @@ export class ViteDevServer {
     const JS_CT = 'application/javascript; charset=utf-8';
     const cacheKey = this.ck(base, `@modules/${specifier}`);
     const generation = this.configGeneration;
-    const outcome = await buildPrebundle(this.prebundleContext(), specifier, barrel, (bundled) => {
+    const outcome = await buildPrebundle(this.prebundle, specifier, barrel, (bundled) => {
       const code = this.servablePrebundle(bundled, base);
       this.cacheModule(generation, cacheKey, { code, timestamp: Date.now(), inputHash: barrel?.inputHash ?? '' });
       return new Response(code, { headers: { ...headers, 'Content-Type': JS_CT } });
@@ -2187,7 +2184,7 @@ export class ViteDevServer {
     const names = new Set<string>(entry ? moduleExportNames(this.vfs, entry) : []);
     if (specifier === pkgName) {
       try {
-        const scan = await scanProject(this.prebundleContext());
+        const scan = await scanProject(this.prebundle);
         if (scan.unread !== null) this.log('warn', `[vite-dev] the module served for ${specifier} declares the names the project imports from it as far as its scan read: it left ${scan.unread} unread`);
         for (const name of scan.namedImports.get(pkgName) ?? []) names.add(name);
       } catch { /* the package's own exports above */ }
