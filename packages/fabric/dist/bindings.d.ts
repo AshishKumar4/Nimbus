@@ -147,6 +147,12 @@ interface NimbusLoaderDepthProps {
      */
     egress?: WorkspaceEgress;
     networkId?: string;
+    /**
+     * Whose loader this is: an opaque name its minter makes once per owner and
+     * load generation (a `wrangler dev` build), under which its keyed workers
+     * (LOADER.get) are cached. Two owners in one isolate never share one.
+     */
+    namespace?: string;
 }
 /** Hop 1: env.LOADER.{load,get} forwarded to the outer loader. */
 export declare class NimbusLoaderRPC extends WorkerEntrypoint<NimbusLoaderShimEnv, NimbusLoaderDepthProps> {
@@ -161,9 +167,10 @@ export declare class NimbusLoaderRPC extends WorkerEntrypoint<NimbusLoaderShimEn
      */
     load(code: WorkerCode): unknown;
     /**
-     * Inner: env.LOADER.get(id, callback). The inner's callback returns
-     * a code object; we treat `id` as the outer cache key (prefixed so
-     * it doesn't collide with load()-generated keys).
+     * Inner: env.LOADER.get(id, callback). The inner's callback returns a code
+     * object, cached under this loader's owner, its network and `id`: an id is
+     * reused within its owner, as the platform's LOADER.get reuses it, and
+     * never across owners. (load() keys are random, and cannot collide.)
      */
     get(id: string, callback: () => WorkerCode | Promise<WorkerCode>): Promise<unknown>;
 }
