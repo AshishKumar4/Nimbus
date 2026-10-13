@@ -4,6 +4,7 @@
  * git_config_parse_key). The command's git reads through withConfigOverrides,
  * so each read of a key `-c` set answers it; nothing is written.
  */
+import { errnoCodeOf, fsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 /** A refusal of git's own options, in git's words, and the exit it takes. */
 export class GitGlobalsError extends Error {
     lines;
@@ -98,10 +99,15 @@ export function withGlobalConfig(git, fs, env, cwd) {
     if (files.length === 0)
         return git;
     const contents = new Map();
+    // One the user cannot read is none (git's access_or_die with ACCESS_EACCES_OK, for the user's own files).
     const read = (file, options) => {
         let content = contents.get(file);
         if (content === undefined) {
-            content = fs.promises.readFile(file, options);
+            content = fs.promises.readFile(file, options).catch((error) => {
+                if (errnoCodeOf(error) === 'EACCES')
+                    throw fsError('ENOENT', 'open', file);
+                throw error;
+            });
             contents.set(file, content);
         }
         return content;
@@ -169,7 +175,7 @@ export function withWorktreeConfig(git, files, fs, known) {
     const set = async (gitdir) => {
         let on = known.get(gitdir);
         if (on === undefined) {
-            on = configBool(await files.getConfig({ fs, gitdir, path: 'extensions.worktreeConfig' }).catch(() => undefined)) === true;
+            on = configBool(await files.getConfig({ fs, gitdir, path: 'extensions.worktreeConfig' })) === true;
             known.set(gitdir, on);
         }
         return on;
@@ -196,7 +202,7 @@ export function withWorktreeConfig(git, files, fs, known) {
                 return git.getConfig(args);
             return (async () => {
                 if (await set(gitdir)) {
-                    const own = await git.getConfig(inWorktreeFile(gitdir, args.path)).catch(() => undefined);
+                    const own = await git.getConfig(inWorktreeFile(gitdir, args.path));
                     if (own !== undefined)
                         return own;
                 }
@@ -211,7 +217,7 @@ export function withWorktreeConfig(git, files, fs, known) {
                 const all = await git.getConfigAll(args);
                 if (!await set(gitdir))
                     return all;
-                return [...all, ...await git.getConfigAll(inWorktreeFile(gitdir, args.path)).catch(() => [])];
+                return [...all, ...await git.getConfigAll(inWorktreeFile(gitdir, args.path))];
             })();
         },
         async setConfig(args) {

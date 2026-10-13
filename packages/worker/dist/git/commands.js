@@ -26,7 +26,7 @@ import { packsSeam } from './pack/store.js';
 import { PromisorFetchError, fetchMissingObjects } from './promisor.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
-import { fsError, isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
+import { errnoCodeOf, fsError, isVfsError, strerror } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { dec, enc } from '@nimbus-sh/core/_shared/bytes.js';
 import { DEFAULT_CONTEXT, DEFAULT_RENAME_SCORE, absentSpec, binaryPath, bytesFromBinary, detectRenames, formatNameOnly, formatNameStatus, formatPatch, formatStat, parseRenameScore, pathLine, statFile, StatList, } from './unified-diff.js';
 import { CheckoutRefused, UnmergedIndex, switchTrees } from './worktree/checkout.js';
@@ -124,15 +124,22 @@ function sessionGitFs(vfs, worktree = null, promisor) {
                 uid: st.uid, gid: st.gid, dev: st.dev, ino: st.ino, nlink: st.nlink,
             }), () => null);
         },
+        // Null where nothing is there; a file there that cannot be read (EACCES, EIO) says so.
         readFile(p) {
+            const absent = (error) => {
+                const code = errnoCodeOf(error);
+                if (code === 'ENOENT' || code === 'ENOTDIR')
+                    return null;
+                throw error;
+            };
             let data;
             try {
                 data = vfs.readFile(p);
             }
-            catch {
-                return Promise.resolve(null);
+            catch (error) {
+                return Promise.resolve(error).then(absent);
             }
-            return Promise.resolve(data).then((bytes) => bytes, () => null);
+            return Promise.resolve(data).then((bytes) => bytes, absent);
         },
         // A file made has the mode its caller asked for (a checkout's: the index's),
         // so it is never more open than that; one there keeps its own.
@@ -1120,8 +1127,8 @@ const COMMAND_HOOKS = {
  * real git's to report. Only one that is not there is none.
  */
 async function executableHook(ctx, git, fs, gitdir, top, hooks) {
-    const configured = await git.getConfig({ fs, gitdir, path: 'core.hooksPath' })
-        .then((value) => (typeof value === 'string' && value !== '' ? value : undefined), () => undefined);
+    const value = await git.getConfig({ fs, gitdir, path: 'core.hooksPath' });
+    const configured = typeof value === 'string' && value !== '' ? value : undefined;
     let dir = `${gitdir}/hooks`;
     if (configured !== undefined) {
         const home = ctx.env.HOME ?? '';
@@ -1176,7 +1183,7 @@ async function assertRepositoryFormat(ctx, session, git, fs, repo) {
         return await assertRepositoryImplemented(git, fs, repo);
     let revision = 0;
     try {
-        revision = ctx.vfs.revision(`${repo.gitdir}/config`);
+        revision = await ctx.vfs.process.revision(`${repo.gitdir}/config`);
     }
     catch { /* not told: read */ }
     const key = `${ctx.cred.uid}:${ctx.cred.gid}:${ctx.cred.groups.join(',')}:${repo.gitdir}`;
@@ -1212,13 +1219,8 @@ async function assertRepositoryImplemented(git, fs, repo) {
     }
     // The repository's own configuration: git reads its format nowhere else.
     const value = async (path) => {
-        try {
-            const got = await git.getConfig({ fs, gitdir: repo.gitdir, path });
-            return got === undefined || got === null ? undefined : String(got);
-        }
-        catch {
-            return undefined;
-        }
+        const got = await git.getConfig({ fs, gitdir: repo.gitdir, path });
+        return got === undefined || got === null ? undefined : String(got);
     };
     const version = Number(await value('core.repositoryformatversion') ?? 0);
     if (!(version === 0 || version === 1)) {
@@ -1229,7 +1231,7 @@ async function assertRepositoryImplemented(git, fs, repo) {
     for (const name of await git.getConfigNames({ fs, gitdir: repo.gitdir, section: 'extensions' })) {
         const set = await value(`extensions.${name}`) ?? '';
         if (name === 'worktreeconfig') {
-            worktreeConfig = configBool(await git.getConfig({ fs, gitdir: repo.gitdir, path: 'extensions.worktreeConfig' }).catch(() => undefined)) === true;
+            worktreeConfig = configBool(await git.getConfig({ fs, gitdir: repo.gitdir, path: 'extensions.worktreeConfig' })) === true;
         }
         const v1Only = Object.hasOwn(V1_EXTENSIONS, name);
         const honored = V0_EXTENSIONS[name] ?? V1_EXTENSIONS[name];
@@ -2045,13 +2047,8 @@ function parseGitDate(text, nowSeconds = Math.floor(Date.now() / 1000)) {
  */
 async function gitIdent(ctx, git, fs, dir, role) {
     const config = async (key) => {
-        try {
-            const value = await git.getConfig({ fs, dir, path: key });
-            return typeof value === 'string' ? value : undefined;
-        }
-        catch {
-            return undefined;
-        }
+        const value = await git.getConfig({ fs, dir, path: key });
+        return typeof value === 'string' ? value : undefined;
     };
     const name = ctx.env[`GIT_${role}_NAME`] || await config('user.name') || ctx.env.USER || 'user';
     const email = ctx.env[`GIT_${role}_EMAIL`] || await config('user.email') || 'user@nimbus.dev';
@@ -3578,6 +3575,8 @@ realGit) {
     // This command's filesystem, once made: what its worktree work cost is kept by it.
     let commandFs = null;
     let executing = false;
+    // Its repository's worktree top, once found: where git names a file from.
+    let top = null;
     try {
         git = await getGit();
     }
@@ -3660,6 +3659,7 @@ realGit) {
         // partial state for the finished clone's.
         if (sub !== 'init' && sub !== 'clone') {
             const repo = await discoverRepo(repoVfs, dir);
+            top = repo?.worktree ?? null;
             // The repository's format is its own config file's, as git reads it: no -c or global value stands in.
             if (repo !== null) {
                 const { worktreeConfig } = await assertRepositoryFormat(ctx, vfs, await getGit(), fs, repo);
@@ -3729,12 +3729,7 @@ realGit) {
                 let initialBranch = initArgs.branch;
                 if (initialBranch === undefined) {
                     let configured;
-                    try {
-                        configured = await git.getConfig({ fs, dir: initDir, path: 'init.defaultBranch' });
-                    }
-                    catch {
-                        configured = undefined;
-                    }
+                    configured = await git.getConfig({ fs, dir: initDir, path: 'init.defaultBranch' });
                     if (typeof configured === 'string')
                         initialBranch = configured;
                 }
@@ -3980,12 +3975,9 @@ realGit) {
                 const { messages, quiet, all, cleanup, allowEmptyMessage } = command.parsed;
                 let configured;
                 if (cleanup === null) {
-                    try {
-                        const value = await git.getConfig({ fs, dir, path: 'commit.cleanup' });
-                        if (typeof value === 'string')
-                            configured = value;
-                    }
-                    catch { /* unset */ }
+                    const value = await git.getConfig({ fs, dir, path: 'commit.cleanup' });
+                    if (typeof value === 'string')
+                        configured = value;
                 }
                 const requested = cleanup ?? configured;
                 const mode = commitCleanupMode(requested);
@@ -4311,13 +4303,7 @@ realGit) {
                 }
                 else {
                     // A key not set is git's exit 1, and nothing printed.
-                    let val;
-                    try {
-                        val = await git.getConfig({ fs, dir, path: key });
-                    }
-                    catch {
-                        val = undefined;
-                    }
+                    const val = await git.getConfig({ fs, dir, path: key });
                     if (val === undefined)
                         return 1;
                     ctx.stdout.write(`${val === null ? '' : val}\n`);
@@ -4337,6 +4323,13 @@ realGit) {
         if (e instanceof GitGlobalsError) {
             await ctx.stderr.write(e.lines);
             return e.code;
+        }
+        // A config file there that cannot be read (cf-git's readConfigText): git's access_or_die, its path as git names it from the top.
+        if (typeof e?.configFile === 'string') {
+            const file = e.configFile;
+            const shown = top !== null && file.startsWith(`${top}/`) ? file.slice(top.length + 1) : file;
+            await ctx.stderr.write(`fatal: unable to access '${shown}': ${strerror(e.cause)}\n`);
+            return 128;
         }
         // The reader went away (`git diff | head`): git dies of SIGPIPE, silently.
         if (e?.code === 'EPIPE')

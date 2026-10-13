@@ -218,12 +218,7 @@ export class WorktreeRepo {
         };
     }
     async config(path) {
-        try {
-            return await this.git.getConfig({ fs: this.gitFs, dir: this.root, path });
-        }
-        catch {
-            return undefined;
-        }
+        return await this.git.getConfig({ fs: this.gitFs, dir: this.root, path });
     }
     /**
      * cf-git's filesystem with the config file `file` offered as

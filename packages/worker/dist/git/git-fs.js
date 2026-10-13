@@ -13,7 +13,7 @@
  */
 import { dec } from '@nimbus-sh/core/_shared/bytes.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
-import { fsError } from '@nimbus-sh/core/vfs/vfs-error.js';
+import { errnoCodeOf, fsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 /** Whether `options` is an options object (`{ encoding: 'utf8' }`), not the bare encoding. */
 function isOptionsObject(options) {
     return typeof options === 'object' && options !== null;
@@ -63,6 +63,9 @@ export function createGitFs(backend, packs) {
                     if (data === null)
                         throw fsError('ENOENT', 'open', filepath);
                     return wantsUtf8(options) ? dec.decode(data) : data;
+                }, (error) => {
+                    // A file there that cannot be read: its errno, at the path asked.
+                    throw fsError(errnoCodeOf(error) ?? 'EIO', 'open', filepath, undefined, { cause: error });
                 }),
             writeFile(filepath, data, options) {
                 const bytes = typeof data === 'string' || data instanceof Uint8Array ? data : new Uint8Array(data);
