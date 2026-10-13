@@ -327,7 +327,7 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
       for (let i = 1; i <= segs.length; i++) {
         const prefix = segs.slice(0, i).join('/');
         const leaf = i === segs.length;
-        const step = table === null ? null : table ? table + '/' + segs[i - 1] : segs[i - 1];
+        const step: string | null = table === null ? null : table ? table + '/' + segs[i - 1] : segs[i - 1];
         const word = own?.(prefix);
         let target: unknown;
         if (word !== undefined && 'absent' in word) {
