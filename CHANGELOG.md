@@ -5,6 +5,17 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed (security): the kernel kept the images resident processes boot
+  from, its copies of inline wasm and of staged native bindings below
+  `/var/lib/nimbus`, and `/var` is the session user's. A user who moved
+  `/var/lib` aside and put a link where a store was had the kernel write
+  those files into any directory, and the image sweep remove, as root,
+  every file there it did not recognise. The stores are now below
+  `/.nimbus`, in root's `/`, where no user can make, move or remove a
+  name; the kernel checks that `/.nimbus` is its own directory, which no
+  one else may write, before each use, and removes the old stores below
+  `/var/lib/nimbus` once, through no link. `/var` is now the user's
+  alone: a process may hold a delegation of it.
 - Fixed (security): helpers a command starts acted as the kernel, not as
   the command's process. `nimbus wrangler dev` read its config and D1
   migrations, kept its KV and R2 stores, and bundled its Worker as

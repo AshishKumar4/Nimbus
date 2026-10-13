@@ -94,8 +94,8 @@ function sequenced(bridge, pid, key, first) {
   assert.equal(fed.poison, true);
   // Where a synchronous write is held rather than refused (SqliteVFS.readRecallAt): the stores, and the directories they are made in.
   const store = (key) => !readLeaseCovers(key, true, SESSION_KERNEL_ROOTS);
-  assert.deepEqual(['', 'var', 'var/lib', 'var/lib/nimbus', 'var/lib/nimbus/staged/x', '.nimbus', '.nimbus/images/x'].filter((key) => !store(key)), []);
-  assert.deepEqual(['var/log', 'var/library', 'var/lib/nimbus2', '.nimbusx', 'home/user'].filter(store), []);
+  assert.deepEqual(['', '.nimbus', '.nimbus/images/x', '.nimbus/facet-images/x', '.nimbus/staged/x'].filter((key) => !store(key)), []);
+  assert.deepEqual(['var', 'var/lib', 'var/lib/nimbus', 'var/log', '.nimbusx', 'home/user'].filter(store), []);
 }
 
 // ── Taken by a barrier, at its revision; confirmed by the next ──
@@ -963,16 +963,16 @@ for (const end of ['exit', 'kill']) {
   const from = other.acquire(s.engine.epoch, s.engine.revision());
   // As a launch writes process 8's boot image: the kernel, through 8's binding.
   const launching = s.files.bind({ pid: 8, cred: CRED_KERNEL }).synchronous;
-  launching.mkdir('/var/lib/nimbus/facet-images', { recursive: true, mode: 0o755 });
-  launching.writeFile('/var/lib/nimbus/facet-images/a.js', 'image');
-  const image = '/var/lib/nimbus/facet-images/a.js';
+  launching.mkdir('/.nimbus/facet-images', { recursive: true, mode: 0o755 });
+  launching.writeFile('/.nimbus/facet-images/a.js', 'image');
+  const image = '/.nimbus/facet-images/a.js';
   const decode = (bytes) => new TextDecoder().decode(bytes);
   assert.equal(decode(s.files.bind({ pid: 8, cred: USER }).readFile(image)), 'image', 'the process it was written for waited');
   assert.equal(decode(s.kernel.readFile(image.slice(1))), 'image', 'the kernel waited');
   assert.throws(() => other.readFile(image), (error) => error.code === 'EAGAIN', 'another read what is held for publication');
   const root = s.files.bind({ pid: 10, cred: CRED_KERNEL });
   assert.throws(() => root.readFile(image), (error) => error.code === 'EAGAIN', 'another process, as root, read what is held for process 8');
-  assert.ok(!other.acquire(s.engine.epoch, from.rev).paths.some((entry) => entry.path.startsWith('var/lib/nimbus')), 'a barrier reported it before the recall');
+  assert.ok(!other.acquire(s.engine.epoch, from.rev).paths.some((entry) => entry.path.startsWith('.nimbus')), 'a barrier reported it before the recall');
   assert.equal(await reader.awaitRecall(readLease.owner, 1000), 'revoke');
   reader.recalled(readLease.owner, 'revoke');
   assert.equal(decode(await withRecall(() => other.readFile(image))), 'image');

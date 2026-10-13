@@ -75,7 +75,7 @@ const name = (path) => path.split('/').pop();
 const a1 = await spawn('const a = 1;', 'a.js');
 const imageA = await bootedImage();
 const packA = await bootedPack();
-assert.match(imageA, /^\/var\/lib\/nimbus\/facet-images\/[0-9a-f]{64}\.js$/,
+assert.match(imageA, /^\/\.nimbus\/facet-images\/[0-9a-f]{64}\.js$/,
   'the image is named by the digest of its own bytes');
 assert.deepEqual(storedImages(), [name(imageA), name(packA)].sort(),
   'the spawn materialized exactly its main module and its code pack in the store');
@@ -171,7 +171,7 @@ await assert.rejects(
 );
 
 await assert.rejects(
-  () => configFor('x', '/var/lib/nimbus/facet-images/not-a-digest.js'),
+  () => configFor('x', '/.nimbus/facet-images/not-a-digest.js'),
   /not a content-addressed facet image path/,
   'a module named by a path that carries no digest is refused rather than trusted',
 );

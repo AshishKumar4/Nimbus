@@ -176,15 +176,17 @@ function held(root, decided, stored = {}) {
   // The whole filesystem is no lease's root (EINVAL); a store, or a subtree holding one, is not delegated.
   assert.throws(() => bridge.acquireExclusiveMutation('/', { delegate: { reads: true } }), /EINVAL/);
   kernel.mkdir('var/lib', { recursive: true });
-  for (const root of ['/.nimbus', '/.nimbus/images', '/var/lib/nimbus/inline-wasm', '/var']) {
+  for (const root of ['/.nimbus', '/.nimbus/images', '/.nimbus/inline-wasm']) {
     assert.throws(() => bridge.acquireExclusiveMutation(root, { includeMissingAncestors: true, delegate: { reads: true } }), /EPERM/,
       `a delegation of ${root} was granted`);
   }
   const granted = bridge.acquireExclusiveMutation('/home/user', { delegate: { reads: true } });
   bridge.releaseExclusiveMutation(granted.owner);
+  // /var is the user's: no store of the session's is below it.
+  bridge.releaseExclusiveMutation(bridge.acquireExclusiveMutation('/var', { delegate: { reads: true } }).owner);
   // Every store the session uses synchronously lies under one of those roots.
   const under = (path) => SESSION_KERNEL_ROOTS.some((root) => path === root || path.startsWith(`${root}/`));
-  for (const store of [DURABLE_IMAGE_DIR, '/var/lib/nimbus/inline-wasm'.slice(1), ...STAGED_BINDINGS.map((binding) => binding.vfsPath.slice(1))]) {
+  for (const store of [DURABLE_IMAGE_DIR, '.nimbus/inline-wasm', ...STAGED_BINDINGS.map((binding) => binding.vfsPath.slice(1))]) {
     assert.ok(under(store), `the session's store ${store} is not under a root it never delegates`);
   }
 }

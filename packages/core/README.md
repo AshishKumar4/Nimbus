@@ -181,7 +181,7 @@ until the program has sent it (and from then on the program writes as it
 goes), a write waits until the program has sent it and given the subtree
 up. Your calls on the workspace's asynchronous face, the session's routes,
 and every other program's calls wait the same way; they never fail for it.
-The session's own stores (`/.nimbus`, `/var/lib/nimbus`) are never held.
+The session's own stores (`/.nimbus`) are never held.
 
 Two limits follow from a program deciding by itself:
 

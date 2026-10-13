@@ -188,8 +188,8 @@ for (const delivered of [false, true]) {
     const reader = files.bind({ pid: 7, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } });
     const { readLease } = reader.acquire(sqliteFs.epoch, sqliteFs.revision(), { lease: true });
     const launching = files.bind({ pid: 8, cred: CRED_KERNEL }).synchronous;
-    launching.mkdir('/var/lib/nimbus/facet-images', { recursive: true, mode: 0o755 });
-    launching.writeFile('/var/lib/nimbus/facet-images/a.js', 'image');
+    launching.mkdir('/.nimbus/facet-images', { recursive: true, mode: 0o755 });
+    launching.writeFile('/.nimbus/facet-images/a.js', 'image');
     assert.notEqual(sqliteFs.publishedFor(), null, 'nothing held for the destroy to meet');
     const self = {
       sqliteFs,

@@ -890,8 +890,24 @@ function bundleUsesNodeSqlite(
  */
 const MANIFEST_COPIES_MAX_BYTES = 4 * 1024 * 1024;
 
+/**
+ * The directory the kernel keeps its stores below (facet images, inline wasm,
+ * staged bindings, durable images). `/` is root's 0755, so no user can make,
+ * rename or remove a name in it: below a `/.nimbus` that is the kernel's own
+ * real directory, which no one else may write, no directory on the way to a
+ * store is one a user could replace with a link (_kernelStoreFor).
+ */
+const KERNEL_STORE_ROOT = '/.nimbus';
+
 /** Where inlined wasm images are staged, one kernel-owned file per content key. */
-const INLINE_WASM_DIR = '/var/lib/nimbus/inline-wasm';
+const INLINE_WASM_DIR = `${KERNEL_STORE_ROOT}/inline-wasm`;
+
+/**
+ * Where releases through worker 0.17.0 kept those stores: below `/var`, which
+ * the session's user owns. Removed once, through no link (_removeLegacyStores).
+ */
+const LEGACY_STORE_PARENT = 'var/lib/nimbus';
+const LEGACY_STORES = ['facet-images', 'inline-wasm', 'staged'];
 
 /**
  * A base64 string literal whose first bytes are wasm's `\0asm` magic
@@ -6140,7 +6156,7 @@ export class FacetManager {
 
   /**
    * The image store's disk for process `pid`'s images: this session's VFS,
-   * as the kernel writing on its behalf (_kernelFor) — the store is written
+   * as the kernel writing on its behalf (_kernelStoreFor) — the store is written
    * by the kernel and read by processes through supervisor bindings that
    * enforce their own credential. Mode 0644 at creation (0666 under the
    * kernel's umask), as POSIX has it, is what makes the read succeed for any
@@ -6152,7 +6168,7 @@ export class FacetManager {
         'Nimbus: a resident process needs a session filesystem to materialize its boot image',
       );
     }
-    const fs = this._kernelFor(pid);
+    const fs = this._kernelStoreFor(pid);
     const at = (path: string) => `/${stripLeadingSlashes(path)}`;
     return {
       mkdirp: (dir) => fs.mkdir(at(dir), { recursive: true, mode: 0o755 }),
@@ -6172,6 +6188,53 @@ export class FacetManager {
    */
   private _kernelFor(pid: number): RuntimeSynchronousFs {
     return this.filesystem!.bind({ pid, cred: CRED_KERNEL }).synchronous!;
+  }
+
+  /**
+   * _kernelFor, for the kernel's own stores (KERNEL_STORE_ROOT). That root is
+   * checked, not assumed, each time: made if absent, and refused unless it is
+   * the kernel's own real directory that no one else may write (only root,
+   * through sudo, could have made it anything else). The first use also
+   * removes the stores an earlier release kept below `/var`.
+   */
+  private _kernelStoreFor(pid: number): RuntimeSynchronousFs {
+    const fs = this._kernelFor(pid);
+    let root = fs.stat(KERNEL_STORE_ROOT, { followSymlinks: false });
+    if (root === null) {
+      fs.mkdir(KERNEL_STORE_ROOT, { mode: 0o755 });
+      root = fs.stat(KERNEL_STORE_ROOT, { followSymlinks: false });
+    }
+    if (root?.type !== 'directory' || root.uid !== 0 || (root.mode & 0o022) !== 0) {
+      throw new Error(`Nimbus: ${KERNEL_STORE_ROOT} is not the kernel's own directory (a ${root?.type ?? 'missing entry'} owned by uid ${root?.uid}, mode ${((root?.mode ?? 0) & 0o7777).toString(8)}); its stores are not written through it`);
+    }
+    if (!this.legacyStoresRemoved) {
+      this.legacyStoresRemoved = true;
+      this._removeLegacyStores(fs);
+    }
+    return fs;
+  }
+
+  private legacyStoresRemoved = false;
+
+  /**
+   * Remove the stores a release through worker 0.17.0 kept below `/var`, as
+   * the kernel, through no link: each directory from `/var` to the store is
+   * looked at without following it, and only real directories lead on, to a
+   * store that is the kernel's own. One synchronous turn, so nothing changes
+   * between a look and the removal. What cannot be removed stays.
+   */
+  private _removeLegacyStores(fs: RuntimeSynchronousFs): void {
+    const parts = LEGACY_STORE_PARENT.split('/');
+    for (let i = 1; i <= parts.length; i++) {
+      const dir = fs.stat(`/${parts.slice(0, i).join('/')}`, { followSymlinks: false });
+      if (dir?.type !== 'directory') return;
+    }
+    for (const store of LEGACY_STORES) {
+      const path = `/${LEGACY_STORE_PARENT}/${store}`;
+      const st = fs.stat(path, { followSymlinks: false });
+      if (st?.type !== 'directory' || st.uid !== 0) continue;
+      try { fs.remove(path, { recursive: true }); } catch { /* left for the user's own rm */ }
+    }
   }
 
   /** Give the bundle's module pass the host's esbuild, as composeFacetManager does. */
@@ -6314,7 +6377,7 @@ export class FacetManager {
    */
   private _stageWasmImageBytes(images: readonly Uint8Array[], pid: number): WasmImageRecord[] {
     if (images.length === 0 || !this.filesystem) return [];
-    const fs = this._kernelFor(pid);
+    const fs = this._kernelStoreFor(pid);
     fs.mkdir(INLINE_WASM_DIR, { recursive: true, mode: 0o755 });
     return images.map((bytes) => {
       const digest = wasmImageDigest(bytes);
@@ -6348,7 +6411,7 @@ export class FacetManager {
   ): Promise<ResidentStagedBindings | null> {
     if (names.length === 0) return null;
     if (!this.filesystem) throw new Error('Nimbus: a resident process needs a session filesystem to boot');
-    const fs = this._kernelFor(pid);
+    const fs = this._kernelStoreFor(pid);
     const bindingPaths: Record<string, string> = {};
     for (const name of names) {
       const binding = stagedBinding(name);
