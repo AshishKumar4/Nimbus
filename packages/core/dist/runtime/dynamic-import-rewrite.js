@@ -116,9 +116,8 @@ function lexedImportSites(code, withBindings = false) {
     const imports = [];
     const stars = [];
     const types = [];
-    // ResolveExport's indirect entries: re-exports, and by local name the bindings imports make.
-    const reexports = [];
-    const imported = new Map();
+    // Each static declaration up to its specifier's quote: what it reads of that module, read below.
+    const clauses = [];
     for (const entry of lexed) {
         if (entry.t === DYNAMIC_IMPORT)
             sites.push({ ss: entry.ss, se: entry.se, d: entry.d, lexed: true });
@@ -134,23 +133,8 @@ function lexedImportSites(code, withBindings = false) {
             const clause = (entry.at ?? []).length > 0 ? attributesClause(source, site, entry.se) : undefined;
             statics.push({ ...site, specifier: entry.n, attributes: type === null ? {} : { type }, ...(clause ? { clause } : {}) });
             types.push(type);
-            if (withBindings) {
-                // The declaration up to its specifier's quote: what it reads of that module.
-                const read = clauseNames(source.slice(entry.ss, site.start));
-                if (read === null)
-                    return null;
-                if (read.star)
-                    stars.push(imports.length);
-                const request = imports.length;
-                const reexport = source.startsWith('export', entry.ss);
-                for (const [name, from] of read.links) {
-                    if (reexport)
-                        reexports.push([name, request, from]);
-                    else
-                        imported.set(name, [request, from]);
-                }
-                imports.push(read.names);
-            }
+            if (withBindings)
+                clauses.push(source.slice(entry.ss, site.start));
         }
         else {
             // A phase import (`import source`, `import defer`): the grammar's to refuse or read.
@@ -184,6 +168,27 @@ function lexedImportSites(code, withBindings = false) {
     const sitesRead = { calls, metas, statics, moduleSyntax: lexing[3] === true };
     if (!withBindings)
         return sitesRead;
+    const tokens = clauseTokens(clauses);
+    if (tokens === null)
+        return null;
+    // ResolveExport's indirect entries: re-exports, and by local name the bindings imports make.
+    const reexports = [];
+    const imported = new Map();
+    for (let request = 0; request < tokens.length; request++) {
+        const read = clauseNames(tokens[request]);
+        if (read === null)
+            return null;
+        if (read.star)
+            stars.push(request);
+        const reexport = tokens[request][0]?.type === tokTypes._export;
+        for (const [name, from] of read.links) {
+            if (reexport)
+                reexports.push([name, request, from]);
+            else
+                imported.set(name, [request, from]);
+        }
+        imports.push(read.names);
+    }
     const lexedExports = exportNames(lexing[1]);
     if (lexedExports === null)
         return null;
@@ -211,22 +216,36 @@ function exportNames(lexedExports) {
     return names;
 }
 /**
- * What a static import or re-export the lexer read (`clause`, from its
+ * The tokens of each of `clauses` (a static declaration from its `import`
+ * or `export` to its specifier), tokenized at once (one tokenizer for the
+ * module, not one per declaration), or null where they do not tokenize.
+ */
+function clauseTokens(clauses) {
+    const lists = [[]];
+    if (clauses.length === 0)
+        return [];
+    try {
+        for (const token of tokenizer(clauses.join('\n;\n'), MODULE_PARSE_OPTIONS)) {
+            if (token.type === tokTypes.semi)
+                lists.push([]);
+            else
+                lists[lists.length - 1].push({ type: token.type, value: Reflect.get(token, 'value') });
+        }
+    }
+    catch {
+        return null;
+    }
+    return lists.length === clauses.length ? lists : null;
+}
+/**
+ * What a static import or re-export the lexer read (`tokens`, from its
  * `import` or `export` to its specifier) reads of its module: the names it
  * imports (`default` a default import's) or re-exports, and whether it is
  * `export * from`; and the bindings it makes of them (`links`): an import's
  * [local, name] and a re-export's [exported, name], the name null for the
  * module's namespace. Null for a declaration of another shape.
  */
-function clauseNames(clause) {
-    const tokens = [];
-    try {
-        for (const token of tokenizer(clause, MODULE_PARSE_OPTIONS))
-            tokens.push({ type: token.type, value: Reflect.get(token, 'value') });
-    }
-    catch {
-        return null;
-    }
+function clauseNames(tokens) {
     let at = 1;
     const is = (type) => tokens[at]?.type === type;
     /** The name at `at` (an identifier, a keyword, a string), or null; with `value`, only that word. */

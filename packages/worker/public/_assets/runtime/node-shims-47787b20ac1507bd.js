@@ -17979,10 +17979,7 @@ const __nimbusAdvised = new WeakSet();
 // The ES modules the interpreter evaluated from files outside the map, with
 // their compiled cells: a later require() asks whether their graphs await.
 const __nimbusRuntimeEsModules = new WeakMap();
-// Whether the module of format `format` loaded at `key`, as the instance
-// `instance` (its key, or a query's or fragment's URL), is an ES module: by
-// its format, else (a typeless file) staged as one, or detected as one when
-// the interpreter compiled it. The loader's knowledge, never the exports'.
+// Whether module `key` (format `format`) loaded as `instance` is an ES module: by its format, else staged or detected as one.
 function __nimbusLoadedEsModule(key, instance, format) {
   if (format === "module") return true;
   if (format !== "detect") return false;
@@ -18119,9 +18116,7 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
         evaluating = true;
         throw __nimbusRequireAsync(parent, filename);
       }
-      // A require() of an ES module links its graph before any of it runs,
-      // as an import() of it does (__nimbusEsmLinkStaged): every name a
-      // module imports is one its module exports.
+      // A require() of an ES module links its graph before any of it runs, as its import() does.
       if (required && runtimeEsModule) {
         const late = { modules: new Map(), rows: [] };
         __nimbusEsmLinkPlan(normalizedPath, moduleUrl, new Set(), [], new Set(), late);
@@ -18607,16 +18602,13 @@ function __esmNamespaceOf(names, read) {
   Object.defineProperty(ns, Symbol.toStringTag, { value: "Module" });
   return Object.preventExtensions(ns);
 }
-// A builtin's namespace (or a staged N-API binding's): `value` as `default`, and its own names read through.
+// A builtin's (or a staged N-API binding's) namespace: `value` as default, its own names read through.
 function __nimbusObjectNamespace(value) {
   const names = new Set(value && (typeof value === "object" || typeof value === "function") ? Object.keys(value) : []);
   names.add("default");
   return __esmNamespaceOf(names, (name) => name === "default" ? value : value[name]);
 }
-// The names cjs-module-lexer finds in the CommonJS module at `key` and in
-// the modules it re-exports, `default` first (core cjs-module-exports.ts),
-// as Node's loader names them before the module runs: a staged facade's,
-// else read here, with the interpreter's runtime.
+// The names Node's loader finds in CommonJS module `key` before it runs (core cjs-module-exports.ts): a staged facade's, else lexed here.
 const __nimbusCommonJsNameCache = new Map();
 function __nimbusCommonJsNames(key) {
   const facade = __nimbusEsmId("commonjs", key);
@@ -18627,14 +18619,9 @@ function __nimbusCommonJsNames(key) {
   }, __nimbusCommonJsNameCache);
   return [...names];
 }
-// What an ES module's import of a module that is not an ES module gives,
-// once it is loaded as `exports` (Node's translators), one per URL, the
-// same for import() and a static import:
-//   - JSON: its value, as `default` alone;
-//   - a builtin: itself as `default`, and its own names read through;
-//   - CommonJS (createCJSModuleWrap): module.exports as `default`,
-//     whatever it says of __esModule; and each name cjs-module-lexer finds
-//     its own property's value once the module has run, read once.
+// An import of a module that is not an ES module, loaded as `exports`, as Node's translators make it, one per URL:
+// JSON's value as default; a builtin as default, its names read through; CommonJS's module.exports as default
+// (whatever its __esModule) and each lexed name's own value once it ran (createCJSModuleWrap).
 function __nimbusTranslatedNamespace(resolution, exports) {
   const cached = __esmNamespaces.get(resolution.url);
   if (cached !== undefined) return cached;
@@ -19478,12 +19465,8 @@ function __nimbusEsmEdges(late, target) {
   if (bindings === null || __nimbusEsm.table[target.row][0] !== "module") return [];
   return bindings[2].map(([row, specifier, ...names]) => ({ target: { row }, specifier, names }));
 }
-// ResolveExport (ECMA-262, Source Text Module Records) of `name` of
-// `target` over the late graph's facts and the launch's row bindings: where
-// it is bound ({ module, binding }: a namespace's binding is "*"), null where
-// `target` has no such export, __NIMBUS_AMBIGUOUS where its `export *`s
-// reach two different bindings of it, undefined where its names are not
-// known here (the interpreter's to find).
+// ECMA-262 ResolveExport of `name` of `target` over the late graph's and the rows' facts: { module, binding },
+// null for none, __NIMBUS_AMBIGUOUS where its export *s reach two bindings, undefined where not known here.
 const __NIMBUS_AMBIGUOUS = { ambiguous: true };
 function __nimbusEsmResolveExport(late, target, name, resolving) {
   if (target === null) return undefined;
@@ -19527,8 +19510,7 @@ function __nimbusEsmResolveExport(late, target, name, resolving) {
   }
   return unknown ? undefined : found;
 }
-// GetExportedNames of `target`, for `export *`: its own names, and its
-// stars' but `default`, each once; null where they are not known here.
+// GetExportedNames of `target` (its own names, its stars' but default); null where not known here.
 function __nimbusEsmExportedNames(late, target, seen) {
   if (target === null) return null;
   if (target.names !== undefined) return target.names;
@@ -19556,13 +19538,9 @@ function __nimbusEsmExportedNames(late, target, seen) {
   }
   return [...names];
 }
-// The late modules the link plans read, by URL: what an interpreted
-// module's `export *` asks of them (__nimbusEsmStarConflicts).
+// The late modules the link plans read, by URL.
 const __nimbusLateModules = new Map();
-// The names an interpreted ES module's `export *`s leave out, its module
-// at `url` (a late module, or a staged one the interpreter evaluates):
-// those they reach two different bindings of, as Node's namespace omits
-// them.
+// The names an interpreted module's (at `url`) export *s reach two bindings of, which its namespace omits.
 function __nimbusEsmStarConflicts(url) {
   const late = { modules: __nimbusLateModules, rows: [] };
   const plain = url.startsWith("file:") && !url.includes("?") && !url.includes("#");
@@ -20053,10 +20031,8 @@ function __requireFrom(id, fromDir, parent, required = true, type = null) {
   if (!resolved) throw __nimbusModuleNotFound(id, parent);
   return __loadModule(resolved, resolved, required, parent);
 }
-// An interpreted ES module's static import of `id` from `parentUrl`, as
-// Node's ES loader makes it: resolved as an import, which refuses before the
-// importer runs (no arrow of the importer's), checked against its `type`
-// attribute, loaded, and given as its module's namespace.
+// An interpreted ES module's static import, as Node's ES loader makes it: resolved (refused with no arrow of the
+// importer's), checked against its `type` attribute, loaded, and given as its module's namespace.
 function __nimbusStaticImport(id, parentUrl, parent, type) {
   let resolution;
   try {
