@@ -321,7 +321,10 @@ export class NimbusSandbox {
      * session's editor, agent and HTTP file routes do. An embedder holding the
      * DO binding acts as the kernel only by asking for it,
      * `files.as(CRED_KERNEL)`, for example to remove a file it provisioned in
-     * a sticky directory. `files.as(cred)` returns the same API bound
+     * a sticky directory. These rules guard against accidents, not against a
+     * program in the session: the session's user has passwordless root through
+     * `sudo` (docs/sandbox-sdk.md, "Users and Permissions"). `files.as(cred)`
+     * returns the same API bound
      * to `cred` instead, the view `SqliteVFS.as(cred)` gives in-process: a
      * file the identity cannot read answers EACCES, one it owns answers.
      * Over the remote endpoint a `cred` is refused by the dispatcher, as it is
