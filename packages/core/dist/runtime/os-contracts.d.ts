@@ -109,6 +109,14 @@ export interface RuntimeOpenFlags {
     directory?: boolean;
     truncate?: boolean;
     followSymlinks?: boolean;
+    /**
+     * O_PATH: the file is held, not opened for I/O. No access is asked of it
+     * but the walk's, and every other flag but `directory` and
+     * `followSymlinks` is ignored, as Linux ignores it. The descriptor answers
+     * its stat and a reopen (an unlinked file's included) until it is closed;
+     * its reads and writes are EBADF.
+     */
+    path?: boolean;
     /** Creation mode, masked by the binding's umask like mkdir's; ignored when the file exists. */
     mode?: number;
     /** A process's live mask for this create, in place of its binding's initial mask. */
@@ -124,13 +132,25 @@ export interface RuntimeOpenFlags {
 export interface RuntimeFileHandle {
     id: number;
     path: string;
-    flags: Required<Omit<RuntimeOpenFlags, 'expectedRevision' | 'mode' | 'umask' | 'sync'>> & {
+    flags: Required<Omit<RuntimeOpenFlags, 'expectedRevision' | 'mode' | 'umask' | 'sync' | 'path'>> & {
         expectedRevision?: number;
     };
     position: number;
     closed: boolean;
 }
+/** What an open answers: the new descriptor, and its file's stat as the open found it (the opened name's revision, where it opened one). */
+export interface RuntimeOpenedFile extends RuntimeFileHandle {
+    stat: RuntimeVfsStat;
+}
 export type Awaitable<T> = T | Promise<T>;
+/**
+ * The file a reopen opens again (RuntimeFsBridge.reopen): the one an open
+ * descriptor of the process is on. The descriptor is the capability: a file
+ * is never reopened by its number alone, which any process can name.
+ */
+export type RuntimeReopenTarget = {
+    readonly handle: number;
+};
 export type RuntimeFsPath = string | {
     readonly directory: number;
     readonly path: string;
@@ -314,7 +334,15 @@ export interface RuntimeFsBridge {
         followSymlinks?: boolean;
     }): Awaitable<VfsMutationReceipt>;
     /** `options.mutationOwner`: the lease an open for writing presents. */
-    open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner): Awaitable<RuntimeFileHandle>;
+    open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner): Awaitable<RuntimeOpenedFile>;
+    /**
+     * A new open file description of the file `target` is (Linux's open of
+     * /proc/self/fd/N): the file, never a name, so one renamed or unlinked
+     * since is the one opened. Its own offset; `flags`' access checked
+     * against the file as it is now; O_TRUNC and O_APPEND honored. A file on
+     * a mount is held there by its name: ESTALE once that name holds another.
+     */
+    reopen(target: RuntimeReopenTarget, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner): Awaitable<RuntimeOpenedFile>;
     read(handleId: number, offset: number | null, length: number): Awaitable<Uint8Array>;
     write(handleId: number, offset: number | null, bytes: Uint8Array): Awaitable<number>;
     close(handleId: number): Awaitable<void>;

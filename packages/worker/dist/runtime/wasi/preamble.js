@@ -395,8 +395,8 @@ export function __wasiInitFS(opts) {
     // A descriptor the last process left open gives its pinned bytes back to
     // the store (a warm facet's store outlives the process).
     for (const entry of fdTable.values())
-        if (entry.kind === 'resident')
-            entry.release?.();
+        if (entry.kind === 'resident' && 'name' in entry.hold)
+            entry.hold.pin?.release();
     fdTable.clear();
     fdTable.set(0, { kind: 'stdin' });
     fdTable.set(1, { kind: 'stdout' });

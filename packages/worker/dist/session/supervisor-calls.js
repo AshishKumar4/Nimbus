@@ -396,6 +396,9 @@ export function supervisorCalls(base) {
         async fsOpen(path, flags) {
             return this._call(this._fsMutation('fsOpen', [path, flags]));
         }
+        async fsReopen(...args) {
+            return this._call(this._fsMutation('fsReopen', args));
+        }
         async fsReadDirectories(request) {
             return this._call(this._fsMutation('fsReadDirectories', [request]));
         }
