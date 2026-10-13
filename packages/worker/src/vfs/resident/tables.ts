@@ -1,9 +1,10 @@
 /**
  * The resident store's tables, and its two backings (store.ts decides; a
- * backing only stores). Four tables: 'file' (one row per held path: kind,
+ * backing only stores). Five tables: 'file' (one row per held path: kind,
  * size, chunk count, revision, content key), 'chunk' (the bytes), 'meta'
- * (schema, cursor, namespace readiness) and 'ns' (the namespace: a stat per
- * visible name, keyed (parent, name)).
+ * (schema, cursor, namespace readiness), 'ns' (the namespace: a stat per
+ * visible name, keyed (parent, name)) and 'page' (pages of files too big to
+ * hold whole, each at the revision it was read at: pages.ts).
  *
  * - sqlTables: the process facet's own SQLite (ctx.storage.sql), durable
  *   across the facet's incarnations. Every statement the store has ever
@@ -24,7 +25,7 @@ import { RESIDENT_ROW_BYTES, namespaceRowBytes, residentBytes, utf8Length } from
  * and the kind is stored rather than inferred so a text file whose bytes happen
  * to be valid UTF-8 does not change shape between a write and a read.
  */
-export const RESIDENT_SCHEMA = '3';
+export const RESIDENT_SCHEMA = '4';
 export const RK_TEXT = 0;
 export const RK_BINARY = 1;
 export const RK_DENIED = 2;
@@ -73,6 +74,7 @@ export interface NsRow {
 }
 export interface NsKey { parent: string; name: string }
 export interface NsChild { name: string; kind: number; mode: number }
+export interface PageRow { path: string; rev: number; part: number; size: number }
 
 /** The one contract both backings keep. */
 export interface ResidentTables {
@@ -126,6 +128,15 @@ export interface ResidentTables {
   nsUnlisted(): (NsKey & { target: string })[];
   nsChildren(parent: string): NsChild[];
   nsCount(): number;
+  pageGet(path: string, rev: number, part: number): Uint8Array | ArrayBuffer | undefined;
+  pageUse(path: string, rev: number, part: number, used: number): void;
+  /** Hold a page, answering the bytes of the one it replaced (0 for none). */
+  pagePut(path: string, rev: number, part: number, bin: Uint8Array, used: number): number;
+  pageDelete(path: string, rev: number, part: number): void;
+  /** The least recently used pages, `limit` at most. */
+  pageOldest(limit: number): PageRow[];
+  pageBytes(): number;
+  pageMaxUsed(): number;
 }
 
 /**
@@ -164,7 +175,7 @@ export function sqlTables(sql: ResidentSql): ResidentTables {
   for (const _row of sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'meta'")) schema = '';
   if (schema !== null) for (const row of sql.exec("SELECT v FROM meta WHERE k = 'schema'")) schema = String(row.v);
   if (schema !== RESIDENT_SCHEMA) {
-    for (const table of ['chunk', 'file', 'ns', 'meta']) sql.exec('DROP TABLE IF EXISTS ' + table);
+    for (const table of ['chunk', 'file', 'ns', 'meta', 'page']) sql.exec('DROP TABLE IF EXISTS ' + table);
   }
   // 'ckey' is the authority's content identity for the bytes (equal keys,
   // equal bytes), when it said so; null for bytes it did not describe.
@@ -181,6 +192,15 @@ export function sqlTables(sql: ResidentSql): ResidentTables {
       + 'PRIMARY KEY (path, part)'
     + ')',
   );
+  // Pages of files too big to hold whole, each at the revision it was read
+  // at; 'used' orders them for eviction (pages.ts).
+  sql.exec(
+    'CREATE TABLE IF NOT EXISTS page ('
+      + 'path TEXT NOT NULL, rev INTEGER NOT NULL, part INTEGER NOT NULL, bin BLOB NOT NULL, used INTEGER NOT NULL, '
+      + 'PRIMARY KEY (path, rev, part)'
+    + ') WITHOUT ROWID',
+  );
+  sql.exec('CREATE INDEX IF NOT EXISTS page_used ON page (used)');
   // The store's own cursor, in the same storage as the rows it describes, so
   // the two cannot be separated by an isolate restart.
   sql.exec('CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)');
@@ -262,8 +282,24 @@ export function sqlTables(sql: ResidentSql): ResidentTables {
       sql.exec('DELETE FROM chunk');
       sql.exec('DELETE FROM file');
       sql.exec('DELETE FROM ns');
-      sql.exec('DELETE FROM meta');
+      // The schema stamp is the tables', not their rows': without it the next
+      // binding would take the store for another schema's and drop it.
+      sql.exec("DELETE FROM meta WHERE k <> 'schema'");
+      sql.exec('DELETE FROM page');
     },
+    pageGet(path, rev, part) {
+      return rowOf<{ bin: Uint8Array | ArrayBuffer }>(sql.exec('SELECT bin FROM page WHERE path = ? AND rev = ? AND part = ?', path, rev, part))?.bin;
+    },
+    pageUse(path, rev, part, used) { sql.exec('UPDATE page SET used = ? WHERE path = ? AND rev = ? AND part = ?', used, path, rev, part); },
+    pagePut(path, rev, part, bin, used) {
+      const had = first(sql.exec('SELECT length(bin) AS n FROM page WHERE path = ? AND rev = ? AND part = ?', path, rev, part));
+      sql.exec('INSERT OR REPLACE INTO page (path, rev, part, bin, used) VALUES (?, ?, ?, ?, ?)', path, rev, part, bin, used);
+      return had === undefined ? 0 : num(had.n);
+    },
+    pageDelete(path, rev, part) { sql.exec('DELETE FROM page WHERE path = ? AND rev = ? AND part = ?', path, rev, part); },
+    pageOldest(limit) { return rowsOf<PageRow>(sql.exec('SELECT path, rev, part, length(bin) AS size FROM page ORDER BY used, path, rev, part LIMIT ?', limit)); },
+    pageBytes() { const row = first(sql.exec('SELECT coalesce(sum(length(bin)), 0) AS n FROM page')); return row === undefined ? 0 : num(row.n); },
+    pageMaxUsed() { const row = first(sql.exec('SELECT coalesce(max(used), 0) AS n FROM page')); return row === undefined ? 0 : num(row.n); },
     nsPut(parent, name, kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target, dev, nlink) {
       sql.exec(
         'INSERT OR REPLACE INTO ns (parent, name, kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target, dev, nlink) '
@@ -310,6 +346,9 @@ export function heapTables(): HeapTables {
   const meta = new Map<string, string>();
   const ns = new Map<string, Map<string, NsRow>>();
   const byKey = new Map<string, Set<string>>();
+  // Pages by "path\0rev\0part".
+  const pages = new Map<string, { path: string; rev: number; part: number; bin: Uint8Array; used: number }>();
+  const pageKey = (path: string, rev: number, part: number): string => path + '\u0000' + rev + '\u0000' + part;
   let sorted: string[] | null = null;
   let used = 0;
   let names = 0;
@@ -466,9 +505,37 @@ export function heapTables(): HeapTables {
       dropWhere((row) => row.rev === RK_OWN_WRITE, (path) => !dated.has(path));
     },
     clear() {
-      files.clear(); chunks.clear(); meta.clear(); ns.clear(); byKey.clear();
+      files.clear(); chunks.clear(); meta.clear(); ns.clear(); byKey.clear(); pages.clear();
       sorted = null; used = 0; names = 0; namespaceBytes = 0;
     },
+    pageGet(path, rev, part) { return pages.get(pageKey(path, rev, part))?.bin.slice(); },
+    pageUse(path, rev, part, stamp) {
+      const row = pages.get(pageKey(path, rev, part));
+      if (row !== undefined) row.used = stamp;
+    },
+    pagePut(path, rev, part, bin, stamp) {
+      const key = pageKey(path, rev, part);
+      const had = pages.get(key);
+      const bytes = residentBytes(bin).slice();
+      if (had !== undefined) used -= RESIDENT_ROW_BYTES + had.bin.byteLength;
+      pages.set(key, { path, rev, part, bin: bytes, used: stamp });
+      used += RESIDENT_ROW_BYTES + bytes.byteLength;
+      return had === undefined ? 0 : had.bin.byteLength;
+    },
+    pageDelete(path, rev, part) {
+      const key = pageKey(path, rev, part);
+      const had = pages.get(key);
+      if (had === undefined) return;
+      pages.delete(key);
+      used -= RESIDENT_ROW_BYTES + had.bin.byteLength;
+    },
+    pageOldest(limit) {
+      // SQLite's ORDER BY used, path, rev, part.
+      const rows = [...pages.values()].sort((a, b) => a.used - b.used || cmp(a.path, b.path) || a.rev - b.rev || a.part - b.part);
+      return rows.slice(0, limit).map((row) => ({ path: row.path, rev: row.rev, part: row.part, size: row.bin.byteLength }));
+    },
+    pageBytes() { let n = 0; for (const row of pages.values()) n += row.bin.byteLength; return n; },
+    pageMaxUsed() { let n = 0; for (const row of pages.values()) n = Math.max(n, row.used); return n; },
     nsPut(parent, name, kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target, dev, nlink) {
       let dir = ns.get(parent);
       const previous = dir?.get(name);

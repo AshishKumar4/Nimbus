@@ -13,6 +13,8 @@
 import { createHash } from 'node:crypto';
 import { oidFromHex, oidToHex } from '../pack/format.js';
 import { CacheTree } from './cachetree.js';
+import { UnsupportedGitOperation } from '../routing.js';
+import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 export const S_IFMT = 0o170000;
 export const S_IFREG = 0o100000;
 export const S_IFLNK = 0o120000;
@@ -280,8 +282,10 @@ export class DirCache {
             mtime = (await fs.lstat(file)).mtime;
             bytes = await fs.readFileUncached(file);
         }
-        catch {
-            return DirCache.empty();
+        catch (error) {
+            if (isVfsError(error, 'ENOENT') || isVfsError(error, 'ENOTDIR'))
+                return DirCache.empty();
+            throw error;
         }
         return DirCache.parse(bytes, Math.floor(mtime / 1000));
     }
@@ -357,9 +361,9 @@ export class DirCache {
             const data = bytes.subarray(at + 8, at + 8 + size);
             at += 8 + size;
             if (signature === 'link')
-                throw new IndexFormatError('the index is split (core.splitIndex), which this git does not read');
+                throw new UnsupportedGitOperation('fatal: the index is split (core.splitIndex), which this git does not read\n', 128);
             if (signature === 'sdir')
-                throw new IndexFormatError('the index is sparse (index.sparse), which this git does not read');
+                throw new UnsupportedGitOperation('fatal: the index is sparse (index.sparse), which this git does not read\n', 128);
             if (signature[0] < 'A' || signature[0] > 'Z') {
                 throw new IndexFormatError(`index uses ${signature} extension, which we do not understand`);
             }

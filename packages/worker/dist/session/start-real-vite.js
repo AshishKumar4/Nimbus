@@ -15,7 +15,7 @@
  * rather than the shim. Before this, cirrus-real wrote nothing at all and every
  * such session was unrecoverable after eviction.
  */
-import { CRED_KERNEL, isVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_SESSION_USER, isVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { execIdField } from '@nimbus-sh/core/runtime/process-table.js';
 import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { rewriteCirrusViteConfigBundle } from '@nimbus-sh/core/runtime/cirrus-vite-config-rewriter.js';
@@ -83,7 +83,7 @@ export async function startRealVite(self, opts) {
         if (cfgPath) {
             try {
                 if (!self.esbuildService)
-                    self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_KERNEL));
+                    self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER));
                 const bundleResult = await self.esbuildService.build([cfgPath], {
                     bundle: true,
                     format: 'esm',

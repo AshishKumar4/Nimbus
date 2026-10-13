@@ -11,8 +11,9 @@
  * running command's pid — it authorizes the batch-facet writes.
  */
 import type { NpmInstallPort } from '@nimbus-sh/core/substrate/lifo/commands/system/npm.js';
+import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import type { SessionInternal } from './internal.js';
 type InstallHost = Pick<SessionInternal, 'ensureSqliteFs' | 'ensureNpmInstaller' | 'ensureGlobalPrefixDirs' | 'processes'>;
-export declare function createNpmInstallPort(self: InstallHost): NpmInstallPort;
+export declare function createNpmInstallPort(self: InstallHost, filesystem: ProcessFiles): NpmInstallPort;
 export {};
 //# sourceMappingURL=npm-install-port.d.ts.map

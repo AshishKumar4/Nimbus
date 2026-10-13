@@ -8,7 +8,7 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
 import { memoryStorage } from './lib/do-storage.mjs';
 
 
-function registerCloneHarness() {
+function registerCloneHarness(realGit) {
   let gitCommand;
   const registry = {
     register(name, command) {
@@ -50,7 +50,8 @@ function registerCloneHarness() {
   processes.spawn('sh', ['sh'], '/home/user', { cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } });
   // Same registration shape init.ts uses — the module is already loaded here,
   // so the lazy import init.ts needs is simply the handler itself.
-  registry.register('git', (ctx) => runGitCommand(ctx, vfs, doCtx, {}, undefined, undefined, processes));
+  registry.register('git', (ctx) => runGitCommand(ctx, vfs, doCtx, {}, undefined, undefined, processes,
+    realGit === undefined ? undefined : () => realGit(ctx)));
   assert.equal(typeof gitCommand, 'function');
   return {
     gitCommand,
@@ -78,6 +79,8 @@ function commandContext(args) {
       async stat() { return { type: 'directory', size: 0, mtimeMs: 0, dev: 1 }; },
       // Each directory is empty: a destination is one a clone may take.
       async readdir() { return []; },
+      // And so holds no file to read (a config the clone looks for).
+      async readFile(path) { throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' }); },
     },
   };
 }
@@ -172,15 +175,25 @@ function commandContext(args) {
 }
 
 {
-  // A filter Nimbus cannot fetch with fails the command loudly instead of silently no-opping.
+  // A valid filter the built-in cannot fetch with is refused before acquiring a clone lease.
   const harness = registerCloneHarness();
   const stderrLines = [];
   const ctx = commandContext(['clone', '--filter=sparse:oid=main:.sparse', 'https://example.invalid/repo.git']);
   ctx.stderr = { write(line) { stderrLines.push(line); } };
   const exitCode = await harness.gitCommand(ctx);
   assert.equal(exitCode, 128);
-  assert.match(stderrLines.join(''), /invalid filter-spec 'sparse:oid=main:.sparse'/);
+  assert.ok(stderrLines.join(''), 'without real git, the saved refusal is printed');
   assert.equal(harness.acquiredRoots.length, 0, 'refused clone must not acquire a mutation lease');
+  const invocation = [...ctx.args];
+  const handed = registerCloneHarness(async (original) => {
+    assert.deepEqual(original.args, invocation);
+    assert.equal(stderrLines.length, 0, 'no diagnostic before handing a valid filter to real git');
+    return 41;
+  });
+  stderrLines.length = 0;
+  ctx.vfs = new Proxy({}, { get() { throw new Error('the built-in filesystem must not be acquired'); } });
+  assert.equal(await handed.gitCommand(ctx), 41);
+  assert.equal(handed.acquiredRoots.length, 0, 'delegated clone must not acquire a built-in mutation lease');
 }
 
 console.log('git clone exclusive lifecycle: ok');

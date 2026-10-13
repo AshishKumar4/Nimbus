@@ -23,6 +23,67 @@ published independently in the `@nimbus-sh` npm scope.
   the file: `stat` shows another user's later change, and a file removed and
   made again has a new file's mode and times. `stat` answers the file's real
   device and link count (`dev`, `nlink`) instead of one made-up device.
+- Added: real git 2.53, built for WASI, in the default runtime catalog.
+  `git` runs it for every command, option or repository format the
+  built-in git does not fully implement (for example `log --graph`,
+  `commit` with paths, `branch -d`'s merged check, `push -u`, `rebase`,
+  `stash`, a SHA-256 repository); `status`, `add`, `diff`, a plain `commit`
+  and `checkout` stay on the built-in git. A command whose hooks the
+  repository makes executable, or whose message comes from an editor, runs
+  on real git, since the built-in runs neither; `status` and `diff` stay
+  built-in and do not write back their index refresh where a
+  `post-index-change` hook is executable. Remote helpers (`git-remote-http`
+  and `git-remote-https`), hooks and aliases work through the session's one
+  child-process broker. On a host whose engine cannot suspend WebAssembly
+  (Node 22), a git child process is refused by name instead.
+- Fixed: a program's end no longer waits on the session to answer the
+  release of its read lease and of the subtrees it held; only its last
+  writes are waited for.
+- Fixed: a `node:sqlite` database keeps what a connection wrote when it is
+  closed. A connection opened after another's `close()` in the same run sees
+  it (it read the run's starting copy), a write made through `all()` or
+  `get()`, such as `INSERT ... RETURNING`, or one SQLite does not count, such
+  as `ANALYZE`'s statistics, is kept (only `run()` and `exec()` were), and a
+  relative name is the file it named when the connection opened. The model
+  is the whole database image: close writes the connection's image back to
+  its file, through the program's `fs`, unless it is the image that was read,
+  so a database only read is not written; a program killed before `close()`
+  loses that connection's changes, and two connections or processes writing
+  one file each write their own image, the last close winning. A write the
+  program may not make fails `close()` as `fs.writeFileSync` would; one the
+  session refuses later is reported as any refused write is. node:sqlite is
+  powered by `fs`, so a close that writes costs what writing that file
+  through `fs` costs: about 0.85 ms CPU per database a close writes, and a
+  SQLite-only program's first write in a fresh isolate about 6 ms more, the
+  fs write path's one-time compile. Writes are no longer lost. A Node `fs`
+  write over an existing file no longer reads the file it replaces (about
+  0.4 ms less per MiB).
+- Fixed (security): helpers a command starts acted as the kernel, not as
+  the command's process. `nimbus wrangler dev` read its config and D1
+  migrations, kept its KV and R2 stores, and bundled its Worker as
+  `CRED_KERNEL`, so a project symlink made it read a file its user could
+  not; a resident process's boot read the `.wasm` files it named as the
+  kernel; `npm install -g` wrote its bin shims as the kernel; and global
+  npm and gem commands, and a command lookup with no caller, were
+  discovered by reading as the kernel. Each now acts as the process that
+  ran it (the session's user for discovery), and is refused what that
+  process is refused. Shims and stores an earlier release left as root are
+  handed to the owner of the directory holding them, the first time they
+  are written. The shared build service's default view is the session's
+  user's.
+- Changed: `npm install -g` makes a missing prefix (`<prefix>/lib`,
+  `<prefix>/bin`) as the process that runs it, where it always used the
+  session's user: `sudo npm install -g --prefix <new dir>` now makes it
+  root's, as on Linux.
+- Fixed: `nimbus wrangler dev` could serve an old build after a rebuild
+  or a restart. A rebuild still bundling when `wrangler dev` was run again
+  (or when a later rebuild overtook it) went on: it printed "Worker built"
+  while the new server was still building, so opening the Worker then
+  showed the waiting page, and it ended the new server's Durable Objects
+  and put its own old classes in their place. A superseded build now says
+  and changes nothing, "Worker built" is printed once the build serves,
+  and `wrangler dev` stops the server before it even while that one is
+  still starting.
 - Fixed (security): the session's owner surfaces acted as the kernel. The
   browser editor's saves, reads and listings, the agent's `read_file`,
   `write_file` and `list_files`, and `POST /api/write-file` and

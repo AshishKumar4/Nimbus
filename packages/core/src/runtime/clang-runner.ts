@@ -33,8 +33,7 @@ import { type ProcessView, withHostView } from './process-files.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import type { Facet, FacetHost } from './facet-host.js';
 import type { ClangFacetResult } from './facet-tasks.js';
-import { CRED_KERNEL, gateSyncLaunch, requireVfsCred, WASM32_WASI_NIMBUS_ABI, type NimbusFilesystemAuthority } from './os-contracts.js';
-import type { WasiCred } from './wasi/types.js';
+import { CRED_KERNEL, gateSyncLaunch, requireVfsCred, WASM32_WASI_NIMBUS_ABI, type NimbusFilesystemAuthority, type VfsCred } from './os-contracts.js';
 import type { ResidentFilesystemStats } from './wasi/resident-filesystem.js';
 import { normalizeVfsPath, resolveVfsPath } from '../vfs/path.js';
 import { hasLeadingCliFlag } from './cli-flags.js';
@@ -80,8 +79,8 @@ export function makeClangRunnerFactory(deps: {
       const cwd: string = ctx.cwd || '/home/user';
       const notHydrated = await gateSyncLaunch(vfs.process, cwd, null, argv);
       if (notHydrated !== null) { ctx.stderr.write(`${binName}: ${notHydrated}\n`); return 1; }
-      const { uid, gid, groups } = requireVfsCred(ctx.cred, binName);
-      const processCred: WasiCred = { uid, gid, groups: [...groups] };
+      const { uid, gid, groups, umask } = requireVfsCred(ctx.cred, binName);
+      const processCred: VfsCred = { uid, gid, groups: [...groups], umask };
 
       // Fast paths — no wasm boot.
       if (hasLeadingCliFlag(argv, CLANG_VERSION_FLAGS)) {
@@ -308,10 +307,12 @@ export function makeClangRunnerFactory(deps: {
           return 1;
         }
 
-        // Real linkers chmod their output executable (+x even after a
-        // prior chmod -x) — so `./a.out` runs with no manual chmod.
+        // A linker writes a new executable: 0777 under the caller's umask,
+        // as ld and wasm-ld leave it (even over a file someone chmod -x'd).
+        // The binji images cannot ask for it themselves: they predate the
+        // Nimbus filesystem extension (nimbus_fs) a rebuilt libc would use.
         try {
-          await vfs.chmod(outputGuest.replace(/^\/+/, ''), 0o755);
+          await vfs.chmod(outputGuest.replace(/^\/+/, ''), 0o777 & ~umask);
         } catch (error) {
           ctx.stderr.write(`${binName}: ${parsed.outputPath}: ${errorMessage(error)}\n`);
           return 1;
@@ -547,7 +548,7 @@ async function ensureSysrootUnpacked(vfs: ProcessView, tarVfsPath: string, sysro
 interface ClangFacetArgs {
   argv: string[];
   /** The credential the session runs the toolchain as: what its own copy of the namespace is read as. */
-  cred: WasiCred;
+  cred: VfsCred;
 }
 
 interface ClangFacetTarget {

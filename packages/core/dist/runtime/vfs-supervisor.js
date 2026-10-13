@@ -20,6 +20,7 @@ export { FILESYSTEM_RPC_METHODS, vfsSupervisor } from './filesystem-mirrors.gene
 const NODE_SHIM_RPC_METHODS = [
     'readFile', 'writeFileStat', 'lstat', 'exists', 'setUmask', 'fsAcquired',
     'fsStorageGrant', 'fsReadRangeUncached', 'fsReadBatch', 'fsListTree',
+    'fsReadDirectories',
 ];
 export const SUPERVISOR_ANSWERED_METHODS = [
     ...FILESYSTEM_ANSWERED_RPC_METHODS,

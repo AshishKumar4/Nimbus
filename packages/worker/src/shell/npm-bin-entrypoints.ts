@@ -1,4 +1,4 @@
-import { CRED_KERNEL, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_SESSION_USER, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { ProcessView, X_OK, type ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import { projectFs, type ProjectFs } from '../runtime/project-fs.js';
 import type { FacetManager, StagedArtifactExecResult } from '../facets/manager.js';
@@ -81,8 +81,8 @@ export function installNpmBinFallbackResolver(
   const upstreamResolve = registry.resolve.bind(registry);
   // Bins are probed through the caller's view, the one the command that
   // runs looks its bin up again through; a resolution without a caller sees
-  // the namespace as the kernel.
-  const kernelView = new ProcessView(deps.filesystem.openHost(CRED_KERNEL).fs);
+  // the namespace as the session user.
+  const ownerView = new ProcessView(deps.filesystem.openHost(CRED_SESSION_USER).fs);
   // A lookup the namespace cannot answer (a mount that fails under the cwd)
   // finds no bin: the name resolves as it would with none, and only the
   // command it names fails.
@@ -91,7 +91,7 @@ export function installNpmBinFallbackResolver(
   };
 
   registry.resolve = async function resolveWithNpmBins(name: string, from?: ResolveContext): Promise<unknown> {
-    const context = from ?? resolveContext(deps.getCwd() || '/home/user', undefined, kernelView);
+    const context = from ?? resolveContext(deps.getCwd() || '/home/user', undefined, ownerView);
     const cwd = context.cwd;
     const inspector = projectFs(context.view);
     // An npm bin shim by path (a launcher's `exec`, or the file a search of

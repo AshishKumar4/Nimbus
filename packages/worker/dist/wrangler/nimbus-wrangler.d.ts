@@ -15,12 +15,15 @@
  */
 import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import type { EsbuildReadFs, EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import type { CompositeVFS } from '@nimbus-sh/core/vfs/composite.js';
 export interface NimbusWranglerOptions {
     /** The workspace's network: the worker under development goes out through its egress. */
     network: WorkspaceNetwork;
+    /** The engine, as the process that started the server: its config, migrations and stores. */
     vfs: CredentialedVfs;
+    /** The namespace, as the same process: what the Worker's bundle reads. */
+    bundleFs: EsbuildReadFs;
     /** The session's namespace, whose changes rebuild the worker (CompositeVFS.watchChanges). */
     namespace: Pick<CompositeVFS, 'watchChanges'>;
     esbuild: EsbuildService;
@@ -59,6 +62,7 @@ export declare function rewriteLocationForOuter(location: string, outerWorkerBas
 export declare class NimbusWrangler {
     private readonly network;
     private vfs;
+    private bundleFs;
     private namespace;
     private esbuild;
     private loaderEnv;
@@ -70,6 +74,15 @@ export declare class NimbusWrangler {
     private config;
     private workerStub;
     private buildVersion;
+    /**
+     * The build that may serve: each build takes the next, and so does stop().
+     * A build that is no longer the latest when it would serve (a later
+     * rebuild overtook it, or its server was stopped) says and changes
+     * nothing: not the Durable Object classes, objects or preview of the
+     * build, or server, that superseded it.
+     */
+    private generation;
+    private stopped;
     private unsubVfs;
     private rebuildTimer;
     /** DO class map: binding name → DurableObjectClass from the inner worker. */
@@ -77,7 +90,9 @@ export declare class NimbusWrangler {
     constructor(opts: NimbusWranglerOptions);
     /** Start the wrangler dev server. */
     start(): Promise<boolean>;
-    /** Stop the wrangler dev server. */
+    /** Whether stop() was called since the last start(): a start it cut short failed for that reason. */
+    get wasStopped(): boolean;
+    /** Stop the wrangler dev server, and any build it has under way. */
     stop(): void;
     get isRunning(): boolean;
     private readConfig;
@@ -104,14 +119,20 @@ export declare class NimbusWrangler {
      * `path.split('/').filter(Boolean)` shape via `normalizePath`).
      */
     private resolveEntryPath;
+    /**
+     * Build the Worker and, unless a later build or stop() superseded it, make
+     * it the one that serves, then `served()`, then say "Worker built": one
+     * synchronous step after the build's last wait, so nothing comes between.
+     */
     private buildAndLoad;
     /**
      * Checks that `worker` (the inner Worker, loaded) exports each binding's
      * class, asking its own isolate once through its `classesEntrypoint`
-     * (which also runs its module code, so an error there is the build's),
-     * then registers each class for the session's facets to run. False,
-     * logged, when one is missing.
+     * (which also runs its module code, so an error there is the build's).
+     * False when one is missing: logged, unless the build was superseded.
      */
+    private exportsDoClasses;
+    /** Registers each binding's class for the session's facets to run. */
     private registerDoClasses;
     private buildInnerEnv;
     /** The session's changes (CompositeVFS.watchChanges), each named as SQLite names it (no leading slash). */

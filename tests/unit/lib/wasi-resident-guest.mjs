@@ -5,7 +5,10 @@
  * supervisor that dispatches each op as the session does. The guest's imports
  * are called from the test as a guest calls them, with its memory laid out by
  * hand. `refuse(path)` makes the session refuse every write to a file whose
- * path it matches with ENOSPC, as a full store does.
+ * path it matches with ENOSPC, as a full store does. `of` runs the guest as
+ * another process of an earlier guest's session, in a WASI body of its own;
+ * `after` runs it as the next process in an earlier guest's WASI body (a warm
+ * facet, FacetSpec.warm), which that guest ended. `cred` is who it runs as.
  *
  * Directory note: under tests/unit/lib/ so the suite does not run it as a test.
  */
@@ -34,18 +37,16 @@ const enc = new TextEncoder();
 /** Whether this engine can park a guest: without JSPI a guest answers from the session, and these tests have nothing to test. */
 export const canPark = typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function';
 
-/**
- * @param {{ refuse?: (path: string) => boolean, of?: object }} [options]
- * `of`: another guest whose session this one is a second process of (its
- * own pid, its own WASI body and store).
- */
-export async function residentGuest({ refuse = () => false, of } = {}) {
-  const modulePath = path.join(os.tmpdir(), `wasi-resident-guest-${process.pid}-${Math.random().toString(16).slice(2)}.mjs`);
-  writeFileSync(modulePath, `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, __wasiFsStats, __wasiSettleWrites, __wasiRunStartAsync, __wasiPrepareFilesystem };`);
-  let P;
-  try { P = await import(pathToFileURL(modulePath).href); } finally { rmSync(modulePath, { force: true }); }
+/** @param {{ refuse?: (path: string) => boolean, of?: object, after?: object, cred?: typeof USER }} [options] */
+export async function residentGuest({ refuse = () => false, of, after, cred = USER } = {}) {
+  let P = after?.P;
+  if (P === undefined) {
+    const modulePath = path.join(os.tmpdir(), `wasi-resident-guest-${process.pid}-${Math.random().toString(16).slice(2)}.mjs`);
+    writeFileSync(modulePath, `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, __wasiFsStats, __wasiSettleWrites, __wasiRunStartAsync, __wasiPrepareFilesystem };`);
+    try { P = await import(pathToFileURL(modulePath).href); } finally { rmSync(modulePath, { force: true }); }
+  }
 
-  const session = of?.session ?? (() => {
+  const session = (of ?? after)?.session ?? (() => {
     const harness = createSqliteVfsTestHarness();
     const raw = new SqliteVFS(harness.sql, harness.ctx);
     const kernel = raw.as(CRED_KERNEL);
@@ -61,7 +62,7 @@ export async function residentGuest({ refuse = () => false, of } = {}) {
   })();
   const { harness, raw, kernel, processes, authority } = session;
   const boundIncarnation = session.deliveries.incarnation;
-  const { pid } = processes.spawn('guest', ['guest'], '/home/user', { cred: USER });
+  const { pid } = processes.spawn('guest', ['guest'], '/home/user', { cred });
 
   const refusedHandles = new Set();
   const supervisor = { synchronous: () => { throw new Error('rpc stubs have no synchronous view'); } };
@@ -84,6 +85,9 @@ export async function residentGuest({ refuse = () => false, of } = {}) {
   }
   // What session/rpc.ts answers itself rather than through the op table.
   supervisor.fsAcquire = async (epoch, cursor, options) => session.bridge.bridge(pid).acquire(epoch, cursor, options);
+  /** The directory batches the guest asked for (fsReadDirectories requests). */
+  const batches = [];
+  supervisor.fsReadDirectories = async (request) => { batches.push(request); return session.dispatch({ op: 'fsReadDirectories', args: [request], pid }); };
   // The process's waves (its filesystem client's), fenced as SupervisorRPC fences them.
   supervisor.openWaveWriter = async () => /** @type {{ writer: string | null }} */ (await session.dispatch({ op: 'openWaveWriter', args: [], pid })).writer;
   supervisor.retireWaveWriter = async (writer) => { await session.dispatch({ op: 'retireWaveWriter', args: [writer], pid }); };
@@ -104,16 +108,16 @@ export async function residentGuest({ refuse = () => false, of } = {}) {
     for (const request of requests) {
       try {
         if (!('length' in request)) out.push({ stat: (await current.stat(request.path, { followSymlinks: false })) ?? null });
-        else out.push({ bytes: await current.readRange(request.path, request.offset, request.length) });
+        else out.push({ bytes: await current.readRange(request.path, request.offset, request.length, { expectedEpoch: request.expectedEpoch, expectedRevision: request.expectedRevision }) });
       } catch (error) { out.push({ error }); }
     }
     return out;
   };
 
   const memory = new WebAssembly.Memory({ initial: 16 });
-  P.__wasiInitFS({ root: '', preopens: [{ wasiPath: '/', vfsPath: '' }], cred: USER });
+  P.__wasiInitFS({ root: '', preopens: [{ wasiPath: '/', vfsPath: '' }], cred });
   P.__wasiAdoptSupervisor(supervisor);
-  const { wasiImport } = makeImportsWithoutJSPI(P, {
+  const { wasiImport, fsImport } = makeImportsWithoutJSPI(P, {
     argv: ['guest'], env: {}, getMemory: () => memory, stdoutWrite: () => {}, stderrWrite: () => {},
   });
   const view = () => new DataView(memory.buffer);
@@ -123,7 +127,7 @@ export async function residentGuest({ refuse = () => false, of } = {}) {
   const RIGHTS_ALL = 0x1fffffffn;
 
   const guest = {
-    P, kernel, raw, session, pid, stats: () => P.__wasiFsStats(),
+    P, kernel, raw, session, pid, wasiImport, fsImport, memory, batches, stats: () => P.__wasiFsStats(),
     /**
      * The session's isolate is replaced under the running guest: its calls
      * reach a fresh process table, of the next generation, that never held it.
@@ -230,7 +234,8 @@ export async function residentGuest({ refuse = () => false, of } = {}) {
     },
     async dispose() { for (const b of [...session.retired, session.bridge]) await b.dispose(); await authority.releaseProcess(pid); harness.db.close(); },
     /** This process ends (its writes settled, its grants given back); the session goes on for another. */
-    async end() { await P.__wasiSettleWrites(); await authority.releaseProcess(pid); },
+    /** What the run's settle reported (null: everything it wrote was answered). */
+    async end() { const failed = await P.__wasiSettleWrites(); await authority.releaseProcess(pid); return failed; },
   };
   // The store boots on the first call; wait until it answers.
   await guest.open('home/user', { directory: true }).then((fd) => guest.close(fd));

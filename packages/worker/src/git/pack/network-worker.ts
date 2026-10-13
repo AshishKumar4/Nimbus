@@ -11,7 +11,7 @@ import { createWaveWriter } from '@nimbus-sh/platform/wave-writer.js';
 import { enc } from '@nimbus-sh/core/_shared/bytes.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { createGitFs } from '../git-fs.js';
-import type { GitNetworkOp, GraphFiltersStep } from '../network-facet.js';
+import type { GitNetworkOp, GitNetworkOpts, GraphFiltersStep } from '../network-facet.js';
 import type { PathProtection } from '../worktree/verify-path.js';
 import { GIT_CLONE_JOB_MARKER } from '../clone-job.js';
 import { createBufferedFs, overlayEntryOf, type OverlayEntry } from './buffered-fs.js';
@@ -30,6 +30,8 @@ import { GitWriteFailure, mountWriter } from './mount-writer.js';
 import { discover, requestPack } from './upload-pack.js';
 import { retryingGitHttp } from './transport.js';
 import { observedGitHttp, remoteFailureOf } from './remote-failure.js';
+import { listRefs, fetchPack, fetchPackResume, pushPack } from './remote.js';
+import { readFramedGitBody } from './remote-body.js';
 import type * as GitBundle from '../../../vendor/git.generated.mjs';
 
 /**
@@ -50,6 +52,10 @@ type HistoryRequest =
 
 /** The body an invocation is sent. */
 interface FacetRequest {
+  forPush?: boolean;
+  remoteFetch?: GitNetworkOpts['remoteFetch'];
+  remotePush?: GitNetworkOpts['remotePush'];
+  remotePushPack?: ReadableStream<Uint8Array>;
   op: GitNetworkOp;
   phase?: string;
   invocationId?: unknown;
@@ -157,6 +163,13 @@ function gitPackContext(
   log: (message: string) => void, worktreeRoot: string | null = null,
 ): GraphContext {
   const dir = normalizeVfsPath(String(opts.dir));
+  const repository = opts.op === 'remote-fetch' ? opts.remoteFetch : undefined;
+  const gitDir = repository === undefined ? undefined : normalizeVfsPath(repository.gitDir);
+  const storage = gitDir === undefined ? undefined : {
+    gitDir,
+    commonDir: normalizeVfsPath(repository?.commonDir ?? gitDir),
+    objectDir: normalizeVfsPath(repository?.objectDir ?? (repository?.commonDir ?? gitDir) + '/objects'),
+  };
   // A pack's ranged writes, as its waves (the wave writer's deadline), stop at the phase deadline.
   const mutation = <T>(name: 'fsWriteRange' | 'rename' | 'lock', call: () => Promise<T>): Promise<T> => {
     if (deadline !== null && Date.now() >= deadline) return Promise.reject(new Error('git ' + (opts.phase || opts.op) + ' passed its phase deadline'));
@@ -176,7 +189,7 @@ function gitPackContext(
       unlink: (path) => mutation('lock', () => supervisor.unlink(path)),
       readdir: (path) => supervisorNames(supervisor, stats, path),
     },
-    writer(onReceipts?: (receipts: CloneReceipt[]) => void) {
+    writer(onReceipts?: (receipts: CloneReceipt[]) => void, directoryRoot?: string) {
       const waves = createWaveWriter({
         supervisor: {
           // The writer's fence for this attempt goes with it: the session refuses a late original.
@@ -190,8 +203,8 @@ function gitPackContext(
           },
         },
         root,
-        worktreeRoot,
-        base: dir,
+        worktreeRoot: directoryRoot ?? worktreeRoot,
+        base: storage === undefined ? dir : undefined,
         deadline,
         onWave(report) {
           stats.filesWritten += report.files;
@@ -208,6 +221,7 @@ function gitPackContext(
       });
     },
     dir,
+    storage,
     url: opts.url ?? '',
     auth: opts.auth,
     marker: { path: '.git/' + GIT_CLONE_JOB_MARKER, text: cloneJobMarker(opts) },
@@ -269,7 +283,9 @@ export const networkWorker = {
 
     let opts: FacetRequest;
     try {
-      opts = await request.json();
+      const framed = await readFramedGitBody(request);
+      opts = framed.options as FacetRequest;
+      if (framed.pack) opts.remotePushPack = framed.pack;
     } catch (e) {
       return Response.json({
         success: false, error: 'Invalid request body: ' + (e as Error | undefined)?.message,
@@ -504,6 +520,19 @@ export const networkWorker = {
         }, advertisement);
         const prepared = 'stream' in started ? { stream: started.stream } : { fast: started };
         return respond(true, { prepared, metadataOverlay: overlayStats() });
+      } else if (opts.op === 'remote-list') {
+        if (typeof opts.url !== 'string') throw protocolError('remote URL is missing');
+        return respond(true, { remote: await listRefs({ url: opts.url, auth: opts.auth }, { forPush: opts.forPush === true }) });
+      } else if (opts.op === 'remote-fetch') {
+        if (!opts.remoteFetch) throw protocolError('remote fetch request is missing');
+        const context = gitPackContext(supervisor, stats, opts, null, null, log, normalizeVfsPath(opts.dir));
+        const remote = opts.remoteFetch.resume
+          ? await fetchPackResume(context, { pending: opts.remoteFetch.resume, budgetUnits: opts.historyBudgetUnits })
+          : await fetchPack(context, { ...opts.remoteFetch, jobId: invocationId, budgetUnits: opts.historyBudgetUnits });
+        return respond(true, { remote, metadataOverlay: overlayStats() });
+      } else if (opts.op === 'remote-push') {
+        if (typeof opts.url !== 'string' || !opts.remotePush) throw protocolError('remote push request is missing');
+        return respond(true, { remote: await pushPack({ url: opts.url, auth: opts.auth }, opts.remotePush, opts.remotePushPack ?? null) });
       } else if (opts.op === 'graph-filters') {
         // A full clone's changed-path filters (git/pack/graph-filters.ts):
         // reads the repository's packs, writes its commit-graph only.

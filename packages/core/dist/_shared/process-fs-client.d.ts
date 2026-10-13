@@ -281,6 +281,8 @@ export interface ProcessFsClient {
      * ask the session.
      */
     readTrusted(): boolean;
+    /** Ownership/log check only, never a clock check: combine with trust established at an actual I/O resumption. */
+    readUnchanged(owner: string): boolean;
     /** A barrier's ACQUIRE asking for the read lease too (VfsAcquireOptions.lease), now; null when it takes none. */
     readLeaseAsk(): ReadLeaseAsk | null;
     /**
