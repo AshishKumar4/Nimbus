@@ -193,10 +193,12 @@ function closeFd(s, proc, fd) {
     // would report the whole slice as failed instead of its exit code.
     if (e.kind === 'authority')
         queueSessionTask(s, Promise.resolve(s.fs.close(e.handle.id)).catch(() => { }));
-    // A copy's hold: closed with the session's next open (ResidentHolds), as nothing waits on it.
-    const held = e.kind === 'resident' ? closeResident(e) : null;
-    if (held !== null)
-        s.holds.release(held);
+    // A copy's hold: kept for the next copy at its name, or closed with the session's next open (ResidentHolds).
+    if (e.kind === 'resident') {
+        const held = closeResident(e);
+        if (held !== null)
+            s.holds.letGo(held, e.stat);
+    }
     if (e.kind === 'pipe') {
         bumpPipe(s, e, -1);
         const pp = s.pipes.get(e.pipeId);

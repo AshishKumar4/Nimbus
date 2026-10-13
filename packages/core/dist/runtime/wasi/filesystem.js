@@ -6,14 +6,14 @@ export function shareResident(open) {
 }
 /**
  * One descriptor on a resident open closed. The last gives back its hold:
- * a pin here, and the session descriptor it answers, which the caller closes
- * without waiting on it, as nothing of the guest's depends on it.
+ * a pin here, and the session descriptor it answers, for the caller to let
+ * go (ResidentHolds.letGo), as nothing of the guest's depends on it.
  */
 export function closeResident(open) {
     if (--open.opens > 0)
         return null;
     if ('handle' in open.hold)
-        return open.hold.handle;
+        return open.hold;
     open.hold.pin?.release();
     return null;
 }
@@ -84,12 +84,53 @@ function pinsContent(fs) {
 }
 /**
  * The session descriptors that hold resident copies (residentHolds), for one
- * filesystem: a hold its copy let go waits here, and the next open closes it
- * (RuntimeOpenFlags.closing), as a close of its own would be a second call
- * to the session for every copy.
+ * filesystem. A hold its copy let go is kept, a few at most, at the name it
+ * was opened by: the next copy of the same file there takes it again after
+ * a stat, which is all main's copy cost, rather than an open of its own.
+ * Past those, and a hold no name keeps, it waits to be closed with the next
+ * open (RuntimeOpenFlags.closing), as a close of its own would be a second
+ * call to the session.
  */
 export class ResidentHolds {
+    keep;
     released = [];
+    kept = new Map();
+    constructor(keep = 16) {
+        this.keep = keep;
+    }
+    /** The name a hold is kept by: what `open` was asked of, followed or not. */
+    static keyOf(name, follow) {
+        const at = typeof name === 'string' ? `/${name}` : 'root' in name ? `r${name.root}\0${name.path}` : `d${name.directory}\0${name.path}`;
+        return follow ? at : `${at}\0nofollow`;
+    }
+    /** `hold`, its copy of the file `stat` describes let go. */
+    letGo(hold, stat) {
+        if (hold.key === undefined) {
+            this.released.push(hold.handle);
+            return;
+        }
+        const replaced = this.kept.get(hold.key);
+        if (replaced !== undefined) {
+            this.kept.delete(hold.key);
+            this.released.push(replaced.handle);
+        }
+        this.kept.set(hold.key, { handle: hold.handle, dev: stat.dev, ino: stat.ino });
+        if (this.kept.size > this.keep) {
+            for (const [key, oldest] of this.kept) {
+                this.kept.delete(key);
+                this.released.push(oldest.handle);
+                break;
+            }
+        }
+    }
+    /** The hold kept at `key`, taken out. */
+    takeKept(key) {
+        const kept = this.kept.get(key);
+        if (kept !== undefined)
+            this.kept.delete(key);
+        return kept;
+    }
+    /** A hold no copy will take again. */
     release(handle) { this.released.push(handle); }
     /** The holds the next open closes, handed out once. */
     take() {
@@ -205,6 +246,11 @@ export function installAuthorityFilesystem(imports, options) {
         holds.release(handle);
     else
         closeUnawaited(fs, handle); };
+    /** A copy's hold, the copy of the file `stat` describes let go: kept or released by `holds` (ResidentHolds.letGo). */
+    const letCopyGo = (fs, hold, stat) => { if (holds)
+        holds.letGo(hold, stat);
+    else
+        closeUnawaited(fs, hold.handle); };
     /** `flags`, closing what was let go since the last open (RuntimeOpenFlags.closing). */
     const closingLetGo = (flags) => {
         const closing = holds?.take();
@@ -505,9 +551,10 @@ export function installAuthorityFilesystem(imports, options) {
             }
         };
         // A descriptor the session opened: the copy's, holding it, when its file
-        // is small enough for one (its bytes `content`'s); else `otherwise`.
-        const adopt = (handle, content, otherwise) => residentable(handle.stat)
-            ? holding(handle.id, () => after(residentContent(handle.stat, content), bytes => copy(handle.stat, bytes, { handle: handle.id })))
+        // is small enough for one (its bytes `content`'s; `key`, the name it may
+        // be kept at, ResidentHolds); else `otherwise`.
+        const adopt = (handle, content, otherwise, key) => residentable(handle.stat)
+            ? holding(handle.id, () => after(residentContent(handle.stat, content), bytes => copy(handle.stat, bytes, { handle: handle.id, key })))
             : otherwise();
         // A reopen's copy is read through its new descriptor, as its file may have no name.
         const answer = (handle) => readOnly ? adopt(handle, () => fs.read(handle.id, 0, handle.stat.size), () => opened(handle)) : opened(handle);
@@ -540,7 +587,19 @@ export function installAuthorityFilesystem(imports, options) {
         // stat. A file that is not a copy's (large, a device) is opened through
         // the hold, which is let go.
         if (holds) {
-            return after(fs.open(target, closingLetGo({ path: true, followSymlinks })), held => adopt(held, byName, () => after(holding(held.id, () => fs.reopen({ handle: held.id }, opening)), file => { letGo(fs, held.id); return opened(file); })));
+            const key = ResidentHolds.keyOf(target, followSymlinks);
+            const viaHold = () => after(fs.open(target, closingLetGo({ path: true, followSymlinks })), held => adopt(held, byName, () => after(holding(held.id, () => fs.reopen({ handle: held.id }, opening)), file => { letGo(fs, held.id); return opened(file); }), key));
+            const kept = holds.takeKept(key);
+            if (kept === undefined)
+                return viaHold();
+            // A hold kept at this name is the copy's again while the name has its file: a stat, as main's copy cost.
+            return after(fs.stat(target, { followSymlinks }), st => {
+                if (st !== null && st.dev === kept.dev && st.ino === kept.ino && residentable(st)) {
+                    return holding(kept.handle, () => after(residentContent(st, byName), bytes => copy(st, bytes, { handle: kept.handle, key })));
+                }
+                holds.release(kept.handle);
+                return st === null ? fail('ENOENT') : viaHold();
+            });
         }
         return after(fs.stat(target, { followSymlinks }), st => {
             if (st === null)
@@ -582,7 +641,7 @@ export function installAuthorityFilesystem(imports, options) {
             fds.delete(fd);
             const held = closeResident(e);
             if (held !== null)
-                letGo(fs, held);
+                letCopyGo(fs, held, e.stat);
             return 0;
         }
         return after(fs.close(e.handle.id), () => { fds.delete(fd); return 0; });
@@ -598,9 +657,11 @@ export function installAuthorityFilesystem(imports, options) {
             fail('ENOTCAPABLE');
         // dup2 closes what it lands on, and only the owner of that fd knows how:
         // a socket's stream and a pipe's writer count are the host's to release.
-        const held = target?.kind === 'resident' ? closeResident(target) : null;
-        if (held !== null)
-            letGo(fs, held);
+        if (target?.kind === 'resident') {
+            const held = closeResident(target);
+            if (held !== null)
+                letCopyGo(fs, held, target.stat);
+        }
         const released = !target || target.kind === 'resident' ? undefined
             : target.kind === 'authority' ? fs.close(target.handle.id)
                 : hostClose?.(to);

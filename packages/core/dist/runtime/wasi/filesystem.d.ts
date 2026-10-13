@@ -42,21 +42,24 @@ export interface ResidentFd {
  * name has it, with the filesystem's pin on its bytes when it pinned them
  * (pinContent), given back with the copy.
  */
-export type ResidentHold = {
-    readonly handle: number;
-} | {
+export type ResidentHold = SessionHold | {
     readonly name: RuntimeFsPath;
     readonly follow: boolean;
     readonly pin?: PinnedContent;
 };
+/** A session descriptor a copy holds: `key`, the name it was opened by (ResidentHolds.keyOf), where it may be kept once the copy goes. */
+export interface SessionHold {
+    readonly handle: number;
+    readonly key?: string;
+}
 /** Another descriptor on a resident open, as dup(2) makes one: the same offset, the same hold. */
 export declare function shareResident(open: ResidentFd): ResidentFd;
 /**
  * One descriptor on a resident open closed. The last gives back its hold:
- * a pin here, and the session descriptor it answers, which the caller closes
- * without waiting on it, as nothing of the guest's depends on it.
+ * a pin here, and the session descriptor it answers, for the caller to let
+ * go (ResidentHolds.letGo), as nothing of the guest's depends on it.
  */
-export declare function closeResident(open: ResidentFd): number | null;
+export declare function closeResident(open: ResidentFd): SessionHold | null;
 export interface AuthorityPreopen {
     kind: 'preopen';
     vfsPath: string;
@@ -103,12 +106,32 @@ export declare function processGoneMessage(refusal: string): string;
 export declare function after<T, R>(value: Awaitable<T>, next: (value: T) => Awaitable<R>): Awaitable<R>;
 /**
  * The session descriptors that hold resident copies (residentHolds), for one
- * filesystem: a hold its copy let go waits here, and the next open closes it
- * (RuntimeOpenFlags.closing), as a close of its own would be a second call
- * to the session for every copy.
+ * filesystem. A hold its copy let go is kept, a few at most, at the name it
+ * was opened by: the next copy of the same file there takes it again after
+ * a stat, which is all main's copy cost, rather than an open of its own.
+ * Past those, and a hold no name keeps, it waits to be closed with the next
+ * open (RuntimeOpenFlags.closing), as a close of its own would be a second
+ * call to the session.
  */
 export declare class ResidentHolds {
+    private readonly keep;
     private released;
+    private readonly kept;
+    constructor(keep?: number);
+    /** The name a hold is kept by: what `open` was asked of, followed or not. */
+    static keyOf(name: RuntimeFsPath, follow: boolean): string;
+    /** `hold`, its copy of the file `stat` describes let go. */
+    letGo(hold: SessionHold, stat: {
+        readonly dev: number;
+        readonly ino: number;
+    }): void;
+    /** The hold kept at `key`, taken out. */
+    takeKept(key: string): {
+        readonly handle: number;
+        readonly dev: number;
+        readonly ino: number;
+    } | undefined;
+    /** A hold no copy will take again. */
     release(handle: number): void;
     /** The holds the next open closes, handed out once. */
     take(): readonly number[] | undefined;
