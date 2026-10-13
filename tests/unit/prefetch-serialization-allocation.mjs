@@ -73,17 +73,17 @@ try {
   const single = await peakOver(() => launchTree(3));
   assert.equal(single.result.exitCode, 0, single.result.stderr);
   reservations.length = 0;
-  const three = await peakOver(() => Promise.all([0, 1, 2].map(launchTree)));
-  const results = three.result;
+  const together = await peakOver(() => Promise.all([0, 1, 2].map(launchTree)));
+  const results = together.result;
   const capacity = readSupervisorAllocationBudget().capacity;
   console.log('PREFETCH_SERIALIZATION ' + JSON.stringify({ callers: 3, elapsedMs: performance.now() - started,
-    singlePeakOverBase: single.over, peakOverBase: three.over, capacity, reservations, results: results.map(({ exitCode, stderr }) => ({ exitCode, stderr })) }));
+    singlePeakOverBase: single.over, peakOverBase: together.over, capacity, reservations, results: results.map(({ exitCode, stderr }) => ({ exitCode, stderr })) }));
   assert.ok(results.every(result => result.exitCode === 0), JSON.stringify(results));
   assert.equal(reservations.length, 3, 'every distinct launch serialized its large cell');
   assert.ok(reservations.every(bytes => bytes >= VFS_BUNDLE_MAX_BYTES && bytes <= capacity),
     `each build serializes under its own admission (${reservations.join(', ')} held; one build's is ${VFS_BUNDLE_MAX_BYTES})`);
-  assert.ok(three.over <= single.over + capacity,
-    `three builds at once peak at one build's bytes plus the admitted budget (${three.over} > ${single.over} + ${capacity})`);
+  assert.ok(together.over <= single.over + capacity,
+    `three builds at once peak at one build's bytes plus the admitted budget (${together.over} > ${single.over} + ${capacity})`);
   assert.equal(readSupervisorAllocationBudget().current, 0, 'completed builds release their allocation');
   fs.mkdir('home/user/shared', { recursive: true, mode: 0o755 });
   fs.writeFile('home/user/shared/cell.js', '// PREFETCH_LEASE_EVIDENCE\nmodule.exports=1;', { mode: 0o644 });
