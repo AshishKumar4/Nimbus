@@ -1142,6 +1142,8 @@ const __fsMod = (() => {
   // re-sending on every flush made each read of the path a chmod, which bumped
   // its revision and evicted the process's own cell (create-astro EAGAIN).
   const _pendingModes = new Set();
+  // _nsDeviceAbove's answers, per directory; a barrier's delta may move them.
+  const _nsDevices = new Map();
   /**
    * Set this process's own attribute on \`k\`. \`fresh\`: the change is the next
    * one queued (_queueStructuralMutation settles it); otherwise its caller
@@ -1211,6 +1213,7 @@ const __fsMod = (() => {
     for (const attrs of [_localModes, _localTimes]) {
       for (const [k, entry] of attrs) if (entry.settled !== null && entry.settled < begin) attrs.delete(k);
     }
+    _nsDevices.clear();
   }
 
   /**
@@ -2034,14 +2037,24 @@ const __fsMod = (() => {
     // link, as its filesystem will say.
     return _newStats(_statMode(k, isDir, isSymlink, mode), uid, gid, undefined, size, atimeMs, mtimeMs, mtimeMs, 1, _nsDeviceAbove(k));
   }
-  /** The device of the nearest directory above \`k\` the namespace holds, if any. */
+  /**
+   * The device of the nearest directory above \`k\` the namespace holds, if
+   * any: per directory, until the next barrier changes the namespace.
+   */
   function _nsDeviceAbove(k) {
     if (!_nsActive()) return undefined;
-    for (let i = k.lastIndexOf("/"); ; i = k.lastIndexOf("/", i - 1)) {
-      const found = __resident.namespace.resolve(i > 0 ? k.slice(0, i) : "", true);
-      if (found && found !== "ELOOP" && Number(found.row.dev) > 0) return Number(found.row.dev);
-      if (i <= 0) return undefined;
+    const parent = k.slice(0, Math.max(0, k.lastIndexOf("/")));
+    let dev = _nsDevices.get(parent);
+    if (dev === undefined) {
+      dev = null;
+      for (let i = k.lastIndexOf("/"); ; i = k.lastIndexOf("/", i - 1)) {
+        const found = __resident.namespace.resolve(i > 0 ? k.slice(0, i) : "", true);
+        if (found && found !== "ELOOP" && Number(found.row.dev) > 0) { dev = Number(found.row.dev); break; }
+        if (i <= 0) break;
+      }
+      _nsDevices.set(parent, dev);
     }
+    return dev ?? undefined;
   }
 
   function _supervisor() {
