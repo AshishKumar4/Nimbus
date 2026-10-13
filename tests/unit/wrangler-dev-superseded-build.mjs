@@ -176,6 +176,25 @@ fourth.server.stop();
 assert.equal(await fourth.server.start(), true, 'a start after a stop that came before it starts');
 assert.equal(fourth.server.isRunning, true);
 fourth.server.stop();
+
+// ── a start stopped as it served, and started again at once ───────────────
+// The second start does not make the first one's report true: the first
+// build no longer serves.
+let restarted = null;
+const fifth = devServer('fifth', {
+  warn: true,
+  onLog: (message, server) => {
+    if (restarted !== null || !/a warning/.test(message)) return;
+    restarted = Promise.resolve();
+    queueMicrotask(() => { server.stop(); fifth.holdBuilds(true); restarted = server.start(); });
+  },
+});
+assert.equal(await fifth.server.start(), false, 'the first start, stopped as it served, reports it though another began');
+fifth.holdBuilds(false);
+fifth.release(0);
+assert.equal(await restarted, true, 'the second start serves');
+assert.equal(fifth.server.isRunning, true);
+fifth.server.stop();
 assert.deepEqual(firstBuilt, [true], '"Worker built" is said once the Worker serves');
 
 console.log('ok - wrangler-dev-superseded-build ("Worker built" once it serves; a superseded build says and changes nothing)');
