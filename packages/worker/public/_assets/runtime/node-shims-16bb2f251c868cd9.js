@@ -17761,14 +17761,25 @@ function packageSelfReferenceSubpath(pkg, specifier) {
 }
 
 var NOT_NORMAL = /\/$|\/\/|(?:^|\/)\.\.?(?:\/|$)/;
+function plainVfsPath(path) {
+  return NOT_NORMAL.test(path) ? null : path.charCodeAt(0) === 47 ? path.slice(1) : path;
+}
 function normalizeVfsPath(p) {
   const text = String(p ?? "");
-  if (!NOT_NORMAL.test(text)) return text.charCodeAt(0) === 47 ? text.slice(1) : text;
-  const segments = text.split("/");
+  const plain = plainVfsPath(text);
+  if (plain !== null) return plain;
+  return normalizedSegments(text, false);
+}
+function normalizedSegments(path, lookup) {
+  const segments = path.split("/");
+  const leaf = segments[segments.length - 1];
+  if (lookup && (leaf === "" || leaf === ".")) return null;
   const out = [];
   for (const seg of segments) {
-    if (seg === "..") out.pop();
-    else if (seg !== "." && seg !== "") out.push(seg);
+    if (seg === "..") {
+      if (lookup) return null;
+      out.pop();
+    } else if (seg !== "." && seg !== "") out.push(seg);
   }
   return out.join("/");
 }

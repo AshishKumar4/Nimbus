@@ -13,7 +13,7 @@ import Nimbus.Refine.Json
 
 namespace Nimbus.Refine.CompositeCases
 
-open Nimbus.Vfs.Composite
+open Nimbus.Vfs Nimbus.Vfs.Composite
 open Nimbus.Vfs.CompositeOps
 open Nimbus.Refine
 
@@ -129,7 +129,11 @@ def sortedPaths (ps : List Path) : Json :=
 
 def xoutJson : XOut → Json
   | .err c => .obj [("error", .str c)]
-  | .report r k => .obj [("removed", sortedPaths r), ("kept", sortedPaths k)]
+  | .report r k fs vanished =>
+    let failures := (fs.mergeSort fun a b => decide (key a.path ≤ key b.path)).map fun f =>
+        Json.obj [("path", pathJson f.path), ("code", .str f.code), ("syscall", .str f.syscall)]
+    .obj ([("removed", sortedPaths r), ("kept", sortedPaths k), ("failures", .arr failures)] ++
+      if vanished.isEmpty then [] else [("vanished", sortedPaths vanished)])
   | .bytes b => .obj [("bytes", .str s!"v{b}")]
   | .supported => .obj [("supported", .bool true)]
   | .count n => .obj [("count", .ofNat n)]
@@ -140,7 +144,8 @@ def xJson (P : Principal) (x : X) (o : XOut) : Json :=
   let base (name : String) (path : String) (extra : List (String × Json)) : Json :=
     .obj ([("as", .ofNat (uidOf P)), ("op", .str name), ("path", .str path)] ++ extra ++ [("expect", xoutJson o)])
   match x with
-  | .removeRecursive p => base "removeRecursive" p []
+  | .removeRecursive p strict => base "removeRecursive" p
+      (if strict then [("keepVanishedAncestors", .bool true)] else [])
   | .readRange p => base "readRange" p [("offset", .ofNat 0), ("length", .ofNat 64)]
   | .writeFileIfRevision p c => base "writeFileIfRevision" p [("expected", .ofNat (if c then 0 else 1))]
   | .readFileAtRevision p => base "readFileAtRevision" p []
@@ -148,15 +153,19 @@ def xJson (P : Principal) (x : X) (o : XOut) : Json :=
   | .statMode p => base "statMode" p []
 
 def capsJson (c : Caps) : Json :=
-  .obj [("removeRecursive", .bool c.removeRecursive), ("readRange", .bool c.readRange), ("cas", .bool c.cas),
-    ("rootMode", match c.rootMode with | some m => .ofNat m | none => .null), ("pins", .arr (c.pins.map fun p => .str (key p)))]
+  let faults (fs : List (Path × String)) : Json :=
+    .arr (fs.map fun (p, code) => .obj [("path", .str (key p)), ("code", .str code)])
+  .obj ([("removeRecursive", .bool c.removeRecursive), ("readRange", .bool c.readRange), ("cas", .bool c.cas),
+    ("rootMode", match c.rootMode with | some m => .ofNat m | none => .null), ("pins", .arr (c.pins.map fun p => .str (key p)))] ++
+    if c.faults = ({} : CompositeRemoval.Faults) then [] else
+      [("faults", .obj [("stat", faults c.faults.stat), ("readdir", faults c.faults.readdir), ("remove", faults c.faults.remove)])])
 
-def fullCaps (b : Backend) : Caps := ⟨true, true, true, if b = 0 then some 511 else none, []⟩
+def fullCaps (b : Backend) : Caps := ⟨true, true, true, if b = 0 then some 511 else none, [], false, {}⟩
 
 def genX (S : St) : Gen X := do
   let p ← genPath S
   let k ← below 8
-  if k < 3 then return .removeRecursive p
+  if k < 3 then return .removeRecursive p false
   else if k < 4 then return .readRange p
   else if k < 5 then
     let revisionOp ← below 2
@@ -179,6 +188,25 @@ def touchesPin (S : St) (caps : Backend → Caps) (P : Principal) (op : Op) : Bo
   | .unlink p | .rmdir p => pinned p false
   | .rename a _ => pinned a true
   | _ => false
+
+/-- Preserve every original seeded input trace, not only its initial trees. The
+    sampler keeps the old namespace shape above mounts so the contract change
+    cannot silently replace later operands or omit old steps. This is solely a
+    choice of test inputs; every expected answer and final tree uses execX's new
+    contract on the independent refined state below. -/
+def samplingState (caps : Backend → Caps) (S : St) (P : Principal) : X → St
+  | .removeRecursive raw _ =>
+    match reach S P false raw with
+    | .error _ => S
+    | .ok p =>
+      if p = [] ∨ synth S.mounts P p then S else
+      let b := (route S.mounts p).backend
+      let t := S.trees b
+      let rp := rel S.mounts p
+      if (look t rp).isNone then S
+      else if (caps b).removeRecursive then setTree S b (cut t rp)
+      else setTree S b (fallbackRemove t (caps b).pins rp).1
+  | x => (execX caps S P x).2
 
 def genCase : Gen (Option Json) := do
   let mut ms : List Mount := []
@@ -205,20 +233,23 @@ def genCase : Gen (Option Json) := do
           if !t.isEmpty then pins := pins ++ [← pick (t.map (·.1))]
       let mode ← below 3
       capList := capList ++ [(b, ⟨rr, (← below 2) == 0, (← below 2) == 0,
-        if mode == 0 then none else some 511, pins⟩)]
+        if mode == 0 then none else some 511, pins, false, {}⟩)]
   let caps : Backend → Caps := fun b => ((capList.find? (·.1 == b)).map (·.2)).getD (fullCaps b)
+  let mut sampler := S
   let mut steps : Array Json := #[]
   let n := (← below 16) + 6
   for i in [0:n] do
     let P ← below 2
     if (← below 4) == 0 then
-      let x ← genX S
+      let x ← genX sampler
+      sampler := samplingState caps sampler P x
       let (o, S') := execX caps S P x
       S := S'
       steps := steps.push (xJson P x o)
     else
-      let op ← genOp S (i + 20)
-      if touchesPin S caps P op then continue
+      let op ← genOp sampler (i + 20)
+      if touchesPin sampler caps P op then continue
+      sampler := (execC caps sampler P op).2
       let (o, S') := execC caps S P op
       S := S'
       steps := steps.push (opJson P op o)
@@ -253,7 +284,7 @@ def directedX : Json := Id.run do
      (1, [(["f"], .file 5), (["d"], .dir), (["d", "x"], .file 6), (["d", "y"], .file 7), (["e"], .dir), (["e", "z"], .file 8)]),
      (2, [(["g"], .file 9)])]
   let capList : List (Backend × Caps) :=
-    [(0, fullCaps 0), (1, ⟨false, false, false, some 511, [["d", "x"]]⟩), (2, ⟨true, true, true, none, []⟩)]
+    [(0, fullCaps 0), (1, ⟨false, false, false, some 511, [["d", "x"]], false, {}⟩), (2, ⟨true, true, true, none, [], false, {}⟩)]
   let caps : Backend → Caps := fun b => ((capList.find? (·.1 == b)).map (·.2)).getD (fullCaps b)
   let steps : List (Principal × (Op ⊕ X)) :=
     [(0, .inr (.statMode "/")), (0, .inr (.statMode "/m1")), (0, .inr (.statMode "/m2")),
@@ -265,10 +296,10 @@ def directedX : Json := Id.run do
      (0, .inr (.copy "/m1" "/m2/all" true)), (0, .inl (.readdir "/m2/all")),
      (0, .inr (.copy "/" "/m2/root" true)), (0, .inr (.copy "/m1/f" "/m1" false)),
      (0, .inr (.copy "/m1/e" "/m1/e/z2" true)), (0, .inr (.copy "/m1/d" "/m2/g" true)),
-     (0, .inr (.removeRecursive "/m1/d")), (0, .inl (.readdir "/m1/d")),
-     (0, .inr (.removeRecursive "/m1/e")), (0, .inl (.stat "/m1/e")),
-     (0, .inr (.removeRecursive "/m2/all")), (0, .inl (.stat "/m2/all")),
-     (0, .inr (.removeRecursive "/m1")), (0, .inr (.removeRecursive "/"))]
+     (0, .inr (.removeRecursive "/m1/d" false)), (0, .inl (.readdir "/m1/d")),
+     (0, .inr (.removeRecursive "/m1/e" false)), (0, .inl (.stat "/m1/e")),
+     (0, .inr (.removeRecursive "/m2/all" false)), (0, .inl (.stat "/m2/all")),
+     (0, .inr (.removeRecursive "/m1" false)), (0, .inr (.removeRecursive "/" false))]
   let mut S : St := { mounts := ms, trees := fun b => ((trees.find? (·.1 == b)).map (·.2)).getD [] }
   let mut out : Array Json := #[]
   for (P, st) in steps do
@@ -309,10 +340,100 @@ def directed : List Json :=
        (0, .stat "/missing/../b"), (0, .readdir "/missing/.."), (0, .stat "/pc/nope/.."),
        (0, .writeFile "/proc/b2/x" 1), (0, .rename "/missing/x" "/proc/b2/y"), (0, .rename "/proc/b2/x" "/missing/y")] ]
 
+/-- The original 204 cases retain their indices. Additional cases isolate each
+    GNU rule, including the one walk's strict/non-strict ENOENT policy. -/
+def removalCase (name : String) (ms : List Mount) (trees : List (Backend × Tree))
+    (capList : List (Backend × Caps)) (steps : List (Principal × X)) : Json := Id.run do
+  let caps : Backend → Caps := fun b => ((capList.find? (·.1 == b)).map (·.2)).getD (fullCaps b)
+  let mut S : St := { mounts := ms, trees := fun b => ((trees.find? (·.1 == b)).map (·.2)).getD [] }
+  let mut out : Array Json := #[]
+  for (P, op) in steps do
+    let (o, S') := execX caps S P op
+    S := S'; out := out.push (xJson P op o)
+  let mountsJson := ms.map fun m => Json.obj
+    ([("point", pathJson m.point), ("backend", .str (backendName m.backend)),
+      ("only", match m.only with | none => .null | some ps => .arr (ps.map fun P => .ofNat (uidOf P)))] ++
+      if (caps m.backend).readOnly then [("readOnly", .bool true)] else [])
+  return .obj [("name", .str name), ("mounts", .arr mountsJson),
+    ("backends", .obj (trees.map fun (b, t) => (backendName b, treeJson t))),
+    ("caps", .obj (capList.map fun (b, c) => (backendName b, capsJson c))),
+    ("steps", .arr out.toList), ("final", .obj (trees.map fun (b, _) => (backendName b, treeJson (S.trees b))))]
+
+def walkedCaps : Caps := { fullCaps 0 with removeRecursive := false }
+
+def directedRemoval : List Json :=
+  let tree : Tree := [(["tree"], .dir), (["tree", "free"], .file 1),
+    (["tree", "bad"], .dir), (["tree", "bad", "child"], .file 2)]
+  let empty : Tree := [(["tree"], .dir), (["tree", "free"], .file 1), (["tree", "bad"], .dir)]
+  let mountRoot : Tree := [(["tree"], .dir), (["tree", "free"], .file 1)]
+  let mounted : Tree := [(["a"], .file 2), (["d"], .dir), (["d", "x"], .file 3)]
+  let ms : List Mount := [⟨["tree", "mounted"], 1, none⟩]
+  let rm (strict : Bool := false) : List (Principal × X) := [(0, .removeRecursive "/tree" strict)]
+  let plain (name : String) (t : Tree) (f : CompositeRemoval.Faults) (strict : Bool := false) : Json :=
+    removalCase name [] [(0, t)] [(0, { walkedCaps with faults := f })] (rm strict)
+  let statGone : CompositeRemoval.Faults := { stat := [(["tree", "bad", "child"], "ENOENT")] }
+  let unlinkGone : CompositeRemoval.Faults := { remove := [(["tree", "bad", "child"], "ENOENT")] }
+  let scandirGone : CompositeRemoval.Faults := { readdir := [(["tree", "bad"], "ENOENT")] }
+  [ removalCase "gnu-writable-mount" ms [(0, mountRoot), (1, mounted)]
+      [(0, fullCaps 0), (1, fullCaps 1)] (rm),
+    removalCase "gnu-readonly-mount" ms [(0, mountRoot), (1, mounted)]
+      [(0, fullCaps 0), (1, { fullCaps 1 with readOnly := true })] (rm),
+    removalCase "gnu-empty-readonly-mount" ms [(0, mountRoot), (1, [])]
+      [(0, fullCaps 0), (1, { fullCaps 1 with readOnly := true })] (rm),
+    removalCase "gnu-nested-writable-mounts"
+      [⟨["tree", "mounted"], 1, none⟩, ⟨["tree", "mounted", "nested"], 2, none⟩]
+      [(0, mountRoot), (1, mounted), (2, [(["leaf"], .file 4)])]
+      [(0, fullCaps 0), (1, fullCaps 1), (2, fullCaps 2)] (rm),
+    plain "gnu-child-lstat-fails-unlink-succeeds" tree
+      { stat := [(["tree", "bad", "child"], "EACCES")] },
+    plain "gnu-child-lstat-fails-directory-unlink" tree
+      { stat := [(["tree", "bad"], "EACCES")] },
+    plain "gnu-unreadable-empty-directory-removed" empty
+      { readdir := [(["tree", "bad"], "EACCES")] },
+    plain "gnu-unreadable-nonempty-scandir-only" tree
+      { readdir := [(["tree", "bad"], "EACCES")] },
+    plain "gnu-operand-lstat-error-aborts" tree
+      { stat := [(["tree"], "EACCES")] },
+    plain "gnu-unreadable-empty-operand-removed" [(["tree"], .dir)]
+      { readdir := [(["tree"], "EACCES")] },
+    plain "gnu-unreadable-nonempty-operand-scandir-only" tree
+      { readdir := [(["tree"], "EACCES")] },
+    plain "gnu-two-refused-children-no-parent-errors"
+      (tree ++ [(["tree", "worse"], .dir), (["tree", "worse", "child"], .file 4)])
+      { remove := [(["tree", "bad", "child"], "EIO"), (["tree", "worse", "child"], "EIO")] },
+    plain "api-child-lstat-enoent-gone" tree statGone,
+    plain "rm-r-child-lstat-enoent-keeps-ancestors" tree statGone true,
+    plain "api-child-unlink-enoent-gone" tree unlinkGone,
+    plain "rm-r-child-unlink-enoent-keeps-ancestors" tree unlinkGone true,
+    plain "api-child-scandir-enoent-gone" tree scandirGone,
+    plain "rm-r-child-scandir-enoent-keeps-ancestors" tree scandirGone true,
+    plain "gnu-unreadable-rmdir-eio-not-scandir" tree
+      { readdir := [(["tree", "bad"], "EACCES")], remove := [(["tree", "bad"], "EIO")] },
+    plain "gnu-unreadable-rmdir-eacces-not-scandir" tree
+      { readdir := [(["tree", "bad"], "EIO")], remove := [(["tree", "bad"], "EACCES")] },
+    removalCase "gnu-link-is-leaf" []
+      [(0, [(["tree"], .dir), (["tree", "link"], .link "/outside"),
+        (["outside"], .dir), (["outside", "secret"], .file 9)])]
+      [(0, walkedCaps)] (rm),
+    removalCase "gnu-root-whole-call-busy" ms [(0, mountRoot), (1, mounted)]
+      [(0, fullCaps 0), (1, fullCaps 1)] [(0, .removeRecursive "/" false)],
+    removalCase "api-shared-backend-disappearance-observed-by-later-mount"
+      [⟨["tree", "a"], 1, none⟩, ⟨["tree", "b"], 1, none⟩]
+      [(0, mountRoot), (1, [(["leaf"], .file 2)])]
+      [(0, fullCaps 0), (1, { walkedCaps with faults := { stat := [(["leaf"], "ENOENT")] } })] (rm),
+    removalCase "rm-r-shared-backend-disappearance-does-not-skip-later-mount-rmdir"
+      [⟨["tree", "a"], 1, none⟩, ⟨["tree", "b"], 1, none⟩]
+      [(0, mountRoot), (1, [(["leaf"], .file 2)])]
+      [(0, fullCaps 0), (1, { walkedCaps with faults := { stat := [(["leaf"], "ENOENT")] } })] (rm true),
+    removalCase "rm-r-shared-backend-reversed-mount-order"
+      [⟨["tree", "b"], 1, none⟩, ⟨["tree", "a"], 1, none⟩]
+      [(0, mountRoot), (1, [(["leaf"], .file 2)])]
+      [(0, fullCaps 0), (1, { walkedCaps with faults := { stat := [(["leaf"], "ENOENT")] } })] (rm true) ]
+
 def fixture : String :=
   fixtureText [("fixture", .str "composite-vfs"), ("model", .str "Nimbus.Vfs.Composite.exec"),
       ("principals", .arr [.obj [("uid", .ofNat 0), ("gid", .ofNat 0)], .obj [("uid", .ofNat 1000), ("gid", .ofNat 1000)]]),
       ("note", .str "backends: fresh in-memory VFSes holding the entries (paths relative to the backend root, parents listed); a mount's source answers its backend to uids in `only`, null otherwise (only null = everyone); each step runs on composite.as(cred of `as`); `final` is every backend's tree after the steps; readdir names sorted")]
-    (directed ++ [directedX] ++ runGen 0x434F4D50 (casesOf 200 genCase))
+    (directed ++ [directedX] ++ runGen 0x434F4D50 (casesOf 200 genCase) ++ directedRemoval)
 
 end Nimbus.Refine.CompositeCases

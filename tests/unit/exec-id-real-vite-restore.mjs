@@ -9,7 +9,7 @@
 // the same cwd, argv and execId, and its port still names the job that
 // started it. Before, restore passed no identity at all, so a restored
 // real-vite pid was `[]` at the root whatever had been persisted.
-// The facet internals are stubbed as in port-route-real-vite-restore.mjs.
+// The facet internals and the launch are stubbed as in port-route-real-vite-restore.mjs.
 
 import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import assert from 'node:assert/strict';
@@ -19,25 +19,13 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
 import { PID_GEN_STRIDE } from '../../packages/core/src/runtime/process-table.ts';
 import { CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
+import { REAL_VITE_STUB, withResidentLauncher } from './lib/vite-route-rig.mjs';
 
 const routes = await importWorkerBundle({
   'packages/worker/src/session/routes.ts': ['handleFetch', 'restorePersistedDevServer'],
   'packages/worker/src/session/start-real-vite.ts': ['startRealVite'],
 }, {
-  stubs: [{
-    filter: /facets\/cirrus-real\.js$/,
-    contents: `
-              export function shouldUseRealVite() { return true; }
-              export class CirrusReal {
-                constructor(opts) { this.opts = opts; this._running = false; }
-                get isRunning() { return this._running; }
-                async start() { this._running = true; }
-                stop() { this._running = false; }
-                async handleRequest() { return new Response('real-vite', { status: 200 }); }
-                get stats() { return { snapshot: null, viteVersion: 'test' }; }
-              }
-            `,
-  }],
+  stubs: [{ filter: /facets\/cirrus-real\.js$/, contents: REAL_VITE_STUB }],
 });
 const realVite = routes.startRealVite;
 
@@ -88,7 +76,7 @@ function session(store, generation) {
     ensureBundlePool() { return null; },
     restorePersistedDevServer: (onlyPort) => routes.restorePersistedDevServer(self, onlyPort),
   };
-  return self;
+  return withResidentLauncher(self);
 }
 
 const store = new Map();

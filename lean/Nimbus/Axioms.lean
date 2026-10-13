@@ -639,6 +639,7 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.CompositeOps.fallback_report_exact
 #print axioms Nimbus.Vfs.CompositeOps.keeps_mono
 #print axioms Nimbus.Vfs.CompositeOps.roots_exact
+#print axioms Nimbus.Vfs.CompositeOps.fallback_failures_exact
 #print axioms Nimbus.Vfs.CompositeOps.execC_refines
 #print axioms Nimbus.Vfs.CompositeOps.frame_refl
 #print axioms Nimbus.Vfs.CompositeOps.frame_set
@@ -647,6 +648,36 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.CompositeOps.create_if_absent_reaches_backend
 #print axioms Nimbus.Vfs.CompositeOps.copy_stays_in_target
 #print axioms Nimbus.Vfs.CompositeOps.mount_point_mode
+
+/-! ## Nimbus/Vfs/CompositeRemoval.lean -/
+
+#print axioms Nimbus.Vfs.CompositeRemoval.mem_mergePaths
+#print axioms Nimbus.Vfs.CompositeRemoval.kept_skips
+#print axioms Nimbus.Vfs.CompositeRemoval.ancestors_exact
+#print axioms Nimbus.Vfs.CompositeRemoval.child_failure_skips_ancestors
+#print axioms Nimbus.Vfs.CompositeRemoval.gone_kept_mono
+#print axioms Nimbus.Vfs.CompositeRemoval.step_kept_mono
+#print axioms Nimbus.Vfs.CompositeRemoval.fold_kept_mono
+#print axioms Nimbus.Vfs.CompositeRemoval.failed_ancestor_skipped_after_siblings
+#print axioms Nimbus.Vfs.CompositeRemoval.gone_failures
+#print axioms Nimbus.Vfs.CompositeRemoval.attempt_failure_path
+#print axioms Nimbus.Vfs.CompositeRemoval.step_failures_exact
+#print axioms Nimbus.Vfs.CompositeRemoval.vanished_policy
+#print axioms Nimbus.Vfs.CompositeRemoval.lstat_failure_unlinks
+#print axioms Nimbus.Vfs.CompositeRemoval.unreadable_still_rmdir
+#print axioms Nimbus.Vfs.CompositeRemoval.unreadable_empty_removed
+#print axioms Nimbus.Vfs.CompositeRemoval.readonly_child_refused
+#print axioms Nimbus.Vfs.CompositeRemoval.mount_rmdir_busy
+#print axioms Nimbus.Vfs.CompositeRemoval.erase_mounts
+#print axioms Nimbus.Vfs.CompositeRemoval.erase_other
+#print axioms Nimbus.Vfs.CompositeRemoval.erase_exact
+#print axioms Nimbus.Vfs.CompositeRemoval.attempt_frame
+#print axioms Nimbus.Vfs.CompositeRemoval.step_frame
+#print axioms Nimbus.Vfs.CompositeRemoval.fold_frame
+#print axioms Nimbus.Vfs.CompositeRemoval.vanished_fold_frame
+#print axioms Nimbus.Vfs.CompositeRemoval.run_frame
+#print axioms Nimbus.Vfs.CompositeRemoval.walk_subtree_frame
+#print axioms Nimbus.Vfs.CompositeRemoval.walk_single_mount
 
 /-! ## Nimbus/Vfs/CompositePerm.lean -/
 

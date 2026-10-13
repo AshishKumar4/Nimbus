@@ -351,8 +351,7 @@ export function createViteCommand(self) {
         if (args[0] === 'stop') {
             let stopped = false;
             if (self.cirrusReal?.isRunning) {
-                self.cirrusReal.stop(self.ctx);
-                self.cirrusReal = null;
+                self.facetManager.finishProcess(self.cirrusReal.pid, 0);
                 stopped = true;
             }
             if (self.viteDevServer?.isRunning) {

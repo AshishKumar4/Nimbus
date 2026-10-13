@@ -14,6 +14,29 @@ published independently in the `@nimbus-sh` npm scope.
   the file: `stat` shows another user's later change, and a file removed and
   made again has a new file's mode and times. `stat` answers the file's real
   device and link count (`dev`, `nlink`) instead of one made-up device.
+- Fixed: walked recursive removal attempts unreadable entries, continues past
+  failures, and reports each entry that remains. The shell reports vanished
+  children unless `rm -f` was requested.
+- Changed: `rm -r` enters mounted subtrees and removes their writable contents,
+  as Linux does. It keeps busy mount points and their ancestors.
+- Fixed: credentialed SQLite paths follow links before `..`, matching the
+  namespace while keeping plain lookups on their indexed fast path.
+- Changed: real Vite (`NIMBUS_REAL_VITE=1 vite`) runs as one of the session's
+  resident processes, with the lifecycle every resident has. `vite` returns
+  once Vite listens, and a Vite that fails to boot fails the command instead
+  of its first page. Time moves with it: `vite` takes about 0.4 s longer,
+  the first page about 1 s less (start to first page about 0.4 s less), and
+  the page's first modules about 70-80 ms more each, the entry's transform no
+  longer hidden behind the boot's wait. Fixed: a server whose isolate the platform resets ends
+  with 137 and frees its port; before, its pid stayed running. A second
+  `vite` ends the server it replaces; before, that pid stayed running. A
+  server that ended (`kill`, `vite stop`, a lost isolate) stays ended;
+  before, the next request to the preview or its port started it again. A
+  session that sleeps and wakes still restores the server it was running. `spawnWorker` takes
+  `identity` (the argv, credential and exec id of a process no invoker
+  names) and `bindings` (beside the process's own SUPERVISOR). Removed: the
+  stateless fallback for hosts without Durable Object facets, where no
+  resident process can run, and `/api/_diag/cirrus`.
 - Fixed (security): JS git refuses a tree entry whose path native git
   refuses: a `.git` component in any case, `.` or `..`, and the names
   NTFS (and, with `core.protectHFS`, HFS+) read as `.git`. `checkout` and

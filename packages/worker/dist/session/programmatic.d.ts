@@ -44,10 +44,6 @@ interface ProgrammaticViteServer {
     isRunning: boolean;
     stop(): void;
 }
-interface ProgrammaticCirrusServer {
-    isRunning: boolean;
-    stop(ctx: ProgrammaticContext): void;
-}
 export interface ProgrammaticHost extends TimerHost {
     readonly runtimeManager: RuntimeManager;
     ensureRuntimeReady(): Promise<void>;
@@ -77,7 +73,9 @@ export interface ProgrammaticHost extends TimerHost {
     facetManagerComposed: ComposedFacetManager | null;
     facetManager: ProgrammaticFacetManager | null;
     viteDevServer: ProgrammaticViteServer | null;
-    cirrusReal: ProgrammaticCirrusServer | null;
+    cirrusReal: {
+        readonly isRunning: boolean;
+    } | null;
     _cpRegistry: MinShellRegistry | null;
     /** Named shells this object's storage held before they were the workspace's, once adopted. See `withShellState`. */
     _storedShellsAdopted?: Promise<void>;
