@@ -1879,20 +1879,22 @@ export class ViteDevServer {
     }
     /**
      * The barrel input of a /@modules request (npm/browser-prebundle.ts
-     * barrelInput): the project is scanned only for a barrel package, and a
-     * scan that left files unread is said, once per request.
+     * barrelInput): null at once for a specifier that names no barrel
+     * package; for one that does, the project is scanned, and a scan that
+     * left files unread is said, once per request.
      */
-    async moduleBarrel(specifier) {
+    moduleBarrel(specifier) {
         const whole = barrelPackage(this.prebundle, specifier);
-        return whole && barrelInput(whole, await scanProject(this.prebundle), (pkgName, fileCount, left) => {
+        return whole && scanProject(this.prebundle).then((scan) => barrelInput(whole, scan, (pkgName, fileCount, left) => {
             this.log('warn', `[vite-dev] ${pkgName} is a barrel package (${fileCount} files), but the scan of the project for the names it imports left ${left} unread; bundling ${pkgName} whole rather than from an entry that could miss one`);
-        });
+        }));
     }
     async serveModule(specifier, headers, base) {
         const JS_CT = 'application/javascript; charset=utf-8';
         const generation = this.configGeneration;
         const cacheKey = this.ck(base, `@modules/${specifier}`);
-        const barrel = await this.moduleBarrel(specifier);
+        const scanning = this.moduleBarrel(specifier);
+        const barrel = scanning && await scanning;
         // 1. In-memory cache (hot path — already bundled)
         const memCached = this.moduleCache.get(cacheKey);
         if (memCached && answersBarrel(memCached.inputHash, barrel)) {

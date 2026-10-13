@@ -413,8 +413,9 @@ export declare class ViteDevServer {
     private servablePrebundle;
     /**
      * The barrel input of a /@modules request (npm/browser-prebundle.ts
-     * barrelInput): the project is scanned only for a barrel package, and a
-     * scan that left files unread is said, once per request.
+     * barrelInput): null at once for a specifier that names no barrel
+     * package; for one that does, the project is scanned, and a scan that
+     * left files unread is said, once per request.
      */
     private moduleBarrel;
     private serveModule;

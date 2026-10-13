@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "61868c835bf078be355c3d6ed02a32dc3a55f6e1295c94ee68877458c4e961e3",
+  "fingerprint": "6c6caf49699a9f877de02cbd0b9103d750b8a3658b3763dcdff178fad87e04bf",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2173,9 +2173,9 @@
     "packages/worker/dist/facets/vite-config-file.d.ts": "05213d3c36cd8a7a6dbed35c715eb15c829b51d8980ba13bb9fc21beeffac23b",
     "packages/worker/dist/facets/vite-config-file.d.ts.map": "ee2c98ef03cb038cea517650b95366aa42016f261e5735506de090be1aa0fbeb",
     "packages/worker/dist/facets/vite-config-file.js": "4c8d41d4f0fa1bafb2ccf6da5e09f272ab0ebe05a36de2d6310900148317ef2f",
-    "packages/worker/dist/facets/vite-dev-server.d.ts": "c353b5660fd685ab85256215c8cad3d23fed02f5d504efa0d3a8aa91e03269d4",
-    "packages/worker/dist/facets/vite-dev-server.d.ts.map": "217e4aa15d6d8bacc99197a86e6d1bcd41f32005da99b14e6328dcea7c69ce7a",
-    "packages/worker/dist/facets/vite-dev-server.js": "0ad19f027568905b73ded5c0107928f82250e67361d6347cc2e0c002efcfbbc3",
+    "packages/worker/dist/facets/vite-dev-server.d.ts": "a7897f3066ed6a465bb8f055b4ce79861b02eecfe70ff0c61f8107828c593c05",
+    "packages/worker/dist/facets/vite-dev-server.d.ts.map": "93a3b44e87a812e455821d6db0cc4a3855b1734911f8101e72c326f7ba8eb18c",
+    "packages/worker/dist/facets/vite-dev-server.js": "fd8ced047f7813770c0afc5b7bfa7bff05160fdff4bce679990c6a8a178a0f52",
     "packages/worker/dist/facets/wasm-image-digest.d.ts": "8d607e53d152180480fe9e4d7f88b7379fbc298ffe5499da3e0070d6a6c54bac",
     "packages/worker/dist/facets/wasm-image-digest.d.ts.map": "676b0f40721a24277299072c5f844fc09c3ae20e374ff70e8646d5f286c63a12",
     "packages/worker/dist/facets/wasm-image-digest.js": "d84c5abafb1bc7112432678cd3bb0291e9c6da1d31ee7a6e042ad771c2470b37",
@@ -2968,7 +2968,7 @@
     "packages/worker/src/facets/server-hints.ts": "987e9eab10bf51803f49409f9ef15fa00ed23f03428677ca2475b0652a2c70e4",
     "packages/worker/src/facets/transform-store.ts": "73933445488071ee222c2f35ad744cf6a9085321171fc9740aba0bbed16dcf4a",
     "packages/worker/src/facets/vite-config-file.ts": "baba7d83894cbee80ad4d88796b121c12f467acade0fe062f7959f635ba3ed07",
-    "packages/worker/src/facets/vite-dev-server.ts": "46d181b84fc42140a653c5cee99e5ef53beb9fe9e9b64f5dc94f5a6e1c51e4fc",
+    "packages/worker/src/facets/vite-dev-server.ts": "5f1df46fd44d65ab6d6fecc21567a4b94527b22653e44684a9e8b78b8eee8d7f",
     "packages/worker/src/facets/wasm-image-digest.ts": "a7b62376aa3789557d52d1f97490cd5b0dab06d3092b44e9c8776b61620c9c9e",
     "packages/worker/src/facets/wasm-swap-registry.ts": "f2a478cd2fb0bbf2a2d39df9fa493d9b9f492b5a997d9a18083306fce4aa9df1",
     "packages/worker/src/facets/ws-terminal.ts": "6dcc7b57bcca477a9e61d8544e3eea2b9628fc0ff6cefda0fd05c76c4f8de4ca",
