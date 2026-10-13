@@ -404,6 +404,13 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       }
       const p = located.path;
       if (p === '') return this.openRoot(path, normalizedFlags);
+      if (flags.path === true) {
+        // There is no descriptor on the link itself, as open's below.
+        if (!normalizedFlags.followSymlinks && this.vfs.isSymlink(p)) throw fsError(normalizedFlags.directory ? 'ENOTDIR' : 'ELOOP', 'open', path);
+        const held = this.rawVfs.holdInode(p, this.vfs.cred, this.vfs.principal, this.vfs.holds);
+        if (normalizedFlags.directory && held.stat().type !== 'directory') { held.close(); throw fsError('ENOTDIR', 'open', path); }
+        return syncValue(this.descriptors.open(held, normalizedFlags, p, held.revision()));
+      }
       // open(2)'s rule, in Linux's order, as a mount's open decides it (openOnMount).
       if (normalizedFlags.exclusive && normalizedFlags.create && (this.vfs.isSymlink(p) || this.vfs.exists(p))) throw fsError('EEXIST', 'open', path);
       // There is no descriptor to open on the link itself: what it points at is exactly what the caller declined to open.

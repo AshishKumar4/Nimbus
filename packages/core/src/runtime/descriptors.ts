@@ -86,6 +86,10 @@ export interface DescriptorScope {
 
 /** An open's flags as its descriptor keeps them: neither access asked is O_RDONLY. */
 export function openFlags(flags: RuntimeOpenFlags): RuntimeFileHandle['flags'] {
+  // O_PATH asks no access (RuntimeOpenFlags.path).
+  if (flags.path === true) {
+    return { read: false, write: false, append: false, create: false, exclusive: false, directory: !!flags.directory, truncate: false, followSymlinks: flags.followSymlinks !== false };
+  }
   return {
     read: !!flags.read || !flags.write,
     write: !!flags.write,

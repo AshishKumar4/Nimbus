@@ -2486,6 +2486,93 @@ export class SqliteVFS {
   }
 
   /**
+   * The file `path` names, held as an O_PATH open holds it: no access asked
+   * of it but the walk's. Its stat and revision, and a reopen (it is one of
+   * openNodes, which reopenInode finds), an unlinked file included, until it
+   * is closed; anything else answers EBADF. One object, where a description
+   * builds each of its calls.
+   */
+  holdInode(path: string, cred: VfsCred, principal?: Principal, holds?: () => ReadonlySet<string>): VfsOpenDescription {
+    const origin: Principal = principal ?? this.activeOrigin ?? Object.freeze({ cred });
+    const priorHolds = this.activeHolds;
+    if (holds !== undefined) this.activeHolds = holds();
+    let resolved: { path: string; inode: INode | undefined };
+    try {
+      resolved = this.checkAccess(path, 0, cred);
+    } finally {
+      this.activeHolds = priorHolds;
+    }
+    if (!resolved.inode) throw vfsKeyError('ENOENT', path);
+    const opened: OpenedNode = { inode: resolved.inode, path: resolved.path, closed: false };
+    this.openNodes.add(opened);
+    return new SqliteVFS.HeldInode(this, opened, path, cred, origin, holds);
+  }
+
+  /** holdInode's answer: describe()'s stat, revision, path and close, on its prototype. */
+  private static readonly HeldInode = class HeldInode implements VfsOpenDescription {
+    constructor(
+      private readonly vfs: SqliteVFS,
+      private readonly opened: OpenedNode,
+      private readonly name: string,
+      private readonly cred: VfsCred,
+      private readonly origin: Principal,
+      private readonly holds: (() => ReadonlySet<string>) | undefined,
+    ) {}
+
+    /** The inode, unless it was closed (or opened in a transaction that rolled back). */
+    private live(): INode {
+      if (this.opened.closed) throw vfsKeyError('EBADF', this.name);
+      return this.opened.inode;
+    }
+
+    /** As describe's published: a file held for publication is recalled for its other openers. */
+    private published(): void {
+      const vfs = this.vfs;
+      if (vfs.heldPipelines.size === 0) return;
+      const key = this.opened.inode.path;
+      const holds = this.holds;
+      vfs.asOrigin(this.origin, () => (holds === undefined ? vfs.recallHeld(key) : vfs.withHolds(holds(), () => vfs.recallHeld(key))));
+    }
+
+    get ino(): number { return this.live().ino; }
+
+    path(): string {
+      this.live();
+      this.published();
+      const name = this.opened.path === null ? null : this.vfs.logicalPath(this.opened.path, this.cred);
+      if (name === null) throw vfsKeyError('ENOENT', this.name);
+      return name;
+    }
+
+    stat(): VfsStat {
+      this.published();
+      this.vfs.settleAppend(this.live().ino);
+      return { ...this.vfs.statOf(this.opened.inode), nlink: this.opened.path === null ? 0 : 1 };
+    }
+
+    revision(): number {
+      this.vfs.settleAppends();
+      return this.opened.path === null ? this.vfs._revision : this.vfs.pathRevision(this.opened.path, this.live());
+    }
+
+    read(): Uint8Array { throw vfsKeyError('EBADF', this.name); }
+    write(): number { throw vfsKeyError('EBADF', this.name); }
+    truncate(): void { throw vfsKeyError('EBADF', this.name); }
+    readdir(): { name: string; type: VfsDirentType }[] { throw vfsKeyError('EBADF', this.name); }
+    chmod(): void { throw vfsKeyError('EBADF', this.name); }
+    chown(): void { throw vfsKeyError('EBADF', this.name); }
+    utimes(): void { throw vfsKeyError('EBADF', this.name); }
+
+    close(): void {
+      if (this.opened.closed) return;
+      this.opened.closed = true;
+      this.vfs.openNodes.delete(this.opened);
+      // An unlinked file's content is collectable once nothing holds it.
+      if (this.opened.path === null) this.vfs.maintenancePending = true;
+    }
+  };
+
+  /**
    * A description of the file `ino` numbers, its access decided already: by
    * the open that made it (creat(2) of a mode without write still writes),
    * or by an open a process's wave made and the session kept

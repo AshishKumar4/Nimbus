@@ -860,7 +860,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       const identity = held.fstat(target.handle);
       const name = '/' + held.keyOf(target.handle);
       return held.flush().then(() => held.sessionOf(target.handle)).then((session) => (session === undefined
-        ? openIdentified(fs, name, flags, identity)
+        ? openIdentified(fs, name, false, flags, identity)
         : Reflect.apply(bySessionReopen, fs, [{ handle: session }, flags, options])));
     });
   }
