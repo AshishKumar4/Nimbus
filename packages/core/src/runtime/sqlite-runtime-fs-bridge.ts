@@ -428,7 +428,8 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       }
 
       const node = this.rawVfs.openDescription(p, this.vfs.cred, { ...normalizedFlags, sync: flags.sync === true }, this.vfs.principal, this.vfs.holds, owner);
-      return syncValue(this.descriptors.open(node, normalizedFlags, p, this.vfs.revision(p)));
+      // Its revision is its name's, read off the description, not looked up again.
+      return syncValue(this.descriptors.open(node, normalizedFlags, p, node.revision()));
     });
   }
 
@@ -935,7 +936,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       if (kind === 'directory' && (normalizedFlags.write || normalizedFlags.truncate || normalizedFlags.append)) { node.close(); throw fsError('EISDIR', 'open', named); }
       if (normalizedFlags.truncate) node.truncate(0);
       // Named as the descriptor it reopens was: an unlinked file has no name of its own.
-      return syncValue(this.descriptors.open(node, normalizedFlags, named));
+      return syncValue(this.descriptors.open(node, normalizedFlags, named, node.revision()));
     });
   }
 
@@ -944,7 +945,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     if (flags.create || flags.truncate || flags.append) throw fsError('EISDIR', 'open', path);
     const deny = (): never => { throw fsError('EPERM', 'fd', ''); };
     const node: VfsOpenDescription = {
-      ino: ROOT_INODE, path: () => '', stat: () => this.rootStat(),
+      ino: ROOT_INODE, path: () => '', stat: () => this.rootStat(), revision: () => this.rawVfs.revision(),
       read: deny, write: deny, truncate: deny, readdir: () => this.readdir(''),
       chmod: deny, chown: deny, utimes: deny, close: () => {},
     };
