@@ -42,7 +42,7 @@ import {
   DEFAULT_HOME, DEFAULT_HOSTNAME, defaultPath, SEEDED_TOP_LEVEL_DIRS,
   DEFAULT_SHELL, DEFAULT_USER, NIMBUS_VERSION,
 } from '../constants.js';
-import { BASH_RUNNER, CRED_KERNEL, CRED_SESSION_USER } from '../runtime/os-contracts.js';
+import { BASH_RUNNER, GIT_RUNNER, CRED_KERNEL, CRED_SESSION_USER, type NimbusHostFilesystemLease } from '../runtime/os-contracts.js';
 import type { SqlDatabase, TransactionHost, NimbusFilesystemAuthority } from '../runtime/os-contracts.js';
 import { ProcessFiles } from '../runtime/process-files.js';
 import { ProcessView } from '../runtime/process-files.js';
@@ -323,7 +323,7 @@ export class NimbusWorkspace {
     shellProcessPid: number,
     private readonly supervisorOps: (envelope: SupervisorOpEnvelope) => Promise<unknown>,
     readonly filesystem: ProcessFiles,
-    private readonly runtimeLease: import('../runtime/os-contracts.js').NimbusHostFilesystemLease,
+    private readonly hostLeases: readonly NimbusHostFilesystemLease[],
     /** Who the workspace shell acts as, and so every call's process. */
     private readonly identity: ShellCommandIdentity,
   ) {
@@ -444,18 +444,26 @@ export class NimbusWorkspace {
 
     const getHome = () => shell.getEnv().HOME ?? DEFAULT_HOME;
     const kernelFs = vfs.as(CRED_KERNEL);
-    const runtimeLease = filesystem.openHost(CRED_KERNEL);
-    // Kernel-credentialed on purpose: this only INSPECTS a file to decide how
-    // to run it, and re-checks the caller's own execute permission at
-    // invocation time — the `authorize` wrapper in exec-dispatch.ts. It
-    // inspects through the namespace's awaiting face, so a script on an
-    // asynchronous mount runs by its path like any other.
-    installPathExecResolver(registry, new ProcessView(runtimeLease.fs), () => shell.getCwd());
-
-    // Everything past the lease can throw — a runtime source that fails to
-    // list, a package that will not install. The workspace it would have
-    // belonged to is never constructed, so nobody is left to close() it.
+    // Everything from the first lease on can throw — a lease refused, a
+    // runtime source that fails to list, a package that will not install.
+    // The workspace it would have belonged to is never constructed, so
+    // nobody is left to close() it: each lease is released here.
+    const hostLeases: NimbusHostFilesystemLease[] = [];
     try {
+      // The kernel's, for the runtime store; the session user's for what the
+      // owner put there: a lookup with no caller of its own, and the packages
+      // they installed globally, are read as they would read them.
+      const runtimeLease = filesystem.openHost(CRED_KERNEL);
+      hostLeases.push(runtimeLease);
+      const ownerLease = filesystem.openHost(CRED_SESSION_USER);
+      hostLeases.push(ownerLease);
+      // A lookup without a caller's view INSPECTS a file to decide how to run
+      // it as the session user, and the caller's own execute permission is
+      // checked again at invocation — the `authorize` wrapper in
+      // exec-dispatch.ts. It inspects through the namespace's awaiting face,
+      // so a script on an asynchronous mount runs by its path like any other.
+      installPathExecResolver(registry, new ProcessView(ownerLease.fs), () => shell.getCwd());
+
       const runtimes = new RuntimeManager({
         vfs: new ProcessView(runtimeLease.fs),
         registry,
@@ -468,6 +476,7 @@ export class NimbusWorkspace {
       if (facets) {
         registerWasmRuntimes({
           facets,
+          sql: options.sql,
           vfs,
           filesystem,
           registry,
@@ -535,7 +544,7 @@ export class NimbusWorkspace {
       // here: the workspace is composed with them registered (a failure
       // leaves those commands out, and says so).
       try {
-        await rehydrateGlobalPackages(new ProcessView(runtimeLease.fs), registry);
+        await rehydrateGlobalPackages(new ProcessView(ownerLease.fs), registry);
       } catch (error) {
         console.error('[nimbus] global npm commands were not restored:', error);
       }
@@ -558,17 +567,18 @@ export class NimbusWorkspace {
       workspace = new NimbusWorkspace(
         vfs, kernel, shell, registry, env, options.sql,
         processes, children, runtimes, shellProcessPid,
-        supervisorOps, filesystem, runtimeLease, identity,
+        supervisorOps, filesystem, hostLeases, identity,
       );
       return workspace;
     } catch (error) {
-      await runtimeLease.dispose();
+      // What ended create() is what it throws, though a release fails too.
+      await releaseHostLeases(hostLeases).catch(() => {});
       throw error;
     }
   }
 
   async close(): Promise<void> {
-    await this.runtimeLease.dispose();
+    await releaseHostLeases(this.hostLeases);
   }
 
   /**
@@ -763,6 +773,13 @@ function defaultEnv(home: string): Record<string, string> {
   };
 }
 
+/** Every lease released, though one release fails; the first failure is thrown once all have been tried. */
+async function releaseHostLeases(leases: readonly NimbusHostFilesystemLease[]): Promise<void> {
+  // Each asked in its own promise, so one that throws at once stops no other.
+  const failed = (await Promise.allSettled(leases.map(async (lease) => lease.dispose()))).find((outcome) => outcome.status === 'rejected');
+  if (failed) throw (failed as PromiseRejectedResult).reason;
+}
+
 /**
  * The identity the workspace's own `sh` runs commands under.
  *
@@ -855,6 +872,7 @@ function workspaceShellIdentity(
  */
 function registerWasmRuntimes(deps: {
   facets: FacetHost;
+  sql: SqlDatabase;
   vfs: SqliteVFS;
   filesystem: ProcessFiles;
   registry: CommandRegistry;
@@ -905,6 +923,15 @@ function registerWasmRuntimes(deps: {
       .makeRubyRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes, registry: deps.registry, getHome: deps.getHome, network: deps.network })),
     'clang-runner': lazy(async () => (await import('../runtime/clang-runner.js'))
       .makeClangRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes })),
+    [GIT_RUNNER]: lazy(async () => {
+      const [{ makeGitRunnerFactory }, { sqliteGitFsmonitorState }] = await Promise.all([
+        import('../runtime/git-runner.js'), import('../runtime/git-fsmonitor.js'),
+      ]);
+      return makeGitRunnerFactory({
+        facets: deps.facets, filesystem: deps.filesystem, processes,
+        fsmonitorState: sqliteGitFsmonitorState(deps.sql, deps.filesystem.namespace),
+      });
+    }),
   };
   for (const [key, factory] of Object.entries(runners)) {
     deps.runtimes.registerRunner(key, factory);

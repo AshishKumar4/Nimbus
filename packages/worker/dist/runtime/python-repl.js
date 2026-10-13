@@ -7,7 +7,7 @@ import { ReplSession } from './repl-session.js';
 import { sessionUsesSciVariant } from '@nimbus-sh/core/runtime/python-pip.js';
 import { buildCPythonPreamble, enterWorkingDirectory } from '@nimbus-sh/core/runtime/cpython-runner.js';
 import { getFacetManagerLoaderHost } from './facet-loader-host.js';
-import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_KERNEL, CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 /** Written by the driver when the source so far cannot yet be run. */
 const INCOMPLETE_MARKER = '__NIMBUS_PY_INCOMPLETE__';
 /**
@@ -181,7 +181,11 @@ class PythonReplAdapter {
     }
     async ensurePoolFrom(vfs) {
         const sciPath = `${this.deps.installRoot}/${CPYTHON_SCI_WASM_REL}`;
-        const wantsSci = (await sessionUsesSciVariant(vfs, this.deps.home)) && (await vfs.exists(sciPath));
+        // What the user installed is looked for as the process that asks (the
+        // session's user for the install-time warm-up), as the one-shot runner
+        // looks for it; the runtime's own files as the kernel.
+        const userInstalledSci = await withHostView(this.deps.authority, this.deps.cred ?? CRED_SESSION_USER, (user) => sessionUsesSciVariant(user, this.deps.home));
+        const wantsSci = userInstalledSci && (await vfs.exists(sciPath));
         // A prompt that was open before `pip install numpy` is holding the
         // interpreter that does not have it. Dropping the pool rebuilds on the next
         // statement, which is the facet restart EXTENSIONS.md says this costs.

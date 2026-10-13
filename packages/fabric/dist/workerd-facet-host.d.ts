@@ -165,7 +165,7 @@ export declare class Processes {
     private readonly env;
     constructor(ctx: DurableObjectState, env: ResidentFacetEnv);
     /** Open a resident process as a facet of this actor, and start its runner. */
-    spawn(disk: () => ResidentDiskReader, supervisor: ResidentSupervisorProps, params: ProcessHostParams): ResidentFacet;
+    spawn(disk: (pid: number) => ResidentDiskReader, supervisor: ResidentSupervisorProps, params: ProcessHostParams): ResidentFacet;
     /**
      * Run one program to completion as an UNKEYED dynamic worker.
      *
@@ -215,6 +215,6 @@ export interface JournalReaderEnv {
  * minted from the composed entrypoint for the coordinator's identity, beside
  * the spec's `bindings`.
  */
-export declare function residentWorkerConfig(env: ResidentFacetEnv, disk: () => ResidentDiskReader, supervisor: ResidentSupervisorProps, boot: ResidentBootSpec): Promise<WorkerCode>;
+export declare function residentWorkerConfig(env: ResidentFacetEnv, disk: (pid: number) => ResidentDiskReader, supervisor: ResidentSupervisorProps, boot: ResidentBootSpec): Promise<WorkerCode>;
 export {};
 //# sourceMappingURL=workerd-facet-host.d.ts.map

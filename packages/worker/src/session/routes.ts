@@ -78,6 +78,7 @@ import { renderNoDevServerHtml } from './helpers.js';
 import { handleAgentRequest } from './agent.js';
 import { captureSessionAiCredential } from './ai.js';
 import { CRED_KERNEL, CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { seedBaseFilesystem } from '@nimbus-sh/core/workspace';
 // The L2 key builders are imported rather than re-derived so the bench
 // endpoints below can never drift from the key shape the cache actually
 // uses (they did: the packument purge used a stale `/p/` segment).
@@ -198,7 +199,7 @@ export async function restorePersistedDevServer(self: RoutesHost, onlyPort?: num
     self.ensureSqliteFs();
     if (!self.esbuildService) {
       if (!self.sqliteFs) throw new Error('Session VFS is not initialized');
-      self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_KERNEL));
+      self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER));
     }
     // Prefer the current request's basePath (just captured from the
     // X-Nimbus-Base header) over the stored one — the latter is only
@@ -938,14 +939,13 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
         const body = await parseJsonBody(request, W7BenchBodySchema);
         const entry = self.processes.spawn('_test:w7-bench', ['_test'], '/');
         try {
-          // The producers publish below a directory their process owns, in a
-          // session no terminal may have set up.
+          // The producers publish below a directory their process makes, in
+          // the home the base seed makes in a session no terminal has set up.
           const root = `home/user/w7-bench-${Date.now()}`;
           const cred = self.processes.cred(entry.pid);
-          const kernel = self.ensureSqliteFs().as(CRED_KERNEL);
-          kernel.mkdir(root, { recursive: true, mode: 0o755 });
-          kernel.chown(root, cred.uid, cred.gid);
+          await withRecall(() => seedBaseFilesystem(self.ensureSqliteFs()));
           const writer = self.ensureSqliteFs().as(cred);
+          writer.mkdir(root, { recursive: true, mode: 0o755 });
           const result = await runWaveBench(self.ctx, self.env, { pid: entry.pid, root, ...body }, {
             writeStream: (stream) => self.getFilesystemAuthority().waves.writeStream(writer, stream),
             sql: self.ctx.storage.sql,
@@ -1254,7 +1254,7 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
         // Start in-process ViteDevServer
         if (!self.esbuildService) {
           if (!self.sqliteFs) throw new Error('Session VFS is not initialized');
-          self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_KERNEL));
+          self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER));
         }
         const basePath = self.viteBasePath;
         // process metadata support: allocate a PID + port even on the

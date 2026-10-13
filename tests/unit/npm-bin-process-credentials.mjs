@@ -51,9 +51,10 @@ registry.register('node', async (ctx) => { received = ctx; return 3; });
 const processes = new SessionProcessSupervisor();
 const files = new ProcessFiles(rawVfs);
 const learned = new Set();
+let lookupCwd = `/${project}`;
 installNpmBinFallbackResolver(registry, {
   filesystem: files,
-  getCwd: () => `/${project}`,
+  getCwd: () => lookupCwd,
   getFacetManager() { throw new Error('unexpected staged artifact'); },
   async learnedServer(server) { return learned.has(`${server.package} ${server.bin} ${server.arg0}`); },
   notifyTerminalEvent() { throw new Error('the bin wrapper reports no process lifecycle of its own'); },
@@ -113,6 +114,24 @@ assert.equal((await invoke('credential-probe', userParent, ['serve'])).__nimbusB
   const reservation = { callerPid: child.pid, command: 'credential-probe', liveInput: true };
   const ctx = await invoke('credential-probe', child, [], { __nimbusBinSpawn: reservation });
   assert.equal(ctx.__nimbusBinSpawn, reservation);
+}
+
+// A lookup with no caller's view sees the namespace as the session user,
+// never the kernel: a bin below a directory only root may enter is not found.
+{
+  const locked = 'home/user/locked';
+  const lockedModules = `${locked}/node_modules`;
+  const entry = { name: 'locked-probe', packageName: 'locked-probe', packageVersion: '1.0.0', packagePath: `${lockedModules}/locked-probe`, targetPath: `${lockedModules}/locked-probe/cli.js` };
+  vfs.mkdir(`${lockedModules}/.bin`, { recursive: true });
+  vfs.mkdir(entry.packagePath, { recursive: true });
+  vfs.writeFile(`${entry.packagePath}/package.json`, JSON.stringify({ name: entry.name, version: '1.0.0' }));
+  vfs.writeFile(`${lockedModules}/.bin/${entry.name}`, createNpmBinShim(entry, `${lockedModules}/.bin`));
+  vfs.writeFile(entry.targetPath, 'console.log("ok")\n');
+  vfs.writeFile(npmBinManifestPath(lockedModules), JSON.stringify(createNpmBinManifest([entry])));
+  vfs.chmod(locked, 0o700);
+  lookupCwd = `/${locked}`;
+  assert.equal(await registry.resolve('locked-probe'), undefined, 'a bin only root may reach is not found by a lookup without a caller');
+  lookupCwd = `/${project}`;
 }
 
 console.log('npm bin launch: the runtime starts the process with the caller\'s context and the bin\'s launch');

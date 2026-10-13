@@ -148,6 +148,7 @@ import { type Admission } from './admission.js';
 import { type Cells } from './cells.js';
 import { type Coherence } from './coherence.js';
 import { type Lazy } from './lazy.js';
+import { type Pages } from './pages.js';
 import { type Namespace } from './namespace.js';
 import { type Sync } from './sync.js';
 import { type Transport } from './transport.js';
@@ -179,6 +180,7 @@ export interface ResidentStore {
     readonly cells: Cells;
     readonly transport: Transport;
     readonly sync: Sync;
+    readonly pages: Pages;
     readonly lazy: Lazy;
 }
 export declare function createResidentStore(options?: ResidentStoreOptions): ResidentStore;

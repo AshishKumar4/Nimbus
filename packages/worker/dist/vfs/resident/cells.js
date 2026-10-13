@@ -391,6 +391,13 @@ export function createCells(coherence, admission, namespace, observeRead) {
         dropDated,
         head,
         has: (path) => head(path) !== undefined || held.has(path),
+        denied: (path) => {
+            const found = head(path);
+            if (found !== undefined)
+                return found.kind === RK_DENIED;
+            const cell = held.get(path)?.cell;
+            return typeof cell === 'object' && cell !== null && !(cell instanceof Uint8Array) && typeof cell.error === 'string';
+        },
         get,
         put,
         putChunk,

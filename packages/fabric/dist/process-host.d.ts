@@ -77,7 +77,7 @@ export type ProcessHostMode = 'facet' | 'peer';
  * `disk` is the coordinator's own filesystem reader; the peer host does not
  * take it, because a peer reads the same disk through the supervisor instead.
  */
-export declare function createProcessHost(mode: ProcessHostMode, ctx: DurableObjectState, env: unknown, disk: () => ResidentDiskReader, 
+export declare function createProcessHost(mode: ProcessHostMode, ctx: DurableObjectState, env: unknown, disk: (pid: number) => ResidentDiskReader, 
 /** The workspace's network: every process's binding carries it, and with it its egress. */
 network: () => WorkspaceNetwork, supervise?: Supervise): ProcessHost;
 export interface PeerOwner {

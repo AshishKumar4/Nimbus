@@ -1,7 +1,7 @@
 import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { type ComposedFacetManager, type FacetManagerHostHooks } from "../facets/compose.js";
 import { type ChildProcessHost } from "@nimbus-sh/core/runtime/child-process-manager.js";
-import { type NimbusFilesystemAuthority } from "@nimbus-sh/core/runtime/os-contracts.js";
+import { type NimbusFilesystemAuthority, type VfsCred } from "@nimbus-sh/core/runtime/os-contracts.js";
 import { PrebundlePool } from "../facets/prebundle-pool.js";
 import type { NpmInstaller } from "../npm/installer.js";
 import { WebSocketRelay } from "../session/ws-relay.js";
@@ -41,7 +41,7 @@ export declare function _ensureWebSocketRelay(self: RuntimeServiceHost, runtimeC
 export declare function createChildProcessHost(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext): ChildProcessHost;
 export declare function _ensureChildProcessManager(self: RuntimeServiceHost): import("@nimbus-sh/core/runtime/child-process-manager.js").ChildProcessManager;
 export declare function ensureNpmInstaller(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext, onProgress?: (msg: string) => void): Promise<NpmInstaller>;
-export declare function ensureGlobalPrefixDirs(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext, prefix: string): void;
+export declare function ensureGlobalPrefixDirs(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext, prefix: string, cred: Readonly<VfsCred>): void;
 export declare function bindRuntimeServices(host: RuntimeServiceHost, context: RuntimeServiceContext): {
     childProcessHost: ChildProcessHost;
     ensureBundlePool: () => PrebundlePool;
@@ -49,6 +49,6 @@ export declare function bindRuntimeServices(host: RuntimeServiceHost, context: R
     _ensureWebSocketRelay: () => WebSocketRelay;
     _ensureChildProcessManager: () => import("@nimbus-sh/core/runtime/child-process-manager.js").ChildProcessManager;
     ensureNpmInstaller: (onProgress?: ((msg: string) => void) | undefined) => Promise<NpmInstaller>;
-    ensureGlobalPrefixDirs: (prefix: string) => void;
+    ensureGlobalPrefixDirs: (prefix: string, cred: Readonly<VfsCred>) => void;
 };
 //# sourceMappingURL=services.d.ts.map

@@ -200,7 +200,10 @@ export function installAuthorityFilesystem(imports, options) {
             fail('ENOTCAPABLE');
         return e;
     };
-    const creationMode = (base) => options.umask ? base & ~options.umask() : undefined;
+    const creationMode = (base) => {
+        const umask = options.umask?.();
+        return umask === undefined ? {} : { mode: base & ~umask, umask };
+    };
     const pathRight = (fd, bit) => {
         const e = preopen(fd) ?? entry(fd);
         if (!((e.rights ?? 0x1fffffffn) & (1n << BigInt(bit))))
@@ -336,9 +339,14 @@ export function installAuthorityFilesystem(imports, options) {
         // fd_allocate, fd_filestat_set_size. wasi-libc asks for sync and status
         // rights on every open, and a resident copy answers those itself.
         const readOnly = !(requested & ((1n << 6n) | (1n << 8n) | (1n << 22n))) && !(flags & 15) && !(status & 1);
+        // An open that may make or empty a file names a file: a directory
+        // refuses it (EISDIR) and a symlink is followed or refused (ELOOP), so
+        // the descriptor's type is known without asking for its stat. (A
+        // directory opened only to write is not refused: the write is.)
+        const writes = !(flags & 2) && !!(flags & (1 | 8));
         const open = () => after(fs.open(target, { read: !!(requested & 2n), write: !!(requested & 64n), append: !!(status & 1),
             create: !!(flags & 1), directory: !!(flags & 2), exclusive: !!(flags & 4), truncate: !!(flags & 8), followSymlinks,
-            mode: creationMode(0o666) }), handle => after(fs.fstat(handle.id), st => {
+            ...creationMode(0o666) }), handle => after(writes ? { type: 'file' } : fs.fstat(handle.id), st => {
             const id = options.allocateFd();
             fds.set(id, { kind: 'authority', handle, type: st.type, rights: requested, rightsInheriting: childRights, fdflags: status });
             u32(out, id);
@@ -497,10 +505,10 @@ export function installAuthorityFilesystem(imports, options) {
         const e = preopen(fd) ?? entry(fd);
         if (e.kind === 'resident')
             fail('ENOTDIR');
-        const list = e.kind === 'preopen' ? fs.readdir(e.vfsPath) : e.entries ?? fs.readdirHandle(e.handle.id);
+        // The filesystem owns the listing's revision/lease, including on a
+        // rewind (cookie 0). An unversioned copy here would outlive its recall.
+        const list = e.kind === 'preopen' ? fs.readdir(e.vfsPath) : fs.readdirHandle(e.handle.id);
         return after(list, entries => {
-            if (e.kind === 'authority')
-                e.entries = entries;
             const all = [{ name: '.', type: 'directory' }, { name: '..', type: 'directory' }, ...entries];
             let written = 0;
             for (let i = num(cookie); i < all.length && written < size; i++) {
@@ -517,7 +525,7 @@ export function installAuthorityFilesystem(imports, options) {
             return 0;
         });
     }, owns);
-    imports.path_create_directory = guard(imports.path_create_directory, (fs, fd, p, n) => { pathRight(fd, 9); return after(fs.mkdir(at(fd, path(p, n)), { recursive: false, mode: creationMode(0o777) }), () => 0); });
+    imports.path_create_directory = guard(imports.path_create_directory, (fs, fd, p, n) => { pathRight(fd, 9); return after(fs.mkdir(at(fd, path(p, n)), { recursive: false, ...creationMode(0o777) }), () => 0); });
     imports.path_remove_directory = guard(imports.path_remove_directory, (fs, fd, p, n) => { pathRight(fd, 25); return after(fs.rmdir(at(fd, path(p, n))), () => 0); });
     imports.path_unlink_file = guard(imports.path_unlink_file, (fs, fd, p, n) => { pathRight(fd, 26); return after(fs.unlink(at(fd, path(p, n))), () => 0); });
     imports.path_rename = guard(imports.path_rename, (fs, from, p, n, to, q, m) => { pathRight(from, 16); pathRight(to, 17); return after(fs.rename(at(from, path(p, n)), at(to, path(q, m))), () => 0); });

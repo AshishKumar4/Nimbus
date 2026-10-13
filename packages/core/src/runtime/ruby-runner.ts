@@ -52,7 +52,7 @@ import type { Command, CommandContext } from '../substrate/lifo/commands/types.j
 import { z } from 'zod';
 import { hasLeadingCliFlag } from './cli-flags.js';
 import type { FacetHost } from './facet-host.js';
-import { CRED_KERNEL, gateSyncLaunch, requireVfsCred, type NimbusFilesystemAuthority } from './os-contracts.js';
+import { CRED_SESSION_USER, gateSyncLaunch, requireVfsCred, type NimbusFilesystemAuthority, type VfsCred } from './os-contracts.js';
 import { WASI_INSTANCE_PREAMBLE_SRC, type WasiFsSnapshot } from './wasi-instance.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import { RUBY_SOCKET_SHIM } from './ruby-socket-shim.js';
@@ -239,7 +239,7 @@ export function makeRubyRunnerFactory(deps: {
         progName,
         binName,
         cwd,
-        cred: { uid: cred.uid, gid: cred.gid, groups: [...cred.groups] },
+        cred,
       };
 
       let result: RubyFacetResult = { exitCode: 1, stdout: '', stderr: '' };
@@ -278,7 +278,8 @@ export function makeRubyRunnerFactory(deps: {
       return result.exitCode;
     };
 
-    if (deps.registry) await withHostView(deps.filesystem, CRED_KERNEL, (vfs) => registerGemBins(vfs, deps.getHome()));
+    // The owner's gems, read as the owner.
+    if (deps.registry) await withHostView(deps.filesystem, CRED_SESSION_USER, (vfs) => registerGemBins(vfs, deps.getHome()));
     return rubyBinHandler;
   };
 }
@@ -596,7 +597,7 @@ interface RubyFacetArgs {
   binName: string;
   cwd: string;
   /** The credential it runs as: with it, its filesystem is its resident one (WasiInitOptions.cred). */
-  cred: { uid: number; gid: number; groups: number[] };
+  cred: VfsCred;
 }
 
 /** What one invocation hands the VM. Identical for both process shapes. */
@@ -609,7 +610,7 @@ export interface RubyFacetCallArgs {
   cwd: string;
   supervisorPid?: number;
   outputControls?: import('./wasi/output-control.js').OutputControlFrame[];
-  cred: { uid: number; gid: number; groups: number[] };
+  cred: VfsCred;
 }
 
 export interface RubyFacetResult {

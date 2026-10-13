@@ -968,7 +968,13 @@ try {
       sameTags(label);
     }
     await tag('a tag that exists', ['tag', 'v1']);
-    await tag('-a with no message', ['tag', '-a', 'v5']);
+    // An annotated tag with no message takes it from an editor: real git's
+    // (git-routing-table.mjs). With none installed, the built-in refuses it
+    // and makes no tag.
+    const editor = await nimbusGit(repo.virtual, ['tag', '-a', 'v5'], committer);
+    assert.equal(editor.code, 128, `-a with no message: ${editor.stderr}`);
+    assert.match(editor.stderr, /^fatal: git tag -a without -m or -F \(its message from an editor\) is not supported here\n$/);
+    sameTags('-a with no message');
     await tag('-f replaces it', ['tag', '-f', '-a', '-m', 're', 'v2']);
     sameTags('-f');
     await tag('-f to the same commit, lightweight', ['tag', '-f', 'light']);

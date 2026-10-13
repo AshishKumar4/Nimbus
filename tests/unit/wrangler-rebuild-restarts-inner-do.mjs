@@ -78,6 +78,7 @@ const ctx = {
 };
 const wrangler = new NimbusWrangler({
   vfs: { exists: (path) => files.has(path), readFileString: (path) => files.get(path) },
+  bundleFs: {},
   namespace: { watchChanges(path, listener) { deliverVfsEvents = listener; return () => {}; } },
   esbuild: {
     async build([entry]) {

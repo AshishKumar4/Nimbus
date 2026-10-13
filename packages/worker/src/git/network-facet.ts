@@ -43,8 +43,12 @@ import type { PathProtection } from './worktree/verify-path.js';
 import { COMMITS_PER_CHUNK, treeSlices, type HistoryKind, type HistoryStepResult, type StagedFile } from './pack/history.js';
 import { RETRY_ATTEMPTS, isLostTransport, retryDelay } from './pack/transport.js';
 import { CHECKOUT_FAILED } from './pack/mount-writer.js';
+import type { FetchPackRequest, FetchPackStep, PushPackRequest, fetchPackResume, listRefs, pushPack } from './pack/remote.js';
+import { framedGitBody, GIT_FRAMED_HEADER } from './pack/remote-body.js';
 
-export type GitNetworkOp = 'clone' | 'fetch' | 'push' | 'fetch-objects' | 'graph-filters';
+export type GitNetworkOp = 'clone' | 'fetch' | 'push' | 'fetch-objects' | 'graph-filters' | 'remote-list' | 'remote-fetch' | 'remote-push';
+
+type RemoteResult = Awaited<ReturnType<typeof listRefs>> | FetchPackStep | Awaited<ReturnType<typeof pushPack>>;
 
 
 /** One step of a clone's changed-path filters pass (git/pack/graph-filters.ts). */
@@ -55,6 +59,10 @@ export type GraphFiltersStep =
   | { step: 'discard'; layer: string; pass: string };
 
 export interface GitNetworkOpts {
+  forPush?: boolean;
+  remoteFetch?: Omit<FetchPackRequest, 'jobId'> & { resume?: Parameters<typeof fetchPackResume>[1]['pending'] };
+  remotePush?: PushPackRequest;
+  remotePushPack?: ReadableStream<Uint8Array> | null;
   op: GitNetworkOp;
   /** For graph-filters: commits a piece is asked for, and its wall-time budget (tuning). */
   graphFilterPieceCommits?: number;
@@ -180,6 +188,7 @@ function parseWaveDiagnostic(value: unknown): WaveStats | undefined {
 export type GitNetworkErrorCode = 'GitCloneBudgetExceeded';
 
 export interface GitNetworkResult {
+  remote?: RemoteResult;
   success: boolean;
   error?: string;
   elapsed: number;
@@ -215,6 +224,7 @@ export interface GitCloneBudgetDiagnostic {
 }
 
 interface FacetInvocationResult {
+  remote?: RemoteResult;
   success?: unknown;
   error?: unknown;
   filesWritten?: unknown;
@@ -1083,7 +1093,7 @@ export async function execGitNetwork(
       };
     }
 
-    const { mutationOwner, rotateMutationOwner, onCloneCheckoutPhase, signal, ...facetOpts } = opts;
+    const { mutationOwner, rotateMutationOwner, onCloneCheckoutPhase, signal, remotePushPack, ...facetOpts } = opts;
     throwIfCancelled(signal);
     // The git command's own network (WorkspaceNetwork.forProcess): its bindings and every facet it loads.
     const network = workspace.forProcess(opts.pid);
@@ -1396,31 +1406,58 @@ export async function execGitNetwork(
 
       const invocationId = crypto.randomUUID();
       const startedAt = Date.now();
-      const remaining = outerDeadline - startedAt;
-      if (remaining <= 0) {
-        throw new Error(`git ${opts.op} timed out after ${timeoutMs / 1000}s`);
-      }
-      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-      const timeout = new Promise<never>((_, reject) => {
-        timeoutHandle = setTimeout(
-          () => reject(new Error(`git ${opts.op} timed out after ${timeoutMs / 1000}s`)),
-          remaining,
-        );
-      });
-      const call = entrypoint.fetch(new Request('http://git/op', {
-        method: 'POST',
-        body: JSON.stringify({ ...facetOpts, invocationId }),
-        signal,
-      })).then(async (response: Response) => {
-        try {
-          return await response.json() as FacetInvocationResult;
-        } finally {
-          disposeRpcResource(response);
+      const facet = entrypoint;
+      /** One invocation of the facet, within what is left of the operation's time. */
+      const invoke = async (options: typeof facetOpts & { invocationId: string }): Promise<FacetInvocationResult> => {
+        const remaining = outerDeadline - Date.now();
+        if (remaining <= 0) {
+          throw new Error(`git ${opts.op} timed out after ${timeoutMs / 1000}s`);
         }
-      });
+        let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+        const timeout = new Promise<never>((_, reject) => {
+          timeoutHandle = setTimeout(
+            () => reject(new Error(`git ${opts.op} timed out after ${timeoutMs / 1000}s`)),
+            remaining,
+          );
+        });
+        const call = facet.fetch(new Request('http://git/op', {
+          method: 'POST',
+          body: remotePushPack ? framedGitBody(options, remotePushPack) : JSON.stringify(options),
+          ...(remotePushPack ? { headers: { [GIT_FRAMED_HEADER]: '1' } } : {}),
+          signal,
+        })).then(async (response: Response) => {
+          try {
+            return await response.json() as FacetInvocationResult;
+          } finally {
+            disposeRpcResource(response);
+          }
+        });
+        try {
+          return await unlessCancelled(Promise.race([call, timeout]), signal);
+        } finally {
+          clearTimeout(timeoutHandle);
+        }
+      };
       let result: FacetInvocationResult;
       try {
-        result = await unlessCancelled(Promise.race([call, timeout]), signal);
+        result = await invoke({ ...facetOpts, invocationId });
+        const remoteFetch = facetOpts.remoteFetch;
+        if (opts.op === 'remote-fetch' && remoteFetch !== undefined) {
+          // A pack past one invocation's decoding budget: the same facet goes on with it.
+          let files = nonNegativeCounter(result.filesWritten);
+          let bytes = nonNegativeCounter(result.bytesWritten);
+          const rpc = parseSupervisorRpcCounters(result.supervisorRpc);
+          for (;;) {
+            const remote = result.success === true ? result.remote : undefined;
+            const pending = remote !== undefined && 'pending' in remote ? remote.pending : null;
+            if (pending === null) break;
+            result = await invoke({ ...facetOpts, invocationId: crypto.randomUUID(), remoteFetch: { ...remoteFetch, resume: pending } });
+            files += nonNegativeCounter(result.filesWritten);
+            bytes += nonNegativeCounter(result.bytesWritten);
+            addSupervisorRpcCounters(rpc, result.supervisorRpc);
+          }
+          result = { ...result, filesWritten: files, bytesWritten: bytes, supervisorRpc: rpc };
+        }
       } catch (error) {
         if (!(error instanceof GitNetworkCancelled)) throw error;
         // A fetch, pull or push stopped: what its facet wrote stays, as git's interrupted fetch leaves its objects.
@@ -1434,8 +1471,6 @@ export async function execGitNetwork(
           supervisorRpc: createSupervisorRpcCounters(),
           metadataOverlay: { ...EMPTY_METADATA_OVERLAY_STATS },
         };
-      } finally {
-        if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       }
       const endedAt = Date.now();
       const diagnostic = parsePhaseDiagnostic(result.diagnostic, {
@@ -1449,6 +1484,7 @@ export async function execGitNetwork(
       }, result);
       return {
         success: result.success === true,
+        remote: result.remote,
         error: typeof result.error === 'string' ? result.error : undefined,
         errorPhase: result.success === true ? undefined : 'operation',
         ...(result.success === true ? {} : { remoteFailure: parseRemoteFailure(result.remoteFailure) }),

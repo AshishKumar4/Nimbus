@@ -113,7 +113,7 @@ const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000])
     'without the prefix chain the credentialed install batch ENOENTs on the missing parent',
   );
 
-  ensureGlobalPrefixDirs(session, { ctx: session.ctx, env: session.env, notify() {}, async requestLaunchTurn() { return true; } }, customPrefix);
+  ensureGlobalPrefixDirs(session, { ctx: session.ctx, env: session.env, notify() {}, async requestLaunchTurn() { return true; } }, customPrefix, USER);
 
   const customPrefixDirs = [
     customPrefix,
@@ -131,7 +131,7 @@ const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000])
   }
 
   const prefixRevision = userVfs.revision(customPrefix);
-  ensureGlobalPrefixDirs(session, { ctx: session.ctx, env: session.env, notify() {}, async requestLaunchTurn() { return true; } }, customPrefix);
+  ensureGlobalPrefixDirs(session, { ctx: session.ctx, env: session.env, notify() {}, async requestLaunchTurn() { return true; } }, customPrefix, USER);
   assert.equal(
     userVfs.revision(customPrefix),
     prefixRevision,
