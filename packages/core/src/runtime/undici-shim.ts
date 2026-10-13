@@ -56,7 +56,7 @@
  *
  * Runtime scope dependencies (in scope where the shim block is interpolated):
  *   - globalThis.fetch — ALREADY patched by node-shims.ts (loopback + AI egress)
- *   - __streamMod (Readable.fromWeb, pipeline), __eventsMod, env
+ *   - __streamMod (Readable.fromWeb, pipeline), __eventsMod, __BufferMod, env
  */
 
 import { HTTP_REDIRECT_POLICY_SOURCE } from './compiled-bodies.generated.js';
@@ -253,23 +253,10 @@ const __undiciMod = (() => {
     throw new errors.InvalidArgumentError("undici: unsupported request body type");
   };
 
-  /** A string's length in UTF-8, as TextEncoder would encode it (a lone surrogate as U+FFFD), without encoding it. */
-  const utf8Length = (text) => {
-    let length = 0;
-    for (let i = 0; i < text.length; i++) {
-      const unit = text.charCodeAt(i);
-      if (unit < 0x80) length += 1;
-      else if (unit < 0x800) length += 2;
-      else if (unit >= 0xd800 && unit < 0xdc00 && i + 1 < text.length && (text.charCodeAt(i + 1) & 0xfc00) === 0xdc00) { length += 4; i++; }
-      else length += 3;
-    }
-    return length;
-  };
-
   /** A hop's body length, as undici checks a Content-Length against it; null for what fetch encodes (FormData, URLSearchParams). */
   const bodyLength = (body) => {
     if (body === undefined) return 0;
-    if (typeof body === "string") return utf8Length(body);
+    if (typeof body === "string") return __BufferMod.byteLength(body, "utf8");
     if (body instanceof Uint8Array || body instanceof ArrayBuffer) return body.byteLength;
     if (typeof Blob !== "undefined" && body instanceof Blob) return body.size;
     return null;
