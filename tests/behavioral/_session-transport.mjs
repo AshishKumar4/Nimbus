@@ -1,5 +1,8 @@
 // Public session protocol and credential ownership, scoped to one target.
 // Policies (readiness, ledgers, retries, browser exchange) compose this data.
+
+/** The version that answered a readiness reply (createNimbusHandler's NIMBUS_VERSION_HEADER). */
+export const VERSION_HEADER = 'x-nimbus-version';
 export function redactCredentials(text) {
   return String(text)
     .replace(/([?&#](?:nimbus_token|access_token|token)=)[^&#\s"'<>]+/gi, '$1…')
@@ -24,7 +27,7 @@ export async function deleteProbeSession(session, { reason, signal, request = gl
   const response = await request(`${session.base}/s/${encodeURIComponent(session.sessionId)}/`, {
     method: 'DELETE', headers: { ...session.headers, ...(reason ? { 'X-Nimbus-Cleanup-Reason': reason } : {}) }, signal,
   });
-  return { ...await deletionResult(response), versionId: response.headers.get('x-nimbus-probe-version'), retryAfter: response.headers.get('retry-after') };
+  return { ...await deletionResult(response), versionId: response.headers.get(VERSION_HEADER), retryAfter: response.headers.get('retry-after') };
 }
 
 export function createProbeTarget({ base, token = '', cookie = '', request = globalThis.fetch }) {
@@ -43,7 +46,7 @@ export function createProbeTarget({ base, token = '', cookie = '', request = glo
       let created;
       if (match) {
         created = { sessionId: match[1], base, headers: targetHeaders, attachPath: attach.pathname + attach.search + attach.hash, status: response.status,
-          versionId: response.headers.get('x-nimbus-probe-version') };
+          versionId: response.headers.get(VERSION_HEADER) };
       } else {
         const text = await response.text().catch(() => '');
         let code;
@@ -61,7 +64,7 @@ export function createProbeTarget({ base, token = '', cookie = '', request = glo
           }
           created = { sessionId: body.sessionId, base, headers: Object.freeze({ Authorization: `Bearer ${attachToken}` }),
             attachPath: `/s/${encodeURIComponent(body.sessionId)}/?nimbus_token=${encodeURIComponent(attachToken)}`,
-            status: opened.status, versionId: opened.headers.get('x-nimbus-probe-version'), reap: 'ttl' };
+            status: opened.status, versionId: opened.headers.get(VERSION_HEADER), reap: 'ttl' };
         } else {
           const detail = redactCredentials(text.trim().split('\n')[0].slice(0, 200));
           const why = response.status === 401 || response.status === 403

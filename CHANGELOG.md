@@ -62,6 +62,14 @@ published independently in the `@nimbus-sh` npm scope.
   files in sticky directories. A remote deletion now acts as the session's
   user, as its writes already did; a colocated embedder calling the session
   binding directly keeps the kernel default.
+- Added: `createNimbusHandler` names the Worker version that answered on the
+  replies a deploy's readiness reads (`POST /new`, the terminal WebSocket
+  upgrade, `DELETE /s/<id>/` and the remote API), as `x-nimbus-version`, when
+  the Worker binds `version_metadata` as `CF_VERSION_METADATA`. The hosted
+  demo binds it on every tier. Staging and production promotion now grade a
+  hosted-demo upload only after the edge answered as that version alone; one
+  old-version reply during the deploy overlap had made a promotion's `/try`
+  check report the session gone.
 
 ## 2026-10-12: platform 0.8.2, core 0.18.0, fabric 0.13.0, worker 0.16.0, loom 0.2.5, sdk 0.13.1, react 0.3.1, cli 0.2.5, create-nimbus-app 0.2.2
 

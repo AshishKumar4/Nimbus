@@ -311,7 +311,6 @@ const EMBEDDER_WORKER_RE = /^\/api\/embedder\/([A-Za-z0-9._-]+)\/(spawn-worker|h
 type ProbeEnv = Omit<Parameters<typeof nimbus.fetch>[1], 'NIMBUS_SESSION'> & {
   NIMBUS_SESSION: DurableObjectNamespace<NimbusSession>;
   NIMBUS_DEBUG?: string;
-  CF_VERSION_METADATA?: { id: string };
 };
 const HostLossProbe = z.discriminatedUnion('action', [
   z.object({ action: z.literal('mode') }),
@@ -319,24 +318,13 @@ const HostLossProbe = z.discriminatedUnion('action', [
   z.object({ action: z.literal('placement-state'), peerName: z.string(), workerKey: z.string() }),
 ]);
 
+// Readiness replies carry x-nimbus-version from createNimbusHandler itself.
 export default {
   async fetch(request: Request, env: ProbeEnv, ctx: ExecutionContext): Promise<Response> {
-    const path = new URL(request.url).pathname;
-    const match = request.method === 'POST' ? EMBEDDER_WORKER_RE.exec(path) : null;
-    const response = match ? await (match[2] === 'host-loss' ? probeHostLoss(request, env, match[1])
-      : match[2] === 'quiet-websocket' ? spawnQuietWebSocket(request, env, match[1]) : spawnEmbedderWorker(request, env, match[1])) : await nimbus.fetch(request, env, ctx);
-    const versionId = env.CF_VERSION_METADATA?.id;
-    // Stamp the three readiness replies, including 101; leave encoded asset
-    // and port responses intact instead of rebuilding their body metadata.
-    const readiness = (request.method === 'POST' && path === '/new')
-      || (request.method === 'GET' && /^\/s\/[^/]+\/ws$/.test(path))
-      || (request.method === 'DELETE' && /^\/s\/[^/]+\/$/.test(path));
-    if (!versionId || !readiness) return response;
-    const headers = new Headers(response.headers);
-    headers.set('x-nimbus-probe-version', versionId);
-    return new Response(response.body, {
-      status: response.status, statusText: response.statusText, headers, webSocket: response.webSocket,
-    });
+    const match = request.method === 'POST' ? EMBEDDER_WORKER_RE.exec(new URL(request.url).pathname) : null;
+    if (!match) return nimbus.fetch(request, env, ctx);
+    return match[2] === 'host-loss' ? probeHostLoss(request, env, match[1])
+      : match[2] === 'quiet-websocket' ? spawnQuietWebSocket(request, env, match[1]) : spawnEmbedderWorker(request, env, match[1]);
   },
 };
 

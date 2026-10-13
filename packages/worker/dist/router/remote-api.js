@@ -116,6 +116,10 @@ export async function handleNimbusRemoteApi(request, env, sdk, outbox) {
 export function remoteApiEnabled(sdk) {
     return normalizeRemoteConfig(sdk?.remote).enabled;
 }
+/** The path the remote API is served under. */
+export function remoteApiBasePath(sdk) {
+    return normalizeRemoteConfig(sdk?.remote).basePath;
+}
 function normalizeRemoteConfig(remote) {
     const value = typeof remote === 'object' ? remote : {};
     return {
