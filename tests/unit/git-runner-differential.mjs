@@ -130,6 +130,24 @@ try {
   await step('a hook that is not executable', { files: { '.git/hooks/post-commit': '#!/bin/sh\necho ran > hook-ran\n' }, git: [['commit', '-q', '--allow-empty', '-m', 'hooked'], ['status', '--porcelain']] });
   steps.push('modes');
 
+  // A child process git starts (an alias of a shell command) reaches the
+  // workspace's one broker. Where the engine can suspend a WASI guest
+  // (JSPI), it runs; where it cannot (Node 22), the nimbus_proc call that
+  // has to wait is refused by name, and the repository is as it was.
+  {
+    const before = await ws.exec('cd repo && git status --porcelain && git rev-parse HEAD && ls .git');
+    const got = await ws.exec(`cd repo && git -c alias.say='!echo said' say`);
+    const parks = typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function';
+    if (parks) {
+      assert.deepEqual([got.exitCode, got.stdout], [0, 'said\n'], `an alias's child runs: ${got.stderr}`);
+    } else {
+      assert.notEqual(got.exitCode, 0, 'refused');
+      assert.match(got.stderr, /nimbus_proc\.(spawn|start|wait)\b.*cannot be suspended/, `refused by name: ${got.stderr}`);
+    }
+    assert.equal((await ws.exec('cd repo && git status --porcelain && git rev-parse HEAD && ls .git')).stdout, before.stdout, 'the repository is as it was');
+    steps.push(parks ? 'a child process' : 'a child process, refused by name');
+  }
+
   // Output that is not UTF-8, byte for byte: a binary blob and a diff of a Latin-1 file.
   const binary = Uint8Array.from({ length: 4096 }, (_, i) => (i * 37 + 11) & 0xff);
   const latin1 = Buffer.from('caf\xe9 cr\xe8me\n', 'latin1');
