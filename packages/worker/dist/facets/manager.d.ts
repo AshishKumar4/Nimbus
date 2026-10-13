@@ -25,7 +25,7 @@ import { type SignalAbortReason } from '@nimbus-sh/core/substrate/lifo/shell/sig
 import { type NodeFacetSources } from '../runtime/node-shims-artifact.js';
 import { type ModuleSource, type ImmutableModuleSource } from '@nimbus-sh/platform/module-source.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import type { NimbusFilesystemAuthority, RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { NimbusFilesystemAuthority, RuntimeFsBridge, VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { type PortVisibility } from '../session/port-capability.js';
 import { type PreloadModuleRoot, type RequiredModuleRoot } from '@nimbus-sh/core/runtime/require-resolver.js';
@@ -1034,6 +1034,16 @@ export interface LongRunningWorkerSpawnOptions {
     port?: number;
     /** The process whose command starts this one: its parent, whose credential and exec id it takes. Never journalled. */
     invokerPid?: number;
+    /**
+     * Who the process is when no invoker says: the argv its identity derives
+     * from, the credential it runs as and its exec id (a dev server restored
+     * from what it persisted). Exclusive with `invokerPid` and `resident`.
+     */
+    identity?: {
+        argv: string[];
+        cred: VfsCred;
+        execId?: string;
+    };
     /** Inline modules: source text, or small wasm carried by value. */
     modules?: Record<string, string | {
         wasm: ArrayBuffer;
@@ -1061,6 +1071,8 @@ export interface LongRunningWorkerSpawnOptions {
     compatibilityFlags?: string[];
     compatibilityDate?: string;
     env?: ResidentCodeSpec['env'];
+    /** Live bindings beside the process's own SUPERVISOR (ResidentCodeSpec.bindings); exclusive with `env` and `durable`. */
+    bindings?: ResidentCodeSpec['bindings'];
     globalOutbound?: ResidentCodeSpec['globalOutbound'];
     /** Forwarded verbatim to the runner's startProcess. */
     startArgs?: unknown;
@@ -2060,6 +2072,7 @@ export declare class FacetManager {
      * never holds one): it runs as the row says, records the process it
      * restarts and why, and says so as its first line of output. The terminal
      * a session's restart disconnected is not where the user looks for it.
+     * A restored launch runs as its identity says, and restarts nothing.
      */
     private _spawnLaunchEntry;
     /**
