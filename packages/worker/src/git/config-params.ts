@@ -203,10 +203,8 @@ export function withWorktreeConfig<G extends ConfigReader & { setConfig(args: { 
       await git.setConfig(args);
     },
   };
-  return new Proxy(git, {
-    get: (target, property, receiver) =>
-      property === 'getConfig' || property === 'getConfigAll' || property === 'setConfig' ? calls[property] : Reflect.get(target, property, receiver),
-  });
+  // A copy, not another Proxy: every call a command makes on git would pass one more trap.
+  return { ...git, ...calls };
 }
 
 /**
