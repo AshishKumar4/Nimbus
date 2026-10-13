@@ -5,30 +5,23 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
-- Fixed: a `node:sqlite` database keeps its changes. A connection opened
-  after another's `close()` in the same run sees what it wrote (it read the
-  run's starting copy), and a write made through `all()` or `get()`, such as
-  `INSERT ... RETURNING`, is saved on close (only `run()` and `exec()` were).
-  The database is read and written as the program's own file, so a refused
-  write fails `close()` instead of being dropped silently, and a database the
-  program only read is not written back. A SQLite-only program's first write
-  in a fresh isolate costs about 6 ms CPU, the fs write path's one-time
-  compile; writes are no longer lost. A Node `fs` write over an existing file
-  no longer reads the file it replaces (about 0.4 ms less per MiB).
-- Security: a sticky directory (mode 1777, such as `/tmp`) protects its
-  entries from every removal. Removing an ancestor (`rm -r`,
-  `fs.rmSync(..., { recursive: true })`) or deleting through a batch could
-  remove another user's file in a sticky directory below it; only the top
-  operand was checked. Changed: `rm -r` of a tree in the session's own store
-  now does what it does on a mounted directory and on Linux: an entry it may
-  not remove stays, with the directories holding it, and everything else
-  goes; it refused the whole tree before removing anything.
-- Fixed: `nimbus wrangler dev`'s Worker Loader binding (`worker_loaders`)
-  cached a Worker loaded with `LOADER.get(id, …)` under its id alone, for
-  the whole isolate: two Workers in co-located sessions that used the same
-  id shared one, and the second ran the first's code. A keyed Worker is now
-  its loader's own: each build's binding has its own, so a rebuild loads
-  its keyed Workers afresh.
+- Fixed: a `node:sqlite` database keeps what a connection wrote when it is
+  closed. A connection opened after another's `close()` in the same run sees
+  it (it read the run's starting copy), a write made through `all()` or
+  `get()`, such as `INSERT ... RETURNING`, or one SQLite does not count, such
+  as `ANALYZE`'s statistics, is kept (only `run()` and `exec()` were), and a
+  relative name is the file it named when the connection opened. The model
+  is the whole database image: close writes the connection's image back to
+  its file, through the program's `fs`, unless it is the image that was read,
+  so a database only read is not written; a program killed before `close()`
+  loses that connection's changes, and two connections or processes writing
+  one file each write their own image, the last close winning. A write the
+  program may not make fails `close()` as `fs.writeFileSync` would; one the
+  session refuses later is reported as any refused write is. A SQLite-only
+  program's first write in a fresh isolate costs about 6 ms CPU, the fs
+  write path's one-time compile; writes are no longer lost. A Node `fs`
+  write over an existing file no longer reads the file it replaces (about
+  0.4 ms less per MiB).
 - Fixed: a module a Node program writes and then imports links as Node's
   does before any of its graph runs. An import of a name its module does
   not export is Node's SyntaxError, with no module body run first; before,
