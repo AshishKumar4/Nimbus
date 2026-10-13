@@ -207,9 +207,8 @@ export function withWorktreeConfig(git, files, fs) {
             await git.setConfig(args);
         },
     };
-    return new Proxy(git, {
-        get: (target, property, receiver) => property === 'getConfig' || property === 'getConfigAll' || property === 'setConfig' ? calls[property] : Reflect.get(target, property, receiver),
-    });
+    // A copy, not another Proxy: every call a command makes on git would pass one more trap.
+    return { ...git, ...calls };
 }
 /**
  * `git` with `overrides` over every file's: a key `-c` set reads as its last
