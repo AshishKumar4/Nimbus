@@ -25,25 +25,26 @@ export interface LateResolution {
 }
 
 /**
- * A staged module row's bindings (worker facets/esm-stage.ts EsmRowBindings,
- * a module's): its own names, the rows its `export *`s reach, by static
- * import that reads names the row it loads, its specifier as written and the
- * names, and its names that are another row's (the name, the row, the name
- * there; null for its namespace).
+ * A staged module row's facts, as its source reads: its own names, the rows
+ * its `export *`s reach, by static import that reads names the row it loads,
+ * its specifier as written and the names, and its names that are another
+ * row's (the name, the row, the name there; null for its namespace).
  */
-export type ModuleRowFacts = readonly [
-  exports: readonly string[],
-  stars: readonly number[],
-  imports: readonly (readonly [row: number, specifier: string, ...names: string[]])[],
-  reexports?: readonly (readonly [exported: string, row: number, name: string | null])[],
-];
+interface ModuleRowFacts {
+  readonly exports: readonly string[];
+  readonly stars: readonly number[];
+  readonly imports: readonly (readonly [row: number, specifier: string, ...names: string[]])[];
+  readonly reexports: readonly (readonly [exported: string, row: number, name: string | null])[];
+}
 
 export interface LateLinkHost {
   /** The staged row of `kind` at `key` (a builtin's name), or -1. */
   row(kind: 'module' | 'commonjs' | 'json' | 'builtin', key: string): number;
   /** A staged row's kind: 'module', or a facade's ('commonjs', 'json', 'builtin'). */
   rowKind(row: number): string;
-  /** The launch's row bindings, as staging wrote them (worker facets/esm-stage.ts EsmRowBindings): JSON, by row. */
+  /** A staged row's key: a module's path, a builtin's name. */
+  rowKey(row: number): string;
+  /** The facades' export names, as staging wrote them (worker facets/esm-stage.ts EsmRowBindings): JSON, by row. */
   rowBindings(): string;
   /** A staged module row's static targets: a row, or -2 - i for the staging refused as missing(i). */
   rowTargets(row: number): readonly number[];
@@ -108,36 +109,57 @@ interface LateGraph {
   readonly rows: number[];
 }
 
-/** A row's bindings: a module's, a facade's names, or null where unknown. */
-type RowBindings = ModuleRowFacts | readonly string[] | null;
-
-/** The launch's row bindings, read once. */
-let rowBindings: readonly RowBindings[] | undefined;
-
-function bindingsOf(host: LateLinkHost, row: number): RowBindings {
-  if (rowBindings === undefined) {
-    try {
-      const parsed: readonly RowBindings[] = JSON.parse(host.rowBindings());
-      rowBindings = parsed;
-    } catch {
-      rowBindings = [];
-    }
-  }
-  return rowBindings[row] ?? null;
-}
-
-const isModuleRow = (bindings: ModuleRowFacts | readonly string[]): bindings is ModuleRowFacts => Array.isArray(bindings[0]);
-
-/** A staged module row's bindings, or null where unknown. */
-function moduleFacts(host: LateLinkHost, row: number): ModuleRowFacts | null {
-  const bindings = bindingsOf(host, row);
-  return bindings !== null && isModuleRow(bindings) ? bindings : null;
-}
+/** The facades' export names, by row, read once. */
+let facadeNames: readonly (readonly string[] | null)[] | undefined;
 
 /** A facade row's export names, or null where unknown. */
 function rowNames(host: LateLinkHost, row: number): readonly string[] | null {
-  const bindings = bindingsOf(host, row);
-  return bindings !== null && !isModuleRow(bindings) ? bindings : null;
+  if (facadeNames === undefined) {
+    try {
+      const parsed: readonly (readonly string[] | null)[] = JSON.parse(host.rowBindings());
+      facadeNames = parsed;
+    } catch {
+      facadeNames = [];
+    }
+  }
+  return facadeNames[row] ?? null;
+}
+
+/** Staged module rows' facts, by row, read from their sources when a link first needs them. */
+const rowFacts = new Map<number, ModuleRowFacts | null>();
+
+/** A staged module row's facts, or null where its source does not tell them. */
+function moduleFacts(host: LateLinkHost, row: number): ModuleRowFacts | null {
+  const known = rowFacts.get(row);
+  if (known !== undefined) return known;
+  let facts: ModuleRowFacts | null = null;
+  const key = host.rowKey(row);
+  const text = host.source(key, row);
+  const analysis = text === null ? null : host.requests(key, text, true, 'module');
+  const bindings = analysis?.bindings;
+  const targets = host.rowTargets(row);
+  const specifiers: string[] = [];
+  for (const request of analysis?.requests ?? []) if (request.kind === 'static') specifiers.push(request.specifier);
+  if (bindings !== undefined && bindings.imports.length === targets.length && specifiers.length === targets.length) {
+    const exports: string[] = [];
+    for (let i = 0; i < bindings.exports.length; i++) exports.push(bindings.exports[i]);
+    const stars: number[] = [];
+    for (let i = 0; i < bindings.stars.length; i++) if (targets[bindings.stars[i]] >= 0) stars.push(targets[bindings.stars[i]]);
+    const imports: [number, string, ...string[]][] = [];
+    for (let at = 0; at < targets.length; at++) {
+      const names: string[] = [];
+      for (let i = 0; i < bindings.imports[at].length; i++) names.push(bindings.imports[at][i]);
+      if (targets[at] >= 0 && names.length > 0) imports.push([targets[at], specifiers[at], ...names]);
+    }
+    const reexports: [string, number, string | null][] = [];
+    for (let i = 0; i < bindings.reexports.length; i++) {
+      const [exported, at, name] = bindings.reexports[i];
+      if (targets[at] >= 0) reexports.push([exported, targets[at], name]);
+    }
+    facts = { exports, stars, imports, reexports };
+  }
+  rowFacts.set(row, facts);
+  return facts;
 }
 
 /** Every late module a link has read, by URL: what an interpreted module's `export *` asks of (starConflicts). */
@@ -329,7 +351,7 @@ function edgesOf(host: LateLinkHost, late: LateGraph, target: LateTarget): reado
   if (target.row === undefined) return late.modules.get(target.url)?.imports ?? [];
   const facts = host.rowKind(target.row) === 'module' ? moduleFacts(host, target.row) : null;
   if (facts === null) return [];
-  return facts[2].map(([row, specifier, ...names]) => ({ target: { row }, specifier, names }));
+  return facts.imports.map(([row, specifier, ...names]) => ({ target: { row }, specifier, names }));
 }
 
 /** A name its module's `export *`s reach two different bindings of. */
@@ -350,9 +372,9 @@ function factsOf(host: LateLinkHost, late: LateGraph, target: LateTarget) {
   const facts = moduleFacts(host, target.row);
   if (facts === null) return null;
   return {
-    exports: facts[0],
-    stars: facts[1].map((row): LateTarget => ({ row })),
-    reexports: (facts[3] ?? []).map(([exported, row, name]): [string, LateTarget, string | null] => [exported, { row }, name]),
+    exports: facts.exports,
+    stars: facts.stars.map((row): LateTarget => ({ row })),
+    reexports: facts.reexports.map(([exported, row, name]): [string, LateTarget, string | null] => [exported, { row }, name]),
   };
 }
 

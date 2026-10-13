@@ -51,23 +51,12 @@ export function esmRowName(row: EsmModuleRow, id: number): string {
 }
 
 /**
- * What Node's linker checks of a row (core esm-interop.ts ModuleBindings),
- * as the process reads it (ESM_BINDINGS_MODULE): a staged module's own
- * export names, the rows its `export *` re-exports, by static import the
- * row it loads, its specifier as written and the names it reads of it, and
- * its names that are another row's ([name, row, the name there, null for
- * its namespace]: ResolveExport's indirect entries); a facade's or a JSON
- * module's export names; null where unknown.
+ * A row's export names, as the late link reads them (ESM_BINDINGS_MODULE,
+ * core runtime/esm-late-link.ts): a facade's or a JSON module's, which
+ * staging already knows; null for a staged module, whose names the late
+ * link reads from its source if it ever needs them.
  */
-export type EsmRowBindings =
-  | readonly [
-    exports: readonly string[],
-    stars: readonly number[],
-    imports: readonly (readonly [row: number, specifier: string, ...names: string[]])[],
-    reexports: readonly (readonly [exported: string, row: number, name: string | null])[],
-  ]
-  | readonly string[]
-  | null;
+export type EsmRowBindings = readonly string[] | null;
 
 /** A specifier Node's loader refuses: the error its import fails with. */
 export interface EsmMissing {
@@ -88,7 +77,7 @@ export interface EsmStage {
   readonly table: EsmModuleRow[];
   /** What each refused specifier fails with, by the number of the missing module it names (ESM_MISSING_DIR). */
   readonly missing: EsmMissing[];
-  /** What Node's linker checks of each row, by id. */
+  /** Each row's export names, by id (EsmRowBindings). */
   readonly bindings: EsmRowBindings[];
   /** How long staging took, in milliseconds: the launch's debug line. */
   readonly ms: number;
@@ -371,21 +360,6 @@ export async function stageEsModules(
       }
     }
     targetNames.push(targets);
-    // What its static imports read of their rows, by the specifiers as written.
-    const read = sites.bindings;
-    if (read !== undefined && read.imports.length === sites.statics.length) {
-      const imports: [number, string, ...string[]][] = [];
-      for (let at = 0; at < sites.statics.length; at++) {
-        if (rowTargets[at]! >= 0 && read.imports[at]!.length > 0) imports.push([rowTargets[at]!, sites.statics[at]!.specifier, ...read.imports[at]!]);
-      }
-      const stars = read.stars.map((at) => rowTargets[at]!).filter((row) => row >= 0);
-      const reexports = read.reexports
-        .filter(([, at]) => rowTargets[at]! >= 0)
-        .map(([exported, at, name]) => [exported, rowTargets[at]!, name] as const);
-      bindings[id] = [read.exports, stars, imports, reexports];
-    } else {
-      bindings[id] = null;
-    }
     id++;
   }
 

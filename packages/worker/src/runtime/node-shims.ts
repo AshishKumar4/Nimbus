@@ -12870,6 +12870,7 @@ async function __nimbusEsmLinkStaged(key) {
 const __nimbusLateLinkHost = {
   row: __nimbusEsmId,
   rowKind: (row) => __nimbusEsm.table[row][0],
+  rowKey: (row) => __nimbusEsm.table[row][1],
   rowBindings: () => __nimbusReadBundleFile(__NIMBUS_BUNDLE_FILES + ${JSON.stringify(ESM_BINDINGS_MODULE)}, "utf8"),
   rowTargets: (row) => __nimbusEsm.table[row][2],
   rowSettled: (row) => __nimbusEsmRecords[row]?.state === __ESM_DONE || __nimbusEsmRecords[row]?.state === __ESM_ADOPTED,
