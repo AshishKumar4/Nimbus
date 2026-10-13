@@ -376,6 +376,7 @@ try {
     });
     await installer.prebundleUsedModules(root, new Map([['legacy', {}]]), project.vfs.as(CRED_KERNEL), () => {});
     const warmed = new NpmCache(project.harness.sql).getEsmBundle('legacy/constants');
+    const installBuilds = specs.length;
     const server = new ViteDevServer({
       vfs: project.vfs, cred: CRED_KERNEL, esbuild: new EsbuildService(undefined, { engine: esbuildEngine }), root, sql: project.harness.sql,
       onHmrMessage() {}, basePath: '/preview', port: 5173, bundlePool: { acquire: async () => pool },
@@ -383,8 +384,8 @@ try {
     const response = await server.handleRequest(new Request('http://localhost/preview/@modules/legacy/constants'), '/@modules/legacy/constants');
     const served = await response.text();
     server.stop?.();
-    const one = warmed !== null && warmed.esmCode.includes('legacy-zero') && specs.length === 1 && response.status === 200 && served.includes('legacy-zero');
-    if (!one) failures.push(`the installer and the dev server resolved legacy/constants differently: warmed ${warmed ? 'a row' : 'nothing'}, ${specs.length} builds (${specs.join(', ')}), served ${response.status}: ${served.slice(0, 200)}`);
+    const one = warmed !== null && warmed.esmCode.includes('legacy-zero') && specs.length === installBuilds && response.status === 200 && served.includes('legacy-zero');
+    if (!one) failures.push(`the installer and the dev server resolved legacy/constants differently: warmed ${warmed ? 'a row' : 'nothing'}, builds ${specs.join(', ')} (${installBuilds} by the installer), served ${response.status}: ${served.slice(0, 200)}`);
     console.log(`  ${one ? 'ok ' : 'RED'} the installer warms a subpath from the entry the dev server bundles it from, and the dev server serves that row`);
   }
 } finally {
