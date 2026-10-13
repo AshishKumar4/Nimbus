@@ -96,6 +96,9 @@ for (const entry of ['handleHttpRequest', 'fetch']) {
   assert.equal(await (await process.fetch(sent)).text(), 'guest answer');
   assert.equal(ctx.request, sent, 'the guest handles the request its host sent, not a copy');
   assert.deepEqual(ctx.seen.map(({ entry }) => entry), ['http']);
+  // A watch with another key is no request of its host's: it enters neither endpoint.
+  const forged = await process.fetch(new Request('https://leaf.invalid/', { headers: { [HOST_WATCH_HEADER]: 'wrong-capability' } }));
+  assert.deepEqual([forged.status, forged.headers.get(HOST_INCARNATION_HEADER), ctx.handlers], [404, null, 1]);
 }
 for (const admitted of [false, true]) {
   // The guest's request signal is its host's call: cancelling the call
