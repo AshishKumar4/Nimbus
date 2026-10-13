@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "40dca5666cfe5d50e147ea5629761f017e1837422df129f0573464f79faa6b6c",
+  "fingerprint": "294dc25141bb087491045c4b9e04f3f26ece2d19c93dfd56c02868c53b7985b7",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2687,8 +2687,8 @@
     "packages/worker/dist/session/supervisor-rpc.d.ts.map": "f48d20c2444e7e24b33b3681f6e926ae17f4cd757b07601fe62758dc5aba8188",
     "packages/worker/dist/session/supervisor-rpc.js": "aa00be8bd73a6910fa90ba32b0a6b3bb524295db779f6d7f3fdf82701d97c7f3",
     "packages/worker/dist/session/vite-command.d.ts": "8ab65c3321df100969bb85c3c8653cccad4b2b68c34faebe2b7cb3864225c56d",
-    "packages/worker/dist/session/vite-command.d.ts.map": "caa539aaf12f8b17edf6072246379b5423bd85f7c61ee8389b2754d50147cbe6",
-    "packages/worker/dist/session/vite-command.js": "e46dfb78b02dbc5db3e9dd13425620e5ef98a26523d7e8dca4cbde85da23601e",
+    "packages/worker/dist/session/vite-command.d.ts.map": "f1522938db5b4db69236412e85c0c42c2d0cd78d75128e40d423c7f76f1401ad",
+    "packages/worker/dist/session/vite-command.js": "0b2d8b81e031b5d942a3842010a0a620b46a247a03b30b87cfd350902ab59935",
     "packages/worker/dist/session/ws-relay.d.ts": "8bc903452599363a4431d84a3d965d4a761c552f901c91ad756ba0b323025556",
     "packages/worker/dist/session/ws-relay.d.ts.map": "92c992df68394b764f13a6b4dfccfabac7e0bce4de11d0dc03a9b74b33f86f5e",
     "packages/worker/dist/session/ws-relay.js": "db0054a68b242389706633aac49b472e4fc51d510fe36f115d9c431d285a4945",
@@ -3138,7 +3138,7 @@
     "packages/worker/src/session/supervisor-calls.ts": "a0681027208130d003634dcee66f879025659b76525b73bd937284e077b88424",
     "packages/worker/src/session/supervisor-op.ts": "56a324372b0130cad998aa51dc6d2ee6b69455b8cbabe95325472d1c2a5feaa3",
     "packages/worker/src/session/supervisor-rpc.ts": "0c6a0a2111e14bfed8d8496de8c1c726ce4881697ffcee7913344a3336fe652b",
-    "packages/worker/src/session/vite-command.ts": "df670aebdeaddbc15a03e811df1c5c60798001ab8acf06fb425f50b61af8c0bc",
+    "packages/worker/src/session/vite-command.ts": "6a7bfdade8513e0301c591b47fc051675c794d10e83d46546a92239d0f3ff7f3",
     "packages/worker/src/session/ws-relay.ts": "09c4885cd74f79077be60dfb8224c449b2ab661ba6020a1f1ccb71d132e90566",
     "packages/worker/src/session/ws.ts": "0d4eedfe8f625428a9c0bb718e268c408a4f829818888b3077fe7d542a6d2898",
     "packages/worker/src/shell/npm-bin-entrypoints.ts": "5355b7fbbbb5c0152cfc73e33894ce7d8c3981092b478a69f876e0f82985fa21",
