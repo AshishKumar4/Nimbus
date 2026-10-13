@@ -157,15 +157,14 @@ export class HostActivity {
 }
 
 /**
- * The requests a host sends a resident's leaf, by id, so it can abandon one:
- * before its response's headers as well as after. Workers RPC carries no
- * signal, and asking per request costs a round trip; abandoning is the rare
- * path, so only it sends anything (the leaf's abandonHttpRequest). Each call
- * carries `low`, below which every id is retired (delivered, or abandoned
- * where the leaf heard it), so the leaf forgets them; and, only when there
- * are any, the ids whose abandon did not arrive (`abandoned`), which the leaf
- * abandons first. The leaf keeps an abandon that overtakes its request until
- * that request arrives (observeResidentConfig).
+ * The requests a coordinator sends the peer hosting a process, by id, so it
+ * can abandon one: before its response's headers as well as after. Workers
+ * RPC carries no signal, and asking per request costs a round trip;
+ * abandoning is the rare path, so only it sends anything (the peer's
+ * abandonHostedHttp). Each call carries `low`, below which every id is
+ * retired (delivered, or abandoned where the peer heard it), so the peer
+ * forgets them; and, only when there are any, the ids whose abandon did not
+ * arrive (`abandoned`), which the peer abandons first (HandledRequests).
  */
 export class SentRequests {
   #next = 0;
@@ -194,12 +193,12 @@ export class SentRequests {
     else void abandon(id).then(() => this.#retire(id), () => this.#abandoned.push(id));
   }
 
-  /** `request`'s leaf answered: the abandons it carried arrived. */
+  /** `request`'s peer answered: the abandons it carried arrived. */
   received(request: HostRequest): void {
     if (request.abandoned) for (const id of request.abandoned) this.#retire(id);
   }
 
-  /** `request`'s call failed before its leaf saw it (leafReceived): its abandons ride the next one. */
+  /** `request`'s call failed before its peer saw it (leafReceived): its abandons ride the next one. */
   unsent(request: HostRequest): void {
     if (request.abandoned) this.#abandoned.push(...request.abandoned);
   }
@@ -207,6 +206,41 @@ export class SentRequests {
   #retire(id: number): void {
     this.#open.delete(id);
     while (this.#low < this.#next && !this.#open.has(this.#low)) this.#low++;
+  }
+}
+
+/**
+ * The receiving end of SentRequests: one AbortController per request its
+ * sender may still abandon, aborted when that abandon arrives, whether before
+ * the request (kept until it comes) or after. Ids below the sender's `low`
+ * are forgotten; an id already retired when its request arrives gets a
+ * signal no abandon will reach.
+ */
+export class HandledRequests {
+  #requests = new Map<number, AbortController>();
+  #low = 0;
+
+  /** The signal request `request.id` runs under, once the abandons it carried are applied. */
+  signal(request: HostRequest): AbortSignal {
+    if (request.abandoned !== undefined) for (const gone of request.abandoned) this.abandon(gone);
+    const { id, low } = request;
+    if (low > this.#low) {
+      // Ids are sequential: forget each retired one, or scan when the step outruns the table.
+      if (low - this.#low <= this.#requests.size) while (this.#low < low) this.#requests.delete(this.#low++);
+      else { for (const known of this.#requests.keys()) if (known < low) this.#requests.delete(known); this.#low = low; }
+    }
+    if (id < this.#low) return new AbortController().signal;
+    let controller = this.#requests.get(id);
+    if (!controller) this.#requests.set(id, controller = new AbortController());
+    return controller.signal;
+  }
+
+  /** Its sender abandoned request `id`. */
+  abandon(id: number): void {
+    if (id < this.#low) return;
+    let controller = this.#requests.get(id);
+    if (!controller) this.#requests.set(id, controller = new AbortController());
+    controller.abort(new DOMException('The caller left the request', 'AbortError'));
   }
 }
 
@@ -296,8 +330,16 @@ export function observeResidentConfig(config: WorkerCode, capability: string): W
   if (Object.hasOwn(modules, entry)) throw new Error('resident worker uses a reserved module name');
   modules[entry] = hostAdapter(config.mainModule, capability);
   config.mainModule = entry;
+  // The guest's request signal is its host's call: aborted when its caller
+  // leaves, and carried by the guest's own fetch or clone of the request. A
+  // program that turned either off keeps its choice.
+  const flags = config.compatibilityFlags ?? [];
+  config.compatibilityFlags = [...flags, ...RESIDENT_SIGNAL_FLAGS.filter(([on, off]) => !flags.includes(on) && !flags.includes(off)).map(([on]) => on)];
   return config;
 }
+
+/** The compatibility flags a resident's request signal needs, each beside the flag that turns it off. */
+const RESIDENT_SIGNAL_FLAGS = [['enable_request_signal', 'disable_request_signal'], ['request_signal_passthrough', 'no_request_signal_passthrough']] as const;
 
 /**
  * The bytes observeResidentConfig adds to a resident's map whose main module
@@ -321,28 +363,6 @@ const failed = (error) => new Response(error instanceof Error ? error.message : 
 export class NimbusProcess extends Base {
   #incarnation = crypto.randomUUID();
   #watchers = new Set();
-  // Its host's requests by id (SentRequests), and the watermark below which they are retired.
-  #requests = new Map();
-  #low = 0;
-  #request(id, low, abandoned) {
-    if (abandoned !== undefined) for (const gone of abandoned) this.#abandon(gone);
-    if (low > this.#low) {
-      // Ids are sequential: forget each retired one, or scan when the step outruns the table.
-      if (low - this.#low <= this.#requests.size) while (this.#low < low) this.#requests.delete(this.#low++);
-      else { for (const known of this.#requests.keys()) if (known < low) this.#requests.delete(known); this.#low = low; }
-    }
-    // Retired before its call arrived: no abandon is coming for it.
-    if (id < this.#low) return new AbortController();
-    let request = this.#requests.get(id);
-    if (!request) this.#requests.set(id, request = new AbortController());
-    return request;
-  }
-  #abandon(id) {
-    if (id < this.#low) return;
-    let request = this.#requests.get(id);
-    if (!request) this.#requests.set(id, request = new AbortController());
-    request.abort(new DOMException('The caller left the request', 'AbortError'));
-  }
   #admit(request) {
     if (request[admittedMark] === true) return request;
     if (request.headers.get(${request}) !== capability) return new Response('Not found', { status: 404 });
@@ -361,36 +381,31 @@ export class NimbusProcess extends Base {
     const admitted = this.#admit(request);
     return admitted instanceof Request ? super.handleHttpRequest(admitted) : admitted;
   }
-  // The host's HTTP entry. Its admission travels as arguments, and request
-  // \`id\` is one its host can abandon (SentRequests): the guest sees its
-  // caller leave as its request's signal.
+  // The host's one entry. A watch reports this instance's incarnation; a data
+  // request carries its admission in its headers until its host holds a live
+  // watch that found this instance, and none after. An upgrade goes to the
+  // guest's fetch, any other request to its HTTP handler, as it came: its
+  // signal is this call's own, aborted when the host cancels it (its caller
+  // left), and a guest's clone or fetch of it keeps it (request_signal_passthrough).
   // A guest that fails answers a capability-branded 500 (HOST_FAILED_HEADER):
   // its host learns the call arrived, whatever the guest's compatibility date.
-  hostHttpRequest(request, id, low, abandoned, admission) {
-    // Its host sends the capability and the pinned incarnation while it has
-    // no live watch that found this instance; with one, the watch admits it.
-    if (admission !== undefined) {
-      if (admission[0] !== capability) return new Response('Not found', { status: 404 });
-      if (admission[1] !== this.#incarnation) return this.#replaced();
+  fetch(request) {
+    const headers = request.headers;
+    if (headers.get(${watch}) === capability) {
+      const watchers = this.#watchers;
+      let current;
+      const body = new ReadableStream({ start(controller) { current = controller; watchers.add(controller); }, cancel() { watchers.delete(current); } });
+      return new Response(body, { headers: { [${incarnation}]: this.#incarnation } });
     }
-    // Its signal natively the one its host can abort: a guest's clone, copy or fetch of it keeps it.
-    const admitted = new Request(request, { signal: this.#request(id, low, abandoned).signal });
+    let admitted = request;
+    if (headers.get(${request}) !== null) {
+      admitted = this.#admit(request);
+      if (!(admitted instanceof Request)) return admitted;
+    }
+    if (headers.get('upgrade')?.toLowerCase() === 'websocket') return super.fetch(admitted);
     admitted[admittedMark] = true;
     try { return Promise.resolve(super.handleHttpRequest(admitted)).catch(failed); }
     catch (error) { return failed(error); }
-  }
-  abandonHttpRequest(key, id) {
-    if (key === capability) this.#abandon(id);
-  }
-  fetch(request) {
-    if (request.headers.get(${watch}) !== capability) {
-      const admitted = this.#admit(request);
-      return admitted instanceof Request ? super.fetch(admitted) : admitted;
-    }
-    const watchers = this.#watchers;
-    let current;
-    const body = new ReadableStream({ start(controller) { current = controller; watchers.add(controller); }, cancel() { watchers.delete(current); } });
-    return new Response(body, { headers: { [${incarnation}]: this.#incarnation } });
   }
 }`;
 }

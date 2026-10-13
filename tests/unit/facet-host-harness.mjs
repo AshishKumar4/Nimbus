@@ -114,8 +114,6 @@ export function createFacetWorld(evaluate, { resolveConfig = true, evaluatesAdap
   // the facet transport, never the receiver.
   const adapters = new Map();
   const receivers = new WeakMap();
-  /** What each data call carried to its leaf: its id, watermark and abandons (SentRequests). */
-  const carried = [];
   const receiverOf = (instance, capability) => {
     let receiver = receivers.get(instance);
     if (!receiver) {
@@ -135,23 +133,15 @@ export function createFacetWorld(evaluate, { resolveConfig = true, evaluatesAdap
     get(name, start) {
       return {
         async startProcess(args) { return (await ensure(name, start)).startProcess(args); },
-        async hostHttpRequest(request, id, low, abandoned, admission) {
-          carried.push({ id, low, abandoned: [...(abandoned ?? [])] });
+        // A resident's one entrypoint (observeResidentConfig): its watch, its
+        // upgrades and its HTTP. The call's signal is its request's, as the
+        // platform makes a fetch's: cancelling the call aborts it.
+        async fetch(request, init) {
           const instance = await ensure(name, start);
-          const receiver = evaluatesAdapter ? instance : await receiverOf(instance, admission?.[0]);
-          return receiver.hostHttpRequest(request, id, low, abandoned, admission);
-        },
-        async abandonHttpRequest(key, id) {
-          const instance = await ensure(name, start);
-          const receiver = evaluatesAdapter ? instance : await receiverOf(instance, key);
-          return receiver.abandonHttpRequest(key, id);
-        },
-        // A resident's WebSocket entrypoint (ResidentFacet.handleWebSocketRequest).
-        async fetch(request) {
-          const instance = await ensure(name, start);
-          if (evaluatesAdapter) return instance.fetch(request);
-          const capability = request.headers.get(HOST_WATCH_HEADER) ?? request.headers.get(HOST_REQUEST_HEADER);
-          const response = await (await receiverOf(instance, capability)).fetch(request);
+          const sent = init?.signal ? new Request(request, { signal: init.signal }) : request;
+          if (evaluatesAdapter) return instance.fetch(sent);
+          const capability = request.headers.get(HOST_WATCH_HEADER) ?? request.headers.get(HOST_REQUEST_HEADER) ?? undefined;
+          const response = await (await receiverOf(instance, capability)).fetch(sent);
           if (!request.headers.has(HOST_WATCH_HEADER) || response.status !== 200 || !response.body) return response;
           // A watch rides a stream the platform can end: its death errors it.
           let active = watches.get(name);
@@ -180,7 +170,6 @@ export function createFacetWorld(evaluate, { resolveConfig = true, evaluatesAdap
   return {
     boots, bootSpecs,
     configs,
-    carried,
     facets,
     loader,
     /** Facet names currently running. */

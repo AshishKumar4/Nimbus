@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { HostActivity, HOST_INCARNATION_HEADER, SentRequests } from '../../packages/fabric/src/host-activity.ts';
+import { HandledRequests, HostActivity, HOST_INCARNATION_HEADER, SentRequests } from '../../packages/fabric/src/host-activity.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { testBox } from './lib/test-box.mjs';
 
@@ -91,7 +91,27 @@ const sent = new SentRequests(), abandons = [];
   assert.deepEqual(again, { id: 4, low: 1, abandoned: [1] });
   sent.received(again);
   sent.settled(again.id, true, async () => {});
-  assert.deepEqual(sent.send(), { id: 5, low: 5 }, 'once its leaf heard the abandon, everything below is retired');
+  assert.deepEqual(sent.send(), { id: 5, low: 5 }, 'once its peer heard the abandon, everything below is retired');
+}
+{
+  // The peer's end: a signal per request its coordinator may abandon.
+  const handled = new HandledRequests();
+  const first = handled.signal({ id: 0, low: 0 });
+  handled.abandon(0);
+  assert.equal(first.aborted, true, 'an abandon reaches its request');
+  handled.abandon(2);
+  const early = handled.signal({ id: 2, low: 0 });
+  assert.equal(early.aborted, true, 'an abandon that overtook its request is kept for it');
+  const second = handled.signal({ id: 1, low: 0 });
+  const carried = handled.signal({ id: 3, low: 0, abandoned: [1] });
+  assert.deepEqual([second.aborted, carried.aborted], [true, false], 'an abandon carried by a later request reaches its own request first');
+  // Below the watermark, ids are forgotten: a late abandon reaches nothing, and a late request gets a signal no abandon will reach.
+  const later = handled.signal({ id: 4, low: 4 });
+  handled.abandon(3);
+  assert.equal(carried.aborted, false, 'a retired id is not abandoned');
+  assert.equal(handled.signal({ id: 1, low: 4 }).aborted, false);
+  handled.abandon(4);
+  assert.equal(later.aborted, true);
 }
 console.log('host-activity: idle, shared active watches, abort, wake validation and host loss');
 

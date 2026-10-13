@@ -73,8 +73,7 @@ const facets = {
     };
     return {
       startProcess: (args) => program.startProcess(args),
-      hostHttpRequest: (...args) => program.hostHttpRequest(...args),
-      fetch: (request) => program.fetch(request),
+      fetch: (request, init) => program.fetch(request, init),
       numberings: async () => (await reader()).numberings(),
       number: async (numbering) => (await reader()).number(numbering),
       readAfter: async (after, maxBytes) => (await reader()).readAfter(after, maxBytes),

@@ -21,6 +21,12 @@ published independently in the `@nimbus-sh` npm scope.
   writing reaches that server as it does in Node: the response closes
   unfinished and later writes are refused, on facet and peer hosts alike. The
   process's work, and the session, are no longer held until it writes again.
+- Changed: a resident process's HTTP requests reach it through its fetch
+  entrypoint, as its WebSocket upgrades already did, instead of an RPC call;
+  routed requests cost less than before. Its request signal is that call's
+  own: the process is loaded with `enable_request_signal` and
+  `request_signal_passthrough`, unless its program turned either off, so a
+  request it forwards is cancelled when its client leaves.
 - Fixed: a resident's request is admitted by the instance its host opened,
   checked in the request itself; one the platform put in its place refuses it
   before any guest code runs, and the process reports its host lost once. A

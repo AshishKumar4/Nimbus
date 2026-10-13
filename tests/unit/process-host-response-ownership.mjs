@@ -135,8 +135,9 @@ for (const mode of ['facet', 'peer']) for (const route of ['port', 'direct']) fo
   } finally { if (response?.body && !response.body.locked) await response.body.cancel().catch(() => {}); neighbor.close(); await process.release(); }
 }
 {
-  // A guest whose handler throws took the call: each failed request is abandoned once and retired.
-  const world = createFacetWorld(() => ({ startProcess: async () => ({}), handleHttpRequest: async () => { throw new Error('the handler failed'); } }), { resolveConfig: false });
+  // A guest whose handler throws took the call; its response is not delivered, which its request's signal says.
+  const signals = [];
+  const world = createFacetWorld(() => ({ startProcess: async () => ({}), handleHttpRequest: async (request) => { signals.push(request.signal); throw new Error('the handler failed'); } }), { resolveConfig: false });
   const ctx = createFacetCtx(world, 'throwing');
   const host = processHostFor(ctx, { LOADER: world.loader, NIMBUS_PROCESS_HOST: 'facet' }, () => { throw new Error('no disk reads'); });
   const process = await host.open({ pid: 12, workerKey: 'throwing', writerId: crypto.randomUUID(), boot });
@@ -146,7 +147,7 @@ for (const mode of ['facet', 'peer']) for (const route of ['port', 'direct']) fo
     await assert.rejects(process.handleHttpRequest(new Request('https://app.invalid/'), scope).catch((error) => { owner.fail(); throw error; }), /the handler failed/);
     await turns();
   }
-  assert.deepEqual(world.carried.map(({ id, low, abandoned }) => [id, low, abandoned]), [[0, 0, []], [1, 1, []], [2, 2, []]], 'each request is retired once its abandon arrived, and none is carried again');
+  assert.deepEqual(signals.map((signal) => signal.aborted), [true, true, true], 'each failed request is abandoned at its guest');
   await process.release();
 }
 assert.ok(published.length > 0, 'the port relay published the process output before its body');

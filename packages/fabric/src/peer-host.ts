@@ -25,7 +25,7 @@ import { ProcessHostLost, type ResidentBootSpec, type ResidentDiskReader, type R
 import { bindingSupervisor, supervisorBindingProps } from './supervisor-props.js';
 import { withResolvers } from './turn-budget.js';
 import { processes, abortFacet, deleteFacetStorage, type ResidentFacet, type ResidentFacetEnv } from './workerd-facet-host.js';
-import { HOST_INCARNATION_HEADER } from './host-activity.js';
+import { HandledRequests, HOST_INCARNATION_HEADER } from './host-activity.js';
 import { responseScope } from '@nimbus-sh/core/runtime/port-registry.js';
 import { isHostReset } from '@nimbus-sh/platform/oom-classify.js';
 
@@ -88,7 +88,7 @@ export interface HostedHttpRequest {
   url: string;
   headers: [string, string][];
   body: ReadableStream | null;
-  /** Its id, by which its coordinator can abandon it, the watermark below which the leaf forgets, and abandons it carries (SentRequests). */
+  /** Its id, by which its coordinator can abandon it, the watermark below which the peer forgets, and abandons it carries (SentRequests). */
   id: number;
   low: number;
   abandoned?: number[];
@@ -151,6 +151,8 @@ interface HostedProcessRecord {
   started: Promise<unknown>;
   /** Unforgeable capability for the fetch-semantic WebSocket hop. */
   webSocketCapability: string;
+  /** Its coordinator's requests, which it abandons by id (SentRequests). */
+  handled: HandledRequests;
   closed: boolean;
   failure?: Error;
   watchers: Map<WebSocket, () => void>;
@@ -299,6 +301,7 @@ export class PeerHost {
       facet: opened.promise,
       started: started.promise,
       webSocketCapability: hostOpts.webSocketCapability,
+      handled: new HandledRequests(),
       closed: false,
       watchers: new Map(),
       residencies: new Map(),
@@ -379,10 +382,10 @@ export class PeerHost {
     });
   }
 
-  /** The coordinator abandons request `id` of a process this peer hosts, at its leaf (SentRequests). */
+  /** The coordinator abandons request `id` of a process this peer hosts (SentRequests): its leaf's call is cancelled. */
   async abandonHttp(workerKey: string, capability: string, id: number): Promise<void> {
     const record = this.records.get(workerKey);
-    if (record && !record.closed && record.webSocketCapability === capability) await (await record.facet).abandonHttpRequest(id);
+    if (record && !record.closed && record.webSocketCapability === capability) record.handled.abandon(id);
   }
 
   /**
@@ -400,7 +403,7 @@ export class PeerHost {
    * isolate before it is returned, for the same reason the parts exist at all:
    * what leaves here must not be an object the loaded worker owns. That
    * pipe's end is when this host's work for the response is done; the
-   * coordinator abandons the request at its leaf by its id (abandonHttp),
+   * coordinator abandons the request by its id (abandonHttp), which cancels its leaf's call,
    * before its headers or after, and the leaf's guest ending its body ends
    * the pipe.
    */
@@ -413,11 +416,11 @@ export class PeerHost {
       for (const [k, v] of wire.headers) headers.append(k, v);
       const init: RequestInit & { duplex?: 'half' } = { method: wire.method, headers };
       if (wire.body) { init.body = wire.body; init.duplex = 'half'; }
-      // The request keeps its coordinator's numbering on to the leaf, which
-      // its coordinator abandons it by. This relay's own end is its pipe's.
+      // The leaf's call runs under the signal its coordinator abandons the
+      // request by (HandledRequests). This relay's own end is its pipe's.
       const { scope, owner } = responseScope(new AbortController().signal);
       let response: Response;
-      try { response = await facet.handleHttpRequest(new Request(wire.url, init), scope, { id: wire.id, low: wire.low, abandoned: wire.abandoned }); }
+      try { response = await facet.handleHttpRequest(new Request(wire.url, init), scope, record.handled.signal(wire)); }
       catch (error) { owner.fail(); throw error; }
       let body: ReadableStream | null = null;
       if (response.body) {
