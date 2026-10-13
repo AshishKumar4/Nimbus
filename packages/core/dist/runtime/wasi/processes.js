@@ -280,8 +280,8 @@ export function processHost(opts) {
         pipe(fdsPtr) {
             const pipe = newPipe();
             const read = opts.allocateFd();
-            const write = opts.allocateFd();
             opts.fds.set(read, { kind: 'pipe', end: 'read', pipe });
+            const write = opts.allocateFd();
             opts.fds.set(write, { kind: 'pipe', end: 'write', pipe });
             pipe.readers = 1;
             pipe.writers = 1;
