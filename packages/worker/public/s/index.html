@@ -1230,7 +1230,7 @@
             fileListCache = (r.entries || []).filter(e => e.type !== 'directory').map(e => e.path);
             fileListCachedAt = Date.now();
           } catch (e) {
-            list.innerHTML = '<div class="palette-empty">fs-list failed: ' + (e?.message || e) + '</div>';
+            list.innerHTML = '<div class="palette-empty">fs-list failed: ' + escapeHtml(e?.message || e) + '</div>';
             return;
           }
         }
@@ -1253,20 +1253,16 @@
           list.innerHTML = '<div class="palette-empty">No matches.</div>';
           return;
         }
-        list.innerHTML = paletteFiltered.map((p, i) =>
-          '<div class="palette-item' + (i === 0 ? ' active' : '') + '" data-idx="' + i + '">' + p + '</div>'
-        ).join('');
-        // Click to open.
-        list.querySelectorAll('.palette-item').forEach(el => {
+        list.replaceChildren(...paletteFiltered.map((path, i) => {
+          const el = document.createElement('div');
+          el.className = 'palette-item' + (i === 0 ? ' active' : '');
+          el.textContent = path;
           el.addEventListener('click', () => {
-            const idx = parseInt(el.dataset.idx, 10);
-            const path = paletteFiltered[idx];
-            if (path) {
-              closePalette();
-              openFile(path);
-            }
+            closePalette();
+            openFile(path);
           });
-        });
+          return el;
+        }));
       }
       function moveActive(delta) {
         const next = Math.max(0, Math.min(paletteFiltered.length - 1, paletteActive + delta));
@@ -1484,12 +1480,6 @@
           ensureNode(e.path, e.type);
         }
         rerender();
-      }
-
-      function escapeHtml(s) {
-        return String(s).replace(/[&<>"']/g, (c) => ({
-          '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;',
-        })[c]);
       }
 
       // Compute the rendered order: walk tree depth-first, including
@@ -2892,13 +2882,6 @@
       // faithfully render xterm sequences inside a <pre>.
       const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[=>()][^\s]?/g;
       function stripAnsi(s) { return s.replace(ANSI_RE, ''); }
-
-      function escapeHtml(s) {
-        return s
-          .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;').replace(/"/g, '&quot;')
-          .replace(/'/g, '&#39;');
-      }
 
       // Derive a short label from the command: strip argv[0] path prefix,
       // drop anything after the first flag-looking token, cap at ~28 chars.
