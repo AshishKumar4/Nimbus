@@ -1164,7 +1164,12 @@ export class VirtualSocketKernel {
     const conn = this.connections.get(accepted.id);
     if (!(conn instanceof VirtualConnection)) return;
     const listener = this.listeners.get(Number(port));
-    if (listener) { listener.restore(conn); return; }
+    if (listener) {
+      listener.restore(conn);
+      // Queued again, it is news to a poll of the port, as an arrival is.
+      this.notifyReadable(Number(port));
+      return;
+    }
     this.connections.delete(conn.id);
     conn.abort(`listener closed on port ${port}`, 502);
   }

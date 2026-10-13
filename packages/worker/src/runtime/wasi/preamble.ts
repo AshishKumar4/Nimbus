@@ -1652,8 +1652,9 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
       const entry = fdTable.get(fd);
       if (!entry || entry.kind !== 'socket') return __WASI_ENOTSOCK;
       if (entry.closed) return __WASI_ENOTCONN;
-      // If the local readBuf is empty, wait for the socket's next chunk.
-      if (entry.readBufOffset >= entry.readBuf.length && !entry.eof) {
+      // Until bytes or the end are here, wait for the socket's next chunk:
+      // another receiver awaiting the same read may have taken this one's.
+      while (entry.readBufOffset >= entry.readBuf.length && !entry.eof) {
         const failed = await __wasiSocketFill(entry);
         if (failed !== null) return failed;
         // The deadline answered this call: what came is the next call's.
