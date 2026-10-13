@@ -16,9 +16,9 @@
  *
  *    NimbusSession (supervisor DO)
  *       │
- *       │ LOADER.load({
+ *       │ FacetManager.spawnWorker(main.js, {
  *       │   modules: {
- *       │     main.js                — facet entrypoint (generated)
+ *       │     main.js                — the process's NimbusProcess (generated)
  *       │     vite.bundle.js         — 2.3 MB real Vite (pre-bundled)
  *       │     cirrus-fs.js           — our fs shim (src/real-vite-fs-shim.ts)
  *       │     cirrus-fs-promises.js  — ditto (fs/promises)
@@ -28,20 +28,21 @@
  *       │     synthetic.js           — seeds globalThis.__cirrusRealFs
  *       │                              with the VFS snapshot
  *       │     user-vite-config.js    — pre-bundled vite.config.ts
- *       │   }
+ *       │   },
+ *       │   bindings: { CIRRUS_HMR },
  *       │ })
  *       ▼
- *    Dynamic Worker (facet)
+ *    Resident process (a facet, its lifecycle the manager's)
  *       - imports synthetic.js (side-effect: populates globalThis.__cirrusRealFs)
  *       - imports vite.bundle.js (evaluates, sees the seeded fs Map)
- *       - starts Vite server via `createServer().listen()`
- *       - exposes fetch via httpServerHandler({port}) from cloudflare:node
- *       - runs a long-poll loop against env.SUPERVISOR.hmrNextEvent
+ *       - startProcess: `createServer().listen()`
+ *       - handleHttpRequest: httpServerHandler({port}) from cloudflare:node
+ *       - runs a long-poll loop against env.CIRRUS_HMR.hmrNextEvent
  *         that delivers VFS change events to the chokidar shim + HMR
  *         client messages to the ws shim
  *
  * All traffic in / out:
- *    Browser ──/preview/* ──>  DO.fetch   ──>  facetStub.fetch
+ *    Browser ──/preview/* ──>  DO.fetch ──> handleHttpRequest (/port/N: through the port registry)
  *    Browser ──/preview/__nimbus_hmr──>  DO.fetch (WS upgrade)
  *                                  │
  *                                  ▼
@@ -50,11 +51,12 @@
  *                                  ▼
  *                               facet loop  ──>  chokidar / ws shim
  */
-import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { HmrBridge } from './real-vite-hmr.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { CompositeVFS } from '@nimbus-sh/core/vfs/composite.js';
+import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import type { FacetManager } from './manager.js';
 import type { ParsedViteConfig } from '@nimbus-sh/core/runtime/vite-config-parser.js';
 /**
  * Resolve opt-in mode.
@@ -66,45 +68,23 @@ export declare function shouldUseRealVite(opts: {
     viteConfig?: Pick<ParsedViteConfig, 'devServer' | 'importsVitePlugin'> | undefined;
 }): boolean;
 export declare class CirrusReal {
-    private readonly network;
     private env;
-    private port;
+    readonly port: number;
     private root;
     private basePath;
     private vfs;
     private namespace;
     private userConfigBundle;
     private extraSyntheticFiles;
-    private facetStub;
-    private pid;
-    private bootError;
+    /** The dev server's process, once launched, and its route (FacetManager.spawnWorker's facet). */
+    pid: number;
+    private route;
+    private running;
     private _startedAt;
-    /** [D'.1] facet name used with ctx.facets.get/delete. Set in start(),
-     *  cleared in stop(). */
-    private _facetName;
-    /** Dispatch shape:
-     *  - 'do-facet' (post-D'.1, requires `$experimental` compat flag)
-     *  - 'fetcher-fallback' (D'.1 graceful-degrade, when
-     *    getDurableObjectClass is unavailable — the prod and the
-     *    flag-stripped local dev case after the 2026-05-08
-     *    deploy-flag-fix tightening) [d1-fix]
-     *  - null (not started, or stop()'d)
-     *  Surfaced via /api/_diag/cirrus.kind for the probe.
-     */
-    private _kind;
-    /** [D'.1] timestamp when the facet stub was successfully obtained
-     *  (after ctx.facets.get returned). Used to compute the supervisor-
-     *  side bootMs that includes module compilation + facet binding,
-     *  but NOT the in-facet vite.createServer.listen() (that's measured
-     *  separately via getFacetMeta RPC). */
-    private _bootCompletedAt;
-    /** [D'.1] last fetch latency ms — surfaces on diag for warm-reuse
-     *  perf assertions. */
-    private _lastFetchMs;
     private _snapshotStats;
     /** HMR bridge — shared by WS upgrade handler + VFS event pump. */
     hmr: HmrBridge;
-    /** Unsubscribe from vfs events on stop(). */
+    /** Unsubscribe from vfs events when the process ends. */
     private _vfsUnsub;
     constructor(opts: {
         env: any;
@@ -118,8 +98,6 @@ export declare class CirrusReal {
         namespace: Pick<CompositeVFS, 'watchChanges'>;
         userConfigBundle?: string | null;
         extraSyntheticFiles?: Record<string, string>;
-        /** The workspace's network: the dev server (the user's config included) goes out through its egress. */
-        network: WorkspaceNetwork;
     });
     get isRunning(): boolean;
     get stats(): Record<string, unknown>;
@@ -128,8 +106,19 @@ export declare class CirrusReal {
      *  the banner printed by nimbus-session.ts can show it. Empty
      *  string when the project is in the known-good envelope. */
     private _sizeWarning;
-    start(ctx: DurableObjectState, pid: number): Promise<void>;
-    stop(ctx?: DurableObjectState): void;
+    /**
+     * Run Vite as one of the session's resident processes, under `identity`,
+     * and resolve once it listens on `port`. Its process ends as any other
+     * does (kill, a lost host, the session's teardown), and that end stops
+     * this controller.
+     */
+    start(ctx: DurableObjectState, launcher: Pick<FacetManager, 'spawnWorker'>, processes: Pick<SessionProcessSupervisor, 'get' | 'subscribeTerminal'>, identity: {
+        cwd: string;
+        argv: string[];
+        cred: VfsCred;
+        execId?: string;
+    }): Promise<void>;
+    private stop;
     /**
      * Browser WS upgrade request arrived at /preview/__nimbus_hmr.
      * The DO has already accepted the server-side socket via
@@ -139,18 +128,10 @@ export declare class CirrusReal {
     detachHmrClient(id: string): void;
     deliverHmrClientMessage(id: string, msg: string): void;
     /**
-     * Route a (non-WS) request into the facet. `pathname` is the path
-     * after stripping the session's `/preview` prefix (e.g. `/`,
-     * `/@vite/client`, `/src/main.tsx`).
+     * A request through the session's preview door, `innerPath` the path after
+     * its `/preview` prefix, straight to the process's route: the body passes
+     * through untouched, as the port registry's relay does not.
      */
-    handleRequest(request: Request, pathname: string): Promise<Response>;
-    /**
-     * [D'.1] Diag bundle for /api/_diag/cirrus. Includes the facet's
-     * own-SQLite identity cookie (round-tripped via the facet's
-     * getFacetMeta RPC), supervisor-side dispatch kind, supervisor-side
-     * bootMs, and last-fetch latency. Returns null when cirrus-real
-     * is not running.
-     */
-    getDiag(): Promise<Record<string, unknown> | null>;
+    handleRequest(request: Request, innerPath: string): Promise<Response>;
 }
 //# sourceMappingURL=cirrus-real.d.ts.map

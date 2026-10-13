@@ -90,6 +90,7 @@ const {
   requireAccountPin,
   TargetNotReadyError,
   waitForTarget,
+  waitForVersion,
   workersDevSubdomain,
   writeState,
 } = await import('./_deploy-target.mjs');
@@ -210,9 +211,12 @@ async function up() {
   writeState(STATE_PATH, { ...state, subdomain, updatedAt: new Date().toISOString() });
 
   // The probe target is the one the suite drives, so readiness means "it
-  // authenticates", not "it answers".
+  // authenticates", not "it answers". The demo opens no session for a probe,
+  // so its readiness is its own stamped answers: the hosted-demo checks grade
+  // this upload, not the version the edge served before it.
   const jwt = await mintProbeToken(state.probe.secret, ttlMs());
   await waitForTarget(probe.base, jwt, undefined, probe.versionId);
+  await waitForVersion(demo.base, demo.versionId);
 
   log(`ready — ${TARGETS.demo.name} ${demo.versionId} / ${TARGETS.probe.name} ${probe.versionId}`);
   process.stdout.write([

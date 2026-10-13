@@ -24,7 +24,8 @@
  * clone fetches 137.16 MB in 3.
  */
 import { GRAPH_RECORDS_DIR, commitRecord } from './commit-graph.js';
-import { decodeBatch, parseTree, MODE_GITLINK, MODE_TREE } from './plan.js';
+import { decodeBatch, MODE_GITLINK, MODE_TREE } from './plan.js';
+import { TreeEntries } from './tree-object.js';
 import { OID_BYTES, oidToHex, PackFormatError } from './format.js';
 import { STAGE_DIR, commitTree, concat, join, readRange, resumePack, settledBefore, TagWatch, storePackResumable, } from './clone.js';
 import { requestPack } from './upload-pack.js';
@@ -40,7 +41,6 @@ export const BLOBS_PER_HISTORY_BATCH = 10_000;
 /** History packs are resolved with this cache, and this many stored bytes kept readable. */
 const HISTORY_CACHE_BYTES = 8 * 1024 * 1024;
 const HISTORY_RECENT_BYTES = 24 * 1024 * 1024;
-const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 function transport(context) {
     return { url: context.url, auth: context.auth, fetch: context.fetch, onProgress: context.onProgress };
@@ -93,15 +93,16 @@ function lister(kind, list, graph) {
         return (object) => {
             if (object.type !== 'tree')
                 return;
-            for (const entry of parseTree(object.data)) {
-                if (entry.mode === MODE_TREE || entry.mode === MODE_GITLINK)
+            const data = object.data;
+            for (const e = new TreeEntries(data); e.next();) {
+                if (e.mode === MODE_TREE || e.mode === MODE_GITLINK)
                     continue;
-                const oid = object.data.subarray(entry.oidAt, entry.oidAt + OID_BYTES);
+                const oid = data.subarray(e.oidAt, e.oidAt + OID_BYTES);
                 const hex = oidToHex(oid);
                 if (seen.has(hex))
                     continue;
                 seen.add(hex);
-                const name = encoder.encode(entry.name);
+                const name = data.subarray(e.nameAt, e.nameEnd);
                 const record = new Uint8Array(OID_BYTES + 2 + name.byteLength);
                 record.set(oid);
                 new DataView(record.buffer).setUint16(OID_BYTES, name.byteLength);

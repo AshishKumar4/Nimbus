@@ -31,7 +31,11 @@ it the module fails to load at deploy time.
 date of 2026-04-21 or later, or the flag in `compatibility_flags` on an older
 date. A program's filesystem errors reach it across workerd RPC, and only
 that flag carries their `code`. On workerd without it `composeFabric` throws,
-naming both fixes, rather than every program seeing `EIO`. It throws where
+naming both fixes, rather than every program seeing `EIO`. It needs
+`enable_request_signal` in `compatibility_flags` too, on every date: a
+process owns work for a response until its client is done with it, and only
+that flag shows a client leaving. Without it `composeFabric` throws, naming
+the flag. It throws where
 it is called. At module scope the Worker fails at startup. A library host
 that composes through `NimbusWorkspace.create({ fabric })` deploys and
 starts, and its first create throws.
@@ -386,7 +390,10 @@ Three platform rules shape them. A `WorkerStub` does not serialize, so each
 hop is its own `WorkerEntrypoint` class. A stub belongs to the request that
 minted it, so the shims store code rather than stubs and re-resolve through
 `LOADER.get(id, cb)`; workerd caches by ID, and the code map is capped at 32
-entries. An RPC method is a wildcard property, so call `ep.method(request)`
+entries. A keyed Worker is cached under its loader's owner namespace, its
+network and its id: each binding's minter names its owner (once per build in
+`nimbus wrangler dev`), so two owners never share a Worker under one id, and a
+loader without an owner has no keyed Workers. An RPC method is a wildcard property, so call `ep.method(request)`
 and never `method.call(ep, request)`, which workerd refuses.
 
 Nesting is capped at depth 4. Raise it with `NIMBUS_INNER_LOADER_DEPTH`.

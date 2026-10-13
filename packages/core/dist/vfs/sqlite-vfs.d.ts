@@ -29,7 +29,7 @@
 import { VfsEventEmitter, type VfsEvent } from './events.js';
 import { type BatchWritePayload, type VfsInodeKind } from '@nimbus-sh/platform/w7-frame.js';
 export { RecallRequired, recallOf, withRecall } from './recall.js';
-import { type Principal, type VfsDirentType, type VfsWriteEvent } from './vfs.js';
+import { type Principal, type VfsDirentType, type VfsRemoval, type VfsWriteEvent } from './vfs.js';
 import { type WaveScope, type WriteBatchStreamResult, type WriteStreamOptions } from '../runtime/wave-contracts.js';
 import { StorageLedger, type StorageLedgerView } from '../runtime/storage-ledger.js';
 import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListEntry, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
@@ -109,6 +109,8 @@ export interface VfsOpenDescription {
     readonly ino: number;
     path(): string;
     stat(): VfsStat;
+    /** What revision() of the name it is held by answers now, without a lookup; the clock once it has no name. */
+    revision(): number;
     read(offset: number, length: number): Uint8Array;
     write(offset: number, bytes: Uint8Array): number;
     truncate(size: number): void;
@@ -252,10 +254,12 @@ export interface CredentialedVfs {
     unlink(path: string): void;
     rmdir(path: string): void;
     /**
-     * Remove a path and everything beneath it, in bounded transactions.
-     * Returns the number of entries removed.
+     * rm -r of a path: what went, what stayed and why (VfsRemoval), as the
+     * walk (removal-walk.ts) decides it, in bounded transactions.
      */
-    removeRecursive(path: string): number;
+    removeRecursive(path: string, options?: {
+        keepVanishedAncestors?: boolean;
+    }): VfsRemoval;
     rename(oldPath: string, newPath: string): void;
     copyFile(src: string, dest: string): void;
     /**
@@ -729,6 +733,16 @@ export declare class SqliteVFS {
     /** The exclusive-mutation lease the open presented: the description's own mutations (write, truncate, chmod, chown, utimes) present it too. */
     mutationOwner?: string): VfsOpenDescription;
     /**
+     * The file `path` names, held as an O_PATH open holds it: no access asked
+     * of it but the walk's. Its stat and revision, and a reopen (it is one of
+     * openNodes, which reopenInode finds), an unlinked file included, until it
+     * is closed; anything else answers EBADF. One object, where a description
+     * builds each of its calls.
+     */
+    holdInode(path: string, cred: VfsCred, principal?: Principal, holds?: () => ReadonlySet<string>): VfsOpenDescription;
+    /** holdInode's answer: describe()'s stat, revision, path and close, on its prototype. */
+    private static readonly HeldInode;
+    /**
      * A description of the file `ino` numbers, its access decided already: by
      * the open that made it (creat(2) of a mode without write still writes),
      * or by an open a process's wave made and the session kept
@@ -825,6 +839,8 @@ export declare class SqliteVFS {
      * parent search proof; resolveName still consults the namespace each time.
      */
     private lastResolution;
+    /** A linked directory's searched prefix, valid under the same mutation clocks as lastResolution. */
+    private lastLinkedPrefix;
     private resolutionEpoch;
     /** A wave's watch for its own commit's publication (waveFiles' ownFiles): called once, at it. */
     private publishWatch;
@@ -883,8 +899,11 @@ export declare class SqliteVFS {
      * that derive a key before handing it on cannot stack the rewrite.
      */
     private storageKey;
+    private physicalKey;
     /** {@link storageKey} of a name already normalized, under a principal's private root. */
     private keyOfName;
+    /** A listing cursor is a lexical index position, not a path that must still exist. */
+    private lexicalKey;
     /**
      * The name a credential uses for `path`, whichever spelling it came in: a
      * confined caller's own root is `/tmp`, whether it wrote /tmp/x or the
@@ -967,6 +986,8 @@ export declare class SqliteVFS {
     private resolvePath;
     /** resolvePath's walk. */
     private walkPath;
+    /** The namespace's component walk, looking up this tree in the caller's names. */
+    private walkComponents;
     /** A walk's answer, kept as lastResolution when it found something on the live tree. */
     private walked;
     /** Keep a walk as lastResolution, in the one record (a walk's turn reads it before anything replaces it). */
@@ -1001,6 +1022,7 @@ export declare class SqliteVFS {
      * the mode said one thing and the filesystem did another.
      */
     private checkStickyParentMutation;
+    private checkStickyParent;
     /**
      * Shared resolver for the boolean probes (exists/isDirectory/isFile/
      * isSymlink). Resolution-structure failures — a missing or non-directory
@@ -1334,7 +1356,7 @@ export declare class SqliteVFS {
      * Refuse a mutation at `path` another lease covers; `owner` presents the
      * caller's own lease, `holds` the delegations the caller's process holds.
      */
-    assertMutationAllowed(path: string, owner?: string, holds?: () => ReadonlySet<string>): void;
+    assertMutationAllowed(path: string, owner?: string, holds?: () => ReadonlySet<string>, cred?: VfsCred): void;
     /**
      * Why a mutation at `path`, as `cred` names it (a confined caller's /tmp/x
      * is its own file), is refused: another owner's exclusive-mutation lease
@@ -1351,6 +1373,8 @@ export declare class SqliteVFS {
      */
     private refusalAt;
     private assertMutationsAllowed;
+    /** Named admission and landed admission use distinct key domains. */
+    private admit;
     /** `ino`: the number a delegation's holder gave the directory it made (askedIno), for a lone mkdir. */
     private mkdir;
     private _mkdirSingle;
@@ -1572,6 +1596,14 @@ export declare class SqliteVFS {
     private readdir;
     private unlink;
     private rmdir;
+    /** What unlink(2) of `path` by `cred` removes, once it may: it refuses as unlink does. */
+    private unlinked;
+    /**
+     * What rmdir(2) of `path` by `cred` removes, once it may: it refuses as
+     * rmdir does. `going`: entries already decided to go with it, which do not
+     * keep it from being empty.
+     */
+    private rmdired;
     /**
      * Remove a path and everything beneath it, in bounded transactions.
      *
@@ -1588,8 +1620,28 @@ export declare class SqliteVFS {
      * before the directory holding it, every committed prefix is a consistent
      * smaller tree — exactly the state an interrupted per-entry walk left
      * behind. The subtree is read a page at a time, never held whole.
+     *
+     * That is the walk's own result whenever nothing in the tree can be
+     * refused: everything goes. Where something may be (mayRefuseRemoval), the
+     * tree is walked entry by entry (removal-walk.ts), as rm -r walks it: what
+     * may go goes, and the report says what stayed and why.
      */
     private removeRecursive;
+    /**
+     * Whether rm -r of `path` may have something refused: the operand's own
+     * removal, or, in a directory of the tree, its reading or its entries'
+     * removal (a directory the caller may not read, search and write, or a
+     * sticky one the caller does not own). Root is refused nothing here.
+     */
+    private mayRefuseRemoval;
+    /**
+     * The walk's steps (removal-walk.ts) as `cred`'s own calls, each refusal
+     * named as SqliteFiles names it. A removal is decided at once, as unlink
+     * and rmdir decide it, and committed with the ones decided before it, a
+     * bounded group at a time (flush), as the plain removal commits. A group
+     * that fails to commit ends the walk with its error (failedCommit).
+     */
+    private removalSteps;
     /**
      * Every inode strictly under `root`, a bounded page at a time: the live
      * tree, or the tree as of generation `at` (pageAt, live and history
@@ -1998,6 +2050,11 @@ export declare class SqliteVFS {
      * across one operation.
      */
     private createdPath;
+    private directoryPlacement;
+    /** Legacy rows under a link remain data at their stored key, not at the link's destination. */
+    private deletionKey;
+    private storedParents;
+    private checkStoredDeletion;
     private normalizeBatchInode;
     private authorizeBatch;
     private authorizeBatchNow;
@@ -2373,6 +2430,15 @@ export declare class SqliteVFS {
     private assertTransactionFits;
     private _writeBatchOnce;
     /**
+     * Each entry a batch deletes below the roots it names (`below`), as
+     * unlink(2) and rmdir(2) would judge it: the directory holding it (deleted
+     * with it) written and searched by `cred`, and, when that directory is
+     * sticky, it or the entry `cred`'s. A batch deleting a tree deletes every
+     * entry of it, so each is judged; the roots are judged where they are
+     * named (authorizeBatchNow).
+     */
+    private authorizeDeletions;
+    /**
      * Every inode at or under each root, deepest first.
      *
      * The path index answers "what is under this prefix?" in the size of the
@@ -2384,6 +2450,8 @@ export declare class SqliteVFS {
      *
      * The subtree is held whole, so only callers that commit it whole use this:
      * a batch's deletions and a rename. A removal pages (subtree, descending).
+     * `below`, given, also gets the ones met under a root before (or without)
+     * being met as a root themselves.
      */
     private collectSubtreeInodes;
     /**

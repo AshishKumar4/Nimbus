@@ -17,8 +17,14 @@
 //   NIMBUS_PREVIEW_HOST_SUFFIX, and the capability-authenticated path form
 //   `/s/<sid>/port/<n>/` with the capability header otherwise — both reach
 //   the same session gate.
+//
+// ON A PEER TARGET (NIMBUS_PROCESS_HOST=peer)
+//   An exposed identity keeps retained application storage, which only its
+//   own coordinator can own, so restarting it is refused by name, and
+//   nothing is minted onto the refused restart: that refusal is asserted in
+//   place of the re-expose.
 
-import { BASE, AUTH_TOKEN, makeAsserter, mintSession, deleteSession, Terminal, heredocCommand, fetchPort, sleep } from '../_driver.mjs';
+import { BASE, AUTH_TOKEN, makeAsserter, mintSession, deleteSession, Terminal, heredocCommand, fetchPort, requestHeaders, sleep } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const SUFFIX = process.env.NIMBUS_PREVIEW_HOST_SUFFIX ?? null;
@@ -31,6 +37,15 @@ const sid = await mintSession();
 console.log(`SID: ${sid}`);
 const box = Nimbus.connect({ endpoint: BASE, ...(AUTH_TOKEN ? { token: AUTH_TOKEN } : {}) }).sandbox(sid);
 const PORT = 4300;
+// The target's process host, from the probe app's debug surface (every probe target carries NIMBUS_DEBUG=1).
+const MODE = await (async () => {
+  const response = await fetch(`${BASE}/api/embedder/${sid}/host-loss`, {
+    method: 'POST', headers: requestHeaders({ 'content-type': 'application/json' }, sid), body: JSON.stringify({ action: 'mode' }),
+  });
+  if (!response.ok) throw new Error(`process host mode: ${response.status} ${await response.text()}`);
+  return (await response.json()).mode;
+})();
+console.log(`process host: ${MODE}`);
 
 /** The public bearer request: host form with a suffix, path form + bearer headers without. */
 async function fetchPublic(capability, path = '/') {
@@ -158,17 +173,29 @@ try {
   const killedOther = await t.run(`kill ${otherPid}`, 15_000);
   a.check('kill ends the unrelated server', killedOther.exitCode === 0, killedOther.output.slice(-200));
   const again = await t.run('node server.js', 30_000);
-  const againPid = Number(again.output.match(/pid=(\d+)/)?.[1] || 0);
-  a.check('the app is running again', againPid > 0, again.output.slice(-200));
-  const reExposed = await box.apps.expose({ owner: OWNER }, { visibility: 'public' });
-  a.check('re-expose answers the same identity', reExposed.owner === OWNER, JSON.stringify(reExposed));
-  a.check('re-expose mints a fresh capability', /^[a-f0-9]{24}$/.test(reExposed.capability ?? '') && reExposed.capability !== CAP1,
-    `old=${CAP1} new=${reExposed.capability}`);
-  const CAP2 = reExposed.capability ?? '';
-  const publicAgain = await pollPublic(CAP2, 'the-app:', 20_000);
-  a.check('the new shared link answers the app', publicAgain.ok, `status=${publicAgain.last.status} body=${publicAgain.last.body?.slice(0, 100)}`);
-  const stale = await fetchPublic(CAP1, '/');
-  a.check('the retired link stays dead', stale.status === 404, `status=${stale.status}`);
+  if (MODE === 'peer') {
+    // Its retained storage belongs to its own coordinator: a peer refuses to host it, by name.
+    a.check('a peer refuses to restart the exposed identity, by name',
+      again.exitCode !== 0 && again.output.includes('a durable spawn must be facet-hosted on its own coordinator')
+        && !/pid=\d+/.test(again.output), again.output.slice(-300));
+    const refused = (await box.apps.list()).find((app) => app.owner === OWNER);
+    a.check('the refused restart leaves the identity stopped, its capability retired',
+      refused?.status === 'stopped' && refused?.capability === null, JSON.stringify(refused));
+    const stale = await fetchPublic(CAP1, '/');
+    a.check('the retired link stays dead', stale.status === 404, `status=${stale.status}`);
+  } else {
+    const againPid = Number(again.output.match(/pid=(\d+)/)?.[1] || 0);
+    a.check('the app is running again', againPid > 0, again.output.slice(-200));
+    const reExposed = await box.apps.expose({ owner: OWNER }, { visibility: 'public' });
+    a.check('re-expose answers the same identity', reExposed.owner === OWNER, JSON.stringify(reExposed));
+    a.check('re-expose mints a fresh capability', /^[a-f0-9]{24}$/.test(reExposed.capability ?? '') && reExposed.capability !== CAP1,
+      `old=${CAP1} new=${reExposed.capability}`);
+    const CAP2 = reExposed.capability ?? '';
+    const publicAgain = await pollPublic(CAP2, 'the-app:', 20_000);
+    a.check('the new shared link answers the app', publicAgain.ok, `status=${publicAgain.last.status} body=${publicAgain.last.body?.slice(0, 100)}`);
+    const stale = await fetchPublic(CAP1, '/');
+    a.check('the retired link stays dead', stale.status === 404, `status=${stale.status}`);
+  }
 
   await box.apps.remove({ owner: OWNER }).catch(() => {});
 } finally {

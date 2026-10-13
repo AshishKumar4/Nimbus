@@ -11,6 +11,7 @@ import { fsError, MAX_LINK_HOPS, modeAllows, walkBeneath, type FsError } from '.
 export { fsError, modeAllows, walkBeneath, type BeneathLookup } from './beneath-walk.js';
 import type {
   RuntimeFileHandle,
+  RuntimeOpenedFile,
   RuntimeFsPath,
   RuntimeReadOptions,
   RuntimeSynchronousFs,
@@ -33,7 +34,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   private readonly vfs: CredentialedVfs;
 
   /** The namespace as this caller sees it: what a path off the SQLite root reaches. */
-  private readonly mounted: SyncVFS | undefined;
+  private readonly mounted: CompositeVFS['sync'] | undefined;
 
   private readonly descriptors: Descriptors;
 
@@ -378,7 +379,8 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   }
 
   /** `options.mutationOwner`: the exclusive-mutation lease an open for writing presents (a read-only open presents none). */
-  open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options: RuntimeMutationOwner = {}): RuntimeFileHandle {
+  open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options: RuntimeMutationOwner = {}): RuntimeOpenedFile {
+    if (flags.closing) this.closeQuietly(flags.closing);
     return called({ syscall: 'open', path }, () => {
       const normalizedFlags = openFlags(flags);
       const flagged = flagsRefusal(normalizedFlags);
@@ -395,14 +397,21 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       if (located.mount) {
         const namespace = located.namespace;
         // The synchronous face looks up through synchronous faces only (an asynchronous mount refused above): its answer is a value.
-        return this.descriptors.issue(syncValue(openMounted({
+        return syncValue(this.descriptors.open(syncValue(openMounted({
           name: located.path, flags: normalizedFlags, mode: flags.mode,
           refuse: (code, syscall) => fsError(code, syscall, path), scope: this.scope, pin: (name, follow) => namespace.pin(name, { follow, sync: true }),
           sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes,
-        })), normalizedFlags);
+        })), normalizedFlags));
       }
       const p = located.path;
       if (p === '') return this.openRoot(path, normalizedFlags);
+      if (flags.path === true) {
+        // There is no descriptor on the link itself, as open's below.
+        if (!normalizedFlags.followSymlinks && this.vfs.isSymlink(p)) throw fsError(normalizedFlags.directory ? 'ENOTDIR' : 'ELOOP', 'open', path);
+        const held = this.rawVfs.holdInode(p, this.vfs.cred, this.vfs.principal, this.vfs.holds);
+        if (normalizedFlags.directory && held.stat().type !== 'directory') { held.close(); throw fsError('ENOTDIR', 'open', path); }
+        return syncValue(this.descriptors.open(held, normalizedFlags, p, held.revision()));
+      }
       // open(2)'s rule, in Linux's order, as a mount's open decides it (openOnMount).
       if (normalizedFlags.exclusive && normalizedFlags.create && (this.vfs.isSymlink(p) || this.vfs.exists(p))) throw fsError('EEXIST', 'open', path);
       // There is no descriptor to open on the link itself: what it points at is exactly what the caller declined to open.
@@ -426,7 +435,9 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         this.owned(owner).truncate(p, 0);
       }
 
-      return this.descriptors.issue(this.rawVfs.openDescription(p, this.vfs.cred, { ...normalizedFlags, sync: flags.sync === true }, this.vfs.principal, this.vfs.holds, owner), normalizedFlags, p);
+      const node = this.rawVfs.openDescription(p, this.vfs.cred, { ...normalizedFlags, sync: flags.sync === true }, this.vfs.principal, this.vfs.holds, owner);
+      // Its revision is its name's, read off the description, not looked up again.
+      return syncValue(this.descriptors.open(node, normalizedFlags, p, node.revision()));
     });
   }
 
@@ -609,22 +620,19 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     });
   }
 
-  remove(path: RuntimeFsPath, options: { recursive?: boolean; force?: boolean } = {}): void {
+  remove(path: RuntimeFsPath, options: { recursive?: boolean; force?: boolean; report?: boolean; keepVanishedAncestors?: boolean } = {}): void | VfsRemoval {
     return called({ syscall: 'remove', path }, () => {
       try {
         if (!options.recursive) { this.unlink(path); return; }
-        const located = this.locateMutation(path, false, 'remove');
-        if (located.mount) {
-          const mount = located.mount;
-          if (!mount.removeRecursive) removeTree(mount, located.path);
-          else {
-            // A walked removal carries on past an entry it cannot remove and
-            // reports it; rm -r fails with the first.
-            const failed = (mount.removeRecursive(located.path) as VfsRemoval | undefined)?.failures[0];
-            if (failed) throw failed.error;
-          }
-        }
-        else this.vfs.removeRecursive(located.path);
+        const located = this.locateMutation(path, false, options.report ? 'rm' : 'remove');
+        const policy = { keepVanishedAncestors: options.keepVanishedAncestors };
+        // A tree in the store, its report not asked for, goes without the namespace's routing.
+        const report = located.mount ? located.mount.removeRecursive(located.path, policy)
+          : options.report && this.namespace !== undefined ? this.namespace.sync.removeRecursive('/' + located.path, policy)
+            : this.vfs.removeRecursive('/' + located.path, policy);
+        if (options.report) return report;
+        const failed = report.failures[0];
+        if (failed) throw failed.error;
       } catch (error) {
         if (!(options.force && hasErrorCode(error, 'ENOENT'))) throw error;
       }
@@ -897,7 +905,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
    * confined caller's /tmp/x is its private file, not the shared tmp/x.
    */
   private leaseAllows(path: string, owner?: string): void {
-    this.rawVfs.assertMutationAllowed(this.vfs.storageKey(normalizeVfsPath(path)), owner, this.vfs.holds);
+    this.rawVfs.assertMutationAllowed(path, owner, this.vfs.holds, this.vfs.cred);
   }
 
 
@@ -908,8 +916,9 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     return located.path;
   }
 
-  reopen(target: RuntimeReopenTarget, flags: RuntimeOpenFlags, options: RuntimeMutationOwner = {}): RuntimeFileHandle {
-    const named = 'handle' in target ? this.descriptors.path(target.handle) : `inode ${target.ino}`;
+  reopen(target: RuntimeReopenTarget, flags: RuntimeOpenFlags, options: RuntimeMutationOwner = {}): RuntimeOpenedFile {
+    if (flags.closing) this.closeQuietly(flags.closing);
+    const named = this.descriptors.openedAs(target.handle);
     return called({ syscall: 'open', path: named }, () => {
       const normalizedFlags = openFlags(flags);
       const flagged = flagsRefusal(normalizedFlags);
@@ -918,37 +927,42 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       if (normalizedFlags.create && normalizedFlags.exclusive) throw fsError('EEXIST', 'open', named);
       const mutates = normalizedFlags.write || normalizedFlags.truncate || normalizedFlags.append;
       const owner = mutates ? options.mutationOwner : undefined;
-      const held = 'handle' in target ? this.descriptors.description(target.handle) : null;
-      if (held?.mounted) {
+      const held = this.descriptors.description(target.handle);
+      if (held.mounted) {
         const namespace = owner === undefined ? this.namespace! : this.namespace!.scoped(() => {}, owner);
-        return this.descriptors.issue(syncValue(reopenMounted(held, {
+        return syncValue(this.descriptors.open(syncValue(reopenMounted(held, {
           flags: normalizedFlags, mode: flags.mode, refuse: (code, syscall) => fsError(code, syscall, named), scope: this.scope,
           pin: (name, follow) => namespace.pin(name, { follow, sync: true }), sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes,
-        })), normalizedFlags);
+        })), normalizedFlags));
       }
-      if (held?.ino === ROOT_INODE) return this.openRoot(named, normalizedFlags);
-      // A copy's identity names a file on this filesystem only by this device.
-      if (held === null && 'dev' in target && target.dev !== this.rawVfs.deviceId) throw fsError('ESTALE', 'open', named);
-      const ino = held?.ino ?? ('ino' in target ? target.ino : 0);
-      const node = this.rawVfs.reopenInode(ino, named, this.vfs.cred, { read: normalizedFlags.read, write: normalizedFlags.write || normalizedFlags.truncate, sync: flags.sync === true }, this.vfs.principal, this.vfs.holds, owner);
+      if (held.ino === ROOT_INODE) return this.openRoot(named, normalizedFlags);
+      const node = this.rawVfs.reopenInode(held.ino, named, this.vfs.cred, { read: normalizedFlags.read, write: normalizedFlags.write || normalizedFlags.truncate, sync: flags.sync === true }, this.vfs.principal, this.vfs.holds, owner);
       const kind = node.stat().type;
       if (normalizedFlags.directory && kind !== 'directory') { node.close(); throw fsError('ENOTDIR', 'open', named); }
       if (kind === 'directory' && (normalizedFlags.write || normalizedFlags.truncate || normalizedFlags.append)) { node.close(); throw fsError('EISDIR', 'open', named); }
       if (normalizedFlags.truncate) node.truncate(0);
-      return this.descriptors.issue(node, normalizedFlags);
+      // Named as the descriptor it reopens was: an unlinked file has no name of its own.
+      return syncValue(this.descriptors.open(node, normalizedFlags, named, node.revision()));
     });
   }
 
-  private openRoot(path: RuntimeFsPath, flags: RuntimeFileHandle['flags']): RuntimeFileHandle {
+  /** RuntimeOpenFlags.closing: each closed, a refusal of one dropped. */
+  private closeQuietly(handles: readonly number[]): void {
+    for (const id of handles) {
+      try { this.close(id); } catch { /* not the caller's to hear of */ }
+    }
+  }
+
+  private openRoot(path: RuntimeFsPath, flags: RuntimeFileHandle['flags']): RuntimeOpenedFile {
     if (flags.create && flags.exclusive) throw fsError('EEXIST', 'open', path);
     if (flags.create || flags.truncate || flags.append) throw fsError('EISDIR', 'open', path);
     const deny = (): never => { throw fsError('EPERM', 'fd', ''); };
     const node: VfsOpenDescription = {
-      ino: ROOT_INODE, path: () => '', stat: () => this.rootStat(),
+      ino: ROOT_INODE, path: () => '', stat: () => this.rootStat(), revision: () => this.rawVfs.revision(),
       read: deny, write: deny, truncate: deny, readdir: () => this.readdir(''),
       chmod: deny, chown: deny, utimes: deny, close: () => {},
     };
-    return this.descriptors.issue(node, flags);
+    return syncValue(this.descriptors.open(node, flags));
   }
 
   private ensureParent(path: string): void {
@@ -1008,7 +1022,7 @@ const DOT_DOT_SEGMENT = /(?:^|\/)\.\.(?:\/|$)/;
 /** A confined path, and whether a mount other than the SQLite root owns it. */
 type Located =
   /** `namespace`: the view `mount` is the synchronous face of (the lease it presents included). */
-  | { mount: SyncVFS; namespace: CompositeVFS; path: string; absent?: undefined }
+  | { mount: CompositeVFS['sync']; namespace: CompositeVFS; path: string; absent?: undefined }
   /** `absent`: the one walk on SQLite ended at an absent name (walkOnSqlite). */
   | { mount?: undefined; path: string; absent?: true };
 
@@ -1017,19 +1031,6 @@ function mountOp<F extends (...args: never[]) => unknown>(fn: F | undefined, ...
   if (typeof fn !== 'function') throw callError('ENOTSUP', args.length === 2 ? { syscall: args[0], path: args[1] } : args[0]);
   return fn;
 }
-
-/** Depth-first removal with base operations, for a backend without its own. */
-function removeTree(mount: SyncVFS, path: string): void {
-  const stat = mount.stat(path, { follow: false });
-  if (stat === null) throw fsError('ENOENT', 'rm', path);
-  if (stat.type === 'directory') {
-    for (const entry of mount.readdir(path)) removeTree(mount, `${path === '/' ? '' : path}/${entry.name}`);
-    mountOp(mount.rmdir, 'rmdir', path)(path);
-  } else {
-    mount.unlink(path);
-  }
-}
-
 
 /** One call as Node names it in its errors: the syscall, its path, and the second path of a call naming two. */
 interface FsCall {

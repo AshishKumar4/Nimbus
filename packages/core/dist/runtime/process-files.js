@@ -26,7 +26,7 @@ import { FS_LIST_PAGE_LIMIT, MOUNT_LIST_NAME_LIMIT } from '../constants.js';
 import { DevVFS } from '../vfs/dev-vfs.js';
 import { standardProc } from '../vfs/proc-vfs.js';
 import { sqliteFiles } from '../vfs/sqlite-files.js';
-import { isVfsError, syscallError, toVfsError, VfsError } from '../vfs/vfs-error.js';
+import { isVfsError, syscallError, toVfsError } from '../vfs/vfs-error.js';
 import { normalizeVfsPath } from '../vfs/path.js';
 import { abandon, andThen, readDeclaredSource, readRangeOrWhole, readText } from '../vfs/vfs.js';
 import { formatProcMounts } from '../shell/mount-commands.js';
@@ -1008,20 +1008,20 @@ class AwaitingProcessBridge {
     remove(path, options) {
         return this.either([path], () => this.bridge.remove(path, options), async () => {
             const p = (await this.path(path, false));
-            const stat = await this.namespace.stat(p, { follow: false });
-            if (stat === null) {
-                if (options?.force)
-                    return;
-                throw syscallError('ENOENT', 'rm', p);
+            try {
+                if (!options?.recursive)
+                    return await this.namespace.unlink(p);
+                const report = await this.namespace.removeRecursive(p, { keepVanishedAncestors: options.keepVanishedAncestors });
+                if (options.report)
+                    return report;
+                const failed = report.failures[0];
+                if (failed)
+                    throw failed.error;
             }
-            if (stat.type !== 'directory')
-                return this.namespace.unlink(p);
-            if (!options?.recursive)
-                throw syscallError('EISDIR', 'rm', p);
-            const report = await this.namespace.removeRecursive(p);
-            const failed = report?.failures?.[0];
-            if (failed)
-                throw syscallError(failed.error.code, 'rm', failed.path);
+            catch (error) {
+                if (!(options?.force && isVfsError(error, 'ENOENT')))
+                    throw error;
+            }
         });
     }
     copyFile(from, to) {
@@ -1039,7 +1039,22 @@ class AwaitingProcessBridge {
     awaits(handleId) {
         return this.scope.handles.get(handleId)?.node.awaits === true;
     }
-    open(path, flags, options) {
+    /** RuntimeOpenFlags.closing, its own descriptors and the bridge's alike, each closed where it is: `given` without it. */
+    closing(given) {
+        if (!given.closing)
+            return given;
+        for (const id of given.closing) {
+            try {
+                const closing = this.close(id);
+                if (closing instanceof Promise)
+                    closing.catch(() => { });
+            }
+            catch { /* not the caller's to hear of */ }
+        }
+        return { ...given, closing: undefined };
+    }
+    open(path, given, options) {
+        const flags = this.closing(given);
         return this.either([path], () => this.bridge.open(path, flags, options), async () => {
             const opened = openFlags(flags);
             const flagged = flagsRefusal(opened);
@@ -1061,11 +1076,12 @@ class AwaitingProcessBridge {
                 abandon(node);
                 throw error;
             }
-            return this.descriptors.issue(node, opened);
+            return this.descriptors.open(node, opened);
         });
     }
-    reopen(target, flags, options) {
-        if (!('handle' in target) || !this.awaits(target.handle))
+    reopen(target, given, options) {
+        const flags = this.closing(given);
+        if (!this.awaits(target.handle))
             return this.bridge.reopen(target, flags, options);
         // A file on a mount that answers by awaiting: reopened there, by the name it is held by.
         this.live();
@@ -1090,7 +1106,7 @@ class AwaitingProcessBridge {
                 abandon(node);
                 throw error;
             }
-            return this.descriptors.issue(node, opened);
+            return this.descriptors.open(node, opened);
         });
     }
     /** The bridge's own descriptor, or this face's answer for one that awaits. */
@@ -1313,23 +1329,12 @@ export class ProcessView {
         await this.call('open', path, () => this.fs.writeFileFrom(path, size, source));
     }
     async truncate(path, size) { await this.call('open', path, () => this.fs.truncate(path, size)); }
-    /**
-     * rm -r: what went, by the roots removed, what is still there, and why.
-     * The engine removes a tree in one step or refuses it whole, so its report
-     * is the operand or the refusal.
-     */
-    async removeRecursive(path) {
-        try {
-            await this.fs.remove(path, { recursive: true });
-            return { removed: [path], kept: [], failures: [] };
-        }
-        catch (error) {
-            const converted = toVfsError(error, 'rm', path);
-            if (!(converted instanceof VfsError) || converted.code === 'ENOENT')
-                throw converted;
-            const failure = { path, error: converted };
-            return { removed: [], kept: [path], failures: [failure] };
-        }
+    /** rm -r's complete namespace report, including partial removal and vanished children. */
+    async removeRecursive(path, options) {
+        const report = await this.call('rm', path, () => this.fs.remove(path, { recursive: true, report: true, keepVanishedAncestors: options?.keepVanishedAncestors }));
+        if (report === undefined)
+            throw syscallError('ENOTSUP', 'rm', path, { detail: 'the filesystem bridge does not return recursive removal facts' });
+        return report;
     }
     async symlink(target, path) { await this.call('symlink', target, () => this.fs.symlink(target, path), path); }
     async readlink(path) {

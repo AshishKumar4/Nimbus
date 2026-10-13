@@ -40,6 +40,7 @@ function host() {
     shell,
     kernel: {},
     terminal: { ws: null, handleMessage() {} },
+    dispatchTerminalInput() {},
     cirrusReal: null,
     _cirrusHmrWsClients: null,
     _b4Phase: 'hydrated',

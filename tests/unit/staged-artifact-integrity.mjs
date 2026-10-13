@@ -40,6 +40,7 @@ import {
   NODE_LIB_ENTRY,
   NODE_LIB_REST_ENTRY,
   NODE_DNS_ENTRY,
+  ESM_LATE_ENTRY,
   NODE_REGISTRY_ENTRY,
   NODE_SHIMS_ENTRY,
   RESIDENT_STORE_ENTRY,
@@ -211,6 +212,7 @@ try {
     ['node-lib', NODE_LIB_ENTRY, 'nodeLib'],
     ['node-lib-rest', NODE_LIB_REST_ENTRY, 'nodeLibRest'],
     ['node-dns', NODE_DNS_ENTRY, 'nodeDns'],
+    ['esm-late', ESM_LATE_ENTRY, 'esmLate'],
     ['node-registry', NODE_REGISTRY_ENTRY, 'registry'],
   ];
   const stagedText = (entry) => readFileSync(path.join(workerRoot, 'public', entry.slice(1)), 'utf8');

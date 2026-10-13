@@ -34,8 +34,6 @@ export interface Leaf {
     mode: number;
     oid: string;
 }
-/** A tree object's entries, in the tree's own order. */
-export declare function parseTree(data: Uint8Array): TreeEntry[];
 /** The tree a tree-ish names: a commit's, or the tree itself. */
 export declare function treeOf(store: ObjectStore, oid: string): Promise<string>;
 export declare function readTree(store: ObjectStore, oid: string): Promise<TreeEntry[]>;

@@ -1,13 +1,16 @@
 /**
  * git/pack/remote-failure.ts — a git server that could not be reached, or
- * refused, as git says it (remote-curl.c discover_refs, http.c
+ * refused, as git says it (remote-curl.c discover_refs and run_slot, http.c
  * handle_curl_result).
  *
- * The facet records what failed (remoteFailureOf): the transport (no
- * answer), or the HTTP status the server answered with, and the text it
- * sent with it when that is plain text. The command says it in git's words
- * (remoteFailureText), and exits as git does (128; a pull, whose fetch is
- * git's child, 1).
+ * The facet records what failed (remoteFailureOf): for the discovery, the
+ * transport (no answer), or the HTTP status the server answered with, and
+ * the text it sent with it when that is plain text; for the request for the
+ * pack (git's RPC, a POST), the status or the transport alone, its body
+ * never read, as git discards it. Every failing answer is taken in by one
+ * capture (answeredFailure). The command says it in git's words, the
+ * credentials it offered taken out (remoteFailureText), and exits as git
+ * does (128; a pull, whose fetch is git's child, 1).
  */
 
 import type { HttpClient, GitHttpResponse } from '../../../vendor/git-http.generated.js';
@@ -17,7 +20,15 @@ export type RemoteFailure =
   /** No answer: the connection, DNS, TLS or the stream failed. `detail` says how. */
   | { kind: 'transport'; detail: string }
   /** An answer with a failing status; `message` is its body when that is text/plain (show_http_message). */
-  | { kind: 'status'; status: number; message?: string };
+  | { kind: 'status'; status: number; message?: string }
+  /** The request for the pack failed: the status it was answered with (null: no answer), and curl's words for it. */
+  | { kind: 'rpc'; status: number | null; detail: string };
+
+/** Which request failed: the discovery (GET info/refs), or the request for the pack (a POST, git's RPC). */
+export type RemoteRequest = 'discovery' | 'rpc';
+
+/** A failure the server answered: its status. */
+type AnsweredFailure = Exclude<RemoteFailure, { kind: 'transport' }>;
 
 /** The most of a failing answer's body kept for its message. */
 const MESSAGE_BYTES = 64 * 1024;
@@ -183,6 +194,11 @@ export function remoteFailureText(url: string, failure: RemoteFailure, credentia
     const safePrompt = redactDestination(prompt, secrets, true);
     return `fatal: could not read ${what} for '${safePrompt}': terminal prompts disabled\n`;
   }
+  if (failure.kind === 'rpc') {
+    // run_slot's report, and fetch-pack's on finding nothing to read.
+    const reason = failure.status === null ? failure.detail : `HTTP ${failure.status} curl 22 ${failure.detail}`;
+    return `error: RPC failed; ${redactCredentials(reason, secrets)}\nfatal: the remote end hung up unexpectedly\n`;
+  }
   const remote = redactCredentials(failure.message ?? '', secrets).trim();
   const lines = remote === '' ? '' : remote.split('\n').map((line) => `remote: ${line}\n`).join('');
   if (failure.status === 404) return `${lines}fatal: repository '${shown}' not found\n`;
@@ -216,14 +232,26 @@ async function readBounded(body: AsyncIterable<Uint8Array>): Promise<Uint8Array>
   return out.slice(0, size);
 }
 
-/** The message of an answer's body, when its type is text/plain; the body is read (or cancelled). */
-export async function plainTextMessage(contentType: string | null, body: ReadableStream<Uint8Array> | null): Promise<string | undefined> {
-  if (body === null) return undefined;
-  if (!isPlainText(contentType)) {
-    await body.cancel();
-    return undefined;
+/**
+ * The failure an answer with a failing `status` is, its body read or let
+ * go: a discovery's message is its body's first MESSAGE_BYTES when that is
+ * text/plain; the request for the pack's body is never read (rpc_in).
+ */
+export async function answeredFailure(
+  request: RemoteRequest, status: number, contentType: string | null | undefined, body: AsyncIterable<Uint8Array> | null | undefined,
+): Promise<AnsweredFailure> {
+  if (request === 'rpc' || !isPlainText(contentType)) {
+    await body?.[Symbol.asyncIterator]().return?.();
+    // normalize_curl_result's words for a failing status.
+    return request === 'rpc' ? { kind: 'rpc', status, detail: `The requested URL returned error: ${status}` } : { kind: 'status', status };
   }
-  return new TextDecoder().decode(await readBounded(body));
+  if (!body) return { kind: 'status', status };
+  return { kind: 'status', status, message: new TextDecoder().decode(await readBounded(body)) };
+}
+
+/** No answer to `request`: the transport's words for why. */
+export function transportFailure(request: RemoteRequest, detail: string): RemoteFailure {
+  return request === 'rpc' ? { kind: 'rpc', status: null, detail } : { kind: 'transport', detail };
 }
 
 /**
@@ -243,36 +271,34 @@ export interface ObservedGitHttp extends HttpClient {
   failureOf(error: unknown): RemoteFailure | undefined;
 }
 
-/** A body of `bytes` again, as cf-git reads a response body (an async iterable of chunks). */
-async function* replay(bytes: Uint8Array): AsyncGenerator<Uint8Array> {
-  yield bytes;
-}
+/** An empty body, as cf-git reads a response body (an async iterable of chunks). */
+async function* emptyBody(): AsyncGenerator<Uint8Array> {}
 
 /**
  * `http` with each failure kept: a request that threw (the transport: that
- * error), and an answer with a failing status (its status, and its body when
- * plain text, which cf-git still reads after). cf-git's HttpError for that
- * status, or the transport's own error, is then known for what it is.
+ * error), and an answer with a failing status (answeredFailure; cf-git then
+ * reads an empty body). cf-git's HttpError for that status, or the
+ * transport's own error, is then known for what it is.
  */
 export function observedGitHttp(http: HttpClient): ObservedGitHttp {
   let thrown: { error: unknown; failure: RemoteFailure } | null = null;
-  let answered: RemoteFailure & { kind: 'status' } | null = null;
+  let answered: AnsweredFailure | null = null;
   return {
     async request(req) {
+      const request: RemoteRequest = req.method === 'POST' ? 'rpc' : 'discovery';
       let response: GitHttpResponse;
       try {
         response = await http.request(req);
       } catch (error) {
-        thrown = { error, failure: { kind: 'transport', detail: error instanceof Error ? error.message : String(error) } };
+        thrown = { error, failure: transportFailure(request, error instanceof Error ? error.message : String(error)) };
         throw error;
       }
       if (response.statusCode < 400) return response;
       const body = response.body as AsyncIterable<Uint8Array> | null | undefined;
-      const bytes = body && Symbol.asyncIterator in body ? await readBounded(body) : new Uint8Array(0);
       const headers = (response.headers ?? {}) as Record<string, string>;
       const contentType = Object.entries(headers).find(([name]) => name.toLowerCase() === 'content-type')?.[1];
-      answered = { kind: 'status', status: response.statusCode, ...(isPlainText(contentType) ? { message: new TextDecoder().decode(bytes) } : {}) };
-      return { ...response, body: replay(bytes) };
+      answered = await answeredFailure(request, response.statusCode, contentType, body && Symbol.asyncIterator in body ? body : null);
+      return { ...response, body: emptyBody() };
     },
     failureOf(error) {
       if (thrown !== null && thrown.error === error) return thrown.failure;

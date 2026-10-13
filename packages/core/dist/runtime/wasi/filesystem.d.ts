@@ -1,5 +1,6 @@
-import type { Awaitable, RuntimeFileHandle, RuntimeFsBridge, RuntimeVfsStat } from '../os-contracts.js';
+import type { Awaitable, RuntimeFileHandle, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenedFile, RuntimeOpenFlags, RuntimeSynchronousFs, RuntimeVfsStat } from '../os-contracts.js';
 import type { Errno, NimbusFsImports, WasiImports } from './types.js';
+import type { PinnedContent } from './resident-filesystem.js';
 /** WASI encoding only. Paths, permissions, inode identity and storage belong to fs. */
 export interface AuthorityFd {
     kind: 'authority';
@@ -16,15 +17,14 @@ export interface AuthorityFd {
 /**
  * A read-only open of a regular file, answered from this isolate: the bytes
  * are the file's content at its stat revision, so every read, seek and stat on
- * the descriptor is local. Nothing on the authority side is held for it.
+ * the descriptor is local.
  */
 export interface ResidentFd {
     kind: 'resident';
-    /** The file's stat at its open: its identity (dev, ino), which a path naming this descriptor opens again by. */
+    /** The file's stat at its open. */
     stat: RuntimeVfsStat;
     bytes: Uint8Array;
-    /** The filesystem's pin on the bytes, when it pinned them (pinContent). */
-    pin?: ResidentPin;
+    hold: ResidentHold;
     /**
      * Descriptors on this open: dup(2), dup2(2) and a fork's copy share it,
      * and with it its offset (shareResident, closeResident).
@@ -35,15 +35,31 @@ export interface ResidentFd {
     rightsInheriting: bigint;
     fdflags: number;
 }
-/** A pin on a resident copy's bytes, and the opens of the copy that hold it (a reopen of one shares its bytes): the last gives it back. */
-export interface ResidentPin {
-    holds: number;
-    release(): void;
+/**
+ * How a resident copy's file is opened again (an open of /dev/fd/N): by the
+ * session's O_PATH descriptor of it (AuthorityFilesystemOptions.residentHolds),
+ * held while the copy lives; else by the name it was read at, while that
+ * name has it, with the filesystem's pin on its bytes when it pinned them
+ * (pinContent), given back with the copy.
+ */
+export type ResidentHold = SessionHold | {
+    readonly name: RuntimeFsPath;
+    readonly follow: boolean;
+    readonly pin?: PinnedContent;
+};
+/** A session descriptor a copy holds: `key`, the name it was opened by (ResidentHolds.keyOf), where it may be kept once the copy goes. */
+export interface SessionHold {
+    readonly handle: number;
+    readonly key?: string;
 }
-/** Another descriptor on a resident open, as dup(2) makes one: the same offset, the same pin. */
+/** Another descriptor on a resident open, as dup(2) makes one: the same offset, the same hold. */
 export declare function shareResident(open: ResidentFd): ResidentFd;
-/** One descriptor on a resident open closed; the last gives back its hold on the pin, and the last hold the pin. */
-export declare function closeResident(open: ResidentFd): void;
+/**
+ * One descriptor on a resident open closed. The last gives back its hold:
+ * a pin here, and the session descriptor it answers, for the caller to let
+ * go (ResidentHolds.letGo), as nothing of the guest's depends on it.
+ */
+export declare function closeResident(open: ResidentFd): SessionHold | null;
 export interface AuthorityPreopen {
     kind: 'preopen';
     vfsPath: string;
@@ -88,6 +104,53 @@ export declare function refusalErrno(error: unknown, gone?: (refusal: string) =>
 /** How a run whose session no longer holds its process ends. */
 export declare function processGoneMessage(refusal: string): string;
 export declare function after<T, R>(value: Awaitable<T>, next: (value: T) => Awaitable<R>): Awaitable<R>;
+/**
+ * The session descriptors that hold resident copies (residentHolds), for one
+ * filesystem. A hold its copy let go is kept, a few at most, at the name it
+ * was opened by: the next copy of the same file there takes it again after
+ * a stat, which is all main's copy cost, rather than an open of its own.
+ * Past those, and a hold no name keeps, it waits to be closed with the next
+ * open (RuntimeOpenFlags.closing), as a close of its own would be a second
+ * call to the session.
+ */
+export declare class ResidentHolds {
+    private readonly keep;
+    /** Holds waiting for an open to close them; past this many they are closed at once, with calls of their own. */
+    static readonly RELEASED_MAX = 64;
+    private released;
+    private readonly kept;
+    constructor(keep?: number);
+    /** The name a hold is kept by: what `open` was asked of, followed or not. */
+    static keyOf(name: RuntimeFsPath, follow: boolean): string;
+    /** `hold`, its copy of the file `stat` describes let go, on `fs`. */
+    letGo(fs: RuntimeFsBridge | RuntimeSynchronousFs, hold: SessionHold, stat: {
+        readonly dev: number;
+        readonly ino: number;
+    }): void;
+    /** The hold kept at `key`, taken out. */
+    takeKept(key: string): {
+        readonly handle: number;
+        readonly dev: number;
+        readonly ino: number;
+    } | undefined;
+    /** A hold no copy will take again, on `fs`: closed with the next open, or now once RELEASED_MAX wait. */
+    release(fs: RuntimeFsBridge | RuntimeSynchronousFs, handle: number): void;
+    /** The holds the next open closes, handed out once. */
+    take(): readonly number[] | undefined;
+}
+/** A session descriptor nothing of the guest's waits to see closed: closed, a refusal of it dropped. */
+export declare function closeUnawaited(fs: RuntimeFsBridge | RuntimeSynchronousFs, handle: number): void;
+/**
+ * Opens `name` as the file `identity` (dev, ino) is, where the process holds
+ * no descriptor of it to reopen by (an open of /dev/fd/N on a copy): ENOENT
+ * once the name has another file, or none. `follow`: as the name was first
+ * looked up. Never creates one, and empties it only once it is known to be
+ * that file.
+ */
+export declare function openIdentified(fs: RuntimeFsBridge | RuntimeSynchronousFs, name: RuntimeFsPath, follow: boolean, flags: RuntimeOpenFlags, identity: {
+    dev: number;
+    ino: number;
+}): Awaitable<RuntimeOpenedFile>;
 export interface AuthorityFilesystemOptions {
     fs(): RuntimeFsBridge | null;
     memory(): WebAssembly.Memory;
@@ -106,12 +169,21 @@ export interface AuthorityFilesystemOptions {
     /**
      * Largest regular file a read-only open answers from a resident copy. A
      * guest that reopens the same file for every module (CPython's zipimport,
-     * a shell's scripts) then pays one stat per open and one read per revision,
+     * a shell's scripts) then pays one open per open and one read per revision,
      * rather than a round trip per descriptor call. Content is keyed by inode
      * and validated against the stat revision, so a file rewritten by anyone
      * is fetched again on its next open. Zero keeps every open on the authority.
      */
     residentBytes?: number;
+    /**
+     * Where a resident copy's hold of its file at the session goes when the
+     * copy is let go: an O_PATH descriptor (RuntimeOpenFlags.path) its open
+     * answers the stat with, so the file itself, renamed or unlinked since, is
+     * what /dev/fd/N opens again. Without (a host that cannot hold one, or
+     * pins bytes itself), a copy is opened again by the name it was read at,
+     * while that name has it.
+     */
+    residentHolds?: ResidentHolds;
     /**
      * Whether a resident copy outlives its descriptor (default true). A guest
      * whose host process already holds the filesystem's content (a node

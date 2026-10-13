@@ -22,7 +22,9 @@ const runtimeDir = join(coreRoot, 'src', 'runtime');
 export const FILESYSTEM_MIRRORS_GENERATED = join(runtimeDir, 'filesystem-mirrors.generated.ts');
 
 /** The answer kinds the table may name, and the transport each is repaired by. */
-const TRANSPORT = { value: 'answerValue', bytes: 'answerBytes', stream: 'answerStream' };
+const TRANSPORT = { value: 'answerValue', bytes: 'answerBytes', stream: 'answerStream', removal: 'answerRemoval' };
+/** The answer kinds whose value leaves for a hop through a transport of its own, and that transport. */
+const SEND = { removal: 'sendRemoval' };
 
 /** The generated file's text for `methods` (FILESYSTEM_METHODS). */
 export function filesystemMirrorsSource(methods) {
@@ -43,7 +45,7 @@ export function filesystemMirrorsSource(methods) {
     ' */',
     '',
     "import type { RuntimeFsBridge } from './os-contracts.js';",
-    "import { answerBytes, answerStream, answerValue, type FILESYSTEM_METHODS, type FilesystemSupervisor } from './filesystem-methods.js';",
+    "import { answerBytes, answerRemoval, answerStream, answerValue, sendRemoval, type FILESYSTEM_METHODS, type FilesystemSupervisor } from './filesystem-methods.js';",
     '',
     '/** Bridge method → its name on the supervisor RPC capability. */',
     'export const FILESYSTEM_RPC_METHODS = {',
@@ -59,7 +61,9 @@ export function filesystemMirrorsSource(methods) {
     'export function vfsSupervisor(fs: RuntimeFsBridge): FilesystemSupervisor {',
     '  return {',
     '    synchronous: fs.synchronous,',
-    ...entries.map(([method, { rpc }]) => `    ${rpc}: (...args) => fs.${method}(...args),`),
+    ...entries.map(([method, { rpc, answer }]) => Object.hasOwn(SEND, answer)
+      ? `    ${rpc}: (...args) => ${SEND[answer]}(fs.${method}(...args)),`
+      : `    ${rpc}: (...args) => fs.${method}(...args),`),
     '  };',
     '}',
     '',

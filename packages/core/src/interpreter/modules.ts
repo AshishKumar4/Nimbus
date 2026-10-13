@@ -4,15 +4,15 @@
  * with Node's semantics: node-shims' adoption), as Node's CommonJS wrapper
  * function, linked as runtime/esm-interop.ts says. Its imports are calls of
  * the require it is given, told each is an import (ESM_LOAD_HELPER), which
- * the loader resolves as Node's ESM loader does,
- * and its exports the getters of module.exports. compile.ts makes the plan
- * (Compiler.modulePlan); this runs it, with the interop helpers the launch
- * compiled from esm-interop.ts's text (InterpreterHost).
+ * the loader resolves, checks and links as Node's ESM loader does, giving
+ * each module's namespace; its exports are the getters of module.exports.
+ * compile.ts makes the plan (Compiler.modulePlan); this runs it, with the
+ * helpers the launch compiled from esm-interop.ts's text (InterpreterHost).
  */
 import type { Code } from './code.js';
 import { reflectApply, resume, resumeThrowing, withElement } from './intrinsics.js';
 import type { HostOperators, NativeFunction } from './host-ops.js';
-import { type Env, ROOT_ENV, TDZ, tdzError } from './runtime.js';
+import { type Env, ROOT_ENV } from './runtime.js';
 import { type StackInfo, initializeStack, popStack, pushStack, stampStack, suspendedStack } from './stack.js';
 
 /** A module cell: Node's CommonJS wrapper function. */
@@ -21,20 +21,16 @@ export type ModuleCell = (exports: unknown, require: unknown, module: unknown, f
 /** esm-interop.ts's helpers, compiled from their text (ESM_MODULE_HELPERS). */
 export interface ModuleHelpers {
   readonly exports: NativeFunction;
-  readonly interop: NativeFunction;
-  readonly namespace: NativeFunction;
   readonly star: NativeFunction;
+  readonly conflicts: NativeFunction;
   readonly load: NativeFunction;
 }
 
-/**
- * What an export's getter reads: its value from the evaluation's frame, or a
- * re-exported namespace (`export * as`), made into `slot` from the module in
- * `from` when first read.
- */
-export type ModuleExport =
-  | { readonly kind: 'read'; readonly name: string; readonly read: (env: Env) => unknown }
-  | { readonly kind: 'namespace'; readonly name: string; readonly slot: number; readonly from: number };
+/** An export's getter: `read` of the evaluation's frame. */
+export interface ModuleExport {
+  readonly name: string;
+  readonly read: (env: Env) => unknown;
+}
 
 /** A module, compiled. */
 export interface ModulePlan {
@@ -49,10 +45,11 @@ export interface ModulePlan {
   readonly dirnameSlot: number;
   /** The export getters, in the order they are installed. */
   readonly exports: readonly ModuleExport[];
-  /** Each requested module, required in order: the slot it goes to, and its interop's (a default import's); -1 for none. */
-  readonly requests: readonly { readonly source: string; readonly module: number; readonly interop: number }[];
-  /** Each import's namespace, made into `slot` from the module in `from` once every request is required. */
-  readonly namespaces: readonly { readonly slot: number; readonly from: number }[];
+  /**
+   * Each requested module, required in order with its `type` attribute
+   * (which the loader checks): the slot its namespace goes to, -1 for none.
+   */
+  readonly requests: readonly { readonly source: string; readonly type: string | null; readonly module: number }[];
   /** Slots of the modules whose names `export *` copies. */
   readonly stars: readonly number[];
   /** Instantiation: the module scope's function declarations made, its lexical bindings in their TDZ. */
@@ -101,34 +98,27 @@ export function moduleCell(plan: ModulePlan, ops: HostOperators, helpers: Module
   };
 }
 
-/** The export getters installed; each request required in order, its interop made; then the import namespaces, then `export *`. */
+/**
+ * The export getters installed; each request required in order, its
+ * namespace in its slot; then `export *`, but the names two of them reach
+ * different bindings of (the loader's answer). Its graph's names were
+ * checked before any of it ran, by whoever loads it (node-shims' late link
+ * plan).
+ */
 function link(plan: ModulePlan, env: Env, requireArg: unknown, helpers: ModuleHelpers, exportsObject: unknown, define: NativeFunction): void {
-  const { exports, requests, namespaces, stars } = plan;
-  for (let i = 0; i < exports.length; i++) reflectApply(define, undefined, [exports[i].name, exportGetter(env, exports[i], helpers)]);
+  const { exports, requests, stars } = plan;
+  for (let i = 0; i < exports.length; i++) {
+    const read = exports[i].read;
+    reflectApply(define, undefined, [exports[i].name, () => read(env)]);
+  }
   for (let i = 0; i < requests.length; i++) {
-    const { source, module, interop } = requests[i];
-    const m: unknown = reflectApply(helpers.load, undefined, [requireArg, source]);
+    const { source, type, module } = requests[i];
+    const m: unknown = reflectApply(helpers.load, undefined, [requireArg, source, type]);
     if (module >= 0) env[module] = m;
-    if (interop >= 0) env[interop] = reflectApply(helpers.interop, undefined, [m]);
   }
-  for (let i = 0; i < namespaces.length; i++) env[namespaces[i].slot] = reflectApply(helpers.namespace, undefined, [env[namespaces[i].from]]);
-  for (let i = 0; i < stars.length; i++) reflectApply(helpers.star, undefined, [exportsObject, define, env[stars[i]]]);
-}
-
-/** The getter of `entry` over one evaluation's frame. */
-function exportGetter(env: Env, entry: ModuleExport, helpers: ModuleHelpers): () => unknown {
-  if (entry.kind === 'read') {
-    const read = entry.read;
-    return () => read(env);
-  }
-  const { name, slot, from } = entry;
-  return () => {
-    if (env[slot] === undefined) {
-      if (env[from] === TDZ) throw tdzError(name);
-      env[slot] = reflectApply(helpers.namespace, undefined, [env[from]]);
-    }
-    return env[slot];
-  };
+  if (stars.length === 0) return;
+  const omitted: unknown = reflectApply(helpers.conflicts, undefined, [requireArg]);
+  for (let i = 0; i < stars.length; i++) reflectApply(helpers.star, undefined, [exportsObject, define, env[stars[i]], omitted]);
 }
 
 /** Runs a module body's generator, made by `start`, as an async function would: one await per yielded value. */

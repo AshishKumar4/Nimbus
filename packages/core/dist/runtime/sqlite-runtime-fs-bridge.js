@@ -357,6 +357,8 @@ export class SqliteRuntimeFsBridge {
     }
     /** `options.mutationOwner`: the exclusive-mutation lease an open for writing presents (a read-only open presents none). */
     open(path, flags, options = {}) {
+        if (flags.closing)
+            this.closeQuietly(flags.closing);
         return called({ syscall: 'open', path }, () => {
             const normalizedFlags = openFlags(flags);
             const flagged = flagsRefusal(normalizedFlags);
@@ -375,15 +377,26 @@ export class SqliteRuntimeFsBridge {
             if (located.mount) {
                 const namespace = located.namespace;
                 // The synchronous face looks up through synchronous faces only (an asynchronous mount refused above): its answer is a value.
-                return this.descriptors.issue(syncValue(openMounted({
+                return syncValue(this.descriptors.open(syncValue(openMounted({
                     name: located.path, flags: normalizedFlags, mode: flags.mode,
                     refuse: (code, syscall) => fsError(code, syscall, path), scope: this.scope, pin: (name, follow) => namespace.pin(name, { follow, sync: true }),
                     sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes,
-                })), normalizedFlags);
+                })), normalizedFlags));
             }
             const p = located.path;
             if (p === '')
                 return this.openRoot(path, normalizedFlags);
+            if (flags.path === true) {
+                // There is no descriptor on the link itself, as open's below.
+                if (!normalizedFlags.followSymlinks && this.vfs.isSymlink(p))
+                    throw fsError(normalizedFlags.directory ? 'ENOTDIR' : 'ELOOP', 'open', path);
+                const held = this.rawVfs.holdInode(p, this.vfs.cred, this.vfs.principal, this.vfs.holds);
+                if (normalizedFlags.directory && held.stat().type !== 'directory') {
+                    held.close();
+                    throw fsError('ENOTDIR', 'open', path);
+                }
+                return syncValue(this.descriptors.open(held, normalizedFlags, p, held.revision()));
+            }
             // open(2)'s rule, in Linux's order, as a mount's open decides it (openOnMount).
             if (normalizedFlags.exclusive && normalizedFlags.create && (this.vfs.isSymlink(p) || this.vfs.exists(p)))
                 throw fsError('EEXIST', 'open', path);
@@ -413,7 +426,9 @@ export class SqliteRuntimeFsBridge {
             else if (normalizedFlags.truncate) {
                 this.owned(owner).truncate(p, 0);
             }
-            return this.descriptors.issue(this.rawVfs.openDescription(p, this.vfs.cred, { ...normalizedFlags, sync: flags.sync === true }, this.vfs.principal, this.vfs.holds, owner), normalizedFlags, p);
+            const node = this.rawVfs.openDescription(p, this.vfs.cred, { ...normalizedFlags, sync: flags.sync === true }, this.vfs.principal, this.vfs.holds, owner);
+            // Its revision is its name's, read off the description, not looked up again.
+            return syncValue(this.descriptors.open(node, normalizedFlags, p, node.revision()));
         });
     }
     // A description on an asynchronous mount refuses this synchronous face's
@@ -621,21 +636,17 @@ export class SqliteRuntimeFsBridge {
                     this.unlink(path);
                     return;
                 }
-                const located = this.locateMutation(path, false, 'remove');
-                if (located.mount) {
-                    const mount = located.mount;
-                    if (!mount.removeRecursive)
-                        removeTree(mount, located.path);
-                    else {
-                        // A walked removal carries on past an entry it cannot remove and
-                        // reports it; rm -r fails with the first.
-                        const failed = mount.removeRecursive(located.path)?.failures[0];
-                        if (failed)
-                            throw failed.error;
-                    }
-                }
-                else
-                    this.vfs.removeRecursive(located.path);
+                const located = this.locateMutation(path, false, options.report ? 'rm' : 'remove');
+                const policy = { keepVanishedAncestors: options.keepVanishedAncestors };
+                // A tree in the store, its report not asked for, goes without the namespace's routing.
+                const report = located.mount ? located.mount.removeRecursive(located.path, policy)
+                    : options.report && this.namespace !== undefined ? this.namespace.sync.removeRecursive('/' + located.path, policy)
+                        : this.vfs.removeRecursive('/' + located.path, policy);
+                if (options.report)
+                    return report;
+                const failed = report.failures[0];
+                if (failed)
+                    throw failed.error;
             }
             catch (error) {
                 if (!(options.force && hasErrorCode(error, 'ENOENT')))
@@ -914,7 +925,7 @@ export class SqliteRuntimeFsBridge {
      * confined caller's /tmp/x is its private file, not the shared tmp/x.
      */
     leaseAllows(path, owner) {
-        this.rawVfs.assertMutationAllowed(this.vfs.storageKey(normalizeVfsPath(path)), owner, this.vfs.holds);
+        this.rawVfs.assertMutationAllowed(path, owner, this.vfs.holds, this.vfs.cred);
     }
     /** Operations with SQLite-only semantics (journals, atomic renames, mutation leases) refuse kernel mounts. */
     sqlitePath(path, followSymlinks, call) {
@@ -924,7 +935,9 @@ export class SqliteRuntimeFsBridge {
         return located.path;
     }
     reopen(target, flags, options = {}) {
-        const named = 'handle' in target ? this.descriptors.path(target.handle) : `inode ${target.ino}`;
+        if (flags.closing)
+            this.closeQuietly(flags.closing);
+        const named = this.descriptors.openedAs(target.handle);
         return called({ syscall: 'open', path: named }, () => {
             const normalizedFlags = openFlags(flags);
             const flagged = flagsRefusal(normalizedFlags);
@@ -935,21 +948,17 @@ export class SqliteRuntimeFsBridge {
                 throw fsError('EEXIST', 'open', named);
             const mutates = normalizedFlags.write || normalizedFlags.truncate || normalizedFlags.append;
             const owner = mutates ? options.mutationOwner : undefined;
-            const held = 'handle' in target ? this.descriptors.description(target.handle) : null;
-            if (held?.mounted) {
+            const held = this.descriptors.description(target.handle);
+            if (held.mounted) {
                 const namespace = owner === undefined ? this.namespace : this.namespace.scoped(() => { }, owner);
-                return this.descriptors.issue(syncValue(reopenMounted(held, {
+                return syncValue(this.descriptors.open(syncValue(reopenMounted(held, {
                     flags: normalizedFlags, mode: flags.mode, refuse: (code, syscall) => fsError(code, syscall, named), scope: this.scope,
                     pin: (name, follow) => namespace.pin(name, { follow, sync: true }), sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes,
-                })), normalizedFlags);
+                })), normalizedFlags));
             }
-            if (held?.ino === ROOT_INODE)
+            if (held.ino === ROOT_INODE)
                 return this.openRoot(named, normalizedFlags);
-            // A copy's identity names a file on this filesystem only by this device.
-            if (held === null && 'dev' in target && target.dev !== this.rawVfs.deviceId)
-                throw fsError('ESTALE', 'open', named);
-            const ino = held?.ino ?? ('ino' in target ? target.ino : 0);
-            const node = this.rawVfs.reopenInode(ino, named, this.vfs.cred, { read: normalizedFlags.read, write: normalizedFlags.write || normalizedFlags.truncate, sync: flags.sync === true }, this.vfs.principal, this.vfs.holds, owner);
+            const node = this.rawVfs.reopenInode(held.ino, named, this.vfs.cred, { read: normalizedFlags.read, write: normalizedFlags.write || normalizedFlags.truncate, sync: flags.sync === true }, this.vfs.principal, this.vfs.holds, owner);
             const kind = node.stat().type;
             if (normalizedFlags.directory && kind !== 'directory') {
                 node.close();
@@ -961,8 +970,18 @@ export class SqliteRuntimeFsBridge {
             }
             if (normalizedFlags.truncate)
                 node.truncate(0);
-            return this.descriptors.issue(node, normalizedFlags);
+            // Named as the descriptor it reopens was: an unlinked file has no name of its own.
+            return syncValue(this.descriptors.open(node, normalizedFlags, named, node.revision()));
         });
+    }
+    /** RuntimeOpenFlags.closing: each closed, a refusal of one dropped. */
+    closeQuietly(handles) {
+        for (const id of handles) {
+            try {
+                this.close(id);
+            }
+            catch { /* not the caller's to hear of */ }
+        }
     }
     openRoot(path, flags) {
         if (flags.create && flags.exclusive)
@@ -971,11 +990,11 @@ export class SqliteRuntimeFsBridge {
             throw fsError('EISDIR', 'open', path);
         const deny = () => { throw fsError('EPERM', 'fd', ''); };
         const node = {
-            ino: ROOT_INODE, path: () => '', stat: () => this.rootStat(),
+            ino: ROOT_INODE, path: () => '', stat: () => this.rootStat(), revision: () => this.rawVfs.revision(),
             read: deny, write: deny, truncate: deny, readdir: () => this.readdir(''),
             chmod: deny, chown: deny, utimes: deny, close: () => { },
         };
-        return this.descriptors.issue(node, flags);
+        return syncValue(this.descriptors.open(node, flags));
     }
     ensureParent(path) {
         const parent = parentVfsPath(path);
@@ -1033,20 +1052,6 @@ function mountOp(fn, ...args) {
     if (typeof fn !== 'function')
         throw callError('ENOTSUP', args.length === 2 ? { syscall: args[0], path: args[1] } : args[0]);
     return fn;
-}
-/** Depth-first removal with base operations, for a backend without its own. */
-function removeTree(mount, path) {
-    const stat = mount.stat(path, { follow: false });
-    if (stat === null)
-        throw fsError('ENOENT', 'rm', path);
-    if (stat.type === 'directory') {
-        for (const entry of mount.readdir(path))
-            removeTree(mount, `${path === '/' ? '' : path}/${entry.name}`);
-        mountOp(mount.rmdir, 'rmdir', path)(path);
-    }
-    else {
-        mount.unlink(path);
-    }
 }
 /** mkdir -p of a mounted path's parent. */
 function mountParents(mount, path) {

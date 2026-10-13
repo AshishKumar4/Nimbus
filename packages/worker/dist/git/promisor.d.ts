@@ -32,10 +32,11 @@ export interface FetchMissingObjectsResult {
     fetched: number;
     network: GitNetworkResult;
 }
+/** The fetch failed: `result` says how (the command says it, its credentials taken out); the message is git's own. */
 export declare class PromisorFetchError extends Error {
-    readonly remote: string;
+    readonly request: FetchMissingObjectsRequest;
     readonly result: GitNetworkResult;
-    constructor(remote: string, result: GitNetworkResult);
+    constructor(request: FetchMissingObjectsRequest, result: GitNetworkResult);
 }
 /** One request to the promisor remote for `oids`; resolves when their pack is durable. */
 export declare function fetchMissingObjects(ctx: DurableObjectState, env: unknown, request: FetchMissingObjectsRequest, 

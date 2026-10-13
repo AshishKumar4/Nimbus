@@ -51,6 +51,7 @@ import {
   type RecallKind,
   type RuntimeOpenFlags,
   type RuntimeReadOptions,
+  type RuntimeOpenedFile,
   type RuntimeReopenTarget,
   type RuntimeSynchronousFs,
   type RuntimeVfsDirEntry,
@@ -168,8 +169,8 @@ class GuardedProcessBridge implements RuntimeFsBridge {
   chown(path: RuntimeFsPath, uid: number, gid: number, options?: { followSymlinks?: boolean }): VfsMutationReceipt {
     this.guard(); return this.target.chown(path, uid, gid, options);
   }
-  open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner): RuntimeFileHandle { this.guard(); return this.target.open(path, flags, options); }
-  reopen(target: RuntimeReopenTarget, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner): RuntimeFileHandle { this.guard(); return this.target.reopen(target, flags, options); }
+  open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner): RuntimeOpenedFile { this.guard(); return this.target.open(path, flags, options); }
+  reopen(target: RuntimeReopenTarget, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner): RuntimeOpenedFile { this.guard(); return this.target.reopen(target, flags, options); }
   read(handleId: number, offset: number | null, length: number): Uint8Array { this.guard(); return this.reading(() => this.target.read(handleId, offset, length)); }
   write(handleId: number, offset: number | null, bytes: Uint8Array): number { this.guard(); return this.target.write(handleId, offset, bytes); }
   close(handleId: number): void { return this.target.close(handleId); }
@@ -206,7 +207,7 @@ class GuardedProcessBridge implements RuntimeFsBridge {
   }
   list(after?: string | null, limit?: number): VfsListPage { this.guard(); return this.target.list(after, limit); }
   realpath(path: RuntimeFsPath): string { this.guard(); return this.target.realpath(path); }
-  remove(path: RuntimeFsPath, options?: { recursive?: boolean; force?: boolean }): void { this.guard(); return this.target.remove(path, options); }
+  remove(path: RuntimeFsPath, options?: { recursive?: boolean; force?: boolean; report?: boolean; keepVanishedAncestors?: boolean }): void | VfsRemoval { this.guard(); return this.target.remove(path, options); }
   copyFile(from: RuntimeFsPath, to: RuntimeFsPath): void { this.guard(); return this.target.copyFile(from, to); }
   copyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: { preserve?: boolean }): number | Promise<number> {
     this.guard(); return this.target.copyTree(from, to, options);
@@ -1039,19 +1040,18 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
   symlink(target: string, path: RuntimeFsPath) {
     return this.either([path], () => this.bridge.symlink(target, path), async () => this.namespace.symlink(target, (await this.path(path, false))));
   }
-  remove(path: RuntimeFsPath, options?: { recursive?: boolean; force?: boolean }) {
+  remove(path: RuntimeFsPath, options?: { recursive?: boolean; force?: boolean; report?: boolean; keepVanishedAncestors?: boolean }) {
     return this.either([path], () => this.bridge.remove(path, options), async () => {
       const p = (await this.path(path, false));
-      const stat = await this.namespace.stat(p, { follow: false });
-      if (stat === null) {
-        if (options?.force) return;
-        throw syscallError('ENOENT', 'rm', p);
+      try {
+        if (!options?.recursive) return await this.namespace.unlink(p);
+        const report = await this.namespace.removeRecursive(p, { keepVanishedAncestors: options.keepVanishedAncestors });
+        if (options.report) return report;
+        const failed = report.failures[0];
+        if (failed) throw failed.error;
+      } catch (error) {
+        if (!(options?.force && isVfsError(error, 'ENOENT'))) throw error;
       }
-      if (stat.type !== 'directory') return this.namespace.unlink(p);
-      if (!options?.recursive) throw syscallError('EISDIR', 'rm', p);
-      const report: VfsRemoval | undefined = await this.namespace.removeRecursive(p);
-      const failed = report?.failures?.[0];
-      if (failed) throw syscallError(failed.error.code, 'rm', failed.path);
     });
   }
   copyFile(from: RuntimeFsPath, to: RuntimeFsPath) {
@@ -1071,7 +1071,20 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
     return this.scope.handles.get(handleId)?.node.awaits === true;
   }
 
-  open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner) {
+  /** RuntimeOpenFlags.closing, its own descriptors and the bridge's alike, each closed where it is: `given` without it. */
+  private closing(given: RuntimeOpenFlags): RuntimeOpenFlags {
+    if (!given.closing) return given;
+    for (const id of given.closing) {
+      try {
+        const closing = this.close(id);
+        if (closing instanceof Promise) closing.catch(() => {});
+      } catch { /* not the caller's to hear of */ }
+    }
+    return { ...given, closing: undefined };
+  }
+
+  open(path: RuntimeFsPath, given: RuntimeOpenFlags, options?: RuntimeMutationOwner) {
+    const flags = this.closing(given);
     return this.either([path], () => this.bridge.open(path, flags, options), async () => {
       const opened = openFlags(flags);
       const flagged = flagsRefusal(opened);
@@ -1091,12 +1104,13 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
         abandon(node);
         throw error;
       }
-      return this.descriptors.issue(node, opened);
+      return this.descriptors.open(node, opened);
     });
   }
 
-  reopen(target: RuntimeReopenTarget, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner) {
-    if (!('handle' in target) || !this.awaits(target.handle)) return this.bridge.reopen(target, flags, options);
+  reopen(target: RuntimeReopenTarget, given: RuntimeOpenFlags, options?: RuntimeMutationOwner) {
+    const flags = this.closing(given);
+    if (!this.awaits(target.handle)) return this.bridge.reopen(target, flags, options);
     // A file on a mount that answers by awaiting: reopened there, by the name it is held by.
     this.live();
     const held = this.descriptors.description(target.handle);
@@ -1117,7 +1131,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
         abandon(node);
         throw error;
       }
-      return this.descriptors.issue(node, opened);
+      return this.descriptors.open(node, opened);
     });
   }
 
@@ -1365,21 +1379,11 @@ export class ProcessView implements VFS {
     await this.call('open', path, () => this.fs.writeFileFrom(path, size, source));
   }
   async truncate(path: string, size: number): Promise<void> { await this.call('open', path, () => this.fs.truncate(path, size)); }
-  /**
-   * rm -r: what went, by the roots removed, what is still there, and why.
-   * The engine removes a tree in one step or refuses it whole, so its report
-   * is the operand or the refusal.
-   */
-  async removeRecursive(path: string): Promise<VfsRemoval> {
-    try {
-      await this.fs.remove(path, { recursive: true });
-      return { removed: [path], kept: [], failures: [] };
-    } catch (error) {
-      const converted = toVfsError(error, 'rm', path);
-      if (!(converted instanceof VfsError) || converted.code === 'ENOENT') throw converted;
-      const failure: VfsRemovalFailure = { path, error: converted };
-      return { removed: [], kept: [path], failures: [failure] };
-    }
+  /** rm -r's complete namespace report, including partial removal and vanished children. */
+  async removeRecursive(path: string, options?: { keepVanishedAncestors?: boolean }): Promise<VfsRemoval> {
+    const report = await this.call('rm', path, () => this.fs.remove(path, { recursive: true, report: true, keepVanishedAncestors: options?.keepVanishedAncestors }));
+    if (report === undefined) throw syscallError('ENOTSUP', 'rm', path, { detail: 'the filesystem bridge does not return recursive removal facts' });
+    return report;
   }
   async symlink(target: string, path: string): Promise<void> { await this.call('symlink', target, () => this.fs.symlink(target, path), path); }
   async readlink(path: string): Promise<string> {

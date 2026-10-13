@@ -36,6 +36,10 @@ const cases = [
   { script: 'printf old >/tmp/a; exec 4<>/tmp/a; mv /tmp/a /tmp/b; printf new >/tmp/a; printf changed >/dev/fd/4; cat /tmp/a; printf :; cat /tmp/b', stdout: 'new:changed', exitCode: 0 },
   { script: 'printf old >/tmp/c; exec 4</tmp/c; rm /tmp/c; cat /dev/fd/4', stdout: 'old', exitCode: 0 },
   { script: 'printf old >/tmp/d; exec 4</tmp/d; mv /tmp/d /tmp/e; printf new >/tmp/d; cat /dev/fd/4; printf :; cat /tmp/d', stdout: 'old:new', exitCode: 0 },
+  // Opened again as it is now: its bytes since rewritten, its mode since changed, and, unlinked, still the owner's to write.
+  { script: 'printf old >/tmp/r; exec 4</tmp/r; printf new >/tmp/r; cat /dev/fd/4', stdout: 'new', exitCode: 0 },
+  { script: 'printf x >/tmp/m; exec 4</tmp/m; chmod 000 /tmp/m; cat /dev/fd/4 2>/dev/null || echo denied', stdout: 'denied\n', exitCode: 0 },
+  { script: 'printf old >/tmp/u; exec 4</tmp/u; rm /tmp/u; if printf changed >/dev/fd/4; then echo reopened; else echo failed; fi; cat /dev/fd/4', stdout: 'reopened\nchanged', exitCode: 0 },
   // Stat'd, it is that file's: its mode, by an absolute name or one relative to the cwd.
   { script: 'printf data >/tmp/p; chmod 400 /tmp/p; exec 4</tmp/p; stat -Lc %a /dev/fd/4', stdout: '400\n', exitCode: 0 },
   { script: 'cd /; printf d >/tmp/g; chmod 640 /tmp/g; exec 4</tmp/g; stat -Lc %a ./dev/fd/4', stdout: '640\n', exitCode: 0 },

@@ -9,6 +9,7 @@ import { traced, type SpanRecorder } from '@nimbus-sh/platform/tracing.js';
 import { WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
 import { CRED_SESSION_USER, requireVfsCred, type VfsCred } from '../runtime/os-contracts.js';
 import { ProcessFiles } from '../runtime/process-files.js';
+import { sendRemoval } from '../runtime/filesystem-methods.js';
 import type { NimbusFilesystemAuthority, NimbusHostFilesystemLease, RuntimeFsBridge, RuntimeFsPath, RuntimeMutationOwner, RuntimeVfsStat } from '../runtime/os-contracts.js';
 import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import {
@@ -28,14 +29,12 @@ const FsPath = z.union([
 const OpenOptions = z.object({
   read: z.boolean().optional(), write: z.boolean().optional(), append: z.boolean().optional(),
   create: z.boolean().optional(), exclusive: z.boolean().optional(), directory: z.boolean().optional(),
-  truncate: z.boolean().optional(), followSymlinks: z.boolean().optional(), expectedRevision: z.number().int().nonnegative().optional(),
+  truncate: z.boolean().optional(), followSymlinks: z.boolean().optional(), path: z.boolean().optional(), expectedRevision: z.number().int().nonnegative().optional(),
+  closing: z.array(z.number().int()).optional(),
   mode: z.number().int().nonnegative().max(0o7777).optional(),
 });
-/** What a reopen opens again (RuntimeReopenTarget): an open descriptor's file, or a file by its identity. */
-const ReopenTarget = z.union([
-  z.object({ handle: z.number().int() }),
-  z.object({ dev: z.number().int().nonnegative(), ino: z.number().int().positive() }),
-]);
+/** What a reopen opens again (RuntimeReopenTarget): an open descriptor's file. */
+const ReopenTarget = z.object({ handle: z.number().int() });
 /** A byte offset into a file: what a ranged write may start at. */
 const RangeOffset = z.number().int().nonnegative();
 /** What `deliverOnce` carries besides the mutation's args; its op is checked against the delivered set. */
@@ -347,11 +346,10 @@ export const SUPERVISOR_OP_ROUTES: Readonly<Record<Exclude<SupervisorOpName, Nat
   fanoutExecute: { method: '_rpcFanoutExecute', args: [0,1,2] },
   processHostProbe: { method: '_rpcProcessHostProbe', args: [] },
   hostProcess: { method: '_rpcHostProcess', args: [0,1] },
-  awaitHostedOpen: { method: '_rpcAwaitHostedOpen', args: [0] },
   awaitHostedBoot: { method: '_rpcAwaitHostedBoot', args: [0] },
   routeHostedHttp: { method: '_rpcRouteHostedHttp', args: [0,1] },
+  abandonHostedHttp: { method: '_rpcAbandonHostedHttp', args: [0,1,2] },
   cancelHostProcess: { method: '_rpcCancelHostProcess', args: [0] },
-  hostLost: { method: '_rpcHostLost', args: [0, 1] },
   hmrRelay: { method: '_rpcHmrRelay', args: [0,1] },
   hmrNextEvent: { method: '_rpcHmrNextEvent', args: [0] },
   // A process that can stop at a read of stdin (worker runtime/stop-replay.ts).
@@ -418,7 +416,13 @@ const NATIVE_OPS = {
   fsFutimes: (e, t) => fsFor(e, t).futimes(numberArg(e, 0), numberArg(e, 1), numberArg(e, 2)),
   fsSync: (e, t) => fsFor(e, t).fsync(e.args?.[0] === undefined ? undefined : numberArg(e, 0)),
   fsRealpath: (e, t) => fsFor(e, t).realpath(FsPath.parse(e.args?.[0])),
-  fsRemove: (e, t) => fsFor(e, t).remove(FsPath.parse(e.args?.[0]), z.object({ recursive: z.boolean().optional(), force: z.boolean().optional() }).optional().parse(e.args?.[1])),
+  // Its report leaves for the hop with each failure's error as data (sendRemoval).
+  fsRemove: (e, t) => sendRemoval(fsFor(e, t).remove(FsPath.parse(e.args?.[0]), z.object({
+    recursive: z.boolean().optional(),
+    force: z.boolean().optional(),
+    report: z.boolean().optional(),
+    keepVanishedAncestors: z.boolean().optional(),
+  }).optional().parse(e.args?.[1]))),
   fsCopyFile: (e, t) => fsFor(e, t).copyFile(FsPath.parse(e.args?.[0]), FsPath.parse(e.args?.[1])),
   fsCopyTree: (e, t) => fsFor(e, t).copyTree(FsPath.parse(e.args?.[0]), FsPath.parse(e.args?.[1]), z.object({ preserve: z.boolean().optional() }).optional().parse(e.args?.[2])),
   fsAcquireExclusiveMutation: (e, t) => fsFor(e, t).acquireExclusiveMutation(FsPath.parse(e.args?.[0]), z.object({

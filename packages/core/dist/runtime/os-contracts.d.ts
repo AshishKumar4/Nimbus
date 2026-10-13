@@ -1,4 +1,5 @@
 import type { VfsEvent } from '../vfs/events.js';
+import type { VfsRemoval } from '../vfs/vfs.js';
 /**
  * A value SQLite can return in a row.
  *
@@ -108,6 +109,20 @@ export interface RuntimeOpenFlags {
     directory?: boolean;
     truncate?: boolean;
     followSymlinks?: boolean;
+    /**
+     * O_PATH: the file is held, not opened for I/O. No access is asked of it
+     * but the walk's, and every other flag but `directory` and
+     * `followSymlinks` is ignored, as Linux ignores it. The descriptor answers
+     * its stat and a reopen (an unlinked file's included) until it is closed;
+     * its reads and writes are EBADF.
+     */
+    path?: boolean;
+    /**
+     * The caller's descriptors this open closes first, each as close() does,
+     * a refusal of one dropped: closes nothing waits on (a resident copy's
+     * hold), sent with the next open rather than as calls of their own.
+     */
+    closing?: readonly number[];
     /** Creation mode, masked by the binding's umask like mkdir's; ignored when the file exists. */
     mode?: number;
     expectedRevision?: number;
@@ -121,23 +136,24 @@ export interface RuntimeOpenFlags {
 export interface RuntimeFileHandle {
     id: number;
     path: string;
-    flags: Required<Omit<RuntimeOpenFlags, 'expectedRevision' | 'mode' | 'sync'>> & {
+    flags: Required<Omit<RuntimeOpenFlags, 'expectedRevision' | 'mode' | 'sync' | 'path' | 'closing'>> & {
         expectedRevision?: number;
     };
     position: number;
     closed: boolean;
 }
+/** What an open answers: the new descriptor, and its file's stat as the open found it (the opened name's revision, where it opened one). */
+export interface RuntimeOpenedFile extends RuntimeFileHandle {
+    stat: RuntimeVfsStat;
+}
 export type Awaitable<T> = T | Promise<T>;
 /**
  * The file a reopen opens again (RuntimeFsBridge.reopen): the one an open
- * descriptor of the process is on, or one known by its identity (a copy the
- * process read it into, which holds no descriptor).
+ * descriptor of the process is on. The descriptor is the capability: a file
+ * is never reopened by its number alone, which any process can name.
  */
 export type RuntimeReopenTarget = {
     readonly handle: number;
-} | {
-    readonly dev: number;
-    readonly ino: number;
 };
 export type RuntimeFsPath = string | {
     readonly directory: number;
@@ -322,7 +338,7 @@ export interface RuntimeFsBridge {
         followSymlinks?: boolean;
     }): Awaitable<VfsMutationReceipt>;
     /** `options.mutationOwner`: the lease an open for writing presents. */
-    open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner): Awaitable<RuntimeFileHandle>;
+    open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner): Awaitable<RuntimeOpenedFile>;
     /**
      * A new open file description of the file `target` is (Linux's open of
      * /proc/self/fd/N): the file, never a name, so one renamed or unlinked
@@ -330,7 +346,7 @@ export interface RuntimeFsBridge {
      * against the file as it is now; O_TRUNC and O_APPEND honored. A file on
      * a mount is held there by its name: ESTALE once that name holds another.
      */
-    reopen(target: RuntimeReopenTarget, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner): Awaitable<RuntimeFileHandle>;
+    reopen(target: RuntimeReopenTarget, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner): Awaitable<RuntimeOpenedFile>;
     read(handleId: number, offset: number | null, length: number): Awaitable<Uint8Array>;
     write(handleId: number, offset: number | null, bytes: Uint8Array): Awaitable<number>;
     close(handleId: number): Awaitable<void>;
@@ -395,7 +411,9 @@ export interface RuntimeFsBridge {
     remove(path: RuntimeFsPath, options?: {
         recursive?: boolean;
         force?: boolean;
-    }): Awaitable<void>;
+        report?: boolean;
+        keepVanishedAncestors?: boolean;
+    }): Awaitable<void | VfsRemoval>;
     copyFile(from: RuntimeFsPath, to: RuntimeFsPath): Awaitable<void | number>;
     /**
      * Copy the tree at `from` to the new path `to` (`cp -r`; `preserve` is
@@ -678,8 +696,25 @@ export interface RuntimeTtyOptions {
  * would make the other import a peer's internals to name its own contract.
  */
 export interface RouteableFacetTarget {
-    handleHttpRequest(request: Request): Promise<Response>;
+    /** A target that runs work for the response (a resident process) owns that work for `scope`. */
+    handleHttpRequest(request: Request, scope: ResponseScope): Promise<Response>;
     handleWebSocketRequest?(request: Request): Promise<Response>;
+}
+/**
+ * How long a routed response is wanted. Its own value rather than the
+ * forwarded request's signal: a signal on a Request makes the request
+ * unserializable over Workers RPC (workerd's AbortSignal serialization needs
+ * the experimental `enable_abortsignal_rpc`), and a process is reached by RPC.
+ */
+export interface ResponseScope {
+    /** The caller's own: aborts when its client goes away. */
+    readonly signal: AbortSignal;
+    /**
+     * Calls `listener` once the caller is done with the response: true when it
+     * was delivered whole, false when it was not (the client left, or the relay
+     * or the handler failed). One listener per scope, its target's.
+     */
+    settled(listener: (delivered: boolean) => void): void;
 }
 export interface RuntimePortBridge {
     register(port: number, processId: number, handler: (request: Request) => Promise<Response>): Promise<void>;

@@ -147,6 +147,12 @@ export interface ProcessHostOptions {
   cred(): { uid: number; gid: number } | null;
   /** Whether the guest can be suspended in an import (JSPI), so that an import may answer by promise. */
   parks: boolean;
+  /**
+   * Every answer by promise goes through here: a threaded guest's run token
+   * is handed back while it waits, so the peer that would end the wait runs.
+   * A poll's readiness is not: the poll that awaits it hands the token back.
+   */
+  park(wait: Promise<Errno>): Promise<Errno>;
 }
 
 interface Child {
@@ -293,7 +299,7 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
     return pipe.end().catch(() => {});
   };
   /** The answer once `dropped` (a drop's wait, if it has one) is done. */
-  const after = (dropped: Promise<void> | undefined): SyscallResult => (dropped ? dropped.then(() => E.SUCCESS) : E.SUCCESS);
+  const after = (dropped: Promise<void> | undefined): SyscallResult => (dropped ? opts.park(dropped.then(() => E.SUCCESS)) : E.SUCCESS);
 
   /** The strings in a NUL-separated buffer the guest passed. */
   const strings = (ptr: number, len: number): string[] => {
@@ -458,7 +464,7 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
       if (stdin) stdin.pipe.readers++;
       for (const target of [stdout, stderr]) if (target !== null && typeof target !== 'number') target.pipe.writers++;
 
-      return (async (): Promise<Errno> => {
+      return opts.park((async (): Promise<Errno> => {
         // The child sees what this process wrote before it started.
         await opts.release();
         let childPid: number;
@@ -525,7 +531,7 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
         })();
         view().setInt32(pidPtr, childPid, true);
         return E.SUCCESS;
-      })();
+      })());
     },
 
     start(pid) {
@@ -540,7 +546,7 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
       const now = answer();
       if (now !== null) return now;
       mustWait('start');
-      return parkedWait((wake) => child.waiters.push(wake), answer).ready.then((started) => started ?? E.INTR);
+      return opts.park(parkedWait((wake) => child.waiters.push(wake), answer).ready.then((started) => started ?? E.INTR));
     },
 
     wait(pid, options, statusPtr, waitedPtr) {
@@ -563,7 +569,7 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
       if (now !== null) return now;
       if (options & WNOHANG) { view().setInt32(waitedPtr, 0, true); return E.SUCCESS; }
       mustWait('wait');
-      return parkedWait((wake) => { for (const child of candidates) child.waiters.push(wake); }, reap).ready.then((reaped) => reaped ?? E.INTR);
+      return opts.park(parkedWait((wake) => { for (const child of candidates) child.waiters.push(wake); }, reap).ready.then((reaped) => reaped ?? E.INTR));
     },
 
     kill(pid, signal) {
@@ -574,7 +580,7 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
       const name = SIGNALS[signal];
       if (!name) return E.INVAL;
       mustWait('kill');
-      return Promise.resolve(sup.cpKill(pid, name)).then((delivered) => (delivered ? E.SUCCESS : E.SRCH));
+      return opts.park(Promise.resolve(sup.cpKill(pid, name)).then((delivered) => (delivered ? E.SUCCESS : E.SRCH)));
     },
   };
 
@@ -598,7 +604,7 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
       try {
         const packet = opts.input(room);
         return packet && typeof (packet as PromiseLike<WasiInputPacket>).then === 'function'
-          ? Promise.resolve(packet).then(finish, () => E.IO) : finish(packet as WasiInputPacket);
+          ? opts.park(Promise.resolve(packet).then(finish, () => E.IO)) : finish(packet as WasiInputPacket);
       } catch { return E.IO; }
     }
     const entry = pipeEntry(fd);
@@ -622,7 +628,7 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
     const now = answer();
     if (now !== null) return now;
     if (((entry.fdflags ?? 0) & FDFLAGS_NONBLOCK) !== 0) return E.AGAIN;
-    return parkedWait((wake) => pipe.waiters.push(wake), answer).ready.then((read) => read ?? E.INTR);
+    return opts.park(parkedWait((wake) => pipe.waiters.push(wake), answer).ready.then((read) => read ?? E.INTR));
   };
 
   // Pipes and the guest's own streams; a file's descriptor is the codec's, and not shared this way.
@@ -645,11 +651,11 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
     if (bytes.byteLength === 0) { view().setUint32(nwritten, 0, true); return E.SUCCESS; }
     if (pipe.readers === 0) return E.PIPE;
     if (pipe.forward) {
-      return pipe.forward(bytes).then((ok) => {
+      return opts.park(pipe.forward(bytes).then((ok) => {
         if (!ok) return E.PIPE;
         view().setUint32(nwritten, bytes.byteLength, true);
         return E.SUCCESS;
-      });
+      }));
     }
     const admit = (): Errno | null => {
       const decision = decideWrite({ queued: pipe.buffered, readers: pipe.readers, writers: pipe.writers }, bytes.byteLength, 'jspi', PIPE_CAPACITY, PIPE_CAPACITY);
@@ -665,7 +671,7 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
     const now = admit();
     if (now !== null) return now;
     if (((entry.fdflags ?? 0) & FDFLAGS_NONBLOCK) !== 0) return E.AGAIN;
-    return parkedWait((wake) => pipe.waiters.push(wake), admit).ready.then((written) => written ?? E.INTR);
+    return opts.park(parkedWait((wake) => pipe.waiters.push(wake), admit).ready.then((written) => written ?? E.INTR));
   };
 
   const close: ProcessHost['close'] = (fd) => {

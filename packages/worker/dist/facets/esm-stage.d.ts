@@ -28,6 +28,13 @@ import { type ModuleScope } from '@nimbus-sh/core/runtime/module-format.js';
 export type EsmModuleRow = readonly [kind: 'module', key: string, targets: readonly number[], flags?: number, packageJson?: string] | readonly [kind: 'commonjs', key: string] | readonly [kind: 'builtin', builtin: string] | readonly [kind: 'json', key: string];
 /** The map module of row `id` (node-shims' __nimbusEsmName reads it so). */
 export declare function esmRowName(row: EsmModuleRow, id: number): string;
+/**
+ * A row's export names, as the late link reads them (ESM_BINDINGS_MODULE,
+ * core runtime/esm-late-link.ts): a facade's or a JSON module's, which
+ * staging already knows; null for a staged module, whose names the late
+ * link reads from its source if it ever needs them.
+ */
+export type EsmRowBindings = readonly string[] | null;
 /** A specifier Node's loader refuses: the error its import fails with. */
 export interface EsmMissing {
     readonly name: string;
@@ -46,6 +53,8 @@ export interface EsmStage {
     readonly table: EsmModuleRow[];
     /** What each refused specifier fails with, by the number of the missing module it names (ESM_MISSING_DIR). */
     readonly missing: EsmMissing[];
+    /** Each row's export names, by id (EsmRowBindings). */
+    readonly bindings: EsmRowBindings[];
     /** How long staging took, in milliseconds: the launch's debug line. */
     readonly ms: number;
 }

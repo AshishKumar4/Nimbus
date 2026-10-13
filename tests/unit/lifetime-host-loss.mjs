@@ -9,6 +9,7 @@
 // plain error (exit 1, not 137).
 
 import assert from 'node:assert/strict';
+import { answerHostWatch } from './lib/host-watch-socket.mjs';
 import { ProcessFabric, ProcessHostLost } from '../../packages/fabric/src/process-fabric.ts';
 import { processes } from '../../packages/fabric/src/workerd-facet-host.ts';
 import { isHostReset } from '../../packages/platform/src/oom-classify.ts';
@@ -80,7 +81,7 @@ const settled = (promise) => promise.then((value) => ({ value }), (error) => ({ 
     id: { toString: () => 'start-reset' },
     storage: { async get() { return undefined; }, async put() {} },
     facets: {
-      get: () => ({ async startProcess() { throw RESET_START; }, async handleHttpRequest() { return new Response('ok'); } }),
+      get: () => ({ async startProcess() { throw RESET_START; }, async handleHttpRequest() { return new Response('ok'); }, fetch: answerHostWatch() }),
       abort() {},
       delete() {},
     },

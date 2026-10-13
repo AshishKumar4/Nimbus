@@ -166,10 +166,11 @@ export declare class NimbusSandbox {
     destroy(options?: NimbusDestroyOptions): Promise<NimbusDestroyResult>;
     /**
      * The session file plane. Every method acts as the session's default
-     * identity for a pid-less caller — the session user for reads, writes,
-     * stat, list, mkdir, rename and chmod; the kernel for `delete` — which is
-     * the embedder's trusted surface, reached only by a caller holding the DO
-     * binding or a remote token. `files.as(cred)` returns the same API bound
+     * identity for a pid-less caller: the session user for reads, writes,
+     * stat, list, mkdir, rename and chmod. `delete` acts as the kernel for a
+     * caller holding the DO binding (the embedder's trusted surface) and as the
+     * session user over the remote endpoint, where a token authenticates the
+     * session, not the kernel. `files.as(cred)` returns the same API bound
      * to `cred` instead, the view `SqliteVFS.as(cred)` gives in-process: a
      * file the identity cannot read answers EACCES, one it owns answers.
      * Over the remote endpoint a `cred` is refused by the dispatcher, as it is

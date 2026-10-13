@@ -42,7 +42,7 @@ import { makeNimbusVerbHandler } from '@nimbus-sh/core/runtime/nimbus-command.js
 
 /** Internal runtime services; callers use composeHostedRuntime, not this recipe. */
 export type RuntimeCommandHost = Pick<SessionInternal,
-  '_emitShellExecDone' | '_setCpRegistry' | '_viteShimPid' | '_viteShimPort' | 'cirrusReal' | 'ensureFacetManager' | 'ensureNpmInstaller' | 'ensureSqliteFs' | 'esbuildService' | 'nimbusWrangler' | 'npmInstaller' | 'portRegistry' | 'processes' | 'sessionBasePath' | 'terminal' | 'viteBasePath' | 'viteDevServer' | 'wranglerAliasBannerShown'
+  '_emitShellExecDone' | '_setCpRegistry' | '_viteShimPid' | '_viteShimPort' | 'cirrusReal' | 'ensureFacetManager' | 'facetManager' | 'ensureNpmInstaller' | 'ensureSqliteFs' | 'esbuildService' | 'nimbusWrangler' | 'npmInstaller' | 'portRegistry' | 'processes' | 'sessionBasePath' | 'terminal' | 'viteBasePath' | 'viteDevServer' | 'wranglerAliasBannerShown'
 > & {
   readonly ctx: DurableObjectState;
   readonly env: RuntimeCatalogEnv;
@@ -69,7 +69,7 @@ export async function registerHostedCommands(self: RuntimeCommandHost, workspace
     setUmask: (mask) => self.processes.setUmask(pid, mask),
     runAs: runAsProcess,
     accountWork: (worker: number) => self.processes.beginWork(worker),
-    holdWork: (worker: number, stop: (reason?: SignalAbortReason) => void) => self.processes.holdWork(worker, stop),
+    holdWork: (worker: number, stop: (reason?: SignalAbortReason) => void, signal?: AbortSignal) => self.processes.holdWork(worker, stop, signal),
   });
   // `kill` is the shell's builtin; the session's own processes (resident
   // servers, the vite shim), numbered in this table's pid space, are reached
@@ -82,15 +82,11 @@ export async function registerHostedCommands(self: RuntimeCommandHost, workspace
       if (signalDisposition(signal) !== 'terminate') return 'unsupported';
       // runtime primitive support (P11): the vite shim PID (registered by
       // P5's long-running spawn) also tears down the in-process
-      // viteDevServer / cirrusReal — facetManager.kill only handles real
-      // Worker-Loader facets, and would leave the shim running with its port
-      // registered against a dead PID.
+      // viteDevServer — facetManager.kill only handles real Worker-Loader
+      // facets, and would leave the shim running with its port registered
+      // against a dead PID.
       if (self._viteShimPid === pid) {
         try {
-          if (self.cirrusReal?.isRunning) {
-            self.cirrusReal.stop(self.ctx);
-            self.cirrusReal = null;
-          }
           if (self.viteDevServer?.isRunning) {
             self.viteDevServer.stop();
             self.viteDevServer = null;
@@ -883,7 +879,7 @@ const shellEntrypointExecutor = {
     // this session's work behind the child's pid: a kill stops it.
     const endAwait = self.processes.beginAwait(parentPid, childProcess.pid);
     const stop = new AbortController();
-    const stopped = self.processes.holdWork(childProcess.pid, (reason) => stop.abort(reason));
+    const stopped = self.processes.holdWork(childProcess.pid, (reason) => stop.abort(reason), stop.signal);
     let exitCode = 1;
     try {
       const identity = commandIdentityFor(childProcess.pid);
@@ -975,7 +971,7 @@ const shellExecuteTracked = async (
   // closed what it opened: a kill stops it, and only then is what it bound
   // released.
   const stop = new AbortController();
-  const stopped = self.processes.holdWork(pid, (reason) => stop.abort(reason));
+  const stopped = self.processes.holdWork(pid, (reason) => stop.abort(reason), stop.signal);
   let exitCode = 1;
   try {
     const result = await scriptShell.execute(cmd, {

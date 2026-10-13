@@ -17,6 +17,7 @@ import {
 } from '../../kernel/index.js';
 import { waitForSignalOrTimeout } from '../signal.js';
 import { ISOLATE_NETWORK } from '../../../../_shared/workspace-network.js';
+import { applyRedirectPolicy, isRedirectStatus } from '../../../../runtime/http-redirect-policy.js';
 
 /** Outcomes of one workspace-local hop, for callers that report failure. */
 export type WorkspaceRequestResult =
@@ -114,12 +115,6 @@ export async function dispatchWorkspaceRequest(
 /** How many redirects a walk follows before it gives up: curl's and wget's default. */
 export const MAX_REDIRECTS = 20;
 
-/** Request headers fetch-follow strips when a redirect crosses origins. */
-const CREDENTIAL_HEADERS = ['authorization', 'proxy-authorization', 'cookie', 'cookie2'];
-
-/** Content headers that only make sense on a request that carries a body. */
-const CONTENT_HEADERS = ['content-type', 'content-length', 'transfer-encoding', 'expect'];
-
 /** A request as it goes from hop to hop of a redirect walk. */
 export interface HopRequest {
   url: URL;
@@ -186,7 +181,7 @@ export async function walkRedirects(
     if (result.kind !== 'response') return { kind: result.kind, url: hop.url };
     const { response } = result;
     await options.arrived?.(response);
-    const location = options.follow && response.status >= 300 && response.status < 400
+    const location = options.follow && isRedirectStatus(response.status, 'command')
       ? response.headers.get('location')
       : null;
     if (!location) return { kind: 'response', response, url: hop.url };
@@ -201,12 +196,6 @@ export async function walkRedirects(
       return { kind: 'response', response, url: hop.url };
     }
     response.body?.cancel().catch(() => {});
-    if (([301, 302].includes(response.status) && hop.method === 'POST') || (response.status === 303 && hop.method !== 'HEAD')) {
-      hop.method = 'GET';
-      hop.body = undefined;
-    }
-    if (hop.body === undefined) for (const name of CONTENT_HEADERS) hop.headers.delete(name);
-    if (next.origin !== hop.url.origin) for (const name of CREDENTIAL_HEADERS) hop.headers.delete(name);
-    hop.url = next;
+    applyRedirectPolicy(hop, response.status, next, 'command');
   }
 }

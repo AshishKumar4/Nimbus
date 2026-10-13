@@ -2431,10 +2431,30 @@ function mkRm(vfs) {
         }
         let code = 0;
         for (const target of targets) {
+            const path = resolvePath(ctx.cwd, target);
             try {
-                await vfs.remove(resolvePath(ctx.cwd, target), { recursive, force });
+                if (!recursive) {
+                    await vfs.remove(path, { force });
+                    continue;
+                }
+                const report = await vfs.removeRecursive(path, { keepVanishedAncestors: !force });
+                for (const failure of report.failures) {
+                    const named = failure.path === path || failure.path.startsWith(`${path}/`) ? target + failure.path.slice(path.length) : failure.path;
+                    const reason = failure.error.detail === undefined ? VFS_STRERROR[failure.error.code]
+                        : `${VFS_STRERROR[failure.error.code]}: ${failure.error.detail}`;
+                    await ctx.stderr.write(`rm: cannot remove '${named}': ${reason}\n`);
+                    code = 1;
+                }
+                if (!force)
+                    for (const gone of report.vanished ?? []) {
+                        const named = gone === path || gone.startsWith(`${path}/`) ? target + gone.slice(path.length) : gone;
+                        await ctx.stderr.write(`rm: cannot remove '${named}': No such file or directory\n`);
+                        code = 1;
+                    }
             }
             catch (error) {
+                if (force && isVfsError(error, 'ENOENT'))
+                    continue;
                 await ctx.stderr.write(`rm: cannot remove '${target}': ${strerror(error)}\n`);
                 code = 1;
             }

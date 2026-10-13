@@ -1,9 +1,11 @@
 import { inWatchedTree, projectChange } from './events.js';
 import { VfsError, VFS_DESCRIPTION, isVfsError, syscallError } from './vfs-error.js';
-import { normalizeVfsPath } from './path.js';
+import { normalizeVfsPath, parentOf } from './path.js';
+import { entryVfsPath, walkVfsPath } from './path-walk.js';
 import { posixAccess } from './posix-access.js';
-import { withRecall } from './recall.js';
+import { recallOf, withRecall } from './recall.js';
 import { DIRENT_TYPES } from './dirent-type.js';
+import { walkRemoval } from './removal-walk.js';
 import { S_IFMT, abandon, andThen, isCharacterDevice, isPromise, readRangeOrWhole, syncValue } from './vfs.js';
 /** Path order as SQLite's index keeps it: by UTF-8 bytes, which is code point order. */
 export function comparePaths(a, b) {
@@ -133,8 +135,6 @@ export function isAsyncMountRefusal(error) {
     return typeof error === 'object' && error !== null && error.asyncMount === true;
 }
 const ROOT_POINT = '/';
-/** Links followed before ELOOP (Linux MAXSYMLINKS). */
-const MAX_LINK_HOPS = 40;
 /** An absolute path's first component when it is spelled plainly (not empty, `.` or `..`). */
 function firstComponent(path) {
     if (path.charCodeAt(0) !== 47)
@@ -146,10 +146,6 @@ function firstComponent(path) {
 /** `/a/b`, from any spelling; `..` stops at the root. */
 export function normalizePath(path) {
     return `/${normalizeVfsPath(String(path))}`;
-}
-function parentOf(path) {
-    const cut = path.lastIndexOf('/');
-    return cut <= 0 ? '/' : path.slice(0, cut);
 }
 /** `path` (at or under `point`) as the backend mounted at `point` names it: '/' at the point. */
 function relativeTo(point, path) {
@@ -2140,7 +2136,7 @@ export class CompositeVFS {
      * `input` with every root link on it followed (the last only when
      * `follow`), normalized in this namespace. A mount point or a directory
      * above one is never a link (rule 2); a component inside a mount is left to
-     * that backend. ELOOP past MAX_LINK_HOPS.
+     * that backend. ELOOP past 40 link hops.
      */
     /** `creating`: absent non-final components are allowed (mkdir -p makes them); a file among them is still ENOTDIR. */
     resolve(input, follow, sync, creating = false, trace) {
@@ -2155,103 +2151,72 @@ export class CompositeVFS {
         // an absolute target from this view's root, a relative one from the
         // link's directory, so `..` at a mount root reaches the mount point's
         // parent. Every hop is walked again with this view's credential.
-        const walk = (components, hops) => {
-            const resolved = [];
-            const lastIndex = components.length - 1;
-            // Set after a structural directory its holder does not hold as a
-            // directory: its other children are absent (they would be under a file).
-            let shadowParent = false;
-            const step = (i) => {
-                for (; i < components.length; i++) {
-                    const component = components[i];
-                    if (component === '' || component === '.')
-                        continue;
-                    if (component === '..') {
-                        resolved.pop();
-                        continue;
-                    }
-                    resolved.push(component);
-                    const prefix = `/${resolved.join('/')}`;
-                    if (trace !== undefined)
-                        trace.at = prefix;
-                    const final = i === lastIndex;
-                    const at = i;
-                    if (this.isStructural(prefix)) {
-                        // Lookup through a mount point, or a directory above one, needs
-                        // search permission on what is there, as on Linux: the mounted
-                        // root, or the directory a backend holds at that path. A
-                        // backend that resolves its own paths checks its own, its root
-                        // included, when the path ends in it; on the way to a mount
-                        // nested in it, they are checked here, as any other backend's.
-                        shadowParent = false;
-                        if (final)
-                            continue;
-                        // `..` inside such a backend is lexical, so where the path ends is too.
-                        const holder = this.locate(prefix).mount;
-                        if (holder.options.resolvesPaths && this.locate(normalizePath(`${prefix}/${components.slice(at + 1).join('/')}`)).mount === holder)
-                            continue;
-                        const mount = this.table.mounts.get(prefix);
-                        return andThen(mount === undefined ? this.heldDirectory(prefix, sync) : this.mountRoot(mount, prefix, sync), (held) => {
-                            if (held !== null && !this.permits(held, 1))
-                                throw new Refusal('EACCES', input);
-                            shadowParent = mount === undefined && held === null;
-                            return step(at + 1);
-                        });
-                    }
-                    if (shadowParent) {
-                        shadowParent = false;
-                        if (!final)
-                            throw new Refusal('ENOENT', input);
-                        continue;
-                    }
-                    if (this.absentOn(prefix) !== null)
-                        continue;
-                    const route = this.locate(prefix);
-                    if (final && !follow)
-                        continue;
-                    if (route.mount.options.resolvesPaths)
-                        continue;
-                    const ops = this.ops(route, sync);
-                    const canLink = typeof ops.readlink === 'function';
-                    const look = () => {
-                        try {
-                            const out = ops.stat(route.rel, { follow: !canLink });
-                            return isPromise(out) ? out.catch((e) => this.walkMiss(e, prefix)) : out;
-                        }
-                        catch (e) {
-                            return this.walkMiss(e, prefix);
-                        }
-                    };
-                    return andThen(look(), (stat) => {
-                        if (stat !== null && stat.type === 'symlink' && canLink) {
-                            if (hops >= MAX_LINK_HOPS)
-                                throw new Refusal('ELOOP', input);
-                            trace?.links.push(prefix);
-                            return andThen(ops.readlink(route.rel), (target) => walk([
-                                ...(target.startsWith('/') ? [] : resolved.slice(0, -1)),
-                                ...target.split('/'),
-                                ...components.slice(at + 1),
-                            ], hops + 1));
-                        }
-                        if (!final) {
-                            if (stat === null) {
-                                if (creating)
-                                    return step(at + 1);
-                                throw new Refusal('ENOENT', input);
-                            }
-                            if (stat.type !== 'directory')
-                                throw new Refusal('ENOTDIR', input);
-                            if (!this.permits(stat, 1))
-                                throw new Refusal('EACCES', input);
-                        }
-                        return step(at + 1);
-                    });
+        // A structural directory its holder lacks hides its other children.
+        let shadowParent = false;
+        return walkVfsPath(input, (prefix, final, components, at) => {
+            if (trace !== undefined)
+                trace.at = prefix;
+            if (this.isStructural(prefix)) {
+                shadowParent = false;
+                if (final)
+                    return null;
+                const holder = this.locate(prefix).mount;
+                if (holder.options.resolvesPaths && this.locate(normalizePath(`${prefix}/${components.slice(at + 1).join('/')}`)).mount === holder)
+                    return null;
+                const mount = this.table.mounts.get(prefix);
+                return andThen(mount === undefined ? this.heldDirectory(prefix, sync) : this.mountRoot(mount, prefix, sync), (held) => {
+                    if (held !== null && !this.permits(held, 1))
+                        throw new Refusal('EACCES', input);
+                    shadowParent = mount === undefined && held === null;
+                    return null;
+                });
+            }
+            if (shadowParent) {
+                shadowParent = false;
+                if (!final)
+                    throw new Refusal('ENOENT', input);
+                return null;
+            }
+            if (this.absentOn(prefix) !== null)
+                return null;
+            const route = this.locate(prefix);
+            if (final && !follow)
+                return null;
+            if (route.mount.options.resolvesPaths)
+                return null;
+            const ops = this.ops(route, sync);
+            const readlink = ops.readlink;
+            const look = () => {
+                try {
+                    const out = ops.stat(route.rel, { follow: readlink === undefined });
+                    return isPromise(out) ? out.catch((error) => this.walkMiss(error, prefix)) : out;
                 }
-                return `/${resolved.join('/')}`;
+                catch (error) {
+                    return this.walkMiss(error, prefix);
+                }
             };
-            return step(0);
-        };
-        return walk(String(input).split('/'), 0);
+            return andThen(look(), (stat) => {
+                if (stat !== null && stat.type === 'symlink' && readlink !== undefined) {
+                    shadowParent = false;
+                    return () => {
+                        trace?.links.push(prefix);
+                        return readlink.call(ops, route.rel);
+                    };
+                }
+                if (!final) {
+                    if (stat === null) {
+                        if (creating)
+                            return null;
+                        throw new Refusal('ENOENT', input);
+                    }
+                    if (stat.type !== 'directory')
+                        throw new Refusal('ENOTDIR', input);
+                    if (!this.permits(stat, 1))
+                        throw new Refusal('EACCES', input);
+                }
+                return null;
+            });
+        }, () => { throw new Refusal('ELOOP', input); });
     }
     /**
      * The directory a backend holds at a path above a mount point, or null
@@ -2296,12 +2261,12 @@ export class CompositeVFS {
     /** Whether this view's principal has `want` (r=4, w=2, x=1) on a stat, by its mode bits. */
     permits(stat, want) {
         const cred = this.viewer.cred;
-        // Root searches every directory (posixAccess's root rule is a file's exec);
-        // an entry its backend keeps no mode for is not judged, and an owner or
-        // group it keeps none of matches no one.
-        if (cred === null || cred.uid === 0 || stat.mode === undefined)
+        // An entry its backend keeps no mode for is not judged, and an owner or
+        // group it keeps none of matches no one. Its type is the stat's: a
+        // backend's mode may carry no file-type bits.
+        if (cred === null || stat.mode === undefined)
             return true;
-        return posixAccess(stat, want, cred);
+        return posixAccess({ mode: stat.mode, uid: stat.uid ?? -1, gid: stat.gid ?? -1, type: stat.type }, want, cred);
     }
     /** A stat that failed during the walk: absent (ENOENT) reads as nothing there; other errors stand. */
     walkMiss(error, _path) {
@@ -2542,7 +2507,7 @@ export class CompositeVFS {
      * where the lookup lands. `written`: the whole content it writes, what
      * observers are told stands after (WriteSpec.written).
      */
-    onMutation(input, follow, sync, what, run, { parents = false, written, told } = {}) {
+    onMutation(input, follow, sync, what, run, { parents = false, written, told, children = false, recursiveEntry = false } = {}) {
         return andThen(this.resolve(input, follow, sync, parents), (path) => {
             this.present(path);
             // unlink(2) refuses a directory before anything else (Linux), and a
@@ -2561,10 +2526,11 @@ export class CompositeVFS {
             // chmod, chown and utimes of a mount point change the mounted root, as
             // on Linux; only a directory above a mount point has no backend to ask.
             const metadataOnly = what === 'changed' && (path === ROOT_POINT || this.table.mounts.get(path) !== undefined);
-            if (this.isStructural(path) && !metadataOnly)
-                throw new Refusal('EBUSY', path, `a mount point cannot be ${what}`);
-            if (route.mount.options.readOnly)
-                throw new Refusal('EROFS', path, `${route.mount.point} is mounted read-only`);
+            const walkingChildren = what === 'removed' && children && path !== ROOT_POINT;
+            if (this.isStructural(path) && !metadataOnly && !walkingChildren)
+                throw new Refusal('EBUSY', path, recursiveEntry ? undefined : `a mount point cannot be ${what}`);
+            if (route.mount.options.readOnly && !walkingChildren)
+                throw new Refusal('EROFS', path, recursiveEntry ? undefined : `${route.mount.point} is mounted read-only`);
             return andThen(this.reachable(path, sync), () => andThen(parents ? this.makeTree(parentOf(path), undefined, sync) : undefined, () => {
                 const ops = this.ops(route, sync);
                 const removes = what === 'unlinked' || what === 'removed';
@@ -2601,7 +2567,7 @@ export class CompositeVFS {
         }
     }
     mkdirAt(input, options, sync) {
-        return andThen(this.resolve(input, false, sync, options?.recursive === true), (path) => {
+        return andThen(this.resolve(entryVfsPath(input).path, false, sync, options?.recursive === true), (path) => {
             this.present(path);
             if (this.isStructural(path)) {
                 // mkdir -p of a live mount point (or a directory above one) has nothing to do.
@@ -2682,7 +2648,9 @@ export class CompositeVFS {
         return make(1);
     }
     renameAt(fromInput, toInput, sync) {
-        return andThen(this.resolve(fromInput, false, sync), (from) => andThen(this.resolve(toInput, false, sync), (to) => {
+        const fromEntry = entryVfsPath(fromInput);
+        const toEntry = entryVfsPath(toInput);
+        return andThen(this.resolve(fromEntry.path, false, sync), (from) => andThen(this.resolve(toEntry.path, false, sync), (to) => {
             this.present(from);
             this.present(to);
             const source = this.locate(from);
@@ -2699,6 +2667,19 @@ export class CompositeVFS {
             return andThen(this.reachable(from, sync), () => andThen(this.reachable(to, sync), () => {
                 const move = () => {
                     this.guardMutation([fromInput, from, toInput, to]);
+                    if (fromEntry.directory || toEntry.directory) {
+                        return andThen(this.softStat(this.ops(source, sync), source.rel, false), (stat) => {
+                            if (stat === null)
+                                throw new Refusal('ENOENT', from);
+                            if (stat.type !== 'directory')
+                                throw new Refusal('ENOTDIR', from);
+                            return andThen(this.softStat(this.ops(target, sync), target.rel, false), (end) => {
+                                if (toEntry.directory && end !== null && end.type !== 'directory')
+                                    throw new Refusal('ENOTDIR', to);
+                                return this.renameIn(source, target, from, sync);
+                            });
+                        });
+                    }
                     return this.renameIn(source, target, from, sync);
                 };
                 // A name renamed onto itself changes nothing.
@@ -2862,7 +2843,7 @@ export class CompositeVFS {
     }
     /** rmdir, or on a backend without it, an emptiness check and unlink. */
     rmdirAt(input, sync) {
-        return this.onMutation(input, false, sync, 'removed', (ops, rel, path) => {
+        return this.onMutation(entryVfsPath(input).path, false, sync, 'removed', (ops, rel, path) => {
             const backend = ops;
             if (typeof backend.rmdir === 'function')
                 return backend.rmdir(rel);
@@ -2888,100 +2869,75 @@ export class CompositeVFS {
      * holding it. A walked removal carries on past a failure, as rm -r does,
      * and `failures` says why each one stayed.
      */
-    removeAt(input, sync) {
+    removeAt(input, sync, keepVanishedAncestors = false) {
         // Each removal is told as it lands (watchChanges): a backend's own rm -r at the roots of what it removed, a walked one entry by entry.
-        return this.onMutation(input, false, sync, 'removed', (ops, rel, path) => {
-            if (this.hasLiveBelow(path))
-                throw new Refusal('EBUSY', path, 'something is mounted beneath it');
-            const backend = ops;
-            const { mount } = this.locate(path);
-            if (typeof backend.removeRecursive === 'function') {
-                const at = (r) => (r === rel ? path : path + r.slice(rel === '/' ? 0 : rel.length));
-                return andThen(backend.removeRecursive(rel), (report) => {
-                    const removal = report
-                        ? {
-                            removed: report.removed.map(at),
-                            kept: report.kept.map(at),
-                            // Each failure named as Node names the call that met it, on the namespace's path.
-                            failures: report.failures.map((f) => ({
-                                path: at(f.path),
-                                error: syscallError(f.error.code, f.error.syscall ?? 'rm', at(f.path), { detail: f.error.detail, cause: f.error }),
-                            })),
-                        }
-                        : { removed: [path], kept: [], failures: [] };
-                    if (this.table.changes !== undefined)
-                        this.tellLanded(mount, storeBehind(this.table, backend), 'unlink', removal.removed);
-                    return removal;
-                });
-            }
-            return this.walkRemove(backend, rel, path, mount);
-        }, { told: null });
-    }
-    walkRemove(ops, rel, path, mount) {
-        const at = (r) => (r === rel ? path : path + r.slice(rel === '/' ? 0 : rel.length));
-        const order = [];
-        const visit = (r) => andThen(ops.stat(r, { follow: false }), (stat) => {
-            if (stat === null) {
-                if (r === rel)
-                    throw new Refusal('ENOENT', path);
-                return undefined;
-            }
-            order.push({ rel: r, dir: stat.type === 'directory' });
-            if (stat.type !== 'directory')
-                return undefined;
-            return andThen(ops.readdir(r), (entries) => entries.reduce((chain, entry) => andThen(chain, () => visit(r === '/' ? `/${entry.name}` : `${r}/${entry.name}`)), undefined));
-        });
-        return andThen(visit(rel), () => {
-            order.reverse();
-            const kept = new Set();
-            const gone = new Set();
-            const failures = [];
-            const keepWithAncestors = (r) => {
-                for (let k = r;; k = parentOf(k)) {
-                    kept.add(k);
-                    if (k === rel || k === '/')
-                        break;
-                }
-            };
-            return andThen(order.reduce((chain, entry) => andThen(chain, () => {
-                if (kept.has(entry.rel))
-                    return undefined;
-                const fail = (cause) => {
-                    if (isVfsError(cause, 'ENOENT')) {
-                        gone.add(entry.rel);
-                        return;
-                    }
-                    keepWithAncestors(entry.rel);
-                    failures.push({
-                        path: at(entry.rel),
-                        error: syscallError(isVfsError(cause) ? cause.code : 'EIO', entry.dir ? 'rmdir' : 'unlink', at(entry.rel), {
-                            detail: isVfsError(cause) ? cause.detail : String(cause), cause,
-                        }),
-                    });
-                };
-                try {
-                    // Each entry guarded right before it is removed, after the walk's
-                    // reads: a refusal keeps it (and the directories holding it).
-                    this.guardMutation([at(entry.rel)]);
-                    const out = entry.dir && typeof ops.rmdir === 'function' ? ops.rmdir(entry.rel) : ops.unlink(entry.rel);
-                    const removed = () => {
-                        gone.add(entry.rel);
+        const entry = entryVfsPath(input);
+        return this.onMutation(entry.path, false, sync, 'removed', (ops, rel, path) => {
+            const remove = () => {
+                const { mount } = this.locate(path);
+                const composed = this.hasLiveBelow(path) || this.isStructural(path) || mount.options.readOnly === true;
+                if (composed)
+                    return this.walkRemove(ops, rel, path, mount, sync, true, keepVanishedAncestors);
+                const backend = ops;
+                if (typeof backend.removeRecursive === 'function') {
+                    const at = (r) => (r === rel ? path : path + r.slice(rel === '/' ? 0 : rel.length));
+                    return andThen(backend.removeRecursive(rel, { keepVanishedAncestors }), (report) => {
+                        const removal = report
+                            ? {
+                                removed: report.removed.map(at),
+                                kept: report.kept.map(at),
+                                ...(report.vanished === undefined ? {} : { vanished: report.vanished.map(at) }),
+                                // Each failure named as Node names the call that met it, on the namespace's path.
+                                failures: report.failures.map((f) => ({
+                                    path: at(f.path),
+                                    error: syscallError(f.error.code, f.error.syscall ?? 'rm', at(f.path), { detail: f.error.detail, cause: f.error }),
+                                })),
+                            }
+                            : { removed: [path], kept: [], failures: [] };
                         if (this.table.changes !== undefined)
-                            this.tellLanded(mount, storeBehind(this.table, ops), entry.dir ? 'unlinkDir' : 'unlink', [at(entry.rel)]);
-                    };
-                    if (isPromise(out))
-                        return out.then(removed, fail);
-                    removed();
-                    return undefined;
+                            this.tellLanded(mount, storeBehind(this.table, backend), 'unlink', removal.removed);
+                        return removal;
+                    });
                 }
-                catch (cause) {
-                    fail(cause);
-                    return undefined;
-                }
-            }), undefined), () => {
-                const removed = [...gone].filter((r) => r === rel || !gone.has(parentOf(r))).map(at).sort();
-                return { removed, kept: [...kept].map(at).sort(), failures };
+                return this.walkRemove(backend, rel, path, mount, sync, false, keepVanishedAncestors);
+            };
+            if (!entry.directory)
+                return remove();
+            return andThen(ops.stat(rel, { follow: false }), (stat) => {
+                if (stat === null)
+                    throw new Refusal('ENOENT', path);
+                if (stat.type !== 'directory')
+                    throw new Refusal('ENOTDIR', path);
+                return remove();
             });
+        }, { told: null, children: true });
+    }
+    walkRemove(ops, rel, path, mount, sync, composed = false, keepVanishedAncestors = false) {
+        const at = (r) => (r === rel ? path : path + r.slice(rel === '/' ? 0 : rel.length));
+        const landed = (r, dir, backend, holder, named) => {
+            if (this.table.changes !== undefined)
+                this.tellLanded(holder, storeBehind(this.table, backend), dir ? 'unlinkDir' : 'unlink', [named]);
+        };
+        const removeOn = (backend, r, dir, holder, named) => {
+            this.guardMutation([named]);
+            const out = dir && typeof backend.rmdir === 'function' ? backend.rmdir(r) : backend.unlink(r);
+            return andThen(out, () => landed(r, dir, backend, holder, named));
+        };
+        const steps = composed
+            ? {
+                lstat: (r) => this.statAt(at(r), false, sync),
+                readdir: (r) => this.readdirAt(at(r), sync),
+                remove: (r, dir) => andThen(this.onMutation(at(r), false, sync, dir ? 'removed' : 'unlinked', (backend, backendRel, named) => removeOn(backend, backendRel, dir, this.locate(named).mount, named), { told: null, recursiveEntry: true }), () => undefined),
+            }
+            : {
+                lstat: (r) => ops.stat(r, { follow: false }),
+                readdir: (r) => ops.readdir(r),
+                remove: (r, dir) => removeOn(ops, r, dir, mount, at(r)),
+            };
+        return walkRemoval(steps, {
+            rel, at, keepVanishedAncestors,
+            missing: () => new Refusal('ENOENT', path),
+            passes: (cause) => recallOf(cause) !== null || isAsyncMountRefusal(cause),
         });
     }
     // ── the VFS surface ──────────────────────────────────────────────────
@@ -3068,8 +3024,8 @@ export class CompositeVFS {
     async rename(from, to) {
         return awaited({ syscall: 'rename', path: from, dest: to }, () => this.renameAt(from, to, false));
     }
-    async removeRecursive(path) {
-        return awaited({ syscall: 'rm', path }, () => this.removeAt(path, false));
+    async removeRecursive(path, options) {
+        return awaited({ syscall: 'rm', path }, () => this.removeAt(path, false, options?.keepVanishedAncestors === true));
     }
     async symlink(target, path) {
         return awaited({ syscall: 'symlink', path: target, dest: path }, () => this.onMutation(path, false, false, 'replaced', (ops, rel, at) => this.method(ops, 'symlink', at)(target, rel)));
@@ -3113,7 +3069,7 @@ export class CompositeVFS {
             unlink: (path) => syncValue(reported({ syscall: 'unlink', path }, () => this.onMutation(path, false, true, 'unlinked', (ops, rel) => ops.unlink(rel)))),
             rmdir: (path) => syncValue(reported({ syscall: 'rmdir', path }, () => this.rmdirAt(path, true))),
             rename: (from, to) => syncValue(reported({ syscall: 'rename', path: from, dest: to }, () => this.renameAt(from, to, true))),
-            removeRecursive: (path) => syncValue(reported({ syscall: 'rm', path }, () => this.removeAt(path, true))),
+            removeRecursive: (path, options) => syncValue(reported({ syscall: 'rm', path }, () => this.removeAt(path, true, options?.keepVanishedAncestors === true))),
             symlink: (target, path) => syncValue(reported({ syscall: 'symlink', path: target, dest: path }, () => this.onMutation(path, false, true, 'replaced', (ops, rel, at) => this.method(ops, 'symlink', at)(target, rel)))),
             readlink: (path) => syncValue(reported({ syscall: 'readlink', path }, () => this.onFile(path, false, true, (ops, rel, at) => this.method(ops, 'readlink', at)(rel)))),
             chmod: (path, mode) => syncValue(reported({ syscall: 'chmod', path }, () => this.onMutation(path, true, true, 'changed', (ops, rel, at) => this.method(ops, 'chmod', at)(rel, mode)))),

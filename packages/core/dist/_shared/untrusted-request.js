@@ -28,10 +28,15 @@ export function isPlatformCookie(name) {
  * namespace is removed.
  */
 export function sanitizeUntrustedHeaders(headers) {
-    for (const name of [...headers.keys()]) {
-        if (name.toLowerCase().startsWith('x-nimbus-'))
+    // Headers yields its names lowercased (Fetch: sort and combine), and only
+    // the ones to drop are collected: a delete while iterating skips entries.
+    let internal;
+    for (const name of headers.keys())
+        if (name.startsWith('x-nimbus-'))
+            (internal ??= []).push(name);
+    if (internal)
+        for (const name of internal)
             headers.delete(name);
-    }
     // Both carry credentials and neither is meaningful to a sandboxed server.
     headers.delete('Authorization');
     headers.delete('Proxy-Authorization');

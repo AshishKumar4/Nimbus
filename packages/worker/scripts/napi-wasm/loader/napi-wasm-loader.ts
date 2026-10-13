@@ -49,6 +49,7 @@ import type {
   RuntimeFileHandle,
   RuntimeFsBridge,
   RuntimeFsPath,
+  RuntimeOpenedFile,
   RuntimeOpenFlags,
   RuntimeVfsStat,
 } from '../../../../core/src/runtime/os-contracts.js';
@@ -395,6 +396,14 @@ function nodeFsBridge(fs: NodeFs, handles: Map<number, BridgeHandle>, nextHandle
     );
   };
 
+  const close = (id: number): Awaitable<void> => {
+    const h = handle(id);
+    h.closed = true;
+    handles.delete(id);
+    if (h.fd !== undefined) fs.closeSync(h.fd);
+    else if (h.file) return h.file.close();
+  };
+
   const bridge = {
     stat: (p: RuntimeFsPath, o?: { followSymlinks?: boolean }) => stat(resolve(p), o?.followSymlinks),
     readFile: (p: RuntimeFsPath): Awaitable<Uint8Array | null> => {
@@ -406,17 +415,31 @@ function nodeFsBridge(fs: NodeFs, handles: Map<number, BridgeHandle>, nextHandle
         return orNullWhenAbsent(error);
       }
     },
-    open: (p: RuntimeFsPath, flags: RuntimeOpenFlags): Awaitable<BridgeHandle> => {
+    // An open answers its file's stat (RuntimeOpenedFile), as fstat of the new descriptor would.
+    open: (p: RuntimeFsPath, flags: RuntimeOpenFlags): Awaitable<RuntimeOpenedFile> => {
+      for (const id of flags.closing ?? []) {
+        try {
+          const closing = close(id);
+          if (closing instanceof Promise) closing.catch(() => {});
+        } catch { /* not the caller's to hear of */ }
+      }
       const path = resolve(p);
       if (flags.directory) {
         // A directory's metadata is always answerable without waiting.
-        if (!fs.statSync(path).isDirectory()) fail('ENOTDIR');
-        return register(path, flags, {});
+        const st = fs.statSync(path);
+        if (!st.isDirectory()) fail('ENOTDIR');
+        return { ...register(path, flags, {}), stat: toStat(st, path) };
       }
       const mode = flags.mode ?? 0o666;
       return attempt(
-        () => register(path, flags, { fd: fs.openSync(path, openFlags(flags), mode) }),
-        async () => register(path, flags, { file: await promises.open(path, openFlags(flags), mode) }),
+        () => {
+          const fd = fs.openSync(path, openFlags(flags), mode);
+          return { ...register(path, flags, { fd }), stat: toStat(fs.fstatSync(fd), path) };
+        },
+        async () => {
+          const file = await promises.open(path, openFlags(flags), mode);
+          return { ...register(path, flags, { file }), stat: toStat(await file.stat(), path) };
+        },
       );
     },
     fstat: (id: number): Awaitable<RuntimeVfsStat> => {
@@ -458,13 +481,7 @@ function nodeFsBridge(fs: NodeFs, handles: Map<number, BridgeHandle>, nextHandle
       if (h.file) return h.file.write(bytes, 0, bytes.length, position).then((r) => done(r.bytesWritten));
       return fail('EISDIR');
     },
-    close: (id: number): Awaitable<void> => {
-      const h = handle(id);
-      h.closed = true;
-      handles.delete(id);
-      if (h.fd !== undefined) fs.closeSync(h.fd);
-      else if (h.file) return h.file.close();
-    },
+    close,
     seek: (id: number, offset: number, whence: 'set' | 'current' | 'end'): number => {
       const h = handle(id);
       if (whence === 'set') h.position = offset;

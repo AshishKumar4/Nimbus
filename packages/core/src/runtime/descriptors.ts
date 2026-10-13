@@ -11,7 +11,7 @@
 import { andThen, isPromise, type Awaitable } from '../vfs/vfs.js';
 import type { VfsOpenDescription } from '../vfs/sqlite-vfs.js';
 import { fsError } from '../vfs/vfs-error.js';
-import type { RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat } from './os-contracts.js';
+import type { RuntimeFileHandle, RuntimeOpenedFile, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat } from './os-contracts.js';
 
 /** The engine's description of a file on SQLite (SqliteVFS.openDescription): every answer at once. */
 export type EngineDescription = VfsOpenDescription & { readonly mounted?: undefined; readonly awaits?: undefined };
@@ -86,6 +86,10 @@ export interface DescriptorScope {
 
 /** An open's flags as its descriptor keeps them: neither access asked is O_RDONLY. */
 export function openFlags(flags: RuntimeOpenFlags): RuntimeFileHandle['flags'] {
+  // O_PATH asks no access (RuntimeOpenFlags.path).
+  if (flags.path === true) {
+    return { read: false, write: false, append: false, create: false, exclusive: false, directory: !!flags.directory, truncate: false, followSymlinks: flags.followSymlinks !== false };
+  }
   return {
     read: !!flags.read || !flags.write,
     write: !!flags.write,
@@ -236,6 +240,18 @@ export class Descriptors {
     return { ...handle };
   }
 
+  /**
+   * issue's descriptor as an open answers it: with its file's stat, as fstat
+   * answers it, its revision `revision` where the open went by a name (the
+   * name's).
+   */
+  open(node: Description, flags: RuntimeFileHandle['flags'], path = node.path(), revision?: number): Awaitable<RuntimeOpenedFile> {
+    const handle: RuntimeFileHandle = { id: this.scope.nextId++, path, flags: Object.freeze(flags), position: 0, closed: false };
+    this.scope.handles.set(handle.id, { handle, node, refs: 1 });
+    if (node.mounted) return andThen(node.stat(), (stat) => ({ ...handle, stat: revision === undefined ? stat : { ...stat, revision } }));
+    return { ...handle, stat: { ...node.stat(), revision: revision ?? this.clock() } };
+  }
+
   /** The description `id` names, to answer from (EBADF when none, or once the scope is closed). */
   description(id: number): Description {
     return this.answering(id).node;
@@ -313,6 +329,11 @@ export class Descriptors {
   /** The absolute path a descriptor was opened at. */
   path(id: number): string {
     return this.opened(id).node.path();
+  }
+
+  /** The name descriptor `id` was opened by: what its errors name, its file having none now perhaps. */
+  openedAs(id: number): string {
+    return this.opened(id).handle.path;
   }
 
   fstat(id: number): Awaitable<RuntimeVfsStat> {

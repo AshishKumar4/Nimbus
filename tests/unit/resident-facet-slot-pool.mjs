@@ -9,6 +9,7 @@
 // concurrent processes never share one.
 
 import assert from 'node:assert/strict';
+import { answerHostWatch } from './lib/host-watch-socket.mjs';
 import { processes, residentFacetName } from '../../packages/fabric/src/workerd-facet-host.ts';
 
 // ── The name is a slot, and slots are what get reused ───────────────────────
@@ -38,6 +39,7 @@ function makeCtx(id = 'session-under-test') {
         return {
           async startProcess() { return { ok: true }; },
           async handleHttpRequest() { return new Response('ok'); },
+          fetch: answerHostWatch(),
         };
       },
       abort(name) { live.delete(name); },

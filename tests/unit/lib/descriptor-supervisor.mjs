@@ -38,6 +38,7 @@ export function descriptorSupervisor(supervisor) {
   return Object.assign(supervisor, {
     stat,
     async fsOpen(value, flags) {
+      for (const id of flags.closing ?? []) handles.delete(id);
       const name = path(value);
       let info = await supervisor.stat(name);
       if (info && flags.create && flags.exclusive) throw error('EEXIST');
@@ -47,7 +48,8 @@ export function descriptorSupervisor(supervisor) {
       if (flags.truncate) await supervisor.fsTruncate(name, 0);
       const handle = { id: nextHandle++, path: name, flags, position: 0, closed: false };
       handles.set(handle.id, handle);
-      return { ...handle };
+      // An open answers its file's stat (RuntimeOpenedFile).
+      return { ...handle, stat: decorate(name, flags.truncate ? await supervisor.stat(name) : info) };
     },
     async fsFstat(id) { const name = get(id).path; return decorate(name, await supervisor.stat(name)); },
     async fsRead(id, offset, length) {

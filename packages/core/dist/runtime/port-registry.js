@@ -75,39 +75,111 @@ const DECODABLE_CONTENT_CODINGS = new Map([
  * target sends a different number of bytes, as HTTP framing would. A HEAD
  * answer's length describes the GET it stands for, not the body it has none
  * of, so it is not held to it.
+ *
+ * The pipe into the last stage is explicit, so its settlement is when the
+ * body is done with: its end (`owner.settle`), or its failure, `owner.signal`
+ * aborting it among them (`owner.fail`).
  */
-function relayRpcBody(response, method, gated) {
-    if (response.body === null)
+export function relayRpcBody(response, method, owner, gated = null) {
+    if (response.body === null) {
+        owner.settle();
         return response;
+    }
     const declared = method === 'HEAD' ? null : response.headers.get('Content-Length');
     // RFC 9110 §8.6: 1*DIGIT. Joined duplicates ("5, 5") are not one length.
     const length = declared !== null && /^\d+$/.test(declared) ? Number(declared) : NaN;
-    const body = Number.isSafeInteger(length)
-        ? (gated === null ? response.body : response.body.pipeThrough(gated)).pipeThrough(new FixedLengthStream(length))
-        : response.body.pipeThrough(gated ?? new TransformStream());
-    return new Response(body, {
+    const last = Number.isSafeInteger(length) ? new FixedLengthStream(length) : gated ?? ownedStage(owner);
+    // An owned stage in the chain ends it when the caller leaves (RelayScope); a chain without one, the pipe's signal.
+    settleWith(owner, last === gated || gated === null ? response.body : response.body.pipeThrough(gated), last.writable, gated === null && Number.isSafeInteger(length));
+    return new Response(last.readable, {
         status: response.status,
         statusText: response.statusText,
         headers: response.headers,
     });
 }
 /**
+ * One response's scope (RouteableFacetTarget) and the owner whose relay
+ * settles it: delivered, or not. It listens on the caller's signal once, for
+ * all of it: a caller that leaves before any header, a stage a pipe waits on
+ * without looking at its signal, the scope's end. Delivery costs no more than
+ * that one listener; only leaving does anything.
+ */
+class RelayScope {
+    signal;
+    #listener;
+    #outcome;
+    #stage;
+    constructor(signal) {
+        this.signal = signal;
+        if (signal.aborted)
+            this.#outcome = false;
+        else
+            signal.addEventListener('abort', this, { once: true });
+    }
+    settled(listener) {
+        if (this.#outcome === undefined)
+            this.#listener = listener;
+        else
+            listener(this.#outcome);
+    }
+    settle() { this.#end(true); }
+    fail() { this.#end(false); }
+    stage(controller) {
+        // A caller that left before the body came: its stage ends at once.
+        if (this.#outcome === false)
+            controller.error(this.signal.aborted ? this.signal.reason : new DOMException('The response was not delivered', 'AbortError'));
+        else
+            this.#stage = controller;
+    }
+    /** The caller left: a pipe waiting on the stage ends, and so does the response. Once it has ended, nothing. */
+    handleEvent() {
+        if (this.#outcome !== undefined)
+            return;
+        this.#stage?.error(this.signal.reason);
+        this.#end(false);
+    }
+    // Its listener stays on the caller's signal, which ends with the request:
+    // removing it would cost every delivered response a second native call.
+    #end(delivered) {
+        if (this.#outcome !== undefined)
+            return;
+        this.#outcome = delivered;
+        this.#stage = undefined;
+        const listener = this.#listener;
+        this.#listener = undefined;
+        listener?.(delivered);
+    }
+}
+export function responseScope(caller) {
+    const scope = new RelayScope(caller);
+    return { scope, owner: scope };
+}
+function settleWith(owner, source, last, watched = true) {
+    void source.pipeTo(last, watched ? { signal: owner.signal } : undefined).then(() => owner.settle(), () => owner.fail());
+}
+/** A JavaScript stage of the relay, which its owner errors if the caller leaves (RelayScope). */
+function ownedStage(owner) {
+    return new TransformStream({ start: (controller) => owner.stage(controller) });
+}
+/**
  * A process's answer body, each piece and its end let out as the rest of
  * its output is (ProcessOutput.releaseOutput): what it wrote while answering
  * is published before the piece after it, or its end, is seen.
  */
-function releasedBody(output, pid) {
+function releasedBody(output, pid, owner) {
     return new TransformStream({
+        start: (controller) => owner.stage(controller),
         transform: (chunk, controller) => output.releaseOutput(pid, () => controller.enqueue(chunk)),
         flush: () => output.releaseOutput(pid, () => { }),
     });
 }
-function decodeContentCoding(response, port, method, gated) {
+function decodeContentCoding(response, port, method, owner, gated) {
     const coding = response.headers.get('Content-Encoding')?.trim().toLowerCase();
     if (!coding || coding === 'identity' || response.body === null)
-        return relayRpcBody(response, method, gated);
+        return relayRpcBody(response, method, owner, gated);
     const format = DECODABLE_CONTENT_CODINGS.get(coding);
     if (!format) {
+        owner.fail();
         void response.body.cancel().catch(() => { });
         return new Response(JSON.stringify({
             error: `port proxy: target answered Content-Encoding "${coding}", which this hop cannot decode`,
@@ -118,12 +190,32 @@ function decodeContentCoding(response, port, method, gated) {
     headers.delete('Content-Encoding');
     // The decoded body has a different length; the Response re-derives it.
     headers.delete('Content-Length');
-    const body = gated === null ? response.body : response.body.pipeThrough(gated);
-    return new Response(body.pipeThrough(new DecompressionStream(format)), {
+    const decoder = new DecompressionStream(format);
+    settleWith(owner, gated === null ? response.body : response.body.pipeThrough(gated), decoder.writable);
+    return new Response(decoder.readable, {
         status: response.status,
         statusText: response.statusText,
         headers,
     });
+}
+/**
+ * `outer` (a Request's serialized URL) with its path replaced by `pathname`,
+ * its query kept and its fragment dropped. Read off the serialization, which
+ * is already normalized, rather than parsed again for every request; an
+ * authority with userinfo, or a path that is not one, goes through URL.
+ */
+export function innerRequestUrl(outer, pathname) {
+    const authority = outer.indexOf('://') + 3;
+    const path = outer.indexOf('/', authority);
+    if (authority < 3 || path < 0 || !pathname.startsWith('/') || outer.lastIndexOf('@', path) >= authority) {
+        const url = new URL(outer);
+        return new URL(pathname + url.search, url.origin).href;
+    }
+    const fragment = outer.indexOf('#', path);
+    const end = fragment < 0 ? outer.length : fragment;
+    const query = outer.indexOf('?', path);
+    // An empty query serializes as nothing (URL.search is '' for a bare '?').
+    return outer.slice(0, path) + pathname + (query < 0 || query > end || query + 1 === end ? '' : outer.slice(query, end));
 }
 export function createPortCapability() {
     const bytes = crypto.getRandomValues(new Uint8Array(12));
@@ -148,6 +240,8 @@ export class PortRegistry {
     portWaitersByPid = new Map();
     /** Where a process's answers leave (setOutput). */
     output = null;
+    clientSocketActivity = null;
+    clientSockets = new Set();
     /**
      * @param deliveredAcquire What the owner of the filesystem attaches to a
      *   request routed to process `pid`: the ACQUIRE answer the process applies
@@ -167,6 +261,66 @@ export class PortRegistry {
      */
     setOutput(output) {
         this.output = output;
+    }
+    /** Routed preview sockets, not the embedder's unrelated socket table. */
+    get clientSocketCount() { return this.clientSockets.size; }
+    setClientSocketActivity(note) { this.clientSocketActivity = note; }
+    clientSocket(response, target, pid) {
+        const pair = new WebSocketPair(), relay = pair[1];
+        target.binaryType = relay.binaryType = 'arraybuffer';
+        let open = true;
+        const closeAs = (socket, code, reason) => {
+            if (socket.readyState !== 1)
+                return;
+            if (code === 1005)
+                socket.close();
+            else if (code === 1006 || code === 1015)
+                socket.close(1011, 'socket ended abnormally');
+            else
+                socket.close(code, reason);
+        };
+        const end = (code, reason) => {
+            if (!open)
+                return;
+            open = false;
+            this.clientSockets.delete(client);
+            try {
+                this.clientSocketActivity?.();
+            }
+            finally {
+                try {
+                    closeAs(target, code, reason);
+                }
+                finally {
+                    closeAs(relay, code, reason);
+                }
+            }
+        };
+        const client = { pid, close: () => end(1001, 'process ended') };
+        target.addEventListener('message', (event) => { if (relay.readyState === 1)
+            relay.send(event.data); });
+        relay.addEventListener('message', (event) => { if (target.readyState === 1)
+            target.send(event.data); });
+        target.addEventListener('close', (event) => end(event.code, event.reason));
+        relay.addEventListener('close', (event) => end(event.code, event.reason));
+        target.addEventListener('error', () => end(1011, 'port target socket failed'));
+        relay.addEventListener('error', () => end(1011, 'client socket failed'));
+        this.clientSockets.add(client);
+        try {
+            target.accept();
+            relay.accept();
+            if (open)
+                this.clientSocketActivity?.();
+            return new Response(null, { status: 101, statusText: response.statusText, headers: response.headers, webSocket: pair[0] });
+        }
+        catch (error) {
+            try {
+                end(1011, 'socket upgrade failed');
+            }
+            finally {
+                throw error;
+            }
+        }
     }
     /**
      * Remember the available facet capabilities for a running process.
@@ -229,6 +383,9 @@ export class PortRegistry {
      * process ended, for a request to one of those ports to be told (ended).
      */
     unregisterByPid(pid, ending) {
+        for (const client of this.clientSockets)
+            if (client.pid === pid)
+                client.close();
         let count = 0;
         for (const [port, entry] of this.ports) {
             if (entry.pid === pid) {
@@ -362,12 +519,14 @@ export class PortRegistry {
                 headers: { 'Content-Type': 'application/json' },
             });
         }
+        // Settled once the client is done with the answer, or at once when nothing was relayed.
+        const { scope, owner } = responseScope(request.signal);
+        let relayed = false;
         try {
-            const outerUrl = new URL(request.url);
             // Preserve query; replace the pathname with the inner path so
             // the user's HTTP server sees its own URL shape. (Fragments
             // never make it onto the wire, so there's nothing to forward.)
-            const innerUrl = new URL(pathname + outerUrl.search, outerUrl.origin);
+            const innerUrl = innerRequestUrl(request.url, pathname);
             // Rebuild a Request targeting the inner URL. Body is forwarded as
             // a stream — we do NOT await `.text()`/`.arrayBuffer()`, which
             // would corrupt any binary payload and block large uploads.
@@ -411,7 +570,7 @@ export class PortRegistry {
             };
             if (hasBody)
                 init.duplex = 'half';
-            const forwarded = new Request(innerUrl.toString(), init);
+            const forwarded = new Request(innerUrl, init);
             // HTTP crosses Workers RPC as Request/Response values, streamed with
             // flow control and never materialised. A WebSocket upgrade cannot: its
             // 101 owns a live socket, so it takes the fetch-semantic entrypoint,
@@ -423,7 +582,7 @@ export class PortRegistry {
             if (!handler) {
                 return new Response('Port target does not expose a WebSocket fetch route', { status: 501 });
             }
-            const response = await handler(forwarded);
+            const response = await handler(forwarded, scope);
             const output = this.output;
             // What it wrote before answering is published before anyone sees the
             // answer; a socket the answer hands over carries what nothing sees.
@@ -444,6 +603,8 @@ export class PortRegistry {
                     headers: { 'Content-Type': 'application/json' },
                 });
             }
+            if (response.webSocket && this.clientSocketActivity)
+                return this.clientSocket(response, response.webSocket, entry.pid);
             // A navigation's answer is the document the browser will isolate (or
             // not) by these headers; a redirect is not a document.
             if (request.headers.get('Sec-Fetch-Mode') === 'navigate' && (response.status < 300 || response.status > 399)) {
@@ -454,7 +615,10 @@ export class PortRegistry {
             // undone. We do NOT inject Access-Control-Allow-Origin — a port proxy
             // forwards whatever CORS policy the user's HTTP server chose (audit C3
             // discourages gratuitous wildcards on non-static routes).
-            return decodeContentCoding(response, port, request.method, output === null || response.body === null ? null : releasedBody(output, entry.pid));
+            const gate = output === null || response.body === null ? null : releasedBody(output, entry.pid, owner);
+            const answer = decodeContentCoding(response, port, request.method, owner, gate);
+            relayed = true;
+            return answer;
         }
         catch (error) {
             // Server-side triage — users see only the 502 body, operators
@@ -464,6 +628,11 @@ export class PortRegistry {
                 status: 502,
                 headers: { 'Content-Type': 'application/json' },
             });
+        }
+        finally {
+            // Nothing reached the client: to its handler, that caller left.
+            if (!relayed)
+                owner.fail();
         }
     }
     get stats() {
@@ -510,7 +679,9 @@ function routeableFacetTarget(value) {
     // A `fetch` target already has fetch semantics, so it serves both.
     const fetchMethod = Reflect.get(value, 'fetch');
     if (typeof fetchMethod === 'function') {
-        const fetch = fetchMethod.bind(value);
+        const bound = fetchMethod.bind(value);
+        // Its second parameter is a RequestInit, never a scope.
+        const fetch = (request) => bound(request);
         return { handleHttpRequest: fetch, handleWebSocketRequest: fetch };
     }
     const httpMethod = Reflect.get(value, 'handleHttpRequest');
