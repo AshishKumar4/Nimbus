@@ -18,21 +18,16 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
-import { FACET_RESIDENT_STORE_SOURCE } from '../../packages/worker/src/vfs/facet-resident-store.ts';
+import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
 
 const dec = new TextDecoder();
 
 function loadStore() {
-  const factory = new Function(
-    FACET_RESIDENT_STORE_SOURCE
-      + '\nreturn { __residentBind, __residentAdoptModuleBundle, __residentSynchronizeFromSupervisor,'
-      + ' __residentKeys, __residentGet, __residentProvenance, __residentSetPlan };',
-  );
-  const store = factory();
-  store.__residentBind({ storage: { sql: createSqliteVfsTestHarness().sql } });
-  store.__residentSetPlan(Array.from({ length: 8 }, (_, i) => `app/f${i}.txt`));
+  const store = createResidentStore();
+  store.bind({ storage: { sql: createSqliteVfsTestHarness().sql } });
+  store.sync.setPlan(Array.from({ length: 8 }, (_, i) => `app/f${i}.txt`));
   return store;
 }
 
@@ -58,9 +53,9 @@ async function listedRevision(path) {
 }
 
 function assertNoStaleByte(store, label) {
-  for (const path of store.__residentKeys()) {
+  for (const path of store.cells.keys()) {
     assert.equal(
-      asText(store.__residentGet(path)),
+      asText(store.cells.get(path)),
       dec.decode(kfs.readFile(path)),
       `${label}: ${path} is stale — the store served bytes the authority has replaced`,
     );
@@ -73,11 +68,11 @@ const TARGET = 'app/f3.txt';
 
 // ── Boot: the store holds every file, dated at its listed revision ────────
 const store = loadStore();
-store.__residentAdoptModuleBundle({}, { epoch: rawVfs.epoch, rev: rawVfs.revision() });
-const booted = await store.__residentSynchronizeFromSupervisor(supervisor);
+store.sync.adoptModuleBundle({}, { epoch: rawVfs.epoch, rev: rawVfs.revision() });
+const booted = await store.sync.synchronize(supervisor);
 assert.equal(booted.filled, 8);
-const heldAt = store.__residentProvenance(TARGET);
-assert.equal(asText(store.__residentGet(TARGET)), 'v1-3');
+const heldAt = store.cells.provenance(TARGET);
+assert.equal(asText(store.cells.get(TARGET)), 'v1-3');
 
 // ── A peer rewrites the target; churn then raises the floor past it ──────
 kfs.writeFile(TARGET, 'v2-peer');
@@ -98,11 +93,11 @@ const listedAt = await listedRevision(TARGET);
 assert.ok(listedAt >= writtenAt, `a path under the floor listed at ${listedAt}, below its write at ${writtenAt}`);
 
 // ── The reconcile: the stale row goes, the peer's bytes come back ─────────
-const repaired = await store.__residentSynchronizeFromSupervisor(supervisor);
+const repaired = await store.sync.synchronize(supervisor);
 assert.equal(repaired.reconciled, true, 'a same-epoch reconcile compares revisions');
-assert.equal(asText(store.__residentGet(TARGET)), 'v2-peer', 'a floor-reported revision vouched for a stale row');
+assert.equal(asText(store.cells.get(TARGET)), 'v2-peer', 'a floor-reported revision vouched for a stale row');
 assertNoStaleByte(store, 'after the floor rose');
-assert.ok(store.__residentProvenance(TARGET) >= writtenAt);
+assert.ok(store.cells.provenance(TARGET) >= writtenAt);
 
 // Untouched rows are kept: a file lists at its row's generation, the
 // revision it was dated at, whatever the floor. Only the rewritten one goes, and
@@ -114,7 +109,7 @@ assert.ok(churn > 0);
 
 // A second reconcile with nothing changed keeps every row: the floor did not
 // move, and each row is dated at the revision it was listed at.
-const settled = await store.__residentSynchronizeFromSupervisor(supervisor);
+const settled = await store.sync.synchronize(supervisor);
 assert.equal(settled.dropped, 0);
 assert.equal(settled.filled, 0);
 assertNoStaleByte(store, 'at rest');

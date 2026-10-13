@@ -38,6 +38,7 @@ import { requireNetwork } from '../_shared/workspace-network.js';
 import { isEgressGuestEvent, RealmEgress } from './realm-egress.js';
 import { fromRealmError, isRealmAnswer, startRealm } from './realm.js';
 import { FILESYSTEM_RPC_METHODS, vfsSupervisor } from './vfs-supervisor.js';
+import { createChildProcessSupervisor } from './child-process-manager.js';
 const record = (value) => typeof value === 'object' && value !== null;
 const strings = (value) => Array.isArray(value) && value.every((entry) => typeof entry === 'string');
 export function isFacetPayload(value) {
@@ -49,7 +50,8 @@ export function isFacetPayload(value) {
         return false;
     const supervisor = value.supervisor;
     return supervisor === undefined
-        || (record(supervisor) && strings(supervisor.methods) && (supervisor.synchronous === null || strings(supervisor.synchronous)));
+        || (record(supervisor) && strings(supervisor.methods) && (supervisor.synchronous === null || strings(supervisor.synchronous))
+            && (supervisor.asynchronous === undefined || strings(supervisor.asynchronous)));
 }
 export function isFacetSubmit(value) {
     return record(value) && value.type === 'submit' && Number.isSafeInteger(value.id) && typeof value.source === 'string'
@@ -156,6 +158,7 @@ class RealmFacet {
     over = null;
     supervisor;
     supervisorMethods;
+    asynchronousMethods = [];
     synchronous;
     isolation = facetIsolation();
     constructor(spec, network) {
@@ -166,15 +169,25 @@ class RealmFacet {
         const processes = spec.syscalls?.processes;
         if (this.supervisor && processes && spec.syscalls) {
             const pid = spec.syscalls.pid;
+            const children = spec.syscalls.children;
             Object.assign(this.supervisor, {
-                stdout: (bytes) => processes.appendOutputBytes(pid, 'stdout', bytes),
-                stderr: (bytes) => processes.appendOutputBytes(pid, 'stderr', bytes),
+                stdout: (bytes) => children?.routeOutput(pid, 1, bytes) ?? processes.appendOutputBytes(pid, 'stdout', bytes),
+                stderr: (bytes) => children?.routeOutput(pid, 2, bytes) ?? processes.appendOutputBytes(pid, 'stderr', bytes),
                 cpReadStdin: async (_child, waitMs, _acquire, maxBytes) => {
                     const packet = await processes.readInput(pid, waitMs, maxBytes);
                     return { ...packet, data: typeof packet.data === 'string' ? new TextEncoder().encode(packet.data) : packet.data };
                 },
             });
             this.supervisorMethods = [...SUPERVISOR_METHODS, 'stdout', 'stderr', 'cpReadStdin'];
+            if (children) {
+                const childCalls = createChildProcessSupervisor(children, pid);
+                Object.assign(this.supervisor, childCalls);
+                this.supervisorMethods = [...SUPERVISOR_METHODS, 'stdout', 'stderr', ...Object.keys(childCalls)];
+                // The WASI process layer follows children in background pumps. A
+                // synchronous long-poll would block the parent from writing stdin.
+                // Its own fd 0 still has to answer on a non-parking wasm stack.
+                this.asynchronousMethods = Object.keys(childCalls).filter(method => method !== 'cpReadStdin');
+            }
         }
         this.synchronous = spec.syscalls?.vfs.synchronous;
     }
@@ -193,7 +206,11 @@ class RealmFacet {
             tag: this.spec.tag,
             parking: engineParks(),
             preamble: this.spec.preamble,
-            supervisor: this.supervisor ? { methods: this.supervisorMethods, synchronous: this.synchronous ? SYNCHRONOUS_METHODS : null } : undefined,
+            supervisor: this.supervisor ? {
+                methods: this.supervisorMethods,
+                synchronous: this.synchronous ? SYNCHRONOUS_METHODS : null,
+                asynchronous: this.asynchronousMethods,
+            } : undefined,
             egress: this.network.egress !== undefined,
         };
         let post = () => false;

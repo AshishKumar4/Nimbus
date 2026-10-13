@@ -1273,7 +1273,7 @@ async function resetInMemorySessionState(self) {
     self.shellProcessPid = null;
     self.terminal = null;
     self.facetManagerComposed = null;
-    self.facetProcessManager = null;
+    self.childProcessManager = null;
     self.esbuildService = null;
     self.viteDevServer = null;
     // The installer's pre-bundler and the dev server's on-demand path share

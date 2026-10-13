@@ -995,6 +995,7 @@ export declare class SqliteVFS {
      * the mode said one thing and the filesystem did another.
      */
     private checkStickyParentMutation;
+    private checkStickyParent;
     /**
      * Shared resolver for the boolean probes (exists/isDirectory/isFile/
      * isSymlink). Resolution-structure failures — a missing or non-directory
@@ -1620,7 +1621,9 @@ export declare class SqliteVFS {
     /**
      * Copy a file by reference: one inode row naming the source's chunk or
      * manifest. No byte is read or written; a later write to either side
-     * copies on write (rewriteFile's sharing probes).
+     * copies on write (rewriteFile's sharing probes). A new file has the
+     * source's permission bits less the copier's umask, as cp(1) makes it; a
+     * file there keeps its own mode.
      */
     private copyFile;
     /**
@@ -1993,6 +1996,10 @@ export declare class SqliteVFS {
      */
     private createdPath;
     private directoryPlacement;
+    /** Legacy rows under a link remain data at their stored key, not at the link's destination. */
+    private deletionKey;
+    private storedParents;
+    private checkStoredDeletion;
     private normalizeBatchInode;
     private authorizeBatch;
     private authorizeBatchNow;

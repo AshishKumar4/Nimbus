@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
  * wasi-resident-held-store — a WASI process that holds a subtree, over the
- * real resident store (facet-resident-store.ts) rather than a test double:
+ * real resident store (vfs/resident/index.ts) rather than a test double:
  * what it decided is what it reads, lists and stats there.
  *
  * Red before (live, wasi-fs-load, python):
@@ -15,7 +15,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { residentFilesystem } from '../../packages/core/src/runtime/wasi/resident-filesystem.ts';
-import { FACET_RESIDENT_STORE_SOURCE } from '../../packages/worker/src/vfs/facet-resident-store.ts';
+import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { WASI_RESIDENT_STORE_BYTES } from '../../packages/platform/src/limits.ts';
 
@@ -45,11 +45,8 @@ async function sessionWith(seed = {}) {
 /** A process of `session` (its own pid) over its own real store, holding what it writes. `gate`: each wave waits for it. */
 async function processOf(session, gate = () => null) {
   const authority = session.files.bind({ pid: session.next++, cred: USER });
-  const storeSource = new Function(
-    FACET_RESIDENT_STORE_SOURCE
-      + '\nreturn { __residentBindInMemory, __residentSetStorage, __residentBootLazy, __residentNamespaceView };',
-  )();
-  storeSource.__residentBindInMemory(WASI_RESIDENT_STORE_BYTES);
+  const storeSource = createResidentStore();
+  storeSource.bindInMemory(WASI_RESIDENT_STORE_BYTES);
   const supervisor = {
     fsAcquire: (...args) => authority.acquire(...args),
     fsList: (...args) => authority.list(...args),
@@ -67,10 +64,10 @@ async function processOf(session, gate = () => null) {
       return out;
     },
   };
-  storeSource.__residentSetStorage(undefined, supervisor);
-  assert.equal(await storeSource.__residentBootLazy(supervisor), true);
+  storeSource.admission.setStorage(undefined, supervisor);
+  assert.equal(await storeSource.lazy.bootLazy(supervisor), true);
   const device = (await authority.stat('/')).dev;
-  const view = storeSource.__residentNamespaceView(supervisor, device, USER);
+  const view = storeSource.lazy.namespaceView(supervisor, device, USER);
   const port = {
     openWriter: async () => null,
     writeBatchStream: async (stream, _fence, owner) => {

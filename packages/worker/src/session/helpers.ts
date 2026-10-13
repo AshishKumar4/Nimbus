@@ -312,7 +312,7 @@ export async function detectUnsupportedWranglerConfig(vfs: Pick<VFS, 'stat' | 'r
 
 /**
  * W8: classify a child_process spawn target by execution kind. Used by
- * the FacetProcessManager to decide between inline pure-builtin vs
+ * the worker's child runner to decide between inline pure-builtin vs
  *
  *   pure-builtin  — sync, no facet recursion. echo, cat, true, false,
  *                   ls, cd, env, sleep, mkdir, rm, … (all the unix

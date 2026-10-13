@@ -80,7 +80,7 @@ function world(grant) {
   const factory = new Function(
     '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
     '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode()
-      + '\n;__residentSetStorage({ facet: "proc-slot-0", grant: 0 }, __supervisor);'
+      + '\n;__resident.admission.setStorage({ facet: "proc-slot-0", grant: 0 }, __supervisor);'
       + '\n;return { fs: __fsMod, hydrated: __nimbusHydrated, read: __readFileOr, resolveFrom: __resolveFrom, quota: (s) => __nimbusPrefetchQuota(s) };',
   );
   declareNamespace({ metadata, manifest });

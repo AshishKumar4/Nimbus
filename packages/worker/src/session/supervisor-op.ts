@@ -51,7 +51,7 @@ export interface SessionSupervisorHost {
    * spawned. Absent, the session serves no delivered mutation.
    */
   readonly supervisorDeliveries?: SupervisorDeliveries;
-  readonly facetManager?: Pick<FacetManager, 'journalCall'> | null;
+  readonly facetManager?: Pick<FacetManager, 'replay'> | null;
   waveTurn?(): Promise<void>;
   _rpcStdout(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
   _rpcStderr(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
@@ -120,7 +120,7 @@ export function buildSessionSupervisorOps(
     // Joining is part of the canonical handler, BEFORE this logical-answer
     // seam. A transport hedge must not consume another journal occurrence.
     observe: (envelope, dispatch) => host.facetManager
-      ? host.facetManager.journalCall(envelope.op, envelope.args, envelope.pid, envelope.run, dispatch)
+      ? host.facetManager.replay.call(envelope.op, envelope.args, envelope.pid, envelope.run, dispatch)
       : dispatch(),
   });
   return { dispatch, bridge: store.bridge, rewind: async (pid) => {

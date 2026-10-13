@@ -23,6 +23,7 @@ import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { FacetManager } from '../facets/manager.js';
 import { type ComposedFacetManager } from '../facets/compose.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import type { ChildProcessManager } from '@nimbus-sh/core/runtime/child-process-manager.js';
 import type {
   SessionRouterRpc, SessionReadyOptions, SessionExecOptions, SessionRunCodeOptions,
   SessionDestroyOptions, SessionDestroyResult, SessionFileStat, SessionDirectoryEntry, SessionRuntimeInstallOptions,
@@ -40,6 +41,7 @@ import type { HmrEvent } from '../facets/real-vite-hmr.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
 import type { NpmInstaller } from '../npm/installer.js';
+import type { PackumentReadOptions } from '../npm/r2-cache.js';
 import type { DocumentPolicy } from '@nimbus-sh/core/runtime/document-policy.js';
 import type { AppDoor } from './routes.js';
 // S10: oom-discriminator helpers (recordFailure, getFailures,
@@ -299,6 +301,7 @@ type SessionEnv = runtimeServices.HostedRuntimeEnv & SessionAiHost['env'];
 
 export class NimbusSession extends CloudflareDurableObject<SessionEnv> implements SessionRouterRpc {
   #runtimeServices: ReturnType<typeof runtimeServices.bindRuntimeServices>;
+  get childProcessHost() { return this.#runtimeServices.childProcessHost; }
   // this.ctx and this.env are provided by the DurableObject base class
   runtimeWorkspace: NimbusWorkspace | null = null;
   private runtimeReady: Promise<void> | null = null;
@@ -343,7 +346,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
     return this.facetManagerComposed?.manager ?? null;
   }
   /** W8: child_process broker. Lazy — only constructed when first cp* RPC arrives. */
-  facetProcessManager: any = null;
+  childProcessManager: ChildProcessManager | null = null;
   /**
    * Supervisor-owned outbound WebSockets. A facet's socket is terminated here
    * so an inbound frame reaches it as a supervisor reply — the only shape a
@@ -932,7 +935,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   async _rpcStdinPrepared(pid?: number, run?: string): Promise<void> { return _rpc._rpcStdinPrepared(this as any, pid, run); }
   async _rpcGetCachedTarball(integrity: string, pid?: number, run?: string) { return _rpc._rpcGetCachedTarball(this as any, integrity, pid, run); }
   async _rpcPutCachedTarball(integrity: string, bytes: Uint8Array | ArrayBuffer) { return _rpc._rpcPutCachedTarball(this as any, integrity, bytes); }
-  async _rpcGetPackument(name: string, options?: { retries?: number; timeoutMs?: number; registry?: string }, pid?: number, run?: string) { return _rpc._rpcGetPackument(this as any, name, options, pid, run); }
+  async _rpcGetPackument(name: string, options?: PackumentReadOptions, pid?: number, run?: string) { return _rpc._rpcGetPackument(this as any, name, options, pid, run); }
   async _rpcCacheResult(ticket: string, result: { value?: unknown; failure?: unknown; failed?: boolean }, pid?: number, run?: string) { return _rpc._rpcCacheResult(this as any, ticket, result, pid, run); }
   async _rpcStdinFileRead(path: string, offset: number, length: number, pid?: number): Promise<{ data: Uint8Array; size: number }> {
     return _rpc._rpcStdinFileRead(this as any, path, offset, length, pid);
@@ -1246,11 +1249,9 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   _ensureWebSocketRelay(): WebSocketRelay { return this.#runtimeServices._ensureWebSocketRelay(); }
 
   /**
-   * W8: lazily construct the FacetProcessManager when the first cp* RPC
-   * arrives. Wired with adapters that bridge the Nimbus shell command
-   * registry to the FacetProcessManager's CommandRegistryLike contract.
+   * Lazily bind the core child broker to this session's runners and cleanup.
    */
-  _ensureFacetProcessManager() { return this.#runtimeServices._ensureFacetProcessManager(); }
+  _ensureChildProcessManager() { return this.#runtimeServices._ensureChildProcessManager(); }
 
   /**
    * Set the shell command registry for the W8 broker to dispatch

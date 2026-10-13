@@ -7,6 +7,7 @@ import { WASI_RESIDENT_STORE_BYTES } from '@nimbus-sh/platform/limits.js';
 import { processHost } from '@nimbus-sh/core/runtime/wasi/processes.js';
 import { wasiOutputRelay } from '@nimbus-sh/core/runtime/wasi/stdio.js';
 import { outputControlReader } from '@nimbus-sh/core/runtime/wasi/output-control.js';
+import { createResidentStore } from '../../vfs/resident/index.js';
 // errno constants
 const __WASI_ESUCCESS = 0;
 const __WASI_EAGAIN = 6;
@@ -156,16 +157,18 @@ let __wasiResident = null;
 function __wasiStartResident(sup, cred) {
     const supervisor = answeringSupervisor(sup);
     const authority = supervisorFilesystem(sup);
-    const store = __wasiResidentStore;
-    store.__residentBindInMemory(WASI_RESIDENT_STORE_BYTES);
-    store.__residentSetStorage(undefined, supervisor);
+    // The store a node process reads its synchronous calls from, here listed on
+    // demand: this process's own (vfs/resident).
+    const store = createResidentStore();
+    store.bindInMemory(WASI_RESIDENT_STORE_BYTES);
+    store.admission.setStorage(undefined, supervisor);
     let view = null;
     const ready = (async () => {
         // The session's own filesystem is the one the store answers for: its root reports its device.
         const root = await authority.stat('/');
-        if (root === null || !(await store.__residentBootLazy(supervisor)))
+        if (root === null || !(await store.lazy.bootLazy(supervisor)))
             return null;
-        view = store.__residentNamespaceView(supervisor, root.dev, cred);
+        view = store.lazy.namespaceView(supervisor, root.dev, cred);
         return view;
     })().catch(() => { view = null; return null; });
     const booting = {
@@ -755,7 +758,10 @@ export function __wasiMakeImports(opts) {
     // pipe descriptors they make, answered ahead of every other kind (below,
     // after the watchdog) and polled with the rest (poll_oneoff). A wait on a
     // child or a pipe is bounded there (EINTR at PROCESS_PARK_MS), so the guest
-    // retries instead of being handed the watchdog's EAGAIN.
+    // retries instead of being handed the watchdog's EAGAIN. Its imports are
+    // Suspending where the guest parks; elsewhere one that has to wait is
+    // refused by name (processes.ts mustWait).
+    const procParks = opts.parking !== 'none' && typeof WebAssembly !== 'undefined' && typeof WebAssembly.Suspending === 'function';
     const proc = processHost({
         fds: fdTable,
         input: opts.stdinRead,
@@ -769,6 +775,7 @@ export function __wasiMakeImports(opts) {
         inbound: () => { __wasiResident?.fs.inbound(); },
         news: __wasiChildNews(),
         cred: () => __wasiFS.cred ?? null,
+        parks: procParks,
     });
     const imports = {
         // ── args / env ──
@@ -1908,7 +1915,7 @@ export function __wasiMakeImports(opts) {
         for (const name of Object.keys(fsTable))
             fsTable[name] = new WebAssembly.Suspending(fsTable[name]);
     }
-    if (opts.parking !== 'none' && typeof WebAssembly !== 'undefined' && typeof WebAssembly.Suspending === 'function') {
+    if (procParks) {
         for (const name of Object.keys(procImport)) {
             procImport[name] = new WebAssembly.Suspending(procImport[name]);
         }

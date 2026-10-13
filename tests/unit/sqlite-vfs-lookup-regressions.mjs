@@ -123,5 +123,18 @@ check('linked prefix cache preserves identity, hops and permission', ({ root, us
   assert.throws(() => user.readFileString('home/user/pkg/f'), { code: 'EACCES' });
 });
 
+check('creation cannot publish a missing-component search proof', ({ user }) => {
+  user.mkdir('home/user/physical/d');
+  user.symlink('physical', 'home/user/l');
+  const path = 'home/user/l/missing/../d';
+  user.mkdir(path, { recursive: true });
+  assert.equal(user.isDirectory('home/user/physical/d'), true);
+  assert.equal(user.exists('home/user/physical/missing'), false);
+  for (const spelling of [path, 'home/user/l/missing/.././d', 'home/user/l/missing/../d/']) {
+    assert.throws(() => user.stat(spelling), { code: 'ENOENT' }, `${spelling} must search the missing component`);
+  }
+  assert.equal(user.stat('home/user/l/d').type, 'directory', 'an existing prefix is still usable');
+});
+
 assert.deepEqual(failures, [], failures.join('\n'));
 console.log('sqlite-vfs-lookup-regressions: ok');

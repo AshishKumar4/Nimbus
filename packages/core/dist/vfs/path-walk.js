@@ -1,4 +1,11 @@
 import { andThen } from './vfs.js';
+/** Mutations name an entry first; a final slash constrains its type without following it. */
+export function entryVfsPath(input) {
+    let end = input.length;
+    while (end > 0 && input.charCodeAt(end - 1) === 47)
+        end--;
+    return { path: end === 0 ? '/' : input.slice(0, end), directory: end < input.length };
+}
 export function walkVfsPath(input, lookup, loop, options) {
     const walk = (components, hops, resolved = []) => {
         const step = (index) => {

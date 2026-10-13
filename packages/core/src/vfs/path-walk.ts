@@ -10,6 +10,13 @@ export interface VfsWalkOptions {
   readonly target?: (target: string) => string;
 }
 
+/** Mutations name an entry first; a final slash constrains its type without following it. */
+export function entryVfsPath(input: string): { path: string; directory: boolean } {
+  let end = input.length;
+  while (end > 0 && input.charCodeAt(end - 1) === 47) end--;
+  return { path: end === 0 ? '/' : input.slice(0, end), directory: end < input.length };
+}
+
 /** Physical component order: a link expands before a following `..`; the root cannot be left. */
 export function walkVfsPath(input: string, lookup: SyncLookup, loop: () => never, options?: VfsWalkOptions): string;
 export function walkVfsPath(input: string, lookup: Lookup, loop: () => never, options?: VfsWalkOptions): Awaitable<string>;

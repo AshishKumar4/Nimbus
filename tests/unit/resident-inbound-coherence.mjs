@@ -63,7 +63,7 @@ async function boot({ attached = false, children = null } = {}) {
   authority.kfs.mkdir('home/user/app', { recursive: true, mode: 0o755 });
   authority.kfs.writeFile(F, 'v1');
   const { supervisor, log } = facetSupervisor(authority);
-  if (children) authority.host._ensureFacetProcessManager = () => children(authority);
+  if (children) authority.host._ensureChildProcessManager = () => children(authority);
   if (attached) authority.host.processes.openInput(log.pid);
   const { proc } = await launchResident({
     authority,

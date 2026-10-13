@@ -59,7 +59,8 @@ export function createGitFs(backend, packs) {
             }),
             writeFile(filepath, data, options) {
                 const bytes = typeof data === 'string' || data instanceof Uint8Array ? data : new Uint8Array(data);
-                return backend.writeFile(normalizeVfsPath(filepath), bytes, (Number(options?.mode) & 0o111) !== 0);
+                const mode = Number(options?.mode);
+                return backend.writeFile(normalizeVfsPath(filepath), bytes, Number.isInteger(mode) ? mode & 0o7777 : undefined);
             },
             unlink: (filepath) => backend.unlink(normalizeVfsPath(filepath), filepath),
             readdir: (filepath) => backend.readdir(normalizeVfsPath(filepath), filepath),

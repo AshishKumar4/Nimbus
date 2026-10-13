@@ -49,6 +49,9 @@ import { ProcessView } from '../runtime/process-files.js';
 import { WorkspaceFs } from './workspace-fs.js';
 import { PID_GEN_STRIDE, type ProcessEntry } from '../runtime/process-table.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
+import { ChildProcessManager, type ChildProcessHost } from '../runtime/child-process-manager.js';
+import { resolveWorkspaceChild } from './child-process-runner.js';
+import { exitCodeForSignal } from '../substrate/lifo/shell/signals.js';
 import type { FacetHost } from '../runtime/facet-host.js';
 import { runtimeEntrypoints, type RunnerFactory } from '../runtime/installed-runtimes.js';
 import { RuntimeManager } from '../runtime/runtime-manager.js';
@@ -177,6 +180,7 @@ export interface NimbusWorkspaceOptions {
   readonly ctxExports?: CtxExports;
   /** The process table that allocated supervisor-binding pids. */
   readonly processes?: SessionProcessSupervisor;
+  readonly childProcesses?: ChildProcessHost;
   readonly processOutput?: (stream: 'stdout' | 'stderr', pid: number, data: Uint8Array) => void | Promise<void>;
   readonly filesystemNamespace?: string;
   /**
@@ -314,6 +318,7 @@ export class NimbusWorkspace {
     env: Record<string, string>,
     private readonly sql: SqlDatabase,
     processes: SessionProcessSupervisor,
+    readonly children: ChildProcessManager,
     runtimes: RuntimeManager,
     shellProcessPid: number,
     private readonly supervisorOps: (envelope: SupervisorOpEnvelope) => Promise<unknown>,
@@ -380,6 +385,25 @@ export class NimbusWorkspace {
     filesystem.holdOutput(processes);
 
     const env = { ...defaultEnv(home), ...options.env };
+    let workspace: NimbusWorkspace | null = null;
+    const children = new ChildProcessManager({
+      processes,
+      resolve: (request, origin) => {
+        if (!workspace) throw new Error('Nimbus: workspace is not initialized');
+        return resolveWorkspaceChild(workspace, request, origin);
+      },
+      terminate: (pid, signal) => processes.kill(pid, exitCodeForSignal(signal)),
+    });
+    if (options.childProcesses) children.bindHost(options.childProcesses);
+    const host = options.facets;
+    const facets: FacetHost | undefined = host ? {
+      parking: host.parking,
+      memoryBudgetBytes: host.memoryBudgetBytes,
+      open: spec => host.open({
+        ...spec,
+        syscalls: spec.syscalls ? { ...spec.syscalls, children } : undefined,
+      }),
+    } : undefined;
 
     // The identity every shell command runs as. A host that supplied one keeps
     // it verbatim — its pid is already alive in ITS process table. Otherwise
@@ -441,9 +465,9 @@ export class NimbusWorkspace {
           : suppliedRuntimeSource(options.runtimes ?? []),
       });
 
-      if (options.facets) {
+      if (facets) {
         registerWasmRuntimes({
-          facets: options.facets,
+          facets,
           vfs,
           filesystem,
           registry,
@@ -531,11 +555,12 @@ export class NimbusWorkspace {
         output: options.processOutput,
         extend: options.supervisorOps,
       });
-      return new NimbusWorkspace(
+      workspace = new NimbusWorkspace(
         vfs, kernel, shell, registry, env, options.sql,
-        processes, runtimes, shellProcessPid,
+        processes, children, runtimes, shellProcessPid,
         supervisorOps, filesystem, runtimeLease, identity,
       );
+      return workspace;
     } catch (error) {
       await runtimeLease.dispose();
       throw error;

@@ -4,7 +4,7 @@
 // takes that chunk off the queue, so the next read does not see it again;
 // a reader waiting when the child exits is told stdin ended.
 import assert from 'node:assert/strict';
-import { FacetProcessManager } from '../../packages/worker/src/facets/process.ts';
+import { ChildProcessManager } from '../../packages/core/src/runtime/child-process-manager.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 
 const encoder = new TextEncoder();
@@ -12,16 +12,14 @@ const decoder = new TextDecoder();
 const processes = new SessionProcessSupervisor();
 const parent = processes.spawn('node', ['parent.js'], '/home/user');
 const exits = new Map();
-const manager = new FacetProcessManager({
+const manager = new ChildProcessManager({
   processes,
-  vfsForProcess() { throw new Error('no script file is read'); },
-  commandRegistry: { async resolve() { return { kind: 'facet-direct' }; } },
-  facetMgr: {
-    async execStream(payload) {
-      const { processPid } = JSON.parse(payload);
+  terminate(pid) { return processes.kill(pid, 143); },
+  async resolve() { return {
+    async run({ pid: processPid }) {
       return await new Promise((resolve) => exits.set(processPid, resolve));
     },
-  },
+  }; },
 });
 const spawn = async () => (await manager.spawn({ parentPid: parent.pid, command: 'node', args: ['reader.js'], cwd: '/home/user', env: {}, stdio: ['pipe', 'pipe', 'pipe'] })).childPid;
 const settle = () => new Promise((resolve) => setTimeout(resolve, 20));

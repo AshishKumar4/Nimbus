@@ -15,7 +15,7 @@
 // it was empty, wrote nothing, and exited 0; create-next-app died on EAGAIN
 // for a config file under $HOME/.config that had never existed.
 //
-// The namespace (vfs/facet-resident-store.ts, CUTOVER #13) is listed before
+// The namespace (vfs/resident/index.ts, CUTOVER #13) is listed before
 // user code runs, so there is no unmapped world. This pins the invariant from
 // the first call: every answer is the authority's, sync and async alike, for
 // a tree outside the working directory, under $HOME/.config, and for a path

@@ -621,7 +621,14 @@ export class SqliteRuntimeFsBridge {
                     this.unlink(path);
                     return;
                 }
-                const report = this.removeRecursive(path, options.keepVanishedAncestors === true);
+                const located = this.locateMutation(path, false, options.report ? 'rm' : 'remove');
+                if (!options.report && !located.mount) {
+                    this.vfs.removeRecursive(located.path);
+                    return;
+                }
+                const report = located.mount ? located.mount.removeRecursive(located.path, { keepVanishedAncestors: options.keepVanishedAncestors })
+                    : this.namespace !== undefined ? this.namespace.sync.removeRecursive('/' + located.path, { keepVanishedAncestors: options.keepVanishedAncestors })
+                        : this.removeStored(located.path, path);
                 if (options.report)
                     return report;
                 const failed = report.failures[0];
@@ -634,16 +641,9 @@ export class SqliteRuntimeFsBridge {
             }
         });
     }
-    removeRecursive(path, keepVanishedAncestors) {
-        return called({ syscall: 'rm', path }, () => {
-            const located = this.locateMutation(path, false, 'rm');
-            if (located.mount)
-                return located.mount.removeRecursive(located.path, { keepVanishedAncestors });
-            if (this.namespace !== undefined)
-                return this.namespace.sync.removeRecursive('/' + located.path, { keepVanishedAncestors });
-            this.vfs.removeRecursive(located.path);
-            return { removed: [typeof path === 'string' ? path : path.path], kept: [], failures: [] };
-        });
+    removeStored(key, path) {
+        this.vfs.removeRecursive(key);
+        return { removed: [typeof path === 'string' ? path : path.path], kept: [], failures: [] };
     }
     copyFile(from, to) {
         const call = { syscall: 'copyfile', path: from, dest: to };

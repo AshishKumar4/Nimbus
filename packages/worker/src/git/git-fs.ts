@@ -41,8 +41,8 @@ export interface GitFsBackend {
   stat(path: string, follow: boolean): Promise<GitFsStat | null>;
   /** `path`'s bytes; null when there is no file. */
   readFile(path: string): Promise<Uint8Array | null>;
-  /** `executable` when the caller's mode has an execute bit. */
-  writeFile(path: string, data: Uint8Array | string, executable: boolean): Promise<void>;
+  /** `mode`: the permission bits the caller asked for, when it did (a checkout's file, a loose object). */
+  writeFile(path: string, data: Uint8Array | string, mode: number | undefined): Promise<void>;
   unlink(path: string, filepath: string): Promise<void>;
   readdir(path: string, filepath: string): Promise<string[]>;
   mkdir(path: string): Promise<void>;
@@ -100,7 +100,8 @@ export function createGitFs<P>(backend: GitFsBackend, packs: P) {
       }),
       writeFile(filepath: string, data: Uint8Array | ArrayBuffer | string, options?: { mode?: unknown }): Promise<void> {
         const bytes = typeof data === 'string' || data instanceof Uint8Array ? data : new Uint8Array(data);
-        return backend.writeFile(normalizeVfsPath(filepath), bytes, (Number(options?.mode) & 0o111) !== 0);
+        const mode = Number(options?.mode);
+        return backend.writeFile(normalizeVfsPath(filepath), bytes, Number.isInteger(mode) ? mode & 0o7777 : undefined);
       },
       unlink: (filepath: string): Promise<void> => backend.unlink(normalizeVfsPath(filepath), filepath),
       readdir: (filepath: string): Promise<string[]> => backend.readdir(normalizeVfsPath(filepath), filepath),

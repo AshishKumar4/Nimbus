@@ -1,6 +1,6 @@
 /-
-  Nimbus.Coherence.Namespace — NodeNoMirror's namespace manifest (`__nsApplyEntry`,
-  facet-resident-store.ts on work/node-nomirror): the facet's copy of the whole
+  Nimbus.Coherence.Namespace — NodeNoMirror's namespace manifest (`applyEntry`,
+  worker vfs/resident/namespace.ts): the facet's copy of the whole
   tree's names, kept exact by the ACQUIRE delta.
 
   A tree maps a path (its components; `[]` is the root) to nothing, a

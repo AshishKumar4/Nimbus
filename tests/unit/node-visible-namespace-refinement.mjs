@@ -16,7 +16,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { _rpcFsAcquire, _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
-import { FACET_RESIDENT_STORE_SOURCE } from '../../packages/worker/src/vfs/facet-resident-store.ts';
+import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
 
@@ -38,12 +38,8 @@ function apply(vfs, step, where) {
 
 function residentStore() {
   const db = new Database(':memory:');
-  const store = new Function(
-    FACET_RESIDENT_STORE_SOURCE
-      + '\nreturn { __residentBind, __residentAdoptModuleBundle, __residentSynchronizeFromSupervisor,'
-      + ' __residentAdmit, __residentCursor, __residentAcquireOptions, __nsRelist, __nsSetCred, __nsReady };',
-  )();
-  store.__residentBind({
+  const store = createResidentStore();
+  store.bind({
     storage: {
       sql: {
         exec(query, ...params) {
@@ -87,20 +83,20 @@ for (const [index, testCase] of fixture.cases.entries()) {
     fsAcquire: (epoch, cursor, options) => _rpcFsAcquire(host, epoch, cursor, options, pid),
   };
   const { store, namespace } = residentStore();
-  store.__nsSetCred(reader);
-  store.__residentAdoptModuleBundle({}, { epoch: raw.epoch, rev: raw.revision() });
-  await store.__residentSynchronizeFromSupervisor(supervisor);
-  assert.ok(store.__nsReady(), `${where}: the namespace was not built`);
+  store.namespace.setCred(reader);
+  store.sync.adoptModuleBundle({}, { epoch: raw.epoch, rev: raw.revision() });
+  await store.sync.synchronize(supervisor);
+  assert.ok(store.namespace.ready(), `${where}: the namespace was not built`);
   assert.deepEqual(sorted(namespace()), sorted(testCase.atCursor), `${where}: namespace at the cursor`);
 
   for (const step of testCase.window) apply(kernel, step, where);
-  const held = store.__residentCursor();
-  const applied = store.__residentAdmit(await supervisor.fsAcquire(held.epoch, held.rev, store.__residentAcquireOptions()));
+  const held = store.coherence.cursor();
+  const applied = store.cells.admit(await supervisor.fsAcquire(held.epoch, held.rev, store.sync.acquireOptions()));
   for (const dir of applied.relist) {
     relists++;
-    await store.__nsRelist(supervisor, dir);
+    await store.transport.relist(supervisor, dir);
   }
-  assert.ok(store.__nsReady(), `${where}: the namespace went unready`);
+  assert.ok(store.namespace.ready(), `${where}: the namespace went unready`);
   assert.deepEqual(sorted(namespace()), sorted(testCase.atAnswer), `${where}: namespace after one ACQUIRE`);
 }
 

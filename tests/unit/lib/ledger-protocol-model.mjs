@@ -904,7 +904,7 @@ export async function exploreStoppedAdmissions({ width = 2, kills = false, suspe
  * tracker. A known-started child must never become a failed spawn again.
  */
 export async function checkBrokerRefusalMapping() {
-  const { FacetProcessManager } = await import('../../../packages/worker/src/facets/process.ts');
+  const { ChildProcessManager } = await import('../../../packages/core/src/runtime/child-process-manager.ts');
   // Hosted services calls onStarted before entering the program. READY can
   // reach the parent before its start REPLY, never before start is produced.
   const paths = [[], ['start'], ['start', 'ready']];
@@ -924,16 +924,18 @@ export async function checkBrokerRefusalMapping() {
       /** @type {{ onStarted: () => void, onStdout: (bytes: Uint8Array) => void }} */ let hooks;
       const refusal = new Promise((resolve) => { refuse = resolve; });
       const running = new Promise((resolve) => { entered = resolve; });
-      const broker = new FacetProcessManager({
+      const broker = new ChildProcessManager({
         processes, issueNews: (pid) => issueProcessNews(ctx, pid),
-        vfsForProcess() { throw new Error('no file'); },
-        // Doubles: a command resolves to a facet, and the facet refuses.
-        commandRegistry: /** @type {any} */ ({ async resolve() { return { kind: 'facet-direct' }; } }),
-        facetMgr: /** @type {any} */ ({ async execStream(payload, _opts, output) {
-          hooks = output; entered();
+        terminate(pid) { return processes.kill(pid, 143); },
+        async resolve() { return { async run({ pid, output, onStarted }) {
+          let started = false;
+          hooks = { ...output, onStarted() { started = true; onStarted(); } }; entered();
           await refusal;
-          throw new budgets.DynamicWorkerDeadlockError(JSON.parse(payload).processPid, [root.pid]);
-        } }),
+          const error = new budgets.DynamicWorkerDeadlockError(pid, [root.pid]);
+          if (!started) return { code: error.code, errno: error.errno };
+          output.onStderr(new TextEncoder().encode(`facet error: ${error.code}: ${error.message}\n`));
+          return 1;
+        } }; },
       });
       try {
         const { childPid } = await broker.spawn({ parentPid: root.pid, command: 'node', args: ['R'], cwd: '/', env: {}, stdio: ['pipe', 'pipe', 'pipe'] });
