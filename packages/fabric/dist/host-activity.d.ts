@@ -50,22 +50,25 @@ export declare class HostActivity {
  * before its response's headers as well as after. Workers RPC carries no
  * signal, and asking per request costs a round trip; abandoning is the rare
  * path, so only it sends anything (the leaf's abandonHttpRequest). Each call
- * carries the ids that ended since the last (`ended`), which the leaf then
- * forgets, and those whose abandon did not arrive (`abandoned`), which it
- * abandons and forgets; it keeps an abandon that overtakes its request until
- * its request, or its end, arrives (observeResidentConfig).
+ * carries `low`, below which every id is retired (delivered, or abandoned
+ * where the leaf heard it), so the leaf forgets them; and, only when there
+ * are any, the ids whose abandon did not arrive (`abandoned`), which the leaf
+ * abandons first. The leaf keeps an abandon that overtakes its request until
+ * that request arrives (observeResidentConfig).
  */
 export declare class SentRequests {
     #private;
-    /** An id for a request, and the earlier ids its leaf forgets or abandons first, when there are any. */
+    /** An id for a request, the watermark below which its leaf forgets, and any abandons it must carry. */
     send(): HostRequest;
     /**
-     * Request `id` ended: reported as ended when delivered, else once its
-     * abandon arrived. A report that overtook the abandon would leave the leaf
-     * holding it for good; one that does not arrive rides the next request.
+     * Request `id` ended: retired when delivered, else once its abandon
+     * arrived. A retirement that overtook the abandon would let the leaf forget
+     * it unabandoned; an abandon that does not arrive rides the next request.
      */
     settled(id: number, delivered: boolean, abandon: (id: number) => Promise<unknown>): void;
-    /** `request`'s call failed before its leaf saw what it carried (leafReceived): carry it again (each is idempotent there). */
+    /** `request`'s leaf answered: the abandons it carried arrived. */
+    received(request: HostRequest): void;
+    /** `request`'s call failed before its leaf saw it (leafReceived): its abandons ride the next one. */
     unsent(request: HostRequest): void;
 }
 /**
@@ -77,13 +80,11 @@ export declare class SentRequests {
 export declare const LEAF_RECEIVED = "nimbusLeafReceived";
 export declare function leafReceived(error: unknown): boolean;
 export declare function receivedFailure(failure: Error): Error;
-/** A request's id, and the earlier ones its leaf forgets (`ended`) or abandons first (`abandoned`), only when there are any. */
+/** A request's id, the watermark below which its leaf forgets (`low`), and the ids it abandons first, only when there are any. */
 export interface HostRequest {
     id: number;
-    carried?: {
-        ended: number[];
-        abandoned: number[];
-    };
+    low: number;
+    abandoned?: number[];
 }
 /**
  * One holder's claim on a host's activity: an object of its own rather than a
@@ -97,7 +98,7 @@ declare class Lease implements HostActivityLease {
     private readonly dependency;
     constructor(activity: HostActivity, signal: AbortSignal | undefined, dependency: Observation | undefined);
     get ready(): Promise<void> | undefined;
-    readonly release: () => void;
+    release(): void;
     /** The signal aborted. */
     handleEvent(): void;
     /** Ended without being released by its holder (HostActivity.close), or as it is released. */

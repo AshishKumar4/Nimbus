@@ -138,7 +138,7 @@ class FacetProcessHost {
         const starting = hostActivity(this.ctx).acquire();
         return {
             ...facet,
-            started: loss.route(() => facet.started).finally(starting.release),
+            started: loss.route(() => facet.started).finally(() => starting.release()),
             lost: loss.signal,
             handleHttpRequest: (request, scope) => loss.route(() => facet.handleHttpRequest(request, scope)),
             handleWebSocketRequest: (request) => loss.route(() => facet.handleWebSocketRequest(request)),
@@ -359,7 +359,7 @@ class PeerProcessHost {
             const observation = hostActivity(this.ctx).observe((signal) => this.watchPeer(placement.peerName, params.workerKey, webSocketCapability, signal, link), (error) => loss.lose(error), opened.incarnation);
             stopObserving = observation.close;
             const starting = hostActivity(this.ctx).acquire();
-            const started = loss.route(() => this.withPeer(placement.peerName, (stub) => stub._rpcAwaitHostedBoot(params.workerKey).then((r) => r.payload))).finally(starting.release);
+            const started = loss.route(() => this.withPeer(placement.peerName, (stub) => stub._rpcAwaitHostedBoot(params.workerKey).then((r) => r.payload))).finally(() => starting.release());
             started.catch(() => { });
             let released = false;
             const sent = new SentRequests();
@@ -376,11 +376,16 @@ class PeerProcessHost {
                         sent.settled(sending.id, delivered, abandon);
                     });
                     try {
-                        return await peered((stub) => routeThroughPeer(stub, params.workerKey, webSocketCapability, request, sending));
+                        const response = await peered((stub) => routeThroughPeer(stub, params.workerKey, webSocketCapability, request, sending));
+                        if (sending.abandoned)
+                            sent.received(sending);
+                        return response;
                     }
                     catch (error) {
                         if (!leafReceived(error))
                             sent.unsent(sending);
+                        else if (sending.abandoned)
+                            sent.received(sending);
                         lease.release();
                         throw error;
                     }

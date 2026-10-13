@@ -472,8 +472,10 @@ function spawnResident(ctx, env, disk, supervisor, params) {
             try {
                 // A live watch that found the pinned instance admits the request; without one it carries its admission.
                 const response = await (observation.validated()
-                    ? facet.hostHttpRequest(request, sending.id, sending.carried)
-                    : facet.hostHttpRequest(request, sending.id, sending.carried, [watchCapability, await incarnation]));
+                    ? facet.hostHttpRequest(request, sending.id, sending.low, sending.abandoned)
+                    : facet.hostHttpRequest(request, sending.id, sending.low, sending.abandoned, [watchCapability, await incarnation]));
+                if (!relayed && sending.abandoned)
+                    sent.received(sending);
                 if (response.status === 500 && response.headers.get(HOST_FAILED_HEADER) === watchCapability)
                     throw receivedFailure(new Error(await response.text()));
                 return response.status === 410 ? await checked(response) : response;
