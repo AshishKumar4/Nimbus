@@ -7,7 +7,12 @@
 //   (1) brokered: a running program's child, let in on the ledger by the
 //       broker (hosted/services.ts) before its command runs a server;
 //   (2) promoted: an exec whose run stopped at its first listen, run on as a
-//       resident (FacetManager._promote) inside the exec's admission.
+//       resident (FacetManager._promote) inside the exec's admission;
+//   (3) brokered and deferred: an attached TTY's resident, whose spawnNode
+//       answers before it boots, so the broker closes the admission it was
+//       started in first. It gives that admission back for good and boots on
+//       a slot of its own; before, it tried to take the closed admission
+//       back and failed before its boot (InternalScallop, at 6da388863).
 // Each is started while another holder has the whole credit: its build
 // waits for credit holding no worker, then boots once the credit is given
 // back. Before, it waited for credit holding the inherited worker
@@ -80,6 +85,7 @@ manager.setVfs(vfs, processFiles(vfs));
 const fs = vfs.as(CRED_KERNEL);
 fs.mkdir('home/user/app', { recursive: true, mode: 0o755 });
 fs.writeFile('home/user/app/server.js', 'module.exports = 1;\n', { mode: 0o644 });
+fs.writeFile('home/user/app/tui.js', 'module.exports = 3;\n', { mode: 0o644 });
 // Past the pool's small-request reserve (CHUNK_SIZE): a map made from it waits on the budget itself.
 fs.writeFile('home/user/app/promoted.js', `module.exports = ${JSON.stringify('p'.repeat(512 * 1024))}.length;\n`, { mode: 0o644 });
 
@@ -120,6 +126,23 @@ const until = async (ok, label) => {
   await until(() => launchHeld(pid).length > 0, 'promoted: it boots once the credit is given back, its residency on the launch\'s worker');
   manager.kill(pid);
   await Promise.race([done.catch(() => {}), new Promise((resolve) => setTimeout(resolve, 20_000))]);
+}
+
+// (3) Brokered and deferred: the broker's admission closes as spawnNode answers, before the boot.
+{
+  const child = processes.spawn('node tui.js', ['node', 'tui.js'], '/home/user/app');
+  const other = await acquireSupervisorAllocation(SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES);
+  await withLaunchAdmission(ctx, { pid: child.pid }, undefined, () => manager.spawnNode("require('./tui.js');", {
+    filename: '/home/user/app/tui.js', cwd: '/home/user/app', command: 'node tui.js', skipSpawn: true, callerPid: child.pid, attachedTty: true,
+  }));
+  await until(() => budget().queued >= 1, `the deferred resident's build waits for credit (${JSON.stringify(budget())})`);
+  assert.deepEqual(launchHeld(child.pid), [], 'deferred: it waits for credit holding no worker, the broker\'s admission closed');
+  other.release();
+  await until(() => launchHeld(child.pid).length > 0 || processes.get(child.pid)?.state !== 'running',
+    'deferred: it boots, or ends, once the credit is given back');
+  assert.equal(processes.get(child.pid)?.state, 'running', `deferred: it boots on a slot of its own, not failing before (${JSON.stringify(processes.get(child.pid))})`);
+  assert.ok(launchHeld(child.pid).length > 0, 'deferred: its residency holds its own slot');
+  manager.kill(child.pid);
 }
 
 assert.equal(budget().current, 0, 'every launch gave its credit back');

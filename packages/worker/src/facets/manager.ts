@@ -9102,10 +9102,14 @@ export class FacetManager {
     // command this is; an exec's, promoted at its first listen) is given back
     // while it prepares and taken again before its boot (`admitted`), which
     // claims it: a launch holding a worker waits for no credit and on no build.
+    // A deferred launch (an attached TTY: spawnNode answers before it boots)
+    // outlives the admission it was started in, which its starter closes: it
+    // gives it back for good, and its boot takes a slot of its own, as a
+    // resident started in none does (_startResidentProcess).
     const inherited = suspendLaunchAdmission(this.ctx);
     let admitted: () => Promise<void> = async () => {};
     let stopWaiting = () => {};
-    if (inherited !== undefined) {
+    if (inherited !== undefined && !opts.attachedTty) {
       const ended = new AbortController();
       stopWaiting = this.processes.subscribeTerminal(entry.pid, () => {
         ended.abort(new Error(`Nimbus: the launch for pid ${entry.pid} was cancelled while it waited for a worker`));
