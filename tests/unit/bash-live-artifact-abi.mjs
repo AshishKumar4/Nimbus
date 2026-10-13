@@ -83,6 +83,7 @@ async function runBash() {
   let store;
   const stats = { mainHi: 0, captureBytesHi: 0, captureCompactions: 0, captureLiveHi: 0 };
   const memory = () => instance.exports.memory;
+  const view = () => new DataView(memory().buffer);
   const sp = () => instance.exports.__stack_pointer.value;
   const unwind = () => instance.exports.asyncify_start_unwind(store.unwindAt(memory(), stats, 1));
   const nimbus = nativeImports(() => instance, '/work', observed);
