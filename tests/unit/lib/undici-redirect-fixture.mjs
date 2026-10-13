@@ -78,13 +78,17 @@ export const REDIRECT_CASES = [
 ];
 
 /**
- * The kinds undici 6's RedirectHandler cannot send twice: a stream, and any
- * iterable but a string or a byte view, which it wraps to mark used once
- * read (lib/handler/redirect-handler.js BodyAsyncIterable). Sent with the
- * first request, each is disturbed when the redirect arrives, so it is not
- * followed.
+ * How undici 6's RedirectHandler sends each kind again (lib/handler/
+ * redirect-handler.js). A Node stream is marked used once read, so a
+ * redirect after it was sent is not followed. Any other iterable but a
+ * string or a byte view is sent as itself first, then iterated again for a
+ * hop that keeps the body (BodyAsyncIterable): an array gives its bytes
+ * again, a spent generator or stream nothing, which a Content-Length then
+ * refuses. A Blob, a string and a Buffer are the same bytes every hop.
  */
-const SENT_ONCE = ['readable', 'async', 'web', 'generator', 'array'];
+const SENT_ONCE = ['readable'];
+const SPENT_ONCE_ITERATED = ['async', 'web', 'generator'];
+const SPENT = { error: 'UND_ERR_REQ_CONTENT_LENGTH_MISMATCH', message: 'Request body length does not match content-length header' };
 
 export const REDIRECT_CLIENT = String.raw`
 const { request } = require('undici');
@@ -175,10 +179,14 @@ export function redirectFailures(report) {
     const entry = REDIRECT_CASES[i];
     const result = report.results[i];
     if (!result) continue;
-    if (result.error) { failures.push(`${JSON.stringify(entry)}: ${result.error} ${result.message}`); continue; }
     const label = `${entry.status} ${entry.method} ${entry.target}${entry.flat ? ' flat headers' : ''}${entry.kind ? ` ${entry.kind} body` : ''}`;
     const followed = [300, 301, 302, 303, 307, 308].includes(entry.status) && !SENT_ONCE.includes(entry.kind);
     const rewrite = followed && entry.status === 303 && entry.method !== 'HEAD';
+    if (followed && !rewrite && SPENT_ONCE_ITERATED.includes(entry.kind)) {
+      check(`${label} sends its spent body again`, { error: result.error, message: result.message }, SPENT);
+      continue;
+    }
+    if (result.error) { failures.push(`${label}: ${result.error} ${result.message}`); continue; }
     const cross = followed && entry.target !== 'same';
     check(`${label} status`, result.statusCode, followed ? 200 : entry.status);
     check(`${label} method`, result.received.method, rewrite ? 'GET' : entry.method);
