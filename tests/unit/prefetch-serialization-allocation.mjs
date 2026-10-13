@@ -67,7 +67,12 @@ mock.module(cellsPath, () => ({ ...cells,
 }));
 const { launchManager } = await import('./lib/facet-launch-harness.mjs');
 const execLoader = {
-  load() { return { getEntrypoint: () => ({ async run() { return Response.json({ exitCode: 0, stdout: '', stderr: '' }); } }) }; },
+  // A launch is at its peak as the loader takes its module map: its build's state and the map made from it.
+  load() {
+    peak = Math.max(peak, used());
+    livePeak = Math.max(livePeak, live());
+    return { getEntrypoint: () => ({ async run() { return Response.json({ exitCode: 0, stdout: '', stderr: '' }); } }) };
+  },
   get() { throw new Error('one-shot fixture uses load, not named resident get'); },
 };
 const env = { LOADER: execLoader };
@@ -87,7 +92,8 @@ const ended = (launch) => launch.then((result) => { livePeak = Math.max(livePeak
 const launchTree = (i) => ended(manager.exec("require('./cell.js')", { filename: `/home/user/tree${i}/run.js`, cwd: `/home/user/tree${i}`, captureOutput: true }));
 /**
  * The live peak over the settled base while `run` runs (read as each build
- * starts serializing and as each launch ends), and the peak in use sampled
+ * starts serializing, as the loader takes each map and as each launch
+ * ends), and the peak in use sampled
  * between collections (`churn`).
  */
 const peakOver = async (run) => {
