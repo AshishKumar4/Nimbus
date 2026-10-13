@@ -6,7 +6,11 @@
 //     and every form it never ran is real git's, handed over before any
 //     effect with the invocation untouched (LittleButterfly's inventory of
 //     main vs this branch, lists A and B);
-//   - a sparse-checkout the built-in implements stays the built-in's.
+//   - a sparse-checkout the built-in implements stays the built-in's;
+//   - a form whose message git takes from an editor (a commit with no -m,
+//     an annotated tag with no -m or -F, a merge or pull with
+//     GIT_MERGE_AUTOEDIT) is real git's, which runs the editor; the
+//     built-in made a message up.
 
 import assert from 'node:assert/strict';
 
@@ -23,14 +27,14 @@ vfs.as(CRED_KERNEL).chown('home/user', CRED_SESSION_USER.uid, CRED_SESSION_USER.
 const files = new ProcessFiles(vfs);
 const user = vfs.as(CRED_SESSION_USER);
 
-/** `git <words>` in repo through the front door, real git installed: who answered. */
-async function engine(words) {
+/** `git <words>` in repo through the front door, real git installed, in `env`: who answered. */
+async function engine(words, env = {}) {
   const args = ['-C', 'repo', '-c', 'user.name=Ada', '-c', 'user.email=ada@example.com', ...words];
   const handed = [];
   let stdout = '';
   let stderr = '';
   await runGitCommand({
-    pid: 1, cred: CRED_SESSION_USER, args, cwd: '/home/user', env: {},
+    pid: 1, cred: CRED_SESSION_USER, args, cwd: '/home/user', env,
     stdout: { write(s) { stdout += s; }, writeBytes(b) { stdout += Buffer.from(b).toString('utf8'); } },
     stderr: { write(s) { stderr += s; } },
     vfs: files.view({ pid: 1, cred: CRED_SESSION_USER }),
@@ -60,6 +64,7 @@ async function setup() {
   user.mkdir('home/user/repo', { recursive: true });
   await plain(['init', '-q', '-b', 'main']);
   user.writeFile('home/user/repo/a.txt', 'one\n');
+  user.writeFile('home/user/repo/msg.txt', 'from a file\n');
   await plain(['add', 'a.txt']);
   await plain(['commit', '-q', '-m', 'first']);
   await plain(['branch', 'topic']);
@@ -82,8 +87,9 @@ const BUILT_IN = [
   ['rev-parse', 'HEAD'], ['rev-parse', '--abbrev-ref', 'HEAD'], ['rev-parse', '--show-toplevel'],
   ['ls-files'], ['ls-files', '-s'],
   ['reset', '--hard', 'HEAD'], ['reset', '--soft', 'HEAD'], ['reset', 'a.txt'],
-  ['merge', 'topic'],
+  ['merge', 'topic'], ['merge', '--no-edit', 'topic'],
   ['fetch', 'origin'], ['pull', 'origin', 'main'], ['push', 'origin', 'main'],
+  ['tag', '-a', '-m', 'x', 'v2'], ['tag', '-m', 'x', 'v3'], ['tag', '-aF', 'msg.txt', 'v4'],
   ['sparse-checkout', 'list'],
 ];
 
@@ -121,10 +127,23 @@ const REAL_GIT = [
   // commands the built-in never ran
   ['stash'], ['stash', 'pop'], ['rebase', 'main'], ['switch', 'topic'], ['restore', 'a.txt'], ['show', 'HEAD'], ['blame', 'a.txt'],
   ['cherry-pick', 'topic'], ['revert', 'HEAD'], ['worktree', 'list'], ['reflog'], ['gc'], ['bisect', 'start'], ['notes', 'list'],
+  // a message from an editor
+  ['commit'], ['commit', '-a'], ['commit', '-q', '--allow-empty'], ['commit', '--allow-empty-message', '--allow-empty'], ['commit', '--cleanup=strip', '-a'],
+  ['tag', '-a', 'v5'], ['tag', '--annotate', 'v5', 'HEAD'],
+];
+
+// GIT_MERGE_AUTOEDIT: git's merge (and a pull's) takes its message from an editor, unless --no-edit.
+const AUTOEDIT = [
+  [{ GIT_MERGE_AUTOEDIT: 'yes' }, ['merge', 'topic'], 'real git'],
+  [{ GIT_MERGE_AUTOEDIT: 'true' }, ['pull', 'origin', 'main'], 'real git'],
+  [{ GIT_MERGE_AUTOEDIT: 'yes' }, ['merge', '--no-edit', 'topic'], 'built-in'],
+  [{ GIT_MERGE_AUTOEDIT: 'no' }, ['merge', 'topic'], 'built-in'],
+  [{ GIT_MERGE_AUTOEDIT: 'false' }, ['pull', 'origin', 'main'], 'built-in'],
 ];
 
 const wrong = [];
 for (const words of BUILT_IN) if (await engine(words) !== 'built-in') wrong.push(`built-in expected: git ${words.join(' ')}`);
 for (const words of REAL_GIT) if (await engine(words) !== 'real git') wrong.push(`real git expected: git ${words.join(' ')}`);
+for (const [env, words, who] of AUTOEDIT) if (await engine(words, env) !== who) wrong.push(`${who} expected: ${JSON.stringify(env)} git ${words.join(' ')}`);
 assert.deepEqual(wrong, [], wrong.join('\n'));
 console.log(`git-routing-table: ${BUILT_IN.length} forms built-in, ${REAL_GIT.length} real git`);

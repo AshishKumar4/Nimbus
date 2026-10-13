@@ -148,6 +148,31 @@ try {
     steps.push(parks ? 'a child process' : 'a child process, refused by name');
   }
 
+  // A commit with no -m takes its message from the editor, real git's to
+  // run (the built-in made a message up): an editor that fails aborts the
+  // commit, as git says (with JSPI), or the editor's start is refused by
+  // name (without); nothing is committed either way.
+  {
+    const before = await ws.exec('cd repo && git rev-parse HEAD && git status --porcelain');
+    const got = await ws.exec(`cd repo && git -c core.editor=false commit -q --allow-empty`);
+    const parks = typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function';
+    if (parks) {
+      let host;
+      try {
+        execFileSync('git', ['-c', 'core.editor=false', 'commit', '-q', '--allow-empty'], { cwd: join(hostDir, 'repo'), env: hostEnv, encoding: 'utf8', stdio: 'pipe' });
+        host = { code: 0, stderr: '' };
+      } catch (error) {
+        host = { code: error.status, stderr: String(error.stderr) };
+      }
+      assert.deepEqual([got.exitCode, got.stderr], [host.code, host.stderr], 'an editor that fails aborts the commit, as git says');
+    } else {
+      assert.notEqual(got.exitCode, 0, 'refused');
+      assert.match(got.stderr, /nimbus_proc\.(spawn|start|wait)\b.*cannot be suspended/, `refused by name: ${got.stderr}`);
+    }
+    assert.equal((await ws.exec('cd repo && git rev-parse HEAD && git status --porcelain')).stdout, before.stdout, 'nothing is committed');
+    steps.push(parks ? 'a commit\'s editor' : 'a commit\'s editor, refused by name');
+  }
+
   // Output that is not UTF-8, byte for byte: a binary blob and a diff of a Latin-1 file.
   const binary = Uint8Array.from({ length: 4096 }, (_, i) => (i * 37 + 11) & 0xff);
   const latin1 = Buffer.from('caf\xe9 cr\xe8me\n', 'latin1');

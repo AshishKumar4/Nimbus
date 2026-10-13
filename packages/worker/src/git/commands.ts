@@ -542,6 +542,8 @@ function parseCommitArgs(args: readonly string[]): {
       }
     } else unsupportedOption('commit', arg);
   }
+  // With no -m, git takes the message from an editor (GIT_EDITOR, core.editor, VISUAL, EDITOR): real git's.
+  if (messages.length === 0) unsupportedOption('commit', 'without -m (its message from an editor)');
   return { messages, quiet, all, cleanup, allowEmptyMessage };
 }
 
@@ -652,7 +654,7 @@ function fetchDepth(flag: string, value: string | undefined): { depth: number; r
   return { depth, relative: flag === '--deepen' };
 }
 
-function parseTransportArgs(command: 'fetch' | 'pull' | 'push', args: readonly string[]) {
+function parseTransportArgs(command: 'fetch' | 'pull' | 'push', args: readonly string[], env: Readonly<Record<string, string>>) {
   let quiet = false;
   let dashdash = false;
   let deepen: { depth: number; relative: boolean } | undefined;
@@ -673,22 +675,37 @@ function parseTransportArgs(command: 'fetch' | 'pull' | 'push', args: readonly s
     } else unsupportedOption(command, arg);
   }
   if (operands.length > (command === 'fetch' ? 1 : 2)) unsupportedOption(command, 'refspecs');
+  // A pull's merge takes its message from an editor as git merge's does.
+  if (command === 'pull' && mergeAutoEdit(env)) unsupportedOption(command, 'with GIT_MERGE_AUTOEDIT (its message from an editor)');
   const branch = operands[1];
   if (branch !== undefined && /[:*^]|^\+/.test(branch)) unsupportedOption(command, `refspec '${branch}'`);
   return { quiet, deepen, remote: operands[0] ?? 'origin', branch };
 }
 
-function parseMergeArgs(args: readonly string[]) {
+/**
+ * Whether git's merge takes its commit message from an editor
+ * (builtin/merge.c default_edit_option): GIT_MERGE_AUTOEDIT says so. Real
+ * git here never sees a terminal (its stdio is no tty), so nothing else
+ * does. A value git cannot read is git's to refuse.
+ */
+function mergeAutoEdit(env: Readonly<Record<string, string>>): boolean {
+  const value = env.GIT_MERGE_AUTOEDIT;
+  return value !== undefined && !['', 'false', 'no', 'off', '0'].includes(value.toLowerCase());
+}
+
+function parseMergeArgs(args: readonly string[], env: Readonly<Record<string, string>>) {
   let quiet = false;
+  let noEdit = false;
   let dashdash = false;
   const operands: string[] = [];
   for (const arg of args) {
     if (dashdash || arg === '-' || !arg.startsWith('-')) { operands.push(arg); continue; }
     if (arg === '--') { dashdash = true; continue; }
     if (arg === '--quiet' || /^-q+$/.test(arg)) quiet = true;
-    else if (arg === '--no-edit') { /* The built-in never opens an editor. */ }
+    else if (arg === '--no-edit') noEdit = true;
     else unsupportedOption('merge', arg);
   }
+  if (!noEdit && mergeAutoEdit(env)) unsupportedOption('merge', 'with GIT_MERGE_AUTOEDIT (its message from an editor)');
   if (operands.length > 1) unsupportedOption('merge', 'multiple heads');
   if (operands.length === 0) throw new GitGlobalsError('usage: git merge <branch>\n', 1);
   validateRevision(operands[0]);
@@ -754,8 +771,8 @@ function parseCommandArgs(sub: string, args: readonly string[], env: Record<stri
     case 'checkout': return { sub, parsed: parseCheckoutArgs(args) };
     case 'diff': return { sub, parsed: parseDiffArgs(args, env.COLUMNS) };
     case 'remote': return { sub, parsed: parseRemoteArgs(args) };
-    case 'fetch': case 'pull': case 'push': return { sub, parsed: parseTransportArgs(sub, args) };
-    case 'merge': return { sub, parsed: parseMergeArgs(args) };
+    case 'fetch': case 'pull': case 'push': return { sub, parsed: parseTransportArgs(sub, args, env) };
+    case 'merge': return { sub, parsed: parseMergeArgs(args, env) };
     case 'reset': return { sub, parsed: parseResetArgs(args) };
     case 'tag': return { sub, parsed: parseTagArgs(args) };
     case 'config': return { sub, parsed: parseConfigArgs(args) };
@@ -1828,6 +1845,10 @@ function parseTagArgs(args: readonly string[]) {
     }
   }
   if (messageFile === '-') unsupportedOption('tag', '--file=-');
+  // An annotated tag made with no -m or -F takes its message from an editor: real git's.
+  if (annotate && messages.length === 0 && messageFile === null && !del && !list && lines === null && operands.length > 0) {
+    unsupportedOption('tag', '-a without -m or -F (its message from an editor)');
+  }
   return { annotate, force, del, list, lines, messages, messageFile, operands };
 }
 
@@ -1902,11 +1923,6 @@ async function tagCommand(ctx: Ctx, git: CfGit, fs: GitFs, vfs: ProjectFs, parse
       await ctx.stderr.write(`fatal: could not open or read '${messageFile}': No such file or directory\n`);
       return 128;
     }
-  }
-  if (annotate && messages.length === 0) {
-    // git would open an editor, and this git has none: what git says with no editor to run.
-    await ctx.stderr.write('error: Terminal is dumb, but EDITOR unset\nPlease supply the message using either -m or -F option.\n');
-    return 1;
   }
   const object = await resolveRevision(git, fs, gitdir, target, cache);
   if (!object) {
@@ -3454,7 +3470,7 @@ export async function runGitCommand(
         const requested = cleanup ?? configured;
         const mode = commitCleanupMode(requested);
         if (!mode) { await ctx.stderr.write(`fatal: Invalid cleanup mode ${requested}\n`); return 128; }
-        const raw = messages.length ? joinMessageOptions(messages) : 'commit\n';
+        const raw = joinMessageOptions(messages);
         const message = mode === 'verbatim' ? raw : cleanupMessage(raw, mode === 'strip');
         if (!message && !allowEmptyMessage) {
           await ctx.stderr.write('Aborting commit due to empty commit message.\n');
