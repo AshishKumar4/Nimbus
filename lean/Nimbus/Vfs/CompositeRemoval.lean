@@ -75,6 +75,18 @@ def namesAt (S : St) (P : Principal) (composed : Bool) (operand q : Path) : List
   else (children (S.trees (owner S composed operand q).backend) (localPath S composed operand q)).eraseDups.mergeSort
     (fun a b => decide (a ≤ b))
 
+/-- A successful unlink/rmdir deletes only that entry. ENOENT faults stand for an
+    external disappearance of the entry (and its subtree, if a directory). -/
+def erase (S : St) (b : Backend) (rp : Path) (vanished : Bool := false) : St :=
+  setTree S b (if vanished then cut (S.trees b) rp else (S.trees b).filter (·.1 != rp))
+
+/-- Discovery observes external disappearances immediately. In particular, when
+    two mount points alias a backend, a child that vanishes through the first
+    mount is not invented again in the second mount's later directory listing. -/
+def applyVanished (base : St) (composed : Bool) (operand : Path) (entries : List (Entry operand)) : St :=
+  entries.foldl (fun S e => if e.vanished then
+    erase S (owner base composed operand e.path).backend (localPath base composed operand e.path) true else S) base
+
 def collect {α : Type} : List (Except String (List α)) → Except String (List α)
   | [] => .ok []
   | .error e :: _ => .error e
@@ -84,10 +96,11 @@ variable (cfg : Backend → Config)
 
 /-- The operand's lstat error aborts. A non-ENOENT child lstat error schedules an
     unlink, not an error report. A failed scandir schedules rmdir, not a refusal. -/
-def discover (S : St) (P : Principal) (composed : Bool) (operand : Path) :
-    Nat → (q : Path) → pfx operand q = true → Bool → Except String (List (Entry operand))
-  | 0, _, _, _ => .error "ELOOP"
-  | n + 1, q, hq, top =>
+def discoverFrom (S : St) (P : Principal) (composed : Bool) (operand : Path) :
+    Nat → (q : Path) → pfx operand q = true → Bool → List (Entry operand) → Except String (List (Entry operand))
+  | 0, _, _, _, _ => .error "ELOOP"
+  | n + 1, q, hq, top, prior =>
+    let current := applyVanished S composed operand prior
     let m := owner S composed operand q
     let rp := localPath S composed operand q
     let statError := fault (cfg m.backend).faults.stat rp
@@ -95,22 +108,27 @@ def discover (S : St) (P : Principal) (composed : Bool) (operand : Path) :
     match statError with
     | some code =>
       if top then .error code
-      else if code = "ENOENT" then .ok [{ base with vanished := true }]
-      else .ok [base]
+      else if code = "ENOENT" then .ok (prior ++ [{ base with vanished := true }])
+      else .ok (prior ++ [base])
     | none =>
-      match observed S P composed operand q with
-      | none => if top then .error "ENOENT" else .ok [{ base with vanished := true }]
+      match observed current P composed operand q with
+      | none => if top then .error "ENOENT" else .ok (prior ++ [{ base with vanished := true }])
       | some .dir =>
         let dir := { base with dir := true }
         match fault (cfg m.backend).faults.readdir rp with
-        | some "ENOENT" => .ok [{ dir with vanished := true }]
-        | some code => .ok [{ dir with unread := some code }]
+        | some "ENOENT" => .ok (prior ++ [{ dir with vanished := true }])
+        | some code => .ok (prior ++ [{ dir with unread := some code }])
         | none =>
-          let plans := (namesAt S P composed operand q).map fun name =>
-            discover S P composed operand n (q ++ [name])
-              (pfx_iff.mpr ((pfx_iff.mp hq).trans (List.prefix_append q [name]))) false
-          (collect plans).map (· ++ [dir])
-      | some _ => .ok [base]
+          let plans := (namesAt current P composed operand q).foldl (fun result name => do
+            let prior ← result
+            discoverFrom S P composed operand n (q ++ [name])
+              (pfx_iff.mpr ((pfx_iff.mp hq).trans (List.prefix_append q [name]))) false prior) (.ok prior)
+          plans.map (· ++ [dir])
+      | some _ => .ok (prior ++ [base])
+
+def discover (S : St) (P : Principal) (composed : Bool) (operand : Path) (n : Nat)
+    (q : Path) (hq : pfx operand q = true) (top : Bool) : Except String (List (Entry operand)) :=
+  discoverFrom cfg S P composed operand n q hq top []
 
 /-- All ancestors, including the failed entry, through the operand. -/
 def ancestors (operand q : Path) : List Path :=
@@ -137,11 +155,6 @@ def gone (operand q : Path) (vanished strict : Bool) (S' : St) (r : Result) : Re
 
 def refused (operand : Path) (f : Failure) (r : Result) : Result :=
   keep operand f.path { r with failures := r.failures ++ [f] }
-
-/-- A successful unlink/rmdir deletes only that entry. ENOENT faults stand for an
-    external disappearance of the entry (and its subtree, if a directory). -/
-def erase (S : St) (b : Backend) (rp : Path) (vanished : Bool := false) : St :=
-  setTree S b (if vanished then cut (S.trees b) rp else (S.trees b).filter (·.1 != rp))
 
 def backendError (base : St) (composed : Bool) {operand : Path}
     (S : St) (e : Entry operand) : Option String :=
@@ -193,7 +206,7 @@ def step (base : St) (P : Principal) (composed strict : Bool) {operand : Path}
 
 def run (base : St) (P : Principal) (composed strict : Bool) (operand : Path)
     (entries : List (Entry operand)) : Result :=
-  entries.foldl (step cfg base P composed strict) { state := base }
+  entries.foldl (step cfg base P composed strict) { state := applyVanished base composed operand entries }
 
 /-! ## Contract and scope proofs -/
 
@@ -322,7 +335,7 @@ theorem lstat_failure_unlinks (S : St) (P : Principal) (composed : Bool)
       (localPath S composed operand q) = some code) (hne : code ≠ "ENOENT") :
     discover cfg S P composed operand (n + 1) q hq false =
       .ok [⟨q, hq, false, false, none⟩] := by
-  simp [discover, h, hne]
+  simp [discover, discoverFrom, h, hne]
 
 theorem unreadable_still_rmdir (S : St) (P : Principal) (composed : Bool)
     (operand q : Path) (hq : pfx operand q = true) (n : Nat) (code : String)
@@ -333,7 +346,7 @@ theorem unreadable_still_rmdir (S : St) (P : Principal) (composed : Bool)
       (localPath S composed operand q) = some code) (hne : code ≠ "ENOENT") :
     discover cfg S P composed operand (n + 1) q hq false =
       .ok [⟨q, hq, true, false, some code⟩] := by
-  simp [discover, hs, hd, hr, hne]
+  simp [discover, discoverFrom, applyVanished, hs, hd, hr, hne]
 
 /-- An unreadable directory's failed scandir is not itself a refusal. When its
     rmdir succeeds (notably an empty unreadable directory), no error is emitted. -/
@@ -436,6 +449,33 @@ theorem fold_frame (base : St) (P : Principal) (composed strict : Bool) {operand
       (fun e' he' => hc e' (List.mem_cons_of_mem _ he'))
     exact ⟨hm'.trans hm, ht'.trans (ht c (hc e (List.mem_cons_self _ _)))⟩
 
+theorem vanished_fold_frame (base : St) (composed : Bool) (operand : Path)
+    (entries : List (Entry operand)) (S : St) (c : Backend)
+    (hc : ∀ e ∈ entries, c ≠ (owner base composed operand e.path).backend) :
+    let after := entries.foldl (fun S e => if e.vanished then
+      erase S (owner base composed operand e.path).backend (localPath base composed operand e.path) true else S) S
+    after.mounts = S.mounts ∧ after.trees c = S.trees c := by
+  induction entries generalizing S with
+  | nil => exact ⟨rfl, rfl⟩
+  | cons e es ih =>
+    simp only [List.foldl_cons]
+    split
+    · obtain ⟨hm, ht⟩ := ih (erase S (owner base composed operand e.path).backend
+        (localPath base composed operand e.path) true) (fun e' he' => hc e' (List.mem_cons_of_mem _ he'))
+      exact ⟨hm, ht.trans (erase_other _ _ _ _ _ (hc e (List.mem_cons_self _ _)))⟩
+    · exact ih S (fun e' he' => hc e' (List.mem_cons_of_mem _ he'))
+
+/-- The write frame covers both discovery-time races and later removal calls. -/
+theorem run_frame (base : St) (P : Principal) (composed strict : Bool) (operand : Path)
+    (entries : List (Entry operand)) (c : Backend)
+    (hc : ∀ e ∈ entries, c ≠ (owner base composed operand e.path).backend) :
+    (run cfg base P composed strict operand entries).state.mounts = base.mounts ∧
+    (run cfg base P composed strict operand entries).state.trees c = base.trees c := by
+  obtain ⟨hm, ht⟩ := fold_frame cfg base P composed strict entries
+    { state := applyVanished base composed operand entries } c hc
+  obtain ⟨hm', ht'⟩ := vanished_fold_frame base composed operand entries base c hc
+  exact ⟨hm.trans hm', ht.trans ht'⟩
+
 /-- Crossing a mount expands the write frame precisely to routed descendants of
     the operand; every other backend and the entire mount table are unchanged. -/
 theorem walk_subtree_frame (base : St) (P : Principal) (composed strict : Bool)
@@ -444,7 +484,7 @@ theorem walk_subtree_frame (base : St) (P : Principal) (composed strict : Bool)
     (hsub : ∀ q, pfx operand q = true → c ≠ (route base.mounts q).backend) :
     (run cfg base P composed strict operand entries).state.mounts = base.mounts ∧
     (run cfg base P composed strict operand entries).state.trees c = base.trees c := by
-  apply fold_frame
+  apply run_frame
   intro e _
   cases composed with
   | false => exact hc
@@ -456,7 +496,7 @@ theorem walk_single_mount (base : St) (P : Principal) (strict : Bool)
     (hc : c ≠ (route base.mounts operand).backend) :
     (run cfg base P false strict operand entries).state.mounts = base.mounts ∧
     (run cfg base P false strict operand entries).state.trees c = base.trees c := by
-  apply fold_frame
+  apply run_frame
   exact fun _ _ => hc
 
 end Nimbus.Vfs.CompositeRemoval
