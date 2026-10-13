@@ -47,7 +47,10 @@ export declare function withGlobalConfig<G extends ConfigReader>(git: G, fs: {
  * repository sets extensions.worktreeConfig: git reads system, global,
  * local, worktree, then -c (withConfigOverrides, over this). Whether it is
  * set is the repository's own config's (`files`, cf-git reading only that
- * file), read once per repository until this command writes a config.
+ * file): in `known`, by gitdir, where the caller has read it already (the
+ * format guard reads every extension), else read here; forgotten when this
+ * command writes a config. A repository without it reads as it would
+ * without this layer, with no wait of its own.
  */
 export declare function withWorktreeConfig<G extends ConfigReader & {
     setConfig(args: {
@@ -65,7 +68,7 @@ export declare function withWorktreeConfig<G extends ConfigReader & {
             encoding: 'utf8';
         }): Promise<Uint8Array | string>;
     };
-}): G;
+}, known: Map<string, boolean>): G;
 /**
  * `git` with `overrides` over every file's: a key `-c` set reads as its last
  * value, and all of them after the files' for a read of every value.

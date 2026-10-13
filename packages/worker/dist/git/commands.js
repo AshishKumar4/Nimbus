@@ -1158,6 +1158,7 @@ async function assertNoHooks(ctx, git, fs, repo, sub) {
     if (hook !== null)
         throw new UnsupportedGitOperation(`fatal: git ${sub} with a ${hook} hook is not supported here\n`, 128);
 }
+/** Refuse a repository whose format the built-in does not implement; answers whether it sets extensions.worktreeConfig. */
 async function assertRepositoryImplemented(git, fs, repo) {
     const where = repo.worktree ?? repo.gitdir;
     if (repo.linked) {
@@ -1178,8 +1179,12 @@ async function assertRepositoryImplemented(git, fs, repo) {
         throw new UnsupportedGitOperation(`fatal: repository format version ${version} is not supported here\n`, 128);
     }
     // Every extension the repository declares: git 2.53 refuses an unknown one in a version 1 repository, and ignores it in version 0.
+    let worktreeConfig = false;
     for (const name of await git.getConfigNames({ fs, gitdir: repo.gitdir, section: 'extensions' })) {
         const set = await value(`extensions.${name}`) ?? '';
+        if (name === 'worktreeconfig') {
+            worktreeConfig = configBool(await git.getConfig({ fs, gitdir: repo.gitdir, path: 'extensions.worktreeConfig' }).catch(() => undefined)) === true;
+        }
         const v1Only = Object.hasOwn(V1_EXTENSIONS, name);
         const honored = V0_EXTENSIONS[name] ?? V1_EXTENSIONS[name];
         if (honored === undefined) {
@@ -1193,6 +1198,7 @@ async function assertRepositoryImplemented(git, fs, repo) {
         if (!honored(set))
             throw new UnsupportedGitOperation(`fatal: a repository with extensions.${name} = ${set} is not supported here\n`, 128);
     }
+    return { worktreeConfig };
 }
 function ambiguousArgument(arg) {
     return `fatal: ambiguous argument '${arg}': unknown revision or path not in the working tree.\n`
@@ -3576,7 +3582,9 @@ realGit) {
         };
         const fs = sessionGitFs(repoVfs, null, promisor);
         const fileGit = git;
-        git = withConfigOverrides(withWorktreeConfig(withGlobalConfig(git, fs, ctx.env, dir), fileGit, fs), globals.config);
+        // Which repositories set extensions.worktreeConfig, by gitdir: the format guard's reading, else the reader's own.
+        const worktreeConfigs = new Map();
+        git = withConfigOverrides(withWorktreeConfig(withGlobalConfig(git, fs, ctx.env, dir), fileGit, fs, worktreeConfigs), globals.config);
         commandFs = fs;
         // The engine, as this command's principal: a repository on it takes its objects in waves (WorktreeRepo.objectWriter).
         commandEngines.set(fs, {
@@ -3600,7 +3608,7 @@ realGit) {
             const repo = await discoverRepo(repoVfs, dir);
             // The repository's format is its own config file's, as git reads it: no -c or global value stands in.
             if (repo !== null)
-                await assertRepositoryImplemented(await getGit(), fs, repo);
+                worktreeConfigs.set(repo.gitdir, (await assertRepositoryImplemented(await getGit(), fs, repo)).worktreeConfig);
             if (repo !== null && command !== null)
                 await assertNoHooks(ctx, git, fs, repo, command.sub);
             if (repo !== null && await repoVfs.exists(`${repo.gitdir}/${GIT_CLONE_JOB_MARKER}`)) {
