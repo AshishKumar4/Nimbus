@@ -2648,11 +2648,11 @@ export class CompositeVFS implements VFS {
   /** Whether this view's principal has `want` (r=4, w=2, x=1) on a stat, by its mode bits. */
   private permits(stat: VfsStat, want: number): boolean {
     const cred = this.viewer.cred;
-    // Root searches every directory (posixAccess's root rule is a file's exec);
-    // an entry its backend keeps no mode for is not judged, and an owner or
-    // group it keeps none of matches no one.
-    if (cred === null || cred.uid === 0 || stat.mode === undefined) return true;
-    return posixAccess(stat as { mode: number; uid: number; gid: number }, want, cred);
+    // An entry its backend keeps no mode for is not judged, and an owner or
+    // group it keeps none of matches no one. Its type is the stat's: a
+    // backend's mode may carry no file-type bits.
+    if (cred === null || stat.mode === undefined) return true;
+    return posixAccess({ mode: stat.mode, uid: stat.uid ?? -1, gid: stat.gid ?? -1, directory: stat.type === 'directory' }, want, cred);
   }
 
   /** A stat that failed during the walk: absent (ENOENT) reads as nothing there; other errors stand. */
