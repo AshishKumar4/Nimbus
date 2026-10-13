@@ -38,6 +38,20 @@ export class Peer extends DurableObject {
 }
 const CODE={compatibilityDate:'2026-09-26',mainModule:'leaf.js',modules:{'leaf.js':\`import {DurableObject} from 'cloudflare:workers';
 export class NimbusProcess extends DurableObject { startProcess(){return 'booted';} handleHttpRequest(){return new Response('user response');} fetch(){return new Response('user response');} }\`}};
+// A guest's answers HTTP framing would change on the way to its host: a declared length on a stream body, and an encoded body, sent manual or (as the Node shim does) automatic.
+const FRAMED={compatibilityDate:'2026-09-26',mainModule:'leaf.js',modules:{'leaf.js':\`import {DurableObject} from 'cloudflare:workers';
+const gzip=()=>new Response(new Blob(['hello hello']).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer();
+export class NimbusProcess extends DurableObject {
+  startProcess(){return 'booted';}
+  async handleHttpRequest(request){
+    const path=new URL(request.url).pathname;
+    if(path==='/length')return new Response(new ReadableStream({start(c){c.enqueue(new Uint8Array([1,2,3,4,5]));c.close();}}),{headers:{'Content-Length':'5'}});
+    if(path==='/short')return new Response(new ReadableStream({start(c){c.enqueue(new Uint8Array([1,2]));c.close();}}),{headers:{'Content-Length':'5'}});
+    if(path==='/gzip-manual')return new Response(await gzip(),{headers:{'Content-Encoding':'gzip'},encodeBody:'manual'});
+    const bytes=new Uint8Array(await gzip());
+    return new Response(new ReadableStream({start(c){c.enqueue(bytes);c.close();}}),{headers:{'Content-Encoding':'gzip'}});
+  }
+}\`}};
 export class Host extends DurableObject {
   activity;
   lease;
@@ -171,7 +185,20 @@ export class Host extends DurableObject {
       for(let i=0;i<100;i++){after=await this.env.PEER.get(this.env.PEER.idFromName(name)).status();if(after.watches===0)break;await new Promise(resolve=>setTimeout(resolve,10));}
       passiveCases.push({cause,state,before:before.watches,after:after.watches});
     }
-    return {shared,afterCancel,rejectedCapability,stale,activeLost:active.lost,idleLost:idle.lost,admitted,error,experiments,resetCases,passiveCases};
+    // What the facet host receives: the guest's declared length and its encoded bytes, as an RPC hop carried them.
+    const framedLeaf=this.env.LOADER.get('framed',()=>observeResidentConfig(structuredClone(FRAMED),'framed-key')).getDurableObjectClass('NimbusProcess');
+    const framedFacet=this.ctx.facets.get('framed',async()=>({class:framedLeaf}));
+    const answer=async(path)=>{
+      const response=await framedFacet.fetch(new Request('https://user.invalid'+path),{encodeResponseBody:'manual'});
+      const seen={status:response.status,length:response.headers.get('content-length'),coding:response.headers.get('content-encoding')};
+      try{
+        const body=response.headers.get('content-encoding')==='gzip'?response.body.pipeThrough(new DecompressionStream('gzip')):response.body;
+        const bytes=new Uint8Array(await new Response(body).arrayBuffer());
+        return {...seen,body:seen.coding==='gzip'?new TextDecoder().decode(bytes):[...bytes]};
+      }catch(error){return {...seen,error:String(error)};}
+    };
+    const framing={length:await answer('/length'),short:await answer('/short'),manual:await answer('/gzip-manual'),automatic:await answer('/gzip-automatic')};
+    return {shared,afterCancel,rejectedCapability,stale,activeLost:active.lost,idleLost:idle.lost,admitted,error,experiments,resetCases,passiveCases,framing};
   }
 }
 export default {fetch(request,env){return new URL(request.url).pathname==='/ready'?new Response('ready'):env.HOST.get(env.HOST.idFromName('proof')).run().then(value=>Response.json(value));}};`;
@@ -224,5 +251,9 @@ try{
     if(test.cause!=='pending-release')assert.equal(test.before,1,JSON.stringify(test));
     assert.equal(test.after,0,JSON.stringify(test));
   }
-  console.log('host-activity-workerd: native abort, shared watch, active reset, idle incarnation change and stale data refusal');
+  assert.deepEqual(result.framing.length,{status:200,length:'5',coding:null,body:[1,2,3,4,5]},'a declared length on a stream body reaches the host');
+  assert.equal(result.framing.short.length,'5');
+  assert.ok(result.framing.short.error,'a body shorter than its declared length fails, never passes short: '+JSON.stringify(result.framing.short));
+  for(const sent of ['manual','automatic']){const {length:_length,...seen}=result.framing[sent];assert.deepEqual(seen,{status:200,coding:'gzip',body:'hello hello'},sent+': the host receives the encoded bytes the guest sent, decoded once');}
+  console.log('host-activity-workerd: native abort, shared watch, active reset, idle incarnation change, stale data refusal and the HTTP hop keeping length and coding');
 }finally{child.kill('SIGKILL');rmSync(dir,{recursive:true,force:true});}
