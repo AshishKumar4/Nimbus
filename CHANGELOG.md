@@ -5,6 +5,10 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed (security): the shell's Ctrl+P palette put file names into the page as
+  HTML. A file named like `<img src=x onerror=...>`, for example from a cloned
+  repository, ran script in the shell page when the palette opened. Palette
+  entries are now plain text, and its error line is escaped.
 - Fixed: `utimesSync`, `lutimesSync` and `futimesSync` in a Node program reach
   the session; they changed only what the program itself saw.
 - Fixed: a file JS git checks out, and a loose object it writes, is made with
