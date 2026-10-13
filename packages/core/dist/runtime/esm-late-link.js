@@ -301,10 +301,14 @@ function edgesOf(host, late, target) {
 }
 /** A name its module's `export *`s reach two different bindings of. */
 const AMBIGUOUS = 'ambiguous';
-/** A late or staged module's facts; null where not known here. */
+/**
+ * A late or staged module's facts; null where not known here. A late module
+ * an earlier link read (a query's instance a staged module, already run,
+ * hands on) is that link's.
+ */
 function factsOf(host, late, target) {
     if (target.row === undefined) {
-        const node = late.modules.get(target.url);
+        const node = late.modules.get(target.url) ?? lateModules.get(target.url);
         return node === undefined || !node.known ? null : node;
     }
     return moduleFacts(host, target.row);
