@@ -33,7 +33,9 @@ export declare function projectFs(view: ProcessView): ProjectFs;
  * to the owner of the directory that holds it, before the tool, which now
  * acts as its caller, replaces it. Releases before 0.13.2 wrote `dist/`
  * (vite build), `package.json` (npm init, npm-fast) and
- * `node_modules/.nimbus-synthetic` (pre-bundling) as root. The calling tool
+ * `node_modules/.nimbus-synthetic` (pre-bundling) as root; releases through
+ * worker 0.17.0, `npm install -g`'s bin shims and `wrangler dev`'s KV and R2
+ * stores (`.nimbus/kv`, `.nimbus/r2`). The calling tool
  * names the one path it writes; only what is still root's there moves, and
  * only what the directory's owner could already read and replace: a world-
  * readable file with no other name (no hard link), or a world-searchable

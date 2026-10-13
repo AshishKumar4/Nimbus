@@ -233,22 +233,25 @@ export class NimbusWorkspace {
         registry.register('kill', createKillCommand(kernel.processRegistry));
         const getHome = () => shell.getEnv().HOME ?? DEFAULT_HOME;
         const kernelFs = vfs.as(CRED_KERNEL);
-        // The kernel's, for the runtime store; the session user's for what the
-        // owner put there: a lookup with no caller of its own, and the packages
-        // they installed globally, are read as they would read them.
-        const runtimeLease = filesystem.openHost(CRED_KERNEL);
-        const ownerLease = filesystem.openHost(CRED_SESSION_USER);
-        const hostLeases = [runtimeLease, ownerLease];
-        // A lookup without a caller's view INSPECTS a file to decide how to run
-        // it as the session user, and the caller's own execute permission is
-        // checked again at invocation — the `authorize` wrapper in
-        // exec-dispatch.ts. It inspects through the namespace's awaiting face, so
-        // a script on an asynchronous mount runs by its path like any other.
-        installPathExecResolver(registry, new ProcessView(ownerLease.fs), () => shell.getCwd());
-        // Everything past the lease can throw — a runtime source that fails to
-        // list, a package that will not install. The workspace it would have
-        // belonged to is never constructed, so nobody is left to close() it.
+        // Everything from the first lease on can throw — a lease refused, a
+        // runtime source that fails to list, a package that will not install.
+        // The workspace it would have belonged to is never constructed, so
+        // nobody is left to close() it: each lease is released here.
+        const hostLeases = [];
         try {
+            // The kernel's, for the runtime store; the session user's for what the
+            // owner put there: a lookup with no caller of its own, and the packages
+            // they installed globally, are read as they would read them.
+            const runtimeLease = filesystem.openHost(CRED_KERNEL);
+            hostLeases.push(runtimeLease);
+            const ownerLease = filesystem.openHost(CRED_SESSION_USER);
+            hostLeases.push(ownerLease);
+            // A lookup without a caller's view INSPECTS a file to decide how to run
+            // it as the session user, and the caller's own execute permission is
+            // checked again at invocation — the `authorize` wrapper in
+            // exec-dispatch.ts. It inspects through the namespace's awaiting face,
+            // so a script on an asynchronous mount runs by its path like any other.
+            installPathExecResolver(registry, new ProcessView(ownerLease.fs), () => shell.getCwd());
             const runtimes = new RuntimeManager({
                 vfs: new ProcessView(runtimeLease.fs),
                 registry,
@@ -355,14 +358,13 @@ export class NimbusWorkspace {
             return workspace;
         }
         catch (error) {
-            for (const lease of hostLeases)
-                await lease.dispose();
+            // What ended create() is what it throws, though a release fails too.
+            await releaseHostLeases(hostLeases).catch(() => { });
             throw error;
         }
     }
     async close() {
-        for (const lease of this.hostLeases)
-            await lease.dispose();
+        await releaseHostLeases(this.hostLeases);
     }
     /**
      * Run `command` as a process of its own and collect what it printed.
@@ -541,6 +543,12 @@ function defaultEnv(home) {
         PORT: '3000',
         HOST: '0.0.0.0',
     };
+}
+/** Every lease released, though one release fails; the first failure is thrown once all have been tried. */
+async function releaseHostLeases(leases) {
+    const failed = (await Promise.allSettled(leases.map((lease) => lease.dispose()))).find((outcome) => outcome.status === 'rejected');
+    if (failed)
+        throw failed.reason;
 }
 /**
  * The identity the workspace's own `sh` runs commands under.
