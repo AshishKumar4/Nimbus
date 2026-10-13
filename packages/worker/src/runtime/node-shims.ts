@@ -3736,6 +3736,78 @@ const __fsMod = (() => {
     return existsSync(p);
   }
 
+  // The watch engine fs.watch and fs.promises.watch share: polls \`filename\`
+  // every 500 ms and calls onChange(eventType, basename) for each change;
+  // answers its stop().
+  //
+  // In the facet context, changes to __vfsBundle/Writes are detected
+  // via polling since we don't have the supervisor's event emitter.
+  // A resident-store read reassembles a fresh byte buffer every time;
+  // object identity is not file identity. It also changes representation
+  // when data is hydrated, without a filesystem mutation. Compare the
+  // namespace's inode metadata instead, without reading content. Its
+  // revision is a listing cursor, not an inode edit: a relist after an
+  // unrelated write must not restart every watched configuration file.
+  // Heap-only embedders have no namespace, so compare bytes.
+  function _watchPath(filename, onChange) {
+    const absPath = _resolve(filename);
+    const key = _strip(absPath);
+    function snapshot() {
+      if (typeof __resident !== "undefined") {
+        // A relist temporarily makes metadata unavailable. Falling back
+        // to byte cells here invents two changes: leaving and re-entering
+        // the namespace, even when the watched inode never changed.
+        if (!_nsActive()) return null;
+        const found = __resident.namespace.resolve(key, true);
+        if (!found || found === "ELOOP") return { stamp: "absent", absent: true };
+        const row = found.row;
+        return { stamp: [row.ino, row.kind, row.size, row.mtime, row.ctime, row.mode, row.uid, row.gid].join(":"), absent: false };
+      }
+      const cell = _bundleLookup(absPath);
+      return { data: cell instanceof Uint8Array ? cell.slice() : cell, absent: cell === undefined };
+    }
+    function equal(a, b) {
+      if (a.stamp !== undefined || b.stamp !== undefined) return a.stamp === b.stamp;
+      if (a.data === b.data) return true;
+      const x = typeof a.data === "string" ? __nimbusOutEnc.encode(a.data) : a.data;
+      const y = typeof b.data === "string" ? __nimbusOutEnc.encode(b.data) : b.data;
+      if (!(x instanceof Uint8Array) || !(y instanceof Uint8Array) || x.length !== y.length) return false;
+      for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return false;
+      return true;
+    }
+    let stopped = false;
+    let previous = snapshot();
+    const interval = setInterval(() => {
+      if (stopped) return;
+      const current = snapshot();
+      if (current === null) return;
+      if (previous === null) { previous = current; return; }
+      if (!equal(current, previous)) {
+        const eventType = current.absent || previous.absent ? "rename" : "change";
+        previous = current;
+        onChange(eventType, __pathMod.basename(filename));
+      }
+    }, 500);
+    return () => {
+      stopped = true;
+      clearInterval(interval);
+    };
+  }
+
+  // fs.promises.realpath and callback fs.realpath: the authority's answer, as
+  // the sync form's is the namespace's, once what this process holds and has
+  // queued for the path has gone ahead of the question.
+  async function _realpathAsync(p) {
+    const supervisor = _supervisor();
+    if (supervisor && typeof supervisor.fsRealpath === "function") {
+      const absPath = _resolve(String(p));
+      await _awaitStructuralOrder(absPath);
+      await _flushLocalPathToSupervisor(absPath, supervisor);
+      return _fsRpc(supervisor.fsRealpath(absPath), "realpath", p, (result) => result);
+    }
+    return realpathSync(p);
+  }
+
   async function _readlinkAsync(p) {
     const supervisor = _supervisor();
     if (supervisor && typeof supervisor.readlink === "function") {
@@ -5711,7 +5783,7 @@ const __fsMod = (() => {
   }
   function realpath(p, opts, cb) {
     if (typeof opts === "function") { cb = opts; opts = undefined; }
-    promises.realpath(p, opts).then((r) => cb(null, r)).catch((e) => cb(e));
+    _realpathAsync(p).then((r) => cb(null, r), (e) => cb(e));
   }
   realpath.native = realpath;
 
@@ -6339,7 +6411,7 @@ const __fsMod = (() => {
     copyFile: (src, dest, mode) => _copyFileAsync(src, dest, mode),
     rename: async (oldP, newP) => { await _renameAsync(oldP, newP); },
     rmdir: async (p) => { await _rmdirAsync(p); },
-    realpath: async (p) => __pathMod.resolve(String(p)),
+    realpath: (p) => _realpathAsync(p),
     truncate: async (p, len) => { await _truncateAsync(p, len || 0); },
     chmod: async (p, mode) => { await _chmodAsync(p, mode); },
     chown: async (p, uid, gid) => { await _chownAsync(p, uid, gid); },
@@ -6355,19 +6427,31 @@ const __fsMod = (() => {
     open: async (path, flags, mode) => _openAsync(path, flags, mode),
     opendir: async (p, opts) => _opendirAsync(p, opts),
     statfs: async (p, opts) => _statfsAsync(p, opts),
+    // fs.watch's engine as Node's async iterator: each change queued until
+    // it is asked for, ended by return() or by its signal (an AbortError).
     watch: async function* (filename, opts) {
-      // Minimal async iter — polls _bundleLookup every 500ms and yields
-      // a single \`change\` event when content differs. Adequate for
-      // "wait for file to change" patterns; not a complete fsevents.
-      const absPath = _resolve(filename);
-      let last = _bundleLookup(absPath);
-      while (true) {
-        await new Promise(r => setTimeout(r, 500));
-        const cur = _bundleLookup(absPath);
-        if (cur !== last) {
-          last = cur;
-          yield { eventType: cur === undefined ? 'rename' : 'change', filename: __pathMod.basename(String(filename)) };
+      const signal = opts?.signal;
+      const aborted = () => new (__nimbusNodeLib().require("internal/errors").AbortError)(undefined, { cause: signal.reason });
+      if (signal !== undefined) __nimbusNodeLib().require("internal/validators").validateAbortSignal(signal, "options.signal");
+      if (signal?.aborted) throw aborted();
+      const queue = [];
+      let wake = null;
+      const stop = _watchPath(filename, (eventType, name) => {
+        queue.push({ eventType, filename: name });
+        if (wake) wake();
+      });
+      const onAbort = () => { stop(); if (wake) wake(); };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      try {
+        while (true) {
+          if (signal?.aborted) throw aborted();
+          if (queue.length > 0) { yield queue.shift(); continue; }
+          await new Promise((resolve) => { wake = resolve; });
+          wake = null;
         }
+      } finally {
+        stop();
+        signal?.removeEventListener("abort", onAbort);
       }
     },
     glob: async function* (pattern, options) {
@@ -6528,60 +6612,16 @@ const __fsMod = (() => {
     F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1,
     createReadStream: (p, opts) => new (__getReadStream())(p, opts),
     createWriteStream: (p, opts) => new (__getWriteStream())(p, opts),
-    // fs.watch() — returns a watcher object that emits 'change' events.
-    // In the facet context, changes to __vfsBundle/Writes are detected
-    // via polling since we don't have the supervisor's event emitter.
-    // For the supervisor context, real VFS events are wired separately.
+    // fs.watch(): an EventEmitter over the watch engine (_watchPath).
     watch: (filename, opts, listener) => {
       if (typeof opts === "function") { listener = opts; opts = {}; }
       const watcher = new __eventsMod();
-      watcher.close = () => { watcher._closed = true; watcher.removeAllListeners(); };
-      watcher._closed = false;
       if (listener) watcher.on("change", listener);
-      // A resident-store read reassembles a fresh byte buffer every time;
-      // object identity is not file identity. It also changes representation
-      // when data is hydrated, without a filesystem mutation. Compare the
-      // namespace's inode metadata instead, without reading content. Its
-      // revision is a listing cursor, not an inode edit: a relist after an
-      // unrelated write must not restart every watched configuration file.
-      // Heap-only embedders have no namespace, so compare bytes.
-      const absPath = _resolve(filename);
-      const key = _strip(absPath);
-      function snapshot() {
-        if (typeof __resident !== "undefined") {
-          // A relist temporarily makes metadata unavailable. Falling back
-          // to byte cells here invents two changes: leaving and re-entering
-          // the namespace, even when the watched inode never changed.
-          if (!_nsActive()) return null;
-          const found = __resident.namespace.resolve(key, true);
-          if (!found || found === "ELOOP") return { stamp: "absent", absent: true };
-          const row = found.row;
-          return { stamp: [row.ino, row.kind, row.size, row.mtime, row.ctime, row.mode, row.uid, row.gid].join(":"), absent: false };
-        }
-        const cell = _bundleLookup(absPath);
-        return { data: cell instanceof Uint8Array ? cell.slice() : cell, absent: cell === undefined };
-      }
-      function equal(a, b) {
-        if (a.stamp !== undefined || b.stamp !== undefined) return a.stamp === b.stamp;
-        if (a.data === b.data) return true;
-        const x = typeof a.data === "string" ? __nimbusOutEnc.encode(a.data) : a.data;
-        const y = typeof b.data === "string" ? __nimbusOutEnc.encode(b.data) : b.data;
-        if (!(x instanceof Uint8Array) || !(y instanceof Uint8Array) || x.length !== y.length) return false;
-        for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return false;
-        return true;
-      }
-      let previous = snapshot();
-      const interval = setInterval(() => {
-        if (watcher._closed) { clearInterval(interval); return; }
-        const current = snapshot();
-        if (current === null) return;
-        if (previous === null) { previous = current; return; }
-        if (!equal(current, previous)) {
-          const eventType = current.absent || previous.absent ? "rename" : "change";
-          previous = current;
-          watcher.emit("change", eventType, __pathMod.basename(filename));
-        }
-      }, 500);
+      let stop = _watchPath(filename, (eventType, name) => watcher.emit("change", eventType, name));
+      watcher.close = () => {
+        if (stop !== null) { stop(); stop = null; }
+        watcher.removeAllListeners();
+      };
       return watcher;
     },
     watchFile: (filename, opts, listener) => {
