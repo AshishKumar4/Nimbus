@@ -116,10 +116,10 @@ export function keepCopiesBefore(fs, paths, tables) {
         const keepAt = (found) => {
             if (found === null)
                 return;
-            // One hold per file, every copy of it sharing it.
+            // One hold per file, every copy of it sharing it; a copy closed while the stat was asked is gone.
             const files = new Map();
             for (const e of unkept) {
-                if (e.kept !== undefined || !('name' in e.hold))
+                if (e.opens === 0 || e.kept !== undefined || !('name' in e.hold))
                     continue;
                 const file = found.type === 'directory' || (found.dev === e.stat.dev && found.ino === e.stat.ino);
                 if (!file)
@@ -128,12 +128,15 @@ export function keepCopiesBefore(fs, paths, tables) {
                 const group = files.get(key);
                 if (group !== undefined)
                     group.copies.push(e);
+                // Beneath a directory, by the name the copy was read at, followed as it was then; else the name taken away, which is the file itself.
+                else if (found.type === 'directory')
+                    files.set(key, { name: e.hold.name, follow: e.hold.follow, copies: [e] });
                 else
-                    files.set(key, { name: found.type === 'directory' ? e.hold.name : name, copies: [e] });
+                    files.set(key, { name, follow: false, copies: [e] });
             }
             const holding = [];
-            for (const { name: at, copies } of files.values()) {
-                const kept = { held: holdFile(fs, at, copies[0].stat), copies: copies.length };
+            for (const { name: at, follow, copies } of files.values()) {
+                const kept = { held: holdFile(fs, at, follow, copies[0].stat), copies: copies.length };
                 for (const e of copies)
                     e.kept = kept;
                 holding.push(kept.held);
@@ -144,8 +147,8 @@ export function keepCopiesBefore(fs, paths, tables) {
     });
     return steps.some((step) => step instanceof Promise) ? Promise.all(steps).then(() => { }) : undefined;
 }
-/** An O_PATH open of `name`, kept when it is the file `stat` describes. */
-function holdFile(fs, name, stat) {
+/** An O_PATH open of `name` (`follow`: its last link followed), kept when it is the file `stat` describes. */
+function holdFile(fs, name, follow, stat) {
     const kept = (opened) => {
         if (opened.stat.dev === stat.dev && opened.stat.ino === stat.ino)
             return { handle: opened.id, fs };
@@ -153,7 +156,7 @@ function holdFile(fs, name, stat) {
         return null;
     };
     try {
-        const opened = fs.open(name, { path: true, followSymlinks: false });
+        const opened = fs.open(name, { path: true, followSymlinks: follow });
         return opened instanceof Promise ? opened.then(kept, () => null) : kept(opened);
     }
     catch {
