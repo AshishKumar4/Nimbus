@@ -7967,7 +7967,18 @@ export class FacetManager {
         if (this.launchesClosed)
             return Promise.reject(new Error('Launch scheduler is closed'));
         const preparing = this.processes.holdWork(entry.pid);
-        return this.trackLaunchTask(this._runResidentLaunchBody(entry, code, command, opts, attempt).finally(preparing));
+        // Let in once on the ledger, as its launch, before its preparation, as an
+        // exec is: what it puts in flight (its transform and build helpers, its
+        // facet's residency) is that worker, and it takes its share of the
+        // transient budget only once let in (Kinu #29). A launch holding credit
+        // that waited for a worker its helpers need would wait on launches
+        // holding workers that wait for its credit. Its process ending ends the wait.
+        const ended = new AbortController();
+        const unsubscribe = this.processes.subscribeTerminal(entry.pid, () => {
+            ended.abort(new Error(`Nimbus: the launch for pid ${entry.pid} was cancelled while it waited for a worker`));
+        });
+        const launch = withLaunchAdmission(this.ctx, { pid: entry.pid }, ended.signal, () => this._runResidentLaunchBody(entry, code, command, opts, attempt));
+        return this.trackLaunchTask(launch.finally(() => { unsubscribe(); preparing(); }));
     }
     async _runResidentLaunchBody(entry, code, command, opts, attempt) {
         const cwd = opts.cwd || '/home/user';
