@@ -952,6 +952,8 @@ export class VirtualSocketKernel {
         const listener = this.listeners.get(Number(port));
         if (listener) {
             listener.restore(conn);
+            // Queued again, it is news to a poll of the port, as an arrival is.
+            this.notifyReadable(Number(port));
             return;
         }
         this.connections.delete(conn.id);
