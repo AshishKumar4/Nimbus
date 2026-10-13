@@ -167,14 +167,17 @@ try {
     assert.equal(budget.current, 0, `every admission was given back (${JSON.stringify(budget)})`);
     assert.equal(budget.queued, 0, `nothing is left queued (${JSON.stringify(budget)})`);
   };
-  const three = (names) => names.map((name) => ended(manager.exec("require('./cell.js')", bigTree(name))));
+  // The trees are written before a base is read: what is measured is the launches', not their files'.
+  const three = (trees) => trees.map((tree) => ended(manager.exec("require('./cell.js')", tree)));
   let peakHeld = 0;
   const watchHeld = setInterval(() => { peakHeld = Math.max(peakHeld, readSupervisorAllocationBudget().current); }, 1);
   try {
     // One ~17 MiB build alone, for its bytes; then three at once peak at one build's plus the admitted budget.
-    const alone = await peakOver(() => ended(manager.exec("require('./cell.js')", bigTree('alone'))));
+    const aloneTree = bigTree('alone');
+    const alone = await peakOver(() => ended(manager.exec("require('./cell.js')", aloneTree)));
     assert.equal(alone.result.exitCode, 0, alone.result.stderr);
-    const bigThree = await peakOver(() => settleWithin(three(['a', 'b', 'c']), 120_000));
+    const bigTrees = ['a', 'b', 'c'].map(bigTree);
+    const bigThree = await peakOver(() => settleWithin(three(bigTrees), 120_000));
     const settled = bigThree.result;
     assert.notEqual(settled, 'deadlocked', 'three ~17 MiB builds sharing the pool all finish');
     assert.deepEqual(settled.map((r) => r.status === 'fulfilled' ? r.value.exitCode : String(r.reason)), [0, 0, 0]);
@@ -205,7 +208,7 @@ try {
     // A build that fails while it holds its admission gives it back, and the
     // build queued behind it is admitted and finishes.
     onBigCell.set('fail-b', () => { throw new Error('injected ~17 MiB serializer failure'); });
-    const failed = await settleWithin(three(['fail-a', 'fail-b', 'fail-c']), 120_000);
+    const failed = await settleWithin(three(['fail-a', 'fail-b', 'fail-c'].map(bigTree)), 120_000);
     onBigCell.delete('fail-b');
     assert.notEqual(failed, 'deadlocked', 'a failure among three ~17 MiB builds stops none of the others');
     assert.equal(failed[1].status, 'rejected');
@@ -221,7 +224,7 @@ try {
       assert.ok(victim, 'the launch being serialized is running');
       manager.kill(victim.pid);
     });
-    const killed = await settleWithin(three(['kill-a', 'kill-b', 'kill-c']), 120_000);
+    const killed = await settleWithin(three(['kill-a', 'kill-b', 'kill-c'].map(bigTree)), 120_000);
     onBigCell.delete('kill-a');
     assert.notEqual(killed, 'deadlocked', 'a launch killed mid-build stops none of the others');
     assert.deepEqual([killed[1], killed[2]].map((r) => r.status === 'fulfilled' ? r.value.exitCode : String(r.reason)), [0, 0]);
