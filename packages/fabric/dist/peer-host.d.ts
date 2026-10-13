@@ -142,6 +142,8 @@ export declare class PeerHost {
      */
     awaitBoot(workerKey: string): Promise<HostedReply<{
         payload: unknown;
+    } | {
+        refused: unknown;
     }>>;
     /** The coordinator abandons request `id` of a process this peer hosts (SentRequests): its leaf's call is cancelled. */
     abandonHttp(workerKey: string, capability: string, id: number): Promise<void>;

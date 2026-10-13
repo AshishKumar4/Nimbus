@@ -138,7 +138,7 @@ class FacetProcessHost {
         const starting = hostActivity(this.ctx).acquire();
         return {
             ...facet,
-            started: loss.route(() => facet.started).finally(() => starting.release()),
+            started: facet.started.finally(() => starting.release()),
             lost: loss.signal,
             handleHttpRequest: (request, scope) => loss.route(() => facet.handleHttpRequest(request, scope)),
             handleWebSocketRequest: (request) => loss.route(() => facet.handleWebSocketRequest(request)),
@@ -192,7 +192,7 @@ function peerNamespace(env) {
 }
 const PeerProbeResult = z.object({ isolateToken: z.string() });
 const PeerOpenResult = z.object({ ok: z.boolean(), incarnation: z.string() });
-const PeerBootResult = z.object({ payload: z.unknown() });
+const PeerBootResult = z.object({ payload: z.unknown(), refused: z.unknown() }).partial();
 const PeerCancelResult = z.object({ cancelled: z.boolean() });
 const PeerHttpResult = z.object({
     status: z.number().int(),
@@ -229,7 +229,8 @@ function processPeerStub(value, peerName) {
         _rpcHostProcess: async (boot, opts) => peerAnswer(PeerOpenResult, await dispatch({ op: 'hostProcess', args: [boot, opts] })),
         _rpcAwaitHostedBoot: async (key) => {
             const result = peerAnswer(PeerBootResult, await dispatch({ op: 'awaitHostedBoot', args: [key] }));
-            return { payload: result.payload };
+            // A refusal is the error its leaf's boot rejected with, never undefined.
+            return result.refused !== undefined ? { refused: result.refused } : { payload: result.payload };
         },
         _rpcRouteHostedHttp: async (key, request) => parsePeerAnswer(PeerHttpResult, await dispatch({ op: 'routeHostedHttp', args: [key, request] })),
         _rpcAbandonHostedHttp: async (key, capability, id) => { await dispatch({ op: 'abandonHostedHttp', args: [key, capability, id] }); },
@@ -360,7 +361,12 @@ class PeerProcessHost {
             const observation = hostActivity(this.ctx).observe((signal) => this.watchPeer(placement.peerName, params.workerKey, webSocketCapability, signal, link), (error) => loss.lose(error), opened.incarnation);
             stopObserving = observation.close;
             const starting = hostActivity(this.ctx).acquire();
-            const started = loss.route(() => this.withPeer(placement.peerName, (stub) => stub._rpcAwaitHostedBoot(params.workerKey).then((r) => r.payload))).finally(() => starting.release());
+            // The boot is its leaf's to answer, as a facet's is: a refusal (a run's
+            // stop) crosses as itself. Only a failed leg to the peer is the host's.
+            const started = loss.route(() => this.withPeer(placement.peerName, (stub) => stub._rpcAwaitHostedBoot(params.workerKey)))
+                .then((boot) => { if ('refused' in boot)
+                throw boot.refused; return boot.payload; })
+                .finally(() => starting.release());
             started.catch(() => { });
             let released = false;
             const sent = new SentRequests();

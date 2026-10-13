@@ -298,7 +298,15 @@ export class PeerHost {
     async awaitBoot(workerKey) {
         return this.answer(workerKey, async () => {
             const record = await this.awaitRecord(workerKey);
-            return { payload: await record.started };
+            // The leaf's boot answers for itself, as a facet's does to its own
+            // coordinator: its refusal (a run's stop, which resets the leaf) is
+            // that boot's answer, never this peer's loss.
+            try {
+                return { payload: await record.started };
+            }
+            catch (error) {
+                return { refused: error };
+            }
         });
     }
     /** The coordinator abandons request `id` of a process this peer hosts (SentRequests): its leaf's call is cancelled. */
