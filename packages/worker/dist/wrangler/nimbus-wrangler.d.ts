@@ -86,7 +86,7 @@ export declare class NimbusWrangler {
     constructor(opts: NimbusWranglerOptions);
     /** Start the wrangler dev server. */
     start(): Promise<boolean>;
-    /** Whether stop() was called: a start it cut short failed for that reason. */
+    /** Whether stop() was called since the last start(): a start it cut short failed for that reason. */
     get wasStopped(): boolean;
     /** Stop the wrangler dev server, and any build it has under way. */
     stop(): void;
