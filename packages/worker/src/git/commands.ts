@@ -25,7 +25,7 @@ import {
 } from './clone-job.js';
 import { noSuchRemoteText, remoteFailureText, selectRemoteCredentials, urlCredentials } from './pack/remote-failure.js';
 import { base64Utf8 } from '@nimbus-sh/core/_shared/crypto.js';
-import { GitGlobalsError, parseConfigParameter, withConfigOverrides, withGlobalConfig, type ConfigOverrides } from './config-params.js';
+import { GitGlobalsError, configBool, parseConfigParameter, withConfigOverrides, withGlobalConfig, withWorktreeConfig, type ConfigOverrides } from './config-params.js';
 import { gitBackend, UnsupportedGitOperation } from './routing.js';
 import { packsSeam, type GitPacksSeam, type PromisorFetch } from './pack/store.js';
 import { PromisorFetchError, fetchMissingObjects } from './promisor.js';
@@ -58,7 +58,7 @@ import { invalidPathError, verifyPath } from './worktree/verify-path.js';
 import { DirCache, NewEntries, comparePaths, type IndexEdit, type NewEntry } from './worktree/dircache.js';
 import { isValidRefName } from './worktree/refname.js';
 import { PairList, type PairSide } from './worktree/pairs.js';
-import { WorktreeRepo, configBool, type ObjectEngine, type ObjectWriter } from './worktree/repo.js';
+import { WorktreeRepo, type ObjectEngine, type ObjectWriter } from './worktree/repo.js';
 import type { SparseMatcher } from './pack/sparse.js';
 import { collectStatus, inSpecs, shortStatusLines, walkTreeAndIndex, type StatusChange } from './worktree/status.js';
 import { EMPTY_TREE, treeLeaves, treeOf, writeTreeFromIndex } from './worktree/tree.js';
@@ -3272,7 +3272,7 @@ export async function runGitCommand(
     };
     const fs = sessionGitFs(repoVfs, null, promisor);
     const fileGit = git;
-    git = withConfigOverrides(withGlobalConfig(git, fs, ctx.env, dir), globals.config);
+    git = withConfigOverrides(withWorktreeConfig(withGlobalConfig(git, fs, ctx.env, dir), fileGit, fs), globals.config);
     commandFs = fs;
     // The engine, as this command's principal: a repository on it takes its objects in waves (WorktreeRepo.objectWriter).
     commandEngines.set(fs, {

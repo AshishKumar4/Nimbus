@@ -57,6 +57,21 @@ export function parseConfigParameter(text: string): [key: string, value: string 
   return [stored, value];
 }
 
+/**
+ * git_config_bool's spellings, from a file or command override: a key with no
+ * `=` is null in the override (git's true), and an explicit empty value is ''
+ * (git's false). cf-git may already have decoded a stored value to a boolean.
+ */
+export function configBool(value: unknown): boolean | undefined {
+  if (value === null) return true;
+  if (typeof value === 'boolean') return value;
+  if (typeof value !== 'string') return undefined;
+  const text = value.toLowerCase();
+  if (['true', 'yes', 'on', '1'].includes(text)) return true;
+  if (['false', 'no', 'off', '0', ''].includes(text)) return false;
+  return undefined;
+}
+
 /** A config key as `-c` stores it: section and variable name in lower case, the subsection kept. */
 function configKey(path: string): string {
   const first = path.indexOf('.');
@@ -125,6 +140,70 @@ export function withGlobalConfig<G extends ConfigReader>(git: G, fs: {
   return new Proxy(git, {
     get: (target, property, receiver) =>
       property === 'getConfig' || property === 'getConfigAll' ? reads[property] : Reflect.get(target, property, receiver),
+  });
+}
+
+/** The repository a read names: its gitdir, else its worktree's .git (as cf-git takes `dir`). */
+function gitdirOf(args: { path: string }): string | null {
+  if ('gitdir' in args && typeof args.gitdir === 'string') return args.gitdir;
+  if ('dir' in args && typeof args.dir === 'string') return `${args.dir}/.git`;
+  return null;
+}
+
+/**
+ * `git` with a repository's config.worktree over its config where the
+ * repository sets extensions.worktreeConfig: git reads system, global,
+ * local, worktree, then -c (withConfigOverrides, over this). Whether it is
+ * set is the repository's own config's (`files`, cf-git reading only that
+ * file), read once per repository until this command writes a config.
+ */
+export function withWorktreeConfig<G extends ConfigReader & { setConfig(args: { path: string }): Promise<void> }>(git: G, files: ConfigReader, fs: {
+  promises: { readFile(path: string, options?: 'utf8' | { encoding: 'utf8' }): Promise<Uint8Array | string> };
+}): G {
+  const enabled = new Map<string, Promise<boolean>>();
+  const worktreeConfig = (args: { path: string }): Promise<string | null> | null => {
+    const gitdir = 'fs' in args && args.fs === fs ? gitdirOf(args) : null;
+    if (gitdir === null) return null;
+    let known = enabled.get(gitdir);
+    if (known === undefined) {
+      known = files.getConfig({ fs, gitdir, path: 'extensions.worktreeConfig' }).then((value) => configBool(value) === true, () => false);
+      enabled.set(gitdir, known);
+    }
+    return known.then((on) => (on ? gitdir : null));
+  };
+  /** cf-git's read of `path` in `gitdir`'s config.worktree, offered as the config of a gitdir of its own. */
+  const inWorktreeFile = (gitdir: string, path: string) => {
+    const file = `${gitdir}/config.worktree`;
+    const own = `${file}.nimbus`;
+    return {
+      path,
+      gitdir: own,
+      fs: { promises: { ...fs.promises, readFile: (name: string, options?: 'utf8' | { encoding: 'utf8' }) => fs.promises.readFile(name === `${own}/config` ? file : name, options) } },
+    };
+  };
+  const calls = {
+    async getConfig(args: { path: string }) {
+      const gitdir = await worktreeConfig(args);
+      if (gitdir !== null) {
+        const own = await git.getConfig(inWorktreeFile(gitdir, args.path)).catch(() => undefined);
+        if (own !== undefined) return own;
+      }
+      return await git.getConfig(args);
+    },
+    async getConfigAll(args: { path: string }) {
+      const all = await git.getConfigAll(args);
+      const gitdir = await worktreeConfig(args);
+      if (gitdir === null) return all;
+      return [...all, ...await git.getConfigAll(inWorktreeFile(gitdir, args.path)).catch(() => [])];
+    },
+    async setConfig(args: { path: string }) {
+      enabled.clear();
+      await git.setConfig(args);
+    },
+  };
+  return new Proxy(git, {
+    get: (target, property, receiver) =>
+      property === 'getConfig' || property === 'getConfigAll' || property === 'setConfig' ? calls[property] : Reflect.get(target, property, receiver),
   });
 }
 

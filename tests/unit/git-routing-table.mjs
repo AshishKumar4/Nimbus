@@ -14,6 +14,8 @@
 //   - a command whose hooks (githooks(5)) the repository makes executable
 //     is real git's: the built-in runs no hook. Where git looks for them
 //     (core.hooksPath, a relative one from the worktree's top) is honored.
+//     core.hooksPath is read as git reads it: -c, a worktree's
+//     config.worktree, the repository's, the global config, in that order.
 //     A hook that is there but not executable is real git's too, which
 //     says it ignored it, and so is one in a directory that can be searched
 //     but not read (git runs a hook by its path) or not searched at all.
@@ -198,6 +200,22 @@ for (const [dir, dirMode, config] of [['.git/hooks', 0o311, null], ['githooks', 
   user.chmod(`home/user/repo/${dir}`, 0o755);
   user.unlink(path);
   if (config) user.writeFile('home/user/repo/.git/config', user.readFileString('home/user/repo/.git/config').replace(`[core]\n\thooksPath = ${config}\n`, ''));
+}
+
+// core.hooksPath where git reads it last but -c: a worktree's config.worktree
+// (extensions.worktreeConfig set), over the repository's; -c over both.
+{
+  const config = user.readFileString('home/user/repo/.git/config');
+  user.mkdir('home/user/repo/worktree-hooks', { recursive: true });
+  user.writeFile('home/user/repo/worktree-hooks/pre-commit', '#!/bin/sh\nexit 0\n');
+  user.chmod('home/user/repo/worktree-hooks/pre-commit', 0o755);
+  user.writeFile('home/user/repo/.git/config', config + '[extensions]\n\tworktreeConfig = true\n[core]\n\thooksPath = no-hooks\n');
+  user.writeFile('home/user/repo/.git/config.worktree', '[core]\n\thooksPath = worktree-hooks\n');
+  if (await engine(['commit', '-m', 'x', '--allow-empty']) !== 'real git') wrong.push('real git expected with pre-commit in config.worktree\'s core.hooksPath: git commit');
+  if (await engine(['-c', 'core.hooksPath=no-hooks', 'commit', '-m', 'x', '--allow-empty']) !== 'built-in') wrong.push('built-in expected with -c core.hooksPath over config.worktree\'s: git commit');
+  user.writeFile('home/user/repo/.git/config', config);
+  user.unlink('home/user/repo/.git/config.worktree');
+  user.unlink('home/user/repo/worktree-hooks/pre-commit');
 }
 
 // The refresh a status or diff writes back runs post-index-change in git:

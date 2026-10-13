@@ -26,6 +26,7 @@ import { Excludes, parsePatternList, type PatternList } from './excludes.js';
 import { EMPTY_TREE, treeOf, type ObjectStore } from './tree.js';
 import { UnsupportedGitOperation } from '../routing.js';
 import { DEFAULT_PATH_PROTECTION, type PathProtection } from './verify-path.js';
+import { configBool } from '../config-params.js';
 import { matchStat, newCounters, worktreeBlobId, type WalkCounters, type Worktree, type WorktreeFs, type WorktreeStat, type WorktreeType } from './walk.js';
 
 /** The cf-git calls a repository makes. */
@@ -86,21 +87,6 @@ interface ObjectSink {
 function isAbsent(error: unknown): boolean {
   return isVfsError(error, 'ENOENT') || isVfsError(error, 'ENOTDIR')
     || (typeof error === 'object' && error !== null && 'code' in error && (error.code === 'ENOENT' || error.code === 'ENOTDIR'));
-}
-
-/**
- * git_config_bool's spellings, from a file or command override: a key with no
- * `=` is null in the override (git's true), and an explicit empty value is ''
- * (git's false). cf-git may already have decoded a stored value to a boolean.
- */
-export function configBool(value: unknown): boolean | undefined {
-  if (value === null) return true;
-  if (typeof value === 'boolean') return value;
-  if (typeof value !== 'string') return undefined;
-  const text = value.toLowerCase();
-  if (['true', 'yes', 'on', '1'].includes(text)) return true;
-  if (['false', 'no', 'off', '0', ''].includes(text)) return false;
-  return undefined;
 }
 
 /**
@@ -273,11 +259,6 @@ export class WorktreeRepo {
     return { fs: { promises }, gitdir: fake };
   }
 
-  /** `path` in the config file `file`, as cf-git reads it. */
-  private async configIn(file: string, path: string): Promise<unknown> {
-    return await this.git.getConfig({ ...this.configFile(file), path });
-  }
-
   /**
    * init_worktree_config: extensions.worktreeConfig set, core.bare (when
    * true) and core.worktree moved from config to config.worktree, unless
@@ -303,24 +284,9 @@ export class WorktreeRepo {
     await this.git.setConfig({ ...this.configFile(`${this.gitdir}/config.worktree`), path, value });
   }
 
-  /**
-   * A setting as git reads it for this worktree: config.worktree's when
-   * extensions.worktreeConfig is set (where clone --sparse and
-   * sparse-checkout write theirs), over the repository's config.
-   */
-  async worktreeSetting(path: string): Promise<unknown> {
-    if (configBool(await this.config('extensions.worktreeConfig')) === true) {
-      try {
-        const value = await this.configIn(`${this.gitdir}/config.worktree`, path);
-        if (value !== undefined) return value;
-      } catch { /* no such file */ }
-    }
-    return await this.config(path);
-  }
-
   /** core.sparseCheckout: whether the worktree is a sparse checkout. */
   async isSparse(): Promise<boolean> {
-    return configBool(await this.worktreeSetting('core.sparseCheckout')) === true;
+    return configBool(await this.config('core.sparseCheckout')) === true;
   }
 
   /**
@@ -338,9 +304,9 @@ export class WorktreeRepo {
     } catch (error) {
       if (!isAbsent(error)) throw error;
     }
-    const cone = configBool(await this.worktreeSetting('core.sparseCheckoutCone')) === true ? parseConeSparseCheckout(patterns) : null;
+    const cone = configBool(await this.config('core.sparseCheckoutCone')) === true ? parseConeSparseCheckout(patterns) : null;
     if (cone === null) throw new Error('fatal: a sparse checkout without cone mode is not supported');
-    return coneMatcher(cone, configBool(await this.worktreeSetting('core.ignorecase')) === true);
+    return coneMatcher(cone, configBool(await this.config('core.ignorecase')) === true);
   }
 
   /** core.protectHFS and core.protectNTFS as the command's config reads them (-c, the repository's, the global), else git's defaults (verify-path.ts). */
@@ -374,7 +340,7 @@ export class WorktreeRepo {
   /** Capability is checked before branch creation, staging, fetch or checkout. Reuse the index read there. */
   async prepare(): Promise<void> {
     if (await this.isSparse()) {
-      if (configBool(await this.worktreeSetting('core.sparseCheckoutCone')) !== true) {
+      if (configBool(await this.config('core.sparseCheckoutCone')) !== true) {
         throw new UnsupportedGitOperation('fatal: a sparse checkout without cone mode is not supported\n', 128);
       }
       let patterns = '';
@@ -397,7 +363,7 @@ export class WorktreeRepo {
    */
   private async clearPresentSkips(dc: DirCache): Promise<void> {
     if (!await this.isSparse()) return;
-    if (configBool(await this.worktreeSetting('sparse.expectFilesOutsideOfPatterns')) === true) return;
+    if (configBool(await this.config('sparse.expectFilesOutsideOfPatterns')) === true) return;
     let missing = '';
     for (let i = 0; i < dc.count; i++) {
       if (!dc.skipWorktree(i)) continue;
