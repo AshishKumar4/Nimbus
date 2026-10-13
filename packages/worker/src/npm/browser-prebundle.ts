@@ -21,7 +21,7 @@ import { PREBUNDLE_DEFINE, sliceSources, type PrebundleResult } from '@nimbus-sh
 import { R_OK } from '@nimbus-sh/core/runtime/process-files.js';
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
-import { resolvePackageEntry } from '@nimbus-sh/core/_shared/exports-resolver.js';
+import { resolvePackageEntry, type ResolvablePackageJson } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { PRE_BUNDLE_SLICE_CAP_BYTES } from '@nimbus-sh/platform/limits.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import type { ResizableCreditLease } from '@nimbus-sh/platform/weighted-credit-pool.js';
@@ -99,7 +99,7 @@ export async function barrelInput(
   ctx: PrebundleContext,
   specifier: string,
   scan: () => Promise<ProjectImports>,
-  unread?: (pkgName: string, fileCount: number, left: number) => void,
+  unread?: (pkgName: string, fileCount: number, left: string) => void,
 ): Promise<BarrelInput | null> {
   const pkgName = packageNameFromSpecifier(specifier);
   if (specifier !== pkgName) return null;
@@ -409,7 +409,7 @@ export function resolvePrebundleEntry(vfs: CredentialedVfs, root: string, specif
   for (const dir of [root, 'home/user', 'usr/share/pkg']) {
     const pkgDir = dir + '/node_modules/' + pkgName;
     if (!vfs.exists(pkgDir)) continue;
-    let pkg: { exports?: unknown; module?: string; main?: string } | null = null;
+    let pkg: ResolvablePackageJson | null = null;
     if (vfs.exists(pkgDir + '/package.json')) {
       try { pkg = JSON.parse(vfs.readFileString(pkgDir + '/package.json')); } catch { /* malformed */ }
     }
@@ -424,7 +424,7 @@ export function resolvePrebundleEntry(vfs: CredentialedVfs, root: string, specif
       const nestedPath = pkgDir + '/' + subpath + '/package.json';
       if (vfs.exists(nestedPath)) {
         try {
-          const nested: { module?: string; main?: string } = JSON.parse(vfs.readFileString(nestedPath));
+          const nested: ResolvablePackageJson = JSON.parse(vfs.readFileString(nestedPath));
           const entry = nested.module || nested.main || 'index.js';
           const found = resolveFile(vfs, normalizeVfsPath(pkgDir + '/' + subpath + '/' + entry.replace(/^\.\//, '')));
           if (found) return found;
