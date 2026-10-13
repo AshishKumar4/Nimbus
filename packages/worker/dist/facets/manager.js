@@ -4683,7 +4683,12 @@ export class FacetManager {
     static PREFETCH_CACHE_MAX = 16;
     /** Live sum of the entries' `bytes`, mirrored to the diag gauge on change. */
     prefetchCacheBytes = 0;
-    /** Cache-miss builds in flight, by key and the revision they read: a launch of the same key waits for one, then takes its entry. */
+    /**
+     * Cache-miss builds in flight, by key and the revision they read: a launch
+     * of the same key waits for one, then takes its entry, or (one the cache
+     * did not retain) its own copy of the state, built at the revision `done`
+     * names (null: it built nothing of its own).
+     */
     prefetchBuilds = new Map();
     /**
      * What each command's runs learned for its next launch: the modules they
@@ -5788,10 +5793,13 @@ export class FacetManager {
         const shared = spec.maxBundleBytes === undefined;
         const inFlight = shared ? this.prefetchBuilds.get(key) : undefined;
         if (inFlight !== undefined && inFlight.revision === revision) {
-            await inFlight.done.catch(() => { });
+            const built = await inFlight.done;
             const published = await takeCached();
             if (published)
                 return published;
+            // Not retained (past the entry bound): that build's own result, if the filesystem is still at the revision it read.
+            if (built !== null && built.revision === revision)
+                return { ...built.state, cacheHit: true, cacheRetained: false };
         }
         // Kinu #29: the cells are gathered and serialized under one admission,
         // so cache-miss builds queue for room through both. A launch admitted
@@ -5799,7 +5807,7 @@ export class FacetManager {
         const building = withPrefetchAllocation(async (queued) => {
             const admitted = queued ? await takeCached() : null;
             if (admitted)
-                return admitted;
+                return { state: admitted, shared: null };
             const readProfile = this.readProfile;
             const offered = [];
             const learnedFor = readProfile === null ? undefined : async (closure) => {
@@ -5913,15 +5921,17 @@ export class FacetManager {
             // from here on, not the peak it passed through on the way in.
             releaseSerializedSources(vfsState);
             vfsState.cacheRetained = this._admitPrefetchCacheEntry(key, revision, vfsState);
-            return vfsState;
+            // What a launch of this key waiting for this build takes: a state of its own, released by it alone.
+            return { state: vfsState, shared: { state: { ...vfsState }, revision } };
         });
+        const inProgress = { revision, done: building.then((built) => built.shared, () => null) };
         if (shared)
-            this.prefetchBuilds.set(key, { revision, done: building });
+            this.prefetchBuilds.set(key, inProgress);
         try {
-            return await building;
+            return (await building).state;
         }
         finally {
-            if (this.prefetchBuilds.get(key)?.done === building)
+            if (this.prefetchBuilds.get(key) === inProgress)
                 this.prefetchBuilds.delete(key);
         }
     }

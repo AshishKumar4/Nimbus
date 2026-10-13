@@ -1315,7 +1315,12 @@ export declare class FacetManager {
     private static readonly PREFETCH_CACHE_MAX;
     /** Live sum of the entries' `bytes`, mirrored to the diag gauge on change. */
     private prefetchCacheBytes;
-    /** Cache-miss builds in flight, by key and the revision they read: a launch of the same key waits for one, then takes its entry. */
+    /**
+     * Cache-miss builds in flight, by key and the revision they read: a launch
+     * of the same key waits for one, then takes its entry, or (one the cache
+     * did not retain) its own copy of the state, built at the revision `done`
+     * names (null: it built nothing of its own).
+     */
     private readonly prefetchBuilds;
     /**
      * What each command's runs learned for its next launch: the modules they
