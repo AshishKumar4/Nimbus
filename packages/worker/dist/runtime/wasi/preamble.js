@@ -745,7 +745,7 @@ function __wasiSocketFill(entry) {
             return null;
         }
         catch (e) {
-            const msg = (e && e.message) ? e.message : String(e);
+            const msg = e instanceof Error && e.message ? e.message : String(e);
             if (/refused|ECONNREFUSED/i.test(msg))
                 return __WASI_ECONNREFUSED;
             if (/unreach|EHOSTUNREACH/i.test(msg))
