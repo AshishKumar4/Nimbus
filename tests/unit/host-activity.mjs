@@ -73,20 +73,25 @@ function setup() {
   // being reported ended, which would make the leaf forget it unabandoned.
 const sent = new SentRequests(), abandons = [];
   const first = sent.send();
-  assert.deepEqual(first, { id: 0 }, 'a request with nothing to carry carries nothing');
+  assert.deepEqual(first, { id: 0, low: 0 }, 'a request carries its watermark, and no abandons when there are none');
   sent.settled(first.id, true, async () => {});
   const second = sent.send(), third = sent.send();
+  assert.deepEqual([second.low, third.low], [1, 1], 'a delivered request is retired below the watermark');
   sent.settled(second.id, false, async (id) => { abandons.push(id); throw new Error('overloaded'); });
   sent.settled(third.id, false, async (id) => { abandons.push(id); });
   await turns();
   assert.deepEqual(abandons, [1, 2]);
-  assert.deepEqual([second.carried, third.carried], [{ ended: [0], abandoned: [] }, undefined], 'an id is carried by the next request after it ended');
+  // Request 2's abandon arrived, request 1's did not: 1 stays open and rides the next request.
   const carrying = sent.send();
-  assert.deepEqual(carrying, { id: 3, carried: { ended: [2], abandoned: [1] } });
+  assert.deepEqual(carrying, { id: 3, low: 1, abandoned: [1] });
   sent.settled(carrying.id, true, async () => {});
-  // The call that carried them failed: the next one carries them again.
+  // The call that carried it failed: the next one carries it again, and the watermark waits for it.
   sent.unsent(carrying);
-  assert.deepEqual(sent.send(), { id: 4, carried: { ended: [3, 2], abandoned: [1] } });
+  const again = sent.send();
+  assert.deepEqual(again, { id: 4, low: 1, abandoned: [1] });
+  sent.received(again);
+  sent.settled(again.id, true, async () => {});
+  assert.deepEqual(sent.send(), { id: 5, low: 5 }, 'once its leaf heard the abandon, everything below is retired');
 }
 console.log('host-activity: idle, shared active watches, abort, wake validation and host loss');
 

@@ -114,7 +114,7 @@ export function createFacetWorld(evaluate, { resolveConfig = true, evaluatesAdap
   // the facet transport, never the receiver.
   const adapters = new Map();
   const receivers = new WeakMap();
-  /** What each data call carried to its leaf (SentRequests). */
+  /** What each data call carried to its leaf: its id, watermark and abandons (SentRequests). */
   const carried = [];
   const receiverOf = (instance, capability) => {
     let receiver = receivers.get(instance);
@@ -135,11 +135,11 @@ export function createFacetWorld(evaluate, { resolveConfig = true, evaluatesAdap
     get(name, start) {
       return {
         async startProcess(args) { return (await ensure(name, start)).startProcess(args); },
-async hostHttpRequest(request, id, sent, admission) {
-          carried.push({ id, ended: [...(sent?.ended ?? [])], abandoned: [...(sent?.abandoned ?? [])] });
+        async hostHttpRequest(request, id, low, abandoned, admission) {
+          carried.push({ id, low, abandoned: [...(abandoned ?? [])] });
           const instance = await ensure(name, start);
           const receiver = evaluatesAdapter ? instance : await receiverOf(instance, admission?.[0]);
-          return receiver.hostHttpRequest(request, id, sent, admission);
+          return receiver.hostHttpRequest(request, id, low, abandoned, admission);
         },
         async abandonHttpRequest(key, id) {
           const instance = await ensure(name, start);

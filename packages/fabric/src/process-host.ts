@@ -451,9 +451,12 @@ class PeerProcessHost implements ProcessHost {
             sent.settled(sending.id, delivered, abandon);
           });
           try {
-            return await peered((stub) => routeThroughPeer(stub, params.workerKey, webSocketCapability, request, sending));
+            const response = await peered((stub) => routeThroughPeer(stub, params.workerKey, webSocketCapability, request, sending));
+            if (sending.abandoned) sent.received(sending);
+            return response;
           } catch (error) {
             if (!leafReceived(error)) sent.unsent(sending);
+            else if (sending.abandoned) sent.received(sending);
             lease.release();
             throw error;
           }

@@ -161,40 +161,52 @@ export class HostActivity {
  * before its response's headers as well as after. Workers RPC carries no
  * signal, and asking per request costs a round trip; abandoning is the rare
  * path, so only it sends anything (the leaf's abandonHttpRequest). Each call
- * carries the ids that ended since the last (`ended`), which the leaf then
- * forgets, and those whose abandon did not arrive (`abandoned`), which it
- * abandons and forgets; it keeps an abandon that overtakes its request until
- * its request, or its end, arrives (observeResidentConfig).
+ * carries `low`, below which every id is retired (delivered, or abandoned
+ * where the leaf heard it), so the leaf forgets them; and, only when there
+ * are any, the ids whose abandon did not arrive (`abandoned`), which the leaf
+ * abandons first. The leaf keeps an abandon that overtakes its request until
+ * that request arrives (observeResidentConfig).
  */
 export class SentRequests {
   #next = 0;
-  #ended: number[] = [];
+  #low = 0;
+  /** Sent and not retired. */
+  #open = new Set<number>();
   #abandoned: number[] = [];
-  /** An id for a request, and the earlier ids its leaf forgets or abandons first, when there are any. */
+
+  /** An id for a request, the watermark below which its leaf forgets, and any abandons it must carry. */
   send(): HostRequest {
     const id = this.#next++;
-    if (this.#ended.length === 0 && this.#abandoned.length === 0) return { id };
-    const carried = { ended: this.#ended, abandoned: this.#abandoned };
-    this.#ended = [];
+    this.#open.add(id);
+    if (this.#abandoned.length === 0) return { id, low: this.#low };
+    const abandoned = this.#abandoned;
     this.#abandoned = [];
-    return { id, carried };
+    return { id, low: this.#low, abandoned };
   }
 
   /**
-   * Request `id` ended: reported as ended when delivered, else once its
-   * abandon arrived. A report that overtook the abandon would leave the leaf
-   * holding it for good; one that does not arrive rides the next request.
+   * Request `id` ended: retired when delivered, else once its abandon
+   * arrived. A retirement that overtook the abandon would let the leaf forget
+   * it unabandoned; an abandon that does not arrive rides the next request.
    */
   settled(id: number, delivered: boolean, abandon: (id: number) => Promise<unknown>): void {
-    if (delivered) this.#ended.push(id);
-    else void abandon(id).then(() => this.#ended.push(id), () => this.#abandoned.push(id));
+    if (delivered) this.#retire(id);
+    else void abandon(id).then(() => this.#retire(id), () => this.#abandoned.push(id));
   }
 
-  /** `request`'s call failed before its leaf saw what it carried (leafReceived): carry it again (each is idempotent there). */
+  /** `request`'s leaf answered: the abandons it carried arrived. */
+  received(request: HostRequest): void {
+    if (request.abandoned) for (const id of request.abandoned) this.#retire(id);
+  }
+
+  /** `request`'s call failed before its leaf saw it (leafReceived): its abandons ride the next one. */
   unsent(request: HostRequest): void {
-    if (!request.carried) return;
-    this.#ended.push(...request.carried.ended);
-    this.#abandoned.push(...request.carried.abandoned);
+    if (request.abandoned) this.#abandoned.push(...request.abandoned);
+  }
+
+  #retire(id: number): void {
+    this.#open.delete(id);
+    while (this.#low < this.#next && !this.#open.has(this.#low)) this.#low++;
   }
 }
 
@@ -213,10 +225,11 @@ export function receivedFailure(failure: Error): Error {
   catch { return Object.assign(new Error(failure.message, { cause: failure }), { [LEAF_RECEIVED]: true }); }
 }
 
-/** A request's id, and the earlier ones its leaf forgets (`ended`) or abandons first (`abandoned`), only when there are any. */
+/** A request's id, the watermark below which its leaf forgets (`low`), and the ids it abandons first, only when there are any. */
 export interface HostRequest {
   id: number;
-  carried?: { ended: number[]; abandoned: number[] };
+  low: number;
+  abandoned?: number[];
 }
 
 /**
@@ -307,19 +320,27 @@ export class NimbusProcess extends Base {
   #watchers = new Set();
   // A guest's fetch may hand its request on to its own handleHttpRequest.
   #admitted = new WeakSet();
-  // Its host's requests by id (SentRequests).
+  // Its host's requests by id (SentRequests), and the watermark below which they are retired.
   #requests = new Map();
-  #request(id, carried) {
-    if (carried !== undefined) {
-      for (const done of carried.ended) this.#requests.delete(done);
-      for (const gone of carried.abandoned) {
-        this.#requests.get(gone)?.abort(new DOMException('The caller left the request', 'AbortError'));
-        this.#requests.delete(gone);
-      }
+  #low = 0;
+  #request(id, low, abandoned) {
+    if (abandoned !== undefined) for (const gone of abandoned) this.#abandon(gone);
+    if (low > this.#low) {
+      // Ids are sequential: forget each retired one, or scan when the step outruns the table.
+      if (low - this.#low <= this.#requests.size) while (this.#low < low) this.#requests.delete(this.#low++);
+      else { for (const known of this.#requests.keys()) if (known < low) this.#requests.delete(known); this.#low = low; }
     }
+    // Retired before its call arrived: no abandon is coming for it.
+    if (id < this.#low) return new AbortController();
     let request = this.#requests.get(id);
     if (!request) this.#requests.set(id, request = new AbortController());
     return request;
+  }
+  #abandon(id) {
+    if (id < this.#low) return;
+    let request = this.#requests.get(id);
+    if (!request) this.#requests.set(id, request = new AbortController());
+    request.abort(new DOMException('The caller left the request', 'AbortError'));
   }
   #admit(request) {
     if (this.#admitted.has(request)) return request;
@@ -344,7 +365,7 @@ export class NimbusProcess extends Base {
   // caller leave as its request's signal.
   // A guest that fails answers a capability-branded 500 (HOST_FAILED_HEADER):
   // its host learns the call arrived, whatever the guest's compatibility date.
-  hostHttpRequest(request, id, carried, admission) {
+  hostHttpRequest(request, id, low, abandoned, admission) {
     // Its host sends the capability and the pinned incarnation while it has
     // no live watch that found this instance; with one, the watch admits it.
     if (admission !== undefined) {
@@ -352,13 +373,13 @@ export class NimbusProcess extends Base {
       if (admission[1] !== this.#incarnation) return this.#replaced();
     }
     // Its signal natively the one its host can abort: a guest's clone, copy or fetch of it keeps it.
-    const admitted = new Request(request, { signal: this.#request(id, carried).signal });
+    const admitted = new Request(request, { signal: this.#request(id, low, abandoned).signal });
     this.#admitted.add(admitted);
     try { return Promise.resolve(super.handleHttpRequest(admitted)).catch(failed); }
     catch (error) { return failed(error); }
   }
   abandonHttpRequest(key, id) {
-    if (key === capability) this.#request(id).abort(new DOMException('The caller left the request', 'AbortError'));
+    if (key === capability) this.#abandon(id);
   }
   fetch(request) {
     if (request.headers.get(${watch}) !== capability) {

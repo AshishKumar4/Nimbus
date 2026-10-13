@@ -103,7 +103,7 @@ async function stagedOneShot(key: string, stage: unknown, supervisor: Supervisor
 interface ResidentFacetStub {
   startProcess(args?: unknown): Promise<unknown>;
   /** Inbound HTTP through the host adapter (observeResidentConfig): admission as arguments, and a request id it can abandon. */
-  hostHttpRequest(request: Request, id: number, carried?: HostRequest['carried'], admission?: readonly [capability: string, incarnation: string]): Promise<Response>;
+  hostHttpRequest(request: Request, id: number, low: number, abandoned?: readonly number[], admission?: readonly [capability: string, incarnation: string]): Promise<Response>;
   abandonHttpRequest(capability: string, id: number): Promise<void>;
   /**
    * A facet stub is a Durable Object stub, so it fetches. That is the one path
@@ -642,8 +642,9 @@ function spawnResident(
       try {
         // A live watch that found the pinned instance admits the request; without one it carries its admission.
         const response = await (observation.validated()
-          ? facet.hostHttpRequest(request, sending.id, sending.carried)
-          : facet.hostHttpRequest(request, sending.id, sending.carried, [watchCapability, await incarnation]));
+          ? facet.hostHttpRequest(request, sending.id, sending.low, sending.abandoned)
+          : facet.hostHttpRequest(request, sending.id, sending.low, sending.abandoned, [watchCapability, await incarnation]));
+        if (!relayed && sending.abandoned) sent.received(sending);
         if (response.status === 500 && response.headers.get(HOST_FAILED_HEADER) === watchCapability) throw receivedFailure(new Error(await response.text()));
         return response.status === 410 ? await checked(response) : response;
       } catch (error) {

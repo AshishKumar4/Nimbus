@@ -25,7 +25,7 @@ import { ProcessHostLost, type ResidentBootSpec, type ResidentDiskReader, type R
 import { bindingSupervisor, supervisorBindingProps } from './supervisor-props.js';
 import { withResolvers } from './turn-budget.js';
 import { processes, abortFacet, deleteFacetStorage, type ResidentFacet, type ResidentFacetEnv } from './workerd-facet-host.js';
-import { HOST_INCARNATION_HEADER, type HostRequest } from './host-activity.js';
+import { HOST_INCARNATION_HEADER } from './host-activity.js';
 import { responseScope } from '@nimbus-sh/core/runtime/port-registry.js';
 import { isHostReset } from '@nimbus-sh/platform/oom-classify.js';
 
@@ -88,9 +88,10 @@ export interface HostedHttpRequest {
   url: string;
   headers: [string, string][];
   body: ReadableStream | null;
-  /** Its id, by which its coordinator can abandon it, and the earlier ids the leaf forgets or abandons (SentRequests). */
+  /** Its id, by which its coordinator can abandon it, the watermark below which the leaf forgets, and abandons it carries (SentRequests). */
   id: number;
-  carried?: HostRequest['carried'];
+  low: number;
+  abandoned?: number[];
 }
 
 export interface HostedHttpResponse {
@@ -416,7 +417,7 @@ export class PeerHost {
       // its coordinator abandons it by. This relay's own end is its pipe's.
       const { scope, owner } = responseScope(new AbortController().signal);
       let response: Response;
-      try { response = await facet.handleHttpRequest(new Request(wire.url, init), scope, { id: wire.id, carried: wire.carried }); }
+      try { response = await facet.handleHttpRequest(new Request(wire.url, init), scope, { id: wire.id, low: wire.low, abandoned: wire.abandoned }); }
       catch (error) { owner.fail(); throw error; }
       let body: ReadableStream | null = null;
       if (response.body) {
