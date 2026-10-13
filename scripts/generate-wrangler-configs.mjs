@@ -36,6 +36,8 @@ export function nimbusAppConfigs(spec) {
     d1_databases: [{ binding: 'DEMO_DB', database_name: databaseName, database_id: databaseId }],
     ratelimits: [{ name: 'ANON_RATE_LIMITER', namespace_id: rateLimitNamespace, simple: spec.hostedDemo.rateLimit }],
     triggers: { crons: spec.hostedDemo.crons },
+    // Readiness replies name the version that answered (createNimbusHandler).
+    version_metadata: { binding: 'CF_VERSION_METADATA' },
   });
   const hosted = {
     ...common, ...hostedTier(spec.hostedDemo.development),

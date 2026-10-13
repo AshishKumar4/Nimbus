@@ -24,6 +24,7 @@ import { setPhase } from './init-phases.js';
 import { shellTerminalTee } from './ws.js';
 import { serveEditorFs } from './editor-fs.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
+import { noteClientActivity } from './hibernation.js';
 export async function initSession(self, ws, options = {}) {
     const replayScrollback = options.resume !== 'wake';
     self.ensureSqliteFs();
@@ -184,6 +185,7 @@ export async function initSession(self, ws, options = {}) {
     self.runtimeWorkspace = workspace;
     // A process's answers leave as the rest of its output does: once what it wrote is published.
     self.portRegistry.setOutput(workspace.processes);
+    self.portRegistry.setClientSocketActivity(() => noteClientActivity(self, self.ctx));
     self.shellProcessPid = workspace.shellProcessPid;
     self.kernel = workspace.kernel;
     self.shell = workspace.shell;

@@ -263,8 +263,12 @@ export function supervisorCalls<Base extends Class>(base: Base) {
       return typeof pid === 'number' && Number.isInteger(pid) && pid > 0 ? pid : 0;
     }
 
-    _call<T>(promise: Promise<T>): Promise<T> {
-      return useRpcResource(promise, (value) => value);
+    async _call<T>(promise: Promise<T>): Promise<T> {
+      const value = await useRpcResource(promise, (reply) => reply);
+      if (value !== null && (typeof value === 'object' || typeof value === 'function') && Object.hasOwn(value, Symbol.dispose)) {
+        Reflect.deleteProperty(value, Symbol.dispose);
+      }
+      return value;
     }
     async _cacheRead<T>(plan: { ticket?: string; readOnly: boolean }, produce: (client: R2CacheClient) => Promise<T>): Promise<T> {
       const client = new R2CacheClient((this[TRANSPORT]().env as any)?.NPM_TARBALL_CACHE ?? null, (this[TRANSPORT]().env as any)?.NPM_PACKUMENT_CACHE ?? null, plan.readOnly);

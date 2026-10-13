@@ -28,6 +28,7 @@ function host() {
   return {
     shell: null,
     terminal: null,
+    dispatchTerminalInput() {},
     kernel: null,
     cirrusReal: null,
     _cirrusHmrWsClients: null,

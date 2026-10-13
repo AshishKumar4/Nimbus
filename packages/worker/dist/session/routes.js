@@ -52,7 +52,7 @@ import { generation } from '@nimbus-sh/fabric/generation.js';
 import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { dynamicWorkerHeadroom, loaderLedgerStats } from '@nimbus-sh/fabric/budgets.js';
 import { timers } from '@nimbus-sh/fabric/timers.js';
-import { isHostedWebSocket } from '@nimbus-sh/fabric/peer-host.js';
+import { isHostedWebSocket, isHostedWatch, isHostedResidency } from '@nimbus-sh/fabric/peer-host.js';
 import { isCirrusHmrPath, readPortCapability, normalizeForwardedHttpPath, readPortReservationByName, readoptCapability, routeToSessionPort, } from './port-capability.js';
 import { registerServingPort } from './serving-port.js';
 import { PREVIEW_CAPABILITY_HEADER, CALLER_SCOPES_HEADER } from '../_shared/session-router.js';
@@ -396,6 +396,10 @@ export async function handleFetch(self, request) {
 async function routeFetch(self, request) {
     const url = new URL(request.url);
     // The peer end of the fetch-semantic WebSocket hop, before anything else.
+    if (isHostedResidency(request))
+        return self.peerHost.reside(request);
+    if (isHostedWatch(request))
+        return self.peerHost.watch(request);
     if (isHostedWebSocket(request))
         return self.peerHost.routeWebSocket(request);
     // Capture session basePath from the routing header (if forwarded by the

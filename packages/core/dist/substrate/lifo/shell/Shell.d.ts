@@ -1,4 +1,5 @@
 import type { ITerminal } from '../terminal/ITerminal.js';
+import type { HeldProcessWork } from '../../../runtime/session-process-supervisor.js';
 import { ProcessView } from '../../../runtime/process-files.js';
 import type { CommandRegistry } from '../commands/registry.js';
 import type { CommandInputStream } from '../commands/types.js';
@@ -64,7 +65,7 @@ export interface ShellCommandIdentity {
      * holdWork). What the pid bound is released after the line has closed
      * what it opened, however the process ends.
      */
-    holdWork?(pid: number, stop: (reason?: SignalAbortReason) => void): () => void;
+    holdWork?(pid: number, stop: (reason?: SignalAbortReason) => void, signal?: AbortSignal): HeldProcessWork;
 }
 export declare class Shell {
     readonly filesystem: NimbusFilesystemAuthority;

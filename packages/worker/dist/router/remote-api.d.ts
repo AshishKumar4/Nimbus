@@ -36,4 +36,6 @@ export interface NimbusRemoteApiOutbox {
 export declare function handleNimbusRemoteApi(request: Request, env: NimbusRemoteEnv, sdk: NimbusSdkRouterConfig | undefined, outbox?: NimbusRemoteApiOutbox): Promise<Response | null>;
 /** Whether the remote API (and with it `DELETE /s/<id>/`) is served. */
 export declare function remoteApiEnabled(sdk: NimbusSdkRouterConfig | undefined): boolean;
+/** The path the remote API is served under. */
+export declare function remoteApiBasePath(sdk: NimbusSdkRouterConfig | undefined): string;
 //# sourceMappingURL=remote-api.d.ts.map

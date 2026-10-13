@@ -535,7 +535,7 @@ export class ProcessFabric {
             done,
             booted: () => hosted.started,
             routeTarget: {
-                handleHttpRequest: (request) => hosted.handleHttpRequest(request),
+                handleHttpRequest: (request, scope) => hosted.handleHttpRequest(request, scope),
                 handleWebSocketRequest: (request) => hosted.handleWebSocketRequest(request),
             },
             kill: () => { held.release(); void release(); },

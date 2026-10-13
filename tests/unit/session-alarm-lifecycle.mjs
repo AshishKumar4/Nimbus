@@ -47,6 +47,8 @@ function makeStorage() {
 function makeHost() {
   return {
     processes: new SessionProcessSupervisor(),
+    portRegistry: { clientSocketCount: 0 },
+    _cirrusHmrWsClients: new Map(),
     _w9SchemaInit: false,
     _w9PersistWired: false,
     _w9FlushTimer: null,
@@ -225,6 +227,10 @@ function makeDestroyHost(storage) {
     shell: null,
     kernel: null,
     facetManager: null,
+    ensureFacetManager() {
+      this.facetManager ??= { kill: () => false, async closeLaunches() {} };
+      return { manager: this.facetManager };
+    },
     portRegistry: { unregisterByPid() {} },
     viteDevServer: null,
     cirrusReal: null,
