@@ -1,17 +1,17 @@
 #!/usr/bin/env bun
 // @serial
-// A launch never waits for the supervisor's transient budget holding a
-// Dynamic Worker (Kinu #29). InternalScallop's cycle: a standalone resident
-// (no launch admission) took the whole budget until it had measured its
-// closure, then its module pass asked the ledger for the transform helper's
-// worker (beginHelperFetch), while ten exec launches, let in on every worker
-// (withLaunchAdmission), waited for its credit. Each waited on the other for
-// good, and the ledger, which models only child waits, saw no deadlock. An
-// exec waiting for room now gives its worker back and takes it again once
-// it has room, credit before worker, as the resident's build takes them.
-// Here the resident's transform host (as the real one, oxcTransformHost)
-// brackets its call with beginHelperFetch; once the ten execs wait for
-// credit, the cycle either resolves (every launch finishes) or it does not.
+// The lock order across the supervisor's transient budget, in-flight builds
+// and Dynamic Workers (Kinu #29): a launch takes credit, or joins another's
+// build of its bundle, before it takes a worker, and holding a worker it
+// waits on neither. InternalScallop's cycles: a standalone resident took the
+// whole budget until it had measured its closure, then its module pass asked
+// the ledger for the transform helper's worker (beginHelperFetch), while ten
+// exec launches, each let in on a worker first, waited (1) for its credit,
+// distinct programs, or (2) on its build, the same program as the
+// resident's. Each waited on the other for good. Here the resident's
+// transform host (as the real one, oxcTransformHost) brackets its call with
+// beginHelperFetch, held back until the ten execs wait; then the cycle either
+// resolves (every launch finishes) or it does not.
 
 import assert from 'node:assert/strict';
 
@@ -65,7 +65,9 @@ manager.setVfs(vfs, processFiles(vfs));
 // The transform host as the real one is: one worker in flight on the ledger for
 // each call (beginHelperFetch), held back until the execs wait.
 let openGate;
-const gate = new Promise((resolve) => { openGate = resolve; });
+let gate;
+const closeGate = () => { gate = new Promise((resolve) => { openGate = resolve; }); };
+closeGate();
 let transforms = 0;
 manager.setEsbuildService(new EsbuildService(undefined, {
   transformHost: async (requests) => {
@@ -83,6 +85,7 @@ const fs = vfs.as(CRED_KERNEL);
 fs.mkdir('home/user/app', { recursive: true, mode: 0o755 });
 fs.writeFile('home/user/app/server.mjs', 'export const port = 3000;\n', { mode: 0o644 });
 for (let i = 0; i < DO_DYNAMIC_WORKER_LIMIT; i++) fs.writeFile(`home/user/app/job${i}.js`, `module.exports = ${i};\n`, { mode: 0o644 });
+fs.writeFile('home/user/app/shared.mjs', 'export const shared = 1;\n', { mode: 0o644 });
 
 const budget = () => readSupervisorAllocationBudget();
 const until = async (ok, label) => {
@@ -90,26 +93,45 @@ const until = async (ok, label) => {
   assert.ok(ok(), label);
 };
 
-// The resident's build is admitted to the budget and reaches its module pass.
-const resident = manager.spawnNode("require('./server.mjs');", { filename: '/home/user/app/run.js', cwd: '/home/user/app', command: 'node run.js' });
-await until(() => budget().current > 0, `the resident's build holds credit (${JSON.stringify(budget())})`);
-// Ten exec launches at once, each let in on a worker, then waiting for the resident's credit.
-const execs = Array.from({ length: DO_DYNAMIC_WORKER_LIMIT }, (_, i) =>
-  manager.exec(`require('./job${i}.js');`, { filename: `/home/user/app/job-run${i}.js`, cwd: '/home/user/app', captureOutput: true }));
-await until(() => budget().queued >= DO_DYNAMIC_WORKER_LIMIT,
-  `the ten execs queued for credit (${JSON.stringify(budget())}, headroom ${dynamicWorkerHeadroom(ctx)})`);
-// The resident's module pass asks for its transform helper's worker.
-openGate();
-const outcome = await Promise.race([
-  Promise.allSettled([resident, ...execs]),
-  new Promise((resolve) => setTimeout(() => resolve('deadlocked'), 20_000)),
-]);
-assert.notEqual(outcome, 'deadlocked', `the resident's build and the ten execs all finish (${JSON.stringify(budget())}, headroom ${dynamicWorkerHeadroom(ctx)}, ${transforms} transforms)`);
-for (const [i, result] of outcome.entries()) {
-  assert.equal(result.status, 'fulfilled', `${i === 0 ? 'the resident' : `exec ${i - 1}`}: ${result.status === 'rejected' ? result.reason?.stack ?? result.reason : ''}`);
+/** The resident and the ten execs all finish once the gate opens, and give every share back. */
+const settles = async (label, resident, execs) => {
+  openGate();
+  const outcome = await Promise.race([
+    Promise.allSettled([resident, ...execs]),
+    new Promise((resolve) => setTimeout(() => resolve('deadlocked'), 20_000)),
+  ]);
+  assert.notEqual(outcome, 'deadlocked', `${label}: the resident's build and the ten execs all finish (${JSON.stringify(budget())}, headroom ${dynamicWorkerHeadroom(ctx)}, ${transforms} transforms)`);
+  for (const [i, result] of outcome.entries()) {
+    assert.equal(result.status, 'fulfilled', `${label}: ${i === 0 ? 'the resident' : `exec ${i - 1}`}: ${result.status === 'rejected' ? result.reason?.stack ?? result.reason : ''}`);
+  }
+  assert.ok(transforms > 0, `${label}: the resident's module pass ran on its helper`);
+  assert.equal(budget().current, 0, `${label}: every launch gave its credit back`);
+  manager.kill(outcome[0].value.pid);
+};
+
+// (1) Distinct programs: the ten wait for the resident's credit.
+{
+  const resident = manager.spawnNode("require('./server.mjs');", { filename: '/home/user/app/run.js', cwd: '/home/user/app', command: 'node run.js' });
+  await until(() => budget().current > 0, `the resident's build holds credit (${JSON.stringify(budget())})`);
+  const execs = Array.from({ length: DO_DYNAMIC_WORKER_LIMIT }, (_, i) =>
+    manager.exec(`require('./job${i}.js');`, { filename: `/home/user/app/job-run${i}.js`, cwd: '/home/user/app', captureOutput: true }));
+  await until(() => budget().queued >= DO_DYNAMIC_WORKER_LIMIT,
+    `the ten execs queued for credit (${JSON.stringify(budget())}, headroom ${dynamicWorkerHeadroom(ctx)})`);
+  await settles('distinct programs', resident, execs);
 }
-assert.ok(transforms > 0, 'the resident\'s module pass ran on its helper');
-assert.equal(budget().current, 0, 'every launch gave its credit back');
-manager.kill(outcome[0].value.pid);
+
+// (2) The same program: the ten join the resident's build of it.
+{
+  closeGate();
+  transforms = 0;
+  const same = { filename: '/home/user/app/shared-run.js', cwd: '/home/user/app' };
+  const resident = manager.spawnNode("require('./shared.mjs');", { ...same, command: 'node shared-run.js' });
+  await until(() => budget().current > 0, `the resident's build holds credit (${JSON.stringify(budget())})`);
+  const execs = Array.from({ length: DO_DYNAMIC_WORKER_LIMIT }, () => manager.exec("require('./shared.mjs');", { ...same, captureOutput: true }));
+  // They join its build, which waits on no credit: given time to reach it.
+  for (let i = 0; i < 100; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+  await settles('the same program', resident, execs);
+}
+
 console.log('resident-launch-admission-order: OK');
 process.exit(0);

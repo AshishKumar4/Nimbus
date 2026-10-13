@@ -94,7 +94,7 @@ import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/platf
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { TurnBudget, PacedWork, turnChunkMaxBytes, withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
 import { generation, onColdStart } from '@nimbus-sh/fabric/generation.js';
-import { DYNAMIC_WORKER_CODE_LIMIT_BYTES, isDynamicWorkerDeadlock, suspendLaunchAdmission, withLaunchAdmission } from '@nimbus-sh/fabric/budgets.js';
+import { DYNAMIC_WORKER_CODE_LIMIT_BYTES, isDynamicWorkerDeadlock, suspendLaunchAdmission, waitOutsideLedger, withLaunchAdmission, withLaunchPreparation } from '@nimbus-sh/fabric/budgets.js';
 import {
   FencedWork,
   FENCED_WORK_KEY_PREFIX,
@@ -213,7 +213,7 @@ import { ONE_SHOT_STORE_MEMORY_BYTES, RESIDENT_CHUNK_BYTES } from '../vfs/facet-
 import { residentCellCost } from '../vfs/resident/cell-cost.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES, SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES } from '@nimbus-sh/platform/limits.js';
 import { CRED_KERNEL, isNativeBinPath, launchNamedPaths, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { acquireSupervisorAllocation, tryAcquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
+import { acquireSupervisorAllocation, readSupervisorAllocationBudget, tryAcquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import type { ResizableCreditLease } from '@nimbus-sh/platform/weighted-credit-pool.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { streamedWasmImageDigest, wasmImageDigest, type WasmImageRecord } from './wasm-image-digest.js';
@@ -4682,6 +4682,8 @@ const PREFETCH_PEAK_PER_BYTE = 3;
 interface PrefetchAdmission {
   /** It waited for room while other work ran. */
   readonly queued: boolean;
+  /** The bytes it holds now. */
+  held(): number;
   /** What it is made from is known (`closureBytes`): it keeps only what that needs, giving the rest back. */
   fit(closureBytes: number): void;
   /** Gives it all back; once. */
@@ -4695,9 +4697,9 @@ function prefetchNeed(closureBytes: number): number {
 
 /**
  * What a launch waits for room under (FacetManager._launchEnds): aborted once
- * its process ends; `resume` takes back the worker it gave up to wait.
+ * its process ends; ended by `dispose`.
  */
-type LaunchWait = () => { readonly signal: AbortSignal; dispose(): void; resume(): Promise<void> };
+type LaunchWait = () => { readonly signal: AbortSignal; dispose(): void };
 
 /**
  * An admission (Kinu #29): `bytes` of the supervisor's admitted transient
@@ -4708,11 +4710,10 @@ type LaunchWait = () => { readonly signal: AbortSignal; dispose(): void; resume(
  * it until its module map is generated (FacetManager.buildAdmissions), so no
  * other build runs beside them beyond what the budget holds. Nothing asks
  * the pool while holding one (two builds holding their cells while a third
- * queued for more deadlocked every one). One that has to wait for room
- * waits under `wait`: a launch whose process ends meanwhile is never
- * admitted, and one let in on the ledger waits holding no worker, taking it
- * back once it has room (credit before worker, as a resident's build, whose
- * helpers ask the ledger while it holds credit, takes them).
+ * queued for more deadlocked every one), and a launch asks it before it
+ * holds a worker, never after (FacetManager's lock order: credit, or a
+ * build joined, before a worker). One that has to wait for room waits under
+ * `wait`: a launch whose process ends meanwhile is never admitted.
  */
 async function admitPrefetch(wait?: LaunchWait, bytes = SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES): Promise<PrefetchAdmission> {
   const now = tryAdmitPrefetch(bytes);
@@ -4724,12 +4725,6 @@ async function admitPrefetch(wait?: LaunchWait, bytes = SUPERVISOR_IN_FLIGHT_ALL
     if (waiting?.signal.aborted) {
       lease.release();
       throw waiting.signal.reason;
-    }
-    try {
-      await waiting?.resume();
-    } catch (error) {
-      lease.release();
-      throw error;
     }
     return admissionOf(lease, bytes, true);
   } finally {
@@ -4749,6 +4744,7 @@ function admissionOf(admitted: ResizableCreditLease, bytes: number, queued: bool
   prefetchBundleStart(held);
   return {
     queued,
+    held: () => held,
     fit(closureBytes) {
       const need = prefetchNeed(closureBytes);
       if (held === 0 || need >= held) return;
@@ -5760,7 +5756,7 @@ export class FacetManager {
    */
   private readonly launchPump: PacedWork;
   /** One-shot launches not yet running, by pid: the stage each is at and since when (launchState). */
-  private readonly launching = new Map<number, { stage: 'admission' | 'prepare'; since: number }>();
+  private readonly launching = new Map<number, { stage: 'prepare' | 'admission' | 'load'; since: number }>();
   private readonly launchTasks = new Set<Promise<void>>();
   private launchesClosed = false;
   // attach-pid → serve-pid: the resident serve facet a bare-`opencode` dual
@@ -5808,18 +5804,21 @@ export class FacetManager {
   /** Live sum of the entries' `bytes`, mirrored to the diag gauge on change. */
   private prefetchCacheBytes = 0;
   /**
-   * Cache-miss builds in flight, by key and the revision they read: a launch
-   * of the same key waits for one, then takes its entry, or (one the cache
-   * did not retain) its own copy of the state, built at the revision `done`
-   * names (null: it built nothing of its own).
+   * Cache-miss builds in flight, by key and the revision they read, and the
+   * launch building it (`leader`): a launch of the same key waits for one,
+   * holding nothing, then takes its entry, or (one the cache did not retain)
+   * its own copy of the state, built at the revision `done` names (null: it
+   * built nothing of its own).
    */
-  private readonly prefetchBuilds = new Map<string, { revision: number; done: Promise<{ state: FacetVfsState; revision: number } | null> }>();
+  private readonly prefetchBuilds = new Map<string, { revision: number; leader: number; done: Promise<{ state: FacetVfsState; revision: number } | null> }>();
   /**
-   * A launch's build admission (admitPrefetch), by pid, held from its build
-   * until its module map is generated: what it built is live until then, and
-   * no other build runs beside it beyond what the budget holds. Given back
-   * once the map is made (_generateUnderCeiling), when the launch builds
-   * again, and as its launch ends however it ends.
+   * A launch's share of the supervisor's credit (admitPrefetch), by pid:
+   * its build's, held from the build until its module map is generated, or
+   * for a state it did not build its map's (_holdMapShare); either taken
+   * before it holds a worker. What it built is live until then, and no
+   * other build runs beside it beyond what the budget holds. Given back once
+   * the map is made (_generateUnderCeiling), kept for a rebuild under the
+   * ceiling, and given back as its launch ends however it ends.
    */
   private readonly buildAdmissions = new Map<number, PrefetchAdmission>();
 
@@ -6899,25 +6898,34 @@ export class FacetManager {
       return this._takePrefetchEntry(key, revision, spec);
     };
     const cached = this._takePrefetchEntry(key, revision, spec);
-    if (cached) return cached;
+    if (cached) return await this._holdMapShare(entry, cached);
     // A build of the same launch at the same revision is in flight: its entry is this launch's once it is admitted.
     // (A rebuild under the ceiling takes no entry, and waits for none.)
     const shared = spec.maxBundleBytes === undefined;
     const inFlight = shared ? this.prefetchBuilds.get(key) : undefined;
     if (inFlight !== undefined && inFlight.revision === revision) {
-      const built = await inFlight.done;
+      // Joined holding nothing: its leader (a standalone resident's build, say) may need a worker for its helpers.
+      const outside = waitOutsideLedger(this.ctx, entry.pid, () => [inFlight.leader]);
+      let built: Awaited<typeof inFlight.done>;
+      try {
+        built = await inFlight.done;
+      } finally {
+        outside();
+      }
       const published = await takeCached();
-      if (published) return published;
+      if (published) return await this._holdMapShare(entry, published);
       // Not retained (past the entry bound): that build's own result, if the filesystem is still at the revision it read.
-      if (built !== null && built.revision === revision) return { ...built.state, cacheHit: true, cacheRetained: false };
+      if (built !== null && built.revision === revision) return await this._holdMapShare(entry, { ...built.state, cacheHit: true, cacheRetained: false });
     }
 
     // Kinu #29: the cells are gathered and serialized under one admission,
     // kept until the launch's module map is made, so cache-miss builds queue
     // for room through all three. A launch admitted after a wait, while
-    // another of its key published, takes that entry. A build again for
-    // this launch (after a stop, under the ceiling) supersedes its last.
-    this._releaseBuildAdmission(entry.pid);
+    // another of its key published, takes that entry. A build again for this
+    // launch under the ceiling builds under the share its map kept: it may
+    // hold a worker, and waits for no credit.
+    const held = this.buildAdmissions.get(entry.pid);
+    this.buildAdmissions.delete(entry.pid);
     const buildUnder = async (admission: PrefetchAdmission): Promise<{ state: FacetVfsState; shared: { state: FacetVfsState; revision: number } | null }> => {
       const admitted = admission.queued ? await takeCached() : null;
       if (admitted) return { state: admitted, shared: null };
@@ -7038,17 +7046,17 @@ export class FacetManager {
       return { state: vfsState, shared: { state: { ...vfsState }, revision } };
     };
     const building = (async () => {
-      const admission = await admitPrefetch(() => this._launchEnds(entry.pid));
+      // Held from the moment it is taken: the detector names its holders (_creditHolders).
+      const admission = held ?? await admitPrefetch(() => this._launchEnds(entry.pid));
+      this.buildAdmissions.set(entry.pid, admission);
       try {
-        const built = await buildUnder(admission);
-        this.buildAdmissions.set(entry.pid, admission);
-        return built;
+        return await buildUnder(admission);
       } catch (error) {
-        admission.release();
+        this._releaseBuildAdmission(entry.pid);
         throw error;
       }
     })();
-    const inProgress = { revision, done: building.then((built) => built.shared, () => null) };
+    const inProgress = { revision, leader: entry.pid, done: building.then((built) => built.shared, () => null) };
     if (shared) this.prefetchBuilds.set(key, inProgress);
     try {
       return (await building).state;
@@ -7071,20 +7079,20 @@ export class FacetManager {
     others: number,
     generate: (state: FacetVfsState) => Promise<G>,
   ): Promise<G> {
-    // Under the launch's build admission, given back once the map is made;
-    // a state it did not build (a cache hit, another launch's build) under
-    // an admission of its own: a map is another copy of its closure. Its
-    // closure is known, so what the map needs is taken at once, with no
-    // await where there is room (a cache hit's path).
-    const built = this.buildAdmissions.get(pid);
-    if (built !== undefined) this.buildAdmissions.delete(pid);
-    const need = built === undefined ? prefetchNeed(vfsState.rawBytes ?? 0) : 0;
-    const admission = built ?? tryAdmitPrefetch(need);
-    if (admission !== null) return this._generateWithin(pid, vfsState, others, generate, admission);
-    return admitPrefetch(() => this._launchEnds(pid), need).then((queued) => this._generateWithin(pid, vfsState, others, generate, queued));
+    // Under the launch's share of the credit, taken before its worker
+    // (_buildProcessBundle: its build's, or its map's): a map made while a
+    // worker is held waits for no credit.
+    const admission = this.buildAdmissions.get(pid);
+    if (admission === undefined) return Promise.reject(new Error(`Nimbus: the module map for pid ${pid} has no share of the credit`));
+    this.buildAdmissions.delete(pid);
+    return this._generateWithin(pid, vfsState, others, generate, admission);
   }
 
-  /** _generateUnderCeiling's work, under its admission, which it gives back as it ends. */
+  /**
+   * _generateUnderCeiling's work, under its admission, which it gives back
+   * as it ends; over the ceiling, it is kept for the rebuild under it
+   * (_rebuildUnderCeiling), which then waits for no credit.
+   */
   private async _generateWithin<G extends GeneratedNodeFacetCode>(
     pid: number,
     vfsState: FacetVfsState,
@@ -7092,6 +7100,7 @@ export class FacetManager {
     generate: (state: FacetVfsState) => Promise<G>,
     admission: PrefetchAdmission,
   ): Promise<G> {
+    let keptForRebuild = false;
     try {
       const room = DYNAMIC_WORKER_CODE_LIMIT_BYTES - others;
       let generated: G | undefined = await generate(vfsState);
@@ -7112,8 +7121,14 @@ export class FacetManager {
       console.warn(`[facet-manager] pid ${pid}: ${message}`);
       if (this.debugEnabled) this.processes.appendOutput(pid, 'stderr', `[nimbus-debug] ${message}\n`);
       return await generate({ ...vfsState, bundleSource: { ...source, codeModules, runtimeCode: JSON.stringify(kept) } });
+    } catch (error) {
+      if (error instanceof ModuleMapOverCeilingError) {
+        this.buildAdmissions.set(pid, admission);
+        keptForRebuild = true;
+      }
+      throw error;
     } finally {
-      admission.release();
+      if (!keptForRebuild) admission.release();
     }
   }
 
@@ -7522,62 +7537,71 @@ export class FacetManager {
     // same kill, forwarded onto the controller the runOnce request carries.
     const onShellAbort = () => abortController.abort();
     opts.signal?.addEventListener('abort', onShellAbort, { once: true });
-    // Let in once on the ledger, as its launch, before its preparation: the
-    // run claims that admission (runOneShot), and a burst of programs builds
-    // no more maps at once than may run. Killed or refused while it waits, it
-    // never ran.
+    // The lock order (Kinu #29): its bundle first, under the supervisor's
+    // credit or another launch's build of it, holding no worker; then let in
+    // once on the ledger, as its launch, and its run claims that admission
+    // (runOneShot). Once it holds a worker it waits for no credit and on no
+    // build: its map's share is held already. Its preparation's helpers wait
+    // for a worker as its process (withLaunchPreparation), so a wait nothing
+    // can satisfy is one the ledger tells. Killed or refused while it waits,
+    // it never ran.
     let admitted = false;
-    this.launching.set(entry.pid, { stage: 'admission', since: Date.now() });
+    let prepareFailed = false;
+    const prepared = <T>(body: () => Promise<T>): Promise<T> => withLaunchPreparation(this.ctx, { pid: entry.pid }, body);
+    this.launching.set(entry.pid, { stage: 'prepare', since: Date.now() });
+    // Paced like a resident launch: a tree too large for one turn costs
+    // turns, and the pacer's stillWanted check ends a build whose process was
+    // killed while it was suspended. The invocation that granted the last
+    // chunk awaits `chunkEnded` (PacedWork.pump), so it owns the launch until
+    // the pacer settles: once the program is loaded and about to be entered
+    // (_execViaLoader's onLoaded), as a resident launch settles once its
+    // process has booted, and in the finally below for a launch that ends
+    // sooner. Not at the end of the build, which would release that turn
+    // with the module map still to assemble and load on it; and not at the
+    // end of the run, which held the session's launch alarm for as long as
+    // the program ran, so a child it launched and waited on, needing a turn
+    // of its own, never got one.
+    const pacer = this._launchPacer(entry.pid);
     try {
-      return await withLaunchAdmission(this.ctx, { pid: entry.pid }, abortController.signal, async () => {
-        admitted = true;
-        this.launching.set(entry.pid, { stage: 'prepare', since: Date.now() });
-        const diagOn = isExecDiagEnabled();
-        const __bundleStart = diagOn ? Date.now() : 0;
-        // Paced like a resident launch: a tree too large for one turn costs
-        // turns, and the pacer's stillWanted check ends a build whose process was
-        // killed while it was suspended. The invocation that granted the last
-        // chunk awaits `chunkEnded` (PacedWork.pump), so it owns the launch until
-        // the pacer settles: once the program is loaded and about to be entered
-        // (_execViaLoader's onLoaded), as a resident launch settles once its
-        // process has booted, and in the finally below for a launch that ends
-        // sooner. Not at the end of the build, which would release that turn
-        // with the module map still to assemble and load on it; and not at the
-        // end of the run, which held the session's launch alarm for as long as
-        // the program ran, so a child it launched and waited on, needing a turn
-        // of its own, never got one.
-        const pacer = this._launchPacer(entry.pid);
-        const bundleSpec: ProcessBundleSpec = { scriptPath: opts.filename, cwd: opts.cwd || '/home/user', entryCode: code, esModule: opts.esModule, bundleProfile: opts.bundleProfile, moduleScope: opts.moduleScope, node: opts.node };
-        let vfsState: FacetVfsState;
-        try {
-          vfsState = await this._buildProcessBundle(entry, bundleSpec, pacer);
-        } catch (err: unknown) {
-          // The require closure that cannot fit the snapshot bound is the
-          // process's own answer, not a build failure: exit 1 with a stderr
-          // that names the entry, the staged bytes at the stop, the bound,
-          // and the remedy — the same shape the got/next guards print.
-          pacer.settle();
-          stdinPump?.stop();
-          foreground?.release();
-          if (err instanceof ClosureBoundExceededError) {
-            const o = err.outcome;
-            const mib = (n: number) => `${(n / 1048576).toFixed(1)} MiB`;
-            const stderr =
-              `require closure for ${o.entry} exceeds the snapshot bound: ` +
-              `${mib(o.bytesSeen)} staged when ${o.lastPath} crossed the ` +
-              `${mib(o.bound)} bound; the process was not started.\n` +
-              `Run it as a server or split the entry; there is no flag to bypass.`;
-            this._end(entry.pid, { code: 1, cause: stderr });
-            return { exitCode: 1, stdout: '', stderr };
-          }
-          // A failed build is thrown to the caller exactly as before. What must
-          // not be left behind is the process entry: it was spawned above and
-          // would otherwise sit 'running' forever for a process that never
-          // started. A build ended by a kill finds its entry already exited and
-          // reports nothing twice.
-          this._end(entry.pid, { code: 1, cause: `assembling the filesystem bundle for \`${command}\` failed: ${errorMessage(err)}` });
-          throw err;
+      const diagOn = isExecDiagEnabled();
+      const __bundleStart = diagOn ? Date.now() : 0;
+      const bundleSpec: ProcessBundleSpec = { scriptPath: opts.filename, cwd: opts.cwd || '/home/user', entryCode: code, esModule: opts.esModule, bundleProfile: opts.bundleProfile, moduleScope: opts.moduleScope, node: opts.node };
+      let vfsState: FacetVfsState;
+      try {
+        vfsState = await prepared(() => this._buildProcessBundle(entry, bundleSpec, pacer));
+      } catch (err: unknown) {
+        // Its failure ends the process here (below), not in the catch further down.
+        prepareFailed = true;
+        // The require closure that cannot fit the snapshot bound is the
+        // process's own answer, not a build failure: exit 1 with a stderr
+        // that names the entry, the staged bytes at the stop, the bound,
+        // and the remedy — the same shape the got/next guards print.
+        pacer.settle();
+        stdinPump?.stop();
+        foreground?.release();
+        if (err instanceof ClosureBoundExceededError) {
+          const o = err.outcome;
+          const mib = (n: number) => `${(n / 1048576).toFixed(1)} MiB`;
+          const stderr =
+            `require closure for ${o.entry} exceeds the snapshot bound: ` +
+            `${mib(o.bytesSeen)} staged when ${o.lastPath} crossed the ` +
+            `${mib(o.bound)} bound; the process was not started.\n` +
+            `Run it as a server or split the entry; there is no flag to bypass.`;
+          this._end(entry.pid, { code: 1, cause: stderr });
+          return { exitCode: 1, stdout: '', stderr };
         }
+        // A failed build is thrown to the caller exactly as before. What must
+        // not be left behind is the process entry: it was spawned above and
+        // would otherwise sit 'running' forever for a process that never
+        // started. A build ended by a kill finds its entry already exited and
+        // reports nothing twice.
+        this._end(entry.pid, { code: 1, cause: `assembling the filesystem bundle for \`${command}\` failed: ${errorMessage(err)}` });
+        throw err;
+      }
+      this.launching.set(entry.pid, { stage: 'admission', since: Date.now() });
+      return await prepared(() => withLaunchAdmission(this.ctx, { pid: entry.pid }, abortController.signal, async () => {
+        admitted = true;
+        this.launching.set(entry.pid, { stage: 'load', since: Date.now() });
         // What it reports missing as it runs is filed against this bundle.
         if (vfsState.bundleKey) this.launchBundles.set(entry.pid, { key: vfsState.bundleKey, refused: new Set() });
         // Where the one-shot's listing of its namespace walks mounts: what its
@@ -7680,8 +7704,18 @@ export class FacetManager {
             await this.hooks.rewindProcessFiles?.(entry.pid);
             const resumed = await this._resumeStoppedRun(entry, outcome.stop, stops, inputChannel, launch, abortController.signal, held, { accepted: acceptedCapture, refused });
             if ('exit' in resumed) { result = resumed.exit; break; }
-            // The replay is a new Worker in flight. Rejoin the admission queue
-            // before rebuilding its module map or asking a preparation helper.
+            // The stopped run's module map was released once it loaded, unless
+            // the prefetch cache keeps it: the next run builds it again, a hit
+            // when nothing it holds has changed since. Built, and its map's
+            // share of the credit held, before it holds a worker again (the
+            // lock order); its helpers wait as its process meanwhile.
+            if (vfsState.generatedSourcesReleased) {
+              vfsState = await this._buildProcessBundle(entry, bundleSpec, pacer);
+              dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
+            } else {
+              await this._holdMapShare(entry, vfsState);
+            }
+            // The replay is a new Worker in flight: it rejoins the admission queue.
             try {
               await resumeAdmission?.(abortController.signal);
             } catch (error) {
@@ -7695,13 +7729,6 @@ export class FacetManager {
             }
             this.processes.setUmask(entry.pid, startUmask);
             launch = { ...launch, ...resumed.next, stopNonce: crypto.randomUUID() };
-            // The stopped run's module map was released once it loaded, unless
-            // the prefetch cache keeps it: the next run builds it again, a hit
-            // when nothing it holds has changed since.
-            if (vfsState.generatedSourcesReleased) {
-              vfsState = await this._buildProcessBundle(entry, bundleSpec, pacer);
-              dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
-            }
           }
           await this._recordLaunchLearning(vfsState.bundleKey, {
             code: result.runtimeCode, executedModules: result.moduleMisses, dataReads: result.residencyMisses,
@@ -7773,9 +7800,11 @@ export class FacetManager {
           this.outputGates.delete(entry.pid);
           if (stoppable) this.replay.close(entry.pid);
         }
-      });
+      }));
     } catch (err: unknown) {
-      if (admitted) throw err;
+      if (admitted || prepareFailed) throw err;
+      // Refused or killed while it waited for a worker, its bundle built.
+      pacer.settle();
       stdinPump?.stop();
       foreground?.release();
       if (abortController.signal.aborted) {
@@ -8184,16 +8213,6 @@ export class FacetManager {
     });
     // The manifests ride as the JSON they are kept as, not stringified again per run.
     const body = `${fields.slice(0, -1)},"manifests":${manifests}}`;
-    // Its map is generated as the facet loads, its run holding the launch's
-    // worker (claimAdmission), where no wait may be: its share of the budget
-    // is taken here, before, where a wait for room gives the worker back
-    // (_launchEnds). A build's is held already (buildAdmissions); the exec's
-    // finally gives either back.
-    if (!this.buildAdmissions.has(entry.pid)) {
-      const need = prefetchNeed(vfsState.rawBytes ?? 0);
-      this.buildAdmissions.set(entry.pid, tryAdmitPrefetch(need) ?? await admitPrefetch(() => this._launchEnds(entry.pid), need));
-    }
-
     try {
       return await this.processHost.runOnce(
         {
@@ -8637,22 +8656,41 @@ export class FacetManager {
   }
 
   /**
-   * What `pid`'s launch waits for room under (admitPrefetch): aborted once
-   * its process ends, so a launch killed or destroyed while it queued is
-   * never admitted after its end. A launch let in on the ledger
-   * (withLaunchAdmission) gives its worker back for the wait and takes it
-   * back once it has room: waiting for credit while holding a worker, it
-   * would wait on a resident's build that holds credit while its helper
-   * waits for a worker (InternalScallop's cycle across the two pools).
+   * What `pid`'s launch waits for room under (admitPrefetch), holding no
+   * worker (the lock order: credit, or a build joined, before a worker):
+   * aborted once its process ends, so a launch killed or destroyed while it
+   * queued is never admitted after its end; and told to the ledger as a
+   * wait on the credit's holders (waitOutsideLedger), so a cycle through a
+   * running program waiting on its child is refused as a cycle of workers is.
    */
-  private _launchEnds(pid: number): { signal: AbortSignal; dispose(): void; resume(): Promise<void> } {
+  private _launchEnds(pid: number): { signal: AbortSignal; dispose(): void } {
     this._assertLaunchStillOwned(pid);
     const ended = new AbortController();
-    const dispose = this.processes.subscribeTerminal(pid, () => {
+    const unsubscribe = this.processes.subscribeTerminal(pid, () => {
       ended.abort(new Error(`Nimbus: the launch for pid ${pid} was cancelled while it waited for room`));
     });
-    const regain = suspendLaunchAdmission(this.ctx);
-    return { signal: ended.signal, dispose, resume: async () => { await regain?.(ended.signal); } };
+    const outside = waitOutsideLedger(this.ctx, pid, () => this._creditHolders());
+    return { signal: ended.signal, dispose: () => { outside(); unsubscribe(); } };
+  }
+
+  /** The launches holding the supervisor's credit, or null where some of it is held by other work (another session's, a write wave). */
+  private _creditHolders(): readonly number[] | null {
+    let own = 0;
+    for (const admission of this.buildAdmissions.values()) own += admission.held();
+    return readSupervisorAllocationBudget().current > own ? null : [...this.buildAdmissions.keys()];
+  }
+
+  /**
+   * A launch's share of the credit for the module map it makes from `state`
+   * (another launch's build, the cache's), taken before it holds a worker:
+   * the share it holds already (its build's, kept for a rebuild) is it.
+   */
+  private async _holdMapShare(entry: ProcessEntry, state: FacetVfsState): Promise<FacetVfsState> {
+    if (!this.buildAdmissions.has(entry.pid)) {
+      const need = prefetchNeed(state.rawBytes ?? 0);
+      this.buildAdmissions.set(entry.pid, tryAdmitPrefetch(need) ?? await admitPrefetch(() => this._launchEnds(entry.pid), need));
+    }
+    return state;
   }
 
   /**
@@ -9041,7 +9079,10 @@ export class FacetManager {
   ): Promise<void> {
     if (this.launchesClosed) return Promise.reject(new Error('Launch scheduler is closed'));
     const preparing = this.processes.holdWork(entry.pid);
-    return this.trackLaunchTask(this._runResidentLaunchBody(entry, code, command, opts, attempt).finally(preparing));
+    // Its bundle first, under the credit, then its residency's worker (the
+    // lock order); its preparation's helpers wait for a worker as its process.
+    const launch = withLaunchPreparation(this.ctx, { pid: entry.pid }, () => this._runResidentLaunchBody(entry, code, command, opts, attempt));
+    return this.trackLaunchTask(launch.finally(preparing));
   }
 
   private async _runResidentLaunchBody(

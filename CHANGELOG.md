@@ -10,7 +10,11 @@ published independently in the `@nimbus-sh` npm scope.
   made, not only while it gathers them, so several launches at once queue
   instead of building side by side past the budget. Launches of the same
   program at once build it once. A launch killed, or whose session is
-  destroyed, while it waits for room is never admitted.
+  destroyed, while it waits for room is never admitted. A launch takes its
+  memory, or waits for another launch's build of its program, before it
+  takes a Dynamic Worker, never after, so launches waiting on each other
+  across the two can no longer hang (the order is in the runtime spec's
+  Facet Resource Contract).
 - Fixed: a module a Node program writes and then imports links as Node's
   does before any of its graph runs. An import of a name its module does
   not export is Node's SyntaxError, with no module body run first; before,

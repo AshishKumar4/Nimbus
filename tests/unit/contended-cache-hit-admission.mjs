@@ -3,11 +3,11 @@
 // A launch of a program already built (a cache hit, no build of its own)
 // generates its module map as its facet loads, its run holding the launch's
 // Dynamic Worker (claimAdmission). Its share of the supervisor's transient
-// budget is taken before that, in its preparation, where a wait for room
-// gives the worker back (Kinu #29): under another build's full reservation
-// it waits holding no worker, and runs once the room is given back. Taken
-// inside the load, the wait could not give the worker back (a run holds it)
-// and the launch failed instead (InternalScallop's trace at 8ec94530).
+// budget is taken before it takes that worker (the lock order, Kinu #29):
+// under another build's full reservation it waits holding no worker, and
+// runs once the room is given back. Taken inside the load, the wait held the
+// worker, and giving it back there failed the launch instead
+// (InternalScallop's trace at 8ec94530).
 
 import assert from 'node:assert/strict';
 
