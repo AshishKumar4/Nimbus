@@ -678,7 +678,7 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     // rights on every open, and a resident copy answers those itself.
     const readOnly = !(requested & ((1n << 6n) | (1n << 8n) | (1n << 22n))) && !(flags & 15) && !(status & 1);
     const o: PathOpen = { fs, target, follow, oflags: flags, requested, childRights, status, readOnly, out };
-    if (reopened !== undefined && reopened.kind !== 'preopen') return openAgain(o, reopened);
+    if (reopened?.kind === 'authority' || reopened?.kind === 'resident') return openAgain(o, reopened);
     if (!readOnly || residentBytes === 0) return openAuthority(o);
     if (holds) {
       const key = ResidentHolds.keyOf(target, follow);
