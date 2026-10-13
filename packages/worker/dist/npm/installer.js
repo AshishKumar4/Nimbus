@@ -53,7 +53,7 @@ import { NPM_INSTALL_PREAMBLE } from '../loaders/npm-install-preamble.js';
 import { NPM_INSTALL_BATCH_TASK, NPM_RESOLVE_ONE_TASK } from '../loaders/compiled-bodies.generated.js';
 import { packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
 import { transformParser } from '../runtime/barrel-synthesizer.js';
-import { barrelInput, buildPrebundle, isServerToolPackage, scanProject, storedPrebundle, } from './browser-prebundle.js';
+import { barrelInput, barrelPackage, buildPrebundle, isServerToolPackage, scanProject, storedPrebundle, } from './browser-prebundle.js';
 import { enc } from '@nimbus-sh/core/_shared/bytes.js';
 import { createNpmBinManifest, createNpmBinShim, npmBinManifestPath, declaredPackageBins, packageBinEntries, parseNpmBinManifest, } from './bin-links.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
@@ -1730,8 +1730,10 @@ export class NpmInstaller {
             const pkgName = packageNameFromSpecifier(specifier);
             if (isServerToolPackage(pkgName) || !installed.has(pkgName))
                 continue;
-            const barrel = await barrelInput(ctx, specifier, async () => scan);
-            if (await storedPrebundle(ctx, specifier, barrel))
+            const whole = barrelPackage(ctx, specifier);
+            const barrel = whole && barrelInput(whole, scan);
+            const stored = storedPrebundle(ctx, specifier, barrel);
+            if (stored && await stored)
                 continue;
             pending.push({ specifier, barrel });
         }

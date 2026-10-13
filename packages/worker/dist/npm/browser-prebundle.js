@@ -37,25 +37,26 @@ const SERVICE_PREBUNDLE_OPTIONS = Object.freeze({
     target: 'esnext',
     define: PREBUNDLE_DEFINE,
 });
-/**
- * The barrel input of `specifier` for the project's imports (`scan`, asked
- * only for a barrel package), or null for a specifier bundled whole: a
- * subpath, a package of few files, or a barrel whose scan left files unread
- * (an entry from what it found could miss a name), which `unread` reports.
- */
-export async function barrelInput(ctx, specifier, scan, unread) {
+/** The barrel package `specifier` names whole, or null (a subpath, or a package of few files). */
+export function barrelPackage(ctx, specifier) {
     const pkgName = packageNameFromSpecifier(specifier);
     if (specifier !== pkgName)
         return null;
     const fileCount = countPackageFiles(ctx.vfs, ctx.root + '/node_modules/' + pkgName);
-    if (fileCount <= BARREL_PKG_FILE_THRESHOLD)
-        return null;
-    const imports = await scan();
-    if (imports.unread !== null) {
-        unread?.(pkgName, fileCount, imports.unread);
+    return fileCount > BARREL_PKG_FILE_THRESHOLD ? { pkgName, fileCount } : null;
+}
+/**
+ * The barrel input of a request for `barrel` from the project's imports,
+ * or null where the scan left files unread (an entry from what it found
+ * could miss a name), which `unread` reports: the barrel is bundled whole.
+ */
+export function barrelInput(barrel, scan, unread) {
+    const { pkgName, fileCount } = barrel;
+    if (scan.unread !== null) {
+        unread?.(pkgName, fileCount, scan.unread);
         return null;
     }
-    const names = imports.namedImports.get(pkgName) ?? null;
+    const names = scan.namedImports.get(pkgName) ?? null;
     return { pkgName, fileCount, names, inputHash: namedImportSignature(pkgName, names) ?? '' };
 }
 /** The project's imports, within PROJECT_SCAN, as both callers scan them. */
@@ -91,23 +92,23 @@ function mayRead(ctx, path) {
     }
 }
 /**
- * The stored bundle of `specifier` that answers this request, raw: built for
- * its barrel input, from sources the principal may all read (one that names
+ * The stored bundle of `specifier` that answers this request: built for its
+ * barrel input, from sources the principal may all read (one that names
  * none is never served), keyed as the code serving now keys this request
  * from those manifests as they read now (by the facet, or by the service).
+ * Null at once where no row can answer; else the key check's answer.
  */
-export async function storedPrebundle(ctx, specifier, barrel) {
+export function storedPrebundle(ctx, specifier, barrel) {
     const row = ctx.cache?.getEsmBundle(specifier);
     if (!row || !answersBarrel(row.inputHash, barrel) || row.sources.length === 0)
         return null;
     if (!row.sources.every((path) => mayRead(ctx, path)))
         return null;
     const request = prebundleRequest(specifier, manifestsOf(row.sources, (path) => readText(ctx, path)));
-    const keys = await Promise.all([
+    return Promise.all([
         prebundleCacheKey(request),
         serviceBuildCacheKey(ctx.esbuild.transformHostId, { ...request, options: SERVICE_PREBUNDLE_OPTIONS }),
-    ]);
-    return keys.includes(row.bundleHash) ? { esmCode: row.esmCode, inputHash: row.inputHash ?? '' } : null;
+    ]).then((keys) => (keys.includes(row.bundleHash) ? { esmCode: row.esmCode, inputHash: row.inputHash ?? '' } : null));
 }
 /**
  * Build `specifier`'s bundle for a request with `barrel`, store it when the

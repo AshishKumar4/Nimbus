@@ -45,13 +45,19 @@ export interface BarrelInput {
     /** namedImportSignature of them: what a row synthesized from them is stored with. */
     inputHash: string;
 }
+/** A barrel package a request names whole: one of more files than BARREL_PKG_FILE_THRESHOLD. */
+export interface BarrelPackage {
+    pkgName: string;
+    fileCount: number;
+}
+/** The barrel package `specifier` names whole, or null (a subpath, or a package of few files). */
+export declare function barrelPackage(ctx: PrebundleContext, specifier: string): BarrelPackage | null;
 /**
- * The barrel input of `specifier` for the project's imports (`scan`, asked
- * only for a barrel package), or null for a specifier bundled whole: a
- * subpath, a package of few files, or a barrel whose scan left files unread
- * (an entry from what it found could miss a name), which `unread` reports.
+ * The barrel input of a request for `barrel` from the project's imports,
+ * or null where the scan left files unread (an entry from what it found
+ * could miss a name), which `unread` reports: the barrel is bundled whole.
  */
-export declare function barrelInput(ctx: PrebundleContext, specifier: string, scan: () => Promise<ProjectImports>, unread?: (pkgName: string, fileCount: number, left: string) => void): Promise<BarrelInput | null>;
+export declare function barrelInput(barrel: BarrelPackage, scan: ProjectImports, unread?: (pkgName: string, fileCount: number, left: string) => void): BarrelInput | null;
 /** The project's imports, within PROJECT_SCAN, as both callers scan them. */
 export declare function scanProject(ctx: PrebundleContext): Promise<ProjectImports>;
 /**
@@ -60,16 +66,19 @@ export declare function scanProject(ctx: PrebundleContext): Promise<ProjectImpor
  * names; any other request takes only a whole bundle.
  */
 export declare function answersBarrel(inputHash: string | undefined, barrel: BarrelInput | null): boolean;
-/**
- * The stored bundle of `specifier` that answers this request, raw: built for
- * its barrel input, from sources the principal may all read (one that names
- * none is never served), keyed as the code serving now keys this request
- * from those manifests as they read now (by the facet, or by the service).
- */
-export declare function storedPrebundle(ctx: PrebundleContext, specifier: string, barrel: BarrelInput | null): Promise<{
+/** A stored bundle, raw, and the barrel input it was built for. */
+export interface StoredPrebundle {
     esmCode: string;
     inputHash: string;
-} | null>;
+}
+/**
+ * The stored bundle of `specifier` that answers this request: built for its
+ * barrel input, from sources the principal may all read (one that names
+ * none is never served), keyed as the code serving now keys this request
+ * from those manifests as they read now (by the facet, or by the service).
+ * Null at once where no row can answer; else the key check's answer.
+ */
+export declare function storedPrebundle(ctx: PrebundleContext, specifier: string, barrel: BarrelInput | null): Promise<StoredPrebundle | null> | null;
 /** What a build of a specifier came to. */
 export type PrebundleOutcome<T> = 
 /**
