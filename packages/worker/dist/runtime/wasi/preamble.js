@@ -615,11 +615,15 @@ function __wasiAllocateFd() { while (fdTable.has(nextFd))
 // park therefore wedges the process forever with nothing raised anywhere,
 // which is strictly worse than failing: nothing to log, nothing to retry.
 //
-// Every import that parks on a HOST promise therefore parks against a deadline
-// set with margin below the measured floor, and on expiry resolves to EAGAIN —
-// an errno the guest's own retry logic already handles — instead of hanging.
-// That is the `parkable` list below, and it is exactly the set of imports that
-// are also Suspending-wrapped, minus one.
+// A call that waits on outside input therefore parks against a deadline set
+// with margin below the measured floor, and on expiry resolves to EAGAIN — an
+// errno the guest's own retry logic already handles — instead of hanging:
+// only a socket's, a listener's and a poll's, the calls POSIX lets end so
+// (__wasiMayTimeOut). Every other import in the `parkable` list (exactly the
+// Suspending-wrapped set, minus one) waits for its answer: a filesystem call
+// has no EAGAIN (mkdir(2), read(2) of a file), and the session may take
+// longer than the deadline to give one, as its first change's grant took 11 s
+// on fe0b2ea1f and CPython's os.makedirs raised BlockingIOError.
 //
 // sched_yield is the exception, and deliberately so: it is Suspending-wrapped
 // in a threads build but is NOT in `parkable`, because it does not wait on the
@@ -665,8 +669,13 @@ function __wasiChildNews() {
 }
 /** The call of the guard now invoking a body; null outside one (a body nothing guards answers when it can). */
 let __wasiParkCall = null;
-function withParkDeadline(fn) {
+function withParkDeadline(fn, mayTimeOut) {
     return function parkGuarded(...args) {
+        // Asked before the body runs: a close takes its descriptor away.
+        if (!mayTimeOut(args)) {
+            const answered = fn.apply(this, args);
+            return typeof answered === 'number' ? answered : __wasiThreadPark(answered.then(undefined, () => __WASI_EIO));
+        }
         const call = { current: true };
         const outer = __wasiParkCall;
         __wasiParkCall = call;
@@ -703,6 +712,19 @@ function withParkDeadline(fn) {
         return __wasiThreadPark(guarded);
     };
 }
+/** Whether `fd` is a socket's or a listener's: the descriptors whose blocking calls POSIX lets end in EAGAIN. */
+function __wasiOnSocket(fd) {
+    const kind = typeof fd === 'number' ? fdTable.get(fd)?.kind : undefined;
+    return kind === 'socket' || kind === 'listener';
+}
+/** Which parkable calls the park deadline may answer EAGAIN; any other waits for its answer (see the watchdog above). */
+const __wasiMayTimeOut = {
+    sock_send: () => true, sock_recv: () => true, sock_shutdown: () => true, sock_accept: () => true, poll_oneoff: () => true,
+    fd_read: (args) => __wasiOnSocket(args[0]), fd_write: (args) => __wasiOnSocket(args[0]),
+    fd_close: (args) => __wasiOnSocket(args[0]), fd_fdstat_set_flags: (args) => __wasiOnSocket(args[0]),
+    fd_renumber: (args) => __wasiOnSocket(args[0]) || __wasiOnSocket(args[1]),
+};
+const __wasiNeverTimesOut = () => false;
 /**
  * A real park is also the moment a threaded process must let a peer run: the
  * token is handed back while the call waits, and taken again before the guest
@@ -1896,7 +1918,7 @@ export function __wasiMakeImports(opts) {
     // Applied before Suspending wraps them.
     for (const name of parkable) {
         if (typeof imports[name] === 'function')
-            imports[name] = withParkDeadline(imports[name]);
+            imports[name] = withParkDeadline(imports[name], __wasiMayTimeOut[name] ?? __wasiNeverTimesOut);
     }
     // Where input from outside enters the guest: a socket's bytes, an accepted
     // connection, a poll that woke, and the watchdog's wake from any of them
@@ -1951,10 +1973,10 @@ export function __wasiMakeImports(opts) {
         };
     }
     const procImport = { ...proc.imports };
-    // The extension's calls park as the filesystem's do, under the same watchdog.
+    // The extension's calls park as the filesystem's do, waiting for their answers.
     const fsTable = fsImport;
     for (const name of Object.keys(fsTable))
-        fsTable[name] = withParkDeadline(fsTable[name]);
+        fsTable[name] = withParkDeadline(fsTable[name], __wasiNeverTimesOut);
     if (opts.parking !== 'none' && typeof WebAssembly !== 'undefined' && typeof WebAssembly.Suspending === 'function') {
         for (const name of Object.keys(fsTable))
             fsTable[name] = new WebAssembly.Suspending(fsTable[name]);
