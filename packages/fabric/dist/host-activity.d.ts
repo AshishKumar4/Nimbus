@@ -35,6 +35,10 @@ export declare class HostActivity {
     observe(open: Observation['open'], lost: Observation['lost'], incarnation: Observation['incarnation']): HostObservation;
     acquire(signal?: AbortSignal): HostActivityLease;
     private hold;
+    /** `lease` let go: the last one stops the host's observations. */
+    released(lease: Lease): boolean;
+    /** `dependency`'s validation, for a holder that waits on it. */
+    validation(dependency: Observation): Promise<void>;
     /** End every old lease; a reused session starts with a fresh ownership epoch. */
     close(): void;
     private stop;
@@ -53,7 +57,7 @@ export declare class HostActivity {
  */
 export declare class SentRequests {
     #private;
-    /** An id for a request, and the earlier ids its leaf forgets or abandons first. */
+    /** An id for a request, and the earlier ids its leaf forgets or abandons first, when there are any. */
     send(): HostRequest;
     /**
      * Request `id` ended: reported as ended when delivered, else once its
@@ -73,11 +77,31 @@ export declare class SentRequests {
 export declare const LEAF_RECEIVED = "nimbusLeafReceived";
 export declare function leafReceived(error: unknown): boolean;
 export declare function receivedFailure(failure: Error): Error;
-/** A request's id, and the earlier ones its leaf forgets (`ended`) or abandons first (`abandoned`). */
+/** A request's id, and the earlier ones its leaf forgets (`ended`) or abandons first (`abandoned`), only when there are any. */
 export interface HostRequest {
     id: number;
-    ended: number[];
-    abandoned: number[];
+    carried?: {
+        ended: number[];
+        abandoned: number[];
+    };
+}
+/**
+ * One holder's claim on a host's activity: an object of its own rather than a
+ * set of closures, since every routed request takes one. Its validation
+ * promise is made only for a holder that reads `ready`; a request never does.
+ */
+declare class Lease implements HostActivityLease {
+    #private;
+    private readonly activity;
+    private readonly signal;
+    private readonly dependency;
+    constructor(activity: HostActivity, signal: AbortSignal | undefined, dependency: Observation | undefined);
+    get ready(): Promise<void> | undefined;
+    readonly release: () => void;
+    /** The signal aborted. */
+    handleEvent(): void;
+    /** Ended without being released by its holder (HostActivity.close), or as it is released. */
+    cancel(): void;
 }
 export declare function hostActivity(host: object): HostActivity;
 /**

@@ -14,6 +14,7 @@
 import { type WorkspaceEgress } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { z } from 'zod/v4';
 import { type ResidentBootSpec } from './process-fabric.js';
+import { type HostRequest } from './host-activity.js';
 export declare function isolateToken(): string;
 /**
  * Options the coordinator hands a hosting peer. Parsed on the peer, because a
@@ -53,8 +54,7 @@ export interface HostedHttpRequest {
     body: ReadableStream | null;
     /** Its id, by which its coordinator can abandon it, and the earlier ids the leaf forgets or abandons (SentRequests). */
     id: number;
-    ended: number[];
-    abandoned: number[];
+    carried?: HostRequest['carried'];
 }
 export interface HostedHttpResponse {
     status: number;

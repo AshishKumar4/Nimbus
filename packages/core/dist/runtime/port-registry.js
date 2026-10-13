@@ -154,8 +154,8 @@ function settleWith(owner, source, last, watched = true) {
     void source.pipeTo(last, watched ? { signal: owner.signal } : undefined).then(() => owner.settle(), () => owner.fail());
 }
 /** A JavaScript stage of the relay, which its owner errors if the caller leaves (RelayScope). */
-function ownedStage(owner, transformer = {}) {
-    return new TransformStream({ ...transformer, start: (controller) => owner.stage(controller) });
+function ownedStage(owner) {
+    return new TransformStream({ start: (controller) => owner.stage(controller) });
 }
 /**
  * A process's answer body, each piece and its end let out as the rest of
@@ -163,7 +163,8 @@ function ownedStage(owner, transformer = {}) {
  * is published before the piece after it, or its end, is seen.
  */
 function releasedBody(output, pid, owner) {
-    return ownedStage(owner, {
+    return new TransformStream({
+        start: (controller) => owner.stage(controller),
         transform: (chunk, controller) => output.releaseOutput(pid, () => controller.enqueue(chunk)),
         flush: () => output.releaseOutput(pid, () => { }),
     });
