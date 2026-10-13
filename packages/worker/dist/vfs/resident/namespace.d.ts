@@ -67,9 +67,13 @@ export interface Namespace {
     deleteTree(t: ResidentTables, k: string, self: boolean): void;
     /** Drop one row and what the table keeps of it in heap. */
     forget(t: ResidentTables, k: string): void;
-    lookup(k: string, followLeaf: boolean): Lookup | 'ELOOP';
-    resolve(k: string, followLeaf: boolean): Resolved | null;
-    unknown(k: string, followLeaf: boolean, listing: boolean): string | null;
+    /**
+     * `ownLinks`: the process's own symlinks the table does not hold yet (its
+     * overlay's), link path → target, followed ahead of the table's.
+     */
+    lookup(k: string, followLeaf: boolean, ownLinks?: ReadonlyMap<string, string>): Lookup | 'ELOOP';
+    resolve(k: string, followLeaf: boolean, ownLinks?: ReadonlyMap<string, string>): Resolved | null;
+    unknown(k: string, followLeaf: boolean, listing: boolean, ownLinks?: ReadonlyMap<string, string>): string | null;
     children(k: string): {
         name: string;
         kind: number;
