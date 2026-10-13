@@ -706,12 +706,11 @@ function withParkDeadline(fn) {
 /**
  * A real park is also the moment a threaded process must let a peer run: the
  * token is handed back while the call waits, and taken again before the guest
- * resumes. Every park goes through here, the deadline guard's and the waits
- * the process host bounds itself (a pipe's, a child's), so the scheduler
- * needs no per-import wiring.
+ * resumes. Every park goes through here: the deadline guard's, and the waits
+ * the process host bounds itself (a pipe's, a child's: its `park` option).
  */
-function __wasiThreadPark(r) {
-    return typeof r === 'number' || !__wasiThreads ? r : __wasiThreads.parkIo(r);
+function __wasiThreadPark(wait) {
+    return __wasiThreads ? __wasiThreads.parkIo(wait) : wait;
 }
 /**
  * The socket's one pending read: a chunk joins its buffer, or its end is
@@ -851,6 +850,7 @@ export function __wasiMakeImports(opts) {
         news: __wasiChildNews(),
         cred: () => __wasiFS.cred ?? null,
         parks: procParks,
+        park: __wasiThreadPark,
     });
     const imports = {
         // ── args / env ──
@@ -1923,20 +1923,16 @@ export function __wasiMakeImports(opts) {
         const writeAll = imports.fd_write;
         const closeAll = imports.fd_close;
         const fdstat = imports.fd_fdstat_get;
-        // A pipe's wait is bounded by the process host (EINTR first): it hands the token back, under no deadline of its own.
         imports.fd_read = function pipeRead(...args) {
             const [fd, iovs, iovsLen, nread] = args;
-            const piped = proc.read(fd, iovs, iovsLen, nread);
-            return piped === null ? readAll.apply(this, args) : __wasiThreadPark(piped);
+            return proc.read(fd, iovs, iovsLen, nread) ?? readAll.apply(this, args);
         };
         imports.fd_write = function pipeWrite(...args) {
             const [fd, iovs, iovsLen, nwritten] = args;
-            const piped = proc.write(fd, iovs, iovsLen, nwritten);
-            return piped === null ? writeAll.apply(this, args) : __wasiThreadPark(piped);
+            return proc.write(fd, iovs, iovsLen, nwritten) ?? writeAll.apply(this, args);
         };
         imports.fd_close = function pipeClose(...args) {
-            const piped = proc.close(args[0]);
-            return piped === null ? closeAll.apply(this, args) : __wasiThreadPark(piped);
+            return proc.close(args[0]) ?? closeAll.apply(this, args);
         };
         imports.fd_fdstat_get = function pipeFdstat(...args) {
             const [fd, statPtr] = args;
@@ -1953,10 +1949,7 @@ export function __wasiMakeImports(opts) {
             return __WASI_ESUCCESS;
         };
     }
-    const procImport = {};
-    // A child's start and wait are bounded by the process host too: they hand the token back the same way.
-    for (const [name, body] of Object.entries(proc.imports))
-        procImport[name] = (...args) => __wasiThreadPark(body(...args));
+    const procImport = { ...proc.imports };
     // The extension's calls park as the filesystem's do, under the same watchdog.
     const fsTable = fsImport;
     for (const name of Object.keys(fsTable))
