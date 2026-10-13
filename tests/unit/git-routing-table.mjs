@@ -279,9 +279,14 @@ for (const [dir, dirMode, config] of [['.git/hooks', 0o311, null], ['githooks', 
 // git's, not run by the built-in on the first file's verdict (RearHerring).
 {
   const config = user.readFileString('home/user/repo/.git/config');
-  vfs.withTransaction(() => {
-    user.writeFile('home/user/repo/.git/config-plain', config);
-    user.writeFile('home/user/repo/.git/config-worktree', config + '[extensions]\n\tworktreeConfig = true\n');
+  // One batch: one generation for both files.
+  const templates = [['config-plain', config], ['config-worktree', config + '[extensions]\n\tworktreeConfig = true\n']].map(([name, text]) => {
+    const data = new TextEncoder().encode(text);
+    return { path: `home/user/repo/.git/${name}`, data };
+  });
+  user.writeBatch({
+    inodes: templates.map(({ path, data }) => ({ path, parentPath: 'home/user/repo/.git', isDir: false, size: data.byteLength, mtime: Date.now(), mode: 0o644, chunkCount: 1 })),
+    chunks: templates.map(({ path, data }) => ({ path, chunkId: 0, data })),
   });
   assert.equal(user.revision('home/user/repo/.git/config-plain'), user.revision('home/user/repo/.git/config-worktree'), 'the two files are of one revision');
   user.writeFile('home/user/repo/.git/config.worktree', '[core]\n\thooksPath = wt-hooks\n');
