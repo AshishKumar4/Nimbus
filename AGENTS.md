@@ -311,19 +311,18 @@ Cloudflare AI Gateway.
 
 ## Tests
 
-Useful commands:
+Everything that executes Nimbus code runs on armada, never on the
+workstation: unit files, red-first tests, benches, profiles, probes, the
+typecheck, builds and workerd. On 2026-10-12 a red-first test run on the
+workstation against a decoder that never terminated reached 41 GB and took
+the user's machine down twice. The workstation runs git, file edits, small
+scripts over receipts, and the `scripts/ci/remote-*.mjs` clients (§ CI).
+One unit file is `remote-unit --only <file>`; one probe is `remote-probes
+--only <probe>`. A bench or profile is committed and run through
+`remote-unit --only` or `mapOnArmada` (`scripts/ci/lib/armada.mjs`).
 
-| Task | Command |
-|---|---|
-| Typecheck | `bun run typecheck` |
-| Build packages | `bun run --cwd packages/worker build` |
-| Unit suite: the gate | `bun scripts/ci/remote-unit.mjs [<commit>]` (CI, below) |
-| Unit suite, fast tier, locally | `bun tests/unit/run-all.mjs --tier fast` |
-| Unit suite, everything, locally | `bun tests/unit/run-all.mjs` |
-| One unit file | `bun tests/unit/<file>.mjs` |
-| All live probes | `BASE=<target> bun test:behavioral` |
-| One live probe | `BASE=<target> bun tests/behavioral/<path>.mjs` |
-| Limit runner scope | `NIMBUS_PROBE_ONLY=<path-fragment> BASE=<target> bun test:behavioral` |
+A red-first test of a hang or runaway bug bounds itself: it runs the
+failing path in a child with a timeout, so red is a clean failure.
 
 Probes should assert user-visible behavior, not static strings or HTTP 200
 alone. Use bounded polling with loud failures; do not add sleep-only or
@@ -739,7 +738,9 @@ subdomain of `nimbus-os.dev` resolves and answers 200, because the zone's
   `enhanced_error_serialization` (on by date from 2026-04-21, or listed as a
   flag on an older date, as Kinu's 2025-12-01 must): `composeFabric` refuses a
   Worker without it, since it is what carries a filesystem error's `code`
-  across RPC to a process.
+  across RPC to a process. Every host also lists `enable_request_signal`,
+  which no date enables: `composeFabric` refuses a Worker without it, since a
+  request's `signal` is the only sign that its client left.
 - `@nimbus-sh/sdk/worker` is the public Worker embedder import. `@nimbus-sh/worker`
   carries runtime assets and implementation.
 - `R2` runtime catalog state is external. Correct code can still fail runtime

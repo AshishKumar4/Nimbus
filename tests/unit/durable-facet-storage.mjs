@@ -15,6 +15,7 @@
 // unrecoverable store.
 
 import assert from 'node:assert/strict';
+import { settledScope } from './lib/response-scope.mjs';
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { ProcessFabric } from '../../packages/fabric/src/process-fabric.ts';
@@ -220,7 +221,7 @@ function setup({ doId = 'durable-do', storage = new Map() } = {}) {
   await running.booted();
   const other = await spawn(2);
   await other.booted();
-  const answer = await (await running.routeTarget.handleHttpRequest(new Request('http://app.test/'))).json();
+  const answer = await (await running.routeTarget.handleHttpRequest(new Request('http://app.test/'), settledScope())).json();
   assert.equal(answer.boot, 1, 'the running process still answers');
   assert.equal(evaluations, 1, 'nothing this incarnation runs was ended and booted again');
   other.kill(); running.kill();

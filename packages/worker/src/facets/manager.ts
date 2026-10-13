@@ -53,7 +53,7 @@ import { normalizeVfsPath, stripLeadingSlashes, vfsPathExtension } from '@nimbus
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 import { direntTypeOf, type KnownDirentType } from '@nimbus-sh/core/vfs/dirent-type.js';
-import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
+import { relayRpcBody, responseScope, type PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import {
   clearPortCapability,
   listPortReservations,
@@ -193,6 +193,7 @@ import {
 } from '../runtime/opencode-facet-runner.js';
 import { parsePortFromArgv, resolveLongRunningPort } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
+import { hostActivity, hostAdapterBytes } from '@nimbus-sh/fabric/host-activity.js';
 import {
   DEFAULT_FACET_BUNDLE_PROFILE,
   type FacetBundleProfile,
@@ -603,7 +604,7 @@ function __nimbusReportBlockedState() {
 // child as much as a callback would be. Once the evaluation settles, the
 // loop gives a settling chain its warm-up turns again; a rejected
 // evaluation is uncaught as it rejects.
-async function __nimbusRunEntrypointToExit(__entryResult, __deadlineMs) {
+async function __nimbusRunEntrypointToExit(__entryResult, __deadlineMs, __beforeExit) {
   let __evaluating = Boolean(__entryResult) && typeof __entryResult.then === "function";
   let __grace = 0;
   if (__evaluating) {
@@ -619,7 +620,36 @@ async function __nimbusRunEntrypointToExit(__entryResult, __deadlineMs) {
     if (__grace > 0) { __grace--; return 1 + __nimbusLiveHandles(); }
     return __nimbusLiveHandles();
   };
-  return await __nimbusRunEventLoop(__count, __nimbusProcessExitPromise, __deadlineMs, 4, __nimbusReportBlockedState);
+  if (!__beforeExit) return await __nimbusRunEventLoop(__count, __nimbusProcessExitPromise, __deadlineMs, 4, __nimbusReportBlockedState);
+  const __limited = Number.isFinite(__deadlineMs);
+  const __startedAt = __limited ? Date.now() : 0;
+  for (;;) {
+    const __remaining = __limited ? Math.max(0, __deadlineMs - (Date.now() - __startedAt)) : __deadlineMs;
+    const __drained = await __nimbusRunEventLoop(__count, __nimbusProcessExitPromise, __remaining, 4, __nimbusReportBlockedState);
+    if (__drained.pending || !await __beforeExit()) return __drained;
+  }
+}
+
+async function __nimbusBeforeExitHasWork() {
+  if (__nimbusProgramStopped || !__processMod.listenerCount("beforeExit")) return false;
+  const __rawSetTimeout = globalThis.__nimbusRawSetTimeout || globalThis.setTimeout;
+  // Already-returned writes still publish, but are not new Node work.
+  const __nodeHandles = () => Math.max(0, __nimbusLiveHandles() - __nimbusHandleCount("__nimbusAcknowledgedVfsOps"));
+  for (;;) {
+    try { __processMod.emit("beforeExit", __processMod.exitCode || 0); }
+    catch (error) { __nimbusUncaughtException(error, false); }
+    let __continued = __nodeHandles() > 0;
+    for (let __pass = 0; __pass < 4; __pass++) {
+      await new Promise((resolve) => __rawSetTimeout(resolve, 0));
+      __continued ||= __nodeHandles() > 0;
+    }
+    if (__nimbusProgramStopped) return false;
+    if (__continued && __nimbusLiveHandles() > 0) return true;
+    if (!__continued) {
+      await __nimbusRunEventLoop(__nimbusLiveHandles, __nimbusProcessExitPromise, Infinity, 0);
+      return false;
+    }
+  }
 }
 
 // Whether the program holds no live handle once a settling chain has had the
@@ -637,17 +667,25 @@ async function __nimbusHoldsNoHandle() {
 // (a timer firing or cleared, an operation settling, a server closed or
 // unref'd, stdin let go) calls __nimbusHandleReleased, and a release that
 // leaves none is the program's natural end.
-function __nimbusNaturalExit() {
+function __nimbusNaturalExit(__beforeExit) {
   return new Promise((resolve) => {
     let __checking = false;
     const __released = () => {
       if (__checking) return;
       __checking = true;
-      __nimbusHoldsNoHandle().then((__none) => {
+      __nimbusHoldsNoHandle().then(async (__none) => {
+        if (__none && __beforeExit && await __beforeExit()) __none = false;
         __checking = false;
         if (!__none) return;
         if (globalThis.__nimbusHandleReleased === __released) globalThis.__nimbusHandleReleased = undefined;
         resolve();
+      }).catch((error) => {
+        __checking = false;
+        __nimbusUncaughtException(error, false);
+        if (__nimbusProgramStopped) {
+          if (globalThis.__nimbusHandleReleased === __released) globalThis.__nimbusHandleReleased = undefined;
+          resolve();
+        } else __released();
       });
     };
     globalThis.__nimbusHandleReleased = __released;
@@ -1329,7 +1367,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
         if (__thrown instanceof __ProcessExit) throw __thrown;
         __nimbusUncaughtException(__thrown, ${entry.esModule});
       }
-      const __drain = await __nimbusRunEntrypointToExit(__entryResult, __entryBudgetMs);
+      const __drain = await __nimbusRunEntrypointToExit(__entryResult, __entryBudgetMs, __nimbusBeforeExitHasWork);
       __drainPasses = __drain.passes;
       if (__nimbusProcessExitCode !== null) exitCode = __nimbusProcessExitCode;
 
@@ -1394,7 +1432,9 @@ ${nodeProgramRuntime(sources, entry.esModule)}
       try {
         await __nimbusDrainVfsWrites(__supervisor);
       } catch (e) {
-        const trace = (e && e.stack) || (e && e.message) || String(e);
+        const message = (e && e.message) || String(e);
+        const stack = (e && e.stack) || message;
+        const trace = stack.includes(message) ? stack : message + "\\n" + stack;
         stderr += trace + "\\n";
         exitCode = 1;
         if (!captureOutput) await __nimbusReleaseStderr(trace + "\\n");
@@ -1424,7 +1464,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
     return __NimbusHostResponse.json({
       exitCode,
       stdout: (__supervisor && !captureOutput) ? "" : stdout,
-      stderr: (__supervisor && !captureOutput) ? "" : stderr,
+      stderr: (__supervisor && !captureOutput) ? __nimbusUnreportedStderr : stderr,
       // Unconditional, unlike diag: the supervisor stages these paths into
       // the next bundle for the same entry, so withholding them behind a
       // debug flag would leave the miss to repeat forever.
@@ -1843,7 +1883,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
         if (__nimbusProcessExitCode !== null) exitCode = __nimbusProcessExitCode;
         // Finished during its boot (\`--help\`, a CLI run that also serves):
         // the boot answers with its exit, as an explicit exit's does.
-        else if (!__nimbusHeldWithoutHandles) __nimbusEndedAtBoot = await __nimbusHoldsNoHandle();
+        else if (!__nimbusHeldWithoutHandles) __nimbusEndedAtBoot = await __nimbusHoldsNoHandle() && !await __nimbusBeforeExitHasWork();
       }
     } catch (e) {
       if (e instanceof __ProcessExit) {
@@ -1909,7 +1949,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
           finalCode = __nimbusEndedAtBoot ? 0 : Number(await __nimbusProcessExitPromise);
         } else {
           // process.exit, or the natural end: no live handle left.
-          finalCode = Number(await Promise.race([__nimbusProcessExitPromise, __nimbusNaturalExit().then(() => 0)]));
+          finalCode = Number(await Promise.race([__nimbusProcessExitPromise, __nimbusNaturalExit(__nimbusBeforeExitHasWork).then(() => 0)]));
         }
         if (__nimbusProcessExitCode === null) {
           finalCode = __nimbusExitAtEnd();
@@ -1981,13 +2021,7 @@ export class NimbusProcess extends DurableObject {
     // Its write log is kept in its own store (process-fs-journal.ts).
     globalThis.__nimbusFsJournalSql = ctx.storage.sql;
   }
-  // Pending while this isolate lives: the coordinator learns of its death
-  // (out of memory, out of CPU) by this call's rejection. Its resolver is
-  // kept on the object, so a collection never finds the promise unsettleable
-  // (which the runtime answers by rejecting it: "Promise will never complete").
-  held() {
-    return new Promise((resolve) => { (this.__nimbusHeld ??= []).push(resolve); });
-  }
+
   async startProcess(startArgs) {
     // Held so an HTTP-first entry (a restart re-entered by a routed request)
     // starts from the same payload startProcess would have used.
@@ -5703,6 +5737,7 @@ export class FacetManager {
     this.learnedServers = new LearnedServers(ctx.storage);
     this.env = parseFacetManagerEnv(env);
     this.processes = processes;
+    this.processes.setWorkObservation(() => hostActivity(ctx).acquire());
     this.portRegistry = portRegistry;
     this.hooks = hooks;
     // The workspace's network (FacetManagerHooks.network); a manager no workspace composed uses the isolate's.
@@ -5869,16 +5904,6 @@ export class FacetManager {
         .catch((e: unknown) => this._end(pid, { code: 1, cause: `${what} failed: ${errorMessage(e)}` }))
         .finally(() => this.releaseProcessRpcResources(pid)),
     );
-  }
-
-  /**
-   * The actor hosting `workerKey` reports, from its own next incarnation,
-   * that the platform reset it under the process (fabric
-   * PeerHost.watchFired). True when it was this session's open process, which
-   * is now lost (ProcessHost.hostLost).
-   */
-  hostLost(workerKey: string, capability: string): boolean {
-    return this.processHost.hostLost?.(workerKey, capability) ?? false;
   }
 
   /**
@@ -6868,15 +6893,16 @@ export class FacetManager {
 
   /**
    * What a resident's map holds beside its generated text: its sidecars, its
-   * staged bindings' loader and trampoline, and the wasm images and bindings
-   * it reads by path at boot, at their size on the session's disk.
+   * staged bindings' loader and trampoline, the host's adapter around its
+   * worker.js, and the wasm images and bindings it reads by path at boot, at
+   * their size on the session's disk.
    */
   private _residentMemberBytes(
     sqliteModules: Readonly<Record<string, { wasm: ArrayBuffer }>>,
     staged: ResidentStagedBindings | null,
     wasmImports: readonly FacetWasmImport[],
   ): number {
-    let bytes = moduleMemberBytes(sqliteModules);
+    let bytes = moduleMemberBytes(sqliteModules) + hostAdapterBytes('worker.js');
     if (staged) bytes += mapTextBytes(staged.loader) + staged.trampoline.byteLength;
     const fs = this.vfs?.as(CRED_KERNEL);
     for (const path of [...wasmImports.map((image) => image.vfsPath), ...Object.values(staged?.bindingPaths ?? {})]) {
@@ -8300,8 +8326,9 @@ export class FacetManager {
    * fails or stops (to wait for stdin) is its launcher's to handle; a
    * lifetime resident's caller watches its lifecycle itself.
    */
-  private _watchHost(pid: number, handle: ResidentProcessHandle, diesAlone: boolean): void {
+  private _watchHost(pid: number, handle: ResidentProcessHandle, diesAlone: boolean, controlFailure?: (error: unknown) => boolean): void {
     handle.done.catch((error: unknown) => {
+      if (controlFailure?.(error)) return;
       if (error instanceof ProcessHostLost) { this._endByHostLoss(pid, error); return; }
       if (diesAlone) void handle.booted().then(() => this._residentDied(pid, error), () => {});
     });
@@ -8360,9 +8387,10 @@ export class FacetManager {
       journaled?: boolean;
       /** A boot after a stop (runtime/stop-replay.ts): its own isolate. */
       run?: number;
+      controlFailure?: (error: unknown) => boolean;
     },
   ): Promise<ResidentProcessHandle> {
-    const { run, ...process } = spec;
+    const { run, controlFailure, ...process } = spec;
     const handle = await this.processFabric.startResidentProcess({
       pid,
       workerKey: `nimbus-process:${this.ctx.id.toString()}:${pid}${run !== undefined && run > 1 ? `:run${run}` : ''}`,
@@ -8374,7 +8402,7 @@ export class FacetManager {
       },
       ...process,
     });
-    this._watchHost(pid, handle, spec.startContract === 'boot' && spec.journaled === true);
+    this._watchHost(pid, handle, spec.startContract === 'boot' && spec.journaled === true, controlFailure);
     return handle;
   }
 
@@ -8424,6 +8452,7 @@ export class FacetManager {
     this.launchPump.close();
     while (this.launchTasks.size > 0) await Promise.allSettled([...this.launchTasks]);
     await Promise.all(this.rowAmendments.values());
+    await this.processHost.close?.();
   }
 
   /** Allocate a free loopback port for a resident server facet (from 4096 up). */
@@ -8661,6 +8690,13 @@ export class FacetManager {
     await this.processes.reap();
     const command = opts.command || (opts.filename ? `node ${opts.filename}` : 'node <script>');
     const cwd = opts.cwd || '/home/user';
+    if (!this.processHost.imageDelivery.storageSharedWithSession) {
+      const argv = launchArgv({ execArgv: opts.node?.execArgv, argv: opts.argv });
+      const derived = await deriveResidentOwner(cwd, argv);
+      const declared = opts.port === undefined ? null : await readPortReservation(this.ctx, opts.port);
+      const owner = declared?.kind === 'explicit' && declared.owner !== null ? declared.owner : derived;
+      if (await readPortReservationByOwner(this.ctx, owner)) this.processHost.assertDurableStorage();
+    }
     let entry: ProcessEntry;
     if (opts.skipSpawn && opts.callerPid != null) {
       const found = this.processes.get(opts.callerPid);
@@ -8719,7 +8755,8 @@ export class FacetManager {
     attempt: number,
   ): Promise<void> {
     if (this.launchesClosed) return Promise.reject(new Error('Launch scheduler is closed'));
-    return this.trackLaunchTask(this._runResidentLaunchBody(entry, code, command, opts, attempt));
+    const preparing = this.processes.holdWork(entry.pid);
+    return this.trackLaunchTask(this._runResidentLaunchBody(entry, code, command, opts, attempt).finally(preparing));
   }
 
   private async _runResidentLaunchBody(
@@ -9025,11 +9062,13 @@ export class FacetManager {
       // pid the session has finished reporting on.
       this._assertLaunchStillOwned(entry.pid);
       try {
+      const launchingNonce = stopNonce, launchingRun = rerun?.replay.run ?? 1;
       handle = await this._startResidentProcess(entry.pid, {
         // The attached-TTY runner holds startProcess open for the process's
         // life; the server/watch runner returns once it is up.
         startContract: opts.attachedTty ? 'lifetime' : 'boot',
         journaled: true,
+        ...(stoppable ? { controlFailure: (error: unknown) => stopRecordOf(error, launchingNonce, launchingRun) !== null } : {}),
         startArgs: {
           pid: entry.pid, vfsCursor, dataPlan,
           ...(Object.keys(lazyReads).length > 0 ? { lazyReads } : {}),
@@ -9256,6 +9295,9 @@ export class FacetManager {
     if (opts.resident && !opts.durable) {
       opts = { ...opts, durable: { owner: await deriveResidentOwner(cwd, opts.resident.argv) } };
     }
+    if (opts.durable && (!opts.resident || await readPortReservationByOwner(this.ctx, opts.durable.owner))) {
+      this.processHost.assertDurableStorage();
+    }
     await this.processes.reap();
     // The table entry carries the same argv the identity is derived from, so
     // a runtime resident reads the same way through either path.
@@ -9431,7 +9473,12 @@ export class FacetManager {
         pid: entry.pid,
         boot,
         facet: {
-          fetch: (request) => target.handleHttpRequest(request),
+          // The caller reads the body across RPC; the process's work for it ends with the relay.
+          fetch: async (request) => {
+            const { scope, owner } = responseScope(request.signal);
+            try { return relayRpcBody(await target.handleHttpRequest(request, scope), request.method, owner); }
+            catch (error) { owner.fail(); throw error; }
+          },
           connect: async (request) => {
             if (typeof target.handleWebSocketRequest !== 'function') {
               throw new Error(`Nimbus: worker pid ${entry.pid} accepts no WebSocket upgrades`);

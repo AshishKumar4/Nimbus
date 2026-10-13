@@ -243,9 +243,21 @@ Object.defineProperty(builtins, "http", {
       const inbound = new __nativeHttpRequest(request, { headers, signal: AbortSignal.any([request.signal, controller.signal]) });
       let detach = () => {};
       let timer;
-      let nativeResponse;
       const captureResponse = (incoming, response) => {
-        nativeResponse = response;
+        // A request abandoned or timed out ends as a dropped socket ends it in
+        // Node (_http_server.js socketOnClose): the request destroyed with an
+        // 'aborted' reset, then its response closed with no 'finish' and no
+        // more writes.
+        const dropped = () => {
+          incoming.destroy(Object.assign(new Error("aborted"), { code: "ECONNRESET" }));
+          response.destroy();
+        };
+        if (inbound.signal.aborted) dropped();
+        else inbound.signal.addEventListener("abort", dropped, { once: true });
+        // A response that ends unfinished takes its connection with it, and
+        // its request is aborted, as Node's socketOnClose does: the platform
+        // can cancel the response body before the caller's leaving arrives.
+        response.once("close", () => { if (!response.writableFinished) dropped(); });
         // workerd's #toReqRes keeps only the text before the first unquoted
         // comma of these fields (splitHeaderValue, meant to pick the first of
         // fetch-joined duplicates), so a guest saw "If-Modified-Since: Tue"
@@ -286,7 +298,6 @@ Object.defineProperty(builtins, "http", {
       timer = setTimeout(() => {
         deadline.resolve(new __nativeHttpResponse("Nimbus: HTTP handler sent no response headers in time", { status: 504 }));
         detach();
-        nativeResponse?.destroy();
         controller.abort();
       }, Number(globalThis.__nimbusHttpHeaderTimeoutMs) || 30000);
       try {

@@ -354,6 +354,10 @@ export class Interpreter {
     return this.lastExitCode;
   }
 
+  setLastExitCode(exitCode: number): void {
+    this.lastExitCode = exitCode;
+  }
+
   async executeScript(script: ScriptNode, terminalStdin?: TerminalInputStream): Promise<number> {
     return (await this.executeScriptWithIo(script, this.createTerminalIo(terminalStdin)));
   }

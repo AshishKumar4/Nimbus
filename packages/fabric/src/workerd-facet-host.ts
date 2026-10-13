@@ -14,12 +14,22 @@
  */
 
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
+import {
+  hostActivity,
+  HOST_INCARNATION_HEADER,
+  HOST_REQUEST_HEADER,
+  HOST_WATCH_HEADER,
+  observeResidentConfig,
+  type HostActivityLease,
+  HOST_FAILED_HEADER,
+  receivedFailure,
+} from './host-activity.js';
 import type { ModuleSourceEnv } from '@nimbus-sh/platform/module-source.js';
 import { readImmutableModuleSource } from '@nimbus-sh/core/_shared/staged-source.js';
 import { classifyError, describeError, isHostReset, isUnexplainedPlatformError } from '@nimbus-sh/platform/oom-classify.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { StorageLedger, forgetFacetStorage } from '@nimbus-sh/core/runtime/storage-ledger.js';
-import type { SqlDatabase } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { ResponseScope, SqlDatabase } from '@nimbus-sh/core/runtime/os-contracts.js';
 import {
   getCtxExports,
   stagedBootAssembler,
@@ -34,6 +44,7 @@ import {
   withDynamicWorkerCapNamed,
 } from './budgets.js';
 import {
+  ProcessHostLost,
   RESIDENT_PROCESS_CLASS,
   residentLoaderConfig,
   type HostedProcess,
@@ -53,6 +64,7 @@ import { PROCESS_FS_JOURNAL_READER_SOURCE } from '@nimbus-sh/core/_shared/proces
 import { applyFacetLimits, facetLimits, facetLoaderKey, type FacetResourceLimits } from './facet-limits.js';
 import { withResolvers } from './turn-budget.js';
 import { enteredByRun, RUN_ENTERED } from './one-shot-entry.js';
+import type { WorkerCode } from '@nimbus-sh/platform/worker-code.js';
 
 // ── Loaded-worker entrypoint plumbing ───────────────────────────────────────
 
@@ -87,15 +99,13 @@ async function stagedOneShot(key: string, stage: unknown, supervisor: Supervisor
 /** The subset of a facet stub a resident process exposes to whoever opened it. */
 interface ResidentFacetStub {
   startProcess(args?: unknown): Promise<unknown>;
-  /** Pending for as long as the process's isolate lives (a journaling resident's class: ProcessHostParams.journal). */
-  held(): Promise<never>;
-  handleHttpRequest(request: Request): Promise<Response>;
   /**
-   * A facet stub is a Durable Object stub, so it fetches. That is the one path
-   * an upgrade can take: a 101 owns a live socket, which the RPC
-   * Request/Response transport reconstructs rather than hands over.
+   * A facet stub is a Durable Object stub, so it fetches: every request the
+   * host adapter takes (observeResidentConfig). An upgrade's 101 keeps its
+   * live socket, and the leaf's own request signal aborts when the call is
+   * cancelled, which no RPC call gives its callee.
    */
-  fetch(request: Request): Promise<Response>;
+  fetch(request: Request, init?: { signal?: AbortSignal; encodeResponseBody?: 'manual' }): Promise<Response>;
 }
 
 /** `ctx.facets` — a Durable Object's named child actors. */
@@ -352,6 +362,10 @@ export function deleteFacetStorage(ctx: DurableObjectState, name: string): void 
   if (sql) forgetFacetStorage(sql, name);
 }
 
+export function abortFacet(ctx: DurableObjectState, name: string, reason: Error): void {
+  facetContainer(ctx).abort(name, reason);
+}
+
 
 
 /**
@@ -363,7 +377,17 @@ export function deleteFacetStorage(ctx: DurableObjectState, name: string): void 
  * derivable from the pid — reading a slot back out of the book would race the
  * release that empties it.
  */
-export type ResidentFacet = Omit<HostedProcess, 'describe'> & { name: string; slot?: number };
+export type ResidentFacet = Omit<HostedProcess, 'describe' | 'handleHttpRequest'> & {
+  name: string;
+  slot?: number;
+  acquireActivity(signal?: AbortSignal): HostActivityLease;
+  /**
+   * HostedProcess.handleHttpRequest; a peer relaying its coordinator's
+   * request passes the signal its coordinator abandons it by
+   * (HandledRequests) instead of the scope's end.
+   */
+  handleHttpRequest(request: Request, scope: ResponseScope, relayed?: AbortSignal): Promise<Response>;
+};
 
 /**
  * The process surface of one hosting actor: how a resident process comes
@@ -453,6 +477,8 @@ function spawnResident(
   // is gone. Both cases are reported instead.
   let evaluated = false;
   let released = false;
+  let refused: { error: unknown } | undefined;
+  const watchCapability = crypto.randomUUID();
   let markLost: (error: Error) => void = () => {};
   const lost = new Promise<never>((_, reject) => { markLost = reject; });
   lost.catch(() => {});
@@ -460,13 +486,15 @@ function spawnResident(
     if (released) {
       throw new Error(`Nimbus: resident process ${params.pid} is no longer running`);
     }
+    if (refused) throw refused.error;
     if (evaluated) {
       const gone = new Error(`Nimbus: resident process ${params.pid} is no longer loaded (its facet was lost)`);
       markLost(gone);
       throw gone;
     }
     evaluated = true;
-    return { class: residentProcessClass(env, disk, supervisor, params, loaderKey) };
+    try { return { class: residentProcessClass(env, disk, supervisor, params, loaderKey, watchCapability) }; }
+    catch (error) { refused = { error }; throw error; }
   };
   const book = slotBook(ctx);
   const ledger = sessionLedger(ctx);
@@ -482,6 +510,7 @@ function spawnResident(
     if (explicit && !book.live.has(name)) {
       facets.abort(name, new Error('Nimbus: a new incarnation takes this facet name'));
     }
+    params.created?.(name);
     facet = facets.get(name, start);
   } catch (error) {
     if (slot !== undefined) releaseSlot(ctx, params.pid);
@@ -500,10 +529,12 @@ function spawnResident(
   facetOfPid(ctx).set(params.pid, name);
 
   let disposed = false;
+  let stopObserving = () => {};
   const release = async () => {
     if (disposed) return;
     disposed = true;
     released = true;
+    stopObserving();
     facetOfPid(ctx).delete(params.pid);
     endResidency();
     try { facets.abort(name, new Error('Nimbus: resident process released')); } catch { /* already gone */ }
@@ -530,6 +561,16 @@ function spawnResident(
     if (slot !== undefined) releaseSlot(ctx, params.pid);
   };
 
+  const watch = (signal?: AbortSignal) => facet.fetch(new Request('https://nimbus-process.invalid/', { signal, headers: { [HOST_WATCH_HEADER]: watchCapability } }));
+  // The first instance's own incarnation, pinned before any request is routed
+  // to it and never learned again from a reply.
+  const incarnation = watch().then(async (response) => {
+    const pinned = response.headers.get(HOST_INCARNATION_HEADER);
+    await response.body?.cancel();
+    if (!pinned) throw new Error(`Nimbus: resident process ${params.pid} reported no incarnation`);
+    return pinned;
+  });
+  incarnation.catch(() => {});
   let started: Promise<unknown>;
   try {
     // The allowance the ledger admitted, for the facet's store to keep under.
@@ -552,6 +593,7 @@ function spawnResident(
     if (ledger !== null && row !== null) ledger.reportSize(name, row);
     return payload;
   }, (error) => {
+    refused = { error };
     // A start that rejects after its release is the process ending or being
     // ended as it booted (json-server --version), not a failure to start.
     throw released ? error : startFailure(error, name, params.pid);
@@ -559,23 +601,57 @@ function spawnResident(
   // A caller reads whichever of `started` and the lifecycle it needs, so keep
   // the runtime from reporting the other as an unhandled rejection.
   started.catch(() => {});
-  // A facet's isolate dies on its own (out of memory, out of CPU) and this
-  // object goes on (measured: the journal probe, 2026-10-07). A journaling
-  // resident's class holds held() open while its isolate lives, from its
-  // creation (a lifetime run is watched while it runs): a platform reset of
-  // it is the process lost too. Anything else that ends the call is not: a
-  // run's own stop aborts the facet with its stop record, and a release ends it.
-  if (params.journal) {
-    Promise.resolve().then(() => facet.held()).catch((error: unknown) => {
-      if (!released && isHostReset(error)) markLost(error instanceof Error ? error : new Error(String(error)));
-    });
-  }
+  const observation = hostActivity(ctx).observe(watch, (error) => { if (!released) markLost(error); }, incarnation);
+  stopObserving = observation.close;
+  // A request runs only on the instance pinned at open. An instance that
+  // refuses it as replaced is this process's host lost, never a guest answer.
+  const checked = async (response: Response): Promise<Response> => {
+    if (response.status !== 410 || response.headers.get(HOST_REQUEST_HEADER) !== watchCapability) return response;
+    const gone = new Error(await response.text());
+    if (!released) markLost(gone);
+    throw new ProcessHostLost(gone);
+  };
+  // A request's admission rides its headers: the leaf's entry is its fetch.
+  const admitted = async (request: Request, signal?: AbortSignal): Promise<Request> => {
+    const headers = new Headers(request.headers);
+    headers.set(HOST_REQUEST_HEADER, watchCapability);
+    headers.set(HOST_INCARNATION_HEADER, await incarnation);
+    return new Request(request, signal === undefined ? { headers } : { headers, signal });
+  };
   return {
     started,
     lost,
-    // A request can arrive before the boot call; it creates the facet as that call would.
-    handleHttpRequest: (request: Request) => facet.handleHttpRequest(request),
-    handleWebSocketRequest: (request: Request) => facet.fetch(request),
+    acquireActivity: observation.acquire,
+    // A request waits for the pinned incarnation, never for the boot. It is
+    // the leaf's fetch, whose own request signal aborts when this call is
+    // cancelled: the call carries a signal that ends when the response will
+    // not be delivered (its caller left, before any header or after), or a
+    // peer's own for the request it relays.
+    handleHttpRequest: async (request: Request, scope: ResponseScope, relayed?: AbortSignal) => {
+      const lease = observation.acquire();
+      const cancel = relayed === undefined ? new AbortController() : null;
+      scope.settled((delivered) => {
+        lease.release();
+        if (!delivered) cancel?.abort(new DOMException('The caller left the request', 'AbortError'));
+      });
+      const signal = relayed ?? cancel!.signal;
+      try {
+        // A live watch that found the pinned instance admits the request; without one it carries its admission.
+        // Unencoded: the registry decodes a coding once, as it did the bytes an RPC hop carried.
+        const response = await facet.fetch(observation.validated() ? request : await admitted(request), { signal, encodeResponseBody: 'manual' });
+        if (response.status === 500 && response.headers.get(HOST_FAILED_HEADER) === watchCapability) throw receivedFailure(new Error(await response.text()));
+        return response.status === 410 ? await checked(response) : response;
+      } catch (error) {
+        lease.release();
+        throw error;
+      }
+    },
+    // An upgrade hands its socket to the caller at the handshake.
+    handleWebSocketRequest: async (request: Request) => {
+      const lease = observation.acquire();
+      try { return await checked(await facet.fetch(await admitted(request))); }
+      finally { lease.release(); }
+    },
     release,
     name,
     slot,
@@ -613,6 +689,7 @@ function residentProcessClass(
   supervisor: ResidentSupervisorProps,
   params: ProcessHostParams,
   loaderKey: string,
+  watchCapability: string,
 ): unknown {
   const loader = env.LOADER;
   if (!loader || typeof loader.get !== 'function') {
@@ -622,7 +699,11 @@ function residentProcessClass(
     );
   }
   return loader
-    .get(facetLoaderKey('process', loaderKey), async () => applyFacetLimits('process', await residentWorkerConfig(env, disk, supervisor, params.boot)))
+    .get(facetLoaderKey('process', loaderKey), async () => {
+      const config = observeResidentConfig(await residentWorkerConfig(env, disk, supervisor, params.boot), watchCapability);
+      assertModuleMapWithinCodeLimit(config.modules);
+      return applyFacetLimits('process', config);
+    })
     .getDurableObjectClass(RESIDENT_PROCESS_CLASS, { limits: facetLimits('process') });
 }
 
@@ -788,12 +869,12 @@ export function facetJournal(ctx: DurableObjectState, env: JournalReaderEnv, nam
   const open = (): JournalReaderStub => {
     if (reader) return reader;
     try { facets.abort(name, new Error('Nimbus: its write log is drained')); } catch { /* not running */ }
-    const worker = loader.load({
+    const worker = loader.load(applyFacetLimits('process', {
       compatibilityDate: CF_COMPAT_DATE,
       mainModule: 'reader.js',
       modules: { 'reader.js': PROCESS_FS_JOURNAL_READER_SOURCE },
-    });
-    reader = facets.get(name, async () => ({ class: worker.getDurableObjectClass('NimbusFsJournalReader') })) as unknown as JournalReaderStub;
+    }));
+    reader = facets.get(name, async () => ({ class: worker.getDurableObjectClass('NimbusFsJournalReader', { limits: facetLimits('process') }) })) as unknown as JournalReaderStub;
     return reader;
   };
   return {
@@ -807,7 +888,7 @@ export function facetJournal(ctx: DurableObjectState, env: JournalReaderEnv, nam
 /** What facetJournal loads its reader with: the Worker Loader's unkeyed load. */
 export interface JournalReaderEnv {
   LOADER?: {
-    load(code: { compatibilityDate: string; mainModule: string; modules: Record<string, string> }): { getDurableObjectClass(name: string): unknown };
+    load(code: { compatibilityDate: string; mainModule: string; modules: Record<string, string> }): { getDurableObjectClass(name: string, options?: { limits: FacetResourceLimits }): unknown };
   };
 }
 
@@ -836,26 +917,17 @@ export async function residentWorkerConfig(
   disk: () => ResidentDiskReader,
   supervisor: ResidentSupervisorProps,
   boot: ResidentBootSpec,
-): Promise<Record<string, unknown>> {
+): Promise<WorkerCode> {
   if (boot.kind === 'code' && boot.code.env !== undefined) {
     const isolated = workspaceOutbound(await residentLoaderConfig(boot.code, disk(), (source) => readImmutableModuleSource(env, source)), supervisor);
-    assertModuleMapWithinCodeLimit(configModules(isolated));
+    assertModuleMapWithinCodeLimit(isolated.modules);
     return isolated;
   }
   const config = boot.kind === 'staged'
     ? await stagedBootAssembler()(env, boot.stage)
     : await residentLoaderConfig(boot.code, disk(), (source) => readImmutableModuleSource(env, source));
-  assertModuleMapWithinCodeLimit(configModules(config));
+  assertModuleMapWithinCodeLimit(config.modules);
   // The binding, not its host's capability (Supervise): a resident's calls each go one hop below its own request, at a fixed depth.
   const bindings = boot.kind === 'code' ? boot.code.bindings : undefined;
   return { ...workspaceOutbound(config, supervisor), env: { ...bindings, SUPERVISOR: bindingSupervisor(supervisor), ...egressMarker(supervisor) } };
-}
-
-/** The module map a loader config assembled, or empty when it named none. */
-function configModules(config: object): Record<string, unknown> {
-  const modules: unknown = 'modules' in config ? config.modules : undefined;
-  if (typeof modules !== 'object' || modules === null) return {};
-  // Loader configs only ever carry a module map under this key.
-  const map: Record<string, unknown> = modules as Record<string, unknown>;
-  return map;
 }

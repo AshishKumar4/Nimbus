@@ -107,6 +107,7 @@ import { wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
 // the replication-bookmark stream.
 import { type TryEnableReplicasResult as _W12EnableResult } from '../replica/routing.js';
 import { wireReplicasOnConstruct as _w12WireReplicasOnConstruct, getReplicaState as _w12GetReplicaState } from './replica-routes.js';
+import type { HostActivityLease } from '@nimbus-sh/fabric/host-activity.js';
 import { wireHibernationOnConstruct as _w9WireHibernationOnConstruct, wireProcessLogPersist as _w9DoWireProcessLogPersist, ensureHibSchema as _w9DoEnsureHibSchema, scheduleHibFlush as _w9DoScheduleHibFlush, clearDestroyedTombstone as _w1ClearDestroyedTombstone, ensureResidentKeepalive as _w1EnsureResidentKeepalive, dispatchAlarm as _w9DoDispatchAlarm, flushOnClose as _w9DoFlushOnClose, noteClientActivity } from './hibernation.js';
 import { timers } from '@nimbus-sh/fabric/timers.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
@@ -117,7 +118,9 @@ import { initSession as _w11InitSession, type InitSessionOptions } from './init.
 // _w5SafePersistRing) extracted.
 // S7: webSocket lifecycle (message, close, error, F1 discriminator,
 // _w5SafePersistRing) extracted.
-import { wsMessage as _wsDoMessage, wsClose as _wsDoClose, wsError as _wsDoError, safePersistRing as _wsDoSafePersistRing, wsKind } from './ws.js';
+import { wsMessage as _wsDoMessage, wsClose as _wsDoClose, wsError as _wsDoError, safePersistRing as _wsDoSafePersistRing, wsKind, terminalInput } from './ws.js';
+import { hostNamespaceBinding } from '@nimbus-sh/fabric/host-dispatch.js';
+import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 // S8: Supervisor RPC + W8 cp* + legacy VFS impls extracted.
 // S8: Supervisor RPC + W8 cp* + legacy VFS impls extracted.
 import * as _rpc from './rpc.js';
@@ -299,6 +302,13 @@ The editor opens this file in Markdown preview mode by default. Use
 
 type SessionEnv = runtimeServices.HostedRuntimeEnv & SessionAiHost['env'];
 
+interface TerminalInputDispatcher {
+  _rpcTerminalInput(frame: string, terminalId: string): Promise<void>;
+}
+function isTerminalInputDispatcher(stub: object): stub is TerminalInputDispatcher {
+  return typeof Reflect.get(stub, '_rpcTerminalInput') === 'function';
+}
+
 export class NimbusSession extends CloudflareDurableObject<SessionEnv> implements SessionRouterRpc {
   #runtimeServices: ReturnType<typeof runtimeServices.bindRuntimeServices>;
   get childProcessHost() { return this.#runtimeServices.childProcessHost; }
@@ -412,10 +422,11 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
    *  CF DO docs). The alarm itself lives in DO storage at key
    *  `w1_next_alarm_reasons`. */
   _w1JanitorAt: number | null = null;
-  /** W1: idempotency flag for the resident keep-alive alarm cycle — the
-   *  recurring event that holds this object in memory for as long as a
-   *  resident process runs (hibernation.ts ensureResidentKeepalive). */
-  _w1KeepaliveArmed: boolean = false;
+  /** W1: the resident keep-alive alarm cycle while armed — the recurring
+   *  event that holds this object in memory for as long as a resident
+   *  process runs and its client is present — and the host activity it owns
+   *  (hibernation.ts armResidentKeepalive). */
+  _w1Keepalive: HostActivityLease | null = null;
   /** W1: when a runtime client last reached this session over HTTP/WS; the keep-alive
    *  holds the object only while traffic was observed within
    *  RESIDENT_KEEPALIVE_DETACHED_MS (hibernation.ts residentClientPresent). */
@@ -656,7 +667,6 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
       this.ctx,
       () => this._pumpResidentLaunches(),
       alarmInfo,
-      () => this.peerHost.watchFired(),
     );
   }
 
@@ -970,33 +980,22 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   // resident process on THIS object (fabric PeerHost).
   private _peerHost: PeerHost | null = null;
   get peerHost(): PeerHost {
-    return this._peerHost ??= _rpc.peerHostFor(this.ctx, this.env, (at) => timers(this, this.ctx).arm('hosting-watch', at));
+    return this._peerHost ??= _rpc.peerHostFor(this.ctx, this.env);
   }
   _rpcProcessHostProbe(): { isolateToken: string } {
     return _rpc._rpcProcessHostProbe(this);
   }
-  async _rpcHostProcess(boot: unknown, opts: unknown): Promise<{ ok: boolean }> {
+  async _rpcHostProcess(boot: unknown, opts: unknown): ReturnType<typeof _rpc._rpcHostProcess> {
     return _rpc._rpcHostProcess(this, boot, opts);
   }
-  async _rpcAwaitHostedOpen(workerKey: string): Promise<{ ok: boolean }> {
-    return _rpc._rpcAwaitHostedOpen(this, workerKey);
-  }
-  async _rpcAwaitHostedBoot(workerKey: string): Promise<{ payload: unknown }> {
+  async _rpcAwaitHostedBoot(workerKey: string): ReturnType<typeof _rpc._rpcAwaitHostedBoot> {
     return _rpc._rpcAwaitHostedBoot(this, workerKey);
   }
-  async _rpcRouteHostedHttp(workerKey: string, request: HostedHttpRequest): Promise<HostedHttpResponse> {
-    return _rpc._rpcRouteHostedHttp(this, workerKey, request);
+  async _rpcAbandonHostedHttp(workerKey: string, capability: string, id: number): Promise<void> {
+    return _rpc._rpcAbandonHostedHttp(this, workerKey, capability, id);
   }
-  async _rpcHostLost(workerKey: string, capability: string): Promise<boolean> {
-    // The host asks until it gets an answer; a session that cannot stand up
-    // to act on the report holds no process of that host, and says so.
-    try {
-      this.ensureSqliteFs();
-      this.ensureFacetManager();
-    } catch {
-      return false;
-    }
-    return _rpc._rpcHostLost(this as any, workerKey, capability);
+  async _rpcRouteHostedHttp(workerKey: string, request: HostedHttpRequest): ReturnType<typeof _rpc._rpcRouteHostedHttp> {
+    return _rpc._rpcRouteHostedHttp(this, workerKey, request);
   }
   async _rpcCancelHostProcess(workerKey: string): Promise<{ cancelled: boolean }> {
     return _rpc._rpcCancelHostProcess(this, workerKey);
@@ -1370,6 +1369,41 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   // method NAMES per plan §IX.4 R1 (DO RPC fabric needs them). Visibility
   // relaxed for the methods (default-public; was async/private).
 
+  private terminalInputDispatcher: TerminalInputDispatcher | null = null;
+  private terminalInputPending = 0;
+  dispatchTerminalInput(frame: string): void {
+    const terminal = this.terminal;
+    if (!terminal || terminal.signal.aborted) return;
+    if (!this.terminalInputDispatcher) {
+      const stub = hostNamespaceBinding(this.env, 'terminal input').get(this.ctx.id);
+      if (!isTerminalInputDispatcher(stub)) {
+        disposeRpcResource(stub);
+        throw new Error('Nimbus: the session exposes no terminal input RPC');
+      }
+      this.terminalInputDispatcher = stub;
+    }
+    const stub = this.terminalInputDispatcher;
+    this.terminalInputPending++;
+    void (async () => {
+      try { await stub._rpcTerminalInput(frame, terminal.id); }
+      catch (error) {
+        if (!terminal.signal.aborted) {
+          console.error('[nimbus] terminal input request failed:', error);
+          terminal.writeln(`terminal input failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      } finally {
+        if (--this.terminalInputPending === 0) {
+          this.terminalInputDispatcher = null;
+          disposeRpcResource(stub);
+        }
+      }
+    })();
+  }
+
+  _rpcTerminalInput(frame: string, terminalId: string): Promise<void> {
+    return terminalInput(this, frame, terminalId);
+  }
+
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const { kind } = wsKind(ws);
     if (kind === 'shell' || kind === 'process-logs' || kind === 'cirrus-hmr') noteClientActivity(this, this.ctx);
@@ -1377,10 +1411,12 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   }
 
   async webSocketClose(ws: WebSocket, code?: number, reason?: string, wasClean?: boolean): Promise<void> {
+    if (wsKind(ws).kind === 'cirrus-hmr') noteClientActivity(this, this.ctx);
     return _wsDoClose(this, ws, code, reason, wasClean);
   }
 
   async webSocketError(ws: WebSocket, error?: any): Promise<void> {
+    if (wsKind(ws).kind === 'cirrus-hmr') noteClientActivity(this, this.ctx);
     return _wsDoError(this, ws, error);
   }
 

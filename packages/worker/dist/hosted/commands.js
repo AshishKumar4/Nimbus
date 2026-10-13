@@ -53,7 +53,7 @@ export async function registerHostedCommands(self, workspace) {
         setUmask: (mask) => self.processes.setUmask(pid, mask),
         runAs: runAsProcess,
         accountWork: (worker) => self.processes.beginWork(worker),
-        holdWork: (worker, stop) => self.processes.holdWork(worker, stop),
+        holdWork: (worker, stop, signal) => self.processes.holdWork(worker, stop, signal),
     });
     // `kill` is the shell's builtin; the session's own processes (resident
     // servers, the vite shim), numbered in this table's pid space, are reached
@@ -796,7 +796,7 @@ export async function registerHostedCommands(self, workspace) {
             // this session's work behind the child's pid: a kill stops it.
             const endAwait = self.processes.beginAwait(parentPid, childProcess.pid);
             const stop = new AbortController();
-            const stopped = self.processes.holdWork(childProcess.pid, (reason) => stop.abort(reason));
+            const stopped = self.processes.holdWork(childProcess.pid, (reason) => stop.abort(reason), stop.signal);
             let exitCode = 1;
             try {
                 const identity = commandIdentityFor(childProcess.pid);
@@ -871,7 +871,7 @@ export async function registerHostedCommands(self, workspace) {
         // closed what it opened: a kill stops it, and only then is what it bound
         // released.
         const stop = new AbortController();
-        const stopped = self.processes.holdWork(pid, (reason) => stop.abort(reason));
+        const stopped = self.processes.holdWork(pid, (reason) => stop.abort(reason), stop.signal);
         let exitCode = 1;
         try {
             const result = await scriptShell.execute(cmd, {

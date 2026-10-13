@@ -698,8 +698,26 @@ export interface RuntimeTtyOptions {
  * would make the other import a peer's internals to name its own contract.
  */
 export interface RouteableFacetTarget {
-  handleHttpRequest(request: Request): Promise<Response>;
+  /** A target that runs work for the response (a resident process) owns that work for `scope`. */
+  handleHttpRequest(request: Request, scope: ResponseScope): Promise<Response>;
   handleWebSocketRequest?(request: Request): Promise<Response>;
+}
+
+/**
+ * How long a routed response is wanted. Its own value rather than the
+ * forwarded request's signal: a signal on a Request makes the request
+ * unserializable over Workers RPC (workerd's AbortSignal serialization needs
+ * the experimental `enable_abortsignal_rpc`), and a process is reached by RPC.
+ */
+export interface ResponseScope {
+  /** The caller's own: aborts when its client goes away. */
+  readonly signal: AbortSignal;
+  /**
+   * Calls `listener` once the caller is done with the response: true when it
+   * was delivered whole, false when it was not (the client left, or the relay
+   * or the handler failed). One listener per scope, its target's.
+   */
+  settled(listener: (delivered: boolean) => void): void;
 }
 
 export interface RuntimePortBridge {

@@ -32,8 +32,8 @@ export interface BuildWranglerOptions {
     /**
      * Compatibility date. Default `2026-09-26`. A date keeps every other
      * behavior it selects; the config names each flag Nimbus needs that the
-     * date does not enable: `enhanced_error_serialization` before 2026-04-21
-     * and `nodejs_compat` before 2026-08-04.
+     * date does not enable: `enhanced_error_serialization` before 2026-04-21,
+     * `nodejs_compat` before 2026-08-04, and `enable_request_signal` always.
      */
     compatibilityDate?: string;
     /** Smart placement on/off. Default `true`. */

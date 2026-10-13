@@ -12,10 +12,13 @@
  * that is not a Durable Object implements `ProcessHost` against the same
  * `HostedProcess` and never imports this file.
  */
+import { type HostActivityLease } from './host-activity.js';
 import type { ModuleSourceEnv } from '@nimbus-sh/platform/module-source.js';
+import type { ResponseScope } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type HostedProcess, type OneShotParams, type ProcessHostParams, type ResidentBootSpec, type ResidentDiskReader, type ResidentSupervisorProps, type Supervise } from './process-fabric.js';
 import type { ProcessFsJournalSource } from '@nimbus-sh/core/_shared/process-fs-journal.js';
 import { type FacetResourceLimits } from './facet-limits.js';
+import type { WorkerCode } from '@nimbus-sh/platform/worker-code.js';
 /** Structural surface of a NimbusLoadedEntrypoint RPC stub. */
 export interface LoadedWorkerEntrypointStub {
     handleHttpRequest?: (request: Request) => Promise<Response>;
@@ -124,6 +127,7 @@ export declare function reservedFacetNames(ctx: DurableObjectState): Set<string>
 /** The facet a running resident process `pid` lives in on this actor, for its storage ledger row. */
 export declare function residentFacetOf(ctx: DurableObjectState, pid: number): string | undefined;
 export declare function deleteFacetStorage(ctx: DurableObjectState, name: string): void;
+export declare function abortFacet(ctx: DurableObjectState, name: string, reason: Error): void;
 /**
  * What `processes(ctx, env).spawn` hands back: a running process, minus its placement.
  *
@@ -133,9 +137,16 @@ export declare function deleteFacetStorage(ctx: DurableObjectState, name: string
  * derivable from the pid — reading a slot back out of the book would race the
  * release that empties it.
  */
-export type ResidentFacet = Omit<HostedProcess, 'describe'> & {
+export type ResidentFacet = Omit<HostedProcess, 'describe' | 'handleHttpRequest'> & {
     name: string;
     slot?: number;
+    acquireActivity(signal?: AbortSignal): HostActivityLease;
+    /**
+     * HostedProcess.handleHttpRequest; a peer relaying its coordinator's
+     * request passes the signal its coordinator abandons it by
+     * (HandledRequests) instead of the scope's end.
+     */
+    handleHttpRequest(request: Request, scope: ResponseScope, relayed?: AbortSignal): Promise<Response>;
 };
 /**
  * The process surface of one hosting actor: how a resident process comes
@@ -185,7 +196,9 @@ export interface JournalReaderEnv {
             mainModule: string;
             modules: Record<string, string>;
         }): {
-            getDurableObjectClass(name: string): unknown;
+            getDurableObjectClass(name: string, options?: {
+                limits: FacetResourceLimits;
+            }): unknown;
         };
     };
 }
@@ -202,6 +215,6 @@ export interface JournalReaderEnv {
  * minted from the composed entrypoint for the coordinator's identity, beside
  * the spec's `bindings`.
  */
-export declare function residentWorkerConfig(env: ResidentFacetEnv, disk: () => ResidentDiskReader, supervisor: ResidentSupervisorProps, boot: ResidentBootSpec): Promise<Record<string, unknown>>;
+export declare function residentWorkerConfig(env: ResidentFacetEnv, disk: () => ResidentDiskReader, supervisor: ResidentSupervisorProps, boot: ResidentBootSpec): Promise<WorkerCode>;
 export {};
 //# sourceMappingURL=workerd-facet-host.d.ts.map
