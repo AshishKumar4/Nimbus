@@ -2396,7 +2396,7 @@ async function serializeFacetVfsData(bundle, forceSideModules, pacer, consume) {
         chunkPaths.push(path);
     }
     await flushChunk();
-    const expression = `(function(__parts){const __out={};for(const __part of __parts){` +
+    const expression = `(function(__parts){const __out=Object.create(null);for(const __part of __parts){` +
         `for(const [__k,__v] of Object.entries(__part)){const __prev=__out[__k];` +
         `if(__prev===undefined){__out[__k]=__v;}` +
         `else if(typeof __prev==="string"&&typeof __v==="string"){__out[__k]=__prev+__v;}` +
