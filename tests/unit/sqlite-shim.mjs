@@ -28,10 +28,10 @@ const wasmPath = require.resolve(`../../packages/worker/public/_assets/sqljs-${S
 const wasmBytes = readFileSync(wasmPath);
 const wasmModule = await WebAssembly.compile(wasmBytes);
 
-// Build a fresh shim sandbox. __vfsBundle/__supervisor/__pendingIO mirror
-// the in-scope facet locals the shim closes over. Returns { sqlite } plus
-// the boot fn and the live flush queue so we can assert persistence.
-function makeSandbox(bundle, supervisor) {
+// Build a fresh shim sandbox. __fsMod mirrors the process's node:fs the shim
+// closes over: `files` (path -> bytes) is its filesystem, `writes` what it
+// was asked to write.
+function makeSandbox(files = new Map()) {
   // The shim attaches __nimbusSQL (first open) and __nimbusInitSqlite
   // (eager-boot API) to globalThis; reset between sandboxes so each test
   // boots its own engine state.
@@ -45,18 +45,28 @@ function makeSandbox(bundle, supervisor) {
   new Function('globalThis', generateSqliteFacetPreamble())(globalThis);
 
   const code = generateSqliteShimCode();
-  const pendingIO = [];
+  const writes = [];
+  const fs = {
+    readFileSync(path) {
+      if (!files.has(path)) throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' });
+      return files.get(path);
+    },
+    writeFileSync(path, bytes) {
+      writes.push(path);
+      files.set(path, bytes);
+    },
+  };
   const factory = new Function(
-    'globalThis', '__vfsBundle', '__supervisor', '__pendingIO',
+    'globalThis', '__fsMod',
     '"use strict";' + code + '\n;return { sqlite: __sqliteMod };',
   );
-  const sandbox = factory(globalThis, bundle, supervisor, pendingIO);
-  return { sqlite: sandbox.sqlite, pendingIO };
+  const sandbox = factory(globalThis, fs);
+  return { sqlite: sandbox.sqlite, files, writes };
 }
 
 // ── Boot + in-memory CRUD, prepared statements, .all/.get/.run ──────────
 {
-  const { sqlite } = makeSandbox({}, null);
+  const { sqlite } = makeSandbox();
   const { DatabaseSync } = sqlite;
 
   // Lazy boot contract: creating the sandbox must NOT boot the engine —
@@ -102,7 +112,7 @@ function makeSandbox(bundle, supervisor) {
 
 // ── Named parameters ────────────────────────────────────────────────────
 {
-  const { sqlite } = makeSandbox({}, null);
+  const { sqlite } = makeSandbox();
   const db = new sqlite.DatabaseSync(':memory:');
   db.exec('CREATE TABLE t (k TEXT, v INTEGER)');
   db.prepare('INSERT INTO t (k, v) VALUES (:k, :v)').run({ k: 'x', v: 7 });
@@ -116,7 +126,7 @@ function makeSandbox(bundle, supervisor) {
 
 // ── setReturnArrays + setReadBigInts ────────────────────────────────────
 {
-  const { sqlite } = makeSandbox({}, null);
+  const { sqlite } = makeSandbox();
   const db = new sqlite.DatabaseSync(':memory:');
   db.exec('CREATE TABLE t (id INTEGER, label TEXT)');
   db.prepare('INSERT INTO t VALUES (?, ?)').run(100, 'hundred');
@@ -142,41 +152,35 @@ function makeSandbox(bundle, supervisor) {
   console.log('ok: setReturnArrays + setReadBigInts');
 }
 
-// ── File-backed open from __vfsBundle snapshot + flush on close ──────────
+// ── File-backed: open reads the file, close writes it when it changed ───
 {
-  // First connection: file-backed, write data, close → flush bytes to the
-  // supervisor (live VFS). Capture the flushed bytes.
-  let flushed = null;
-  const supervisor = {
-    writeFile: async (path, bytes) => { flushed = { path, bytes }; },
-  };
-  const { sqlite, pendingIO } = makeSandbox({}, supervisor);
-
+  const { sqlite, files, writes } = makeSandbox();
   const db = new sqlite.DatabaseSync('/home/user/app.db');
   db.exec('CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT)');
   db.prepare('INSERT INTO kv VALUES (?, ?)').run('hello', 'world');
   db.close();
-  await Promise.all(pendingIO);
+  assert.deepEqual(writes, ['/home/user/app.db'], 'close() wrote the database to its file');
+  assert.ok(files.get('/home/user/app.db') instanceof Uint8Array && files.get('/home/user/app.db').length > 0);
 
-  assert.ok(flushed, 'close() flushed db.export() to the supervisor');
-  assert.equal(flushed.path, '/home/user/app.db');
-  assert.ok(flushed.bytes instanceof Uint8Array && flushed.bytes.length > 0);
-
-  // Second connection (separate sandbox): the flushed bytes are staged in
-  // the facet's __vfsBundle snapshot (slash-stripped key, as buildPrefetchBundle
-  // stores them). Reopen and prove the data persisted.
-  const bundle = { 'home/user/app.db': flushed.bytes };
-  const reopened = makeSandbox(bundle, null);
+  // A later connection (here a fresh sandbox over the same files) reads it.
+  const reopened = makeSandbox(files);
   const db2 = new reopened.sqlite.DatabaseSync('/home/user/app.db');
-  const row = db2.prepare('SELECT v FROM kv WHERE k = ?').get('hello');
-  assert.deepEqual(row, { v: 'world' });
+  assert.deepEqual(db2.prepare('SELECT v FROM kv WHERE k = ?').get('hello'), { v: 'world' });
+  assert.deepEqual(db2.prepare("INSERT INTO kv VALUES ('a', 'b') RETURNING k").all(), [{ k: 'a' }]);
   db2.close();
-  console.log('ok: file-backed persistence (flush on close + reopen from snapshot)');
+  assert.deepEqual(reopened.writes, ['/home/user/app.db'], "a row method's write is written back");
+
+  const readOnly = makeSandbox(files);
+  const db3 = new readOnly.sqlite.DatabaseSync('/home/user/app.db');
+  assert.equal(db3.prepare('SELECT count(*) AS n FROM kv').get().n, 2);
+  db3.close();
+  assert.deepEqual(readOnly.writes, [], 'a database only read is not written back');
+  console.log('ok: file-backed persistence (written on close when changed, read on open)');
 }
 
 // ── Unsupported methods throw a clear error; never fake ─────────────────
 {
-  const { sqlite } = makeSandbox({}, null);
+  const { sqlite } = makeSandbox();
   const db = new sqlite.DatabaseSync(':memory:');
   assert.throws(() => db.loadExtension('x'), /node:sqlite: .* not supported/);
   assert.throws(() => db.function('f'), /node:sqlite: .* not supported/);
@@ -191,7 +195,7 @@ function makeSandbox(bundle, supervisor) {
 
 // ── Eager boot API (__nimbusInitSqlite): for callers that will open a DB ─
 {
-  makeSandbox({}, null);
+  makeSandbox();
   assert.equal(globalThis.__nimbusSQL, undefined, 'engine must not boot at shim eval');
   const SQL = await globalThis.__nimbusInitSqlite();
   assert.ok(globalThis.__nimbusSQL, 'eager boot instantiates the engine');
