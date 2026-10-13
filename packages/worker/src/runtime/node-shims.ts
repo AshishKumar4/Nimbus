@@ -12634,8 +12634,8 @@ async function __nimbusEsmImport(id) {
   }
 }
 // The interpreter's evaluation of staged module \`id\` (an adoption), as
-// import() gives it. One it evaluated already is that evaluation's, its
-// graph not resolved again. A graph workerd did not link (\`linked\` false:
+// import() gives it. One it evaluated already (or is evaluating, in its
+// top-level await) is that evaluation's, its graph not resolved again. A graph workerd did not link (\`linked\` false:
 // it reaches a module staging handed on, or one the interpreter took) is
 // checked first as a late graph is (core esm-late-link.ts linkAdopted):
 // every imported name, before any of it runs, unless a link checked it
@@ -12645,8 +12645,13 @@ async function __nimbusEsmInterpret(id, linked) {
   const url = __nimbusEsmUrl("/" + key);
   const known = __esmNamespaces.get(url);
   if (known !== undefined) return known;
+  // Its namespace once its evaluation completes: one still in its top-level await is waited for, its rejection given.
   const evaluated = __nimbusEsmRecords[id];
-  if (evaluated?.state === __ESM_ADOPTED && evaluated.module !== undefined && evaluated.namespace !== null) return evaluated.namespace;
+  if (evaluated?.state === __ESM_ADOPTED && evaluated.module !== undefined && evaluated.namespace !== null) {
+    const evaluation = __moduleEvaluations.get(key);
+    if (evaluation === undefined) return evaluated.namespace;
+    return evaluation.then(() => evaluated.namespace, (e) => { __nimbusExplainCommonJSGlobalLike(e, url, true); throw e; });
+  }
   const pending = (async () => {
     if (!linked) __nimbusRegistryRequire("./${RUNTIME_ESM_LATE_MODULE}").linkAdopted(__nimbusLateLinkHost, id, key, url);
     let exports;

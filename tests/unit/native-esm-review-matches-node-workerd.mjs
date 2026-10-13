@@ -77,6 +77,19 @@ const FILES = {
     "unlinkSync(require('node:path').join(__dirname, 'child.mjs'));",
     "import('./root.mjs').then((i) => console.log('same', r === i, i.r), (e) => console.log('rejected', e.code, e.message));",
   ].join('\n') + '\n',
+  // A module the interpreter evaluates through a late graph, still in its
+  // top-level await, is the one a later import() waits for: its namespace
+  // once its evaluation completes, not before.
+  'adopted-pending-tla/seed.mjs': 'export const seed = 1;\n',
+  'adopted-pending-tla/slow.mjs': "import { seed } from './seed.mjs';\nexport let done = false;\nawait new Promise((resolve) => setTimeout(resolve, 50));\ndone = seed === 1;\n",
+  'adopted-pending-tla/main.cjs': [
+    "const { writeFileSync } = require('node:fs');",
+    "require('./seed.mjs');",
+    "writeFileSync(require('node:path').join(__dirname, 'bridge.mjs'), \"import './slow.mjs';\\n\");",
+    "const bridge = import('./bridge.mjs');",
+    "import('./slow.mjs').then((slow) => console.log('slow done', slow.done), (e) => console.log('rejected', e.code, e.message));",
+    'bridge.catch((e) => console.log(\'bridge rejected\', e.message));',
+  ].join('\n') + '\n',
   'namespace-import-first/dep.mjs': 'export const x = 1;\n',
   'namespace-import-first/main.mjs': "import { createRequire } from 'node:module';\nconst i = await import('./dep.mjs');\nconst r = createRequire(import.meta.url)('./dep.mjs');\nconsole.log(r === i);\n",
   // Finishing an asynchronous dependency does not make it (or its
@@ -330,6 +343,7 @@ const COMMANDS = [
   'node namespace-require-first/main.cjs',
   'node namespace-import-first/main.mjs',
   'node adopted-then-unlinked/main.cjs',
+  'node adopted-pending-tla/main.cjs',
   'node completed-tla/main.mjs',
   'node function-origin/sub/entry.mjs',
   'node static-query/main.mjs',
