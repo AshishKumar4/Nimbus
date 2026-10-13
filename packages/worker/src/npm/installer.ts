@@ -2131,8 +2131,12 @@ export class NpmInstaller {
 
 /** What staging directories in /tmp and copies beside a mounted package are named. */
 const STAGE_PREFIX = '.npm-stage-';
-/** `nogroup`: the group a stage's sweep acts with, which grants it nothing. */
-const NO_GROUP = 65534;
+/**
+ * The group a stage's sweep acts with: one no inode can have (chown refuses
+ * a gid past Number.MAX_SAFE_INTEGER), so it grants nothing. Not nogroup,
+ * which is a group like any other.
+ */
+const NO_GROUP = Number.MAX_SAFE_INTEGER + 1;
 const COPY_PREFIX = '.nimbus-copy-';
 
 /**
