@@ -8,7 +8,10 @@ published independently in the `@nimbus-sh` npm scope.
 - Changed: real Vite (`NIMBUS_REAL_VITE=1 vite`) runs as one of the session's
   resident processes, with the lifecycle every resident has. `vite` returns
   once Vite listens, and a Vite that fails to boot fails the command instead
-  of its first page. Fixed: a server whose isolate the platform resets ends
+  of its first page. Time moves with it: `vite` takes about 0.4 s longer,
+  the first page about 1 s less (start to first page about 0.4 s less), and
+  the page's first modules about 70-80 ms more each, the entry's transform no
+  longer hidden behind the boot's wait. Fixed: a server whose isolate the platform resets ends
   with 137 and frees its port; before, its pid stayed running. A second
   `vite` ends the server it replaces; before, that pid stayed running. A
   server that ended (`kill`, `vite stop`, a lost isolate) stays ended;
