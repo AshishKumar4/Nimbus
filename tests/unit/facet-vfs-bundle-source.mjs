@@ -47,6 +47,27 @@ assert.deepEqual(
   'side modules reconstruct every text, binary, denial, and transitive leaf cell exactly',
 );
 
+// A file named __proto__ is data like any other. Escape-heavy text costs the
+// generated source what its JSON encoding costs, no more, so the side modules
+// that carry it stay within the ceiling, and it comes back as an own entry.
+{
+  const quoted = Object.create(null);
+  quoted.__proto__ = '"\\'.repeat(6_000_000);
+  quoted['usr/local/lib/node_modules/data/table.json'] = '{"__proto__":{"k":"v"}}';
+  const split = await buildFacetVfsBundleSource(quoted);
+  assert.ok(Object.keys(split.modules).length >= 2, 'the escape-heavy cell is split across side modules');
+  for (const [name, moduleSource] of Object.entries(split.modules)) {
+    assert.ok(new TextEncoder().encode(moduleSource).length <= BUNDLE_MAX_ENCODED_BYTES, `${name} stays within the encoded per-module ceiling`);
+  }
+  const back = evaluateBundleSource(split);
+  assert.ok(Object.hasOwn(back, '__proto__') && back.__proto__ === quoted.__proto__, 'the file named __proto__ is an own entry with its text');
+  assert.equal(back['usr/local/lib/node_modules/data/table.json'], quoted['usr/local/lib/node_modules/data/table.json']);
+  const small = Object.create(null);
+  small.__proto__ = 'x';
+  const inlineProto = evaluateBundleSource(await buildFacetVfsBundleSource(small));
+  assert.ok(Object.hasOwn(inlineProto, '__proto__') && inlineProto.__proto__ === 'x', 'inline, too');
+}
+
 const inline = await buildFacetVfsBundleSource({
   'usr/local/lib/node_modules/shebang-command/package.json': '{"main":"index.js"}',
 });
