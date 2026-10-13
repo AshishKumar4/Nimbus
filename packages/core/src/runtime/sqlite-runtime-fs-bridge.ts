@@ -634,8 +634,8 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       if (source === null) throw callError('ELOOP', call);
       const target = this.locateMutation(to, true, call);
       if (!source.mount && !target.mount) { this.vfs.copyFile(source.path, target.path); return; }
-      // Across filesystems, the namespace's copy, from the file the source leads to.
-      this.mounted!.copy!(source.mount ? source.path : '/' + source.path, target.mount ? target.path : '/' + target.path);
+      // Across filesystems, the namespace's copy, from the file the source leads to (a backend that resolves its own paths follows it there).
+      this.mounted!.copy(source.mount ? source.path : '/' + source.path, target.mount ? target.path : '/' + target.path, { follow: true });
     });
   }
 

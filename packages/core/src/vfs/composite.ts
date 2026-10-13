@@ -33,7 +33,7 @@ import { posixAccess } from './posix-access.js';
 import { recallOf, withRecall } from './recall.js';
 import { DIRENT_TYPES } from './dirent-type.js';
 import { walkRemoval, type RemovalSteps } from './removal-walk.js';
-import { S_IFMT, abandon, andThen, isCharacterDevice, isPromise, readRangeOrWhole, syncValue } from './vfs.js';
+import { S_IFMT, abandon, andThen, copiedPermissions, isCharacterDevice, isPromise, readRangeOrWhole, syncValue } from './vfs.js';
 
 /**
  * Where a reader of a namespace's feed stands: the mount table as its
@@ -155,9 +155,13 @@ export function runtimeStatOf(stat: VfsStat): RuntimeVfsStat {
 
 export type { Principal } from './vfs.js';
 
-/** The namespace always offers recursive removal, walking a backend that does not. */
+/** The namespace's copy: a tree with `recursive`; `follow` copies what a link named as the source leads to, as copyfile does. */
+export interface NamespaceCopyOptions { recursive?: boolean; preserve?: boolean; follow?: boolean }
+
+/** The namespace always offers recursive removal, walking a backend that does not, and copies across filesystems. */
 export interface CompositeSyncVFS extends SyncVFS {
   removeRecursive(path: string, options?: { keepVanishedAncestors?: boolean }): VfsRemoval;
+  copy(from: string, to: string, options?: NamespaceCopyOptions): number;
 }
 
 /** A backend, or a function giving the backend for a principal at this instant (null: absent). */
@@ -3082,9 +3086,8 @@ export class CompositeVFS implements VFS {
    * one tree is cp -r's decision (-x stays on one), not this primitive's.
    * A directory onto an existing path is EEXIST: merging into a directory
    * is cp's job too. (FormalModelsLane `Vfs/Composite`, copy_stays_in_target.)
-   * `follow` copies what a link named as the source leads to, as copyfile does.
    */
-  private copyAt(fromInput: string, toInput: string, options: { recursive?: boolean; preserve?: boolean; follow?: boolean } | undefined, sync: boolean): Awaitable<number> {
+  private copyAt(fromInput: string, toInput: string, options: NamespaceCopyOptions | undefined, sync: boolean): Awaitable<number> {
     return andThen(this.resolve(fromInput, options?.follow === true, sync), (from) => { this.present(from); return andThen(this.resolve(toInput, false, sync), (to) => {
       this.present(to);
       const fromMount = this.table.mounts.get(from);
@@ -3096,7 +3099,8 @@ export class CompositeVFS implements VFS {
       const target = this.locate(to);
       if (target.mount.options.readOnly) throw new Refusal('EROFS', to, `${target.mount.point} is mounted read-only`);
       const sourceOps = this.ops(source, sync) as SyncVFS;
-      return andThen(this.statAt(from, false, sync), (stat) => {
+      // Followed, a link a backend resolves itself is followed there too.
+      return andThen(this.statAt(from, options?.follow === true, sync), (stat) => {
         if (stat === null) throw new Refusal('ENOENT', from);
         const dir = stat.type === 'directory';
         if (dir && !options?.recursive) throw new Refusal('EISDIR', from, 'a tree needs recursive');
@@ -3119,7 +3123,7 @@ export class CompositeVFS implements VFS {
           // Each entry the copy makes is told as it lands, the ones before a failure too.
           return this.reportWrite({ path: at, route, ops: targetOps, follow, kind: 'write', told: null }, () => {
             this.guardMutation([toInput]);
-            return this.copyBytes(sourceOps, source.rel, stat, targetOps as SyncVFS, route.rel, at, { ops: targetOps as SyncVFS, rel: route.rel, mount: route.mount, told });
+            return this.copyBytes(sourceOps, source.rel, stat, targetOps as SyncVFS, route.rel, at, { ops: targetOps as SyncVFS, rel: route.rel, mount: route.mount, told, preserve: options?.preserve === true });
           }, sync);
         };
         // The target's parent is a directory, unless its backend resolves its own paths and answers for it (it may make it).
@@ -3163,9 +3167,10 @@ export class CompositeVFS implements VFS {
    */
   private copyBytes(
     from: SyncVFS, fromRel: string, stat: VfsStat, to: SyncVFS, toRel: string, toAt: string,
-    made: { readonly ops: SyncVFS; readonly rel: string; readonly mount: Mount; readonly told: VfsEventType },
+    made: { readonly ops: SyncVFS; readonly rel: string; readonly mount: Mount; readonly told: VfsEventType; readonly preserve: boolean },
   ): Awaitable<number> {
-    const mode = stat.mode === undefined ? undefined : stat.mode & 0o7777;
+    const mode = stat.mode === undefined ? undefined
+      : made.preserve ? stat.mode & 0o7777 : copiedPermissions(stat.mode, stat.type === 'directory');
     const told = toRel === made.rel ? made.told : stat.type === 'directory' ? 'addDir' : 'add';
     const landed = <R>(result: Awaitable<R>): Awaitable<R> => {
       if (isPromise(result)) result.then(() => this.tellLanded(made.mount, storeBehind(this.table, to), told, [toAt]), () => {});
@@ -3425,7 +3430,7 @@ export class CompositeVFS implements VFS {
       this.onCapability(path, false, 'writeFileIfRevision', true, (fn, rel) => fn(rel, data, expected), { written: data, creates: createsIfAbsent(expected) }));
   }
 
-  async copy(from: string, to: string, options?: { recursive?: boolean; preserve?: boolean; follow?: boolean }): Promise<number> {
+  async copy(from: string, to: string, options?: NamespaceCopyOptions): Promise<number> {
     return awaited({ syscall: options?.recursive ? 'cp' : 'copyfile', path: from, dest: to }, () => this.copyAt(from, to, options, false));
   }
 
