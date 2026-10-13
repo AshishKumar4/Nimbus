@@ -2066,7 +2066,8 @@ export declare class FacetManager {
     /**
      * A launch's share of the credit for the module map it makes from `state`
      * (another launch's build, the cache's), taken before it holds a worker:
-     * the share it holds already (its build's, kept for a rebuild) is it.
+     * the share it holds already (its build's, kept for a rebuild) is it. A
+     * copy of what is staged: the VFS cache is not shrunk for it.
      */
     private _holdMapShare;
     /**

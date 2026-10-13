@@ -97,7 +97,7 @@ import { ONE_SHOT_STORE_MEMORY_BYTES, RESIDENT_CHUNK_BYTES } from '../vfs/facet-
 import { residentCellCost } from '../vfs/resident/cell-cost.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES, SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES } from '@nimbus-sh/platform/limits.js';
 import { CRED_KERNEL, isNativeBinPath, launchNamedPaths, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { acquireSupervisorAllocation, readSupervisorAllocationBudget, tryAcquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
+import { acquireSupervisorAllocation, acquireSupervisorCopyAllocation, readSupervisorAllocationBudget, tryAcquireSupervisorAllocation, tryAcquireSupervisorCopyAllocation, } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { streamedWasmImageDigest, wasmImageDigest } from './wasm-image-digest.js';
 import { prefetchBundleStart, prefetchBundleEnd, setPrefetchCacheBytes, } from '@nimbus-sh/platform/diag-counters.js';
 const launchAdapters = new WeakMap();
@@ -4100,13 +4100,13 @@ function prefetchNeed(closureBytes) {
  * build joined, before a worker). One that has to wait for room waits under
  * `wait`: a launch whose process ends meanwhile is never admitted.
  */
-async function admitPrefetch(wait, bytes = SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES) {
-    const now = tryAdmitPrefetch(bytes);
+async function admitPrefetch(wait, bytes = SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, copy = false) {
+    const now = tryAdmitPrefetch(bytes, copy);
     if (now !== null)
         return now;
     const waiting = wait?.();
     try {
-        const lease = await acquireSupervisorAllocation(bytes, waiting?.signal);
+        const lease = await (copy ? acquireSupervisorCopyAllocation : acquireSupervisorAllocation)(bytes, waiting?.signal);
         // Room came as its launch ended: given back, not used.
         if (waiting?.signal.aborted) {
             lease.release();
@@ -4118,9 +4118,13 @@ async function admitPrefetch(wait, bytes = SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGE
         waiting?.dispose();
     }
 }
-/** admitPrefetch's admission where there is room now, at once (no await); null where it would wait. */
-function tryAdmitPrefetch(bytes) {
-    const lease = tryAcquireSupervisorAllocation(bytes);
+/**
+ * admitPrefetch's admission where there is room now, at once (no await);
+ * null where it would wait. A `copy` (a map made from a state already
+ * staged) takes the credit without shrinking the VFS cache.
+ */
+function tryAdmitPrefetch(bytes, copy = false) {
+    const lease = copy ? tryAcquireSupervisorCopyAllocation(bytes) : tryAcquireSupervisorAllocation(bytes);
     return lease === null ? null : admissionOf(lease, bytes, false);
 }
 function admissionOf(admitted, bytes, queued) {
@@ -7674,18 +7678,19 @@ export class FacetManager {
     /**
      * A launch's share of the credit for the module map it makes from `state`
      * (another launch's build, the cache's), taken before it holds a worker:
-     * the share it holds already (its build's, kept for a rebuild) is it.
+     * the share it holds already (its build's, kept for a rebuild) is it. A
+     * copy of what is staged: the VFS cache is not shrunk for it.
      */
     _holdMapShare(entry, state) {
         if (this.buildAdmissions.has(entry.pid))
             return state;
         const need = prefetchNeed(state.rawBytes ?? 0);
-        const now = tryAdmitPrefetch(need);
+        const now = tryAdmitPrefetch(need, true);
         if (now !== null) {
             this.buildAdmissions.set(entry.pid, now);
             return state;
         }
-        return admitPrefetch(() => this._launchEnds(entry.pid), need).then((admission) => {
+        return admitPrefetch(() => this._launchEnds(entry.pid), need, true).then((admission) => {
             this.buildAdmissions.set(entry.pid, admission);
             return state;
         });
