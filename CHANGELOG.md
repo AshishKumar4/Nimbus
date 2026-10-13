@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `nimbus wrangler dev`'s Worker Loader binding (`worker_loaders`)
+  cached a Worker loaded with `LOADER.get(id, …)` under its id alone, for
+  the whole isolate: two Workers in co-located sessions that used the same
+  id shared one, and the second ran the first's code. A keyed Worker is now
+  its loader's own: each build's binding has its own, so a rebuild loads
+  its keyed Workers afresh.
+
 - Fixed: in a WASI program (an uploaded program, CPython), a socket read that
   followed a poll which gave up on the socket could lose a chunk that arrived
   just before the socket closed. A read or an accept that the 10 s park
