@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "0b917dfd831d19dac7f9a269830762b510a64e681b9cfc20e8249bbd08d684d8",
+  "fingerprint": "785492132c3df4a90b17dfac6c2326df65a7e08e9f1ff5c0e1758a7f6c12a408",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2555,8 +2555,8 @@
     "packages/worker/dist/runtime/process-logs-api.d.ts.map": "b01f2d58c59c8e4343c79c85ed44116b117b73df4756f3dbaf55cff3d2738a9f",
     "packages/worker/dist/runtime/process-logs-api.js": "ab6187e9c935ce9c93966b8d336a90acba51e8cee5f58bb787e85de96a866181",
     "packages/worker/dist/runtime/project-fs.d.ts": "b887dcf24ef41c9a89c44a5cf97c4f0607377090dc5e5529de943807d6fd006b",
-    "packages/worker/dist/runtime/project-fs.d.ts.map": "fead67a1a8674cee88c97ec92358f18e0bd2d57d59d2dbcee22f4d74b1915f6c",
-    "packages/worker/dist/runtime/project-fs.js": "ec445d00e0190fbeb1a35788799bccb889e57375a06771a12f0153f9424e684a",
+    "packages/worker/dist/runtime/project-fs.d.ts.map": "9920ae75c5ec56ae9420186608fd633cad256e479225e4a25880af20ba618ed9",
+    "packages/worker/dist/runtime/project-fs.js": "6100a6a10e5de58f1be6d38aa0df4e00ecca2baa104cb4c454cd8251ca76b54e",
     "packages/worker/dist/runtime/python-repl.d.ts": "d64daae68dd590e813c41c785401a794deb668baab388c1a9b60227cdf9638e5",
     "packages/worker/dist/runtime/python-repl.d.ts.map": "8bd15877cfdb7c3ccb64d044bba9a92d733c12813a9cfb8115fd51b03b0bd2fa",
     "packages/worker/dist/runtime/python-repl.js": "fce6ea03c4929bfcb8642d1e4799896ea05148c948872163b1cfb2f441b17923",
@@ -3107,7 +3107,7 @@
     "packages/worker/src/runtime/oxc-wasm-bytes.ts": "3f7c6b221e77fd50827f8f8231d6abbd591e61b9a45df6fbd1bbc8bf10c5362e",
     "packages/worker/src/runtime/package-manager.ts": "0ae3a8fcde8c5c10569945176ef243bd590eac3df996fb4f7dc8fb774581b2f9",
     "packages/worker/src/runtime/process-logs-api.ts": "b5e2e21128fca49c6a19cfbc9c4512a6bdc3da94c1138d14854b089f5741c14b",
-    "packages/worker/src/runtime/project-fs.ts": "20327a6a047567ffba1c75d0b1af74630e231e6ed0368149420cc5b932bdb728",
+    "packages/worker/src/runtime/project-fs.ts": "6d814070d02994643b2e3d344f78d0fc3b30824abcd71b1d8a7a1ebeef98ec5c",
     "packages/worker/src/runtime/python-repl.ts": "a9bcc78ad7409683b58be0849f446fef771d80b380f1ebae72cdfdb422e49f16",
     "packages/worker/src/runtime/repl-facet-tasks.ts": "1b2f36608b626db96a6d0ce2ff4852eabb2c0bb95191f3725cf8e83307f7e2b2",
     "packages/worker/src/runtime/repl-session.ts": "2615cadb587e41c7cf1bda12eb1e9f321932f76480aaf51598c2aa43f189b401",
