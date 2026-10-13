@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
  * resident-page-cache — the resident store's pages of files too big to hold
- * whole (worker vfs/facet-resident-store.ts __residentPages), on both
+ * whole (worker vfs/resident/pages.ts), on both
  * backings, over a session that answers fsReadBatch as the session does
  * (a range pinned to a revision the file has left is refused):
  *
@@ -21,13 +21,15 @@
 
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
-import { FACET_RESIDENT_STORE_SOURCE } from '../../packages/worker/src/vfs/facet-resident-store.ts';
+import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
 import { RESIDENT_PAGE_BYTES, RESIDENT_PAGE_CACHE_BYTES, RESIDENT_PAGE_CACHE_FREE_SHARE } from '../../packages/platform/src/limits.ts';
 
 const P = RESIDENT_PAGE_BYTES;
-const API = 'bindInMemory: __residentBindInMemory, bindTables: __residentBindTables, onSql: __residentTablesOnSql, bootLazy: __residentBootLazy,'
-  + ' view: __residentNamespaceView, pageHeld: __residentPageHeld, setStorage: __residentSetStorage, tables: () => __residentT';
-const freshStore = () => new Function(`${FACET_RESIDENT_STORE_SOURCE}\nreturn { ${API} };`)();
+/** The store, and the bytes of the pages it holds. */
+const freshStore = () => {
+  const store = createResidentStore();
+  return Object.assign(store, { pageHeld: () => store.coherence.tables('pageHeld').pageBytes() });
+};
 
 /** workerd's ctx.storage.sql over a real SQLite. */
 function sqlShim() {
@@ -72,12 +74,12 @@ const joined = (pages) => {
 for (const backing of ['heap', 'sqlite']) {
   const store = freshStore();
   if (backing === 'heap') store.bindInMemory(64 * P);
-  else store.bindTables(store.onSql(sqlShim()));
+  else store.bind({ storage: { sql: sqlShim() } });
   const size = 20 * P + 123;
   const { s, bytes } = session(size);
-  store.setStorage(undefined, s);
-  assert.equal(await store.bootLazy(s), true);
-  const view = store.view(s, 1, USER);
+  store.admission.setStorage(undefined, s);
+  assert.equal(await store.lazy.bootLazy(s), true);
+  const view = store.lazy.namespaceView(s, 1, USER);
 
   // A first read fetches, in one batch; a second asks nothing.
   const first = await view.pages('home/user/big', 5, size, 2, 5);
@@ -100,7 +102,7 @@ for (const backing of ['heap', 'sqlite']) {
 
   // A new lazy boot starts from nothing: no page is held.
   assert.ok(store.pageHeld() > 0);
-  assert.equal(await store.bootLazy(s), true);
+  assert.equal(await store.lazy.bootLazy(s), true);
   assert.equal(store.pageHeld(), 0, `${backing}: a fresh boot holds no page`);
   assert.equal((await view.pages('home/user/big', 6, size, 3, 3)).fetched, 1);
 }
@@ -112,9 +114,9 @@ for (const backing of ['heap', 'sqlite']) {
   store.bindInMemory(16 * P + 64 * 1024);
   const size = 40 * P;
   const { s } = session(size);
-  store.setStorage(undefined, s);
-  await store.bootLazy(s);
-  const view = store.view(s, 1, USER);
+  store.admission.setStorage(undefined, s);
+  await store.lazy.bootLazy(s);
+  const view = store.lazy.namespaceView(s, 1, USER);
   for (let part = 0; part < 8; part++) await view.pages('home/user/big', 5, size, part, part);
   assert.equal((await view.pages('home/user/big', 5, size, 0, 0)).fetched, 0, 'page 0 is held, and now the most recently used');
   for (let part = 8; part < 12; part++) await view.pages('home/user/big', 5, size, part, part);
@@ -127,14 +129,14 @@ for (const backing of ['heap', 'sqlite']) {
 // free, and the pages keep to their share of it.
 {
   const store = freshStore();
-  store.bindTables(store.onSql(sqlShim()));
+  store.bind({ storage: { sql: sqlShim() } });
   const size = 40 * P;
   const { s } = session(size);
   const free = 8 * P;
   s.fsStorageGrant = async (_facet, want) => ({ granted: want, available: free });
-  store.setStorage({ facet: 'wasi-git-0', grant: 0 }, s);
-  await store.bootLazy(s);
-  const view = store.view(s, 1, USER);
+  store.admission.setStorage({ facet: 'wasi-git-0', grant: 0 }, s);
+  await store.lazy.bootLazy(s);
+  const view = store.lazy.namespaceView(s, 1, USER);
   for (let part = 0; part < 12; part++) await view.pages('home/user/big', 5, size, part, part);
   const held = store.pageHeld();
   assert.ok(held > 0, 'pages are held');
