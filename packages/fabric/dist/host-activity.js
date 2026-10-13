@@ -395,7 +395,10 @@ export class NimbusProcess extends Base {
   // its host learns the call arrived, whatever the guest's compatibility date.
   fetch(request) {
     const headers = request.headers;
-    if (headers.get(${watch}) === capability) {
+    const watching = headers.get(${watch});
+    if (watching !== null) {
+      // Only its host watches: a watch with another key enters neither endpoint.
+      if (watching !== capability) return new Response('Not found', { status: 404 });
       const watchers = this.#watchers;
       let current;
       const body = new ReadableStream({ start(controller) { current = controller; watchers.add(controller); }, cancel() { watchers.delete(current); } });
