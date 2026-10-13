@@ -19,7 +19,7 @@ const output = {
   escapeOutput() {},
 };
 
-for (const mode of ['facet', 'peer']) for (const route of ['port', 'direct']) for (const ending of ['eof', 'leave', 'partial-leave', 'error', 'short', 'long', 'no-body', 'leave-before-headers', 'throw']) {
+for (const mode of ['facet', 'peer']) for (const route of ['port', 'direct']) for (const ending of ['eof', 'leave', 'partial-leave', 'error', 'short', 'long', 'no-body', 'leave-before-headers', 'answer-after-leave', 'throw']) {
   let source, cancelled = false, watching = 0, heard = false, handled;
   const handling = Promise.withResolvers();
   const world = createFacetWorld(() => ({
@@ -27,6 +27,12 @@ for (const mode of ['facet', 'peer']) for (const route of ['port', 'direct']) fo
     handleHttpRequest: async (request) => {
       handled = request;
       if (ending === 'throw') throw new Error('the handler failed');
+      if (ending === 'answer-after-leave') {
+        // A handler that answers after its caller left, with a body it then keeps quiet.
+        handling.resolve();
+        await new Promise((resolve) => request.signal.addEventListener('abort', resolve, { once: true }));
+        return new Response(new ReadableStream({ start(controller) { source = controller; }, cancel() { cancelled = true; } }));
+      }
       if (ending === 'leave-before-headers') {
         // A handler that never answers headers hears its caller leave through its request.
         handling.resolve();
@@ -56,6 +62,15 @@ for (const mode of ['facet', 'peer']) for (const route of ['port', 'direct']) fo
     const answered = route === 'port'
       ? (() => { const ports = new PortRegistry(); ports.setOutput(output); ports.bindFacetStub(11, process); ports.register(3011, 11); return ports.routeRequest(3011, new Request('https://app.invalid/', { signal: client.signal }), '/'); })()
       : (async () => { const { scope, owner } = responseScope(client.signal); try { return relayRpcBody(await process.handleHttpRequest(new Request('https://app.invalid/'), scope), 'GET', owner); } catch (error) { owner.fail(error); throw error; } })();
+    if (ending === 'answer-after-leave') {
+      await handling.promise; await turns();
+      client.abort(new DOMException('The client has disconnected', 'AbortError'));
+      await answered.then((response) => response.body?.cancel?.().catch(() => {}), () => {});
+      await turns();
+      assert.equal(cancelled, true, `${label}: a body that came after its caller left is cancelled, though its source is quiet`);
+      assert.equal(watching, 0, `${label}: and the work is released`);
+      continue;
+    }
     if (ending === 'leave-before-headers') {
       await handling.promise; await turns();
       assert.equal(watching, 1, `${label}: the process owns its work while its handler runs`);

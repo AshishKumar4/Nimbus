@@ -159,7 +159,11 @@ class RelayScope implements ResponseScope, BodyOwner {
   }
   settle(): void { this.#end(true); }
   fail(): void { this.#end(false); }
-  stage(controller: TransformStreamDefaultController<Uint8Array>): void { this.#stage = controller; }
+  stage(controller: TransformStreamDefaultController<Uint8Array>): void {
+    // A caller that left before the body came: its stage ends at once.
+    if (this.#outcome === false) controller.error(this.signal.aborted ? this.signal.reason : new DOMException('The response was not delivered', 'AbortError'));
+    else this.#stage = controller;
+  }
   /** The caller left: a pipe waiting on the stage ends, and so does the response. */
   handleEvent(): void {
     this.#stage?.error(this.signal.reason);
