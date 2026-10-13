@@ -41,7 +41,7 @@
  * Runtime scope dependencies (in scope where SHIMS is interpolated):
  *   - __fsMod: the process's node:fs (readFileSync, writeFileSync)
  *   - __pathMod: the process's node:path (resolve, against its cwd)
- *   - __cryptoMod: node:crypto (createHash), to know an image unchanged
+ *   - __cryptoMod: node:crypto (createHash), to know a WAL image unchanged
  */
 /**
  * Module-init preamble that prepares the sql.js `initSqlJs` factory.

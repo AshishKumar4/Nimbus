@@ -41,7 +41,7 @@
  * Runtime scope dependencies (in scope where SHIMS is interpolated):
  *   - __fsMod: the process's node:fs (readFileSync, writeFileSync)
  *   - __pathMod: the process's node:path (resolve, against its cwd)
- *   - __cryptoMod: node:crypto (createHash), to know an image unchanged
+ *   - __cryptoMod: node:crypto (createHash), to know a WAL image unchanged
  */
 import { SQLJS_GLUE_FN_BODY } from '../sqlite-wasm-bundle.generated.js';
 /**
@@ -161,9 +161,26 @@ const __sqliteMod = (() => {
     return __getSQL();
   };
 
-  // An image's identity: its length and SHA-256, compared at close.
-  function __imageDigest(bytes) {
-    return bytes.length + ":" + __cryptoMod.createHash("sha256").update(bytes).digest("hex");
+  // What a close compares an image against: its length and 100-byte header.
+  // SQLite increments the header's change counter (offset 24) whenever it
+  // commits a change to the file, so a rollback-journal image whose header
+  // and length are the ones read has the bytes read. A WAL database's
+  // counter does not move (offsets 18 and 19 are 2), so its SHA-256 is kept.
+  function __imageMark(bytes) {
+    const wal = bytes.length >= 20 && (bytes[18] === 2 || bytes[19] === 2);
+    return {
+      length: bytes.length,
+      header: bytes.slice(0, 100),
+      digest: wal ? __cryptoMod.createHash("sha256").update(bytes).digest("hex") : null,
+    };
+  }
+
+  function __sameImage(mark, bytes) {
+    if (mark === null || mark.length !== bytes.length) return false;
+    if (mark.digest !== null) return mark.digest === __cryptoMod.createHash("sha256").update(bytes).digest("hex");
+    if (bytes.length >= 20 && (bytes[18] === 2 || bytes[19] === 2)) return false;
+    for (let i = 0; i < mark.header.length; i++) if (mark.header[i] !== bytes[i]) return false;
+    return true;
   }
 
   // The database file's bytes, or null for a database not yet written
@@ -345,7 +362,7 @@ const __sqliteMod = (() => {
   // The statements whose changes SQLite counts nowhere (ANALYZE's statistics,
   // VACUUM's and REINDEX's layout, a PRAGMA's header): SQL that names one
   // may have changed the image. Any mention counts; a false one costs a compare.
-  const __UNCOUNTED = /\b(?:analyze|vacuum|reindex|pragma)\b/i;
+  const __UNCOUNTED = /\\b(?:analyze|vacuum|reindex|pragma)\\b/i;
 
   class DatabaseSync {
     constructor(path, options) {
@@ -354,8 +371,9 @@ const __sqliteMod = (() => {
       this.__memory = !this.__path || this.__path === ":memory:";
       this.__open = false;
       this.__raw = null;
-      // The file the name denoted at open, and the digest of the bytes last
-      // read from or written to it (null: none were, so close creates it).
+      // The file the name denoted at open, and the mark (__imageMark) of the
+      // bytes last read from or written to it (null: none were, so close
+      // creates it).
       this.__file = null;
       this.__loaded = null;
       // What SQLite counted of the connection's changes at open, and whether
@@ -371,7 +389,7 @@ const __sqliteMod = (() => {
       this.__file = this.__memory ? null : __pathMod.resolve(this.__path);
       const bytes = this.__memory ? null : __readDbBytes(this.__file);
       this.__raw = bytes ? new SQL.Database(bytes) : new SQL.Database();
-      this.__loaded = bytes ? __imageDigest(bytes) : null;
+      this.__loaded = bytes ? __imageMark(bytes) : null;
       this.__counted = this.__memory ? null : this.__counters();
       this.__open = true;
     }
@@ -441,10 +459,9 @@ const __sqliteMod = (() => {
       if (this.__memory || !this.__open) return;
       if (!this.__uncounted && this.__counters() === this.__counted) return;
       const image = this.__raw.export();
-      const digest = __imageDigest(image);
-      if (digest === this.__loaded) return;
+      if (__sameImage(this.__loaded, image)) return;
       __fsMod.writeFileSync(this.__file, image);
-      this.__loaded = digest;
+      this.__loaded = __imageMark(image);
     }
 
     close() {
