@@ -9,7 +9,7 @@
  */
 
 import { oidFromHex, oidToHex } from '../pack/format.js';
-import { decodeTree } from '../pack/tree-object.js';
+import { TreeEntries } from '../pack/tree-object.js';
 import { encodeNode, type BuiltSubtree } from './cachetree.js';
 import { S_IFMT, comparePaths, decodePath, type DirCache } from './dircache.js';
 
@@ -59,7 +59,9 @@ export async function readTree(store: ObjectStore, oid: string): Promise<TreeEnt
   if (oid === EMPTY_TREE) return [];
   const { type, data } = await store.read(oid);
   if (type !== 'tree') throw new Error(`object ${oid} is a ${type}, not a tree`);
-  return decodeTree(data, (mode, oidAt, nameAt, nameEnd) => ({ name: decodePath(data.subarray(nameAt, nameEnd)), mode, oid: oidToHex(data, oidAt) }));
+  const entries: TreeEntry[] = [];
+  for (const e = new TreeEntries(data); e.next();) entries.push({ name: decodePath(data.subarray(e.nameAt, e.nameEnd)), mode: e.mode, oid: oidToHex(data, e.oidAt) });
+  return entries;
 }
 
 const isTree = (mode: number) => (mode & S_IFMT) === S_IFDIR;

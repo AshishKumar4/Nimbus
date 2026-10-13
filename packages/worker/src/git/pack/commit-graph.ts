@@ -29,7 +29,7 @@
 import { createHash } from 'node:crypto';
 
 import { OID_BYTES, PackFormatError } from './format.js';
-import { decodeTree } from './tree-object.js';
+import { TreeEntries } from './tree-object.js';
 
 const GRAPH_PARENT_NONE = 0x70000000;
 const GRAPH_EXTRA_EDGES_NEEDED = 0x80000000;
@@ -443,7 +443,9 @@ const MODE_TREE = 0o040000;
 const EMPTY = new Uint8Array(0);
 
 function treeEntries(tree: Uint8Array): DiffEntry[] {
-  return decodeTree(tree, (mode, oidAt, nameAt, nameEnd) => ({ name: tree.subarray(nameAt, nameEnd), mode, oid: tree.subarray(oidAt, oidAt + OID_BYTES) }));
+  const entries: DiffEntry[] = [];
+  for (const e = new TreeEntries(tree); e.next();) entries.push({ name: tree.subarray(e.nameAt, e.nameEnd), mode: e.mode, oid: tree.subarray(e.oidAt, e.oidAt + OID_BYTES) });
+  return entries;
 }
 
 const isTree = (mode: number) => (mode & 0o170000) === MODE_TREE;

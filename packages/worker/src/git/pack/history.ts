@@ -26,7 +26,7 @@
 
 import { GRAPH_RECORDS_DIR, commitRecord } from './commit-graph.js';
 import { decodeBatch, MODE_GITLINK, MODE_TREE } from './plan.js';
-import { decodeTree } from './tree-object.js';
+import { TreeEntries } from './tree-object.js';
 import { OID_BYTES, oidToHex, PackFormatError } from './format.js';
 import {
   STAGE_DIR,
@@ -136,20 +136,19 @@ function lister(kind: HistoryKind, list: ListWriter, graph: ListWriter): StorePa
     return (object) => {
       if (object.type !== 'tree') return;
       const data = object.data;
-      const records = decodeTree(data, (mode, oidAt, nameAt, nameEnd) => {
-        if (mode === MODE_TREE || mode === MODE_GITLINK) return null;
-        const oid = data.subarray(oidAt, oidAt + OID_BYTES);
+      for (const e = new TreeEntries(data); e.next();) {
+        if (e.mode === MODE_TREE || e.mode === MODE_GITLINK) continue;
+        const oid = data.subarray(e.oidAt, e.oidAt + OID_BYTES);
         const hex = oidToHex(oid);
-        if (seen.has(hex)) return null;
+        if (seen.has(hex)) continue;
         seen.add(hex);
-        const name = data.subarray(nameAt, nameEnd);
+        const name = data.subarray(e.nameAt, e.nameEnd);
         const record = new Uint8Array(OID_BYTES + 2 + name.byteLength);
         record.set(oid);
         new DataView(record.buffer).setUint16(OID_BYTES, name.byteLength);
         record.set(name, OID_BYTES + 2);
-        return record;
-      });
-      for (const record of records) if (record !== null) list.add(record);
+        list.add(record);
+      }
     };
   }
   return undefined;

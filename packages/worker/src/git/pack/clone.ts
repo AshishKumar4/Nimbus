@@ -17,7 +17,7 @@
  */
 
 import { decodeBatch, encodeBatch, CheckoutPlan, MODE_GITLINK, MODE_SYMLINK, MODE_TREE } from './plan.js';
-import { decodeTree } from './tree-object.js';
+import { TreeEntries } from './tree-object.js';
 import { coneMatcher, coneOf, coneSparseCheckout } from './sparse.js';
 import { ENTRY_BYTES, entryOffset } from './idx.js';
 import { installPack, RangedPackFile, readRange, resumeInstall, type PackFiles, type PackSummary } from './install.js';
@@ -461,14 +461,12 @@ function cacheTreeOf(name: string, root: string, trees: Map<string, Uint8Array>)
   if (data === undefined) throw new PackFormatError('the pack lacks tree ' + root);
   let count = 0;
   const subtrees: BuiltSubtree[] = [];
-  const entries = decodeTree(data, (mode, oidAt, nameAt, nameEnd) =>
-    (mode === MODE_TREE ? { name: decoder.decode(data.subarray(nameAt, nameEnd)), oid: oidToHex(data, oidAt) } : null));
-  for (const entry of entries) {
-    if (entry === null) {
+  for (const e = new TreeEntries(data); e.next();) {
+    if (e.mode !== MODE_TREE) {
       count++;
       continue;
     }
-    const child = cacheTreeOf(entry.name, entry.oid, trees);
+    const child = cacheTreeOf(decoder.decode(data.subarray(e.nameAt, e.nameEnd)), oidToHex(data, e.oidAt), trees);
     count += child.count;
     subtrees.push(child.built);
   }
@@ -481,7 +479,7 @@ function treesComplete(trees: Map<string, Uint8Array>, root: string): boolean {
   while (pending.length > 0) {
     const data = trees.get(pending.pop()!);
     if (data === undefined) return false;
-    for (const oid of decodeTree(data, (mode, oidAt) => (mode === MODE_TREE ? oidToHex(data, oidAt) : null))) if (oid !== null) pending.push(oid);
+    for (const e = new TreeEntries(data); e.next();) if (e.mode === MODE_TREE) pending.push(oidToHex(data, e.oidAt));
   }
   return true;
 }
@@ -864,7 +862,7 @@ async function readTrees(store: PackObjectStore, root: string): Promise<Map<stri
     bytes += object.data.byteLength;
     if (bytes > PLAN_TREE_BYTES) throw new PackFormatError('the commit\'s trees pass ' + PLAN_TREE_BYTES + ' bytes');
     trees.set(oid, object.data);
-    for (const oid of decodeTree(object.data, (mode, oidAt) => (mode === MODE_TREE ? oidToHex(object.data, oidAt) : null))) if (oid !== null) pending.push(oid);
+    for (const e = new TreeEntries(object.data); e.next();) if (e.mode === MODE_TREE) pending.push(oidToHex(object.data, e.oidAt));
   }
   return trees;
 }
