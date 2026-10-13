@@ -34,7 +34,6 @@ import { stripAnsi, type LogChunk } from '@nimbus-sh/core/runtime/process-logs.j
 import { DEFAULT_HOME, NODE_VERSION } from '@nimbus-sh/core/constants.js';
 import { VITE_CONFIG_KEY } from '../session/keys.js';
 import type { SessionInternal } from '../session/internal.js';
-import type { FacetProcessManager } from '../facets/process.js';
 import { isJsonObject } from '../npm/package-lock.js';
 
 import { HeadlessTerminal } from '@nimbus-sh/core/substrate/lifo/index.js';
@@ -49,7 +48,7 @@ export type RuntimeCommandHost = Pick<SessionInternal,
   readonly env: RuntimeCatalogEnv;
   routeLoopback: SessionInternal['routeLoopback'];
   ensureGlobalPrefixDirs: SessionInternal['ensureGlobalPrefixDirs'];
-  _ensureFacetProcessManager(): FacetProcessManager;
+  _ensureChildProcessManager: SessionInternal['_ensureChildProcessManager'];
 };
 
 export async function registerHostedCommands(self: RuntimeCommandHost, workspace: NimbusWorkspace): Promise<void> {
@@ -153,7 +152,7 @@ const remoteHelper: Command = async (ctx) => {
       }
     },
   }, createRemoteEngine({ ctx: self.ctx, env: self.env, pid: ctx.pid, network: workspace.network, signal: ctx.signal }),
-  createLocalGit(self._ensureFacetProcessManager(), ctx));
+  createLocalGit(self._ensureChildProcessManager(), ctx));
 };
 registry.registerBuiltin('git-remote-http', remoteHelper);
 registry.registerBuiltin('git-remote-https', remoteHelper);

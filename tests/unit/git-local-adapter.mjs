@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
-import { FacetProcessManager } from '../../packages/worker/src/facets/process.ts';
+import { ChildProcessManager } from '../../packages/core/src/runtime/child-process-manager.ts';
 import { createLocalGit } from '../../packages/worker/src/git/local-git.ts';
 
 const work = mkdtempSync(join(tmpdir(), 'git-local-adapter-'));
@@ -22,49 +22,50 @@ const parent = processes.spawn('git-remote-http', [], work);
 const children = new Map();
 const spawned = [];
 let fail = false;
-const manager = new FacetProcessManager({
+const manager = new ChildProcessManager({
   processes,
-  vfsForProcess: () => ({ exists: async () => true }),
-  facetMgr: { kill(pid) { children.get(pid)?.kill('SIGTERM'); return true; } },
-  commandRegistry: {
-    async resolve() { return { kind: 'pure-builtin' }; },
-    async runPureBuiltin(pid, name, args, inherited, cwd, stdin, hooks) {
-      assert.equal(name, 'git');
-      assert.equal(cwd, work);
-      assert.equal(inherited.GIT_TOKEN, env.GIT_TOKEN);
-      assert.equal(inherited.NIMBUS_GIT_WASI, '1');
-      assert.deepEqual(processes.cred(pid), processes.cred(parent.pid));
-      spawned.push({ pid, args, inherited });
-      if (fail) {
-        await hooks.onStdout(new TextEncoder().encode('partial\n'));
-        await hooks.onStderr(new Uint8Array(384 * 1024).fill(120));
-        return 7;
-      }
-      const child = spawn(name, args, { cwd, env: inherited, stdio: ['pipe', 'pipe', 'pipe'] });
-      children.set(pid, child);
-      processes.setTerminator(pid, () => child.kill('SIGTERM'));
-      const exit = new Promise((resolve, reject) => {
-        child.once('error', reject);
-        child.once('close', (code, signal) => resolve(code ?? (signal ? 143 : 1)));
-      });
-      const feed = async () => {
-        for (let bytes = await stdin.readBytes(65536); bytes !== null; bytes = await stdin.readBytes(65536)) {
-          if (!child.stdin.write(bytes)) await new Promise((resolve) => child.stdin.once('drain', resolve));
+  terminate(pid) { children.get(pid)?.kill('SIGTERM'); return true; },
+  async resolve() {
+    return {
+      async run({ pid, command: name, args, env: inherited, cwd, stdin, output: hooks, onStarted }) {
+        assert.equal(name, 'git');
+        assert.equal(cwd, work);
+        assert.equal(inherited.GIT_TOKEN, env.GIT_TOKEN);
+        assert.equal(inherited.NIMBUS_GIT_WASI, '1');
+        assert.deepEqual(processes.cred(pid), processes.cred(parent.pid));
+        spawned.push({ pid, args, inherited });
+        onStarted();
+        if (fail) {
+          await hooks.onStdout(new TextEncoder().encode('partial\n'));
+          await hooks.onStderr(new Uint8Array(384 * 1024).fill(120));
+          return 7;
         }
-        child.stdin.end();
-      };
-      const drain = async (stream, write) => { for await (const bytes of stream) await write(new Uint8Array(bytes)); };
-      try {
-        await Promise.all([feed(), drain(child.stdout, hooks.onStdout), drain(child.stderr, hooks.onStderr)]);
-        return await exit;
-      } finally {
-        child.kill();
-        await exit;
-        children.delete(pid);
-      }
-    },
+        const child = spawn(name, args, { cwd, env: inherited, stdio: ['pipe', 'pipe', 'pipe'] });
+        children.set(pid, child);
+        const exit = new Promise((resolve, reject) => {
+          child.once('error', reject);
+          child.once('close', (code, signal) => resolve(code ?? (signal ? 143 : 1)));
+        });
+        const feed = async () => {
+          for (let bytes = await stdin.readBytes(65536); bytes !== null; bytes = await stdin.readBytes(65536)) {
+            if (!child.stdin.write(bytes)) await new Promise((resolve) => child.stdin.once('drain', resolve));
+          }
+          child.stdin.end();
+        };
+        const drain = async (stream, write) => { for await (const bytes of stream) await write(new Uint8Array(bytes)); };
+        try {
+          await Promise.all([feed(), drain(child.stdout, hooks.onStdout), drain(child.stderr, hooks.onStderr)]);
+          return await exit;
+        } finally {
+          child.kill();
+          await exit;
+          children.delete(pid);
+        }
+      },
+    };
   },
 });
+
 
 try {
   const repo = join(work, 'repo');

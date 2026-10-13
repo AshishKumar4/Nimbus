@@ -1,13 +1,13 @@
 import type { CommandContext } from '@nimbus-sh/core/substrate/lifo/commands/types.js';
 import { GIT_WASI_ENV } from '@nimbus-sh/core/runtime/os-contracts.js';
-import type { FacetProcessManager } from '../facets/process.js';
+import type { ChildProcessManager } from '@nimbus-sh/core/runtime/child-process-manager.js';
 import type { LocalGit } from './remote-helper.js';
 
 const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const encoder = new TextEncoder();
 
 /** Git's object and ref operations, as children of the remote helper on the session's byte pipes. */
-export function createLocalGit(manager: FacetProcessManager, from: Pick<CommandContext, 'pid' | 'cwd' | 'env' | 'signal'>): LocalGit {
+export function createLocalGit(manager: ChildProcessManager, from: Pick<CommandContext, 'pid' | 'cwd' | 'env' | 'signal'>): LocalGit {
   const run = (gitDir: string, args: string[], input: (signal: AbortSignal) => Promise<string>, signal = from.signal): ReadableStream<Uint8Array> => {
     const stop = new AbortController();
     let pid: number | null = null;
