@@ -2048,7 +2048,11 @@ export declare class FacetManager {
     /**
      * What `pid`'s launch waits for room under (admitPrefetch): aborted once
      * its process ends, so a launch killed or destroyed while it queued is
-     * never admitted after its end.
+     * never admitted after its end. A launch let in on the ledger
+     * (withLaunchAdmission) gives its worker back for the wait and takes it
+     * back once it has room: waiting for credit while holding a worker, it
+     * would wait on a resident's build that holds credit while its helper
+     * waits for a worker (InternalScallop's cycle across the two pools).
      */
     private _launchEnds;
     /**

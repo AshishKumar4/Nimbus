@@ -4096,7 +4096,10 @@ function prefetchNeed(closureBytes) {
  * other build runs beside them beyond what the budget holds. Nothing asks
  * the pool while holding one (two builds holding their cells while a third
  * queued for more deadlocked every one). One that has to wait for room
- * waits under `wait`: a launch whose process ends meanwhile is never admitted.
+ * waits under `wait`: a launch whose process ends meanwhile is never
+ * admitted, and one let in on the ledger waits holding no worker, taking it
+ * back once it has room (credit before worker, as a resident's build, whose
+ * helpers ask the ledger while it holds credit, takes them).
  */
 async function admitPrefetch(wait, bytes = SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES) {
     const now = tryAdmitPrefetch(bytes);
@@ -4109,6 +4112,13 @@ async function admitPrefetch(wait, bytes = SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGE
         if (waiting?.signal.aborted) {
             lease.release();
             throw waiting.signal.reason;
+        }
+        try {
+            await waiting?.resume();
+        }
+        catch (error) {
+            lease.release();
+            throw error;
         }
         return admissionOf(lease, bytes, true);
     }
@@ -7606,7 +7616,11 @@ export class FacetManager {
     /**
      * What `pid`'s launch waits for room under (admitPrefetch): aborted once
      * its process ends, so a launch killed or destroyed while it queued is
-     * never admitted after its end.
+     * never admitted after its end. A launch let in on the ledger
+     * (withLaunchAdmission) gives its worker back for the wait and takes it
+     * back once it has room: waiting for credit while holding a worker, it
+     * would wait on a resident's build that holds credit while its helper
+     * waits for a worker (InternalScallop's cycle across the two pools).
      */
     _launchEnds(pid) {
         this._assertLaunchStillOwned(pid);
@@ -7614,7 +7628,8 @@ export class FacetManager {
         const dispose = this.processes.subscribeTerminal(pid, () => {
             ended.abort(new Error(`Nimbus: the launch for pid ${pid} was cancelled while it waited for room`));
         });
-        return { signal: ended.signal, dispose };
+        const regain = suspendLaunchAdmission(this.ctx);
+        return { signal: ended.signal, dispose, resume: async () => { await regain?.(ended.signal); } };
     }
     /**
      * The one way this manager boots a resident process. Every resident process
@@ -7970,18 +7985,7 @@ export class FacetManager {
         if (this.launchesClosed)
             return Promise.reject(new Error('Launch scheduler is closed'));
         const preparing = this.processes.holdWork(entry.pid);
-        // Let in once on the ledger, as its launch, before its preparation, as an
-        // exec is: what it puts in flight (its transform and build helpers, its
-        // facet's residency) is that worker, and it takes its share of the
-        // transient budget only once let in (Kinu #29). A launch holding credit
-        // that waited for a worker its helpers need would wait on launches
-        // holding workers that wait for its credit. Its process ending ends the wait.
-        const ended = new AbortController();
-        const unsubscribe = this.processes.subscribeTerminal(entry.pid, () => {
-            ended.abort(new Error(`Nimbus: the launch for pid ${entry.pid} was cancelled while it waited for a worker`));
-        });
-        const launch = withLaunchAdmission(this.ctx, { pid: entry.pid }, ended.signal, () => this._runResidentLaunchBody(entry, code, command, opts, attempt));
-        return this.trackLaunchTask(launch.finally(() => { unsubscribe(); preparing(); }));
+        return this.trackLaunchTask(this._runResidentLaunchBody(entry, code, command, opts, attempt).finally(preparing));
     }
     async _runResidentLaunchBody(entry, code, command, opts, attempt) {
         const cwd = opts.cwd || '/home/user';
