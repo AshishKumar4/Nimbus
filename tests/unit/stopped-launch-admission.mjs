@@ -48,7 +48,7 @@ function launch({ stops = 1, signal, ctx = {}, processes = new SessionProcessSup
     },
     stdinReadAhead: new ReadAheadBudget(STDIN_SYNC_READ_BYTES + 1),
     outputGates: new Map(), replay: new ReplaySessions(), stdinTaken: new Map(),
-    launchBundles: new Map(), launching: new Map(),
+    launchBundles: new Map(), launching: new Map(), buildAdmissions: new Map(),
     _launchPacer: () => ({ settle() {}, chunks: 0 }),
     _buildProcessBundle: async () => {
       preparation.push(held());

@@ -2,13 +2,14 @@
 // A destroy ends the launches suspended for a turn, and what they hold goes
 // back to the isolate.
 //
-// A launch's build takes its share of the isolate's supervisor allocation
-// credit (one pool, every session on the isolate) and, paced, waits between
-// chunks for a turn the session's alarm grants. A destroy deletes that alarm
-// and drops the manager: a build suspended when it lands never resumed, and
-// its credit stayed taken for the isolate's life — the neighbours' launches
-// and reads queued behind it. Red before: the pool stayed at two builds' worth
-// after the destroy answered.
+// A launch's build takes the isolate's supervisor allocation credit (one
+// pool, every session on the isolate: the whole of it until the build has
+// measured its closure, Kinu #29) and, paced, waits between chunks for a
+// turn the session's alarm grants; a second launch's build queues for the
+// credit meanwhile. A destroy deletes that alarm and drops the manager: a
+// build suspended when it lands never resumed, and its credit stayed taken
+// for the isolate's life — the neighbours' launches and reads queued behind
+// it. Red before: the pool stayed taken after the destroy answered.
 
 import assert from 'node:assert/strict';
 
@@ -64,12 +65,13 @@ for (let i = 0; i < 40; i++) {
 const runs = ['/home/user/a.js', '/home/user/b.js'].map((filename) =>
   manager.exec("require('dep');", { filename, cwd: '/home/user', captureOutput: true })
     .then((result) => ({ result }), (error) => ({ error })));
-for (let i = 0; i < 500 && (turns.requested < 2 || processes.getRunning().length < 2); i++) {
+for (let i = 0; i < 500 && (turns.requested < 1 || processes.getRunning().length < 2 || readSupervisorAllocationBudget().queued < 1); i++) {
   await new Promise((resolve) => setTimeout(resolve, 5));
 }
-assert.equal(turns.requested, 2, 'both builds suspended for a turn');
+assert.equal(turns.requested, 1, 'one build suspended for a turn');
 const held = readSupervisorAllocationBudget();
-assert.ok(held.current > 0, `the suspended builds hold allocation credit (${JSON.stringify(held)})`);
+assert.ok(held.current > 0, `the suspended build holds allocation credit (${JSON.stringify(held)})`);
+assert.equal(held.queued, 1, `the other build queued for credit (${JSON.stringify(held)})`);
 
 const storage = new Map();
 const host = {
@@ -108,6 +110,7 @@ assert.equal(destroyed.killed, 2);
 
 const after = readSupervisorAllocationBudget();
 assert.equal(after.current, 0, `the destroyed launches gave back their credit (${JSON.stringify(after)})`);
+assert.equal(after.queued, 0, `nothing is left queued for credit (${JSON.stringify(after)})`);
 const whole = tryAcquireSupervisorAllocation(after.capacity);
 assert.ok(whole !== null, 'the isolate\'s whole allocation budget is free again');
 whole.release();
@@ -118,6 +121,6 @@ const settled = await Promise.race([
 ]);
 assert.ok(settled !== null, 'both destroyed launches ended');
 for (const run of settled) assert.ok(run.error !== undefined, 'a destroyed launch never ran');
-assert.equal(turns.requested, 2, 'no destroyed launch asked for another turn');
+assert.equal(turns.requested, 1, 'no destroyed launch asked for another turn, the queued one included');
 
 console.log('destroy-ends-suspended-launches: OK');
