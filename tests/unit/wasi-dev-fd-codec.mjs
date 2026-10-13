@@ -31,7 +31,7 @@ import { WASI_RESIDENT_STORE_BYTES } from '../../packages/platform/src/limits.ts
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
-const E = { SUCCESS: 0, NOENT: 44 };
+const E = { SUCCESS: 0, ACCES: 2, NOENT: 44 };
 const RIGHT_READ = 2n, RIGHT_SEEK = 4n, RIGHT_WRITE = 64n;
 const O_TRUNC = 8, FDFLAG_APPEND = 1;
 
@@ -106,13 +106,15 @@ async function processWith(files, { holding = false } = {}) {
   const view32 = () => new DataView(memory.buffer);
   const name = (text) => { const b = enc.encode(text); new Uint8Array(memory.buffer).set(b, 4096); return b.length; };
   return {
-    fds, authority, charged: () => charged,
+    fds, kernel, authority, fs, charged: () => charged,
     /** path_open of `path` beneath the root preopen: the new descriptor. */
     async open(path, { rights = RIGHT_READ | RIGHT_SEEK, oflags = 0, fdflags = 0 } = {}) {
       const errno = await imports.path_open(3, 1, 4096, name(path), oflags, rights, 0n, fdflags, 64);
       assert.equal(errno, E.SUCCESS, `path_open ${path}`);
       return view32().getUint32(64, true);
     },
+    /** path_open's errno alone. */
+    openErrno: async (path) => imports.path_open(3, 1, 4096, name(path), 0, RIGHT_READ | RIGHT_SEEK, 0n, 0, 64),
     async read(fd, length) {
       view32().setUint32(128, 8192, true); view32().setUint32(132, length, true);
       assert.equal(await imports.fd_read(fd, 128, 1, 136), E.SUCCESS);
@@ -133,6 +135,9 @@ async function processWith(files, { holding = false } = {}) {
     settle: () => fs.settle(),
   };
 }
+
+/** What `call` answers: its value, or the code it was refused with. */
+const outcome = async (call) => { try { return { value: await call() }; } catch (error) { return { code: error.code }; } };
 
 const failures = [];
 const check = async (what, run) => { try { await run(); console.log(`  ✓ ${what}`); } catch (error) { failures.push(`${what}: ${error.message}`); console.log(`  ✗ ${what}`); } };
@@ -195,6 +200,37 @@ await check('a file a held subtree decided, renamed there, is the one /dev/fd op
   await p.settle();
   assert.equal(dec.decode(await p.authority.readFile('/home/user/i.txt')), 'x');
   assert.equal(await p.authority.stat('/home/user/h.txt'), null);
+});
+
+await check('a file the process cannot open by name is not opened by its inode number', async () => {
+  const p = await processWith({});
+  await p.kernel.mkdir('/srv/private', { recursive: true });
+  await p.kernel.chown('/srv/private', 2000, 2000);
+  await p.kernel.chmod('/srv/private', 0o700);
+  await p.kernel.writeFile('/srv/private/f', enc.encode('protected'));
+  await p.kernel.chmod('/srv/private/f', 0o644);
+  const { dev, ino } = await p.kernel.stat('/srv/private/f');
+  assert.equal((await outcome(() => p.authority.open('/srv/private/f', { read: true }))).code, 'EACCES', 'not by its name');
+  const read = await outcome(async () => dec.decode(await p.authority.read((await p.authority.reopen({ dev, ino }, { read: true })).id, 0, 64)));
+  assert.deepEqual(read, { code: 'EBADF' }, 'a number is not a descriptor the process holds');
+});
+
+await check('a resident copy opened again through /dev/fd reads its file as it is now', async () => {
+  const p = await processWith({ 'n.txt': 'old' });
+  const original = await p.open('home/user/n.txt');
+  assert.equal(p.fds.get(original).kind, 'resident');
+  const writer = await p.open('home/user/n.txt', { rights: RIGHT_WRITE | RIGHT_SEEK, oflags: O_TRUNC });
+  await p.write(writer, 'new');
+  await p.close(writer);
+  const copy = await p.open(`dev/fd/${original}`);
+  assert.equal(await p.read(copy, 64), 'new');
+});
+
+await check('a resident copy is not opened again once its mode refuses the read', async () => {
+  const p = await processWith({ 'm.txt': 'x' });
+  const original = await p.open('home/user/m.txt');
+  await p.fs.chmod('/home/user/m.txt', 0);
+  assert.equal(await p.openErrno(`dev/fd/${original}`), E.ACCES);
 });
 
 assert.deepEqual(failures, []);
