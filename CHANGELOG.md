@@ -12,7 +12,9 @@ published independently in the `@nimbus-sh` npm scope.
   and writes through it, as are its rename and removal; before, the sync
   calls saw it only after the session reported it. A link another program
   makes is seen, as other changes it makes are, once the session reports it
-  to this one.
+  to this one. `readdirSync` of a directory the program made lists a file it
+  wrote there from then on; after an `await` it could omit it until the
+  session reported the file.
   `fs.promises.watch` yields a file's changes, not one every 500 ms for a
   large unchanged file, and ends when its `signal` aborts (an `AbortError`)
   or the loop stops. A program's own `chmod` and `utimes` no longer outlive
