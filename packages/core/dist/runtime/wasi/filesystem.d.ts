@@ -37,29 +37,27 @@ export interface ResidentFd {
 }
 /**
  * How a resident copy's file is opened again (an open of /dev/fd/N): by the
- * session's O_PATH descriptor of it (AuthorityFilesystemOptions.residentHolds),
- * held while the copy lives; else by the name it was read at, while that
- * name has it, with the filesystem's pin on its bytes when it pinned them
- * (pinContent), given back with the copy.
+ * session descriptor the copy was read through (a reopen's), held while the
+ * copy lives; else by the name it was read at while that name has it, and
+ * once its process took that name away, by the hold ResidentCopies took
+ * first. A filesystem's pin on its bytes (pinContent) is given back with it.
  */
-export type ResidentHold = SessionHold | {
+export type ResidentHold = {
+    readonly handle: number;
+} | {
     readonly name: RuntimeFsPath;
     readonly follow: boolean;
     readonly pin?: PinnedContent;
 };
-/** A session descriptor a copy holds: `key`, the name it was opened by (ResidentHolds.keyOf), where it may be kept once the copy goes. */
-export interface SessionHold {
-    readonly handle: number;
-    readonly key?: string;
-}
 /** Another descriptor on a resident open, as dup(2) makes one: the same offset, the same hold. */
 export declare function shareResident(open: ResidentFd): ResidentFd;
 /**
  * One descriptor on a resident open closed. The last gives back its hold:
- * a pin here, and the session descriptor it answers, for the caller to let
- * go (ResidentHolds.letGo), as nothing of the guest's depends on it.
+ * the session descriptor it was read through, closed without waiting on it,
+ * as nothing of the guest's depends on it; else its pin, and its place in
+ * `copies`.
  */
-export declare function closeResident(open: ResidentFd): SessionHold | null;
+export declare function closeResident(open: ResidentFd, fs: RuntimeFsBridge | RuntimeSynchronousFs, copies: ResidentCopies): void;
 export interface AuthorityPreopen {
     kind: 'preopen';
     vfsPath: string;
@@ -105,38 +103,35 @@ export declare function refusalErrno(error: unknown, gone?: (refusal: string) =>
 export declare function processGoneMessage(refusal: string): string;
 export declare function after<T, R>(value: Awaitable<T>, next: (value: T) => Awaitable<R>): Awaitable<R>;
 /**
- * The session descriptors that hold resident copies (residentHolds), for one
- * filesystem. A hold its copy let go is kept, a few at most, at the name it
- * was opened by: the next copy of the same file there takes it again after
- * a stat, which is all main's copy cost, rather than an open of its own.
- * Past those, and a hold no name keeps, it waits to be closed with the next
- * open (RuntimeOpenFlags.closing), as a close of its own would be a second
- * call to the session.
+ * The resident copies of a filesystem's processes, by file (bash's processes
+ * share one, so a child's rm finds its shell's copies). A copy holds nothing
+ * at the session: before one of these processes takes a name away, by an
+ * unlink or a rename from or over it, the copies' file there is held by an
+ * O_PATH descriptor (RuntimeOpenFlags.path), as Linux's open file outlives
+ * its name, and an open of /dev/fd/N whose name no longer has the file opens
+ * it by that hold. The hold goes with the file's last copy.
  */
-export declare class ResidentHolds {
-    private readonly keep;
-    /** Holds waiting for an open to close them; past this many they are closed at once, with calls of their own. */
-    static readonly RELEASED_MAX = 64;
-    private released;
-    private readonly kept;
-    constructor(keep?: number);
-    /** The name a hold is kept by: what `open` was asked of, followed or not. */
-    static keyOf(name: RuntimeFsPath, follow: boolean): string;
-    /** `hold`, its copy of the file `stat` describes let go, on `fs`. */
-    letGo(fs: RuntimeFsBridge | RuntimeSynchronousFs, hold: SessionHold, stat: {
-        readonly dev: number;
-        readonly ino: number;
-    }): void;
-    /** The hold kept at `key`, taken out. */
-    takeKept(key: string): {
+export declare class ResidentCopies {
+    private readonly files;
+    /** A copy of the file `stat` describes, read at `name`. */
+    copied(stat: RuntimeVfsStat, name: RuntimeFsPath): void;
+    /** One copy of that file gone; its last lets the hold go. */
+    released(stat: RuntimeVfsStat): void;
+    /** The hold of the file `stat` describes, if its name was taken away; null when none was taken. */
+    held(stat: RuntimeVfsStat): Awaitable<{
         readonly handle: number;
-        readonly dev: number;
-        readonly ino: number;
-    } | undefined;
-    /** A hold no copy will take again, on `fs`: closed with the next open, or now once RELEASED_MAX wait. */
-    release(fs: RuntimeFsBridge | RuntimeSynchronousFs, handle: number): void;
-    /** The holds the next open closes, handed out once. */
-    take(): readonly number[] | undefined;
+        readonly fs: RuntimeFsBridge | RuntimeSynchronousFs;
+    } | null> | null;
+    /**
+     * Before a change takes the names `paths` away on `fs` (an unlink's, a
+     * rename's from and to), holds the copies' files there; for a directory
+     * among them (a rename's), every file with copies, as its names may be
+     * beneath it. Settles once each hold is answered, so the change cannot
+     * reach the session before it; at once while nothing has copies.
+     */
+    before(fs: RuntimeFsBridge | RuntimeSynchronousFs, paths: readonly RuntimeFsPath[]): Awaitable<void>;
+    /** An O_PATH open of `name`, kept when it is `file`. */
+    private take;
 }
 /** A session descriptor nothing of the guest's waits to see closed: closed, a refusal of it dropped. */
 export declare function closeUnawaited(fs: RuntimeFsBridge | RuntimeSynchronousFs, handle: number): void;
@@ -175,15 +170,8 @@ export interface AuthorityFilesystemOptions {
      * is fetched again on its next open. Zero keeps every open on the authority.
      */
     residentBytes?: number;
-    /**
-     * Where a resident copy's hold of its file at the session goes when the
-     * copy is let go: an O_PATH descriptor (RuntimeOpenFlags.path) its open
-     * answers the stat with, so the file itself, renamed or unlinked since, is
-     * what /dev/fd/N opens again. Without (a host that cannot hold one, or
-     * pins bytes itself), a copy is opened again by the name it was read at,
-     * while that name has it.
-     */
-    residentHolds?: ResidentHolds;
+    /** The resident copies these descriptors share with other processes' (bash's); this filesystem's own when absent. */
+    residentCopies?: ResidentCopies;
     /**
      * Whether a resident copy outlives its descriptor (default true). A guest
      * whose host process already holds the filesystem's content (a node

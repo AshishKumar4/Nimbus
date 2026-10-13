@@ -34,7 +34,7 @@
  *   - A name the store does not know (its directory not listed yet) is not
  *     absent: the adapter lists the directory and walks again.
  */
-import type { RuntimeFsBridge, RuntimeOpenedFile, RuntimeFsPath, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat } from '../os-contracts.js';
+import type { RuntimeFsBridge, RuntimeFsPath, RuntimeVfsDirEntry, RuntimeVfsStat } from '../os-contracts.js';
 import type { ProcessFsJournal, ProcessFsSession, ProcessFsStats } from '../../_shared/process-fs-client.js';
 /** A name as the store holds it: its lstat, and a symlink's text. */
 export interface ResidentEntry {
@@ -95,12 +95,6 @@ export interface PinnedContent {
     release(): void;
     /** The name it was pinned at, which an open of /dev/fd/N opens it again by while that name has it (openIdentified). */
     name: string;
-    /**
-     * Opens the file again where its name no longer has it: by the session's
-     * hold of it, taken when this process took the name away (an unlink, a
-     * rename from or over it). Null when no hold was taken.
-     */
-    reopen(flags: RuntimeOpenFlags): Promise<RuntimeOpenedFile> | null;
 }
 export interface ResidentFilesystem extends RuntimeFsBridge {
     /**

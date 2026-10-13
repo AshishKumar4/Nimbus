@@ -35,7 +35,7 @@
  *     absent: the adapter lists the directory and walks again.
  */
 import { fsError, modeAllows, walkBeneath } from '../beneath-walk.js';
-import { closeUnawaited, openIdentified } from './filesystem.js';
+import { openIdentified } from './filesystem.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
 import { delegationHolder } from './delegation-holder.js';
 /** A held write goes to the session in pieces of this size: each fits one call. */
@@ -170,8 +170,6 @@ export function residentFilesystem(session, resident, delegation) {
     const directories = new Map();
     /** Bytes pinned for the codec's own descriptors (pinContent). */
     const pins = new Map();
-    /** The files those pins are of, by identity. */
-    const pinnedFiles = new Map();
     /** A write-through description's reader: the session's read-only descriptor of its file, opened at its first read. */
     const throughReaders = new Map();
     /**
@@ -453,15 +451,9 @@ export function residentFilesystem(session, resident, delegation) {
         // A file this process writes through is the session's to read (its writes are answered there first).
         if (holder?.writing(entry.ino) !== undefined || entry.revision !== stat.revision)
             return null;
-        const fileKey = identity(entry.dev, entry.ino);
-        const pinKey = `${fileKey}:${entry.revision}`;
+        const pinKey = `${identity(entry.dev, entry.ino)}:${entry.revision}`;
         const pinned = (pin) => {
             pin.holders++;
-            let file = pinnedFiles.get(fileKey);
-            if (file === undefined)
-                pinnedFiles.set(fileKey, file = { key, dev: entry.dev, ino: entry.ino, pins: 0, hold: null });
-            file.pins++;
-            const of = file;
             let released = false;
             return {
                 bytes: pin.bytes,
@@ -470,27 +462,10 @@ export function residentFilesystem(session, resident, delegation) {
                     if (released)
                         return;
                     released = true;
-                    if (--of.pins === 0) {
-                        pinnedFiles.delete(fileKey);
-                        void of.hold?.then((handle) => { if (handle !== null)
-                            closeUnawaited(authority, handle); });
-                    }
                     if (--pin.holders > 0)
                         return;
                     pins.delete(pinKey);
                     store.release(pin.bytes.byteLength);
-                },
-                reopen: (flags) => {
-                    const hold = of.hold;
-                    if (hold === null)
-                        return null;
-                    return hold.then((handle) => {
-                        if (handle === null)
-                            throw fsError('ENOENT', 'open', '/' + of.key);
-                        // What this process decided of the file is the session's first.
-                        const reopen = () => authority.reopen({ handle }, flags);
-                        return holder === null ? reopen() : holder.flush().then(reopen);
-                    });
                 },
             };
         };
@@ -577,12 +552,7 @@ export function residentFilesystem(session, resident, delegation) {
     }), () => authority.realpath(path));
     /** A descriptor of the holder's, as an open answers it: with its stat, the holder's. */
     const heldOpen = (handle) => ({ ...handle, stat: statOf(holder.fstat(handle.id)) });
-    fs.open = (path, given) => {
-        // The holder's descriptors and the session's alike: each closed where it is (RuntimeOpenFlags.closing).
-        if (given.closing)
-            for (const id of given.closing)
-                closeUnawaited(fs, id);
-        const flags = given.closing ? { ...given, closing: undefined } : given;
+    fs.open = (path, flags) => {
         const readOnly = !flags.write && !flags.create && !flags.truncate && !flags.append && !flags.exclusive;
         if (!readOnly && holder !== null) {
             // A file made or emptied in a subtree this process holds is decided here.
@@ -760,12 +730,7 @@ export function residentFilesystem(session, resident, delegation) {
     // session descriptor, any other by its file's name while that name has it.
     const bySessionReopen = Reflect.get(fs, 'reopen');
     if (typeof bySessionReopen === 'function') {
-        Reflect.set(fs, 'reopen', (target, given, options) => {
-            // The holder's descriptors and the session's alike: each closed where it is (RuntimeOpenFlags.closing).
-            if (given.closing)
-                for (const id of given.closing)
-                    closeUnawaited(fs, id);
-            const flags = given.closing ? { ...given, closing: undefined } : given;
+        Reflect.set(fs, 'reopen', (target, flags, options) => {
             const held = holder;
             if (!held?.owns(target.handle))
                 return Reflect.apply(bySessionReopen, fs, [target, flags, options]);
@@ -890,37 +855,6 @@ export function residentFilesystem(session, resident, delegation) {
         return after(local, (done) => (done !== DELEGATE ? undefined
             : names !== undefined ? byClient('rename', { type: 'rename', from: names[0], to: names[1] }) : bySessionRename(from, to)));
     };
-    /**
-     * Before this process takes the name `key` away (an unlink of it, a rename
-     * of it or over it; `under`: a directory's, every name beneath it too), the
-     * files a pin holds there are held at the session by an O_PATH descriptor,
-     * sent first on the same stub so the session has the hold before the change.
-     * Not waited on. A file that is another by the time it lands is not held.
-     */
-    const holdPinnedAt = (key, under) => {
-        for (const file of pinnedFiles.values()) {
-            if (file.hold !== null || (file.key !== key && !(under && file.key.startsWith(key + '/'))))
-                continue;
-            file.hold = Promise.resolve(authority.open('/' + file.key, { path: true, followSymlinks: false })).then((held) => {
-                if (held.stat.dev === file.dev && held.stat.ino === file.ino)
-                    return held.id;
-                closeUnawaited(authority, held.id);
-                return null;
-            }, () => null);
-        }
-    };
-    /** `change`, after the pinned files at the names `paths` (resolved as `change` resolves them) are held. */
-    const keepingPins = (paths, change) => {
-        if (pinnedFiles.size === 0)
-            return change();
-        const held = paths.map(([path, under]) => after(keyFor(path, false), (key) => { if (key !== DELEGATE)
-            holdPinnedAt(key, under); }));
-        return held.some((step) => step instanceof Promise) ? Promise.all(held).then(change) : change();
-    };
-    const unlinkDropping = fs.unlink;
-    fs.unlink = (path) => keepingPins([[path, false]], () => unlinkDropping(path));
-    const renameDropping = fs.rename;
-    fs.rename = (from, to) => keepingPins([[from, true], [to, false]], () => renameDropping(from, to));
     // Nothing of these is decided here: by the client when the store places the name.
     const byName = (name, passed, pathAt, op) => (...args) => {
         if (holder === null)
