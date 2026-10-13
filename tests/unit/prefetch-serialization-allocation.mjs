@@ -1,0 +1,174 @@
+#!/usr/bin/env bun
+// @serial
+// Kinu #29: a launch's cache-miss build holds its admission (the build's
+// share of the supervisor's admitted transient budget) while it serializes
+// its cells, not only while it gathers them, so concurrent builds queue for
+// room through both. Through the real FacetManager.exec path, observing the
+// production cell serializer without replacing its work or the bytes it
+// makes:
+//   - each build serializes under its own admission, and three distinct
+//     launches at once peak at one build's heap plus the admitted budget;
+//   - launches of one key at once build once; a build queued across a write
+//     builds the new generation; a failure gives its admission back;
+//   - three ~17 MiB builds sharing the pool all finish, and one that fails
+//     or is killed while it holds its admission stops none of the others.
+import assert from 'node:assert/strict';
+import { mock } from 'bun:test';
+import { heapStats } from 'bun:jsc';
+import { readSupervisorAllocationBudget, acquireSupervisorAllocation } from '../../packages/platform/src/heavy-alloc-coord.ts';
+import { VFS_BUNDLE_MAX_BYTES } from '../../packages/core/src/constants.ts';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
+
+adoptCtxExports({ SupervisorRPC: ({ props }) => ({ props }), NimbusLoadedEntrypoint: () => ({
+  async startProcess() { return { ok: true }; }, async handleHttpRequest() { return new Response('ok'); },
+}) });
+
+const cellsPath = new URL('../../packages/core/src/_shared/commonjs-cell.ts', import.meta.url).pathname;
+const cells = await import(cellsPath);
+const legacyWrap = cells.wrapCommonJsCell;
+const reservations = [];
+let peak = 0;
+let failSerialization = false;
+// What a ~17 MiB build does as it starts serializing its cell (the three-caller
+// cases below): fail, or be killed, while it holds its admission.
+const onBigCell = new Map();
+mock.module(cellsPath, () => ({ ...cells,
+  wrapCommonJsCell(...args) {
+    const big = /PREFETCH_BIG_EVIDENCE ([\w-]+)/.exec(args[0].slice(0, 64))?.[1];
+    if (big !== undefined) onBigCell.get(big)?.();
+    if (args[0].includes('PREFETCH_LEASE_EVIDENCE')) {
+      reservations.push(readSupervisorAllocationBudget().current);
+      peak = Math.max(peak, heapStats().heapSize);
+      if (failSerialization) throw new Error('injected serializer failure');
+    }
+    return legacyWrap(...args);
+  },
+}));
+const { launchManager } = await import('./lib/facet-launch-harness.mjs');
+const execLoader = {
+  load() { return { getEntrypoint: () => ({ async run() { return Response.json({ exitCode: 0, stdout: '', stderr: '' }); } }) }; },
+  get() { throw new Error('one-shot fixture uses load, not named resident get'); },
+};
+const env = { LOADER: execLoader };
+const { manager, vfs, processes } = launchManager('prefetch-serialization-credit', { env });
+const fs = vfs.as(CRED_KERNEL);
+for (let i = 0; i < 4; i++) {
+  fs.mkdir(`home/user/tree${i}`, { recursive: true, mode: 0o755 });
+  fs.writeFile(`home/user/tree${i}/cell.js`, `// PREFETCH_LEASE_EVIDENCE\nmodule.exports = "${'x'.repeat(10 * 1024 * 1024)}";\n`, { mode: 0o644 });
+}
+const launchTree = (i) => manager.exec("require('./cell.js')", { filename: `/home/user/tree${i}/run.js`, cwd: `/home/user/tree${i}`, captureOutput: true });
+/** The heap's peak over its settled base while `run` runs. */
+const peakOver = async (run) => {
+  Bun.gc(true);
+  const base = heapStats().heapSize;
+  peak = base;
+  const result = await run();
+  return { result, over: peak - base };
+};
+const sampled = setInterval(() => { peak = Math.max(peak, heapStats().heapSize); }, 1);
+const started = performance.now();
+try {
+  // One build alone, for its bytes.
+  const single = await peakOver(() => launchTree(3));
+  assert.equal(single.result.exitCode, 0, single.result.stderr);
+  reservations.length = 0;
+  const three = await peakOver(() => Promise.all([0, 1, 2].map(launchTree)));
+  const results = three.result;
+  const capacity = readSupervisorAllocationBudget().capacity;
+  console.log('PREFETCH_SERIALIZATION ' + JSON.stringify({ callers: 3, elapsedMs: performance.now() - started,
+    singlePeakOverBase: single.over, peakOverBase: three.over, capacity, reservations, results: results.map(({ exitCode, stderr }) => ({ exitCode, stderr })) }));
+  assert.ok(results.every(result => result.exitCode === 0), JSON.stringify(results));
+  assert.equal(reservations.length, 3, 'every distinct launch serialized its large cell');
+  assert.ok(reservations.every(bytes => bytes >= VFS_BUNDLE_MAX_BYTES && bytes <= capacity),
+    `each build serializes under its own admission (${reservations.join(', ')} held; one build's is ${VFS_BUNDLE_MAX_BYTES})`);
+  assert.ok(three.over <= single.over + capacity,
+    `three builds at once peak at one build's bytes plus the admitted budget (${three.over} > ${single.over} + ${capacity})`);
+  assert.equal(readSupervisorAllocationBudget().current, 0, 'completed builds release their allocation');
+  fs.mkdir('home/user/shared', { recursive: true, mode: 0o755 });
+  fs.writeFile('home/user/shared/cell.js', '// PREFETCH_LEASE_EVIDENCE\nmodule.exports=1;', { mode: 0o644 });
+  const options = { filename: '/home/user/shared/run.js', cwd: '/home/user/shared', captureOutput: true };
+  const count = reservations.length;
+  const identical = await Promise.all(Array.from({ length: 3 }, () => manager.exec("require('./cell.js')", options)));
+  assert.ok(identical.every(result => result.exitCode === 0));
+  assert.equal(reservations.length - count, 1, 'same-key waiters use the published cache after admission instead of gathering again');
+  fs.writeFile('home/user/shared/cell.js', '// PREFETCH_LEASE_EVIDENCE\nmodule.exports=2;', { mode: 0o644 });
+  failSerialization = true;
+  await assert.rejects(manager.exec("require('./cell.js')", options), /injected serializer failure/);
+  assert.equal(readSupervisorAllocationBudget().current, 0, 'a serializer failure cannot leak its lease');
+  failSerialization = false;
+  assert.equal((await manager.exec("require('./cell.js')", options)).exitCode, 0, 'the next launch can be admitted after failure');
+  // A queued build must re-read the generation after admission; an old
+  // cache hit observed before the wait is not authority for the new tree.
+  fs.writeFile('home/user/shared/cell.js', '// PREFETCH_LEASE_EVIDENCE\nmodule.exports=3;');
+  const hold = await acquireSupervisorAllocation(readSupervisorAllocationBudget().capacity);
+  const beforeWait = reservations.length;
+  const queued = manager.exec("require('./cell.js')", options);
+  for (let i = 0; readSupervisorAllocationBudget().queued === 0 && i < 100; i++) await new Promise(resolve => setTimeout(resolve, 1));
+  assert.ok(readSupervisorAllocationBudget().queued > 0, 'the real manager build is waiting for allocation');
+  fs.writeFile('home/user/shared/cell.js', '// PREFETCH_LEASE_EVIDENCE\nmodule.exports=4;');
+  hold.release();
+  assert.equal((await queued).exitCode, 0);
+  assert.equal(reservations.length - beforeWait, 1);
+  const afterNewGeneration = reservations.length;
+  assert.equal((await manager.exec("require('./cell.js')", options)).exitCode, 0);
+  assert.equal(reservations.length, afterNewGeneration, 'the queued build published the newly read generation, so its next launch is a cache hit');
+  assert.equal(readSupervisorAllocationBudget().current, 0);
+
+  // Three callers whose closures are ~17 MiB each share the 40 MiB pool
+  // (SingleNightingale's recheck of f7cb5aab2): two hold their admissions and
+  // the third queues for its own. A build that asked the pool again while
+  // holding its cells waited behind the third, which waited for it: all
+  // three deadlocked. A build asks once.
+  const BIG = 17 * 1024 * 1024;
+  const bigTree = (name) => {
+    fs.mkdir(`home/user/big-${name}`, { recursive: true, mode: 0o755 });
+    fs.writeFile(`home/user/big-${name}/cell.js`, `// PREFETCH_BIG_EVIDENCE ${name}\nmodule.exports = "${'z'.repeat(BIG)}".length;\n`, { mode: 0o644 });
+    return { filename: `/home/user/big-${name}/run.js`, cwd: `/home/user/big-${name}`, captureOutput: true };
+  };
+  const settleWithin = (runs, ms) => Promise.race([
+    Promise.allSettled(runs),
+    new Promise((resolve) => setTimeout(() => resolve('deadlocked'), ms)),
+  ]);
+  const drained = () => {
+    const budget = readSupervisorAllocationBudget();
+    assert.equal(budget.current, 0, `every admission was given back (${JSON.stringify(budget)})`);
+    assert.equal(budget.queued, 0, `nothing is left queued (${JSON.stringify(budget)})`);
+  };
+  const three = (names) => names.map((name) => manager.exec("require('./cell.js')", bigTree(name)));
+  let peakHeld = 0;
+  const watchHeld = setInterval(() => { peakHeld = Math.max(peakHeld, readSupervisorAllocationBudget().current); }, 1);
+  try {
+    const settled = await settleWithin(three(['a', 'b', 'c']), 120_000);
+    assert.notEqual(settled, 'deadlocked', 'three ~17 MiB builds sharing the pool all finish');
+    assert.deepEqual(settled.map((r) => r.status === 'fulfilled' ? r.value.exitCode : String(r.reason)), [0, 0, 0]);
+    assert.ok(peakHeld <= readSupervisorAllocationBudget().capacity, `the pool's ceiling held (${peakHeld})`);
+    drained();
+
+    // A build that fails while it holds its admission gives it back, and the
+    // build queued behind it is admitted and finishes.
+    onBigCell.set('fail-b', () => { throw new Error('injected ~17 MiB serializer failure'); });
+    const failed = await settleWithin(three(['fail-a', 'fail-b', 'fail-c']), 120_000);
+    onBigCell.delete('fail-b');
+    assert.notEqual(failed, 'deadlocked', 'a failure among three ~17 MiB builds stops none of the others');
+    assert.equal(failed[1].status, 'rejected');
+    assert.match(String(failed[1].reason), /injected ~17 MiB serializer failure/);
+    assert.deepEqual([failed[0], failed[2]].map((r) => r.status === 'fulfilled' ? r.value.exitCode : String(r.reason)), [0, 0]);
+    drained();
+
+    // A launch killed while it holds its admission (mid-serialization) gives
+    // it back: the others finish and the pool drains.
+    onBigCell.set('kill-a', () => {
+      onBigCell.delete('kill-a');
+      const victim = processes.getRunning().find((entry) => entry.cwd === '/home/user/big-kill-a');
+      assert.ok(victim, 'the launch being serialized is running');
+      manager.kill(victim.pid);
+    });
+    const killed = await settleWithin(three(['kill-a', 'kill-b', 'kill-c']), 120_000);
+    onBigCell.delete('kill-a');
+    assert.notEqual(killed, 'deadlocked', 'a launch killed mid-build stops none of the others');
+    assert.deepEqual([killed[1], killed[2]].map((r) => r.status === 'fulfilled' ? r.value.exitCode : String(r.reason)), [0, 0]);
+    assert.ok(killed[0].status === 'rejected' || killed[0].value.exitCode !== 0, `the killed launch did not run as if never killed (${JSON.stringify(killed[0].value ?? String(killed[0].reason))})`);
+    drained();
+  } finally { clearInterval(watchHeld); }
+} finally { clearInterval(sampled); }
