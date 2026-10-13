@@ -1024,13 +1024,10 @@ class AwaitingProcessBridge {
         });
     }
     copyFile(from, to) {
-        return this.either([from, to], () => this.bridge.copyFile(from, to), async () => this.namespace.copy((await this.path(from)), (await this.path(to)), { recursive: false }));
+        return this.either([from, to], () => this.bridge.copyFile(from, to), async () => this.namespace.copy((await this.path(from)), (await this.path(to)), { follow: true }));
     }
     copyTree(from, to, options) {
-        return this.either([from, to], () => this.bridge.copyTree(from, to, options), async () => {
-            await this.namespace.copy((await this.path(from)), (await this.path(to)), { recursive: true, preserve: options?.preserve });
-            return 0;
-        });
+        return this.either([from, to], () => this.bridge.copyTree(from, to, options), async () => this.namespace.copy((await this.path(from)), (await this.path(to)), { recursive: true, preserve: options?.preserve }));
     }
     // ── descriptors on an asynchronous mount ─────────────────────────────
     // The scope's own descriptors (Descriptors), whose descriptions answer by

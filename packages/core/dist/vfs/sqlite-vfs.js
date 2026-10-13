@@ -5633,6 +5633,7 @@ export class SqliteVFS {
             dst: target.path,
             uid: cred.uid,
             gid: cred.gid,
+            groups: cred.groups,
             clearBits: options.preserve ? 0 : (cred.umask & 0o777) | 0o6000,
             preserveOwner: options.preserve === true && cred.uid === 0,
             preserveTimes: options.preserve === true,
@@ -5701,12 +5702,13 @@ export class SqliteVFS {
         for (;;) {
             const now = this.now();
             const page = cursor === null
-                ? [...this.sql.exec(`SELECT path, kind, size FROM ${source} WHERE path = ?`, job.src)]
+                ? [...this.sql.exec(`SELECT path, kind, size, mode FROM ${source} WHERE path = ?`, job.src)]
                 : [...(range.upper === null
-                        ? this.sql.exec(`SELECT path, kind, size FROM ${source} WHERE path > ? ORDER BY path LIMIT ?`, cursor, COPY_PAGE_ROWS)
-                        : this.sql.exec(`SELECT path, kind, size FROM ${source} WHERE path > ? AND path < ? ORDER BY path LIMIT ?`, cursor, range.upper, COPY_PAGE_ROWS))];
+                        ? this.sql.exec(`SELECT path, kind, size, mode FROM ${source} WHERE path > ? ORDER BY path LIMIT ?`, cursor, COPY_PAGE_ROWS)
+                        : this.sql.exec(`SELECT path, kind, size, mode FROM ${source} WHERE path > ? AND path < ? ORDER BY path LIMIT ?`, cursor, range.upper, COPY_PAGE_ROWS))];
             const last = page.length > 0 ? String(page[page.length - 1].path) : null;
             const done = cursor !== null && page.length < COPY_PAGE_ROWS;
+            const attrs = page.length > 0 ? this.copiedAttrs(job, cursor === null, page) : null;
             let gen = 0;
             const inserted = new Set();
             // The slice that publishes the copy's root adds a name to the
@@ -5732,10 +5734,6 @@ export class SqliteVFS {
                 if (page.length > 0) {
                     const lower = cursor === null ? job.src : cursor;
                     const tail = job.src.length + 1;
-                    const shared = this.sharedDirectory(job.dst);
-                    const copiedMode = shared
-                        ? '((mode & ~' + job.clearBits + ' & ~56) | ((mode & ~' + job.clearBits + ' & 448) >> 3) | CASE WHEN kind = ' + INODE_KIND_DIRECTORY + ' THEN 1024 ELSE 0 END)'
-                        : '(mode & ~' + job.clearBits + ')';
                     // A path another writer made first keeps its row (OR IGNORE): what
                     // this page inserted is what RETURNING names, and only that is its.
                     for (const row of this.sql.exec(`INSERT OR IGNORE INTO vfs_inodes
@@ -5744,13 +5742,13 @@ export class SqliteVFS {
                       CASE WHEN path = ? THEN ? ELSE ? || substr(parent_path, ?) END,
                       kind, size,
                       CASE WHEN ? THEN atime ELSE ? END, CASE WHEN ? THEN mtime ELSE ? END, ?,
-                      CASE WHEN kind = ${INODE_KIND_SYMLINK} THEN mode ELSE ${copiedMode} END,
+                      ${attrs.mode},
                       CASE WHEN ? THEN uid ELSE ? END,
-                      ${shared ? 'CASE WHEN kind = ' + INODE_KIND_SYMLINK + ' THEN CASE WHEN ? THEN gid ELSE ? END ELSE ' + shared.gid + ' END' : 'CASE WHEN ? THEN gid ELSE ? END'},
+                      ${attrs.gid},
                       ? + row_number() OVER (ORDER BY path) - 1, ?, chunk_id, content_id,
-                      ${shared ? 'CASE WHEN kind = ' + INODE_KIND_DIRECTORY + ' THEN ' + shared.acl + ' ELSE dacl END' : 'dacl'}
+                      ${attrs.dacl}
                FROM ${source} WHERE path ${cursor === null ? '=' : '>'} ? AND path <= ? ORDER BY path
-               RETURNING path`, job.dst, tail, job.src, parentKey(job.dst), job.dst, tail, job.preserveTimes ? 1 : 0, now, job.preserveTimes ? 1 : 0, now, now, job.preserveOwner ? 1 : 0, job.uid, job.preserveOwner ? 1 : 0, job.gid, firstIno, gen, lower, last))
+               RETURNING path`, job.dst, tail, job.src, parentKey(job.dst), job.dst, tail, job.preserveTimes ? 1 : 0, now, job.preserveTimes ? 1 : 0, now, now, job.preserveOwner ? 1 : 0, job.uid, firstIno, gen, lower, last))
                         inserted.add(String(row.path));
                     this.sql.exec('UPDATE vfs_state SET next_ino = ? WHERE slot = 1', firstIno + page.length);
                 }
@@ -5811,6 +5809,45 @@ export class SqliteVFS {
             if (++pages >= maxPages)
                 return { copied, id: jobId, done: false };
         }
+    }
+    /**
+     * The SQL a copy's page makes its entries' mode, group and default ACL
+     * with. Without preserve, what a creation there makes (creationAttrs): the
+     * root's beneath the destination's parent, every other's beneath the
+     * copied root, as each directory the copy makes is made alike (its group
+     * and default ACL are the root's). With it, the source's, and its group
+     * when root copies. A registered shared directory's rule holds for both.
+     */
+    copiedAttrs(job, root, page) {
+        const at = root ? job.dst : `${job.dst}/`;
+        const shared = this.sharedDirectory(at);
+        const cred = { uid: job.uid, gid: job.gid, groups: job.groups ?? [job.gid], umask: job.clearBits & 0o777 };
+        const preserve = job.preserveTimes;
+        const modes = new Map();
+        for (const row of page) {
+            const kind = Number(row.kind);
+            const mode = Number(row.mode);
+            const key = kind * 0o200000 + mode;
+            if (kind === INODE_KIND_SYMLINK || modes.has(key))
+                continue;
+            const dir = kind === INODE_KIND_DIRECTORY;
+            const perms = preserve
+                ? (shared ? this.sharedMode(mode & 0o7777, dir) : mode & 0o7777)
+                : this.creationAttrs(at, mode & 0o1777, cred, dir).mode;
+            modes.set(key, (mode & ~0o7777) | perms);
+        }
+        const cases = [...modes].map(([key, made]) => `WHEN ${key} THEN ${made}`).join(' ');
+        const mode = cases ? `CASE WHEN kind = ${INODE_KIND_SYMLINK} THEN mode ELSE CASE kind * ${0o200000} + mode ${cases} END END` : 'mode';
+        if (!preserve) {
+            const made = this.creationAttrs(at, 0, cred, true);
+            return { mode, gid: String(made.gid), dacl: `CASE WHEN kind = ${INODE_KIND_DIRECTORY} THEN ${made.defaultAcl ?? 'NULL'} END` };
+        }
+        const owner = job.preserveOwner ? 'gid' : String(job.gid);
+        return {
+            mode,
+            gid: shared ? `CASE WHEN kind = ${INODE_KIND_SYMLINK} THEN ${owner} ELSE ${shared.gid} END` : owner,
+            dacl: shared ? `CASE WHEN kind = ${INODE_KIND_DIRECTORY} THEN ${shared.acl} ELSE dacl END` : 'dacl',
+        };
     }
     /**
      * Continue every job a reset interrupted, from its cursor: one slice now,

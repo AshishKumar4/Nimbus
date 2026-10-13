@@ -898,6 +898,7 @@ export declare class CompositeVFS implements VFS {
      * one tree is cp -r's decision (-x stays on one), not this primitive's.
      * A directory onto an existing path is EEXIST: merging into a directory
      * is cp's job too. (FormalModelsLane `Vfs/Composite`, copy_stays_in_target.)
+     * `follow` copies what a link named as the source leads to, as copyfile does.
      */
     private copyAt;
     /**
@@ -976,6 +977,7 @@ export declare class CompositeVFS implements VFS {
     copy(from: string, to: string, options?: {
         recursive?: boolean;
         preserve?: boolean;
+        follow?: boolean;
     }): Promise<number>;
     readFileAtRevision(path: string, revision: VfsRevision, range?: {
         offset: number;

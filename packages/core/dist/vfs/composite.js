@@ -2712,9 +2712,10 @@ export class CompositeVFS {
      * one tree is cp -r's decision (-x stays on one), not this primitive's.
      * A directory onto an existing path is EEXIST: merging into a directory
      * is cp's job too. (FormalModelsLane `Vfs/Composite`, copy_stays_in_target.)
+     * `follow` copies what a link named as the source leads to, as copyfile does.
      */
     copyAt(fromInput, toInput, options, sync) {
-        return andThen(this.resolve(fromInput, false, sync), (from) => {
+        return andThen(this.resolve(fromInput, options?.follow === true, sync), (from) => {
             this.present(from);
             return andThen(this.resolve(toInput, false, sync), (to) => {
                 this.present(to);

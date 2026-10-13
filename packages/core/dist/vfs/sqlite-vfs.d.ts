@@ -1689,6 +1689,15 @@ export declare class SqliteVFS {
      */
     private runCopyTree;
     /**
+     * The SQL a copy's page makes its entries' mode, group and default ACL
+     * with. Without preserve, what a creation there makes (creationAttrs): the
+     * root's beneath the destination's parent, every other's beneath the
+     * copied root, as each directory the copy makes is made alike (its group
+     * and default ACL are the root's). With it, the source's, and its group
+     * when root copies. A registered shared directory's rule holds for both.
+     */
+    private copiedAttrs;
+    /**
      * Continue every job a reset interrupted, from its cursor: one slice now,
      * at open, and the rest in slices with a yield between, so a job of any
      * size never holds one synchronous turn.
