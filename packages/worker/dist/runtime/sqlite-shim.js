@@ -170,7 +170,9 @@ const __sqliteMod = (() => {
     const wal = bytes.length >= 20 && (bytes[18] === 2 || bytes[19] === 2);
     return {
       length: bytes.length,
-      header: bytes.slice(0, 100),
+      // A copy: sql.js's in-memory file may own the very bytes it was given,
+      // and a Buffer's slice is a view of them.
+      header: Uint8Array.from(bytes.subarray(0, 100)),
       digest: wal ? __cryptoMod.createHash("sha256").update(bytes).digest("hex") : null,
     };
   }
