@@ -121,7 +121,7 @@ export const NIMBUS_RUNTIME_ABIS = Object.freeze({
  * catalog is shared by every deployment reading it and a workspace binds only
  * the build its preamble was written against.
  */
-export const BASH_RUNNER = 'bash-runner@3';
+export const BASH_RUNNER = 'bash-runner@4';
 export const WASM32_WASI_NIMBUS_ABI = {
     os: NIMBUS_OS_NAME,
     target: NIMBUS_ABI_TARGET,
