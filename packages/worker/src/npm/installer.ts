@@ -1397,7 +1397,9 @@ export class NpmInstaller {
     // Each as the user who owns it: another user's staging directory in the
     // sticky /tmp is still this installer's to clear, but what its owner
     // could not remove is not (a directory moved to a stage's name, holding
-    // root's files, is not the kernel's to empty).
+    // root's files, is not the kernel's to empty). As that user with no
+    // group: a stage's group is no proof its owner is in it (a setgid
+    // directory gives its own), and the owner's own files need none.
     const kernel = this.store.as(CRED_KERNEL);
     let entries: { name: string; type: string }[];
     try { entries = kernel.readdir(tmp); } catch { return; }
@@ -1405,8 +1407,8 @@ export class NpmInstaller {
       const path = `${tmp}/${entry.name}`;
       if (entry.type !== 'directory' || !entry.name.startsWith(STAGE_PREFIX) || this.placing.has(path)) continue;
       try {
-        const { uid, gid } = kernel.lstat(path);
-        this.store.as({ uid, gid, groups: [gid], umask: 0o022 }).removeRecursive(path);
+        const { uid } = kernel.lstat(path);
+        this.store.as({ uid, gid: NO_GROUP, groups: [], umask: 0o022 }).removeRecursive(path);
       } catch { /* tried again next time */ }
     }
   }
@@ -2129,6 +2131,8 @@ export class NpmInstaller {
 
 /** What staging directories in /tmp and copies beside a mounted package are named. */
 const STAGE_PREFIX = '.npm-stage-';
+/** `nogroup`: the group a stage's sweep acts with, which grants it nothing. */
+const NO_GROUP = 65534;
 const COPY_PREFIX = '.nimbus-copy-';
 
 /**
