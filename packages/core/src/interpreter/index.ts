@@ -47,11 +47,9 @@ import { type InterpretedFrame, type StackUnit, stampStack, stackFrames } from '
 export type { HostOps } from './host-ops.js';
 export { INTERPRETER_UNSUPPORTED, UnsupportedSyntax } from './unsupported.js';
 export { replLineBody } from './repl-line.js';
-// What only a late graph needs, carried here, which every late graph loads:
-// the names Node's lexer finds in a CommonJS module the launch did not stage
-// (node-shims __nimbusCommonJsNames), and the late graph's link.
-export { cjsModuleExportNames } from '../runtime/cjs-module-exports.js';
-export { starConflicts } from '../runtime/esm-late-link.js';
+// What only an interpreted module's imports need, carried here: the names
+// Node's loader finds in a CommonJS module, and the late graph's link.
+export { commonJsNames, starConflicts } from '../runtime/esm-late-link.js';
 export type { ModuleCell } from './modules.js';
 export type { ModuleRequest } from './module-requests.js';
 

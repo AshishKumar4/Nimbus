@@ -14,6 +14,7 @@
  */
 
 import type { ModuleRequests } from '../interpreter/index.js';
+import { cjsModuleExportNames } from './cjs-module-exports.js';
 
 /** What the loader resolves a static import to. */
 export interface LateResolution {
@@ -23,15 +24,19 @@ export interface LateResolution {
   readonly builtin?: string;
 }
 
-/** A staged module row's bindings (worker facets/esm-stage.ts EsmRowBindings, a module's). */
-export interface ModuleRowFacts {
-  readonly exports: readonly string[];
-  readonly stars: readonly number[];
-  /** By static import that reads names: the row it loads, its specifier as written, the names. */
-  readonly imports: readonly (readonly [row: number, specifier: string, ...names: string[]])[];
-  /** Its names that are another row's: the name, the row, the name there (null: its namespace). */
-  readonly reexports: readonly (readonly [exported: string, row: number, name: string | null])[];
-}
+/**
+ * A staged module row's bindings (worker facets/esm-stage.ts EsmRowBindings,
+ * a module's): its own names, the rows its `export *`s reach, by static
+ * import that reads names the row it loads, its specifier as written and the
+ * names, and its names that are another row's (the name, the row, the name
+ * there; null for its namespace).
+ */
+export type ModuleRowFacts = readonly [
+  exports: readonly string[],
+  stars: readonly number[],
+  imports: readonly (readonly [row: number, specifier: string, ...names: string[]])[],
+  reexports?: readonly (readonly [exported: string, row: number, name: string | null])[],
+];
 
 export interface LateLinkHost {
   /** The staged row of `kind` at `key` (a builtin's name), or -1. */
@@ -60,10 +65,10 @@ export interface LateLinkHost {
    * else Node's error, as the loader's own (no arrow of the importer's).
    */
   resolve(specifier: string, parentUrl: string, type: string | null | undefined): LateResolution;
-  /** A builtin's export names: `default`, and its own. */
-  builtinNames(builtin: string): readonly string[];
-  /** The CommonJS module at `key`'s export names, as Node's lexer finds them. */
-  commonJsNames(key: string): readonly string[];
+  /** A builtin's exports. */
+  builtin(name: string): object | null | undefined;
+  /** The file require() loads for `specifier` from the module at `parentPath`, or null. */
+  cjsResolve(specifier: string, parentPath: string): string | null;
   /** Node's message for `name`, which the module `specifier` names does not export. */
   exportMessage(specifier: string, name: string, commonjs: boolean): string;
   /** `error` thrown as the loader's own (no arrow of the importer's). */
@@ -108,6 +113,21 @@ interface LateGraph {
 
 /** Every late module a link has read, by URL: what an interpreted module's `export *` asks of (starConflicts). */
 const lateModules = new Map<string, LateNode>();
+
+/** The CommonJS modules' names Node's lexer found, by path. */
+const commonJsNameCache = new Map<string, Set<string>>();
+
+/**
+ * The names Node's loader finds in the CommonJS module at `key` before it
+ * runs: a staged facade's, else Node's lexer's over its source and the
+ * modules it re-exports (cjs-module-exports.ts), `default` first.
+ */
+export function commonJsNames(host: LateLinkHost, key: string): readonly string[] {
+  const facade = host.row('commonjs', key);
+  const staged = facade === -1 ? null : host.rowNames(facade);
+  if (staged !== null) return staged;
+  return [...cjsModuleExportNames(`/${key}`, { source: (path) => host.source(path.replace(/^\/+/, ''), -1), resolve: host.cjsResolve }, commonJsNameCache)];
+}
 
 /**
  * Links the late graph of the module at `key` (`url`): throws the refusal
@@ -192,7 +212,9 @@ function plan(host: LateLinkHost, read: ReadRequests, key: string, url: string, 
 function lateTarget(host: LateLinkHost, resolution: LateResolution): LateTarget | null {
   if (resolution.format === 'builtin' && resolution.builtin !== undefined) {
     const id = host.row('builtin', resolution.builtin);
-    return id !== -1 ? { row: id } : { url: resolution.url, names: host.builtinNames(resolution.builtin), commonjs: false };
+    if (id !== -1) return { row: id };
+    const exports = host.builtin(resolution.builtin);
+    return { url: resolution.url, names: ['default', ...(typeof exports === 'object' && exports !== null ? Object.keys(exports) : [])], commonjs: false };
   }
   if (resolution.path === undefined) return null;
   const key = resolution.path.replace(/^\/+/, '');
@@ -205,7 +227,7 @@ function lateTarget(host: LateLinkHost, resolution: LateResolution): LateTarget 
   }
   if (resolution.format === 'module' || resolution.format === 'detect') return { url: resolution.url };
   if (resolution.format === 'json') return { url: resolution.url, names: ['default'], commonjs: false };
-  if (resolution.format === 'commonjs') return { url: resolution.url, names: host.commonJsNames(key), commonjs: true };
+  if (resolution.format === 'commonjs') return { url: resolution.url, names: commonJsNames(host, key), commonjs: true };
   return null;
 }
 
@@ -275,7 +297,7 @@ function edgesOf(host: LateLinkHost, late: LateGraph, target: LateTarget): reado
   if (target.row === undefined) return late.modules.get(target.url)?.imports ?? [];
   const facts = host.rowKind(target.row) === 'module' ? host.moduleFacts(target.row) : null;
   if (facts === null) return [];
-  return facts.imports.map(([row, specifier, ...names]) => ({ target: { row }, specifier, names }));
+  return facts[2].map(([row, specifier, ...names]) => ({ target: { row }, specifier, names }));
 }
 
 /** A name its module's `export *`s reach two different bindings of. */
@@ -296,9 +318,9 @@ function factsOf(host: LateLinkHost, late: LateGraph, target: LateTarget) {
   const facts = host.moduleFacts(target.row);
   if (facts === null) return null;
   return {
-    exports: facts.exports,
-    stars: facts.stars.map((row): LateTarget => ({ row })),
-    reexports: facts.reexports.map(([exported, row, name]): [string, LateTarget, string | null] => [exported, { row }, name]),
+    exports: facts[0],
+    stars: facts[1].map((row): LateTarget => ({ row })),
+    reexports: (facts[3] ?? []).map(([exported, row, name]): [string, LateTarget, string | null] => [exported, { row }, name]),
   };
 }
 
