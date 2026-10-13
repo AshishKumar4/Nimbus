@@ -6618,6 +6618,7 @@ export class SqliteVFS {
     let cursor = jobId === null ? null : String([...this.sql.exec('SELECT cursor FROM vfs_jobs WHERE id = ?', jobId)][0]!.cursor);
     let copied = 0;
     let pages = 0;
+    const policy = this.copyPolicy(job);
     for (;;) {
       const now = this.now();
       const page = cursor === null
@@ -6632,7 +6633,7 @@ export class SqliteVFS {
           ))];
       const last = page.length > 0 ? String(page[page.length - 1]!.path) : null;
       const done = cursor !== null && page.length < COPY_PAGE_ROWS;
-      const attrs = page.length > 0 ? this.copiedAttrs(job, cursor === null, page) : null;
+      const attrs = page.length > 0 ? policy(cursor === null, page) : null;
       let gen = 0;
       const inserted = new Set<string>();
       // The slice that publishes the copy's root adds a name to the
@@ -6742,42 +6743,54 @@ export class SqliteVFS {
   }
 
   /**
-   * The SQL a copy's page makes its entries' mode, group and default ACL
-   * with. Without preserve, what a creation there makes (creationAttrs): the
-   * root's beneath the destination's parent, every other's beneath the
-   * copied root, as each directory the copy makes is made alike (its group
-   * and default ACL are the root's). With it, the source's, and its group
-   * when root copies. A registered shared directory's rule holds for both.
+   * What a copy makes its entries with, for one slice: SQL over each source
+   * row's kind and mode, per page, kept as the pages go. Without preserve,
+   * what a creation there makes (creationAttrs): the root's beneath the
+   * destination's parent, every other's beneath the copied root, as each
+   * directory the copy makes is made alike (its group and default ACL are
+   * the root's). With it, the source's, and its group when root copies. A
+   * registered shared directory's rule holds for both. A link keeps its mode.
    */
-  private copiedAttrs(job: CopyTreeJob, root: boolean, page: readonly SqlRow[]): { mode: string; gid: string; dacl: string } {
-    const at = root ? job.dst : `${job.dst}/`;
-    const shared = this.sharedDirectory(at);
+  private copyPolicy(job: CopyTreeJob): (root: boolean, page: readonly SqlRow[]) => { mode: string; gid: string; dacl: string } {
     const cred: VfsCred = { uid: job.uid, gid: job.gid, groups: job.groups ?? [job.gid], umask: job.clearBits & 0o777 };
-    const preserve = job.preserveTimes;
-    const modes = new Map<number, number>();
-    for (const row of page) {
-      const kind = Number(row.kind);
-      const mode = Number(row.mode);
-      const key = kind * 0o200000 + mode;
-      if (kind === INODE_KIND_SYMLINK || modes.has(key)) continue;
-      const dir = kind === INODE_KIND_DIRECTORY;
-      const perms = preserve
-        ? (shared ? this.sharedMode(mode & 0o7777, dir) : mode & 0o7777)
-        : this.creationAttrs(at, mode & 0o1777, cred, dir).mode;
-      modes.set(key, (mode & ~0o7777) | perms);
-    }
-    const cases = [...modes].map(([key, made]) => `WHEN ${key} THEN ${made}`).join(' ');
-    const mode = cases ? `CASE WHEN kind = ${INODE_KIND_SYMLINK} THEN mode ELSE CASE kind * ${0o200000} + mode ${cases} END END` : 'mode';
-    if (!preserve) {
-      const made = this.creationAttrs(at, 0, cred, true);
-      return { mode, gid: String(made.gid), dacl: `CASE WHEN kind = ${INODE_KIND_DIRECTORY} THEN ${made.defaultAcl ?? 'NULL'} END` };
-    }
+    const shared = this.sharedDirectory(job.dst);
     const owner = job.preserveOwner ? 'gid' : String(job.gid);
-    return {
-      mode,
-      gid: shared ? `CASE WHEN kind = ${INODE_KIND_SYMLINK} THEN ${owner} ELSE ${shared.gid} END` : owner,
-      dacl: shared ? `CASE WHEN kind = ${INODE_KIND_DIRECTORY} THEN ${shared.acl} ELSE dacl END` : 'dacl',
+    const form = (at: string) => {
+      const modes = new Map<number, number>();
+      let sql: { mode: string; gid: string; dacl: string } | null = null;
+      return (page: readonly SqlRow[]) => {
+        let grew = sql === null;
+        for (const row of page) {
+          const kind = Number(row.kind);
+          const mode = Number(row.mode);
+          const key = kind * 0o200000 + mode;
+          if (modes.has(key)) continue;
+          grew = true;
+          const dir = kind === INODE_KIND_DIRECTORY;
+          const perms = kind === INODE_KIND_SYMLINK ? mode & 0o7777
+            : job.preserveTimes ? (shared ? this.sharedMode(mode & 0o7777, dir) : mode & 0o7777)
+              : this.creationAttrs(at, mode & 0o1777, cred, dir).mode;
+          modes.set(key, (mode & ~0o7777) | perms);
+        }
+        if (!grew) return sql!;
+        const cases = [...modes].sort(([a], [b]) => a - b).map(([key, made]) => `WHEN ${key} THEN ${made}`).join(' ');
+        const mode = `CASE kind * ${0o200000} + mode ${cases} END`;
+        if (!job.preserveTimes) {
+          const made = this.creationAttrs(at, 0, cred, true);
+          sql = { mode, gid: String(made.gid), dacl: `CASE WHEN kind = ${INODE_KIND_DIRECTORY} THEN ${made.defaultAcl ?? 'NULL'} END` };
+        } else {
+          sql = {
+            mode,
+            gid: shared ? `CASE WHEN kind = ${INODE_KIND_SYMLINK} THEN ${owner} ELSE ${shared.gid} END` : owner,
+            dacl: shared ? `CASE WHEN kind = ${INODE_KIND_DIRECTORY} THEN ${shared.acl} ELSE dacl END` : 'dacl',
+          };
+        }
+        return sql;
+      };
     };
+    const root = form(job.dst);
+    const rest = form(`${job.dst}/`);
+    return (atRoot, page) => (atRoot ? root : rest)(page);
   }
 
   /**
