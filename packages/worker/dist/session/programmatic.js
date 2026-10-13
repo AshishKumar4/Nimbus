@@ -13,7 +13,7 @@ import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-proces
 import { hostActivity } from '@nimbus-sh/fabric/host-activity.js';
 import { endResidentKeepalive } from './hibernation.js';
 import { PortRegistry, createPortCapability } from '@nimbus-sh/core/runtime/port-registry.js';
-import { CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_KERNEL, CRED_SESSION_USER, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { endProcessInput, resizeProcess, signalProcess, writeProcessInput } from '@nimbus-sh/core/runtime/process-input-routing.js';
 import { SessionProcessLogsOptionsSchema, } from '@nimbus-sh/core/runtime/session-protocol.js';
 import { SESSION_DESTROYED_KEY, SHELL_STATE_KEY_PREFIX, VITE_CONFIG_KEY } from './keys.js';
@@ -970,20 +970,31 @@ export async function rpcSpawnWorker(self, workerCode, command, cwd, opts = {}) 
     return self.facetManager.spawnWorker(workerCode, String(command), String(cwd), opts);
 }
 /**
- * `files.delete`. Absent a `cred` this acts as CRED_KERNEL — what it has
- * always done, and the embedder's trusted surface: only a caller holding the
- * DO binding reaches it. A `cred` binds the removal to that identity instead,
- * the same view `SqliteVFS.as(cred)` gives in-process.
+ * `files.delete`. Absent a `cred` this acts as the session's user, as every
+ * other file operation and every owner surface does; a `cred` binds the
+ * removal to that identity instead, the same view `SqliteVFS.as(cred)` gives
+ * in-process. An embedder holding the DO binding deletes as the kernel only
+ * by asking for it: `files.as(CRED_KERNEL)`.
  */
 export async function rpcDeleteFile(self, path, options = {}, cred) {
     await ensureProgrammaticReady(self);
     const p = `/${String(path).replace(/^\/+/, '')}`;
-    const fs = self.getFilesystemAuthority().namespaceFs(cred === undefined ? CRED_KERNEL : requireVfsCred(cred, 'files.delete'));
+    const fs = self.getFilesystemAuthority().namespaceFs(cred === undefined ? CRED_SESSION_USER : requireVfsCred(cred, 'files.delete'));
     // A delegation it meets is recalled first.
+    // The leaf is classified without following it, as unlink(2) resolves it:
+    // a symlink is removed, never searched through to its target.
     await withRecall(() => {
-        if (!fs.exists(p))
-            return;
-        if (fs.isDirectory(p)) {
+        let leaf;
+        try {
+            leaf = fs.lstat(p);
+        }
+        catch (error) {
+            const code = error.code;
+            if (code === 'ENOENT' || code === 'ENOTDIR')
+                return;
+            throw error;
+        }
+        if (leaf.type === 'directory') {
             if (!options.recursive)
                 fs.rmdir(p);
             else

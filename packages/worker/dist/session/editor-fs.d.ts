@@ -1,5 +1,14 @@
-import type { NamespaceFs } from '@nimbus-sh/core/runtime/process-files.js';
+import type { NamespaceFs, ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 type EditorFs = Pick<NamespaceFs, 'exists' | 'isDirectory' | 'readFile' | 'mkdir' | 'writeFile' | 'readdir'>;
+/**
+ * The editor pane's views of the session's namespace: `files`, which it
+ * reads and saves, and `tree`, which it lists. The tree reads what has
+ * landed, so listing a directory a process holds asks the process for nothing.
+ */
+export declare function editorViews(namespace: ProcessFiles): {
+    files: EditorFs;
+    tree: EditorFs;
+};
 /**
  * The frame answering `msg`, computed again once a delegation it meets is
  * recalled (withRecall): the editor's reads and writes wait for a process

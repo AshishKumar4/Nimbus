@@ -100,6 +100,28 @@ export default createNimbusHandler({
 - `capabilities()`
 - `tools(options?)`
 
+## Users and Permissions
+
+A session has Unix users and permissions. Commands run as the session's user
+(uid 1000) unless they ask for another, and the session's own surfaces act
+as that user too: the SDK's `files` methods, the browser editor, the agent's
+file tools and the session's HTTP file routes. Each of them is refused what
+the user's own shell is refused. An embedder holding the Durable Object
+binding can act as another identity by naming it, for example
+`sandbox.files.as(CRED_KERNEL).delete(path)` (both exported by
+`@nimbus-sh/sdk`).
+
+**The session's user has passwordless root.** `sudo` and `su` run any
+command as root, with no password. So these rules guard against accidents
+and against the session's own tools reaching past the user. They do not
+stand against a program in the session that uses `sudo`.
+
+The same applies to protected files, `_rpcWriteProtectedRootFile`: a
+kernel-owned, read-only file in a sticky directory, which the session's user
+cannot change or remove through ordinary file operations. A program that
+runs `sudo` can. Do not rely on a protected file to keep a value from code
+running in the session.
+
 ## Runtime Contract
 
 Nimbus is a Cloudflare Worker, Durable Object, and WebAssembly sandbox. It

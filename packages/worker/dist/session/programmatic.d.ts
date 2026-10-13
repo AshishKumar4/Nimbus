@@ -285,10 +285,11 @@ export declare function rpcRemoveDurableApp(self: ProgrammaticHost, owner: strin
  */
 export declare function rpcSpawnWorker(self: ProgrammaticHost, workerCode: string, command: string, cwd: string, opts?: LongRunningWorkerSpawnOptions): Promise<SpawnedWorker>;
 /**
- * `files.delete`. Absent a `cred` this acts as CRED_KERNEL — what it has
- * always done, and the embedder's trusted surface: only a caller holding the
- * DO binding reaches it. A `cred` binds the removal to that identity instead,
- * the same view `SqliteVFS.as(cred)` gives in-process.
+ * `files.delete`. Absent a `cred` this acts as the session's user, as every
+ * other file operation and every owner surface does; a `cred` binds the
+ * removal to that identity instead, the same view `SqliteVFS.as(cred)` gives
+ * in-process. An embedder holding the DO binding deletes as the kernel only
+ * by asking for it: `files.as(CRED_KERNEL)`.
  */
 export declare function rpcDeleteFile(self: ProgrammaticHost, path: string, options?: {
     recursive?: boolean;

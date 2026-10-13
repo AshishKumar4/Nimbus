@@ -8,6 +8,14 @@ import {
   readPreviewHostSuffix,
 } from '@nimbus-sh/worker/preview-host';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+
+/**
+ * The identities `files.as` takes by name: the session's user (what every
+ * file method uses by default), and the kernel, which an embedder holding
+ * the DO binding asks for when it means to act past the user's permissions.
+ */
+export { CRED_KERNEL, CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
+export type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import {
   EXEC_STREAM_CONTENT_TYPE,
   collectExecStream,
@@ -491,12 +499,15 @@ export class NimbusSandbox {
   }
 
   /**
-   * The session file plane. Every method acts as the session's default
-   * identity for a pid-less caller: the session user for reads, writes,
-   * stat, list, mkdir, rename and chmod. `delete` acts as the kernel for a
-   * caller holding the DO binding (the embedder's trusted surface) and as the
-   * session user over the remote endpoint, where a token authenticates the
-   * session, not the kernel. `files.as(cred)` returns the same API bound
+   * The session file plane. Every method acts as the session's user:
+   * reads, writes, stat, list, mkdir, rename, chmod and delete, as the
+   * session's editor, agent and HTTP file routes do. An embedder holding the
+   * DO binding acts as the kernel only by asking for it,
+   * `files.as(CRED_KERNEL)`, for example to remove a file it provisioned in
+   * a sticky directory. These rules guard against accidents, not against a
+   * program in the session: the session's user has passwordless root through
+   * `sudo` (docs/sandbox-sdk.md, "Users and Permissions"). `files.as(cred)`
+   * returns the same API bound
    * to `cred` instead, the view `SqliteVFS.as(cred)` gives in-process: a
    * file the identity cannot read answers EACCES, one it owns answers.
    * Over the remote endpoint a `cred` is refused by the dispatcher, as it is
