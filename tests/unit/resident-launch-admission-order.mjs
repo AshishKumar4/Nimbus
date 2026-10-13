@@ -1,17 +1,17 @@
 #!/usr/bin/env bun
 // @serial
-// A resident launch is let in on the ledger (one Dynamic Worker,
-// withLaunchAdmission) before it takes its share of the supervisor's
-// transient budget, as an exec is (Kinu #29), so every launch waits for a
-// worker before credit and never for a worker while holding credit.
-// InternalScallop's cycle: a standalone resident took the whole budget (until
-// it had measured its closure), then its module pass asked the ledger for the
-// transform helper's worker (beginHelperFetch), while ten exec launches held
-// every worker and waited for its credit. Each waited on the other for good,
-// and the ledger, which models only child waits, saw no deadlock. Here the
-// resident's transform host (as the real one, oxcTransformHost) brackets its
-// call with beginHelperFetch; once the ten execs wait, the cycle either
-// resolves (every launch finishes) or it does not.
+// A launch never waits for the supervisor's transient budget holding a
+// Dynamic Worker (Kinu #29). InternalScallop's cycle: a standalone resident
+// (no launch admission) took the whole budget until it had measured its
+// closure, then its module pass asked the ledger for the transform helper's
+// worker (beginHelperFetch), while ten exec launches, let in on every worker
+// (withLaunchAdmission), waited for its credit. Each waited on the other for
+// good, and the ledger, which models only child waits, saw no deadlock. An
+// exec waiting for room now gives its worker back and takes it again once
+// it has room, credit before worker, as the resident's build takes them.
+// Here the resident's transform host (as the real one, oxcTransformHost)
+// brackets its call with beginHelperFetch; once the ten execs wait for
+// credit, the cycle either resolves (every launch finishes) or it does not.
 
 import assert from 'node:assert/strict';
 
@@ -93,11 +93,11 @@ const until = async (ok, label) => {
 // The resident's build is admitted to the budget and reaches its module pass.
 const resident = manager.spawnNode("require('./server.mjs');", { filename: '/home/user/app/run.js', cwd: '/home/user/app', command: 'node run.js' });
 await until(() => budget().current > 0, `the resident's build holds credit (${JSON.stringify(budget())})`);
-// Ten exec launches at once: let in on every worker there is room for, each waiting for the resident's credit.
+// Ten exec launches at once, each let in on a worker, then waiting for the resident's credit.
 const execs = Array.from({ length: DO_DYNAMIC_WORKER_LIMIT }, (_, i) =>
   manager.exec(`require('./job${i}.js');`, { filename: `/home/user/app/job-run${i}.js`, cwd: '/home/user/app', captureOutput: true }));
-await until(() => dynamicWorkerHeadroom(ctx) === 0 && budget().queued >= DO_DYNAMIC_WORKER_LIMIT - 1,
-  `every worker held and the execs queued for credit (${JSON.stringify(budget())}, headroom ${dynamicWorkerHeadroom(ctx)})`);
+await until(() => budget().queued >= DO_DYNAMIC_WORKER_LIMIT,
+  `the ten execs queued for credit (${JSON.stringify(budget())}, headroom ${dynamicWorkerHeadroom(ctx)})`);
 // The resident's module pass asks for its transform helper's worker.
 openGate();
 const outcome = await Promise.race([
