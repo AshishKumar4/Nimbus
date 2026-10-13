@@ -3082,9 +3082,10 @@ export class CompositeVFS implements VFS {
    * one tree is cp -r's decision (-x stays on one), not this primitive's.
    * A directory onto an existing path is EEXIST: merging into a directory
    * is cp's job too. (FormalModelsLane `Vfs/Composite`, copy_stays_in_target.)
+   * `follow` copies what a link named as the source leads to, as copyfile does.
    */
-  private copyAt(fromInput: string, toInput: string, options: { recursive?: boolean; preserve?: boolean } | undefined, sync: boolean): Awaitable<number> {
-    return andThen(this.resolve(fromInput, false, sync), (from) => { this.present(from); return andThen(this.resolve(toInput, false, sync), (to) => {
+  private copyAt(fromInput: string, toInput: string, options: { recursive?: boolean; preserve?: boolean; follow?: boolean } | undefined, sync: boolean): Awaitable<number> {
+    return andThen(this.resolve(fromInput, options?.follow === true, sync), (from) => { this.present(from); return andThen(this.resolve(toInput, false, sync), (to) => {
       this.present(to);
       const fromMount = this.table.mounts.get(from);
       if (from === ROOT_POINT || (this.isStructural(from) && fromMount === undefined) || (fromMount === undefined && this.hasLiveBelow(from))) {
@@ -3424,7 +3425,7 @@ export class CompositeVFS implements VFS {
       this.onCapability(path, false, 'writeFileIfRevision', true, (fn, rel) => fn(rel, data, expected), { written: data, creates: createsIfAbsent(expected) }));
   }
 
-  async copy(from: string, to: string, options?: { recursive?: boolean; preserve?: boolean }): Promise<number> {
+  async copy(from: string, to: string, options?: { recursive?: boolean; preserve?: boolean; follow?: boolean }): Promise<number> {
     return awaited({ syscall: options?.recursive ? 'cp' : 'copyfile', path: from, dest: to }, () => this.copyAt(from, to, options, false));
   }
 
