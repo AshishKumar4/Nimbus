@@ -37,6 +37,14 @@ published independently in the `@nimbus-sh` npm scope.
   -c 'import sys; print(sys.stdin.read())'`). The WASI layer now reads every
   runtime's fd 0 from its process's input channel; before, only the generic
   wasm runner wired it, and the others read an empty stdin.
+- Fixed: in a WASI program (an uploaded program, CPython), a socket read that
+  followed a poll which gave up on the socket could lose a chunk that arrived
+  just before the socket closed. A read or an accept that the 10 s park
+  deadline answered with EAGAIN wrote into the guest's buffer, or adopted a
+  connection, when its input arrived later; the input now waits for the next
+  call. A threaded program reading a pipe its other thread writes no longer
+  waits 8 s for EINTR. An open after `fd_renumber` or `dup2` no longer
+  replaces the descriptor moved there.
 - Fixed: walked recursive removal attempts unreadable entries, continues past
   failures, and reports each entry that remains. The shell reports vanished
   children unless `rm -f` was requested.
