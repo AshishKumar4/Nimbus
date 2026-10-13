@@ -65,24 +65,26 @@ const ctx = {
   facets: platformFacets(),
   exports: { NimbusDurableObjectNamespace: (options) => options },
 };
-const request = { bindingName: 'COUNTER', id: 'room-1', method: 'GET', url: 'https://inner.test/', headers: [], body: null };
-const answer = async () => new TextDecoder().decode((await _rpcInnerDoFetch({ ctx }, request)).body);
+const request = (id) => ({ bindingName: 'COUNTER', id, method: 'GET', url: 'https://inner.test/', headers: [], body: null });
+/** What object `id` answers: room-1 is one that runs on; a new id starts the class registered now. */
+const answer = async (id = 'room-1') => new TextDecoder().decode((await _rpcInnerDoFetch({ ctx }, request(id))).body);
 
 /** A dev server whose builds are held until `release()`, when `hold` is set. */
-function devServer(name) {
+function devServer(name, { warn = false, onLog = () => {} } = {}) {
   const log = [];
   const reloads = [];
   const builds = [];
   let deliver = () => {};
+  let watching = false;
   let hold = false;
   let requested = () => {};
   const server = new NimbusWrangler({
     vfs: { exists: (path) => files.has(path), readFileString: (path) => files.get(path) },
     bundleFs: {},
-    namespace: { watchChanges(_path, listener) { deliver = listener; return () => {}; } },
+    namespace: { watchChanges(_path, listener) { deliver = listener; watching = true; return () => { watching = false; }; } },
     esbuild: {
       build([entry]) {
-        const result = { errors: [], warnings: [], outputFiles: [{ contents: files.get(entry) }] };
+        const result = { errors: [], warnings: warn ? [{ text: 'a warning' }] : [], outputFiles: [{ contents: files.get(entry) }] };
         requested();
         if (!hold) return Promise.resolve(result);
         return new Promise((resolve) => { builds.push(() => resolve(result)); });
@@ -91,11 +93,12 @@ function devServer(name) {
     env: { LOADER: loader },
     ctx,
     root: `/${ROOT}`,
-    onLog: (message) => log.push({ message, serving: server.isRunning }),
+    onLog: (message) => { log.push({ message, serving: server.isRunning }); onLog(message, server); },
     onHmrMessage: (message) => reloads.push(message),
   });
   return {
     server, log, reloads, name,
+    watching: () => watching,
     built: () => log.filter((entry) => /Worker built/.test(entry.message)),
     holdBuilds(on) { hold = on; },
     /** Change the entry and wait for the rebuild it starts to ask for its bundle. */
@@ -137,7 +140,8 @@ first.release(0);
 await settle();
 assert.equal(first.built().length, builtBefore, 'the stopped server does not say "Worker built"');
 assert.equal(first.reloads.length, reloadsBefore, 'nor reload the preview');
-assert.equal(await answer(), 'v3 served=2', "nor replace the new server's classes, or end its objects");
+assert.equal(await answer(), 'v3 served=2', "nor end the new server's objects");
+assert.equal(await answer('room-2'), 'v3 served=1', "nor replace the new server's classes");
 
 // ── a rebuild a later one overtook says nothing and changes nothing ───────
 second.holdBuilds(true);
@@ -148,11 +152,22 @@ await second.change('v5');
 await until(() => second.reloads.length > 0, 'the later rebuild reloads the preview');
 assert.equal(await answer(), 'v5 served=1', 'the later rebuild serves');
 const builtAfter = second.built().length;
+const reloadsAfter = second.reloads.length;
 second.release(0);
 await settle();
-assert.equal(await answer(), 'v5 served=2', 'the overtaken rebuild does not replace it');
+assert.equal(await answer(), 'v5 served=2', 'the overtaken rebuild does not end its objects');
+assert.equal(await answer('room-3'), 'v5 served=1', 'nor replace its classes');
 assert.equal(second.built().length, builtAfter, 'nor say "Worker built"');
+assert.equal(second.reloads.length, reloadsAfter, 'nor reload the preview');
 second.server.stop();
+
+// ── a stop() that comes as the build serves, before start resumes ─────────
+// It is queued from within the build's last step: start() reports the stop,
+// and the server neither serves nor watches.
+const third = devServer('third', { warn: true, onLog: (message, server) => { if (/a warning/.test(message)) queueMicrotask(() => server.stop()); } });
+assert.equal(await third.server.start(), false, 'a start stopped as it served reports it');
+assert.equal(third.server.isRunning, false, 'and the server does not serve');
+assert.equal(third.watching(), false, 'nor watch');
 assert.deepEqual(firstBuilt, [true], '"Worker built" is said once the Worker serves');
 
 console.log('ok - wrangler-dev-superseded-build ("Worker built" once it serves; a superseded build says and changes nothing)');
