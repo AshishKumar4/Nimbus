@@ -95,7 +95,7 @@ import { ONE_SHOT_STORE_MEMORY_BYTES, RESIDENT_CHUNK_BYTES } from '../vfs/facet-
 import { residentCellCost } from '../vfs/resident/cell-cost.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { CRED_KERNEL, isNativeBinPath, launchNamedPaths } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
+import { acquireSupervisorAllocation, tryAcquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { streamedWasmImageDigest, wasmImageDigest } from './wasm-image-digest.js';
 import { prefetchBundleStart, prefetchBundleEnd, setPrefetchCacheBytes, } from '@nimbus-sh/platform/diag-counters.js';
 const launchAdapters = new WeakMap();
@@ -4004,10 +4004,12 @@ async function withPrefetchAllocation(build) {
     // allowed to spend, so a build queues behind other heavy work instead of
     // racing it, and attribute it so it lands under `prefetchBundleBytes` rather
     // than in the unattributed remainder.
-    const lease = await acquireSupervisorAllocation(VFS_BUNDLE_MAX_BYTES);
+    // `queued`: it waited for room, while other builds ran.
+    const immediate = tryAcquireSupervisorAllocation(VFS_BUNDLE_MAX_BYTES);
+    const lease = immediate ?? await acquireSupervisorAllocation(VFS_BUNDLE_MAX_BYTES);
     prefetchBundleStart(VFS_BUNDLE_MAX_BYTES);
     try {
-        return await build();
+        return await build(immediate === null);
     }
     finally {
         prefetchBundleEnd(VFS_BUNDLE_MAX_BYTES);
@@ -5742,9 +5744,9 @@ export class FacetManager {
         // `-e` code is staged as an ES module or not, as the command line says.
         const evaluatedModule = spec.esModule === true && (spec.scriptPath === undefined || spec.scriptPath === '<eval>' || spec.scriptPath === '[stdin]');
         const key = `${profile}\x00${moduleScope}\x00${credKey}\x00${spec.cwd}\x00${spec.scriptPath ?? ''}\x00${_fnv1a(spec.entryCode)}\x00${JSON.stringify(launch)}\x00${evaluatedModule ? 1 : 0}`;
-        let revision = await vfs.revision();
+        let revision = 0;
         /**
-         * The entry for `key` at the filesystem's revision, if one is held. An
+         * The entry for `key` at the filesystem's revision (read into `revision`), if one is held. An
          * entry built at an older revision can never be SERVED again — the
          * lookup requires an exact match — so from the first write after it was
          * admitted it is retained garbage, held in the isolate that is measurably
@@ -5788,9 +5790,9 @@ export class FacetManager {
         }
         // Kinu #29: the cells are gathered and serialized under one admission,
         // so cache-miss builds queue for room through both. A launch admitted
-        // after another of its key published takes that entry instead.
-        const building = withPrefetchAllocation(async () => {
-            const admitted = await takeCached();
+        // after a wait, while another of its key published, takes that entry.
+        const building = withPrefetchAllocation(async (queued) => {
+            const admitted = queued ? await takeCached() : null;
             if (admitted)
                 return admitted;
             const readProfile = this.readProfile;
