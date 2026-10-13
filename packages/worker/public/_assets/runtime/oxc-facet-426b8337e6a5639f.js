@@ -6880,6 +6880,46 @@ error: the Oxc transform crashed (${reason})`);
     return typeof value === "object" && value !== null && "type" in value && typeof value.type === "string" && NODE_TYPES.has(value.type);
   }
 
+  function bindingIdentifiers(pattern, out) {
+    if (pattern === null) return out;
+    switch (pattern.type) {
+      case "Identifier":
+        out[out.length] = pattern;
+        return out;
+      case "ObjectPattern":
+        for (let i = 0; i < pattern.properties.length; i++) {
+          const property = pattern.properties[i];
+          bindingIdentifiers(property.type === "RestElement" ? property.argument : property.value, out);
+        }
+        return out;
+      case "ArrayPattern":
+        for (let i = 0; i < pattern.elements.length; i++) bindingIdentifiers(pattern.elements[i], out);
+        return out;
+      case "RestElement":
+        return bindingIdentifiers(pattern.argument, out);
+      case "AssignmentPattern":
+        return bindingIdentifiers(pattern.left, out);
+      default:
+        return out;
+    }
+  }
+
+  var ESM_EXPORTS_HELPER = '(() => { const O = ({}).constructor; const tag = O.getOwnPropertySymbols(O.getPrototypeOf(async () => {}))[0]; return (exports) => { O.defineProperty(exports, "__esModule", { value: true }); O.defineProperty(exports, tag, { value: "Module" }); return (name, get) => O.defineProperty(exports, name, { enumerable: true, get }); }; })()';
+  var ESM_STAR_HELPER = '(exports, define, m, omitted) => { for (const k in m) { if (k === "default" || ({}).hasOwnProperty.call(exports, k)) continue; let left = false; for (let i = 0; omitted && i < omitted.length; i++) if (omitted[i] === k) left = true; if (!left) define(k, () => m[k]); } }';
+  var ESM_STAR_CONFLICTS = "nimbus:star-conflicts";
+  var ESM_CONFLICTS_HELPER = `(require) => require("", "${ESM_STAR_CONFLICTS}")`;
+  var ESM_STATIC_IMPORT = "nimbus:static-import";
+  var ESM_LOAD_HELPER = `(require, source, type) => require(source, "${ESM_STATIC_IMPORT}", type)`;
+  var ESM_MODULE_HELPERS = `{ exports: ${ESM_EXPORTS_HELPER}, star: ${ESM_STAR_HELPER}, conflicts: ${ESM_CONFLICTS_HELPER}, load: ${ESM_LOAD_HELPER} }`;
+  function importType(node) {
+    const attributes = node.attributes ?? [];
+    for (let i = 0; i < attributes.length; i++) {
+      const { key, value } = attributes[i];
+      if ((key.type === "Identifier" ? key.name : key.value) === "type" && typeof value.value === "string") return value.value;
+    }
+    return null;
+  }
+
   function createModuleLexer() {
     let e, a, r, i = 2 << 19;
     const s = 1 === new Uint8Array(new Uint16Array([1]).buffer)[0] ? function(e2, a2) {
@@ -9580,9 +9620,9 @@ error: the Oxc transform crashed (${reason})`);
       else if (entry.t === STATIC_IMPORT) {
         if (entry.n === void 0) return null;
         const site = { start: entry.s - 1, end: entry.e + 1 };
-        const attributes = Object.fromEntries(entry.at ?? []);
-        const clause = Object.keys(attributes).length > 0 ? attributesClause(source, site, entry.se) : void 0;
-        statics.push({ ...site, specifier: entry.n, attributes, ...clause ? { clause } : {} });
+        const type = (entry.at ?? []).find(([key]) => key === "type")?.[1] ?? null;
+        const clause = (entry.at ?? []).length > 0 ? attributesClause(source, site, entry.se) : void 0;
+        statics.push({ ...site, specifier: entry.n, attributes: type === null ? {} : { type }, ...clause ? { clause } : {} });
       } else {
         return null;
       }
@@ -9636,14 +9676,10 @@ error: the Oxc transform crashed (${reason})`);
         declarations = true;
         const source = statement.source;
         if (!source || typeof source.value !== "string") return;
-        const attributes = {};
-        for (const attribute of statement.attributes ?? []) {
-          const key = attribute.key.type === "Identifier" ? attribute.key.name : String(attribute.key.value);
-          if (typeof attribute.value.value === "string") attributes[key] = attribute.value.value;
-        }
+        const type = importType(statement);
         const last = statement.attributes?.[statement.attributes.length - 1];
         const clause = last === void 0 ? void 0 : attributesClauseAfter(code, source, last.end);
-        statics.push({ start: source.start, end: source.end, specifier: source.value, attributes, ...clause ? { clause } : {} });
+        statics.push({ start: source.start, end: source.end, specifier: source.value, attributes: type === null ? {} : { type }, ...clause ? { clause } : {} });
       }
     });
     calls.sort((a, b) => a.start - b.start);
@@ -9793,30 +9829,6 @@ error: the Oxc transform crashed (${reason})`);
       return collected.edits.length ? applySourceEdits(code, collected.edits) : code;
     }
     return code;
-  }
-
-  function bindingIdentifiers(pattern, out) {
-    if (pattern === null) return out;
-    switch (pattern.type) {
-      case "Identifier":
-        out[out.length] = pattern;
-        return out;
-      case "ObjectPattern":
-        for (let i = 0; i < pattern.properties.length; i++) {
-          const property = pattern.properties[i];
-          bindingIdentifiers(property.type === "RestElement" ? property.argument : property.value, out);
-        }
-        return out;
-      case "ArrayPattern":
-        for (let i = 0; i < pattern.elements.length; i++) bindingIdentifiers(pattern.elements[i], out);
-        return out;
-      case "RestElement":
-        return bindingIdentifiers(pattern.argument, out);
-      case "AssignmentPattern":
-        return bindingIdentifiers(pattern.left, out);
-      default:
-        return out;
-    }
   }
 
   var PREFIX_END =   Symbol("prefix end");

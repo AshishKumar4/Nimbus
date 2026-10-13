@@ -11,13 +11,14 @@
  *     getters in exported-name order), so a module in a cycle with this one
  *     finds them;
  *   - every requested module is then loaded in source order (ESM_LOAD_HELPER:
- *     the importer's require, resolving it as an import), a default
- *     import's interop (ESM_INTEROP_HELPER) made as its module is required:
- *     an ES module's as it is (one marked `__esModule`, or a namespace the
- *     registry made), a CommonJS module's exports as `default`;
- *   - then each namespace (ESM_NAMESPACE_HELPER) an import or `export * as`
- *     names, once;
- *   - last, each `export *` copies its module's names (ESM_STAR_HELPER).
+ *     the importer's require, resolving it as an import, with its `type`
+ *     attribute), which gives its namespace as Node's loader makes it: an
+ *     ES module's own, or a CommonJS module's, a builtin's or JSON's as
+ *     Node's translators make it (node-shims); a default import reads its
+ *     `default`, and a namespace import is it;
+ *   - last, each `export *` copies its module's names (ESM_STAR_HELPER) but
+ *     those two of them reach different bindings of (ESM_CONFLICTS_HELPER:
+ *     the loader's answer), which Node's namespace leaves out.
  *
  * The helpers are source text a launch's runtime compiles for its
  * interpreter (ESM_MODULE_HELPERS, commonjs-cell.ts). They reach Object,
@@ -29,7 +30,7 @@
  * built-ins, so it names none (tests/unit/interpreter-primordials.mjs), and
  * it makes its lists with the caller's EsmLists.
  */
-import type { Identifier, Literal, ModuleDeclaration, Statement } from 'acorn';
+import type { ExportAllDeclaration, ExportNamedDeclaration, Identifier, ImportDeclaration, Literal, ModuleDeclaration, Statement } from 'acorn';
 import { bindingIdentifiers } from './binding-pattern.js';
 
 /** The CommonJS exports object marked as an ES module's; answers the function that installs an export's getter. */
@@ -38,28 +39,17 @@ export const ESM_EXPORTS_HELPER = '(() => { const O = ({}).constructor; const ta
   + 'return (name, get) => O.defineProperty(exports, name, { enumerable: true, get }); }; })()';
 
 /**
- * Whether a required module is an ES module's: one marked `__esModule`, or a
- * module namespace the registry made (a null prototype, tagged `Module`),
- * which the interpreter's static import of a staged ES module gets.
+ * `export *`: each name of the module but `default`, those already exported
+ * and those `omitted` (ESM_CONFLICTS_HELPER's), read through.
  */
-const ES_MODULE_TEST = '(m && (m.__esModule || (typeof m === "object" && ({}).constructor.getPrototypeOf(m) === null '
-  + '&& ({}).constructor.getOwnPropertyDescriptor(m, ({}).constructor.getOwnPropertySymbols(({}).constructor.getPrototypeOf(async () => {}))[0])?.value === "Module")))';
+export const ESM_STAR_HELPER = '(exports, define, m, omitted) => { for (const k in m) { if (k === "default" || ({}).hasOwnProperty.call(exports, k)) continue; '
+  + 'let left = false; for (let i = 0; omitted && i < omitted.length; i++) if (omitted[i] === k) left = true; if (!left) define(k, () => m[k]); } }';
 
-/** What a default import reads `default` of: an ES module's as it is, else `{ default: module }`. */
-export const ESM_INTEROP_HELPER = `(m) => ${ES_MODULE_TEST} ? m : { default: m }`;
+/** What a module's require is passed for the names its `export *`s reach two different bindings of. */
+export const ESM_STAR_CONFLICTS = 'nimbus:star-conflicts';
 
-/**
- * A required module as a namespace, as Node and esbuild read a CommonJS
- * module: an ES module's as it is; any other with its exports as `default`,
- * its other own names read through.
- */
-export const ESM_NAMESPACE_HELPER = `(m) => { if (${ES_MODULE_TEST}) return m; const O = ({}).constructor; `
-  + 'const ns = O.create(m != null ? O.getPrototypeOf(m) : null); O.defineProperty(ns, "default", { value: m, enumerable: true }); '
-  + 'if (m != null) for (const k of O.getOwnPropertyNames(m)) if (k !== "default") '
-  + 'O.defineProperty(ns, k, { get: () => m[k], enumerable: O.getOwnPropertyDescriptor(m, k).enumerable }); return ns; }';
-
-/** `export *`: each name of the module but `default` and those already exported, read through. */
-export const ESM_STAR_HELPER = '(exports, define, m) => { for (const k in m) if (k !== "default" && !({}).hasOwnProperty.call(exports, k)) define(k, () => m[k]); }';
+/** The names a module's `export *`s leave out, as Node's namespace omits them: its loader's answer, through its require. */
+export const ESM_CONFLICTS_HELPER = `(require) => require("", "${ESM_STAR_CONFLICTS}")`;
 
 /**
  * What a module's require is passed beside a static import's specifier: the
@@ -69,11 +59,11 @@ export const ESM_STAR_HELPER = '(exports, define, m) => { for (const k in m) if 
  */
 export const ESM_STATIC_IMPORT = 'nimbus:static-import';
 
-/** A static import's module: the importer's require, told the request is an import. */
-export const ESM_LOAD_HELPER = `(require, source) => require(source, "${ESM_STATIC_IMPORT}")`;
+/** A static import's module: the importer's require, told the request is an import, with its `type` attribute (or null). */
+export const ESM_LOAD_HELPER = `(require, source, type) => require(source, "${ESM_STATIC_IMPORT}", type)`;
 
 /** The helpers as an object literal's source: what a launch compiles for its interpreter (interpreter/modules.ts ModuleHelpers). */
-export const ESM_MODULE_HELPERS = `{ exports: ${ESM_EXPORTS_HELPER}, interop: ${ESM_INTEROP_HELPER}, namespace: ${ESM_NAMESPACE_HELPER}, star: ${ESM_STAR_HELPER}, load: ${ESM_LOAD_HELPER} }`;
+export const ESM_MODULE_HELPERS = `{ exports: ${ESM_EXPORTS_HELPER}, star: ${ESM_STAR_HELPER}, conflicts: ${ESM_CONFLICTS_HELPER}, load: ${ESM_LOAD_HELPER} }`;
 
 /**
  * One name an import binds: the module's namespace, or one of its exports
@@ -100,9 +90,17 @@ export type EsmExportName =
  * where it is the `export` keywords alone and the declaration stays.
  */
 export type EsmRecord<Binding extends EsmImportBinding = EsmImportBinding> =
-  | { readonly kind: 'import'; readonly start: number; readonly end: number; readonly source: string; readonly bindings: readonly Binding[] }
-  | { readonly kind: 'export'; readonly start: number; readonly end: number; readonly source: string | null; readonly names: readonly EsmExportName[] }
-  | { readonly kind: 'export-all'; readonly start: number; readonly end: number; readonly source: string }
+  | { readonly kind: 'import'; readonly start: number; readonly end: number; readonly source: string; readonly type: string | null; readonly bindings: readonly Binding[] }
+  | {
+    readonly kind: 'export';
+    readonly start: number;
+    readonly end: number;
+    readonly source: string | null;
+    /** Its source's `type` attribute (importType); null with no source. */
+    readonly type: string | null;
+    readonly names: readonly EsmExportName[];
+  }
+  | { readonly kind: 'export-all'; readonly start: number; readonly end: number; readonly source: string; readonly type: string | null }
   | {
     readonly kind: 'export-default';
     readonly start: number;
@@ -122,6 +120,20 @@ function exportName(node: Identifier | Literal): string {
   return node.type === 'Identifier' ? node.name : `${node.value}`;
 }
 
+/**
+ * The attribute a static import or re-export passes its loader: its `type`,
+ * or null. V8 keeps only the keys its host supports, Node's being `type`
+ * alone, so any other key is dropped, not refused (import()'s are refused).
+ */
+export function importType(node: ImportDeclaration | ExportNamedDeclaration | ExportAllDeclaration): string | null {
+  const attributes = node.attributes ?? [];
+  for (let i = 0; i < attributes.length; i++) {
+    const { key, value } = attributes[i];
+    if ((key.type === 'Identifier' ? key.name : key.value) === 'type' && typeof value.value === 'string') return value.value;
+  }
+  return null;
+}
+
 /** The record of a module's top-level statement, or null for one that declares no import or export. */
 export function esmRecord(node: Statement | ModuleDeclaration, lists: EsmLists): EsmRecord | null {
   switch (node.type) {
@@ -137,7 +149,7 @@ export function esmRecord(node: Statement | ModuleDeclaration, lists: EsmLists):
             imported: specifier.type === 'ImportDefaultSpecifier' ? 'default' : exportName(specifier.imported),
           });
       }
-      return { kind: 'import', start: node.start, end: node.end, source: `${node.source.value}`, bindings };
+      return { kind: 'import', start: node.start, end: node.end, source: `${node.source.value}`, type: importType(node), bindings };
     }
     case 'ExportNamedDeclaration': {
       const names = lists.list<EsmExportName>();
@@ -150,20 +162,20 @@ export function esmRecord(node: Statement | ModuleDeclaration, lists: EsmLists):
         } else {
           lists.push(names, { kind: 'named', exported: declaration.id.name, local: declaration.id.name });
         }
-        return { kind: 'export', start: node.start, end: declaration.start, source: null, names };
+        return { kind: 'export', start: node.start, end: declaration.start, source: null, type: null, names };
       }
       for (let i = 0; i < node.specifiers.length; i++) {
         const specifier = node.specifiers[i];
         lists.push(names, { kind: 'named', exported: exportName(specifier.exported), local: exportName(specifier.local) });
       }
-      return { kind: 'export', start: node.start, end: node.end, source: node.source ? `${node.source.value}` : null, names };
+      return { kind: 'export', start: node.start, end: node.end, source: node.source ? `${node.source.value}` : null, type: node.source ? importType(node) : null, names };
     }
     case 'ExportDefaultDeclaration': {
       const declaration = node.declaration;
       if ((declaration.type === 'FunctionDeclaration' || declaration.type === 'ClassDeclaration') && declaration.id) {
         const names = lists.list<EsmExportName>();
         lists.push(names, { kind: 'named', exported: 'default', local: declaration.id.name });
-        return { kind: 'export', start: node.start, end: declaration.start, source: null, names };
+        return { kind: 'export', start: node.start, end: declaration.start, source: null, type: null, names };
       }
       return { kind: 'export-default', start: node.start, end: node.end, expression: { start: declaration.start, end: declaration.end } };
     }
@@ -171,9 +183,9 @@ export function esmRecord(node: Statement | ModuleDeclaration, lists: EsmLists):
       if (node.exported) {
         const names = lists.list<EsmExportName>();
         lists.push(names, { kind: 'namespace', exported: exportName(node.exported) });
-        return { kind: 'export', start: node.start, end: node.end, source: `${node.source.value}`, names };
+        return { kind: 'export', start: node.start, end: node.end, source: `${node.source.value}`, type: importType(node), names };
       }
-      return { kind: 'export-all', start: node.start, end: node.end, source: `${node.source.value}` };
+      return { kind: 'export-all', start: node.start, end: node.end, source: `${node.source.value}`, type: importType(node) };
     }
     default:
       return null;
@@ -183,14 +195,14 @@ export function esmRecord(node: Statement | ModuleDeclaration, lists: EsmLists):
 /** A module the declarations request, required in source order. */
 export interface EsmRequest<Binding extends EsmImportBinding = EsmImportBinding> {
   readonly source: string;
+  /** Its `type` attribute (importType), which its loader checks against what it loads. */
+  readonly type: string | null;
   /** Whether the module is read again (an import's binding, a re-export, a namespace, `export *`), not only run. */
   readonly kept: boolean;
-  /** Whether a default import reads it, through its interop (ESM_INTEROP_HELPER), made as it is required. */
-  readonly interop: boolean;
   /**
    * The bindings of the import that requests it (none for a re-export's): a
-   * named one reads `imported` of the module (`default`, of its interop) at
-   * each use; a namespace one is among the link's namespaces.
+   * named one reads `imported` of the module's namespace at each use; a
+   * namespace one is among the link's namespaces.
    */
   readonly bindings: readonly Binding[];
 }
@@ -224,20 +236,15 @@ export function esmLink<Binding extends EsmImportBinding>(records: ArrayLike<Esm
   const namespaces = lists.list<{ readonly request: number; readonly local: string | null }>();
   const stars = lists.list<number>();
   const none = lists.list<Binding>();
-  const request = (source: string, kept: boolean, interop: boolean, bindings: readonly Binding[]): number => {
-    lists.push(requests, { source, kept, interop, bindings });
+  const request = (source: string, type: string | null, kept: boolean, bindings: readonly Binding[]): number => {
+    lists.push(requests, { source, type, kept, bindings });
     return requests.length - 1;
   };
   for (let i = 0; i < records.length; i++) {
     const record = records[i];
     switch (record.kind) {
       case 'import': {
-        let interop = false;
-        for (let j = 0; j < record.bindings.length; j++) {
-          const binding = record.bindings[j];
-          if (binding.kind === 'named' && binding.imported === 'default') interop = true;
-        }
-        const at = request(record.source, record.bindings.length > 0, interop, record.bindings);
+        const at = request(record.source, record.type, record.bindings.length > 0, record.bindings);
         for (let j = 0; j < record.bindings.length; j++) {
           const binding = record.bindings[j];
           if (binding.kind === 'namespace') lists.push(namespaces, { request: at, local: binding.local });
@@ -253,7 +260,7 @@ export function esmLink<Binding extends EsmImportBinding>(records: ArrayLike<Esm
           }
           break;
         }
-        const at = request(record.source, true, false, none);
+        const at = request(record.source, record.type, true, none);
         for (let j = 0; j < record.names.length; j++) {
           const name = record.names[j];
           if (name.kind === 'named') {
@@ -269,11 +276,85 @@ export function esmLink<Binding extends EsmImportBinding>(records: ArrayLike<Esm
         lists.push(exports, { kind: 'default', exported: 'default' });
         break;
       case 'export-all':
-        lists.push(stars, request(record.source, true, false, none));
+        lists.push(stars, request(record.source, record.type, true, none));
         break;
     }
   }
   return { exports: byExportedName(exports, lists), requests, namespaces, stars };
+}
+
+/**
+ * What Node's linker checks of a module, before any module of its graph
+ * runs: each name an import or a re-export reads of a requested module is
+ * one that module exports.
+ */
+export interface ModuleBindings {
+  /** The names it exports itself: its own, by name from a requested module, `export * as`. `export *` adds its modules' (`stars`). */
+  readonly exports: readonly string[];
+  /** By request, in source order (a static specifier's place): the names it imports or re-exports from that module, `default` a default import's. */
+  readonly imports: readonly (readonly string[])[];
+  /** The requests whose names `export *` re-exports. */
+  readonly stars: readonly number[];
+  /** By request: its `type` attribute (importType), which the loader checks against what it loads. */
+  readonly types: readonly (string | null)[];
+  /**
+   * Its names that are another module's (ResolveExport's indirect entries:
+   * a re-export, or an export of an imported binding): the name, the
+   * request, and the name it has there, null for that module's namespace.
+   * Its other names are bindings of its own.
+   */
+  readonly reexports: readonly (readonly [exported: string, request: number, name: string | null])[];
+  /**
+   * Its names that are bindings of its own (ResolveExport's local entries):
+   * the name and the binding's, `*default*` for an `export default` of an
+   * expression. Two names of one binding resolve to one binding.
+   */
+  readonly locals: readonly (readonly [exported: string, local: string])[];
+}
+
+/** The bindings of a module linked as `link`. */
+export function esmBindings(link: EsmLink, lists: EsmLists): ModuleBindings {
+  const exports = lists.list<string>();
+  for (let i = 0; i < link.exports.length; i++) lists.push(exports, link.exports[i].exported);
+  const imports = lists.list<string[]>();
+  for (let i = 0; i < link.requests.length; i++) {
+    const names = lists.list<string>();
+    const bindings = link.requests[i].bindings;
+    for (let j = 0; j < bindings.length; j++) {
+      const binding = bindings[j];
+      if (binding.kind === 'named') lists.push(names, binding.imported);
+    }
+    lists.push(imports, names);
+  }
+  for (let i = 0; i < link.exports.length; i++) {
+    const entry = link.exports[i];
+    if (entry.kind === 'reexport') lists.push(imports[entry.request], entry.name);
+  }
+  const types = lists.list<string | null>();
+  for (let i = 0; i < link.requests.length; i++) lists.push(types, link.requests[i].type);
+  const reexports = lists.list<readonly [string, number, string | null]>();
+  const locals = lists.list<readonly [string, string]>();
+  for (let i = 0; i < link.exports.length; i++) {
+    const entry = link.exports[i];
+    if (entry.kind === 'reexport') lists.push(reexports, [entry.exported, entry.request, entry.name]);
+    else if (entry.kind === 'namespace') lists.push(reexports, [entry.exported, link.namespaces[entry.namespace].request, null]);
+    else if (entry.kind === 'default') lists.push(locals, [entry.exported, '*default*']);
+    else {
+      // An export of an imported binding is that module's.
+      let imported = false;
+      for (let r = 0; r < link.requests.length; r++) {
+        const bindings = link.requests[r].bindings;
+        for (let j = 0; j < bindings.length; j++) {
+          const binding = bindings[j];
+          if (binding.local !== entry.local) continue;
+          lists.push(reexports, [entry.exported, r, binding.kind === 'named' ? binding.imported : null]);
+          imported = true;
+        }
+      }
+      if (!imported) lists.push(locals, [entry.exported, entry.local]);
+    }
+  }
+  return { exports, imports, stars: link.stars, types, reexports, locals };
 }
 
 /** `entries` sorted by exported name, stably: a merge sort, which calls nothing of the realm's. */

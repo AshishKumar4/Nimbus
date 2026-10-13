@@ -431,10 +431,13 @@ async function runCases(interpreterFile, opsFile) {
       'export const load = () => import("./later.js");',
       'export const seen = [d, cjs.k, ns.default.k, ns.k];',
     ].join('\n'));
+    // What the loader gives a static import is the module's namespace: a CommonJS module's and
+    // a builtin's as Node's translators make them (module.exports as default, beside its names).
+    const path = require('node:path');
     const modules = {
-      'node:path': require('node:path'),
-      './esm.js': { __esModule: true, default: 'D' },
-      './cjs.js': { k: 'K' },
+      'node:path': { default: path, join: path.join },
+      './esm.js': { default: 'D' },
+      './cjs.js': { default: { k: 'K' }, k: 'K' },
       './star.js': { v: 'V', w: 'W', default: 'not re-exported' },
     };
     const mod = { exports: {}, __nimbusImportMeta: { url: 'file:///w/m.mjs' } };
