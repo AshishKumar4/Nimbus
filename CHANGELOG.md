@@ -13,6 +13,19 @@ published independently in the `@nimbus-sh` npm scope.
   now does what it does on a mounted directory and on Linux: an entry it may
   not remove stays, with the directories holding it, and everything else
   goes; it refused the whole tree before removing anything.
+- Fixed: a module a Node program writes and then imports links as Node's
+  does before any of its graph runs. An import of a name its module does
+  not export is Node's SyntaxError, with no module body run first; before,
+  a sibling's body ran, or the name was just undefined.
+- Fixed: such a module imports a CommonJS module as Node does: `default` is
+  `module.exports` even when it sets `__esModule`, its other names are the
+  ones Node's lexer finds, and their values are taken once the module has
+  run. `export *` of two different bindings of one name exports neither,
+  and importing that name is Node's SyntaxError.
+- Fixed: import attributes are checked as Node checks them on every
+  import: JSON needs `with { type: 'json' }`, JavaScript and builtins refuse
+  it, and an unknown type is refused. A static import's unknown attribute
+  key is ignored, as Node ignores it; it was refused.
 
 ## 2026-10-13: platform 0.9.0, core 0.19.0, fabric 0.14.0, worker 0.17.0, config 0.3.1, loom 0.3.0, sdk 0.14.0, react 0.3.2, cli 0.2.6, create-nimbus-app 0.2.3
 
