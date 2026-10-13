@@ -16,6 +16,12 @@ published independently in the `@nimbus-sh` npm scope.
   one else may write, before each use, and removes the old stores below
   `/var/lib/nimbus` once, through no link. `/var` is now the user's
   alone: a process may hold a delegation of it.
+- Fixed (security): `writeProtectedRootFile` followed links the session's
+  user had made. A link at the file's name had the kernel overwrite the
+  file it led to and make it root's, read-only; a link at the declared
+  root or above it had the kernel make the directory it led to sticky and
+  world-writable. A link at the file's name is now replaced by the file,
+  and a root reached through a link is refused.
 - Fixed (security): helpers a command starts acted as the kernel, not as
   the command's process. `nimbus wrangler dev` read its config and D1
   migrations, kept its KV and R2 stores, and bundled its Worker as
