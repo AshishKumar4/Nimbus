@@ -572,9 +572,9 @@ for (const phase of ['openWriter', 'stream']) {
 }
 
 // ── rm -r applied from the log keeps another user's file in a sticky directory ──
-// The removal's own judgement (SqliteVFS.removeRecursive): the refused entry
-// stays with the directories holding it, everything else goes, and the call
-// answers the refusal.
+// The removal's own judgement (SqliteVFS.removeRecursive) refuses it, and the
+// call answers the refusal; a wave's calls apply in one transaction, which
+// the refusal rolls back, so nothing of the tree went.
 {
   const s = session();
   const c = client(s);
@@ -587,7 +587,7 @@ for (const phase of ['openWriter', 'stream']) {
   s.kernel.chown('home/user/tree/mine', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
   await assert.rejects(c.submit({ type: 'call', call: { call: 'rm', path: 'home/user/tree', recursive: true } }), (error) => error.code === 'EPERM');
   assert.equal(s.kernel.exists('home/user/tree/tmp/theirs'), true, "another user's file stays");
-  assert.equal(s.kernel.exists('home/user/tree/mine'), false, 'the rest goes');
+  assert.equal(s.kernel.exists('home/user/tree/mine'), true, 'the refused call commits nothing');
 }
 
 // ── rm, lchown and lutimes are calls in the log, applied as the session's own ──
