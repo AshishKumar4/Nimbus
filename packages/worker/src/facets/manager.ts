@@ -6975,44 +6975,48 @@ export class FacetManager {
   ): Promise<G> {
     // Under the launch's build admission, given back once the map is made;
     // a state it did not build (a cache hit, another launch's build) under
-    // an admission of its own: a map is another copy of its closure.
-    if (this.buildAdmissions.has(pid)) {
-      return this._generateWithin(pid, vfsState, others, generate).finally(() => this._releaseBuildAdmission(pid));
-    }
-    // Its closure is known: what the map needs is taken at once, with no
+    // an admission of its own: a map is another copy of its closure. Its
+    // closure is known, so what the map needs is taken at once, with no
     // await where there is room (a cache hit's path).
-    const need = prefetchNeed(vfsState.rawBytes ?? 0);
-    const now = tryAdmitPrefetch(need);
-    if (now !== null) return this._generateWithin(pid, vfsState, others, generate).finally(() => now.release());
-    return withPrefetchAllocation(async () => await this._generateWithin(pid, vfsState, others, generate), () => this._launchEnds(pid), need);
+    const built = this.buildAdmissions.get(pid);
+    if (built !== undefined) this.buildAdmissions.delete(pid);
+    const need = built === undefined ? prefetchNeed(vfsState.rawBytes ?? 0) : 0;
+    const admission = built ?? tryAdmitPrefetch(need);
+    if (admission !== null) return this._generateWithin(pid, vfsState, others, generate, admission);
+    return admitPrefetch(() => this._launchEnds(pid), need).then((queued) => this._generateWithin(pid, vfsState, others, generate, queued));
   }
 
-  /** _generateUnderCeiling's work, under its admission. */
+  /** _generateUnderCeiling's work, under its admission, which it gives back as it ends. */
   private async _generateWithin<G extends GeneratedNodeFacetCode>(
     pid: number,
     vfsState: FacetVfsState,
     others: number,
     generate: (state: FacetVfsState) => Promise<G>,
+    admission: PrefetchAdmission,
   ): Promise<G> {
-    const room = DYNAMIC_WORKER_CODE_LIMIT_BYTES - others;
-    let generated: G | undefined = await generate(vfsState);
-    const bytes = generatedMapTextBytes(generated, room);
-    if (bytes === null || bytes <= room) return generated;
-    const source = vfsState.bundleSource;
-    const keys: string[] = source ? JSON.parse(source.runtimeCode) : [];
-    const learned = keys.map((key) => [key, mapTextBytes(generated!.codeModules[runtimeCodeModuleName(key)] ?? '')] as const);
-    generated = undefined;
-    const { kept, over } = learnedRuntimeCodeWithin(bytes, learned, room);
-    if (over > 0 || !source) throw new ModuleMapOverCeilingError(over);
-    const keep = new Set(kept);
-    const codeModules = { ...source.codeModules };
-    for (const key of keys) if (!keep.has(key)) delete codeModules[runtimeCodeModuleName(key)];
-    const message = `the module map is ${(bytes + others).toLocaleString('en-US')} bytes with the code earlier runs learned, over the `
-      + `${DYNAMIC_WORKER_CODE_LIMIT_BYTES.toLocaleString('en-US')}-byte ceiling: it stages ${kept.length} of its ${keys.length} pieces, `
-      + 'the first its runs needed, and runs the rest interpreted, as the run that learned them did';
-    console.warn(`[facet-manager] pid ${pid}: ${message}`);
-    if (this.debugEnabled) this.processes.appendOutput(pid, 'stderr', `[nimbus-debug] ${message}\n`);
-    return generate({ ...vfsState, bundleSource: { ...source, codeModules, runtimeCode: JSON.stringify(kept) } });
+    try {
+      const room = DYNAMIC_WORKER_CODE_LIMIT_BYTES - others;
+      let generated: G | undefined = await generate(vfsState);
+      const bytes = generatedMapTextBytes(generated, room);
+      if (bytes === null || bytes <= room) return generated;
+      const source = vfsState.bundleSource;
+      const keys: string[] = source ? JSON.parse(source.runtimeCode) : [];
+      const learned = keys.map((key) => [key, mapTextBytes(generated!.codeModules[runtimeCodeModuleName(key)] ?? '')] as const);
+      generated = undefined;
+      const { kept, over } = learnedRuntimeCodeWithin(bytes, learned, room);
+      if (over > 0 || !source) throw new ModuleMapOverCeilingError(over);
+      const keep = new Set(kept);
+      const codeModules = { ...source.codeModules };
+      for (const key of keys) if (!keep.has(key)) delete codeModules[runtimeCodeModuleName(key)];
+      const message = `the module map is ${(bytes + others).toLocaleString('en-US')} bytes with the code earlier runs learned, over the `
+        + `${DYNAMIC_WORKER_CODE_LIMIT_BYTES.toLocaleString('en-US')}-byte ceiling: it stages ${kept.length} of its ${keys.length} pieces, `
+        + 'the first its runs needed, and runs the rest interpreted, as the run that learned them did';
+      console.warn(`[facet-manager] pid ${pid}: ${message}`);
+      if (this.debugEnabled) this.processes.appendOutput(pid, 'stderr', `[nimbus-debug] ${message}\n`);
+      return await generate({ ...vfsState, bundleSource: { ...source, codeModules, runtimeCode: JSON.stringify(kept) } });
+    } finally {
+      admission.release();
+    }
   }
 
   /**
