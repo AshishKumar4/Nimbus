@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a `node:sqlite` database keeps its changes. A connection opened
+  after another's `close()` in the same run sees what it wrote (it read the
+  run's starting copy), and a write made through `all()` or `get()`, such as
+  `INSERT ... RETURNING`, is saved on close (only `run()` and `exec()` were).
+  The database is read and written as the program's own file, so a refused
+  write fails `close()` instead of being dropped silently, and a database the
+  program only read is not written back.
 ## 2026-10-12: platform 0.8.2, core 0.18.0, fabric 0.13.0, worker 0.16.0, loom 0.2.5, sdk 0.13.1, react 0.3.1, cli 0.2.5, create-nimbus-app 0.2.2
 
 - Fixed (security): the shell's Ctrl+P palette put file names into the page as
