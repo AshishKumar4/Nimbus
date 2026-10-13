@@ -21,7 +21,7 @@ import type { RuntimeCatalogEnv } from '../runtime/runtime-catalog.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { SessionFilesystem } from './session-filesystem.js';
 import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
-import { CRED_KERNEL, requireVfsCred, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_KERNEL, CRED_SESSION_USER, requireVfsCred, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { endProcessInput, resizeProcess, signalProcess, writeProcessInput } from '@nimbus-sh/core/runtime/process-input-routing.js';
 import {
   SessionProcessLogsOptionsSchema,
@@ -1188,10 +1188,11 @@ export async function rpcSpawnWorker(
 }
 
 /**
- * `files.delete`. Absent a `cred` this acts as CRED_KERNEL — what it has
- * always done, and the embedder's trusted surface: only a caller holding the
- * DO binding reaches it. A `cred` binds the removal to that identity instead,
- * the same view `SqliteVFS.as(cred)` gives in-process.
+ * `files.delete`. Absent a `cred` this acts as the session's user, as every
+ * other file operation and every owner surface does; a `cred` binds the
+ * removal to that identity instead, the same view `SqliteVFS.as(cred)` gives
+ * in-process. An embedder holding the DO binding deletes as the kernel only
+ * by asking for it: `files.as(CRED_KERNEL)`.
  */
 export async function rpcDeleteFile(
   self: ProgrammaticHost,
@@ -1201,7 +1202,7 @@ export async function rpcDeleteFile(
 ): Promise<void> {
   await ensureProgrammaticReady(self);
   const p = `/${String(path).replace(/^\/+/, '')}`;
-  const fs = self.getFilesystemAuthority().namespaceFs(cred === undefined ? CRED_KERNEL : requireVfsCred(cred, 'files.delete'));
+  const fs = self.getFilesystemAuthority().namespaceFs(cred === undefined ? CRED_SESSION_USER : requireVfsCred(cred, 'files.delete'));
   // A delegation it meets is recalled first.
   await withRecall(() => {
     if (!fs.exists(p)) return;

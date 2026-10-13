@@ -5,6 +5,22 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed (security): the session's owner surfaces acted as the kernel. The
+  browser editor's saves, reads and listings, the agent's `read_file`,
+  `write_file` and `list_files`, and `POST /api/write-file` and
+  `/api/mkdir` read and wrote as `CRED_KERNEL`. So they could replace a
+  kernel-owned file the session's user cannot change, such as one an
+  embedder provisioned in a sticky directory, and read another user's
+  private files. They now act as the session's user, and are refused what
+  that user's own shell is refused.
+- Breaking: `files.delete` with no credential now acts as the session's
+  user, like every other file method, instead of the kernel. An embedder
+  that deletes past the user's permissions asks for it by name:
+  `sandbox.files.as(CRED_KERNEL).delete(path)`. `CRED_KERNEL`,
+  `CRED_SESSION_USER` and the `VfsCred` type are exported from
+  `@nimbus-sh/sdk`. Over the remote endpoint a deletion already acted as
+  the session's user.
+
 - Fixed: a module a Node program writes and then imports links as Node's
   does before any of its graph runs. An import of a name its module does
   not export is Node's SyntaxError, with no module body run first; before,
