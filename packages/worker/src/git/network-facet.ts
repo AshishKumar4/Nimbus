@@ -426,6 +426,9 @@ function parseRemoteFailure(value: unknown): RemoteFailure | undefined {
   if (failure.kind === 'status' && typeof failure.status === 'number' && Number.isInteger(failure.status)) {
     return { kind: 'status', status: failure.status, ...(typeof failure.message === 'string' ? { message: failure.message } : {}) };
   }
+  if (failure.kind === 'rpc' && (failure.status === null || Number.isInteger(failure.status)) && typeof failure.detail === 'string') {
+    return { kind: 'rpc', status: typeof failure.status === 'number' ? failure.status : null, detail: failure.detail };
+  }
   return undefined;
 }
 
@@ -1250,9 +1253,12 @@ export async function execGitNetwork(
             await onCloneCheckoutPhase?.();
           }
           const tags = tagsHeld(prepared.fast?.tags ?? prepared.stream?.tags ?? [], tagsFound);
-          // A file a batch could not write: as git, every object fetched first, the clone
-          // finished but its index, then the checkout's failure with git's errors (its repository kept).
-          const checkoutErrors = [...run.checkoutErrors.entries()].sort(([a], [b]) => a - b).flatMap(([, errors]) => errors);
+          // A path the checkout refuses, or a file a batch could not write: as git, every object fetched
+          // first, the clone finished but its index, then the checkout's failure with git's errors (its repository kept).
+          const checkoutErrors = [
+            ...fast.checkoutErrors ?? [],
+            ...[...run.checkoutErrors.entries()].sort(([a], [b]) => a - b).flatMap(([, errors]) => errors),
+          ];
           await runCloneFinish(facetOpts, identity, shares, full, fast.cacheTreeBytes, tags, graph, run, checkoutErrors.length > 0);
           if (checkoutErrors.length > 0) {
             facets.fence?.();

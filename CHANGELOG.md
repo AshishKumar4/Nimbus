@@ -5,6 +5,21 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed (security): JS git refuses a tree entry whose path native git
+  refuses: a `.git` component in any case, `.` or `..`, and the names
+  NTFS (and, with `core.protectHFS`, HFS+) read as `.git`. `checkout` and
+  `reset --hard` write nothing and say git's `invalid path` error, `reset`
+  leaves the index, and a clone keeps its repository with nothing checked
+  out. Before, a fetched commit could write `.git/config` or a file above
+  the worktree.
+- Fixed (security): a malformed tree object is git's error
+  (`too-short tree object`, `malformed mode in tree entry`, `empty
+  filename in tree entry`). One reader looped forever on such a tree,
+  growing until the session ran out of memory.
+- Fixed (security): when a git server refuses the request for a pack after
+  answering its discovery, clone, fetch, pull, push and a partial clone's
+  lazy fetch say `RPC failed` as git does, and never print the server's
+  answer. Before, they printed it whole, credentials it echoed included.
 - Fixed: `utimesSync`, `lutimesSync` and `futimesSync` in a Node program reach
   the session; they changed only what the program itself saw.
 - Fixed: a file JS git checks out, and a loose object it writes, is made with

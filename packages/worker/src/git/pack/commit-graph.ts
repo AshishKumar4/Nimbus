@@ -29,6 +29,7 @@
 import { createHash } from 'node:crypto';
 
 import { OID_BYTES, PackFormatError } from './format.js';
+import { decodeTree } from './tree-object.js';
 
 const GRAPH_PARENT_NONE = 0x70000000;
 const GRAPH_EXTRA_EDGES_NEEDED = 0x80000000;
@@ -442,17 +443,7 @@ const MODE_TREE = 0o040000;
 const EMPTY = new Uint8Array(0);
 
 function treeEntries(tree: Uint8Array): DiffEntry[] {
-  const entries: DiffEntry[] = [];
-  for (let p = 0; p < tree.byteLength;) {
-    let mode = 0;
-    while (p < tree.byteLength && tree[p] !== 0x20) mode = mode * 8 + (tree[p++] - 0x30);
-    const nameStart = ++p;
-    while (p < tree.byteLength && tree[p] !== 0) p++;
-    if (p + 1 + OID_BYTES > tree.byteLength) throw new PackFormatError('tree entry is truncated');
-    entries.push({ name: tree.subarray(nameStart, p), mode, oid: tree.subarray(p + 1, p + 1 + OID_BYTES) });
-    p += 1 + OID_BYTES;
-  }
-  return entries;
+  return decodeTree(tree, (mode, oidAt, nameAt, nameEnd) => ({ name: tree.subarray(nameAt, nameEnd), mode, oid: tree.subarray(oidAt, oidAt + OID_BYTES) }));
 }
 
 const isTree = (mode: number) => (mode & 0o170000) === MODE_TREE;

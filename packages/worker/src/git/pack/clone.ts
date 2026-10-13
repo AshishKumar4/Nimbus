@@ -16,7 +16,8 @@
  * nothing reads it back but a delta whose base has left the cache.
  */
 
-import { decodeBatch, encodeBatch, parseTree, CheckoutPlan, MODE_GITLINK, MODE_SYMLINK, MODE_TREE } from './plan.js';
+import { decodeBatch, encodeBatch, CheckoutPlan, MODE_GITLINK, MODE_SYMLINK, MODE_TREE } from './plan.js';
+import { decodeTree } from './tree-object.js';
 import { coneMatcher, coneOf, coneSparseCheckout } from './sparse.js';
 import { ENTRY_BYTES, entryOffset } from './idx.js';
 import { installPack, RangedPackFile, readRange, resumeInstall, type PackFiles, type PackSummary } from './install.js';
@@ -26,6 +27,7 @@ import { GRAPH_RECORDS_DIR } from './commit-graph.js';
 import { MissingBaseError, PackObjectResolver, runAsync } from './reader.js';
 import { encodeIndexEntry, encodeIndexFile, splitIndexEntries, type EntryStat } from '../worktree/dircache.js';
 import { encodeNode, type BuiltSubtree } from '../worktree/cachetree.js';
+import { invalidPathError } from '../worktree/verify-path.js';
 import { oidFromHex, oidToHex, PACK_TRAILER_BYTES, PackFormatError } from './format.js';
 import { PackStreamProcessor, type PackProcessResult, type PackStore, type WorkTally } from './processor.js';
 import { discover, requestPack, type Advertisement, type GitTransportAuth, type UploadPackOptions } from './upload-pack.js';
@@ -114,6 +116,8 @@ export interface ClonePrepared {
   /** The remote's tags, and which of their ids prepare's pack held (TagWatch). */
   tags: CloneTag[];
   tagsFound: string[];
+  /** git's error for the path its checkout refuses (CheckoutPlan.refused): the checkout fails, once every object is in. */
+  checkoutErrors?: string[];
 }
 
 /** An advertised tag: its ref, the id it names, and what that peels to. */
@@ -457,12 +461,14 @@ function cacheTreeOf(name: string, root: string, trees: Map<string, Uint8Array>)
   if (data === undefined) throw new PackFormatError('the pack lacks tree ' + root);
   let count = 0;
   const subtrees: BuiltSubtree[] = [];
-  for (const entry of parseTree(data)) {
-    if (entry.mode !== MODE_TREE) {
+  const entries = decodeTree(data, (mode, oidAt, nameAt, nameEnd) =>
+    (mode === MODE_TREE ? { name: decoder.decode(data.subarray(nameAt, nameEnd)), oid: oidToHex(data, oidAt) } : null));
+  for (const entry of entries) {
+    if (entry === null) {
       count++;
       continue;
     }
-    const child = cacheTreeOf(entry.name, oidToHex(data, entry.oidAt), trees);
+    const child = cacheTreeOf(entry.name, entry.oid, trees);
     count += child.count;
     subtrees.push(child.built);
   }
@@ -475,7 +481,7 @@ function treesComplete(trees: Map<string, Uint8Array>, root: string): boolean {
   while (pending.length > 0) {
     const data = trees.get(pending.pop()!);
     if (data === undefined) return false;
-    for (const entry of parseTree(data)) if (entry.mode === MODE_TREE) pending.push(oidToHex(data, entry.oidAt));
+    for (const oid of decodeTree(data, (mode, oidAt) => (mode === MODE_TREE ? oidToHex(data, oidAt) : null))) if (oid !== null) pending.push(oid);
   }
   return true;
 }
@@ -685,6 +691,7 @@ export async function cloneFast(context: CloneContext, request: CloneRequest, ad
     packs,
     tags,
     tagsFound: [...watch.found],
+    ...(plan.refused === null ? {} : { checkoutErrors: [invalidPathError(plan.refused)] }),
   };
 }
 
@@ -857,7 +864,7 @@ async function readTrees(store: PackObjectStore, root: string): Promise<Map<stri
     bytes += object.data.byteLength;
     if (bytes > PLAN_TREE_BYTES) throw new PackFormatError('the commit\'s trees pass ' + PLAN_TREE_BYTES + ' bytes');
     trees.set(oid, object.data);
-    for (const entry of parseTree(object.data)) if (entry.mode === MODE_TREE) pending.push(oidToHex(object.data, entry.oidAt));
+    for (const oid of decodeTree(object.data, (mode, oidAt) => (mode === MODE_TREE ? oidToHex(object.data, oidAt) : null))) if (oid !== null) pending.push(oid);
   }
   return trees;
 }
@@ -901,6 +908,7 @@ export async function clonePlanFromStore(
     packs: [],
     tags: [],
     tagsFound: [],
+    ...(plan.refused === null ? {} : { checkoutErrors: [invalidPathError(plan.refused)] }),
   };
 }
 

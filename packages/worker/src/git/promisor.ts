@@ -33,9 +33,10 @@ export interface FetchMissingObjectsResult {
   network: GitNetworkResult;
 }
 
+/** The fetch failed: `result` says how (the command says it, its credentials taken out); the message is git's own. */
 export class PromisorFetchError extends Error {
-  constructor(readonly remote: string, readonly result: GitNetworkResult) {
-    super(`fatal: could not fetch missing objects from promisor remote '${remote}': ${result.error ?? 'unknown error'}`);
+  constructor(readonly request: FetchMissingObjectsRequest, readonly result: GitNetworkResult) {
+    super(`could not fetch ${request.oids[0]} from promisor remote`);
     this.name = 'PromisorFetchError';
   }
 }
@@ -59,6 +60,6 @@ export async function fetchMissingObjects(
     auth: request.auth,
     ...(request.onMount === true ? { onMount: true } : {}),
   }, workspaceNetwork);
-  if (!network.success) throw new PromisorFetchError(request.remote, network);
+  if (!network.success) throw new PromisorFetchError(request, network);
   return { fetched: network.fetchedObjects ?? 0, network };
 }
