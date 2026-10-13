@@ -1688,6 +1688,8 @@ export declare class FacetManager {
      * with none of it throws ModuleMapOverCeilingError.
      */
     private _generateUnderCeiling;
+    /** _generateUnderCeiling's work, under its admission. */
+    private _generateWithin;
     /**
      * Build a launch's state again when its map was over the ceiling with none
      * of its learned code (ModuleMapOverCeilingError), `over` bytes past it:

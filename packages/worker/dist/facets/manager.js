@@ -93,7 +93,7 @@ import { CF_COMPAT_DATE, DEFAULT_HOME, GUEST_COMPAT_FLAGS, VFS_BUNDLE_MAX_FILES,
 import { LEDGER_ROW_BYTES } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { ONE_SHOT_STORE_MEMORY_BYTES, RESIDENT_CHUNK_BYTES } from '../vfs/facet-resident-limits.js';
 import { residentCellCost } from '../vfs/resident/cell-cost.js';
-import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
+import { MAX_RPC_SAFE_PAYLOAD_BYTES, SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES } from '@nimbus-sh/platform/limits.js';
 import { CRED_KERNEL, isNativeBinPath, launchNamedPaths } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { acquireSupervisorAllocation, tryAcquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { streamedWasmImageDigest, wasmImageDigest } from './wasm-image-digest.js';
@@ -3986,33 +3986,51 @@ export async function toolConfigRoots(vfs, cwd, scriptPath) {
  *
  */
 export async function buildPrefetchBundle(vfs, options) {
-    return await withPrefetchAllocation(() => gatherPrefetchBundle(vfs, options));
+    return await withPrefetchAllocation(async (admission) => {
+        const state = await gatherPrefetchBundle(vfs, options);
+        admission.fit(state.rawBytes ?? 0);
+        return state;
+    });
 }
 /**
- * `build` under the build's admission: the budget the enrichment passes are
- * allowed to spend, taken once and held until `build` ends. A launch's build
- * gathers its cells and serializes them under it (Kinu #29: the source grows
- * as the cells it is made from are given up), so builds queue for room
- * through both, as the 40 MiB of admitted transient payload says; nothing
- * under it asks the pool again (two builds holding their cells while a third
- * queued for more deadlocked every one).
+ * What a launch's build or module map holds at its peak, per byte of the
+ * closure it is made from: measured over a launch's whole build and map (one
+ * ~17 MiB closure's at 108 MB over its heap's base, 6.0 times; a 10 MiB one's
+ * at 44.8 MB, 4.3 times), heap and JSC's extra memory together.
  */
-async function withPrefetchAllocation(build) {
-    // This build accumulates raw VFS contents in the supervisor heap, and did it
-    // with nothing watching: the estimator read 9.4 MiB while these bytes were
-    // resetting the DO three times. Take the budget the enrichment passes are
-    // allowed to spend, so a build queues behind other heavy work instead of
-    // racing it, and attribute it so it lands under `prefetchBundleBytes` rather
-    // than in the unattributed remainder.
-    // `queued`: it waited for room, while other builds ran.
-    const immediate = tryAcquireSupervisorAllocation(VFS_BUNDLE_MAX_BYTES);
-    const lease = immediate ?? await acquireSupervisorAllocation(VFS_BUNDLE_MAX_BYTES);
-    prefetchBundleStart(VFS_BUNDLE_MAX_BYTES);
+const PREFETCH_PEAK_PER_BYTE = 6;
+/**
+ * `work` under one admission (Kinu #29): the whole of the supervisor's
+ * admitted transient budget, taken at once, until `work` has measured the
+ * closure it is made from (`fit`), then PREFETCH_PEAK_PER_BYTE times that at
+ * most, the rest given back to the work queued behind it; held until `work`
+ * ends. A launch's build gathers its cells and serializes them under one,
+ * and its module map is generated under another, so neither runs beside
+ * another's beyond what the budget holds. Nothing under one asks the pool
+ * again (two builds holding their cells while a third queued for more
+ * deadlocked every one).
+ */
+async function withPrefetchAllocation(work) {
+    // Attributed so it lands under `prefetchBundleBytes`, not the unattributed remainder.
+    const immediate = tryAcquireSupervisorAllocation(SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES);
+    const lease = immediate ?? await acquireSupervisorAllocation(SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES);
+    let held = SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES;
+    prefetchBundleStart(held);
     try {
-        return await build(immediate === null);
+        return await work({
+            queued: immediate === null,
+            fit(closureBytes) {
+                const need = Math.max(1, Math.ceil(closureBytes * PREFETCH_PEAK_PER_BYTE));
+                if (need >= held)
+                    return;
+                lease.shrinkTo(need);
+                prefetchBundleEnd(held - need);
+                held = need;
+            },
+        });
     }
     finally {
-        prefetchBundleEnd(VFS_BUNDLE_MAX_BYTES);
+        prefetchBundleEnd(held);
         lease.release();
     }
 }
@@ -5804,8 +5822,8 @@ export class FacetManager {
         // Kinu #29: the cells are gathered and serialized under one admission,
         // so cache-miss builds queue for room through both. A launch admitted
         // after a wait, while another of its key published, takes that entry.
-        const building = withPrefetchAllocation(async (queued) => {
-            const admitted = queued ? await takeCached() : null;
+        const building = withPrefetchAllocation(async (admission) => {
+            const admitted = admission.queued ? await takeCached() : null;
             if (admitted)
                 return { state: admitted, shared: null };
             const readProfile = this.readProfile;
@@ -5851,6 +5869,7 @@ export class FacetManager {
                 ],
                 ...(evaluatedModule ? { entryEsModule: entryEsModuleKey(spec.scriptPath, spec.cwd) } : {}),
             });
+            admission.fit(vfsState.rawBytes ?? 0);
             if (offered.length > 0) {
                 const staged = [];
                 const unresolved = [];
@@ -5943,7 +5962,15 @@ export class FacetManager {
      * keeps and is made again from the state without the rest; one over it
      * with none of it throws ModuleMapOverCeilingError.
      */
-    async _generateUnderCeiling(pid, vfsState, others, generate) {
+    _generateUnderCeiling(pid, vfsState, others, generate) {
+        // Under an admission of its own (Kinu #29): a map is another copy of its closure, made beside other launches' builds.
+        return withPrefetchAllocation(async (admission) => {
+            admission.fit(vfsState.rawBytes ?? 0);
+            return await this._generateWithin(pid, vfsState, others, generate);
+        });
+    }
+    /** _generateUnderCeiling's work, under its admission. */
+    async _generateWithin(pid, vfsState, others, generate) {
         const room = DYNAMIC_WORKER_CODE_LIMIT_BYTES - others;
         let generated = await generate(vfsState);
         const bytes = generatedMapTextBytes(generated, room);
@@ -7197,10 +7224,11 @@ export class FacetManager {
             this.imageStore.ensureDir(entry.pid);
         const processVfs = this.filesystem ? this.filesystem.bind({ pid: entry.pid, cred: entry.cred }) : null;
         // Gathered and serialized under one admission (Kinu #29).
-        const { vfsState, vfsBundle } = await withPrefetchAllocation(async () => {
+        const { vfsState, vfsBundle } = await withPrefetchAllocation(async (admission) => {
             const gathered = processVfs
                 ? await gatherPrefetchBundle(processVfs, { cwd: opts.cwd, entryCode: '', esbuild: this.esbuild || undefined })
                 : { bundle: {}, reachableCount: 0, truncated: false };
+            admission.fit(gathered.rawBytes ?? 0);
             const serialized = _serializeBundleForFacet(gathered.bundle);
             assertStagedBundleFitsRpcPayload(serialized, gathered.bundle);
             return { vfsState: gathered, vfsBundle: serialized };
