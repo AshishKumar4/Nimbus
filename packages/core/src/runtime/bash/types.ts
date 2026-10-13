@@ -15,7 +15,7 @@
 import type { Errno, SyscallResult, WasiSupervisorStub } from '../wasi/types.js';
 import type { RuntimeFsBridge, VfsCred } from '../os-contracts.js';
 import type { AuthorityFd, AuthorityPreopen, ResidentFd } from '../wasi/filesystem.js';
-import type { CaptureStats, CaptureStore, StackBounds } from './capture-store.js';
+import type { CaptureStats, CaptureStore, ModuleLayout } from './capture-store.js';
 
 /**
  * The errno set this scheduler answers with — the same one every Nimbus syscall
@@ -217,6 +217,8 @@ export interface BashWasmExports {
   __stack_pointer: WebAssembly.Global;
   __data_end: WebAssembly.Global;
   __heap_base: WebAssembly.Global;
+  /** Where the jmp_buf hooks' log is (nimbus-proc.c). */
+  nimbus_procenv_log(): number;
   asyncify_start_unwind(buf: number): void;
   asyncify_stop_unwind(): void;
   asyncify_start_rewind(buf: number): void;
@@ -300,7 +302,7 @@ export interface BashStats extends CaptureStats {
 export interface BashSession {
   mod: WebAssembly.Module;
   /** The module's shadow stack, checked at its first instance (capture-store.ts). */
-  stack?: StackBounds;
+  stack?: ModuleLayout;
   /** Command name → the wasm module that answers to it, busybox applets included. */
   coreutils: Map<string, WebAssembly.Module>;
   coreutilsRoot: string;

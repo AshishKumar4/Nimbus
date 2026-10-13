@@ -24,10 +24,11 @@ const bash = new WebAssembly.Module(bashBytes);
 const busybox = new WebAssembly.Module(busyboxBytes);
 const imports = (mod) => WebAssembly.Module.imports(mod).map(({ module, name }) => `${module}.${name}`);
 assert(imports(bash).includes('nimbus_proc.capture_cwd'));
-// bash-runner@4: every jmp_buf copy and saved-copy end reaches the runner, and the stack's bounds and pointer are exported.
-assert(imports(bash).includes('nimbus_procenv.copy') && imports(bash).includes('nimbus_procenv.drop'));
+// bash-runner@5: every jmp_buf copy and saved-copy end is recorded in the module's log, which it exports with the stack's bounds and pointer.
+assert(imports(bash).includes('nimbus_procenv.full') && !imports(bash).includes('nimbus_procenv.copy'));
 const exported = Object.fromEntries(WebAssembly.Module.exports(bash).map(({ name, kind }) => [name, kind]));
 for (const name of ['__stack_pointer', '__data_end', '__heap_base']) assert.equal(exported[name], 'global', name);
+assert.equal(exported.nimbus_procenv_log, 'function');
 assert(imports(busybox).includes('nimbus_proc.startup_cwd'));
 assert(imports(busybox).includes('nimbus_proc.stat_metadata'));
 assert(imports(busybox).includes('wasi_snapshot_preview1.fd_sync'));
@@ -85,23 +86,21 @@ async function runBash() {
   const memory = () => instance.exports.memory;
   const view = () => new DataView(memory().buffer);
   const sp = () => instance.exports.__stack_pointer.value;
-  const unwind = () => instance.exports.asyncify_start_unwind(store.unwindAt(memory(), stats, 1));
+  const unwind = () => instance.exports.asyncify_start_unwind(store.unwindAt(memory(), sp(), stats, 1));
   const nimbus = nativeImports(() => instance, '/work', observed);
   Object.assign(nimbus, {
     getppid: () => 1, getpgid: () => 17, setpgid: () => -52, tcgetpgrp: () => -59, tcsetpgrp: () => -59,
     setjmp(env) {
       if (rewind) { instance.exports.asyncify_stop_rewind(); rewind = false; return; }
-      store.sweep(sp()); store.setting(env);
+      store.setting(memory(), env);
       captureEnv = env; captureSp = sp(); reason = 'capture'; unwind();
     },
     longjmp(env, value) {
-      store.sweep(sp());
       jumpEnv = env; jumpValue = value; reason = 'jump'; unwind();
     },
   });
   const procenv = {
-    copy(dst, src) { store.sweep(sp()); store.copied(memory(), dst, src); },
-    drop(at) { store.sweep(sp()); store.dropped(at); },
+    full() { store.applyLog(memory()); },
   };
   // These commands deliberately stay in Bash. Unexpected process operations
   // fail this binary proof instead of claiming success for an untested syscall.
@@ -139,7 +138,7 @@ async function runBash() {
   instance = new WebAssembly.Instance(bash, { wasi_snapshot_preview1: table, nimbus_proc: nimbus, nimbus_procenv: procenv, env });
   const base = memory().buffer.byteLength;
   memory().grow(ARENA_SIZE / 65536);
-  store = new CaptureStore({ low: instance.exports.__data_end.value, high: instance.exports.__heap_base.value }, base, ARENA_SIZE);
+  store = new CaptureStore({ low: instance.exports.__data_end.value, high: instance.exports.__heap_base.value, log: instance.exports.nimbus_procenv_log() }, base, ARENA_SIZE);
   let initial = true;
   for (let steps = 0; code === null; steps++) {
     assert(steps < 5000, 'binary scheduler did not terminate');

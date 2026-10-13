@@ -29,7 +29,7 @@ if [ ! -f config.status ]; then
   # cross.cache holds target answers only, never a machine's configure
   # environment (its CC, its build triple). configure writes its cache
   # back, so it gets a copy.
-  # Every jmp_buf copy through nimbus_procenv (bash-runner@4).
+  # Every jmp_buf copy recorded for the runner (bash-runner@5: nimbus-proc.c's log).
   patch -p1 --forward < "$HERE/patches/procenv.patch"
   cp "$HERE/cross.cache" nimbus-cross.cache
   CC="$CC" \

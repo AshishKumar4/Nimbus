@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 // Behavior test: a setjmp capture of the wasm bash lives exactly as long as a
-// buffer can still jump to it (bash-runner@4, bash/capture-store.ts).
+// buffer can still jump to it (bash-runner@5, bash/capture-store.ts).
 //
 // bash copies jmp_bufs by value around eval, functions, traps and sourced
-// files; the 5.2.37-4 build reports every copy and every end of a saved one
+// files; the 5.2.37-5 build reports every copy and every end of a saved one
 // (wasm/bash/patches/procenv.patch), and a copy on the stack ends with its
 // frame. So the captures a shell holds do not grow with how much it has run,
 // a jump out of many frames lets go of the copies they held, freed captures
