@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "7607f8eec1fe8c7815218037154fbec2045cf33af8407459477b419090cefb1b",
+  "fingerprint": "65bbdae0803a57d41381d360312d4916db9f22ea0629974ec83c8e952e781b70",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2023,9 +2023,9 @@
     "packages/sdk/dist/oauth.d.ts": "1685eeeac5a195020419dd21ab08a2bc610bda9c8c26c3d4cc8109f857856520",
     "packages/sdk/dist/oauth.d.ts.map": "3bebf1b6f82900803f4fd02d718dbbe393befe56467e6b4920dac73df5940d4c",
     "packages/sdk/dist/oauth.js": "36b24b537bc429e299cdd2bcaa71f1cd682923f150c08fe76aedae7303bd7ae5",
-    "packages/sdk/dist/sandbox.d.ts": "1590d6b030ecd63ff1bb8000ed9f5b167a001cd662ff9789dbb8bd4172c02c2f",
-    "packages/sdk/dist/sandbox.d.ts.map": "bd214244366da6bf05de982411402f66f6840873b90b1f3900f22aca306bcf98",
-    "packages/sdk/dist/sandbox.js": "4d9f973aa909f99db3ca331a4b20d0c48c005700929405276fa58d88f8cda737",
+    "packages/sdk/dist/sandbox.d.ts": "c16aabf820f741b2589504cb7aacbcb23006216262bfa3248f384161178f8ad0",
+    "packages/sdk/dist/sandbox.d.ts.map": "62266c7baf888d73a17c22aa339a825c263893aa1bde7324b1a1420e9545ba76",
+    "packages/sdk/dist/sandbox.js": "2f4af69cfc7b36103f3384acf2ad1714ba8a73a9e1720da83e7886a714673b36",
     "packages/sdk/dist/session.d.ts": "21372410656a37ad921c1a699e94cd40638aac7d5d20a704a402812e729c433a",
     "packages/sdk/dist/session.d.ts.map": "523cfa7b6830df7f40a1a0da690c3eda9ecc5bcc9b835d17f9edd12fe5ac9e77",
     "packages/sdk/dist/session.js": "f373ece1a92779da476ab310fc91c5e722f3f62791dc938148c02866ae69d678",
@@ -2041,7 +2041,7 @@
     "packages/sdk/src/flue.ts": "a207ff73f004e48ea3d5cdab9c193630df4e8071274e3a5bf3fdc158c8cdf956",
     "packages/sdk/src/index.ts": "e8483b920265930337c2ee7ed7d3a9cba0809088014f3d374eb851b8e5aafacf",
     "packages/sdk/src/oauth.ts": "6d801a39fb98f45556b4996d172a72da622bab8289b844e2cbb207ee36f69b1f",
-    "packages/sdk/src/sandbox.ts": "048d092283b4d7f1edb1faa53bf5957d62927e85251bd524425e9e0462d444ee",
+    "packages/sdk/src/sandbox.ts": "7a6ab95fc0766d3e3a908d9983c8b50d3e6a2ac29ec2e08b1039fdcfdb132c88",
     "packages/sdk/src/session.ts": "c232943bb10ce785f1a081876777c20a5788d1d6a14d6acf2db8d554a6e73679",
     "packages/sdk/src/token.ts": "fa670097c8946ca3296be4be6ec24eecfa0137e3cab44303ffb71aebcebb6fe6",
     "packages/sdk/src/types/assets.d.ts": "c4aa7861e179b8b294e8d171fa77826f2f105693d5a9627f0ea0f8ba4fb4324b",
