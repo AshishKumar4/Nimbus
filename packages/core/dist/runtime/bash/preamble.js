@@ -666,7 +666,7 @@ function makeProc(s, pid, ppid, fds) {
     proc.DV = DV;
     proc.U8 = U8;
     /** Unwind the whole stack, from the import calling this, into the arena's top. */
-    const startUnwind = () => { proc.inst.exports.asyncify_start_unwind(proc.captures.unwindAt(proc.inst.exports.memory, s.stats, proc.pid)); };
+    const startUnwind = () => { proc.inst.exports.asyncify_start_unwind(proc.captures.unwindAt(proc.inst.exports.memory, stackPointer(), s.stats, proc.pid)); };
     /** The shadow stack pointer at the import calling this: its caller's frame bottom (nimbus-proc.c's wrappers keep no frame). */
     const stackPointer = () => Number(proc.inst.exports.__stack_pointer.value);
     const wstr = (p, str) => { const b = te.encode(str); U8().set(b, p); return b.length; };
@@ -816,8 +816,7 @@ function makeProc(s, pid, ppid, fds) {
                 return;
             }
             const sp = stackPointer();
-            proc.captures.sweep(sp);
-            proc.captures.setting(env);
+            proc.captures.setting(proc.inst.exports.memory, env);
             c.reason = 'capture';
             c.captureEnv = env;
             c.captureSp = sp;
@@ -830,7 +829,6 @@ function makeProc(s, pid, ppid, fds) {
                 c.rewinding = false;
                 return;
             }
-            proc.captures.sweep(stackPointer());
             c.reason = 'longjmp';
             c.ljEnv = env;
             c.ljVal = val;
@@ -999,44 +997,38 @@ function makeProc(s, pid, ppid, fds) {
         sock_shutdown: suspend('sock_shutdown', wasi.sock_shutdown),
     };
     // Every copy bash makes of a jmp_buf, and every end of a saved one (wasm/bash/patches/procenv.patch).
-    const nimbus_procenv = {
-        copy: (dst, src) => {
-            proc.captures.sweep(stackPointer());
-            proc.captures.copied(proc.inst.exports.memory, dst, src);
-        },
-        drop: (at) => {
-            proc.captures.sweep(stackPointer());
-            proc.captures.dropped(at);
-        },
-    };
+    // The jmp_buf hooks record into the module's own log (nimbus-proc.c); a full one is applied at once.
+    const nimbus_procenv = { full: () => { proc.captures.applyLog(proc.inst.exports.memory); } };
     proc.inst = new WebAssembly.Instance(s.mod, { wasi_snapshot_preview1: suspendedWasi, nimbus_proc, nimbus_procenv, env: envImports });
-    s.stack ??= checkedStack(s.mod, proc.inst);
+    s.stack ??= checkedLayout(s.mod, proc.inst);
     proc.captures = new CaptureStore(s.stack, 0, 0);
     s.stats.instances++;
     s.procs.set(pid, proc);
     return proc;
 }
 /**
- * The module's shadow stack, after checking it is the bash-runner@4 module:
- * one that routes its jmp_buf copies through nimbus_procenv, exports the
+ * The module's shadow stack and hook log, after checking it is the
+ * bash-runner@5 module: one that records its jmp_buf copies in its own log
+ * (nimbus_procenv_log, handed over by nimbus_procenv.full), exports the
  * stack's bounds, and the stack pointer a longjmp and a fork set.
  */
-function checkedStack(mod, inst) {
+function checkedLayout(mod, inst) {
     const ex = inst.exports;
-    const routed = WebAssembly.Module.imports(mod).some((i) => i.module === 'nimbus_procenv' && i.name === 'copy');
-    if (!routed || typeof ex.__nimbus_signal_disposition !== 'function' || !(ex.__data_end instanceof WebAssembly.Global) || !(ex.__heap_base instanceof WebAssembly.Global)) {
-        throw new Error('bash-runner@4 needs the bash 5.2.37-4 module (its jmp_buf copies routed through nimbus_procenv); install bash 5.2.37-4');
+    const logs = WebAssembly.Module.imports(mod).some((i) => i.module === 'nimbus_procenv' && i.name === 'full');
+    if (!logs || typeof ex.nimbus_procenv_log !== 'function' || typeof ex.__nimbus_signal_disposition !== 'function'
+        || !(ex.__data_end instanceof WebAssembly.Global) || !(ex.__heap_base instanceof WebAssembly.Global)) {
+        throw new Error('bash-runner@5 needs the bash 5.2.37-5 module (its jmp_buf copies recorded in nimbus_procenv_log); install bash 5.2.37-5');
     }
     try {
         ex.__stack_pointer.value = ex.__stack_pointer.value;
     }
     catch {
-        throw new Error('bash-runner@4 needs a mutable __stack_pointer export; install bash 5.2.37-4');
+        throw new Error('bash-runner@5 needs a mutable __stack_pointer export; install bash 5.2.37-5');
     }
     const low = Number(ex.__data_end.value), high = Number(ex.__heap_base.value), sp = Number(ex.__stack_pointer.value);
     if (!(low < sp && sp <= high))
-        throw new Error(`bash-runner@4: the module's stack is not [__data_end, __heap_base) (${low}, ${sp}, ${high})`);
-    return { low, high };
+        throw new Error(`bash-runner@5: the module's stack is not [__data_end, __heap_base) (${low}, ${sp}, ${high})`);
+    return { low, high, log: ex.nimbus_procenv_log() };
 }
 /** A process's unwind state before it first runs; a reason's own fields are set when it unwinds for that reason. */
 function freshCtx() {
@@ -1121,7 +1113,7 @@ function copyForkImage(s, parent, child, source) {
 function setupArena(proc) {
     const base = proc.inst.exports.memory.buffer.byteLength;
     proc.inst.exports.memory.grow(Math.ceil(ARENA_SIZE / PAGE));
-    proc.captures = new CaptureStore(proc.captures.stackBounds, base, ARENA_SIZE);
+    proc.captures = new CaptureStore(proc.captures.layout, base, ARENA_SIZE);
 }
 // ── scheduler ─────────────────────────────────────────────────────────
 function resumeProc(proc) {

@@ -1,6 +1,6 @@
 /**
  * A wasm bash process's unwind arena, and the setjmp captures it holds, for
- * their whole lifetime (bash-runner@4).
+ * their whole lifetime (bash-runner@5).
  *
  * Every suspension unwinds the whole stack into the arena (asyncify):
  * setjmp(env)'s, and a blocking call's, a fork's or a longjmp's. A setjmp's
@@ -10,15 +10,19 @@
  *
  * A capture lives exactly as long as a buffer that names it can still be
  * jumped through. bash copies jmp_bufs by value (saved around eval, source
- * and traps), and the bash 5.2.37-4 build routes every such copy through
+ * and traps), and the bash 5.2.37-5 build routes every such copy through
  * nimbus_procenv.copy and every end of a saved copy through
  * nimbus_procenv.drop (wasm/bash/patches/procenv.patch). So the store keeps a
  * registry, buffer address → capture, and a count per capture of the buffers
- * that name it. A buffer on the stack ends without a hook, when its frame
- * returns or a longjmp skips it: below the stack pointer, it is dead
- * (sweep, at every hook, over the stack's buffers only). A buffer written
- * over without a hook no longer holds its capture's words; that only keeps
- * the capture longer, so it is looked for only when an unwind needs room.
+ * that name it. A hook only records what it saw, in the module's own memory
+ * (nimbus-proc.c's log: no call into the runner); the records are applied,
+ * in order, before the store is next asked anything (every unwind asks
+ * first), and a full log is handed over at once (nimbus_procenv.full). A
+ * buffer on the stack ends without a hook, when its frame returns or a
+ * longjmp skips it: below the stack pointer, it is dead (swept at every
+ * unwind, over the stack's buffers only). A buffer written over without a
+ * hook no longer holds its capture's words; that only keeps the capture
+ * longer, so it is looked for only when an unwind needs room.
  * A capture no buffer names is freed, and its space is taken back from the
  * top, or by sliding the live captures down once freed space below the top
  * passes PACK_SLACK, so the arena a process touches stays near what is live
@@ -35,6 +39,10 @@
 /** The arena: as large as the 8 MiB main buffer and the 32 × 256 KiB slots it replaces. */
 export declare const ARENA_SIZE: number;
 /** Where a module's shadow stack is: [low, high), from its __data_end and __heap_base (data first, as wasm-ld lays it out). */
+export interface ModuleLayout extends StackBounds {
+    /** Where the hooks' log is (nimbus_procenv_log): its record count, then the records, two words each. */
+    readonly log: number;
+}
 export interface StackBounds {
     readonly low: number;
     readonly high: number;
@@ -60,13 +68,13 @@ export declare class CaptureStore {
     readonly base: number;
     readonly size: number;
     /** The arena `size` bytes from `base`, empty, or a copy of what `from` holds (a fork's). */
-    constructor(stack: StackBounds, base: number, size: number, from?: CaptureStore);
+    constructor(stack: ModuleLayout, base: number, size: number, from?: CaptureStore);
     /** A forked child's: the same captures, buffers and counts, at the same places in the child's copy of the memory. */
     fork(): CaptureStore;
     /** An empty store for the same arena: an exited process's instance, kept for reuse, holds no captures. */
     emptied(): CaptureStore;
-    /** The module's shadow stack, which every store of its processes shares. */
-    get stackBounds(): StackBounds;
+    /** The module's shadow stack and log, which every store of its processes shares. */
+    get layout(): ModuleLayout;
     /** Where the next unwind goes, and where the one pending is. */
     get top(): number;
     /** What of the arena a fork copies: each live capture's bytes, and the pending unwind's up to `unwound`. */
@@ -77,21 +85,21 @@ export declare class CaptureStore {
      * down when less than MIN_ROOM is left. Only between a rewind's end and
      * the next unwind, when captures are the only unwound data.
      */
-    unwindAt(memory: WebAssembly.Memory, stats: CaptureStats, pid: number): number;
-    /** Before each hook's effect: the stack's buffers below `sp`, the current stack pointer, ended with their frames. */
-    sweep(sp: number): void;
+    unwindAt(memory: WebAssembly.Memory, sp: number, stats: CaptureStats, pid: number): number;
     /** setjmp(env) is about to capture: env stops naming what it named. */
-    setting(env: number): void;
+    setting(memory: WebAssembly.Memory, env: number): void;
     /**
      * Keep the stack setjmp(env) just unwound at top as a capture: write env
      * to name it, and count env. `sp`: setjmp's caller's stack pointer.
      * Answers where the capture is, ready to rewind.
      */
     take(memory: WebAssembly.Memory, env: number, sp: number, stats: CaptureStats, pid: number): number;
-    /** nimbus_procenv.copy(dst, src), after the copy: dst names what src named. */
-    copied(memory: WebAssembly.Memory, dst: number, src: number): void;
-    /** nimbus_procenv.drop(at): the saved buffer at `at` ends. */
-    dropped(at: number): void;
+    /**
+     * The hooks' log in `memory`, applied in the order it was made, and
+     * emptied: a copy's dst names what its src named, if dst still holds its
+     * words, and a drop's buffer ends. Also nimbus_procenv.full's answer.
+     */
+    applyLog(memory: WebAssembly.Memory): void;
     /**
      * The capture longjmp(env, value) jumps to, its landing given `value`,
      * made ready to rewind; after the current stack was unwound and

@@ -747,7 +747,7 @@ export declare const NIMBUS_RUNTIME_ABIS: Readonly<Record<string, RuntimePackage
  * catalog is shared by every deployment reading it and a workspace binds only
  * the build its preamble was written against.
  */
-export declare const BASH_RUNNER = "bash-runner@3";
+export declare const BASH_RUNNER = "bash-runner@5";
 /** Git's first runtime build imports the shared Nimbus filesystem/process extensions. */
 export declare const GIT_RUNNER = "git-runner";
 /**
