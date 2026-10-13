@@ -12,7 +12,11 @@ published independently in the `@nimbus-sh` npm scope.
   kernel-owned file the session's user cannot change, such as one an
   embedder provisioned in a sticky directory, and read another user's
   private files. They now act as the session's user, and are refused what
-  that user's own shell is refused.
+  that user's own shell is refused. These rules, like protected files,
+  guard against accidents and against the session's own tools: the
+  session's user has passwordless root through `sudo`, so they do not stand
+  against a program in the session that uses it (documented in the SDK
+  guide, "Users and Permissions").
 - Breaking: `files.delete` with no credential now acts as the session's
   user, like every other file method, instead of the kernel. An embedder
   that deletes past the user's permissions asks for it by name:
