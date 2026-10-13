@@ -1034,26 +1034,30 @@ const NOT_A_REPOSITORY = 'fatal: not a git repository (or any of the parent dire
 const NOT_A_WORK_TREE = 'fatal: this operation must be run in a work tree\n';
 /** setup_git_directory's walk: from the cwd up, a `.git` inside each level, else the level itself as a git directory. */
 async function discoverRepo(vfs, cwd) {
-    // git's is_git_directory: HEAD, and objects and refs here or in the common directory it names.
-    const isGitDir = async (key) => {
+    // git's is_git_directory: HEAD, and objects and refs here or in the common
+    // directory it names. Null for none; else whether it names one (GitRepo.linked).
+    const gitDirAt = async (key) => {
         const sub = (name) => (key ? `${key}/${name}` : name);
         if (!await vfs.isFile(sub('HEAD')))
-            return false;
-        return await vfs.isFile(sub('commondir')) || (await vfs.isDirectory(sub('objects')) && await vfs.isDirectory(sub('refs')));
+            return null;
+        if (await vfs.isFile(sub('commondir')))
+            return true;
+        return await vfs.isDirectory(sub('objects')) && await vfs.isDirectory(sub('refs')) ? false : null;
     };
     const segments = normalizeVfsPath(cwd).split('/').filter(Boolean);
-    const shared = async (gitdir) => await vfs.isFile(`${gitdir}/commondir`);
     for (let depth = segments.length; depth >= 0; depth--) {
         const dir = segments.slice(0, depth).join('/');
         const prefix = segments.slice(depth).join('/');
         const dotGit = dir ? `${dir}/.git` : '.git';
-        if (await isGitDir(dotGit))
-            return { gitdir: `/${dotGit}`, worktree: `/${dir}`, prefix, linked: await shared(dotGit) };
+        const linked = await gitDirAt(dotGit);
+        if (linked !== null)
+            return { gitdir: `/${dotGit}`, worktree: `/${dir}`, prefix, linked };
         // A .git file (gitdir: ...): git's repository is where it points, never an enclosing one's.
         if (await vfs.isFile(dotGit))
             return { gitdir: `/${dotGit}`, worktree: `/${dir}`, prefix, linked: true };
-        if (await isGitDir(dir))
-            return { gitdir: `/${dir}`, worktree: null, prefix, linked: await shared(dir) };
+        const bare = await gitDirAt(dir);
+        if (bare !== null)
+            return { gitdir: `/${dir}`, worktree: null, prefix, linked: bare };
     }
     return null;
 }
@@ -1157,6 +1161,48 @@ async function assertNoHooks(ctx, git, fs, repo, sub) {
     const hook = await executableHook(ctx, git, fs, repo.gitdir, repo.worktree ?? repo.gitdir, hooks);
     if (hook !== null)
         throw new UnsupportedGitOperation(`fatal: git ${sub} with a ${hook} hook is not supported here\n`, 128);
+}
+/**
+ * assertRepositoryImplemented's verdicts on a repository's config file, by
+ * session, credential and git directory, each with the revision of the file
+ * it was read at: a repository whose config is unchanged is not read again
+ * for its format. A path whose revision cannot be told (0: a mount's) is
+ * read every time.
+ */
+const formatVerdicts = new WeakMap();
+/** assertRepositoryImplemented, its verdict kept while the repository's config file is unchanged (formatVerdicts). */
+async function assertRepositoryFormat(ctx, session, git, fs, repo) {
+    if (repo.linked)
+        return await assertRepositoryImplemented(git, fs, repo);
+    let revision = 0;
+    try {
+        revision = ctx.vfs.revision(`${repo.gitdir}/config`);
+    }
+    catch { /* not told: read */ }
+    const key = `${ctx.cred.uid}:${ctx.cred.gid}:${ctx.cred.groups.join(',')}:${repo.gitdir}`;
+    let verdicts = formatVerdicts.get(session);
+    if (verdicts === undefined)
+        formatVerdicts.set(session, verdicts = new Map());
+    const known = verdicts.get(key);
+    if (revision !== 0 && known?.revision === revision) {
+        if (known.verdict instanceof UnsupportedGitOperation)
+            throw known.verdict;
+        return known.verdict;
+    }
+    let verdict;
+    try {
+        verdict = await assertRepositoryImplemented(git, fs, repo);
+    }
+    catch (error) {
+        if (!(error instanceof UnsupportedGitOperation))
+            throw error;
+        verdict = error;
+    }
+    if (revision !== 0)
+        verdicts.set(key, { revision, verdict });
+    if (verdict instanceof UnsupportedGitOperation)
+        throw verdict;
+    return verdict;
 }
 /** Refuse a repository whose format the built-in does not implement; answers whether it sets extensions.worktreeConfig. */
 async function assertRepositoryImplemented(git, fs, repo) {
@@ -3616,7 +3662,7 @@ realGit) {
             const repo = await discoverRepo(repoVfs, dir);
             // The repository's format is its own config file's, as git reads it: no -c or global value stands in.
             if (repo !== null) {
-                const { worktreeConfig } = await assertRepositoryImplemented(await getGit(), fs, repo);
+                const { worktreeConfig } = await assertRepositoryFormat(ctx, vfs, await getGit(), fs, repo);
                 worktreeConfigs.set(repo.gitdir, worktreeConfig);
                 if (worktreeConfig)
                     git = reader(true);
