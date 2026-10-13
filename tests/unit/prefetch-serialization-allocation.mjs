@@ -31,6 +31,8 @@ const cellsPath = new URL('../../packages/core/src/_shared/commonjs-cell.ts', im
 const cells = await import(cellsPath);
 const legacyWrap = cells.wrapCommonJsCell;
 const reservations = [];
+// The heap's bytes in use: its objects, and the buffers of strings and arrays JSC keeps beside them (extraMemorySize).
+const used = () => { const stats = heapStats(); return stats.heapSize + stats.extraMemorySize; };
 let peak = 0;
 let failSerialization = false;
 // What a ~17 MiB build does as it starts serializing its cell (the three-caller
@@ -43,11 +45,12 @@ mock.module(cellsPath, () => ({ ...cells,
     const big = /PREFETCH_BIG_EVIDENCE ([\w-]+)/.exec(args[0].slice(0, 64))?.[1];
     if (big !== undefined) {
       bigSerialized.set(big, (bigSerialized.get(big) ?? 0) + 1);
+      peak = Math.max(peak, used());
       onBigCell.get(big)?.();
     }
     if (args[0].includes('PREFETCH_LEASE_EVIDENCE')) {
       reservations.push(readSupervisorAllocationBudget().current);
-      peak = Math.max(peak, heapStats().heapSize);
+      peak = Math.max(peak, used());
       if (failSerialization) throw new Error('injected serializer failure');
     }
     return legacyWrap(...args);
@@ -69,12 +72,13 @@ const launchTree = (i) => manager.exec("require('./cell.js')", { filename: `/hom
 /** The heap's peak over its settled base while `run` runs. */
 const peakOver = async (run) => {
   Bun.gc(true);
-  const base = heapStats().heapSize;
+  const base = used();
   peak = base;
   const result = await run();
+  peak = Math.max(peak, used());
   return { result, over: peak - base };
 };
-const sampled = setInterval(() => { peak = Math.max(peak, heapStats().heapSize); }, 1);
+const sampled = setInterval(() => { peak = Math.max(peak, used()); }, 1);
 const started = performance.now();
 try {
   // One build alone, for its bytes.
@@ -157,6 +161,7 @@ try {
     assert.ok(peakHeld <= readSupervisorAllocationBudget().capacity, `the pool's ceiling held (${peakHeld})`);
     const capacity = readSupervisorAllocationBudget().capacity;
     console.log('PREFETCH_SERIALIZATION_BIG ' + JSON.stringify({ singlePeakOverBase: alone.over, peakOverBase: bigThree.over, capacity }));
+    assert.ok(alone.over > BIG, `one ~17 MiB build is measured (${alone.over} bytes over its base)`);
     assert.ok(bigThree.over <= alone.over + capacity,
       `three ~17 MiB builds at once peak at one build's bytes plus the admitted budget (${bigThree.over} > ${alone.over} + ${capacity})`);
     drained();
