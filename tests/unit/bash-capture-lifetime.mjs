@@ -6,9 +6,9 @@
 // files; the 5.2.37-4 build reports every copy and every end of a saved one
 // (wasm/bash/patches/procenv.patch), and a copy on the stack ends with its
 // frame. So the captures a shell holds do not grow with how much it has run,
-// a jump out of many frames lets go of the copies they held, captures whose
-// homes alternate are packed down when they fill the arena, and a fork copies
-// only the captures that live. Driven through REAL bash on the REAL staged
+// a jump out of many frames lets go of the copies they held, freed captures
+// are packed away as they build, and a fork copies only the captures that
+// live. Driven through REAL bash on the REAL staged
 // wasm, through the runner's own scheduler.
 
 import assert from 'node:assert/strict';
@@ -47,14 +47,17 @@ await check('a jump out of many frames lets go of the copies they held', async (
 });
 
 // A function's return_catch and the test builtin's buffer, set in turn, free each other's capture below the newest:
-// the arena fills with freed space and is packed; a fork then copies the captures that live, not the arena.
-await check('captures that fill the arena are packed, and a fork copies only the live ones', async () => {
+// freed space is packed away as it builds, so the arena a shell touches does not grow with how many it took
+// (15 MiB of captures, 3000 of them); a fork then copies the captures that live, not the arena.
+await check('freed captures are packed as they build, and a fork copies only the live ones', async () => {
   const fresh = await run('(echo child); echo done');
-  const filled = await run('f(){ [ 1 ]; }; for i in $(seq 1500); do f; done; (echo child); echo done');
-  assert.equal(filled.stdout, 'child\ndone\n');
-  assert.ok(filled.stats.captureCompactions >= 1, JSON.stringify(filled.stats));
-  assert.ok(filled.stats.captureBytesHi > 8 << 20, JSON.stringify(filled.stats));
-  assert.ok(filled.stats.forkCopied - fresh.stats.forkCopied < 1 << 20, JSON.stringify({ fresh: fresh.stats.forkCopied, filled: filled.stats.forkCopied }));
+  const few = await run('f(){ [ 1 ]; }; for i in $(seq 300); do f; done; (echo child); echo done');
+  const many = await run('f(){ [ 1 ]; }; for i in $(seq 1500); do f; done; (echo child); echo done');
+  assert.equal(many.stdout, 'child\ndone\n');
+  assert.ok(many.stats.captureCompactions > few.stats.captureCompactions, JSON.stringify({ few: few.stats, many: many.stats }));
+  assert.ok(many.stats.captureBytesHi < 4 << 20, JSON.stringify(many.stats));
+  assert.ok(many.stats.captureBytesHi <= few.stats.captureBytesHi + (256 << 10), JSON.stringify({ few: few.stats.captureBytesHi, many: many.stats.captureBytesHi }));
+  assert.ok(many.stats.forkCopied - fresh.stats.forkCopied < 1 << 20, JSON.stringify({ fresh: fresh.stats.forkCopied, many: many.stats.forkCopied }));
 });
 
 assert.deepEqual(failures, []);

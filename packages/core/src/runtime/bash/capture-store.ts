@@ -20,8 +20,10 @@
  * over without a hook no longer holds its capture's words; that only keeps
  * the capture longer, so it is looked for only when an unwind needs room.
  * A capture no buffer names is freed, and its space is taken back from the
- * top, or by sliding the live captures down when an unwind needs the room.
- * No memory is scanned.
+ * top, or by sliding the live captures down once freed space below the top
+ * passes PACK_SLACK, so the arena a process touches stays near what is live
+ * (fresh pages and cold lines are most of a capture's cost). No memory is
+ * scanned.
  *
  * A jmp_buf as this store writes it: word 0 names the capture (TAG | a
  * 16-bit id), word 1 is setjmp's return value (the only word nimbus-proc.c
@@ -36,6 +38,8 @@ const TAG = 0xfb5a0000;
 export const ARENA_SIZE = 16 << 20;
 /** What every unwind is given at least. bash's deepest unwind seen is ~240 KiB (12 nested function calls). */
 const MIN_ROOM = 2 << 20;
+/** Freed space below the top past which the live captures are packed before the next unwind. */
+const PACK_SLACK = 1 << 20;
 
 /** Where a module's shadow stack is: [low, high), from its __data_end and __heap_base (data first, as wasm-ld lays it out). */
 export interface StackBounds {
@@ -74,7 +78,9 @@ export interface RewindTarget {
   readonly sp: number;
 }
 
-const above = (at: number, length: number): number => (at + 8 + length + 15) & ~15;
+/** A capture's footprint: its header and bytes, to the next 16-byte boundary (every capture starts on one). */
+const span = (length: number): number => (8 + length + 15) & ~15;
+const above = (at: number, length: number): number => at + span(length);
 
 export class CaptureStore {
   readonly base: number;
@@ -87,6 +93,8 @@ export class CaptureStore {
   readonly #stackNames: number[];
   #view: DataView | null = null;
   #top: number;
+  /** The live captures' footprint: the arena below the top, less the space freed in it. */
+  #liveBytes = 0;
   #nextId = 1;
   #nextGeneration = 1;
 
@@ -98,6 +106,7 @@ export class CaptureStore {
     this.#names = new Map(from.#names);
     this.#stackNames = [...from.#stackNames];
     this.#top = from.#top;
+    this.#liveBytes = from.#liveBytes;
     for (const [id, capture] of from.#captures) this.#captures.set(id, { ...capture });
     this.#nextId = from.#nextId; this.#nextGeneration = from.#nextGeneration;
   }
@@ -134,9 +143,10 @@ export class CaptureStore {
    */
   unwindAt(memory: WebAssembly.Memory, stats: CaptureStats, pid: number): number {
     const view = this.#viewOf(memory);
-    if (this.base + this.size - this.#top < MIN_ROOM) {
-      // The buffers written over without a hook end now, then the live captures are packed.
-      for (const [at, id] of this.#names) if (!this.#holds(view, at, id)) this.#unname(at);
+    const short = this.base + this.size - this.#top < MIN_ROOM;
+    if (short || this.#top - this.base - this.#liveBytes > PACK_SLACK) {
+      // Short of room, the buffers written over without a hook end first.
+      if (short) for (const [at, id] of this.#names) if (!this.#holds(view, at, id)) this.#unname(at);
       this.#compact(memory); stats.captureCompactions++;
     }
     if (this.base + this.size - this.#top < MIN_ROOM) {
@@ -182,6 +192,7 @@ export class CaptureStore {
     this.#captures.set(id, capture);
     this.#name(env, id);
     this.#top = above(at, length);
+    this.#liveBytes += span(length);
     if (length > stats.mainHi) stats.mainHi = length;
     if (this.#top - this.base > stats.captureBytesHi) stats.captureBytesHi = this.#top - this.base;
     if (this.#captures.size > stats.captureLiveHi) stats.captureLiveHi = this.#captures.size;
@@ -271,6 +282,7 @@ export class CaptureStore {
     const capture = this.#captures.get(id);
     if (capture === undefined || --capture.refs > 0) return;
     this.#captures.delete(id);
+    this.#liveBytes -= span(capture.length);
     if (above(capture.at, capture.length) !== this.#top) return;
     let top = this.base;
     for (const live of this.#captures.values()) top = Math.max(top, above(live.at, live.length));
