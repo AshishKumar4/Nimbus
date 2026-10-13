@@ -96,7 +96,7 @@ try {
       await box.processes.kill(started.pid);
       const seeded = await box.exec("sudo sh -c 'printf %s proto-root > /__proto__'");
       assert.equal(seeded.exitCode, 0, seeded.stderr);
-      const rootFile = await box.exec('node -e "const f=require(\'fs\'); console.log(\'ROOT_PROTO \'+JSON.stringify([f.readFileSync(\'/__proto__\',\'utf8\'),f.readdirSync(\'/\').includes(\'__proto__\')]))"');
+      const rootFile = await box.exec('node -e "const f=require(\'fs\'); console.log(\'ROOT_PROTO \'+JSON.stringify([f.readFileSync(\'/__proto__\',\'utf8\'),f.readdirSync(\'/\').includes(\'__proto__\')]))"', { cwd: '/' });
       assert.equal(rootFile.exitCode, 0, rootFile.stderr);
       const rootLine = rootFile.stdout.split('\n').find((text) => text.startsWith('ROOT_PROTO '));
       assert.ok(rootLine, rootFile.stdout);
