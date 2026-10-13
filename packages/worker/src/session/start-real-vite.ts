@@ -185,6 +185,10 @@ export async function startRealVite(self: any, opts: StartRealViteOptions): Prom
     // Persist so the session recovers after hibernation — same key the shim
     // uses, tagged so restore rebuilds real-vite. configDir is recorded so the
     // restore can re-bundle the same vite.config from the (persisted) VFS.
+    // The intent lasts as long as the server: its end (a kill, vite stop, a
+    // lost host, a replacing vite) forgets it, so nothing restores a server
+    // that ended. A session that sleeps never ends it, and wakes to restore it.
+    const pid = cirrusReal.pid;
     try {
       await self.ctx.storage.put(VITE_CONFIG_KEY, {
         devServer: 'real',
@@ -192,9 +196,12 @@ export async function startRealVite(self: any, opts: StartRealViteOptions): Prom
         port: opts.port,
         basePath: opts.basePath,
         configDir: opts.configDir,
-        identity: devServerIdentity(self.processes.get(cirrusReal.pid)),
+        identity: devServerIdentity(self.processes.get(pid)),
       });
     } catch { /* persistence is best-effort; the server still serves now */ }
+    const forget = (): void => { self.ctx.storage.delete(VITE_CONFIG_KEY).catch(() => {}); };
+    if (self.processes.get(pid)?.state !== 'running') forget();
+    else self.processes.subscribeTerminal(pid, forget);
 
     return { cirrusReal, userConfigBundle, cfgPath };
   } finally {

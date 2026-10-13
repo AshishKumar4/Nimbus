@@ -5,7 +5,9 @@
 //     on the preview path and on its port;
 //   - `ps` lists it running;
 //   - `kill <pid>` ends it as SIGTERM;
-//   - `vite` starts it again under a new pid, and `vite stop` ends that one.
+//   - `vite` starts it again under a new pid, and `vite stop` ends that one;
+//   - a server that ended stays ended: a request to the preview path or its
+//     port does not start it again.
 
 import {
   BASE, Terminal, mintSession, deleteSession, makeAsserter, heredocCommand,
@@ -34,6 +36,16 @@ try {
   }
 
   /** `ps`'s status for each real-vite pid, newest last. */
+  /** After an end: /preview and /port answer without a server, and none started again. */
+  const staysEnded = async (what) => {
+    const preview = await fetchPreview(sid);
+    a.check(`${what}: the preview path does not serve it again`, !(preview.status === 200 && preview.html.includes(marker)),
+      `status=${preview.status} ${preview.html.slice(0, 200)}`);
+    const onPort = await fetchPort(sid, port, '');
+    a.check(`${what}: its port does not serve it again`, onPort.status !== 200, `status=${onPort.status} ${onPort.body.slice(0, 200)}`);
+    const live = (await servers()).filter((s) => s.status === 'running');
+    a.check(`${what}: no server was started again`, live.length === 0, JSON.stringify(live));
+  };
   const servers = async () => {
     const ps = await terminal.run('ps', 10_000);
     return ps.output.split('\n').filter((l) => l.includes('vite (real,'))
@@ -60,6 +72,7 @@ try {
   a.check('kill succeeds', killed.exitCode === 0, killed.output);
   const afterKill = await statusOf(pid);
   a.check('kill ends it as SIGTERM', afterKill === 'killed(143)', String(afterKill));
+  await staysEnded('after kill');
 
   const again = await start();
   a.check('vite starts it again under a new pid', again !== pid, `pid ${pid} then ${again}`);
@@ -69,6 +82,7 @@ try {
   a.check('vite stop says it stopped the server', stopped.output.includes('Dev server stopped'), stopped.output);
   const afterStop = await statusOf(again);
   a.check('vite stop ends it, exiting 0', afterStop === 'exited(0)', String(afterStop));
+  await staysEnded('after vite stop');
 } finally {
   await terminal.close();
   const deleted = await deleteSession(sid);

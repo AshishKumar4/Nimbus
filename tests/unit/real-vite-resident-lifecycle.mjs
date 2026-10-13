@@ -15,6 +15,8 @@
 //   5. killProcess ends it 137;
 //   6. a lost facet ends it 137, its port answering with the cause, and the
 //      server is never evaluated a second time under the same pid;
+// and each end forgets what would restore the server when the session
+// wakes, which it holds while the server runs.
 //   7. the runtime's close ends it.
 
 import assert from 'node:assert/strict';
@@ -95,11 +97,14 @@ const server = () => {
   const boot = world.boots.at(-1);
   return { pid, facet: boot?.facetName, boot };
 };
-const ended = (pid, code, facet, what) => {
+/** What restores the server when the session wakes (routes.restorePersistedDevServer). */
+const restoreIntent = () => ctx.storage.get('vite-config');
+const ended = async (pid, code, facet, what) => {
   assert.equal(running(pid), false, `${what}: the server's process ended`);
   assert.equal(processes.get(pid)?.exitCode, code, `${what}: exit ${code}`);
   assert.equal(ports.get(PORT), undefined, `${what}: its port is free`);
   assert.equal(world.liveFacets().includes(facet), false, `${what}: its facet is released`);
+  assert.equal(await restoreIntent(), undefined, `${what}: nothing restores it`);
 };
 
 try {
@@ -120,13 +125,14 @@ try {
   const env0 = first.boot.config.env;
   assert.equal(env0.SUPERVISOR?.supervisor?.pid, first.pid, 'its SUPERVISOR is its own process\'s');
   assert.equal(env0.CIRRUS_HMR?.hmr?.doId, 'real-vite-do', 'its HMR channel is the session\'s');
+  assert.equal((await restoreIntent())?.port, PORT, 'while it runs, a session that wakes restores it');
   const page = await ports.routeRequest(PORT, new Request('https://session.test/'), '/index.html');
   assert.equal(await page.text(), 'vite /index.html', 'its port routes to the process');
   console.log('  [1] vite returns with Vite booted in one resident process, its port routed to it');
 
   // ── 2. kill <pid> ───────────────────────────────────────────────────────
   assert.deepEqual(await sh(`kill ${first.pid}`), { code: 0, out: '', err: '' });
-  ended(first.pid, 143, first.facet, 'kill');
+  await ended(first.pid, 143, first.facet, 'kill');
   console.log('  [2] kill ends it 143 and frees its port and facet');
 
   // ── 3. vite stop ────────────────────────────────────────────────────────
@@ -136,7 +142,7 @@ try {
   const stop = await sh(`cd ${ROOT} && NIMBUS_REAL_VITE=1 vite stop`);
   assert.equal(stop.code, 0, stop.err);
   assert.match(stop.out, /Dev server stopped/);
-  ended(second.pid, 0, second.facet, 'vite stop');
+  await ended(second.pid, 0, second.facet, 'vite stop');
   console.log('  [3] vite stop ends it, exiting 0');
 
   // ── 4. a second vite ends the first ─────────────────────────────────────
@@ -149,11 +155,12 @@ try {
   assert.equal(processes.get(third.pid)?.exitCode, 143);
   assert.equal(world.liveFacets().includes(third.facet), false, 'its facet is released');
   assert.equal(ports.get(PORT)?.pid, fourth.pid, 'the new one serves the port');
+  assert.equal((await restoreIntent())?.identity?.argv?.join(' '), `--port ${PORT} --no-install-check`, 'and is what a session that wakes restores');
   console.log('  [4] a second vite ends the server running before it');
 
   // ── 5. killProcess ──────────────────────────────────────────────────────
   assert.deepEqual(await runtime.killProcess(fourth.pid), { ok: true, pid: fourth.pid });
-  ended(fourth.pid, 137, fourth.facet, 'killProcess');
+  await ended(fourth.pid, 137, fourth.facet, 'killProcess');
   console.log('  [5] killProcess ends it 137');
 
   // ── 6. a lost facet ─────────────────────────────────────────────────────
@@ -169,6 +176,7 @@ try {
   assert.equal(processes.get(fifth.pid)?.exitCode, 137);
   assert.equal(ports.get(PORT), undefined, 'its port is free');
   assert.match(String(ports.ended(PORT)), new RegExp(`pid ${fifth.pid}`), 'and answers with the cause');
+  assert.equal(await restoreIntent(), undefined, 'nothing restores it');
   console.log('  [6] a lost facet ends it 137, its port answering with the cause');
 
   // ── 7. the runtime's close ──────────────────────────────────────────────
