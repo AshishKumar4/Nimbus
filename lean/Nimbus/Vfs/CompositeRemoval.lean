@@ -87,11 +87,6 @@ def applyVanished (base : St) (composed : Bool) (operand : Path) (entries : List
   entries.foldl (fun S e => if e.vanished then
     erase S (owner base composed operand e.path).backend (localPath base composed operand e.path) true else S) base
 
-def collect {α : Type} : List (Except String (List α)) → Except String (List α)
-  | [] => .ok []
-  | .error e :: _ => .error e
-  | .ok xs :: rest => (collect rest).map (xs ++ ·)
-
 variable (cfg : Backend → Config)
 
 /-- The operand's lstat error aborts. A non-ENOENT child lstat error schedules an
