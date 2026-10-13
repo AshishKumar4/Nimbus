@@ -10,8 +10,9 @@ published independently in the `@nimbus-sh` npm scope.
   NTFS (and, with `core.protectHFS`, HFS+) read as `.git`. `checkout` and
   `reset --hard` write nothing and say git's `invalid path` error, `reset`
   leaves the index, and a clone keeps its repository with nothing checked
-  out. Before, a fetched commit could write `.git/config` or a file above
-  the worktree.
+  out. A clone honours `core.protectHFS` and `core.protectNTFS` from `-c`
+  and the user's `~/.gitconfig`, as git's does. Before, a fetched commit
+  could write `.git/config` or a file above the worktree.
 - Fixed (security): a malformed tree object is git's error
   (`too-short tree object`, `malformed mode in tree entry`, `empty
   filename in tree entry`). One reader looped forever on such a tree,

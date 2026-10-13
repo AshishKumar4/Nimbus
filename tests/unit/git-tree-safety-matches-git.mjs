@@ -268,4 +268,62 @@ console.log('  ok  .g\u200cit under core.protectHFS: refused, as git does');
   }
 }
 
+// A clone checks out under the settings its command runs with: `-c` and the
+// user's global config, never the config of the repository it is run in.
+// Both planners: an unfiltered clone's (its stored pack) and a filtered one's.
+{
+  const served = join(work, 'served-settings');
+  mkdirSync(served);
+  const serve = (name, make) => {
+    const source = repository(join(work, `settings-${name}`), make);
+    cpSync(join(source, '.git'), join(served, `${name}.git`), { recursive: true });
+    sh(join(served, `${name}.git`), ['config', 'core.bare', 'true']);
+    sh(join(served, `${name}.git`), ['symbolic-ref', 'HEAD', 'refs/heads/evil']);
+  };
+  serve('hfs', (o) => sub(o, '.g\u200cit'));
+  serve('ntfs', (o) => sub(o, 'git~1'));
+  // A repository the clone is run in, whose own config would let git~1 through.
+  sh(work, ['init', '-q', join(work, 'cwd-repo')]);
+  sh(join(work, 'cwd-repo'), ['config', 'core.protectNTFS', 'false']);
+  user.mkdir('home/user/cwd-repo', { recursive: true });
+  assert.equal((await session.git('/home/user/cwd-repo', ['init', '-q'])).code, 0);
+  assert.equal((await session.git('/home/user/cwd-repo', ['config', 'core.protectNTFS', 'false'])).code, 0);
+  const server = startGitHttpServer(served);
+  let n = 0;
+  try {
+    const cases = [
+      ['core.protectHFS=true on the command line refuses .g\u200cit', 'hfs', ['-c', 'core.protectHFS=true'], {}, '/home/user', work],
+      ['core.protectHFS=true in the user\'s ~/.gitconfig refuses .g\u200cit', 'hfs', [], { HOME: '/home/user' }, '/home/user', work],
+      ['core.protectNTFS=false on the command line lets git~1 through', 'ntfs', ['-c', 'core.protectNTFS=false'], {}, '/home/user', work],
+      ['the config of the repository a clone is run in is not the clone\'s', 'ntfs', [], {}, '/home/user/cwd-repo', join(work, 'cwd-repo')],
+    ];
+    for (const [label, name, settings, env, cwd, hostCwd] of cases) {
+      for (const flags of [[], ['--filter=blob:none']]) {
+        const dest = `settings-${++n}`;
+        const global = env.HOME !== undefined;
+        if (global) user.writeFile('home/user/.gitconfig', '[core]\n\tprotectHFS = true\n');
+        const hostArgs = [...settings, ...(global ? ['-c', 'core.protectHFS=true'] : []), 'clone', ...flags, `${server.url}/${name}.git`, join(work, dest)];
+        const host = await new Promise((resolve) => {
+          const p = spawn('git', hostArgs, { cwd: hostCwd, env: GIT_ENV });
+          let stderr = '';
+          p.stderr.on('data', (chunk) => { stderr += chunk; });
+          p.on('close', (code) => resolve({ code, stderr }));
+        });
+        const ours = await session.git(cwd, [...settings, 'clone', ...flags, `${server.url}/${name}.git`, `/home/user/${dest}`], env);
+        if (global) user.unlink('home/user/.gitconfig');
+        const lines = (text) => text.split('\n').filter((line) => line && !line.startsWith('Cloning into') && !line.startsWith('[git]'));
+        const what = `${label} (clone ${flags.join(' ')})`;
+        assert.equal(ours.code, host.code, `${what}: exit (git's: ${host.stderr}; ours: ${ours.stderr})`);
+        assert.deepEqual(lines(ours.stderr), lines(host.stderr), `${what}: git's errors`);
+        const checkedOut = (dir) => readdirSync(dir).filter((entry) => entry !== '.git').sort();
+        assert.deepEqual(sessionState(`/home/user/${dest}`).filter((line) => !line.startsWith('.git/')).map((line) => line.split(' ')[0].replace(/\/$/, '')).filter((path) => !path.includes('/')).sort(),
+          checkedOut(join(work, dest)), `${what}: what is checked out`);
+      }
+      console.log(`  ok  ${label}, in both planners`);
+    }
+  } finally {
+    server.stop();
+  }
+}
+
 console.log(`git-tree-safety-matches-git: ok (${cases} cases)`);

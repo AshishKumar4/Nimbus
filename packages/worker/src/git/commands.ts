@@ -2884,6 +2884,11 @@ export async function runGitCommand(
         // mutations there by it, as it does on SQLite. A delegation it
         // overlaps is recalled first (withRecall). It goes when the clone's
         // process is stopped (stoppable): a destroy stops the clone first.
+        // The names its checkout refuses beyond verify_path's own, as git's
+        // clone reads them: `-c` and the user's global config. The
+        // destination has no config yet, and the repository the command is
+        // run in is not the clone's.
+        const protect = await worktreeRepo(ctx, git, vfs, fs, `${dest}/.git`, dest).pathProtection();
         const leaseRoot = place.mount ? await firstMissing(ctx.vfs, target) : target;
         const mutationLease = await withRecall(() => vfs.as(ctx.cred).acquireExclusiveMutation(leaseRoot, { includeMissingAncestors: !place.mount, stoppable: true }));
         // A piece of the clone that hung may still write: the facet runner
@@ -2910,6 +2915,7 @@ export async function runGitCommand(
               depth,
               filter,
               sparse,
+              protect,
               quiet,
               exclusiveDestination: true,
               exclusiveMutationRoot: mutationLease.root,

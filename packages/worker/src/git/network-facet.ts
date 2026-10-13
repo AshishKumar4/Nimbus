@@ -39,6 +39,7 @@ import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { GIT_PACK_NODE_IMPORTS, GIT_PACK_SRC } from './pack/facet.generated.js';
 import { createSupervisorRpcCounters, type MetadataOverlayStats, type SupervisorRpcCounters } from './pack/facet-supervisor.js';
 import { tagsHeld, type CloneBatchResult, type ClonePrepared, type CloneStreamed, type CloneTag } from './pack/clone.js';
+import type { PathProtection } from './worktree/verify-path.js';
 import { COMMITS_PER_CHUNK, treeSlices, type HistoryKind, type HistoryStepResult, type StagedFile } from './pack/history.js';
 import { RETRY_ATTEMPTS, isLostTransport, retryDelay } from './pack/transport.js';
 import { CHECKOUT_FAILED } from './pack/mount-writer.js';
@@ -113,6 +114,8 @@ export interface GitNetworkOpts {
   filter?: string;
   /** `git clone --sparse`: a cone-mode sparse checkout of the top's files only. */
   sparse?: boolean;
+  /** clone: the names its checkout refuses beyond verify_path's own, as its command is configured. */
+  protect?: PathProtection;
   /** Fast clone, full history: blobs per history request (tuning; history.ts by default). */
   historyBlobsPerBatch?: number;
   /** Fast clone, full history: root trees per history request (tuning; history.ts by default). */

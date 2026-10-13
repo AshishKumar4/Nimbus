@@ -27,7 +27,7 @@ import { GRAPH_RECORDS_DIR } from './commit-graph.js';
 import { MissingBaseError, PackObjectResolver, runAsync } from './reader.js';
 import { encodeIndexEntry, encodeIndexFile, splitIndexEntries, type EntryStat } from '../worktree/dircache.js';
 import { encodeNode, type BuiltSubtree } from '../worktree/cachetree.js';
-import { invalidPathError } from '../worktree/verify-path.js';
+import { invalidPathError, type PathProtection } from '../worktree/verify-path.js';
 import { oidFromHex, oidToHex, PACK_TRAILER_BYTES, PackFormatError } from './format.js';
 import { PackStreamProcessor, type PackProcessResult, type PackStore, type WorkTally } from './processor.js';
 import { discover, requestPack, type Advertisement, type GitTransportAuth, type UploadPackOptions } from './upload-pack.js';
@@ -85,6 +85,8 @@ export interface CloneRequest {
   budgetUnits?: number;
   /** `git clone --sparse`: a cone-mode sparse checkout of the top's files only. */
   sparse?: boolean;
+  /** The names the checkout refuses beyond verify_path's own, as the clone's command is configured (`-c`, the user's global config). */
+  protect?: PathProtection;
 }
 
 export interface CloneBatchPlan {
@@ -561,7 +563,7 @@ export async function cloneFast(context: CloneContext, request: CloneRequest, ad
       const found = trees.get(oidToHex(data, at));
       if (found === undefined) throw new PackFormatError('the pack lacks tree ' + oidToHex(data, at));
       return found;
-    }, request.sparse === true ? coneMatcher(coneOf([])) : undefined);
+    }, request.sparse === true ? coneMatcher(coneOf([])) : undefined, request.protect);
   };
   const head = tagObject ?? commit;
   const promisorRefs = head + ' HEAD\n' + head + ' ' + fullRef + '\n';
@@ -877,14 +879,14 @@ function supervisorStore(context: CloneContext): PackObjectStore {
 /** A streamed clone's checkout plan, from its stored pack: the batches then read their blobs from it. */
 export async function clonePlanFromStore(
   context: CloneContext,
-  request: { commit: string; blobsPerBatch?: number; sparse?: boolean },
+  request: { commit: string; blobsPerBatch?: number; sparse?: boolean; protect?: PathProtection },
 ): Promise<ClonePrepared> {
   const store = supervisorStore(context);
   const commitObject = await store.read(request.commit);
   if (commitObject === null || commitObject.type !== 'commit') throw new PackFormatError('the clone lacks commit ' + request.commit);
   const tree = commitTree(commitObject.data, request.commit);
   const trees = await readTrees(store, tree);
-  const plan = CheckoutPlan.fromTrees(trees.get(tree)!, (data, at) => trees.get(oidToHex(data, at))!, request.sparse === true ? coneMatcher(coneOf([])) : undefined);
+  const plan = CheckoutPlan.fromTrees(trees.get(tree)!, (data, at) => trees.get(oidToHex(data, at))!, request.sparse === true ? coneMatcher(coneOf([])) : undefined, request.protect);
   const cacheTree = cacheTreeOf('', tree, trees).built.bytes;
   trees.clear();
   const writer = context.writer();
