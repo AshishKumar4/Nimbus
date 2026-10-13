@@ -18,7 +18,7 @@ import { loaderOutbound, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/w
 import { applyFacetLimits, facetLimits, type FacetResourceLimits } from '@nimbus-sh/fabric/facet-limits.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import type { EsbuildReadFs, EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import type { VfsEvent } from '@nimbus-sh/core/vfs/events.js';
 import type { CompositeVFS } from '@nimbus-sh/core/vfs/composite.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
@@ -36,7 +36,10 @@ import { parseWranglerJsonc, type WranglerConfig } from './wrangler-config.js';
 export interface NimbusWranglerOptions {
   /** The workspace's network: the worker under development goes out through its egress. */
   network: WorkspaceNetwork;
+  /** The engine, as the process that started the server: its config, migrations and stores. */
   vfs: CredentialedVfs;
+  /** The namespace, as the same process: what the Worker's bundle reads. */
+  bundleFs: EsbuildReadFs;
   /** The session's namespace, whose changes rebuild the worker (CompositeVFS.watchChanges). */
   namespace: Pick<CompositeVFS, 'watchChanges'>;
   esbuild: EsbuildService;
@@ -169,6 +172,7 @@ function renderWorkerRunningHtml(opts: { workerName: string; outerWorkerBase: st
 export class NimbusWrangler {
   private readonly network: WorkspaceNetwork;
   private vfs: CredentialedVfs;
+  private bundleFs: EsbuildReadFs;
   private namespace: Pick<CompositeVFS, 'watchChanges'>;
   private esbuild: EsbuildService;
   private loaderEnv: any;
@@ -197,6 +201,7 @@ export class NimbusWrangler {
 
   constructor(opts: NimbusWranglerOptions) {
     this.vfs = opts.vfs;
+    this.bundleFs = opts.bundleFs;
     this.namespace = opts.namespace;
     this.esbuild = opts.esbuild;
     this.loaderEnv = opts.env;
@@ -385,6 +390,8 @@ export class NimbusWrangler {
           'child_process', 'worker_threads', 'perf_hooks', 'zlib',
           'assert', 'fs/promises', 'process',
         ],
+        // Through the starting process's view, not the build service's default.
+        fs: this.bundleFs,
       };
       let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
       const result = await Promise.race([

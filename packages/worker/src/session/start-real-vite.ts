@@ -16,7 +16,7 @@
  * such session was unrecoverable after eviction.
  */
 
-import { CRED_KERNEL, isVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_SESSION_USER, isVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { execIdField, type ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
@@ -131,7 +131,7 @@ export async function startRealVite(self: any, opts: StartRealViteOptions): Prom
       .find((p) => callerFs.exists(p)) ?? null);
     if (cfgPath) {
       try {
-        if (!self.esbuildService) self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_KERNEL));
+        if (!self.esbuildService) self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER));
         const bundleResult = await self.esbuildService.build([cfgPath], {
           bundle: true,
           format: 'esm',

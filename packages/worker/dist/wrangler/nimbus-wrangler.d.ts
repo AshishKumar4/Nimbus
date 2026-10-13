@@ -15,12 +15,15 @@
  */
 import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import type { EsbuildReadFs, EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import type { CompositeVFS } from '@nimbus-sh/core/vfs/composite.js';
 export interface NimbusWranglerOptions {
     /** The workspace's network: the worker under development goes out through its egress. */
     network: WorkspaceNetwork;
+    /** The engine, as the process that started the server: its config, migrations and stores. */
     vfs: CredentialedVfs;
+    /** The namespace, as the same process: what the Worker's bundle reads. */
+    bundleFs: EsbuildReadFs;
     /** The session's namespace, whose changes rebuild the worker (CompositeVFS.watchChanges). */
     namespace: Pick<CompositeVFS, 'watchChanges'>;
     esbuild: EsbuildService;
@@ -59,6 +62,7 @@ export declare function rewriteLocationForOuter(location: string, outerWorkerBas
 export declare class NimbusWrangler {
     private readonly network;
     private vfs;
+    private bundleFs;
     private namespace;
     private esbuild;
     private loaderEnv;

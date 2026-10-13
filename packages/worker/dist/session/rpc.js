@@ -1204,7 +1204,7 @@ export async function _rpcTransform(self, code, loader) {
         self.ensureSqliteFs();
         if (!self.sqliteFs)
             throw new Error('Session VFS is not initialized');
-        self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_KERNEL));
+        self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER));
     }
     try {
         const result = await self.esbuildService.transform(code, {

@@ -9,7 +9,7 @@ import {
   issueProcessNews,
   withLaunchAdmission,
 } from "@nimbus-sh/fabric/budgets.js";
-import { CRED_KERNEL, CRED_SESSION_USER, type NimbusFilesystemAuthority } from "@nimbus-sh/core/runtime/os-contracts.js";
+import { CRED_KERNEL, CRED_SESSION_USER, type NimbusFilesystemAuthority, type VfsCred } from "@nimbus-sh/core/runtime/os-contracts.js";
 import { ProcessFiles, ProcessView, X_OK } from "@nimbus-sh/core/runtime/process-files.js";
 import { resolutionOf } from '@nimbus-sh/core/shell/exec-dispatch.js';
 
@@ -220,7 +220,7 @@ export async function ensureNpmInstaller(self: RuntimeServiceHost, runtimeContex
     self.ensureSqliteFs();
     if (!self.esbuildService) {
       if (!self.sqliteFs) throw new Error('Session VFS is not initialized');
-      self.esbuildService = supervisorEsbuildService(runtimeContext.ctx, runtimeContext.env, self.getFilesystemAuthority().namespaceFs(CRED_KERNEL));
+      self.esbuildService = supervisorEsbuildService(runtimeContext.ctx, runtimeContext.env, self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER));
     }
     // Lazy-load the installer (+ its ~216 KB resolver/facet/loader-pool
     // subgraph) on first npm use so it stays out of the cold script-eval
@@ -241,8 +241,9 @@ export async function ensureNpmInstaller(self: RuntimeServiceHost, runtimeContex
     return self.npmInstaller;
   }
 
-export function ensureGlobalPrefixDirs(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext, prefix: string): void {
-    const fs = self.sqliteFs!.as(CRED_SESSION_USER);
+export function ensureGlobalPrefixDirs(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext, prefix: string, cred: Readonly<VfsCred>): void {
+    // Made as the installing process, which then installs into them.
+    const fs = self.sqliteFs!.as(cred);
     const dirs = [
       prefix,
       `${prefix}/lib`,

@@ -14,7 +14,7 @@ import type { ProcessHost, ResidentDiskReader, Supervise } from '@nimbus-sh/fabr
  */
 export declare function processHostMode(env: unknown): ProcessHostMode;
 /** The substrate for this deployment, resolved once. */
-export declare function processHostFor(ctx: DurableObjectState, env: unknown, disk: () => ResidentDiskReader, 
+export declare function processHostFor(ctx: DurableObjectState, env: unknown, disk: (pid: number) => ResidentDiskReader, 
 /** The workspace's network (the session's composition supplies it); absent, the isolate's own. */
 network?: () => WorkspaceNetwork, supervise?: Supervise): ProcessHost;
 //# sourceMappingURL=process-host.d.ts.map

@@ -122,7 +122,7 @@ export function createProcessHost(
   mode: ProcessHostMode,
   ctx: DurableObjectState,
   env: unknown,
-  disk: () => ResidentDiskReader,
+  disk: (pid: number) => ResidentDiskReader,
   /** The workspace's network: every process's binding carries it, and with it its egress. */
   network: () => WorkspaceNetwork,
   supervise: Supervise = bindingSupervisor,
@@ -154,7 +154,7 @@ class FacetProcessHost implements ProcessHost {
   constructor(
     private readonly ctx: DurableObjectState,
     env: unknown,
-    private readonly disk: () => ResidentDiskReader,
+    private readonly disk: (pid: number) => ResidentDiskReader,
     private readonly network: () => WorkspaceNetwork,
     private readonly supervise: Supervise,
   ) {
