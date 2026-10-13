@@ -105,7 +105,7 @@ interface ResidentFacetStub {
    * live socket, and the leaf's own request signal aborts when the call is
    * cancelled, which no RPC call gives its callee.
    */
-  fetch(request: Request, init?: { signal?: AbortSignal }): Promise<Response>;
+  fetch(request: Request, init?: { signal?: AbortSignal; encodeResponseBody?: 'manual' }): Promise<Response>;
 }
 
 /** `ctx.facets` — a Durable Object's named child actors. */
@@ -637,7 +637,8 @@ function spawnResident(
       const signal = relayed ?? cancel!.signal;
       try {
         // A live watch that found the pinned instance admits the request; without one it carries its admission.
-        const response = await facet.fetch(observation.validated() ? request : await admitted(request), { signal });
+        // Unencoded: the registry decodes a coding once, as it did the bytes an RPC hop carried.
+        const response = await facet.fetch(observation.validated() ? request : await admitted(request), { signal, encodeResponseBody: 'manual' });
         if (response.status === 500 && response.headers.get(HOST_FAILED_HEADER) === watchCapability) throw receivedFailure(new Error(await response.text()));
         return response.status === 410 ? await checked(response) : response;
       } catch (error) {

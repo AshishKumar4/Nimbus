@@ -109,7 +109,7 @@ const sent = new SentRequests(), abandons = [];
   const later = handled.signal({ id: 4, low: 4 });
   handled.abandon(3);
   assert.equal(carried.aborted, false, 'a retired id is not abandoned');
-  assert.equal(handled.signal({ id: 1, low: 4 }).aborted, false);
+  assert.equal(handled.signal({ id: 1, low: 4 }).aborted, true, 'a request that arrives already retired was abandoned');
   handled.abandon(4);
   assert.equal(later.aborted, true);
 }

@@ -38,7 +38,7 @@ export class Peer extends DurableObject {
 }
 const CODE={compatibilityDate:'2026-09-26',mainModule:'leaf.js',modules:{'leaf.js':\`import {DurableObject} from 'cloudflare:workers';
 export class NimbusProcess extends DurableObject { startProcess(){return 'booted';} handleHttpRequest(){return new Response('user response');} fetch(){return new Response('user response');} }\`}};
-// A guest's answers HTTP framing would change on the way to its host: a declared length on a stream body, and an encoded body, sent manual or (as the Node shim does) automatic.
+// A guest's answers as the HTTP hop to its host carries them: a declared length on a stream body (right, short, long), and an encoded body, sent manual or (as the Node shim does) automatic.
 const FRAMED={compatibilityDate:'2026-09-26',mainModule:'leaf.js',modules:{'leaf.js':\`import {DurableObject} from 'cloudflare:workers';
 const gzip=()=>new Response(new Blob(['hello hello']).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer();
 export class NimbusProcess extends DurableObject {
@@ -47,6 +47,7 @@ export class NimbusProcess extends DurableObject {
     const path=new URL(request.url).pathname;
     if(path==='/length')return new Response(new ReadableStream({start(c){c.enqueue(new Uint8Array([1,2,3,4,5]));c.close();}}),{headers:{'Content-Length':'5'}});
     if(path==='/short')return new Response(new ReadableStream({start(c){c.enqueue(new Uint8Array([1,2]));c.close();}}),{headers:{'Content-Length':'5'}});
+    if(path==='/long')return new Response(new ReadableStream({start(c){c.enqueue(new Uint8Array([1,2,3,4,5]));c.close();}}),{headers:{'Content-Length':'2'}});
     if(path==='/gzip-manual')return new Response(await gzip(),{headers:{'Content-Encoding':'gzip'},encodeBody:'manual'});
     const bytes=new Uint8Array(await gzip());
     return new Response(new ReadableStream({start(c){c.enqueue(bytes);c.close();}}),{headers:{'Content-Encoding':'gzip'}});
@@ -197,7 +198,7 @@ export class Host extends DurableObject {
         return {...seen,body:seen.coding==='gzip'?new TextDecoder().decode(bytes):[...bytes]};
       }catch(error){return {...seen,error:String(error)};}
     };
-    const framing={length:await answer('/length'),short:await answer('/short'),manual:await answer('/gzip-manual'),automatic:await answer('/gzip-automatic')};
+    const framing={length:await answer('/length'),short:await answer('/short'),long:await answer('/long'),manual:await answer('/gzip-manual'),automatic:await answer('/gzip-automatic')};
     return {shared,afterCancel,rejectedCapability,stale,activeLost:active.lost,idleLost:idle.lost,admitted,error,experiments,resetCases,passiveCases,framing};
   }
 }
@@ -252,8 +253,12 @@ try{
     assert.equal(test.after,0,JSON.stringify(test));
   }
   assert.deepEqual(result.framing.length,{status:200,length:'5',coding:null,body:[1,2,3,4,5]},'a declared length on a stream body reaches the host');
-  assert.equal(result.framing.short.length,'5');
-  assert.ok(result.framing.short.error,'a body shorter than its declared length fails, never passes short: '+JSON.stringify(result.framing.short));
+  // A wrong declaration reaches the host as declared, for the registry's FixedLengthStream to refuse: never rewritten to match the body, never a body cut to fit.
+  for(const [sent,declared,got] of [['short','5',2],['long','2',5]]){
+    const seen=result.framing[sent];
+    assert.equal(seen.length,declared,sent+': '+JSON.stringify(seen));
+    assert.ok(seen.error||seen.body.length===got,sent+': the body is not cut to its declaration: '+JSON.stringify(seen));
+  }
   for(const sent of ['manual','automatic']){const {length:_length,...seen}=result.framing[sent];assert.deepEqual(seen,{status:200,coding:'gzip',body:'hello hello'},sent+': the host receives the encoded bytes the guest sent, decoded once');}
   console.log('host-activity-workerd: native abort, shared watch, active reset, idle incarnation change, stale data refusal and the HTTP hop keeping length and coding');
 }finally{child.kill('SIGKILL');rmSync(dir,{recursive:true,force:true});}
