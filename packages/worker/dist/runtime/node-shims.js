@@ -3305,8 +3305,11 @@ const __fsMod = (() => {
     const atimeMs = Number.isFinite(own?.atimeMs) ? own.atimeMs : Number(meta?.atime ?? meta?.mtime ?? now);
     const ctimeMs = Number(meta?.ctime ?? meta?.mtime ?? now);
     const mode = _statMode(key, isDir, isSymlink, Number(meta?.mode ?? (isDir ? 0o755 : 0o644)));
-    const identity = (value) => value === undefined || value === null ? undefined : Number(value);
-    return _newStats(mode, meta?.uid, meta?.gid, identity(meta?.ino), Number(meta?.size || 0), atimeMs, mtimeMs, ctimeMs, identity(meta?.nlink), identity(meta?.dev));
+    return _newStats(mode, meta?.uid, meta?.gid, _statIdentity(meta?.ino), Number(meta?.size || 0), atimeMs, mtimeMs, ctimeMs, _statIdentity(meta?.nlink), _statIdentity(meta?.dev));
+  }
+  /** An identity field (ino, nlink, dev) as its filesystem gave it, or undefined where it gave none. */
+  function _statIdentity(value) {
+    return value === undefined || value === null ? undefined : Number(value);
   }
 
   // Each exact dirent type's S_IFMT bits and Node predicate (core's vfs/dirent-type.ts).
