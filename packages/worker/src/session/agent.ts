@@ -900,7 +900,7 @@ function toolSchema(properties: Record<string, unknown>, required: string[]) {
   });
 }
 
-async function runTool(self: Host, name: string, args: any): Promise<unknown> {
+export async function runTool(self: Host, name: string, args: any): Promise<unknown> {
   try {
     if (name === 'exec') {
       return rpcExec(self, String(args.command || ''), {

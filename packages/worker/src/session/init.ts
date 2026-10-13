@@ -23,7 +23,7 @@ import { sessionAiEnv } from './ai.js';
 import { setPhase } from './init-phases.js';
 import { shellTerminalTee } from './ws.js';
 import type { SessionInternal } from './internal.js';
-import { serveEditorFs } from './editor-fs.js';
+import { editorViews, serveEditorFs } from './editor-fs.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 import { noteClientActivity } from './hibernation.js';
 
@@ -254,10 +254,7 @@ export async function initSession(
     //
     // Answered by serveEditorFs (editor-fs.ts).
     self.terminal.onFs((msg: any, reply: (frame: any) => void) => {
-      const namespace = self.getFilesystemAuthority();
-      // The file tree lists on fs-watch events, so it reads what has landed:
-      // listing a directory a process holds asks the process for nothing.
-      void serveEditorFs({ files: namespace.namespaceFs(CRED_KERNEL), tree: namespace.namespaceFs(CRED_KERNEL, { landed: true }) }, msg).then(reply);
+      void serveEditorFs(editorViews(self.getFilesystemAuthority()), msg).then(reply);
     });
 
     // W8: hand the registry to the cp broker so child_process.spawn from

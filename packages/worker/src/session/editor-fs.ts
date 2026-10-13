@@ -12,9 +12,19 @@
  */
 import { parentVfsPath, stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
 import { recallOf, withRecall } from '@nimbus-sh/core/vfs/recall.js';
-import type { NamespaceFs } from '@nimbus-sh/core/runtime/process-files.js';
+import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { NamespaceFs, ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 
 type EditorFs = Pick<NamespaceFs, 'exists' | 'isDirectory' | 'readFile' | 'mkdir' | 'writeFile' | 'readdir'>;
+
+/**
+ * The editor pane's views of the session's namespace: `files`, which it
+ * reads and saves, and `tree`, which it lists. The tree reads what has
+ * landed, so listing a directory a process holds asks the process for nothing.
+ */
+export function editorViews(namespace: ProcessFiles): { files: EditorFs; tree: EditorFs } {
+  return { files: namespace.namespaceFs(CRED_KERNEL), tree: namespace.namespaceFs(CRED_KERNEL, { landed: true }) };
+}
 
 /** A message's path, as the namespace names it. */
 const absolute = (path: unknown): string => `/${stripLeadingSlashes(String(path || ''))}`;
