@@ -16,9 +16,17 @@ let server;
 let probe;
 try {
   // No npm release or host-package resolution drift: this is the exact
-  // undici version the CI Node executable bundles, with request() exposed.
+  // undici version the CI Node executable bundles. Node exports its real
+  // dispatcher, whose .request() uses that same bundled RedirectHandler;
+  // this facade only translates the top-level URL to dispatcher arguments.
   mkdirSync(join(host, 'node_modules/undici'), { recursive: true });
-  writeFileSync(join(host, 'node_modules/undici/index.js'), 'module.exports = require("internal/deps/undici/undici");\n');
+  writeFileSync(join(host, 'node_modules/undici/index.js'), [
+    'const undici = require("internal/deps/undici/undici");',
+    'exports.request = (url, options = {}) => {',
+    '  const target = new URL(url);',
+    '  return undici.getGlobalDispatcher().request({ ...options, origin: target.origin, path: target.pathname + target.search, method: options.method || (options.body ? "PUT" : "GET") });',
+    '};',
+  ].join('\n'));
   writeFileSync(join(host, 'server.cjs'), REDIRECT_SERVER);
   writeFileSync(join(host, 'client.cjs'), REDIRECT_CLIENT);
   server = spawn('node', ['server.cjs'], { cwd: host, stdio: ['ignore', 'pipe', 'pipe'] });
