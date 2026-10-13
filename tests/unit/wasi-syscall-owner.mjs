@@ -102,6 +102,26 @@ await check('a chunk and then the end of a socket, split between a lapsed poll a
   assert.equal((await g.recv(50)).text, '', 'then the end');
 });
 
+// RTW-1: two receivers wait on one empty socket and share its one read; the one that finds the bytes taken waits on.
+await check('two receivers of one socket: the second waits for its own chunk, or the end, rather than reading a false end', async () => {
+  const g = await parkingGuest();
+  const feed = g.socket(52);
+  const first = g.recv(52);
+  const second = g.recv(52);
+  feed.enqueue(enc.encode('one'));
+  assert.deepEqual({ errno: (await first).errno, text: (await first).text }, { errno: ESUCCESS, text: 'one' });
+  const early = await Promise.race([second.then((r) => ({ errno: r.errno, text: r.text })), tick(200).then(() => 'waiting')]);
+  assert.equal(early, 'waiting', 'the second has nothing yet, and the socket has not ended');
+  feed.enqueue(enc.encode('two'));
+  assert.deepEqual({ errno: (await second).errno, text: (await second).text }, { errno: ESUCCESS, text: 'two' });
+  const third = g.recv(52);
+  const fourth = g.recv(52);
+  feed.enqueue(enc.encode('three'));
+  feed.close();
+  const answers = (await Promise.all([third, fourth])).map((r) => r.text).sort();
+  assert.deepEqual(answers, ['', 'three'], 'one gets the chunk, the other the end');
+});
+
 // RTW-M8: the deadline answered; the guest reused the buffer; then the bytes came.
 await check('a recv the deadline answered writes nothing when its bytes arrive later, and the next recv gets them', async () => {
   const g = await parkingGuest();
@@ -139,6 +159,24 @@ await check('an accept the deadline answered adopts nothing when its connection 
     const accepted = await Promise.race([g.wasi.sock_accept(60, 0, out), tick(2000).then(() => 'still waiting')]);
     assert.equal(accepted, ESUCCESS, 'the next accept takes the connection that came');
     assert.equal(g.P.fdTable.get(g.view().getUint32(out, true))?.kind, 'socket');
+    void request;
+  } finally { delete globalThis.__nimbusVirtualSockets; }
+});
+
+// RTW-M8: the connection a timed-out accept gives back is the listener's: a poll waiting on it hears of it.
+await check('a connection a timed-out accept gave back wakes a poll of its listener', async () => {
+  const kernel = new VirtualSocketKernel({});
+  const port = kernel.listen(7302);
+  globalThis.__nimbusVirtualSockets = kernel;
+  try {
+    const g = await parkingGuest();
+    g.P.fdTable.set(61, { kind: 'listener', port, fdflags: 0 });
+    assert.equal(await g.wasi.sock_accept(61, 0, g.scratch()), EAGAIN, 'the deadline answered');
+    const polled = g.poll([{ read: 61 }]);
+    await tick();
+    const request = kernel.handleHttpRequest(port, new Request('http://nimbus.local/late')).catch(() => {});
+    const woke = await Promise.race([polled, tick(2000).then(() => 'still waiting')]);
+    assert.deepEqual(woke, { errno: ESUCCESS, events: [{ sub: 0, type: FD_READ, error: ESUCCESS }] }, 'the poll heard of the connection at once');
     void request;
   } finally { delete globalThis.__nimbusVirtualSockets; }
 });
