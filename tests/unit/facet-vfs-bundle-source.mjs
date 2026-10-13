@@ -20,6 +20,10 @@ function evaluateBundleSource(source) {
   return new Function(...aliases, `return (${source.expression});`)(...parts);
 }
 
+// A bundle comes back as a dictionary: no prototype, so a file named like one
+// of Object.prototype's members is only a file.
+const dictionary = (entries) => Object.assign(Object.create(null), entries);
+
 // Data cells: a program's code files are modules of their own, not bundle
 // data (the last case below).
 const oversizedSource = 'const value = "escaped";\n'.repeat(900_000);
@@ -43,24 +47,43 @@ for (const [name, moduleSource] of Object.entries(source.modules)) {
 }
 assert.deepEqual(
   evaluateBundleSource(source),
-  bundle,
+  dictionary(bundle),
   'side modules reconstruct every text, binary, denial, and transitive leaf cell exactly',
 );
+
+// Escape-heavy text costs the generated source what its JSON encoding costs,
+// no more, so the side modules that carry it stay within the ceiling; and a
+// data file named __proto__ comes back as an own entry, split or inline.
+{
+  const quoted = Object.create(null);
+  quoted['usr/local/lib/node_modules/data/quotes.txt'] = '"\\'.repeat(6_000_000);
+  quoted['usr/local/lib/node_modules/data/table.json'] = '{"__proto__":{"k":"v"}}';
+  quoted.__proto__ = new Uint8Array([1, 2, 3]);
+  const split = await buildFacetVfsBundleSource(quoted);
+  assert.ok(Object.keys(split.modules).length >= 2, 'the escape-heavy cell is split across side modules');
+  for (const [name, moduleSource] of Object.entries(split.modules)) {
+    assert.ok(new TextEncoder().encode(moduleSource).length <= BUNDLE_MAX_ENCODED_BYTES, `${name} stays within the encoded per-module ceiling`);
+  }
+  assert.deepEqual(evaluateBundleSource(split), quoted, 'every cell comes back, the file named __proto__ an own entry');
+  const small = Object.create(null);
+  small.__proto__ = new Uint8Array([7]);
+  assert.deepEqual(evaluateBundleSource(await buildFacetVfsBundleSource(small)), small, 'inline, too');
+}
 
 const inline = await buildFacetVfsBundleSource({
   'usr/local/lib/node_modules/shebang-command/package.json': '{"main":"index.js"}',
 });
 assert.deepEqual(inline.modules, {}, 'small bundles keep the existing inline path');
-assert.deepEqual(evaluateBundleSource(inline), {
+assert.deepEqual(evaluateBundleSource(inline), dictionary({
   'usr/local/lib/node_modules/shebang-command/package.json': '{"main":"index.js"}',
-});
+}));
 
 // A code cell is its own `{ cjs }` module and not data as well — the store
 // takes its file from that module — so it costs the map its text once.
 {
   const code = 'module.exports = () => "node";';
   const split = await buildFacetVfsBundleSource({ 'usr/local/lib/node_modules/shebang-command/index.js': code });
-  assert.deepEqual(evaluateBundleSource(split), {}, 'no data copy of a code cell');
+  assert.deepEqual(evaluateBundleSource(split), dictionary({}), 'no data copy of a code cell');
   const texts = Object.values(split.codeModules);
   assert.equal(texts.length, 1);
   assert.equal(texts[0].split(code).length, 2, 'the module carries the cell once');
@@ -124,7 +147,7 @@ for (const [label, char, bytesPerChar] of [
     'an inline binary bundle really is within the ceiling (the counter does not under-count)',
   );
   assert.deepEqual(
-    evaluateBundleSource(fits), { [BIN]: justUnder },
+    evaluateBundleSource(fits), dictionary({ [BIN]: justUnder }),
     'a ceiling-sized binary cell still revives byte-for-byte',
   );
 

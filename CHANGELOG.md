@@ -18,6 +18,39 @@ published independently in the `@nimbus-sh` npm scope.
   names) and `bindings` (beside the process's own SUPERVISOR). Removed: the
   stateless fallback for hosts without Durable Object facets, where no
   resident process can run, and `/api/_diag/cirrus`.
+- Fixed: a peer-hosted resident whose boot reads stdin (a synchronous read of
+  fd 0) was replayed against reads it never made: the hosting peer's own
+  reads of the process's boot images counted as the process's, and its
+  second boot stopped with `reached fd 0 before the recorded answer to stat
+  was delivered`. The peer reads the images through a binding no run acts
+  through, under the process's pid; the session serves such a read apart
+  from the run's own receipts.
+- Fixed: Node programs report Node's navigator identity and ICU locale, so
+  packages such as pg choose their Node transport. Worker identity and
+  hardware concurrency stay unchanged.
+- Added: `NimbusWorkspace.shellState(name)` reads the named shell's saved cwd
+  and exact environment, without its call pid. Reads share the shell's queue
+  and distinguish lone UTF-16 surrogates and variables named `__proto__`,
+  `constructor` or `toString`. Listings and UTF-8 pipes are unchanged.
+- Fixed: fabric connections preserve the host's socket type in lookups and
+  listings, so callers can use methods such as `send` without type assertions.
+- Fixed: Cloudflare account lookup validates only the successful account
+  result and reports malformed responses with their HTTP status and cause.
+  Account names are trimmed; blank names use the account id.
+- Fixed (security): `undici.request()` no longer forwards explicit Authorization,
+  Cookie or Proxy-Authorization headers across an origin-changing redirect.
+  Redirects now match Node 22's bundled undici: Host is regenerated on every
+  hop, 303 drops the body and content headers (keeping HEAD), 301/302 and
+  307/308 retain the method and body, and redirect limits honor
+  `throwOnMaxRedirect`. Along a redirect, a Node stream body stops at the
+  first redirect; an async or sync iterable, an array or a Web ReadableStream
+  is iterated again for the next hop that keeps the body, so a spent one fails
+  its Content-Length (`UND_ERR_REQ_CONTENT_LENGTH_MISMATCH`), and no redirect
+  after that hop is followed until a 303 drops the body. A string, bytes, a
+  Blob, FormData and URLSearchParams are the same on every hop (for FormData
+  and URLSearchParams, undici's own handler differs). A Web ReadableStream is
+  streamed on the first request, as before. Sync iterables and arrays are now
+  accepted as request bodies.
 - Fixed: peer placement put a process in the isolate another process of the
   same coordinator already ran in, and two processes placed at once in the
   same one: the isolates in use were checked but never recorded. Each

@@ -777,6 +777,18 @@ ${STOP_REPLAY_SOURCE}
 // only other way a string becomes code in a Worker is \`new Function\` at
 // module evaluation, which compiled the whole closure before the program ran.
 ${runtime.code}
+
+// These getters retain only identity, not a run's filesystem and shims.
+function __nimbusInstallNodeNavigator(__version) {
+  let __languages;
+  const __languageList = () => __languages ??= Object.freeze([new Intl.DateTimeFormat().resolvedOptions().locale]);
+  Object.defineProperties(globalThis.navigator, {
+    userAgent: { get: () => 'Node.js/' + __version.slice(1).split('.')[0], enumerable: true, configurable: true },
+    platform: { get: () => 'Linux x86_64', enumerable: true, configurable: true },
+    language: { get: () => __languageList()[0], enumerable: true, configurable: true },
+    languages: { get: __languageList, enumerable: true, configurable: true },
+  });
+}
 `;
 }
 /**
@@ -897,6 +909,7 @@ ${RESIDENCY_MISS_REPORT}
     try { globalThis.process = __processMod; } catch {}
     try { globalThis.Buffer = __BufferMod; } catch {}
     try { globalThis.global = globalThis; } catch {}
+    __nimbusInstallNodeNavigator(__processMod.version);
     // undici's fetch (bundled by e.g. create-cloudflare) detaches
     // performance.markResourceTiming and calls it with no receiver,
     // which workerd rejects with "Illegal invocation" and crashes the
@@ -1245,7 +1258,7 @@ export function facetWasmImportsSource(wasmImports) {
 export async function generateLongRunningNodeCode(userCode, vfsState, opts, usesSqlite, sources, pacer) {
     const bundleSource = await facetVfsBundleSourceFor(vfsState, pacer);
     const entry = entryModule(userCode, opts.filename, opts.cwd || DEFAULT_HOME, opts.esModule, bundleSource, opts.preamble);
-    const safeArgs = JSON.stringify({
+    const args = {
         argv: opts.argv || [],
         nodeCommandLine: opts.node ?? null,
         env: opts.env || {},
@@ -1255,12 +1268,12 @@ export async function generateLongRunningNodeCode(userCode, vfsState, opts, uses
         stdin: opts.stdin || '',
         attachedTty: opts.attachedTty === true,
         cred: opts.cred,
-    });
+    };
     const runtime = createNodeFacetRuntime(sources, { ...bundleSource, stackEntry: entry.stackEntry });
     const source = moduleSource `
 import { DurableObject } from "cloudflare:workers";
 ${nodeProgramModule(bundleSource, runtime, usesSqlite, vfsState.stagedBindings, opts.wasmImports ?? [])}
-const __NIMBUS_ARGS = ${safeArgs};
+const __NIMBUS_ARGS = ${jsonDataLiteral(args)};
 
 // \`let\`, not \`const\`, so the parsed bundle can be dropped once the store has
 // adopted it. Holding both is the double materialisation: the module map's text
@@ -2117,6 +2130,35 @@ function describeBundleCells(cells, limit = 8) {
     return shown.map(([path, bytes]) => `${path} (${bytes} bytes)`).join(', ') + (rest > 0 ? `, +${rest} more` : '');
 }
 /**
+ * JSON data as the JavaScript expression that evaluates to it: its JSON text,
+ * except that an own `__proto__` key is written computed (`["__proto__"]`),
+ * since in an object literal `"__proto__":` sets the prototype instead of
+ * making the key. Data without one is its JSON text, byte for byte, so the
+ * counters that size generated sources from JSON encodings stay exact.
+ */
+function jsonDataLiteral(value) {
+    return holdsProtoKey(value) ? dataLiteral(JSON.parse(JSON.stringify(value))) : JSON.stringify(value);
+}
+function holdsProtoKey(value) {
+    if (value === null || typeof value !== 'object')
+        return false;
+    if (!Array.isArray(value) && Object.hasOwn(value, '__proto__'))
+        return true;
+    return Object.values(value).some(holdsProtoKey);
+}
+/** Parsed JSON data as `jsonDataLiteral` writes it. */
+function dataLiteral(data) {
+    if (data === null || typeof data !== 'object')
+        return JSON.stringify(data);
+    if (Array.isArray(data))
+        return `[${data.map(dataLiteral).join(',')}]`;
+    return `{${Object.entries(data).map(([key, item]) => `${key === '__proto__' ? '["__proto__"]' : JSON.stringify(key)}:${dataLiteral(item)}`).join(',')}}`;
+}
+/** Bytes a bundle key costs the generated source: its JSON text, computed when it is `__proto__`. */
+function _bundleKeyBytes(path) {
+    return _jsonEncodedBytes(path) + (path === '__proto__' ? 2 : 0);
+}
+/**
  * hardening-r5: emit a JS expression that revives binary cells from base64
  * and preserves permission-denial cells alongside ordinary strings.
  *
@@ -2126,6 +2168,8 @@ function describeBundleCells(cells, limit = 8) {
 function _serializeBundleForFacet(bundle) {
     const strCells = {};
     const binCells = {};
+    Object.setPrototypeOf(strCells, null);
+    Object.setPrototypeOf(binCells, null);
     const deniedPaths = [];
     for (const [k, v] of Object.entries(bundle)) {
         if (typeof v === 'string') {
@@ -2148,10 +2192,7 @@ function _serializeBundleForFacet(bundle) {
     }
     // The IIFE revives binary cells in-place. atob → binary string →
     // Uint8Array (Uint8Array.from(str, c=>c.charCodeAt(0))).
-    // Note: when binCells is empty (the overwhelming common case —
-    // source code is all text) the IIFE collapses to a JSON literal,
-    // costing only the IIFE wrapper bytes (~30) per facet boot.
-    return `(function(){const __b=${JSON.stringify(strCells)};const __x=${JSON.stringify(binCells)};const __d=${JSON.stringify(deniedPaths)};for(const __k in __x){__b[__k]=Uint8Array.from(atob(__x[__k]),__c=>__c.charCodeAt(0));}for(const __k of __d){__b[__k]={error:"EACCES"};}return __b;})()`;
+    return `(function(){const __b=${jsonDataLiteral(strCells)};Object.setPrototypeOf(__b,null);const __x=${jsonDataLiteral(binCells)};const __d=${JSON.stringify(deniedPaths)};for(const __k in __x){__b[__k]=Uint8Array.from(atob(__x[__k]),__c=>__c.charCodeAt(0));}for(const __k of __d){__b[__k]={error:"EACCES"};}return __b;})()`;
 }
 const FACET_VFS_MODULE_PREFIX = '__nimbus_vfs_bundle_';
 const FACET_VFS_MODULE_SOURCE_MARGIN = 1024;
@@ -2201,10 +2242,10 @@ const _FACET_MODULE_ENVELOPE_BYTES = _encodedSourceBytes(_facetBundleModuleSourc
  */
 function _facetBundleCellBytes(path, cell) {
     if (typeof cell === 'string') {
-        return _jsonEncodedBytes(path) + 1 + _jsonEncodedBytes(cell);
+        return _bundleKeyBytes(path) + 1 + _jsonEncodedBytes(cell);
     }
     if (cell instanceof Uint8Array) {
-        return _jsonEncodedBytes(path) + 1 + 4 * Math.ceil(cell.byteLength / 3) + 2;
+        return _bundleKeyBytes(path) + 1 + 4 * Math.ceil(cell.byteLength / 3) + 2;
     }
     // A denial cell rides in the path array, which carries no key.
     return _jsonEncodedBytes(path);
@@ -2277,6 +2318,7 @@ export async function buildFacetVfsBundleSource(bundle, forceSideModules = false
     // build), so each is taken as its module is written and the map is never
     // held twice. Otherwise the caller's bundle is left as it was.
     const data = consume ? bundle : {};
+    Object.setPrototypeOf(data, null);
     for (const path of Object.keys(bundle)) {
         const cell = bundle[path];
         const emit = emits?.get(path);
@@ -2368,6 +2410,7 @@ async function serializeFacetVfsData(bundle, forceSideModules, pacer, consume) {
     const imports = [];
     const aliases = [];
     let chunk = {};
+    Object.setPrototypeOf(chunk, null);
     let chunkPaths = [];
     let estimatedBytes = 0;
     // A chunk becomes its side module the moment it is full, so the cells it
@@ -2392,6 +2435,7 @@ async function serializeFacetVfsData(bundle, forceSideModules, pacer, consume) {
             for (const path of chunkPaths)
                 delete bundle[path];
         chunk = {};
+        Object.setPrototypeOf(chunk, null);
         chunkPaths = [];
         estimatedBytes = 0;
         // Each side module is an independent serialization of its own cells, so
@@ -2413,7 +2457,7 @@ async function serializeFacetVfsData(bundle, forceSideModules, pacer, consume) {
         chunkPaths.push(path);
     }
     await flushChunk();
-    const expression = `(function(__parts){const __out={};for(const __part of __parts){` +
+    const expression = `(function(__parts){const __out=Object.create(null);for(const __part of __parts){` +
         `for(const [__k,__v] of Object.entries(__part)){const __prev=__out[__k];` +
         `if(__prev===undefined){__out[__k]=__v;}` +
         `else if(typeof __prev==="string"&&typeof __v==="string"){__out[__k]=__prev+__v;}` +
@@ -4083,6 +4127,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
         throw new ClosureBoundExceededError(prefetch);
     }
     const bundle = { ...prefetch.bundle };
+    Object.setPrototypeOf(bundle, null);
     const closurePaths = new Set(Object.keys(prefetch.bundle).filter((path) => !prefetch.speculative.has(path)));
     // Non-executable read evidence and other sessions' profiles may use only
     // the room the required executable graph leaves. Neither may displace it.
@@ -4304,6 +4349,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
     let rawTotal = 0;
     /** What the bound evicts, held until its images and reads are named below. */
     const evictedCells = {};
+    Object.setPrototypeOf(evictedCells, null);
     for (const [path, cell] of Object.entries(bundle)) {
         const bytes = codeOnly.has(path) ? 0 : _bundleCellRawBytes(cell);
         rawBytes.set(path, bytes);

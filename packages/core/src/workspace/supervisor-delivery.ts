@@ -279,6 +279,12 @@ export class SupervisorDeliveries {
   private readonly running = new Map<string, Receipt>();
   /** One joined-read index: pending reads, plus bounded replies of journaled runs. */
   private readonly reads = new Map<number, ReadScope>();
+  /**
+   * Reads no run made: an infrastructure binding's, a host reading on a
+   * process's behalf (a peer reading its boot images). They are no part of
+   * any run's receipts, and a run's scope does not refuse them as stale.
+   */
+  private readonly hostReads = new Map<number, ReadScope>();
   /** Open write-wave epochs, by `${pid}:${writer}`: the newest attempt admitted under each. */
   private readonly waveEpochs = new Map<string, WaveEpoch>();
   /** Each epoch's waves being applied now: a retirement waits for them (retireWaveWriter). */
@@ -409,13 +415,14 @@ export class SupervisorDeliveries {
     read: () => ReturnType<SupervisorOpDispatch>,
     run?: string,
   ): JoinedRead {
-    let scope = this.reads.get(pid);
+    const reads = run === undefined ? this.hostReads : this.reads;
+    let scope = reads.get(pid);
     if (scope?.run && scope.run.id !== run) {
       throw Object.assign(new Error(`ESTALE: read ${id} belongs to a different run`), { code: 'ESTALE' });
     }
     if (!scope) {
       scope = { replies: new Map(), bytes: 0 };
-      this.reads.set(pid, scope);
+      reads.set(pid, scope);
     }
     const running = scope.replies.get(id);
     if (running) {
@@ -435,7 +442,7 @@ export class SupervisorDeliveries {
     const current = scope;
     const settled = (value: unknown): void => {
       entry.pending = false;
-      if (this.reads.get(pid) !== current) return;
+      if (reads.get(pid) !== current) return;
       if (owner?.recording()) {
         let charged: number;
         try { charged = readReplyBytes(value, owner.maxBytes - current.bytes); }
@@ -450,7 +457,7 @@ export class SupervisorDeliveries {
         owner.disqualify(`needed more than ${owner.maxBytes} bytes of retained filesystem read receipts before stdin`);
       }
       current.replies.delete(id);
-      if (!current.run && current.replies.size === 0) this.reads.delete(pid);
+      if (!current.run && current.replies.size === 0) reads.delete(pid);
     };
     answer.then(settled, settled);
     return { joined: false, answer };
@@ -522,7 +529,7 @@ export class SupervisorDeliveries {
   /** Reads being served, which repeats of them would join. */
   get readsServing(): number {
     let count = 0;
-    for (const scope of this.reads.values()) for (const reply of scope.replies.values()) if (reply.pending) count++;
+    for (const reads of [this.reads, this.hostReads]) for (const scope of reads.values()) for (const reply of scope.replies.values()) if (reply.pending) count++;
     return count;
   }
 
@@ -574,6 +581,7 @@ export class SupervisorDeliveries {
     const prefix = `${pid}:`;
     for (const key of this.waveEpochs.keys()) if (key.startsWith(prefix)) this.waveEpochs.delete(key);
     this.endReadRun(pid);
+    this.hostReads.delete(pid);
     const now = Date.now();
     for (const generation of [this.current, this.previous]) {
       const receipts = generation.get(pid);

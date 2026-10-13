@@ -17,6 +17,8 @@ export interface SavedVariable {
     readonly scalar: string | undefined;
     readonly array: (string | undefined)[] | undefined;
 }
+/** A variable dictionary: prototype names are ordinary variable names too. */
+export declare function cloneEnv(source: Readonly<Record<string, string>>): Record<string, string>;
 /** `name=value` (`name+=value` with `append`); on an array, its first element. False for a readonly name. */
 export declare function assignVariable(store: VariableStore, name: string, value: string, append?: boolean): boolean;
 /** `name=(value …)` (`name+=(…)` appends to the array). False for a readonly name. */
