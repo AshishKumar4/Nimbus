@@ -2314,10 +2314,15 @@ export class SqliteVFS {
         return view;
     }
     accessInode(inode, want, cred) {
-        return this.accessMode(inode.mode, inode.uid, inode.gid, want, cred);
+        return this.accessMode(inode.mode, inode.uid, inode.gid, want, cred, inode.isDir);
     }
-    accessMode(mode, uid, gid, want, cred) {
-        return posixAccess({ mode, uid, gid }, want, cred);
+    /**
+     * `directory`: whether the entry is one. A stored mode may carry no
+     * file-type bits (mkdir keeps the permission bits it was given), and root's
+     * search of a directory depends on it (posixAccess).
+     */
+    accessMode(mode, uid, gid, want, cred, directory) {
+        return posixAccess({ mode, uid, gid, directory }, want, cred);
     }
     /**
      * Walk `path` to its inode, following links, in the caller's own names.
@@ -2599,7 +2604,7 @@ export class SqliteVFS {
      * removing a name in it needs write and search there like any directory.
      */
     checkRootWritable(path, cred) {
-        if (!this.accessMode(ROOT_DIRECTORY_MODE, 0, 0, 0o3, cred))
+        if (!this.accessMode(ROOT_DIRECTORY_MODE, 0, 0, 0o3, cred, true))
             throw vfsKeyError('EACCES', normalizeVfsPath(path));
     }
     checkParentAccess(path, cred) {
@@ -7834,7 +7839,7 @@ export class SqliteVFS {
             if (!staged || !staged.isDir)
                 throw vfsKeyError('ENOENT', parent);
             checkParent(parent, placing);
-            if (!this.accessMode(staged.mode, staged.uid ?? 1000, staged.gid ?? 1000, 0o3, cred)) {
+            if (!this.accessMode(staged.mode, staged.uid ?? 1000, staged.gid ?? 1000, 0o3, cred, true)) {
                 throw vfsKeyError('EACCES', parent);
             }
         };

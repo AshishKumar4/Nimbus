@@ -938,6 +938,11 @@ export declare class SqliteVFS {
      */
     private callerView;
     private accessInode;
+    /**
+     * `directory`: whether the entry is one. A stored mode may carry no
+     * file-type bits (mkdir keeps the permission bits it was given), and root's
+     * search of a directory depends on it (posixAccess).
+     */
     private accessMode;
     /**
      * Walk `path` to its inode, following links, in the caller's own names.
