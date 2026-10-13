@@ -21,6 +21,25 @@ published independently in the `@nimbus-sh` npm scope.
 - Fixed: a program's end no longer waits on the session to answer the
   release of its read lease and of the subtrees it held; only its last
   writes are waited for.
+- Fixed: a `node:sqlite` database keeps what a connection wrote when it is
+  closed. A connection opened after another's `close()` in the same run sees
+  it (it read the run's starting copy), a write made through `all()` or
+  `get()`, such as `INSERT ... RETURNING`, or one SQLite does not count, such
+  as `ANALYZE`'s statistics, is kept (only `run()` and `exec()` were), and a
+  relative name is the file it named when the connection opened. The model
+  is the whole database image: close writes the connection's image back to
+  its file, through the program's `fs`, unless it is the image that was read,
+  so a database only read is not written; a program killed before `close()`
+  loses that connection's changes, and two connections or processes writing
+  one file each write their own image, the last close winning. A write the
+  program may not make fails `close()` as `fs.writeFileSync` would; one the
+  session refuses later is reported as any refused write is. node:sqlite is
+  powered by `fs`, so a close that writes costs what writing that file
+  through `fs` costs: about 0.85 ms CPU per database a close writes, and a
+  SQLite-only program's first write in a fresh isolate about 6 ms more, the
+  fs write path's one-time compile. Writes are no longer lost. A Node `fs`
+  write over an existing file no longer reads the file it replaces (about
+  0.4 ms less per MiB).
 - Fixed (security): helpers a command starts acted as the kernel, not as
   the command's process. `nimbus wrangler dev` read its config and D1
   migrations, kept its KV and R2 stores, and bundled its Worker as

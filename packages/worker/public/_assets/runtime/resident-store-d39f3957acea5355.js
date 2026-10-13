@@ -1614,6 +1614,12 @@ var __nimbusResidentModule = (() => {
       dropDated,
       head,
       has: (path) => head(path) !== void 0 || held.has(path),
+      denied: (path) => {
+        const found = head(path);
+        if (found !== void 0) return found.kind === RK_DENIED;
+        const cell = held.get(path)?.cell;
+        return typeof cell === "object" && cell !== null && !(cell instanceof Uint8Array) && typeof cell.error === "string";
+      },
       get,
       put,
       putChunk,
