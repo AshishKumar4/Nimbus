@@ -16195,7 +16195,7 @@ function __nimbusMakeRequire(module, fromDir = __nimbusModuleDir(module), requir
   const require = function require(id) {
     if (arguments.length > 1 && arguments[1] === "nimbus:static-import") return __requireFrom(id, fromDir, module, false, arguments[2]);
     if (arguments.length > 1 && arguments[1] === "nimbus:star-conflicts") {
-      return __nimbusRegistryRequire("./nimbus/interpreter.js").starConflicts(__nimbusLateLinkHost, module.__nimbusImportMeta?.url ?? builtins.url.pathToFileURL(module.filename).href);
+      return __nimbusRegistryRequire("./nimbus/esm-late.js").starConflicts(__nimbusLateLinkHost, module.__nimbusImportMeta?.url ?? builtins.url.pathToFileURL(module.filename).href);
     }
     return __requireFrom(id, fromDir, module, required);
   };
@@ -18605,7 +18605,7 @@ function __nimbusObjectNamespace(value) {
   return __esmNamespaceOf(names, (name) => name === "default" ? value : value[name]);
 }
 function __nimbusCommonJsNames(key) {
-  return __nimbusRegistryRequire("./nimbus/interpreter.js").commonJsNames(__nimbusLateLinkHost, key);
+  return __nimbusRegistryRequire("./nimbus/esm-late.js").commonJsNames(__nimbusLateLinkHost, key);
 }
 // An import of a module that is not an ES module, loaded as `exports`, as Node's translators make it, one per URL:
 // JSON's value as default; a builtin as default, its names read through; CommonJS's module.exports as default
@@ -19287,10 +19287,11 @@ const __nimbusLateLinkHost = {
     __nimbusDecorated.add(error);
     return error;
   },
+  requests: (path, text, javaScript, goal) => __nimbusModuleRequests(path, text, javaScript, goal),
 };
 // Links the late graph of the module at `key` (`url`); the staged rows it imports, in order.
 function __nimbusLateLink(key, url) {
-  return __nimbusRegistryRequire("./nimbus/interpreter.js").linkLate(__nimbusLateLinkHost, key, url);
+  return __nimbusRegistryRequire("./nimbus/esm-late.js").linkLateGraph(__nimbusLateLinkHost, key, url);
 }
 function __esmLoadInterpreted(resolution, key, evaluationKey, esm) {
   let ns;

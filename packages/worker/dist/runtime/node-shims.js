@@ -65,7 +65,7 @@ import { NODE_WS_UPGRADE_SOURCE } from './node-ws-upgrade.js';
 import { NODE_SOURCE_MAPS_SOURCE } from './node-source-maps.js';
 import { NODE_BUILTIN_FRONTS_SOURCE } from './node-builtin-fronts.js';
 import { NODE_MINIMATCH_SOURCE } from './node-minimatch-source.js';
-import { RUNTIME_INTERPRETER_MODULE, RUNTIME_NODE_LIB_MODULE, RUNTIME_PARSER_MODULE, RUNTIME_WASM_MAX_BYTES } from '@nimbus-sh/core/_shared/commonjs-cell.js';
+import { RUNTIME_ESM_LATE_MODULE, RUNTIME_INTERPRETER_MODULE, RUNTIME_NODE_LIB_MODULE, RUNTIME_PARSER_MODULE, RUNTIME_WASM_MAX_BYTES } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { STAGED_BINDING_ARTIFACTS } from '../napi-wasm-artifacts.generated.js';
 const SQLITE_SHIM_CODE = generateSqliteShimCode();
 const UNDICI_SHIM_CODE = generateUndiciShimCode();
@@ -11218,7 +11218,7 @@ function __nimbusMakeRequire(module, fromDir = __nimbusModuleDir(module), requir
   const require = function require(id) {
     if (arguments.length > 1 && arguments[1] === ${JSON.stringify(ESM_STATIC_IMPORT)}) return __requireFrom(id, fromDir, module, false, arguments[2]);
     if (arguments.length > 1 && arguments[1] === ${JSON.stringify(ESM_STAR_CONFLICTS)}) {
-      return __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_MODULE}").starConflicts(__nimbusLateLinkHost, module.__nimbusImportMeta?.url ?? builtins.url.pathToFileURL(module.filename).href);
+      return __nimbusRegistryRequire("./${RUNTIME_ESM_LATE_MODULE}").starConflicts(__nimbusLateLinkHost, module.__nimbusImportMeta?.url ?? builtins.url.pathToFileURL(module.filename).href);
     }
     return __requireFrom(id, fromDir, module, required);
   };
@@ -12193,7 +12193,7 @@ function __nimbusObjectNamespace(value) {
   return __esmNamespaceOf(names, (name) => name === "default" ? value : value[name]);
 }
 function __nimbusCommonJsNames(key) {
-  return __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_MODULE}").commonJsNames(__nimbusLateLinkHost, key);
+  return __nimbusRegistryRequire("./${RUNTIME_ESM_LATE_MODULE}").commonJsNames(__nimbusLateLinkHost, key);
 }
 // An import of a module that is not an ES module, loaded as \`exports\`, as Node's translators make it, one per URL:
 // JSON's value as default; a builtin as default, its names read through; CommonJS's module.exports as default
@@ -12873,10 +12873,11 @@ const __nimbusLateLinkHost = {
     __nimbusDecorated.add(error);
     return error;
   },
+  requests: (path, text, javaScript, goal) => __nimbusModuleRequests(path, text, javaScript, goal),
 };
 // Links the late graph of the module at \`key\` (\`url\`); the staged rows it imports, in order.
 function __nimbusLateLink(key, url) {
-  return __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_MODULE}").linkLate(__nimbusLateLinkHost, key, url);
+  return __nimbusRegistryRequire("./${RUNTIME_ESM_LATE_MODULE}").linkLateGraph(__nimbusLateLinkHost, key, url);
 }
 function __esmLoadInterpreted(resolution, key, evaluationKey, esm) {
   let ns;

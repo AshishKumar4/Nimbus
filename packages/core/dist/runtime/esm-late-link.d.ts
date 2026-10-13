@@ -8,9 +8,9 @@
  * rejects and no body runs.
  *
  * node-shims gives the facts (LateLinkHost: the registry's rows, the
- * resolver, the files); this decides. The interpreter's runtime module
- * carries it, which every late graph loads anyway, so a launch that never
- * links one never compiles it.
+ * resolver, the files, the interpreter's reading of a module); this decides.
+ * It is a runtime module of its own (RUNTIME_ESM_LATE_MODULE, with Node's
+ * CommonJS lexer), so a launch whose imports never need it never compiles it.
  */
 import type { ModuleRequests } from '../interpreter/index.js';
 /** What the loader resolves a static import to. */
@@ -70,9 +70,9 @@ export interface LateLinkHost {
     exportMessage(specifier: string, name: string, commonjs: boolean): string;
     /** `error` thrown as the loader's own (no arrow of the importer's). */
     decorate(error: Error): Error;
+    /** A module's requests and bindings, as the interpreter reads it with the loader's parse goal (interpreter/index.ts moduleRequests). */
+    requests(path: string, text: string, javaScript: boolean, goal: 'module' | 'commonjs' | 'detect'): ModuleRequests;
 }
-/** How the host reads a module's requests and bindings (interpreter/index.ts moduleRequests). */
-export type ReadRequests = (path: string, text: string, javaScript: boolean, goal: 'module' | 'commonjs' | 'detect') => ModuleRequests;
 /**
  * The names Node's loader finds in the CommonJS module at `key` before it
  * runs: a staged facade's, else Node's lexer's over its source and the
@@ -86,7 +86,7 @@ export declare function commonJsNames(host: LateLinkHost, key: string): readonly
  * staged modules it imports, in import order, for the caller to evaluate
  * before the interpreter does the rest.
  */
-export declare function linkLateGraph(host: LateLinkHost, read: ReadRequests, key: string, url: string): number[];
+export declare function linkLateGraph(host: LateLinkHost, key: string, url: string): number[];
 /** The names the `export *`s of the interpreted module at `url` reach two different bindings of, which its namespace omits. */
 export declare function starConflicts(host: LateLinkHost, url: string): string[];
 //# sourceMappingURL=esm-late-link.d.ts.map

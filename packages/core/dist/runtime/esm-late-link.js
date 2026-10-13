@@ -8,9 +8,9 @@
  * rejects and no body runs.
  *
  * node-shims gives the facts (LateLinkHost: the registry's rows, the
- * resolver, the files); this decides. The interpreter's runtime module
- * carries it, which every late graph loads anyway, so a launch that never
- * links one never compiles it.
+ * resolver, the files, the interpreter's reading of a module); this decides.
+ * It is a runtime module of its own (RUNTIME_ESM_LATE_MODULE, with Node's
+ * CommonJS lexer), so a launch whose imports never need it never compiles it.
  */
 import { cjsModuleExportNames } from './cjs-module-exports.js';
 /** The launch's row bindings, read once. */
@@ -61,10 +61,10 @@ export function commonJsNames(host, key) {
  * staged modules it imports, in import order, for the caller to evaluate
  * before the interpreter does the rest.
  */
-export function linkLateGraph(host, read, key, url) {
+export function linkLateGraph(host, key, url) {
     const order = [];
     const late = { modules: new Map(), rows: [] };
-    plan(host, read, key, url, new Set(), order, new Set(), late);
+    plan(host, key, url, new Set(), order, new Set(), late);
     checkBindings(host, late, url);
     return order;
 }
@@ -80,7 +80,7 @@ export function starConflicts(host, url) {
         return [];
     return names.filter((name) => resolveExport(host, late, target, name, new Set()) === AMBIGUOUS);
 }
-function plan(host, read, key, url, seen, order, checked, late) {
+function plan(host, key, url, seen, order, checked, late) {
     if (seen.has(url))
         return;
     seen.add(url);
@@ -90,7 +90,7 @@ function plan(host, read, key, url, seen, order, checked, late) {
         return;
     // Read with the parse goal the loader gives it: an adopted staged module's, a module; another's, its format.
     const format = staged !== -1 ? 'module' : host.fileFormat(key);
-    const analysis = read(key, text, staged !== -1, format ?? 'detect');
+    const analysis = host.requests(key, text, staged !== -1, format ?? 'detect');
     // A module its parser could not read (a syntax error, TypeScript, JSX) is
     // loaded as the interpreter loads it, for that load's error, before any
     // body runs; a staged one is the launch's own to link.
@@ -143,10 +143,10 @@ function plan(host, read, key, url, seen, order, checked, late) {
         if (id === -1 || search !== '' || hash !== '') {
             // What the interpreter loads as an ES module (a CommonJS module compiles when it evaluates, as Node's does).
             if (resolution.format === 'module' || resolution.format === 'detect')
-                plan(host, read, target, resolution.url, seen, order, checked, late);
+                plan(host, target, resolution.url, seen, order, checked, late);
             continue;
         }
-        checkLinks(host, read, id, seen, checked, late);
+        checkLinks(host, id, seen, checked, late);
         if (!order.includes(id))
             order.push(id);
     }
@@ -186,7 +186,7 @@ function lateTarget(host, resolution) {
  * imported) is planned as the late graph's own. The graph's unevaluated
  * rows go to `late`.
  */
-function checkLinks(host, read, id, seen, checked, late) {
+function checkLinks(host, id, seen, checked, late) {
     const visit = (at) => {
         if (checked.has(at))
             return;
@@ -205,7 +205,7 @@ function checkLinks(host, read, id, seen, checked, late) {
             if ('refusal' in missing)
                 throw missing.refusal;
             const handed = new URL(missing.handedOn);
-            plan(host, read, decodeURIComponent(handed.pathname).replace(/^\/+/, ''), missing.handedOn, seen, [], checked, late);
+            plan(host, decodeURIComponent(handed.pathname).replace(/^\/+/, ''), missing.handedOn, seen, [], checked, late);
         }
     };
     visit(id);

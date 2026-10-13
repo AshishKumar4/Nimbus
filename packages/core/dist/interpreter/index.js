@@ -33,13 +33,9 @@ import { own } from './parser-realm.js';
 import { Error, LAUNCH_PRIMORDIALS, SafeMap, SafeWeakSet, SyntaxError, charCodeAt, isWhitespaceCode, reflectGet, reflectGetOwnPropertyDescriptor, someItem, stringLastIndexOf, stringOf, stringSlice, withElement, } from './intrinsics.js';
 import { UnsupportedSyntax } from './unsupported.js';
 import { programRequests } from './module-requests.js';
-import { linkLateGraph } from '../runtime/esm-late-link.js';
 import { stampStack, stackFrames } from './stack.js';
 export { INTERPRETER_UNSUPPORTED, UnsupportedSyntax } from './unsupported.js';
 export { replLineBody } from './repl-line.js';
-// What only an interpreted module's imports need, carried here: the names
-// Node's loader finds in a CommonJS module, and the late graph's link.
-export { commonJsNames, starConflicts } from '../runtime/esm-late-link.js';
 /** The parameters of Node's CommonJS module wrapper. */
 const WRAPPER_PARAMS = ['exports', 'require', 'module', '__filename', '__dirname'];
 /** Extensions whose text is not JavaScript acorn can parse. */
@@ -137,10 +133,6 @@ export function moduleRequests(path, text, javaScript = false, goal) {
         }
     }
     return { requests: programRequests(program) };
-}
-/** esm-late-link.ts linkLateGraph, reading each module with moduleRequests. */
-export function linkLate(host, key, url) {
-    return linkLateGraph(host, moduleRequests, key, url);
 }
 /** Whether a module's top level has import or export declarations. */
 function hasModuleSyntax(program) {
