@@ -34,13 +34,28 @@ export interface ResidentFd {
     rights: bigint;
     rightsInheriting: bigint;
     fdflags: number;
+    /** The session's hold of its file, once one of its processes took the name it was read at away (holdCopiesBefore). */
+    kept?: KeptFile;
+}
+/**
+ * A file resident copies are of, held at the session by an O_PATH descriptor
+ * (RuntimeOpenFlags.path) before one of their processes took its name away,
+ * as Linux's open file outlives its name; its last copy lets it go. Null
+ * when it could not be held.
+ */
+export interface KeptFile {
+    readonly held: Awaitable<{
+        readonly handle: number;
+        readonly fs: RuntimeFsBridge | RuntimeSynchronousFs;
+    } | null>;
+    copies: number;
 }
 /**
  * How a resident copy's file is opened again (an open of /dev/fd/N): by the
  * session descriptor the copy was read through (a reopen's), held while the
  * copy lives; else by the name it was read at while that name has it, and
- * once its process took that name away, by the hold ResidentCopies took
- * first. A filesystem's pin on its bytes (pinContent) is given back with it.
+ * once its process took that name away, by the file it keeps (KeptFile).
+ * A filesystem's pin on its bytes (pinContent) is given back with it.
  */
 export type ResidentHold = {
     readonly handle: number;
@@ -54,10 +69,10 @@ export declare function shareResident(open: ResidentFd): ResidentFd;
 /**
  * One descriptor on a resident open closed. The last gives back its hold:
  * the session descriptor it was read through, closed without waiting on it,
- * as nothing of the guest's depends on it; else its pin, and its place in
- * `copies`.
+ * as nothing of the guest's depends on it; else its pin, and its share of
+ * the file it keeps.
  */
-export declare function closeResident(open: ResidentFd, fs: RuntimeFsBridge | RuntimeSynchronousFs, copies: ResidentCopies): void;
+export declare function closeResident(open: ResidentFd, fs: RuntimeFsBridge | RuntimeSynchronousFs): void;
 export interface AuthorityPreopen {
     kind: 'preopen';
     vfsPath: string;
@@ -103,36 +118,14 @@ export declare function refusalErrno(error: unknown, gone?: (refusal: string) =>
 export declare function processGoneMessage(refusal: string): string;
 export declare function after<T, R>(value: Awaitable<T>, next: (value: T) => Awaitable<R>): Awaitable<R>;
 /**
- * The resident copies of a filesystem's processes, by file (bash's processes
- * share one, so a child's rm finds its shell's copies). A copy holds nothing
- * at the session: before one of these processes takes a name away, by an
- * unlink or a rename from or over it, the copies' file there is held by an
- * O_PATH descriptor (RuntimeOpenFlags.path), as Linux's open file outlives
- * its name, and an open of /dev/fd/N whose name no longer has the file opens
- * it by that hold. The hold goes with the file's last copy.
+ * Before a change takes the names `paths` away on `fs` (an unlink's, a
+ * rename's from and to), keeps the files that resident copies in `tables`
+ * are of there (KeptFile); for a directory among them (a rename's), every
+ * copied file, as its names may be beneath it. Settles once each hold is
+ * answered, so the change cannot reach the session before it; at once, and
+ * asking the session nothing, when no copy lacks one.
  */
-export declare class ResidentCopies {
-    private readonly files;
-    /** A copy of the file `stat` describes, read at `name`. */
-    copied(stat: RuntimeVfsStat, name: RuntimeFsPath): void;
-    /** One copy of that file gone; its last lets the hold go. */
-    released(stat: RuntimeVfsStat): void;
-    /** The hold of the file `stat` describes, if its name was taken away; null when none was taken. */
-    held(stat: RuntimeVfsStat): Awaitable<{
-        readonly handle: number;
-        readonly fs: RuntimeFsBridge | RuntimeSynchronousFs;
-    } | null> | null;
-    /**
-     * Before a change takes the names `paths` away on `fs` (an unlink's, a
-     * rename's from and to), holds the copies' files there; for a directory
-     * among them (a rename's), every file with copies, as its names may be
-     * beneath it. Settles once each hold is answered, so the change cannot
-     * reach the session before it; at once while nothing has copies.
-     */
-    before(fs: RuntimeFsBridge | RuntimeSynchronousFs, paths: readonly RuntimeFsPath[]): Awaitable<void>;
-    /** An O_PATH open of `name`, kept when it is `file`. */
-    private take;
-}
+export declare function keepCopiesBefore(fs: RuntimeFsBridge | RuntimeSynchronousFs, paths: readonly RuntimeFsPath[], tables: Iterable<ReadonlyMap<number, FilesystemFd>>): Awaitable<void>;
 /** A session descriptor nothing of the guest's waits to see closed: closed, a refusal of it dropped. */
 export declare function closeUnawaited(fs: RuntimeFsBridge | RuntimeSynchronousFs, handle: number): void;
 /**
@@ -170,8 +163,12 @@ export interface AuthorityFilesystemOptions {
      * is fetched again on its next open. Zero keeps every open on the authority.
      */
     residentBytes?: number;
-    /** The resident copies these descriptors share with other processes' (bash's); this filesystem's own when absent. */
-    residentCopies?: ResidentCopies;
+    /**
+     * Every descriptor table whose resident copies an unlink or a rename here
+     * keeps the file of (keepCopiesBefore): bash's processes', which share
+     * their files; this one's alone when absent.
+     */
+    residentTables?: () => Iterable<ReadonlyMap<number, FilesystemFd>>;
     /**
      * Whether a resident copy outlives its descriptor (default true). A guest
      * whose host process already holds the filesystem's content (a node

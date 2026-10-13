@@ -7,10 +7,10 @@ export function shareResident(open) {
 /**
  * One descriptor on a resident open closed. The last gives back its hold:
  * the session descriptor it was read through, closed without waiting on it,
- * as nothing of the guest's depends on it; else its pin, and its place in
- * `copies`.
+ * as nothing of the guest's depends on it; else its pin, and its share of
+ * the file it keeps.
  */
-export function closeResident(open, fs, copies) {
+export function closeResident(open, fs) {
     if (--open.opens > 0)
         return;
     if ('handle' in open.hold) {
@@ -18,7 +18,10 @@ export function closeResident(open, fs, copies) {
         return;
     }
     open.hold.pin?.release();
-    copies.released(open.stat);
+    const kept = open.kept;
+    if (kept !== undefined && --kept.copies === 0)
+        after(kept.held, (held) => { if (held !== null)
+            closeUnawaited(held.fs, held.handle); });
 }
 /**
  * Synthetic paths that name a socket rather than a file, and the one place
@@ -86,95 +89,75 @@ function pinsContent(fs) {
     return typeof Reflect.get(fs, 'pinContent') === 'function';
 }
 /**
- * The resident copies of a filesystem's processes, by file (bash's processes
- * share one, so a child's rm finds its shell's copies). A copy holds nothing
- * at the session: before one of these processes takes a name away, by an
- * unlink or a rename from or over it, the copies' file there is held by an
- * O_PATH descriptor (RuntimeOpenFlags.path), as Linux's open file outlives
- * its name, and an open of /dev/fd/N whose name no longer has the file opens
- * it by that hold. The hold goes with the file's last copy.
+ * Before a change takes the names `paths` away on `fs` (an unlink's, a
+ * rename's from and to), keeps the files that resident copies in `tables`
+ * are of there (KeptFile); for a directory among them (a rename's), every
+ * copied file, as its names may be beneath it. Settles once each hold is
+ * answered, so the change cannot reach the session before it; at once, and
+ * asking the session nothing, when no copy lacks one.
  */
-export class ResidentCopies {
-    files = new Map();
-    /** A copy of the file `stat` describes, read at `name`. */
-    copied(stat, name) {
-        const key = `${stat.dev}:${stat.ino}`;
-        const file = this.files.get(key);
-        if (file !== undefined) {
-            file.copies++;
-            return;
-        }
-        this.files.set(key, { copies: 1, name, dev: stat.dev, ino: stat.ino, hold: null });
-    }
-    /** One copy of that file gone; its last lets the hold go. */
-    released(stat) {
-        const key = `${stat.dev}:${stat.ino}`;
-        const file = this.files.get(key);
-        if (file === undefined || --file.copies > 0)
-            return;
-        this.files.delete(key);
-        if (file.hold !== null)
-            after(file.hold, (held) => { if (held !== null)
-                closeUnawaited(held.fs, held.handle); });
-    }
-    /** The hold of the file `stat` describes, if its name was taken away; null when none was taken. */
-    held(stat) {
-        return this.files.get(`${stat.dev}:${stat.ino}`)?.hold ?? null;
-    }
-    /**
-     * Before a change takes the names `paths` away on `fs` (an unlink's, a
-     * rename's from and to), holds the copies' files there; for a directory
-     * among them (a rename's), every file with copies, as its names may be
-     * beneath it. Settles once each hold is answered, so the change cannot
-     * reach the session before it; at once while nothing has copies.
-     */
-    before(fs, paths) {
-        if (this.files.size === 0)
-            return;
-        const steps = paths.map((name) => {
-            let st;
-            try {
-                st = fs.stat(name, { followSymlinks: false });
-            }
-            catch {
-                return;
-            }
-            const holdAt = (found) => {
-                if (found === null)
-                    return;
-                const holding = [];
-                for (const file of this.files.values()) {
-                    if (file.hold !== null)
-                        continue;
-                    if (found.type === 'directory')
-                        file.hold = this.take(fs, file.name, file);
-                    else if (found.dev === file.dev && found.ino === file.ino)
-                        file.hold = this.take(fs, name, file);
-                    else
-                        continue;
-                    holding.push(file.hold);
-                }
-                return holding.some((step) => step instanceof Promise) ? Promise.all(holding).then(() => { }) : undefined;
-            };
-            return st instanceof Promise ? st.then(holdAt, () => { }) : holdAt(st);
-        });
-        return steps.some((step) => step instanceof Promise) ? Promise.all(steps).then(() => { }) : undefined;
-    }
-    /** An O_PATH open of `name`, kept when it is `file`. */
-    take(fs, name, file) {
-        const kept = (opened) => {
-            if (opened.stat.dev === file.dev && opened.stat.ino === file.ino)
-                return { handle: opened.id, fs };
-            closeUnawaited(fs, opened.id);
-            return null;
-        };
+export function keepCopiesBefore(fs, paths, tables) {
+    // A copy is one open however many descriptors (dup's, a fork's) name it.
+    const unkept = new Set();
+    for (const table of tables)
+        for (const e of table.values())
+            if (e.kind === 'resident' && e.kept === undefined && !('handle' in e.hold))
+                unkept.add(e);
+    if (unkept.size === 0)
+        return;
+    const steps = paths.map((name) => {
+        let st;
         try {
-            const opened = fs.open(name, { path: true, followSymlinks: false });
-            return opened instanceof Promise ? opened.then(kept, () => null) : kept(opened);
+            st = fs.stat(name, { followSymlinks: false });
         }
         catch {
-            return null;
+            return;
         }
+        const keepAt = (found) => {
+            if (found === null)
+                return;
+            // One hold per file, every copy of it sharing it.
+            const files = new Map();
+            for (const e of unkept) {
+                if (e.kept !== undefined || !('name' in e.hold))
+                    continue;
+                const file = found.type === 'directory' || (found.dev === e.stat.dev && found.ino === e.stat.ino);
+                if (!file)
+                    continue;
+                const key = `${e.stat.dev}:${e.stat.ino}`;
+                const group = files.get(key);
+                if (group !== undefined)
+                    group.copies.push(e);
+                else
+                    files.set(key, { name: found.type === 'directory' ? e.hold.name : name, copies: [e] });
+            }
+            const holding = [];
+            for (const { name: at, copies } of files.values()) {
+                const kept = { held: holdFile(fs, at, copies[0].stat), copies: copies.length };
+                for (const e of copies)
+                    e.kept = kept;
+                holding.push(kept.held);
+            }
+            return holding.some((step) => step instanceof Promise) ? Promise.all(holding).then(() => { }) : undefined;
+        };
+        return st instanceof Promise ? st.then(keepAt, () => { }) : keepAt(st);
+    });
+    return steps.some((step) => step instanceof Promise) ? Promise.all(steps).then(() => { }) : undefined;
+}
+/** An O_PATH open of `name`, kept when it is the file `stat` describes. */
+function holdFile(fs, name, stat) {
+    const kept = (opened) => {
+        if (opened.stat.dev === stat.dev && opened.stat.ino === stat.ino)
+            return { handle: opened.id, fs };
+        closeUnawaited(fs, opened.id);
+        return null;
+    };
+    try {
+        const opened = fs.open(name, { path: true, followSymlinks: false });
+        return opened instanceof Promise ? opened.then(kept, () => null) : kept(opened);
+    }
+    catch {
+        return null;
     }
 }
 /** A session descriptor nothing of the guest's waits to see closed: closed, a refusal of it dropped. */
@@ -280,7 +263,7 @@ export function installAuthorityFilesystem(imports, options) {
     // maximum), where the constructor takes any offset within the buffer.
     const guestBytes = (ptr, length) => new Uint8Array(options.memory().buffer, ptr, length);
     const view = () => new DataView(options.memory().buffer);
-    const copies = options.residentCopies ?? new ResidentCopies();
+    const residentTables = options.residentTables ?? (() => [fds]);
     const u32 = (ptr, value) => view().setUint32(ptr, value, true);
     const u64 = (ptr, value) => view().setBigUint64(ptr, BigInt(value), true);
     const path = (ptr, length) => {
@@ -532,8 +515,6 @@ export function installAuthorityFilesystem(imports, options) {
     const copy = (o, stat, bytes, hold) => {
         const id = options.allocateFd();
         fds.set(id, { kind: 'resident', stat, bytes, hold, opens: 1, position: 0, rights: o.requested, rightsInheriting: o.childRights, fdflags: o.status });
-        if (!('handle' in hold))
-            copies.copied(stat, hold.name);
         u32(o.out, id);
         return 0;
     };
@@ -576,9 +557,9 @@ export function installAuthorityFilesystem(imports, options) {
             return after(fs.reopen({ handle: hold.handle }, flagsOf(o)), handle => reopenedAs(o, handle));
         // A copy that holds no descriptor: its file is opened by the name it was read at, while that name has it.
         const again = () => after(openIdentified(fs, hold.name, hold.follow, flagsOf(o), was), handle => reopenedAs(o, handle));
-        // Where the name no longer has it, the hold ResidentCopies took before its process took the name away.
+        // Where the name no longer has it, the file it keeps, held before its process took the name away.
         const byHold = (error) => {
-            const held = error instanceof Error && 'code' in error && error.code === 'ENOENT' ? copies.held(was) : null;
+            const held = error instanceof Error && 'code' in error && error.code === 'ENOENT' ? reopened.kept?.held ?? null : null;
             if (held === null)
                 throw error;
             return after(held, (taken) => {
@@ -676,7 +657,7 @@ export function installAuthorityFilesystem(imports, options) {
         const e = entry(fd);
         if (e.kind === 'resident') {
             fds.delete(fd);
-            closeResident(e, fs, copies);
+            closeResident(e, fs);
             return 0;
         }
         return after(fs.close(e.handle.id), () => { fds.delete(fd); return 0; });
@@ -693,7 +674,7 @@ export function installAuthorityFilesystem(imports, options) {
         // dup2 closes what it lands on, and only the owner of that fd knows how:
         // a socket's stream and a pipe's writer count are the host's to release.
         if (target?.kind === 'resident')
-            closeResident(target, fs, copies);
+            closeResident(target, fs);
         const released = !target || target.kind === 'resident' ? undefined
             : target.kind === 'authority' ? fs.close(target.handle.id)
                 : hostClose?.(to);
@@ -802,17 +783,17 @@ export function installAuthorityFilesystem(imports, options) {
     }, owns);
     imports.path_create_directory = guard(imports.path_create_directory, (fs, fd, p, n) => { pathRight(fd, 9); return after(fs.mkdir(at(fd, path(p, n)), { recursive: false, mode: creationMode(0o777) }), () => 0); });
     imports.path_remove_directory = guard(imports.path_remove_directory, (fs, fd, p, n) => { pathRight(fd, 25); return after(fs.rmdir(at(fd, path(p, n))), () => 0); });
-    // A name these processes take away first holds the file of their copies there (ResidentCopies.before).
+    // A name these processes take away first keeps the file of their copies there (keepCopiesBefore).
     imports.path_unlink_file = guard(imports.path_unlink_file, (fs, fd, p, n) => {
         pathRight(fd, 26);
         const name = at(fd, path(p, n));
-        return after(copies.before(fs, [name]), () => after(fs.unlink(name), () => 0));
+        return after(keepCopiesBefore(fs, [name], residentTables()), () => after(fs.unlink(name), () => 0));
     });
     imports.path_rename = guard(imports.path_rename, (fs, from, p, n, to, q, m) => {
         pathRight(from, 16);
         pathRight(to, 17);
         const source = at(from, path(p, n)), target = at(to, path(q, m));
-        return after(copies.before(fs, [source, target]), () => after(fs.rename(source, target), () => 0));
+        return after(keepCopiesBefore(fs, [source, target], residentTables()), () => after(fs.rename(source, target), () => 0));
     });
     imports.path_symlink = guard(imports.path_symlink, (fs, p, n, fd, q, m) => { pathRight(fd, 24); return after(fs.symlink(path(p, n), at(fd, path(q, m))), () => 0); });
     imports.path_readlink = guard(imports.path_readlink, (fs, fd, p, n, buf, cap, used) => {

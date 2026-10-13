@@ -1,4 +1,4 @@
-import { after, closeResident, descriptorNamed, ResidentCopies, installAuthorityFilesystem, processGoneMessage, refusalErrno, shareResident } from '../wasi/filesystem.js';
+import { after, closeResident, descriptorNamed, installAuthorityFilesystem, processGoneMessage, refusalErrno, shareResident } from '../wasi/filesystem.js';
 import { supervisorFilesystem } from '../vfs-supervisor.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
 import { PIPE_CAPACITY, decideRead, decideWrite, heldExitSettles, holdsExit, pipeBudget, pipeLimitMessage, readerStops } from './pipe-rules.js';
@@ -87,7 +87,7 @@ function newSession(args) {
     if (!target)
         throw new Error('bash requires a process stdio capability');
     const session = {
-        mod, coreutils, coreutilsRoot: norm(args.coreutilsRoot), fs: filesystem, cwd, cred: args.cred, parking: args.parking, pipeBudget: pipeBudget(args.memoryBudgetBytes), pending: new Set(), copies: new ResidentCopies(),
+        mod, coreutils, coreutilsRoot: norm(args.coreutilsRoot), fs: filesystem, cwd, cred: args.cred, parking: args.parking, pipeBudget: pipeBudget(args.memoryBudgetBytes), pending: new Set(),
         argv: args.argv, environ: args.environ,
         stdinTty: !!args.stdinTty,
         stdin: { chunks: args.stdinData ? [te.encode(args.stdinData)] : [], queued: 0, closed: !!args.stdinClosed, waiters: [] },
@@ -194,7 +194,7 @@ function closeFd(s, proc, fd) {
     if (e.kind === 'authority')
         queueSessionTask(s, Promise.resolve(s.fs.close(e.handle.id)).catch(() => { }));
     if (e.kind === 'resident')
-        closeResident(e, s.fs, s.copies);
+        closeResident(e, s.fs);
     if (e.kind === 'pipe') {
         bumpPipe(s, e, -1);
         const pp = s.pipes.get(e.pipeId);
@@ -415,7 +415,7 @@ function makeWasiFs(s, proc, DV, U8, io, memory, synchronous = false, resident) 
             crypto.getRandomValues(U8().subarray(p + i, p + Math.min(i + 65536, n))); return 0; },
         proc_exit(code) { throw new Exit(code); },
     };
-    installAuthorityFilesystem(imports, { fs: () => s.fs, memory, fds: proc.fds, allocateFd: () => lowestFd(proc), synchronous, umask: () => s.cred.umask, residentBytes: WASI_RESIDENT_FILE_CAP_BYTES, residentCopies: s.copies, resident, processGone: s.gone, duplicate: (fd) => duplicateStream(s, proc, fd) });
+    installAuthorityFilesystem(imports, { fs: () => s.fs, memory, fds: proc.fds, allocateFd: () => lowestFd(proc), synchronous, umask: () => s.cred.umask, residentBytes: WASI_RESIDENT_FILE_CAP_BYTES, residentTables: () => [...s.procs.values()].map((each) => each.fds), resident, processGone: s.gone, duplicate: (fd) => duplicateStream(s, proc, fd) });
     installPreopenRehoming(proc, imports);
     return imports;
 }
