@@ -29,6 +29,8 @@ if [ ! -f config.status ]; then
   # cross.cache holds target answers only, never a machine's configure
   # environment (its CC, its build triple). configure writes its cache
   # back, so it gets a copy.
+  # Every jmp_buf copy through nimbus_procenv (bash-runner@4).
+  patch -p1 --forward < "$HERE/patches/procenv.patch"
   cp "$HERE/cross.cache" nimbus-cross.cache
   CC="$CC" \
   CFLAGS="-std=gnu17 -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI_EMULATED_MMAN -O2" \
@@ -73,7 +75,8 @@ OBJS="shell.o eval.o y.tab.o general.o make_cmd.o print_cmd.o dispose_cmd.o exec
   -L./builtins -L./lib/readline -L./lib/glob -L./lib/tilde -L./lib/sh \
   -lbuiltins -lglob -lsh -lreadline -lhistory ./lib/termcap/libtermcap.a -ltilde \
   nimbus-proc.o $TARGET_LDFLAGS \
-  -Wl,--export=__stack_pointer -Wl,--allow-undefined -Wl,--no-gc-sections \
+  -Wl,--export=__stack_pointer -Wl,--export=__data_end -Wl,--export=__heap_base \
+  -Wl,--allow-undefined -Wl,--no-gc-sections \
   -Wl,--wrap=dup2 -Wl,--wrap=dup -Wl,--wrap=fcntl
 
 # fpcast-emu: bash's unwind_protect casts function pointers, which wasm's

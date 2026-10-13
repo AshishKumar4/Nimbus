@@ -5,6 +5,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: in the installed GNU bash, an `exit` or `return` inside `eval`, a
+  sourced file, a function or an EXIT trap now ends with the status bash
+  chose. Before, a jump through one of bash's saved copies of its jump
+  buffers could land in another capture: `eval 'exit 7'` exited 0, an EXIT
+  trap's exit was lost, and code after a `return` ran. This needs the bash
+  runtime 5.2.37-4 (runner `bash-runner@4`); a session with 5.2.37-3 is told
+  to install it. The bash module is now built by a reproducible recipe
+  (`scripts/ci/remote-bash-build.mjs`) and carries its provenance.
 - Fixed: in a WASI program (bash and its commands, CPython, any compiled
   program), `/dev/fd/N`, `/proc/self/fd/N`, `/dev/stdin`, `/dev/stdout` and
   `/dev/stderr` now name the process's own descriptor, as on Linux. A pipe or

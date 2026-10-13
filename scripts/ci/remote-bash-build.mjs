@@ -16,7 +16,7 @@ import { BASH_OUTPUTS } from '../../packages/worker/wasm/bash/inputs.mjs';
 
 const DIR = 'packages/worker/wasm/bash';
 // The module's import surface, and real bash through the runner: fds, pipes, signals, waits.
-const VERIFY = ['bash-live-artifact-abi', 'bash-wasi-correctness', 'bash-fd-posix-correctness', 'bash-pipes-jspi', 'bash-kill-wait', 'bash-wait-reaps-own-children'];
+const VERIFY = ['bash-live-artifact-abi', 'bash-nonlocal-exit', 'bash-capture-lifetime', 'bash-wasi-correctness', 'bash-fd-posix-correctness', 'bash-pipes-jspi', 'bash-kill-wait', 'bash-wait-reaps-own-children'];
 await remoteRecipeBuild({
   tool: 'remote-bash-build',
   runtime: 'bash-wasi',

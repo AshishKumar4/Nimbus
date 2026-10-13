@@ -10,7 +10,7 @@ export const BASH_REGENERATE = 'bun scripts/ci/remote-bash-build.mjs';
 /** What bash.async.wasm is built from, beside the pinned sources build-in-bwrap.sh fetches. */
 export async function bashInputs(root = HERE) {
   return digestInputs(root, [
-    'build-bash.sh', 'build-in-bwrap.sh', 'inputs.mjs', 'cross.cache', 'nimbus-proc.c', 'nimbus-proc.h', 'include',
+    'build-bash.sh', 'build-in-bwrap.sh', 'inputs.mjs', 'cross.cache', 'nimbus-proc.c', 'nimbus-proc.h', 'include', 'patches',
     '../../scripts/artifact-inputs.mjs',
   ]);
 }

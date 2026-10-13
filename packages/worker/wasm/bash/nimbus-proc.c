@@ -191,6 +191,14 @@ _Noreturn void longjmp(jmp_buf env, int val) { __np_longjmp((void *)env, val ? v
 _Noreturn void _longjmp(jmp_buf env, int val) { __np_longjmp((void *)env, val ? val : 1); __builtin_unreachable(); }
 _Noreturn void siglongjmp(sigjmp_buf env, int val) { __np_longjmp((void *)env, val ? val : 1); __builtin_unreachable(); }
 
+/* A module of their own, off asyncify's import list: neither ever unwinds.
+ * Neither keeps a frame, so the stack pointer the runner reads is the
+ * caller's, which holds dst. */
+__attribute__((import_module("nimbus_procenv"), import_name("copy"))) extern void __np_procenv_copy(void *dst, const void *src);
+__attribute__((import_module("nimbus_procenv"), import_name("drop"))) extern void __np_procenv_drop(void *at);
+void nimbus_procenv_copy(void *dst, const void *src) { memcpy(dst, src, sizeof(jmp_buf)); __np_procenv_copy(dst, src); }
+void nimbus_procenv_drop(void *at) { __np_procenv_drop(at); }
+
 /* ---- termios (the RuntimeTtyOptions seam; non-interactive bash never calls
  * these — stubbed to a sane cooked-mode default. tcget/set route to the
  * nimbus_proc tty imports when interactive job control lands, M5). ---- */
