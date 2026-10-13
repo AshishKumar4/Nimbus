@@ -91,6 +91,7 @@ import { packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.
 import { transformParser } from '../runtime/barrel-synthesizer.js';
 import {
   barrelInput,
+  barrelPackage,
   buildPrebundle,
   isServerToolPackage,
   scanProject,
@@ -1941,8 +1942,10 @@ export class NpmInstaller {
     for (const specifier of scan.bareSpecifiers) {
       const pkgName = packageNameFromSpecifier(specifier);
       if (isServerToolPackage(pkgName) || !installed.has(pkgName)) continue;
-      const barrel = await barrelInput(ctx, specifier, async () => scan);
-      if (await storedPrebundle(ctx, specifier, barrel)) continue;
+      const whole = barrelPackage(ctx, specifier);
+      const barrel = whole && barrelInput(whole, scan);
+      const stored = storedPrebundle(ctx, specifier, barrel);
+      if (stored && await stored) continue;
       pending.push({ specifier, barrel });
     }
     if (pending.length === 0) return;

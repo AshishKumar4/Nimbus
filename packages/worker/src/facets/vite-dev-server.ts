@@ -49,6 +49,7 @@ import { transformParser, type ScanBudget } from '../runtime/barrel-synthesizer.
 import {
   answersBarrel,
   barrelInput,
+  barrelPackage,
   buildPrebundle,
   resolvePrebundleEntry,
   scanProject,
@@ -2035,9 +2036,10 @@ export class ViteDevServer {
    * barrelInput): the project is scanned only for a barrel package, and a
    * scan that left files unread is said, once per request.
    */
-  private moduleBarrel(specifier: string): Promise<BarrelInput | null> {
+  private async moduleBarrel(specifier: string): Promise<BarrelInput | null> {
     const ctx = this.prebundleContext();
-    return barrelInput(ctx, specifier, () => scanProject(ctx), (pkgName, fileCount, left) => {
+    const whole = barrelPackage(ctx, specifier);
+    return whole && barrelInput(whole, await scanProject(ctx), (pkgName, fileCount, left) => {
       this.log('warn', `[vite-dev] ${pkgName} is a barrel package (${fileCount} files), but the scan of the project for the names it imports left ${left} unread; bundling ${pkgName} whole rather than from an entry that could miss one`);
     });
   }
@@ -2061,7 +2063,8 @@ export class ViteDevServer {
     // 2. The workspace's stored pre-bundle (the installer's warming or an
     //    earlier request), raw: the base-dependent rewrites are this
     //    request's (servablePrebundle).
-    const stored = await storedPrebundle(this.prebundleContext(), specifier, barrel);
+    const check = storedPrebundle(this.prebundleContext(), specifier, barrel);
+    const stored = check && await check;
     if (stored) {
       const code = this.servablePrebundle(stored.esmCode, base);
       this.cacheModule(generation, cacheKey, { code, timestamp: Date.now(), inputHash: stored.inputHash });
