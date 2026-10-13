@@ -5,6 +5,8 @@
  * so each read of a key `-c` set answers it; nothing is written.
  */
 
+import { errnoCodeOf, fsError } from '@nimbus-sh/core/vfs/vfs-error.js';
+
 /** A refusal of git's own options, in git's words, and the exit it takes. */
 export class GitGlobalsError extends Error {
   constructor(readonly lines: string, readonly code: number) {
@@ -97,9 +99,16 @@ export function withGlobalConfig<G extends ConfigReader>(git: G, fs: {
     .map((file) => file.startsWith('/') ? file : `${cwd}/${file}`);
   if (files.length === 0) return git;
   const contents = new Map<string, ReturnType<typeof fs.promises.readFile>>();
+  // One the user cannot read is none (git's access_or_die with ACCESS_EACCES_OK, for the user's own files).
   const read = (file: string, options?: 'utf8' | { encoding: 'utf8' }) => {
     let content = contents.get(file);
-    if (content === undefined) { content = fs.promises.readFile(file, options); contents.set(file, content); }
+    if (content === undefined) {
+      content = fs.promises.readFile(file, options).catch((error: unknown) => {
+        if (errnoCodeOf(error) === 'EACCES') throw fsError('ENOENT', 'open', file);
+        throw error;
+      });
+      contents.set(file, content);
+    }
     return content;
   };
   const values = new Map<string, ReturnType<ConfigReader['getConfigAll']>>();
@@ -168,7 +177,7 @@ export function withWorktreeConfig<G extends ConfigReader & { setConfig(args: { 
   const set = async (gitdir: string): Promise<boolean> => {
     let on = known.get(gitdir);
     if (on === undefined) {
-      on = configBool(await files.getConfig({ fs, gitdir, path: 'extensions.worktreeConfig' }).catch(() => undefined)) === true;
+      on = configBool(await files.getConfig({ fs, gitdir, path: 'extensions.worktreeConfig' })) === true;
       known.set(gitdir, on);
     }
     return on;
@@ -194,7 +203,7 @@ export function withWorktreeConfig<G extends ConfigReader & { setConfig(args: { 
       if (gitdir === null) return git.getConfig(args);
       return (async () => {
         if (await set(gitdir)) {
-          const own = await git.getConfig(inWorktreeFile(gitdir, args.path)).catch(() => undefined);
+          const own = await git.getConfig(inWorktreeFile(gitdir, args.path));
           if (own !== undefined) return own;
         }
         return await git.getConfig(args);
@@ -206,7 +215,7 @@ export function withWorktreeConfig<G extends ConfigReader & { setConfig(args: { 
       return (async () => {
         const all = await git.getConfigAll(args);
         if (!await set(gitdir)) return all;
-        return [...all, ...await git.getConfigAll(inWorktreeFile(gitdir, args.path)).catch(() => [])];
+        return [...all, ...await git.getConfigAll(inWorktreeFile(gitdir, args.path))];
       })();
     },
     async setConfig(args: { path: string }) {

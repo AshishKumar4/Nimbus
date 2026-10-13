@@ -239,7 +239,7 @@ export class WorktreeRepo {
   }
 
   async config(path: string): Promise<unknown> {
-    try { return await this.git.getConfig({ fs: this.gitFs, dir: this.root, path }); } catch { return undefined; }
+    return await this.git.getConfig({ fs: this.gitFs, dir: this.root, path });
   }
 
   /**

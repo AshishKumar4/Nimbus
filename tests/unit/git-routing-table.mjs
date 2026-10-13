@@ -218,6 +218,59 @@ for (const [dir, dirMode, config] of [['.git/hooks', 0o311, null], ['githooks', 
   user.unlink('home/user/repo/worktree-hooks/pre-commit');
 }
 
+// A config file there that cannot be read is no empty one: git dies of it
+// (access_or_die: "unable to access", 128) and runs nothing. The
+// repository's config.worktree (extensions.worktreeConfig set), unreadable,
+// names the hooks a commit runs over the repository's own hooksPath: the
+// commit is refused, not made without its hook (RearHerring). So is any
+// command in a repository whose own config cannot be read. A global file
+// the user cannot read is none, as git takes the user's own files.
+{
+  const outcome = async (words, env = {}) => {
+    let stderr = '';
+    const handed = [];
+    const code = await runGitCommand({
+      pid: 1, cred: CRED_SESSION_USER, args: ['-C', 'repo', '-c', 'user.name=Ada', '-c', 'user.email=ada@example.com', ...words], cwd: '/home/user', env,
+      stdout: { write() {}, writeBytes() {} }, stderr: { write(s) { stderr += s; } },
+      vfs: files.view({ pid: 1, cred: CRED_SESSION_USER }), signal: new AbortController().signal,
+    }, vfs, undefined, undefined, undefined, undefined, undefined, async () => { handed.push(words); return 0; });
+    return { who: handed.length > 0 ? 'real git' : 'built-in', code, stderr };
+  };
+  const config = user.readFileString('home/user/repo/.git/config');
+  user.mkdir('home/user/repo/repo-hooks', { recursive: true });
+  user.writeFile('home/user/repo/repo-hooks/pre-commit', '#!/bin/sh\nexit 1\n');
+  user.chmod('home/user/repo/repo-hooks/pre-commit', 0o755);
+  user.writeFile('home/user/repo/.git/config', config + '[extensions]\n\tworktreeConfig = true\n[core]\n\thooksPath = no-hooks\n');
+  user.writeFile('home/user/repo/.git/config.worktree', '[core]\n\thooksPath = repo-hooks\n');
+  user.chmod('home/user/repo/.git/config.worktree', 0o000);
+  const before = user.readFileString('home/user/repo/.git/refs/heads/main');
+  for (const words of [['commit', '-m', 'x', '--allow-empty'], ['status']]) {
+    const got = await outcome(words);
+    if (got.code !== 128 || got.stderr !== "fatal: unable to access '.git/config.worktree': Permission denied\n") {
+      wrong.push(`git ${words.join(' ')} with an unreadable config.worktree: ${got.who} ${got.code} ${JSON.stringify(got.stderr)}`);
+    }
+  }
+  if (user.readFileString('home/user/repo/.git/refs/heads/main') !== before) wrong.push('a commit was made with an unreadable config.worktree');
+  user.chmod('home/user/repo/.git/config.worktree', 0o644);
+  user.unlink('home/user/repo/.git/config.worktree');
+  user.writeFile('home/user/repo/.git/config', config);
+
+  user.chmod('home/user/repo/.git/config', 0o000);
+  const unreadable = await outcome(['status']);
+  if (unreadable.code !== 128 || !unreadable.stderr.includes("fatal: unable to access '.git/config': Permission denied\n")) {
+    wrong.push(`git status with an unreadable .git/config: ${unreadable.who} ${unreadable.code} ${JSON.stringify(unreadable.stderr)}`);
+  }
+  user.chmod('home/user/repo/.git/config', 0o644);
+
+  user.writeFile('home/user/.gitconfig', '[core]\n\thooksPath = repo-hooks\n');
+  user.chmod('home/user/.gitconfig', 0o000);
+  const global = await outcome(['commit', '-m', 'x', '--allow-empty'], { HOME: '/home/user' });
+  if (global.who !== 'built-in' || global.code !== 0) wrong.push(`git commit with an unreadable ~/.gitconfig: ${global.who} ${global.code} ${JSON.stringify(global.stderr)}`);
+  user.chmod('home/user/.gitconfig', 0o644);
+  user.unlink('home/user/.gitconfig');
+  user.unlink('home/user/repo/repo-hooks/pre-commit');
+}
+
 // The refresh a status or diff writes back runs post-index-change in git:
 // where that hook is executable the built-in keeps none, as git keeps none
 // it cannot lock, and so runs no hook. Without it, the refresh is kept.

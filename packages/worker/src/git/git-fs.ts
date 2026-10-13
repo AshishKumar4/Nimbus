@@ -13,7 +13,7 @@
  */
 import { dec } from '@nimbus-sh/core/_shared/bytes.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
-import { fsError } from '@nimbus-sh/core/vfs/vfs-error.js';
+import { errnoCodeOf, fsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 
 /** An inode as a backend reports it. */
 export interface GitFsStat {
@@ -105,6 +105,9 @@ export function createGitFs<P>(backend: GitFsBackend, packs: P) {
         : backend.readFile(normalizeVfsPath(filepath)).then((data) => {
           if (data === null) throw fsError('ENOENT', 'open', filepath);
           return wantsUtf8(options) ? dec.decode(data) : data;
+        }, (error: unknown) => {
+          // A file there that cannot be read: its errno, at the path asked.
+          throw fsError(errnoCodeOf(error) ?? 'EIO', 'open', filepath, undefined, { cause: error });
         }),
       writeFile(filepath: string, data: Uint8Array | ArrayBuffer | string, options?: { mode?: unknown }): Promise<void> {
         const bytes = typeof data === 'string' || data instanceof Uint8Array ? data : new Uint8Array(data);
