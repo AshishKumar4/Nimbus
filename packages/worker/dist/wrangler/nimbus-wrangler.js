@@ -156,8 +156,6 @@ export class NimbusWrangler {
      */
     generation = 0;
     stopped = false;
-    /** What the build that serves made, said once it serves. */
-    builtNote = '';
     unsubVfs = null;
     rebuildTimer = null;
     /** DO class map: binding name → DurableObjectClass from the inner worker. */
@@ -181,17 +179,15 @@ export class NimbusWrangler {
             this.onLog('\x1b[31mNo wrangler.jsonc or wrangler.toml found in ' + this.root + '\x1b[0m\n');
             return false;
         }
-        // 2. Build and load the worker
-        const ok = await this.buildAndLoad();
-        if (!ok)
-            return false;
-        // 3. Watch for file changes
-        this.running = true;
-        this.unsubVfs = this.namespace.watchChanges('/', (events) => {
-            this.handleVfsEvents(events);
+        // 2. Build and load the worker; once it serves, 3. watch for file changes.
+        const ok = await this.buildAndLoad(() => {
+            this.running = true;
+            this.unsubVfs = this.namespace.watchChanges('/', (events) => {
+                this.handleVfsEvents(events);
+            });
         });
-        this.onLog(this.builtNote);
-        return true;
+        // A stop() that came after it served, before this resumed, stopped it.
+        return ok && !this.stopped;
     }
     /** Whether stop() was called: a start it cut short failed for that reason. */
     get wasStopped() { return this.stopped; }
@@ -294,7 +290,12 @@ export class NimbusWrangler {
     resolveEntryPath() {
         return normalizeVfsPath(this.root + '/' + (this.config?.main ?? ''));
     }
-    async buildAndLoad() {
+    /**
+     * Build the Worker and, unless a later build or stop() superseded it, make
+     * it the one that serves, then `served()`, then say "Worker built": one
+     * synchronous step after the build's last wait, so nothing comes between.
+     */
+    async buildAndLoad(served) {
         const generation = ++this.generation;
         const superseded = () => generation !== this.generation;
         if (!this.config?.main) {
@@ -428,8 +429,8 @@ export class NimbusWrangler {
             for (const w of result.warnings || []) {
                 this.onLog(`  \x1b[33mwarning: ${w.text}\x1b[0m\n`);
             }
-            // Said by the caller once this build serves.
-            this.builtNote = `  \x1b[32mWorker built (v${this.buildVersion}, ${bundledCode.length} bytes)\x1b[0m\n`;
+            served();
+            this.onLog(`  \x1b[32mWorker built (v${this.buildVersion}, ${bundledCode.length} bytes)\x1b[0m\n`);
             return true;
         }
         catch (e) {
@@ -729,11 +730,7 @@ export class NimbusWrangler {
         this.rebuildTimer = setTimeout(async () => {
             this.rebuildTimer = null;
             this.onLog('\n  \x1b[33mFile change detected, rebuilding...\x1b[0m\n');
-            const ok = await this.buildAndLoad();
-            if (ok) {
-                this.onLog(this.builtNote);
-                this.onHmrMessage({ type: 'nimbus-hmr', event: 'full-reload' });
-            }
+            await this.buildAndLoad(() => this.onHmrMessage({ type: 'nimbus-hmr', event: 'full-reload' }));
         }, 250);
     }
     // ── Request handling ──────────────────────────────────────────────────

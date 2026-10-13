@@ -79,8 +79,6 @@ export declare class NimbusWrangler {
      */
     private generation;
     private stopped;
-    /** What the build that serves made, said once it serves. */
-    private builtNote;
     private unsubVfs;
     private rebuildTimer;
     /** DO class map: binding name → DurableObjectClass from the inner worker. */
@@ -117,6 +115,11 @@ export declare class NimbusWrangler {
      * `path.split('/').filter(Boolean)` shape via `normalizePath`).
      */
     private resolveEntryPath;
+    /**
+     * Build the Worker and, unless a later build or stop() superseded it, make
+     * it the one that serves, then `served()`, then say "Worker built": one
+     * synchronous step after the build's last wait, so nothing comes between.
+     */
     private buildAndLoad;
     /**
      * Checks that `worker` (the inner Worker, loaded) exports each binding's
