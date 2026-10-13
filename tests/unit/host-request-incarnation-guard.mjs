@@ -15,7 +15,7 @@ export class NimbusProcess extends DurableObject {
     this.ctx.handlers++;
     this.ctx.signal = request.signal;
     // What a guest that forwards its request keeps: a clone and a copy.
-    this.ctx.forwarded = [request.clone().signal, new Request(request).signal];
+    this.ctx.forwarded = [request.clone().signal, new Request(request.clone()).signal];
     this.ctx.seen.push({ entry, method: request.method, headers: [...request.headers], body: await request.text() });
     if (request.headers.get('Upgrade') === 'websocket') {
       const [client, server] = Object.values(new WebSocketPair());
