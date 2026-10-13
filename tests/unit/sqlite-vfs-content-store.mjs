@@ -92,7 +92,7 @@ function wireChunks(path, data) {
   assert.notEqual(vfs.contentKey('a/node_modules/pkg-0/f-0.js'), vfs.contentKey('a/node_modules/pkg-1/f-1.js'));
 
   // ── Unlinking every sharer frees every chunk ───────────────────────────
-  assert.equal(vfs.removeRecursive('a'), 10_102);
+  assert.deepEqual(vfs.removeRecursive('a'), { removed: ['a'], kept: [], failures: [] });
   drain(raw);
   assert.equal(storedChunks(harness), chunksAfterFirst, 'the surviving sharer keeps every chunk');
   assert.deepEqual([...vfs.readFile('b/node_modules/pkg-0/f-0.js')], [...random(sizes[0], 0)]);

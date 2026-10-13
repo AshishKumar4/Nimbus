@@ -1,7 +1,7 @@
 import { registerHostedCommands } from '../hosted/commands.js';
 import { runtimeCatalogSource } from '../runtime/runtime-catalog.js';
 import { NimbusWorkspace } from '@nimbus-sh/core/workspace';
-import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_KERNEL, CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 // Runtime factories (clang/python/ruby/bash/wasm) are imported lazily at
@@ -23,7 +23,7 @@ import { sessionAiEnv } from './ai.js';
 import { setPhase } from './init-phases.js';
 import { shellTerminalTee } from './ws.js';
 import type { SessionInternal } from './internal.js';
-import { serveEditorFs } from './editor-fs.js';
+import { editorViews, serveEditorFs } from './editor-fs.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 import { noteClientActivity } from './hibernation.js';
 
@@ -64,6 +64,8 @@ export async function initSession(
     const replayScrollback = options.resume !== 'wake';
     self.ensureSqliteFs();
     const kernelFs = self.sqliteFs!.as(CRED_KERNEL);
+    // The user's project is read as its user, as the user's shell reads it.
+    const userFs = self.sqliteFs!.as(CRED_SESSION_USER);
     self.ensureFacetManager();
     // Idempotent, so a delegation it meets is waited out and it runs again.
     await withRecall(() => self.seedFilesystem());
@@ -254,10 +256,7 @@ export async function initSession(
     //
     // Answered by serveEditorFs (editor-fs.ts).
     self.terminal.onFs((msg: any, reply: (frame: any) => void) => {
-      const namespace = self.getFilesystemAuthority();
-      // The file tree lists on fs-watch events, so it reads what has landed:
-      // listing a directory a process holds asks the process for nothing.
-      void serveEditorFs({ files: namespace.namespaceFs(CRED_KERNEL), tree: namespace.namespaceFs(CRED_KERNEL, { landed: true }) }, msg).then(reply);
+      void serveEditorFs(editorViews(self.getFilesystemAuthority()), msg).then(reply);
     });
 
     // W8: hand the registry to the cp broker so child_process.spawn from
@@ -310,7 +309,7 @@ if (persisted.cwd) {
       // deletes ~/.nimbus-seeded (or the project dir) the hint stops
       // appearing on next login.
       try {
-        if (hasSeededProject(self.sqliteFs!) && kernelFs.exists(SEED_PROJECT_DIR)) {
+        if (hasSeededProject(self.sqliteFs!) && userFs.exists(SEED_PROJECT_DIR)) {
           self.terminal.write(
             `\x1b[2mStarter app ready at \x1b[36m${SEED_PROJECT_TILDE}\x1b[0m\x1b[2m — try:\x1b[0m\r\n` +
             `  \x1b[36mcd ${SEED_PROJECT_NAME} && npm install && npm run dev\x1b[0m\r\n\r\n`
@@ -326,16 +325,16 @@ if (persisted.cwd) {
         try {
           const projDir = SEED_PROJECT_DIR;
           const pkgPath = projDir + '/package.json';
-          if (!kernelFs.exists(pkgPath)) return;
-          const pkg = JSON.parse(kernelFs.readFileString(pkgPath));
+          if (!userFs.exists(pkgPath)) return;
+          const pkg = JSON.parse(userFs.readFileString(pkgPath));
           const files = new Set<string>();
           try {
-            for (const e of kernelFs.readdir(projDir)) files.add(e.name);
+            for (const e of userFs.readdir(projDir)) files.add(e.name);
           } catch {}
           const fileContents: Record<string, string> = {};
           for (const c of ['vite.config.ts', 'vite.config.js', 'vite.config.mjs']) {
             if (files.has(c)) {
-              try { fileContents[c] = kernelFs.readFileString(projDir + '/' + c); } catch {}
+              try { fileContents[c] = userFs.readFileString(projDir + '/' + c); } catch {}
             }
           }
           const { detectFramework, describeDetect } = await import('@nimbus-sh/core/runtime/framework-detect.js');

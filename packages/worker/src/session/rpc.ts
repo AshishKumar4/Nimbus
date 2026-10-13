@@ -385,9 +385,13 @@ export async function _rpcWriteFile(self: RpcHost, path: string, content: string
  * rename or remove this one. That is the whole mechanism; there is no special
  * case anywhere in the filesystem for it.
  *
- * Deliberately absent from the remote HTTP RPC dispatcher: the point is a file
- * the sandboxed program cannot forge, so only an embedder holding the DO stub
- * may write it.
+ * Deliberately absent from the remote HTTP RPC dispatcher, so only an
+ * embedder holding the DO stub may write it.
+ *
+ * It guards against accidents, not against the session's code: the session's
+ * user has passwordless root (`sudo`, `su`), and a program that runs `sudo`
+ * can replace or remove this file. Do not rely on it to keep a value from code
+ * running in the session (docs/sandbox-sdk.md, "Users and Permissions").
  */
 export async function _rpcWriteProtectedRootFile(
   self: RpcHost,

@@ -1,8 +1,9 @@
 /**
  * The editor pane's filesystem messages, over the terminal's WebSocket
  * (fs-read, fs-write, fs-list, each answered by a `<type>-result` frame):
- * read and written as the kernel through the session's namespace
- * (ProcessFiles.namespaceFs), mounts included, each answer computed whole.
+ * read and written as the session's user through the session's namespace
+ * (ProcessFiles.namespaceFs), mounts included, each answer computed whole:
+ * the editor is refused what the user's own shell is refused.
  *
  * Binary refuse: fs-read uses readFile(bytes) + fatal:true UTF-8 decode.
  * Throws on invalid bytes → reply { binary:true } with no content. The
@@ -12,6 +13,15 @@
  */
 import { parentVfsPath, stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
 import { recallOf, withRecall } from '@nimbus-sh/core/vfs/recall.js';
+import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
+/**
+ * The editor pane's views of the session's namespace: `files`, which it
+ * reads and saves, and `tree`, which it lists. The tree reads what has
+ * landed, so listing a directory a process holds asks the process for nothing.
+ */
+export function editorViews(namespace) {
+    return { files: namespace.namespaceFs(CRED_SESSION_USER), tree: namespace.namespaceFs(CRED_SESSION_USER, { landed: true }) };
+}
 /** A message's path, as the namespace names it. */
 const absolute = (path) => `/${stripLeadingSlashes(String(path || ''))}`;
 /**
@@ -24,8 +34,8 @@ const absolute = (path) => `/${stripLeadingSlashes(String(path || ''))}`;
 export function serveEditorFs(views, msg) {
     // A listing is the file tree's, which reads after each wave lands (fs-watch):
     // it reads what has landed. Opening and saving a file wait for its holder.
-    const kernelFs = msg?.type === 'fs-list' ? views.tree : views.files;
-    return withRecall(() => answerEditorFs(kernelFs, msg)).catch((e) => ({
+    const fs = msg?.type === 'fs-list' ? views.tree : views.files;
+    return withRecall(() => answerEditorFs(fs, msg)).catch((e) => ({
         type: msg.type + '-result',
         path: msg.path,
         dir: msg.dir,
@@ -33,19 +43,19 @@ export function serveEditorFs(views, msg) {
         error: (e?.message || String(e)),
     }));
 }
-function answerEditorFs(kernelFs, msg) {
+function answerEditorFs(fs, msg) {
     if (msg.type === 'fs-read') {
         const p = absolute(msg.path);
-        if (!kernelFs.exists(p)) {
+        if (!fs.exists(p)) {
             return { type: 'fs-read-result', path: msg.path, error: 'ENOENT: no such file or directory' };
         }
-        if (kernelFs.isDirectory(p)) {
+        if (fs.isDirectory(p)) {
             return { type: 'fs-read-result', path: msg.path, error: 'EISDIR: is a directory' };
         }
         // Read bytes; attempt strict UTF-8 decode. Non-UTF-8 → mark
         // binary so the editor shows a friendly placeholder rather
         // than mojibake.
-        const bytes = kernelFs.readFile(p);
+        const bytes = fs.readFile(p);
         try {
             const content = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
             return { type: 'fs-read-result', path: msg.path, content };
@@ -67,23 +77,23 @@ function answerEditorFs(kernelFs, msg) {
         const parent = parentVfsPath(p);
         if (parent)
             try {
-                kernelFs.mkdir(`/${parent}`, { recursive: true });
+                fs.mkdir(`/${parent}`, { recursive: true });
             }
             catch (error) {
                 if (recallOf(error) !== null)
                     throw error;
             }
         const content = typeof msg.content === 'string' ? msg.content : String(msg.content ?? '');
-        kernelFs.writeFile(`/${p}`, content);
+        fs.writeFile(`/${p}`, content);
         return { type: 'fs-write-result', path: msg.path, ok: true };
     }
     if (msg.type === 'fs-list') {
         const dir = absolute(msg.dir);
         const recursive = msg.recursive === true;
-        if (!kernelFs.exists(dir)) {
+        if (!fs.exists(dir)) {
             return { type: 'fs-list-result', dir: msg.dir, entries: [], error: 'ENOENT' };
         }
-        if (!kernelFs.isDirectory(dir)) {
+        if (!fs.isDirectory(dir)) {
             return { type: 'fs-list-result', dir: msg.dir, entries: [], error: 'ENOTDIR' };
         }
         // BFS walk with per-call cap so a 10k-file project doesn't
@@ -98,7 +108,7 @@ function answerEditorFs(kernelFs, msg) {
             let entries;
             // A directory it cannot list is left out; a delegation it meets is recalled (the walk runs again).
             try {
-                entries = kernelFs.readdir(cur);
+                entries = fs.readdir(cur);
             }
             catch (error) {
                 if (recallOf(error) !== null)

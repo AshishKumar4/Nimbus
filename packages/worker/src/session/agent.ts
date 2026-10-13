@@ -76,7 +76,7 @@ import {
   type StoredMessageStatus,
   type StoredTurnPart,
 } from './agent-contract.js';
-import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
@@ -900,7 +900,7 @@ function toolSchema(properties: Record<string, unknown>, required: string[]) {
   });
 }
 
-async function runTool(self: Host, name: string, args: any): Promise<unknown> {
+export async function runTool(self: Host, name: string, args: any): Promise<unknown> {
   try {
     if (name === 'exec') {
       return rpcExec(self, String(args.command || ''), {
@@ -911,13 +911,14 @@ async function runTool(self: Host, name: string, args: any): Promise<unknown> {
     if (name === 'read_file') {
       await ensureProgrammaticReady(self);
       const path = normalizeAgentVfsPath(args.path || '/home/user');
-      // Each file tool waits for a delegation it meets to be recalled (withRecall).
-      return { path: '/' + path, content: await withRecall(() => self.sqliteFs!.as(CRED_KERNEL).readFileString(path)) };
+      // Each file tool acts as the session's user, as the user's own shell does,
+      // and waits for a delegation it meets to be recalled (withRecall).
+      return { path: '/' + path, content: await withRecall(() => self.sqliteFs!.as(CRED_SESSION_USER).readFileString(path)) };
     }
     if (name === 'write_file') {
       await ensureProgrammaticReady(self);
       const path = normalizeAgentVfsPath(args.path || '/home/user/file.txt');
-      const vfs = self.sqliteFs!.as(CRED_KERNEL);
+      const vfs = self.sqliteFs!.as(CRED_SESSION_USER);
       await withRecall(() => {
         ensureParentDirs(vfs, path);
         vfs.writeFile(path, String(args.content ?? ''));
@@ -928,7 +929,7 @@ async function runTool(self: Host, name: string, args: any): Promise<unknown> {
       await ensureProgrammaticReady(self);
       const path = normalizeAgentVfsPath(args.path || '/home/user');
       const base = trimTrailingSlash(path);
-      const entries = (await withRecall(() => self.sqliteFs!.as(CRED_KERNEL).readdir(path))).map((entry) => ({
+      const entries = (await withRecall(() => self.sqliteFs!.as(CRED_SESSION_USER).readdir(path))).map((entry) => ({
         name: entry.name,
         type: entry.type,
         path: '/' + base + '/' + entry.name,

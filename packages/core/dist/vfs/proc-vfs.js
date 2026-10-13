@@ -2,9 +2,9 @@ import { syscallError } from './vfs-error.js';
 import { posixAccess } from './posix-access.js';
 const enc = new TextEncoder();
 /** A directory's and a file's mode and owner: what their stats say and their access asks. */
-const DIRECTORY = { mode: 0o40555, uid: 0, gid: 0 };
-const FILE = { mode: 0o100444, uid: 0, gid: 0 };
-const DIR = { type: 'directory', size: 0, mtimeMs: 0, ...DIRECTORY };
+const DIRECTORY = { mode: 0o40555, uid: 0, gid: 0, type: 'directory' };
+const FILE = { mode: 0o100444, uid: 0, gid: 0, type: 'file' };
+const DIR = { size: 0, mtimeMs: 0, ...DIRECTORY };
 function key(path) {
     return path.split('/').filter((s) => s !== '' && s !== '.').join('/');
 }
@@ -46,7 +46,7 @@ export class ProcVFS {
             return DIR;
         if (!this.files.has(k))
             return null;
-        return { type: 'file', size: this.generate(path).length, mtimeMs: Date.now(), ...FILE };
+        return { size: this.generate(path).length, mtimeMs: Date.now(), ...FILE };
     }
     readFile(path) {
         return this.generate(path);
