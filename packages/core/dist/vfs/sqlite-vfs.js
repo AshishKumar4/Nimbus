@@ -44,7 +44,7 @@ import { posixAccess } from './posix-access.js';
 import { RecallRequired, recallOf, withRecall } from './recall.js';
 import { SESSION_KERNEL_ROOTS, readLeaseCovers } from '../_shared/read-lease-cover.js';
 export { RecallRequired, recallOf, withRecall } from './recall.js';
-import { readDeclaredSource, syncValue } from './vfs.js';
+import { copiedPermissions, readDeclaredSource, syncValue } from './vfs.js';
 import { errnoCodeOf, toVfsError, vfsError } from './vfs-error.js';
 import { walkRemoval } from './removal-walk.js';
 import { inodeKind, linkedSignal, untilAborted, validateFileChunks, validateInodeShape, withUmask, } from '../runtime/wave-contracts.js';
@@ -5547,7 +5547,7 @@ export class SqliteVFS {
         if (!prior)
             this.checkParentAccess(target.path, cred);
         const now = this.now();
-        const made = prior ? undefined : this.creationAttrs(target.path, inode.mode & 0o777, cred, false);
+        const made = prior ? undefined : this.creationAttrs(target.path, copiedPermissions(inode.mode, false), cred, false);
         const builder = this.newPlan();
         builder.addInode({
             path: target.path,
@@ -5816,51 +5816,53 @@ export class SqliteVFS {
     }
     /**
      * What a copy makes its entries with, for one slice: SQL over each source
-     * row's kind and mode, per page, kept as the pages go. Without preserve,
-     * what a creation there makes (creationAttrs): the root's beneath the
-     * destination's parent, every other's beneath the copied root, as each
-     * directory the copy makes is made alike (its group and default ACL are
-     * the root's). With it, the source's, and its group when root copies. A
-     * registered shared directory's rule holds for both. A link keeps its mode.
+     * row's kind and mode, for the modes of the page at hand. Without
+     * preserve, what a creation there makes (creationAttrs) of the source's
+     * permissions (copiedPermissions): the root's beneath the destination's
+     * parent, every other's beneath the copied root, as each directory the
+     * copy makes is made alike (its group and default ACL are the root's).
+     * With it, the source's, and its group when root copies. A registered
+     * shared directory's rule holds for both. A link keeps its mode.
      */
     copyPolicy(job) {
-        const cred = { uid: job.uid, gid: job.gid, groups: job.groups ?? [job.gid], umask: job.clearBits & 0o777 };
         const shared = this.sharedDirectory(job.dst);
+        // A job recorded before its groups were was admitted when it was
+        // planned, a shared directory's group with it.
+        const groups = job.groups ?? (shared ? [job.gid, shared.gid] : [job.gid]);
+        const cred = { uid: job.uid, gid: job.gid, groups, umask: job.clearBits & 0o777 };
         const owner = job.preserveOwner ? 'gid' : String(job.gid);
         const form = (at) => {
-            const modes = new Map();
-            let sql = null;
+            const made = new Map();
+            let attrs = null;
             return (page) => {
-                let grew = sql === null;
+                const keys = new Set();
                 for (const row of page) {
                     const kind = Number(row.kind);
                     const mode = Number(row.mode);
                     const key = kind * 0o200000 + mode;
-                    if (modes.has(key))
+                    keys.add(key);
+                    if (made.has(key))
                         continue;
-                    grew = true;
                     const dir = kind === INODE_KIND_DIRECTORY;
                     const perms = kind === INODE_KIND_SYMLINK ? mode & 0o7777
                         : job.preserveTimes ? (shared ? this.sharedMode(mode & 0o7777, dir) : mode & 0o7777)
-                            : this.creationAttrs(at, mode & 0o1777, cred, dir).mode;
-                    modes.set(key, (mode & ~0o7777) | perms);
+                            : this.creationAttrs(at, copiedPermissions(mode, dir), cred, dir).mode;
+                    made.set(key, (mode & ~0o7777) | perms);
                 }
-                if (!grew)
-                    return sql;
-                const cases = [...modes].sort(([a], [b]) => a - b).map(([key, made]) => `WHEN ${key} THEN ${made}`).join(' ');
-                const mode = `CASE kind * ${0o200000} + mode ${cases} END`;
-                if (!job.preserveTimes) {
-                    const made = this.creationAttrs(at, 0, cred, true);
-                    sql = { mode, gid: String(made.gid), dacl: `CASE WHEN kind = ${INODE_KIND_DIRECTORY} THEN ${made.defaultAcl ?? 'NULL'} END` };
+                if (attrs === null) {
+                    if (!job.preserveTimes) {
+                        const root = this.creationAttrs(at, 0, cred, true);
+                        attrs = { gid: String(root.gid), dacl: `CASE WHEN kind = ${INODE_KIND_DIRECTORY} THEN ${root.defaultAcl ?? 'NULL'} END` };
+                    }
+                    else {
+                        attrs = {
+                            gid: shared ? `CASE WHEN kind = ${INODE_KIND_SYMLINK} THEN ${owner} ELSE ${shared.gid} END` : owner,
+                            dacl: shared ? `CASE WHEN kind = ${INODE_KIND_DIRECTORY} THEN ${shared.acl} ELSE dacl END` : 'dacl',
+                        };
+                    }
                 }
-                else {
-                    sql = {
-                        mode,
-                        gid: shared ? `CASE WHEN kind = ${INODE_KIND_SYMLINK} THEN ${owner} ELSE ${shared.gid} END` : owner,
-                        dacl: shared ? `CASE WHEN kind = ${INODE_KIND_DIRECTORY} THEN ${shared.acl} ELSE dacl END` : 'dacl',
-                    };
-                }
-                return sql;
+                const cases = [...keys].sort((a, b) => a - b).map((key) => `WHEN ${key} THEN ${made.get(key)}`).join(' ');
+                return { mode: `CASE kind * ${0o200000} + mode ${cases} END`, ...attrs };
             };
         };
         const root = form(job.dst);

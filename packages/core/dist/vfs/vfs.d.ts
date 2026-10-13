@@ -359,6 +359,14 @@ export declare const S_IFREG = 32768;
 export declare const S_IFDIR = 16384;
 export declare const S_IFCHR = 8192;
 export declare const S_IFLNK = 40960;
+/**
+ * The permission bits a copy without preserve asks to make an entry with:
+ * the source's, never its set-user-ID or set-group-ID (cp makes a new file,
+ * not the source's owner's); a directory keeps its sticky bit. The
+ * filesystem it lands on applies its creation policy (umask, a default ACL,
+ * a setgid parent's group) as to any entry made there.
+ */
+export declare function copiedPermissions(mode: number, directory: boolean): number;
 /** True for a character device such as `/dev/zero`, which streams rather than stores. */
 export declare function isCharacterDevice(mode: number | undefined): boolean;
 /** The `ls -l` type character for a mode, falling back to the entry's type. */

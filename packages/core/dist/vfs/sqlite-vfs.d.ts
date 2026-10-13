@@ -1693,12 +1693,13 @@ export declare class SqliteVFS {
     private runCopyTree;
     /**
      * What a copy makes its entries with, for one slice: SQL over each source
-     * row's kind and mode, per page, kept as the pages go. Without preserve,
-     * what a creation there makes (creationAttrs): the root's beneath the
-     * destination's parent, every other's beneath the copied root, as each
-     * directory the copy makes is made alike (its group and default ACL are
-     * the root's). With it, the source's, and its group when root copies. A
-     * registered shared directory's rule holds for both. A link keeps its mode.
+     * row's kind and mode, for the modes of the page at hand. Without
+     * preserve, what a creation there makes (creationAttrs) of the source's
+     * permissions (copiedPermissions): the root's beneath the destination's
+     * parent, every other's beneath the copied root, as each directory the
+     * copy makes is made alike (its group and default ACL are the root's).
+     * With it, the source's, and its group when root copies. A registered
+     * shared directory's rule holds for both. A link keeps its mode.
      */
     private copyPolicy;
     /**

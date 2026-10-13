@@ -88,11 +88,18 @@ export declare function comparePaths(a: string, b: string): number;
  */
 export declare function runtimeStatOf(stat: VfsStat): RuntimeVfsStat;
 export type { Principal } from './vfs.js';
-/** The namespace always offers recursive removal, walking a backend that does not. */
+/** The namespace's copy: a tree with `recursive`; `follow` copies what a link named as the source leads to, as copyfile does. */
+export interface NamespaceCopyOptions {
+    recursive?: boolean;
+    preserve?: boolean;
+    follow?: boolean;
+}
+/** The namespace always offers recursive removal, walking a backend that does not, and copies across filesystems. */
 export interface CompositeSyncVFS extends SyncVFS {
     removeRecursive(path: string, options?: {
         keepVanishedAncestors?: boolean;
     }): VfsRemoval;
+    copy(from: string, to: string, options?: NamespaceCopyOptions): number;
 }
 /** A backend, or a function giving the backend for a principal at this instant (null: absent). */
 export type VfsSource = VFS | ((principal: Principal) => VFS | null);
@@ -898,7 +905,6 @@ export declare class CompositeVFS implements VFS {
      * one tree is cp -r's decision (-x stays on one), not this primitive's.
      * A directory onto an existing path is EEXIST: merging into a directory
      * is cp's job too. (FormalModelsLane `Vfs/Composite`, copy_stays_in_target.)
-     * `follow` copies what a link named as the source leads to, as copyfile does.
      */
     private copyAt;
     /**
@@ -974,11 +980,7 @@ export declare class CompositeVFS implements VFS {
     chown(path: string, uid: number, gid: number): Promise<void>;
     utimes(path: string, atimeMs: number, mtimeMs: number): Promise<void>;
     writeFileIfRevision(path: string, data: Uint8Array, expected: VfsRevision): Promise<VfsCasResult>;
-    copy(from: string, to: string, options?: {
-        recursive?: boolean;
-        preserve?: boolean;
-        follow?: boolean;
-    }): Promise<number>;
+    copy(from: string, to: string, options?: NamespaceCopyOptions): Promise<number>;
     readFileAtRevision(path: string, revision: VfsRevision, range?: {
         offset: number;
         length: number;
