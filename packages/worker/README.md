@@ -328,6 +328,12 @@ None of these is optional. See `apps/hosted-demo/wrangler.jsonc` or
 - `ASSETS` — serves the xterm shell + lazy-loaded WASM/JS blobs
 - `JWT_SECRET` (secret) — HS256 signing key for token-enforced deployments
 
+Optional: a `version_metadata` binding named `CF_VERSION_METADATA` makes the
+replies a deploy's readiness reads (`POST /new`, the terminal WebSocket
+upgrade, `DELETE /s/<id>/` and the remote API) carry `x-nimbus-version`, the
+version that answered, so a deploy can wait until the edge serves the version
+it uploaded.
+
 ## Status
 
 v0.1 is the first public release. SemVer is not stable yet, so expect

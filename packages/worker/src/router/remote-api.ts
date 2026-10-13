@@ -196,6 +196,11 @@ export function remoteApiEnabled(sdk: NimbusSdkRouterConfig | undefined): boolea
   return normalizeRemoteConfig(sdk?.remote).enabled;
 }
 
+/** The path the remote API is served under. */
+export function remoteApiBasePath(sdk: NimbusSdkRouterConfig | undefined): string {
+  return normalizeRemoteConfig(sdk?.remote).basePath;
+}
+
 function normalizeRemoteConfig(remote: boolean | NimbusRemoteApiConfig | undefined): Required<NimbusRemoteApiConfig> {
   const value = typeof remote === 'object' ? remote : {};
   return {

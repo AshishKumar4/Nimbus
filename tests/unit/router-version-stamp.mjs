@@ -2,9 +2,10 @@
 // from createNimbusHandler itself, so every app built on it is gradeable the
 // same way; no other reply is rebuilt.
 import assert from 'node:assert/strict';
-import { createNimbusHandler } from '../../packages/worker/src/router/index.ts';
+import { createNimbusHandler, NIMBUS_VERSION_HEADER } from '../../packages/worker/src/router/index.ts';
+import { VERSION_HEADER } from '../behavioral/_session-transport.mjs';
 
-const NIMBUS_VERSION_HEADER = 'x-nimbus-version';
+assert.equal(VERSION_HEADER, NIMBUS_VERSION_HEADER, 'the probes read the header the router writes');
 
 const suffix = 'preview.example.test';
 const env = {
