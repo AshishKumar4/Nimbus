@@ -82,7 +82,13 @@ const outcome = async (iterable) => {
   setTimeout(() => controller.abort('stop'), 1300);
   const aborted = await Promise.race([watching, sleep(4000).then(() => ({ timeout: true }))]);
   const already = await Promise.race([outcome(fs.promises.watch('/home/user/file.bin', { signal: controller.signal })), sleep(1000).then(() => ({ timeout: true }))]);
-  console.log(JSON.stringify({ aborted, already }));
+  // return() while a next() waits on an unchanged file ends both at once.
+  const iterator = fs.promises.watch('/home/user/file.bin')[Symbol.asyncIterator]();
+  const pending = iterator.next();
+  await sleep(700);
+  const returned = await Promise.race([iterator.return(), sleep(2000).then(() => 'timeout')]);
+  const settled = await Promise.race([pending, sleep(2000).then(() => 'timeout')]);
+  console.log(JSON.stringify({ aborted, already, returned, settled }));
   process.exit(0);
 })();
 `;
@@ -109,6 +115,8 @@ const outcome = async (iterable) => {
     const seen = JSON.parse(body.stdout);
     assert.deepEqual(seen.aborted, { name: 'AbortError', code: 'ABORT_ERR', cause: 'stop' },
       'an unchanged 3 MiB file yields nothing, and the signal ends the iterator with an AbortError');
+    assert.deepEqual([seen.returned, seen.settled], [{ done: true }, { done: true }],
+      'return() while a next() waits ends the iterator and settles the waiting next()');
     assert.deepEqual(seen.already, { name: 'AbortError', code: 'ABORT_ERR', cause: 'stop' }, 'an already-aborted signal refuses it');
   } finally {
     rmSync(dir, { recursive: true, force: true });
