@@ -22,6 +22,7 @@ export type ModuleCell = (exports: unknown, require: unknown, module: unknown, f
 export interface ModuleHelpers {
   readonly exports: NativeFunction;
   readonly star: NativeFunction;
+  readonly conflicts: NativeFunction;
   readonly load: NativeFunction;
 }
 
@@ -99,8 +100,10 @@ export function moduleCell(plan: ModulePlan, ops: HostOperators, helpers: Module
 
 /**
  * The export getters installed; each request required in order, its
- * namespace in its slot; then `export *`. Its graph's names were checked
- * before any of it ran, by whoever loads it (node-shims' late link plan).
+ * namespace in its slot; then `export *`, but the names two of them reach
+ * different bindings of (the loader's answer). Its graph's names were
+ * checked before any of it ran, by whoever loads it (node-shims' late link
+ * plan).
  */
 function link(plan: ModulePlan, env: Env, requireArg: unknown, helpers: ModuleHelpers, exportsObject: unknown, define: NativeFunction): void {
   const { exports, requests, stars } = plan;
@@ -113,7 +116,9 @@ function link(plan: ModulePlan, env: Env, requireArg: unknown, helpers: ModuleHe
     const m: unknown = reflectApply(helpers.load, undefined, [requireArg, source, type]);
     if (module >= 0) env[module] = m;
   }
-  for (let i = 0; i < stars.length; i++) reflectApply(helpers.star, undefined, [exportsObject, define, env[stars[i]]]);
+  if (stars.length === 0) return;
+  const omitted: unknown = reflectApply(helpers.conflicts, undefined, [requireArg]);
+  for (let i = 0; i < stars.length; i++) reflectApply(helpers.star, undefined, [exportsObject, define, env[stars[i]], omitted]);
 }
 
 /** Runs a module body's generator, made by `start`, as an async function would: one await per yielded value. */

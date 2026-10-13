@@ -53,12 +53,19 @@ export function esmRowName(row: EsmModuleRow, id: number): string {
 /**
  * What Node's linker checks of a row (core esm-interop.ts ModuleBindings),
  * as the process reads it (ESM_BINDINGS_MODULE): a staged module's own
- * export names, the rows its `export *` re-exports, and, by static import,
- * the row it loads, its specifier as written and the names it reads of it;
- * a facade's or a JSON module's export names; null where unknown.
+ * export names, the rows its `export *` re-exports, by static import the
+ * row it loads, its specifier as written and the names it reads of it, and
+ * its names that are another row's ([name, row, the name there, null for
+ * its namespace]: ResolveExport's indirect entries); a facade's or a JSON
+ * module's export names; null where unknown.
  */
 export type EsmRowBindings =
-  | readonly [exports: readonly string[], stars: readonly number[], imports: readonly (readonly [row: number, specifier: string, ...names: string[]])[]]
+  | readonly [
+    exports: readonly string[],
+    stars: readonly number[],
+    imports: readonly (readonly [row: number, specifier: string, ...names: string[]])[],
+    reexports: readonly (readonly [exported: string, row: number, name: string | null])[],
+  ]
   | readonly string[]
   | null;
 
@@ -372,7 +379,10 @@ export async function stageEsModules(
         if (rowTargets[at]! >= 0 && read.imports[at]!.length > 0) imports.push([rowTargets[at]!, sites.statics[at]!.specifier, ...read.imports[at]!]);
       }
       const stars = read.stars.map((at) => rowTargets[at]!).filter((row) => row >= 0);
-      bindings[id] = [read.exports, stars, imports];
+      const reexports = read.reexports
+        .filter(([, at]) => rowTargets[at]! >= 0)
+        .map(([exported, at, name]) => [exported, rowTargets[at]!, name] as const);
+      bindings[id] = [read.exports, stars, imports, reexports];
     } else {
       bindings[id] = null;
     }

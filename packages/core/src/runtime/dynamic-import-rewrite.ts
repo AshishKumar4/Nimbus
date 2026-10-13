@@ -160,6 +160,9 @@ function lexedImportSites(code: string, withBindings = false): ImportSites | nul
   const imports: (readonly string[])[] = [];
   const stars: number[] = [];
   const types: (string | null)[] = [];
+  // ResolveExport's indirect entries: re-exports, and by local name the bindings imports make.
+  const reexports: [string, number, string | null][] = [];
+  const imported = new Map<string, [number, string | null]>();
   for (const entry of lexed) {
     if (entry.t === DYNAMIC_IMPORT) sites.push({ ss: entry.ss, se: entry.se, d: entry.d, lexed: true });
     else if (entry.t === IMPORT_META) metas.push({ start: entry.s, end: entry.e });
@@ -177,6 +180,12 @@ function lexedImportSites(code: string, withBindings = false): ImportSites | nul
         const read = clauseNames(source.slice(entry.ss, site.start));
         if (read === null) return null;
         if (read.star) stars.push(imports.length);
+        const request = imports.length;
+        const reexport = source.startsWith('export', entry.ss);
+        for (const [name, from] of read.links) {
+          if (reexport) reexports.push([name, request, from]);
+          else imported.set(name, [request, from]);
+        }
         imports.push(read.names);
       }
     } else {
@@ -207,18 +216,26 @@ function lexedImportSites(code: string, withBindings = false): ImportSites | nul
   }
   const sitesRead: ImportSites = { calls, metas, statics, moduleSyntax: lexing[3] === true };
   if (!withBindings) return sitesRead;
-  const exports = exportNames(lexing[1]);
-  return exports === null ? null : { ...sitesRead, bindings: { exports, imports, stars, types } };
+  const lexedExports = exportNames(lexing[1]);
+  if (lexedExports === null) return null;
+  // An export of an imported binding (`import { a } from 'm'; export { a as b }`) is that module's.
+  for (const [name, local] of lexedExports) {
+    const binding = local === undefined ? undefined : imported.get(local);
+    if (binding !== undefined) reexports.push([name, ...binding]);
+  }
+  const exports = lexedExports.map(([name]) => name);
+  return { ...sitesRead, bindings: { exports, imports, stars, types, reexports } };
 }
 
-/** The names of the lexer's exports, or null for an entry it did not name. */
-function exportNames(lexedExports: unknown): string[] | null {
+/** The lexer's exports, [name, local name] (none for a re-export's), or null for an entry it did not name. */
+function exportNames(lexedExports: unknown): [string, string | undefined][] | null {
   if (!Array.isArray(lexedExports)) return null;
-  const names: string[] = [];
+  const names: [string, string | undefined][] = [];
   for (const entry of lexedExports) {
     const name: unknown = typeof entry === 'object' && entry !== null ? Reflect.get(entry, 'n') : undefined;
+    const local: unknown = typeof entry === 'object' && entry !== null ? Reflect.get(entry, 'ln') : undefined;
     if (typeof name !== 'string') return null;
-    names.push(name);
+    names.push([name, typeof local === 'string' ? local : undefined]);
   }
   return names;
 }
@@ -227,9 +244,11 @@ function exportNames(lexedExports: unknown): string[] | null {
  * What a static import or re-export the lexer read (`clause`, from its
  * `import` or `export` to its specifier) reads of its module: the names it
  * imports (`default` a default import's) or re-exports, and whether it is
- * `export * from`. Null for a declaration of another shape.
+ * `export * from`; and the bindings it makes of them (`links`): an import's
+ * [local, name] and a re-export's [exported, name], the name null for the
+ * module's namespace. Null for a declaration of another shape.
  */
-function clauseNames(clause: string): { names: string[]; star: boolean } | null {
+function clauseNames(clause: string): { names: string[]; star: boolean; links: [string, string | null][] } | null {
   const tokens: { type: TokenType; value: unknown }[] = [];
   try {
     for (const token of tokenizer(clause, MODULE_PARSE_OPTIONS)) tokens.push({ type: token.type, value: Reflect.get(token, 'value') });
@@ -246,33 +265,39 @@ function clauseNames(clause: string): { names: string[]; star: boolean } | null 
     if (value !== undefined && (token.value !== value || token.type === tokTypes.string)) return null;
     return token.value;
   };
-  /** `{ a, b as c }` from `at`: each specifier's first name (an import's imported, a re-export's local). */
-  const list = (): string[] | null => {
-    const names: string[] = [];
+  /** `{ a, b as c }` from `at`: each specifier's names, [first, second] (an import's imported and local, a re-export's local and exported). */
+  const list = (): [string, string][] | null => {
+    const pairs: [string, string][] = [];
     at++;
     while (!is(tokTypes.braceR)) {
       const name = word();
       if (name === null) return null;
-      names.push(name);
       at++;
+      let second = name;
       if (word('as') !== null) {
         at++;
-        if (word() === null) return null;
+        const renamed = word();
+        if (renamed === null) return null;
+        second = renamed;
         at++;
       }
+      pairs.push([name, second]);
       if (is(tokTypes.comma)) at++;
       else if (!is(tokTypes.braceR)) return null;
     }
     at++;
-    return names;
+    return pairs;
   };
-  const from = (names: string[], star: boolean) => (word('from') !== null && at === tokens.length - 1 ? { names, star } : null);
+  const links: [string, string | null][] = [];
+  const from = (names: string[], star: boolean) => (word('from') !== null && at === tokens.length - 1 ? { names, star, links } : null);
   if (tokens[0]?.type === tokTypes._import) {
-    if (at === tokens.length) return { names: [], star: false };
+    if (at === tokens.length) return { names: [], star: false, links };
     const names: string[] = [];
     if (!is(tokTypes.star) && !is(tokTypes.braceL)) {
-      if (word() === null) return null;
+      const local = word();
+      if (local === null) return null;
       names.push('default');
+      links.push([local, 'default']);
       at++;
       if (!is(tokTypes.comma)) return from(names, false);
       at++;
@@ -280,23 +305,35 @@ function clauseNames(clause: string): { names: string[]; star: boolean } | null 
     if (is(tokTypes.star)) {
       at++;
       if (word('as') === null) return null;
-      at += 2;
+      at++;
+      const local = word();
+      if (local === null) return null;
+      links.push([local, null]);
+      at++;
       return from(names, false);
     }
     if (!is(tokTypes.braceL)) return null;
     const named = list();
-    return named === null ? null : from([...names, ...named], false);
+    if (named === null) return null;
+    for (const [imported, local] of named) links.push([local, imported]);
+    return from([...names, ...named.map(([imported]) => imported)], false);
   }
   if (tokens[0]?.type !== tokTypes._export) return null;
   if (is(tokTypes.star)) {
     at++;
     if (word('as') === null) return from([], true);
-    at += 2;
+    at++;
+    const exported = word();
+    if (exported === null) return null;
+    links.push([exported, null]);
+    at++;
     return from([], false);
   }
   if (!is(tokTypes.braceL)) return null;
   const named = list();
-  return named === null ? null : from(named, false);
+  if (named === null) return null;
+  for (const [local, exported] of named) links.push([exported, local]);
+  return from(named.map(([local]) => local), false);
 }
 
 /** The cell rewritten from the lexer's reading, or null where only the grammar can decide. */
