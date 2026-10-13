@@ -1065,11 +1065,9 @@ const __fsMod = (() => {
   // entry per path: "absent" / "absentTree" (unlink, rmdir, rm), "dir"
   // (mkdir; \`hide\` when nothing was there, so no stale child shows through),
   // "alias" (a rename: the new name denotes what the old one did) and "link"
-  // (symlink: its \`target\`, which the namespace's walk follows through
-  // _nsLinks as it follows the table's links). An entry retires once its
-  // mutation has settled AND a barrier begun after that has applied, because
-  // such a barrier's delta is answered after the mutation committed, so the
-  // table then shows it or anything later.
+  // (symlink, followed through _nsLinks). An entry retires once its mutation
+  // has settled AND a barrier begun after that has applied: that barrier's
+  // delta shows it or anything later.
   function _nsActive() {
     return typeof __resident !== "undefined" && __resident.namespace.ready();
   }
@@ -1114,29 +1112,21 @@ const __fsMod = (() => {
     return mount === null ? _fsErr("ENOENT", syscall, displayPath) : _nsUnlistedErr(mount, syscall, displayPath, asyncForm);
   }
   const _nsOwn = new Map();
-  // The overlay's "link" entries, link path → target: what the namespace's
-  // lookups follow (_nsLookup), ahead of the table's links.
+  // The overlay's links (path → target), followed ahead of the table's (_nsLookup).
   const _nsLinks = new Map();
   let _nsFresh = [];
   let _barrierBegins = 0;
-  // This process's own attributes: the mode (chmod) and the times (utimes) it
-  // set on each path, answered ahead of the namespace's until the namespace
-  // says so. Each is an overlay entry ({ value, settled }) with its lifetime:
-  // settled when its change is answered, retired by the barrier after that
-  // (_nsRetire), dropped when the path is removed and moved when it is.
+  // This process's own mode and times per path: overlay entries ({ value,
+  // settled }), retired as the overlay's are, dropped and moved with the path.
   const _localModes = new Map();
   const _localTimes = new Map();
   // Modes set locally that the authority has not received yet. Delivered once:
   // re-sending on every flush made each read of the path a chmod, which bumped
   // its revision and evicted the process's own cell (create-astro EAGAIN).
   const _pendingModes = new Set();
-  // _nsDeviceAbove's answers, per directory; a barrier's delta may move them.
+  // _nsDeviceAbove's answers per directory, until the next barrier.
   const _nsDevices = new Map();
-  /**
-   * Set this process's own attribute on \`k\`. \`fresh\`: the change is the next
-   * one queued (_queueStructuralMutation settles it); otherwise its caller
-   * settles it (_settleLocalAttr) once the change is answered.
-   */
+  /** \`fresh\`: the next queued mutation settles it; else its caller does (_settleLocalAttr). */
   function _setLocalAttr(attrs, k, value, fresh) {
     const entry = { value, settled: null };
     attrs.set(k, entry);
@@ -1146,7 +1136,7 @@ const __fsMod = (() => {
   function _settleLocalAttr(entry) {
     if (entry.settled === null) entry.settled = _barrierBegins;
   }
-  /** A removed path's own attributes go with it (\`tree\`: and those beneath it). */
+  /** \`tree\`: and those beneath it. */
   function _forgetLocalAttrs(k, tree) {
     const prefix = k + "/";
     for (const attrs of [_localModes, _localTimes]) {
@@ -1156,7 +1146,7 @@ const __fsMod = (() => {
     _pendingModes.delete(k);
     if (tree) for (const key of [..._pendingModes]) if (key.startsWith(prefix)) _pendingModes.delete(key);
   }
-  /** A renamed path's own attributes, and those beneath it, travel with its name. */
+
   function _moveLocalAttrs(oldK, newK) {
     const prefix = oldK + "/";
     for (const attrs of [_localModes, _localTimes]) {
@@ -1172,12 +1162,7 @@ const __fsMod = (() => {
       _pendingModes.add(newK + key.slice(oldK.length));
     }
   }
-  /**
-   * Set the overlay's word on \`k\`. \`extra.settled\`: its change is answered
-   * already (an async call's), so it is settled now; otherwise the mutation
-   * queued next settles it (_nsTakeFresh). A removed tree ("absentTree")
-   * takes the entries beneath it with it.
-   */
+  /** \`extra.settled\`: answered already; else the next queued mutation settles it. "absentTree" drops the entries beneath. */
   function _nsOwnSet(k, state, extra) {
     const before = _nsOwn.get(k);
     const entry = {
@@ -1223,10 +1208,9 @@ const __fsMod = (() => {
 
   /**
    * The overlay's word on \`k\`: "absent", { alias } (look the table up at
-   * this key instead), { dir } (own directory), { symlink } (own link, its
-   * target), { hide } (the table knows nothing under an own fresh
-   * directory), or null (ask the table, through _nsLookup, which follows the
-   * own links on the way).
+   * this key instead), { dir } (own directory), { symlink } (own link),
+   * { hide } (the table knows nothing under an own fresh directory), or null
+   * (ask the table, through _nsLookup).
    *
    * An alias's \`link\`: the moved name is a symlink, whose own entry (what
    * lstat sees) is the table's row at that key. \`alias\` is what following
@@ -1273,7 +1257,7 @@ const __fsMod = (() => {
     return found === "ELOOP" ? null : found.path;
   }
 
-  /** The namespace's lookup, and its resolve, through the table's links and this process's own (_nsLinks). */
+  /** The namespace's lookup and resolve, own links (_nsLinks) included. */
   function _nsLookup(k, follow) { return __resident.namespace.lookup(k, follow, _nsLinks); }
   function _nsResolve(k, follow) { return __resident.namespace.resolve(k, follow, _nsLinks); }
 
@@ -1356,7 +1340,6 @@ const __fsMod = (() => {
     const own = _nsOwnView(k);
     if (own === "absent") return "absent";
     if (own && own.dir) return { type: "directory", size: 0, mode: 0o40000 | ((own.mode ?? 0o777) & ~__processUmask), uid: cred.uid, gid: cred.gid, own: true };
-    // A symlink this process made: its own entry, as symlink(2) makes one.
     if (!follow && own && own.symlink !== undefined) {
       return { type: "symlink", size: _byteLen(own.symlink), mode: 0o120777, uid: cred.uid, gid: cred.gid, own: true };
     }
@@ -1373,9 +1356,7 @@ const __fsMod = (() => {
       const found = _nsResolve(own && own.alias !== undefined ? own.alias : k, follow);
       if (found === "ELOOP") return "ELOOP";
       if (found) return _nsRowMeta(found.row);
-      // Followed to a name the table does not list yet: what this process
-      // made there (a file written or a directory made through the link, or
-      // the link's target), which its own view holds.
+      // Followed to a name the table does not list yet: this process's own.
       if (follow) {
         const held = _nsHeldKey(k);
         if (held !== null && held !== k) return _nsMeta(held, false);
@@ -1391,7 +1372,6 @@ const __fsMod = (() => {
   function _nsList(k) {
     const names = new Map();
     const own = _nsOwnView(k);
-    // Through a link, the directory it names, which may be one this process made.
     if (own === null || own.symlink !== undefined) {
       const landing = _nsHeldKey(k);
       if (landing !== null && landing !== k) return _nsList(landing);
@@ -1405,9 +1385,7 @@ const __fsMod = (() => {
         }
       }
     } else if (own !== "absent") {
-      // A directory this process made: of what the table holds under its
-      // name, only what this process made there since (its writes, once the
-      // store holds them dated), as _nsMeta answers them.
+      // An own directory: only what this process made there, as _nsMeta answers.
       for (const child of __resident.namespace.children(k)) {
         if (_createdHere.has(prefix + child.name)) names.set(child.name, child.kind === 1 ? "directory" : child.kind === 2 ? "symlink" : _direntTypeOfMode(child.mode, "file"));
       }
@@ -2023,13 +2001,10 @@ const __fsMod = (() => {
   Stats.prototype._checkModeProperty = function (property) {
     return (this.mode & _S_IFMT) === property;
   };
-  // The device a stat without one is on: metadata with no filesystem behind
-  // it (a heap-only embedder's bundle). A block is Linux's 512 bytes,
-  // allocated 4096 at a time.
+  // The device of a stat with none (a heap-only embedder's); 512-byte blocks, 4096 at a time.
   const _STAT_DEVICE = 2049;
   const _STAT_BLKSIZE = 4096;
-  // A path's Stats: its identity (device, inode, links) as its filesystem
-  // gives it; without one, a directory has its own link and its entry's, a file one.
+  // A path's Stats; without a link count, a directory has two, a file one.
   function _newStats(mode, uid, gid, ino, size, atimeMs, mtimeMs, ctimeMs, nlink, dev) {
     const blocks = Math.ceil(size / _STAT_BLKSIZE) * (_STAT_BLKSIZE / 512);
     const links = nlink ?? ((mode & _S_IFMT) === 0o040000 ? 2 : 1);
@@ -2065,14 +2040,9 @@ const __fsMod = (() => {
       : Number.isFinite(_ownWriteTimes[k]) ? _ownWriteTimes[k]
       : (_ownWriteTimes[k] = Date.now());
     const atimeMs = Number.isFinite(time?.atimeMs) ? time.atimeMs : mtimeMs;
-    // Not yet in the namespace: on the device of the directory it is in, one
-    // link, as its filesystem will say.
     return _newStats(_statMode(k, isDir, isSymlink, mode), uid, gid, undefined, size, atimeMs, mtimeMs, mtimeMs, 1, _nsDeviceAbove(k));
   }
-  /**
-   * The device of the nearest directory above \`k\` the namespace holds, if
-   * any: per directory, until the next barrier changes the namespace.
-   */
+  /** The device of the nearest directory above \`k\` the namespace holds. */
   function _nsDeviceAbove(k) {
     if (!_nsActive()) return undefined;
     const parent = k.slice(0, Math.max(0, k.lastIndexOf("/")));
@@ -3356,7 +3326,7 @@ const __fsMod = (() => {
     const mode = _statMode(key, isDir, isSymlink, Number(meta?.mode ?? (isDir ? 0o755 : 0o644)));
     return _newStats(mode, meta?.uid, meta?.gid, _statIdentity(meta?.ino), Number(meta?.size || 0), atimeMs, mtimeMs, ctimeMs, _statIdentity(meta?.nlink), _statIdentity(meta?.dev));
   }
-  /** An identity field (ino, nlink, dev) as its filesystem gave it, or undefined where it gave none. */
+
   function _statIdentity(value) {
     return value === undefined || value === null ? undefined : Number(value);
   }
@@ -3907,11 +3877,8 @@ const __fsMod = (() => {
     };
   }
 
-  // fs.promises.realpath and callback fs.realpath: realpathSync's answer, from
-  // the namespace and this process's own effects on it, once what it has
-  // queued for the path has gone ahead of the question. The authority's
-  // where the namespace cannot say (it is being rebuilt, or the path is on
-  // a mount the launch did not list).
+  // Async realpath: realpathSync's answer once queued work on the path has gone
+  // ahead; the authority's where the namespace cannot say.
   async function _realpathAsync(p) {
     const absPath = _resolve(String(p));
     await _awaitStructuralOrder(absPath);
@@ -3941,8 +3908,6 @@ const __fsMod = (() => {
       await _awaitStructuralOrder(absPath);
       // Node names the target, then the link: "symlink 'target' -> 'link'".
       await _fsRpc(_vfsCall({ call: "symlink", path: _strip(absPath), target: String(target) }), "symlink", String(target), () => undefined, path);
-      // The sync view shows the link at once, as it shows a directory this
-      // process made: the overlay holds it until a barrier reports it.
       if (typeof __resident !== "undefined") _nsOwnSet(_strip(absPath), "link", { target: String(target), settled: true });
       _markVfsStale();
       return;
@@ -4721,8 +4686,6 @@ const __fsMod = (() => {
     } else if (source !== undefined && target !== undefined && target.isDirectory()) {
       throw _fsErr("EISDIR", "rename", oldP, newP);
     }
-    // What this process set on the name (its mode, its times) is the moved
-    // file's; what it set on the name it replaces goes with that.
     _forgetLocalAttrs(newK, true);
     _moveLocalAttrs(oldK, newK);
     // The table still holds the old name until the rename is reported, so the
@@ -4737,9 +4700,7 @@ const __fsMod = (() => {
     const createdMoved = [..._createdHere]
       .filter(([key]) => key === oldK || key.startsWith(oldPrefix))
       .map(([key, mode]) => [newK + key.slice(oldK.length), mode]);
-    // The overlay's word on what moves: a directory or link this process
-    // made, and whatever it did beneath (made, moved in, removed), under the
-    // new names. Taken now: removing the old tree takes its entries with it.
+    // Own entries at and beneath the old name, taken before its removal drops them.
     const ownMoved = [..._nsOwn]
       .filter(([key, entry]) => key === oldK ? entry.state === "dir" || entry.state === "link" : key.startsWith(oldPrefix))
       .map(([key, entry]) => [newK + key.slice(oldK.length), entry]);
@@ -6557,8 +6518,7 @@ const __fsMod = (() => {
     open: async (path, flags, mode) => _openAsync(path, flags, mode),
     opendir: async (p, opts) => _opendirAsync(p, opts),
     statfs: async (p, opts) => _statfsAsync(p, opts),
-    // fs.watch's engine as Node's async iterator: each change queued until
-    // it is asked for, ended by return() or by its signal (an AbortError).
+    // The watch engine as an async iterator, ended by return() or its signal.
     watch: async function* (filename, opts) {
       const signal = opts?.signal;
       const aborted = () => new (__nimbusNodeLib().require("internal/errors").AbortError)(undefined, { cause: signal.reason });
