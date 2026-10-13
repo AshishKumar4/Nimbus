@@ -3,9 +3,9 @@ import { handleNimbusRemoteApi } from '../../packages/worker/src/router/remote-a
 import { issueNimbusToken } from '../../packages/worker/src/auth/token.ts';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 
-// A remote token authenticates the session's user, so its deletion acts as
-// that user, as its write, chmod and rename do (supervisor-op credFor); it
-// never reaches the kernel's default that only a colocated embedder gets.
+// A remote token authenticates the session's user, so its deletion names
+// that user, as its write, chmod and rename do (supervisor-op credFor): no
+// default, now or later, can widen it.
 const calls = [];
 const stub = { _rpcDeleteFile: async (...args) => { calls.push(args); } };
 const env = { JWT_SECRET: 'unit-remote-delete-secret', NIMBUS_SESSION: { idFromName: (name) => name, get: () => stub } };

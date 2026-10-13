@@ -55,6 +55,10 @@ const denied = /EACCES|EPERM/;
   assert.equal(text('home/user/protected.txt'), 'kept');
   const read = await serveEditorFs(views, { type: 'fs-read', path: '/home/user/private/secret.txt' });
   assert.match(String(read.error), denied, `the editor read another uid's 0600 file: ${JSON.stringify(read)}`);
+  const list = await serveEditorFs(views, { type: 'fs-list', dir: '/home/user/private' });
+  assert.match(String(list.error), denied, `the editor listed another uid's 0700 directory: ${JSON.stringify(list)}`);
+  const tree = await serveEditorFs(views, { type: 'fs-list', dir: '/home/user', recursive: true });
+  assert.ok(!tree.entries.some((entry) => entry.path.startsWith('/home/user/private/')), `the editor's tree shows another uid's files: ${JSON.stringify(tree.entries)}`);
   const own = await serveEditorFs(views, { type: 'fs-write', path: '/home/user/notes/editor.txt', content: 'mine' });
   assert.equal(own.ok, true, JSON.stringify(own));
   assert.ok(ownedByUser('home/user/notes/editor.txt'), 'what the editor saves belongs to the user');
@@ -116,6 +120,12 @@ const denied = /EACCES|EPERM/;
   assert.equal(text('home/user/sticky/provisioned.txt'), 'provisioned');
   await rpcDeleteFile(host, '/home/user/notes/editor.txt');
   assert.equal(kernel.exists('home/user/notes/editor.txt'), false, "the user's own file is deleted");
+  // A user's symlink is removed as unlink(2) removes it, without searching
+  // through to a target the user cannot reach.
+  engine.as(CRED_SESSION_USER).symlink('/home/user/private/secret.txt', 'home/user/shortcut');
+  await rpcDeleteFile(host, '/home/user/shortcut');
+  assert.equal(kernel.isSymlink('home/user/shortcut'), false, 'the symlink is gone');
+  assert.equal(text('home/user/private/secret.txt'), 'theirs', 'and its target is untouched');
   await rpcDeleteFile(host, '/home/user/sticky/provisioned.txt', {}, CRED_KERNEL);
   assert.equal(kernel.exists('home/user/sticky/provisioned.txt'), false, 'the embedder deletes as the kernel when it asks by name');
   console.log('  files.delete acts as the session user unless the kernel is asked for');
