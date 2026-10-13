@@ -5,6 +5,16 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: in a WASI program (an uploaded program, CPython), a socket read that
+  followed a poll which gave up on the socket could lose a chunk that arrived
+  just before the socket closed. A read or an accept that the 10 s park
+  deadline answered with EAGAIN wrote into the guest's buffer, or adopted a
+  connection, when its input arrived later; the input now waits for the next
+  call. A threaded program reading a pipe its other thread writes no longer
+  waits 8 s for EINTR. An open after `fd_renumber` or `dup2` no longer
+  replaces the descriptor moved there: a new descriptor takes the lowest free
+  number, as POSIX's open does.
+
 ## 2026-10-12: platform 0.8.2, core 0.18.0, fabric 0.13.0, worker 0.16.0, loom 0.2.5, sdk 0.13.1, react 0.3.1, cli 0.2.5, create-nimbus-app 0.2.2
 
 - Fixed (security): the shell's Ctrl+P palette put file names into the page as

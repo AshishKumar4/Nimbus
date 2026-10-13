@@ -26,6 +26,7 @@ import type {
   ListenerFdEntry,
   NimbusFsImports,
   ParkableImport,
+  SocketFdEntry,
   SyscallResult,
   WasiFsState,
   WasiImports,
@@ -46,6 +47,7 @@ import type {
 
 import {
   installAuthorityFilesystem,
+  lowestFreeFd,
   processGoneMessage,
   WASI_ACCEPTED_PATH_PREFIX,
   WASI_LISTEN_PATH_PREFIX,
@@ -414,7 +416,6 @@ export function __wasiInitFS(opts: WasiInitOptions): void {
   fdTable.set(0, { kind: 'stdin' });
   fdTable.set(1, { kind: 'stdout' });
   fdTable.set(2, { kind: 'stderr' });
-  nextFd = 3;
   for (const po of (opts.preopens || [])) {
     const fd = __wasiAllocateFd();
     const vfsPath = __wasiCanonicalize(po.vfsPath);
@@ -564,6 +565,7 @@ function __wasiOpenListener(pathArg: string, fdflags: number, fdOutPtr: number, 
 // Either way the bytes handed back are the accepted connection's id, which the
 // guest then opens as a socket descriptor.
 async function __wasiAcceptRead(entry: ListenerFdEntry, iovsPtr: number, iovsLen: number, nreadPtr: number, writeU32LE: WriteU32LE, view: () => DataView, u8: () => Uint8Array): Promise<Errno> {
+  const call = __wasiParkCall;
   const kernel = __wasiKernelOrNull('connections cannot be accepted');
   if (!kernel) return __WASI_ENOSYS;
   try {
@@ -573,6 +575,8 @@ async function __wasiAcceptRead(entry: ListenerFdEntry, iovsPtr: number, iovsLen
       if (!accepted) { writeU32LE(nreadPtr, 0); return __WASI_EAGAIN; }
     } else {
       accepted = await kernel.accept(entry.port);
+      // The deadline answered this read: the connection is the next accept's.
+      if (call && !call.current) { kernel.unaccept(entry.port, accepted); return __WASI_EAGAIN; }
     }
     const bytes = new TextEncoder().encode(String(accepted.id) + '\n');
     const dv = view();
@@ -654,11 +658,9 @@ function __wasiAdoptSocket(socket: WasiSocket, fdflags: number): number {
 // writes to it. The mask is advisory for this module's own kinds; the codec
 // enforces rights on its descriptors.
 export const fdTable = new Map<number, FdEntry>();
-let nextFd = 3;
-// The only source of descriptor numbers. A second counter — one for files, one
-// for sockets — hands the same number out twice and the later open silently
-// destroys the earlier fd's entry.
-function __wasiAllocateFd(): number { return nextFd++; }
+// The only source of descriptor numbers, for files, sockets and pipes alike.
+// From 3: the host answers 0, 1 and 2 as the guest's streams by number.
+function __wasiAllocateFd(): number { return lowestFreeFd(fdTable, 3); }
 
 
 
@@ -723,17 +725,37 @@ function __wasiChildNews(): ChildNews {
   });
 }
 
+/**
+ * One call of a guarded syscall, while its answer is still the guest's to
+ * receive: the park deadline answering it first ends that. A body that
+ * waits for input from outside the guest reads its call at entry
+ * (__wasiParkCall, before its first await) and writes nothing into guest
+ * memory or the descriptor table once the call is no longer current; the
+ * input stays where it came from, for the next call. Its check and its
+ * writes run in the one microtask its last await resumes in, so the
+ * deadline's timer cannot fall between them.
+ */
+interface WasiParkCall { current: boolean }
+/** The call of the guard now invoking a body; null outside one (a body nothing guards answers when it can). */
+let __wasiParkCall: WasiParkCall | null = null;
+
 function withParkDeadline(fn: WasiSyscallFn): WasiSyscallFn {
   return function parkGuarded(this: unknown, ...args: never[]) {
-    const r = fn.apply(this, args);
+    const call: WasiParkCall = { current: true };
+    const outer = __wasiParkCall;
+    __wasiParkCall = call;
+    let r: SyscallResult;
+    try { r = fn.apply(this, args); } finally { __wasiParkCall = outer; }
     // A cache hit or a sync errno is passed straight through: only a real
     // park is guarded, so this costs nothing on the synchronous path.
-    if (!r || typeof (r as Promise<Errno>).then !== 'function') return r;
+    if (typeof r === 'number') return r;
+    const parked = r;
     const guarded = new Promise<Errno>((resolve) => {
       let settled = false;
       const timer = setTimeout(() => {
         if (settled) return;
         settled = true;
+        call.current = false;
         resolve(__WASI_EAGAIN);
       }, __WASI_PARK_DEADLINE_MS);
       const finish = (value: Errno) => {
@@ -742,13 +764,55 @@ function withParkDeadline(fn: WasiSyscallFn): WasiSyscallFn {
         clearTimeout(timer);
         resolve(value);
       };
-      (r as Promise<Errno>).then(finish, () => finish(__WASI_EAGAIN));
+      parked.then(finish, () => finish(__WASI_EAGAIN));
     });
-    // A real park is also the moment a threaded process must let a peer run:
-    // this is the single point every blocking syscall already goes through,
-    // so the scheduler needs no per-import wiring.
-    return __wasiThreads ? __wasiThreads.parkIo(guarded) : guarded;
+    return __wasiThreadPark(guarded);
   };
+}
+
+/**
+ * A real park is also the moment a threaded process must let a peer run: the
+ * token is handed back while the call waits, and taken again before the guest
+ * resumes. Every park goes through here, the deadline guard's and the waits
+ * the process host bounds itself (a pipe's, a child's), so the scheduler
+ * needs no per-import wiring.
+ */
+function __wasiThreadPark(r: SyscallResult): SyscallResult {
+  return typeof r === 'number' || !__wasiThreads ? r : __wasiThreads.parkIo(r);
+}
+
+/**
+ * The socket's one pending read: a chunk joins its buffer, or its end is
+ * recorded on it. Every reader of the socket (poll's readiness, sock_recv,
+ * fd_read) awaits this one, so no two split a chunk between them, and a
+ * reader that gave up leaves what came for the next. Resolves to null, or
+ * the errno the read failed with.
+ */
+function __wasiSocketFill(entry: SocketFdEntry): Promise<Errno | null> {
+  if (entry.filling) return entry.filling;
+  const fill = (async (): Promise<Errno | null> => {
+    try {
+      if (!entry.reader) entry.reader = entry.socket.readable.getReader();
+      await entry.socket.opened;
+      const { value, done } = await entry.reader.read();
+      if (done) { entry.eof = true; return null; }
+      const chunk = value instanceof Uint8Array ? value : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+      const unread = entry.readBuf.subarray(entry.readBufOffset);
+      if (unread.length === 0) entry.readBuf = chunk;
+      else { const joined = new Uint8Array(unread.length + chunk.length); joined.set(unread); joined.set(chunk, unread.length); entry.readBuf = joined; }
+      entry.readBufOffset = 0;
+      return null;
+    } catch (e) {
+      const msg = ((e as Error) && (e as Error).message) ? (e as Error).message : String(e);
+      if (/refused|ECONNREFUSED/i.test(msg)) return __WASI_ECONNREFUSED;
+      if (/unreach|EHOSTUNREACH/i.test(msg)) return __WASI_EHOSTUNREACH;
+      return __WASI_EIO;
+    }
+  })();
+  entry.filling = fill;
+  // Cleared before any reader resumes: a reader's continuation is registered after this one.
+  void fill.then(() => { if (entry.filling === fill) entry.filling = undefined; });
+  return fill;
 }
 
 export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBundle {
@@ -1289,6 +1353,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     // fn returns a Promise which the wasm caller cannot consume — the
     // trap surfaces via __wasiRunStartAsync's catch.
     async poll_oneoff(inSubsPtr, outEventsPtr, nsubs, retNeventsPtr) {
+      const call = __wasiParkCall;
       const dv = view();
       if ((nsubs | 0) <= 0) {
         writeU32LE(retNeventsPtr, 0);
@@ -1442,39 +1507,15 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
               nbytes: 0n, flags: 1,  // RECV_DATA_TRUNCATED bit doesn't apply; flag 1 == HANGUP per eventrwflags_t bit 0.
             });
           }
-          // Awaitable: peek at the readable stream. We MUST NOT consume
-          // the data into oblivion — sock_recv on a later call needs to
-          // see it. Strategy: getReader(), read() one chunk, STASH the
-          // result on entry.readBuf so sock_recv finds it pre-loaded.
-          return (async () => {
-            try {
-              if (!entry.reader) entry.reader = entry.socket.readable.getReader();
-              await entry.socket.opened;
-              const { value, done } = await entry.reader.read() as ReadableStreamReadResult<Uint8Array | ArrayBufferView>;
-              if (done) {
-                entry.eof = true;
-                entry.readBuf = new Uint8Array(0);
-                entry.readBufOffset = 0;
-                return {
-                  idx: s.idx, error: __WASI_ESUCCESS, type: s.tag,
-                  nbytes: 0n, flags: 1,  // HANGUP
-                };
-              }
-              entry.readBuf = (value instanceof Uint8Array)
-                ? value
-                : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-              entry.readBufOffset = 0;
-              return {
-                idx: s.idx, error: __WASI_ESUCCESS, type: s.tag,
-                nbytes: BigInt(entry.readBuf.length), flags: 0,
-              };
-            } catch (e) {
-              return {
-                idx: s.idx, error: __WASI_EIO, type: s.tag,
-                nbytes: 0n, flags: 0,
-              };
-            }
-          })();
+          // Awaitable: the socket's one pending read, whose bytes stay on the
+          // socket for whichever read comes next, this poll's or not.
+          return __wasiSocketFill(entry).then((failed): WasiPollEvent => {
+            if (failed !== null) return { idx: s.idx, error: __WASI_EIO, type: s.tag, nbytes: 0n, flags: 0 };
+            const avail = entry.readBuf.length - entry.readBufOffset;
+            // Peer closed with nothing left: ready with 0 bytes and HANGUP.
+            if (avail === 0 && entry.eof) return { idx: s.idx, error: __WASI_ESUCCESS, type: s.tag, nbytes: 0n, flags: 1 };
+            return { idx: s.idx, error: __WASI_ESUCCESS, type: s.tag, nbytes: BigInt(avail), flags: 0 };
+          });
         }
         return Promise.resolve({
           idx: s.idx, error: __WASI_EBADF, type: s.tag, nbytes: 0n, flags: 0,
@@ -1516,6 +1557,8 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
           pipeWaits[i]?.();
         }
       }
+      // The deadline answered this poll: its events are not the guest's.
+      if (call && !call.current) return __WASI_EAGAIN;
       // Only a pipe's wait that gave up wins with EINTR: nothing else was ready.
       if (winnerResult.error === __WASI_EINTR) {
         writeU32LE(retNeventsPtr, 0);
@@ -1603,34 +1646,19 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     },
 
     async sock_recv(fd, riDataPtr, riDataLen, _riFlags, retDataLenPtr, retFlagsPtr) {
+      const call = __wasiParkCall;
       const entry = fdTable.get(fd);
       if (!entry || entry.kind !== 'socket') return __WASI_ENOTSOCK;
       if (entry.closed) return __WASI_ENOTCONN;
+      // If the local readBuf is empty, wait for the socket's next chunk.
+      if (entry.readBufOffset >= entry.readBuf.length && !entry.eof) {
+        const failed = await __wasiSocketFill(entry);
+        if (failed !== null) return failed;
+        // The deadline answered this call: what came is the next call's.
+        if (call && !call.current) return __WASI_EAGAIN;
+      }
       const dv = view();
       const memU8 = u8();
-      // If the local readBuf is empty, fetch a chunk from the stream.
-      if (entry.readBufOffset >= entry.readBuf.length && !entry.eof) {
-        try {
-          if (!entry.reader) entry.reader = entry.socket.readable.getReader();
-          await entry.socket.opened;
-          const { value, done } = await entry.reader.read() as ReadableStreamReadResult<Uint8Array | ArrayBufferView>;
-          if (done) {
-            entry.eof = true;
-            entry.readBuf = new Uint8Array(0);
-            entry.readBufOffset = 0;
-          } else {
-            entry.readBuf = (value instanceof Uint8Array)
-              ? value
-              : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-            entry.readBufOffset = 0;
-          }
-        } catch (e) {
-          const msg = ((e as Error) && (e as Error).message) ? (e as Error).message : String(e);
-          if (/refused|ECONNREFUSED/i.test(msg)) return __WASI_ECONNREFUSED;
-          if (/unreach|EHOSTUNREACH/i.test(msg)) return __WASI_EHOSTUNREACH;
-          return __WASI_EIO;
-        }
-      }
       // Copy from readBuf into the user's iovs, up to total request size.
       let total = 0;
       for (let i = 0; i < riDataLen; i++) {
@@ -1726,6 +1754,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     // WASI. Both routes end at __wasiAdoptSocket, so an accepted connection is
     // the same kind of fd whichever way it arrived.
     async sock_accept(fd, flags, fdOutPtr) {
+      const call = __wasiParkCall;
       const entry = fdTable.get(fd);
       if (!entry) return __WASI_EBADF;
       if (entry.kind !== 'listener') return __WASI_ENOTSOCK;
@@ -1741,6 +1770,8 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
           if (!accepted) return __WASI_EAGAIN;
         } else {
           accepted = await kernel.accept(entry.port);
+          // The deadline answered this call: the connection is the next accept's.
+          if (call && !call.current) { kernel.unaccept(entry.port, accepted); return __WASI_EAGAIN; }
         }
         const socket = kernel.streamFor(accepted.id);
         writeU32LE(fdOutPtr, __wasiAdoptSocket(socket, flags & __WASI_FDFLAGS_NONBLOCK));
@@ -1859,16 +1890,20 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     const writeAll: WasiSyscallFn = imports.fd_write;
     const closeAll: WasiSyscallFn = imports.fd_close;
     const fdstat: WasiSyscallFn = imports.fd_fdstat_get;
+    // A pipe's wait is bounded by the process host (EINTR first): it hands the token back, under no deadline of its own.
     (imports as WasiParkableTable).fd_read = function pipeRead(this: unknown, ...args: never[]) {
       const [fd, iovs, iovsLen, nread] = args as unknown as number[];
-      return proc.read(fd, iovs, iovsLen, nread) ?? readAll.apply(this, args);
+      const piped = proc.read(fd, iovs, iovsLen, nread);
+      return piped === null ? readAll.apply(this, args) : __wasiThreadPark(piped);
     };
     (imports as WasiParkableTable).fd_write = function pipeWrite(this: unknown, ...args: never[]) {
       const [fd, iovs, iovsLen, nwritten] = args as unknown as number[];
-      return proc.write(fd, iovs, iovsLen, nwritten) ?? writeAll.apply(this, args);
+      const piped = proc.write(fd, iovs, iovsLen, nwritten);
+      return piped === null ? writeAll.apply(this, args) : __wasiThreadPark(piped);
     };
     (imports as WasiParkableTable).fd_close = function pipeClose(this: unknown, ...args: never[]) {
-      return proc.close(args[0] as unknown as number) ?? closeAll.apply(this, args);
+      const piped = proc.close(args[0] as unknown as number);
+      return piped === null ? closeAll.apply(this, args) : __wasiThreadPark(piped);
     };
     imports.fd_fdstat_get = function pipeFdstat(this: unknown, ...args: never[]) {
       const [fd, statPtr] = args as unknown as number[];
@@ -1884,7 +1919,9 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
       return __WASI_ESUCCESS;
     } as WasiSyscallFn;
   }
-  const procImport: Record<string, (...args: number[]) => SyscallResult> = { ...proc.imports };
+  const procImport: Record<string, (...args: number[]) => SyscallResult> = {};
+  // A child's start and wait are bounded by the process host too: they hand the token back the same way.
+  for (const [name, body] of Object.entries(proc.imports)) procImport[name] = (...args: number[]) => __wasiThreadPark(body(...args));
   // The extension's calls park as the filesystem's do, under the same watchdog.
   const fsTable = fsImport as Record<string, WasiSyscallFn>;
   for (const name of Object.keys(fsTable)) fsTable[name] = withParkDeadline(fsTable[name]);
