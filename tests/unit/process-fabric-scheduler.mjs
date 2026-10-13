@@ -4,7 +4,7 @@
 // EVERY case below runs twice: once with NIMBUS_PROCESS_HOST unset (the
 // process is a facet of the user's own session DO) and once with it set to
 // `peer` (the process is a facet of a sibling DO, reached over the real
-// _rpcHostProcess / _rpcAwaitHostedOpen / _rpcAwaitHostedBoot /
+// _rpcHostProcess / _rpcAwaitHostedBoot /
 // _rpcRouteHostedHttp / _rpcCancelHostProcess legs). An abstraction that only
 // works one way is not an abstraction, so the assertions are shared and only
 // the placement STRING differs.
@@ -27,6 +27,7 @@
 // Behavior is asserted through the public ProcessFabric surface only.
 
 import assert from 'node:assert/strict';
+import { settledScope } from './lib/response-scope.mjs';
 import { facetLoaderKey } from '../../packages/fabric/src/facet-limits.ts';
 import {
   ProcessFabric,
@@ -206,10 +207,10 @@ for (const mode of PROCESS_HOST_MODES) {
     assert.ok(boot.config.modules['ruby+stdlib.wasm'].wasm instanceof ArrayBuffer,
       'a wasm image arrives as bytes the loader can compile');
     assert.equal(boot.config.modules['boot.js'], 'export const x = 1', 'inline modules survive');
-    assert.equal(boot.config.mainModule, 'worker.js');
+    assert.match(boot.config.modules[boot.config.mainModule], /from "\.\/worker\.js"/, 'the host adapter imports the generated main');
 
     // (4) one handle surface: the route target reaches the running facet.
-    const routed = await handle.routeTarget.handleHttpRequest(new Request('http://x/hi'));
+    const routed = await handle.routeTarget.handleHttpRequest(new Request('http://x/hi'), settledScope());
     assert.equal(await routed.text(), `served /hi by ${residentFacetName(0)}`);
     // A `boot` runner stays resident after its payload: `done` must not settle.
     let settled = false;
@@ -252,7 +253,7 @@ for (const mode of PROCESS_HOST_MODES) {
     });
     await handle.booted();
     for (let i = 0; i < 20; i++) {
-      const res = await handle.routeTarget.handleHttpRequest(new Request(`http://x/p${i}`));
+      const res = await handle.routeTarget.handleHttpRequest(new Request(`http://x/p${i}`), settledScope());
       assert.equal(await res.text(), `served /p${i} by ${residentFacetName(0)}`);
     }
     assert.equal(world.boots.length, 1, '20 routed requests booted nothing');
@@ -263,7 +264,7 @@ for (const mode of PROCESS_HOST_MODES) {
     handle.kill();
     await handle.done.catch(() => {});
     await assert.rejects(
-      handle.routeTarget.handleHttpRequest(new Request('http://x/dead')),
+      handle.routeTarget.handleHttpRequest(new Request('http://x/dead'), settledScope()),
       /no longer running/,
       'a killed process fails loud, and says the same thing wherever it ran',
     );
@@ -278,7 +279,7 @@ for (const mode of PROCESS_HOST_MODES) {
     await second.booted();
     world.lose(world.boots.at(-1).facetName);
     await assert.rejects(
-      second.routeTarget.handleHttpRequest(new Request('http://x/after')),
+      second.routeTarget.handleHttpRequest(new Request('http://x/after'), settledScope()),
       /no longer loaded/,
       'a lost facet fails loud',
     );
@@ -325,7 +326,7 @@ for (const mode of PROCESS_HOST_MODES) {
       method: 'POST',
       headers: { 'X-Probe': 'kept', Cookie: 'session=abc' },
       body: 'payload',
-    }));
+    }), settledScope());
 
     assert.equal(seen.method, 'POST', 'the method reaches the process');
     assert.equal(seen.url, 'http://x/echo?q=1', 'the URL and its query reach the process');
@@ -382,7 +383,7 @@ for (const mode of PROCESS_HOST_MODES) {
       onWriterActivated() {},
       onWriterRetired: (writerId) => retired.push(writerId),
     });
-    await handle.routeTarget.handleHttpRequest(new Request('http://x/up'));
+    await handle.routeTarget.handleHttpRequest(new Request('http://x/up'), settledScope());
     assert.deepEqual(world.liveFacets(), [residentFacetName(0)]);
     handle.kill();
     handle.kill();
@@ -498,7 +499,7 @@ for (const mode of PROCESS_HOST_MODES) {
   // The host leg is a trust boundary: a sibling accepts a boot spec and a pid
   // from whoever calls it, so both are parsed rather than believed.
   const world = createFacetWorld(makeProgram());
-  // A host arms the alarm that reports its own reset before it hosts anything.
+  // Opening authenticates and records the hosted process before its use.
   const peer = { peerHost: peerHostFor(createFacetCtx(world, 'peer-do'), { LOADER: world.loader }, async () => {}) };
   const goodOpts = {
     coordinatorDoId: 'coord-do-id', pid: 62, writerId: crypto.randomUUID(), workerKey: 'k62',
@@ -517,12 +518,12 @@ for (const mode of PROCESS_HOST_MODES) {
   // process, so it parks exactly one key: anything else is refused at once,
   // and without that anyone holding a sibling stub could pile up map entries
   // and 30-second timers here by the thousand.
-  const route = _rpcRouteHostedHttp(peer, 'k62', { method: 'GET', url: 'http://x/', headers: [], body: null });
+  const route = _rpcRouteHostedHttp(peer, 'k62', { capability: goodOpts2.webSocketCapability, method: 'GET', url: 'http://x/', headers: [], body: null, id: 0, low: 0 });
   let routeSettled = false;
   route.then(() => { routeSettled = true; }, () => { routeSettled = true; });
   // Refused at once: settled before any timer can fire, the parked key's
   // 30-second wait included.
-  const second = _rpcRouteHostedHttp(peer, 'other-key', { method: 'GET', url: 'http://x/', headers: [], body: null });
+  const second = _rpcRouteHostedHttp(peer, 'other-key', { capability: goodOpts2.webSocketCapability, method: 'GET', url: 'http://x/', headers: [], body: null, id: 0, low: 0 });
   let refusedAtOnce = false;
   second.catch(() => { refusedAtOnce = true; });
   await new Promise((resolve) => setTimeout(resolve, 0));
@@ -541,9 +542,8 @@ for (const mode of PROCESS_HOST_MODES) {
   console.log('  caseP3: the host leg parses what it is handed, and parks exactly one key');
 }
 {
-  // A peer that dies under a process that is already up, through the REAL host
-  // leg this time: severing the held call is what a Durable Object reset does
-  // to it, and the process has to end rather than route to a corpse.
+  // A native watch ends on peer reset. Unlike an RPC, a socket does not carry
+  // the remote exception, but it still names host loss and ends the process.
   const world = createFacetWorld(makeProgram());
   const host = createProcessHost('peer', world, setupDisk([]).reader);
   const retired = [];
@@ -552,9 +552,11 @@ for (const mode of PROCESS_HOST_MODES) {
     onWriterActivated() {}, onWriterRetired: (id) => retired.push(id),
   });
   await handle.booted();
+  const activity = host.acquireActivity(); await activity.ready;
   [...host.peers.values()][0].die(new Error('peer reset under a running process'));
-  await assert.rejects(handle.done, /peer reset under a running process/,
-    'the held host leg severing ends the process');
+  await assert.rejects(handle.done, /its host was reset by the platform/,
+    'active observation reports the host reset');
+  activity.release();
   assert.equal(retired.length, 1, 'and the writer identity it held is reclaimed');
   console.log('  caseP5: a peer reset ends the process it was hosting');
 }

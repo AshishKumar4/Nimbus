@@ -65,6 +65,26 @@ const append = (path, text) => ({ type: 'call', call: { call: 'appendFile', path
 const writeFile = (path, text) => ({ type: 'call', call: { call: 'writeFile', path, mode: 0o644, data: enc.encode(text) } });
 const facetSql = () => createSqliteVfsTestHarness().sql;
 
+// A native invocation quota ends transport, not the durable process log.
+{
+  const s = session();
+  const sql = facetSql();
+  const journal = sqlJournal(sql);
+  s.fault = () => { throw new Error('Too many subrequests by single Worker invocation'); };
+  const c = processFsClient({ session: s.port, journal, retry: RETRY });
+  for (let i = 0; i < 10000; i++) c.submit(writeFile(`home/user/out/quota${i}`, `${i}\n`), { acknowledged: true });
+  assert.equal(journal.entries().length, 10000, 'every returned synchronous write was durable before transport ran');
+  await assert.rejects(c.settle(), /Too many subrequests/);
+  await assert.rejects(async () => { await c.rawSocket(); }, /Too many subrequests/, 'a failed invocation cannot bypass the filesystem gate to open a new transport');
+  const reopened = sqlJournal(sql);
+  assert.equal(reopened.entries().length, 10000, 'quota exhaustion must leave acknowledged writes for a fresh-invocation drain');
+  s.fault = null;
+  const drained = await drainProcessFsJournal({ journal: journalSource(reopened), session: s.port, retry: RETRY });
+  assert.deepEqual(drained.failures, []);
+  for (let i = 0; i < 10000; i++) assert.equal(s.text(`home/user/out/quota${i}`), `${i}\n`);
+  assert.equal(reopened.entries().length, 0);
+}
+
 /**
  * The port a process that dies talks through: `live` waves reach the session,
  * and from its death on nothing does (its calls never answer), as nothing of

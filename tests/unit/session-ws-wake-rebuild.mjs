@@ -56,6 +56,7 @@ function wokenHost(build) {
     _w5PersistRing: () => null,
     _w9FlushOnClose: () => {},
     _wakeRebuild: null,
+    dispatchTerminalInput(frame) { this.terminal.handleMessage(JSON.parse(frame)); },
     initCalls: [],
     async initSession(ws, options) {
       this.initCalls.push({ ws, options });

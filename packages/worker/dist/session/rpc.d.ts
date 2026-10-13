@@ -24,7 +24,7 @@ import { type SessionFileStat } from '@nimbus-sh/core/runtime/session-protocol.j
 import type { InnerDoFetchAnswer } from '@nimbus-sh/fabric/bindings.js';
 import type { RuntimeVfsStat } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type FanoutShardOptions } from '@nimbus-sh/fabric/fanout.js';
-import { PeerHost, type HostedHttpRequest, type HostedHttpResponse } from '@nimbus-sh/fabric/peer-host.js';
+import { PeerHost, type HostedHttpRequest, type HostedHttpResponse, type HostedReply } from '@nimbus-sh/fabric/peer-host.js';
 import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type VfsMutationReceipt, type VfsListTree } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/runtime/wave-contracts.js';
 import { z } from 'zod/v4';
@@ -437,35 +437,28 @@ export declare function _rpcFanoutExecute(self: RpcHost, fnSource: string, args:
     results: unknown[];
 }>;
 /**
- * The PeerHost an object serves its siblings with: Nimbus's boot specs, and
- * the hosting watch armed through the object's own scheduler.
+ * The PeerHost an object serves its siblings with, using Nimbus's boot specs.
  */
-export declare function peerHostFor(ctx: DurableObjectState, env: unknown, scheduleWatch: (at: number) => Promise<void>): PeerHost;
+export declare function peerHostFor(ctx: DurableObjectState, env: unknown): PeerHost;
 interface PeerHostRpcHost {
     readonly peerHost: PeerHost;
 }
 export declare function _rpcProcessHostProbe(self: PeerHostRpcHost): {
     isolateToken: string;
 };
-export declare function _rpcHostProcess(self: PeerHostRpcHost, boot: unknown, opts: unknown): Promise<{
+export declare function _rpcHostProcess(self: PeerHostRpcHost, boot: unknown, opts: unknown): Promise<HostedReply<{
     ok: boolean;
-}>;
-export declare function _rpcAwaitHostedOpen(self: PeerHostRpcHost, workerKey: string): Promise<{
-    ok: boolean;
-}>;
-export declare function _rpcAwaitHostedBoot(self: PeerHostRpcHost, workerKey: string): Promise<{
+    incarnation: string;
+}>>;
+export declare function _rpcAwaitHostedBoot(self: PeerHostRpcHost, workerKey: string): Promise<HostedReply<{
     payload: unknown;
-}>;
-export declare function _rpcRouteHostedHttp(self: PeerHostRpcHost, workerKey: string, wire: HostedHttpRequest): Promise<HostedHttpResponse>;
+} | {
+    refused: unknown;
+}>>;
+export declare function _rpcRouteHostedHttp(self: PeerHostRpcHost, workerKey: string, wire: HostedHttpRequest): Promise<HostedReply<HostedHttpResponse>>;
+export declare function _rpcAbandonHostedHttp(self: PeerHostRpcHost, workerKey: string, capability: string, id: number): Promise<void>;
 export declare function _rpcCancelHostProcess(self: PeerHostRpcHost, workerKey: string): Promise<{
     cancelled: boolean;
 }>;
-/**
- * RPC: the actor that hosted `workerKey` for this session reports, from a new
- * incarnation, that the platform reset it under the process. The capability
- * proves it hosted it. True when the process was this session's and is now
- * ended.
- */
-export declare function _rpcHostLost(self: RpcHost, workerKey: string, capability: string): boolean;
 export {};
 //# sourceMappingURL=rpc.d.ts.map

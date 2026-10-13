@@ -10,6 +10,8 @@ import { ensureRuntimesProgrammatic, installRuntimeProgrammatic } from '../runti
 import { PID_GEN_STRIDE, execIdField, parseExecId } from '@nimbus-sh/core/runtime/process-table.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import { hostActivity } from '@nimbus-sh/fabric/host-activity.js';
+import { endResidentKeepalive } from './hibernation.js';
 import { PortRegistry, createPortCapability } from '@nimbus-sh/core/runtime/port-registry.js';
 import { CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { endProcessInput, resizeProcess, signalProcess, writeProcessInput } from '@nimbus-sh/core/runtime/process-input-routing.js';
@@ -168,7 +170,7 @@ function startShellJob(self, command, options, job, named) {
             controller.abort(reason);
         }
         catch { /* already settled */ }
-    });
+    }, controller.signal);
     const emit = (stream, sink) => (data) => {
         if (job.background) {
             try {
@@ -1009,10 +1011,14 @@ async function destroySession(self, options) {
     if (guardedVfs.hasExclusiveMutation({ stoppable: false })) {
         throw Object.assign(new Error('EBUSY: session has an active exclusive filesystem mutation'), { code: 'EBUSY' });
     }
+    // A cold DELETE must also close peer placements left by the previous incarnation.
+    self.ensureFacetManager();
     // Past this it completes, and nothing starts meanwhile: the table it stops
     // admits no process, and a request that would ready the session waits for
     // the one it makes again (rpcDestroy, ensureRuntimeReady).
     self.processes.closeAdmission(Object.assign(new Error('ESHUTDOWN: the session is being destroyed'), { code: 'ESHUTDOWN' }));
+    hostActivity(self.ctx).close();
+    endResidentKeepalive(self);
     const reason = typeof options.reason === 'string' && options.reason.trim()
         ? options.reason.trim().slice(0, 200)
         : null;

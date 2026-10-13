@@ -138,6 +138,9 @@ export class Interpreter {
     getLastExitCode() {
         return this.lastExitCode;
     }
+    setLastExitCode(exitCode) {
+        this.lastExitCode = exitCode;
+    }
     async executeScript(script, terminalStdin) {
         return (await this.executeScriptWithIo(script, this.createTerminalIo(terminalStdin)));
     }
