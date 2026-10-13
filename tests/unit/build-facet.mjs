@@ -170,9 +170,15 @@ try {
       specifier, entryPath: `${NODE_MODULES}/${entry}`, externals: specifier.startsWith('react') ? (specifier === 'react' ? [] : ['react']) : ['react', 'react-dom', 'react/jsx-runtime', 'react/jsx-dev-runtime'],
       slice: sliceOf(files), bundlerVersion: 'test', define,
     });
-    const pool = await new PrebundlePool(env, ctx).acquire();
+    const provider = new PrebundlePool(env, ctx);
+    const pool = await provider.acquire();
     const before = counts.facetNames.length;
     assert.equal(before, 1, 'acquire loads the facet');
+    // Acquired again (each pre-bundle acquires: an install's warming, a /@modules request): the facet is warm, nothing is asked of it.
+    const calls = counts.calls;
+    await provider.acquire();
+    await provider.acquire();
+    assert.equal(counts.calls, calls, `acquiring a loaded facet asked it ${counts.calls - calls} more calls`);
     const results = await Promise.all(CASES.map((c) => pool.prebundle(specOf(c))));
     assert.equal(counts.mostPrebundling, PRE_BUNDLE_CONCURRENCY, 'pre-bundles run one at a time');
     for (const [i, c] of CASES.entries()) {
@@ -193,9 +199,12 @@ try {
       console.warn = warn;
     }
     assert.deepEqual([crashed.ok, crashed.errorText], [false, "Nimbus's bundler ran out of stack: a module nests too deeply for it (Maximum call stack size exceeded.)"]);
+    // Its generation retired: the next acquire loads the fresh one before any slice is built.
+    await provider.acquire();
+    assert.equal(counts.facetNames.length, 2, 'an acquire after a retirement loads the next generation');
     const after = await pool.prebundle(specOf(CASES.find((c) => c.specifier === 'cjs-lib')));
     assert.equal(after.ok, true);
-    assert.equal(counts.facetNames.length, 2, 'the next pre-bundle loads a fresh isolate');
+    assert.equal(counts.facetNames.length, 2, 'the next pre-bundle runs on that fresh isolate');
     console.log(`  ok  ${CASES.length} pre-bundles through PrebundlePool: one facet load, one at a time, native rolldown's output; a dying binding fails only its own`);
   }
 

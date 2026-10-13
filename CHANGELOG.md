@@ -21,6 +21,12 @@ published independently in the `@nimbus-sh` npm scope.
   answering its discovery, clone, fetch, pull, push and a partial clone's
   lazy fetch say `RPC failed` as git does, and never print the server's
   answer. Before, they printed it whole, credentials it echoed included.
+- Changed: `npm install`'s background warming of browser bundles and the
+  Vite dev server's `/@modules/` bundles are one path. Install now warms a
+  package subpath the dev server can resolve (a directory with its own
+  `package.json`), skips a package whose entry is a native or WebAssembly
+  payload with the same reason the dev server gives, and holds only the
+  memory a slice needs while it builds.
 - Fixed: a peer-hosted resident whose boot reads stdin (a synchronous read of
   fd 0) was replayed against reads it never made: the hosting peer's own
   reads of the process's boot images counted as the process's, and its
