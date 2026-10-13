@@ -337,7 +337,6 @@ class RuntimeOwner {
                 await clean(() => { this.portRegistry.unregisterByPid(process.pid); });
             }
             await clean(() => this.viteDevServer?.stop());
-            await clean(() => this.cirrusReal?.stop(this.ctx));
             await clean(() => this.nimbusWrangler?.stop());
             await clean(() => this.bundlePool?.dispose());
             await clean(() => this.processes.flushLogs());

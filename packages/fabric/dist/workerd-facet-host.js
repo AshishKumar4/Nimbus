@@ -655,7 +655,8 @@ export function facetJournal(ctx, env, name) {
  * exactly as minted (loopback stubs by reference), and the composed supervisor
  * entrypoint is not consulted at all, so no SUPERVISOR binding appears.
  * Without one, the default holds: inherited network plus a SUPERVISOR
- * minted from the composed entrypoint for the coordinator's identity.
+ * minted from the composed entrypoint for the coordinator's identity, beside
+ * the spec's `bindings`.
  */
 export async function residentWorkerConfig(env, disk, supervisor, boot) {
     if (boot.kind === 'code' && boot.code.env !== undefined) {
@@ -668,7 +669,8 @@ export async function residentWorkerConfig(env, disk, supervisor, boot) {
         : await residentLoaderConfig(boot.code, disk(), (source) => readImmutableModuleSource(env, source));
     assertModuleMapWithinCodeLimit(configModules(config));
     // The binding, not its host's capability (Supervise): a resident's calls each go one hop below its own request, at a fixed depth.
-    return { ...workspaceOutbound(config, supervisor), env: { SUPERVISOR: bindingSupervisor(supervisor), ...egressMarker(supervisor) } };
+    const bindings = boot.kind === 'code' ? boot.code.bindings : undefined;
+    return { ...workspaceOutbound(config, supervisor), env: { ...bindings, SUPERVISOR: bindingSupervisor(supervisor), ...egressMarker(supervisor) } };
 }
 /** The module map a loader config assembled, or empty when it named none. */
 function configModules(config) {

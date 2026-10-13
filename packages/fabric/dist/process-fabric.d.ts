@@ -128,6 +128,7 @@ export declare const ResidentCodeSpecSchema: z.ZodObject<{
     }, z.core.$strip>>>;
     vfsCodePacks: z.ZodOptional<z.ZodArray<z.ZodString>>;
     env: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
+    bindings: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
     globalOutbound: z.ZodOptional<z.ZodNullable<z.ZodCustom<ServiceStub, ServiceStub>>>;
 }, z.core.$strip>;
 export type ResidentCodeSpec = z.infer<typeof ResidentCodeSpecSchema>;
@@ -167,6 +168,7 @@ export declare function residentBootSpecSchema<Stage extends z.ZodType>(stageSch
         }, z.core.$strip>>>;
         vfsCodePacks: z.ZodOptional<z.ZodArray<z.ZodString>>;
         env: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
+        bindings: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
         globalOutbound: z.ZodOptional<z.ZodNullable<z.ZodCustom<ServiceStub, ServiceStub>>>;
     }, z.core.$strip>;
 }, z.core.$strip>], "kind">;

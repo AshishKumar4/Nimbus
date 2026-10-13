@@ -199,7 +199,8 @@ export interface JournalReaderEnv {
  * exactly as minted (loopback stubs by reference), and the composed supervisor
  * entrypoint is not consulted at all, so no SUPERVISOR binding appears.
  * Without one, the default holds: inherited network plus a SUPERVISOR
- * minted from the composed entrypoint for the coordinator's identity.
+ * minted from the composed entrypoint for the coordinator's identity, beside
+ * the spec's `bindings`.
  */
 export declare function residentWorkerConfig(env: ResidentFacetEnv, disk: () => ResidentDiskReader, supervisor: ResidentSupervisorProps, boot: ResidentBootSpec): Promise<Record<string, unknown>>;
 export {};
