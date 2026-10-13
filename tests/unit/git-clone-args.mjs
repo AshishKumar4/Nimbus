@@ -2,6 +2,7 @@
 
 import assert from 'node:assert/strict';
 import { parseCloneArgs, parseGitGlobals } from '../../packages/worker/src/git/commands.ts';
+import { UnsupportedGitOperation } from '../../packages/worker/src/git/routing.ts';
 
 const url = 'https://github.com/example/project.git';
 
@@ -168,7 +169,7 @@ assert.equal(parseCloneArgs(['--filter', 'blob:none', url]).url, url);
 assert.equal(parseCloneArgs(['--filter=blob:limit=1k', url]).filter, 'blob:limit=1024');
 assert.equal(parseCloneArgs(['--filter=blob:limit=2M', url]).filter, 'blob:limit=2097152');
 assert.equal(parseCloneArgs(['--filter=tree:0', url]).filter, 'tree:0');
-assert.throws(() => parseCloneArgs(['--filter=sparse:oid=abc', url]), /invalid filter-spec 'sparse:oid=abc'/);
+assert.throws(() => parseCloneArgs(['--filter=sparse:oid=abc', url]), UnsupportedGitOperation);
 assert.throws(() => parseCloneArgs(['--filter=blob:limit=', url]), /invalid filter-spec/);
 
 // Any other unknown flag is a loud error listing what is supported.

@@ -66,6 +66,7 @@ import type { PackumentReadOptions, PackumentReadThrough } from '../npm/r2-cache
 import { R2CacheClient, MAX_R2_TARBALL_BYTES } from '../npm/r2-cache.js';
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsListTree, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle, RecallKind } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { ReadDirectoryBatchRequest, ReadDirectoryBatchResult } from '@nimbus-sh/core/runtime/read-directory-batch.js';
 import {
   isSupervisorAnsweredMethod,
   supervisorAnswer,
@@ -462,7 +463,7 @@ export function supervisorCalls<Base extends Class>(base: Base) {
      * never mistaken for a complete listing.
      */
     /** N18: `bytes` more for this process's facet store, reporting what it measures. */
-    async fsStorageGrant(facet: string, bytes: number, databaseSize: number): Promise<{ granted: number }> {
+    async fsStorageGrant(facet: string, bytes: number, databaseSize: number): Promise<{ granted: number; available?: number }> {
       return this._call(this._fsOp('fsStorageGrant', [facet, bytes, databaseSize]));
     }
 
@@ -501,6 +502,10 @@ export function supervisorCalls<Base extends Class>(base: Base) {
 
     async fsOpen(path: RuntimeFsPath, flags: RuntimeOpenFlags): Promise<RuntimeFileHandle> {
       return this._call(this._fsMutation('fsOpen', [path, flags]));
+    }
+
+    async fsReadDirectories(request: ReadDirectoryBatchRequest): Promise<ReadDirectoryBatchResult> {
+      return this._call(this._fsMutation('fsReadDirectories', [request]));
     }
 
     async fsRead(handleId: number, offset: number | null, length: number): Promise<Uint8Array> {

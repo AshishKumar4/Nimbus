@@ -3,7 +3,7 @@ import { createKillCommand } from '@nimbus-sh/core/substrate/lifo/commands/syste
 import { installSummary } from '@nimbus-sh/core/substrate/lifo/commands/system/npm-log.js';
 import { exitCodeForSignal, signalDisposition } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
-import { BASH_RUNNER, CRED_KERNEL, CRED_SESSION_USER, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { BASH_RUNNER, GIT_RUNNER, CRED_KERNEL, CRED_SESSION_USER, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { handKernelArtifact, projectFs } from '../runtime/project-fs.js';
 import { makeEsbuildCommand } from '@nimbus-sh/core/runtime/esbuild-cli.js';
@@ -105,10 +105,38 @@ export async function registerHostedCommands(self, workspace) {
     // exhausting the supervisor DO's CPU budget on large repos. The command
     // module (+ its ~106 KB network-facet dependency) is loaded lazily on the
     // first `git` invocation so it stays out of the cold script-eval graph.
-    registry.register('git', async (ctx) => {
+    // The one `git`: with real git installed (below), the same command, routing
+    // what it lacks there (git/routing.ts).
+    const runGit = async (ctx, realGit) => {
         const { runGitCommand } = await import('../git/commands.js');
-        return runGitCommand(ctx, sqliteFs, self.ctx, self.env, workspace.network, workspace.filesystem, self.processes);
-    });
+        return runGitCommand(ctx, sqliteFs, self.ctx, self.env, workspace.network, workspace.filesystem, self.processes, realGit === undefined ? undefined : () => realGit(ctx));
+    };
+    registry.registerBuiltin('git', (ctx) => runGit(ctx));
+    const remoteHelper = async (ctx) => {
+        const [{ runRemoteHelper }, { createRemoteEngine }, { createLocalGit }, { pulledStdinReader, stdinBytesOf }] = await Promise.all([
+            import('../git/remote-helper.js'), import('../git/engine.js'), import('../git/local-git.js'), import('@nimbus-sh/core/shell/stdin-adapter.js'),
+        ]);
+        const stdinBytes = ctx.stdin === undefined ? { readBytes: async () => null } : stdinBytesOf(ctx.stdin);
+        const stdin = pulledStdinReader(() => stdinBytes.readBytes(65536));
+        return runRemoteHelper({
+            args: ctx.args, env: ctx.env, cwd: ctx.cwd,
+            readLine: async () => stdin?.readLine ? stdin.readLine() : null,
+            stdout: (text) => ctx.stdout.write(text),
+            stderr: (text) => ctx.stderr.write(text),
+            async readFile(path) {
+                try {
+                    return await ctx.vfs.readFile(path);
+                }
+                catch (error) {
+                    if (typeof error === 'object' && error !== null && 'code' in error && (error.code === 'ENOENT' || error.code === 'ENOTDIR'))
+                        return null;
+                    throw error;
+                }
+            },
+        }, createRemoteEngine({ ctx: self.ctx, env: self.env, pid: ctx.pid, network: workspace.network, signal: ctx.signal }), createLocalGit(self._ensureChildProcessManager(), ctx));
+    };
+    registry.registerBuiltin('git-remote-http', remoteHelper);
+    registry.registerBuiltin('git-remote-https', remoteHelper);
     // ── runtime package manager: `nimbus install` package manager + runner registry.
     //
     // 1. Register the clang-runner factory FIRST so the rehydration step
@@ -117,6 +145,30 @@ export async function registerHostedCommands(self, workspace) {
     // 2. Register the `nimbus` shell verb (install/uninstall/list/available).
     // 3. Rehydrate any previously-installed runtimes from VFS so their
     //    bins reappear in the registry after DO eviction or WS reconnect.
+    // Real git (git.wasm), one WASI process per invocation: core runtime/git-runner.ts.
+    // Its `git` is the built-in one above with real git behind it; uninstalled,
+    // the built-in answers alone again. The image cache is incarnation-local;
+    // fsmonitor issued-token provenance is durable host metadata so a wake can
+    // keep the VFS revision token.
+    let gitFactory = null;
+    workspace.runtimes.registerRunner(GIT_RUNNER, (manifest, installRoot, binName, binKind) => {
+        let handler = null;
+        const realGit = async (ctx) => {
+            gitFactory ??= (async () => {
+                const { makeGitRunnerFactory } = await import('@nimbus-sh/core/runtime/git-runner.js');
+                const { sqliteGitFsmonitorState } = await import('@nimbus-sh/core/runtime/git-fsmonitor.js');
+                const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
+                return makeGitRunnerFactory({
+                    facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem, processes: self.processes,
+                    fsmonitorState: sqliteGitFsmonitorState(self.ctx.storage.sql, workspace.filesystem.namespace),
+                });
+            })().catch((error) => { gitFactory = null; throw error; });
+            handler ??= gitFactory.then((factory) => factory(manifest, installRoot, binName, binKind))
+                .catch((error) => { handler = null; throw error; });
+            return (await handler)(ctx);
+        };
+        return binName === 'git' && binKind === undefined ? (ctx) => runGit(ctx, realGit) : realGit;
+    });
     workspace.runtimes.registerRunner('clang-runner', (manifest, installRoot, binName, binKind) => async (ctx) => {
         const { makeClangRunnerFactory } = await import('@nimbus-sh/core/runtime/clang-runner.js');
         const { facetHostForManager } = await import('../runtime/facet-loader-host.js');

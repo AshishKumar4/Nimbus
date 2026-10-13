@@ -2,11 +2,11 @@ import { Shell, createCurlCommand, createNpmCommand, NPM_VERSION, createTopComma
 import { createKillCommand, type HostProcessSignals } from '@nimbus-sh/core/substrate/lifo/commands/system/kill.js';
 import { installSummary } from '@nimbus-sh/core/substrate/lifo/commands/system/npm-log.js';
 import { exitCodeForSignal, signalDisposition, type SignalAbortReason } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
-import type { CommandContext } from '@nimbus-sh/core/substrate/lifo/commands/types.js';
+import type { Command, CommandContext } from '@nimbus-sh/core/substrate/lifo/commands/types.js';
 import type { ShellCommandIdentity } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
 import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
 import { NimbusWorkspace } from '@nimbus-sh/core/workspace';
-import { BASH_RUNNER, CRED_KERNEL, CRED_SESSION_USER, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { BASH_RUNNER, GIT_RUNNER, CRED_KERNEL, CRED_SESSION_USER, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { handKernelArtifact, projectFs } from '../runtime/project-fs.js';
 import { makeEsbuildCommand } from '@nimbus-sh/core/runtime/esbuild-cli.js';
@@ -28,7 +28,7 @@ import { installNpmBinFallbackResolver } from '../shell/npm-bin-entrypoints.js';
 import { createNpmInstallPort } from '../session/npm-install-port.js';
 import { createRuntimeCommandHintResolver } from '../runtime/package-manager.js';
 import { rpcExposeApp, rpcListApps, rpcRemoveApp, rpcRotateLink } from '../session/programmatic.js';
-import { listInstalledRuntimes } from '@nimbus-sh/core/runtime/installed-runtimes.js';
+import { listInstalledRuntimes, type RunnerFactory } from '@nimbus-sh/core/runtime/installed-runtimes.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { stripAnsi, type LogChunk } from '@nimbus-sh/core/runtime/process-logs.js';
 import { DEFAULT_HOME, NODE_VERSION } from '@nimbus-sh/core/constants.js';
@@ -48,6 +48,7 @@ export type RuntimeCommandHost = Pick<SessionInternal,
   readonly env: RuntimeCatalogEnv;
   routeLoopback: SessionInternal['routeLoopback'];
   ensureGlobalPrefixDirs: SessionInternal['ensureGlobalPrefixDirs'];
+  _ensureChildProcessManager: SessionInternal['_ensureChildProcessManager'];
 };
 
 export async function registerHostedCommands(self: RuntimeCommandHost, workspace: NimbusWorkspace): Promise<void> {
@@ -123,10 +124,37 @@ registry.register('chsh', makeChshCommand({
 // exhausting the supervisor DO's CPU budget on large repos. The command
 // module (+ its ~106 KB network-facet dependency) is loaded lazily on the
 // first `git` invocation so it stays out of the cold script-eval graph.
-registry.register('git', async (ctx: any) => {
+// The one `git`: with real git installed (below), the same command, routing
+// what it lacks there (git/routing.ts).
+const runGit = async (ctx: CommandContext, realGit?: Command): Promise<number> => {
   const { runGitCommand } = await import('../git/commands.js');
-  return runGitCommand(ctx, sqliteFs, self.ctx, self.env, workspace.network, workspace.filesystem, self.processes);
-});
+  return runGitCommand(ctx, sqliteFs, self.ctx, self.env, workspace.network, workspace.filesystem, self.processes,
+    realGit === undefined ? undefined : () => realGit(ctx));
+};
+registry.registerBuiltin('git', (ctx) => runGit(ctx));
+const remoteHelper: Command = async (ctx) => {
+  const [{ runRemoteHelper }, { createRemoteEngine }, { createLocalGit }, { pulledStdinReader, stdinBytesOf }] = await Promise.all([
+    import('../git/remote-helper.js'), import('../git/engine.js'), import('../git/local-git.js'), import('@nimbus-sh/core/shell/stdin-adapter.js'),
+  ]);
+  const stdinBytes = ctx.stdin === undefined ? { readBytes: async () => null } : stdinBytesOf(ctx.stdin);
+  const stdin = pulledStdinReader(() => stdinBytes.readBytes(65536));
+  return runRemoteHelper({
+    args: ctx.args, env: ctx.env, cwd: ctx.cwd,
+    readLine: async () => stdin?.readLine ? stdin.readLine() : null,
+    stdout: (text) => ctx.stdout.write(text),
+    stderr: (text) => ctx.stderr.write(text),
+    async readFile(path) {
+      try { return await ctx.vfs.readFile(path); }
+      catch (error) {
+        if (typeof error === 'object' && error !== null && 'code' in error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')) return null;
+        throw error;
+      }
+    },
+  }, createRemoteEngine({ ctx: self.ctx, env: self.env, pid: ctx.pid, network: workspace.network, signal: ctx.signal }),
+  createLocalGit(self._ensureChildProcessManager(), ctx));
+};
+registry.registerBuiltin('git-remote-http', remoteHelper);
+registry.registerBuiltin('git-remote-https', remoteHelper);
 
 // ── runtime package manager: `nimbus install` package manager + runner registry.
 //
@@ -136,6 +164,33 @@ registry.register('git', async (ctx: any) => {
 // 2. Register the `nimbus` shell verb (install/uninstall/list/available).
 // 3. Rehydrate any previously-installed runtimes from VFS so their
 //    bins reappear in the registry after DO eviction or WS reconnect.
+// Real git (git.wasm), one WASI process per invocation: core runtime/git-runner.ts.
+// Its `git` is the built-in one above with real git behind it; uninstalled,
+// the built-in answers alone again. The image cache is incarnation-local;
+// fsmonitor issued-token provenance is durable host metadata so a wake can
+// keep the VFS revision token.
+let gitFactory: Promise<RunnerFactory> | null = null;
+workspace.runtimes.registerRunner(
+  GIT_RUNNER,
+  (manifest, installRoot, binName, binKind) => {
+    let handler: Promise<Command> | null = null;
+    const realGit: Command = async (ctx) => {
+      gitFactory ??= (async () => {
+        const { makeGitRunnerFactory } = await import('@nimbus-sh/core/runtime/git-runner.js');
+        const { sqliteGitFsmonitorState } = await import('@nimbus-sh/core/runtime/git-fsmonitor.js');
+        const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
+        return makeGitRunnerFactory({
+          facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem, processes: self.processes,
+          fsmonitorState: sqliteGitFsmonitorState(self.ctx.storage.sql, workspace.filesystem.namespace),
+        });
+      })().catch((error) => { gitFactory = null; throw error; });
+      handler ??= gitFactory.then((factory) => factory(manifest, installRoot, binName, binKind))
+        .catch((error) => { handler = null; throw error; });
+      return (await handler)(ctx);
+    };
+    return binName === 'git' && binKind === undefined ? (ctx) => runGit(ctx, realGit) : realGit;
+  },
+);
 workspace.runtimes.registerRunner(
   'clang-runner',
   (manifest, installRoot, binName, binKind) => async (ctx: CommandContext) => {

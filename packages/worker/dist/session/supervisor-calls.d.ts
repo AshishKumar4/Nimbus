@@ -53,6 +53,7 @@ import { type SupervisorDeliveredOpName, type SupervisorJoinedReadOpName } from 
 import type { PackumentReadOptions, PackumentReadThrough } from '../npm/r2-cache.js';
 import { R2CacheClient } from '../npm/r2-cache.js';
 import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsListTree, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle, RecallKind } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { ReadDirectoryBatchRequest, ReadDirectoryBatchResult } from '@nimbus-sh/core/runtime/read-directory-batch.js';
 import { type SupervisorAnswer, type SupervisorAnsweredMethod } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/runtime/wave-contracts.js';
 import { type FsAcquireArgs, type FsAcquiredAnswer, type FsReadBatchEntry, type FsReadBatchRequest, type VfsDeliveredAcquire } from './rpc.js';
@@ -234,6 +235,7 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
     /** N18: `bytes` more for this process's facet store, reporting what it measures. */
     fsStorageGrant(facet: string, bytes: number, databaseSize: number): Promise<{
         granted: number;
+        available?: number;
     }>;
     fsList(after?: string | null, limit?: number | null): Promise<VfsListPage>;
     /** Everything beneath directory `root`, in one page and one revision; E2BIG past `maxEntries` (session/rpc.ts _rpcFsListTree). */
@@ -251,12 +253,13 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
     wsSend(id: number, text: string | null, bytes: Uint8Array | null): Promise<void>;
     wsClose(id: number, code?: number, reason?: string): Promise<void>;
     fsOpen(path: RuntimeFsPath, flags: RuntimeOpenFlags): Promise<RuntimeFileHandle>;
+    fsReadDirectories(request: ReadDirectoryBatchRequest): Promise<ReadDirectoryBatchResult>;
     fsRead(handleId: number, offset: number | null, length: number): Promise<Uint8Array>;
     fsWrite(handleId: number, offset: number | null, bytes: Uint8Array | ArrayBuffer | number[]): Promise<number>;
     /** A descriptor's stat and its directory listing move nothing: re-sent like any read. */
     fsFstat(handleId: number): Promise<Awaited<ReturnType<RuntimeFsBridge["fstat"]>>>;
     fsDup(handleId: number): Promise<Awaited<ReturnType<RuntimeFsBridge["dup"]>>>;
-    fsSeek(handleId: number, offset: number, whence: "set" | "current" | "end"): Promise<Awaited<ReturnType<RuntimeFsBridge["seek"]>>>;
+    fsSeek(handleId: number, offset: number, whence: "set" | "end" | "current"): Promise<Awaited<ReturnType<RuntimeFsBridge["seek"]>>>;
     fsSetStatus(handleId: number, status: {
         append?: boolean;
     }): Promise<Awaited<ReturnType<RuntimeFsBridge["setStatus"]>>>;

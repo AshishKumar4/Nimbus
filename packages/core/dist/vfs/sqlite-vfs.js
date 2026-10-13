@@ -2174,8 +2174,8 @@ export class SqliteVFS {
             isSymlink: (path) => this.isSymlink(path, bound),
             kind: (path) => this.probeInode(path, bound)?.kind ?? null,
             access: (path, mode) => { this.checkAccess(path, mode, bound); },
-            mkdir: (path, options) => this.mkdir(path, options, bound),
-            writeFile: (path, content, options) => this.writeFile(path, content, options, bound),
+            mkdir: (path, options) => this.mkdir(path, options, withUmask(bound, options?.umask)),
+            writeFile: (path, content, options) => this.writeFile(path, content, options, withUmask(bound, options?.umask)),
             writeFileFrom: (path, size, source, options) => this.spanning(() => this.writeFileFrom(path, size, source, options, bound, mutationOwner, origin), mutationOwner),
             symlink: (target, path) => this.symlink(target, path, bound),
             readlink: (path) => this.readlink(path, bound),
@@ -3841,6 +3841,9 @@ export class SqliteVFS {
     }
     /** `ino`: the number a delegation's holder gave the file it made (askedIno), kept when this makes it. */
     writeFile(path, content, options, cred, onCommit) {
+        if (options?.exclusive && this.checkAccess(path, 0, cred, { followLeaf: false, allowMissingLeaf: true }).inode) {
+            throw vfsKeyError('EEXIST', path);
+        }
         const data = typeof content === 'string' ? enc.encode(content) : content;
         const inode = this.fileWriteInode(path, data.length, options, cred);
         try {

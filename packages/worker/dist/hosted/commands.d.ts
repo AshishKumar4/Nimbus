@@ -7,6 +7,7 @@ export type RuntimeCommandHost = Pick<SessionInternal, '_emitShellExecDone' | '_
     readonly env: RuntimeCatalogEnv;
     routeLoopback: SessionInternal['routeLoopback'];
     ensureGlobalPrefixDirs: SessionInternal['ensureGlobalPrefixDirs'];
+    _ensureChildProcessManager: SessionInternal['_ensureChildProcessManager'];
 };
 export declare function registerHostedCommands(self: RuntimeCommandHost, workspace: NimbusWorkspace): Promise<void>;
 //# sourceMappingURL=commands.d.ts.map

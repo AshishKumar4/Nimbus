@@ -20,7 +20,7 @@ import type { Coherence, Cursor } from './coherence.js';
 import { nsDescribes, nsKey, nsSplit, type Namespace } from './namespace.js';
 import { RESIDENT_CHUNK_BYTES } from '../facet-resident-limits.js';
 import type { ResidentSupervisor } from './supervisor.js';
-import { RK_BINARY } from './tables.js';
+import { RK_BINARY, RK_OWN_WRITE, type ResidentTables } from './tables.js';
 
 /**
  * The `fsReadBatch` bounds, as the filler must respect them.
@@ -156,6 +156,18 @@ export function createTransport(coherence: Coherence, admission: Admission, name
    * reconcile: a row dated at the global cursor is indistinguishable from a row
    * whose path moved at that same revision.
    */
+  /**
+   * Whether the namespace holds a later revision of `path` than `rev`: bytes
+   * read at `rev` are older than what a barrier admitted while the read was
+   * in flight (read-ahead goes on beside the program's own calls), and are not
+   * installed, or a later read would be served them by their length alone.
+   */
+  const outdated = (t: ResidentTables, path: string, rev: number): boolean => {
+    const [parent, name] = nsSplit(path);
+    const listed = t.nsGet(parent, name);
+    return listed !== undefined && Number(listed.rev) > rev;
+  };
+
   const fetchFiles = async (supervisor: ResidentSupervisor, wantedFiles: WantedFile[]): Promise<Fetched> => {
     // Content already held under another path, or wanted twice in this batch,
     // is fetched once: equal keys are equal bytes (the second copy is local).
@@ -199,6 +211,8 @@ export function createTransport(coherence: Coherence, admission: Admission, name
     const landed = new Map<string, number>();
     let filled = 0, failed = 0, fetchedBytes = 0;
     const failedPaths = new Set<string>();
+    /** The revision each path is read at. */
+    const revOf = new Map(ranges.map((range) => [range.path, range.rev]));
 
     for (let at = 0; at < ranges.length;) {
       const batch: typeof ranges = [];
@@ -245,6 +259,8 @@ export function createTransport(coherence: Coherence, admission: Admission, name
         if (entry.bytes === null || entry.bytes === undefined) { failedPaths.add(range.path); continue; }
         const chunk = residentBytes(entry.bytes);
         if (chunk.byteLength !== range.length) { failedPaths.add(range.path); continue; }
+        // Not a byte of it beneath a newer revision of the file (another fill's head and chunks).
+        if (outdated(t, range.path, range.rev)) { failedPaths.add(range.path); continue; }
         fetchedBytes += chunk.byteLength;
         if (!cells.putChunk(t, range.path, range.part, chunk)) { failedPaths.add(range.path); continue; }
         const seen = (landed.get(range.path) || 0) + 1;
@@ -261,12 +277,18 @@ export function createTransport(coherence: Coherence, admission: Admission, name
     // nothing will ever serve.
     for (const path of failedPaths) {
       failed++;
+      // A head at this read's revision or later (another fill, own bytes) is
+      // not this read's to drop; an older one may sit over chunks this read
+      // wrote, and goes with them.
+      const held = t.fileRev(path);
+      const rev = revOf.get(path);
+      if (held !== undefined && (held === RK_OWN_WRITE || (rev !== undefined && held >= rev))) continue;
       t.chunkDelete(path);
       t.fileDelete(path);
     }
 
     for (const file of later) {
-      if (cells.copyByKey(t, file.path, file.ckey, file.rev)) copied++;
+      if (!outdated(t, file.path, file.rev) && cells.copyByKey(t, file.path, file.ckey, file.rev)) copied++;
       else failed++;
     }
     if (ranges.length > 0) await admission.reportSize();

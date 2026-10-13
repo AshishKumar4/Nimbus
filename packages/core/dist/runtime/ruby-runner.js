@@ -200,7 +200,7 @@ export function makeRubyRunnerFactory(deps) {
                 progName,
                 binName,
                 cwd,
-                cred: { uid: cred.uid, gid: cred.gid, groups: [...cred.groups] },
+                cred,
             };
             let result = { exitCode: 1, stdout: '', stderr: '' };
             if (needsResidentProcess(parsed)) {

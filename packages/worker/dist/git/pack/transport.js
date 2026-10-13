@@ -24,6 +24,26 @@
  * with its cause. Nothing else is retried.
  */
 import { retryDelayMs, retrying } from '@nimbus-sh/platform/retry.js';
+import { base64Utf8 } from '@nimbus-sh/core/_shared/crypto.js';
+import { selectRemoteCredentials } from './remote-failure.js';
+/** URL normalization and credential selection shared by upload-pack and receive-pack. */
+export function gitHttpRemote(options) {
+    const auth = selectRemoteCredentials(options.url, options.auth);
+    const parsed = URL.canParse(options.url) ? new URL(options.url) : null;
+    let url = options.url;
+    if (parsed && (parsed.username !== '' || parsed.password !== '')) {
+        parsed.username = '';
+        parsed.password = '';
+        url = parsed.href;
+    }
+    return { url: url.endsWith('/') ? url.slice(0, -1) : url, auth };
+}
+export function gitHttpHeaders(auth, extra) {
+    const result = { 'user-agent': 'git/nimbus', ...extra };
+    if (auth && (auth.username || auth.password))
+        result.authorization = 'Basic ' + base64Utf8(auth.username + ':' + auth.password);
+    return result;
+}
 export const RETRY_ATTEMPTS = 3;
 /** The waits before the second and the third try. */
 export const RETRY_BACKOFF_MS = [1_000, 3_000];
@@ -70,4 +90,14 @@ export function retryingGitHttp(base, schedule = RETRY_BACKOFF_MS) {
             });
         },
     };
+}
+export class UploadPackError extends Error {
+    status;
+    failure;
+    constructor(message, status, failure) {
+        super(UPLOAD_PACK_ERROR_PREFIX + message);
+        this.status = status;
+        this.failure = failure;
+        this.name = 'UploadPackError';
+    }
 }

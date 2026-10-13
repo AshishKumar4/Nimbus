@@ -1,0 +1,35 @@
+# The system configuration of Nimbus's git (GIT_CONFIG_SYSTEM, set by the
+# git runner): what holds for git in a Nimbus session whatever the user's
+# own configuration says, and why. A user's ~/.gitconfig or a repository's
+# .git/config overrides any of it.
+[core]
+	# A facet has 128 MiB for everything. With mmap emulated by reads, these
+	# bound what git holds of packs: 1 MiB windows, 16 MiB of them, 8 MiB of
+	# delta bases (measured: vscode's full history in 52 MiB, Linux status 35).
+	packedGitWindowSize = 1m
+	packedGitLimit = 16m
+	deltaBaseCacheLimit = 8m
+
+	# There is no terminal to page or to edit in yet.
+	pager = cat
+[fetch]
+	# Each fetch adds a commit-graph layer for what it brought, with its
+	# changed-path filters. Without a graph a deep history is out of reach in
+	# a facet: on vscode's full history, blame read the pack index 1,085,781
+	# times (30,645 with one) and log --graph held 173 MiB (34 with one). The
+	# base graph is clone's, written by the engine as it indexes the pack.
+	writeCommitGraph = true
+[commitGraph]
+	changedPathsVersion = 2
+[init]
+	# A repository starts without sample hooks or an info/exclude: git ships
+	# no templates here, and an empty value says so instead of a warning.
+	templateDir =
+[maintenance]
+	# Auto-maintenance is a child git after every commit, fetch and merge: a
+	# facet started each time, for work that is rarely due.
+	auto = false
+[gc]
+	auto = 0
+[color]
+	ui = auto

@@ -1,7 +1,9 @@
 #!/usr/bin/env bun
 // The real stop/replay loop, with only preparation and the Worker call
-// replaced: its launch admission must be absent while it waits on stdin,
-// then reacquired before preparation or a run. The nested run hold ends
+// replaced: its launch admission must be absent while it waits on stdin
+// and while it prepares (the lock order, Kinu #29: its bundle and its
+// credit before a worker, the broker's admission given back for its first
+// preparation too), then reacquired for each run. The nested run hold ends
 // as runOneShot ends it after ctx.abort.
 import assert from 'node:assert/strict';
 import { ReplaySessions } from '../../packages/worker/src/runtime/replay-session.ts';
@@ -48,7 +50,7 @@ function launch({ stops = 1, signal, ctx = {}, processes = new SessionProcessSup
     },
     stdinReadAhead: new ReadAheadBudget(STDIN_SYNC_READ_BYTES + 1),
     outputGates: new Map(), replay: new ReplaySessions(), stdinTaken: new Map(),
-    launchBundles: new Map(), launching: new Map(),
+    launchBundles: new Map(), launching: new Map(), buildAdmissions: new Map(),
     _launchPacer: () => ({ settle() {}, chunks: 0 }),
     _buildProcessBundle: async () => {
       preparation.push(held());
@@ -90,8 +92,8 @@ function launch({ stops = 1, signal, ctx = {}, processes = new SessionProcessSup
   return { ctx, processes, entry, manager, done, waiting, packets, preparation, runs, unread, held };
 }
 
-// Stop twice: both times there is no launch hold while stdin is open;
-// preparation, the run and the launch's finally each regain/release one.
+// Stop twice: both times there is no launch hold while stdin is open, nor
+// while it prepares; the run and the launch's finally each regain/release one.
 {
   const h = launch({ stops: 2 });
   for (let i = 0; i < 2; i++) {
@@ -101,14 +103,15 @@ function launch({ stops = 1, signal, ctx = {}, processes = new SessionProcessSup
     h.packets[i].resolve({ data: new Uint8Array([120]), ended: true });
   }
   assert.equal((await h.done).exitCode, 0);
-  assert.deepEqual(h.preparation, Array.from({ length: 3 }, () => [h.entry.pid]), 'replay preparation happens only after readmission');
+  assert.deepEqual(h.preparation, Array.from({ length: 3 }, () => undefined), 'every preparation, the first and each replay\'s, holds no worker');
   assert.equal(h.unread.length, 2);
   assert.deepEqual(loaderLedgerStats(h.ctx).inFlightWorkers, []);
   assert.equal(loaderLedgerStats(h.ctx).waiting, 0);
 }
 
 // B already queued before the replay is not overtaken. Input can arrive
-// while all workers are in flight; no replay preparation starts then.
+// while all workers are in flight; the replay is prepared first, holding
+// none, and then queues for one.
 {
   const h = launch();
   await h.waiting[0].promise;
@@ -117,7 +120,7 @@ function launch({ stops = 1, signal, ctx = {}, processes = new SessionProcessSup
   h.packets[0].resolve({ data: new Uint8Array(0), ended: true });
   await tick();
   assert.deepEqual(loaderLedgerStats(h.ctx).waiters.map((w) => w.key), ['B', `launch:${h.entry.pid}`], 'replay takes its fair place in the ledger queue');
-  assert.equal(h.preparation.length, 1, 'no preparation while the replay queues');
+  assert.equal(h.preparation.length, 2, 'the replay was prepared before it queued for a worker');
   blockers[0]();
   const endB = await b;
   await tick();
@@ -129,7 +132,8 @@ function launch({ stops = 1, signal, ctx = {}, processes = new SessionProcessSup
 }
 
 // Kill / Ctrl-C while awaiting input and while queued for readmission:
-// there is nothing to release twice, and no preparation after the kill.
+// there is nothing to release twice, and no preparation after the kill (a
+// queued replay was prepared before it queued).
 for (const queued of [false, true]) {
   const controller = new AbortController();
   const h = launch({ signal: controller.signal });
@@ -144,7 +148,7 @@ for (const queued of [false, true]) {
   if (queued) h.processes.kill(h.entry.pid);
   else controller.abort();
   assert.equal((await h.done).exitCode, 130);
-  assert.equal(h.preparation.length, 1);
+  assert.equal(h.preparation.length, queued ? 2 : 1);
   assert.equal(loaderLedgerStats(h.ctx).waiting, 0);
   assert.equal(h.held(), undefined);
   for (const end of blockers) end();
@@ -168,7 +172,7 @@ for (const queued of [false, true]) {
   assert.equal(refused.exitCode, 1);
   assert.equal(refused.stdout, 'READY\n', 'a refused replay keeps the stopped run\'s captured output');
   assert.match(refused.stderr, /EAGAIN.*resume|resume.*EAGAIN/s);
-  assert.equal(h.preparation.length, 1);
+  assert.equal(h.preparation.length, 2, 'the replay was prepared before its readmission was refused');
   assert.equal(loaderLedgerStats(h.ctx).waiting, 0);
   assert.equal(h.held(), undefined);
   for (const end of blockers) end();
@@ -242,7 +246,7 @@ for (const queued of [false, true]) {
   const stderr = bytes(await broker.readOutput(childPid, 2, 0, 0));
   assert.match(stderr, /EAGAIN.*resume|resume.*EAGAIN/s);
   assert.equal(r.runs.length, 1, 'the refused replay ran nothing');
-  assert.equal(r.preparation.length, 1, 'nor prepared it');
+  assert.equal(r.preparation.length, 2, 'it was prepared, holding no worker, before its readmission was refused');
   assert.equal(processes.get(childPid).state, 'exited');
   for (const kill of grandchildren) kill.abort();
   for (const end of holders) end();
@@ -263,6 +267,7 @@ for (const queued of [false, true]) {
     assert.throws(() => suspendLaunchAdmission(ctx), /no run in flight/);
     run();
     assert.equal(suspendLaunchAdmission({}), undefined, 'another actor cannot release this admission');
+    assert.equal(suspendLaunchAdmission(ctx, 8), undefined, 'nor another process\'s launch');
     const resume = suspendLaunchAdmission(ctx);
     assert.equal(beginAdmittedFetch(ctx), undefined);
     assert.equal(claimAdmission(ctx, 7), undefined);
@@ -281,4 +286,4 @@ for (const queued of [false, true]) {
   assert.deepEqual(loaderLedgerStats(ctx).inFlightWorkers, []);
 }
 
-console.log('ok - stopped-launch-admission (stdin waits hold nothing; replay queues fairly before preparation; repeated stops and kills leak nothing)');
+console.log('ok - stopped-launch-admission (stdin waits and preparation hold nothing; a prepared replay queues fairly; repeated stops and kills leak nothing)');

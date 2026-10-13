@@ -24,6 +24,20 @@
  * with its cause. Nothing else is retried.
  */
 import type { HttpClient } from '../../../vendor/git-http.generated.js';
+import { type RemoteFailure } from './remote-failure.js';
+export interface GitTransportAuth {
+    username: string;
+    password: string;
+}
+/** URL normalization and credential selection shared by upload-pack and receive-pack. */
+export declare function gitHttpRemote(options: {
+    url: string;
+    auth?: GitTransportAuth;
+}): {
+    url: string;
+    auth: GitTransportAuth;
+};
+export declare function gitHttpHeaders(auth: GitTransportAuth | undefined, extra: Record<string, string>): Record<string, string>;
 export declare const RETRY_ATTEMPTS = 3;
 /** The waits before the second and the third try. */
 export declare const RETRY_BACKOFF_MS: readonly number[];
@@ -48,4 +62,9 @@ export declare function retryDelay(attempt: number, schedule?: readonly number[]
  * `schedule` is for tests.
  */
 export declare function retryingGitHttp(base: HttpClient, schedule?: readonly number[]): HttpClient;
+export declare class UploadPackError extends Error {
+    readonly status?: number | undefined;
+    readonly failure?: RemoteFailure | undefined;
+    constructor(message: string, status?: number | undefined, failure?: RemoteFailure | undefined);
+}
 //# sourceMappingURL=transport.d.ts.map

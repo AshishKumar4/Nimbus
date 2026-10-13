@@ -6,7 +6,8 @@
 
 import assert from 'node:assert/strict';
 
-import { UploadPackError, requestPack } from '../../packages/worker/src/git/pack/upload-pack.ts';
+import { requestPack } from '../../packages/worker/src/git/pack/upload-pack.ts';
+import { UploadPackError } from '../../packages/worker/src/git/pack/transport.ts';
 import { RETRY_ATTEMPTS, RETRY_BACKOFF_MS, STALL_MS } from '../../packages/worker/src/git/pack/transport.ts';
 
 const encoder = new TextEncoder();

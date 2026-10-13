@@ -545,6 +545,33 @@ for (const phase of ['openWriter', 'stream']) {
   await c.settle();
 }
 
+// ── Settle waits for the log's last answer only: a grant's release the
+//    session has not answered does not hold the run's end, and it is sent ──
+{
+  const s = session();
+  s.kernel.mkdir('home/user/held', { mode: 0o755 });
+  s.kernel.chown('home/user/held', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  const c = client(s, { grantAfter: 1, grantIdleMs: 60_000, recallPollMs: 100 });
+  c.holder('home/user/held/x');
+  const grant = await until(() => c.holder('home/user/held/x'), 'the grant');
+  c.submit({ type: 'call', call: { call: 'writeFile', path: 'home/user/held/x', mode: 0o644, ino: c.number(grant), data: enc.encode('kept') } }, { acknowledged: true });
+  const asked = [];
+  const wavesBefore = s.calls.waves;
+  let answer;
+  const release = s.port.grants.release;
+  s.port.grants.release = (owner) => {
+    asked.push(owner);
+    return new Promise((resolve) => { answer = () => resolve(release(owner)); });
+  };
+  const ended = await Promise.race([c.settle().then(() => 'settled'), new Promise((resolve) => setTimeout(() => resolve('held'), 1_000))]);
+  assert.equal(ended, 'settled', 'settle waited for a release the session had not answered');
+  assert.equal(s.calls.waves, wavesBefore + 1, 'the log went in one wave, answered before settle returned');
+  assert.equal(asked.length, 1, 'the grant\'s release was sent');
+  answer();
+  await until(() => s.files.delegations.size === 0, 'the release, once answered');
+  assert.equal(s.text('home/user/held/x'), 'kept', 'what the log carried is the session\'s');
+}
+
 // ── Two held subtrees: writes interleaved between them share one wave (no grant per record) ──
 {
   const s = session();
