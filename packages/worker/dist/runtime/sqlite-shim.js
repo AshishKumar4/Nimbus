@@ -328,7 +328,11 @@ const __sqliteMod = (() => {
 
   function __lastInsertRowid(handle) {
     // sql.js does not expose last_insert_rowid() directly; query it.
-    const stmt = handle.prepare("SELECT last_insert_rowid()");
+    return __scalar(handle, "SELECT last_insert_rowid()");
+  }
+
+  function __scalar(handle, sql) {
+    const stmt = handle.prepare(sql);
     try {
       stmt.step();
       const row = stmt.get();
@@ -337,6 +341,11 @@ const __sqliteMod = (() => {
       stmt.free();
     }
   }
+
+  // The statements whose changes SQLite counts nowhere (ANALYZE's statistics,
+  // VACUUM's and REINDEX's layout, a PRAGMA's header): SQL that names one
+  // may have changed the image. Any mention counts; a false one costs a compare.
+  const __UNCOUNTED = /\b(?:analyze|vacuum|reindex|pragma)\b/i;
 
   class DatabaseSync {
     constructor(path, options) {
@@ -349,6 +358,10 @@ const __sqliteMod = (() => {
       // read from or written to it (null: none were, so close creates it).
       this.__file = null;
       this.__loaded = null;
+      // What SQLite counted of the connection's changes at open, and whether
+      // it ran SQL whose changes it does not count (__UNCOUNTED).
+      this.__counted = null;
+      this.__uncounted = false;
       const open = opts.open === undefined ? true : !!opts.open;
       if (open) this.__doOpen();
     }
@@ -359,7 +372,17 @@ const __sqliteMod = (() => {
       const bytes = this.__memory ? null : __readDbBytes(this.__file);
       this.__raw = bytes ? new SQL.Database(bytes) : new SQL.Database();
       this.__loaded = bytes ? __imageDigest(bytes) : null;
+      this.__counted = this.__memory ? null : this.__counters();
       this.__open = true;
+    }
+
+    // What SQLite counts of this connection's changes: the rows any statement
+    // changed, and the header fields schema changes and programs set. Asked
+    // with PRAGMA statements, which no table of the program's can shadow.
+    __counters() {
+      const raw = this.__raw;
+      return [__scalar(raw, "SELECT total_changes()"), __scalar(raw, "PRAGMA schema_version"),
+        __scalar(raw, "PRAGMA user_version"), __scalar(raw, "PRAGMA application_id")].join(",");
     }
 
     open() {
@@ -373,6 +396,7 @@ const __sqliteMod = (() => {
 
     prepare(sql) {
       if (!this.__open) throw new Error("node:sqlite: database is not open");
+      if (__UNCOUNTED.test(sql)) this.__uncounted = true;
       return new StatementSync(this, String(sql));
     }
 
@@ -381,6 +405,7 @@ const __sqliteMod = (() => {
       // sql.js run() executes one-or-more statements with no result rows;
       // PRAGMAs are honored against the single in-memory connection (or
       // no-op where not meaningful for an in-memory whole-DB snapshot).
+      if (__UNCOUNTED.test(sql)) this.__uncounted = true;
       this.__raw.run(String(sql));
     }
 
@@ -410,8 +435,11 @@ const __sqliteMod = (() => {
 
     // Write the database's image back to its file, through the process's
     // filesystem, unless its bytes are the ones last read or written there.
+    // Only a connection that SQLite says changed something, or that ran SQL
+    // whose changes it does not count, can hold a new image: no other exports.
     __flush() {
       if (this.__memory || !this.__open) return;
+      if (!this.__uncounted && this.__counters() === this.__counted) return;
       const image = this.__raw.export();
       const digest = __imageDigest(image);
       if (digest === this.__loaded) return;
