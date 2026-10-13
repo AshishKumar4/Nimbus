@@ -81,7 +81,8 @@ function held(root, decided, stored = {}) {
   const { raw, kernel, recalls } = held('home/user/repo', { 'home/user/repo/decided': 'by the holder' });
   const authority = new ProcessFiles(raw);
   const host = { sqliteFs: raw, getFilesystemAuthority: () => authority, async ensureRuntimeReady() {} };
-  await rpcDeleteFile(host, '/home/user/repo/existing');
+  // The fixture is the kernel's, so the embedder deletes as the kernel by name.
+  await rpcDeleteFile(host, '/home/user/repo/existing', {}, CRED_KERNEL);
   // It looks before it removes: the look shares, the removal revokes.
   assert.deepEqual(recalls, ['share', 'revoke']);
   assert.equal(kernel.exists('home/user/repo/existing'), false);
