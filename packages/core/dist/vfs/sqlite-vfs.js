@@ -1647,6 +1647,10 @@ export class SqliteVFS {
         };
         const description = {
             get ino() { return live().ino; },
+            revision: () => {
+                this.settleAppends();
+                return opened.path === null ? this._revision : this.pathRevision(opened.path, live());
+            },
             // The opener's name for the file, which descriptor-relative lookups
             // resolve beneath: the key would put them in a different view.
             path: () => {

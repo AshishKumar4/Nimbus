@@ -109,6 +109,8 @@ export interface VfsOpenDescription {
     readonly ino: number;
     path(): string;
     stat(): VfsStat;
+    /** What revision() of the name it is held by answers now, without a lookup; the clock once it has no name. */
+    revision(): number;
     read(offset: number, length: number): Uint8Array;
     write(offset: number, bytes: Uint8Array): number;
     truncate(size: number): void;
