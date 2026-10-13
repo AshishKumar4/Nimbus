@@ -205,6 +205,12 @@ export interface ModuleBindings {
      * Its other names are bindings of its own.
      */
     readonly reexports: readonly (readonly [exported: string, request: number, name: string | null])[];
+    /**
+     * Its names that are bindings of its own (ResolveExport's local entries):
+     * the name and the binding's, `*default*` for an `export default` of an
+     * expression. Two names of one binding resolve to one binding.
+     */
+    readonly locals: readonly (readonly [exported: string, local: string])[];
 }
 /** The bindings of a module linked as `link`. */
 export declare function esmBindings(link: EsmLink, lists: EsmLists): ModuleBindings;

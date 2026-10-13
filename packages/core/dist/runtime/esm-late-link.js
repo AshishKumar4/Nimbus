@@ -46,28 +46,36 @@ function moduleFacts(host, row) {
         if (request.kind === 'static')
             specifiers.push(request.specifier);
     if (bindings !== undefined && bindings.imports.length === targets.length && specifiers.length === targets.length) {
+        // What static import `at` loads: a row, or the late module at the URL staging handed it on to (a query's or a fragment's instance).
+        const loads = (at) => {
+            if (targets[at] >= 0)
+                return { row: targets[at] };
+            const missing = host.missing(-2 - targets[at]);
+            return missing !== null && 'handedOn' in missing ? { url: missing.handedOn } : null;
+        };
         const exports = [];
         for (let i = 0; i < bindings.exports.length; i++)
             exports.push(bindings.exports[i]);
+        const locals = [];
+        for (let i = 0; i < bindings.locals.length; i++)
+            locals.push([bindings.locals[i][0], bindings.locals[i][1]]);
         const stars = [];
         for (let i = 0; i < bindings.stars.length; i++)
-            if (targets[bindings.stars[i]] >= 0)
-                stars.push(targets[bindings.stars[i]]);
+            stars.push(loads(bindings.stars[i]));
         const imports = [];
         for (let at = 0; at < targets.length; at++) {
             const names = [];
             for (let i = 0; i < bindings.imports[at].length; i++)
                 names.push(bindings.imports[at][i]);
-            if (targets[at] >= 0 && names.length > 0)
-                imports.push([targets[at], specifiers[at], ...names]);
+            if (names.length > 0)
+                imports.push({ target: loads(at), specifier: specifiers[at], names });
         }
         const reexports = [];
         for (let i = 0; i < bindings.reexports.length; i++) {
             const [exported, at, name] = bindings.reexports[i];
-            if (targets[at] >= 0)
-                reexports.push([exported, targets[at], name]);
+            reexports.push([exported, loads(at), name]);
         }
-        facts = { exports, stars, imports, reexports };
+        facts = { exports, locals, stars, imports, reexports };
     }
     rowFacts.set(row, facts);
     return facts;
@@ -138,10 +146,14 @@ function plan(host, key, url, seen, order, checked, late) {
             statics++;
     const known = bindings !== undefined && bindings.imports.length === statics;
     const exports = [];
-    if (known)
+    const locals = [];
+    if (known) {
         for (let i = 0; i < bindings.exports.length; i++)
             exports.push(bindings.exports[i]);
-    const node = { known, exports, stars: [], imports: [], reexports: [] };
+        for (let i = 0; i < bindings.locals.length; i++)
+            locals.push([bindings.locals[i][0], bindings.locals[i][1]]);
+    }
+    const node = { known, exports, locals, stars: [], imports: [], reexports: [] };
     late.modules.set(url, node);
     lateModules.set(url, node);
     let at = -1;
@@ -285,26 +297,17 @@ function edgesOf(host, late, target) {
     if (target.row === undefined)
         return late.modules.get(target.url)?.imports ?? [];
     const facts = host.rowKind(target.row) === 'module' ? moduleFacts(host, target.row) : null;
-    if (facts === null)
-        return [];
-    return facts.imports.map(([row, specifier, ...names]) => ({ target: { row }, specifier, names }));
+    return facts === null ? [] : facts.imports;
 }
 /** A name its module's `export *`s reach two different bindings of. */
 const AMBIGUOUS = 'ambiguous';
-/** A late or staged module's own names, `export *`s and indirect entries; null where not known here. */
+/** A late or staged module's facts; null where not known here. */
 function factsOf(host, late, target) {
     if (target.row === undefined) {
         const node = late.modules.get(target.url);
         return node === undefined || !node.known ? null : node;
     }
-    const facts = moduleFacts(host, target.row);
-    if (facts === null)
-        return null;
-    return {
-        exports: facts.exports,
-        stars: facts.stars.map((row) => ({ row })),
-        reexports: facts.reexports.map(([exported, row, name]) => [exported, { row }, name]),
-    };
+    return moduleFacts(host, target.row);
 }
 /**
  * ECMA-262 ResolveExport of `name` of `target`: its binding, null where it
@@ -337,8 +340,9 @@ function resolveExport(host, late, target, name, resolving) {
             return undefined;
         return { module: from.row !== undefined ? `r${from.row}` : `u${from.url}`, binding: '*' };
     }
-    if (facts.exports.includes(name))
-        return { module, binding: name };
+    for (const [exported, local] of facts.locals)
+        if (exported === name)
+            return { module, binding: local };
     if (name === 'default')
         return null;
     let found = null;
