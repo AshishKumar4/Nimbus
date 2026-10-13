@@ -17,7 +17,7 @@ const enc = new TextEncoder();
 /** A directory's and a file's mode and owner: what their stats say and their access asks. */
 const DIRECTORY = { mode: 0o40555, uid: 0, gid: 0, type: 'directory' } as const;
 const FILE = { mode: 0o100444, uid: 0, gid: 0, type: 'file' } as const;
-const DIR: VfsStat = { type: 'directory', size: 0, mtimeMs: 0, ...DIRECTORY };
+const DIR: VfsStat = { size: 0, mtimeMs: 0, ...DIRECTORY };
 
 function key(path: string): string {
   return path.split('/').filter((s) => s !== '' && s !== '.').join('/');
@@ -59,7 +59,7 @@ export class ProcVFS implements VFS {
     const k = key(path);
     if (this.isDir(k)) return DIR;
     if (!this.files.has(k)) return null;
-    return { type: 'file', size: this.generate(path).length, mtimeMs: Date.now(), ...FILE };
+    return { size: this.generate(path).length, mtimeMs: Date.now(), ...FILE };
   }
 
   readFile(path: string): Uint8Array {

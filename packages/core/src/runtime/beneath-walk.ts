@@ -74,7 +74,7 @@ export function* walkBeneath(
       const searched = (yield { stat: '/' + dir }) as Exclude<BeneathAnswer, string>;
       if (searched === null) throw fsError('ENOENT', 'path', path);
       if (searched.type !== 'directory') throw fsError('ENOTDIR', 'path', path);
-      if (!modeAllows(searched, 1, cred)) throw fsError('EACCES', 'path', path);
+      if (!modeAllows({ ...searched, type: 'directory' }, 1, cred)) throw fsError('EACCES', 'path', path);
     }
     if (segment === '.') continue;
     if (segment === '..') {
