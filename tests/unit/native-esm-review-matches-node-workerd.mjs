@@ -67,6 +67,16 @@ const FILES = {
   // regardless of which loader first evaluated the module.
   'namespace-require-first/dep.mjs': 'export const x = 1;\n',
   'namespace-require-first/main.cjs': "const r = require('./dep.mjs');\nimport('./dep.mjs').then((i) => console.log(r === i));\n",
+  // A module require() evaluated is the one a later import() gets, its
+  // graph not resolved again: a dependency deleted since is not looked for.
+  'adopted-then-unlinked/child.mjs': "export const c = 'child';\n",
+  'adopted-then-unlinked/root.mjs': "import { c } from './child.mjs';\nexport const r = c;\n",
+  'adopted-then-unlinked/main.cjs': [
+    "const { unlinkSync } = require('node:fs');",
+    "const r = require('./root.mjs');",
+    "unlinkSync(require('node:path').join(__dirname, 'child.mjs'));",
+    "import('./root.mjs').then((i) => console.log('same', r === i, i.r), (e) => console.log('rejected', e.code, e.message));",
+  ].join('\n') + '\n',
   'namespace-import-first/dep.mjs': 'export const x = 1;\n',
   'namespace-import-first/main.mjs': "import { createRequire } from 'node:module';\nconst i = await import('./dep.mjs');\nconst r = createRequire(import.meta.url)('./dep.mjs');\nconsole.log(r === i);\n",
   // Finishing an asynchronous dependency does not make it (or its
@@ -319,6 +329,7 @@ const COMMANDS = [
   'node late-stop/main.mjs',
   'node namespace-require-first/main.cjs',
   'node namespace-import-first/main.mjs',
+  'node adopted-then-unlinked/main.cjs',
   'node completed-tla/main.mjs',
   'node function-origin/sub/entry.mjs',
   'node static-query/main.mjs',
