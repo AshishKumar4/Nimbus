@@ -95,14 +95,13 @@ const ETC = ['etc/profile', 'etc/hostname', 'etc/os-release'];
   await ws.runtimes.installPackage(toyPackage(), { force: true });
 
   // Two versions installed at once: one launcher, the version its name runs.
-  const [, second] = await Promise.all([
+  await Promise.all([
     ws.runtimes.installPackage(toyPackage({ version: '2.0.0' })),
     ws.runtimes.installPackage(toyPackage({ version: '3.0.0' })),
   ]);
   const serving = (await ws.exec('toy')).stdout.trim().split(' from ')[1];
   assert.equal(kernel.readlink('usr/bin/toy'), `/${serving}/bin/toy`, 'the launcher leads to the version the name runs');
   assert.equal((await ws.exec('/usr/bin/toy')).stdout, `ran toy from ${serving}\n`);
-  void second;
   await ws.exec('nimbus uninstall toy@2.0.0');
   await ws.exec('nimbus uninstall toy@3.0.0');
 
@@ -165,11 +164,9 @@ const ETC = ['etc/profile', 'etc/hostname', 'etc/os-release'];
   const kernel0 = (await open(db)).vfs.as(CRED_KERNEL);
   for (const dir of [...ROOTS].reverse()) kernel0.chown(dir, USER, USER);
   const user0 = (await open(db)).vfs.as(CRED_SESSION_USER);
-  // As an earlier release let the user: /usr/lib a link to its home, and a
-  // runtime of its own making in a store directory of its own.
+  // As an earlier release let the user: /usr/lib a link to its home.
   user0.rename('usr/lib', 'usr/lib-old');
   user0.symlink('/home/user', 'usr/lib');
-  user0.mkdir('usr/share/x/nimbus', { recursive: true });
   const ws = await open(db);
   const kernel = ws.vfs.as(CRED_KERNEL);
   assert.equal(kernel.lstat('usr/lib').type, 'symlink', 'the link is left');
@@ -183,7 +180,6 @@ const ETC = ['etc/profile', 'etc/hostname', 'etc/os-release'];
   const db = new Database(':memory:');
   const kernel0 = (await open(db)).vfs.as(CRED_KERNEL);
   kernel0.chown('usr/lib', USER, USER);
-  const user0 = kernel0; void user0;
   const user = (await open(db)).vfs.as(CRED_SESSION_USER);
   // A runtime of the user's own making in a store the user made.
   const pkg = toyPackage({ name: 'forged' });
