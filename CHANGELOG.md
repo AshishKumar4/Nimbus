@@ -10,12 +10,15 @@ published independently in the `@nimbus-sh` npm scope.
   Redirects now match Node 22's bundled undici: Host is regenerated on every
   hop, 303 drops the body and content headers (keeping HEAD), 301/302 and
   307/308 retain the method and body, and redirect limits honor
-  `throwOnMaxRedirect`. A body is sent again as undici sends it: a Node stream
-  stops at the redirect; an async or sync iterable, an array or a Web
-  ReadableStream is iterated again, so a spent one fails its Content-Length
-  (`UND_ERR_REQ_CONTENT_LENGTH_MISMATCH`); a body whose length differs from
-  its Content-Length is refused. Sync iterables and arrays are now accepted as
-  request bodies.
+  `throwOnMaxRedirect`. Along a redirect, a Node stream body stops at the
+  first redirect; an async or sync iterable, an array or a Web ReadableStream
+  is iterated again for the next hop that keeps the body, so a spent one fails
+  its Content-Length (`UND_ERR_REQ_CONTENT_LENGTH_MISMATCH`), and no redirect
+  after that hop is followed until a 303 drops the body. A string, bytes, a
+  Blob, FormData and URLSearchParams are the same on every hop (for FormData
+  and URLSearchParams, undici's own handler differs). A Web ReadableStream is
+  streamed on the first request, as before. Sync iterables and arrays are now
+  accepted as request bodies.
 
 ## 2026-10-12: platform 0.8.2, core 0.18.0, fabric 0.13.0, worker 0.16.0, loom 0.2.5, sdk 0.13.1, react 0.3.1, cli 0.2.5, create-nimbus-app 0.2.2
 
