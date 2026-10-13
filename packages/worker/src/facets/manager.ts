@@ -6866,7 +6866,7 @@ export class FacetManager {
     pacer: TurnBudget,
   ): Promise<FacetVfsState> {
     // No filesystem: an empty bundle, its map's share taken as any other's.
-    if (!this.vfs) return await this._holdMapShare(entry, { bundle: {}, reachableCount: 0, truncated: false });
+    if (!this.vfs) return this._holdMapShare(entry, { bundle: {}, reachableCount: 0, truncated: false });
     if (!this.filesystem) throw new Error('Process filesystem authority is not initialized');
     this.imageStore.ensureDir(entry.pid);
     // Its program runs under the node shims, every way out of which waits at
@@ -6897,7 +6897,7 @@ export class FacetManager {
       return this._takePrefetchEntry(key, revision, spec);
     };
     const cached = this._takePrefetchEntry(key, revision, spec);
-    if (cached) return await this._holdMapShare(entry, cached);
+    if (cached) return this._holdMapShare(entry, cached);
     // A build of the same launch at the same revision is in flight: its entry is this launch's once it is admitted.
     // (A rebuild under the ceiling takes no entry, and waits for none.)
     const shared = spec.maxBundleBytes === undefined;
@@ -6912,9 +6912,9 @@ export class FacetManager {
         outside();
       }
       const published = await takeCached();
-      if (published) return await this._holdMapShare(entry, published);
+      if (published) return this._holdMapShare(entry, published);
       // Not retained (past the entry bound): that build's own result, if the filesystem is still at the revision it read.
-      if (built !== null && built.revision === revision) return await this._holdMapShare(entry, { ...built.state, cacheHit: true, cacheRetained: false });
+      if (built !== null && built.revision === revision) return this._holdMapShare(entry, { ...built.state, cacheHit: true, cacheRetained: false });
     }
 
     // Kinu #29: the cells are gathered and serialized under one admission,
@@ -7603,7 +7603,7 @@ export class FacetManager {
       }
       this.launching.set(entry.pid, { stage: 'admission', since: Date.now() });
       await brokered?.(abortController.signal);
-      return await prepared(() => withLaunchAdmission(this.ctx, { pid: entry.pid }, abortController.signal, async () => {
+      return await withLaunchAdmission(this.ctx, { pid: entry.pid }, abortController.signal, async () => {
         admitted = true;
         this.launching.set(entry.pid, { stage: 'load', since: Date.now() });
         // What it reports missing as it runs is filed against this bundle.
@@ -7804,7 +7804,7 @@ export class FacetManager {
           this.outputGates.delete(entry.pid);
           if (stoppable) this.replay.close(entry.pid);
         }
-      }));
+      });
     } catch (err: unknown) {
       if (admitted || prepareFailed) throw err;
       // Refused or killed while it waited for a worker, its bundle built.
@@ -8689,12 +8689,18 @@ export class FacetManager {
    * (another launch's build, the cache's), taken before it holds a worker:
    * the share it holds already (its build's, kept for a rebuild) is it.
    */
-  private async _holdMapShare(entry: ProcessEntry, state: FacetVfsState): Promise<FacetVfsState> {
-    if (!this.buildAdmissions.has(entry.pid)) {
-      const need = prefetchNeed(state.rawBytes ?? 0);
-      this.buildAdmissions.set(entry.pid, tryAdmitPrefetch(need) ?? await admitPrefetch(() => this._launchEnds(entry.pid), need));
+  private _holdMapShare(entry: ProcessEntry, state: FacetVfsState): FacetVfsState | Promise<FacetVfsState> {
+    if (this.buildAdmissions.has(entry.pid)) return state;
+    const need = prefetchNeed(state.rawBytes ?? 0);
+    const now = tryAdmitPrefetch(need);
+    if (now !== null) {
+      this.buildAdmissions.set(entry.pid, now);
+      return state;
     }
-    return state;
+    return admitPrefetch(() => this._launchEnds(entry.pid), need).then((admission) => {
+      this.buildAdmissions.set(entry.pid, admission);
+      return state;
+    });
   }
 
   /**
