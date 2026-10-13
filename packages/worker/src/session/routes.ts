@@ -62,6 +62,7 @@ import { dynamicWorkerHeadroom, loaderLedgerStats } from '@nimbus-sh/fabric/budg
 import { timers } from '@nimbus-sh/fabric/timers.js';
 import { isHostedWebSocket } from '@nimbus-sh/fabric/peer-host.js';
 import {
+  isCirrusHmrPath,
   persistPortCapability,
   readPortCapability,
   normalizeForwardedHttpPath,
@@ -1379,9 +1380,16 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
       // NIMBUS_REAL_VITE=1 or `nimbusDevServer: 'real'`.
       if (self.cirrusReal?.isRunning) {
         const previewPath = (url.pathname.replace(/^\/preview/, '') || '/') + url.search;
-        // Its port's route: HMR accepted in-DO, everything else through the
-        // port registry to the process.
-        return routeToSessionPort(self, self.cirrusReal.port, request, previewPath, self.viteBasePath);
+
+        // HMR WebSocket upgrade. Vite's @vite/client opens a WS against
+        // `<base>/__nimbus_hmr` (our custom HMR path); accept it in-DO and
+        // plug it into cirrusReal.hmr so the facet's ws-shim sees a
+        // 'connection' event on its next long-poll.
+        if (isCirrusHmrPath(previewPath)) {
+          return acceptCirrusHmrWs(self, request);
+        }
+
+        return self.cirrusReal.handleRequest(sanitizeUntrustedRequest(request), previewPath);
       }
 
       if (self.viteDevServer?.isRunning) {

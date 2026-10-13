@@ -114,13 +114,11 @@ export function withResidentLauncher(self) {
   self.facetManager = {
     async spawnWorker(_code, command, cwd, opts) {
       const entry = self.processes.spawn(command, opts.identity.argv, cwd, { cred: opts.identity.cred, execId: opts.identity.execId });
-      self.portRegistry.bindFacetStub(entry.pid, {
-        async handleHttpRequest(request) {
-          return new Response(`real-vite served ${new URL(request.url).pathname}`, { status: 200, headers: { 'X-Served-By': 'cirrus-real' } });
-        },
-      });
+      const handleHttpRequest = async (request) =>
+        new Response(`real-vite served ${new URL(request.url).pathname}`, { status: 200, headers: { 'X-Served-By': 'cirrus-real' } });
+      self.portRegistry.bindFacetStub(entry.pid, { handleHttpRequest });
       self.portRegistry.register(opts.port, entry.pid);
-      return { pid: entry.pid, boot: {} };
+      return { pid: entry.pid, boot: {}, facet: { fetch: handleHttpRequest } };
     },
     kill: () => true,
   };
@@ -135,9 +133,10 @@ export const REAL_VITE_STUB = `
     constructor(opts) { this.opts = opts; this.port = opts.port; this.pid = 0; this._running = false; }
     get isRunning() { return this._running; }
     async start(_ctx, launcher, _processes, identity) {
-      ({ pid: this.pid } = await launcher.spawnWorker('', 'vite (real)', identity.cwd, { port: this.port, identity }));
+      ({ pid: this.pid, facet: { fetch: this.route } } = await launcher.spawnWorker('', 'vite (real)', identity.cwd, { port: this.port, identity }));
       this._running = true;
     }
+    handleRequest(request, innerPath) { return this.route(new Request('http://cirrus-real' + innerPath, request)); }
     attachHmrClient() { return 'client-1'; }
     get stats() { return { snapshot: null, viteVersion: 'test' }; }
   }
