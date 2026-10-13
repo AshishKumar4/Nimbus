@@ -76,9 +76,9 @@
 import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { SupervisorBindingProps } from './supervisor-props.js';
 import { z } from 'zod/v4';
-import type { RouteableFacetTarget } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { ResponseScope, RouteableFacetTarget } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { ProcessFsJournalSource } from '@nimbus-sh/core/_shared/process-fs-journal.js';
-import type { ServiceStub } from './vendor/types.js';
+import type { ServiceStub, WorkerCode } from './vendor/types.js';
 /**
  * The class every generated resident runner exports. One name for every
  * runtime: the fabric names it unconditionally, so nothing about which program
@@ -243,7 +243,7 @@ export interface ResidentDiskReader {
  * re-minted). An absent env stays absent
  * so the worker config can tell "embedder takes the env" from the default.
  */
-export declare function residentLoaderConfig(spec: ResidentCodeSpec, disk: ResidentDiskReader, readAsset?: (source: z.infer<typeof ModuleSourceAssetSchema>) => Promise<string>): Promise<Record<string, unknown>>;
+export declare function residentLoaderConfig(spec: ResidentCodeSpec, disk: ResidentDiskReader, readAsset?: (source: z.infer<typeof ModuleSourceAssetSchema>) => Promise<string>): Promise<WorkerCode>;
 /**
  * One image holding many code modules: a JSON index of `[name, length]` rows
  * for `{ cjs }` modules and `[name, length, "js"]` rows for ES modules, a
@@ -301,6 +301,8 @@ export interface ProcessHostParams {
     writerId: string;
     /** Forwarded verbatim to the runner's startProcess. */
     startArgs: unknown;
+    /** Record the physical child before its first call can publish side effects. */
+    created?(facet: string): void;
     /**
      * Set only by the coordinator's durable-application path: an explicit facet
      * name (`app-slot-<n>`) allocated from DO storage, plus the release split
@@ -324,8 +326,6 @@ export interface ProcessHostParams {
      * the session is told the facet's name when it opens (`opened`), and
      * `drain` is handed the store's journal when the process is released,
      * before the store goes. A drain that throws keeps the store and its name.
-     * Its class holds `held()` open while its isolate lives, so a death after
-     * its boot (out of memory, CPU) is the process's `lost`.
      */
     journal?: {
         opened(facet: string): void;
@@ -359,17 +359,13 @@ export interface HostedProcess {
      * that is already up — the one failure a substrate can suffer that the
      * process itself never reports.
      *
-     * It is not symmetric, and pretending otherwise is what leaks a process. A
-     * facet dies only with the Durable Object that owns it, which takes the
-     * coordinator and this handle with it, so there is nothing to observe and
-     * this never settles; its death shows up at the next use, loudly. A peer can
-     * die on its own, the held host leg says so, and throwing that away would
-     * leave a `boot`-contract process routing to a corpse until someone killed
-     * it by hand.
+     * This is a known loss, not a keepalive. Owned work observes the host while
+     * active; an idle host is validated again before new work is admitted.
+     * Both start contracts and both substrates report through this one signal.
      */
     readonly lost: Promise<never>;
-    /** Inbound HTTP for the process's registered ports. */
-    handleHttpRequest(request: Request): Promise<Response>;
+    /** Inbound HTTP for the process's registered ports. The host owns work for the response for `scope`. */
+    handleHttpRequest(request: Request, scope: ResponseScope): Promise<Response>;
     /**
      * Inbound WebSocket upgrade, on fetch semantics for every hop. A 101
      * Response owns a live socket, which the parts-based RPC path cannot carry.
@@ -534,6 +530,8 @@ export interface OneShotParams {
     outbound?: boolean;
 }
 export interface ProcessHost {
+    /** Release persistent host placements, including a previous coordinator incarnation's. */
+    close?(): Promise<void>;
     /** What this substrate can and cannot deliver, for operators and callers. */
     readonly imageDelivery: ProcessImageDelivery;
     /**
@@ -547,15 +545,9 @@ export interface ProcessHost {
      * resources are still held; they are released as it returns.
      */
     runOnce<T>(params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T>;
+    /** Refuse unsupported retained application storage before publishing a pid. */
+    assertDurableStorage(): void;
     open(params: ProcessHostParams): Promise<HostedProcess>;
-    /**
-     * The actor hosting `workerKey` found, in a new incarnation, that it no
-     * longer holds the process (a peer's own alarm, `hostLost` op), and proved
-     * it hosted it with the capability minted for that open. The process is
-     * lost ({@link ProcessHostLost}). False when this host has no such open.
-     * A facet's host is the coordinator itself, so it never hears this.
-     */
-    hostLost?(workerKey: string, capability: string): boolean;
 }
 /**
  * How a caller supplies the substrate a process manager will run programs on.
@@ -649,9 +641,8 @@ export interface ResidentProcessSpawn {
     storageBytes?: number;
     /**
      * A Nimbus runtime's process (node, python, ruby, opencode), whose class
-     * logs its changes in its facet's store and holds `held()` open while its
-     * isolate lives (ProcessHostParams.journal). Never an application's own
-     * class, whose store is its own.
+     * logs its changes in its facet's store (ProcessHostParams.journal).
+     * Never an application's own class, whose store is its own.
      */
     journaled?: boolean;
     /**

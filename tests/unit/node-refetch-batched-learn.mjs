@@ -103,13 +103,16 @@ try {
   manager.setVfs(rawVfs, processFiles(rawVfs));
   kfs.mkdir('home/user/probe', { recursive: true, mode: 0o755 });
 
-  // The probe's setup.js, reduced to what it does to the filesystem.
+  // The written cells must be fresh at an actual user resumption, not an exit-drain tick.
   const program = `
 const fs = require('fs');
 const icons = '/home/user/probe/node_modules/lucide-react/dist/esm/icons';
 fs.mkdirSync(icons, { recursive: true });
 for (let i = 0; i < ${FILES}; i++) fs.writeFileSync(icons + '/dummy-' + i + '.js', 'export default ' + i + ';\\n');
 fs.writeFileSync('/home/user/probe/done.txt', 'ok');
+setTimeout(() => {
+  if (fs.readFileSync('/home/user/probe/done.txt', 'utf8') !== 'ok') throw new Error('the resumed callback lost its own write');
+}, 0);
 `;
   const result = await manager.exec(program, { filename: '/home/user/probe/setup.js', cwd: '/home/user/probe' });
   globalThis.console = realConsole;

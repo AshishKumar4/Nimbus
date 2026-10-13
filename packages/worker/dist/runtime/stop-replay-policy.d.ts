@@ -319,19 +319,16 @@ export declare const REPLAY_OPERATION_POLICY: {
     hostProcess: {
         readonly kind: "effect";
     };
-    awaitHostedOpen: {
-        readonly kind: "effect";
-    };
     awaitHostedBoot: {
         readonly kind: "effect";
     };
     routeHostedHttp: {
         readonly kind: "effect";
     };
-    cancelHostProcess: {
+    abandonHostedHttp: {
         readonly kind: "effect";
     };
-    hostLost: {
+    cancelHostProcess: {
         readonly kind: "effect";
     };
     hmrRelay: {

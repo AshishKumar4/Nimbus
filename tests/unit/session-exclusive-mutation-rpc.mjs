@@ -13,7 +13,15 @@ import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { asyncOnly } from './lib/async-memory-vfs.mjs';
 import { SupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
 
-import { rpcDestroy } from '../../packages/worker/src/session/programmatic.ts';
+import { rpcDestroy as destroySession } from '../../packages/worker/src/session/programmatic.ts';
+
+const rpcDestroy = (host, options) => {
+  host.ensureFacetManager = () => {
+    host.facetManager ??= { async closeLaunches() {} };
+    return { manager: host.facetManager };
+  };
+  return destroySession(host, options);
+};
 
 mock.module('cloudflare:workers', () => ({ WorkerEntrypoint: class {
   constructor(ctx, env) { this.ctx = ctx; this.env = env; }

@@ -25,6 +25,7 @@ import { shellTerminalTee } from './ws.js';
 import type { SessionInternal } from './internal.js';
 import { serveEditorFs } from './editor-fs.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
+import { noteClientActivity } from './hibernation.js';
 
 /**
  * `initSession` reads `this.ctx` and `this.env` extensively (~14 sites).
@@ -223,6 +224,7 @@ export async function initSession(
     self.runtimeWorkspace = workspace;
     // A process's answers leave as the rest of its output does: once what it wrote is published.
     self.portRegistry.setOutput(workspace.processes);
+    self.portRegistry.setClientSocketActivity(() => noteClientActivity(self, self.ctx));
     self.shellProcessPid = workspace.shellProcessPid;
     self.kernel = workspace.kernel;
     self.shell = workspace.shell;

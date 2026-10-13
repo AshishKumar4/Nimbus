@@ -27,10 +27,20 @@
 // generated artifacts before testing a runner change.
 
 import assert from 'node:assert/strict';
+import { spawn, spawnSync } from 'node:child_process';
+import { Nimbus } from '../../packages/sdk/src/sandbox.ts';
 
 import { localTerminal, startLocalProbe } from './lib/workerd-probe.mjs';
 
 const W = '/home/user/w';
+const RESIDENT_ENV = [
+  'const keys = ["__proto__", "constructor", "toString"];',
+  'const server = require("http").createServer((q,s) => s.end("ok"));',
+  'server.listen(0, () => {',
+  '  console.log("RESIDENT_ENV " + JSON.stringify({ keys: Object.keys(process.env).filter((key) => keys.includes(key)).sort(), values: keys.map((key) => process.env[key]) }));',
+  '  setTimeout(() => server.close(), 5000);',
+  '});',
+].join('\n');
 const FILES = {
   'server.js': [
     'require("http").createServer((q, s) => s.end("ok")).listen(7071);',
@@ -61,6 +71,39 @@ try {
       `mkdir -p ${W}/node_modules/late-module/deep && node -e "const f = JSON.parse(Buffer.from('${payload}', 'base64').toString()); for (const [n, t] of Object.entries(f)) require('fs').writeFileSync('${W}/' + n, t); console.log('SETUP')"`,
     );
     assert.match(setup.stdout, /SETUP/, setup.stdout);
+
+    const env = Object.fromEntries([['__proto__', 'resident-proto'], ['constructor', 'resident-constructor'], ['toString', 'resident-toString']]);
+    const nativeSetup = 'const env = JSON.parse(' + JSON.stringify(JSON.stringify(env)) + '); for (const key of Object.keys(env)) process.env[key] = env[key];\n';
+    const native = spawnSync('node', ['-e', nativeSetup + RESIDENT_ENV], { encoding: 'utf8', timeout: 20_000 });
+    assert.equal(native.status, 0, native.stderr);
+    const nativeEnv = JSON.parse(native.stdout.trim().slice('RESIDENT_ENV '.length));
+    assert.deepEqual(nativeEnv.keys, Object.keys(env).sort(), 'the native control was given every environment name');
+    assert.deepEqual(nativeEnv.values, ['resident-proto', 'resident-constructor', 'resident-toString']);
+    const box = Nimbus.connect({ endpoint: probe.base, token: probe.token }).sandbox('resident-env-' + crypto.randomUUID());
+    try {
+      await box.files.write('/home/user/named-env.js', RESIDENT_ENV);
+      const exported = await box.exec("export '__proto__=resident-proto' constructor=resident-constructor toString=resident-toString", { shellId: 'environment' });
+      assert.equal(exported.exitCode, 0, exported.stderr);
+      const started = await box.startProcess('node --watch /home/user/named-env.js', { shellId: 'environment' });
+      let logs;
+      for (const deadline = Date.now() + 30_000; Date.now() < deadline;) {
+        logs = await box.processes.logs(started.pid);
+        if (logs.text.includes('RESIDENT_ENV ')) break;
+        await Bun.sleep(50);
+      }
+      const line = logs?.text.split('\n').find((text) => text.startsWith('RESIDENT_ENV '));
+      assert.equal(line, native.stdout.trim(), 'every exported name reaches a real resident Node process as it reaches native Node');
+      await box.processes.kill(started.pid);
+      const seeded = await box.exec("sudo sh -c 'printf %s proto-root > /__proto__'");
+      assert.equal(seeded.exitCode, 0, seeded.stderr);
+      const rootFile = await box.exec('node -e "const f=require(\'fs\'); console.log(\'ROOT_PROTO \'+JSON.stringify([f.readFileSync(\'/__proto__\',\'utf8\'),f.readdirSync(\'/\').includes(\'__proto__\')]))"', { cwd: '/' });
+      assert.equal(rootFile.exitCode, 0, rootFile.stderr);
+      const rootLine = rootFile.stdout.split('\n').find((text) => text.startsWith('ROOT_PROTO '));
+      assert.ok(rootLine, rootFile.stdout);
+      assert.deepEqual(JSON.parse(rootLine.slice('ROOT_PROTO '.length)), ['proto-root', true], 'the generated Node runner preserves prototype-named root files as data');
+    } finally {
+      await box.destroy();
+    }
 
     /** `pid`'s status in the session's process table (ps). */
     const statusOf = async (pid) => new RegExp(`^\\s*${pid}\\s+(\\S+)`, 'm').exec((await terminal.run('ps')).stdout)?.[1];
@@ -139,6 +182,121 @@ try {
     assert.ok(unrefPid > 0, unref.stdout);
     assert.equal(await ended(unrefPid), 'exited(0)', 'an unrefed native listener does not keep the process alive');
     console.log('workerd native listen/unref natural exit: ' + Math.round(performance.now() - unrefStart) + 'ms');
+
+    const beforeExitSource = String.raw`
+const events = [];
+const server = require('http').createServer((_request, response) => { response.end('closed'); server.close(); });
+function broken() { throw new Error('resident beforeExit failure'); }
+process.on('beforeExit', broken);
+process.on('uncaughtException', (error, kind) => {
+  events.push([error.message, kind]);
+  process.removeListener('beforeExit', broken);
+  setTimeout(() => { events.push('continued'); process.exitCode = 7; }, 0);
+});
+process.on('exit', (code) => console.log('BEFORE_RESULT ' + JSON.stringify({ code, events })));
+server.listen(Number(process.env.PORT || 0), '127.0.0.1', () => console.log('BOUND:' + server.address().port));
+`;
+    const hostBefore = await new Promise((resolve, reject) => {
+      const child = spawn('node', ['-e', beforeExitSource], { env: { ...process.env, PORT: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
+      let output = '', error = '', closing = false;
+      const deadline = setTimeout(() => child.kill(), 30000);
+      child.stdout.on('data', (part) => {
+        output += part;
+        const port = /BOUND:(\d+)/.exec(output)?.[1];
+        if (port && !closing) { closing = true; void fetch('http://127.0.0.1:' + port + '/close').catch(reject); }
+      });
+      child.stderr.on('data', (part) => { error += part; });
+      child.on('error', reject);
+      child.on('close', (code) => { clearTimeout(deadline); resolve({ code, output, error }); });
+    });
+    assert.equal(hostBefore.code, 7, hostBefore.error);
+    const expectedBefore = JSON.parse(/BEFORE_RESULT ([^\r\n]+)/.exec(hostBefore.output)[1]);
+    await terminal.writeFile(W + '/resident-before.js', beforeExitSource);
+    const launchedBefore = await terminal.run('cd ' + W + ' && PORT=7073 node resident-before.js');
+    const beforePid = Number(/pid=(\d+)/.exec(launchedBefore.stdout)?.[1]);
+    assert.ok(beforePid > 0, launchedBefore.stdout);
+    await terminal.run('curl -s http://127.0.0.1:7073/close');
+    const beforeStatus = await ended(beforePid);
+    const beforeCode = /^(?:exited|crashed)\((\d+)\)$/.exec(beforeStatus)?.[1];
+    assert.equal(Number(beforeCode), hostBefore.code, 'a handled resident beforeExit throw releases its natural-exit check: ' + beforeStatus);
+    const beforeLogs = (await terminal.run('logs ' + beforePid)).stdout;
+    const actualBefore = /BEFORE_RESULT ([^\r\n]+)/.exec(beforeLogs)?.[1];
+    assert.ok(actualBefore, beforeLogs);
+    assert.deepEqual(JSON.parse(actualBefore), expectedBefore, 'resident exception kind and continuation match Node');
+
+    // A client that leaves a response mid-stream: the guest hears it as
+    // Node's server does, its response closed unfinished and later writes
+    // refused. The server keeps writing: wrangler dev's local proxy passes a
+    // client's reset on only at a write (a quiet server's case is the live
+    // probe abandoned-download-releases-session).
+    const abandonSource = String.raw`
+const events = [];
+const server = require('http').createServer((request, response) => {
+  if (request.url === '/report') return response.end(JSON.stringify(events));
+  request.on('aborted', () => events.push('request aborted'));
+  request.on('close', () => events.push('request close'));
+  response.on('finish', () => events.push('response finish'));
+  response.on('error', (error) => events.push('response error ' + error.code));
+  const more = setInterval(() => response.write(Buffer.alloc(1024, 98)), 50);
+  response.on('close', () => {
+    clearInterval(more);
+    events.push('response close ' + JSON.stringify({ destroyed: response.destroyed, finished: response.writableFinished }));
+    response.write('late', (error) => events.push('late write ' + (error?.code ?? 'written')));
+  });
+  response.writeHead(200);
+  response.write(Buffer.alloc(65536, 97));
+});
+server.listen(Number(process.env.PORT || 0), '127.0.0.1', () => console.log('BOUND:' + server.address().port));
+`;
+    // The client resets its connection once the first bytes arrive, as a
+    // dropped connection does: a quiet server sees a reset at once, where a
+    // graceful close is seen only at its next write.
+    const RESET_CLIENT = String.raw`
+const url = new URL(process.argv[1]);
+const socket = require('node:net').connect(Number(url.port), url.hostname, () => {
+  const fields = Object.entries(JSON.parse(process.env.HEADERS)).map(([name, value]) => name + ': ' + value + '\r\n').join('');
+  socket.write('GET ' + url.pathname + ' HTTP/1.1\r\nHost: ' + url.host + '\r\n' + fields + 'Accept-Encoding: identity\r\n\r\n');
+});
+let received = 0;
+socket.on('data', (data) => { received += data.length; if (received > 1024) socket.resetAndDestroy(); });
+socket.on('close', () => process.exit(received > 1024 ? 0 : 2));
+socket.on('error', () => {});
+`;
+    const leave = async (url, headers = {}) => {
+      const client = spawn('node', ['-e', RESET_CLIENT, url + '/stall'], { env: { ...process.env, HEADERS: JSON.stringify(headers) }, stdio: ['ignore', 'ignore', 'pipe'] });
+      let stderr = '';
+      client.stderr.on('data', (part) => { stderr += part; });
+      assert.equal(await new Promise((resolve) => client.on('close', resolve)), 0, 'the client read the first bytes, then reset: ' + stderr);
+      for (let i = 0; i < 100; i++) {
+        const report = JSON.parse(await (await fetch(url + '/report', { headers })).text());
+        if (report.some((event) => event.startsWith('late write')) && report.includes('request close')) return report;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      throw new Error('the server never heard its client leave');
+    };
+    const hostAbandon = await new Promise((resolve, reject) => {
+      const child = spawn('node', ['-e', abandonSource], { env: { ...process.env, PORT: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
+      let output = '';
+      child.stdout.on('data', (part) => {
+        output += part;
+        const port = /BOUND:(\d+)/.exec(output)?.[1];
+        if (port) leave('http://127.0.0.1:' + port).then(resolve, reject).finally(() => child.kill());
+      });
+      child.on('error', reject);
+    });
+    await terminal.writeFile(W + '/abandon.js', abandonSource);
+    await terminal.run('cd ' + W + ' && PORT=7074 node abandon.js');
+    const { requestHeaders } = await import('../behavioral/_driver.mjs');
+    const nimbusAbandon = await leave(`${probe.base}/s/${terminal.sid}/port/7074`, requestHeaders());
+    // Every event Node's server sees, the resident's sees, and nothing more
+    // but one event of workerd's own: a write that fails after the client
+    // left cancels the body with a reason, and workerd's ServerResponse
+    // (src/node/internal/internal_http_server.ts, body cancel →
+    // destroy(reason)) emits it as 'error', which Node's never does.
+    for (const event of hostAbandon) assert.ok(nimbusAbandon.includes(event), `a client leaving mid-response reaches the resident server as it reaches Node's: ${event} in ${JSON.stringify(nimbusAbandon)}`);
+    assert.deepEqual(nimbusAbandon.filter((event) => !hostAbandon.includes(event) && !event.startsWith('response error')), [], JSON.stringify({ nimbusAbandon, hostAbandon }));
+    // Heard as the caller leaving (not as that failed write), the request is aborted before its response closes, as in Node.
+    if (!nimbusAbandon.some((event) => event.startsWith('response error'))) assert.deepEqual(nimbusAbandon.slice(0, 2), hostAbandon.slice(0, 2));
   } finally {
     await terminal.close().catch(() => {});
   }

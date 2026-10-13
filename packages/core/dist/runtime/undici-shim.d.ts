@@ -56,7 +56,7 @@
  *
  * Runtime scope dependencies (in scope where the shim block is interpolated):
  *   - globalThis.fetch — ALREADY patched by node-shims.ts (loopback + AI egress)
- *   - __streamMod (Readable.fromWeb, pipeline), __eventsMod, env
+ *   - __streamMod (Readable.fromWeb, pipeline), __eventsMod, __BufferMod, env
  */
 /**
  * The names the shim's module has beside \`default\`: what an ES module may

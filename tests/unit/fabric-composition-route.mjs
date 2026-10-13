@@ -52,11 +52,25 @@ import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-netwo
     delete globalThis.Cloudflare;
   }
 }
+// No date enables enable_request_signal, and without it a client leaving a
+// response is never seen: such a host must not compose either.
+{
+  globalThis.Cloudflare = { compatibilityFlags: { enhanced_error_serialization: true, enable_request_signal: false } };
+  try {
+    assert.throws(
+      () => composeFabric({ supervisorEntrypoint: 'SupervisorRPC', hostNamespace: 'WORKSPACES' }),
+      /"enable_request_signal"[^.]*compatibility_flags/,
+    );
+    assert.equal(hostRoute(), null, 'the refused composition is not kept');
+  } finally {
+    delete globalThis.Cloudflare;
+  }
+}
 
 // ── 1. A conflicting composition is loud; an identical one is a no-op ──────
 {
   assert.equal(hostRoute(), null, 'no composition, no route: a program run without one gets no supervisor binding either');
-  const assembler = async () => ({});
+  const assembler = async () => ({ compatibilityDate: '2026-09-26', mainModule: 'worker.js', modules: { 'worker.js': 'export default {}' } });
   composeFabric({ supervisorEntrypoint: 'SupervisorRPC', hostNamespace: 'WORKSPACES', stagedBootAssembler: assembler });
   assert.doesNotThrow(
     () => composeFabric({ supervisorEntrypoint: 'SupervisorRPC', hostNamespace: 'WORKSPACES', stagedBootAssembler: assembler }),
