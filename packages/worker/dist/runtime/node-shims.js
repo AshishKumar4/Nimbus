@@ -12554,7 +12554,7 @@ async function __nimbusEsmImport(id) {
   if (record.state === __ESM_DONE && record.namespace !== null) return record.namespace;
   const row = __nimbusEsm.table[id];
   if (row[0] === "module" && record.state === 0) __nimbusEsmWarnTypeless(id);
-  if (row[0] === "module" && __nimbusEsmTainted(id)) return __nimbusEsmInterpret(id);
+  if (row[0] === "module" && __nimbusEsmTainted(id)) return __nimbusEsmInterpret(id, false);
   let batch = null;
   let since = __nimbusEsmBatches;
   try {
@@ -12581,11 +12581,10 @@ async function __nimbusEsmImport(id) {
   } catch (error) {
     // Its evaluation was cancelled or stopped short of a module (a require()
     // took a module of it; an earlier evaluation stopped at a sibling's
-    // throw), or it links to a module the launch did not stage: the
-    // interpreter's.
-    if (row[0] === "module" && (__nimbusIsEsmStop(error) || __nimbusEsmMissingOf(error)?.code === "ERR_NIMBUS_NOT_STAGED")) {
-      return __nimbusEsmInterpret(id);
-    }
+    // throw), its graph linked; or it links to a module the launch did not
+    // stage: the interpreter's.
+    if (row[0] === "module" && __nimbusIsEsmStop(error)) return __nimbusEsmInterpret(id, true);
+    if (row[0] === "module" && __nimbusEsmMissingOf(error)?.code === "ERR_NIMBUS_NOT_STAGED") return __nimbusEsmInterpret(id, false);
     // The body that threw: one its evaluation began and did not complete
     // (marked already where a later body's check stopped). It keeps what it
     // threw, for a require() of it. A body suspended in its top-level await
@@ -12617,13 +12616,18 @@ async function __nimbusEsmImport(id) {
     throw __nimbusEsmLinkError(error, id);
   }
 }
-// The interpreter's evaluation of staged module \`id\` (an adoption), as import() gives it.
-async function __nimbusEsmInterpret(id) {
+// The interpreter's evaluation of staged module \`id\` (an adoption), as
+// import() gives it. A graph workerd did not link (\`linked\` false: it
+// reaches a module staging handed on, or one the interpreter took) is
+// checked first as a late graph is (core esm-late-link.ts): every imported
+// name, before any of it runs. The interpreter evaluates it as before.
+async function __nimbusEsmInterpret(id, linked) {
   const key = __nimbusEsm.table[id][1];
   const url = __nimbusEsmUrl("/" + key);
   const known = __esmNamespaces.get(url);
   if (known !== undefined) return known;
   const pending = (async () => {
+    if (!linked) __nimbusLateLink(key, url);
     let exports;
     try {
       exports = __loadModule(key, key, false, undefined, true);
