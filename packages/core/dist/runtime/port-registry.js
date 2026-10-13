@@ -124,7 +124,13 @@ class RelayScope {
     }
     settle() { this.#end(true); }
     fail() { this.#end(false); }
-    stage(controller) { this.#stage = controller; }
+    stage(controller) {
+        // A caller that left before the body came: its stage ends at once.
+        if (this.#outcome === false)
+            controller.error(this.signal.aborted ? this.signal.reason : new DOMException('The response was not delivered', 'AbortError'));
+        else
+            this.#stage = controller;
+    }
     /** The caller left: a pipe waiting on the stage ends, and so does the response. */
     handleEvent() {
         this.#stage?.error(this.signal.reason);
