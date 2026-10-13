@@ -14,6 +14,8 @@ export class NimbusProcess extends DurableObject {
   async answer(request, entry) {
     this.ctx.handlers++;
     this.ctx.signal = request.signal;
+    // What a guest that forwards its request keeps: a clone and a copy.
+    this.ctx.forwarded = [request.clone().signal, new Request(request).signal];
     this.ctx.seen.push({ entry, method: request.method, headers: [...request.headers], body: await request.text() });
     if (request.headers.get('Upgrade') === 'websocket') {
       const [client, server] = Object.values(new WebSocketPair());
@@ -100,6 +102,7 @@ for (const entry of ['hostHttpRequest', 'handleHttpRequest', 'fetch']) {
   assert.equal(ctx.signal.aborted, false, 'only its host can abandon a request');
   await process.abandonHttpRequest(capability, nextId - 1);
   assert.equal(ctx.signal.aborted, true, 'the guest sees its host abandon the request as its signal');
+  assert.deepEqual(ctx.forwarded.map((signal) => signal.aborted), [true, true], 'a clone or copy of the request the guest forwards is abandoned with it');
   // An abandon that overtakes its request is kept for it.
   await process.abandonHttpRequest(capability, nextId);
   await (await call(process, 'hostHttpRequest', request(pinned))).text();
