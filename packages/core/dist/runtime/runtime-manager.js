@@ -269,9 +269,12 @@ export class RuntimeManager {
             const entrypoints = runtimeEntrypoints(match.manifest);
             for (const ep of entrypoints)
                 this.registry.unregister?.(ep.binName);
-            const unlinked = await unlinkLaunchers(this.vfs, runtimeLaunchers(match.manifest, match.root, entrypoints.map((ep) => ep.binName)));
-            for (const launcher of unlinked)
+            // Its launchers' paths go as its names do, whatever is at them now;
+            // a surviving version's are registered again below.
+            const launchers = runtimeLaunchers(match.manifest, match.root, entrypoints.map((ep) => ep.binName));
+            for (const launcher of launchers)
                 this.registry.unregister?.(launcher.command);
+            await unlinkLaunchers(this.vfs, launchers);
             if (await this.vfs.exists(match.root))
                 await this.vfs.remove(match.root, { recursive: true });
         }
