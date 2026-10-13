@@ -135,11 +135,11 @@ export function createFacetWorld(evaluate, { resolveConfig = true, evaluatesAdap
     get(name, start) {
       return {
         async startProcess(args) { return (await ensure(name, start)).startProcess(args); },
-        async hostHttpRequest(request, id, ended, abandoned, admission) {
-          carried.push({ id, ended: [...ended], abandoned: [...abandoned] });
+async hostHttpRequest(request, id, sent, admission) {
+          carried.push({ id, ended: [...(sent?.ended ?? [])], abandoned: [...(sent?.abandoned ?? [])] });
           const instance = await ensure(name, start);
           const receiver = evaluatesAdapter ? instance : await receiverOf(instance, admission?.[0]);
-          return receiver.hostHttpRequest(request, id, ended, abandoned, admission);
+          return receiver.hostHttpRequest(request, id, sent, admission);
         },
         async abandonHttpRequest(key, id) {
           const instance = await ensure(name, start);

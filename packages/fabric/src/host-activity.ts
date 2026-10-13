@@ -32,7 +32,7 @@ interface Observation {
 
 export class HostActivity {
   private readonly observations = new Set<Observation>();
-  private readonly owners = new Set<() => void>();
+  private readonly owners = new Set<Lease>();
 
   observe(open: Observation['open'], lost: Observation['lost'], incarnation: Observation['incarnation']): HostObservation {
     const observation: Observation = { open, lost, incarnation, failed: null };
@@ -54,43 +54,30 @@ export class HostActivity {
 
   private hold(signal?: AbortSignal, dependency?: Observation): HostActivityLease {
     signal?.throwIfAborted();
-    let rejectReady: ((reason: unknown) => void) | undefined;
-    let ready: Promise<void> | undefined;
-    let ended = false;
-    const reason = () => signal?.aborted ? signal.reason : new DOMException('Host validation aborted', 'AbortError');
-    const cancel = () => {
-      ended = true;
-      signal?.removeEventListener('abort', release);
-      rejectReady?.(reason());
-    };
-    const release = () => {
-      if (!this.owners.delete(cancel)) return;
-      cancel();
-      if (this.owners.size === 0) this.stop();
-    };
+    const lease = new Lease(this, signal, dependency);
     const idle = this.owners.size === 0;
-    this.owners.add(cancel);
+    this.owners.add(lease);
     // While anything holds the host its observations already run.
     if (idle) for (const observation of this.observations) if (!observation.failed) this.start(observation);
-    signal?.addEventListener('abort', release, { once: true });
-    const validated = () => {
-      if (!dependency) return undefined;
-      if (!ready) {
-        ready = ended ? Promise.reject(reason()) : new Promise<void>((resolve, reject) => {
-          rejectReady = reject;
-          this.start(dependency).then(resolve, reject);
-        });
-        ready.catch(() => {});
-      }
-      return ready;
-    };
-    // Made only for a holder that waits on validation; a request never does.
-    return { get ready() { return validated(); }, release };
+    signal?.addEventListener('abort', lease, { once: true });
+    return lease;
+  }
+
+  /** `lease` let go: the last one stops the host's observations. */
+  released(lease: Lease): boolean {
+    if (!this.owners.delete(lease)) return false;
+    if (this.owners.size === 0) this.stop();
+    return true;
+  }
+
+  /** `dependency`'s validation, for a holder that waits on it. */
+  validation(dependency: Observation): Promise<void> {
+    return this.start(dependency);
   }
 
   /** End every old lease; a reused session starts with a fresh ownership epoch. */
   close(): void {
-    for (const cancel of this.owners) cancel();
+    for (const lease of this.owners) lease.cancel();
     this.owners.clear();
     this.stop();
   }
@@ -183,12 +170,14 @@ export class SentRequests {
   #next = 0;
   #ended: number[] = [];
   #abandoned: number[] = [];
-  /** An id for a request, and the earlier ids its leaf forgets or abandons first. */
+  /** An id for a request, and the earlier ids its leaf forgets or abandons first, when there are any. */
   send(): HostRequest {
-    const request = { id: this.#next++, ended: this.#ended, abandoned: this.#abandoned };
+    const id = this.#next++;
+    if (this.#ended.length === 0 && this.#abandoned.length === 0) return { id };
+    const carried = { ended: this.#ended, abandoned: this.#abandoned };
     this.#ended = [];
     this.#abandoned = [];
-    return request;
+    return { id, carried };
   }
 
   /**
@@ -203,8 +192,9 @@ export class SentRequests {
 
   /** `request`'s call failed before its leaf saw what it carried (leafReceived): carry it again (each is idempotent there). */
   unsent(request: HostRequest): void {
-    this.#ended.push(...request.ended);
-    this.#abandoned.push(...request.abandoned);
+    if (!request.carried) return;
+    this.#ended.push(...request.carried.ended);
+    this.#abandoned.push(...request.carried.abandoned);
   }
 }
 
@@ -223,11 +213,52 @@ export function receivedFailure(failure: Error): Error {
   catch { return Object.assign(new Error(failure.message, { cause: failure }), { [LEAF_RECEIVED]: true }); }
 }
 
-/** A request's id, and the earlier ones its leaf forgets (`ended`) or abandons first (`abandoned`). */
+/** A request's id, and the earlier ones its leaf forgets (`ended`) or abandons first (`abandoned`), only when there are any. */
 export interface HostRequest {
   id: number;
-  ended: number[];
-  abandoned: number[];
+  carried?: { ended: number[]; abandoned: number[] };
+}
+
+/**
+ * One holder's claim on a host's activity: an object of its own rather than a
+ * set of closures, since every routed request takes one. Its validation
+ * promise is made only for a holder that reads `ready`; a request never does.
+ */
+class Lease implements HostActivityLease {
+  #ended = false;
+  #ready: Promise<void> | undefined;
+  #reject: ((reason: unknown) => void) | undefined;
+  constructor(
+    private readonly activity: HostActivity,
+    private readonly signal: AbortSignal | undefined,
+    private readonly dependency: Observation | undefined,
+  ) {}
+  get ready(): Promise<void> | undefined {
+    const dependency = this.dependency;
+    if (!dependency) return undefined;
+    if (!this.#ready) {
+      this.#ready = this.#ended ? Promise.reject(this.#reason()) : new Promise<void>((resolve, reject) => {
+        this.#reject = reject;
+        this.activity.validation(dependency).then(resolve, reject);
+      });
+      this.#ready.catch(() => {});
+    }
+    return this.#ready;
+  }
+  readonly release = (): void => {
+    if (this.activity.released(this)) this.cancel();
+  };
+  /** The signal aborted. */
+  handleEvent(): void { this.release(); }
+  /** Ended without being released by its holder (HostActivity.close), or as it is released. */
+  cancel(): void {
+    this.#ended = true;
+    this.signal?.removeEventListener('abort', this);
+    this.#reject?.(this.#reason());
+  }
+  #reason(): unknown {
+    return this.signal?.aborted ? this.signal.reason : new DOMException('Host validation aborted', 'AbortError');
+  }
 }
 
 const activities = new WeakMap<object, HostActivity>();
@@ -270,6 +301,7 @@ function hostAdapter(mainModule: string, capability: string): string {
   return `import { NimbusProcess as Base } from ${JSON.stringify('./' + mainModule)};
 export * from ${JSON.stringify('./' + mainModule)};
 const capability = ${key};
+const failed = (error) => new Response(error instanceof Error ? error.message : String(error), { status: 500, headers: { [${failed}]: capability } });
 export class NimbusProcess extends Base {
   #incarnation = crypto.randomUUID();
   #watchers = new Set();
@@ -277,11 +309,13 @@ export class NimbusProcess extends Base {
   #admitted = new WeakSet();
   // Its host's requests by id (SentRequests).
   #requests = new Map();
-  #request(id, ended, abandoned = []) {
-    for (const done of ended) this.#requests.delete(done);
-    for (const gone of abandoned) {
-      this.#requests.get(gone)?.abort(new DOMException('The caller left the request', 'AbortError'));
-      this.#requests.delete(gone);
+  #request(id, carried) {
+    if (carried !== undefined) {
+      for (const done of carried.ended) this.#requests.delete(done);
+      for (const gone of carried.abandoned) {
+        this.#requests.get(gone)?.abort(new DOMException('The caller left the request', 'AbortError'));
+        this.#requests.delete(gone);
+      }
     }
     let request = this.#requests.get(id);
     if (!request) this.#requests.set(id, request = new AbortController());
@@ -310,7 +344,7 @@ export class NimbusProcess extends Base {
   // caller leave as its request's signal.
   // A guest that fails answers a capability-branded 500 (HOST_FAILED_HEADER):
   // its host learns the call arrived, whatever the guest's compatibility date.
-  hostHttpRequest(request, id, ended, abandoned, admission) {
+  hostHttpRequest(request, id, carried, admission) {
     // Its host sends the capability and the pinned incarnation while it has
     // no live watch that found this instance; with one, the watch admits it.
     if (admission !== undefined) {
@@ -318,14 +352,13 @@ export class NimbusProcess extends Base {
       if (admission[1] !== this.#incarnation) return this.#replaced();
     }
     // Its signal natively the one its host can abort: a guest's clone, copy or fetch of it keeps it.
-    const admitted = new Request(request, { signal: this.#request(id, ended, abandoned).signal });
+    const admitted = new Request(request, { signal: this.#request(id, carried).signal });
     this.#admitted.add(admitted);
-    const failed = (error) => new Response(error instanceof Error ? error.message : String(error), { status: 500, headers: { [${failed}]: capability } });
     try { return Promise.resolve(super.handleHttpRequest(admitted)).catch(failed); }
     catch (error) { return failed(error); }
   }
   abandonHttpRequest(key, id) {
-    if (key === capability) this.#request(id, []).abort(new DOMException('The caller left the request', 'AbortError'));
+    if (key === capability) this.#request(id).abort(new DOMException('The caller left the request', 'AbortError'));
   }
   fetch(request) {
     if (request.headers.get(${watch}) !== capability) {

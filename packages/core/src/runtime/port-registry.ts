@@ -189,8 +189,8 @@ function settleWith(owner: BodyOwner, source: ReadableStream<Uint8Array>, last: 
 }
 
 /** A JavaScript stage of the relay, which its owner errors if the caller leaves (RelayScope). */
-function ownedStage(owner: BodyOwner, transformer: Transformer<Uint8Array, Uint8Array> = {}): TransformStream<Uint8Array, Uint8Array> {
-  return new TransformStream({ ...transformer, start: (controller) => owner.stage(controller) });
+function ownedStage(owner: BodyOwner): TransformStream<Uint8Array, Uint8Array> {
+  return new TransformStream({ start: (controller) => owner.stage(controller) });
 }
 
 /**
@@ -199,7 +199,8 @@ function ownedStage(owner: BodyOwner, transformer: Transformer<Uint8Array, Uint8
  * is published before the piece after it, or its end, is seen.
  */
 function releasedBody(output: ProcessOutput, pid: number, owner: BodyOwner): TransformStream<Uint8Array, Uint8Array> {
-  return ownedStage(owner, {
+  return new TransformStream({
+    start: (controller) => owner.stage(controller),
     transform: (chunk, controller) => output.releaseOutput(pid, () => controller.enqueue(chunk)),
     flush: () => output.releaseOutput(pid, () => {}),
   });

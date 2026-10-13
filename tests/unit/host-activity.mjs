@@ -71,22 +71,22 @@ function setup() {
   // A request that was not delivered is abandoned; an abandon that does not
   // arrive (its target busy, not gone) rides the next request instead of
   // being reported ended, which would make the leaf forget it unabandoned.
-  const sent = new SentRequests(), abandons = [];
+const sent = new SentRequests(), abandons = [];
   const first = sent.send();
-  assert.deepEqual(first, { id: 0, ended: [], abandoned: [] });
+  assert.deepEqual(first, { id: 0 }, 'a request with nothing to carry carries nothing');
   sent.settled(first.id, true, async () => {});
   const second = sent.send(), third = sent.send();
   sent.settled(second.id, false, async (id) => { abandons.push(id); throw new Error('overloaded'); });
   sent.settled(third.id, false, async (id) => { abandons.push(id); });
   await turns();
   assert.deepEqual(abandons, [1, 2]);
-  assert.deepEqual([second.ended, third.ended], [[0], []], 'an id is carried by the next request after it ended');
+  assert.deepEqual([second.carried, third.carried], [{ ended: [0], abandoned: [] }, undefined], 'an id is carried by the next request after it ended');
   const carrying = sent.send();
-  assert.deepEqual(carrying, { id: 3, ended: [2], abandoned: [1] });
+  assert.deepEqual(carrying, { id: 3, carried: { ended: [2], abandoned: [1] } });
   sent.settled(carrying.id, true, async () => {});
   // The call that carried them failed: the next one carries them again.
   sent.unsent(carrying);
-  assert.deepEqual(sent.send(), { id: 4, ended: [3, 2], abandoned: [1] });
+  assert.deepEqual(sent.send(), { id: 4, carried: { ended: [3, 2], abandoned: [1] } });
 }
 console.log('host-activity: idle, shared active watches, abort, wake validation and host loss');
 
