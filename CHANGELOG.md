@@ -6,8 +6,13 @@ published independently in the `@nimbus-sh` npm scope.
 ## Unreleased
 
 - Fixed (Node `fs`): `fs.promises.realpath` and callback `fs.realpath`
-  resolve symlinks and refuse a missing path with `ENOENT`, as
-  `realpathSync` does; they returned the path as written.
+  resolve symlinks and refuse a missing path with `ENOENT`, giving
+  `realpathSync`'s answer; they returned the path as written. A link the
+  program makes is seen at once by both, and by `stat`, `lstat`, `readdir`
+  and writes through it, as are its rename and removal; before, the sync
+  calls saw it only after the session reported it. A link another program
+  makes is seen, as other changes it makes are, once the session reports it
+  to this one.
   `fs.promises.watch` yields a file's changes, not one every 500 ms for a
   large unchanged file, and ends when its `signal` aborts (an `AbortError`)
   or the loop stops. A program's own `chmod` and `utimes` no longer outlive
