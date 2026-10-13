@@ -82,6 +82,20 @@ const both = async (p) => {
   await fs.promises.symlink('real', '/home/user/ownlink');
   await fs.promises.symlink('file.txt', '/home/user/ownlink/new2');
   seen.viaOwnLink = [await both('/home/user/ownlink/new2'), fs.readdirSync('/home/user/real').includes('new2')];
+  // A tree renamed: its files resolve under the new name.
+  fs.mkdirSync('/home/user/t5');
+  fs.writeFileSync('/home/user/t5/f', 'f');
+  fs.renameSync('/home/user/t5', '/home/user/t5moved');
+  seen.renamedReal = await both('/home/user/t5moved/f');
+  // A file made with a mode, its write acknowledged: still that mode.
+  fs.writeFileSync('/home/user/private.txt', 'p', { mode: 0o600 });
+  await fs.promises.realpath('/home/user/private.txt');
+  seen.madeMode = (fs.statSync('/home/user/private.txt').mode & 0o777).toString(8);
+  // A file in a directory made just now, its write acknowledged: the filesystem's device.
+  fs.mkdirSync('/home/user/fresh6');
+  fs.writeFileSync('/home/user/fresh6/f', 'f');
+  await fs.promises.realpath('/home/user/fresh6/f');
+  seen.freshDev = fs.statSync('/home/user/fresh6/f').dev === dev;
   console.log(JSON.stringify(seen));
 })();
 `;
@@ -113,6 +127,9 @@ check('a link into a renamed tree resolves to nothing', () => assert.deepEqual(s
 check('a link into a removed tree resolves to nothing', () => assert.deepEqual(seen.removedTree, [false, refused('ENOENT')]));
 check("a link made through the table's directory link is in the directory it names", () => assert.deepEqual(seen.viaTableLink, [same('/home/user/real/file.txt'), true, true]));
 check("and through the program's own", () => assert.deepEqual(seen.viaOwnLink, [same('/home/user/real/file.txt'), true]));
+check('a renamed tree resolves under its new name', () => assert.deepEqual(seen.renamedReal, same('/home/user/t5moved/f')));
+check('a file made with a mode keeps it once its write is acknowledged', () => assert.equal(seen.madeMode, '600'));
+check('a file in a directory made just now has its filesystem\'s device', () => assert.equal(seen.freshDev, true));
 for (const r of results) realProcess.stderr.write(r.join('  ') + '\n');
 if (results.some((r) => r[0] === 'FAIL')) realProcess.exit(1);
 realProcess.stdout.write('node-own-view-resolved: ok\n');

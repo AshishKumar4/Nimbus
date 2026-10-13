@@ -64,6 +64,35 @@ const within = (promise, ms) => Promise.race([promise, new Promise((resolve) => 
   bytes = new Uint8Array([1]);
 }
 
+// ── nothing starts until the first next(); an end is final ────────────────
+{
+  const before = timers.size;
+  const unread = fs.promises.watch('/home/user/file.bin')[Symbol.asyncIterator]();
+  assert.equal(timers.size, before, 'a watcher no one reads polls nothing');
+  assert.deepEqual(await unread.return(), { value: undefined, done: true });
+  assert.equal(timers.size, before, 'and ending it starts nothing');
+  bytes = new Uint8Array([1, 2, 3]);
+  const backlog = fs.promises.watch('/home/user/file.bin')[Symbol.asyncIterator]();
+  const first = backlog.next();
+  for (let n = 0; n < 2; n++) tick();
+  await settle();
+  bytes[1] = 8;
+  tick();
+  assert.deepEqual(await within(first, 2000), { value: { eventType: 'change', filename: 'file.bin' }, done: false });
+  bytes[2] = 8;
+  tick();
+  await settle();
+  await backlog.return();
+  assert.deepEqual(await within(backlog.next(), 1000), { value: undefined, done: true }, 'a change queued before return() is not yielded after it');
+  assert.equal(timers.size, before, 'and its polling stopped');
+  const controller = new AbortController();
+  const aborting = fs.promises.watch('/home/user/file.bin', { signal: controller.signal })[Symbol.asyncIterator]();
+  const waiting = aborting.next();
+  controller.abort('stop');
+  await assert.rejects(waiting, { name: 'AbortError' });
+  assert.deepEqual(await within(aborting.next(), 1000), { value: undefined, done: true }, 'after its abort, it is done');
+}
+
 // ── its signal ends it (the real one-shot runner, whose AbortError is Node's) ──
 {
   const authority = createAuthority();
