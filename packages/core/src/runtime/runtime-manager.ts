@@ -129,10 +129,14 @@ export class RuntimeManager {
    * ours is left to what is there.
    */
   private async linkCommands(root: string, manifest: RuntimeManifest, handlers: ReadonlyMap<string, Command>): Promise<void> {
-    for (const launcher of await linkLaunchers(this.vfs, runtimeLaunchers(manifest, root, handlers.keys()))) {
+    const launchers = runtimeLaunchers(manifest, root, handlers.keys());
+    const linked = new Set(await linkLaunchers(this.vfs, launchers));
+    for (const launcher of launchers) {
       // An entrypoint that names the path itself (bash's /usr/bin/bash) keeps its own handler.
       if (handlers.has(launcher.command)) continue;
-      this.registry.register(launcher.command, handlers.get(launcher.binName)!);
+      if (linked.has(launcher)) this.registry.register(launcher.command, handlers.get(launcher.binName)!);
+      // What is at that path now is not a launcher of ours: it runs as itself.
+      else this.registry.unregister?.(launcher.command);
     }
   }
 
