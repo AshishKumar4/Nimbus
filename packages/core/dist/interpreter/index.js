@@ -24,7 +24,7 @@
  */
 import { parse } from 'acorn';
 import { expressionFunctionBody, parseRuntimeFunction, runtimeFunctionSource, scriptExpression, } from '../_shared/runtime-function-source.js';
-import { Compiler } from './compile.js';
+import { Compiler, programBindings } from './compile.js';
 import { moduleCell } from './modules.js';
 import { InterpreterRuntime, ROOT_ENV, frameTemplate, isObject } from './runtime.js';
 import { analyzeCommonJs, analyzeFunction, analyzeProgram, releaseScopes } from './scope.js';
@@ -113,7 +113,8 @@ export function moduleRequests(path, text, javaScript = false, goal) {
         return { requests: [], unread: 'unparsed' };
     if (goal !== undefined) {
         try {
-            return { requests: programRequests(formatProgram(text, goal === 'detect' ? undefined : goal).program) };
+            const { module, program } = formatProgram(text, goal === 'detect' ? undefined : goal);
+            return { requests: programRequests(program), ...(module ? { bindings: programBindings(program) } : {}) };
         }
         catch {
             return { requests: [], unread: 'syntax' };

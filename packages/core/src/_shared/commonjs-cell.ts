@@ -376,6 +376,12 @@ export const RUNTIME_PARSER_MODULE = 'nimbus/parser.js';
 export const RUNTIME_NODE_LIB_MODULE = 'nimbus/node-lib.js';
 export const RUNTIME_NODE_LIB_REST_MODULE = 'nimbus/node-lib-rest.js';
 export const RUNTIME_NODE_DNS_MODULE = 'nimbus/node-dns.js';
+/**
+ * The late ES module graph's link and the names Node's loader finds in a
+ * CommonJS module (core runtime/esm-late-link.ts), compiled when an
+ * interpreted module's imports first need them.
+ */
+export const RUNTIME_ESM_LATE_MODULE = 'nimbus/esm-late.js';
 
 /** The module name of the runtime code with key `key`. */
 export function runtimeCodeModuleName(key: string): string {

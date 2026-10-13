@@ -109,7 +109,8 @@ const FILES = {
     'import(url).then(async (m) => { const again=await import(url); const distinct=await import(url+"#another-instance"); let bad=false; try { await m.bad(); } catch { bad=true; } console.log("DATA " + JSON.stringify([m.name,m.sep,m.url===url,m===again,bad,distinct!==m,distinct.url===url+"#another-instance"])); }, (e) => console.log("DATA!" + (e.code || e.name)));',
   ].join('\n'),
   'grammar.js': "async function f(){ const ok = await /import(\"fake\")/.test('import\"fake\"'); const m = await import(\"./grammar-dep.js\"); console.log(\"GRAMMAR \" + ok + \" \" + m.value); } f();",
-  'grammar-dep.js': 'module.exports = { value: 7 };',
+  // A name cjs-module-lexer finds: what Node's import() of a CommonJS module has besides its default.
+  'grammar-dep.js': 'exports.value = 7;',
   // A late graph holding TypeScript written while the program runs: the
   // launch compiles it next time, and refuses the graph before any of its
   // bodies runs (a staged sibling's included).
