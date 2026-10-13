@@ -8,10 +8,6 @@ export interface AuthorityFd {
     rights: bigint;
     rightsInheriting: bigint;
     fdflags: number;
-    entries?: {
-        name: string;
-        type: string;
-    }[];
 }
 /**
  * A read-only open of a regular file, answered from this isolate: the bytes
@@ -80,7 +76,7 @@ export interface AuthorityFilesystemOptions {
     allocateFd(): number;
     abi?: 'preview0' | 'preview1';
     synchronous: boolean;
-    /** The guest's live umask when its process can move it after boot (bash's `umask` builtin). */
+    /** The process's live umask (bash's builtin or a nimbus-libc guest's umask). */
     umask?(): number;
     /**
      * The session answered that it holds no such process: it restarted (or

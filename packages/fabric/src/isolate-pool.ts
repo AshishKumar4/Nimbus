@@ -171,6 +171,14 @@ export interface IsolatePoolOptions {
   /** A runtime program's explicit pid/run capability; helpers keep their infrastructure binding. */
   processSupervisor?: SupervisorBindingProps;
   /**
+   * Hand the SUPERVISOR binding to each call (`execute`'s second argument,
+   * merged into the function's env) instead of the worker's env. The loader
+   * key then names no process, so a warm worker made for one process's call
+   * can serve the next process's, and never holds a capability between them.
+   * Only an RPC dispatch carries it: `submitRequest` refuses such a pool.
+   */
+  supervisorPerCall?: boolean;
+  /**
    * Raw JavaScript source prepended to every generated worker module.
    * Lets callers inject bundled helpers, such as a tar parser. The user
    * function can reference top-level names declared in the preamble as if
@@ -289,6 +297,8 @@ export interface LoaderWorkerModuleSourceOptions {
   preamble?: string;
   wasmEntries?: ReadonlyArray<{ name: string; id: string }>;
   hasBindings: boolean;
+  /** `execute(arg, bindings)`: the call's bindings, over the worker's env (IsolatePoolOptions.supervisorPerCall). */
+  callBindings?: boolean;
 }
 
 /** Assemble the exact JavaScript module parsed by a dynamic loader worker. */
@@ -330,9 +340,11 @@ export function assembleLoaderWorkerModuleSource(
   }
   lines.push(`const __fn__ = ${options.fnSource};`);
   lines.push('');
-  const callExpr = options.hasBindings
-    ? '__fn__(...args, this.env)'
-    : '__fn__(...args)';
+  const callExpr = options.callBindings
+    ? '__fn__(args[0], { ...this.env, ...args[1] })'
+    : options.hasBindings
+      ? '__fn__(...args, this.env)'
+      : '__fn__(...args)';
   const requestCallExpr = options.hasBindings
     ? '__fn__(request, this.env)'
     : '__fn__(request)';
@@ -429,6 +441,8 @@ export class IsolatePool {
   /** Set by dispose() — queued dispatches reject instead of running. */
   private disposed = false;
   private bindings: Record<string, unknown> | undefined;
+  /** The bindings each call carries (IsolatePoolOptions.supervisorPerCall). */
+  private callBindings: { SUPERVISOR: unknown } | undefined;
 
   private readonly preamble: string | undefined;
   private readonly preambleHash: string;
@@ -578,8 +592,10 @@ export class IsolatePool {
           route: opts?.supervisorRoute,
           network: this.network,
         });
-        bindings.SUPERVISOR = opts?.processSupervisor
+        const minted = opts?.processSupervisor
           ? mintProcessSupervisor(supervisorRpc, opts.processSupervisor) : supervisorRpc({ props: supervisor });
+        if (opts.supervisorPerCall) this.callBindings = { SUPERVISOR: minted };
+        else bindings.SUPERVISOR = minted;
         // Whatever the minted worker's env carries must be in its loader
         // cache key — workerd's loader cache survives a DO hibernation
         // wake while generation-strided pids (1000001 → 2000001) do not:
@@ -590,7 +606,9 @@ export class IsolatePool {
         // across sessions, not across wakes of the same session. So does
         // the instance a binding delivers mutations to, when it names one.
         const run = supervisor.bindingKind === 'process' ? `:${supervisor.writerId}` : '';
-        this.supervisorKey = supervisorLoaderKey(`s${supervisor.doId.slice(0, 12)}-${supervisor.pid}${run}`, supervisor);
+        this.supervisorKey = this.callBindings === undefined
+          ? supervisorLoaderKey(`s${supervisor.doId.slice(0, 12)}-${supervisor.pid}${run}`, supervisor)
+          : 's-call';
       } else {
         // Supervisor entrypoint unavailable — running without ctx.exports
         // (e.g. unit-test harness, or LOADER.load contexts where the
@@ -704,6 +722,7 @@ export class IsolatePool {
       preamble: this.preamble,
       wasmEntries: allWasmEntries,
       hasBindings: this.bindings !== undefined,
+      callBindings: this.callBindings !== undefined,
     });
 
     // Modules map: the entry worker.js source plus any wasm modules the
@@ -1012,7 +1031,7 @@ export class IsolatePool {
         fnSource,
         fnHash,
         0,
-        (entrypoint) => entrypoint.execute(arg) as Promise<Awaited<R>>,
+        (entrypoint) => this.#execute(entrypoint, arg) as Promise<Awaited<R>>,
         resilience,
         opts?.wasmModules,
       ));
@@ -1050,6 +1069,9 @@ export class IsolatePool {
         'IsolatePool.submitRequest: request body is already consumed — ' +
           'pass an unconsumed Request so retries can re-issue it.',
       );
+    }
+    if (this.callBindings !== undefined) {
+      throw new BindingError('IsolatePool.submitRequest: a per-call supervisor rides an RPC dispatch (submit or map), not a Request.');
     }
     const { fnSource, fnHash } = this.#prepare(fn);
     const resilience = this.#resolve(opts);
@@ -1141,7 +1163,7 @@ export class IsolatePool {
             fnSource,
             fnHash,
             slotIndex,
-            (entrypoint) => entrypoint.execute(items[idx]),
+            (entrypoint) => this.#execute(entrypoint, items[idx]),
             resilience,
             opts?.wasmModules,
             undefined,
@@ -1186,12 +1208,19 @@ export class IsolatePool {
    */
   dispose(): void {
     this.disposed = true;
+    disposeRpcResource(this.callBindings?.SUPERVISOR);
+    this.callBindings = undefined;
     if (!this.bindings) return;
     for (const key of Object.keys(this.bindings)) {
       disposeRpcResource(this.bindings[key]);
     }
     // Prevent double-dispose from re-running the loop.
     this.bindings = undefined;
+  }
+
+  /** One `execute` of an argument, with the call's bindings when the pool hands them per call. */
+  #execute(entrypoint: { execute(...args: unknown[]): Promise<unknown> }, arg: unknown): Promise<unknown> {
+    return this.callBindings === undefined ? entrypoint.execute(arg) : entrypoint.execute(arg, this.callBindings);
   }
 }
 

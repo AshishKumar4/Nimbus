@@ -66,4 +66,9 @@ for (const [label, run, syscall, path, dest, code = 'ENOENT'] of calls) {
 assert.equal(bridge.readFile(missing), null);
 assert.equal(bridge.stat(missing), null);
 
+// open(2) with O_DIRECTORY: a missing name is ENOENT (git reads a missing
+// loose-object directory and expects exactly that), a file ENOTDIR.
+assert.throws(() => bridge.open('/home/user/w/absent', { read: true, directory: true }), { code: 'ENOENT' });
+assert.throws(() => bridge.open(file, { read: true, directory: true }), { code: 'ENOTDIR' });
+
 console.log(`runtime-fs-bridge-error-paths: ${calls.length} calls name the caller's paths`);

@@ -9,6 +9,8 @@ import { traced, type SpanRecorder } from '@nimbus-sh/platform/tracing.js';
 import { WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
 import { CRED_SESSION_USER, requireVfsCred, type VfsCred } from '../runtime/os-contracts.js';
 import { ProcessFiles } from '../runtime/process-files.js';
+import { RuntimeFsPathSchema as FsPath } from '../runtime/filesystem-path.js';
+import { readDirectoryBatch } from '../runtime/read-directory-batch.js';
 import { sendRemoval } from '../runtime/filesystem-methods.js';
 import type { NimbusFilesystemAuthority, NimbusHostFilesystemLease, RuntimeFsBridge, RuntimeFsPath, RuntimeMutationOwner, RuntimeVfsStat } from '../runtime/os-contracts.js';
 import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
@@ -21,16 +23,12 @@ import {
   type SupervisorDelivery,
 } from './supervisor-delivery.js';
 
-const FsPath = z.union([
-  z.string(),
-  z.object({ directory: z.number().int().nonnegative(), path: z.string(), beneath: z.boolean().optional() }),
-  z.object({ root: z.string(), path: z.string(), beneath: z.literal(true) }),
-]);
 const OpenOptions = z.object({
   read: z.boolean().optional(), write: z.boolean().optional(), append: z.boolean().optional(),
   create: z.boolean().optional(), exclusive: z.boolean().optional(), directory: z.boolean().optional(),
   truncate: z.boolean().optional(), followSymlinks: z.boolean().optional(), expectedRevision: z.number().int().nonnegative().optional(),
   mode: z.number().int().nonnegative().max(0o7777).optional(),
+  umask: z.number().int().nonnegative().max(0o777).optional(),
 });
 /** A byte offset into a file: what a ranged write may start at. */
 const RangeOffset = z.number().int().nonnegative();
@@ -395,6 +393,7 @@ const NATIVE_OPS = {
   // the store did (SqliteVFS holds none of its appends), so a refusal is that
   // write's, and a delivered write's receipt records its outcome.
   fsOpen: (e, t) => fsFor(e, t).open(FsPath.parse(e.args?.[0]), { ...OpenOptions.parse(e.args?.[1]), sync: true }, leaseOf(e)),
+  fsReadDirectories: (e, t) => readDirectoryBatch(fsFor(e, t), e.args?.[0]),
   fsRead: (e, t) => {
     const length = numberArg(e, 2);
     return readHydrating(t.hydrated, () => t.readLease(length, () => Promise.resolve(fsFor(e, t).read(numberArg(e, 0), nullableNumberArg(e, 1), length))));
@@ -463,7 +462,7 @@ const NATIVE_OPS = {
     }
   },
   mkdir: (e, t) => fsFor(e, t).mkdir(FsPath.parse(e.args?.[0]), {
-    ...z.object({ recursive: z.boolean().optional(), mode: z.number().int().nonnegative().optional() }).default({ recursive: true }).parse(e.args?.[1]),
+    ...z.object({ recursive: z.boolean().optional(), mode: z.number().int().nonnegative().optional(), umask: z.number().int().nonnegative().max(0o777).optional() }).default({ recursive: true }).parse(e.args?.[1]),
     ...leaseOf(e),
   }),
   rmdir: (e, t) => fsFor(e, t).rmdir(FsPath.parse(e.args?.[0]), leaseOf(e)),

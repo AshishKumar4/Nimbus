@@ -10,15 +10,10 @@
  */
 
 import { retrying } from '@nimbus-sh/platform/retry.js';
-import { RETRY_ATTEMPTS, RETRY_BACKOFF_MS, STALL_MS, TRANSIENT_HTTP_STATUSES, UPLOAD_PACK_ERROR_PREFIX } from './transport.js';
+import { RETRY_ATTEMPTS, RETRY_BACKOFF_MS, STALL_MS, TRANSIENT_HTTP_STATUSES, UploadPackError, gitHttpHeaders, gitHttpRemote, type GitTransportAuth } from './transport.js';
+import { PktReader, pktLine, text } from './pkt-line.js';
 import { PackFormatError } from './format.js';
-import { answeredFailure, selectRemoteCredentials, transportFailure, type RemoteFailure } from './remote-failure.js';
-import { base64Utf8 } from '@nimbus-sh/core/_shared/crypto.js';
-
-export interface GitTransportAuth {
-  username: string;
-  password: string;
-}
+import { answeredFailure, transportFailure } from './remote-failure.js';
 
 export interface UploadPackOptions {
   url: string;
@@ -52,9 +47,12 @@ export interface PackRequest {
   depth?: number;
   /** Deepen from the receiver's shallow boundary rather than from the tips (git fetch --deepen). */
   relative?: boolean;
+  deepenSince?: number;
+  deepenNot?: string[];
   filter?: string;
   /** Ask for a thin pack: deltas against `haves` the server need not send. */
   thin?: boolean;
+  includeTag?: boolean;
 }
 
 export interface PackResponse {
@@ -64,57 +62,20 @@ export interface PackResponse {
   pack: AsyncIterable<Uint8Array> | null;
 }
 
-export class UploadPackError extends Error {
-  constructor(message: string, readonly status?: number, readonly failure?: RemoteFailure) {
-    super(UPLOAD_PACK_ERROR_PREFIX + message);
-    this.name = 'UploadPackError';
-  }
-}
-
 const AGENT = 'agent=git/nimbus';
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-
-function pktLine(text: string): Uint8Array {
-  const body = encoder.encode(text);
-  const out = new Uint8Array(body.byteLength + 4);
-  out.set(encoder.encode((body.byteLength + 4).toString(16).padStart(4, '0')));
-  out.set(body, 4);
-  return out;
-}
 
 /**
  * The repository's URL without credentials, and the credentials to send: a
  * URL's own (https://user:password@host/repo.git), as git takes them, else
  * the options'.
  */
-function remote(options: UploadPackOptions): { url: string; auth: GitTransportAuth | undefined } {
-  const auth = selectRemoteCredentials(options.url, options.auth);
-  const parsed = URL.canParse(options.url) ? new URL(options.url) : null;
-  if (parsed === null || (parsed.username === '' && parsed.password === '')) return { url: withoutSlash(options.url), auth };
-  parsed.username = '';
-  parsed.password = '';
-  return { url: withoutSlash(parsed.href), auth };
-}
-
-function withoutSlash(url: string): string {
-  return url.endsWith('/') ? url.slice(0, -1) : url;
-}
-
-function headers(auth: GitTransportAuth | undefined, extra: Record<string, string>): Record<string, string> {
-  const result: Record<string, string> = { 'user-agent': 'git/nimbus', ...extra };
-  if (auth && (auth.username || auth.password)) {
-    // Basic credentials are UTF-8, as git sends them.
-    result.authorization = 'Basic ' + base64Utf8(auth.username + ':' + auth.password);
-  }
-  return result;
-}
-
 /** A request whose transient failures are retried before any byte is read (transport.ts). */
 async function send(options: UploadPackOptions, path: string, init: RequestInit & { headers: Record<string, string> }): Promise<Response> {
   const doFetch = options.fetch ?? fetch;
-  const { url, auth } = remote(options);
-  const request = { ...init, headers: headers(auth, init.headers) };
+  const { url, auth } = gitHttpRemote(options);
+  const request = { ...init, headers: gitHttpHeaders(auth, init.headers) };
   const failed = init.method === 'POST' ? 'rpc' : 'discovery';
   // Headers that do not come within the stall time are a stall too.
   const stallMs = options.stallMs ?? STALL_MS;
@@ -150,83 +111,9 @@ async function send(options: UploadPackOptions, path: string, init: RequestInit 
 
 export { STALL_MS };
 
-/** pkt-lines off a byte stream, pulled one at a time; null is a flush. */
-class PktReader {
-  private buffer: Uint8Array = new Uint8Array(0);
-  private done = false;
-
-  constructor(private readonly reader: ReadableStreamDefaultReader<Uint8Array>, private readonly stallMs = STALL_MS) {}
-
-  /** The next chunk, or a stall error when none comes in time (the read is cancelled). */
-  private read(): Promise<ReadableStreamReadResult<Uint8Array>> {
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const stalled = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => {
-        reject(new UploadPackError('the server sent nothing for ' + Math.round(this.stallMs / 1000) + ' s'));
-        void this.reader.cancel().catch(() => undefined);
-      }, this.stallMs);
-    });
-    const read = this.reader.read().catch((error: unknown) => {
-      // A response cut off mid-stream is the transport's failure, as a stall is.
-      throw error instanceof UploadPackError ? error
-        : new UploadPackError('the response broke off: ' + (error instanceof Error ? error.message : String(error)));
-    });
-    return Promise.race([read, stalled]).finally(() => {
-      if (timer !== null) clearTimeout(timer);
-    });
-  }
-
-  private async fill(needed: number): Promise<boolean> {
-    while (this.buffer.byteLength < needed) {
-      if (this.done) return false;
-      const { done, value } = await this.read();
-      if (done) {
-        this.done = true;
-        return this.buffer.byteLength >= needed;
-      }
-      if (this.buffer.byteLength === 0) {
-        this.buffer = value;
-      } else {
-        const merged = new Uint8Array(this.buffer.byteLength + value.byteLength);
-        merged.set(this.buffer);
-        merged.set(value, this.buffer.byteLength);
-        this.buffer = merged;
-      }
-    }
-    return true;
-  }
-
-  /** The next packet's payload, null for a flush, undefined at the stream's end. */
-  async next(): Promise<Uint8Array | null | undefined> {
-    if (!await this.fill(4)) {
-      if (this.buffer.byteLength === 0) return undefined;
-      throw new UploadPackError('stream ended inside a packet length');
-    }
-    const length = parseInt(decoder.decode(this.buffer.subarray(0, 4)), 16);
-    if (!Number.isInteger(length) || (length > 0 && length < 4)) throw new UploadPackError('bad packet length');
-    if (length === 0 || length === 1 || length === 2) {
-      this.buffer = this.buffer.subarray(4);
-      return null;
-    }
-    if (!await this.fill(length)) throw new UploadPackError('stream ended inside a packet');
-    const payload = this.buffer.subarray(4, length);
-    this.buffer = this.buffer.subarray(length);
-    return payload;
-  }
-
-  cancel(): Promise<void> {
-    return this.reader.cancel();
-  }
-}
-
-function text(payload: Uint8Array): string {
-  const line = decoder.decode(payload);
-  return line.endsWith('\n') ? line.slice(0, -1) : line;
-}
-
-export async function discover(options: UploadPackOptions): Promise<Advertisement> {
-  const response = await send(options, '/info/refs?service=git-upload-pack', {
-    headers: { accept: 'application/x-git-upload-pack-advertisement' },
+export async function discover(options: UploadPackOptions, service: 'git-upload-pack' | 'git-receive-pack' = 'git-upload-pack'): Promise<Advertisement> {
+  const response = await send(options, '/info/refs?service=' + service, {
+    headers: { accept: 'application/x-' + service + '-advertisement' },
   });
   if (!response.ok || !response.body) {
     // The server's text, as git shows it, with the status.
@@ -238,7 +125,7 @@ export async function discover(options: UploadPackOptions): Promise<Advertisemen
   }
   const reader = new PktReader(response.body.getReader(), options.stallMs);
   const first = await reader.next();
-  if (!first || text(first) !== '# service=git-upload-pack') throw new UploadPackError('not a smart HTTP server');
+  if (!first || text(first) !== '# service=' + service) throw new UploadPackError('not a smart HTTP server');
   if (await reader.next() !== null) throw new UploadPackError('advertisement header lacks its flush');
   const advertisement: Advertisement = { refs: new Map(), symrefs: new Map(), capabilities: new Set() };
   let firstRef = true;
@@ -274,16 +161,26 @@ export async function discover(options: UploadPackOptions): Promise<Advertisemen
 /** Capabilities to ask for, from those the server offers. */
 function requestCapabilities(advertised: Set<string>, request: PackRequest): string[] {
   // include-tag: annotated tags of the objects sent come with them, as git asks (clone follows them).
-  const capabilities = ['side-band-64k', 'ofs-delta', 'include-tag'].filter((capability) => advertised.has(capability));
+  const capabilities = ['side-band-64k', 'ofs-delta', ...(request.includeTag === false ? [] : ['include-tag'])].filter((capability) => advertised.has(capability));
   if (!advertised.has('side-band-64k')) throw new UploadPackError('the server does not offer side-band-64k');
   if (request.thin && advertised.has('thin-pack')) capabilities.push('thin-pack');
-  if (request.depth !== undefined || (request.shallows?.length ?? 0) > 0) {
+  const deepens = request.depth !== undefined || request.deepenSince !== undefined || (request.deepenNot?.length ?? 0) > 0;
+  if (deepens || (request.shallows?.length ?? 0) > 0) {
     if (!advertised.has('shallow')) throw new UploadPackError('the server does not support shallow fetches');
     capabilities.push('shallow');
   }
   if (request.relative) {
     if (!advertised.has('deepen-relative')) throw new UploadPackError('the server does not support --deepen');
     capabilities.push('deepen-relative');
+  }
+  // fetch-pack.c: the server must offer each deepen option the request uses.
+  for (const [used, capability] of [
+    [request.deepenSince !== undefined, 'deepen-since'],
+    [(request.deepenNot?.length ?? 0) > 0, 'deepen-not'],
+  ] as const) {
+    if (!used) continue;
+    if (!advertised.has(capability)) throw new UploadPackError('the server does not support ' + capability);
+    capabilities.push(capability);
   }
   if (request.filter !== undefined) {
     if (!advertised.has('filter')) throw new UploadPackError('the server does not support --filter');
@@ -301,6 +198,8 @@ export async function requestPack(options: UploadPackOptions, advertised: Set<st
   request.wants.forEach((oid, index) => lines.push(pktLine('want ' + oid + (index === 0 ? ' ' + capabilities.join(' ') : '') + '\n')));
   for (const oid of request.shallows ?? []) lines.push(pktLine('shallow ' + oid + '\n'));
   if (request.depth !== undefined) lines.push(pktLine('deepen ' + request.depth + '\n'));
+  if (request.deepenSince !== undefined) lines.push(pktLine('deepen-since ' + request.deepenSince + '\n'));
+  for (const ref of request.deepenNot ?? []) lines.push(pktLine('deepen-not ' + ref + '\n'));
   if (request.filter !== undefined) lines.push(pktLine('filter ' + request.filter + '\n'));
   lines.push(encoder.encode('0000'));
   for (const oid of request.haves ?? []) lines.push(pktLine('have ' + oid + '\n'));

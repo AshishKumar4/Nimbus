@@ -306,6 +306,31 @@ const ROOT_INIT = (extra = {}) => ({
 }
 
 // ── 12. A read-only open is answered from a resident copy, per revision ─────
+// A directory stream may be rewound after input; the codec cannot keep its
+// first listing forever while the authority/resident namespace has advanced.
+{
+  const sup = memorySupervisor({ 'home/user/old.txt': 'old' });
+  const h = host(ROOT_INIT(), sup);
+  const dir = await h.open('home/user', { oflags: 2 });
+  assert.equal(dir.errno, ESUCCESS);
+  const names = async () => {
+    assert.equal(await h.wasiImport.fd_readdir(dir.fd, 0x1000, 8192, 0n, 0x900), ESUCCESS);
+    const used = h.view().getUint32(0x900, true);
+    const found = [];
+    for (let at = 0; at < used;) {
+      const size = h.view().getUint32(0x1000 + at + 16, true);
+      found.push(dec.decode(h.u8().slice(0x1000 + at + 24, 0x1000 + at + 24 + size)));
+      at += 24 + size;
+    }
+    return found;
+  };
+  assert.ok((await names()).includes('old.txt'));
+  sup.store.set('home/user/new.txt', enc.encode('new'));
+  assert.ok((await names()).includes('new.txt'), 'rewound fd_readdir asks the current authority/view, not an unversioned codec cache');
+  assert.equal(await h.wasiImport.fd_close(dir.fd), ESUCCESS);
+}
+
+// ── 12. A read-only open is answered from a resident copy, per revision ─────
 // One stat per open, one read per revision: the descriptor calls in between
 // (fstat, seek, read, close) never reach the supervisor. A rewrite moves the
 // stat revision, so the next open reads again; a writable open never uses it.

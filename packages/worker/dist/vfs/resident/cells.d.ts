@@ -53,6 +53,8 @@ export interface Cells {
     head(path: string): FileHead | undefined;
     /** Whether `path` is held, in the tables or in memory. */
     has(path: string): boolean;
+    /** Whether the cell held for `path` is a denial (what get answers { error } for), its bytes not read. */
+    denied(path: string): boolean;
     get(path: string): ResidentCell | undefined;
     /** Write one cell as `rev`, or as an own write when `rev` is not a number (see put below). */
     put(t: ResidentTables, path: string, cell: ResidentCell | ArrayBuffer, rev?: number, ckey?: unknown): boolean;

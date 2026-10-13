@@ -26,6 +26,7 @@ export type { FilesystemSupervisor } from './filesystem-methods.js';
 const NODE_SHIM_RPC_METHODS = [
   'readFile', 'writeFileStat', 'lstat', 'exists', 'setUmask', 'fsAcquired',
   'fsStorageGrant', 'fsReadRangeUncached', 'fsReadBatch', 'fsListTree',
+  'fsReadDirectories',
 ] as const;
 
 /**

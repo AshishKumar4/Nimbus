@@ -142,6 +142,29 @@ export const FS_READ_BATCH_REQUEST_BYTES = 4 * 1024 * 1024;
 // deepest realistic paths: a node_modules path runs ~200 bytes, so a full
 // page is ~1.6 MB against the 28 MiB bound.
 export const FS_LIST_PAGE_LIMIT = 8192;
+/**
+ * Authority-owned directory descriptions outstanding from one process's
+ * prefetch channels, and how many one batch opens: git status on Express
+ * (69 directories) walks its tree in two batches of 64.
+ */
+export const DIRECTORY_PREFETCH_LIMIT = 128;
+export const DIRECTORY_BATCH_LIMIT = 64;
+/**
+ * How long a run's end waits for its directory channel's last exchange:
+ * past it (an earlier exchange the session never answered holds the
+ * channel's turn) the run ends anyway, and what the channel still holds is
+ * charged to the process's scope until its release, as an abandoned
+ * answer's descriptions are. The WASI park deadline's length.
+ */
+export const DIRECTORY_END_WAIT_MS = 10_000;
+/**
+ * How far ahead of the first request of a directory channel that has not
+ * reached the session a request may be numbered: a run sends one exchange
+ * at a time, and its end beside at most one unanswered, so a few is plenty;
+ * a request past it is refused. It bounds what the session keeps of a
+ * channel's requests in flight, live or ended.
+ */
+export const DIRECTORY_SEQUENCE_WINDOW = 8;
 
 // Entries one subtree listing (fsListTree) carries before it is refused
 // (E2BIG): two list pages' worth, in one round trip and one revision.

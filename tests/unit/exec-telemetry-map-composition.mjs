@@ -78,17 +78,20 @@ for (let i = 0; i < 40; i++) {
   fs.writeFile(`home/user/node_modules/dep/lib/unused${i}.js`, '// nothing requires this\n', { mode: 0o644 });
 }
 
-resetExecTelemetry();
-const result = await manager.exec("require('dep');", {
-  filename: '/home/user/run.js',
-  cwd: '/home/user',
-  captureOutput: true,
-});
-assert.equal(result.exitCode, 0, 'the exec under measurement succeeded');
-
-const records = readExecTelemetry();
-assert.equal(records.length, 1, 'one exec produced one record');
-const [rec] = records;
+/** One exec's record. */
+async function measure() {
+  resetExecTelemetry();
+  const result = await manager.exec("require('dep');", {
+    filename: '/home/user/run.js',
+    cwd: '/home/user',
+    captureOutput: true,
+  });
+  assert.equal(result.exitCode, 0, 'the exec under measurement succeeded');
+  const records = readExecTelemetry();
+  assert.equal(records.length, 1, 'one exec produced one record');
+  return records[0];
+}
+const rec = await measure();
 
 assert.ok(rec.bundleBytes > 0, 'the bundle part of the map is measured');
 assert.ok(
@@ -96,11 +99,18 @@ assert.ok(
   `the bundle (${rec.bundleBytes}) must fit inside the total it is part of (${rec.moduleMapBytes})`,
 );
 // The remainder is the runner and shims, which are fixed-size: no pass ships
-// a table of the tree's names or stats alongside the bundle.
-assert.ok(
-  rec.moduleMapBytes - rec.bundleBytes < 2 * 1024 * 1024,
-  `the unattributed remainder (${rec.moduleMapBytes - rec.bundleBytes}) is the fixed runner + shim, not a second pass`,
+// a table of the tree's names or stats alongside the bundle. Ten times the
+// files nothing requires leave the remainder, and the whole map, as they were.
+for (let i = 40; i < 400; i++) {
+  fs.writeFile(`home/user/node_modules/dep/lib/unused${i}.js`, '// nothing requires this\n', { mode: 0o644 });
+}
+const grown = await measure();
+assert.equal(
+  grown.moduleMapBytes - grown.bundleBytes,
+  rec.moduleMapBytes - rec.bundleBytes,
+  'the unattributed remainder is the fixed runner + shim, not a second pass over the tree',
 );
+assert.equal(grown.moduleMapBytes, rec.moduleMapBytes, "a tree's files that nothing requires cost the map nothing");
 assert.equal(rec.namespaceRefusals, 0, 'a healthy launch refuses no synchronous call');
 
 console.log('exec-telemetry-map-composition: ok');

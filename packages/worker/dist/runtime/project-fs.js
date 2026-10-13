@@ -54,6 +54,7 @@ export function projectFs(view) {
         writeFile: (key, content, options) => view.writeFile(at(key), content, options),
         mkdir: (key, options) => view.mkdir(at(key), options),
         unlink: (key) => view.unlink(at(key)),
+        rename: (from, to) => view.rename(at(from), at(to)),
         rmdir: (key) => view.rmdir(at(key)),
         // As the engine's report, its first failure thrown: what may go goes, and a refusal is the call's.
         removeRecursive: async (key, options) => {

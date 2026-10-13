@@ -14,7 +14,7 @@
  * mode is refused, as the rest of this git refuses it.
  */
 import { type CheckoutWriter } from './worktree/checkout.js';
-import { type WorktreeRepo } from './worktree/repo.js';
+import type { WorktreeRepo } from './worktree/repo.js';
 export interface SparseCheckoutContext {
     wrepo: WorktreeRepo;
     /** The worktree's top, absolute. */
@@ -27,6 +27,11 @@ export interface SparseCheckoutContext {
     stdout(text: string): Promise<void>;
     stderr(text: string): Promise<void>;
 }
+export declare function parseSparseCheckoutArgs(args: readonly string[]): {
+    sub: string;
+    flags: Set<string>;
+    rest: string[];
+};
 /**
  * `git sparse-checkout <subcommand> [<options>]`. One that changes the
  * sparse checkout holds the repository's index lock from its first read of
@@ -35,5 +40,5 @@ export interface SparseCheckoutContext {
  * once, the second sees the first's whole result, never its patterns over
  * the other's worktree.
  */
-export declare function sparseCheckout(ctx: SparseCheckoutContext, args: readonly string[]): Promise<number>;
+export declare function sparseCheckout(ctx: SparseCheckoutContext, args: ReturnType<typeof parseSparseCheckoutArgs>): Promise<number>;
 //# sourceMappingURL=sparse-checkout.d.ts.map

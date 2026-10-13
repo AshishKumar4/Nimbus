@@ -38,6 +38,7 @@ import { requireNetwork } from '../_shared/workspace-network.js';
 import { isEgressGuestEvent, RealmEgress } from './realm-egress.js';
 import { fromRealmError, isRealmAnswer, startRealm } from './realm.js';
 import { FILESYSTEM_RPC_METHODS, vfsSupervisor } from './vfs-supervisor.js';
+import { DIRECTORY_READ_RPC, hasDirectoryReadBridge, readDirectoryBatch } from './read-directory-batch.js';
 import { createChildProcessSupervisor } from './child-process-manager.js';
 const record = (value) => typeof value === 'object' && value !== null;
 const strings = (value) => Array.isArray(value) && value.every((entry) => typeof entry === 'string');
@@ -166,6 +167,11 @@ class RealmFacet {
         this.network = network;
         this.supervisor = spec.syscalls ? vfsSupervisor(spec.syscalls.vfs) : null;
         this.supervisorMethods = SUPERVISOR_METHODS;
+        if (this.supervisor && spec.syscalls && hasDirectoryReadBridge(spec.syscalls.vfs)) {
+            const fs = spec.syscalls.vfs;
+            Object.assign(this.supervisor, { [DIRECTORY_READ_RPC]: (request) => readDirectoryBatch(fs, request) });
+            this.supervisorMethods = [...this.supervisorMethods, DIRECTORY_READ_RPC];
+        }
         const processes = spec.syscalls?.processes;
         if (this.supervisor && processes && spec.syscalls) {
             const pid = spec.syscalls.pid;
@@ -178,11 +184,11 @@ class RealmFacet {
                     return { ...packet, data: typeof packet.data === 'string' ? new TextEncoder().encode(packet.data) : packet.data };
                 },
             });
-            this.supervisorMethods = [...SUPERVISOR_METHODS, 'stdout', 'stderr', 'cpReadStdin'];
+            this.supervisorMethods = [...this.supervisorMethods, 'stdout', 'stderr', 'cpReadStdin'];
             if (children) {
                 const childCalls = createChildProcessSupervisor(children, pid);
                 Object.assign(this.supervisor, childCalls);
-                this.supervisorMethods = [...SUPERVISOR_METHODS, 'stdout', 'stderr', ...Object.keys(childCalls)];
+                this.supervisorMethods = [...this.supervisorMethods, ...Object.keys(childCalls).filter((method) => method !== 'cpReadStdin')];
                 // The WASI process layer follows children in background pumps. A
                 // synchronous long-poll would block the parent from writing stdin.
                 // Its own fd 0 still has to answer on a non-parking wasm stack.

@@ -10,8 +10,17 @@ export function resolveContext(cwd, env, view) {
 export class CommandRegistry {
     commands = new Map();
     lazy = new Map();
+    builtins = new Map();
     register(name, command) {
         this.commands.set(name, command);
+    }
+    /**
+     * A command the shell is built with. One registered under the same name
+     * (an installed runtime's) answers instead, until it is unregistered: then
+     * this one answers again.
+     */
+    registerBuiltin(name, command) {
+        this.builtins.set(name, command);
     }
     registerLazy(name, loader) {
         this.lazy.set(name, loader);
@@ -32,13 +41,13 @@ export class CommandRegistry {
             this.lazy.delete(name);
             return mod.default;
         }
-        return undefined;
+        return this.builtins.get(name);
     }
     has(name) {
-        return this.commands.has(name) || this.lazy.has(name);
+        return this.commands.has(name) || this.lazy.has(name) || this.builtins.has(name);
     }
     list() {
-        const names = new Set([...this.commands.keys(), ...this.lazy.keys()]);
+        const names = new Set([...this.commands.keys(), ...this.lazy.keys(), ...this.builtins.keys()]);
         return [...names].sort();
     }
 }

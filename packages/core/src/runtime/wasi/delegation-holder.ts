@@ -35,7 +35,7 @@
  * (the documented limit, answered by the session's recall timeout).
  */
 
-import type { RuntimeFileHandle, RuntimeVfsDirEntry } from '../os-contracts.js';
+import type { RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry } from '../os-contracts.js';
 import type { ResidentEntry } from './resident-filesystem.js';
 import { fsError, modeAllows } from '../beneath-walk.js';
 import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
@@ -138,7 +138,7 @@ export interface DelegationHolder {
    * with everything the process logged before it and answered with the
    * file's stat; the description it returns writes through (LocalFile.through).
    */
-  openThrough(key: string, path: string, flags: { read?: boolean; append?: boolean; create?: boolean; truncate?: boolean; exclusive?: boolean; followSymlinks?: boolean; mode?: number }): Promise<RuntimeFileHandle>;
+  openThrough(key: string, path: string, flags: RuntimeOpenFlags): Promise<RuntimeFileHandle>;
   /**
    * Everything logged so far answered, what the session refused kept for the
    * next sync (flush) to report: what goes before a call to the session.
@@ -179,7 +179,7 @@ export interface DelegationHolder {
    * parent known): a descriptor of the holder's, or undefined when the
    * session is to decide it.
    */
-  open(key: string, path: string, flags: { read?: boolean; write?: boolean; append?: boolean; create?: boolean; truncate?: boolean; exclusive?: boolean; mode?: number }): RuntimeFileHandle | undefined;
+  open(key: string, path: string, flags: RuntimeOpenFlags): RuntimeFileHandle | undefined;
   read(handleId: number, offset: number | null, length: number): Uint8Array;
   write(handleId: number, offset: number | null, bytes: Uint8Array): number;
   seek(handleId: number, offset: number, whence: 'set' | 'current' | 'end'): number;
@@ -191,7 +191,7 @@ export interface DelegationHolder {
   /** Another descriptor of the same open file (its position shared). */
   dup(handleId: number): RuntimeFileHandle;
   /** Decide a mkdir at `key`: true when decided here (and done), false when the session is to. */
-  mkdir(key: string, path: string, mode: number): boolean;
+  mkdir(key: string, path: string, mode: number, umask?: number): boolean;
   /** Decide an unlink of `key` (a file or link): true when decided here. */
   unlink(key: string, path: string): boolean;
   /** Decide a rename of `from` to `to` (both resolved): true when decided here. */
@@ -506,14 +506,15 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
         const { uid, gid } = ownership(parent);
         const stamp = now();
         const asked = (flags.mode ?? 0o666) & 0o777;
+        const umask = flags.umask ?? grant.umask;
         const entry: ResidentEntry = {
           type: 'file', dev: store.device, ino, nlink: 1, size: 0, atime: stamp, mtime: stamp, ctime: stamp,
-          mode: 0o100000 | (asked & ~grant.umask), uid, gid, revision: 0, target: null,
+          mode: 0o100000 | (asked & ~umask), uid, gid, revision: 0, target: null,
         };
         decided.set(key, entry);
         note(parentKey(key), nameOf(key), 'file');
         // Its mode was decided under this umask: the session applies the same one.
-        file = { key, bytes: new Uint8Array(0), length: 0, mode: asked, made: ino, umask: grant.umask };
+        file = { key, bytes: new Uint8Array(0), length: 0, mode: asked, made: ino, umask };
         files.set(ino, file);
         // Made here: the name exists from now on, in the log's order. Logged
         // with its bytes, before the next decision (drain), as one call.
@@ -550,6 +551,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
         type: 'call',
         call: {
           call: 'open', path: key, mode: (flags.mode ?? 0o666) & 0o7777,
+          ...(flags.umask === undefined ? {} : { umask: flags.umask }),
           ...(flags.create ? { create: true as const } : {}),
           ...(flags.truncate ? { truncate: true as const } : {}),
           ...(flags.exclusive ? { exclusive: true as const } : {}),
@@ -705,7 +707,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       return { id, path: handle.path } as RuntimeFileHandle;
     },
 
-    mkdir: (key, path, mode) => {
+    mkdir: (key, path, mode, mask) => {
       if ((mode & 0o7000) !== 0) return false;
       const current = entryOf(key);
       if (current === undefined) return false;
@@ -718,14 +720,15 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       if (ino === undefined) return false;
       const { uid, gid, setgid } = ownership(parent);
       const stamp = now();
-      const perm = (mode & 0o777 & ~grant.umask) | (setgid ? 0o2000 : 0);
+      const umask = mask ?? grant.umask;
+      const perm = (mode & 0o777 & ~umask) | (setgid ? 0o2000 : 0);
       decided.set(key, {
         type: 'directory', dev: store.device, ino, nlink: 2, size: 0, atime: stamp, mtime: stamp, ctime: stamp,
         mode: 0o40000 | perm, uid, gid, revision: 0, target: null,
       });
       note(parentKey(key), nameOf(key), 'directory');
       added.set(key, added.get(key) ?? new Map());
-      log({ type: 'call', call: { call: 'mkdir', path: key, mode: mode & 0o777, ino, umask: grant.umask } });
+      log({ type: 'call', call: { call: 'mkdir', path: key, mode: mode & 0o777, ino, umask } });
       return true;
     },
 
