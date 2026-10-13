@@ -91,17 +91,17 @@ async function runBash() {
     getppid: () => 1, getpgid: () => 17, setpgid: () => -52, tcgetpgrp: () => -59, tcsetpgrp: () => -59,
     setjmp(env) {
       if (rewind) { instance.exports.asyncify_stop_rewind(); rewind = false; return; }
-      store.sweep(memory(), sp()); store.setting(env);
+      store.sweep(sp()); store.setting(env);
       captureEnv = env; captureSp = sp(); reason = 'capture'; unwind();
     },
     longjmp(env, value) {
-      store.sweep(memory(), sp());
+      store.sweep(sp());
       jumpEnv = env; jumpValue = value; reason = 'jump'; unwind();
     },
   });
   const procenv = {
-    copy(dst, src) { store.sweep(memory(), sp()); store.copied(memory(), dst, src); },
-    drop(at) { store.sweep(memory(), sp()); store.dropped(at); },
+    copy(dst, src) { store.sweep(sp()); store.copied(memory(), dst, src); },
+    drop(at) { store.sweep(sp()); store.dropped(at); },
   };
   // These commands deliberately stay in Bash. Unexpected process operations
   // fail this binary proof instead of claiming success for an untested syscall.

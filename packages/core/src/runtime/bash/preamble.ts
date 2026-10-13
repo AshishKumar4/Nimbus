@@ -705,7 +705,7 @@ function makeProc(s: BashSession, pid: number, ppid: number, fds: Map<number, Ba
     setjmp: (env) => {
       if (c.rewinding) { proc.inst.exports.asyncify_stop_rewind(); c.rewinding = false; return; }
       const sp = stackPointer();
-      proc.captures.sweep(proc.inst.exports.memory, sp);
+      proc.captures.sweep(sp);
       proc.captures.setting(env);
       c.reason = 'capture'; c.captureEnv = env; c.captureSp = sp;
       startUnwind();
@@ -713,7 +713,7 @@ function makeProc(s: BashSession, pid: number, ppid: number, fds: Map<number, Ba
     // The current stack is unwound and discarded; the target is resolved once it is (step).
     longjmp: (env, val) => {
       if (c.rewinding) { proc.inst.exports.asyncify_stop_rewind(); c.rewinding = false; return; }
-      proc.captures.sweep(proc.inst.exports.memory, stackPointer());
+      proc.captures.sweep(stackPointer());
       c.reason = 'longjmp'; c.ljEnv = env; c.ljVal = val;
       startUnwind();
     },
@@ -847,11 +847,11 @@ function makeProc(s: BashSession, pid: number, ppid: number, fds: Map<number, Ba
   // Every copy bash makes of a jmp_buf, and every end of a saved one (wasm/bash/patches/procenv.patch).
   const nimbus_procenv = {
     copy: (dst: number, src: number) => {
-      proc.captures.sweep(proc.inst.exports.memory, stackPointer());
+      proc.captures.sweep(stackPointer());
       proc.captures.copied(proc.inst.exports.memory, dst, src);
     },
     drop: (at: number) => {
-      proc.captures.sweep(proc.inst.exports.memory, stackPointer());
+      proc.captures.sweep(stackPointer());
       proc.captures.dropped(at);
     },
   };

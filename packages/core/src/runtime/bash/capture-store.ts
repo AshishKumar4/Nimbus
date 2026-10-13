@@ -16,9 +16,12 @@
  * registry, buffer address → capture, and a count per capture of the buffers
  * that name it. A buffer on the stack ends without a hook, when its frame
  * returns or a longjmp skips it: below the stack pointer, it is dead
- * (sweep). A capture no buffer names is freed, and its space is taken back
- * from the top, or by sliding the live captures down when an unwind needs
- * the room. No memory is scanned.
+ * (sweep, at every hook, over the stack's buffers only). A buffer written
+ * over without a hook no longer holds its capture's words; that only keeps
+ * the capture longer, so it is looked for only when an unwind needs room.
+ * A capture no buffer names is freed, and its space is taken back from the
+ * top, or by sliding the live captures down when an unwind needs the room.
+ * No memory is scanned.
  *
  * A jmp_buf as this store writes it: word 0 names the capture (TAG | a
  * 16-bit id), word 1 is setjmp's return value (the only word nimbus-proc.c
@@ -80,6 +83,9 @@ export class CaptureStore {
   readonly #captures: Map<number, Capture>;
   /** Registered buffer address → the id of the capture it names. */
   readonly #names: Map<number, number>;
+  /** The registered buffers on the shadow stack, ascending: those below the stack pointer are a prefix. */
+  readonly #stackNames: number[];
+  #view: DataView | null = null;
   #top: number;
   #nextId = 1;
   #nextGeneration = 1;
@@ -88,8 +94,9 @@ export class CaptureStore {
   constructor(stack: StackBounds, base: number, size: number, from?: CaptureStore) {
     this.#stack = stack; this.base = base; this.size = size;
     this.#captures = new Map();
-    if (from === undefined) { this.#names = new Map(); this.#top = base; return; }
+    if (from === undefined) { this.#names = new Map(); this.#stackNames = []; this.#top = base; return; }
     this.#names = new Map(from.#names);
+    this.#stackNames = [...from.#stackNames];
     this.#top = from.#top;
     for (const [id, capture] of from.#captures) this.#captures.set(id, { ...capture });
     this.#nextId = from.#nextId; this.#nextGeneration = from.#nextGeneration;
@@ -126,22 +133,26 @@ export class CaptureStore {
    * the next unwind, when captures are the only unwound data.
    */
   unwindAt(memory: WebAssembly.Memory, stats: CaptureStats, pid: number): number {
-    if (this.base + this.size - this.#top < MIN_ROOM) { this.#compact(memory); stats.captureCompactions++; }
+    const view = this.#viewOf(memory);
+    if (this.base + this.size - this.#top < MIN_ROOM) {
+      // The buffers written over without a hook end now, then the live captures are packed.
+      for (const [at, id] of this.#names) if (!this.#holds(view, at, id)) this.#unname(at);
+      this.#compact(memory); stats.captureCompactions++;
+    }
     if (this.base + this.size - this.#top < MIN_ROOM) {
       throw new Error(`bash-runner: pid ${pid}'s live setjmp captures fill its ${this.size >> 20} MiB arena (a recursion too deep?)`);
     }
-    const view = new DataView(memory.buffer);
     view.setUint32(this.#top, this.#top + 8, true);
     view.setUint32(this.#top + 4, this.base + this.size, true);
     return this.#top;
   }
 
-  /** Before each hook's effect: let go of the buffers that ended without one. `sp`: the current stack pointer. */
-  sweep(memory: WebAssembly.Memory, sp: number): void {
-    const view = new DataView(memory.buffer);
-    for (const [at, id] of this.#names) {
-      if ((at >= this.#stack.low && at < sp) || !this.#holds(view, at, id)) this.#unname(at);
-    }
+  /** Before each hook's effect: the stack's buffers below `sp`, the current stack pointer, ended with their frames. */
+  sweep(sp: number): void {
+    const stack = this.#stackNames;
+    let dead = 0;
+    while (dead < stack.length && stack[dead] < sp) dead++;
+    if (dead > 0) for (const at of stack.splice(0, dead)) this.#release(at);
   }
 
   /** setjmp(env) is about to capture: env stops naming what it named. */
@@ -155,7 +166,7 @@ export class CaptureStore {
    * Answers where the capture is, ready to rewind.
    */
   take(memory: WebAssembly.Memory, env: number, sp: number, stats: CaptureStats, pid: number): number {
-    const view = new DataView(memory.buffer);
+    const view = this.#viewOf(memory);
     const at = this.#top, length = view.getUint32(at, true) - (at + 8);
     for (let tried = 0; this.#captures.has(this.#nextId); tried++) {
       if (tried === 0xffff) throw new Error(`bash-runner: pid ${pid} holds a setjmp capture under every id`);
@@ -169,7 +180,7 @@ export class CaptureStore {
     view.setUint32(env + 8, generation, true);
     const capture: Capture = { at, length, env, generation, sp, refs: 1 };
     this.#captures.set(id, capture);
-    this.#names.set(env, id);
+    this.#name(env, id);
     this.#top = above(at, length);
     if (length > stats.mainHi) stats.mainHi = length;
     if (this.#top - this.base > stats.captureBytesHi) stats.captureBytesHi = this.#top - this.base;
@@ -181,8 +192,8 @@ export class CaptureStore {
   copied(memory: WebAssembly.Memory, dst: number, src: number): void {
     if (this.#names.has(dst)) this.#unname(dst);
     const id = this.#names.get(src);
-    if (id === undefined || !this.#holds(new DataView(memory.buffer), dst, id)) return;
-    this.#names.set(dst, id);
+    if (id === undefined || !this.#holds(this.#viewOf(memory), dst, id)) return;
+    this.#name(dst, id);
     const capture = this.#captures.get(id);
     if (capture !== undefined) capture.refs++;
   }
@@ -200,14 +211,14 @@ export class CaptureStore {
    * no capture held.
    */
   jump(memory: WebAssembly.Memory, env: number, value: number, pid: number): RewindTarget {
-    const view = new DataView(memory.buffer);
+    const view = this.#viewOf(memory);
     const tag = view.getUint32(env, true), generation = view.getUint32(env + 8, true);
     const capture = (tag & 0xffff0000) >>> 0 === TAG ? this.#captures.get(tag & 0xffff) : undefined;
     if (capture === undefined || capture.generation !== generation) {
       throw new Error(`bash-runner: pid ${pid} longjmp'd through a jmp_buf whose setjmp it no longer holds (0x${tag.toString(16)}, generation ${generation})`);
     }
     // Freed by this, the capture's bytes stay as they are until the landing: no unwind comes before it.
-    this.sweep(memory, capture.sp);
+    this.sweep(capture.sp);
     view.setInt32(capture.env + 4, value, true);
     return { at: this.#ready(view, capture), sp: capture.sp };
   }
@@ -220,13 +231,40 @@ export class CaptureStore {
     return capture.at;
   }
 
+  /** A view of `memory`, made again only when it grew. */
+  #viewOf(memory: WebAssembly.Memory): DataView {
+    if (this.#view === null || this.#view.buffer !== memory.buffer) this.#view = new DataView(memory.buffer);
+    return this.#view;
+  }
+
+  /** Register `at` as naming capture `id`; a buffer on the stack also in address order. */
+  #name(at: number, id: number): void {
+    this.#names.set(at, id);
+    if (at < this.#stack.low || at >= this.#stack.high) return;
+    const stack = this.#stackNames;
+    let lo = 0, hi = stack.length;
+    while (lo < hi) { const mid = (lo + hi) >>> 1; if (stack[mid] < at) lo = mid + 1; else hi = mid; }
+    stack.splice(lo, 0, at);
+  }
+
   #holds(view: DataView, at: number, id: number): boolean {
     const capture = this.#captures.get(id);
     return capture !== undefined && view.getUint32(at, true) === ((TAG | id) >>> 0) && view.getUint32(at + 8, true) === capture.generation;
   }
 
-  /** `at` stops naming its capture; a capture no buffer names is freed, and the top comes down past freed space. */
+  /** `at` stops naming its capture (#release), out of the stack's order first when it is on the stack. */
   #unname(at: number): void {
+    if (at >= this.#stack.low && at < this.#stack.high) {
+      const stack = this.#stackNames;
+      let lo = 0, hi = stack.length;
+      while (lo < hi) { const mid = (lo + hi) >>> 1; if (stack[mid] < at) lo = mid + 1; else hi = mid; }
+      if (stack[lo] === at) stack.splice(lo, 1);
+    }
+    this.#release(at);
+  }
+
+  /** A capture no buffer names is freed, and the top comes down past freed space. */
+  #release(at: number): void {
     const id = this.#names.get(at);
     this.#names.delete(at);
     if (id === undefined) return;
