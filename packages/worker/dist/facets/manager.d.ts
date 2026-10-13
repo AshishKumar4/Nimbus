@@ -2002,13 +2002,18 @@ export declare class FacetManager {
      * The reader the fabric completes process `pid`'s boot spec's by-path
      * members with.
      *
-     * Reads as the process, as a peer host's reader already does (its no-run
-     * binding acts for the pid): the boot names project images the process
-     * chose, so it reads only what the process may. The kernel's own images
-     * (`_imageBlobs`, installed runtimes) are world-readable. Uncached because
-     * these are the session's largest files — a ruby interpreter image is
-     * 34.3 MiB — and pinning one in the VFS content LRU for the life of the
-     * session is what once crashed the supervisor.
+     * A member the spec names by path (a project's `.wasm`, a runtime's image)
+     * is read as the process, as a peer host's reader already does (its no-run
+     * binding acts for the pid), so the boot reads only what the process may;
+     * a write it meets that has not published yet (the kernel's own, held while
+     * a running process's read lease is recalled, or a parent's delegation) is
+     * waited for, as the peer's read waits. The images this manager generated
+     * for it (`_imageBlobs`) are read as the kernel that wrote them, which sees
+     * its own store writes before they publish, and each is verified against
+     * the digest its path names. Uncached because these are the session's
+     * largest files — a ruby interpreter image is 34.3 MiB — and pinning one
+     * in the VFS content LRU for the life of the session is what once crashed
+     * the supervisor.
      */
     private _residentDisk;
     /**

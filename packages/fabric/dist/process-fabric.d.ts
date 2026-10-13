@@ -224,15 +224,23 @@ export declare function facetImagePathDigest(path: string): string | null;
  * Reads the members a boot spec named by path off the SESSION's disk — the
  * coordinator's, always, whichever substrate is doing the reading.
  *
- * The session supplies it, because it owns the filesystem and the credential
- * the kernel reads its own image store with; the fabric never learns either.
- * A host that runs inside the coordinator answers synchronously off the local
- * VFS; a host that runs elsewhere answers over the supervisor RPC. That is the
- * whole of the difference, and it is why the return type is widened rather
- * than the reader duplicated.
+ * The session supplies it, because it owns the filesystem and the process's
+ * credential; the fabric never learns either. A host that runs inside the
+ * coordinator answers off the local VFS; a host that runs elsewhere answers
+ * over the supervisor RPC. That is the whole of the
+ * difference, and it is why the return type is widened rather than the
+ * reader duplicated.
  */
 export interface ResidentDiskReader {
+    /** A member the spec names by path (a wasm module), read as the process. */
     readFile(path: string): Uint8Array | Promise<Uint8Array>;
+    /**
+     * A content-addressed image the session generated for the process (a code
+     * pack, a composed or text module), verified against the digest its path
+     * names. The coordinator reads it as the image store's owner, which sees
+     * its own writes before they publish; absent, it is read as readFile reads.
+     */
+    readImage?(path: string): Uint8Array | Promise<Uint8Array>;
 }
 /**
  * Complete a resident-process module map: read every member the spec named by
