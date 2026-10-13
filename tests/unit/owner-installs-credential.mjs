@@ -7,7 +7,7 @@
 // shims were root's, and a linked package.json was read past its permissions.
 
 import assert from 'node:assert/strict';
-import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
+import { NimbusWorkspace, seedBaseFilesystem } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
@@ -22,12 +22,11 @@ const USER = CRED_SESSION_USER.uid;
   const vfs = new SqliteVFS(harness.sql, harness.ctx);
   const kernel = vfs.as(CRED_KERNEL);
   const user = vfs.as(CRED_SESSION_USER);
-  kernel.mkdir('etc', { recursive: true, mode: 0o755 });
+  // The OS the workspace boots on: /usr is the user's, /etc root's.
+  seedBaseFilesystem(vfs);
   kernel.writeFile('etc/secret.json', JSON.stringify({ name: 'leaky', bin: { 'leaked-name': 'cli.js' } }), { mode: 0o600 });
-  kernel.mkdir('usr/lib/node_modules', { recursive: true, mode: 0o755 });
   for (const name of ['leaky', 'fine']) {
-    kernel.mkdir(`usr/lib/node_modules/${name}`, { mode: 0o755 });
-    kernel.chown(`usr/lib/node_modules/${name}`, USER, USER);
+    user.mkdir(`usr/lib/node_modules/${name}`);
     user.writeFile(`usr/lib/node_modules/${name}/cli.js`, 'console.log(1)\n');
   }
   user.symlink('/etc/secret.json', 'usr/lib/node_modules/leaky/package.json');
@@ -48,11 +47,9 @@ const USER = CRED_SESSION_USER.uid;
   const vfs = new SqliteVFS(harness.sql, harness.ctx);
   const kernel = vfs.as(CRED_KERNEL);
   const user = vfs.as(CRED_SESSION_USER);
-  kernel.mkdir('usr/local/lib/node_modules/tool', { recursive: true, mode: 0o755 });
-  kernel.mkdir('usr/local/bin', { recursive: true, mode: 0o755 });
-  for (const dir of ['usr/local', 'usr/local/lib', 'usr/local/lib/node_modules', 'usr/local/lib/node_modules/tool', 'usr/local/bin']) {
-    kernel.chown(dir, USER, USER);
-  }
+  // The default prefix, /usr/local, is the user's.
+  seedBaseFilesystem(vfs);
+  user.mkdir('usr/local/lib/node_modules/tool');
   user.writeFile('usr/local/lib/node_modules/tool/package.json', JSON.stringify({ name: 'tool', version: '1.0.0', bin: { tool: 'cli.js' } }));
   user.writeFile('usr/local/lib/node_modules/tool/cli.js', 'console.log(1)\n');
   const processes = new SessionProcessSupervisor();
