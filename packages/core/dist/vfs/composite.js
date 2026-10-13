@@ -2884,7 +2884,7 @@ export class CompositeVFS {
                 const backend = ops;
                 if (typeof backend.removeRecursive === 'function') {
                     const at = (r) => (r === rel ? path : path + r.slice(rel === '/' ? 0 : rel.length));
-                    return andThen(backend.removeRecursive(rel), (report) => {
+                    return andThen(backend.removeRecursive(rel, { keepVanishedAncestors }), (report) => {
                         const removal = report
                             ? {
                                 removed: report.removed.map(at),

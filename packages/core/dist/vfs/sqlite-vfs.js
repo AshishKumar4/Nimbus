@@ -41,7 +41,7 @@ import { w7ChunkCount, w7Chunks, } from '@nimbus-sh/platform/w7-frame.js';
 import { WeightedCreditPool, } from '@nimbus-sh/platform/weighted-credit-pool.js';
 import { createHash } from 'node:crypto';
 import { posixAccess } from './posix-access.js';
-import { RecallRequired, withRecall } from './recall.js';
+import { RecallRequired, recallOf, withRecall } from './recall.js';
 import { SESSION_KERNEL_ROOTS, readLeaseCovers } from '../_shared/read-lease-cover.js';
 export { RecallRequired, recallOf, withRecall } from './recall.js';
 import { readDeclaredSource } from './vfs.js';
@@ -2697,7 +2697,11 @@ export class SqliteVFS {
         try {
             resolved = this.resolvePath(path, cred ?? CRED_KERNEL, true, true);
         }
-        catch {
+        catch (error) {
+            // A walk that met another holder's delegation is waited for, not
+            // answered: the name resolves once it is recalled.
+            if (recallOf(error) !== null)
+                throw error;
             // A name that does not resolve is the name's own counter. Read, not
             // admitted: no lookup of it will find it through that name.
             const p = cred === undefined ? normalizeVfsPath(path) : this.lexicalKey(path, cred).value;

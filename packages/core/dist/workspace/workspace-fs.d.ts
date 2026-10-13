@@ -78,7 +78,9 @@ export declare class WorkspaceFs implements VFS {
     writeFileFrom(path: string, size: number, source: AsyncIterable<Uint8Array>): Promise<void>;
     truncate(path: string, size: number): Promise<void>;
     /** rm -r, with what went and what is still there (ProcessView.removeRecursive). */
-    removeRecursive(path: string): Promise<VfsRemoval>;
+    removeRecursive(path: string, options?: {
+        keepVanishedAncestors?: boolean;
+    }): Promise<VfsRemoval>;
     /** `target` is the link's text, taken from the link's directory when it is followed, never from `cwd`. */
     symlink(target: string, path: string): Promise<void>;
     readlink(path: string): Promise<string>;

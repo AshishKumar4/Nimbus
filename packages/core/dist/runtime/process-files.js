@@ -1009,7 +1009,7 @@ class AwaitingProcessBridge {
             const p = (await this.path(path, false));
             try {
                 if (!options?.recursive)
-                    return this.namespace.unlink(p);
+                    return await this.namespace.unlink(p);
                 const report = await this.namespace.removeRecursive(p, { keepVanishedAncestors: options.keepVanishedAncestors });
                 if (options.report)
                     return report;
