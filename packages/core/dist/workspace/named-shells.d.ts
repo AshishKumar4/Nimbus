@@ -59,6 +59,8 @@ export declare class NamedShells {
     private readonly shellFor;
     /** One queue per name: the last call made on it, settled when that call is. */
     private readonly queues;
+    private readonly idle;
+    private parsedName;
     constructor(sql: SqlDatabase, 
     /** Where a name with no saved state and no `start` begins. */
     home: string, 
@@ -72,6 +74,9 @@ export declare class NamedShells {
      * exists from then on, rooted there.
      */
     hold<T>(id: string, options: NamedShellOptions, body: (shell: NamedShell) => Promise<T>): Promise<T>;
+    /** The last saved state, after earlier calls on this name have settled. */
+    read(id: string): Promise<ShellState | null>;
+    private run;
     private save;
 }
 //# sourceMappingURL=named-shells.d.ts.map

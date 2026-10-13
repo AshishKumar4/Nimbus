@@ -40,42 +40,42 @@ export interface ConnectionSocket {
     deserializeAttachment(): unknown;
 }
 /** The hosting actor's hibernation surface. */
-export interface ConnectionsContext {
-    acceptWebSocket(ws: ConnectionSocket, tags?: string[]): void;
-    getWebSockets(tag?: string): ConnectionSocket[];
-    getTags(ws: ConnectionSocket): string[];
+export interface ConnectionsContext<S extends ConnectionSocket = ConnectionSocket> {
+    acceptWebSocket(ws: S, tags?: string[]): void;
+    getWebSockets(tag?: string): S[];
+    getTags(ws: S): string[];
 }
 /** The per-connection hub of one hosting actor. Cheap accessor; it holds no
  *  state of its own, which is the point. */
-export declare function connections<T>(ctx: ConnectionsContext, schema: z.ZodType<T>): Connections<T>;
-export declare class Connections<T> {
+export declare function connections<T, S extends ConnectionSocket = ConnectionSocket>(ctx: ConnectionsContext<S>, schema: z.ZodType<T>): Connections<T, S>;
+export declare class Connections<T, S extends ConnectionSocket = ConnectionSocket> {
     private readonly ctx;
     private readonly schema;
-    constructor(ctx: ConnectionsContext, schema: z.ZodType<T>);
+    constructor(ctx: ConnectionsContext<S>, schema: z.ZodType<T>);
     /**
      * Accept a socket under an identity key, replacing whatever already holds
      * it. The attachment validates BEFORE anything else happens, so a rejected
      * newcomer cannot evict the live connection it failed to replace.
      */
-    accept(ws: ConnectionSocket, opts: {
+    accept(ws: S, opts: {
         key: string;
         tags?: string[];
         attachment: T;
     }): void;
     /** The open socket holding a tag, re-derived from the platform. */
-    get(tag: string): ConnectionSocket | null;
+    get(tag: string): S | null;
     /** Every open socket (optionally: holding a tag). */
-    list(tag?: string): ConnectionSocket[];
+    list(tag?: string): S[];
     /** A socket's tags — identity key first, then whatever accept added. */
-    tags(ws: ConnectionSocket): string[];
+    tags(ws: S): string[];
     /**
      * The attachment, validated. Null when it does not parse — an attachment
      * written by a previous deploy is untrusted input, and a null is honest
      * where a cast would be a lie.
      */
-    read(ws: ConnectionSocket): T | null;
+    read(ws: S): T | null;
     /** Replace the attachment, validated on the way in. */
-    write(ws: ConnectionSocket, attachment: T): void;
+    write(ws: S, attachment: T): void;
     private writeSerialized;
 }
 //# sourceMappingURL=connections.d.ts.map
