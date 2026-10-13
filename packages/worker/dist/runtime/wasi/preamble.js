@@ -615,15 +615,21 @@ function __wasiAllocateFd() { while (fdTable.has(nextFd))
 // park therefore wedges the process forever with nothing raised anywhere,
 // which is strictly worse than failing: nothing to log, nothing to retry.
 //
-// A call that waits on outside input therefore parks against a deadline set
-// with margin below the measured floor, and on expiry resolves to EAGAIN — an
-// errno the guest's own retry logic already handles — instead of hanging:
-// only a socket's, a listener's and a poll's, the calls POSIX lets end so
-// (__wasiMayTimeOut). Every other import in the `parkable` list (exactly the
-// Suspending-wrapped set, minus one) waits for its answer: a filesystem call
-// has no EAGAIN (mkdir(2), read(2) of a file), and the session may take
-// longer than the deadline to give one, as its first change's grant took 11 s
-// on fe0b2ea1f and CPython's os.makedirs raised BlockingIOError.
+// Re-measured 2026-10-13 (throwaway tw-parkceil1): a filesystem call the
+// session answered 25 s and 60 s late resumed with its answer, in a
+// foreground run (the session's startProcess in flight) and in a background
+// process past the request that started it alike. The ceiling above no
+// longer holds for a call whose answer comes.
+//
+// A call that waits on outside input parks against a deadline, and on expiry
+// resolves to EAGAIN — an errno the guest's own retry logic already handles —
+// so a peer that never answers cannot wedge it: only a socket's, a
+// listener's and a poll's, the calls POSIX lets end so (__wasiMayTimeOut).
+// Every other import in the `parkable` list (exactly the Suspending-wrapped
+// set, minus one) waits for its answer: a filesystem call has no EAGAIN
+// (mkdir(2), read(2) of a file), and the session may take longer than the
+// deadline to give one, as a first change's grant took 11 s on fe0b2ea1f and
+// CPython's os.makedirs raised BlockingIOError.
 //
 // sched_yield is the exception, and deliberately so: it is Suspending-wrapped
 // in a threads build but is NOT in `parkable`, because it does not wait on the
