@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: in a WASI program (an uploaded program, CPython), a filesystem call
+  the session took more than 10 s to answer failed with EAGAIN, which no
+  filesystem call returns on Linux: `os.makedirs` raised `BlockingIOError`
+  when the process's first change waited on the session. It now waits for
+  the answer. Only a socket's or a poll's wait still ends with EAGAIN at the
+  10 s park deadline.
+
 - Fixed (security): the session's owner surfaces acted as the kernel. The
   browser editor's saves, reads and listings, the agent's `read_file`,
   `write_file` and `list_files`, and `POST /api/write-file` and
