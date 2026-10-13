@@ -127,8 +127,11 @@ The Worker needs `enhanced_error_serialization`. A process's filesystem errors
 reach it across workerd RPC, and only that flag carries their `code` across.
 A compatibility date of 2026-04-21 or later enables it; on an older date, add
 `"enhanced_error_serialization"` to `compatibility_flags`, which keeps every
-other behavior of that date. Without it the Worker fails at startup with
-that reason, since this package's entry composes the fabric at module scope.
+other behavior of that date. It also needs `"enable_request_signal"` in
+`compatibility_flags` on every date: it is how a process sees a client leave
+a response it is serving. Without either flag the Worker fails at startup
+with that reason, since this package's entry composes the fabric at module
+scope.
 From 2026-08-04 the date also enables
 `nodejs_compat`, so no flag is listed.
 
@@ -327,6 +330,12 @@ None of these is optional. See `apps/hosted-demo/wrangler.jsonc` or
 - `NPM_TARBALL_CACHE` + `NPM_PACKUMENT_CACHE` + `NIMBUS_RUNTIME_CACHE` (R2)
 - `ASSETS` — serves the xterm shell + lazy-loaded WASM/JS blobs
 - `JWT_SECRET` (secret) — HS256 signing key for token-enforced deployments
+
+Optional: a `version_metadata` binding named `CF_VERSION_METADATA` makes the
+replies a deploy's readiness reads (`POST /new`, the terminal WebSocket
+upgrade, `DELETE /s/<id>/` and the remote API) carry `x-nimbus-version`, the
+version that answered, so a deploy can wait until the edge serves the version
+it uploaded.
 
 ## Status
 

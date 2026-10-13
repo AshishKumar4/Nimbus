@@ -156,7 +156,7 @@ for (const [what, end] of [
     async handleHttpRequest() { return new Response('served'); },
   }), { resolveConfig: false });
   const hostEnv = { LOADER: world.loader, ASSETS: stagedAssets };
-  const { ns, peers } = createPeerNamespace(world, hostEnv, { coordinator: { doId: SID, supervisorOp: () => null } });
+  const { ns, peers } = createPeerNamespace(world, hostEnv);
   const ctx = createFacetCtx(world, SID);
   const s = session();
   const portRegistry = new PortRegistry();

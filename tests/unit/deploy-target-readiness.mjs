@@ -3,12 +3,13 @@
 // A healthy /new, an HTTP 200 shell, or a rejected WebSocket is not ready.
 import assert from 'node:assert/strict';
 import { waitForTarget, READINESS_CYCLES } from '../behavioral/_deploy-target.mjs';
+import { VERSION_HEADER } from '../behavioral/_session-transport.mjs';
 
 const failures = [];
 for (const mode of ['ready', 'upgrade-503', 'wrong-command-output', 'delete-500', 'delete-html', 'delete-invalid-result']) {
   const events = [];
   let minted = 0;
-  const headers = { 'x-nimbus-probe-version': 'uploaded-version' };
+  const headers = { [VERSION_HEADER]: 'uploaded-version' };
   const server = Bun.serve({
     hostname: '127.0.0.1', port: 0,
     fetch(request, server) {

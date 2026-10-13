@@ -8,7 +8,7 @@ const __nativeBuiltin = ((host) => typeof __nimbusNativeBuiltins === "undefined"
 // What process.exit throws to end the program where it stands; its host
 // catches it as the exit.
 class __ProcessExit extends Error {
-  constructor(code) { super("process.exit(" + code + ")"); this.code = code; }
+  constructor(code) { super("process.exit(" + code + ")"); this.code = code & 255; }
 }
 // Node's internal errors (core _shared/node-error.ts), first: the shims, the
 // preambles below and the code they load make them by name, and the cell
@@ -13843,20 +13843,21 @@ function __nimbusOutputGate() {
 // Send a line to the session's stderr for this process, at its gate: every
 // diagnostic Nimbus prints for a process, as its own output is. Answers once
 // sent (never rejects); the run's pending writes wait for it too.
+let __nimbusUnreportedStderr = "";
 function __nimbusReleaseStderr(line) {
   if (!__supervisor || typeof __supervisor.stderr !== "function") return Promise.resolve();
   const send = () => __nimbusUseRpcResult(__supervisor.stderr(__nimbusOutEnc.encode(line)), () => undefined);
   const gate = __nimbusOutputGate();
   let task;
-  try { task = gate === null ? send() : gate.then(send); } catch { return Promise.resolve(); }
-  task = Promise.resolve(task).catch(() => {});
+  try { task = gate === null ? send() : gate.then(send); } catch { __nimbusUnreportedStderr += line; return Promise.resolve(); }
+  task = Promise.resolve(task).catch(() => { __nimbusUnreportedStderr += line; });
   if (typeof __pendingIO !== "undefined" && Array.isArray(__pendingIO)) __pendingIO.push(task);
   return task;
 }
 
 function __nimbusReportProcessExit(code, reason) {
   if (__nimbusProcessExitReported) return;
-  __nimbusProcessExitCode = Number(code ?? 0);
+  __nimbusProcessExitCode = Number(code ?? 0) & 255;
   __nimbusProgramStopped = true;
   try { if (typeof globalThis.__nimbusStopProgramTimers === "function") globalThis.__nimbusStopProgramTimers(); } catch {}
   try { if (__nimbusProcessExitResolve) __nimbusProcessExitResolve(__nimbusProcessExitCode); } catch {}
@@ -14201,7 +14202,7 @@ function __nimbusExitAtEnd() {
     __processMod._exiting = true;
     __nimbusEmitExit(__processMod.exitCode || 0);
   }
-  return __processMod.exitCode || 0;
+  return (__processMod.exitCode || 0) & 255;
 }
 
 // ── What nothing caught ──
@@ -15370,9 +15371,21 @@ Object.defineProperty(builtins, "http", {
       const inbound = new __nativeHttpRequest(request, { headers, signal: AbortSignal.any([request.signal, controller.signal]) });
       let detach = () => {};
       let timer;
-      let nativeResponse;
       const captureResponse = (incoming, response) => {
-        nativeResponse = response;
+        // A request abandoned or timed out ends as a dropped socket ends it in
+        // Node (_http_server.js socketOnClose): the request destroyed with an
+        // 'aborted' reset, then its response closed with no 'finish' and no
+        // more writes.
+        const dropped = () => {
+          incoming.destroy(Object.assign(new Error("aborted"), { code: "ECONNRESET" }));
+          response.destroy();
+        };
+        if (inbound.signal.aborted) dropped();
+        else inbound.signal.addEventListener("abort", dropped, { once: true });
+        // A response that ends unfinished takes its connection with it, and
+        // its request is aborted, as Node's socketOnClose does: the platform
+        // can cancel the response body before the caller's leaving arrives.
+        response.once("close", () => { if (!response.writableFinished) dropped(); });
         // workerd's #toReqRes keeps only the text before the first unquoted
         // comma of these fields (splitHeaderValue, meant to pick the first of
         // fetch-joined duplicates), so a guest saw "If-Modified-Since: Tue"
@@ -15413,7 +15426,6 @@ Object.defineProperty(builtins, "http", {
       timer = setTimeout(() => {
         deadline.resolve(new __nativeHttpResponse("Nimbus: HTTP handler sent no response headers in time", { status: 504 }));
         detach();
-        nativeResponse?.destroy();
         controller.abort();
       }, Number(globalThis.__nimbusHttpHeaderTimeoutMs) || 30000);
       try {
