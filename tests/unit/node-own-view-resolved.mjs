@@ -73,6 +73,7 @@ const both = async (p) => {
   await fs.promises.symlink('tree/file', '/home/user/l3');
   fs.renameSync('/home/user/tree', '/home/user/moved');
   seen.renamedTree = [fs.existsSync('/home/user/l3'), fs.lstatSync('/home/user/l3').isSymbolicLink(), await both('/home/user/l3')];
+  seen.movedReal = await both('/home/user/moved/file');
   await fs.promises.symlink('tree2/file', '/home/user/l4');
   fs.rmSync('/home/user/tree2', { recursive: true });
   seen.removedTree = [fs.existsSync('/home/user/l4'), await both('/home/user/l4')];
@@ -127,7 +128,7 @@ check('a link into a renamed tree resolves to nothing', () => assert.deepEqual(s
 check('a link into a removed tree resolves to nothing', () => assert.deepEqual(seen.removedTree, [false, refused('ENOENT')]));
 check("a link made through the table's directory link is in the directory it names", () => assert.deepEqual(seen.viaTableLink, [same('/home/user/real/file.txt'), true, true]));
 check("and through the program's own", () => assert.deepEqual(seen.viaOwnLink, [same('/home/user/real/file.txt'), true]));
-check('a renamed tree resolves under its new name', () => assert.deepEqual(seen.renamedReal, same('/home/user/t5moved/f')));
+check('a renamed tree resolves under its new name', () => assert.deepEqual([seen.movedReal, seen.renamedReal], [same('/home/user/moved/file'), same('/home/user/t5moved/f')]));
 check('a file made with a mode keeps it once its write is acknowledged', () => assert.equal(seen.madeMode, '600'));
 check('a file in a directory made just now has its filesystem\'s device', () => assert.equal(seen.freshDev, true));
 for (const r of results) realProcess.stderr.write(r.join('  ') + '\n');
