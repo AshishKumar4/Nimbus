@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "021aa9346ed6ef633e78e5a8b69cdaa9ccc3448bf00612878e1c866b411331aa",
+  "fingerprint": "fd64b13f41066ee51b1307c0d518ca4a54ce9276d753f97593afc16fb5691d9a",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -635,8 +635,8 @@
     "packages/core/dist/runtime/session-protocol.d.ts.map": "1c2ce981e4f39eea5480c170ffbccdfcbfe5cebe7edcff384d571c23ac79efc7",
     "packages/core/dist/runtime/session-protocol.js": "24e42708b82dcb67051c49ee08ca8d898a925f83dba757f59d42ee6193983bcc",
     "packages/core/dist/runtime/sqlite-runtime-fs-bridge.d.ts": "3ea2ad98235b93a7bb9483f0c2bfdee7028fac1f70867d64c54cbb058ddc22d3",
-    "packages/core/dist/runtime/sqlite-runtime-fs-bridge.d.ts.map": "a61bafac08a166d8d57bc91a37c23a04e2d150582692f0804feab0693cfb5fad",
-    "packages/core/dist/runtime/sqlite-runtime-fs-bridge.js": "be1d2666742026747bc316a2f9ef098de03b9e3f76c0049cedba52fcfa62b79a",
+    "packages/core/dist/runtime/sqlite-runtime-fs-bridge.d.ts.map": "e76ace7fad7a464585c7500f6ddc9ced7d2a6987d5ebd4ee1914f9594bcfa4c8",
+    "packages/core/dist/runtime/sqlite-runtime-fs-bridge.js": "3f2ccfdbab9da88f9cac7c6297b0f1f66146f0cb0d97835b95827d7a84167ff6",
     "packages/core/dist/runtime/static-fs-refs.d.ts": "a8ba5668aa9b61e3f04acedf198a8ed76363f43e1c380cf2b6e3888174f2bfe4",
     "packages/core/dist/runtime/static-fs-refs.d.ts.map": "564392bf060e0f3fb5376361c4839ea853873c106ef2078c03b10e372b46395d",
     "packages/core/dist/runtime/static-fs-refs.js": "dfb56c27b0514ff7ca553dff494af1da794d335ca12f70177e5c9626f1201c43",
@@ -1490,7 +1490,7 @@
     "packages/core/src/runtime/server-launch.ts": "31edd6192c133c1cbdf21f5570f9e9ffe40ee5e38e35f9e892998495e0375017",
     "packages/core/src/runtime/session-process-supervisor.ts": "ffecaf6ffec98d41cc8bc1b67be16650d5614e2a25505bb8811fe627aac61d3b",
     "packages/core/src/runtime/session-protocol.ts": "319de11958eabde4afc23b9a8491b5072bdeb40a5ce1f0d8c425a619f24a1763",
-    "packages/core/src/runtime/sqlite-runtime-fs-bridge.ts": "db98370a20384bc0126da90975aae2a737e4d021e893487a2d118aafb7f80f34",
+    "packages/core/src/runtime/sqlite-runtime-fs-bridge.ts": "9cea11def24737a6c2bc548259c851d680d262074d8f5c648cbea1f941d21760",
     "packages/core/src/runtime/static-fs-refs.ts": "cd2da6c308315050ee73a6fec20f66c0dc947abfa8bdb05a2edccd19220ff5ac",
     "packages/core/src/runtime/stdin-read.ts": "f8c3dec82f62e77375f77bd4950e3891133a1b15b3d38ed0eea6a298117a939b",
     "packages/core/src/runtime/storage-ledger.ts": "7c51bc60a324d0a6a44735dc76458b23c0727a65e07eeef762fca9640fe655a5",

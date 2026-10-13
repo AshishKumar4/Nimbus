@@ -958,7 +958,8 @@ export class SqliteRuntimeFsBridge {
             }
             if (normalizedFlags.truncate)
                 node.truncate(0);
-            return syncValue(this.descriptors.open(node, normalizedFlags));
+            // Named as the descriptor it reopens was: an unlinked file has no name of its own.
+            return syncValue(this.descriptors.open(node, normalizedFlags, named));
         });
     }
     openRoot(path, flags) {
