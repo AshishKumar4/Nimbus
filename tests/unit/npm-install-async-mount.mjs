@@ -265,6 +265,15 @@ for (const [when, landed] of [['after', true], ['partial', false]]) {
   await install('/m/t');
   assert.equal(root.exists('tmp/.npm-stage-5-nogroup/g/nogroup'), true, "a file only nogroup may remove is left");
   root.removeRecursive('tmp/.npm-stage-5-nogroup');
+  // Nor of any gid at all, however its inode came to have it: here one made
+  // by a credential whose gid is past any chown's.
+  vfs.as(OTHER).mkdir('tmp/.npm-stage-6-any', { recursive: true });
+  const odd = { ...CRED_KERNEL, gid: Number.MAX_SAFE_INTEGER + 1, groups: [], umask: 0 };
+  vfs.as(odd).mkdir('tmp/.npm-stage-6-any/g', { mode: 0o770 });
+  vfs.as(odd).writeFile('tmp/.npm-stage-6-any/g/any', 'root', { mode: 0o660 });
+  await install('/m/t');
+  assert.equal(root.exists('tmp/.npm-stage-6-any/g/any'), true, 'a file only its group may remove is left, whatever the group');
+  root.removeRecursive('tmp/.npm-stage-6-any');
   console.log('  the sweep removes each stage as the user who owns it');
 }
 
