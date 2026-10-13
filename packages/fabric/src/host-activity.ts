@@ -258,9 +258,9 @@ class Lease implements HostActivityLease {
     }
     return this.#ready;
   }
-  readonly release = (): void => {
+  release(): void {
     if (this.activity.released(this)) this.cancel();
-  };
+  }
   /** The signal aborted. */
   handleEvent(): void { this.release(); }
   /** Ended without being released by its holder (HostActivity.close), or as it is released. */
@@ -314,12 +314,13 @@ function hostAdapter(mainModule: string, capability: string): string {
   return `import { NimbusProcess as Base } from ${JSON.stringify('./' + mainModule)};
 export * from ${JSON.stringify('./' + mainModule)};
 const capability = ${key};
+// A guest's fetch may hand its request on to its own handleHttpRequest: what
+// this adapter admitted carries this mark, which only the adapter can name.
+const admittedMark = Symbol('admitted');
 const failed = (error) => new Response(error instanceof Error ? error.message : String(error), { status: 500, headers: { [${failed}]: capability } });
 export class NimbusProcess extends Base {
   #incarnation = crypto.randomUUID();
   #watchers = new Set();
-  // A guest's fetch may hand its request on to its own handleHttpRequest.
-  #admitted = new WeakSet();
   // Its host's requests by id (SentRequests), and the watermark below which they are retired.
   #requests = new Map();
   #low = 0;
@@ -343,14 +344,14 @@ export class NimbusProcess extends Base {
     request.abort(new DOMException('The caller left the request', 'AbortError'));
   }
   #admit(request) {
-    if (this.#admitted.has(request)) return request;
+    if (request[admittedMark] === true) return request;
     if (request.headers.get(${request}) !== capability) return new Response('Not found', { status: 404 });
     if (request.headers.get(${incarnation}) !== this.#incarnation) return this.#replaced();
     const headers = new Headers(request.headers);
     headers.delete(${request});
     headers.delete(${incarnation});
     const admitted = new Request(request, { headers });
-    this.#admitted.add(admitted);
+    admitted[admittedMark] = true;
     return admitted;
   }
   #replaced() {
@@ -374,7 +375,7 @@ export class NimbusProcess extends Base {
     }
     // Its signal natively the one its host can abort: a guest's clone, copy or fetch of it keeps it.
     const admitted = new Request(request, { signal: this.#request(id, low, abandoned).signal });
-    this.#admitted.add(admitted);
+    admitted[admittedMark] = true;
     try { return Promise.resolve(super.handleHttpRequest(admitted)).catch(failed); }
     catch (error) { return failed(error); }
   }

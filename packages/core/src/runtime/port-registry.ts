@@ -164,15 +164,18 @@ class RelayScope implements ResponseScope, BodyOwner {
     if (this.#outcome === false) controller.error(this.signal.aborted ? this.signal.reason : new DOMException('The response was not delivered', 'AbortError'));
     else this.#stage = controller;
   }
-  /** The caller left: a pipe waiting on the stage ends, and so does the response. */
+  /** The caller left: a pipe waiting on the stage ends, and so does the response. Once it has ended, nothing. */
   handleEvent(): void {
+    if (this.#outcome !== undefined) return;
     this.#stage?.error(this.signal.reason);
     this.#end(false);
   }
+  // Its listener stays on the caller's signal, which ends with the request:
+  // removing it would cost every delivered response a second native call.
   #end(delivered: boolean): void {
     if (this.#outcome !== undefined) return;
     this.#outcome = delivered;
-    this.signal.removeEventListener('abort', this);
+    this.#stage = undefined;
     const listener = this.#listener;
     this.#listener = undefined;
     listener?.(delivered);

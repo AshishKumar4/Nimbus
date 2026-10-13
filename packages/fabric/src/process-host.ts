@@ -179,7 +179,7 @@ class FacetProcessHost implements ProcessHost {
     const starting = hostActivity(this.ctx).acquire();
     return {
       ...facet,
-      started: loss.route(() => facet.started).finally(starting.release),
+      started: loss.route(() => facet.started).finally(() => starting.release()),
       lost: loss.signal,
       handleHttpRequest: (request: Request, scope: ResponseScope) => loss.route(() => facet.handleHttpRequest(request, scope)),
       handleWebSocketRequest: (request: Request) => loss.route(() => facet.handleWebSocketRequest(request)),
@@ -434,7 +434,7 @@ class PeerProcessHost implements ProcessHost {
       );
       stopObserving = observation.close;
       const starting = hostActivity(this.ctx).acquire();
-      const started = loss.route(() => this.withPeer(placement.peerName, (stub) => stub._rpcAwaitHostedBoot(params.workerKey).then((r) => r.payload))).finally(starting.release);
+      const started = loss.route(() => this.withPeer(placement.peerName, (stub) => stub._rpcAwaitHostedBoot(params.workerKey).then((r) => r.payload))).finally(() => starting.release());
       started.catch(() => {});
       let released = false;
       const sent = new SentRequests();
