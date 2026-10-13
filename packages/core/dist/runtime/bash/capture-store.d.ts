@@ -20,8 +20,10 @@
  * over without a hook no longer holds its capture's words; that only keeps
  * the capture longer, so it is looked for only when an unwind needs room.
  * A capture no buffer names is freed, and its space is taken back from the
- * top, or by sliding the live captures down when an unwind needs the room.
- * No memory is scanned.
+ * top, or by sliding the live captures down once freed space below the top
+ * passes PACK_SLACK, so the arena a process touches stays near what is live
+ * (fresh pages and cold lines are most of a capture's cost). No memory is
+ * scanned.
  *
  * A jmp_buf as this store writes it: word 0 names the capture (TAG | a
  * 16-bit id), word 1 is setjmp's return value (the only word nimbus-proc.c
