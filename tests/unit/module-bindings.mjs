@@ -13,7 +13,7 @@ const DECLARATIONS = [
   "import d, { a as b } from './x';",
   "import * as ns from './y';",
   "import './side';",
-  "export { q as r, s, default } from './z';",
+  "export { q as r, s, default as zd } from './z';",
   "export * from './star';",
   "export * as nsx from './nsx';",
   "import /* c */ { /* d */ g /* e */ } /* f */ from './g';",
@@ -25,7 +25,7 @@ const DECLARATIONS = [
   'export default class {}',
 ];
 const IMPORTS = [['default', 'a'], [], [], ['q', 's', 'default'], [], [], ['g'], ['default'], ['default'], ['default']];
-const EXPORTS = ['default', 'f', 'k', 'm', 'nsx', 'r', 's'];
+const EXPORTS = ['default', 'f', 'k', 'm', 'nsx', 'r', 's', 'zd'];
 
 function bindingsOf(text) {
   const { statics, bindings } = readModuleImportSites(text);
