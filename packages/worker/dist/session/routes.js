@@ -542,7 +542,7 @@ async function routeFetch(self, request) {
     //                              cleanly (stops viteDevServer, deletes
     //                              vite-config) OR delegates to
     //                              facetManager.kill for real facets.
-    //   POST /api/restart/<pid>  — kill + (if it was the vite shim)
+    //   POST /api/restart/<pid>  — kill + (if it was a vite dev server)
     //                              re-run `vite` with the same argv to
     //                              boot a fresh server. For real facets,
     //                              currently only kills (caller must
@@ -566,15 +566,12 @@ async function routeFetch(self, request) {
                 return json(404, { error: 'no such process', pid });
             }
             const isViteShim = self._viteShimPid === pid;
+            const isDevServer = isViteShim || (self.cirrusReal?.isRunning === true && self.cirrusReal.pid === pid);
             try {
                 if (isViteShim) {
                     // Same teardown the `kill` shell handler does. Centralised
                     // here so the UI doesn't need to reimplement it.
                     try {
-                        if (self.cirrusReal?.isRunning) {
-                            self.cirrusReal.stop(self.ctx);
-                            self.cirrusReal = null;
-                        }
                         if (self.viteDevServer?.isRunning) {
                             self.viteDevServer.stop();
                             self.viteDevServer = null;
@@ -621,7 +618,7 @@ async function routeFetch(self, request) {
             // when the killed PID was the vite shim. We do NOT generically
             // restart arbitrary processes — the supervisor doesn't keep
             // enough argv/env state to do that safely for real facets.
-            if (action === 'restart' && isViteShim) {
+            if (action === 'restart' && isDevServer) {
                 // Send a synthetic 'vite' command line to the terminal so the
                 // existing registry handler runs. This is the simplest way to
                 // re-trigger the SAME code path the user originally invoked,
@@ -860,26 +857,6 @@ async function routeFetch(self, request) {
             })(),
             ts: Date.now(),
         });
-    }
-    // ── [D'.1] /api/_diag/cirrus — cirrus-real DO Facet diagnostics ─────
-    //
-    // Returns null when cirrus-real is not running (no NIMBUS_REAL_VITE
-    // session yet). When running, returns the supervisor-side dispatch
-    // shape (kind = 'do-facet') + the in-facet identity cookie (proves
-    // own-SQLite is working and survives ctx.facets warm reuse).
-    //
-    // and cookie persistence across forced supervisor reconnect.
-    if (url.pathname === '/api/_diag/cirrus') {
-        if (!self.cirrusReal) {
-            return Response.json({ running: false, kind: null });
-        }
-        try {
-            const diag = await self.cirrusReal.getDiag();
-            return Response.json({ running: true, ...diag });
-        }
-        catch (e) {
-            return Response.json({ running: true, error: e?.message || String(e) }, { status: 500 });
-        }
     }
     // ── W9: hibernation simulation + diagnostic spawn (NIMBUS_DEBUG=1) ──
     //

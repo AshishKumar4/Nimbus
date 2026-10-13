@@ -402,7 +402,7 @@ export interface SessionPortHost {
   ensureDurableAppOnPort?: (port: number) => Promise<'absent' | 'started' | 'failed'>;
   _viteShimPort?: number | null;
   viteDevServer?: { isRunning: boolean; handleRequest(request: Request, innerPath: string, mountBase: string): Promise<Response> } | null;
-  cirrusReal?: { isRunning: boolean } | null;
+  cirrusReal?: { isRunning: boolean; port: number } | null;
   // Session-owned helpers the route delegates to — absent on the composed
   // host, where they would have nothing to restore or accept.
   restorePersistedDevServer?: (onlyPort?: number) => Promise<void>;
@@ -519,17 +519,15 @@ export async function routeToSessionPort(
       }
     }
   }
-  if (port === self._viteShimPort) {
-    // The preview HMR WebSocket can't cross the port-registry RPC, so it is
-    // accepted in-DO for both dev servers — the same handling `/preview/` uses.
-    if (self.cirrusReal?.isRunning && self.acceptCirrusHmrWs && isCirrusHmrPath(innerPath)) {
-      return self.acceptCirrusHmrWs(request);
-    }
-    // The Cirrus dev server rewrites base-relative URLs per request and the
-    // generic proxy strips the base header, so hand it the request directly.
-    if (self.viteDevServer?.isRunning) {
-      return self.viteDevServer.handleRequest(request, innerPath, mountBase);
-    }
+  // Real Vite's HMR socket is the session's (its HmrBridge), so it is
+  // accepted in-DO on every route to the server's port.
+  if (self.cirrusReal?.isRunning && port === self.cirrusReal.port && self.acceptCirrusHmrWs && isCirrusHmrPath(innerPath)) {
+    return self.acceptCirrusHmrWs(request);
+  }
+  // The Cirrus dev server rewrites base-relative URLs per request and the
+  // generic proxy strips the base header, so hand it the request directly.
+  if (port === self._viteShimPort && self.viteDevServer?.isRunning) {
+    return self.viteDevServer.handleRequest(request, innerPath, mountBase);
   }
   const proxied = capability === undefined
     ? await self.portRegistry.routeRequest(port, request, innerPath)
