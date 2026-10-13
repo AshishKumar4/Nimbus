@@ -14,10 +14,14 @@
 //   - fetchMissingObjects for a blob nobody holds yet: that object only,
 //     in a promisor pack;
 //   - a repository with no promisor remote never fetches: a missing object
-//     is missing, as git reports it.
+//     is missing, as git reports it;
+//   - a promisor remote that refuses the request for the pack (a POST), its
+//     body echoing the credentials sent: git's "RPC failed", then "could not
+//     fetch <id> from promisor remote", exit 128; the body never shown.
 
 import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -46,7 +50,14 @@ try {
   hostGit(work, ['clone', '-q', '--bare', source, join(served, 'repo.git')]);
   hostGit(join(served, 'repo.git'), ['config', 'uploadpack.allowFilter', 'true']);
   hostGit(join(served, 'repo.git'), ['config', 'uploadpack.allowAnySHA1InWant', 'true']);
-  const server = startGitHttpServer(served);
+  // While `refusing`, a request for a pack is answered 403 with a body echoing what it was sent.
+  let refusing = false;
+  const server = startGitHttpServer(served, {
+    refuse: (path, body, request) => refusing && request.method === 'POST' && new Response(
+      `denied for ${request.headers.get('authorization')}; try https://u:hunter2@127.0.0.1/r.git\n`,
+      { status: 403, headers: { 'content-type': 'text/plain' } },
+    ),
+  });
   const url = server.url + '/repo.git';
   const [parent] = hostGit(source, ['rev-parse', 'HEAD~1']).trim().split('\n');
   const host = join(work, 'host');
@@ -131,6 +142,32 @@ try {
     assert.equal(restored.code, 0, restored.stderr);
     assert.equal(kernel.readFileString('home/user/repo3/src/f1.txt'), 'edited\n', 'checkout restored the staged blob');
     assert.equal(requests.fetchObjects, 3, 'the staged blob is local: no request');
+
+    // A promisor remote that refuses the request for the pack: git's words, the body not shown.
+    {
+      const credentialed = url.replace('http://', 'http://u:TOKEN-9@');
+      // Host git over the same server: not spawnSync, which would stop the loop the server answers from.
+      const hostAsync = (cwd, args) => new Promise((resolve) => {
+        const child = spawn('git', args, { cwd, env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', HOME: work, GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C' } });
+        let stderr = '';
+        child.stderr.on('data', (chunk) => { stderr += chunk; });
+        child.on('close', (code) => resolve({ code, stderr }));
+      });
+      const host4 = join(work, 'host4');
+      assert.equal((await hostAsync(work, ['clone', '-q', '--depth', '2', '--filter=blob:none', credentialed, host4])).code, 0);
+      const cloned4 = await git('/home/user', ['clone', '--depth', '2', '--filter=blob:none', credentialed, 'repo4']);
+      assert.equal(cloned4.code, 0, cloned4.stderr);
+      refusing = true;
+      const args = ['checkout', parent, '--', 'src/f0.txt'];
+      const host = await hostAsync(host4, args);
+      const ours = await git('/home/user/repo4', args);
+      const said = (stderr) => stderr.split('\n').filter((line) => /^(error|fatal|remote): /.test(line));
+      assert.deepEqual([ours.code, said(ours.stderr)], [host.code, said(host.stderr)], `git's: ${host.stderr}; ours: ${ours.stderr}`);
+      assert.equal(said(ours.stderr).at(-1), `fatal: could not fetch ${hostGit(source, ['rev-parse', `${parent}:src/f0.txt`]).trim()} from promisor remote`);
+      assert.doesNotMatch(ours.stderr, /denied|hunter2|TOKEN-9|dTpUT0tFTi05/, `nothing of the body, no credential: ${ours.stderr}`);
+      refusing = false;
+      console.log('  ok  a promisor remote refusing the request for the pack: git\'s words, nothing of its body');
+    }
   } finally {
     server.stop();
   }

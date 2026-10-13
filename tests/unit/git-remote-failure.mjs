@@ -26,7 +26,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { anonymizeUrl, remoteFailureText, selectRemoteCredentials } from '../../packages/worker/src/git/pack/remote-failure.ts';
-import { createFacetSession, hostGitEnv } from './lib/facet-session.mjs';
+import { createFacetSession, hostGit as hostGitIn, hostGitEnv } from './lib/facet-session.mjs';
+import { startGitHttpServer } from './lib/git-http-server.mjs';
 
 // ── the lines on their own ──
 assert.equal(anonymizeUrl('https://u:p@host:8080/a/b.git'), 'https://host:8080/a/b.git');
@@ -231,6 +232,58 @@ try {
     assert.match(unicode.stderr, /^remote: denied for Basic <redacted>; /m, unicode.stderr);
     assert.equal(unicode.stderr.includes(Buffer.from('git:secret-密码').toString('base64')), false, 'UTF-8 Basic credentials the server echoes are redacted');
     console.log('  ok  credentials a server echoes in its message are not printed');
+  }
+
+  // A server that answers the discovery, then refuses the request for the pack (a POST), its body
+  // echoing the credentials sent: git reports "RPC failed" and discards the body, and so does ours.
+  // (A push's own "send-pack:" line is not said here.)
+  {
+    const served = join(work, 'rpc-served');
+    mkdirSync(served);
+    hostGitIn(work, work, ['init', '-q', '--bare', '-b', 'main', join(served, 'repo.git')]);
+    hostGitIn(work, join(served, 'repo.git'), ['config', 'http.receivepack', 'true']);
+    const seed = join(work, 'rpc-seed');
+    hostGitIn(work, work, ['init', '-q', '-b', 'main', seed]);
+    hostGitIn(work, seed, ['commit', '-q', '--allow-empty', '-m', 'seed']);
+    hostGitIn(work, seed, ['push', '-q', join(served, 'repo.git'), 'main']);
+    const rpc = startGitHttpServer(served, {
+      refuse: (path, body, request) => request.method === 'POST' && new Response(
+        `denied for ${request.headers.get('authorization')}; use https://u:hunter2@127.0.0.1/r.git with TOKEN-9\n`,
+        { status: 403, headers: { 'content-type': 'text/plain' } },
+      ),
+    });
+    try {
+      const url = rpc.url.replace('http://', 'http://u:TOKEN-9@') + '/repo.git';
+      const said = (stderr) => stderr.split('\n').filter((line) => /^(error|fatal|remote): /.test(line)).join('\n');
+      const quiet = (label, stderr) => assert.doesNotMatch(stderr, /denied|hunter2|TOKEN-9|dTpUT0tFTi05/, `${label}: nothing of the body, no credential: ${stderr}`);
+      const host = await realGit(work, ['clone', url, join(work, 'rpc-host')]);
+      const ours = await session.git('/home/user', ['clone', url, '/home/user/rpc-ours']);
+      assert.deepEqual([ours.code, said(ours.stderr)], [host.code, said(host.stderr)], `clone (git's: ${host.stderr}; ours: ${ours.stderr})`);
+      assert.match(ours.stderr, /^error: RPC failed; HTTP 403 curl 22 The requested URL returned error: 403\nfatal: the remote end hung up unexpectedly\n/m);
+      quiet('clone', ours.stderr);
+      const hostRepo = join(work, 'rpc-host-repo');
+      hostGitIn(work, work, ['init', '-q', '-b', 'main', hostRepo]);
+      hostGitIn(work, hostRepo, ['commit', '-q', '--allow-empty', '-m', 'mine']);
+      hostGitIn(work, hostRepo, ['remote', 'add', 'origin', url]);
+      hostGitIn(work, hostRepo, ['branch', 'other']);
+      const repo = '/home/user/rpc-repo';
+      assert.equal((await session.git('/home/user', ['init', '-q', '-b', 'main', repo])).code, 0);
+      session.kernel.writeFile(`${repo.slice(1)}/a.txt`, 'a\n');
+      for (const args of [['add', 'a.txt'], ['commit', '-q', '-m', 'mine'], ['remote', 'add', 'origin', url], ['branch', 'other']]) {
+        const step = await session.git(repo, args, { GIT_AUTHOR_NAME: 'a', GIT_AUTHOR_EMAIL: 'a@b', GIT_COMMITTER_NAME: 'a', GIT_COMMITTER_EMAIL: 'a@b' });
+        assert.equal(step.code, 0, `${args[0]}: ${step.stderr}`);
+      }
+      // A branch the remote lacks: its push sends a pack.
+      for (const args of [['fetch', 'origin'], ['pull', 'origin', 'main'], ['push', 'origin', 'other']]) {
+        const h = await realGit(hostRepo, args);
+        const o = await session.git(repo, args);
+        assert.deepEqual([o.code, said(o.stderr)], [h.code, said(h.stderr)], `${args[0]} (git's: ${h.stderr}; ours: ${o.stderr})`);
+        quiet(args[0], o.stderr);
+      }
+      console.log('  ok  a refused request for the pack: "RPC failed" as git says it, the body not shown');
+    } finally {
+      rpc.stop();
+    }
   }
 
   // The same, in a repository made as a shell makes one: `git init`, `git config`, a commit, `git remote add`.
