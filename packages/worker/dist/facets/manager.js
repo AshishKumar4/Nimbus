@@ -3993,45 +3993,57 @@ export async function buildPrefetchBundle(vfs, options) {
     });
 }
 /**
- * What a launch's build or module map holds at its peak, per byte of the
- * closure it is made from: measured over a launch's whole build and map (one
- * ~17 MiB closure's at 108 MB over its heap's base, 6.0 times; a 10 MiB one's
- * at 44.8 MB, 4.3 times), heap and JSC's extra memory together.
+ * What a launch's build and module map hold live at their peak, per byte of
+ * the closure they are made from: its cells, their serialized source and the
+ * map made from it. Measured live (after a collection) as a build starts
+ * serializing and as its launch ends: a ~17 MiB closure's launch at 45 MB
+ * over its base (2.5 times).
  */
-const PREFETCH_PEAK_PER_BYTE = 6;
+const PREFETCH_PEAK_PER_BYTE = 3;
 /**
- * `work` under one admission (Kinu #29): the whole of the supervisor's
- * admitted transient budget, taken at once, until `work` has measured the
- * closure it is made from (`fit`), then PREFETCH_PEAK_PER_BYTE times that at
- * most, the rest given back to the work queued behind it; held until `work`
- * ends. A launch's build gathers its cells and serializes them under one,
- * and its module map is generated under another, so neither runs beside
- * another's beyond what the budget holds. Nothing under one asks the pool
- * again (two builds holding their cells while a third queued for more
- * deadlocked every one).
+ * An admission (Kinu #29): the whole of the supervisor's admitted transient
+ * budget, taken at once, until its work has measured the closure it is made
+ * from (`fit`), then PREFETCH_PEAK_PER_BYTE times that at most, the rest
+ * given back to the work queued behind it. A launch's build gathers its
+ * cells and serializes them under one, and keeps it until its module map is
+ * generated (FacetManager.buildAdmissions), so no other build runs beside
+ * them beyond what the budget holds. Nothing asks the pool while holding one
+ * (two builds holding their cells while a third queued for more deadlocked
+ * every one).
  */
-async function withPrefetchAllocation(work) {
+async function admitPrefetch() {
     // Attributed so it lands under `prefetchBundleBytes`, not the unattributed remainder.
     const immediate = tryAcquireSupervisorAllocation(SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES);
     const lease = immediate ?? await acquireSupervisorAllocation(SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES);
     let held = SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES;
     prefetchBundleStart(held);
+    return {
+        queued: immediate === null,
+        fit(closureBytes) {
+            const need = Math.max(1, Math.ceil(closureBytes * PREFETCH_PEAK_PER_BYTE));
+            if (held === 0 || need >= held)
+                return;
+            lease.shrinkTo(need);
+            prefetchBundleEnd(held - need);
+            held = need;
+        },
+        release() {
+            if (held === 0)
+                return;
+            prefetchBundleEnd(held);
+            held = 0;
+            lease.release();
+        },
+    };
+}
+/** `work` under an admission of its own, given back as it ends. */
+async function withPrefetchAllocation(work) {
+    const admission = await admitPrefetch();
     try {
-        return await work({
-            queued: immediate === null,
-            fit(closureBytes) {
-                const need = Math.max(1, Math.ceil(closureBytes * PREFETCH_PEAK_PER_BYTE));
-                if (need >= held)
-                    return;
-                lease.shrinkTo(need);
-                prefetchBundleEnd(held - need);
-                held = need;
-            },
-        });
+        return await work(admission);
     }
     finally {
-        prefetchBundleEnd(held);
-        lease.release();
+        admission.release();
     }
 }
 /** The launch's cells, gathered from `vfs` (callers hold withPrefetchAllocation's admission). */
@@ -4708,6 +4720,21 @@ export class FacetManager {
      * names (null: it built nothing of its own).
      */
     prefetchBuilds = new Map();
+    /**
+     * A launch's build admission (admitPrefetch), by pid, held from its build
+     * until its module map is generated: what it built is live until then, and
+     * no other build runs beside it beyond what the budget holds. Given back
+     * once the map is made (_generateUnderCeiling), when the launch builds
+     * again, and as its launch ends however it ends.
+     */
+    buildAdmissions = new Map();
+    _releaseBuildAdmission(pid) {
+        const admission = this.buildAdmissions.get(pid);
+        if (admission === undefined)
+            return;
+        this.buildAdmissions.delete(pid);
+        admission.release();
+    }
     /**
      * What each command's runs learned for its next launch: the modules they
      * tried to execute and the files they read that the launch lacked, and the
@@ -5820,9 +5847,12 @@ export class FacetManager {
                 return { ...built.state, cacheHit: true, cacheRetained: false };
         }
         // Kinu #29: the cells are gathered and serialized under one admission,
-        // so cache-miss builds queue for room through both. A launch admitted
-        // after a wait, while another of its key published, takes that entry.
-        const building = withPrefetchAllocation(async (admission) => {
+        // kept until the launch's module map is made, so cache-miss builds queue
+        // for room through all three. A launch admitted after a wait, while
+        // another of its key published, takes that entry. A build again for
+        // this launch (after a stop, under the ceiling) supersedes its last.
+        this._releaseBuildAdmission(entry.pid);
+        const buildUnder = async (admission) => {
             const admitted = admission.queued ? await takeCached() : null;
             if (admitted)
                 return { state: admitted, shared: null };
@@ -5942,7 +5972,19 @@ export class FacetManager {
             vfsState.cacheRetained = this._admitPrefetchCacheEntry(key, revision, vfsState);
             // What a launch of this key waiting for this build takes: a state of its own, released by it alone.
             return { state: vfsState, shared: { state: { ...vfsState }, revision } };
-        });
+        };
+        const building = (async () => {
+            const admission = await admitPrefetch();
+            try {
+                const built = await buildUnder(admission);
+                this.buildAdmissions.set(entry.pid, admission);
+                return built;
+            }
+            catch (error) {
+                admission.release();
+                throw error;
+            }
+        })();
         const inProgress = { revision, done: building.then((built) => built.shared, () => null) };
         if (shared)
             this.prefetchBuilds.set(key, inProgress);
@@ -5963,7 +6005,12 @@ export class FacetManager {
      * with none of it throws ModuleMapOverCeilingError.
      */
     _generateUnderCeiling(pid, vfsState, others, generate) {
-        // Under an admission of its own (Kinu #29): a map is another copy of its closure, made beside other launches' builds.
+        // Under the launch's build admission, given back once the map is made;
+        // a state it did not build (a cache hit, another launch's build) under
+        // an admission of its own: a map is another copy of its closure.
+        if (this.buildAdmissions.has(pid)) {
+            return this._generateWithin(pid, vfsState, others, generate).finally(() => this._releaseBuildAdmission(pid));
+        }
         return withPrefetchAllocation(async (admission) => {
             admission.fit(vfsState.rawBytes ?? 0);
             return await this._generateWithin(pid, vfsState, others, generate);
@@ -6616,6 +6663,7 @@ export class FacetManager {
         finally {
             this.launching.delete(entry.pid);
             opts.signal?.removeEventListener('abort', onShellAbort);
+            this._releaseBuildAdmission(entry.pid);
         }
     }
     /** The one-shot launches not yet running (their stage and its age) and the launches waiting for a turn. */
@@ -7902,6 +7950,7 @@ export class FacetManager {
         }
         finally {
             pacer.settle();
+            this._releaseBuildAdmission(entry.pid);
         }
         // Booted and running: its budget is whole again once it has run
         // RESIDENT_PROVEN_MS in this instance (_proveByUptime). If the process

@@ -1323,6 +1323,15 @@ export declare class FacetManager {
      */
     private readonly prefetchBuilds;
     /**
+     * A launch's build admission (admitPrefetch), by pid, held from its build
+     * until its module map is generated: what it built is live until then, and
+     * no other build runs beside it beyond what the budget holds. Given back
+     * once the map is made (_generateUnderCeiling), when the launch builds
+     * again, and as its launch ends however it ends.
+     */
+    private readonly buildAdmissions;
+    private _releaseBuildAdmission;
+    /**
      * What each command's runs learned for its next launch: the modules they
      * tried to execute and the files they read that the launch lacked, and the
      * runtime code they produced (launch-learning-store.ts). Kept in the
