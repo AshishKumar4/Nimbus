@@ -64,7 +64,8 @@ export async function remoteRecipeBuild(recipe, argv) {
     if ${recipe.verify} > "$W/verify.log" 2>&1; then verify=ok; else verify=failed; fi
   fi
   printf '{"build":"%s","seconds":%d,"verify":"%s"}\n' $build $seconds $verify
-  if [ $build != ok ]; then tail -80 "$W/build.log"
+  # The first errors, which a parallel or tolerant make leaves far above the tail.
+  if [ $build != ok ]; then grep -n -m 12 -B 3 -A 2 -E 'error:|Error [0-9]' "$W/build.log"; echo ...; tail -40 "$W/build.log"
   elif [ $verify != ok ]; then tail -80 "$W/verify.log"
   else
     grep -E '${recipe.summary}' "$W/verify.log"
