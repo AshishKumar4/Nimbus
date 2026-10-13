@@ -183,6 +183,12 @@ cases.readReceiptLifetime = async () => {
   const [one, two] = await Promise.all([hostRead(), hostRead()]);
   assert.deepEqual([one, two, hostCalls], [{ size: 1 }, { size: 1 }, 1], 'a host read is served, once');
   assert.equal(d.readReceipts, 0, 'and keeps no receipt in the run');
+  // A forgotten process takes its host reads with it: a late one's repeat reads again.
+  let late;
+  d.joinRead(7, hostId, 'stat', () => {}, () => new Promise((resolve) => { late = resolve; }), undefined);
+  d.forget(7);
+  assert.equal(d.readsServing, 0, 'forgetting a process drops its host reads');
+  late({ size: 0 });
   d.endReadRun(7, 'd');
   // No journal: preserve the old read behavior and common-path memory cost.
   let ordinary = 0;

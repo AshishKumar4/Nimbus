@@ -581,6 +581,7 @@ export class SupervisorDeliveries {
     const prefix = `${pid}:`;
     for (const key of this.waveEpochs.keys()) if (key.startsWith(prefix)) this.waveEpochs.delete(key);
     this.endReadRun(pid);
+    this.hostReads.delete(pid);
     const now = Date.now();
     for (const generation of [this.current, this.previous]) {
       const receipts = generation.get(pid);
