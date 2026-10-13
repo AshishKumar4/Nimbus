@@ -22,6 +22,10 @@ published independently in the `@nimbus-sh` npm scope.
   root or above it had the kernel make the directory it led to sticky and
   world-writable. A link at the file's name is now replaced by the file,
   and a root reached through a link is refused.
+- Fixed: `npm install` cleared what an earlier install left in `/tmp` as
+  the kernel through whatever `/tmp` led to, and `/tmp` is the session
+  user's to replace with a link. It clears as the kernel only in the real
+  `/tmp`, and elsewhere as the user who installs.
 - Fixed (security): helpers a command starts acted as the kernel, not as
   the command's process. `nimbus wrangler dev` read its config and D1
   migrations, kept its KV and R2 stores, and bundled its Worker as

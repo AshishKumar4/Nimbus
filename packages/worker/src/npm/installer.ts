@@ -379,7 +379,7 @@ export class NpmInstaller {
     // Where a mounted project's packages are staged; what an install cut
     // short left there goes first.
     const tmp = await engineKey(view, this.store, '/tmp');
-    if (tmp !== null) this.sweepStaging(tmp);
+    if (tmp !== null) this.sweepStaging(tmp, opts.cred);
     const principal = { pid: opts.pid, cred: opts.cred, view, tmp };
     const lockfile = this.cache.readLockfile(projDir);
     const { roots, named, devOnly, advised } = await this.buildRoots(projDir, project, opts);
@@ -1393,15 +1393,22 @@ export class NpmInstaller {
   }
 
   /** Staging directories in `tmp` no install in this session is using: an install cut short left them. */
-  private sweepStaging(tmp: string): void {
-    // As the kernel: another user's staging directory in the sticky /tmp is still this installer's.
-    const kernel = this.store.as(CRED_KERNEL);
+  private sweepStaging(tmp: string, cred: VfsCred): void {
+    // As the kernel in the session's own /tmp (another user's staging
+    // directory there is still this installer's), reached through no link:
+    // its parent is root's `/`. Anywhere else, as the installing user, who
+    // may replace /tmp with a link to a directory that is not the kernel's to
+    // clear.
+    let sweeper = this.store.as(cred);
+    try {
+      if (tmp === 'tmp' && this.store.as(CRED_KERNEL).lstat(tmp).type === 'directory') sweeper = this.store.as(CRED_KERNEL);
+    } catch { return; }
     let entries: { name: string; type: string }[];
-    try { entries = kernel.readdir(tmp); } catch { return; }
+    try { entries = sweeper.readdir(tmp); } catch { return; }
     for (const entry of entries) {
       const path = `${tmp}/${entry.name}`;
       if (entry.type !== 'directory' || !entry.name.startsWith(STAGE_PREFIX) || this.placing.has(path)) continue;
-      try { kernel.removeRecursive(path); } catch { /* tried again next time */ }
+      try { sweeper.removeRecursive(path); } catch { /* tried again next time */ }
     }
   }
 
