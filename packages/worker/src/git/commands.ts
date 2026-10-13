@@ -1061,11 +1061,13 @@ const COMMAND_HOOKS: Readonly<Record<string, readonly string[]>> = {
 };
 
 /**
- * The first of `hooks` the repository makes executable, null for none:
- * where git looks for them (core.hooksPath, from -c, the repository's and
- * the global config, a relative one from `top`, the directory hooks run
- * in; else $GIT_DIR/hooks), each found as git's find_hook finds it, by
- * access(X_OK) as the command's principal.
+ * The first of `hooks` git would run or report, null for none: where git
+ * looks for them (core.hooksPath, from -c, the repository's and the global
+ * config, a relative one from `top`, the directory hooks run in; else
+ * $GIT_DIR/hooks), each found as git's find_hook finds it, by access(X_OK)
+ * on its path as the command's principal. One there and executable runs;
+ * one access refuses otherwise (EACCES: git says it ignored the hook) is
+ * real git's to report. Only one that is not there is none.
  */
 async function executableHook(
   ctx: Ctx,
@@ -1083,12 +1085,22 @@ async function executableHook(
     const expanded = configured === '~' ? home : configured.startsWith('~/') ? home + configured.slice(1) : configured;
     dir = expanded.startsWith('/') ? expanded : `${top}/${expanded}`;
   }
-  // One listing (none: no hooks), then access(X_OK) only for the hooks it names.
-  let present: Set<string>;
-  try { present = new Set((await ctx.vfs.readdir(normalizeVfsPath(dir))).map((entry) => entry.name)); } catch { return null; }
+  // The directory's listing, where it can be read, says at once which hooks
+  // are not there; a directory that is not there holds none. One that
+  // cannot be listed (searchable, not readable) is looked in by path.
+  let listed: Set<string> | null = null;
+  try {
+    listed = new Set((await ctx.vfs.readdir(normalizeVfsPath(dir))).map((entry) => entry.name));
+  } catch (error) {
+    if (isVfsError(error, 'ENOENT') || isVfsError(error, 'ENOTDIR')) return null;
+  }
   for (const hook of hooks) {
-    if (!present.has(hook)) continue;
-    try { await ctx.vfs.access(normalizeVfsPath(`${dir}/${hook}`), X_OK); } catch { continue; }
+    if (listed !== null && !listed.has(hook)) continue;
+    try {
+      await ctx.vfs.access(normalizeVfsPath(`${dir}/${hook}`), X_OK);
+    } catch (error) {
+      if (isVfsError(error, 'ENOENT') || isVfsError(error, 'ENOTDIR')) continue;
+    }
     return hook;
   }
   return null;

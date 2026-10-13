@@ -13,10 +13,13 @@
 //     built-in made a message up;
 //   - a command whose hooks (githooks(5)) the repository makes executable
 //     is real git's: the built-in runs no hook. Where git looks for them
-//     (core.hooksPath, a relative one from the worktree's top) is honored,
-//     and a hook that is not executable is not run by git either. status
-//     and diff, which write an index only if able, stay the built-in's and
-//     keep no refresh where writing it would run post-index-change.
+//     (core.hooksPath, a relative one from the worktree's top) is honored.
+//     A hook that is there but not executable is real git's too, which
+//     says it ignored it, and so is one in a directory that can be searched
+//     but not read (git runs a hook by its path) or not searched at all.
+//     status and diff, which write an index only if able, stay the
+//     built-in's and keep no refresh where writing it would run
+//     post-index-change.
 
 import assert from 'node:assert/strict';
 
@@ -156,7 +159,8 @@ for (const [env, words, who] of AUTOEDIT) if (await engine(words, env) !== who) 
 const HOOKS = [
   // [hook, its directory in the repository, executable, config to set, [form, who]...]
   ['pre-commit', '.git/hooks', true, null, [['commit', '-m', 'x', '--allow-empty'], 'real git'], [['status'], 'built-in'], [['add', 'a.txt'], 'built-in']],
-  ['pre-commit', '.git/hooks', false, null, [['commit', '-m', 'x', '--allow-empty'], 'built-in']],
+  // git says it ignored a hook that is not executable: real git's to say.
+  ['pre-commit', '.git/hooks', false, null, [['commit', '-m', 'x', '--allow-empty'], 'real git'], [['branch', 'more2'], 'built-in']],
   ['commit-msg', '.git/hooks', true, null, [['commit', '-m', 'x', '--allow-empty'], 'real git'], [['merge', 'topic'], 'real git'], [['checkout', 'topic'], 'built-in']],
   ['post-checkout', '.git/hooks', true, null, [['checkout', 'topic'], 'real git'], [['commit', '-m', 'x', '--allow-empty'], 'built-in']],
   ['post-merge', '.git/hooks', true, null, [['merge', 'topic'], 'real git'], [['pull', 'origin', 'main'], 'real git'], [['fetch', 'origin'], 'built-in']],
@@ -179,6 +183,23 @@ for (const [hook, dir, executable, config, ...forms] of HOOKS) {
   user.unlink(path);
   if (config) user.writeFile('home/user/repo/.git/config', user.readFileString('home/user/repo/.git/config').replace(`[core]\n\thooksPath = ${config[1]}\n`, ''));
 }
+// A hooks directory git can search but not read (git runs a hook by its
+// path), as $GIT_DIR/hooks and as core.hooksPath; and one it cannot search,
+// where access refuses (EACCES) and git says it ignored the hook.
+for (const [dir, dirMode, config] of [['.git/hooks', 0o311, null], ['githooks', 0o311, 'githooks'], ['.git/hooks', 0o600, null]]) {
+  const path = `home/user/repo/${dir}/pre-commit`;
+  user.mkdir(`home/user/repo/${dir}`, { recursive: true });
+  user.writeFile(path, '#!/bin/sh\nexit 0\n');
+  user.chmod(path, 0o755);
+  user.chmod(`home/user/repo/${dir}`, dirMode);
+  if (config) user.writeFile('home/user/repo/.git/config', user.readFileString('home/user/repo/.git/config') + `[core]\n\thooksPath = ${config}\n`);
+  const who = await engine(['commit', '-m', 'x', '--allow-empty']);
+  if (who !== 'real git') wrong.push(`real git expected with pre-commit in a ${dirMode.toString(8)} ${dir}: git commit`);
+  user.chmod(`home/user/repo/${dir}`, 0o755);
+  user.unlink(path);
+  if (config) user.writeFile('home/user/repo/.git/config', user.readFileString('home/user/repo/.git/config').replace(`[core]\n\thooksPath = ${config}\n`, ''));
+}
+
 // The refresh a status or diff writes back runs post-index-change in git:
 // where that hook is executable the built-in keeps none, as git keeps none
 // it cannot lock, and so runs no hook. Without it, the refresh is kept.
