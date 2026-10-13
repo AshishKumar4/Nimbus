@@ -17,7 +17,8 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
 import { catalogKey } from '../../packages/worker/src/runtime/runtime-catalog.ts';
 import { syncRuntimes } from '../../packages/cli/src/commands/runtime-sync.ts';
 import { stageDeploymentProject } from './lib/deployment-project.mjs';
@@ -39,6 +40,8 @@ try {
   cpSync(join(WORKER, 'wasm/bash'), join(root, 'packages/worker/wasm/bash'), { recursive: true });
   mkdirSync(join(root, 'node_modules/@nimbus-sh'), { recursive: true });
   symlinkSync(CORE, join(root, 'node_modules/@nimbus-sh/core'));
+  // The recipe check's parser, as the worker's scripts resolve it.
+  symlinkSync(dirname(createRequire(join(WORKER, 'scripts/artifact-inputs.mjs')).resolve('jsonc-parser/package.json')), join(root, 'node_modules/jsonc-parser'));
   stageDeploymentProject(root, OLD);
 
   // Stub wrangler over a bucket directory: object put/get (--file or --pipe) and bucket info.
