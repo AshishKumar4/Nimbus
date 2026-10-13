@@ -454,7 +454,7 @@ const CRED_USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
   assert.throws(() => vfs.removeRecursive('held'), /EBUSY/);
   assert.equal(vfs.exists('held'), true);
   rawVfs.releaseExclusiveMutation(lease.owner);
-  assert.ok(vfs.removeRecursive('held') > 0);
+  assert.deepEqual(vfs.removeRecursive('held'), { removed: ['held'], kept: [], failures: [] });
 }
 
 console.log('sqlite-vfs-recursive-delete: ok');
