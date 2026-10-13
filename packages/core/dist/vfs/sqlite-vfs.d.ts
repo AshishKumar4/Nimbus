@@ -731,6 +731,16 @@ export declare class SqliteVFS {
     /** The exclusive-mutation lease the open presented: the description's own mutations (write, truncate, chmod, chown, utimes) present it too. */
     mutationOwner?: string): VfsOpenDescription;
     /**
+     * The file `path` names, held as an O_PATH open holds it: no access asked
+     * of it but the walk's. Its stat and revision, and a reopen (it is one of
+     * openNodes, which reopenInode finds), an unlinked file included, until it
+     * is closed; anything else answers EBADF. One object, where a description
+     * builds each of its calls.
+     */
+    holdInode(path: string, cred: VfsCred, principal?: Principal, holds?: () => ReadonlySet<string>): VfsOpenDescription;
+    /** holdInode's answer: describe()'s stat, revision, path and close, on its prototype. */
+    private static readonly HeldInode;
+    /**
      * A description of the file `ino` numbers, its access decided already: by
      * the open that made it (creat(2) of a mode without write still writes),
      * or by an open a process's wave made and the session kept

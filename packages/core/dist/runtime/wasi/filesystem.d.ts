@@ -1,4 +1,4 @@
-import type { Awaitable, RuntimeFileHandle, RuntimeFsBridge, RuntimeOpenedFile, RuntimeOpenFlags, RuntimeSynchronousFs, RuntimeVfsStat } from '../os-contracts.js';
+import type { Awaitable, RuntimeFileHandle, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenedFile, RuntimeOpenFlags, RuntimeSynchronousFs, RuntimeVfsStat } from '../os-contracts.js';
 import type { Errno, NimbusFsImports, WasiImports } from './types.js';
 import type { PinnedContent } from './resident-filesystem.js';
 /** WASI encoding only. Paths, permissions, inode identity and storage belong to fs. */
@@ -36,14 +36,18 @@ export interface ResidentFd {
     fdflags: number;
 }
 /**
- * What holds a resident copy's file while the copy lives, and opens it again
- * (an open of /dev/fd/N): the session's descriptor of it, which the copy was
- * read through, or the filesystem's pin on its bytes (pinContent).
+ * How a resident copy's file is opened again (an open of /dev/fd/N): by the
+ * session's O_PATH descriptor of it (AuthorityFilesystemOptions.residentHolds),
+ * held while the copy lives; else by the name it was read at, while that
+ * name has it, with the filesystem's pin on its bytes when it pinned them
+ * (pinContent), given back with the copy.
  */
 export type ResidentHold = {
     readonly handle: number;
 } | {
-    readonly pinned: PinnedContent;
+    readonly name: RuntimeFsPath;
+    readonly follow: boolean;
+    readonly pin?: PinnedContent;
 };
 /** Another descriptor on a resident open, as dup(2) makes one: the same offset, the same hold. */
 export declare function shareResident(open: ResidentFd): ResidentFd;
@@ -102,10 +106,11 @@ export declare function closeUnawaited(fs: RuntimeFsBridge | RuntimeSynchronousF
 /**
  * Opens `name` as the file `identity` (dev, ino) is, where the process holds
  * no descriptor of it to reopen by (an open of /dev/fd/N on a copy): ENOENT
- * once the name has another file, or none. Never creates one, and empties it
- * only once it is known to be that file.
+ * once the name has another file, or none. `follow`: as the name was first
+ * looked up. Never creates one, and empties it only once it is known to be
+ * that file.
  */
-export declare function openIdentified(fs: RuntimeFsBridge | RuntimeSynchronousFs, name: string, flags: RuntimeOpenFlags, identity: {
+export declare function openIdentified(fs: RuntimeFsBridge | RuntimeSynchronousFs, name: RuntimeFsPath, follow: boolean, flags: RuntimeOpenFlags, identity: {
     dev: number;
     ino: number;
 }): Awaitable<RuntimeOpenedFile>;
@@ -133,6 +138,14 @@ export interface AuthorityFilesystemOptions {
      * is fetched again on its next open. Zero keeps every open on the authority.
      */
     residentBytes?: number;
+    /**
+     * Whether a resident copy holds its file at the session, by an O_PATH
+     * descriptor (RuntimeOpenFlags.path) its open answers the stat with: the
+     * file itself, renamed or unlinked since, is what /dev/fd/N opens again.
+     * Without (a host that cannot hold one, or pins bytes itself), a copy is
+     * opened again by the name it was read at, while that name has it.
+     */
+    residentHolds?: boolean;
     /**
      * Whether a resident copy outlives its descriptor (default true). A guest
      * whose host process already holds the filesystem's content (a node

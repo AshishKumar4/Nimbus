@@ -109,6 +109,14 @@ export interface RuntimeOpenFlags {
     directory?: boolean;
     truncate?: boolean;
     followSymlinks?: boolean;
+    /**
+     * O_PATH: the file is held, not opened for I/O. No access is asked of it
+     * but the walk's, and every other flag but `directory` and
+     * `followSymlinks` is ignored, as Linux ignores it. The descriptor answers
+     * its stat and a reopen (an unlinked file's included) until it is closed;
+     * its reads and writes are EBADF.
+     */
+    path?: boolean;
     /** Creation mode, masked by the binding's umask like mkdir's; ignored when the file exists. */
     mode?: number;
     expectedRevision?: number;
@@ -122,7 +130,7 @@ export interface RuntimeOpenFlags {
 export interface RuntimeFileHandle {
     id: number;
     path: string;
-    flags: Required<Omit<RuntimeOpenFlags, 'expectedRevision' | 'mode' | 'sync'>> & {
+    flags: Required<Omit<RuntimeOpenFlags, 'expectedRevision' | 'mode' | 'sync' | 'path'>> & {
         expectedRevision?: number;
     };
     position: number;
