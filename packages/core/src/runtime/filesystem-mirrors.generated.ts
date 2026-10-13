@@ -6,7 +6,7 @@
  */
 
 import type { RuntimeFsBridge } from './os-contracts.js';
-import { answerBytes, answerStream, answerValue, type FILESYSTEM_METHODS, type FilesystemSupervisor } from './filesystem-methods.js';
+import { answerBytes, answerRemoval, answerStream, answerValue, sendRemoval, type FILESYSTEM_METHODS, type FilesystemSupervisor } from './filesystem-methods.js';
 
 /** Bridge method → its name on the supervisor RPC capability. */
 export const FILESYSTEM_RPC_METHODS = {
@@ -141,7 +141,7 @@ export function vfsSupervisor(fs: RuntimeFsBridge): FilesystemSupervisor {
     fsAcquire: (...args) => fs.acquire(...args),
     fsList: (...args) => fs.list(...args),
     fsRealpath: (...args) => fs.realpath(...args),
-    fsRemove: (...args) => fs.remove(...args),
+    fsRemove: (...args) => sendRemoval(fs.remove(...args)),
     fsCopyFile: (...args) => fs.copyFile(...args),
     fsCopyTree: (...args) => fs.copyTree(...args),
     fsFstat: (...args) => fs.fstat(...args),
@@ -202,7 +202,7 @@ export function bridgeOverSupervisor(
     acquire: (...args) => answerValue(supervisor.fsAcquire(...args)),
     list: (...args) => answerValue(supervisor.fsList(...args)),
     realpath: (...args) => answerValue(supervisor.fsRealpath(...args)),
-    remove: (...args) => answerValue(supervisor.fsRemove(...args)),
+    remove: (...args) => answerRemoval(supervisor.fsRemove(...args)),
     copyFile: (...args) => answerValue(supervisor.fsCopyFile(...args)),
     copyTree: (...args) => answerValue(supervisor.fsCopyTree(...args)),
     fstat: (...args) => answerValue(supervisor.fsFstat(...args)),

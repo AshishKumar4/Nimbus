@@ -1,4 +1,5 @@
 import type { VfsEvent } from '../vfs/events.js';
+import type { VfsRemoval } from '../vfs/vfs.js';
 
 /**
  * A value SQLite can return in a row.
@@ -456,7 +457,7 @@ export interface RuntimeFsBridge {
    */
   subscribe?(path: string, listener: (event: VfsEvent) => void, options?: { follow?: boolean }): () => void;
   realpath(path: RuntimeFsPath): Awaitable<string>;
-  remove(path: RuntimeFsPath, options?: { recursive?: boolean; force?: boolean }): Awaitable<void>;
+  remove(path: RuntimeFsPath, options?: { recursive?: boolean; force?: boolean; report?: boolean; keepVanishedAncestors?: boolean }): Awaitable<void | VfsRemoval>;
   copyFile(from: RuntimeFsPath, to: RuntimeFsPath): Awaitable<void | number>;
   /**
    * Copy the tree at `from` to the new path `to` (`cp -r`; `preserve` is

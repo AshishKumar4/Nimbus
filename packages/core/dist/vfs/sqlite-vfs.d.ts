@@ -827,6 +827,8 @@ export declare class SqliteVFS {
      * parent search proof; resolveName still consults the namespace each time.
      */
     private lastResolution;
+    /** A linked directory's searched prefix, valid under the same mutation clocks as lastResolution. */
+    private lastLinkedPrefix;
     private resolutionEpoch;
     /** A wave's watch for its own commit's publication (waveFiles' ownFiles): called once, at it. */
     private publishWatch;
@@ -885,8 +887,11 @@ export declare class SqliteVFS {
      * that derive a key before handing it on cannot stack the rewrite.
      */
     private storageKey;
+    private physicalKey;
     /** {@link storageKey} of a name already normalized, under a principal's private root. */
     private keyOfName;
+    /** A listing cursor is a lexical index position, not a path that must still exist. */
+    private lexicalKey;
     /**
      * The name a credential uses for `path`, whichever spelling it came in: a
      * confined caller's own root is `/tmp`, whether it wrote /tmp/x or the
@@ -969,6 +974,8 @@ export declare class SqliteVFS {
     private resolvePath;
     /** resolvePath's walk. */
     private walkPath;
+    /** The namespace's component walk, looking up this tree in the caller's names. */
+    private walkComponents;
     /** A walk's answer, kept as lastResolution when it found something on the live tree. */
     private walked;
     /** Keep a walk as lastResolution, in the one record (a walk's turn reads it before anything replaces it). */
@@ -1003,6 +1010,7 @@ export declare class SqliteVFS {
      * the mode said one thing and the filesystem did another.
      */
     private checkStickyParentMutation;
+    private checkStickyParent;
     /**
      * Shared resolver for the boolean probes (exists/isDirectory/isFile/
      * isSymlink). Resolution-structure failures — a missing or non-directory
@@ -1336,7 +1344,7 @@ export declare class SqliteVFS {
      * Refuse a mutation at `path` another lease covers; `owner` presents the
      * caller's own lease, `holds` the delegations the caller's process holds.
      */
-    assertMutationAllowed(path: string, owner?: string, holds?: () => ReadonlySet<string>): void;
+    assertMutationAllowed(path: string, owner?: string, holds?: () => ReadonlySet<string>, cred?: VfsCred): void;
     /**
      * Why a mutation at `path`, as `cred` names it (a confined caller's /tmp/x
      * is its own file), is refused: another owner's exclusive-mutation lease
@@ -1353,6 +1361,8 @@ export declare class SqliteVFS {
      */
     private refusalAt;
     private assertMutationsAllowed;
+    /** Named admission and landed admission use distinct key domains. */
+    private admit;
     /** `ino`: the number a delegation's holder gave the directory it made (askedIno), for a lone mkdir. */
     private mkdir;
     private _mkdirSingle;
@@ -2000,6 +2010,11 @@ export declare class SqliteVFS {
      * across one operation.
      */
     private createdPath;
+    private directoryPlacement;
+    /** Legacy rows under a link remain data at their stored key, not at the link's destination. */
+    private deletionKey;
+    private storedParents;
+    private checkStoredDeletion;
     private normalizeBatchInode;
     private authorizeBatch;
     private authorizeBatchNow;

@@ -8,16 +8,24 @@
   A backend's capabilities are static configuration (`Caps`), not state: which
   optional methods it has, whether it reports POSIX modes (and its root's mode),
   and, for a backend without `removeRecursive`, the entries its `unlink`/`rmdir`
-  refuse (`pins`) — the only way the fallback can leave a partial result.
+  refuse (`pins`), mount read-only flags and injected backend answers (`faults`).
 
   Rules (DECIDED where DESIGN.md is silent, flagged to the Filesystem lane):
   - All walk with `follow = false` for their operands (`readRange` and the CAS reads
     follow the final link) and answer walk errors, then ENXIO, first.
-  - `removeRecursive p`: `/`, a live mount point or an ancestor of one → EBUSY.
-    Native: the subtree goes. Fallback: post-order, an entry is removed unless it
-    is pinned or holds a pinned entry; the report names the roots of the removed
-    subtrees (native: only the operand, no walk) and every kept entry
-    (`fallback_report_exact`, `roots_exact`). Only `p`'s backend changes
+  - `removeRecursive p`: `/` → EBUSY. A live mount is entered, not rejected up
+    front: its children are removed as allowed (EROFS at each refused read-only
+    child), and its own rmdir is EBUSY only if no child failed. A failed child
+    keeps its ancestors without attempting their rmdir or adding failure lines.
+    Native removal is used only on a non-composed writable tree. The readable
+    single-backend fallback retains its exact partition and maximal-root proofs
+    (`fallback_report_exact`, `roots_exact`). The one fault-aware postorder walk
+    is `CompositeRemoval`: ENOENT counts gone, with a policy bit additionally
+    keeping ancestors for rm -r without -f; failed child lstat still attempts
+    unlink, failed scandir still attempts rmdir. Reports include removed roots,
+    kept entries, individual refusals and optional vanished entries. The write
+    frame expands only to backends routed under the operand; the original
+    single-backend frame still holds when no mount is crossed
     (`removeRecursive_stays_in_mount`).
   - `readRange`, `writeFileIfRevision`, `readFileAtRevision`: lookup first (a
     missing path is ENOENT, as on Linux — Main's ruling); an existing path on a
@@ -41,11 +49,11 @@
     synthesized ancestor reports 0755; `/` reports the root backend's root mode.
 -/
 
-import Nimbus.Vfs.Composite
+import Nimbus.Vfs.CompositeRemoval
 
 namespace Nimbus.Vfs.CompositeOps
 
-open Nimbus.Vfs.Composite
+open Nimbus.Vfs Nimbus.Vfs.Composite
 
 structure Caps where
   removeRecursive : Bool
@@ -54,10 +62,12 @@ structure Caps where
   /-- `some m`: the backend reports modes, its root has mode `m`. -/
   rootMode : Option Nat
   pins : List Path
+  readOnly : Bool := false
+  faults : CompositeRemoval.Faults := {}
   deriving DecidableEq, Repr
 
 inductive X where
-  | removeRecursive (p : String)
+  | removeRecursive (p : String) (keepVanishedAncestors : Bool)
   | readRange (p : String)
   /-- `creating`: the expected revision is 0, nothing there (create-if-absent). -/
   | writeFileIfRevision (p : String) (creating : Bool)
@@ -67,7 +77,7 @@ inductive X where
 
 inductive XOut where
   | err (code : String)
-  | report (removed kept : List Path)
+  | report (removed kept : List Path) (failures : List CompositeRemoval.Failure) (vanished : List Path)
   | bytes (b : Nat)
   | supported
   | count (n : Nat)
@@ -169,6 +179,59 @@ theorem roots_exact (t : Tree) (pins : List Path) (rp : Path) :
     · have := keeps_mono hxq hk
       simp [this] at hxk
 
+/-- In the readable fallback, only a pinned entry without a failed descendant
+    gets its own failure line. Pinned ancestors are kept, but never attempted. -/
+def fallbackFailures (t : Tree) (pins : List Path) (rp point : Path) : List CompositeRemoval.Failure :=
+  ((subtree t rp).filter fun q => pins.contains q &&
+    !(subtree t q).any (fun child => child != q && pins.contains child)).map fun q =>
+      ⟨point ++ q, "EBUSY", if look t q = some .dir then "rmdir" else "unlink"⟩
+
+/-- Every readable-fallback failure names an actual pinned subtree entry and has
+    no pinned proper descendant. Thus retained pinned ancestors do not acquire
+    extra failure lines, just as in the fault-aware operational walk. -/
+theorem fallback_failures_exact (t : Tree) (pins : List Path) (rp point : Path) :
+    ∀ f ∈ fallbackFailures t pins rp point, f.code = "EBUSY" ∧
+      ∃ q ∈ subtree t rp, f.path = point ++ q ∧ q ∈ pins ∧
+        ∀ child ∈ subtree t q, child ≠ q → child ∉ pins := by
+  intro f hf
+  obtain ⟨q, hq, rfl⟩ := List.mem_map.mp hf
+  obtain ⟨hsub, hq⟩ := List.mem_filter.mp hq
+  obtain ⟨hpin, hmin⟩ := Bool.and_eq_true_iff.mp hq
+  refine ⟨rfl, q, hsub, rfl, List.contains_iff_mem.mp hpin, ?_⟩
+  intro child hchild hne hpin'
+  have hany : (subtree t q).any (fun child => child != q && pins.contains child) = true :=
+    List.any_eq_true.mpr ⟨child, hchild, by simp [hne, List.contains_iff_mem, hpin']⟩
+  rw [hany] at hmin
+  cases hmin
+
+def removalConfig (caps : Backend → Caps) (b : Backend) : CompositeRemoval.Config :=
+  ⟨(caps b).readOnly, (caps b).pins, (caps b).faults⟩
+
+def composedRemoval (caps : Backend → Caps) (S : St) (P : Principal) (p : Path) : Bool :=
+  synth S.mounts P p || (caps (route S.mounts p).backend).readOnly
+
+def removeResolved (caps : Backend → Caps) (S : St) (P : Principal) (p : Path) (strict : Bool) : XOut × St :=
+  if p = [] then (.err "EBUSY", S) else
+  let b := (route S.mounts p).backend
+  let t := S.trees b
+  let rp := rel S.mounts p
+  let composed := composedRemoval caps S P p
+  if (CompositeRemoval.observed S P composed p p).isNone then (.err "ENOENT", S)
+  else if !composed && (caps b).removeRecursive then
+    (.report [p] [] [] [], setTree S b (cut t rp))
+  else if !composed && (caps b).faults = ({} : CompositeRemoval.Faults) then
+    let (t', removed, kept) := fallbackRemove t (caps b).pins rp
+    (.report ((roots rp removed).map ((route S.mounts p).point ++ ·))
+      (kept.map ((route S.mounts p).point ++ ·))
+      (fallbackFailures t (caps b).pins rp (route S.mounts p).point) [], setTree S b t')
+  else
+    match CompositeRemoval.discover (removalConfig caps) S P composed p maxSteps p
+        (pfx_iff.mpr (List.prefix_refl p)) true with
+    | .error code => (.err code, S)
+    | .ok entries =>
+      let r := CompositeRemoval.run (removalConfig caps) S P composed strict p entries
+      (.report (roots p r.gone) r.kept r.failures r.vanished, r.state)
+
 /-! ## The operations -/
 
 def reach (S : St) (P : Principal) (follow : Bool) (raw : String) : Except String Path :=
@@ -186,21 +249,10 @@ def relocate (t : Tree) (rs rq : Path) : Tree :=
 variable (caps : Backend → Caps)
 
 def execX (S : St) (P : Principal) : X → XOut × St
-  | .removeRecursive raw =>
+  | .removeRecursive raw strict =>
     match reach S P false raw with
     | .error e => (.err e, S)
-    | .ok p =>
-      if p = [] ∨ synth S.mounts P p then (.err "EBUSY", S) else
-      let b := (route S.mounts p).backend
-      let t := S.trees b
-      let rp := rel S.mounts p
-      if (look t rp).isNone then (.err "ENOENT", S)
-      else if (caps b).removeRecursive then
-        (.report [(route S.mounts p).point ++ rp] [], setTree S b (cut t rp))
-      else
-        let (t', removed, kept) := fallbackRemove t (caps b).pins rp
-        (.report ((roots rp removed).map ((route S.mounts p).point ++ ·)) (kept.map ((route S.mounts p).point ++ ·)),
-          setTree S b t')
+    | .ok p => removeResolved caps S P p strict
   | .readRange raw =>
     match reach S P true raw with
     | .error e => (.err e, S)
@@ -315,24 +367,53 @@ theorem frame_refl (S : St) (b : Backend) : Frame S S b := ⟨rfl, fun _ _ => rf
 theorem frame_set (S : St) (b : Backend) (t : Tree) : Frame S (setTree S b t) b :=
   ⟨rfl, fun c hc => by simp [setTree, hc]⟩
 
-/-- `removeRecursive` changes only the backend serving its operand: it never
-    crosses into another mount, and `/`, a live mount point or an ancestor of one is
-    EBUSY with nothing changed. -/
-theorem removeRecursive_stays_in_mount (S : St) (P : Principal) (raw : String) :
-    (∀ p, reach S P false raw = .ok p → Frame S (execX caps S P (.removeRecursive raw)).2 (route S.mounts p).backend) ∧
-    (∀ p, reach S P false raw = .ok p → (p = [] ∨ synth S.mounts P p = true) →
-      execX caps S P (.removeRecursive raw) = (.err "EBUSY", S)) := by
-  refine ⟨fun p hp => ?_, fun p hp hs => ?_⟩
-  · simp only [execX, hp]
+/-- GNU semantics change the old unconditional single-mount property: a crossing
+    walk may write each live backend under its operand. It still changes no other
+    backend or mount table; a non-composed removal retains the old frame, and `/`
+    retains its whole-call EBUSY/no-change property. -/
+theorem removeRecursive_stays_in_mount (S : St) (P : Principal) (raw : String) (strict : Bool) :
+    (∀ p, reach S P false raw = .ok p → composedRemoval caps S P p = false →
+      Frame S (execX caps S P (.removeRecursive raw strict)).2 (route S.mounts p).backend) ∧
+    (∀ p, reach S P false raw = .ok p → ∀ c, c ≠ (route S.mounts p).backend →
+      (∀ q, pfx p q = true → c ≠ (route S.mounts q).backend) →
+      (execX caps S P (.removeRecursive raw strict)).2.mounts = S.mounts ∧
+      (execX caps S P (.removeRecursive raw strict)).2.trees c = S.trees c) ∧
+    (reach S P false raw = .ok [] → execX caps S P (.removeRecursive raw strict) = (.err "EBUSY", S)) := by
+  refine ⟨?_, ?_, ?_⟩
+  · intro p hp hc
+    simp only [execX, hp, removeResolved, hc]
     split
     · exact frame_refl _ _
     · split
       · exact frame_refl _ _
       · split
         · exact frame_set _ _ _
-        · exact frame_set _ _ _
-  · simp only [execX, hp]
-    rw [if_pos hs]
+        · split
+          · exact frame_set _ _ _
+          · split
+            · exact frame_refl _ _
+            · rename_i entries _
+              constructor
+              · obtain ⟨hm, _⟩ := CompositeRemoval.walk_single_mount (removalConfig caps) S P strict p entries
+                  ((route S.mounts p).backend + 1) (Nat.succ_ne_self _)
+                exact hm
+              · intro c hne
+                exact (CompositeRemoval.walk_single_mount (removalConfig caps) S P strict p entries c hne).2
+  · intro p hp c hc hsub
+    simp only [execX, hp, removeResolved]
+    split
+    · exact ⟨rfl, rfl⟩
+    · split
+      · exact ⟨rfl, rfl⟩
+      · split
+        · exact ⟨rfl, (frame_set S _ _).2 c hc⟩
+        · split
+          · exact ⟨rfl, (frame_set S _ _).2 c hc⟩
+          · split
+            · exact ⟨rfl, rfl⟩
+            · exact CompositeRemoval.walk_subtree_frame (removalConfig caps) S P _ strict p _ c hc hsub
+  · intro hp
+    simp [execX, hp, removeResolved]
 
 /-- A capability the backend lacks answers ENOTSUP and is never emulated. -/
 theorem unsupported_is_enotsup (S : St) (P : Principal) (raw : String) (p : Path)

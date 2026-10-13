@@ -168,7 +168,8 @@ export class WaveIngest {
     if (router === null) return true;
     const routes = new Map<string, string>();
     for (const named of names) {
-      const key = view.storageKey(named);
+      // Routing asks the namespace about the original components, not a store-only resolution.
+      const key = named.startsWith('/') ? named.slice(1) : named;
       const looked = follow ? key : parentKey(key);
       let resolved = routes.get(looked);
       if (resolved === undefined) {

@@ -229,6 +229,8 @@ interface SharedFacet {
   retired: boolean;
   /** Its binding died: whatever a call on it gets instead of an answer is that death. */
   crashed: boolean;
+  /** Its load and warm-up (loadBuildFacet), once: the facet is warm for every later caller of this generation. */
+  warmed?: Promise<void>;
 }
 
 /**
@@ -441,10 +443,17 @@ export function buildFacetPrebundler(ctx: DurableObjectState, env: unknown): (sp
  * Loads the Durable Object's build facet and waits for it: the staged parts
  * fetched and verified, the binding instantiated. What prewarmBuildFacet
  * starts, for a caller that wants the load behind it before it allocates
- * (a pre-bundle's slice). Rejects as the load does.
+ * (a pre-bundle's slice). Once per generation: a facet warmed (or warming)
+ * is not asked again; a retired one's successor is warmed by its first
+ * caller. Rejects as the load does, and the next caller loads afresh.
  */
-export async function loadBuildFacet(ctx: DurableObjectState, env: unknown): Promise<void> {
+export function loadBuildFacet(ctx: DurableObjectState, env: unknown): Promise<void> {
   const facet = sharedBuildFacet(ctx, env);
+  facet.warmed ??= warm(ctx, facet);
+  return facet.warmed;
+}
+
+async function warm(ctx: DurableObjectState, facet: SharedFacet): Promise<void> {
   const endCall = await beginCall(ctx, facet);
   try {
     await (await facet.stub).warm();

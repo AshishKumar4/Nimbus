@@ -9,6 +9,7 @@ import { traced, type SpanRecorder } from '@nimbus-sh/platform/tracing.js';
 import { WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
 import { CRED_SESSION_USER, requireVfsCred, type VfsCred } from '../runtime/os-contracts.js';
 import { ProcessFiles } from '../runtime/process-files.js';
+import { sendRemoval } from '../runtime/filesystem-methods.js';
 import type { NimbusFilesystemAuthority, NimbusHostFilesystemLease, RuntimeFsBridge, RuntimeFsPath, RuntimeMutationOwner, RuntimeVfsStat } from '../runtime/os-contracts.js';
 import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import {
@@ -414,7 +415,13 @@ const NATIVE_OPS = {
   fsFutimes: (e, t) => fsFor(e, t).futimes(numberArg(e, 0), numberArg(e, 1), numberArg(e, 2)),
   fsSync: (e, t) => fsFor(e, t).fsync(e.args?.[0] === undefined ? undefined : numberArg(e, 0)),
   fsRealpath: (e, t) => fsFor(e, t).realpath(FsPath.parse(e.args?.[0])),
-  fsRemove: (e, t) => fsFor(e, t).remove(FsPath.parse(e.args?.[0]), z.object({ recursive: z.boolean().optional(), force: z.boolean().optional() }).optional().parse(e.args?.[1])),
+  // Its report leaves for the hop with each failure's error as data (sendRemoval).
+  fsRemove: (e, t) => sendRemoval(fsFor(e, t).remove(FsPath.parse(e.args?.[0]), z.object({
+    recursive: z.boolean().optional(),
+    force: z.boolean().optional(),
+    report: z.boolean().optional(),
+    keepVanishedAncestors: z.boolean().optional(),
+  }).optional().parse(e.args?.[1]))),
   fsCopyFile: (e, t) => fsFor(e, t).copyFile(FsPath.parse(e.args?.[0]), FsPath.parse(e.args?.[1])),
   fsCopyTree: (e, t) => fsFor(e, t).copyTree(FsPath.parse(e.args?.[0]), FsPath.parse(e.args?.[1]), z.object({ preserve: z.boolean().optional() }).optional().parse(e.args?.[2])),
   fsAcquireExclusiveMutation: (e, t) => fsFor(e, t).acquireExclusiveMutation(FsPath.parse(e.args?.[0]), z.object({

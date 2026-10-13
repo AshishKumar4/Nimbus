@@ -9,7 +9,8 @@ const publicRoot = new URL('../../../packages/worker/public/', import.meta.url);
 
 export const stagedAssets = {
   async fetch(request) {
-    const { pathname } = new URL(request.url);
+    // The binding takes a URL string or a Request, as fetch does.
+    const { pathname } = new URL(typeof request === 'string' ? request : request.url);
     try {
       return new Response(await readFile(new URL(`.${pathname}`, publicRoot)));
     } catch (e) {

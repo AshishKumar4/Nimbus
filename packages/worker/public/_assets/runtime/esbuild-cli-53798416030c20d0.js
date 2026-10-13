@@ -597,6 +597,39 @@ return globalThis.Go;
   function asBytes(value) {
     return value instanceof ArrayBuffer ? new Uint8Array(value) : value;
   }
+  var STANDARD_ERRORS = {
+    EvalError,
+    RangeError,
+    ReferenceError,
+    SyntaxError,
+    TypeError,
+    URIError
+  };
+  function supervisorRefusalError(refusal) {
+    const Standard = Object.hasOwn(STANDARD_ERRORS, refusal.name) ? STANDARD_ERRORS[refusal.name] : void 0;
+    const error = new (Standard ?? Error)(refusal.message);
+    if (!Standard && refusal.name !== "Error") {
+      Object.defineProperty(error, "name", { value: refusal.name, configurable: true, writable: true });
+    }
+    for (const [key, value] of Object.entries(refusal.properties)) {
+      Object.defineProperty(error, key, { value, configurable: true, enumerable: true, writable: true });
+    }
+    for (const [key, value] of Object.entries(refusal.errors)) {
+      Object.defineProperty(error, key, { value: supervisorRefusalError(value), configurable: true, enumerable: true, writable: true });
+    }
+    return error;
+  }
+  function answerRemoval(result) {
+    return pending(result) ? Promise.resolve(result).then(removalErrors) : removalErrors(result);
+  }
+  function removalErrors(report) {
+    if (report === void 0) return report;
+    const failures = report.failures.map(({ path, error }) => ({
+      path,
+      error: error instanceof Error ? error : supervisorRefusalError(error)
+    }));
+    return { ...report, failures };
+  }
 
   var FILESYSTEM_ANSWERED_RPC_METHODS = [
     "stat",
@@ -678,7 +711,7 @@ return globalThis.Go;
       acquire: (...args) => answerValue(supervisor.fsAcquire(...args)),
       list: (...args) => answerValue(supervisor.fsList(...args)),
       realpath: (...args) => answerValue(supervisor.fsRealpath(...args)),
-      remove: (...args) => answerValue(supervisor.fsRemove(...args)),
+      remove: (...args) => answerRemoval(supervisor.fsRemove(...args)),
       copyFile: (...args) => answerValue(supervisor.fsCopyFile(...args)),
       copyTree: (...args) => answerValue(supervisor.fsCopyTree(...args)),
       fstat: (...args) => answerValue(supervisor.fsFstat(...args)),
@@ -719,28 +752,6 @@ return globalThis.Go;
   var ANSWERED = new Set(SUPERVISOR_ANSWERED_METHODS);
   function isSupervisorAnsweredMethod(name) {
     return typeof name === "string" && ANSWERED.has(name);
-  }
-  var STANDARD_ERRORS = {
-    EvalError,
-    RangeError,
-    ReferenceError,
-    SyntaxError,
-    TypeError,
-    URIError
-  };
-  function supervisorRefusalError(refusal) {
-    const Standard = Object.hasOwn(STANDARD_ERRORS, refusal.name) ? STANDARD_ERRORS[refusal.name] : void 0;
-    const error = new (Standard ?? Error)(refusal.message);
-    if (!Standard && refusal.name !== "Error") {
-      Object.defineProperty(error, "name", { value: refusal.name, configurable: true, writable: true });
-    }
-    for (const [key, value] of Object.entries(refusal.properties)) {
-      Object.defineProperty(error, key, { value, configurable: true, enumerable: true, writable: true });
-    }
-    for (const [key, value] of Object.entries(refusal.errors)) {
-      Object.defineProperty(error, key, { value: supervisorRefusalError(value), configurable: true, enumerable: true, writable: true });
-    }
-    return error;
   }
   function isAnsweringStub(supervisor) {
     return typeof Reflect.get(supervisor, "answer") === "function";

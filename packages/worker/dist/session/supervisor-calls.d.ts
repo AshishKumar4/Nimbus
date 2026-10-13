@@ -272,6 +272,8 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
     fsRemove(path: RuntimeFsPath, options?: {
         recursive?: boolean;
         force?: boolean;
+        report?: boolean;
+        keepVanishedAncestors?: boolean;
     } | undefined): Promise<Awaited<ReturnType<RuntimeFsBridge["remove"]>>>;
     fsCopyFile(from: RuntimeFsPath, to: RuntimeFsPath): Promise<Awaited<ReturnType<RuntimeFsBridge["copyFile"]>>>;
     fsCopyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: {

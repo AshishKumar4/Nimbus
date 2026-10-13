@@ -401,17 +401,15 @@ export async function routeToSessionPort(self, port, request, innerPath, mountBa
             }
         }
     }
-    if (port === self._viteShimPort) {
-        // The preview HMR WebSocket can't cross the port-registry RPC, so it is
-        // accepted in-DO for both dev servers — the same handling `/preview/` uses.
-        if (self.cirrusReal?.isRunning && self.acceptCirrusHmrWs && isCirrusHmrPath(innerPath)) {
-            return self.acceptCirrusHmrWs(request);
-        }
-        // The Cirrus dev server rewrites base-relative URLs per request and the
-        // generic proxy strips the base header, so hand it the request directly.
-        if (self.viteDevServer?.isRunning) {
-            return self.viteDevServer.handleRequest(request, innerPath, mountBase);
-        }
+    // Real Vite's HMR socket is the session's (its HmrBridge), so it is
+    // accepted in-DO on every route to the server's port.
+    if (self.cirrusReal?.isRunning && port === self.cirrusReal.port && self.acceptCirrusHmrWs && isCirrusHmrPath(innerPath)) {
+        return self.acceptCirrusHmrWs(request);
+    }
+    // The Cirrus dev server rewrites base-relative URLs per request and the
+    // generic proxy strips the base header, so hand it the request directly.
+    if (port === self._viteShimPort && self.viteDevServer?.isRunning) {
+        return self.viteDevServer.handleRequest(request, innerPath, mountBase);
     }
     const proxied = capability === undefined
         ? await self.portRegistry.routeRequest(port, request, innerPath)
