@@ -81,7 +81,7 @@ function ledger(ctx) {
     let entry = ledgers.get(ctx);
     if (!entry) {
         entry = {
-            inFlight: new Map(), holders: new Map(), processHolds: new Map(), news: new Map(), graph: undefined,
+            inFlight: new Map(), holders: new Map(), processHolds: new Map(), news: new Map(), graph: undefined, outside: new Map(),
             schedule: decideOnALaterTurn, deciding: false,
             turnDelays: [], decisionDelays: [], turnProbePending: false,
             claims: new Set(), peak: 0, readmitted: 0,
@@ -271,6 +271,10 @@ function decide(entry) {
  *   - a process holding no worker (a shell line running in the session) is
  *     stuck when every unit of its own work is awaiting a child it started
  *     (the graph's `awaits`), and each of those is queued or stuck;
+ *   - a process holding no worker in a wait outside the ledger (for the
+ *     supervisor's credit, on another launch's build: waitOutsideLedger) is
+ *     stuck when each process that wait is on is queued or stuck: the
+ *     credit's holders, the build's leader;
  *   - anything else (a builtin running, a process that never reports, a
  *     hold no process owns) is taken to end on its own.
  *
@@ -300,7 +304,7 @@ function deadlocked(entry) {
         if (entry.processHolds.has(pid))
             on = currentNews(entry, pid) ? graph.children(pid) : null;
         else
-            on = graph.awaits(pid);
+            on = entry.outside.get(pid)?.() ?? graph.awaits(pid);
         if (!on || on.length === 0)
             return;
         waitsOn.set(pid, on);
@@ -336,6 +340,31 @@ function deadlocked(entry) {
         }
     }
     return undefined;
+}
+/**
+ * `pid`, holding no worker, waits outside the ledger until the returned end:
+ * for the supervisor's transient credit, or on another launch's build of
+ * the bundle it needs. `on` names the processes whose progress that wait
+ * is on (the credit's holders, the build's leader), or null where something
+ * the ledger cannot see may end it (credit held outside the session). The
+ * detector takes it as one more wait-for edge (deadlocked), so the cycle a
+ * running program makes, holding its worker while its child waits for
+ * credit that a build holds while its helper waits for a worker, is told
+ * and refused as a cycle of workers is: one wait-for graph across the
+ * workers, the credit and the builds.
+ */
+export function waitOutsideLedger(ctx, pid, on) {
+    const entry = ledger(ctx);
+    entry.outside.set(pid, on);
+    admitWaiters(entry);
+    let ended = false;
+    return () => {
+        if (ended)
+            return;
+        ended = true;
+        if (entry.outside.get(pid) === on)
+            entry.outside.delete(pid);
+    };
 }
 /**
  * The session's process account for `ctx`'s ledger (ProcessWaitGraph).
@@ -560,6 +589,17 @@ const launchAdmission = new AsyncLocalStorage();
 export function launchWorkerKey(pid) {
     return `launch:${pid}`;
 }
+/** The launch whose preparation (its bundle's build) this async context is, holding no worker of its own. */
+const launchPreparation = new AsyncLocalStorage();
+/**
+ * `body`, the preparation of `process`'s launch before it takes a worker
+ * (its bundle's build, under the supervisor's credit). A helper it calls
+ * (beginHelperFetch) waits for a worker as that process, so a wait no
+ * release can satisfy is one the detector can tell and refuse.
+ */
+export function withLaunchPreparation(ctx, process, body) {
+    return launchPreparation.run({ ctx, process }, body);
+}
 /**
  * Run a launch admitted once on the ledger. It waits, as
  * {@link beginLoaderFetchWhenFree} with its process does, for one Dynamic
@@ -673,10 +713,12 @@ function claimed(admission, runner) {
  * transform facet, the esbuild facet, the build facet): within an admitted
  * launch it is that launch's worker (beginAdmittedFetch); otherwise it waits
  * its turn on the ledger, joining at once when that worker is already in
- * flight. End the hold from the caller's own `finally`, as beginLoaderFetch's.
+ * flight, as the process whose preparation it is (withLaunchPreparation).
+ * End the hold from the caller's own `finally`, as beginLoaderFetch's.
  */
 export async function beginHelperFetch(ctx, workerKey) {
-    return beginAdmittedFetch(ctx) ?? beginLoaderFetchWhenFree(ctx, workerKey);
+    const preparing = launchPreparation.getStore();
+    return beginAdmittedFetch(ctx) ?? beginLoaderFetchWhenFree(ctx, workerKey, preparing?.ctx === ctx ? { process: preparing.process } : {});
 }
 /**
  * Distinct Dynamic Workers this actor may still put in flight: the limit

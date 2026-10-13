@@ -1330,18 +1330,21 @@ export declare class FacetManager {
     /** Live sum of the entries' `bytes`, mirrored to the diag gauge on change. */
     private prefetchCacheBytes;
     /**
-     * Cache-miss builds in flight, by key and the revision they read: a launch
-     * of the same key waits for one, then takes its entry, or (one the cache
-     * did not retain) its own copy of the state, built at the revision `done`
-     * names (null: it built nothing of its own).
+     * Cache-miss builds in flight, by key and the revision they read, and the
+     * launch building it (`leader`): a launch of the same key waits for one,
+     * holding nothing, then takes its entry, or (one the cache did not retain)
+     * its own copy of the state, built at the revision `done` names (null: it
+     * built nothing of its own).
      */
     private readonly prefetchBuilds;
     /**
-     * A launch's build admission (admitPrefetch), by pid, held from its build
-     * until its module map is generated: what it built is live until then, and
-     * no other build runs beside it beyond what the budget holds. Given back
-     * once the map is made (_generateUnderCeiling), when the launch builds
-     * again, and as its launch ends however it ends.
+     * A launch's share of the supervisor's credit (admitPrefetch), by pid:
+     * its build's, held from the build until its module map is generated, or
+     * for a state it did not build its map's (_holdMapShare); either taken
+     * before it holds a worker. What it built is live until then, and no
+     * other build runs beside it beyond what the budget holds. Given back once
+     * the map is made (_generateUnderCeiling), kept for a rebuild under the
+     * ceiling, and given back as its launch ends however it ends.
      */
     private readonly buildAdmissions;
     private _releaseBuildAdmission;
@@ -1704,7 +1707,11 @@ export declare class FacetManager {
      * with none of it throws ModuleMapOverCeilingError.
      */
     private _generateUnderCeiling;
-    /** _generateUnderCeiling's work, under its admission, which it gives back as it ends. */
+    /**
+     * _generateUnderCeiling's work, under its admission, which it gives back
+     * as it ends; over the ceiling, it is kept for the rebuild under it
+     * (_rebuildUnderCeiling), which then waits for no credit.
+     */
     private _generateWithin;
     /**
      * Build a launch's state again when its map was over the ceiling with none
@@ -2046,15 +2053,22 @@ export declare class FacetManager {
      */
     private _assertLaunchStillOwned;
     /**
-     * What `pid`'s launch waits for room under (admitPrefetch): aborted once
-     * its process ends, so a launch killed or destroyed while it queued is
-     * never admitted after its end. A launch let in on the ledger
-     * (withLaunchAdmission) gives its worker back for the wait and takes it
-     * back once it has room: waiting for credit while holding a worker, it
-     * would wait on a resident's build that holds credit while its helper
-     * waits for a worker (InternalScallop's cycle across the two pools).
+     * What `pid`'s launch waits for room under (admitPrefetch), holding no
+     * worker (the lock order: credit, or a build joined, before a worker):
+     * aborted once its process ends, so a launch killed or destroyed while it
+     * queued is never admitted after its end; and told to the ledger as a
+     * wait on the credit's holders (waitOutsideLedger), so a cycle through a
+     * running program waiting on its child is refused as a cycle of workers is.
      */
     private _launchEnds;
+    /** The launches holding the supervisor's credit, or null where some of it is held by other work (another session's, a write wave). */
+    private _creditHolders;
+    /**
+     * A launch's share of the credit for the module map it makes from `state`
+     * (another launch's build, the cache's), taken before it holds a worker:
+     * the share it holds already (its build's, kept for a rebuild) is it.
+     */
+    private _holdMapShare;
     /**
      * The one way this manager boots a resident process. Every resident process
      * is a facet of this session; there is nothing to place and nothing here

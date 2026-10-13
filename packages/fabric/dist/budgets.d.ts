@@ -93,6 +93,19 @@ export interface ProcessWaitGraph {
     awaits(pid: number): readonly number[] | null;
 }
 /**
+ * `pid`, holding no worker, waits outside the ledger until the returned end:
+ * for the supervisor's transient credit, or on another launch's build of
+ * the bundle it needs. `on` names the processes whose progress that wait
+ * is on (the credit's holders, the build's leader), or null where something
+ * the ledger cannot see may end it (credit held outside the session). The
+ * detector takes it as one more wait-for edge (deadlocked), so the cycle a
+ * running program makes, holding its worker while its child waits for
+ * credit that a build holds while its helper waits for a worker, is told
+ * and refused as a cycle of workers is: one wait-for graph across the
+ * workers, the credit and the builds.
+ */
+export declare function waitOutsideLedger(ctx: object, pid: number, on: () => readonly number[] | null): () => void;
+/**
  * The session's process account for `ctx`'s ledger (ProcessWaitGraph).
  * Without one, nothing is refused. `schedule` runs a refusal's decision on
  * a later turn (by default the event loop's next); a test drives it.
@@ -221,6 +234,13 @@ export declare function readmitRefused(refused: EndLoaderFetch, options: {
 /** The one Dynamic Worker a process puts in flight, on the ledger: its launch, then its run or its residency. */
 export declare function launchWorkerKey(pid: number): string;
 /**
+ * `body`, the preparation of `process`'s launch before it takes a worker
+ * (its bundle's build, under the supervisor's credit). A helper it calls
+ * (beginHelperFetch) waits for a worker as that process, so a wait no
+ * release can satisfy is one the detector can tell and refuse.
+ */
+export declare function withLaunchPreparation<T>(ctx: object, process: LedgerProcess, body: () => Promise<T>): Promise<T>;
+/**
  * Run a launch admitted once on the ledger. It waits, as
  * {@link beginLoaderFetchWhenFree} with its process does, for one Dynamic
  * Worker, and holds it until `body` settles. Everything the launch puts in
@@ -268,7 +288,8 @@ export declare function claimAdmission(ctx: object, pid?: number): EndLoaderFetc
  * transform facet, the esbuild facet, the build facet): within an admitted
  * launch it is that launch's worker (beginAdmittedFetch); otherwise it waits
  * its turn on the ledger, joining at once when that worker is already in
- * flight. End the hold from the caller's own `finally`, as beginLoaderFetch's.
+ * flight, as the process whose preparation it is (withLaunchPreparation).
+ * End the hold from the caller's own `finally`, as beginLoaderFetch's.
  */
 export declare function beginHelperFetch(ctx: object, workerKey: string): Promise<EndLoaderFetch>;
 /**
