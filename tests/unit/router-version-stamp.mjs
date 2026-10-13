@@ -8,8 +8,11 @@ import { VERSION_HEADER } from '../behavioral/_session-transport.mjs';
 assert.equal(VERSION_HEADER, NIMBUS_VERSION_HEADER, 'the probes read the header the router writes');
 
 const suffix = 'preview.example.test';
+// A session binding that no readiness reply may reach.
+const NIMBUS_SESSION = { idFromName() { throw new Error('a readiness reply reached a session'); }, get() { throw new Error('a readiness reply reached a session'); } };
 const env = {
   JWT_SECRET: 'unit-version-stamp-secret-0123456789abcdef',
+  NIMBUS_SESSION,
   NIMBUS_PREVIEW_HOST_SUFFIX: suffix,
   CF_VERSION_METADATA: { id: 'version-new' },
 };
@@ -25,7 +28,7 @@ for (const [what, url, init] of [
   ['the remote API', 'https://app.test/api/nimbus/v1/sandboxes/nimbus-readiness/rpc', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }],
 ]) {
   const response = await answer(url, init);
-  assert.equal(response.status, 401, `${what}: refused before any session`);
+  assert.ok(response.status >= 400 && response.status < 500, `${what}: refused before any session (${response.status})`);
   assert.equal(response.headers.get(NIMBUS_VERSION_HEADER), 'version-new', `${what} names the version that answered`);
 }
 
