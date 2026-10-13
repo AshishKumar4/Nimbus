@@ -20,6 +20,7 @@ export declare function modeAllows(stat: {
     mode?: number;
     uid?: number;
     gid?: number;
+    type?: string;
 }, want: number, cred: {
     uid: number;
     gid: number;

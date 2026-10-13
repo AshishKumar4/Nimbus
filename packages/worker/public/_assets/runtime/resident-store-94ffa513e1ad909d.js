@@ -307,8 +307,9 @@ var __nimbusResidentModule = (() => {
     if (requested === 0)
       return true;
     const permissions = entry.mode & 511;
-    if (cred.uid === 0)
-      return (requested & 1) === 0 || (permissions & 73) !== 0;
+    if (cred.uid === 0) {
+      return (requested & 1) === 0 || (permissions & 73) !== 0 || (entry.directory ?? (entry.mode & 61440) === 16384);
+    }
     const shift = cred.uid === entry.uid ? 6 : cred.gid === entry.gid || cred.groups.includes(entry.gid) ? 3 : 0;
     return (permissions >> shift & requested) === requested;
   }
