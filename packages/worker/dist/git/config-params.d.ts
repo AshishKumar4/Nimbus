@@ -53,7 +53,13 @@ export declare function withWorktreeConfig<G extends ConfigReader & {
     setConfig(args: {
         path: string;
     }): Promise<void>;
-}>(git: G, files: ConfigReader, fs: {
+}>(git: G, files: {
+    getConfig(args: {
+        fs: unknown;
+        gitdir: string;
+        path: string;
+    }): Promise<unknown>;
+}, fs: {
     promises: {
         readFile(path: string, options?: 'utf8' | {
             encoding: 'utf8';
