@@ -73,20 +73,10 @@ export declare function refusalErrno(error: unknown, gone?: (refusal: string) =>
 /** How a run whose session no longer holds its process ends. */
 export declare function processGoneMessage(refusal: string): string;
 export declare function after<T, R>(value: Awaitable<T>, next: (value: T) => Awaitable<R>): Awaitable<R>;
-/**
- * The lowest descriptor number at or above `from` that no entry of `taken`
- * holds and is not `reserved`, as POSIX open(2) and dup(2) choose one. Every
- * WASI host's allocator: fd_renumber and dup2 place entries at numbers the
- * guest picks, so a counter would hand one of them out again.
- */
-export declare function lowestFreeFd(taken: {
-    has(fd: number): boolean;
-}, from: number, reserved?: number): number;
 export interface AuthorityFilesystemOptions {
     fs(): RuntimeFsBridge | null;
     memory(): WebAssembly.Memory;
     fds: Map<number, FilesystemFd>;
-    /** The lowest number not in `fds`: it is taken once its entry is set, so set it before asking again. */
     allocateFd(): number;
     abi?: 'preview0' | 'preview1';
     synchronous: boolean;

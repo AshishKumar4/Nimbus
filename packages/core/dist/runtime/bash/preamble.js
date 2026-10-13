@@ -1,4 +1,4 @@
-import { after, installAuthorityFilesystem, lowestFreeFd, processGoneMessage, refusalErrno } from '../wasi/filesystem.js';
+import { after, installAuthorityFilesystem, processGoneMessage, refusalErrno } from '../wasi/filesystem.js';
 import { supervisorFilesystem } from '../vfs-supervisor.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
 import { PIPE_CAPACITY, decideRead, decideWrite, heldExitSettles, holdsExit, pipeBudget, pipeLimitMessage, readerStops } from './pipe-rules.js';
@@ -155,7 +155,8 @@ function wakeWriters(pp) {
 // real 'preopen' entry: wasi-libc's path ops fd_fdstat_get the dirfd
 // to compute inherited rights, so it must answer (not EBADF), and
 // lowestFd must never re-issue it for a regular file.
-function lowestFd(proc) { return lowestFreeFd(proc.fds, 0, 3); }
+function lowestFd(proc) { let fd = 0; while (proc.fds.has(fd) || fd === 3)
+    fd++; return fd; }
 function bumpPipe(s, e, d) { const pp = s.pipes.get(e.pipeId); if (e.end === 'r')
     pp.readers += d;
 else

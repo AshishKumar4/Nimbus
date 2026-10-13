@@ -1,4 +1,4 @@
-import { installAuthorityFilesystem, lowestFreeFd, processGoneMessage, WASI_ACCEPTED_PATH_PREFIX, WASI_LISTEN_PATH_PREFIX, WASI_TCP_PATH_PREFIX, } from '@nimbus-sh/core/runtime/wasi/filesystem.js';
+import { installAuthorityFilesystem, processGoneMessage, WASI_ACCEPTED_PATH_PREFIX, WASI_LISTEN_PATH_PREFIX, WASI_TCP_PATH_PREFIX, } from '@nimbus-sh/core/runtime/wasi/filesystem.js';
 import { answeringSupervisor, supervisorFilesystem } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '@nimbus-sh/core/constants.js';
 import { residentFilesystem, } from '@nimbus-sh/core/runtime/wasi/resident-filesystem.js';
@@ -346,6 +346,7 @@ export function __wasiInitFS(opts) {
     fdTable.set(0, { kind: 'stdin' });
     fdTable.set(1, { kind: 'stdout' });
     fdTable.set(2, { kind: 'stderr' });
+    nextFd = 3;
     for (const po of (opts.preopens || [])) {
         const fd = __wasiAllocateFd();
         const vfsPath = __wasiCanonicalize(po.vfsPath);
@@ -597,9 +598,13 @@ function __wasiAdoptSocket(socket, fdflags) {
 // writes to it. The mask is advisory for this module's own kinds; the codec
 // enforces rights on its descriptors.
 export const fdTable = new Map();
-// The only source of descriptor numbers, for files, sockets and pipes alike.
-// From 3: the host answers 0, 1 and 2 as the guest's streams by number.
-function __wasiAllocateFd() { return lowestFreeFd(fdTable, 3); }
+let nextFd = 3;
+// The only source of descriptor numbers. A second counter — one for files, one
+// for sockets — hands the same number out twice and the later open silently
+// destroys the earlier fd's entry. fd_renumber and dup2 place entries at
+// numbers the guest picks, so the counter steps over a number one holds.
+function __wasiAllocateFd() { while (fdTable.has(nextFd))
+    nextFd++; return nextFd++; }
 // ─── makeImports ────────────────────────────────────────────────────────
 // ── Park watchdog ────────────────────────────────────────────────────────
 //
