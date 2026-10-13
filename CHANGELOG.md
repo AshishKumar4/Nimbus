@@ -5,6 +5,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: peer placement put a process in the isolate another process of the
+  same coordinator already ran in, and two processes placed at once in the
+  same one: the isolates in use were checked but never recorded. Each
+  placement now reserves its isolate when it accepts it, and frees it when
+  the process is released, fails to open, or its host closes.
+
 - Breaking: a Worker that composes the fabric needs the `enable_request_signal`
   compatibility flag, which no compatibility date enables. Add
   `"enable_request_signal"` to `compatibility_flags` in your wrangler config;

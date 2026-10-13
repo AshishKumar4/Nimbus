@@ -390,12 +390,13 @@ class PeerProcessHost implements ProcessHost {
       this.assertDurableStorage();
     }
     await this.reconcile();
+    const supervisor = supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() });
+    // Reserves its isolate for this pid: from here every way out frees it.
     const placement = await this._place(params.pid);
     // Minted per open, held only by this coordinator and the peer that hosts
     // the process. The workerKey is derivable from a pid; this is not.
     const webSocketCapability = crypto.randomUUID();
 
-    const supervisor = supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() });
     const loss = new HostLoss();
     let stopObserving = () => {};
     const residency: PeerResidency = { abort: new AbortController(), socket: null };
@@ -524,26 +525,38 @@ class PeerProcessHost implements ProcessHost {
     hostActivity(this.ctx).close();
     for (const residency of this.residencies.values()) residency.abort.abort();
     this.residencies.clear();
+    this.tokensInUse.clear();
     await this.clearPlacements();
   }
 
   /**
    * Probe successive sibling names until one reports an isolate token distinct
-   * from this coordinator's and from every peer already hosting a process. A
-   * peer that co-located bought nothing — it shares the CPU it was chosen to
-   * escape — so placement verifies rather than assumes.
+   * from this coordinator's and from every peer already hosting a process or
+   * being placed. A peer that co-located bought nothing — it shares the CPU it
+   * was chosen to escape — so placement verifies rather than assumes. The
+   * chosen isolate is reserved for `pid` (tokensInUse) the moment it is
+   * accepted, before anything else awaits, so a placement running at the same
+   * time sees it; the open's release or failure frees it.
    */
   private async _place(pid: number): Promise<PeerPlacement> {
-    const denied = new Set<string>([isolateToken(), ...this.tokensInUse.values()]);
+    const accept = (candidate: PeerPlacement): PeerPlacement => {
+      this.tokensInUse.set(pid, candidate.isolateToken);
+      return candidate;
+    };
     for (let attempt = 0; attempt < PEER_PLACEMENT_MAX_ATTEMPTS - 1; attempt++) {
       const candidate = await this._probePlacement(pid, attempt);
-      if (!denied.has(candidate.isolateToken)) return candidate;
+      if (candidate.isolateToken !== isolateToken() && !this.isolateInUse(candidate.isolateToken)) return accept(candidate);
     }
     // Every attempt co-located, which happens in single-process topologies. Use
     // the last one anyway: it runs the process correctly, it just shares the
     // CPU it was chosen to escape, and the placement line names the isolate it
     // landed in so that is visible rather than assumed.
-    return this._probePlacement(pid, PEER_PLACEMENT_MAX_ATTEMPTS - 1);
+    return accept(await this._probePlacement(pid, PEER_PLACEMENT_MAX_ATTEMPTS - 1));
+  }
+
+  private isolateInUse(token: string): boolean {
+    for (const inUse of this.tokensInUse.values()) if (inUse === token) return true;
+    return false;
   }
 
   /** One sibling name, resolved and probed. Leaks nothing on failure. */
