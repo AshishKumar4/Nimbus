@@ -20,6 +20,7 @@ export interface NodeFilesystem {
   stat(path: string): RuntimeVfsStat;
   /** stat(2) of `path` itself where it names a link (lstat); ENOENT when nothing is there. */
   lstat(path: string): RuntimeVfsStat;
+  /** Canonical VFS path, following links; native module caches key by it. */
   realpath(path: string): string;
   mkdir(path: string, options?: { recursive?: boolean; mode?: number }): void;
   readdir(path: string): RuntimeVfsDirEntry[];

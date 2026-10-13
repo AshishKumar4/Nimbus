@@ -35,7 +35,6 @@ import {
 } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { moduleImporterUrl } from '@nimbus-sh/core/_shared/module-importer.js';
 import { isTypescriptDeclarationFile, stripsTypeScript } from '@nimbus-sh/core/_shared/typescript-specifiers.js';
-import type { EsModuleMap } from '@nimbus-sh/core/runtime/async-module-lowering.js';
 import { ReadAheadBudget, STDIN_SYNC_READ_BYTES, type ReadAheadAccount } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { execIdField, type ProcessEntry, type ProcessRestart } from '@nimbus-sh/core/runtime/process-table.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
@@ -87,10 +86,11 @@ import {
 const READ_PROFILE_LAUNCH_BYTES = Math.floor(VFS_BUNDLE_MAX_BYTES / 8);
 import { NpmCache } from '../npm/cache.js';
 import { NPM_BIN_MANIFEST_NAME, parseNpmBinManifest } from '../npm/bin-links.js';
-import { mayHaveDynamicImport } from '@nimbus-sh/core/runtime/dynamic-import-rewrite.js';
+import { mayHaveDynamicImport, type ImportSites } from '@nimbus-sh/core/runtime/dynamic-import-rewrite.js';
+import { stageEsModules, type EsmStage } from './esm-stage.js';
+import { ESM_HOST_MODULE, readEsModule } from '@nimbus-sh/core/runtime/native-esm.js';
 import { relativeWasmPaths } from '@nimbus-sh/core/_shared/relative-wasm-paths.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/platform/oom-discriminator.js';
-import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { TurnBudget, PacedWork, turnChunkMaxBytes, withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
 import { generation, onColdStart } from '@nimbus-sh/fabric/generation.js';
@@ -105,7 +105,7 @@ import {
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { rewriteProvidedCommonJsModules } from '@nimbus-sh/core/runtime/provided-packages.js';
 import {
-  bundleTypescriptLoader,
+  bundleCompiledLoader,
   esbuildDiagnosticShim,
   isBundleModuleCandidate,
   looksLikeEsm,
@@ -119,10 +119,11 @@ import { TransformStore } from './transform-store.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import {
   parseResolvablePackageJson,
+  BUILD_BROWSER_PACKAGE_MAP_POLICY,
   type ResolvablePackageJson,
 } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { requirePackageEntry } from '@nimbus-sh/core/runtime/require-resolution.js';
-import { type ExecDiagSink, isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
+import { type ExecDiagSink, type ExecTelemetryRecord, isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
 import { LAUNCH_PROFILE_MAX_PATHS, LaunchLearningStore, type LaunchLearning, type LaunchReport } from './launch-learning-store.js';
 import { LearnedServers } from './server-hints.js';
 import type { ServerIdentity } from '@nimbus-sh/core/runtime/server-launch.js';
@@ -130,8 +131,9 @@ import { disposeRpcResource, disposeRpcResources } from '@nimbus-sh/platform/rpc
 import { SUPERVISOR_ANSWERING_SRC } from '@nimbus-sh/core/runtime/supervisor-answering.generated.js';
 import { STOP_REPLAY_SOURCE } from '../runtime/stop-replay.js';
 import { encodeBase64, OwnedPieces, ReplayOutputGate, StdinTaken, stopRecordOf } from '../runtime/stop-replay-host.js';
-import { answerDigest, ReplayJournal, type RecordedResponse } from '../runtime/stop-replay-journal.js';
-import { REPLAY_FETCH_MAX_BYTES, REPLAY_PREFIX_MAX_BYTES, REPLAY_JOURNAL_MAX_ENTRIES, REPLAY_READ_RECEIPT_MAX_BYTES, STOP_LIMIT, type ReplayLaunch, type StopRecord, type RecordedBody } from '../runtime/stop-replay-contracts.js';
+import { answerDigest } from '../runtime/stop-replay-journal.js';
+import { REPLAY_PREFIX_MAX_BYTES, REPLAY_JOURNAL_MAX_ENTRIES, REPLAY_READ_RECEIPT_MAX_BYTES, STOP_LIMIT, type ReplayLaunch, type StopRecord } from '../runtime/stop-replay-contracts.js';
+import { ReplaySessions } from '../runtime/replay-session.js';
 import { openSupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import type { ProcessInputPacket } from '@nimbus-sh/core/runtime/process-input.js';
 import { sqliteWasmModuleEntry, type OpencodeStageSpec } from './opencode-staging.js';
@@ -154,7 +156,7 @@ import {
   type DeclaredBindingFs,
 } from '../runtime/staged-bindings.js';
 import {
-  encodeCommonJsPack,
+  encodeCodePack,
   ProcessFabric,
   ProcessHostLost,
   ResidentProcessHandle,
@@ -207,6 +209,7 @@ import {
 } from '@nimbus-sh/core/constants.js';
 import { LEDGER_ROW_BYTES } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { ONE_SHOT_STORE_MEMORY_BYTES, RESIDENT_CHUNK_BYTES } from '../vfs/facet-resident-limits.js';
+import { residentCellCost } from '../vfs/resident/cell-cost.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { CRED_KERNEL, isNativeBinPath, launchNamedPaths } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
@@ -354,7 +357,7 @@ export interface FacetExecResult {
    * exec-telemetry.ts); the supervisor folds them with its own phase timings
    * before recording.
    */
-  diag?: { drainPasses: number; rpcWrites: number; fsRpcReads: number; namespaceRefusals?: number };
+  diag?: { drainPasses: number; rpcWrites: number; fsRpcReads: number; namespaceRefusals?: number; esmAdoptions?: number };
 }
 
 /**
@@ -942,6 +945,8 @@ interface GeneratedNodeFacetCode {
   immutableModules: Record<string, ImmutableModuleSource>;
   modules: Record<string, string>;
   codeModules: Record<string, string>;
+  /** The staged ES modules and their facades, as `{ js }` module texts (FacetVfsBundleSource.esModules). */
+  esModules: Record<string, string>;
 }
 
 /**
@@ -957,57 +962,74 @@ export function entryImporterUrl(filename: string | undefined, cwd: string): str
   return moduleImporterUrl(path);
 }
 
+/** The VFS key a launch stages an ES module entry at: its file, or `[eval1]` in the working directory for `-e` and stdin code. */
+export function entryEsModuleKey(filename: string | undefined, cwd: string): string {
+  const evaluated = filename === undefined || filename === '<eval>' || filename === '[stdin]';
+  return stripLeadingSlashes(evaluated ? `${cwd.replace(/\/+$/, '')}/[eval1]` : filename);
+}
+
 /**
- * The entry code as a module of the map, named for the script it came from so
- * its stack frames carry that path; `-e` code is `[eval]`. The runtime may
- * have lowered it from ESM (runtime-registry.ts), and its scope is read off
- * the code itself (declaresWrapperBinding). Its `Function` carries
- * `importer` (entryImporterUrl). `esModule` (RuntimeRunOpts) is how the
- * runner evaluates it: an ES entry's require is its static imports, and what
- * escapes it is explained as Node's loader explains it.
+ * The entry as the runner evaluates it. An ES module (`esModule`,
+ * RuntimeRunOpts), or TypeScript or JSX the launch compiled to one, is the
+ * map's staged module at its key (entryEsModuleKey), imported: an ES entry's
+ * evaluation is its job, and what escapes it is explained as Node's loader
+ * explains it. Anything else is CommonJS code as a module of the map, named
+ * for the script it came from so its stack frames carry that path (`-e` code
+ * is `[eval]`), its scope read off the code itself (declaresWrapperBinding),
+ * its `Function` carrying `importer` (entryImporterUrl).
  */
 function entryModule(
-  userCode: string, filename: string | undefined, cwd: string, esModule: boolean | undefined, esModuleMap: string | undefined,
+  userCode: string, filename: string | undefined, cwd: string, esModule: boolean | undefined, bundleSource: FacetVfsBundleSource,
+  preamble?: string,
 ): { name: string; esModule: boolean; modules: Record<string, string>; evaluate: string; stackEntry: string } {
+  const entry = programEntry(userCode, filename, cwd, esModule, bundleSource);
+  if (preamble === undefined) return entry;
+  // The preamble, a module of its own, then the entry: `(preamble, entry)`.
+  const name = commonJsEntryModuleName('[preamble]');
   const importer = entryImporterUrl(filename, cwd);
-  const map = esModuleMapOf(esModuleMap);
-  // A lowered ES module was bound before it was lowered (core esbuild-service.ts preparedTransformSource).
-  const code = map ? userCode : rewriteProvidedCommonJsModules(userCode);
-  const name = commonJsEntryModuleName(filename || '[eval]');
-  const path = 'filename || "/home/user/script.js"';
-  const wrapped = wrapCommonJsCell(code, declaresWrapperBinding(code) ? 'block' : 'function', map?.head, map?.tail);
   return {
-    name,
-    esModule: esModule === true,
-    modules: {
-      [name]: wrapped.text,
-      ...(map !== null && map.columns.length > 0 ? { [columnMapModuleName(name)]: JSON.stringify(map.columns) } : {}),
-    },
-    evaluate: `__nimbusEvaluateEntry(__nimbusEntryWrapper(${JSON.stringify(name)}, ${JSON.stringify(importer)}), mod, ${path}, dirname || "/home/user", ${esModule === true})`,
-    // commonjs-cell.ts __NIMBUS_STACK_ENTRY: how its frames are named.
-    stackEntry: JSON.stringify([name, entryFrameFile(filename, cwd, esModule === true), wrapped.head, esModule === true ? 1 : 0, wrapped.tail]),
+    ...entry,
+    modules: { ...entry.modules, [name]: wrapCommonJsCell(preamble).text },
+    evaluate: `(__nimbusEntryWrapper(${JSON.stringify(name)}, ${JSON.stringify(importer)})({}, __nimbusMakeRequire(mod), mod, filename || "/home/user/script.js", dirname || "/home/user"), ${entry.evaluate})`,
   };
 }
 
-/** A transform result's EsModuleMap (core async-module-lowering.ts), or null for none: an engine's emit, not the lowering's. */
-function esModuleMapOf(map: string | undefined): EsModuleMap | null {
-  return map ? JSON.parse(map) as EsModuleMap : null;
+function programEntry(
+  userCode: string, filename: string | undefined, cwd: string, esModule: boolean | undefined, bundleSource: FacetVfsBundleSource,
+): { name: string; esModule: boolean; modules: Record<string, string>; evaluate: string; stackEntry: string } {
+  const key = entryEsModuleKey(filename, cwd);
+  const cell = commonJsCellModuleName(key);
+  const importer = entryImporterUrl(filename, cwd);
+  if (esModule === true && bundleSource.esModules[cell] !== undefined) {
+    return { name: '', esModule: true, modules: {}, evaluate: `__nimbusEsmRunEntry(${JSON.stringify(key)})`, stackEntry: 'null' };
+  }
+  // TypeScript or JSX the launch compiled to CommonJS (or the diagnostic of
+  // one it could not): its cell, whose frames are its file's.
+  if (esModule === true && bundleSource.codeModules[cell] !== undefined) {
+    const path = JSON.stringify('/' + key);
+    return {
+      name: cell, esModule: false, modules: {}, stackEntry: 'null',
+      evaluate: `__nimbusEvaluateEntry(() => __nimbusEntryWrapper(${JSON.stringify(cell)}, ${JSON.stringify(importer)}), mod, ${path}, dirname || "/home/user")`,
+    };
+  }
+  const code = rewriteProvidedCommonJsModules(userCode);
+  const name = commonJsEntryModuleName(filename || '[eval]');
+  const path = 'filename || "/home/user/script.js"';
+  const wrapped = wrapCommonJsCell(code, declaresWrapperBinding(code) ? 'block' : 'function');
+  return {
+    name,
+    esModule: false,
+    modules: { [name]: wrapped.text },
+    evaluate: `__nimbusEvaluateEntry(() => __nimbusEntryWrapper(${JSON.stringify(name)}, ${JSON.stringify(importer)}), mod, ${path}, dirname || "/home/user")`,
+    // commonjs-cell.ts __NIMBUS_STACK_ENTRY: how its frames are named.
+    stackEntry: JSON.stringify([name, entryFrameFile(filename), wrapped.head, 0, wrapped.tail]),
+  };
 }
 
-/** A data: URL module as a launch stages it: always an ES module to Node, in the runtime's scope. */
-export async function stagedDataUrlModule(text: string, moduleScope: ModuleScope, esbuild: EsbuildService): Promise<string> {
-  const result = await esbuild.transform(text, { esModule: moduleScope, moduleMetadata: true, dynamicImportParent: 'data:text/javascript,' });
-  const map = esModuleMapOf(result.map);
-  return wrapCommonJsCell(result.code, 'block', map?.head, map?.tail).text;
-}
-
-/** What Node's stack names the entry's file: its path, an ES module's file: URL; -e and stdin are [eval] and [stdin], as an ES module [eval1] in the launch's directory. */
-function entryFrameFile(filename: string | undefined, cwd: string, esModule: boolean): string {
-  const evaluated = filename === undefined || filename === '<eval>' || filename === '[stdin]';
-  if (!esModule) return evaluated ? (filename === '[stdin]' ? '[stdin]' : '[eval]') : filename;
-  const url = new URL('file://');
-  url.pathname = evaluated ? `${cwd.replace(/\/+$/, '')}/[eval1]` : filename;
-  return url.href;
+/** What Node's stack names a CommonJS entry's file: its path; -e and stdin are [eval] and [stdin]. */
+function entryFrameFile(filename: string | undefined): string {
+  if (filename === undefined || filename === '<eval>') return '[eval]';
+  return filename;
 }
 
 /**
@@ -1028,6 +1050,7 @@ ${runtime.imports}
 ${usesSqlite ? SQLITE_FACET_IMPORT : ''}
 ${stagedBindingsFacetImport(stagedBindings)}
 ${facetWasmImportsSource(wasmImports)}
+${bundleSource.esm === 'null' ? '' : `import { host as __nimbusEsmHost } from ${JSON.stringify('./' + ESM_HOST_MODULE)};`}
 const __NimbusHostResponse = globalThis.Response;
 // The SUPERVISOR binding's filesystem calls answer a refusal as a value
 // (core vfs-supervisor.ts answeringSupervisor).
@@ -1051,7 +1074,7 @@ ${runtime.code}
  */
 function nodeProgramRuntime(sources: NodeFacetSources, esModule: boolean): ModuleSource {
   return moduleSource`
-    const __vfsBundle = __nimbusResidentBundle;
+    const __vfsBundle = __resident.bundle;
     const __pendingIO = [];
     let __rpcDrops = 0;
     let __rpcDropBytes = 0;
@@ -1191,10 +1214,10 @@ export async function generateEntrypointCode(
   filename?: string,
   cwd: string = DEFAULT_HOME,
   esModule?: boolean,
-  esModuleMap?: string,
+  preamble?: string,
 ): Promise<GeneratedNodeFacetCode> {
-  const entry = entryModule(userCode, filename, cwd, esModule, esModuleMap);
   const bundleSource = await facetVfsBundleSourceFor(vfsState);
+  const entry = entryModule(userCode, filename, cwd, esModule, bundleSource, preamble);
   const runtime = createNodeFacetRuntime(sources, { ...bundleSource, stackEntry: entry.stackEntry });
   const source = moduleSource`
 ${nodeProgramModule(bundleSource, runtime, usesSqlite, vfsState.stagedBindings, wasmImports)}
@@ -1264,25 +1287,25 @@ ${VFS_CURSOR_SEED_SOURCE}
     // Its network goes through its workspace's egress: node:tls refuses a TLS socket by name.
     globalThis.__nimbusEgress = workerEnv?.NIMBUS_EGRESS === true;
     // The same store, namespace and data plan a resident boots on, backed by
-    // this run's heap (runOnce hosts no SQLite; vfs/facet-resident-store.ts).
-    // Declared inside the request, beside the shims, so a loader that reuses
-    // this isolate for another run starts it from an empty store.
-${nodeFacetSource(sources, "residentStore")}
-    __residentBindInMemory(${ONE_SHOT_STORE_MEMORY_BYTES});
-    __residentSetStorage(undefined, __supervisor);
-    __nsSetCred(cred);
-    __residentSetPlan(dataPlan);
-    __residentSetManifests(manifests);
-    __residentSetPushRoots([_cwd || "/home/user", "/tmp"]);
+    // this run's heap (runOnce hosts no SQLite; vfs/resident). This run's own,
+    // so a loader that reuses this isolate for another run starts it from an
+    // empty store.
+    const __resident = __nimbusResidentModule.createResidentStore();
+    __resident.bindInMemory(${ONE_SHOT_STORE_MEMORY_BYTES});
+    __resident.admission.setStorage(undefined, __supervisor);
+    __resident.namespace.setCred(cred);
+    __resident.sync.setPlan(dataPlan);
+    __resident.sync.setManifests(manifests);
+    __resident.sync.setPushRoots([_cwd || "/home/user", "/tmp"]);
     // The module bundle stays at module scope: a reused isolate adopts it
     // again on its next run, and its text cells are shared, not copied.
-    const __residentBooted = await __residentBoot(() => __MODULE_VFS_BUNDLE, __MODULE_VFS_CURSOR, __supervisor, ${bundleSource.storageBytes});
+    const __residentBooted = await __resident.sync.boot(() => __MODULE_VFS_BUNDLE, __MODULE_VFS_CURSOR, __supervisor, ${bundleSource.storageBytes});
     if (__residentBooted.cursor) {
       globalThis.__nimbusVfsCursor = { epoch: __residentBooted.cursor.epoch, rev: __residentBooted.cursor.rev };
     }
     // No user code runs before the namespace answers: it is the view every
     // synchronous stat, exists and readdir reads (CUTOVER #13).
-    const __namespaceFailure = await __residentRequireNamespace(__supervisor, __residentBooted.failure);
+    const __namespaceFailure = await __resident.sync.requireNamespace(__supervisor, __residentBooted.failure);
     if (__namespaceFailure) {
       return __NimbusHostResponse.json({ exitCode: 1, stdout: "", stderr: __namespaceFailure + "\\n", residencyMisses: [] });
     }
@@ -1410,7 +1433,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
       // Code produced while it ran, for the next launch (commonjs-cell.ts).
       runtimeCode: __nimbusRuntimeCodeLedger(),
       ...(__diag ? { diag: {
-        drainPasses: __drainPasses, rpcWrites: __rpcWriteCount, fsRpcReads: globalThis.__nimbusFsRpcReads || 0,
+        drainPasses: __drainPasses, rpcWrites: __rpcWriteCount, fsRpcReads: globalThis.__nimbusFsRpcReads || 0, esmAdoptions: __nimbusEsmAdoptions,
         namespaceRefusals: (globalThis.__nimbusVfsCoherence && globalThis.__nimbusVfsCoherence.namespaceRefusals) || 0,
       } } : {}),
     });
@@ -1423,6 +1446,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
     immutableModules: runtime.immutableModules,
     modules: bundleSource.modules,
     codeModules: { ...bundleSource.codeModules, ...runtime.modules, ...entry.modules },
+    esModules: bundleSource.esModules,
   };
 }
 
@@ -1547,7 +1571,8 @@ export async function generateLongRunningNodeCode(
     filename?: string;
     dirname?: string;
     esModule?: boolean;
-    esModuleMap?: string;
+    /** CommonJS evaluated before the entry (node-runner.ts RunFreshOpts.preamble). */
+    preamble?: string;
     stdin?: string;
     attachedTty?: boolean;
     cred: ProcessEntry['cred'];
@@ -1558,7 +1583,8 @@ export async function generateLongRunningNodeCode(
   sources: NodeFacetSources,
   pacer?: TurnBudget,
 ): Promise<GeneratedNodeFacetCode> {
-  const entry = entryModule(userCode, opts.filename, opts.cwd || DEFAULT_HOME, opts.esModule, opts.esModuleMap);
+  const bundleSource = await facetVfsBundleSourceFor(vfsState, pacer);
+  const entry = entryModule(userCode, opts.filename, opts.cwd || DEFAULT_HOME, opts.esModule, bundleSource, opts.preamble);
   const safeArgs = JSON.stringify({
     argv: opts.argv || [],
     nodeCommandLine: opts.node ?? null,
@@ -1570,7 +1596,6 @@ export async function generateLongRunningNodeCode(
     attachedTty: opts.attachedTty === true,
     cred: opts.cred,
   });
-  const bundleSource = await facetVfsBundleSourceFor(vfsState, pacer);
   const runtime = createNodeFacetRuntime(sources, { ...bundleSource, stackEntry: entry.stackEntry });
   const source = moduleSource`
 import { DurableObject } from "cloudflare:workers";
@@ -1583,7 +1608,13 @@ const __NIMBUS_ARGS = ${safeArgs};
 // are getters over the map's own module text.
 let __MODULE_VFS_BUNDLE = __nimbusWithCodeCells(${bundleSource.expression});
 
-${nodeFacetSource(sources, "residentStore")}
+// The shared read profile's files this launch staged; each is struck off
+// when read, and what is left at exit is reported unread (read-profile.ts).
+let __nimbusProfileStaged = null;
+// This facet's store: one process, one store, for the life of the isolate.
+const __resident = __nimbusResidentModule.createResidentStore({
+  observeRead: (path) => { if (__nimbusProfileStaged !== null) __nimbusProfileStaged.delete(path); },
+});
 
 let __nimbusStarted = false;
 let __nimbusStarting = null;
@@ -1699,19 +1730,17 @@ ${VFS_CURSOR_SEED_SOURCE}
     // A synchronous read cannot block and no JS stack here can be suspended, so
     // the bytes have to sit somewhere a synchronous call can already reach;
     // \`ctx.storage.sql.exec\` returns a Cursor, not a Promise. See
-    // vfs/facet-resident-store.ts.
-    __residentBind(workerCtx);
-    __residentSetStorage(__startArgs && __startArgs.storage, __supervisor);
-    __nsSetCred(cred);
-    __residentSetPlan(__startArgs && __startArgs.dataPlan);
+    // vfs/resident.
+    __resident.bind(workerCtx);
+    __resident.admission.setStorage(__startArgs && __startArgs.storage, __supervisor);
+    __resident.namespace.setCred(cred);
+    __resident.sync.setPlan(__startArgs && __startArgs.dataPlan);
     // What an import() of a module only an import() reaches reads
     // synchronously, fetched when that import() runs (node-shims.ts
     // __nimbusStageImport; the planner's lazyReadsByTarget).
     globalThis.__nimbusLazyReads = new Map(Object.entries((__startArgs && __startArgs.lazyReads) || {}));
-    // The shared read profile's files this launch staged; each is struck off
-    // when read, and what is left at exit is reported unread (read-profile.ts).
-    globalThis.__nimbusProfileStaged = new Set((__startArgs && __startArgs.profileStaged) || []);
-    __residentSetPushRoots([_cwd || "/home/user", "/tmp"]);
+    __nimbusProfileStaged = new Set((__startArgs && __startArgs.profileStaged) || []);
+    __resident.sync.setPushRoots([_cwd || "/home/user", "/tmp"]);
     // Bring the store to the authority's current state before the program's
     // first instruction. This is what makes a first synchronous read of an
     // untouched file succeed, and it is the ONLY blocking step: the waiting is
@@ -1723,13 +1752,13 @@ ${VFS_CURSOR_SEED_SOURCE}
     // current are kept, and only what changed is fetched. It is SERVED only
     // once that listing has vouched for it: rows it cannot vouch for are a
     // previous process's, of unknown age, so the kept store is emptied and
-    // this launch boots as a cold one does. See __residentBoot.
+    // this launch boots as a cold one does. See vfs/resident sync.boot.
     //
     // The thunk hands the parsed bundle over and drops this scope's reference,
     // so a cold boot frees it the moment it is adopted rather than holding it
     // through the fill. A kept store that reconciles never takes it.
     const __residentBootStarted = Date.now();
-    const __residentBooted = await __residentBoot(
+    const __residentBooted = await __resident.sync.boot(
       () => { const __bundle = __MODULE_VFS_BUNDLE; __MODULE_VFS_BUNDLE = null; return __bundle; },
       __MODULE_VFS_CURSOR,
       __supervisor,
@@ -1738,7 +1767,7 @@ ${VFS_CURSOR_SEED_SOURCE}
     if (__startArgs && __startArgs.diag && __supervisor) {
       // NIMBUS_DEBUG only: what this process holds, for per-process storage measurement.
       try {
-        const __stats = __residentStats();
+        const __stats = __resident.cells.stats();
         await __supervisor.stderr(new TextEncoder().encode("[nimbus-debug] resident boot " + JSON.stringify({
           ms: Date.now() - __residentBootStarted, ...__stats, failure: __residentBooted.failure || null,
         }) + "\\n"));
@@ -1754,14 +1783,13 @@ ${VFS_CURSOR_SEED_SOURCE}
     // No user code runs before the namespace answers: it is the view every
     // synchronous stat, exists and readdir reads (CUTOVER #13). A launch whose
     // namespace cannot be listed fails here, naming why.
-    const __namespaceFailure = await __residentRequireNamespace(__supervisor, __residentBooted.failure);
+    const __namespaceFailure = await __resident.sync.requireNamespace(__supervisor, __residentBooted.failure);
     if (__namespaceFailure) throw new Error(__namespaceFailure);
 ${nodeProgramRuntime(sources, entry.esModule)}
     if (attachedTty) {
       try { __processMod.stdin.__nimbusStartLivePump?.(); } catch {}
     }
 
-    let __attachedCompletion = null;
     let __attachedExplicitExit = false;
     // \`--watch\` and \`--inspect-brk\` hold a process that has no handle left
     // (it waits for a change, or for a debugger); nothing else does.
@@ -1799,10 +1827,13 @@ ${nodeProgramRuntime(sources, entry.esModule)}
         __nimbusUncaughtException(__thrown, ${entry.esModule});
       }
       if (attachedTty) {
-        // An attached entry owns the terminal until it returns, so its own
-        // completion is awaited by the exit lifecycle below, never here.
+        // An attached program ends as Node's does, at process.exit or with
+        // no live handle left, not when its entry's evaluation completes: a
+        // CLI whose top level starts its interface and returns runs on (pi's
+        // bin). What the evaluation rejects with is uncaught, as Node's
+        // loader rejects.
         if (__entryResult && typeof __entryResult.then === "function") {
-          __attachedCompletion = __entryResult;
+          __entryResult.then(undefined, (__error) => { __nimbusUncaughtException(__error, true); });
         }
         await __nimbusRunEventLoop(
           __nimbusPendingStartupWork, __nimbusProcessExitPromise, ${RESIDENT_BOOT_SETTLE_MS}, 8,
@@ -1857,7 +1888,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
         code = 1;
         await __nimbusReleaseStderr(__replayShort);
       }
-      await __supervisor.reportExit(code, reason || "", __nimbusDataReadMisses(), [...(globalThis.__nimbusProfileStaged || [])], __nimbusRuntimeCodeLedger(), __nimbusExecutedModuleMisses());
+      await __supervisor.reportExit(code, reason || "", __nimbusDataReadMisses(), [...(__nimbusProfileStaged || [])], __nimbusRuntimeCodeLedger(), __nimbusExecutedModuleMisses());
       __nimbusProcessExitReported = true;
     };
     const __nimbusReportLifecycleFailure = async (e) => {
@@ -1874,19 +1905,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
     } else {
       const __residentExitLifecycle = (async () => {
         let finalCode = 0;
-        if (attachedTty && __attachedCompletion) {
-          const __exitMarker = {};
-          const __result = await Promise.race([
-            __attachedCompletion.then(() => null),
-            __nimbusProcessExitPromise.then((code) => {
-              finalCode = Number(code ?? 0);
-              return __exitMarker;
-            }),
-          ]);
-          if (__result !== __exitMarker) {
-            finalCode = Number(__nimbusProcessExitCode ?? 0);
-          }
-        } else if (__nimbusEndedAtBoot || __nimbusHeldWithoutHandles) {
+        if (__nimbusEndedAtBoot || __nimbusHeldWithoutHandles) {
           finalCode = __nimbusEndedAtBoot ? 0 : Number(await __nimbusProcessExitPromise);
         } else {
           // process.exit, or the natural end: no live handle left.
@@ -1987,7 +2006,7 @@ export class NimbusProcess extends DurableObject {
     let databaseSize;
     try { databaseSize = this.ctx.storage.sql.databaseSize; } catch {}
     let storageCap = null;
-    try { storageCap = __residentStorageCap(); } catch {}
+    try { storageCap = __resident.admission.storageCap(); } catch {}
     return { ok: true, databaseSize, storageCap };
   }
   async fetch(req) { return __nimbusDispatchHttp(req, this.env, this.ctx); }
@@ -2000,6 +2019,7 @@ export class NimbusProcess extends DurableObject {
     immutableModules: runtime.immutableModules,
     modules: bundleSource.modules,
     codeModules: { ...bundleSource.codeModules, ...runtime.modules, ...entry.modules },
+    esModules: bundleSource.esModules,
   };
 }
 
@@ -2014,17 +2034,43 @@ export class NimbusProcess extends DurableObject {
  *
 
  * The process's view of names and stats is the namespace its store boots on
- * (vfs/facet-resident-store.ts), never a spawn-time table.
+ * (vfs/resident), never a spawn-time table.
  */
 type FacetVfsDenial = { error: 'EACCES' };
 type FacetVfsBundle = Record<string, string | Uint8Array | FacetVfsDenial>;
 
+/** A launch's staged ES modules in numbers, for its debug line: counts, and characters of each part. */
+function esmStageSize(esm: EsmStage): Record<string, number> {
+  // Counted, not serialized: every build takes it, a launch over pi's 1074 modules included.
+  let text = 0;
+  let columns = 0;
+  for (const staged of esm.modules.values()) {
+    text += staged.text.length;
+    columns += staged.columns.length;
+  }
+  let members = 0;
+  for (const member of Object.values(esm.members)) members += member.length;
+  return { ms: esm.ms, modules: esm.modules.size, rows: esm.table.length, missing: esm.missing.length, text, columns, members };
+}
+
+/** A launch's per-module costs, for its exec telemetry record. */
+function execBreakdown(state: { cacheHit?: boolean; transforms?: BundleCellTransformStats; esmSize?: Record<string, number>; phases?: Record<string, number>; reachableCount?: number; rawBytes?: number }): Pick<ExecTelemetryRecord, 'transforms' | 'esm' | 'phases' | 'closure'> {
+  // A cache hit built nothing: the numbers are the launch that built it.
+  if (state.cacheHit) return {};
+  const t = state.transforms;
+  return {
+    ...(t ? { transforms: { cells: t.cells, stored: t.stored, transformed: t.transformed, hostBytes: t.hostBytes, ms: t.ms } } : {}),
+    ...(state.esmSize ? { esm: state.esmSize } : {}),
+    ...(state.phases ? { phases: state.phases } : {}),
+    ...(state.reachableCount !== undefined ? { closure: { files: state.reachableCount, bytes: state.rawBytes ?? 0 } } : {}),
+  };
+}
+
 /**
- * What the facet store charges itself to hold one cell (facet-resident-store's
- * __residentCellCost, which this must match): its bytes (a text cell's UTF-8
- * length) plus 1%, a row per chunk and head, and a page of slack.
+ * What a module map costs the facet's store that adopts it (N18), as the store
+ * charges itself (vfs/resident cell-cost.ts). A denial is a head row only; a
+ * code-only file is none.
  */
-/** What a module map costs the facet's store that adopts it (N18). A denial is a head row only; a code-only file is none. */
 function moduleMapStorageBytes(bundle: FacetVfsBundle, codeOnly?: ReadonlySet<string>): number {
   let bytes = 0;
   for (const [path, cell] of Object.entries(bundle)) {
@@ -2032,15 +2078,6 @@ function moduleMapStorageBytes(bundle: FacetVfsBundle, codeOnly?: ReadonlySet<st
     bytes += typeof cell === 'string' || cell instanceof Uint8Array ? residentCellCost(cell) : 2 * LEDGER_ROW_BYTES;
   }
   return bytes;
-}
-
-function residentCellCost(cell: string | Uint8Array): number {
-  const isText = typeof cell === 'string';
-  const size = isText ? cell.length : cell.byteLength;
-  const limit = isText ? Math.floor(RESIDENT_CHUNK_BYTES / 3) : RESIDENT_CHUNK_BYTES;
-  const chunks = Math.max(1, Math.ceil(size / limit));
-  const bytes = isText ? utf8Length(cell) : size;
-  return Math.ceil(bytes * 1.01) + (chunks + 1) * LEDGER_ROW_BYTES + 4096;
 }
 
 interface FacetVfsState {
@@ -2063,15 +2100,18 @@ interface FacetVfsState {
    * with none is its own module.
    */
   emits?: Map<string, string>;
-  /** A lowered ES module's EsModuleMap (core async-module-lowering.ts), as JSON, by path. */
-  columnMaps?: Map<string, string>;
   /**
-   * The cells lowered from ESM or compiled from TypeScript
-   * (transformEsmInBundle), whose module wraps them in the block scope
-   * (commonjs-cell.ts, THE WRAPPER), each true where it is an ES module.
-   * Every other code cell is CommonJS as Node would run it.
+   * The ES modules the map carries, staged (esm-stage.ts): each its own
+   * module, which is never also in `emits`. Every other code cell is
+   * CommonJS as Node would run it.
    */
-  lowered?: Map<string, boolean>;
+  esm?: EsmStage;
+  /** Its size and time in numbers (esmStageSize), kept past its release: the launch's debug line. */
+  esmSize?: Record<string, number>;
+  /** ES modules carried as files only, never as modules of the map: only the passes that carry files to be read staged them. */
+  dataModules?: Set<string>;
+  /** Where its build's time went, by phase, in ms (the walk, enrichment, transforms, fitting, staging, the rest, serialization). */
+  phases?: Record<string, number>;
   /**
    * The files staged only to run whose module is an emit: the map carries the
    * emit and not the file, which no read asked for. A synchronous read of one
@@ -2182,6 +2222,8 @@ interface ProcessBundleSpec {
   scriptPath: string | undefined;
   cwd: string;
   entryCode: string;
+  /** The entry is an ES module (RuntimeRunOpts.esModule): `-e` or stdin code is staged as one (entryEsModuleKey). */
+  esModule?: boolean;
   bundleProfile?: FacetBundleProfile;
   /** Whose scope the runtime runs an ES module in (RuntimeRunOpts.moduleScope): absent, Node's. */
   moduleScope?: ModuleScope;
@@ -2215,8 +2257,7 @@ export function releaseSerializedSources(vfsState: FacetVfsState): void {
   if (!vfsState.bundleSource) return;
   vfsState.bundle = {};
   vfsState.emits = undefined;
-  vfsState.columnMaps = undefined;
-  vfsState.lowered = undefined;
+  vfsState.esm = undefined;
 }
 
 /**
@@ -2277,7 +2318,7 @@ export class ModuleMapOverCeilingError extends Error {
  */
 export function generatedMapTextBytes(generated: GeneratedNodeFacetCode, room: number): number | null {
   const sharedBytes = generated.source.byteLength + Object.values(generated.immutableModules).reduce((bytes, source) => bytes + source.byteLength, 0);
-  const texts = [...Object.values(generated.modules), ...Object.values(generated.codeModules)];
+  const texts = [...Object.values(generated.modules), ...Object.values(generated.codeModules), ...Object.values(generated.esModules)];
   let units = 0;
   for (const text of texts) units += text.length;
   if (sharedBytes + units * 3 <= room) return null;
@@ -2375,7 +2416,7 @@ async function facetVfsBundleSourceFor(
   return vfsState.bundleSource
     ?? await buildFacetVfsBundleSource(
       vfsState.bundle, vfsState.bundleSideModulesRequired, pacer,
-      { emits: vfsState.emits, columnMaps: vfsState.columnMaps, lowered: vfsState.lowered, codeOnly: vfsState.codeOnly },
+      { emits: vfsState.emits, esm: vfsState.esm, codeOnly: vfsState.codeOnly, dataModules: vfsState.dataModules },
     );
 }
 
@@ -2386,13 +2427,17 @@ interface FacetVfsBundleSource {
   modules: Record<string, string>;
   /** The code cells as `{ cjs }` module texts, by module name. */
   codeModules: Record<string, string>;
+  /** The staged ES modules and what they link to, as `{ js }` module texts, by module name (esm-stage.ts). */
+  esModules: Record<string, string>;
   /** The JSON of the launch's CommonJsCellRow table. */
   codeCells: string;
+  /** The JSON of the launch's ES module table and refusals (esm-stage.ts EsmStage), or `null`. */
+  esm: string;
   /** The JSON list of runtime-code keys the map carries as `gen/<key>.js`. */
   runtimeCode: string;
   /**
    * What the process's store charges itself to adopt the data cells and the
-   * code cells it reads back (facet-resident-store's __residentCellCost).
+   * code cells it reads back (vfs/resident residentCellCost).
    */
   storageBytes: number;
 }
@@ -2488,14 +2533,17 @@ function retainedVfsStateBytes(state: FacetVfsState): number {
     if (typeof cell === 'string' || cell instanceof Uint8Array) bytes += _bundleCellLength(cell);
   }
   for (const [path, emit] of state.emits ?? []) bytes += path.length + emit.length;
-  for (const [path, map] of state.columnMaps ?? []) bytes += path.length + map.length;
-  for (const path of state.lowered?.keys() ?? []) bytes += path.length;
   for (const path of state.codeOnly ?? []) bytes += path.length;
   const source = state.bundleSource;
   if (source) {
     bytes += source.expression.length + source.imports.length + source.codeCells.length + source.runtimeCode.length;
     for (const moduleSource of Object.values(source.modules)) bytes += moduleSource.length;
     for (const [name, text] of Object.entries(source.codeModules)) bytes += name.length + text.length;
+    for (const [name, text] of Object.entries(source.esModules)) bytes += name.length + text.length;
+    bytes += source.esm.length;
+  } else if (state.esm) {
+    for (const [key, staged] of state.esm.modules) bytes += key.length + staged.text.length + staged.columns.length * 16;
+    for (const [name, text] of Object.entries(state.esm.members)) bytes += name.length + text.length;
   }
   return bytes;
 }
@@ -2672,20 +2720,9 @@ const FACET_VFS_MODULE_SOURCE_MARGIN = 1024;
  * encoder, including its replacement of an unpaired surrogate with U+FFFD.
  */
 function _encodedSourceBytes(source: string): number {
-  let bytes = 0;
-  for (let i = 0; i < source.length; i++) {
-    const code = source.charCodeAt(i);
-    if (code < 0x80) { bytes += 1; continue; }
-    if (code < 0x800) { bytes += 2; continue; }
-    if (code >= 0xd800 && code <= 0xdbff) {
-      const next = i + 1 < source.length ? source.charCodeAt(i + 1) : 0;
-      // A well-formed pair is one 4-byte code point; a lone surrogate is
-      // encoded as U+FFFD, which is three bytes — same as the default below.
-      if (next >= 0xdc00 && next <= 0xdfff) { bytes += 4; i++; continue; }
-    }
-    bytes += 3;
-  }
-  return bytes;
+  // UTF-8 bytes, a lone surrogate as U+FFFD's three: mapTextBytes, natively
+  // (the guard measures every cell and emit of a launch with it).
+  return mapTextBytes(source);
 }
 
 function _facetBundleModuleSource(bundle: FacetVfsBundle): string {
@@ -2775,28 +2812,38 @@ export async function buildFacetVfsBundleSource(
   {
     consume = false,
     emits,
-    columnMaps,
-    lowered,
+    esm,
     codeOnly,
+    dataModules,
     runtimeCode,
   }: {
     consume?: boolean;
     /** The module of each cell a transform changed (FacetVfsState.emits). */
     emits?: ReadonlyMap<string, string>;
-    /** FacetVfsState.columnMaps. */
-    columnMaps?: ReadonlyMap<string, string>;
-    /** FacetVfsState.lowered. */
-    lowered?: ReadonlyMap<string, boolean>;
+    /** The staged ES modules (FacetVfsState.esm). */
+    esm?: EsmStage;
     /** Files whose emit the map carries and not the file (FacetVfsState.codeOnly). */
     codeOnly?: ReadonlySet<string>;
+    /** ES modules carried as files only (FacetVfsState.dataModules): never a `{ cjs }` module. */
+    dataModules?: ReadonlySet<string>;
     /** Runtime code staged for this launch: `{ cjs }` module text by key. */
     runtimeCode?: ReadonlyMap<string, string>;
   } = {},
 ): Promise<FacetVfsBundleSource> {
   const storageBytes = moduleMapStorageBytes(bundle, codeOnly);
   const codeModules: Record<string, string> = {};
+  const esModules: Record<string, string> = { ...esm?.members };
   const rows: CommonJsCellRow[] = [];
   for (const [key, text] of runtimeCode ?? []) codeModules[runtimeCodeModuleName(key)] = text;
+  // An ES module's text is never its file's (its prologue, its specifiers):
+  // the map carries the file beside it, when it carries the file.
+  for (const [key, staged] of esm?.modules ?? []) {
+    const name = commonJsCellModuleName(key);
+    esModules[name] = staged.text;
+    if (staged.columns.length > 0) codeModules[columnMapModuleName(name)] = JSON.stringify(staged.columns);
+    rows.push([key, name, staged.head, staged.tail, staged.hashbang ? 1 : 0, 0, 1]);
+    if (pacer) await pacer.spend(staged.text.length);
+  }
   // `consume`: the caller releases the raw cells right after (a launch's
   // build), so each is taken as its module is written and the map is never
   // held twice. Otherwise the caller's bundle is left as it was.
@@ -2804,16 +2851,14 @@ export async function buildFacetVfsBundleSource(
   for (const path of Object.keys(bundle)) {
     const cell = bundle[path];
     const emit = emits?.get(path);
-    const code = emit ?? (typeof cell === 'string' && isCodeCellPath(path) ? cell : undefined);
+    const staged = esm?.modules.has(path) === true || dataModules?.has(path) === true;
+    const code = staged ? undefined : emit ?? (typeof cell === 'string' && isCodeCellPath(path) ? cell : undefined);
     const adopt = code !== undefined && emit === undefined && commonJsCellReadsBack(path);
     if (code !== undefined) {
-      const esModuleMap = emit === undefined ? null : esModuleMapOf(columnMaps?.get(path));
-      const esModule = lowered?.get(path) === true;
-      const wrapped = wrapCommonJsCell(code, lowered?.has(path) ? 'block' : 'function', esModuleMap?.head, esModuleMap?.tail);
+      const wrapped = wrapCommonJsCell(code);
       const name = commonJsCellModuleName(path);
       codeModules[name] = wrapped.text;
-      if (esModuleMap !== null && esModuleMap.columns.length > 0) codeModules[columnMapModuleName(name)] = JSON.stringify(esModuleMap.columns);
-      rows.push([path, name, wrapped.head, wrapped.tail, wrapped.hashbang ? 1 : 0, adopt ? 1 : 0, esModule ? 1 : 0]);
+      rows.push([path, name, wrapped.head, wrapped.tail, wrapped.hashbang ? 1 : 0, adopt ? 1 : 0, 0]);
       if (pacer) await pacer.spend(code.length);
     }
     if (adopt || codeOnly?.has(path)) {
@@ -2825,7 +2870,9 @@ export async function buildFacetVfsBundleSource(
   return {
     ...await serializeFacetVfsData(data, forceSideModules, pacer, consume),
     codeModules,
+    esModules,
     codeCells: JSON.stringify(rows),
+    esm: esm === undefined ? 'null' : JSON.stringify({ table: esm.table, missing: esm.missing }),
     runtimeCode: JSON.stringify([...(runtimeCode?.keys() ?? [])]),
     storageBytes,
   };
@@ -3034,6 +3081,63 @@ interface OptionalModuleGroup {
   members: ReadonlySet<string>;
 }
 
+/**
+ * What the size guard keeps of a snapshot over `bound` raw bytes: it drops
+ * the `evictable` paths in order until what remains fits. A path is kept
+ * while something holds it: `independent` (paths staged on their own), or a
+ * kept group it is a member of. Evicting an independent path drops every
+ * group that has it (a group missing a member cannot load); evicting a
+ * group's root drops the group. `rawTotal` is the snapshot's bytes before any
+ * eviction; each eviction leaves the bytes of what is still held.
+ *
+ * Each path's holders are counted once, and an eviction releases only what
+ * it drops: the set used to be built again from every kept group after each
+ * eviction, pacing all of it each time, and a pi launch evicting 530 to 838
+ * files spent seconds of turns on it.
+ */
+export async function retainWithinBound(
+  bound: number,
+  rawTotal: number,
+  independent: Set<string>,
+  keptGroups: Set<OptionalModuleGroup>,
+  evictable: readonly string[],
+  rawBytes: ReadonlyMap<string, number>,
+  pacer?: { spend(bytes: number): Promise<void> },
+): Promise<{ retained: Set<string>; rawTotal: number }> {
+  const holders = new Map<string, number>();
+  const hold = (path: string) => holders.set(path, (holders.get(path) ?? 0) + 1);
+  for (const path of independent) hold(path);
+  for (const group of keptGroups) {
+    let work = 0;
+    for (const path of group.members) { hold(path); work += path.length + 256; }
+    if (pacer) await pacer.spend(work);
+  }
+  let heldBytes = 0;
+  for (const path of holders.keys()) heldBytes += rawBytes.get(path) ?? 0;
+  const release = (path: string) => {
+    const left = (holders.get(path) ?? 0) - 1;
+    if (left > 0) { holders.set(path, left); return; }
+    if (holders.delete(path)) heldBytes -= rawBytes.get(path) ?? 0;
+  };
+  const drop = async (group: OptionalModuleGroup) => {
+    keptGroups.delete(group);
+    let work = 0;
+    for (const member of group.members) { release(member); work += member.length + 256; }
+    if (pacer) await pacer.spend(work);
+  };
+  for (const path of evictable) {
+    if (rawTotal <= bound) break;
+    if (independent.delete(path)) {
+      release(path);
+      for (const group of [...keptGroups]) if (group.members.has(path)) await drop(group);
+    } else {
+      for (const group of [...keptGroups]) if (group.root === path) await drop(group);
+    }
+    rawTotal = heldBytes;
+  }
+  return { retained: new Set(holders.keys()), rawTotal };
+}
+
 export async function greedyAddMainEntries(
   vfs: LaunchFs,
   cwd: string,
@@ -3171,8 +3275,8 @@ export async function greedyAddMainEntries(
     // `index.js`, which does not exist.
     const candidates: string[] = [];
     if (pkg) {
-      // As require resolves it, under the program's conditions (require-resolution.ts requirePackageEntry).
-      const entry = requirePackageEntry(pkg, '.', options.conditions ?? []);
+      // Speculative staging may oversample permissively; runtime Node resolution remains strict.
+      const entry = requirePackageEntry(pkg, '.', options.conditions ?? [], BUILD_BROWSER_PACKAGE_MAP_POLICY);
       if (entry !== null) candidates.push(entry);
       if (pkg.main !== undefined) candidates.push(pkg.main);
     }
@@ -3870,6 +3974,12 @@ export async function collectClosureWasmImages(
   vfs: LaunchFs,
   bundle: Record<string, string | Uint8Array | FacetVfsDenial>,
   unstagedPaths: readonly string[],
+  /**
+   * A module's analysis as the data plan reads it (FacetManager
+   * _staticRefsOf: its file, once per revision), or null: then its cell is
+   * analyzed here.
+   */
+  staticRefs?: (path: string) => Promise<StaticFsRefs | null>,
 ): Promise<WasmImageRecord[]> {
   const byPath = new Map<string, WasmImageRecord>();
   for (const [path, cell] of Object.entries(bundle)) {
@@ -3882,6 +3992,15 @@ export async function collectClosureWasmImages(
     if (!(path.endsWith('.js') || path.endsWith('.mjs') || path.endsWith('.cjs'))) continue;
     // wasm-bindgen also uses a folded template/variable path. Reuse the
     // filesystem AST analysis rather than adding another string-pattern rule.
+    // The data plan analyzes the same files: one analysis serves both, and
+    // every launch after the first of a file's revision (a 487 KB pi chunk's
+    // took 1.1 s, warm, each launch).
+    const known = staticRefs ? await staticRefs(stripLeadingSlashes(path)) : null;
+    if (known !== null) {
+      // Its exact references hold its relative-literal images too (_staticRefsOf).
+      for (const ref of known.exact) if (ref.path.endsWith('.wasm')) named.add(stripLeadingSlashes(ref.path));
+      continue;
+    }
     for (const ref of findStaticFsReferences(cell, '/' + stripLeadingSlashes(path)).exact) {
       if (ref.path.endsWith('.wasm')) named.add(stripLeadingSlashes(ref.path));
     }
@@ -4062,7 +4181,7 @@ function _isLoadableModuleCell(path: string): boolean {
   if (isTypescriptDeclarationFile(path)) return false;
   const ext = vfsPathExtension(path);
   return ext === '.js' || ext === '.mjs' || ext === '.cjs' || ext === '.json'
-    || ext === '.wasm' || ext === '' || bundleTypescriptLoader(path) !== null;
+    || ext === '.wasm' || ext === '' || bundleCompiledLoader(path) !== null;
 }
 
 /**
@@ -4293,7 +4412,7 @@ async function addEntryAbsPathReads(
  */
 function _markBundleEsmAsFailed(
   bundle: Record<string, string | Uint8Array>,
-  placeEmit: (path: string, code: string, map: string) => void,
+  placeEmit: (path: string, code: string) => void,
   packageTypeOf: (path: string) => PackageType,
   reason: string,
 ): void {
@@ -4303,7 +4422,7 @@ function _markBundleEsmAsFailed(
     if (typeof src !== 'string') continue;
     // A TypeScript source is never runnable as staged, so it always needs
     // the emit it cannot get; a JavaScript file only if it is ESM.
-    if (bundleTypescriptLoader(path) !== null || looksLikeEsm(path, src, packageTypeOf(path))) placeEmit(path, esbuildDiagnosticShim(path, reason), '');
+    if (bundleCompiledLoader(path) !== null || looksLikeEsm(path, src, packageTypeOf(path))) placeEmit(path, esbuildDiagnosticShim(path, reason));
   }
 }
 
@@ -4325,25 +4444,22 @@ async function cellPackageTypes(vfs: LaunchFs, paths: Iterable<string>): Promise
 }
 
 /**
- * Transform every cell of the bundle that needs it (needsBundleCellTransform)
- * to CommonJS: transformBundleCells, over the bundle's cells, with the
- * launch's store and pacer. A module esbuild rejects becomes a diagnostic
- * shim that throws the reason when required (esbuildDiagnosticShim).
+ * Run every cell of the bundle that needs it (needsBundleCellTransform)
+ * through the module pass: transformBundleCells, over the bundle's cells,
+ * with the launch's store and pacer. A module esbuild rejects becomes a
+ * diagnostic shim that throws the reason when required
+ * (esbuildDiagnosticShim).
  *
  * Each result is the path's emit (`placeEmit`), to become its module cell,
  * and never the file: what a program reads is the file on disk, never the
- * launch's CommonJS rendering of it (tsc compiling its own project's
- * sources; a script patching an installed ES module and writing it back).
- *
- * Every cell lowered from ESM or compiled from TypeScript is added to
- * `lowered` (its module's block scope, commonjs-cell.ts THE WRAPPER), true
- * where it is an ES module. An ES module is lowered in the launch's
- * runtime's module `scope`.
+ * launch's rendering of it (tsc compiling its own project's sources; a
+ * script patching an installed module and writing it back). Each ES module's
+ * import sites go to `esModules`, as JSON, for its staging.
  */
-async function transformEsmInBundle(
+async function transformBundleModules(
   bundle: Record<string, string | Uint8Array>,
-  placeEmit: (path: string, code: string, map: string) => void,
-  lowered: Map<string, boolean>,
+  placeEmit: (path: string, code: string) => void,
+  esModules: Map<string, string>,
   packageTypeOf: (path: string) => PackageType,
   scope: ModuleScope,
   stripTypes: NodeTypeScript | null,
@@ -4360,8 +4476,8 @@ async function transformEsmInBundle(
     if (typeof source === 'string' && needsBundleCellTransform(path, source, packageType)) cells.push({ path, source, packageType });
   }
   return transformBundleCells(cells, { host: esbuild, store, pacer, scope, stripTypes }, (path, result) => {
-    placeEmit(path, result.code, result.map);
-    if (result.lowered) lowered.set(path, result.esModule);
+    placeEmit(path, result.code);
+    if (result.sites !== '') esModules.set(path, result.sites);
   });
 }
 
@@ -4371,7 +4487,7 @@ export interface PrefetchBundleOptions {
   scriptPath?: string;
   cwd: string;
   entryCode: string;
-  /** The ESM→CJS pass's transform host; absent, ESM cells stage as diagnostics. */
+  /** The module pass's transform host (transformBundleModules); absent, ES modules and TypeScript stage as diagnostics. */
   esbuild?: EsbuildService;
   bundleProfile?: FacetBundleProfile;
   /** Whose scope the runtime runs an ES module in (RuntimeRunOpts.moduleScope): absent, Node's. */
@@ -4394,6 +4510,10 @@ export interface PrefetchBundleOptions {
   stripTypes?: NodeTypeScript | null;
   /** What the command line preloads (`node -r`, `--import`): required roots, walked first, as they run first. */
   preloads?: readonly PreloadModuleRoot[];
+  /** `entryCode` is an ES module (`-e` or stdin, entryEsModuleKey): the VFS key it is staged at. */
+  entryEsModule?: string;
+  /** A module's static filesystem references, as the data plan reads them (collectClosureWasmImages). */
+  staticRefs?: (path: string) => Promise<StaticFsRefs | null>;
 }
 
 /** A tool's config file: `<tool>.config.js|ts|mjs|cjs|mts|cts` (vite.config.ts, astro.config.mjs). */
@@ -4456,9 +4576,8 @@ export async function toolConfigRoots(vfs: LaunchFs, cwd: string, scriptPath: st
  * If required content still exceeds the per-module encoded ceiling, Worker
  * Loader side modules carry the bundle without truncating the closure.
  *
- * W3.5: now async to allow the optional ESM→CJS pre-pass via esbuild.
- * If `esbuild` is not provided, the pass is skipped (preserves prior
- * behaviour for code paths that don't have esbuild handy).
+ * The module pass (transformBundleModules) runs on `esbuild`; without it,
+ * ES modules and TypeScript stage as diagnostics.
  *
  */
 export async function buildPrefetchBundle(vfs: LaunchFs, options: PrefetchBundleOptions): Promise<FacetVfsState> {
@@ -4511,12 +4630,18 @@ async function _buildPrefetchBundle(
     conditions = [],
     stripTypes = null,
     preloads = [],
+    entryEsModule,
+    staticRefs,
   }: PrefetchBundleOptions,
 ): Promise<FacetVfsState> {
   // Read the cursor BEFORE the walk: a mutation that lands while the bundle
   // is being assembled must be reported as invalidated, not silently missed.
   const admitted = await vfs.acquire(null, 0);
   const cursor = { epoch: admitted.epoch, rev: admitted.rev };
+  // Where the build's time went, by phase (ms; the clock moves across its turns): its exec telemetry.
+  const phases: Record<string, number> = {};
+  let phaseFrom = Date.now();
+  const phase = (name: string) => { const now = Date.now(); phases[name] = (phases[name] ?? 0) + now - phaseFrom; phaseFrom = now; };
 
   // Modules earlier runs executed belong to the complete required graph.
   // Adding them later as enrichment let final pruning remove one imported
@@ -4531,6 +4656,7 @@ async function _buildPrefetchBundle(
     maxBundleBytes, pacer?.spend.bind(pacer), undefined, roots.length > 0 ? roots : undefined, conditions);
   // A launch they take past the bound is built again with them optional (buildPrefetchBundle).
   const prefetch = await walkRoots([...configRoots, ...executedModules ?? []]);
+  phase('walk');
   if ('kind' in prefetch) {
     // A required closure larger than the bound can never launch as a
     // snapshot. Surface it as the process's own failure rather than a
@@ -4577,6 +4703,7 @@ async function _buildPrefetchBundle(
   room -= own.bytes;
   const learnedOnly = new Set(learned.filter((path) => !observedReads?.has(path) && !observedPaths.has(path)));
   await addObservedReads(vfs, learnedOnly, bundle, learnedPaths, budgetState, Math.max(0, room), pacer);
+  phase('e.observed');
   for (const path of observedPaths) learnedPaths.delete(path);
   await paceAfterPass();
 
@@ -4586,6 +4713,7 @@ async function _buildPrefetchBundle(
   //    static require closure, which is correctness-critical.
   const independentBeforeGroups = new Set(Object.keys(bundle));
   const greedy = (await greedyAddMainEntries(vfs, cwd, bundle, budgetState, prefetch.entryPaths ?? closurePaths, { maxBundleBytes, pacer, conditions }));
+  phase('e.greedy');
   // Each landed learned root's closure (PrefetchResult.units) is one group
   // beside the greedy pass's, kept or evicted whole: a dependency evicted on
   // its own leaves a root in the map that cannot load.
@@ -4608,6 +4736,7 @@ async function _buildPrefetchBundle(
   //      tldts, parse5, lookup-table packages, mime-db, etc.) ENOENT
   //      at facet runtime even though the file is on VFS-disk + in
   const assetAdd = (await addStaticReadFileAssets(vfs, cwd, bundle, budgetState));
+  phase('e.assets');
   void assetAdd;
   await paceAfterPass();
 
@@ -4619,6 +4748,7 @@ async function _buildPrefetchBundle(
   //      (dotfiles, no-extension sentinels, "digest/hash/version/sha/md5"
   //      shapes). Motivating case: ts-jest's `.ts-jest-digest`. See
   const dotAdd = (await addStaticReadFileDotfilesAndCompiled(vfs, cwd, bundle, budgetState));
+  phase('e.dotfiles');
   void dotAdd;
   await paceAfterPass();
 
@@ -4631,6 +4761,13 @@ async function _buildPrefetchBundle(
   //      as data, etc.) without needing a per-pkg whitelist.
   //      No-op when entry isn't inside node_modules.
   const binSiblingAdd = (await addBinTargetSiblings(vfs, scriptPath, bundle, budgetState, bundleProfile));
+  phase('e.binSiblings');
+  // What the passes that stage code have staged (the walk, the runs'
+  // evidence, the package entries, a bin's siblings). The passes after them
+  // carry files to be read (the working tree, absolute paths the entry
+  // names): an ES module only they carry is a file, not a module of the map
+  // (dataModules below).
+  const codePaths = new Set(Object.keys(bundle));
   await paceAfterPass();
 
   // 2.34 project-data snapshot: sync Node fs cannot await the
@@ -4639,6 +4776,7 @@ async function _buildPrefetchBundle(
   // and Nimbus cache directories. Async fs still uses live supervisor
   // reads and child-process staleness fallback.
   const cwdProjectAdd = (await addCwdProjectFiles(vfs, cwd, bundle, budgetState));
+  phase('e.cwdProject');
   void cwdProjectAdd;
   await paceAfterPass();
 
@@ -4667,17 +4805,16 @@ async function _buildPrefetchBundle(
   //   - Skip paths under known-untrusted prefixes (`/proc`, `/sys`,
   //     `/dev` — we don't have these mounts; they'd never resolve).
   const absScanAdd = (await addEntryAbsPathReads(vfs, entryCode || '', bundle, budgetState));
+  phase('e.absPaths');
   void absScanAdd;
   await paceAfterPass();
 
-  // 2.5 W3.5 Fix B: ESM→CJS transform pass. Walks `bundle`, sniffs each
-  //     .js/.mjs for top-level import/export, runs esbuild's CJS transform
-  //     on the matches, and keeps each result as the path's emit. Every cell
-  //     reaches the guest as CommonJS (commonjs-cell.ts says why the registry
-  //     cannot take the ES module itself).
+  // 2.5 The module pass (core bundle-cell-transform.ts): each ES module read
+  //     for staging, TypeScript stripped or compiled, CommonJS's import()
+  //     routed; each result is the path's emit, and each ES module's import
+  //     sites are kept for its staging below.
   const emits = new Map<string, string>();
-  const columnMaps = new Map<string, string>();
-  const lowered = new Map<string, boolean>();
+  const esModules = new Map<string, string>();
   // A file staged only to run carries its emit and not itself
   // (FacetVfsState.codeOnly): installed code is most of a map, and each ES
   // module carried twice would halve the closure the bound admits. One staged
@@ -4693,20 +4830,21 @@ async function _buildPrefetchBundle(
   // has one: the build never holds the file's bytes and its module both, and
   // what reads the cells for their code (bundleUsesNodeSqlite, the wasm and
   // binding scans) reads the module, which is all the map carries.
-  const placeEmit = (path: string, code: string, map = '') => {
+  const placeEmit = (path: string, code: string) => {
     emits.set(path, code);
-    if (map) columnMaps.set(path, map);
     if (!runOnly(path)) return;
     bundle[path] = code;
     codeOnly.add(path);
   };
   let transforms: BundleCellTransformStats | undefined;
+  phase('enrich');
   const packageTypeOf = await cellPackageTypes(vfs, Object.keys(bundle).filter(isBundleModuleCandidate));
   if (esbuild) {
     // Transient failures propagate through the launch failure path before
     // serialization/cache/LOADER publication. Per-source verdicts still use
-    // the lazy diagnostic cells installed by transformEsmInBundle.
-    transforms = await transformEsmInBundle(bundle, placeEmit, lowered, packageTypeOf, moduleScope, stripTypes, esbuild, pacer, transformStore);
+    // the lazy diagnostic cells installed by transformBundleModules.
+    transforms = await transformBundleModules(bundle, placeEmit, esModules, packageTypeOf, moduleScope, stripTypes, esbuild, pacer, transformStore);
+    phase('transforms');
   } else {
     // No esbuild service was given: the ESM cells stage as diagnostics that
     // say so, rather than as source the registry rejects without a reason.
@@ -4717,9 +4855,9 @@ async function _buildPrefetchBundle(
   // TypeScript source never is). A file that changes has the result as its emit.
   for (const path of Object.keys(bundle)) {
     const cell = bundle[path];
-    const code = emits.get(path) ?? (isBundleModuleCandidate(path) && bundleTypescriptLoader(path) === null ? cell : undefined);
-    // A lowered ES module was bound before it was lowered (esbuild-service.ts preparedTransformSource).
-    if (typeof code !== 'string' || lowered.get(path) === true) continue;
+    const code = emits.get(path) ?? (isBundleModuleCandidate(path) && bundleCompiledLoader(path) === null ? cell : undefined);
+    // An ES module was bound before it was read (esbuild-service.ts preparedTransformSource).
+    if (typeof code !== 'string' || esModules.has(path)) continue;
     await pacer?.spend(code.length);
     let bound: string;
     try {
@@ -4732,6 +4870,7 @@ async function _buildPrefetchBundle(
     if (bound !== code) placeEmit(path, bound);
   }
   await paceAfterPass();
+  phase('bind');
   // 4. The snapshot's size guard, in the unit the session DO's memory was
   //    measured in and the require walk counts: raw bytes, a cell's UTF-8
   //    length (VFS_BUNDLE_MAX_BYTES, platform/limits.ts, unless the caller
@@ -4821,27 +4960,9 @@ async function _buildPrefetchBundle(
         return (unitBytes.get(b) ?? weight(b)) - (unitBytes.get(a) ?? weight(a));
       });
     const evictable = [...enrichment, ...lastAdmittedFirst(learnedPaths), ...lastAdmittedFirst(observedPaths)];
-    async function retainedPaths(): Promise<Set<string>> {
-      const retained = new Set(independent);
-      for (const group of keptGroups) {
-        let work = 0;
-        for (const path of group.members) { retained.add(path); work += path.length + 256; }
-        if (pacer) await pacer.spend(work);
-      }
-      return retained;
-    }
-    let retained = await retainedPaths();
-    for (const path of evictable) {
-      if (rawTotal <= maxBundleBytes) break;
-      if (independent.delete(path)) {
-        for (const group of keptGroups) if (group.members.has(path)) keptGroups.delete(group);
-      } else {
-        for (const group of keptGroups) if (group.root === path) keptGroups.delete(group);
-      }
-      retained = await retainedPaths();
-      rawTotal = 0;
-      for (const path of retained) rawTotal += rawBytes.get(path) ?? 0;
-    }
+    const kept = await retainWithinBound(maxBundleBytes, rawTotal, independent, keptGroups, evictable, rawBytes, pacer);
+    const retained = kept.retained;
+    rawTotal = kept.rawTotal;
     const evicted: BundleCellSize[] = [];
     for (const k of Object.keys(bundle)) {
       if (retained.has(k)) continue;
@@ -4849,11 +4970,12 @@ async function _buildPrefetchBundle(
       evictedCells[k] = bundle[k]!;
       delete bundle[k];
       emits.delete(k);
-      columnMaps.delete(k);
-      lowered.delete(k);
+      esModules.delete(k);
       codeOnly.delete(k);
       size.remove(k);
     }
+    // How many it evicted, beside the phases' times (exec telemetry).
+    phases.evicted = evicted.length;
     if (evicted.length > 0) {
       truncated = true;
       console.warn(
@@ -4868,6 +4990,7 @@ async function _buildPrefetchBundle(
   const fileCount = Object.keys(bundle).length;
   const bundleSideModulesRequired = size.bytes > BUNDLE_MAX_ENCODED_BYTES;
 
+  phase('guard');
   // What only an import() reaches: phase 2's modules, less any a staged
   // package entry's static walk reaches (a synchronous require of that entry
   // evaluates them too). Each with the lazy modules that import it.
@@ -4884,14 +5007,67 @@ async function _buildPrefetchBundle(
   // An evicted module is still one the program may load late (as runtime
   // code, through an import()): its images ride in the map, bytes only since
   // they compile on first use, and its reads are named for that import().
-  const wasmImages = (await collectClosureWasmImages(vfs, { ...bundle, ...evictedCells }, binSiblingAdd.wasmPaths));
+  const wasmImages = (await collectClosureWasmImages(vfs, { ...bundle, ...evictedCells }, binSiblingAdd.wasmPaths, staticRefs));
+  phase('wasm');
   const readers = evictedReaders(evictedCells);
+
+  // The ES modules the map carries, staged as the process's registry
+  // evaluates them (esm-stage.ts), `-e` or stdin code that is one among them
+  // (entryModule). A staged module's text supersedes its emit, which no
+  // longer needs holding.
+  let esm: EsmStage | undefined;
+  const dataModules = new Set<string>();
+  if (esModules.size > 0 || entryEsModule !== undefined) {
+    const cells = new Map<string, { code: string; sites: ImportSites }>();
+    if (entryEsModule !== undefined && entryCode !== undefined) {
+      cells.set(entryEsModule, { code: entryCode, sites: readEsModule(entryCode, moduleScope) });
+    }
+    for (const [key, sites] of esModules) {
+      const code = emits.get(key);
+      if (code === undefined) continue;
+      if (codePaths.has(key)) cells.set(key, { code, sites: JSON.parse(sites) as ImportSites });
+      else dataModules.add(key);
+    }
+    // A data module is carried as its file only: staging the working tree's
+    // modules (an example app's sources, importing packages not installed)
+    // cost every launch in it its listings and refusals, for code no
+    // program here imports. One a program does import is loaded as a file
+    // the launch did not stage (node-shims' __loadModule), and the next
+    // launch walks it from the run's record.
+    for (const key of dataModules) emits.delete(key);
+    const held = (key: string) => {
+      const cell = bundle[key];
+      return typeof cell === 'string' ? cell : undefined;
+    };
+    const entries = async (dir: string) => {
+      try { return new Map((await vfs.readdir(dir)).map((entry) => [entry.name, entry.type])); } catch { return null; }
+    };
+    phase('fit');
+    // With no module to stage, the map carries no ES module host at all.
+    if (cells.size > 0) esm = await stageEsModules({ files: filesOf(vfs), realpath: async (path) => await vfs.realpath(path), entries, held }, cells, {
+      conditions,
+      cwd,
+      scope: moduleScope,
+      stripsTypes: stripTypes !== null && stripTypes !== 'javascript',
+      typeScript: stripTypes !== 'javascript',
+      isCode: (key) => !dataModules.has(key) && (emits.has(key) || (typeof bundle[key] === 'string' && isCodeCellPath(key))),
+      gate: true,
+    });
+    // Staging reads and rewrites its modules' text, which the map's
+    // serialization spends as it carries each one (buildFacetVfsBundleSource),
+    // as it spent each lowered module's emit: each staged byte is spent once.
+    // A pass's bundle weight here cost a launch over lodash-es a turn of its own.
+    for (const key of esm?.modules.keys() ?? []) emits.delete(key);
+    phase('stage');
+  }
+  phase('rest');
 
   return {
     bundle,
+    phases,
     ...(emits.size > 0 ? { emits } : {}),
-    ...(columnMaps.size > 0 ? { columnMaps } : {}),
-    ...(lowered.size > 0 ? { lowered } : {}),
+    ...(esm ? { esm, esmSize: esmStageSize(esm) } : {}),
+    ...(dataModules.size > 0 ? { dataModules } : {}),
     ...(codeOnly.size > 0 ? { codeOnly } : {}),
     cursor,
     reachableCount: fileCount,
@@ -4919,7 +5095,7 @@ export function evictedReaders(cells: Readonly<Record<string, string | Uint8Arra
   const readers: string[] = [];
   for (const [path, cell] of Object.entries(cells)) {
     if (readers.length >= EVICTED_READERS_MAX) break;
-    // \`Sync\` and not \`Sync(\`: a lowered module calls \`(0, import_fs.readFileSync)(…)\`.
+    // \`Sync\` and not \`Sync(\`: a bundled module calls \`(0, import_fs.readFileSync)(…)\`.
     if (typeof cell === 'string' && /\.[cm]?js$/.test(path) && SYNC_CALL_NAME.test(cell)) readers.push(stripLeadingSlashes(path));
   }
   return readers;
@@ -5101,9 +5277,10 @@ export interface ResidentSpawnOptions {
   cwd?: string;
   filename?: string;
   dirname?: string;
-  /** The program is an ES module the runtime lowered (RuntimeRunOpts.esModule). */
+  /** The program is an ES module (RuntimeRunOpts.esModule). */
   esModule?: boolean;
-  esModuleMap?: string;
+  /** CommonJS evaluated before the entry (node-runner.ts RunFreshOpts.preamble). */
+  preamble?: string;
   /** Whose scope the runtime runs an ES module in (RuntimeRunOpts.moduleScope): absent, Node's. */
   moduleScope?: ModuleScope;
   command?: string;
@@ -5360,32 +5537,8 @@ export class FacetManager {
   private readonly outputGates = new Map<number, ReplayOutputGate>();
   /** Per stdin channel of a process that can stop: what its current run took (stdinTakenBy). */
   private readonly stdinTaken = new Map<number, StdinTaken>();
-  /** Per process that can stop: what each of its runs was answered (journalCall). */
-  private readonly journals = new Map<number, ReplayJournal>();
-  /**
-   * Connections a process that can stop opened through the session, by the
-   * token its socket names (netTls, outboundCall): where to, and the upgrade
-   * rendezvous between the guest asking and the outbound doing it.
-   */
-  private readonly netTargets = new Map<string, {
-    pid: number;
-    host: string;
-    port: number;
-    registered: Promise<void>;
-    register: () => void;
-    /** What the program asked of its TLS session; null once the process has ended. */
-    asked: Promise<{ servername?: string } | null>;
-    ask: (request: { servername?: string } | null) => void;
-    answered: Promise<{ ok: boolean; error?: string }>;
-    answer: (result: { ok: boolean; error?: string }) => void;
-  }>();
-  /** A live fetch the outbound is making for a journaled answer: its result, by ticket. */
-  private readonly fetchTickets = new Map<string, {
-    pid: number; run?: string; key: string; what: string;
-    deliver: (value: Omit<RecordedResponse, 'body'> | { error: string }) => void;
-    done: Promise<unknown>; response?: RecordedResponse;
-    body?: { deliver: (value: RecordedBody) => void; done: Promise<unknown> };
-  }>();
+  /** Per process that can stop: its journal, its connections and live fetches, across its runs (runtime/replay-session.ts). */
+  readonly replay = new ReplaySessions();
   /**
    * The content-addressed boot-image store (fabric's image-store.ts),
    * writing through this session's kernel-credentialed VFS and rooted off the
@@ -5424,7 +5577,7 @@ export class FacetManager {
   /** Per resident pid: the shared read profile's entries its launch staged, settled at its exit. */
   private readonly residentProfileOffers = new Map<number, { staged: StagedProfileEntry[]; unresolved: string[] }>();
   /**
-   * The service the bundle's ESM→CJS pass transforms with. composeFacetManager
+   * The service the bundle's module pass transforms with. composeFacetManager
    * sets it: the host's own, or one whose transforms run in the session's
    * transform facet. Never one of this isolate: a transform engine's wasm
    * memory only grows.
@@ -5433,7 +5586,7 @@ export class FacetManager {
 
   /**
    * Prefetch-bundle cache. buildPrefetchBundle does a full VFS reachable-set
-   * walk + greedy oversample + esbuild ESM→CJS pass on EVERY foreground
+   * walk + greedy oversample + the module pass on EVERY foreground
    * exec — dominant wall-clock on large node_modules. This memoizes the
    * result (including the serialized facet bundle) keyed on
    * (bundleProfile, cwd, scriptPath, entryCode identity).
@@ -5477,8 +5630,8 @@ export class FacetManager {
   private readProfile: ReadProfile | null = null;
   /** Read-profile changes dropped after losing every write race. */
   private readProfileConflicts = 0;
-  /** Per module path: its static references at a revision (see _closureStaticRefs). */
-  private staticRefsMemo = new Map<string, { rev: number; refs: StaticFsRefs }>();
+  /** Per credential and module path: its static references at a revision (see _staticRefsOf). */
+  private staticRefsMemo = new Map<string, { rev: number | string; refs: StaticFsRefs }>();
   /** Modules whose references are remembered: a few programs' closures. */
   private static readonly STATIC_REFS_MEMO_MAX = 16_384;
 
@@ -5633,6 +5786,8 @@ export class FacetManager {
     // ended the process, and the delete must not be a floating promise there.
     this.processes.setOnTerminal((pid) => {
       this.launchBundles.delete(pid);
+      // However it ended, nothing of its replay is waited on any more.
+      this.replay.close(pid);
       this.residentProfileOffers.delete(pid);
       // Its writers' cursors go with it, unless its log is still to be
       // drained (which numbers against them, and forgets them after).
@@ -5933,7 +6088,7 @@ export class FacetManager {
     return this.filesystem!.bind({ pid, cred: CRED_KERNEL }).synchronous!;
   }
 
-  /** Give the bundle's ESM→CJS pass the host's esbuild, as composeFacetManager does. */
+  /** Give the bundle's module pass the host's esbuild, as composeFacetManager does. */
   setEsbuildService(esbuild: EsbuildService) { this.esbuild = esbuild; }
 
   /**
@@ -5991,7 +6146,7 @@ export class FacetManager {
    * the entry, the working directory and the process they build for; that is
    * all they supply. Everything else — the revision-keyed cache and its stale
    * eviction, the residency profile a previous miss learned, the reachable-set
-   * walk and its enrichment passes, the ESM→CJS transform, the manifest and
+   * walk and its enrichment passes, the module pass, the manifest and
    * metadata, the module-map serialization with its side-module split, the
    * `node:sqlite` answer, and the release of the raw cells once they are
    * serialized — happens here, once, and yields the turn whenever a chunk's
@@ -6178,7 +6333,7 @@ export class FacetManager {
     const lazy = new Set(vfsState.lazyModules ?? []);
     const syncReadsOf = new Map<string, string[]>();
     const refs: StaticFsRefs[] = [];
-    await this._closureStaticRefs(vfs, vfsState.bundlePaths ?? [], pacer, (path, moduleRefs) => {
+    await this._closureStaticRefs(vfs, entry.cred, vfsState.bundlePaths ?? [], pacer, (path, moduleRefs) => {
       const reads = lazy.has(path) ? moduleRefs.exact.filter((ref) => ref.sync).map((ref) => stripLeadingSlashes(ref.path)) : [];
       if (reads.length === 0) { refs.push(moduleRefs); return; }
       syncReadsOf.set(path, reads);
@@ -6187,7 +6342,7 @@ export class FacetManager {
     const lazyReads = lazyReadsByTarget(syncReadsOf, vfsState.lazyImporters ?? {});
     // An evicted module's reads, under its own path: the import() whose
     // closure walk reaches it fetches them (node-shims.ts __nimbusStageImport).
-    await this._closureStaticRefs(vfs, vfsState.evictedReaders ?? [], pacer, (path, moduleRefs) => {
+    await this._closureStaticRefs(vfs, entry.cred, vfsState.evictedReaders ?? [], pacer, (path, moduleRefs) => {
       const reads = moduleRefs.exact.filter((ref) => ref.sync).map((ref) => stripLeadingSlashes(ref.path));
       if (reads.length > 0) lazyReads[path] = [...new Set([...(lazyReads[path] ?? []), ...reads])];
     });
@@ -6225,7 +6380,7 @@ export class FacetManager {
     });
     trace(`planned ${plan.paths.length}`);
     // What the facet's store will hold (N18), in the cost its store charges
-    // itself (facet-resident-store's __residentCellCost): the planned bytes on
+    // itself (vfs/resident residentCellCost): the planned bytes on
     // overflow pages (1% over), a head and chunk rows per file, a namespace
     // row per name, and slack for the last write's page.
     const rows = plan.paths.length * 2 + Math.ceil(plan.bytes / RESIDENT_CHUNK_BYTES) + names;
@@ -6254,7 +6409,7 @@ export class FacetManager {
     for (const path of vfsState.codeOnly ?? []) held.delete(path);
     const dir = stripLeadingSlashes(cwd).replace(/\/+$/, '');
     const reads = new Set<string>();
-    for (const refs of await this._closureStaticRefs(vfs, vfsState.bundlePaths ?? [], pacer)) {
+    for (const refs of await this._closureStaticRefs(vfs, entry.cred, vfsState.bundlePaths ?? [], pacer)) {
       for (const ref of refs.exact) if (ref.sync) reads.add(stripLeadingSlashes(ref.path));
       for (const ref of refs.cwdRelative) if (ref.sync) reads.add(normalizeVfsPath((dir ? dir + '/' : '') + ref.path));
     }
@@ -6280,7 +6435,7 @@ export class FacetManager {
    * Every package.json the process's credential can see (data-plan.ts's
    * `package-json` rule, which a resident's plan applies itself), as copies a
    * one-shot is handed beside its plan: its store holds each manifest its own
-   * listing names from boot (facet-resident-store's __residentSetManifests).
+   * listing names from boot (vfs/resident sync.setManifests).
    * A program resolves package names its closure never named, and reads each
    * manifest synchronously to do it: vite's config load, for every import of
    * the config it decides whether to externalize.
@@ -6412,6 +6567,8 @@ export class FacetManager {
    */
   private async _closureStaticRefs(
     vfs: LaunchFs,
+    /** Whose reads these are: the analysis of a file is kept per credential that read it. */
+    cred: Readonly<VfsCred>,
     paths: readonly string[],
     pacer: TurnBudget,
     /** Called with each module that names paths, and what it names. */
@@ -6420,39 +6577,52 @@ export class FacetManager {
     const out: StaticFsRefs[] = [];
     for (const path of paths) {
       if (!/\.(?:c|m)?js$/.test(path)) continue;
-      let rev: number;
-      try { rev = await vfs.revision(path); } catch { continue; }
-      const memo = this.staticRefsMemo.get(path);
-      let refs: StaticFsRefs;
-      if (memo && memo.rev === rev) {
-        refs = memo.refs;
-      } else {
-        let source: string;
-        try { source = await filesOf(vfs).readFileString(path); } catch { continue; }
-        await pacer.spend(source.length);
-        refs = findStaticFsReferences(source, '/' + path);
-        // A registered sibling image is also bytes its loader may read.
-        // CommonJS import.meta.url polyfills can hide that path from folding;
-        // the image collector's same relative-literal rule still names it.
-        for (const image of relativeWasmPaths(source, path)) {
-          const name = '/' + image;
-          const existing = refs.exact.find((ref) => ref.path === name);
-          if (existing) existing.sync = true;
-          else refs.exact.push({ path: name, sync: true });
-        }
-        this.staticRefsMemo.delete(path);
-        this.staticRefsMemo.set(path, { rev, refs });
-        for (const oldest of this.staticRefsMemo.keys()) {
-          if (this.staticRefsMemo.size <= FacetManager.STATIC_REFS_MEMO_MAX) break;
-          this.staticRefsMemo.delete(oldest);
-        }
-      }
+      const refs = await this._staticRefsOf(vfs, cred, path, pacer);
+      if (refs === null) continue;
       if (refs.exact.length + refs.listed.length + refs.patterns.length + refs.cwdRelative.length + refs.resolves.length > 0) {
         out.push(refs);
         each?.(path, refs);
       }
     }
     return out;
+  }
+
+  /**
+   * One module's static filesystem references (_closureStaticRefs), parsed
+   * once per revision of its file in this session; null if it has no
+   * revision or cannot be read. The launch's image collector reads the same
+   * analysis (collectClosureWasmImages).
+   */
+  private async _staticRefsOf(vfs: LaunchFs, cred: Readonly<VfsCred>, path: string, pacer?: TurnBudget): Promise<StaticFsRefs | null> {
+    let rev: number;
+    try { rev = await vfs.revision(path); } catch { return null; }
+    // A credential's own: one that could not read the file never learns what it names.
+    const key = `${cred.uid}:${cred.gid}:${cred.groups.join(',')}\0${path}`;
+    const memo = this.staticRefsMemo.get(key);
+    if (rev !== 0 && memo && memo.rev === rev) return memo.refs;
+    let source: string;
+    try { source = await filesOf(vfs).readFileString(path); } catch { return null; }
+    // A mounted file has no revision (0): its content's digest is its identity.
+    const identity = rev !== 0 ? rev : await sha256Hex(source);
+    if (memo && memo.rev === identity) return memo.refs;
+    await pacer?.spend(source.length);
+    const refs = findStaticFsReferences(source, '/' + path);
+    // A registered sibling image is also bytes its loader may read.
+    // CommonJS import.meta.url polyfills can hide that path from folding;
+    // the image collector's same relative-literal rule still names it.
+    for (const image of relativeWasmPaths(source, path)) {
+      const name = '/' + image;
+      const existing = refs.exact.find((ref) => ref.path === name);
+      if (existing) existing.sync = true;
+      else refs.exact.push({ path: name, sync: true });
+    }
+    this.staticRefsMemo.delete(key);
+    this.staticRefsMemo.set(key, { rev: identity, refs });
+    for (const oldest of this.staticRefsMemo.keys()) {
+      if (this.staticRefsMemo.size <= FacetManager.STATIC_REFS_MEMO_MAX) break;
+      this.staticRefsMemo.delete(oldest);
+    }
+    return refs;
   }
 
   private async _buildProcessBundle(
@@ -6480,7 +6650,9 @@ export class FacetManager {
       conditions: spec.node?.conditions ?? [], require: spec.node?.require ?? [], import: spec.node?.import ?? [],
       stripTypes: moduleScope === 'node' ? typeScriptStripOptions(spec.node ?? {}) : null,
     };
-    const key = `${profile}\x00${moduleScope}\x00${credKey}\x00${spec.cwd}\x00${spec.scriptPath ?? ''}\x00${_fnv1a(spec.entryCode)}\x00${JSON.stringify(launch)}`;
+    // `-e` code is staged as an ES module or not, as the command line says.
+    const evaluatedModule = spec.esModule === true && (spec.scriptPath === undefined || spec.scriptPath === '<eval>' || spec.scriptPath === '[stdin]');
+    const key = `${profile}\x00${moduleScope}\x00${credKey}\x00${spec.cwd}\x00${spec.scriptPath ?? ''}\x00${_fnv1a(spec.entryCode)}\x00${JSON.stringify(launch)}\x00${evaluatedModule ? 1 : 0}`;
     const revision = (await vfs.revision());
     // An entry built at an older revision can never be SERVED again — the
     // lookup below requires an exact match — so from the first write after it
@@ -6531,6 +6703,7 @@ export class FacetManager {
       cwd: spec.cwd,
       entryCode: spec.entryCode,
       esbuild: this.esbuild ?? undefined,
+      staticRefs: (path) => this._staticRefsOf(vfs, cred, path, pacer),
       bundleProfile: profile,
       moduleScope,
       observedReads: new Set(learning.dataReads),
@@ -6546,6 +6719,7 @@ export class FacetManager {
         ...launch.require.map((specifier) => ({ preload: 'require' as const, specifier })),
         ...launch.import.map((specifier) => ({ preload: 'import' as const, specifier })),
       ],
+      ...(evaluatedModule ? { entryEsModule: entryEsModuleKey(spec.scriptPath, spec.cwd) } : {}),
     });
     if (offered.length > 0) {
       const staged: StagedProfileEntry[] = [];
@@ -6586,6 +6760,7 @@ export class FacetManager {
     // (N18): taken now, while the cells exist, for every launch this state
     // serves (a cache hit included).
     vfsState.moduleStorageBytes = moduleMapStorageBytes(vfsState.bundle, vfsState.codeOnly);
+    const serializeFrom = Date.now();
     vfsState.bundleSource = await buildFacetVfsBundleSource(
       vfsState.bundle,
       vfsState.bundleSideModulesRequired,
@@ -6593,12 +6768,13 @@ export class FacetManager {
       {
         consume: true,
         emits: vfsState.emits,
-        columnMaps: vfsState.columnMaps,
-        lowered: vfsState.lowered,
+        esm: vfsState.esm,
         codeOnly: vfsState.codeOnly,
+        dataModules: vfsState.dataModules,
         runtimeCode: await this._stagedRuntimeCode(learning, vfs, pacer, moduleScope, launch.stripTypes),
       },
     );
+    if (vfsState.phases) vfsState.phases.serialize = Date.now() - serializeFrom;
     vfsState.cacheHit = false;
 
     // Serialization is total: bundleSource/serializedManifest/serializedMetadata
@@ -6750,10 +6926,13 @@ export class FacetManager {
   /**
    * The runtime code recorded for an entry, as `{ cjs }` module text by key:
    * a constructor call as the function module (or the SyntaxError the
-   * constructor would throw), a file lowered and wrapped as a module cell is.
-   * A file is staged by its content key even when the launch also carries its
+   * constructor would throw), a CommonJS file wrapped as a module cell is. A
+   * file is staged by its content key even when the launch also carries its
    * path as a cell: the guest looks a path up first and the key only for a
-   * path the map lacks — the same text written under a fresh name.
+   * path the map lacks — the same text written under a fresh name. An ES
+   * module (a data: URL's always) is not staged: each instance of it is the
+   * path it was written at, which a module the map fixes cannot be, so each
+   * launch interprets it (core native-esm.ts).
    */
   private async _stagedRuntimeCode(
     learning: LaunchLearning, vfs: LaunchFs, pacer: TurnBudget, moduleScope: ModuleScope, stripTypes: NodeTypeScript | null,
@@ -6770,35 +6949,23 @@ export class FacetManager {
         modules.set(codeKey, runtimeFunctionModule(entry.kind, entry.params, entry.body));
         continue;
       }
-      if (entry.path.startsWith('data:')) {
-        if (!this.esbuild) throw new Error('No transformer for a staged data URL module');
-        modules.set(codeKey, await stagedDataUrlModule(entry.text, moduleScope, this.esbuild));
-        continue;
-      }
+      if (entry.path.startsWith('data:')) continue;
       const path = entry.path.replace(/^\/+/, '');
       const file: Record<string, string> = { [path]: entry.text };
       const emits = new Map<string, string>();
-      const maps = new Map<string, string>();
-      const placeEmit = (at: string, code: string, map: string) => {
-        emits.set(at, code);
-        maps.set(at, map);
-      };
-      const lowered = new Map<string, boolean>();
+      const esModules = new Map<string, string>();
+      const placeEmit = (at: string, code: string) => { emits.set(at, code); };
       const packageTypeOf = await cellPackageTypes(vfs, [path]);
-      if (this.esbuild) await transformEsmInBundle(file, placeEmit, lowered, packageTypeOf, moduleScope, stripTypes, this.esbuild, pacer, this._transformStore());
+      if (this.esbuild) await transformBundleModules(file, placeEmit, esModules, packageTypeOf, moduleScope, stripTypes, this.esbuild, pacer, this._transformStore());
       else _markBundleEsmAsFailed(file, placeEmit, packageTypeOf, 'no esbuild service was given to this launch');
-      let code = emits.get(path) ?? file[path];
-      // A lowered ES module was bound before it was lowered (core esbuild-service.ts preparedTransformSource).
-      if (lowered.get(path) !== true) {
-        try {
-          code = rewriteProvidedCommonJsModules(code);
-        } catch {
-          // Unparseable: it stays as written, and requiring it says why.
-        }
+      if (esModules.has(path)) continue;
+      let code = emits.get(path) ?? entry.text;
+      try {
+        code = rewriteProvidedCommonJsModules(code);
+      } catch {
+        // Unparseable: it stays as written, and requiring it says why.
       }
-      const map = esModuleMapOf(maps.get(path));
-      const scope = lowered.has(path) || declaresWrapperBinding(code) ? 'block' : 'function';
-      modules.set(codeKey, wrapCommonJsCell(code, scope, map?.head, map?.tail).text);
+      modules.set(codeKey, wrapCommonJsCell(code).text);
     }
     return modules.size > 0 ? modules : undefined;
   }
@@ -6983,10 +7150,10 @@ export class FacetManager {
       callerPid?: number;
       /** The process whose command runs the program: its parent, whose credential and exec id it takes. */
       invokerPid?: number;
-      /** The program is an ES module the runtime lowered (RuntimeRunOpts.esModule). */
+      /** The program is an ES module (RuntimeRunOpts.esModule). */
       esModule?: boolean;
-      /** RuntimeRunOpts.esModuleMap. */
-      esModuleMap?: string;
+      /** CommonJS evaluated before the entry (node-runner.ts RunFreshOpts.preamble). */
+      preamble?: string;
       /** Whose scope the runtime runs an ES module in (RuntimeRunOpts.moduleScope): absent, Node's. */
       moduleScope?: ModuleScope;
       bundleProfile?: FacetBundleProfile;
@@ -7091,7 +7258,7 @@ export class FacetManager {
         // the program ran, so a child it launched and waited on, needing a turn
         // of its own, never got one.
         const pacer = this._launchPacer(entry.pid);
-        const bundleSpec: ProcessBundleSpec = { scriptPath: opts.filename, cwd: opts.cwd || '/home/user', entryCode: code, bundleProfile: opts.bundleProfile, moduleScope: opts.moduleScope, node: opts.node };
+        const bundleSpec: ProcessBundleSpec = { scriptPath: opts.filename, cwd: opts.cwd || '/home/user', entryCode: code, esModule: opts.esModule, bundleProfile: opts.bundleProfile, moduleScope: opts.moduleScope, node: opts.node };
         let vfsState: FacetVfsState;
         try {
           vfsState = await this._buildProcessBundle(entry, bundleSpec, pacer);
@@ -7150,11 +7317,11 @@ export class FacetManager {
         const divergence = new AbortController();
         if (stoppable || promotable) this.outputGates.set(entry.pid, new ReplayOutputGate());
         if (stoppable) {
-          this.journals.set(entry.pid, new ReplayJournal(() => {
+          const { journal } = this.replay.open(entry.pid, () => {
             this.outputGates.get(entry.pid)?.close();
             divergence.abort();
-          }));
-          if (opts.stdinFile) this.journals.get(entry.pid)!.bindStdinFile({ path: opts.stdinFile.path, offset: opts.stdinFile.offset, limit: STDIN_SYNC_READ_BYTES });
+          });
+          if (opts.stdinFile) journal.bindStdinFile({ path: opts.stdinFile.path, offset: opts.stdinFile.offset, limit: STDIN_SYNC_READ_BYTES });
         }
         if (inputChannel > 0) this.stdinTaken.set(inputChannel, new StdinTaken(held, STDIN_SYNC_READ_BYTES));
         // Each run starts from the umask the process started with: a umask the
@@ -7184,7 +7351,7 @@ export class FacetManager {
           // What the session has of a captured run's output: the last stopped
           // run's, until a run after it gets past the read it stopped at (N8).
           let acceptedCapture: { stdout: string; stderr: string } = { stdout: '', stderr: '' };
-          const journal = this.journals.get(entry.pid);
+          const journal = this.replay.get(entry.pid)?.journal;
           for (let stops = 0; ; stops++) {
             let outcome: FacetExecResult | { stop: StopRecord };
             try {
@@ -7269,7 +7436,9 @@ export class FacetManager {
               namespaceRefusals: result.diag?.namespaceRefusals ?? 0,
               rpcWrites: result.diag?.rpcWrites ?? 0,
               fsRpcReads: result.diag?.fsRpcReads ?? 0,
+              esmAdoptions: result.diag?.esmAdoptions ?? 0,
               cacheHit: vfsState.cacheHit ?? false,
+              ...execBreakdown(vfsState),
               turns: pacer.chunks,
               exitCode: result.exitCode,
               at: Date.now(),
@@ -7313,11 +7482,7 @@ export class FacetManager {
           this.stdinTaken.delete(inputChannel);
           held.give();
           this.outputGates.delete(entry.pid);
-          if (stoppable) {
-            this.journals.get(entry.pid)?.close();
-            this.journals.delete(entry.pid);
-            this._dropNetTargets(entry.pid);
-          }
+          if (stoppable) this.replay.close(entry.pid);
         }
       });
     } catch (err: unknown) {
@@ -7431,7 +7596,7 @@ export class FacetManager {
     try {
       await this.spawnNode(code, {
         argv: opts.argv, env: opts.env, cwd: opts.cwd, filename: opts.filename, dirname: opts.dirname,
-        esModule: opts.esModule, esModuleMap: opts.esModuleMap, moduleScope: opts.moduleScope,
+        esModule: opts.esModule, moduleScope: opts.moduleScope, preamble: opts.preamble,
         command: opts.command, invokerPid: opts.invokerPid, bundleProfile: opts.bundleProfile, node: opts.node,
         ...(opts.stdin !== undefined ? { stdin: opts.stdin } : {}),
         skipSpawn: true, callerPid: pid, resume,
@@ -7520,7 +7685,7 @@ export class FacetManager {
       tape: stop.tape!,
       stopAt: stop.stopAt!,
       prefix: stopped.prefix ? { stdout: encodeBase64(stopped.prefix.stdout), stderr: encodeBase64(stopped.prefix.stderr) } : null,
-      observations: this.journals.get(pid)?.observations,
+      observations: this.replay.get(pid)?.journal.observations,
     };
     // A \`< file\` the stopped run read synchronously but the launch had not
     // staged: the next run reads it ahead. Nothing is waited for.
@@ -7619,234 +7784,6 @@ export class FacetManager {
    */
   stdinTakenBy(pid: number): StdinTaken | undefined {
     return this.stdinTaken.get(pid);
-  }
-
-  /**
-   * A supervisor call from a process, answered through \`dispatch\`: for one
-   * that can stop, through its journal (runtime/stop-replay.ts ReplayJournal),
-   * which counts what it does outside itself and checks what a run after a
-   * stop is answered against the run before it.
-   */
-  journalCall(op: string, args: readonly unknown[] | undefined, pid: number | undefined, run: string | undefined, dispatch: () => Promise<unknown>): Promise<unknown> {
-    const journal = pid === undefined ? undefined : this.journals.get(pid);
-    // A call that names no run is the session's own on the process's behalf
-    // (the stat a `< file` relaunch makes), not something a run was told.
-    if (!journal || run === undefined || op === 'replayBoundary' || op === 'netTls' || op === 'outbound') return dispatch();
-    if (op === 'getCachedTarball' || op === 'getPackument') return journal.externalRead(op, args, run);
-    return journal.handle(op, args, run, dispatch);
-  }
-  /** Whether this bound run is still recording: cache reads must not fill shared stores. */
-  journalRecording(pid: number | undefined, run: string | undefined): boolean {
-    const journal = pid === undefined ? undefined : this.journals.get(pid);
-    return !!journal && journal.admits(run) && journal.recording;
-  }
-  stdinPrepared(pid: number, run: string | undefined): void { this.journals.get(pid)?.prepared(run); }
-  async cacheResult(pid: number, run: string | undefined, ticket: string, result: { value?: unknown; failure?: unknown; failed?: boolean }): Promise<void> {
-    const journal = this.journals.get(pid);
-    if (!journal) throw new Error('no such cache observation');
-    await journal.externalResult(ticket, result, run);
-  }
-
-  /** The run after a stop reached the read the run before it stopped at. */
-  async replayBoundary(pid: number, run: string | undefined): Promise<void> {
-    await this.journals.get(pid)?.boundary(run);
-  }
-
-  /**
-   * A process that can stop opening a TLS connection through the session
-   * (\`open\`: where to; the outbound proxies it), and asking for its upgrade
-   * (\`upgrade\`: answered once the outbound has made the TLS session with the
-   * server). Opening one is something a second run would do again.
-   */
-  async netTls(pid: number, run: string | undefined, action: string, token: string, payload: Record<string, unknown> | undefined): Promise<unknown> {
-    const journal = this.journals.get(pid);
-    if (!journal || !journal.admits(run) || !/^[0-9a-f]{32}$/.test(token)) throw new Error('netTls: no such process or connection');
-    if (action === 'open') {
-      const host = String(payload?.host ?? ''), port = Number(payload?.port);
-      if (host.length === 0 || !Number.isInteger(port) || port <= 0 || port > 65535) throw new Error('netTls: bad target');
-      const refused = await journal.beforeEffect(`tls.connect ${host}:${port}`);
-      if (refused) throw refused;
-      this._netTarget(token, pid).host = host;
-      this._netTarget(token, pid).port = port;
-      this._netTarget(token, pid).register();
-      return true;
-    }
-    if (action === 'upgrade') {
-      const target = this._netTarget(token, pid);
-      const servername = typeof payload?.servername === 'string' ? payload.servername : undefined;
-      target.ask(servername === undefined ? {} : { servername });
-      return await target.answered;
-    }
-    throw new Error(`netTls: unknown action ${action}`);
-  }
-
-  /**
-   * The outbound side of a process's network (SupervisorRPC.fetch/connect,
-   * the globalOutbound of a run that can stop):
-   *   effect(what)            a request that is not a read, a plain connection
-   *   fetch(key, what)        a read: { replay: response } or { live: ticket }
-   *   fetched(ticket, result) what the live read got; answered when the
-   *                           program may have it
-   *   connect(token)          where a TLS connection goes
-   *   awaitUpgrade(token)     resolves when the guest asks for the TLS session
-   *   upgraded(token, result) whether the outbound made it
-   */
-  async outboundCall(pid: number, run: string | undefined, action: string, payload: Record<string, unknown> | undefined): Promise<unknown> {
-    const journal = this.journals.get(pid);
-    if (!journal || !journal.admits(run)) throw new Error('outbound: this run of the process has stopped');
-    switch (action) {
-      case 'effect': {
-        const refused = await journal.beforeEffect(String(payload?.what ?? 'a request'));
-        if (refused) throw refused;
-        // The run cannot be replayed now: the outbound need not ask again.
-        return { unrecorded: true };
-      }
-      case 'fetch': {
-        // Nothing is recorded for a run that cannot be replayed (D1).
-        if (!journal.recording) return { unrecorded: true };
-        const key = String(payload?.key ?? '');
-        const what = String(payload?.what ?? 'a request');
-        let plan!: (value: unknown) => void;
-        const planned = new Promise((resolve) => { plan = resolve; });
-        const ticket = crypto.randomUUID();
-        let deliver!: (value: Omit<RecordedResponse, 'body'> | { error: string }) => void;
-        const fetched = new Promise<Omit<RecordedResponse, 'body'> | { error: string }>((resolve) => { deliver = resolve; });
-        let replayed = false;
-        let response: RecordedResponse | undefined;
-        const done = journal.answer('fetchHeader ' + key, what + ' headers', async (expected) => {
-          if (expected?.response) {
-            replayed = true; response = expected.response;
-            const { status, statusText, headers, hasBody } = response;
-            return { status, statusText, headers, hasBody };
-          }
-          plan({ live: ticket });
-          const result = await fetched;
-          if ('error' in result) {
-            // A pre-headers platform rejection has not crossed as a
-            // Response. Keep the live error, but never replay an incomplete
-            // failure shape (the body-error protocol below records one).
-            journal.disqualify(`${what} failed before its headers (${result.error})`);
-            throw new Error(result.error);
-          }
-          response = { ...result, body: new Uint8Array(0) };
-          return result;
-        }, () => response);
-        const live = { pid, run, key, what, deliver, done, response: undefined as RecordedResponse | undefined };
-        this.fetchTickets.set(ticket, live);
-        done.then(() => {
-          live.response = response;
-          if (replayed) {
-            if (response?.hasBody) this._startFetchBody(ticket, live, journal);
-            else this.fetchTickets.delete(ticket);
-            plan({ replay: response, ticket });
-          }
-        }, (error) => { this.fetchTickets.delete(ticket); plan({ error: errorMessage(error) }); });
-        return await planned;
-      }
-      case 'fetched': {
-        const ticket = String(payload?.ticket ?? '');
-        const live = this.fetchTickets.get(ticket);
-        if (!live || live.pid !== pid || live.run !== run) throw new Error('outbound: no such request');
-        const result = payload?.result as Omit<RecordedResponse, 'body'> | { error: string };
-        live.deliver(result);
-        try { await live.done; } catch (error) { this.fetchTickets.delete(ticket); throw error; }
-        if (!('error' in result) && result.hasBody) this._startFetchBody(ticket, live, journal);
-        else this.fetchTickets.delete(ticket);
-        return true;
-      }
-      case 'fetchBody': {
-        const ticket = String(payload?.ticket ?? '');
-        const live = this.fetchTickets.get(ticket);
-        if (!live || live.pid !== pid || live.run !== run || !live.body) throw new Error('outbound: no such response body');
-        this.fetchTickets.delete(ticket);
-        live.body.deliver(payload?.result as RecordedBody);
-        await live.body.done;
-        journal.bodyFinished(ticket);
-        return true;
-      }
-      case 'connect': {
-        const token = String(payload?.token ?? '');
-        if (!/^[0-9a-f]{32}$/.test(token)) {
-          // A plain connection (not one the TLS shim opened): proxied, and
-          // something a second run would do again.
-          const refused = await journal.beforeEffect(`connect ${token}`);
-          if (refused) throw refused;
-          return { plain: true, unrecorded: true };
-        }
-        const target = this._netTarget(token, pid);
-        const registered = await Promise.race([target.registered.then(() => true), new Promise((r) => setTimeout(() => r(false), 10_000))]);
-        if (!registered) throw new Error('outbound: no connection was opened under this name');
-        return { host: target.host, port: target.port };
-      }
-      case 'awaitUpgrade': {
-        const target = this._netTarget(String(payload?.token ?? ''), pid);
-        return await target.asked;
-      }
-      case 'upgraded': {
-        const target = this._netTarget(String(payload?.token ?? ''), pid);
-        const result = payload?.result as { ok: boolean; error?: string } | undefined;
-        target.answer(result && result.ok ? { ok: true } : { ok: false, error: String(result?.error ?? 'the TLS session could not be made') });
-        return true;
-      }
-      default:
-        throw new Error(`outbound: unknown action ${action}`);
-    }
-  }
-
-  private _startFetchBody(ticket: string, live: {
-    key: string; what: string; response?: RecordedResponse;
-    body?: { deliver: (value: RecordedBody) => void; done: Promise<unknown> };
-  }, journal: ReplayJournal): void {
-    if (live.body) return;
-    journal.bodyStarted(ticket, live.what);
-    let deliver!: (value: RecordedBody) => void;
-    const pending = new Promise<RecordedBody>((resolve) => { deliver = resolve; });
-    const done = journal.answer('fetchBody ' + live.key, live.what + ' body', async () => {
-      const result = await pending;
-      if ('tooLarge' in result) journal.disqualify(`received a response larger than ${REPLAY_FETCH_MAX_BYTES / 1048576} MiB (${live.what})`);
-      else if (live.response) {
-        if ('error' in result) { live.response.bodyError = result.error; live.response.bodyFailure = result.failure; }
-        if ('body' in result) {
-          live.response.body = result.body;
-          live.response.chunks = result.chunks;
-          journal.bodyBytes(result.body.byteLength);
-        }
-      }
-      return result;
-    });
-    // The ticket owns the pending answer even if its client is aborted.
-    done.catch(() => {});
-    live.body = { deliver, done };
-  }
-
-  private _netTarget(token: string, pid: number) {
-    let target = this.netTargets.get(token);
-    if (target === undefined) {
-      let register!: () => void, ask!: (request: { servername?: string } | null) => void, answer!: (result: { ok: boolean; error?: string }) => void;
-      const registered = new Promise<void>((resolve) => { register = resolve; });
-      const asked = new Promise<{ servername?: string } | null>((resolve) => { ask = resolve; });
-      const answered = new Promise<{ ok: boolean; error?: string }>((resolve) => { answer = resolve; });
-      target = { pid, host: '', port: 0, registered, register, asked, ask, answered, answer };
-      this.netTargets.set(token, target);
-    }
-    if (target.pid !== pid) throw new Error('no such connection');
-    return target;
-  }
-
-  /** A process ended: its connections' names are forgotten and their waits answered. */
-  private _dropNetTargets(pid: number): void {
-    for (const [token, target] of this.netTargets) {
-      if (target.pid !== pid) continue;
-      target.ask(null);
-      target.answer({ ok: false, error: 'the process ended' });
-      this.netTargets.delete(token);
-    }
-    for (const [ticket, live] of this.fetchTickets) {
-      if (live.pid !== pid) continue;
-      live.deliver({ error: 'the process ended' });
-      live.body?.deliver({ error: 'the process ended' });
-      this.fetchTickets.delete(ticket);
-    }
   }
 
   /**
@@ -7984,17 +7921,18 @@ export class FacetManager {
             const entryCode = await this._entryDynamicImports(code, opts.filename, opts.cwd || '/home/user', pacer);
             const generatedWorker = await this._generateUnderCeiling(
               entry.pid, vfsState, moduleMemberBytes({ ...sqliteModules, ...wasmModules, ...stagedModules }) + ONE_SHOT_HOST_ENTRY_BYTES,
-              (state) => generateEntrypointCode(entryCode, state, usesSqlite, sources, wasmImports, opts.filename, opts.cwd || DEFAULT_HOME, opts.esModule, opts.esModuleMap),
+              (state) => generateEntrypointCode(entryCode, state, usesSqlite, sources, wasmImports, opts.filename, opts.cwd || DEFAULT_HOME, opts.esModule, opts.preamble),
             );
-            const codeModules: Record<string, { cjs: string }> = {};
+            const codeModules: Record<string, { cjs: string } | { js: string }> = {};
             for (const [name, text] of Object.entries(generatedWorker.codeModules)) codeModules[name] = { cjs: text };
+            for (const [name, text] of Object.entries(generatedWorker.esModules)) codeModules[name] = { js: text };
             for (const [name, source] of Object.entries(generatedWorker.immutableModules)) codeModules[name] = { cjs: source.text };
             if (diagSink) {
               diagSink.moduleMapBytes = generatedWorker.source.byteLength;
               for (const source of Object.values(generatedWorker.modules)) {
                 diagSink.moduleMapBytes += _encodedSourceBytes(source);
               }
-              for (const text of Object.values(generatedWorker.codeModules)) {
+              for (const text of [...Object.values(generatedWorker.codeModules), ...Object.values(generatedWorker.esModules)]) {
                 diagSink.moduleMapBytes += _encodedSourceBytes(text);
               }
               for (const source of Object.values(generatedWorker.immutableModules)) diagSink.moduleMapBytes += source.byteLength;
@@ -8015,7 +7953,7 @@ export class FacetManager {
             // a module map rebuilt from files that changed while it waited
             // would answer it differently with nothing to show for it.
             if (opts.codeDigest) {
-              const digest = answerDigest([generatedWorker.source.recipe(), generatedWorker.modules, generatedWorker.codeModules,
+              const digest = answerDigest([generatedWorker.source.recipe(), generatedWorker.modules, generatedWorker.codeModules, generatedWorker.esModules,
                 Object.fromEntries(Object.entries(generatedWorker.immutableModules).map(([name, source]) => [name, source.asset]))]);
               if (opts.codeDigest.value === undefined) opts.codeDigest.value = digest;
               else if (opts.codeDigest.value !== digest) throw new ReplayCodeChanged();
@@ -8441,12 +8379,12 @@ export class FacetManager {
     // The run this writer is reads the process's stdin, and no run before it,
     // and is the one its supervisor calls are answered for.
     this.stdinTaken.get(pid)?.start(writerId);
-    this.journals.get(pid)?.start(writerId);
+    this.replay.get(pid)?.journal.start(writerId);
     const entry = this.processes.get(pid);
     if (!entry || entry.state !== 'running') {
       throw new Error(`Nimbus: cannot activate append writer for non-running process ${pid}`);
     }
-    const journal = this.journals.get(pid);
+    const journal = this.replay.get(pid)?.journal;
     if (journal) openSupervisorDeliveries(this.ctx).startReadRun(pid, writerId, {
       maxEntries: REPLAY_JOURNAL_MAX_ENTRIES,
       maxBytes: REPLAY_READ_RECEIPT_MAX_BYTES,
@@ -8917,13 +8855,13 @@ export class FacetManager {
     const diagOn = isExecDiagEnabled();
     const __bundleStart = diagOn ? Date.now() : 0;
     if (this.debugEnabled) this.processes.appendOutput(entry.pid, 'stderr', '[nimbus-debug] launch: building the module map\n');
-    const spec: ProcessBundleSpec = { scriptPath: opts.filename, cwd, entryCode: code, bundleProfile: opts.bundleProfile, moduleScope: opts.moduleScope, node: opts.node };
+    const spec: ProcessBundleSpec = { scriptPath: opts.filename, cwd, entryCode: code, esModule: opts.esModule, bundleProfile: opts.bundleProfile, moduleScope: opts.moduleScope, node: opts.node };
     let vfsState = await this._buildProcessBundle(entry, spec, pacer);
     const plan = async () => {
       if (this.debugEnabled) {
         this.processes.appendOutput(entry.pid, 'stderr',
           `[nimbus-debug] module map: ${vfsState.reachableCount} files${vfsState.cacheHit ? ' (prefetch cache)' : ''}, `
-          + `transforms ${JSON.stringify(vfsState.transforms ?? null)} (${pacer.chunks} turns so far)\n`);
+          + `transforms ${JSON.stringify(vfsState.transforms ?? null)}, ES modules ${JSON.stringify(vfsState.esmSize ?? null)} (${pacer.chunks} turns so far)\n`);
       }
       const planStart = Date.now();
       const planned = await this._planResidentData(entry, vfsState, cwd, opts.env?.HOME, pacer, opts.filename);
@@ -8997,7 +8935,7 @@ export class FacetManager {
     let moduleMapBytes = 0;
     let bundleBytes = 0;
     if (diagOn) {
-      for (const source of [...Object.values(generatedWorker.modules), ...Object.values(generatedWorker.codeModules)]) {
+      for (const source of [...Object.values(generatedWorker.modules), ...Object.values(generatedWorker.codeModules), ...Object.values(generatedWorker.esModules)]) {
         bundleBytes += _encodedSourceBytes(source);
       }
       moduleMapBytes = generatedWorker.source.byteLength + bundleBytes
@@ -9033,7 +8971,7 @@ export class FacetManager {
         .map(([name, source]) => [name, { kind: 'cjs' as const, source: source.asset }]));
       // The code cells travel as ONE image of many modules: the boot spec
       // names a path, not thousands, and the loader slices them out at load.
-      const codePack = encodeCommonJsPack(generatedWorker.codeModules);
+      const codePack = encodeCodePack(generatedWorker.codeModules, generatedWorker.esModules);
       generatedWorker = undefined;
       if (staged) sources[STAGED_BINDING_LOADER_MODULE] = staged.loader;
       const { [CODE_PACK_IMAGE]: codePackPath, 'worker.js': mainSourcePath, ...vfsTextModules } = await this.imageStore.materialize(
@@ -9055,10 +8993,10 @@ export class FacetManager {
       if (stdinWriter) {
         this.outputGates.set(entry.pid, new ReplayOutputGate());
         this.stdinTaken.set(entry.pid, new StdinTaken(heldStdin, STDIN_SYNC_READ_BYTES));
-        this.journals.set(entry.pid, new ReplayJournal(() => {
+        this.replay.open(entry.pid, () => {
           this.outputGates.get(entry.pid)?.close();
           strayed?.();
-        }));
+        });
       }
       // Each boot starts from the umask the process started with.
       const startUmask = entry.cred.umask;
@@ -9119,7 +9057,7 @@ export class FacetManager {
               ...Object.fromEntries(wasmImports.map((image) => [image.moduleName, image.vfsPath])),
               ...staged?.bindingPaths,
             },
-            vfsCommonJsPacks: [codePackPath],
+            vfsCodePacks: [codePackPath],
           },
         },
       });
@@ -9150,7 +9088,9 @@ export class FacetManager {
           namespaceRefusals: 0,
           rpcWrites: 0,
           fsRpcReads: 0,
+          esmAdoptions: 0,
           cacheHit,
+          ...execBreakdown(vfsState),
           turns: pacer.chunks,
           exitCode: 0,
           at: Date.now(),
@@ -9174,7 +9114,7 @@ export class FacetManager {
       } catch (e: unknown) {
         // The boot stopped itself at a synchronous read of stdin that has to
         // wait: wait for the input, then boot it again.
-        const journal = this.journals.get(entry.pid);
+        const journal = this.replay.get(entry.pid)?.journal;
         let stop = stoppable ? stopRecordOf(e, stopNonce, rerun?.replay.run ?? 1) : null;
         if (stop === null && journal?.diverged) stop = { v: 3, kind: 'diverged', run: rerun?.replay.run ?? 1, out: [], why: journal.diverged };
         if (stop === null) throw e;
@@ -9215,9 +9155,7 @@ export class FacetManager {
         if (stdinWriter) {
           this.outputGates.delete(entry.pid);
           // Booted: from here it is a running server, never run again.
-          this.journals.get(entry.pid)?.close();
-          this.journals.delete(entry.pid);
-          this._dropNetTargets(entry.pid);
+          this.replay.close(entry.pid);
         }
       }
 

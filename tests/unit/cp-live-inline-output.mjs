@@ -3,25 +3,23 @@
 // return all its output only after it exits, and each byte reaches the
 // parent once.
 import assert from 'node:assert/strict';
-import { FacetProcessManager } from '../../packages/worker/src/facets/process.ts';
+import { ChildProcessManager } from '../../packages/core/src/runtime/child-process-manager.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 const encoder=new TextEncoder(),decoder=new TextDecoder();
 const processes=new SessionProcessSupervisor();
 const parent=processes.spawn('node',['parent.js'],'/home/user');
 processes.openInput(parent.pid); // An inherited fd refers to the parent's actual live channel.
 let manager;
-manager=new FacetProcessManager({
+manager=new ChildProcessManager({
  processes,
- vfsForProcess(){throw new Error('no script file is read');},
- commandRegistry:{async resolve(){return {kind:'facet-direct'};}},
- facetMgr:{async execStream(payload,_options,hooks){
-   const {processPid}=JSON.parse(payload);
+ terminate(pid) { return processes.kill(pid, 143); },
+ async resolve(){return {async run({pid:processPid,output:hooks}){
    hooks.onStdout(encoder.encode('question> '));
    const packet=await manager.cpReadStdin(processPid,1000);
    if(packet.ended) return 1;
    hooks.onStderr(encoder.encode('received '+decoder.decode(packet.data)));
    return 0;
- }},
+ }};},
 });
 const {childPid}=await manager.spawn({parentPid:parent.pid,command:'node',args:['interactive.js'],cwd:'/home/user',env:{},stdio:['inherit','inherit','inherit']});
 try {

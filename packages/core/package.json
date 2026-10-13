@@ -60,6 +60,7 @@
     "@renovatebot/pep440": "^5.0.0",
     "acorn": "^8.15.0",
     "acorn-walk": "^8.3.5",
+    "cjs-module-lexer": "2.2.0",
     "css-tree": "3.2.1",
     "esbuild-wasm": "0.24.2",
     "hosted-git-info": "8.1.0",

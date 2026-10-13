@@ -1,7 +1,6 @@
 import { requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { SUPERVISOR_OP_ROUTES, createSupervisorBridgeStore } from '@nimbus-sh/core/workspace/supervisor-op.js';
-import { SUPERVISOR_DELIVER_OP } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import { openSupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { answerSupervisorOp, buildSessionSupervisorOps } from '../session/supervisor-op.js';
@@ -39,7 +38,7 @@ class RuntimeOwner {
     _viteShimPort = null;
     wranglerAliasBannerShown = false;
     facetManagerComposed = null;
-    facetProcessManager = null;
+    childProcessManager = null;
     esbuildService = null;
     bundlePool = null;
     npmInstaller = null;
@@ -136,7 +135,7 @@ class RuntimeOwner {
     ensureFacetManager() { this.assertOpen(); return this.services.ensureFacetManager(); }
     ensureNpmInstaller(onProgress) { this.assertOpen(); return this.services.ensureNpmInstaller(onProgress); }
     ensureGlobalPrefixDirs(prefix) { return this.services.ensureGlobalPrefixDirs(prefix); }
-    _ensureFacetProcessManager() { this.assertOpen(); return this.services._ensureFacetProcessManager(); }
+    _ensureChildProcessManager() { this.assertOpen(); return this.services._ensureChildProcessManager(); }
     _ensureWebSocketRelay() { this.assertOpen(); return this.services._ensureWebSocketRelay(); }
     _setCpRegistry(registry) {
         if (registry !== this._cpRegistry)
@@ -208,13 +207,9 @@ class RuntimeOwner {
     }
     serveSupervisorOp(envelope) {
         this.assertOpen();
-        // A process that can stop at a read of stdin is answered through its
-        // journal (worker runtime/stop-replay.ts ReplayJournal).
-        const manager = this.facetManager;
-        if (!manager)
-            return this.supervisorOps().dispatch(envelope);
-        const op = envelope.op === SUPERVISOR_DELIVER_OP ? (envelope.delivery?.op ?? envelope.op) : envelope.op;
-        return manager.journalCall(op, envelope.args, envelope.pid, envelope.run, () => this.supervisorOps().dispatch(envelope));
+        // A process that can stop is answered through its journal by the
+        // canonical handler's logical-answer seam (supervisor-op.ts observe).
+        return this.supervisorOps().dispatch(envelope);
     }
     supervisorBridge(pid) { return this.supervisorOps().bridge(pid); }
     supervisorRewindBridge(pid) { return this.supervisorOps().rewind(pid); }

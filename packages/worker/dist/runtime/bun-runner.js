@@ -185,17 +185,14 @@ export const BUN_SHIM_PREAMBLE = `
 // ── End Bun-runtime shim preamble ──────────────────────────────────
 `.trim() + '\n';
 /**
- * Run a bun script with the Bun shim preamble prepended.
- *
- * The user's `code` is wrapped:
- *   <BUN_SHIM_PREAMBLE>;
- *   <user code>
+ * Run a bun script, the Bun shim preamble evaluated before its entry
+ * (RunFreshOpts.preamble): the entry itself is the program's own module,
+ * an ES module's staged as it is (core runtime/native-esm.ts).
  *
  * Routing follows runFresh: argv flags --watch / --inspect /
  * --inspect-brk, or a program the handler judged to start a server
  * (opts.launchesServer) → long-running fork; otherwise short fresh-isolate.
  */
 export async function runBunScript(facetMgr, code, opts) {
-    const wrappedCode = BUN_SHIM_PREAMBLE + code;
-    return runFresh(facetMgr, wrappedCode, opts);
+    return runFresh(facetMgr, code, { ...opts, preamble: BUN_SHIM_PREAMBLE });
 }

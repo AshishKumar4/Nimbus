@@ -50,7 +50,7 @@ import type { WsRelayHeaders, WsRelayOpened } from './ws-relay.js';
 import type { DoCallRetryPolicy } from '@nimbus-sh/fabric/do-calls.js';
 import type { SupervisorOpEnvelope, SupervisorOpName, WriteFileStatAnswer } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { type SupervisorDeliveredOpName, type SupervisorJoinedReadOpName } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
-import type { PackumentReadThrough } from '../npm/r2-cache.js';
+import type { PackumentReadOptions, PackumentReadThrough } from '../npm/r2-cache.js';
 import { R2CacheClient } from '../npm/r2-cache.js';
 import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsListTree, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle, RecallKind } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { ReadDirectoryBatchRequest, ReadDirectoryBatchResult } from '@nimbus-sh/core/runtime/read-directory-batch.js';
@@ -426,11 +426,7 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
      * ones registry.npmjs.org served for that exact name; another registry
      * (`options.registry`, the install's `NPM_REGISTRY`) has its own keys.
      */
-    getPackument(name: string, options?: {
-        retries?: number;
-        timeoutMs?: number;
-        registry?: string;
-    }): Promise<PackumentReadThrough & {
+    getPackument(name: string, options?: PackumentReadOptions): Promise<PackumentReadThrough & {
         events: CacheStatEvent[];
     }>;
     stdout(data: Uint8Array, at?: number, run?: number): Promise<void>;

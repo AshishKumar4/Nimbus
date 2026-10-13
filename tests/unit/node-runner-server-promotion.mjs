@@ -87,7 +87,8 @@ const PLAIN = `console.log('one-shot'); process.exit(0);`;
   await runBunScript(fm, PLAIN, { argv: ['-e'] });
   assert.equal(fm.calls.exec.length, 1, 'Bun compatibility preamble must not promote a short user script');
   assert.equal(fm.calls.spawnNode.length, 0);
-  assert.ok(fm.calls.exec[0].code.startsWith(BUN_SHIM_PREAMBLE), 'Bun APIs remain installed');
+  assert.equal(fm.calls.exec[0].code, PLAIN, 'the entry is the program itself');
+  assert.equal(fm.calls.exec[0].opts.preamble, BUN_SHIM_PREAMBLE, 'Bun APIs remain installed, before it');
 }
 {
   const fm = makeFacetMgr();

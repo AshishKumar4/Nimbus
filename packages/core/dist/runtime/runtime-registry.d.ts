@@ -116,13 +116,12 @@ export interface RuntimeRunOpts {
      */
     node?: NodeLaunch;
     /**
-     * The program is an ES module the handler lowered (module-format.ts): its
-     * own require is its static imports, and what escapes its evaluation is
-     * explained as Node's loader explains it.
+     * The program is an ES module (module-format.ts), or TypeScript or JSX the
+     * launch compiles, which may be one: the runner imports the launch's
+     * staged module of it, and what escapes its evaluation is explained as
+     * Node's loader explains it.
      */
     esModule?: boolean;
-    /** Its lowering's EsModuleMap (async-module-lowering.ts), as JSON: where its frames read the source's places. */
-    esModuleMap?: string;
     /** Whose scope its ES modules run in (RuntimeSpec.moduleScope): absent, Node's. */
     moduleScope?: ModuleScope;
     /**

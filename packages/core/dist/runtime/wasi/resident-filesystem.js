@@ -6,7 +6,7 @@
  * on a throwaway (2026-10-05), 5.9-12.7 ms for one `os.stat` from Python, so
  * a program that stats a tree pays for each name with a round trip. The
  * process already carries a store for names and bytes
- * (worker vfs/facet-resident-store.ts, the one a node process reads its
+ * (worker vfs/resident, the one a node process reads its
  * synchronous calls from). This adapter puts the codec's calls in front of
  * it: a lookup, a stat, a directory listing and its descriptor, and a file's
  * bytes (which the codec holds for a read-only descriptor, its ResidentFd) are

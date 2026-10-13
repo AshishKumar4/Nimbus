@@ -68,17 +68,9 @@ import { WASI_RESIDENT_STORE_BYTES } from '@nimbus-sh/platform/limits.js';
 import { processHost, type ChildNews, type PipeReadiness } from '@nimbus-sh/core/runtime/wasi/processes.js';
 import { wasiOutputRelay, type WasiOutputTarget } from '@nimbus-sh/core/runtime/wasi/stdio.js';
 import { outputControlReader } from '@nimbus-sh/core/runtime/wasi/output-control.js';
+import { createResidentStore, type ResidentStore } from '../../vfs/resident/index.js';
 declare const __wasiCreateChildNews: (send: (report: { blocked: boolean; frontier: number; seq: number }) => void) => ChildNews;
 
-// The resident store (worker vfs/facet-resident-store.ts FACET_RESIDENT_STORE_SOURCE),
-// an instance of its own spliced ahead of this body by scripts/bundle-facet-workers.mjs:
-// the store a node process reads its synchronous calls from, here listed on demand.
-declare const __wasiResidentStore: {
-  __residentBindInMemory(budget: number): unknown;
-  __residentSetStorage(storage: undefined, supervisor: unknown): void;
-  __residentBootLazy(supervisor: unknown): Promise<boolean>;
-  __residentNamespaceView(supervisor: unknown, device: number, cred: WasiCred): ResidentNamespace;
-};
 
 // errno constants
 const __WASI_ESUCCESS       = 0;
@@ -230,7 +222,7 @@ let __wasiProcessGone: string | null = null;
 // `inbound()` is called wherever input from outside enters the guest (a
 // socket's bytes, an accepted connection, a poll wakeup): the next answer then
 // takes the ACQUIRE barrier first, the causal rule a node process keeps.
-let __wasiResident: { sup: WasiSupervisorStub; who: string; fs: ResidentFilesystem; ready: Promise<ResidentNamespace | null> } | null = null;
+let __wasiResident: { sup: WasiSupervisorStub; who: string; store: ResidentStore; fs: ResidentFilesystem; ready: Promise<ResidentNamespace | null> } | null = null;
 
 /**
  * The store the last process of this facet left at the end of its run (a
@@ -238,7 +230,7 @@ let __wasiResident: { sup: WasiSupervisorStub; who: string; fs: ResidentFilesyst
  * filesystem reports, and the directories it opened. The next process of the
  * same credential continues it.
  */
-let __wasiKept: { who: string; device: number; walked: readonly string[] } | null = null;
+let __wasiKept: { who: string; store: ResidentStore; device: number; walked: readonly string[] } | null = null;
 
 /**
  * Syscalls this facet's watchdog gave up on (withParkDeadline): each may
@@ -259,24 +251,26 @@ function __wasiWho(cred: WasiCred): string {
 }
 
 /** The resident filesystem over `sup`, booting its store; its calls go to the session until the boot lands. */
-function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): { fs: ResidentFilesystem; ready: Promise<ResidentNamespace | null> } {
+function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): { store: ResidentStore; fs: ResidentFilesystem; ready: Promise<ResidentNamespace | null> } {
   const supervisor = answeringSupervisor(sup);
   const authority = supervisorFilesystem(sup);
-  const store = __wasiResidentStore;
   const kept = __wasiKept !== null && __wasiKept.who === __wasiWho(cred) ? __wasiKept : null;
   __wasiKept = null;
-  store.__residentSetStorage(undefined, supervisor);
+  // The store a node process reads its synchronous calls from, here listed on
+  // demand (vfs/resident): the facet's last process's, kept, or a new one.
+  const store = kept?.store ?? createResidentStore();
+  store.admission.setStorage(undefined, supervisor);
   // A kept store answers as it stood at its cursor: the process's first
   // answer takes the barrier from there (inbound, below), so it reads
   // everything that happened since, as a barrier inside one process does.
-  let view: ResidentNamespace | null = kept === null ? null : store.__residentNamespaceView(supervisor, kept.device, cred);
+  let view: ResidentNamespace | null = kept === null ? null : store.lazy.namespaceView(supervisor, kept.device, cred);
   if (view !== null && !view.ready()) view = null;
-  if (view === null) store.__residentBindInMemory(WASI_RESIDENT_STORE_BYTES);
+  if (view === null) store.bindInMemory(WASI_RESIDENT_STORE_BYTES);
   const ready = view !== null ? Promise.resolve(view) : (async () => {
     // The session's own filesystem is the one the store answers for: its root reports its device.
     const root = await authority.stat('/');
-    if (root === null || !(await store.__residentBootLazy(supervisor))) return null;
-    view = store.__residentNamespaceView(supervisor, root.dev, cred);
+    if (root === null || !(await store.lazy.bootLazy(supervisor))) return null;
+    view = store.lazy.namespaceView(supervisor, root.dev, cred);
     return view;
   })().catch(() => { view = null; return null; });
   const booting: ResidentNamespace = {
@@ -328,7 +322,7 @@ function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): { fs: Res
     ...(kept === null || view === null ? {} : { walked: kept.walked }),
   });
   if (kept !== null && view !== null) fs.inbound();
-  return { fs, ready };
+  return { store, fs, ready };
 }
 
 /** The stub's wave calls (SupervisorRPC.openWaveWriter, writeBatchStream). */
@@ -395,7 +389,7 @@ export async function __wasiSettleWrites(): Promise<string | null> {
       // answered, leaves the store to the next process in this facet.
       const view = await resident.ready;
       if (failed === null && __wasiAbandoned === 0 && view !== null && view.ready()) {
-        __wasiKept = { who: resident.who, device: view.device, walked: resident.fs.walked() };
+        __wasiKept = { who: resident.who, store: resident.store, device: view.device, walked: resident.fs.walked() };
       }
     }
   } catch (error) {
@@ -878,7 +872,10 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
   // pipe descriptors they make, answered ahead of every other kind (below,
   // after the watchdog) and polled with the rest (poll_oneoff). A wait on a
   // child or a pipe is bounded there (EINTR at PROCESS_PARK_MS), so the guest
-  // retries instead of being handed the watchdog's EAGAIN.
+  // retries instead of being handed the watchdog's EAGAIN. Its imports are
+  // Suspending where the guest parks; elsewhere one that has to wait is
+  // refused by name (processes.ts mustWait).
+  const procParks = opts.parking !== 'none' && typeof WebAssembly !== 'undefined' && typeof WebAssembly.Suspending === 'function';
   const proc = processHost({
     fds: fdTable,
     input: opts.stdinRead,
@@ -891,6 +888,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     inbound: () => { __wasiResident?.fs.inbound(); },
     news: __wasiChildNews(),
     cred: () => __wasiFS.cred ?? null,
+    parks: procParks,
   });
 
   const imports: WasiImports = {
@@ -1962,7 +1960,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
   if (opts.parking !== 'none' && typeof WebAssembly !== 'undefined' && typeof WebAssembly.Suspending === 'function') {
     for (const name of Object.keys(fsTable)) fsTable[name] = new WebAssembly.Suspending(fsTable[name]) as unknown as WasiSyscallFn;
   }
-  if (opts.parking !== 'none' && typeof WebAssembly !== 'undefined' && typeof WebAssembly.Suspending === 'function') {
+  if (procParks) {
     for (const name of Object.keys(procImport)) {
       procImport[name] = new WebAssembly.Suspending(procImport[name]) as unknown as (...args: number[]) => SyscallResult;
     }

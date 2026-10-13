@@ -33,7 +33,7 @@ import { createCurlCommand } from '../substrate/lifo/commands/net/curl.js';
 import { createWgetCommand } from '../substrate/lifo/commands/net/wget.js';
 import { createDigCommand } from '../substrate/lifo/commands/net/dig.js';
 import { createPingCommand } from '../substrate/lifo/commands/net/ping.js';
-import { workspaceNetwork, type WorkspaceEgress, type WorkspaceNetwork } from '../_shared/workspace-network.js';
+import { selectProcessEgress, workspaceNetwork, type EgressFor, type WorkspaceEgress, type WorkspaceNetwork } from '../_shared/workspace-network.js';
 import { runCommand, type CommandResult, type RunOptions } from '../substrate/lifo/sandbox/run-command.js';
 import { HeadlessTerminal } from '../substrate/lifo/sandbox/HeadlessTerminal.js';
 import type { ITerminal } from '../substrate/lifo/terminal/ITerminal.js';
@@ -49,6 +49,9 @@ import { ProcessView } from '../runtime/process-files.js';
 import { WorkspaceFs } from './workspace-fs.js';
 import { PID_GEN_STRIDE, type ProcessEntry } from '../runtime/process-table.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
+import { ChildProcessManager, type ChildProcessHost } from '../runtime/child-process-manager.js';
+import { resolveWorkspaceChild } from './child-process-runner.js';
+import { exitCodeForSignal } from '../substrate/lifo/shell/signals.js';
 import type { FacetHost } from '../runtime/facet-host.js';
 import { runtimeEntrypoints, type RunnerFactory } from '../runtime/installed-runtimes.js';
 import { RuntimeManager } from '../runtime/runtime-manager.js';
@@ -177,6 +180,7 @@ export interface NimbusWorkspaceOptions {
   readonly ctxExports?: CtxExports;
   /** The process table that allocated supervisor-binding pids. */
   readonly processes?: SessionProcessSupervisor;
+  readonly childProcesses?: ChildProcessHost;
   readonly processOutput?: (stream: 'stdout' | 'stderr', pid: number, data: Uint8Array) => void | Promise<void>;
   readonly filesystemNamespace?: string;
   /**
@@ -219,11 +223,13 @@ export interface NimbusWorkspaceOptions {
    * `node` program's fetch and http/https, streamed and redirected as Node's
    * fetch does; a worker or dev server a command starts.
    *
-   * Refused: a process's TLS socket (`tls.connect`), because a Fetcher's
-   * `connect()` carries plain TCP only and the TLS session could only be
-   * made off the egress (HTTPS by fetch or `https` is not affected); the
-   * WebSocket of an inline `node` program or a `localFacetHost` facet, which
-   * cannot cross its realm.
+   * A process's TLS socket (`tls.connect`) goes through the egress's optional
+   * `connectTls`, which makes the TLS session; without it, it is refused by
+   * name. Refused: TLS over a socket the program opened
+   * (`tls.connect({ socket })`, STARTTLS), since the egress carries that
+   * connection and workerd starts no TLS on one through a service binding;
+   * the WebSocket of an inline `node` program or a `localFacetHost` facet,
+   * which cannot cross its realm.
    *
    * Not covered: responses from Nimbus's shared npm packument cache are not
    * used under an egress, so the egress sees every registry read, but
@@ -234,6 +240,20 @@ export interface NimbusWorkspaceOptions {
    * Absent, the workspace uses the isolate's own network, as before.
    */
   readonly egress?: WorkspaceEgress;
+  /**
+   * The egress for one process of the workspace, `{ pid, execId }`: asked
+   * once per process while it lives, so everything the process does goes
+   * through the one it returns: its fetch, sockets and TLS, the commands it
+   * runs (curl, git, npm, pip and the rest), and its own Dynamic Worker,
+   * wherever it is hosted. Typically `egress` minted again with the exec in
+   * its props, so the host can tell which exec made each request. Undefined
+   * keeps `egress` for that process. Requires `egress`, which still carries
+   * the workspace's work that no process makes. A host that builds the
+   * network for its `facets` itself makes it with
+   * `selectProcessEgress(egress, egressFor, processes)` over the same
+   * `processes`; a process is still asked for once.
+   */
+  readonly egressFor?: EgressFor;
 }
 
 /**
@@ -298,6 +318,7 @@ export class NimbusWorkspace {
     env: Record<string, string>,
     private readonly sql: SqlDatabase,
     processes: SessionProcessSupervisor,
+    readonly children: ChildProcessManager,
     runtimes: RuntimeManager,
     shellProcessPid: number,
     private readonly supervisorOps: (envelope: SupervisorOpEnvelope) => Promise<unknown>,
@@ -340,7 +361,6 @@ export class NimbusWorkspace {
     if (filesystem.engine !== vfs) throw new Error('The workspace filesystem must be over the workspace SqliteVFS');
     await seedBaseFilesystem(filesystem, home);
     const kernel = new Kernel();
-    kernel.network = workspaceNetwork(options.egress);
     const registry = createDefaultRegistry();
     // The durable coreutils replace ~25 lifo builtins. They are the ones that
     // carry credentials and read this filesystem's uid/gid, so they must win.
@@ -352,6 +372,12 @@ export class NimbusWorkspace {
     // Only a supervisor this workspace created gets its pid base set here; a
     // host-supplied one keeps the base its owner configured.
     if (!options.processes) processes.setPidBase((options.generation ?? 1) * PID_GEN_STRIDE);
+    if (options.egressFor !== undefined && options.egress === undefined) {
+      throw new TypeError('NimbusWorkspace: egressFor refines egress, the workspace\'s own network; give both');
+    }
+    kernel.network = options.egress !== undefined && options.egressFor !== undefined
+      ? selectProcessEgress(options.egress, options.egressFor, processes)
+      : workspaceNetwork(options.egress);
     // Its processes bind to this filesystem, so a reap releases them here,
     // and their output waits for what they wrote to be published: the one
     // place the table and the filesystem meet.
@@ -359,6 +385,25 @@ export class NimbusWorkspace {
     filesystem.holdOutput(processes);
 
     const env = { ...defaultEnv(home), ...options.env };
+    let workspace: NimbusWorkspace | null = null;
+    const children = new ChildProcessManager({
+      processes,
+      resolve: (request, origin) => {
+        if (!workspace) throw new Error('Nimbus: workspace is not initialized');
+        return resolveWorkspaceChild(workspace, request, origin);
+      },
+      terminate: (pid, signal) => processes.kill(pid, exitCodeForSignal(signal)),
+    });
+    if (options.childProcesses) children.bindHost(options.childProcesses);
+    const host = options.facets;
+    const facets: FacetHost | undefined = host ? {
+      parking: host.parking,
+      memoryBudgetBytes: host.memoryBudgetBytes,
+      open: spec => host.open({
+        ...spec,
+        syscalls: spec.syscalls ? { ...spec.syscalls, children } : undefined,
+      }),
+    } : undefined;
 
     // The identity every shell command runs as. A host that supplied one keeps
     // it verbatim — its pid is already alive in ITS process table. Otherwise
@@ -420,9 +465,9 @@ export class NimbusWorkspace {
           : suppliedRuntimeSource(options.runtimes ?? []),
       });
 
-      if (options.facets) {
+      if (facets) {
         registerWasmRuntimes({
-          facets: options.facets,
+          facets,
           sql: options.sql,
           vfs,
           filesystem,
@@ -511,11 +556,12 @@ export class NimbusWorkspace {
         output: options.processOutput,
         extend: options.supervisorOps,
       });
-      return new NimbusWorkspace(
+      workspace = new NimbusWorkspace(
         vfs, kernel, shell, registry, env, options.sql,
-        processes, runtimes, shellProcessPid,
+        processes, children, runtimes, shellProcessPid,
         supervisorOps, filesystem, runtimeLease, identity,
       );
+      return workspace;
     } catch (error) {
       await runtimeLease.dispose();
       throw error;

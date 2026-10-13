@@ -39,6 +39,7 @@
  */
 
 import type { CommandRegistry } from '@nimbus-sh/core/substrate/lifo/commands/registry.js';
+import type { ChildProcessHost, ChildProcessManager } from '@nimbus-sh/core/runtime/child-process-manager.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { SessionRouterRpc } from '@nimbus-sh/core/runtime/session-protocol.js';
@@ -88,7 +89,8 @@ export interface SessionInternal extends Pick<SessionRouterRpc,
   facetManagerComposed: ComposedFacetManager | null;
   readonly facetManager: FacetManager | null;
   /** W8: child_process broker; lazy. */
-  facetProcessManager: any;
+  childProcessManager: ChildProcessManager | null;
+  readonly childProcessHost: ChildProcessHost;
   esbuildService: EsbuildService | null;
   /** The session's pre-bundle pool (its build facet); lazy via ensureBundlePool. */
   bundlePool: PrebundlePool | null;
@@ -163,11 +165,11 @@ export interface SessionInternal extends Pick<SessionRouterRpc,
 
   // ── Methods siblings call back into ─────────────────────────────────
   ensureSqliteFs(): SqliteVFS;
-  egressForWorkspace(): import('@nimbus-sh/core/_shared/workspace-network.js').WorkspaceEgress | undefined;
+  egressForWorkspace(): { egress?: import('@nimbus-sh/core/_shared/workspace-network.js').WorkspaceEgress; egressFor?: import('@nimbus-sh/core/_shared/workspace-network.js').EgressFor };
   getFilesystemAuthority(): import('@nimbus-sh/core/runtime/process-files.js').ProcessFiles
   ensureFacetManager(): ComposedFacetManager;
   ensureBundlePool(): PrebundlePool;
-  _ensureFacetProcessManager(): any;
+  _ensureChildProcessManager(): ChildProcessManager;
   ensureNpmInstaller(onProgress?: (msg: string) => void): Promise<NpmInstaller>;
   _setCpRegistry(r: CommandRegistry): void;
   hydrateSessionBasePath(request: Request): Promise<void>;

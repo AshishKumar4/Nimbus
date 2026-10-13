@@ -10,7 +10,8 @@
  * plugin always runs here, over this service's view.
  */
 import type { Awaitable } from '../vfs/vfs.js';
-import { type ModuleScope, type PackageType } from './module-format.js';
+import { type ImportSites } from './dynamic-import-rewrite.js';
+import type { ModuleScope, PackageType } from './module-format.js';
 import type { StrippedTypeScript, TypeScriptStripOptions } from './typescript-strip.js';
 import type { TypeScriptRefusal } from './typescript-refusal.js';
 /**
@@ -106,23 +107,21 @@ export interface EsbuildTransformOptions {
     /** Only the dynamic `import()` rewrite: the code is already CommonJS. */
     rewriteOnly?: boolean;
     /**
-     * TypeScript Node runs: its types stripped as Node strips them, then as
-     * Node's format for it (by its extension, `packageType`, else its stripped
-     * syntax) an ES module lowered in Node's scope or CommonJS whose import()
-     * is routed (typescript-strip.ts). `sourcefile` names it; dynamicImportParent
-     * and moduleMetadata are read too.
+     * TypeScript Node runs: its types stripped as Node strips them, then, as
+     * Node's format for it says (its extension, `packageType`, else its
+     * stripped syntax), an ES module staged natively or CommonJS whose import()
+     * is routed (typescript-strip.ts). `sourcefile` names it, and
+     * dynamicImportParent is read too.
      */
     stripTypes?: TypeScriptStripOptions;
     packageType?: PackageType;
     /** Only the strip: the stripped code, `esModule` where Node runs it as an ES module. */
     stripOnly?: true;
-    /** Bind compiler-produced import.meta references to the wrapper module. */
-    moduleMetadata?: boolean;
     /**
-     * The code is an ES module, lowered to CommonJS in this runtime's scope
-     * at dynamicImportParent (async-module-lowering.ts lowerEsModule), its
-     * result's map the EsModuleMap; where the engine lowers it instead,
-     * moduleMetadata and define are read too.
+     * The code is an ES module the process's registry evaluates natively in
+     * this runtime's scope (native-esm.ts): the result's map is its import
+     * sites as JSON. With a TypeScript or JSX loader it is compiled first,
+     * its module syntax kept, and staged only where it has some.
      */
     esModule?: ModuleScope;
 }
@@ -133,7 +132,7 @@ export interface TransformResult {
         text: string;
         location?: esbuild.Location | null;
     }[];
-    /** An ES module this lowered, in this runtime's scope: its frames are an ES module's, and Node's its typeofs. */
+    /** An ES module staged natively in this runtime's scope: `map` is its import sites. */
     esModule?: ModuleScope;
 }
 /**
@@ -165,18 +164,20 @@ type EsbuildBuildApi = Pick<typeof esbuild, 'build'>;
  * transform facet strips TypeScript.
  */
 export interface TransformRuntime {
-    rewriteDynamicImports(code: string, parentUrl: string, moduleMetadata?: boolean, routeImports?: boolean): string;
-    lowerAsyncModule(esm: string): string;
-    lowerEsModule(source: string, scope: ModuleScope, parentUrl: string): TransformResult;
+    rewriteDynamicImports(code: string, parentUrl: string): string;
+    readEsModule(code: string, scope: ModuleScope | undefined): ImportSites;
     rewriteProvidedCommonJsModules(source: string): string;
     stripTypeScript?(code: string, filename: string, options: TypeScriptStripOptions, packageType: PackageType): Promise<StrippedTypeScript>;
 }
 /**
- * One transform request as a transform host runs it: esbuild (unless the
- * code is already CommonJS), then, for a module whose dynamic `import()` is
- * the process's, the rewrite that routes each one to the process's ESM loader.
- * `engine` is null only before esbuild is loaded, which a rewrite-only
- * request does not wait for.
+ * One transform request as a transform host runs it. An ES module the
+ * process's registry evaluates natively (native-esm.ts) answers with its
+ * code and, as its map, the JSON of its import sites
+ * (native-esm.ts readEsModule), which the session stages
+ * it by; TypeScript and JSX are compiled with their module syntax kept, and
+ * staged so when they have some. CommonJS keeps its code, each dynamic
+ * `import()` routed to the process's ESM loader. `engine` is null only before
+ * esbuild is loaded, which neither a rewrite nor a stage waits for.
  */
 export declare function runTransformRequest(engine: EsbuildTransformApi | (() => Promise<EsbuildTransformApi>) | null, code: string, options: EsbuildTransformOptions | undefined, runtime: TransformRuntime): Promise<TransformResult | {
     error: string;
@@ -347,18 +348,7 @@ export declare class EsbuildService {
     get transformsInIsolate(): boolean;
     /** Load the in-isolate engine (lazy, on the first call without a host). */
     private ensureInit;
-    /**
-     * Transform a single code string (TS→JS, JSX→JS, minify, etc.)
-     *
-     * Top-level await: esbuild emits no CommonJS for it, and a node cell is
-     * CommonJS. Modern CLI entries use it (nuxi's `bin/nuxi.mjs`, serve 14's
-     * `build/main.js`), so when esbuild rejects `format: 'cjs'` for that
-     * reason, the module is emitted as ESM and lowered by lowerAsyncModule:
-     * imports become requires above a returned async IIFE holding the rest,
-     * exports become `module.exports` assignments. The runner awaits the
-     * returned promise, so the awaits cannot race process teardown or VFS
-     * flushes. Every other source takes esbuild's own CommonJS output.
-     */
+    /** Transform a single code string (TS→JS, JSX→JS, minify, etc.): runTransformRequest. */
     transform(code: string, options?: EsbuildTransformOptions): Promise<TransformResult>;
     /** One transform on the in-isolate engine, of source the provided-module pre-pass has seen. */
     private transformInIsolate;

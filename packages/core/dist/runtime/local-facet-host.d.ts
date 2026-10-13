@@ -49,6 +49,8 @@ export interface FacetPayload {
     readonly supervisor?: {
         readonly methods: readonly string[];
         readonly synchronous: readonly string[] | null;
+        /** Calls followed in the background, even when wasm itself cannot park. */
+        readonly asynchronous?: readonly string[];
     };
     /** The workspace's network goes through an egress: the facet's fetch crosses to the host (realm-egress.ts). */
     readonly egress: boolean;

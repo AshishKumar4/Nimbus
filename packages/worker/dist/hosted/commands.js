@@ -714,7 +714,8 @@ export async function registerHostedCommands(self, workspace) {
                 '   \x1b[2mDeploy with real wrangler to get the real bindings.\x1b[0m\n\n');
         }
         self.nimbusWrangler = new NimbusWrangler({
-            network: workspace.network,
+            // The dev server's Worker goes out through the network of the command that started it.
+            network: workspace.network.forProcess(ctx.pid),
             vfs: kernelFs,
             namespace: workspace.filesystem.vfs,
             esbuild: self.esbuildService,

@@ -27,6 +27,7 @@ import { z } from 'zod/v4';
 import type { HostRoute } from './composition.js';
 import { type FacetCodePolicy } from './facet-limits.js';
 import { type SupervisorBindingProps } from './supervisor-props.js';
+import type { WorkspaceEgress } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { WorkerCode, EntrypointOptions } from './vendor/types.js';
 /**
  * A dynamic worker's entrypoint, as hop 3 relays to it. `fetch` is the
@@ -122,6 +123,7 @@ declare const NimbusLoadedEntrypointPropsSchema: z.ZodObject<{
     }, z.core.$loose>>;
     stage: z.ZodOptional<z.ZodUnknown>;
     supervisor: z.ZodOptional<z.ZodCustom<SupervisorBindingProps, SupervisorBindingProps>>;
+    egress: z.ZodOptional<z.ZodCustom<WorkspaceEgress, WorkspaceEgress>>;
 }, z.core.$loose>;
 type NimbusLoadedEntrypointProps = z.infer<typeof NimbusLoadedEntrypointPropsSchema>;
 /**
@@ -134,9 +136,17 @@ export declare function getLoadedCodesStats(): {
     maxEntries: number;
     evictions: number;
 };
-/** Props every Worker-Loader hop carries: how deep this Nimbus already is. */
+/** Props every Worker-Loader hop carries: how deep this Nimbus already is, and whose network it loads into. */
 interface NimbusLoaderDepthProps {
     depth?: number;
+    /**
+     * The egress of the process whose Worker holds this loader, when it has
+     * one: every Worker loaded through it goes out through it too
+     * (workspaceOutbound). With its network's id, so a keyed load under one
+     * egress is never served under another.
+     */
+    egress?: WorkspaceEgress;
+    networkId?: string;
 }
 /** Hop 1: env.LOADER.{load,get} forwarded to the outer loader. */
 export declare class NimbusLoaderRPC extends WorkerEntrypoint<NimbusLoaderShimEnv, NimbusLoaderDepthProps> {

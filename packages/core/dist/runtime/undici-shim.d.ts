@@ -58,5 +58,12 @@
  *   - globalThis.fetch — ALREADY patched by node-shims.ts (loopback + AI egress)
  *   - __streamMod (Readable.fromWeb, pipeline), __eventsMod, env
  */
+/**
+ * The names the shim's module has beside \`default\`: what an ES module may
+ * import from 'undici' (worker facets/esm-stage.ts builds its facade with
+ * them). tests/unit/undici-shim-exports.mjs evaluates the shim and checks the
+ * list against its keys.
+ */
+export declare const UNDICI_SHIM_EXPORTS: readonly string[];
 export declare function generateUndiciShimCode(): string;
 //# sourceMappingURL=undici-shim.d.ts.map

@@ -19,6 +19,10 @@ export interface LexedImport {
     readonly ss: number;
     readonly se: number;
     readonly d: number;
+    /** A specifier's value, when the lexer could unquote it. */
+    readonly n?: string;
+    /** A static import's `with { … }` attributes, as written. */
+    readonly at?: ReadonlyArray<readonly [string, string]> | null;
 }
 /** Lexes one source; throws an Error with a numeric `idx` where it cannot. */
 export type ModuleLexer = (source: string) => readonly [readonly LexedImport[], ...unknown[]];

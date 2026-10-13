@@ -13,7 +13,7 @@ import assert from 'node:assert/strict';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { FACET_RESIDENT_STORE_SOURCE } from '../../packages/worker/src/vfs/facet-resident-store.ts';
+import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const enc = new TextEncoder();
@@ -28,10 +28,8 @@ await kernel.mkdir('/home/user', { recursive: true });
 await kernel.chown('/home/user', 1000, 1000);
 await kernel.writeFile('/home/user/index', enc.encode('old!'));
 
-const store = new Function(
-  FACET_RESIDENT_STORE_SOURCE + '\nreturn { __residentBindInMemory, __residentSetStorage, __residentBootLazy, __residentNamespaceView };',
-)();
-store.__residentBindInMemory(16 * 1024 * 1024);
+const store = createResidentStore();
+store.bindInMemory(16 * 1024 * 1024);
 let gate = null;
 const supervisor = {
   fsAcquire: (...args) => authority.acquire(...args),
@@ -53,9 +51,9 @@ const supervisor = {
     return out;
   },
 };
-store.__residentSetStorage(undefined, supervisor);
-assert.equal(await store.__residentBootLazy(supervisor), true);
-const view = store.__residentNamespaceView(supervisor, (await authority.stat('/')).dev, USER);
+store.admission.setStorage(undefined, supervisor);
+assert.equal(await store.lazy.bootLazy(supervisor), true);
+const view = store.lazy.namespaceView(supervisor, (await authority.stat('/')).dev, USER);
 try {
   assert.equal(await view.lookup(['home', 'home/user', 'home/user/index'], false), true);
   const before = view.entry('home/user/index');

@@ -178,9 +178,8 @@ export interface ForwardOptions {
    * check them. Omitted in legacy mode or when the caller was not verified.
    */
   callerScopes?: readonly string[];
-  /** Precomputed legacy-migration Set-Cookie values for the outgoing response. */
-  migrateSessionCookies?: readonly string[];
 }
+
 /**
  * Forward a request to the session's DO.
  *
@@ -256,18 +255,7 @@ export function forwardToSession(
   const doName = `${opts.tenantSegment}:${route.sessionId}`;
   const id = env.NIMBUS_SESSION.idFromName(doName);
   const stub = env.NIMBUS_SESSION.get(id);
-  const migrate = opts.migrateSessionCookies;
-  if (migrate === undefined || migrate.length === 0) return stub.fetch(inner);
-  // Legacy migration on use: a jar that authenticated via the pre-per-session
-  // global cookie gets its verified credential re-issued under the
-  // route-owned name, and the global name expired, in this same response.
-  // Forwarded auth (Authorization/query) never holds the legacy name, so this
-  // is a no-op for every request but a legacy-cookie reconnect.
-  return stub.fetch(inner).then((response: Response) => {
-    const migrated = new Response(response.body, response);
-    for (const value of migrate) migrated.headers.append('Set-Cookie', value);
-    return migrated;
-  });
+  return stub.fetch(inner);
 }
 
 /**

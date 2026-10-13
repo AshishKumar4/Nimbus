@@ -104,6 +104,7 @@ export declare function promiseReject(reason: unknown): Promise<never>;
 export declare function resume<R>(it: Generator<unknown, R, unknown>, value: unknown): IteratorResult<unknown, R>;
 /** Throw into one of the interpreter's own generators. */
 export declare function resumeThrowing<R>(it: Generator<unknown, R, unknown>, error: unknown): IteratorResult<unknown, R>;
+export declare function resumeReturning<R>(it: Generator<unknown, R, unknown>, value: unknown): IteratorResult<unknown, R>;
 /**
  * `fn`, a generator function of the interpreter's own, made to create
  * generators that inherit SafeGeneratorPrototype.

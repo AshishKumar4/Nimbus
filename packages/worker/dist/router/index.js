@@ -36,7 +36,7 @@ import { doUnavailableError } from './do-errors.js';
 import { buildPreviewHost, isPreviewHostSafeSid, parsePreviewHost, readPreviewHostSuffix, } from '../_shared/preview-host.js';
 import { ISOLATED_SHELL_HEADERS, isIsolatedShellUrl } from '../_shared/preview-isolation.js';
 import { parseSessionRoute, forwardToSession, renderInvalidSessionHtml, SESSION_ROUTE_PREFIX, LEGACY_PUBLIC_DO_SEGMENT, PREVIEW_CAPABILITY_HEADER, PUBLIC_BEARER_HEADER, } from '../_shared/session-router.js';
-import { issueNimbusToken, verifyNimbusToken, requireScopes, requireSessionPin, authErrorResponse, setNimbusTokenCookie, enforceSessionCookieCapacity, sessionCookieMigration, NIMBUS_TOKEN_QUERY, NimbusAuthError, NimbusBootstrapConsumedError, NimbusTokenClaimsError, DEFAULT_TOKEN_TTL_MS, ATTACH_BOOTSTRAP_TTL_MS, } from '../auth/index.js';
+import { issueNimbusToken, verifyNimbusToken, requireScopes, requireSessionPin, authErrorResponse, setNimbusTokenCookie, expireSessionCookie, enforceSessionCookieCapacity, planSessionCookieMigration, NIMBUS_TOKEN_QUERY, NimbusAuthError, NimbusBootstrapConsumedError, NimbusTokenClaimsError, DEFAULT_TOKEN_TTL_MS, ATTACH_BOOTSTRAP_TTL_MS, } from '../auth/index.js';
 import { authorizeRequest } from '../auth/middleware.js';
 import { hasJwtSecret } from '../auth/token.js';
 import { adoptCtxExports } from '@nimbus-sh/fabric/composition.js';
@@ -124,6 +124,64 @@ export function createNimbusHandler(options = {}) {
         // Capture ctx.exports on first call (loopback bindings for facets).
         if (ctx?.exports)
             adoptCtxExports(ctx.exports);
+        // Session authenticated by this request, if any: the one response policy
+        // below (legacy migration, destroy expiry) covers every answer path —
+        // forwarded DO answers, local shell HTML, local JSON — so no branch can
+        // leave one out. Branches that authenticate a session set this; the
+        // preview-capability and OAuth-callback forwards carry no session
+        // credential and stay untouched.
+        // The one authenticated-session response policy: every answer produced
+        // while a session is authenticated — forwarded DO answers, local shell
+        // HTML, local JSON, destroy results — passes through here, so no branch
+        // can leave migration or destroy-expiry out. Sites below only record
+        // which session authenticated; this wrapper applies the headers.
+        let plannedMigration = [];
+        let destroyedSession = null;
+        // Plan at authentication, before any dispatch: the capacity check throws
+        // here, so a refusal always precedes the session DO's side effects. A
+        // refusal is an auth answer (same envelope as resolveNimbusRouteAuth),
+        // never an unhandled throw.
+        let authRefusal = null;
+        const planMigration = (verified, sessionId) => {
+            if (verified === null || authRefusal !== null) {
+                if (verified === null)
+                    plannedMigration = [];
+                return;
+            }
+            try {
+                plannedMigration = planSessionCookieMigration(request.headers.get('Cookie'), verified, sessionId);
+            }
+            catch (e) {
+                if (e instanceof NimbusAuthError)
+                    authRefusal = authErrorResponse(e);
+                else
+                    throw e;
+            }
+        };
+        const authRefused = () => authRefusal;
+        const applySessionResponsePolicy = async (response) => {
+            const answered = await response;
+            const setCookies = [...plannedMigration];
+            if (destroyedSession !== null)
+                setCookies.push(expireSessionCookie(destroyedSession));
+            if (setCookies.length === 0)
+                return answered;
+            // Fetched answers (ASSETS shell, the session DO's upgrade) arrive with
+            // immutable headers: append only to a mutable copy. A 101 keeps its
+            // accepted socket — it lives beside headers, not in them, so copying
+            // headers alone carries it across untouched.
+            const headers = new Headers(answered.headers);
+            for (const value of setCookies)
+                headers.append('Set-Cookie', value);
+            const socket = answered.webSocket;
+            return new Response(answered.body, {
+                status: answered.status,
+                statusText: answered.statusText,
+                headers,
+                ...(socket == null ? {} : { webSocket: socket }),
+            });
+        };
+        const answered = (response) => applySessionResponsePolicy(response);
         const url = new URL(request.url);
         const previewSuffix = readPreviewHostSuffix(env);
         // ── <port>--<sid>.<suffix> — port preview ───────────────────────
@@ -214,14 +272,15 @@ export function createNimbusHandler(options = {}) {
             const scopedInner = preview.name !== undefined
                 ? `/app/${preview.name}`
                 : `/port/${preview.port}`;
-            return forwardToSession(request, {
+            if (auth.verified)
+                planMigration(auth.verified, preview.sid);
+            if (authRefused() !== null)
+                return authRefused();
+            return answered(forwardToSession(request, {
                 sessionId: preview.sid,
                 innerPath: `${scopedInner}${url.pathname === '/' ? '/' : url.pathname}`,
                 basePath: '',
-            }, env, {
-                tenantSegment: auth.tenantSegment,
-                migrateSessionCookies: auth.verified ? sessionCookieMigration(request.headers.get('Cookie'), auth.verified, preview.sid) : [],
-            });
+            }, env, { tenantSegment: auth.tenantSegment }));
         }
         // Embedder custom routes run first among the control-plane routes.
         if (customRoutes) {
@@ -235,9 +294,17 @@ export function createNimbusHandler(options = {}) {
                 return new Response('Internal error in embedder route', { status: 500 });
             }
         }
-        const sdkResponse = await handleNimbusRemoteApi(request, env, options.sdk);
-        if (sdkResponse)
-            return sdkResponse;
+        const remoteOutbox = { destroyedSessionId: null };
+        const sdkResponse = await handleNimbusRemoteApi(request, env, options.sdk, remoteOutbox);
+        if (sdkResponse) {
+            // A proven destroy frees its jar slot through the one policy below:
+            // remote-api reports the disposition as internal metadata, so no JSON
+            // re-parse or path rediscovery happens here. Anything else leaves the
+            // jar untouched.
+            if (remoteOutbox.destroyedSessionId !== null)
+                destroyedSession = remoteOutbox.destroyedSessionId;
+            return answered(sdkResponse);
+        }
         if (url.pathname === '/api/nimbus/oauth/callback') {
             // Signed by the session that started the flow: a state this deployment
             // did not sign never reaches a Durable Object.
@@ -321,17 +388,20 @@ export function createNimbusHandler(options = {}) {
             if (auth instanceof Response)
                 return auth;
             const tenantSegment = auth.tenantSegment;
+            planMigration(auth.verified, route.sessionId);
+            if (authRefused() !== null)
+                return authRefused();
             if (route.innerPath === '/api/preview-url' && request.method === 'GET') {
                 const rawPort = url.searchParams.get('port');
                 const port = rawPort && /^\d+$/.test(rawPort) ? Number(rawPort) : NaN;
                 if (!Number.isInteger(port) || port < 1 || port > 65535) {
-                    return Response.json({ error: 'Invalid port' }, {
+                    return answered(Promise.resolve(Response.json({ error: 'Invalid port' }, {
                         status: 400,
                         headers: { 'Cache-Control': 'no-store' },
-                    });
+                    })));
                 }
                 if (!previewSuffix || !isPreviewHostSafeSid(route.sessionId)) {
-                    return Response.json({ url: null, reason: 'unavailable' }, { headers: { 'Cache-Control': 'no-store' } });
+                    return answered(Promise.resolve(Response.json({ url: null, reason: 'unavailable' }, { headers: { 'Cache-Control': 'no-store' } })));
                 }
                 let previewUrl = `https://${buildPreviewHost(route.sessionId, port, previewSuffix)}/`;
                 if (auth.verified) {
@@ -346,20 +416,20 @@ export function createNimbusHandler(options = {}) {
                     });
                     previewUrl += `?${new URLSearchParams({ [NIMBUS_TOKEN_QUERY]: token })}`;
                 }
-                return Response.json({ url: previewUrl }, { headers: { 'Cache-Control': 'no-store' } });
+                return answered(Promise.resolve(Response.json({ url: previewUrl }, { headers: { 'Cache-Control': 'no-store' } })));
             }
             // `/s/<id>` and `/s/<id>/` (no inner path) → serve the xterm UI shell.
             // Only to GET and HEAD: a root DELETE is the SDK's destroy, answered by
             // handleNimbusRemoteApi above when the remote API is enabled.
             if (route.innerPath === '/' || route.innerPath === '') {
                 if (request.method !== 'GET' && request.method !== 'HEAD') {
-                    return new Response('Method not allowed', {
+                    return answered(Promise.resolve(new Response('Method not allowed', {
                         status: 405,
                         headers: {
                             Allow: remoteApiEnabled(options.sdk) ? 'GET, HEAD, DELETE' : 'GET, HEAD',
                             'Cache-Control': 'no-store',
                         },
-                    });
+                    })));
                 }
                 if (env.ASSETS) {
                     const shellUrl = new URL('/s/index.html', url.origin);
@@ -373,13 +443,13 @@ export function createNimbusHandler(options = {}) {
                     // default shell keeps no embedder policy, so every other preview,
                     // and every third-party frame inside one, loads as it always has.
                     if (!isIsolatedShellUrl(url))
-                        return shell;
+                        return answered(Promise.resolve(shell));
                     const headers = new Headers(shell.headers);
                     for (const [name, value] of Object.entries(ISOLATED_SHELL_HEADERS))
                         headers.set(name, value);
-                    return new Response(shell.body, { status: shell.status, statusText: shell.statusText, headers });
+                    return answered(Promise.resolve(new Response(shell.body, { status: shell.status, statusText: shell.statusText, headers })));
                 }
-                return new Response('<!DOCTYPE html><meta http-equiv="refresh" content="0; url=/"><title>Nimbus</title>', { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+                return answered(Promise.resolve(new Response('<!DOCTYPE html><meta http-equiv="refresh" content="0; url=/"><title>Nimbus</title>', { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } })));
             }
             // Best-effort fire onSessionStart on WebSocket upgrade. Hooks
             // never block: schedule via ctx.waitUntil.
@@ -397,13 +467,12 @@ export function createNimbusHandler(options = {}) {
                     console.warn('[nimbus] onSessionStart hook threw synchronously:', e);
                 }
             }
-            return forwardToSession(request, route, env, {
+            return answered(forwardToSession(request, route, env, {
                 tenantSegment,
                 ...(auth.verified?.claims.scopes !== undefined
                     ? { callerScopes: auth.verified.claims.scopes }
                     : {}),
-                migrateSessionCookies: auth.verified ? sessionCookieMigration(request.headers.get('Cookie'), auth.verified, route.sessionId) : [],
-            });
+            }));
         }
         // ── Back-compat legacy root paths → landing page ────────────────
         if (isLegacyRootPath(url.pathname)) {

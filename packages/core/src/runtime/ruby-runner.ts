@@ -143,7 +143,7 @@ export function makeRubyRunnerFactory(deps: {
       if (notHydrated !== null) { ctx.stderr.write(`${binName}: ${notHydrated}\n`); return 1; }
 
       const home = ctx.env?.HOME || deps.getHome();
-      const packageCommand = await maybeHandleRubyPackageCommand(binKind, binName, argv, cwd, home, vfs, ctx, deps.network);
+      const packageCommand = await maybeHandleRubyPackageCommand(binKind, binName, argv, cwd, home, vfs, ctx, deps.network.forProcess(ctx.pid));
       if (packageCommand.handled) {
         if (packageCommand.exitCode === 0) (await registerGemBins(vfs, home));
         return packageCommand.exitCode;

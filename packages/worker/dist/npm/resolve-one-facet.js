@@ -220,7 +220,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     const hasVersions = (value) => value !== null && typeof value === 'object' && 'versions' in value && !!value.versions;
     // `value[key]` as JavaScript reads it, a primitive's through its wrapper; undefined for null and undefined.
     const readProperty = (value, key) => value === null || value === undefined ? undefined : Reflect.get(Object(value), key);
-    const loadPackument = async (name) => {
+    const loadPackument = async (name, revalidate = false) => {
         let packumentText = null;
         let packumentSource = 'network';
         if (!env?.SUPERVISOR || typeof env.SUPERVISOR.getPackument !== 'function') {
@@ -236,6 +236,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
                 retries: Math.max(0, spec.retries ?? 3),
                 timeoutMs: spec.fetchTimeoutMs ?? 15_000,
                 registry: spec.registry,
+                ...(revalidate ? { revalidate: true } : {}),
             }), (r) => ({ json: r.json, source: r.source, events: r.events, status: r.status, failure: r.failure }));
             packumentElapsedMs = Date.now() - packumentStart;
             // Splice the supervisor's per-tier events into our accumulator.
@@ -316,13 +317,37 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     // is published in lockstep, so it stands in with exactly that version; a
     // target that lacks it installs the package unswapped, with the note that
     // its native build cannot run here, never a target version out of range.
+    // A cached packument that cannot answer what is asked is asked of the
+    // registry once more, past the cache: cached absence is no proof that
+    // nothing is published (a version published since it was cached). Once,
+    // and where that fails, the cached answer stands.
+    // Its answer, or null where that read fails in any way (a rejected
+    // call included): the cached answer then stands, as it was.
+    const askAgain = async (name) => {
+        try {
+            const again = await loadPackument(name, true);
+            return 'failed' in again ? null : again;
+        }
+        catch {
+            return null;
+        }
+    };
+    const stagedVersion = stagedBindingVersion();
+    const choose = (data) => (stagedVersion !== null && readProperty(data.versions, stagedVersion) !== undefined
+        ? stagedVersion
+        : pickVersion(data));
     let packument = await loadPackument(effName);
     if ('failed' in packument)
         return packument.failed;
-    const stagedVersion = stagedBindingVersion();
-    let version = stagedVersion !== null && readProperty(packument.data.versions, stagedVersion) !== undefined
-        ? stagedVersion
-        : pickVersion(packument.data);
+    // One pick; a cached packument asked again only where it answered nothing (or not the staged version).
+    let version = choose(packument.data);
+    if (packument.source === 'r2-cache' && (stagedVersion !== null ? version !== stagedVersion : version === null)) {
+        const again = await askAgain(effName);
+        if (again) {
+            packument = again;
+            version = choose(again.data);
+        }
+    }
     if (__swap && __swap.since) {
         const own = version;
         let covered = false;
@@ -335,7 +360,10 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
             covered = COMPARE_SEMVER(ownSemver, since) >= 0;
         }
         if (covered) {
-            const target = await loadPackument(__swap.to);
+            let target = await loadPackument(__swap.to);
+            if (!('failed' in target) && target.source === 'r2-cache' && readProperty(target.data.versions, String(own)) === undefined) {
+                target = await askAgain(__swap.to) ?? target;
+            }
             if ('failed' in target)
                 return target.failed;
             if (readProperty(target.data.versions, String(own)) !== undefined) {

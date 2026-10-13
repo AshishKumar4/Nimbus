@@ -130,8 +130,6 @@ export interface ForwardOptions {
      * check them. Omitted in legacy mode or when the caller was not verified.
      */
     callerScopes?: readonly string[];
-    /** Precomputed legacy-migration Set-Cookie values for the outgoing response. */
-    migrateSessionCookies?: readonly string[];
 }
 /**
  * Forward a request to the session's DO.

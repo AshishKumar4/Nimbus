@@ -780,7 +780,7 @@ export function supervisorCalls(base) {
         //
         // The parent facet's `child_process.spawn` shim (node-shims.ts) calls
         // these methods. They delegate to NimbusSession._rpcCp* methods which
-        // route through the shared FacetProcessManager.
+        // route through the shared ChildProcessManager.
         //
         async cpSpawn(req) {
             return this._call(this._op('cpSpawn', [{ ...req, parentPid: this._pid() }]));
@@ -819,10 +819,16 @@ export function supervisorCalls(base) {
                 const port = Number(payload.port);
                 if (!hostname || !Number.isInteger(port) || port < 1 || port > 65535)
                     throw new TypeError('netTls: bad target');
+                const servername = payload.servername;
+                if (servername !== undefined && (typeof servername !== 'string' || servername === ''))
+                    throw new TypeError('netTls: bad servername');
                 if (typeof egress.connectTls !== 'function')
                     throw Object.assign(new Error(EGRESS_TLS_REFUSAL), { code: 'ERR_NIMBUS_EGRESS_TLS' });
+                // The host is Node's servername when the program names none: only another name crosses.
+                const target = servername === undefined || servername === hostname
+                    ? { hostname, port } : { hostname, port, servername };
                 try {
-                    return await egress.connectTls({ hostname, port });
+                    return await egress.connectTls(target);
                 }
                 catch (error) {
                     if (error instanceof TypeError && error.message === 'The RPC receiver does not implement the method "connectTls".') {

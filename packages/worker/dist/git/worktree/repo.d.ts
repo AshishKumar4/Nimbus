@@ -66,7 +66,7 @@ export interface ObjectEngine {
 }
 /** Objects written by one command: each `write`'s object is there once `flush` has settled. */
 export interface ObjectWriter {
-    write(type: 'blob' | 'tree' | 'commit', data: Uint8Array): Promise<string>;
+    write(type: 'blob' | 'tree' | 'commit' | 'tag', data: Uint8Array): Promise<string>;
     flush(): Promise<void>;
 }
 /**

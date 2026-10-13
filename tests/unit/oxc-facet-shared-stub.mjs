@@ -140,35 +140,22 @@ const request = { code: 'const n: number = 1; export default n;', options: { loa
   console.log('  ok  nesting past the host stack goes to the fallback: that module, typed, bounded, timed, logged');
 }
 
-// ── More than four too-deep cells, unpaced and unstored: every one is placed ─
+// ── More than four deeply nested native ES cells: every one is staged ──────
 {
   // stageOpencode's prefetch bundle transforms with no store and no pacer:
   // nothing would send a deferred module again, so none may be deferred.
   resetInstances();
   const { generateTransformFacetRuntimeSource } = await import('../../packages/core/src/runtime/esbuild-service.ts');
   const { rewriteDynamicImports } = await import('../../packages/core/src/runtime/dynamic-import-rewrite.ts');
-  const { lowerAsyncModule, lowerEsModule } = await import('../../packages/core/src/runtime/async-module-lowering.ts');
+  const { readEsModule } = await import('../../packages/core/src/runtime/native-esm.ts');
   const { rewriteProvidedCommonJsModules } = await import('../../packages/core/src/runtime/provided-packages.ts');
   const { transformBundleCells } = await import('../../packages/core/src/runtime/bundle-cell-transform.ts');
   const { runTransformRequest } = new Function(`${generateTransformFacetRuntimeSource()}\nreturn { runTransformRequest };`)();
-  const runtime = { rewriteDynamicImports, lowerAsyncModule, lowerEsModule, rewriteProvidedCommonJsModules };
-  const { createRequire } = await import('node:module');
-  const { readFile } = await import('node:fs/promises');
-  const fromCore = createRequire(new URL('../../packages/core/package.json', import.meta.url));
-  const esbuild = await import(fromCore.resolve('esbuild-wasm/esm/browser.js'));
-  // esbuild's Go runtime wants the native WebAssembly.Instance the harness counts through.
-  releaseFacetHarness();
-  await esbuild.initialize({ wasmModule: await WebAssembly.compile(await readFile(fromCore.resolve('esbuild-wasm/esbuild.wasm'))), worker: false });
+  const runtime = { rewriteDynamicImports, readEsModule, rewriteProvidedCommonJsModules };
   const { ctx, env } = durableObject(await freshFacetClass());
-  // The esbuild facet's transformMany, in this process.
-  const calls = [];
-  const fallback = async (requests) => {
-    calls.push(requests.length);
-    const outcomes = [];
-    for (const { code, options } of requests) outcomes.push(await runTransformRequest(esbuild, code, options, runtime));
-    return outcomes;
-  };
-  // Arrays 7,000 deep: past Oxc's passes and the lowering's parse on Bun's stack (acorn's ~5,000), within esbuild's.
+  const fallback = async () => assert.fail('native ES modules never need the engine\'s stack fallback');
+  // Arrays 7,000 deep would exceed a recursive transform's stack, but
+  // JavaScript ES-module staging only reads their import sites.
   const cells = Array.from({ length: 6 }, (_, i) => ({
     path: `node_modules/deep/d${i}.mjs`,
     source: `export const x${i} = ${'['.repeat(7000)}${i}${']'.repeat(7000)};`,
@@ -186,45 +173,25 @@ const request = { code: 'const n: number = 1; export default n;', options: { loa
   for (const [i, { path }] of cells.entries()) {
     const result = placed.get(path);
     assert.equal(result.failed, false, `${path}: ${result.code.slice(0, 200)}`);
-    assert.match(result.code, new RegExp(`x${i}: \\(\\) => x${i}`));
+    assert.equal(result.code, cells[i].source, 'the native module stays as written');
+    assert.deepEqual(JSON.parse(result.sites), { calls: [], metas: [], statics: [], moduleSyntax: true });
   }
-  assert.ok(calls.every((n) => n <= 4) && calls.reduce((a, b) => a + b, 0) === 6, JSON.stringify(calls));
-  console.log('  ok  six too-deep cells with no store or pacer are all placed, four per esbuild call at most');
+  assert.equal(instances.created, 0, 'native ES modules instantiate no Oxc engine');
+  console.log('  ok  six deep native ES cells with no store or pacer are all staged without an engine');
 
-  // TypeScript the strip takes but the lowering cannot (in a facet, acorn's
-  // stack ends near 600 levels, amaro's past 1,000): the transform facet's
-  // retry is the stripped module, which the esbuild facet, with no amaro, lowers.
+  // Once Node's TypeScript strip succeeds, its module stages natively: no
+  // transform engine is loaded, and no stripped-code lowering retry remains.
   const stripped = 'export const t         = 1;';
   const exhausted = { transform: async () => { throw Object.assign(new RangeError('Maximum call stack size exceeded'), { stackExhausted: true }); } };
   const typed = { stripTypes: { mode: 'strip-only', sourceMap: false }, packageType: null, sourcefile: '/src/t.mts', dynamicImportParent: 'file:///src/t.mts' };
-  const thrown = await runTransformRequest(exhausted, 'export const t: unknown = 1;', typed, {
+  const staged = await runTransformRequest(exhausted, 'export const t: unknown = 1;', typed, {
     ...runtime,
     stripTypeScript: async () => ({ code: stripped, format: 'module' }),
-    lowerEsModule: () => { throw new RangeError('Maximum call stack size exceeded'); },
-  }).then(() => null, (e) => e);
-  assert.equal(thrown?.stackExhausted, true);
-  assert.equal(thrown.retry.code, stripped);
-  assert.equal(thrown.retry.options.esModule, 'node');
-  assert.equal(thrown.retry.options.stripTypes, undefined);
-  const retried = [];
-  const { ctx: retryCtx, env: retryEnv } = durableObject(class {
-    async transformMany(requests) {
-      return requests.map(() => ({ error: 'Maximum call stack size exceeded', stackExhausted: true, retry: thrown.retry }));
-    }
   });
-  console.warn = () => {};
-  try {
-    const [outcome] = await oxcTransformHost(retryCtx, retryEnv, async (requests) => {
-      retried.push(...requests);
-      return fallback(requests);
-    })([{ code: 'export const t: unknown = 1;', options: typed }]);
-    assert.equal(outcome.error, undefined, outcome.error);
-    assert.equal(outcome.esModule, 'node');
-  } finally {
-    console.warn = warn;
-  }
-  assert.deepEqual(retried, [thrown.retry], 'the esbuild facet is sent the retry');
-  console.log('  ok  TypeScript too deep to lower after its strip is lowered by esbuild from its stripped code');
+  assert.equal(staged.code, stripped);
+  assert.equal(staged.esModule, 'node');
+  assert.deepEqual(JSON.parse(staged.map), { calls: [], metas: [], statics: [], moduleSyntax: true });
+  console.log('  ok  stripped TypeScript ES modules stage without a transform engine or lowering retry');
 }
 
 // ── A stub that threw is dropped: the retry mints a fresh one ───────────────

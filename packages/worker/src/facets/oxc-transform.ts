@@ -32,7 +32,7 @@ const TRANSFORM_OXC_HIGH_WATER_BYTES = 32 * 1024 * 1024;
  * Everything of the facet's module but its staged parts. `oxcWasm` is the
  * module map's compiled wasm, and the staged runtime (core
  * runtime/oxc-facet/preamble.ts) installs the wasm's driver, the
- * dynamic-import rewrite and the top-level-await lowering as globals.
+ * dynamic-import rewrite and the ES module reader as globals.
  * Requests run one at a time on one instance, each answered or refused on
  * its own: a module Oxc rejects (or that crashes the instance, which is then
  * replaced) is a verdict on that module, never on its slice.

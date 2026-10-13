@@ -224,7 +224,8 @@ export class IsolatePool {
             ? 'global'
             : ctx.id.toString().slice(0, 12);
         this.scope = opts.scope ?? '';
-        this.network = requireNetwork(opts.network, 'IsolatePool');
+        // The network of the process the pool's facets act for (WorkspaceNetwork.forProcess), the one its binding carries.
+        this.network = requireNetwork(opts.network, 'IsolatePool').forProcess(opts.processSupervisor?.pid ?? opts.supervisorPid ?? 0);
         // Materialise the wasm-modules table. Sanitise each name into a
         // valid JS identifier for the static import binding; key collisions
         // (e.g. 'esbuild.wasm' and 'esbuild_wasm' both sanitise to
@@ -279,7 +280,7 @@ export class IsolatePool {
                 const supervisor = opts?.processSupervisor ?? infrastructureSupervisorProps(ctx, opts?.supervisorPid ?? 0, {
                     doId: opts?.supervisorDoIdOverride,
                     route: opts?.supervisorRoute,
-                    network: opts.network,
+                    network: this.network,
                 });
                 const minted = opts?.processSupervisor
                     ? mintProcessSupervisor(supervisorRpc, opts.processSupervisor) : supervisorRpc({ props: supervisor });

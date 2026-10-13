@@ -177,8 +177,9 @@ export async function initSession(self, ws, options = {}) {
         env: envOverlay,
         terminal: self.terminal,
         processes: self.processes,
+        childProcesses: self.childProcessHost,
         runtimeSource: runtimeCatalogSource(self.env),
-        egress: self.egressForWorkspace(),
+        ...self.egressForWorkspace(),
     });
     self.runtimeWorkspace = workspace;
     // A process's answers leave as the rest of its output does: once what it wrote is published.

@@ -17,7 +17,7 @@ import { type SessionSupervisorHost, type SessionSupervisorOps } from './supervi
 /** The session a filesystem serves: whose processes it stops, and whose supervisor ops it answers. */
 export type SessionFilesystemHost = SessionSupervisorHost & {
     readonly processes: SessionProcessSupervisor;
-    readonly facetManager?: (Pick<FacetManager, 'journalCall' | 'kill'>) | null;
+    readonly facetManager?: (Pick<FacetManager, 'kill'>) | null;
 };
 export declare class SessionFilesystem {
     readonly engine: SqliteVFS;

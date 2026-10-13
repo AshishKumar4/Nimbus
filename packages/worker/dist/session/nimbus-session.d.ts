@@ -13,7 +13,7 @@ import * as runtimeServices from '../hosted/services.js';
  * `node` execution is delegated to dynamic workers via LOADER.load().
  * IPC between facets and the supervisor flows through SupervisorRPC.
  */
-import { type WorkspaceEgress } from '@nimbus-sh/core/_shared/workspace-network.js';
+import { type EgressFor, type EgressProcess, type WorkspaceEgress, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { Kernel, Shell } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { DurableObject as CloudflareDurableObject } from 'cloudflare:workers';
 import { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
@@ -22,6 +22,7 @@ import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { FacetManager } from '../facets/manager.js';
 import { type ComposedFacetManager } from '../facets/compose.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import type { ChildProcessManager } from '@nimbus-sh/core/runtime/child-process-manager.js';
 import type { SessionRouterRpc, SessionReadyOptions, SessionExecOptions, SessionRunCodeOptions, SessionDestroyOptions, SessionDestroyResult, SessionFileStat, SessionDirectoryEntry, SessionRuntimeInstallOptions, SessionTerminalSize, SessionProcessLogsOptions, SessionExposeOptions, SessionDurableAppOptions, SessionAppTarget } from '@nimbus-sh/core/runtime/session-protocol.js';
 import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
@@ -35,6 +36,7 @@ import type { HmrEvent } from '../facets/real-vite-hmr.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
 import type { NpmInstaller } from '../npm/installer.js';
+import type { PackumentReadOptions } from '../npm/r2-cache.js';
 import type { DocumentPolicy } from '@nimbus-sh/core/runtime/document-policy.js';
 import type { AppDoor } from './routes.js';
 import type { NimbusWorkspace } from '@nimbus-sh/core/workspace';
@@ -75,6 +77,7 @@ export declare function renderWelcomeMarkdown(version: string): string;
 type SessionEnv = runtimeServices.HostedRuntimeEnv & SessionAiHost['env'];
 export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> implements SessionRouterRpc {
     #private;
+    get childProcessHost(): import("@nimbus-sh/core/runtime/child-process-manager.js").ChildProcessHost;
     runtimeWorkspace: NimbusWorkspace | null;
     private runtimeReady;
     get runtimeManager(): RuntimeManager;
@@ -93,7 +96,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
     facetManagerComposed: ComposedFacetManager | null;
     get facetManager(): FacetManager | null;
     /** W8: child_process broker. Lazy — only constructed when first cp* RPC arrives. */
-    facetProcessManager: any;
+    childProcessManager: ChildProcessManager | null;
     /**
      * Supervisor-owned outbound WebSockets. A facet's socket is terminated here
      * so an inbound frame reaches it as a supervisor reply — the only shape a
@@ -329,8 +332,28 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
      * Called once per instance, by whatever needs the network first.
      */
     protected workspaceEgress(): WorkspaceEgress | undefined;
-    /** {@link workspaceEgress}, for the session's init and processes (not part of the embedder surface). */
-    egressForWorkspace(): WorkspaceEgress | undefined;
+    /**
+     * The egress for one of the session's processes (NimbusWorkspaceOptions.egressFor),
+     * when the workspace has one ({@link workspaceEgress}): asked once per
+     * process while it lives, so its fetch, sockets, TLS, commands and Dynamic
+     * Worker, wherever it is hosted, all go through what this returns. An
+     * embedder that tells execs apart implements it, e.g.
+     * `return this.ctx.exports.Egress({ props: { session: this.ctx.id.toString(), execId: process.execId } })`.
+     * Undefined keeps the workspace's egress for that process.
+     */
+    protected egressFor?(process: EgressProcess): WorkspaceEgress | undefined;
+    /** {@link workspaceEgress} and {@link egressFor}, for the session's workspace (not part of the embedder surface). */
+    egressForWorkspace(): {
+        egress?: WorkspaceEgress;
+        egressFor?: EgressFor;
+    };
+    /**
+     * The session's network, before and across its workspaces: under
+     * {@link egressFor} it selects from whatever process table the session
+     * holds as a process asks (a destroy installs a new one), and a process
+     * is asked for once, whether this network or the workspace's asks first.
+     */
+    sessionNetwork(): WorkspaceNetwork;
     /** The session's namespace and process bindings: one, for the workspace, facets and RPC alike. */
     getFilesystemAuthority(): ProcessFiles;
     /** The pid-keyed filesystem bridge behind the supervisor ops. */
@@ -379,11 +402,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
         readOnly: boolean;
     }>;
     _rpcPutCachedTarball(integrity: string, bytes: Uint8Array | ArrayBuffer): Promise<void>;
-    _rpcGetPackument(name: string, options?: {
-        retries?: number;
-        timeoutMs?: number;
-        registry?: string;
-    }, pid?: number, run?: string): Promise<{
+    _rpcGetPackument(name: string, options?: PackumentReadOptions, pid?: number, run?: string): Promise<{
         readOnly: boolean;
     }>;
     _rpcCacheResult(ticket: string, result: {
@@ -758,11 +777,9 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
      */
     _ensureWebSocketRelay(): WebSocketRelay;
     /**
-     * W8: lazily construct the FacetProcessManager when the first cp* RPC
-     * arrives. Wired with adapters that bridge the Nimbus shell command
-     * registry to the FacetProcessManager's CommandRegistryLike contract.
+     * Lazily bind the core child broker to this session's runners and cleanup.
      */
-    _ensureFacetProcessManager(): any;
+    _ensureChildProcessManager(): ChildProcessManager;
     /**
      * Set the shell command registry for the W8 broker to dispatch
      * resolved commands. Called from the shell-init path right after

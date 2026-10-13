@@ -22,7 +22,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { _rpcFsAcquire, _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
-import { FACET_RESIDENT_STORE_SOURCE } from '../../packages/worker/src/vfs/facet-resident-store.ts';
+import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
 
@@ -136,12 +136,8 @@ function sqlShim() {
   };
 }
 
-const store = new Function(
-  FACET_RESIDENT_STORE_SOURCE
-    + '\nreturn { __residentBind, __residentAdoptModuleBundle, __residentSynchronizeFromSupervisor,'
-    + ' __residentAdmit, __residentCursor, __residentGet, __residentSetPlan };',
-)();
-store.__residentBind({ storage: { sql: sqlShim() } });
+const store = createResidentStore();
+store.bind({ storage: { sql: sqlShim() } });
 const supervisor = {
   fsList: (after, limit) => _rpcFsList(host, after ?? null, limit ?? null, pid),
   fsReadBatch: (requests) => _rpcFsReadBatch(host, requests, pid),
@@ -149,22 +145,22 @@ const supervisor = {
 };
 const asText = (cell) => (typeof cell === 'string' ? cell : dec.decode(cell));
 
-store.__residentAdoptModuleBundle({}, { epoch: raw.epoch, rev: raw.revision() });
+store.sync.adoptModuleBundle({}, { epoch: raw.epoch, rev: raw.revision() });
 // The launch's data plan holds A's /tmp/x.
-store.__residentSetPlan(['tmp/x']);
-const filled = await store.__residentSynchronizeFromSupervisor(supervisor);
+store.sync.setPlan(['tmp/x']);
+const filled = await store.sync.synchronize(supervisor);
 assert.equal(filled.failed, 0, 'a fill of the private /tmp/x was refused');
-assert.equal(asText(store.__residentGet('tmp/x')), 'private v4');
+assert.equal(asText(store.cells.get('tmp/x')), 'private v4');
 
 // A peer rewrites A's private file. A knows it only as /tmp/x, so that is the
 // name the delta has to evict.
 kernel.writeFile(`${PRIVATE_ROOT}/x`, 'a peer wrote this');
-const held = store.__residentCursor();
-const applied = store.__residentAdmit(await supervisor.fsAcquire(held.epoch, held.rev));
+const held = store.coherence.cursor();
+const applied = store.cells.admit(await supervisor.fsAcquire(held.epoch, held.rev));
 assert.deepEqual(applied.dropped, ['tmp/x'], "a peer's write left A holding the replaced bytes");
-assert.equal(store.__residentGet('tmp/x'), undefined);
-const refilled = await store.__residentSynchronizeFromSupervisor(supervisor);
+assert.equal(store.cells.get('tmp/x'), undefined);
+const refilled = await store.sync.synchronize(supervisor);
 assert.equal(refilled.failed, 0);
-assert.equal(asText(store.__residentGet('tmp/x')), 'a peer wrote this');
+assert.equal(asText(store.cells.get('tmp/x')), 'a peer wrote this');
 
 console.log('confined-tmp-revisions: ok');

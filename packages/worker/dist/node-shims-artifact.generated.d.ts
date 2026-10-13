@@ -16,7 +16,7 @@ export declare const NODE_SHIMS_SHA256: string;
 export declare const VFS_WRITE_LEDGER_ENTRY: string;
 export declare const VFS_WRITE_LEDGER_BUILD_ID: string;
 export declare const VFS_WRITE_LEDGER_SHA256: string;
-/** dist/vfs/facet-resident-store.js FACET_RESIDENT_STORE_SOURCE */
+/** src/vfs/resident/index.ts, bundled by scripts/resident-store-bundle.mjs */
 export declare const RESIDENT_STORE_ENTRY: string;
 export declare const RESIDENT_STORE_BUILD_ID: string;
 export declare const RESIDENT_STORE_SHA256: string;
@@ -32,6 +32,10 @@ export declare const JS_INTERPRETER_SHA256: string;
 export declare const JS_INTERPRETER_OPS_ENTRY: string;
 export declare const JS_INTERPRETER_OPS_BUILD_ID: string;
 export declare const JS_INTERPRETER_OPS_SHA256: string;
+/** @nimbus-sh/core src/interpreter/parser.ts, bundled by scripts/interpreter-bundle.mjs */
+export declare const JS_PARSER_ENTRY: string;
+export declare const JS_PARSER_BUILD_ID: string;
+export declare const JS_PARSER_SHA256: string;
 /** dist/runtime/node-lib-module.js generateNodeLibModule() */
 export declare const NODE_LIB_ENTRY: string;
 export declare const NODE_LIB_BUILD_ID: string;

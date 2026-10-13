@@ -25,7 +25,7 @@ import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { residentFilesystem } from '../../packages/core/src/runtime/wasi/resident-filesystem.ts';
 import { subtreeListing } from '../../packages/core/src/runtime/fs-list-tree.ts';
-import { FACET_RESIDENT_STORE_SOURCE } from '../../packages/worker/src/vfs/facet-resident-store.ts';
+import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const enc = new TextEncoder();
@@ -51,11 +51,8 @@ for (let i = 0; i < ICONS; i++) {
 }
 for (let i = 0; i < 50; i++) await kernel.writeFile(k(`other/f${i}.mjs`), enc.encode(`export const f = ${i};\n`));
 
-const store = new Function(
-  FACET_RESIDENT_STORE_SOURCE
-    + '\nreturn { __residentBindInMemory, __residentSetStorage, __residentBootLazy, __residentNamespaceView };',
-)();
-store.__residentBindInMemory(64 * 1024 * 1024);
+const store = createResidentStore();
+store.bindInMemory(64 * 1024 * 1024);
 const seen = { batches: 0, read: [], trees: [], lists: 0 };
 const supervisor = {
   fsAcquire: (...args) => authority.acquire(...args),
@@ -78,10 +75,10 @@ const supervisor = {
     return out;
   },
 };
-store.__residentSetStorage(undefined, supervisor);
-assert.equal(await store.__residentBootLazy(supervisor), true);
+store.admission.setStorage(undefined, supervisor);
+assert.equal(await store.lazy.bootLazy(supervisor), true);
 const device = (await authority.stat('/')).dev;
-const fs = residentFilesystem(authority, store.__residentNamespaceView(supervisor, device, USER));
+const fs = residentFilesystem(authority, store.lazy.namespaceView(supervisor, device, USER));
 
 // ── one file of a directory: that file, and nothing more ──
 {

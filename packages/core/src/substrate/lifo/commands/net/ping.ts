@@ -42,7 +42,7 @@ function createPingImpl(network: () => WorkspaceNetwork): Command {
 
     const start = performance.now();
     try {
-      await network().fetch(url, { method: 'HEAD', signal: ctx.signal });
+      await network().forProcess(ctx.pid).fetch(url, { method: 'HEAD', signal: ctx.signal });
       const elapsed = performance.now() - start;
       times.push(elapsed);
       await ctx.stdout.write(`Response from ${host}: time=${elapsed.toFixed(1)}ms\n`);

@@ -139,7 +139,8 @@ async function walk(world, root, held = {}, allowance = 10000, files = 100, prog
     [entry]: 'require("./keep.cjs");',
     [APP+'/keep.cjs']: 'module.exports=1;',
     [nm+'/a/package.json']: '{"name":"a","main":"index.ts"}',
-    [a]: 'export const answer: number = require("shared") + 1;',
+    // An enum's emit is far larger than its source: the transform grows the root.
+    [a]: 'export enum Big { ' + Array.from({ length: 24 }, (_, i) => 'M' + i).join(', ') + ' }\nexport const answer: number = require("shared") + 1;',
     [nm+'/b/package.json']: '{"name":"b","main":"index.cjs"}',
     [b]: 'module.exports=require("shared")+2;',
     [nm+'/shared/package.json']: '{"name":"shared","main":"index.cjs"}',

@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 
 import { makeCPythonRunnerFactory } from '../../packages/core/src/runtime/cpython-runner.ts';
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import { makeRubyRunnerFactory } from '../../packages/core/src/runtime/ruby-runner.ts';
 import { makeWasmRunner } from '../../packages/core/src/runtime/wasm-runner.ts';
 import { ProcessView } from '../../packages/core/src/runtime/process-files.ts';
@@ -45,7 +46,7 @@ function invocationVfs(filesystem) {
     '/runtime/python/share/cpython/python.wasm': new Uint8Array([0]),
     '/runtime/python/lib/python313.zip': new Uint8Array(),
   }, 'home/user/locked/tool.py');
-  const run = makeCPythonRunnerFactory({ facets: unreachableFacets })(
+  const run = makeCPythonRunnerFactory({ facets: unreachableFacets, network: ISOLATE_NETWORK })(
     {
       files: [
         { path: 'share/cpython/python.wasm' },
@@ -66,7 +67,7 @@ function invocationVfs(filesystem) {
   const filesystem = deniedProgramAuthority({
     '/runtime/ruby/share/ruby/ruby+stdlib.wasm': new Uint8Array([0]),
   }, 'home/user/locked/tool.rb');
-  const run = await makeRubyRunnerFactory({ facets: unreachableFacets, filesystem, getHome: () => '/home/user' })(
+  const run = await makeRubyRunnerFactory({ facets: unreachableFacets, filesystem, getHome: () => '/home/user', network: ISOLATE_NETWORK })(
     { files: [{ path: 'share/ruby/ruby+stdlib.wasm' }] },
     '/runtime/ruby',
     'ruby',

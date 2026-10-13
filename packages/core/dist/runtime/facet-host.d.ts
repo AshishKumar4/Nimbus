@@ -89,6 +89,7 @@ export interface FacetSyscalls {
     readonly pid: number;
     /** Local hosts bind the same stdio channels that a remote host reaches by pid. */
     readonly processes?: import('./session-process-supervisor.js').SessionProcessSupervisor;
+    readonly children?: import('./child-process-manager.js').ChildProcessManager;
 }
 export interface FacetSubmitOptions {
     /**

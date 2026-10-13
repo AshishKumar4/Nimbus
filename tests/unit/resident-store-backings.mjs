@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // The resident store's two backings answer alike. The store decides and
-// its tables only store: __residentTablesOnSql (a process facet's SQLite)
-// and __residentTablesInMemory (a one-shot's heap) sit behind the same
+// its tables only store: sqlTables (a process facet's SQLite)
+// and heapTables (a one-shot's heap) sit behind the same
 // operations. Seeded random sequences of those operations (puts,
 // deletes, revision changes, the dated drops, chunk copies, namespace
 // edits) run on both, and every answer must be equal: rows, key order,
@@ -15,17 +15,12 @@
 
 import assert from 'node:assert/strict';
 
-import { FACET_RESIDENT_STORE_SOURCE } from '../../packages/worker/src/vfs/facet-resident-store.ts';
+import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
+import { heapTables, sqlTables, RK_OWN_WRITE } from '../../packages/worker/src/vfs/resident/tables.ts';
+import { RESIDENT_ROW_BYTES, utf8Length } from '../../packages/worker/src/vfs/resident/cell-cost.ts';
+import { prefixEnd } from '../../packages/worker/src/vfs/resident/namespace.ts';
+import { FACET_OWN_WRITE_MEMORY_BYTES } from '../../packages/platform/src/limits.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-
-const STORE_API = 'onSql: __residentTablesOnSql, inMemory: __residentTablesInMemory, OWN: __RK_OWN_WRITE, ROW: __RESIDENT_ROW_BYTES,'
-  + ' nsReady: __nsReady, markReady: __nsMarkReady, replaceNamespace: __nsReplace, LINK: __NS_LINK,'
-  + ' utf8: __residentUtf8Length, prefixEnd: __residentPrefixEnd, bindInMemory: __residentBindInMemory,'
-  + ' adopt: __residentAdoptModuleBundle, fill: __residentFill, get: __residentGet, setStorage: __residentSetStorage,'
-  + ' storageMiss: __residentStorageMiss, bytes: __residentDbBytes, bundle: __nimbusResidentBundle, heldMax: __RESIDENT_HELD_MAX_BYTES';
-/** The shipped store source in a fresh module scope: one store per call. */
-const freshStore = () => new Function(`${FACET_RESIDENT_STORE_SOURCE}\nreturn { ${STORE_API} };`)();
-const store = freshStore();
 
 /** A row as a plain value: blobs as byte arrays, whichever form the backing returned. */
 function plain(value) {
@@ -52,13 +47,13 @@ function prng(seed) {
 const PATHS = ['a', 'a/b', 'a/b/c', 'a/bc', 'a0', 'a.', 'ab', 'b', 'b/x', 'é/f', '😀', '😀/g', '\ue000', '\ue000/h', '\ufffd', 'z'];
 const DIRS = ['', 'a', 'a/b', 'b', '😀', '\ue000'];
 const NAMES = ['x', 'y', 'b', 'é', '😀', '\ue000', '\ufffd'];
-const REVS = () => [store.OWN, 0, 3, 7];
+const REVS = () => [RK_OWN_WRITE, 0, 3, 7];
 
 const reads = (t, rand) => {
   const path = PATHS[Math.floor(rand() * PATHS.length)];
   const from = PATHS[Math.floor(rand() * PATHS.length)];
   const prefix = `${from}/`;
-  const to = store.prefixEnd(prefix);
+  const to = prefixEnd(prefix);
   const parent = DIRS[Math.floor(rand() * DIRS.length)];
   return {
     head: t.fileHead(path), rev: t.fileRev(path), revKey: t.fileRevKey(path), ownSize: t.fileOwnSize(path),
@@ -125,7 +120,7 @@ function randomOp(rand) {
   if (r < 0.82) return ['nsPut', pick(DIRS), pick(NAMES), pick([0, 1, 2]), 7, 0o644, 1000, 1000, 1.5, 2.5, 3.5, 11, pick([0, 4]), rand() < 0.3 ? 'target' : null];
   if (r < 0.88) return ['nsDelete', pick(DIRS), pick(NAMES)];
   if (r < 0.92) return ['nsDeleteChildren', pick(DIRS)];
-  if (r < 0.96) { const prefix = `${pick(DIRS)}/`; return ['nsDeleteParents', prefix, store.prefixEnd(prefix)]; }
+  if (r < 0.96) { const prefix = `${pick(DIRS)}/`; return ['nsDeleteParents', prefix, prefixEnd(prefix)]; }
   if (r < 0.965) return ['nsClear'];
   // Stamps from a small range, so ties in 'used' are ordered by key as SQLite orders them.
   if (r < 0.985) return ['pagePut', path, pick3(rand), Math.floor(rand() * 3), bytes(), Math.floor(rand() * 6)];
@@ -135,15 +130,15 @@ function randomOp(rand) {
 
 /** What the in-memory backing holds, summed directly: its bytes() must equal it. */
 function heldBytes(t) {
-  let total = t.fileAllPaths().length * store.ROW;
+  let total = t.fileAllPaths().length * RESIDENT_ROW_BYTES;
   for (const path of new Set([...t.fileAllPaths(), ...PATHS])) {
-    for (const cell of t.chunkParts(path)) total += store.ROW + (cell.txt != null ? store.utf8(cell.txt) : cell.bin ? cell.bin.byteLength : 0);
+    for (const cell of t.chunkParts(path)) total += RESIDENT_ROW_BYTES + (cell.txt != null ? utf8Length(cell.txt) : cell.bin ? cell.bin.byteLength : 0);
   }
   for (const { parent, name } of t.nsKeys()) {
     const row = t.nsGet(parent, name);
-    total += store.ROW + 2 * (parent.length + name.length + (row.target?.length ?? 0));
+    total += RESIDENT_ROW_BYTES + 2 * (parent.length + name.length + (row.target?.length ?? 0));
   }
-  for (const row of t.pageOldest(1 << 20)) total += store.ROW + row.size;
+  for (const row of t.pageOldest(1 << 20)) total += RESIDENT_ROW_BYTES + row.size;
   return total;
 }
 
@@ -152,8 +147,8 @@ const STEPS = 120;
 let compared = 0;
 for (let seed = 1; seed <= SEQUENCES; seed++) {
   const rand = prng(seed);
-  const sql = store.onSql(createSqliteVfsTestHarness().sql);
-  const heap = store.inMemory();
+  const sql = sqlTables(createSqliteVfsTestHarness().sql);
+  const heap = heapTables();
   const ops = [];
   for (let i = 0; i < STEPS; i++) {
     const op = randomOp(rand);
@@ -180,10 +175,10 @@ for (let seed = 1; seed <= SEQUENCES; seed++) {
 
 // A read hands back a copy: writing into it changes nothing held.
 {
-  const heap = store.inMemory();
+  const heap = heapTables();
   heap.chunkAddBin('p', 0, new Uint8Array([1, 2, 3]));
   heap.chunkFirst('p').bin[0] = 9;
-  assert.deepEqual([...heap.chunkFirst('p').bin], [1, 2, 3], 'a read is a copy');
+  assert.deepEqual([.../** @type {Uint8Array} */ (heap.chunkFirst('p').bin)], [1, 2, 3], 'a read is a copy');
 }
 
 // The heap backing's budget, one for everything a one-shot holds: the
@@ -194,26 +189,26 @@ for (let seed = 1; seed <= SEQUENCES; seed++) {
 // storage (ENOSPC in the shims). The total never exceeds the budget, and no
 // ledger is asked: the heap has no row there to grow.
 {
-  const s = freshStore();
+  const s = createResidentStore();
   const BUDGET = 256 * 1024;
   s.bindInMemory(BUDGET);
   let grants = 0;
-  s.setStorage(undefined, { fsStorageGrant: async () => { grants++; return { granted: 1 << 30 }; } });
-  s.adopt({}, { epoch: 'e', rev: 1 });
+  s.admission.setStorage(undefined, { fsStorageGrant: async () => { grants++; return { granted: 1 << 30 }; } });
+  s.sync.adoptModuleBundle({}, { epoch: 'e', rev: 1 });
   const text = (n, c) => c.repeat(n);
-  assert.equal(s.fill('home/user/a.txt', text(64 * 1024, 'a'), 2), true, 'a fill within the budget is held');
-  assert.equal(s.get('home/user/a.txt'), text(64 * 1024, 'a'));
-  assert.equal(s.fill('home/user/big.txt', text(512 * 1024, 'b'), 2), false, 'a fill past the budget is refused');
-  assert.equal(s.get('home/user/big.txt'), undefined, 'and its read is a miss, not partial bytes');
+  assert.equal(s.cells.fill('home/user/a.txt', text(64 * 1024, 'a'), 2), true, 'a fill within the budget is held');
+  assert.equal(s.cells.get('home/user/a.txt'), text(64 * 1024, 'a'));
+  assert.equal(s.cells.fill('home/user/big.txt', text(512 * 1024, 'b'), 2), false, 'a fill past the budget is refused');
+  assert.equal(s.cells.get('home/user/big.txt'), undefined, 'and its read is a miss, not partial bytes');
   // Own writes: the first fits what is left and is held; the second does not.
   s.bundle['home/user/mine.bin'] = new Uint8Array(96 * 1024).fill(7);
-  assert.equal(s.get('home/user/mine.bin')?.[0], 7, 'an own write that fits what the budget leaves reads back');
-  assert.equal(s.storageMiss('home/user/mine.bin'), false);
-  assert.ok(s.bytes() <= BUDGET, `tables and held writes hold ${s.bytes()} B, within the ${BUDGET} B budget`);
+  assert.equal(s.cells.get('home/user/mine.bin')?.[0], 7, 'an own write that fits what the budget leaves reads back');
+  assert.equal(s.cells.storageMiss('home/user/mine.bin'), false);
+  assert.ok(s.admission.dbBytes() <= BUDGET, `tables and held writes hold ${s.admission.dbBytes()} B, within the ${BUDGET} B budget`);
   s.bundle['home/user/more.bin'] = new Uint8Array(160 * 1024).fill(9);
-  assert.equal(s.storageMiss('home/user/more.bin'), true, 'one that does not fit is named the storage\'s (ENOSPC), not EAGAIN');
-  assert.ok(s.bytes() <= BUDGET, `and the total stays ${s.bytes()} B, within the budget`);
-  assert.ok(s.heldMax > BUDGET, 'the facet\'s own held bound is not what limits a one-shot');
+  assert.equal(s.cells.storageMiss('home/user/more.bin'), true, 'one that does not fit is named the storage\'s (ENOSPC), not EAGAIN');
+  assert.ok(s.admission.dbBytes() <= BUDGET, `and the total stays ${s.admission.dbBytes()} B, within the budget`);
+  assert.ok(FACET_OWN_WRITE_MEMORY_BYTES > BUDGET, 'the facet\'s own held bound is not what limits a one-shot');
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(grants, 0, 'the heap backing never asks the ledger for room');
 }
@@ -221,40 +216,45 @@ for (let seed = 1; seed <= SEQUENCES; seed++) {
 // Namespace replacements charge deltas, not a second row or inode; text and
 // link-target growth count before storage admits the row.
 {
-  const s = freshStore();
-  const t = s.bindInMemory(4096);
-  s.markReady(t, true);
-  const put = (name, target) => t.nsPut('home/user', name, s.LINK, target.length, 0o120777, 1000, 1000, 0, 0, 0, 7, 1, target);
+  const s = createResidentStore();
+  s.bindInMemory(4096);
+  const t = s.coherence.heap;
+  s.namespace.markReady(t, true);
+  const put = (name, target) => s.namespace.put(t, 'home/user/' + name, {
+    type: 'symlink', size: target.length, mode: 0o120777, uid: 1000, gid: 1000,
+    atime: 0, mtime: 0, ctime: 0, ino: 7,
+  }, 1, target);
   put('link', 'x'.repeat(500));
-  const initial = s.bytes();
+  const initial = s.admission.dbBytes();
   for (let i = 0; i < 20; i++) put('link', 'x'.repeat(500));
-  assert.equal(s.bytes(), initial, 'upsert does not double charge');
+  assert.equal(s.admission.dbBytes(), initial, 'upsert does not double charge');
   assert.equal(t.nsCount(), 1);
   put('link', 'short');
-  assert.ok(s.bytes() < initial, 'shorter target releases its text cost');
-  const before = s.bytes();
+  assert.ok(s.admission.dbBytes() < initial, 'shorter target releases its text cost');
+  const before = s.admission.dbBytes();
   assert.throws(() => put('link', 'x'.repeat(4096)), error => error.code === 'ENOSPC');
-  assert.equal(s.bytes(), before, 'refused growth changes no stored bytes');
+  assert.equal(s.admission.dbBytes(), before, 'refused growth changes no stored bytes');
   assert.equal(t.nsGet('home/user', 'link').target, 'short');
-  assert.equal(s.nsReady(), false, 'a refused namespace update is never a ready partial view');
+  assert.equal(s.namespace.ready(), false, 'a refused namespace update is never a ready partial view');
   t.nsDelete('home/user', 'link');
   assert.equal(t.nsCount(), 0);
   assert.equal(t.nsBytes(), 0);
-  assert.equal(s.bytes(), 0);
+  assert.equal(s.admission.dbBytes(), 0);
 }
 
 {
-  const s = freshStore();
-  const t = s.bindInMemory(2800);
-  s.markReady(t, true);
+  const s = createResidentStore();
+  s.bindInMemory(2800);
+  const t = s.coherence.heap;
+  s.namespace.markReady(t, true);
   const row = (name, target) => ({ path: 'home/user/' + name, rev: 1, linkTarget: target,
     stat: { type: 'symlink', size: target.length, mode: 0o120777, uid: 1000, gid: 1000, atime: 0, mtime: 0, ctime: 0, ino: 1 } });
-  s.replaceNamespace(t, [row('a', 'x'), row('b', 'x'.repeat(1000))]);
-  const bytes = s.bytes();
-  s.replaceNamespace(t, [row('a', 'y'.repeat(1000)), row('b', 'y')]);
+  s.namespace.replace(t, [row('a', 'x'), row('b', 'x'.repeat(1000))]);
+  const bytes = s.admission.dbBytes();
+  s.namespace.replace(t, [row('a', 'y'.repeat(1000)), row('b', 'y')]);
   assert.equal(t.nsGet('home/user', 'a').target, 'y'.repeat(1000));
   assert.equal(t.nsGet('home/user', 'b').target, 'y');
-  assert.equal(s.bytes(), bytes, 'same-size namespace replacement is admitted independent of row order');
+  assert.equal(s.admission.dbBytes(), bytes, 'same-size namespace replacement is admitted independent of row order');
   assert.equal(t.nsCount(), 2);
 }
 

@@ -139,7 +139,7 @@ async function settle(world) {
 // both are left alone (an orphan is not), whether given whole or as a pack.
 {
   const { ImageStore, FACET_IMAGE_WRITE_SLICE_BYTES } = await import('../../packages/fabric/src/image-store.ts');
-  const { encodeCommonJsPack } = await import('../../packages/fabric/src/process-fabric.ts');
+  const { encodeCodePack } = await import('../../packages/fabric/src/process-fabric.ts');
   for (const shape of ['whole', 'pack']) {
     const files = new Map();
     const dir = FACET_IMAGE_DIR;
@@ -173,7 +173,7 @@ async function settle(world) {
         if (++spends === 2) { suspended(); await released; }
       },
     };
-    const source = shape === 'whole' ? big : encodeCommonJsPack({ 'big.js': big });
+    const source = shape === 'whole' ? big : encodeCodePack({ 'big.js': big });
     const length = new TextEncoder().encode(shape === 'whole' ? source : source.join('')).byteLength;
     const launch = store.materialize(1, [['small.js', 'module.exports = 0;'], ['big.js', source]], pacer);
     await resume;

@@ -1064,7 +1064,7 @@ export async function execGitNetwork(
    * loads goes out through its egress, when its host supplied one (prepare,
    * every batch and history piece, a fence's reload, fetch/pull/push).
    */
-  network: WorkspaceNetwork,
+  workspace: WorkspaceNetwork,
 ): Promise<GitNetworkResult> {
   const start = Date.now();
   const timeoutMs = opts.timeout ?? (opts.op === 'clone'
@@ -1089,6 +1089,8 @@ export async function execGitNetwork(
 
     const { mutationOwner, rotateMutationOwner, onCloneCheckoutPhase, signal, remotePushPack, ...facetOpts } = opts;
     throwIfCancelled(signal);
+    // The git command's own network (WorkspaceNetwork.forProcess): its bindings and every facet it loads.
+    const network = workspace.forProcess(opts.pid);
     const ctxExports = getCtxExports();
     // One run for every binding this operation mints, a fence's included.
     const writerId = crypto.randomUUID();

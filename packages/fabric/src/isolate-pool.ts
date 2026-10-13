@@ -125,9 +125,10 @@ export interface IsolatePoolOptions {
   /**
    * The network the pool's facets use. For a pool that runs work on behalf
    * of a workspace (its registry fetches, a program's requests), the
-   * workspace's (`workspace.network`), whose egress becomes each facet's
-   * globalOutbound and whose id is baked into the loader id, so a warm
-   * isolate made under one egress never serves another. Nimbus's own work
+   * workspace's (`workspace.network`); the pool takes its supervisor
+   * process's own from it (WorkspaceNetwork.forProcess), whose egress
+   * becomes each facet's globalOutbound and whose id is baked into the
+   * loader id, so a warm isolate made under one egress never serves another. Nimbus's own work
    * states `ISOLATE_NETWORK`: the facets keep the parent's network. Required,
    * so each pool's network is chosen where it is made.
    */
@@ -533,7 +534,8 @@ export class IsolatePool {
       ? 'global'
       : ctx.id.toString().slice(0, 12);
     this.scope = opts.scope ?? '';
-    this.network = requireNetwork(opts.network, 'IsolatePool');
+    // The network of the process the pool's facets act for (WorkspaceNetwork.forProcess), the one its binding carries.
+    this.network = requireNetwork(opts.network, 'IsolatePool').forProcess(opts.processSupervisor?.pid ?? opts.supervisorPid ?? 0);
 
     // Materialise the wasm-modules table. Sanitise each name into a
     // valid JS identifier for the static import binding; key collisions
@@ -594,7 +596,7 @@ export class IsolatePool {
         const supervisor = opts?.processSupervisor ?? infrastructureSupervisorProps(ctx, opts?.supervisorPid ?? 0, {
           doId: opts?.supervisorDoIdOverride,
           route: opts?.supervisorRoute,
-          network: opts.network,
+          network: this.network,
         });
         const minted = opts?.processSupervisor
           ? mintProcessSupervisor(supervisorRpc, opts.processSupervisor) : supervisorRpc({ props: supervisor });

@@ -16,7 +16,7 @@
 // as uid 1000, revokes its read of a file it holds, and reads it.
 
 import assert from 'node:assert/strict';
-import { FACET_RESIDENT_STORE_SOURCE } from '../../packages/worker/src/vfs/facet-resident-store.ts';
+import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import {
   createAuthority,
@@ -108,14 +108,12 @@ function counting(authority) {
 async function kept(revoke) {
   const authority = session();
   const sql = facetSql();
-  const previous = new Function(
-    `${FACET_RESIDENT_STORE_SOURCE}\nreturn { __residentBind, __residentAdoptModuleBundle, __residentSynchronizeFromSupervisor, __residentSetPlan, __nsSetCred };`,
-  )();
-  previous.__residentBind({ storage: { sql } });
-  previous.__nsSetCred({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 });
-  previous.__residentSetPlan(await residentDataPlan(authority, APP));
-  previous.__residentAdoptModuleBundle({}, authority.cursor());
-  const filled = await previous.__residentSynchronizeFromSupervisor(facetSupervisor(authority).supervisor);
+  const previous = createResidentStore();
+  previous.bind({ storage: { sql } });
+  previous.namespace.setCred({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 });
+  previous.sync.setPlan(await residentDataPlan(authority, APP));
+  previous.sync.adoptModuleBundle({}, authority.cursor());
+  const filled = await previous.sync.synchronize(facetSupervisor(authority).supervisor);
   assert.ok(filled.filled >= 2, 'the premise: the earlier launch held the file');
   await revoke(authority);
   authority.kfs.chmod('home/user/app/f.txt', 0o600);
@@ -188,15 +186,13 @@ async function cpDenied() {
   // Unreadable from the start: the earlier launch's fill holds the session's answer.
   authority.kfs.chmod(KEY, 0o000);
   const sql = facetSql();
-  const previous = new Function(
-    `${FACET_RESIDENT_STORE_SOURCE}\nreturn { __residentBind, __residentAdoptModuleBundle, __residentSynchronizeFromSupervisor, __residentSetPlan, __nsSetCred, __residentGet };`,
-  )();
-  previous.__residentBind({ storage: { sql } });
-  previous.__nsSetCred({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 });
-  previous.__residentSetPlan(await residentDataPlan(authority, APP));
-  previous.__residentAdoptModuleBundle({}, authority.cursor());
-  await previous.__residentSynchronizeFromSupervisor(facetSupervisor(authority).supervisor);
-  assert.deepEqual(previous.__residentGet(KEY), { error: 'EACCES' }, 'the premise: the store holds the source as a denial');
+  const previous = createResidentStore();
+  previous.bind({ storage: { sql } });
+  previous.namespace.setCred({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 });
+  previous.sync.setPlan(await residentDataPlan(authority, APP));
+  previous.sync.adoptModuleBundle({}, authority.cursor());
+  await previous.sync.synchronize(facetSupervisor(authority).supervisor);
+  assert.deepEqual(previous.cells.get(KEY), { error: 'EACCES' }, 'the premise: the store holds the source as a denial');
   const { supervisor } = facetSupervisor(authority);
   await launchResident({ authority, program: PROGRAM, env: { SUPERVISOR: supervisor }, sql, cursor: authority.cursor() });
   const probe = globalThis.__probe;
