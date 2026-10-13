@@ -5,6 +5,20 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a module a Node program writes and then imports links as Node's
+  does before any of its graph runs. An import of a name its module does
+  not export is Node's SyntaxError, with no module body run first; before,
+  a sibling's body ran, or the name was just undefined.
+- Fixed: such a module imports a CommonJS module as Node does: `default` is
+  `module.exports` even when it sets `__esModule`, its other names are the
+  ones Node's lexer finds, and their values are taken once the module has
+  run. `export *` of two different bindings of one name exports neither,
+  and importing that name is Node's SyntaxError.
+- Fixed: import attributes are checked as Node checks them on every
+  import: JSON needs `with { type: 'json' }`, JavaScript and builtins refuse
+  it, and an unknown type is refused. A static import's unknown attribute
+  key is ignored, as Node ignores it; it was refused.
+
 ## 2026-10-12: platform 0.8.2, core 0.18.0, fabric 0.13.0, worker 0.16.0, loom 0.2.5, sdk 0.13.1, react 0.3.1, cli 0.2.5, create-nimbus-app 0.2.2
 
 - Fixed (security): the shell's Ctrl+P palette put file names into the page as

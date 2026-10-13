@@ -1,5 +1,5 @@
 // @serial
-// @tier slow — drives a local workerd session through every scenario.
+// @tier slow — drives a local workerd; CI 14-16 s wall, 18-21 s CPU, 1.3 GiB peak (2 runs, 2026-10-13)
 // A module a program writes after its launch began (the interpreter's) and
 // the launch's own staged modules (the registry's) import the same modules
 // with Node 22's meaning, against host Node 22.22.3:
