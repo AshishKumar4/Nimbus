@@ -704,8 +704,9 @@ const wranglerHandler = (invokedAs: 'wrangler' | 'nimbus-wrangler') =>
       return 1;
     }
 
-    // Stop existing
-    if (self.nimbusWrangler?.isRunning) self.nimbusWrangler.stop();
+    // The dev server before this one stops, a start still under way included:
+    // left to finish, it would serve, watch and rebuild beside this one.
+    self.nimbusWrangler?.stop();
     let starting = true;
 
     // Pre-flight: read the wrangler config ourselves and call out any
@@ -770,13 +771,16 @@ const wranglerHandler = (invokedAs: 'wrangler' | 'nimbus-wrangler') =>
       },
     });
 
-    const ok = await self.nimbusWrangler.start().finally(() => { starting = false; });
+    const server = self.nimbusWrangler;
+    const ok = await server.start().finally(() => { starting = false; });
     if (!ok) {
-      ctx.stderr.write('  \x1b[31mFailed to start Worker dev server.\x1b[0m\n');
+      ctx.stderr.write(server.wasStopped
+        ? '  \x1b[33mWorker dev server stopped before it started.\x1b[0m\n'
+        : '  \x1b[31mFailed to start Worker dev server.\x1b[0m\n');
       return 1;
     }
 
-    const cfg = self.nimbusWrangler.stats;
+    const cfg = server.stats;
     // runtime primitive support (P5): banner advertises the canonical
     // `/__nimbus/worker/` route. The legacy `/worker/` URL is still
     // accepted for one release (Sunset 2027-01-01) but new sessions

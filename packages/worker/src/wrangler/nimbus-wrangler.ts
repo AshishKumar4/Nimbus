@@ -185,6 +185,15 @@ export class NimbusWrangler {
   private config: WranglerConfig | null = null;
   private workerStub: any = null;
   private buildVersion = 0;
+  /**
+   * The build that may serve: each build takes the next, and so does stop().
+   * A build that is no longer the latest when it would serve (a later
+   * rebuild overtook it, or its server was stopped) says and changes
+   * nothing: not the Durable Object classes, objects or preview of the
+   * build, or server, that superseded it.
+   */
+  private generation = 0;
+  private stopped = false;
   private unsubVfs: (() => void) | null = null;
   private rebuildTimer: any = null;
   /** DO class map: binding name → DurableObjectClass from the inner worker. */
@@ -205,6 +214,7 @@ export class NimbusWrangler {
 
   /** Start the wrangler dev server. */
   async start(): Promise<boolean> {
+    this.stopped = false;
     // 1. Read wrangler config
     this.config = this.readConfig();
     if (!this.config) {
@@ -212,21 +222,26 @@ export class NimbusWrangler {
       return false;
     }
 
-    // 2. Build and load the worker
-    const ok = await this.buildAndLoad();
-    if (!ok) return false;
-
-    // 3. Watch for file changes
-    this.running = true;
-    this.unsubVfs = this.namespace.watchChanges('/', (events) => {
-      this.handleVfsEvents(events);
+    // 2. Build and load the worker; once it serves, 3. watch for file changes.
+    const building = this.buildAndLoad(() => {
+      this.running = true;
+      this.unsubVfs = this.namespace.watchChanges('/', (events) => {
+        this.handleVfsEvents(events);
+      });
     });
-
-    return true;
+    // The generation this start's build took: a stop() or another start
+    // that came after it served, before this resumed, superseded it.
+    const generation = this.generation;
+    return (await building) && generation === this.generation;
   }
 
-  /** Stop the wrangler dev server. */
+  /** Whether stop() was called since the last start(): a start it cut short failed for that reason. */
+  get wasStopped() { return this.stopped; }
+
+  /** Stop the wrangler dev server, and any build it has under way. */
   stop(): void {
+    this.stopped = true;
+    this.generation++;
     this.running = false;
     if (this.unsubVfs) { this.unsubVfs(); this.unsubVfs = null; }
     if (this.rebuildTimer) { clearTimeout(this.rebuildTimer); this.rebuildTimer = null; }
@@ -320,7 +335,14 @@ export class NimbusWrangler {
     return normalizeVfsPath(this.root + '/' + (this.config?.main ?? ''));
   }
 
-  private async buildAndLoad(): Promise<boolean> {
+  /**
+   * Build the Worker and, unless a later build or stop() superseded it, make
+   * it the one that serves, then `served()`, then say "Worker built": one
+   * synchronous step after the build's last wait, so nothing comes between.
+   */
+  private async buildAndLoad(served: () => void): Promise<boolean> {
+    const generation = ++this.generation;
+    const superseded = () => generation !== this.generation;
     if (!this.config?.main) {
       this.onLog('\x1b[31mNo "main" entry point in wrangler config\x1b[0m\n');
       return false;
@@ -386,6 +408,7 @@ export class NimbusWrangler {
           }, BUILD_TIMEOUT_MS);
         }),
       ]).finally(() => { if (timeoutHandle) clearTimeout(timeoutHandle); });
+      if (superseded()) return false;
 
       if (result.errors?.length) {
         for (const e of result.errors) {
@@ -400,16 +423,6 @@ export class NimbusWrangler {
       }
 
       const bundledCode = result.outputFiles[0].contents;
-      this.buildVersion++;
-
-      // On rebuild, abort any live DO facets so the NEXT get() runs the
-      // startup callback with the fresh class. Docs: abort invalidates
-      // all existing stubs but preserves storage; the next get() is the
-      // code-update pattern.
-      if (this.supervisorCtx) {
-        abortInnerDoFacets(this.supervisorCtx, this.doClassMap.keys(), new Error('nimbus-wrangler rebuilding'));
-      }
-      this.doClassMap.clear();
 
       const wrangCompatDate = this.config.compatibility_date || CF_COMPAT_DATE;
       // Filter flags that workerd refuses on dynamic-worker LOADER.load().
@@ -450,16 +463,31 @@ export class NimbusWrangler {
         env: this.buildInnerEnv(),
         ...loaderOutbound(this.network),
       }));
-      if (classesEntrypoint !== null && !(await this.registerDoClasses(worker, classesEntrypoint, doBindings))) return false;
+      if (classesEntrypoint !== null && !(await this.exportsDoClasses(worker, classesEntrypoint, doBindings, superseded))) return false;
+      if (superseded()) return false;
+
+      // What serves changes here, at once, and only for the latest build.
+      // On rebuild, abort any live DO facets so the NEXT get() runs the
+      // startup callback with the fresh class. Docs: abort invalidates
+      // all existing stubs but preserves storage; the next get() is the
+      // code-update pattern.
+      this.buildVersion++;
+      if (this.supervisorCtx) {
+        abortInnerDoFacets(this.supervisorCtx, this.doClassMap.keys(), new Error('nimbus-wrangler rebuilding'));
+      }
+      this.doClassMap.clear();
+      if (classesEntrypoint !== null) this.registerDoClasses(worker, doBindings);
       this.workerStub = worker.getEntrypoint(undefined, { limits: facetLimits('worker') });
 
       for (const w of result.warnings || []) {
         this.onLog(`  \x1b[33mwarning: ${w.text}\x1b[0m\n`);
       }
 
+      served();
       this.onLog(`  \x1b[32mWorker built (v${this.buildVersion}, ${bundledCode.length} bytes)\x1b[0m\n`);
       return true;
     } catch (e: any) {
+      if (superseded()) return false;
       this.onLog(`  \x1b[31mBuild error: ${e?.message || e}\x1b[0m\n`);
       return false;
     }
@@ -484,25 +512,30 @@ export class NimbusWrangler {
   /**
    * Checks that `worker` (the inner Worker, loaded) exports each binding's
    * class, asking its own isolate once through its `classesEntrypoint`
-   * (which also runs its module code, so an error there is the build's),
-   * then registers each class for the session's facets to run. False,
-   * logged, when one is missing.
+   * (which also runs its module code, so an error there is the build's).
+   * False when one is missing: logged, unless the build was superseded.
    */
-  private async registerDoClasses(
-    worker: {
-      getEntrypoint(name: string, options?: { limits: FacetResourceLimits }): { missing(classNames: string[]): Promise<string[]> };
-      getDurableObjectClass(name: string, options?: { limits: FacetResourceLimits }): DurableObjectClass;
-    },
+  private async exportsDoClasses(
+    worker: { getEntrypoint(name: string, options?: { limits: FacetResourceLimits }): { missing(classNames: string[]): Promise<string[]> } },
     classesEntrypoint: string,
     bindings: readonly { name: string; class_name: string }[],
+    superseded: () => boolean,
   ): Promise<boolean> {
     const missing = new Set(await worker.getEntrypoint(classesEntrypoint, { limits: facetLimits('worker') }).missing(bindings.map((b) => b.class_name)));
+    if (superseded()) return false;
     for (const b of bindings) {
       if (missing.has(b.class_name)) {
         this.onLog(`  \x1b[31merror: durable_objects binding '${b.name}' => class '${b.class_name}' is not exported by the Worker\x1b[0m\n`);
       }
     }
-    if (missing.size > 0) return false;
+    return missing.size === 0;
+  }
+
+  /** Registers each binding's class for the session's facets to run. */
+  private registerDoClasses(
+    worker: { getDurableObjectClass(name: string, options?: { limits: FacetResourceLimits }): DurableObjectClass },
+    bindings: readonly { name: string; class_name: string }[],
+  ): void {
     const doId = this.supervisorCtx?.id?.toString?.() || '';
     if (doId) clearInnerDoClasses(doId);
     for (const b of bindings) {
@@ -510,7 +543,6 @@ export class NimbusWrangler {
       this.doClassMap.set(b.name, cls);
       if (doId) registerInnerDoClass(doId, b.name, cls);
     }
-    return true;
   }
 
   private buildInnerEnv(): Record<string, any> {
@@ -757,10 +789,7 @@ export class NimbusWrangler {
     this.rebuildTimer = setTimeout(async () => {
       this.rebuildTimer = null;
       this.onLog('\n  \x1b[33mFile change detected, rebuilding...\x1b[0m\n');
-      const ok = await this.buildAndLoad();
-      if (ok) {
-        this.onHmrMessage({ type: 'nimbus-hmr', event: 'full-reload' });
-      }
+      await this.buildAndLoad(() => this.onHmrMessage({ type: 'nimbus-hmr', event: 'full-reload' }));
     }, 250);
   }
 
