@@ -499,6 +499,88 @@ export function installAuthorityFilesystem(imports, options) {
         }
         return after(fs.write(e.handle.id, offset, data), n => { u32(written, n); return 0; });
     };
+    const flagsOf = (o) => ({ read: !!(o.requested & 2n), write: !!(o.requested & 64n), append: !!(o.status & 1),
+        create: !!(o.oflags & 1), directory: !!(o.oflags & 2), exclusive: !!(o.oflags & 4), truncate: !!(o.oflags & 8), followSymlinks: o.follow,
+        mode: creationMode(0o666) });
+    const opened = (o, handle) => {
+        const id = options.allocateFd();
+        fds.set(id, { kind: 'authority', handle, type: handle.stat.type, rights: o.requested, rightsInheriting: o.childRights, fdflags: o.status });
+        u32(o.out, id);
+        return 0;
+    };
+    const copy = (o, stat, bytes, hold) => {
+        const id = options.allocateFd();
+        fds.set(id, { kind: 'resident', stat, bytes, hold, opens: 1, position: 0, rights: o.requested, rightsInheriting: o.childRights, fdflags: o.status });
+        u32(o.out, id);
+        return 0;
+    };
+    // An open's copy is read by the name it opened, as any read of that name
+    // is (a host that stages content answers that read).
+    const byName = (o) => after(o.fs.readFile(o.target), bytes => bytes ?? fail('ENOENT'));
+    /** A copy of the file `stat` describes, its bytes `content`'s, holding the session's descriptor `held`, which is let go if that fails. */
+    const heldCopy = (o, stat, held, content, key) => {
+        let bytes;
+        try {
+            bytes = residentContent(stat, content);
+        }
+        catch (error) {
+            letGo(o.fs, held);
+            throw error;
+        }
+        if (!(bytes instanceof Promise))
+            return copy(o, stat, bytes, { handle: held, key });
+        return bytes.then(read => copy(o, stat, read, { handle: held, key }), (error) => { letGo(o.fs, held); throw error; });
+    };
+    // A reopen's copy is read through its new descriptor, as its file may have no name.
+    const reopenedAs = (o, handle) => (o.readOnly && residentable(handle.stat)
+        ? heldCopy(o, handle.stat, handle.id, () => o.fs.read(handle.id, 0, handle.stat.size))
+        : opened(o, handle));
+    // The filesystem's pin on the bytes at `st`'s revision, as the copy; `otherwise` where it pins none (they changed, the budget is spent, the mode refuses the read).
+    const pinned = (o, name, st, otherwise) => {
+        const fs = o.fs;
+        return pinsContent(fs) ? after(fs.pinContent(name, st), pin => (pin === null ? otherwise() : copy(o, st, pin.bytes, { name: pin.name, follow: false, pin }))) : otherwise();
+    };
+    const openAuthority = (o) => after(o.fs.open(o.target, closingLetGo(flagsOf(o))), handle => opened(o, handle));
+    // A file a descriptor holds is opened again as itself, never by a name a
+    // rename or an unlink may have given to another (RuntimeFsBridge.reopen),
+    // under the access asked as the file is now.
+    const openAgain = (o, reopened) => {
+        const fs = o.fs;
+        if (reopened.kind === 'authority')
+            return after(fs.reopen({ handle: reopened.handle.id }, flagsOf(o)), handle => reopenedAs(o, handle));
+        const { hold, stat: was } = reopened;
+        if ('handle' in hold)
+            return after(fs.reopen({ handle: hold.handle }, flagsOf(o)), handle => reopenedAs(o, handle));
+        // A copy that holds no descriptor: its file is opened by the name it was read at, while that name has it.
+        const again = () => after(openIdentified(fs, hold.name, hold.follow, flagsOf(o), was), handle => reopenedAs(o, handle));
+        if (!o.readOnly || hold.pin === undefined)
+            return again();
+        // A pinned one's copy is the filesystem's pin at the file's revision now.
+        return after(fs.stat(hold.name, { followSymlinks: hold.follow }), st => {
+            if (st === null || st.dev !== was.dev || st.ino !== was.ino)
+                fail('ENOENT');
+            return pinned(o, hold.name, st, again);
+        });
+    };
+    // A copy held at the session (residentHolds): its O_PATH open answers the
+    // stat. A file that is not a copy's (large, a device) is opened through
+    // the hold, which is let go.
+    const openHeld = (o, holds, key) => {
+        const fs = o.fs;
+        return after(fs.open(o.target, closingLetGo({ path: true, followSymlinks: o.follow })), held => {
+            if (residentable(held.stat))
+                return heldCopy(o, held.stat, held.id, () => byName(o), key);
+            let file;
+            try {
+                file = fs.reopen({ handle: held.id }, flagsOf(o));
+            }
+            catch (error) {
+                letGo(fs, held.id);
+                throw error;
+            }
+            return after(file, (handle) => { letGo(fs, held.id); return opened(o, handle); });
+        });
+    };
     imports.path_open = guard(imports.path_open, (fs, fd, lookup, p, n, flags, rights, inherit, status, out) => {
         if (status & ~5)
             fail('ENOTSUP');
@@ -521,105 +603,43 @@ export function installAuthorityFilesystem(imports, options) {
         const allowed = parent.rightsInheriting;
         if (allowed !== undefined && ((requested | childRights) & ~allowed))
             fail('ENOTCAPABLE');
-        const followSymlinks = !!(lookup & 1);
+        const follow = !!(lookup & 1);
         // Rights that change the file keep the open on the authority: fd_write,
         // fd_allocate, fd_filestat_set_size. wasi-libc asks for sync and status
         // rights on every open, and a resident copy answers those itself.
         const readOnly = !(requested & ((1n << 6n) | (1n << 8n) | (1n << 22n))) && !(flags & 15) && !(status & 1);
-        const opening = { read: !!(requested & 2n), write: !!(requested & 64n), append: !!(status & 1),
-            create: !!(flags & 1), directory: !!(flags & 2), exclusive: !!(flags & 4), truncate: !!(flags & 8), followSymlinks,
-            mode: creationMode(0o666) };
-        const opened = (handle) => {
-            const id = options.allocateFd();
-            fds.set(id, { kind: 'authority', handle, type: handle.stat.type, rights: requested, rightsInheriting: childRights, fdflags: status });
-            u32(out, id);
-            return 0;
-        };
-        const copy = (stat, bytes, hold) => {
-            const id = options.allocateFd();
-            fds.set(id, { kind: 'resident', stat, bytes, hold, opens: 1, position: 0, rights: requested, rightsInheriting: childRights, fdflags: status });
-            u32(out, id);
-            return 0;
-        };
-        // An open's copy is read by the name it opened, as any read of that name
-        // is (a host that stages content answers that read).
-        const byName = () => after(fs.readFile(target), bytes => bytes ?? fail('ENOENT'));
-        /** `work` with the session's descriptor `held`, which is let go when it fails. */
-        const holding = (held, work) => {
-            const refused = (error) => { letGo(fs, held); throw error; };
-            try {
-                const result = work();
-                return result instanceof Promise ? result.catch(refused) : result;
-            }
-            catch (error) {
-                return refused(error);
-            }
-        };
-        // A descriptor the session opened: the copy's, holding it, when its file
-        // is small enough for one (its bytes `content`'s; `key`, the name it may
-        // be kept at, ResidentHolds); else `otherwise`.
-        const adopt = (handle, content, otherwise, key) => residentable(handle.stat)
-            ? holding(handle.id, () => after(residentContent(handle.stat, content), bytes => copy(handle.stat, bytes, { handle: handle.id, key })))
-            : otherwise();
-        // A reopen's copy is read through its new descriptor, as its file may have no name.
-        const answer = (handle) => readOnly ? adopt(handle, () => fs.read(handle.id, 0, handle.stat.size), () => opened(handle)) : opened(handle);
-        // The filesystem's pin on the bytes at `st`'s revision, as the copy; `otherwise` where it pins none (they changed, the budget is spent, the mode refuses the read).
-        const pinned = (name, st, otherwise) => pinsContent(fs) ? after(fs.pinContent(name, st), pin => (pin === null ? otherwise() : copy(st, pin.bytes, { name: pin.name, follow: false, pin }))) : otherwise();
-        // A file a descriptor holds is opened again as itself, never by a name a
-        // rename or an unlink may have given to another (RuntimeFsBridge.reopen),
-        // under the access asked as the file is now.
-        if (reopened?.kind === 'authority')
-            return after(fs.reopen({ handle: reopened.handle.id }, opening), answer);
-        if (reopened?.kind === 'resident') {
-            const { hold, stat: was } = reopened;
-            if ('handle' in hold)
-                return after(fs.reopen({ handle: hold.handle }, opening), answer);
-            // A copy that holds no descriptor: its file is opened by the name it was read at, while that name has it.
-            const again = () => after(openIdentified(fs, hold.name, hold.follow, opening, was), answer);
-            if (!readOnly || hold.pin === undefined)
-                return again();
-            // A pinned one's copy is the filesystem's pin at the file's revision now.
-            return after(fs.stat(hold.name, { followSymlinks: hold.follow }), st => {
-                if (st === null || st.dev !== was.dev || st.ino !== was.ino)
-                    fail('ENOENT');
-                return pinned(hold.name, st, again);
-            });
-        }
-        const open = () => after(fs.open(target, closingLetGo(opening)), opened);
+        const o = { fs, target, follow, oflags: flags, requested, childRights, status, readOnly, out };
+        if (reopened !== undefined && reopened.kind !== 'preopen')
+            return openAgain(o, reopened);
         if (!readOnly || residentBytes === 0)
-            return open();
-        // A copy held at the session (residentHolds): its O_PATH open answers the
-        // stat. A file that is not a copy's (large, a device) is opened through
-        // the hold, which is let go.
+            return openAuthority(o);
         if (holds) {
-            const key = ResidentHolds.keyOf(target, followSymlinks);
-            const viaHold = () => after(fs.open(target, closingLetGo({ path: true, followSymlinks })), held => adopt(held, byName, () => after(holding(held.id, () => fs.reopen({ handle: held.id }, opening)), file => { letGo(fs, held.id); return opened(file); }), key));
+            const key = ResidentHolds.keyOf(target, follow);
             const kept = holds.takeKept(key);
             if (kept === undefined)
-                return viaHold();
+                return openHeld(o, holds, key);
             // A hold kept at this name is the copy's again while the name has its file: a stat, as main's copy cost.
-            return after(fs.stat(target, { followSymlinks }), st => {
-                if (st !== null && st.dev === kept.dev && st.ino === kept.ino && residentable(st)) {
-                    return holding(kept.handle, () => after(residentContent(st, byName), bytes => copy(st, bytes, { handle: kept.handle, key })));
-                }
+            return after(fs.stat(target, { followSymlinks: follow }), st => {
+                if (st !== null && st.dev === kept.dev && st.ino === kept.ino && residentable(st))
+                    return heldCopy(o, st, kept.handle, () => byName(o), key);
                 holds.release(kept.handle);
-                return st === null ? fail('ENOENT') : viaHold();
+                return st === null ? fail('ENOENT') : openHeld(o, holds, key);
             });
         }
-        return after(fs.stat(target, { followSymlinks }), st => {
+        return after(fs.stat(target, { followSymlinks: follow }), st => {
             if (st === null)
                 fail('ENOENT');
             if (!residentable(st))
-                return open();
+                return openAuthority(o);
             // A filesystem that holds file bytes itself (wasi/resident-filesystem.ts)
             // is the copy: it pins them for the descriptor under its own budget, and
             // past that budget the descriptor is the session's.
             if (pinsContent(fs))
-                return pinned(target, st, open);
+                return pinned(o, target, st, () => openAuthority(o));
             // A hit needs no permission check of its own: the copy was read under
             // this credential, and a chmod or chown since would have moved the
             // revision along with any rewrite.
-            return after(residentContent(st, byName), bytes => copy(st, bytes, { name: target, follow: followSymlinks }));
+            return after(residentContent(st, () => byName(o)), bytes => copy(o, st, bytes, { name: target, follow }));
         });
     }, args => !socketPath(args[0], args[2], args[3]));
     imports.fd_filestat_get = guard(imports.fd_filestat_get, (fs, fd, out) => { pathRight(fd, 21); return after(stat(fs, fd), st => writeStat(out, st)); }, owns);
