@@ -13,9 +13,9 @@ export const NODE_SHIMS_ENTRY = "/_assets/runtime/node-shims-7fb968320d7d0418.js
 export const NODE_SHIMS_BUILD_ID = "7fb968320d7d0418";
 export const NODE_SHIMS_SHA256 = "7fb968320d7d04183698263467cc8b7622ebe961cf6f09350472f7c4bf4c7637";
 /** @nimbus-sh/core dist/_shared/vfs-write-ledger.js VFS_WRITE_LEDGER_SOURCE */
-export const VFS_WRITE_LEDGER_ENTRY = "/_assets/runtime/vfs-write-ledger-4d31973bc59bc796.js";
-export const VFS_WRITE_LEDGER_BUILD_ID = "4d31973bc59bc796";
-export const VFS_WRITE_LEDGER_SHA256 = "4d31973bc59bc796f550e1646b785aaeeeaee5bd13354a4c4566e53301e90083";
+export const VFS_WRITE_LEDGER_ENTRY = "/_assets/runtime/vfs-write-ledger-eb8fb15be3848aaf.js";
+export const VFS_WRITE_LEDGER_BUILD_ID = "eb8fb15be3848aaf";
+export const VFS_WRITE_LEDGER_SHA256 = "eb8fb15be3848aafb3dda80071d89d2a0532d40faf21e6f2d2a1db102c98c994";
 /** src/vfs/resident/index.ts, bundled by scripts/resident-store-bundle.mjs */
 export const RESIDENT_STORE_ENTRY = "/_assets/runtime/resident-store-a948fb532879f11b.js";
 export const RESIDENT_STORE_BUILD_ID = "a948fb532879f11b";

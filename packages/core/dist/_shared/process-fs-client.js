@@ -685,8 +685,6 @@ export function processFsClient(options) {
     };
     /** The run ended (settle): it takes no read lease again. */
     let runEnded = false;
-    /** Read leases granted to a barrier asked before the run ended, on their way back: settle waits for them. */
-    const givingBack = new Set();
     /**
      * The read lease's recalls, for as long as it is the process's: each poll
      * that comes back empty while no barrier confirmed it gives it back (it is
@@ -1015,10 +1013,12 @@ export function processFsClient(options) {
         async settle() {
             settling = true;
             runEnded = true;
-            // Given back before the run is over: a writer after it never waits on its trust.
+            // Given back before the run is over, so a writer after it never waits
+            // on its trust; not waited for: its answer tells the run nothing (it
+            // is the session's to end with the process anyway), and what the
+            // process says next reaches the session after it.
             if (readLease !== null)
-                await giveBackReadLease(readLease.owner);
-            await Promise.all([...givingBack]);
+                void giveBackReadLease(readLease.owner);
             if (claiming !== null)
                 await claiming;
             try {
@@ -1031,8 +1031,15 @@ export function processFsClient(options) {
                     timers.clearTimeout(idleTimer);
                     idleTimer = null;
                 }
+                // Each grant closed, its log sent with the rest; its release, as the
+                // read lease's, is sent and not waited for.
+                for (const grant of live()) {
+                    grant.closing = true;
+                    options.freezing?.(grant.root);
+                }
+                await client.flush();
                 for (const grant of live())
-                    await close(grant);
+                    void end(grant);
                 settling = false;
             }
             if (processGone !== null)
@@ -1069,9 +1076,7 @@ export function processFsClient(options) {
             }
             // Granted to a barrier asked before the run ended: given back too.
             if (runEnded) {
-                const back = giveBackReadLease(lease.owner);
-                givingBack.add(back);
-                void back.finally(() => givingBack.delete(back));
+                void giveBackReadLease(lease.owner);
                 return;
             }
             readLease = { owner: lease.owner, until: 0, confirmedAt: now(), logged: -1 };
