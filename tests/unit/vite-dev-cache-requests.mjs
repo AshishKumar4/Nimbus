@@ -19,7 +19,8 @@
 // and the dev server's take the same define (Vite's dev values, none of
 // vite.config's, as Vite's optimizer), so a row either writes the other
 // serves, and the installer rebuilds a dependency reinstalled at another
-// version rather than skip it as current.
+// version rather than skip it as current. And one entry: the installer
+// warms a specifier from the file the dev server bundles it from.
 
 import assert from 'node:assert/strict';
 import { EsbuildService, buildWithEsbuild } from '../../packages/core/src/runtime/esbuild-service.ts';
@@ -350,6 +351,41 @@ try {
     const rebuilt = specs.length === 2 && reinstalled?.esmCode.includes('version = 2');
     if (!rebuilt) failures.push(`the installer kept the bundle of the version it replaced: ${specs.length} builds, ${reinstalled?.esmCode}`);
     console.log(`  ${rebuilt ? 'ok ' : 'RED'} the installer pre-bundles a dependency reinstalled at another version again`);
+  }
+
+  // ── One entry, wherever the pre-bundle is made ─────────────────────────
+  // A subpath a legacy package exposes as a directory with its own
+  // package.json pointing out of it (react-remove-scroll-bar/constants):
+  // the dev server bundles it from that entry, so the installer warms it
+  // from the same one, and the dev server then serves that row, building
+  // nothing.
+  {
+    const project = session({
+      'node_modules/legacy/package.json': JSON.stringify({ name: 'legacy', version: '1.0.0', main: 'dist/index.js' }),
+      'node_modules/legacy/dist/index.js': 'export const root = 1;\n',
+      'node_modules/legacy/dist/constants.js': 'export const zero = "legacy-zero";\n',
+      'node_modules/legacy/constants/package.json': JSON.stringify({ private: true, module: '../dist/constants.js' }),
+      'src/main.ts': "import { zero } from 'legacy/constants';\nconsole.log(zero);\n",
+    });
+    const engine = await esbuildEngine();
+    const specs = [];
+    const pool = { prebundle: async (spec) => (specs.push(spec.specifier), prebundleSlice(spec, (options, plugin) => buildWithEsbuild(engine, options, plugin))) };
+    const installer = new NpmInstaller(new ProcessFiles(project.vfs), project.harness.sql, {
+      esbuild: new EsbuildService(undefined, { engine: esbuildEngine }),
+      bundlePool: { acquire: async () => pool },
+    });
+    await installer.prebundleUsedModules(root, new Map([['legacy', {}]]), project.vfs.as(CRED_KERNEL), () => {});
+    const warmed = new NpmCache(project.harness.sql).getEsmBundle('legacy/constants');
+    const server = new ViteDevServer({
+      vfs: project.vfs, cred: CRED_KERNEL, esbuild: new EsbuildService(undefined, { engine: esbuildEngine }), root, sql: project.harness.sql,
+      onHmrMessage() {}, basePath: '/preview', port: 5173, bundlePool: { acquire: async () => pool },
+    });
+    const response = await server.handleRequest(new Request('http://localhost/preview/@modules/legacy/constants'), '/@modules/legacy/constants');
+    const served = await response.text();
+    server.stop?.();
+    const one = warmed !== null && warmed.esmCode.includes('legacy-zero') && specs.length === 1 && response.status === 200 && served.includes('legacy-zero');
+    if (!one) failures.push(`the installer and the dev server resolved legacy/constants differently: warmed ${warmed ? 'a row' : 'nothing'}, ${specs.length} builds (${specs.join(', ')}), served ${response.status}: ${served.slice(0, 200)}`);
+    console.log(`  ${one ? 'ok ' : 'RED'} the installer warms a subpath from the entry the dev server bundles it from, and the dev server serves that row`);
   }
 } finally {
   await stopEsbuildEngine();

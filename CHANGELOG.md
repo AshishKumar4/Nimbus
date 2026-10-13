@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed: `npm install`'s background warming of browser bundles and the
+  Vite dev server's `/@modules/` bundles are one path. Install now warms a
+  package subpath the dev server can resolve (a directory with its own
+  `package.json`), skips a package whose entry is a native or WebAssembly
+  payload with the same reason the dev server gives, and holds only the
+  memory a slice needs while it builds.
+
 ## 2026-10-12: platform 0.8.2, core 0.18.0, fabric 0.13.0, worker 0.16.0, loom 0.2.5, sdk 0.13.1, react 0.3.1, cli 0.2.5, create-nimbus-app 0.2.2
 
 - Fixed (security): the shell's Ctrl+P palette put file names into the page as
