@@ -4,7 +4,8 @@
 // mode; it executes a regular file only when some execute bit is set.
 //   1. the one calculation (posixAccess), on directories and files;
 //   2. the session's store: root stats, lists and writes under a mode-000
-//      directory, and rm -r of a tree holding one removes it whole;
+//      directory (chmod'ed to it, made with it, or made so by a batch), and
+//      rm -r of a tree holding one removes it whole;
 //   3. a mounted backend that keeps modes without file-type bits;
 //   4. the namespace's check.
 // Red before: root was denied search on a directory with no execute bits, so
@@ -50,6 +51,30 @@ assert.equal(posixAccess(closedDir, 1, USER), false, 'others are still judged by
   root.writeFile('home/tree/closed/deep/g', 'g');
   assert.deepEqual(root.removeRecursive('home/tree'), { removed: ['home/tree'], kept: [], failures: [] }, "root's rm -r removes it whole");
   assert.equal(root.exists('home/tree'), false);
+  harness.db.close();
+}
+
+// ── 2b. a directory made with mode 000, alone and in a batch ─────────────
+// mkdir keeps the permission bits it is given, without file-type bits; the
+// directory is a directory all the same.
+{
+  const harness = createSqliteVfsTestHarness();
+  const engine = new SqliteVFS(harness.sql, harness.ctx);
+  const root = engine.as(CRED_KERNEL);
+  root.mkdir('home/closed', { recursive: true, mode: 0o000 });
+  root.writeFile('home/closed/f', 'f');
+  assert.equal(root.stat('home/closed/f').size, 1, 'root writes and stats under a directory made with mode 000');
+  root.writeBatch({
+    inodes: [
+      { path: 'batch', parentPath: '', isDir: true, size: 0, mtime: 1, mode: 0o000, chunkCount: 0 },
+      { path: 'batch/inner', parentPath: 'batch', isDir: true, size: 0, mtime: 1, mode: 0o000, chunkCount: 0 },
+      { path: 'batch/inner/f', parentPath: 'batch/inner', isDir: false, size: 0, mtime: 1, mode: 0o644, chunkCount: 0 },
+    ],
+    chunks: [],
+  });
+  assert.deepEqual(root.readdir('batch/inner').map((entry) => entry.name), ['f'], 'and under directories a batch made with mode 000');
+  assert.deepEqual(root.removeRecursive('home/closed'), { removed: ['home/closed'], kept: [], failures: [] });
+  assert.deepEqual(root.removeRecursive('batch'), { removed: ['batch'], kept: [], failures: [] });
   harness.db.close();
 }
 
