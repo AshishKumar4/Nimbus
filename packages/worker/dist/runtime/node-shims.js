@@ -55,7 +55,7 @@ import { SYSTEM_IDENTITY } from '@nimbus-sh/core/constants.js';
 import { DIRENT_TYPES } from '@nimbus-sh/core/vfs/dirent-type.js';
 import { STDIN_SYNC_READ_BYTES, STDIN_FILE_READ_PIECE_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { COMMONJS_WRAPPER_NAMES } from '@nimbus-sh/core/runtime/javascript-ast.js';
-import { ESM_STATIC_IMPORT } from '@nimbus-sh/core/runtime/esm-interop.js';
+import { ESM_STAR_CONFLICTS, ESM_STATIC_IMPORT } from '@nimbus-sh/core/runtime/esm-interop.js';
 import { ESM_BINDINGS_MODULE, ESM_BUN_SCOPE, ESM_FACADE_DIR, ESM_TOP_LEVEL_AWAIT, ESM_TYPELESS } from '@nimbus-sh/core/runtime/native-esm.js';
 import { ESM_REQUIRED_SOURCE } from '@nimbus-sh/core/runtime/compiled-bodies.generated.js';
 import { FACET_PROVIDED_PACKAGES, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, NIMBUS_AI_GATEWAY_PORT, NODE_VERSION, NODE_VERSIONS, VFS_CAPACITY, } from '@nimbus-sh/core/constants.js';
@@ -11213,9 +11213,13 @@ function __nimbusModuleNotFound(request, parent) {
 // resolving from \`fromDir\` (its file's directory). \`required\` false is an
 // ES module's, which only its static imports call.
 function __nimbusMakeRequire(module, fromDir = __nimbusModuleDir(module), required = true) {
-  // An interpreted ES module's static import passes its marker and its type attribute (esm-interop.ts ESM_LOAD_HELPER).
+  // An interpreted ES module's static import passes its marker and its type
+  // attribute (esm-interop.ts ESM_LOAD_HELPER); its \`export *\` asks what it leaves out (ESM_CONFLICTS_HELPER).
   const require = function require(id) {
     if (arguments.length > 1 && arguments[1] === ${JSON.stringify(ESM_STATIC_IMPORT)}) return __requireFrom(id, fromDir, module, false, arguments[2]);
+    if (arguments.length > 1 && arguments[1] === ${JSON.stringify(ESM_STAR_CONFLICTS)}) {
+      return __nimbusEsmStarConflicts(module.__nimbusImportMeta?.url ?? builtins.url.pathToFileURL(module.filename).href);
+    }
     return __requireFrom(id, fromDir, module, required);
   };
   function resolve(request, options) {
@@ -12828,8 +12832,9 @@ function __esmLoad(resolution) {
         url: resolution.url,
         resolve: (id) => globalThis.__nimbusImportMetaResolve(id, resolution.url),
       } });
-      // Its static imports (ESM_LOAD_HELPER: the specifier, the marker, the type attribute).
-      const requireData = (id, marker, type = null) => __nimbusStaticImport(String(id), resolution.url, undefined, type);
+      // Its static imports (ESM_LOAD_HELPER: the specifier, the marker, the type attribute). A data:
+      // module's \`export *\` has no facts here to leave a name out by.
+      const requireData = (id, marker, type = null) => marker === ${JSON.stringify(ESM_STAR_CONFLICTS)} ? [] : __nimbusStaticImport(String(id), resolution.url, undefined, type);
       let result;
       try {
         result = cell(mod.exports, requireData, mod, undefined, undefined);
@@ -12918,8 +12923,10 @@ function __nimbusEsmLinkPlan(key, url, seen, order, checked, late) {
   const reads = known ? Array.from(bindings.imports, (names) => Array.from(names)) : [];
   const starsAt = known ? Array.from(bindings.stars) : [];
   const types = known ? Array.from(bindings.types) : [];
-  const node = { known, exports: known ? Array.from(bindings.exports) : [], stars: [], imports: [] };
+  const reexportsAt = known ? Array.from(bindings.reexports, (entry) => Array.from(entry)) : [];
+  const node = { known, exports: known ? Array.from(bindings.exports) : [], stars: [], imports: [], reexports: [] };
   late.modules.set(url, node);
+  __nimbusLateModules.set(url, node);
   let at = -1;
   for (const request of analysis.requests) {
     if (request.kind !== "static") continue;
@@ -12940,6 +12947,7 @@ function __nimbusEsmLinkPlan(key, url, seen, order, checked, late) {
       const loads = __nimbusEsmLateTarget(resolution);
       if (starsAt.includes(at)) node.stars.push(loads);
       if (reads[at].length > 0) node.imports.push({ target: loads, specifier: request.specifier, names: reads[at] });
+      for (const [exported, request, name] of reexportsAt) if (request === at) node.reexports.push([exported, loads, name]);
     }
     if (!resolution.path) continue;
     const target = resolution.path.replace(/^\\/+/, "");
@@ -12968,7 +12976,7 @@ function __nimbusEsmLateTarget(resolution) {
     const id = __nimbusEsmId("builtin", resolution.builtin);
     if (id !== -1) return { row: id };
     const mod = builtins[resolution.builtin];
-    return { names: ["default", ...(mod && (typeof mod === "object" || typeof mod === "function") ? Object.keys(mod) : [])] };
+    return { names: ["default", ...(mod && (typeof mod === "object" || typeof mod === "function") ? Object.keys(mod) : [])], url: resolution.url };
   }
   if (!resolution.path) return null;
   const key = resolution.path.replace(/^\\/+/, "");
@@ -12980,8 +12988,8 @@ function __nimbusEsmLateTarget(resolution) {
     if (facade !== -1) return { row: facade };
   }
   if (resolution.format === "module" || resolution.format === "detect") return { url: resolution.url };
-  if (resolution.format === "json") return { names: ["default"] };
-  if (resolution.format === "commonjs") return { names: __nimbusCommonJsNames(key), commonjs: true };
+  if (resolution.format === "json") return { names: ["default"], url: resolution.url };
+  if (resolution.format === "commonjs") return { names: __nimbusCommonJsNames(key), url: resolution.url, commonjs: true };
   return null;
 }
 // Throws the refusal of a static import staged module \`id\`'s graph (what
@@ -13031,9 +13039,12 @@ function __nimbusEsmCheckBindings(late, rootUrl) {
     for (const edge of edges) visit(edge.target);
     for (const edge of edges) {
       for (const name of edge.names) {
-        if (__nimbusEsmExports(late, edge.target, name, new Set()) !== false) continue;
+        const resolution = __nimbusEsmResolveExport(late, edge.target, name, new Set());
+        if (resolution !== null && resolution !== __NIMBUS_AMBIGUOUS) continue;
         const commonjs = edge.target.commonjs === true || (edge.target.row !== undefined && __nimbusEsm.table[edge.target.row][0] === "commonjs");
-        const error = new SyntaxError(__nimbusEsmExportMessage(edge.specifier, name, commonjs));
+        const error = new SyntaxError(resolution === __NIMBUS_AMBIGUOUS
+          ? "The requested module '" + edge.specifier + "' contains conflicting star exports for name '" + name + "'"
+          : __nimbusEsmExportMessage(edge.specifier, name, commonjs));
         __nimbusDecorated.add(error);
         throw error;
       }
@@ -13053,16 +13064,63 @@ function __nimbusEsmEdges(late, target) {
   if (bindings === null || __nimbusEsm.table[target.row][0] !== "module") return [];
   return bindings[2].map(([row, specifier, ...names]) => ({ target: { row }, specifier, names }));
 }
-// Whether \`target\` exports \`name\`, as Node resolves it: one of its own,
-// else one an \`export *\` of it re-exports (never \`default\`); null where
-// its names are not known.
-function __nimbusEsmExports(late, target, name, seen) {
+// ResolveExport (ECMA-262, Source Text Module Records) of \`name\` of
+// \`target\` over the late graph's facts and the launch's row bindings: where
+// it is bound ({ module, binding }: a namespace's binding is "*"), null where
+// \`target\` has no such export, __NIMBUS_AMBIGUOUS where its \`export *\`s
+// reach two different bindings of it, undefined where its names are not
+// known here (the interpreter's to find).
+const __NIMBUS_AMBIGUOUS = { ambiguous: true };
+function __nimbusEsmResolveExport(late, target, name, resolving) {
+  if (target === null) return undefined;
+  if (target.names !== undefined) return target.names.includes(name) ? { module: "u" + target.url, binding: name } : null;
+  const module = target.url !== undefined ? "u" + target.url : "r" + target.row;
+  // A circular import request: nothing more to find this way.
+  if (resolving.has(module + "\0" + name)) return null;
+  resolving.add(module + "\0" + name);
+  let exports;
+  let stars;
+  let reexports;
+  if (target.url !== undefined) {
+    const node = late.modules.get(target.url);
+    if (node === undefined || !node.known) return undefined;
+    ({ exports, stars, reexports } = node);
+  } else {
+    const bindings = __nimbusEsmBindingsOf(target.row);
+    if (bindings === null) return undefined;
+    if (__nimbusEsm.table[target.row][0] !== "module") return bindings.includes(name) ? { module, binding: name } : null;
+    exports = bindings[0];
+    stars = bindings[1].map((row) => ({ row }));
+    reexports = (bindings[3] ?? []).map(([exported, row, imported]) => [exported, { row }, imported]);
+  }
+  for (const [exported, from, imported] of reexports) {
+    if (exported !== name) continue;
+    if (imported !== null) return __nimbusEsmResolveExport(late, from, imported, resolving);
+    if (from === null) return undefined;
+    return { module: from.url !== undefined ? "u" + from.url : "r" + from.row, binding: "*" };
+  }
+  if (exports.includes(name)) return { module, binding: name };
+  if (name === "default") return null;
+  let found = null;
+  let unknown = false;
+  for (const star of stars) {
+    const resolution = __nimbusEsmResolveExport(late, star, name, resolving);
+    if (resolution === __NIMBUS_AMBIGUOUS) return resolution;
+    if (resolution === undefined) unknown = true;
+    else if (resolution === null) continue;
+    else if (found === null) found = resolution;
+    else if (found.module !== resolution.module || found.binding !== resolution.binding) return __NIMBUS_AMBIGUOUS;
+  }
+  return unknown ? undefined : found;
+}
+// GetExportedNames of \`target\`, for \`export *\`: its own names, and its
+// stars' but \`default\`, each once; null where they are not known here.
+function __nimbusEsmExportedNames(late, target, seen) {
   if (target === null) return null;
-  if (target.names !== undefined) return target.names.includes(name);
-  const mark = target.url !== undefined ? "u" + target.url : "r" + target.row;
-  // An \`export *\` cycle adds nothing the first visit did not.
-  if (seen.has(mark)) return false;
-  seen.add(mark);
+  if (target.names !== undefined) return target.names;
+  const module = target.url !== undefined ? "u" + target.url : "r" + target.row;
+  if (seen.has(module)) return [];
+  seen.add(module);
   let exports;
   let stars;
   if (target.url !== undefined) {
@@ -13072,19 +13130,34 @@ function __nimbusEsmExports(late, target, name, seen) {
   } else {
     const bindings = __nimbusEsmBindingsOf(target.row);
     if (bindings === null) return null;
-    if (__nimbusEsm.table[target.row][0] !== "module") return bindings.includes(name);
+    if (__nimbusEsm.table[target.row][0] !== "module") return bindings;
     exports = bindings[0];
     stars = bindings[1].map((row) => ({ row }));
   }
-  if (exports.includes(name)) return true;
-  if (name === "default") return false;
-  let unknown = false;
+  const names = new Set(exports);
   for (const star of stars) {
-    const found = __nimbusEsmExports(late, star, name, seen);
-    if (found === true) return true;
-    if (found === null) unknown = true;
+    const starred = __nimbusEsmExportedNames(late, star, seen);
+    if (starred === null) return null;
+    for (const starName of starred) if (starName !== "default") names.add(starName);
   }
-  return unknown ? null : false;
+  return [...names];
+}
+// The late modules the link plans read, by URL: what an interpreted
+// module's \`export *\` asks of them (__nimbusEsmStarConflicts).
+const __nimbusLateModules = new Map();
+// The names an interpreted ES module's \`export *\`s leave out, its module
+// at \`url\` (a late module, or a staged one the interpreter evaluates):
+// those they reach two different bindings of, as Node's namespace omits
+// them.
+function __nimbusEsmStarConflicts(url) {
+  const late = { modules: __nimbusLateModules, rows: [] };
+  const plain = url.startsWith("file:") && !url.includes("?") && !url.includes("#");
+  const row = plain ? __nimbusEsmId("module", builtins.url.fileURLToPath(url).replace(/^\\/+/, "")) : -1;
+  const target = __nimbusLateModules.has(url) ? { url } : row !== -1 ? { row } : null;
+  if (target === null) return [];
+  const names = __nimbusEsmExportedNames(late, target, new Set());
+  if (names === null) return [];
+  return names.filter((name) => __nimbusEsmResolveExport(late, target, name, new Set()) === __NIMBUS_AMBIGUOUS);
 }
 function __esmLoadInterpreted(resolution, key, evaluationKey, esm) {
   let ns;

@@ -16,7 +16,9 @@
  *     ES module's own, or a CommonJS module's, a builtin's or JSON's as
  *     Node's translators make it (node-shims); a default import reads its
  *     `default`, and a namespace import is it;
- *   - last, each `export *` copies its module's names (ESM_STAR_HELPER).
+ *   - last, each `export *` copies its module's names (ESM_STAR_HELPER) but
+ *     those two of them reach different bindings of (ESM_CONFLICTS_HELPER:
+ *     the loader's answer), which Node's namespace leaves out.
  *
  * The helpers are source text a launch's runtime compiles for its
  * interpreter (ESM_MODULE_HELPERS, commonjs-cell.ts). They reach Object,
@@ -31,8 +33,15 @@
 import type { ExportAllDeclaration, ExportNamedDeclaration, ImportDeclaration, ModuleDeclaration, Statement } from 'acorn';
 /** The CommonJS exports object marked as an ES module's; answers the function that installs an export's getter. */
 export declare const ESM_EXPORTS_HELPER: string;
-/** `export *`: each name of the module but `default` and those already exported, read through. */
-export declare const ESM_STAR_HELPER = "(exports, define, m) => { for (const k in m) if (k !== \"default\" && !({}).hasOwnProperty.call(exports, k)) define(k, () => m[k]); }";
+/**
+ * `export *`: each name of the module but `default`, those already exported
+ * and those `omitted` (ESM_CONFLICTS_HELPER's), read through.
+ */
+export declare const ESM_STAR_HELPER: string;
+/** What a module's require is passed for the names its `export *`s reach two different bindings of. */
+export declare const ESM_STAR_CONFLICTS = "nimbus:star-conflicts";
+/** The names a module's `export *`s leave out, as Node's namespace omits them: its loader's answer, through its require. */
+export declare const ESM_CONFLICTS_HELPER = "(require) => require(\"\", \"nimbus:star-conflicts\")";
 /**
  * What a module's require is passed beside a static import's specifier: the
  * loader resolves it as Node's ESM loader does (node-shims' __requireFrom),
@@ -43,7 +52,7 @@ export declare const ESM_STATIC_IMPORT = "nimbus:static-import";
 /** A static import's module: the importer's require, told the request is an import, with its `type` attribute (or null). */
 export declare const ESM_LOAD_HELPER = "(require, source, type) => require(source, \"nimbus:static-import\", type)";
 /** The helpers as an object literal's source: what a launch compiles for its interpreter (interpreter/modules.ts ModuleHelpers). */
-export declare const ESM_MODULE_HELPERS = "{ exports: (() => { const O = ({}).constructor; const tag = O.getOwnPropertySymbols(O.getPrototypeOf(async () => {}))[0]; return (exports) => { O.defineProperty(exports, \"__esModule\", { value: true }); O.defineProperty(exports, tag, { value: \"Module\" }); return (name, get) => O.defineProperty(exports, name, { enumerable: true, get }); }; })(), star: (exports, define, m) => { for (const k in m) if (k !== \"default\" && !({}).hasOwnProperty.call(exports, k)) define(k, () => m[k]); }, load: (require, source, type) => require(source, \"nimbus:static-import\", type) }";
+export declare const ESM_MODULE_HELPERS = "{ exports: (() => { const O = ({}).constructor; const tag = O.getOwnPropertySymbols(O.getPrototypeOf(async () => {}))[0]; return (exports) => { O.defineProperty(exports, \"__esModule\", { value: true }); O.defineProperty(exports, tag, { value: \"Module\" }); return (name, get) => O.defineProperty(exports, name, { enumerable: true, get }); }; })(), star: (exports, define, m, omitted) => { for (const k in m) { if (k === \"default\" || ({}).hasOwnProperty.call(exports, k)) continue; let left = false; for (let i = 0; omitted && i < omitted.length; i++) if (omitted[i] === k) left = true; if (!left) define(k, () => m[k]); } }, conflicts: (require) => require(\"\", \"nimbus:star-conflicts\"), load: (require, source, type) => require(source, \"nimbus:static-import\", type) }";
 /**
  * One name an import binds: the module's namespace, or one of its exports
  * by name (`default` included, which `import d from` binds too). A string
@@ -189,6 +198,13 @@ export interface ModuleBindings {
     readonly stars: readonly number[];
     /** By request: its `type` attribute (importType), which the loader checks against what it loads. */
     readonly types: readonly (string | null)[];
+    /**
+     * Its names that are another module's (ResolveExport's indirect entries:
+     * a re-export, or an export of an imported binding): the name, the
+     * request, and the name it has there, null for that module's namespace.
+     * Its other names are bindings of its own.
+     */
+    readonly reexports: readonly (readonly [exported: string, request: number, name: string | null])[];
 }
 /** The bindings of a module linked as `link`. */
 export declare function esmBindings(link: EsmLink, lists: EsmLists): ModuleBindings;

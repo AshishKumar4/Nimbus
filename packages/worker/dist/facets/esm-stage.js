@@ -302,7 +302,10 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
                     imports.push([rowTargets[at], sites.statics[at].specifier, ...read.imports[at]]);
             }
             const stars = read.stars.map((at) => rowTargets[at]).filter((row) => row >= 0);
-            bindings[id] = [read.exports, stars, imports];
+            const reexports = read.reexports
+                .filter(([, at]) => rowTargets[at] >= 0)
+                .map(([exported, at, name]) => [exported, rowTargets[at], name]);
+            bindings[id] = [read.exports, stars, imports, reexports];
         }
         else {
             bindings[id] = null;

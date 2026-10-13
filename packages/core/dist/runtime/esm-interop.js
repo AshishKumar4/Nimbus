@@ -3,8 +3,16 @@ import { bindingIdentifiers } from './binding-pattern.js';
 export const ESM_EXPORTS_HELPER = '(() => { const O = ({}).constructor; const tag = O.getOwnPropertySymbols(O.getPrototypeOf(async () => {}))[0]; '
     + 'return (exports) => { O.defineProperty(exports, "__esModule", { value: true }); O.defineProperty(exports, tag, { value: "Module" }); '
     + 'return (name, get) => O.defineProperty(exports, name, { enumerable: true, get }); }; })()';
-/** `export *`: each name of the module but `default` and those already exported, read through. */
-export const ESM_STAR_HELPER = '(exports, define, m) => { for (const k in m) if (k !== "default" && !({}).hasOwnProperty.call(exports, k)) define(k, () => m[k]); }';
+/**
+ * `export *`: each name of the module but `default`, those already exported
+ * and those `omitted` (ESM_CONFLICTS_HELPER's), read through.
+ */
+export const ESM_STAR_HELPER = '(exports, define, m, omitted) => { for (const k in m) { if (k === "default" || ({}).hasOwnProperty.call(exports, k)) continue; '
+    + 'let left = false; for (let i = 0; omitted && i < omitted.length; i++) if (omitted[i] === k) left = true; if (!left) define(k, () => m[k]); } }';
+/** What a module's require is passed for the names its `export *`s reach two different bindings of. */
+export const ESM_STAR_CONFLICTS = 'nimbus:star-conflicts';
+/** The names a module's `export *`s leave out, as Node's namespace omits them: its loader's answer, through its require. */
+export const ESM_CONFLICTS_HELPER = `(require) => require("", "${ESM_STAR_CONFLICTS}")`;
 /**
  * What a module's require is passed beside a static import's specifier: the
  * loader resolves it as Node's ESM loader does (node-shims' __requireFrom),
@@ -15,7 +23,7 @@ export const ESM_STATIC_IMPORT = 'nimbus:static-import';
 /** A static import's module: the importer's require, told the request is an import, with its `type` attribute (or null). */
 export const ESM_LOAD_HELPER = `(require, source, type) => require(source, "${ESM_STATIC_IMPORT}", type)`;
 /** The helpers as an object literal's source: what a launch compiles for its interpreter (interpreter/modules.ts ModuleHelpers). */
-export const ESM_MODULE_HELPERS = `{ exports: ${ESM_EXPORTS_HELPER}, star: ${ESM_STAR_HELPER}, load: ${ESM_LOAD_HELPER} }`;
+export const ESM_MODULE_HELPERS = `{ exports: ${ESM_EXPORTS_HELPER}, star: ${ESM_STAR_HELPER}, conflicts: ${ESM_CONFLICTS_HELPER}, load: ${ESM_LOAD_HELPER} }`;
 /** A ModuleExportName: an identifier, or a string such as `export { a as "b-c" }`. */
 function exportName(node) {
     return node.type === 'Identifier' ? node.name : `${node.value}`;
@@ -174,7 +182,26 @@ export function esmBindings(link, lists) {
     const types = lists.list();
     for (let i = 0; i < link.requests.length; i++)
         lists.push(types, link.requests[i].type);
-    return { exports, imports, stars: link.stars, types };
+    const reexports = lists.list();
+    for (let i = 0; i < link.exports.length; i++) {
+        const entry = link.exports[i];
+        if (entry.kind === 'reexport')
+            lists.push(reexports, [entry.exported, entry.request, entry.name]);
+        else if (entry.kind === 'namespace')
+            lists.push(reexports, [entry.exported, link.namespaces[entry.namespace].request, null]);
+        else if (entry.kind === 'binding') {
+            // An export of an imported binding is that module's.
+            for (let r = 0; r < link.requests.length; r++) {
+                const bindings = link.requests[r].bindings;
+                for (let j = 0; j < bindings.length; j++) {
+                    const binding = bindings[j];
+                    if (binding.local === entry.local)
+                        lists.push(reexports, [entry.exported, r, binding.kind === 'named' ? binding.imported : null]);
+                }
+            }
+        }
+    }
+    return { exports, imports, stars: link.stars, types, reexports };
 }
 /** `entries` sorted by exported name, stably: a merge sort, which calls nothing of the realm's. */
 function byExportedName(entries, lists) {

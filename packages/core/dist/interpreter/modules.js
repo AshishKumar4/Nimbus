@@ -47,8 +47,10 @@ export function moduleCell(plan, ops, helpers) {
 }
 /**
  * The export getters installed; each request required in order, its
- * namespace in its slot; then `export *`. Its graph's names were checked
- * before any of it ran, by whoever loads it (node-shims' late link plan).
+ * namespace in its slot; then `export *`, but the names two of them reach
+ * different bindings of (the loader's answer). Its graph's names were
+ * checked before any of it ran, by whoever loads it (node-shims' late link
+ * plan).
  */
 function link(plan, env, requireArg, helpers, exportsObject, define) {
     const { exports, requests, stars } = plan;
@@ -62,8 +64,11 @@ function link(plan, env, requireArg, helpers, exportsObject, define) {
         if (module >= 0)
             env[module] = m;
     }
+    if (stars.length === 0)
+        return;
+    const omitted = reflectApply(helpers.conflicts, undefined, [requireArg]);
     for (let i = 0; i < stars.length; i++)
-        reflectApply(helpers.star, undefined, [exportsObject, define, env[stars[i]]]);
+        reflectApply(helpers.star, undefined, [exportsObject, define, env[stars[i]], omitted]);
 }
 /** Runs a module body's generator, made by `start`, as an async function would: one await per yielded value. */
 async function drive(env, start) {

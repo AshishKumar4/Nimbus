@@ -19,6 +19,7 @@ export type ModuleCell = (exports: unknown, require: unknown, module: unknown, f
 export interface ModuleHelpers {
     readonly exports: NativeFunction;
     readonly star: NativeFunction;
+    readonly conflicts: NativeFunction;
     readonly load: NativeFunction;
 }
 /** An export's getter: `read` of the evaluation's frame. */

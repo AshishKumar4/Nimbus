@@ -31,11 +31,18 @@ export declare function esmRowName(row: EsmModuleRow, id: number): string;
 /**
  * What Node's linker checks of a row (core esm-interop.ts ModuleBindings),
  * as the process reads it (ESM_BINDINGS_MODULE): a staged module's own
- * export names, the rows its `export *` re-exports, and, by static import,
- * the row it loads, its specifier as written and the names it reads of it;
- * a facade's or a JSON module's export names; null where unknown.
+ * export names, the rows its `export *` re-exports, by static import the
+ * row it loads, its specifier as written and the names it reads of it, and
+ * its names that are another row's ([name, row, the name there, null for
+ * its namespace]: ResolveExport's indirect entries); a facade's or a JSON
+ * module's export names; null where unknown.
  */
-export type EsmRowBindings = readonly [exports: readonly string[], stars: readonly number[], imports: readonly (readonly [row: number, specifier: string, ...names: string[]])[]] | readonly string[] | null;
+export type EsmRowBindings = readonly [
+    exports: readonly string[],
+    stars: readonly number[],
+    imports: readonly (readonly [row: number, specifier: string, ...names: string[]])[],
+    reexports: readonly (readonly [exported: string, row: number, name: string | null])[]
+] | readonly string[] | null;
 /** A specifier Node's loader refuses: the error its import fails with. */
 export interface EsmMissing {
     readonly name: string;

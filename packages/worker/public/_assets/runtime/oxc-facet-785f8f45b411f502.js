@@ -6905,10 +6905,12 @@ error: the Oxc transform crashed (${reason})`);
   }
 
   var ESM_EXPORTS_HELPER = '(() => { const O = ({}).constructor; const tag = O.getOwnPropertySymbols(O.getPrototypeOf(async () => {}))[0]; return (exports) => { O.defineProperty(exports, "__esModule", { value: true }); O.defineProperty(exports, tag, { value: "Module" }); return (name, get) => O.defineProperty(exports, name, { enumerable: true, get }); }; })()';
-  var ESM_STAR_HELPER = '(exports, define, m) => { for (const k in m) if (k !== "default" && !({}).hasOwnProperty.call(exports, k)) define(k, () => m[k]); }';
+  var ESM_STAR_HELPER = '(exports, define, m, omitted) => { for (const k in m) { if (k === "default" || ({}).hasOwnProperty.call(exports, k)) continue; let left = false; for (let i = 0; omitted && i < omitted.length; i++) if (omitted[i] === k) left = true; if (!left) define(k, () => m[k]); } }';
+  var ESM_STAR_CONFLICTS = "nimbus:star-conflicts";
+  var ESM_CONFLICTS_HELPER = `(require) => require("", "${ESM_STAR_CONFLICTS}")`;
   var ESM_STATIC_IMPORT = "nimbus:static-import";
   var ESM_LOAD_HELPER = `(require, source, type) => require(source, "${ESM_STATIC_IMPORT}", type)`;
-  var ESM_MODULE_HELPERS = `{ exports: ${ESM_EXPORTS_HELPER}, star: ${ESM_STAR_HELPER}, load: ${ESM_LOAD_HELPER} }`;
+  var ESM_MODULE_HELPERS = `{ exports: ${ESM_EXPORTS_HELPER}, star: ${ESM_STAR_HELPER}, conflicts: ${ESM_CONFLICTS_HELPER}, load: ${ESM_LOAD_HELPER} }`;
   function exportName(node) {
     return node.type === "Identifier" ? node.name : `${node.value}`;
   }
@@ -7044,7 +7046,22 @@ error: the Oxc transform crashed (${reason})`);
     }
     const types2 = lists.list();
     for (let i = 0; i < link.requests.length; i++) lists.push(types2, link.requests[i].type);
-    return { exports, imports, stars: link.stars, types: types2 };
+    const reexports = lists.list();
+    for (let i = 0; i < link.exports.length; i++) {
+      const entry = link.exports[i];
+      if (entry.kind === "reexport") lists.push(reexports, [entry.exported, entry.request, entry.name]);
+      else if (entry.kind === "namespace") lists.push(reexports, [entry.exported, link.namespaces[entry.namespace].request, null]);
+      else if (entry.kind === "binding") {
+        for (let r = 0; r < link.requests.length; r++) {
+          const bindings = link.requests[r].bindings;
+          for (let j = 0; j < bindings.length; j++) {
+            const binding = bindings[j];
+            if (binding.local === entry.local) lists.push(reexports, [entry.exported, r, binding.kind === "named" ? binding.imported : null]);
+          }
+        }
+      }
+    }
+    return { exports, imports, stars: link.stars, types: types2, reexports };
   }
   function byExportedName(entries, lists) {
     const n = entries.length;
@@ -9769,6 +9786,8 @@ error: the Oxc transform crashed (${reason})`);
     const imports = [];
     const stars = [];
     const types2 = [];
+    const reexports = [];
+    const imported =   new Map();
     for (const entry of lexed) {
       if (entry.t === DYNAMIC_IMPORT) sites.push({ ss: entry.ss, se: entry.se, d: entry.d, lexed: true });
       else if (entry.t === IMPORT_META) metas.push({ start: entry.s, end: entry.e });
@@ -9783,6 +9802,12 @@ error: the Oxc transform crashed (${reason})`);
           const read = clauseNames(source.slice(entry.ss, site.start));
           if (read === null) return null;
           if (read.star) stars.push(imports.length);
+          const request = imports.length;
+          const reexport = source.startsWith("export", entry.ss);
+          for (const [name, from] of read.links) {
+            if (reexport) reexports.push([name, request, from]);
+            else imported.set(name, [request, from]);
+          }
           imports.push(read.names);
         }
       } else {
@@ -9810,16 +9835,23 @@ error: the Oxc transform crashed (${reason})`);
     }
     const sitesRead = { calls, metas, statics, moduleSyntax: lexing[3] === true };
     if (!withBindings) return sitesRead;
-    const exports = exportNames(lexing[1]);
-    return exports === null ? null : { ...sitesRead, bindings: { exports, imports, stars, types: types2 } };
+    const lexedExports = exportNames(lexing[1]);
+    if (lexedExports === null) return null;
+    for (const [name, local] of lexedExports) {
+      const binding = local === void 0 ? void 0 : imported.get(local);
+      if (binding !== void 0) reexports.push([name, ...binding]);
+    }
+    const exports = lexedExports.map(([name]) => name);
+    return { ...sitesRead, bindings: { exports, imports, stars, types: types2, reexports } };
   }
   function exportNames(lexedExports) {
     if (!Array.isArray(lexedExports)) return null;
     const names = [];
     for (const entry of lexedExports) {
       const name = typeof entry === "object" && entry !== null ? Reflect.get(entry, "n") : void 0;
+      const local = typeof entry === "object" && entry !== null ? Reflect.get(entry, "ln") : void 0;
       if (typeof name !== "string") return null;
-      names.push(name);
+      names.push([name, typeof local === "string" ? local : void 0]);
     }
     return names;
   }
@@ -9840,31 +9872,37 @@ error: the Oxc transform crashed (${reason})`);
       return token.value;
     };
     const list = () => {
-      const names = [];
+      const pairs = [];
       at2++;
       while (!is(types$1.braceR)) {
         const name = word();
         if (name === null) return null;
-        names.push(name);
         at2++;
+        let second = name;
         if (word("as") !== null) {
           at2++;
-          if (word() === null) return null;
+          const renamed = word();
+          if (renamed === null) return null;
+          second = renamed;
           at2++;
         }
+        pairs.push([name, second]);
         if (is(types$1.comma)) at2++;
         else if (!is(types$1.braceR)) return null;
       }
       at2++;
-      return names;
+      return pairs;
     };
-    const from = (names, star) => word("from") !== null && at2 === tokens.length - 1 ? { names, star } : null;
+    const links = [];
+    const from = (names, star) => word("from") !== null && at2 === tokens.length - 1 ? { names, star, links } : null;
     if (tokens[0]?.type === types$1._import) {
-      if (at2 === tokens.length) return { names: [], star: false };
+      if (at2 === tokens.length) return { names: [], star: false, links };
       const names = [];
       if (!is(types$1.star) && !is(types$1.braceL)) {
-        if (word() === null) return null;
+        const local = word();
+        if (local === null) return null;
         names.push("default");
+        links.push([local, "default"]);
         at2++;
         if (!is(types$1.comma)) return from(names, false);
         at2++;
@@ -9872,23 +9910,35 @@ error: the Oxc transform crashed (${reason})`);
       if (is(types$1.star)) {
         at2++;
         if (word("as") === null) return null;
-        at2 += 2;
+        at2++;
+        const local = word();
+        if (local === null) return null;
+        links.push([local, null]);
+        at2++;
         return from(names, false);
       }
       if (!is(types$1.braceL)) return null;
       const named2 = list();
-      return named2 === null ? null : from([...names, ...named2], false);
+      if (named2 === null) return null;
+      for (const [imported, local] of named2) links.push([local, imported]);
+      return from([...names, ...named2.map(([imported]) => imported)], false);
     }
     if (tokens[0]?.type !== types$1._export) return null;
     if (is(types$1.star)) {
       at2++;
       if (word("as") === null) return from([], true);
-      at2 += 2;
+      at2++;
+      const exported = word();
+      if (exported === null) return null;
+      links.push([exported, null]);
+      at2++;
       return from([], false);
     }
     if (!is(types$1.braceL)) return null;
     const named = list();
-    return named === null ? null : from(named, false);
+    if (named === null) return null;
+    for (const [local, exported] of named) links.push([exported, local]);
+    return from(named.map(([local]) => local), false);
   }
   function rewriteFromLexer(code, call) {
     const sites = lexedImportSites(code);
