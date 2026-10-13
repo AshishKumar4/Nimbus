@@ -34,7 +34,7 @@
 import { refusalErrno as filesystemErrno } from './filesystem.js';
 import { PIPE_CAPACITY, decideWrite } from '../bash/pipe-rules.js';
 /** WASI errno values these imports answer with. */
-const E = { SUCCESS: 0, AGAIN: 6, BADF: 8, CHILD: 12, INTR: 27, INVAL: 28, IO: 29, NOSYS: 52, PIPE: 64, SRCH: 71 };
+const E = { SUCCESS: 0, AGAIN: 6, BADF: 8, CHILD: 12, INTR: 27, INVAL: 28, IO: 29, NOSYS: 52, NOTSUP: 58, PIPE: 64, SRCH: 71 };
 const FDFLAGS_NONBLOCK = 4;
 /** Signal numbers as wasi-libc's emulated signals number them, and their names. */
 const SIGNALS = { 1: 'SIGHUP', 2: 'SIGINT', 3: 'SIGQUIT', 9: 'SIGKILL', 13: 'SIGPIPE', 15: 'SIGTERM' };
@@ -110,14 +110,17 @@ export function processHost(opts) {
     };
     /**
      * An import that has to wait for its answer, in a guest that cannot be
-     * suspended: refused by name before it does anything. A promise returned
-     * where an i32 belongs would read as 0, success.
+     * suspended (a promise returned where an i32 belongs would read as 0,
+     * success): refused by name before it does anything, as an errno through
+     * the ABI, so the guest's own error path runs and cleans up (git removes
+     * its index.lock); never a trap through its C frames. Its name, and why,
+     * go to the guest's stderr.
      */
-    const mustWait = (name) => {
-        if (opts.parks)
-            return;
-        throw new Error(`nimbus_proc.${name} has to wait for its answer, and this guest cannot be suspended: `
-            + 'a WASI guest\'s child processes need JSPI (WebAssembly.Suspending and WebAssembly.promising)');
+    const encoder = new TextEncoder();
+    const refused = (name) => {
+        void opts.output(2, encoder.encode(`nimbus_proc.${name} has to wait for its answer, and this guest cannot be suspended: `
+            + 'a WASI guest\'s child processes need JSPI (WebAssembly.Suspending and WebAssembly.promising)\n'));
+        return E.NOTSUP;
     };
     const notify = (child) => {
         for (const waiter of child.waiters.splice(0))
@@ -326,7 +329,8 @@ export function processHost(opts) {
             const argv = strings(argvPtr, argvLen);
             if (argv.length === 0)
                 return E.INVAL;
-            mustWait('spawn');
+            if (!opts.parks)
+                return refused('spawn');
             const env = {};
             for (const entry of strings(envPtr, envLen)) {
                 const at = entry.indexOf('=');
@@ -467,7 +471,8 @@ export function processHost(opts) {
             const now = answer();
             if (now !== null)
                 return now;
-            mustWait('start');
+            if (!opts.parks)
+                return refused('start');
             return parkedWait((wake) => child.waiters.push(wake), answer).ready.then((started) => started ?? E.INTR);
         },
         wait(pid, options, statusPtr, waitedPtr) {
@@ -497,7 +502,8 @@ export function processHost(opts) {
                 view().setInt32(waitedPtr, 0, true);
                 return E.SUCCESS;
             }
-            mustWait('wait');
+            if (!opts.parks)
+                return refused('wait');
             return parkedWait((wake) => { for (const child of candidates)
                 child.waiters.push(wake); }, reap).ready.then((reaped) => reaped ?? E.INTR);
         },
@@ -512,7 +518,8 @@ export function processHost(opts) {
             const name = SIGNALS[signal];
             if (!name)
                 return E.INVAL;
-            mustWait('kill');
+            if (!opts.parks)
+                return refused('kill');
             return Promise.resolve(sup.cpKill(pid, name)).then((delivered) => (delivered ? E.SUCCESS : E.SRCH));
         },
     };
