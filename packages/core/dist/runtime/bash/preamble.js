@@ -191,10 +191,9 @@ function closeFd(s, proc, fd) {
     // The entry is gone either way: a release that fails has still released
     // this process's claim on it, and letting the rejection reach s.error
     // would report the whole slice as failed instead of its exit code.
-    if (e.kind === 'authority')
-        queueSessionTask(s, Promise.resolve(s.fs.close(e.handle.id)).catch(() => { }));
-    if (e.kind === 'resident')
-        closeResident(e);
+    const held = e.kind === 'authority' ? e.handle.id : e.kind === 'resident' ? closeResident(e) : null;
+    if (held !== null)
+        queueSessionTask(s, Promise.resolve(s.fs.close(held)).catch(() => { }));
     if (e.kind === 'pipe') {
         bumpPipe(s, e, -1);
         const pp = s.pipes.get(e.pipeId);

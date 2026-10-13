@@ -93,6 +93,8 @@ export interface ResidentNamespace {
 export interface PinnedContent {
     bytes: Uint8Array;
     release(): void;
+    /** The name it was pinned at, which an open of /dev/fd/N opens it again by while that name has it (openIdentified). */
+    name: string;
 }
 export interface ResidentFilesystem extends RuntimeFsBridge {
     /**

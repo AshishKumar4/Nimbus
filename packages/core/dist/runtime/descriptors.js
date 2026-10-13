@@ -160,6 +160,14 @@ export class Descriptors {
         this.scope.handles.set(handle.id, { handle, node, refs: 1 });
         return { ...handle };
     }
+    /**
+     * issue's descriptor as an open answers it: with its file's stat, fstat's
+     * then, its revision `revision` where the open went by a name (the name's).
+     */
+    open(node, flags, path = node.path(), revision) {
+        const handle = this.issue(node, flags, path);
+        return andThen(this.fstat(handle.id), (stat) => ({ ...handle, stat: revision === undefined ? stat : { ...stat, revision } }));
+    }
     /** The description `id` names, to answer from (EBADF when none, or once the scope is closed). */
     description(id) {
         return this.answering(id).node;

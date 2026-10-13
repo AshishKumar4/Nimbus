@@ -35,6 +35,7 @@
  *     absent: the adapter lists the directory and walks again.
  */
 import { fsError, modeAllows, walkBeneath } from '../beneath-walk.js';
+import { openIdentified } from './filesystem.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
 import { delegationHolder } from './delegation-holder.js';
 /** A held write goes to the session in pieces of this size: each fits one call. */
@@ -165,8 +166,7 @@ export function residentFilesystem(session, resident, delegation) {
     }
     /** The session's descriptors this process opened read-only: closing one changes nothing, so it owes no barrier. */
     const readers = new Set();
-    /** Of those, the directories, and where their listing is, once their fstat named them. */
-    const pendingDirectories = new Map();
+    /** Of those, the directories, and where their listing is. */
     const directories = new Map();
     /** Bytes pinned for the codec's own descriptors (pinContent). */
     const pins = new Map();
@@ -457,6 +457,7 @@ export function residentFilesystem(session, resident, delegation) {
             let released = false;
             return {
                 bytes: pin.bytes,
+                name: '/' + key,
                 release: () => {
                     if (released)
                         return;
@@ -549,12 +550,14 @@ export function residentFilesystem(session, resident, delegation) {
             throw fsError('ENOENT', 'realpath', path);
         return '/' + key;
     }), () => authority.realpath(path));
+    /** A descriptor of the holder's, as an open answers it: with its stat, the holder's. */
+    const heldOpen = (handle) => ({ ...handle, stat: statOf(holder.fstat(handle.id)) });
     fs.open = (path, flags) => {
         const readOnly = !flags.write && !flags.create && !flags.truncate && !flags.append && !flags.exclusive;
         if (!readOnly && holder !== null) {
             // A file made or emptied in a subtree this process holds is decided here.
             const local = decide('open', () => after(keyFor(path, true), (key) => (key === DELEGATE ? DELEGATE
-                : after(holder.open(key, typeof path === 'string' ? path : path.path, flags), (handle) => handle ?? DELEGATE))));
+                : after(holder.open(key, typeof path === 'string' ? path : path.path, flags), (handle) => (handle === undefined ? DELEGATE : heldOpen(handle))))));
             return after(local, (handle) => (handle === DELEGATE ? openOnSession(path, flags) : handle));
         }
         return openOnSession(path, flags);
@@ -576,7 +579,7 @@ export function residentFilesystem(session, resident, delegation) {
                     if (there === undefined || there?.type === 'directory')
                         return DELEGATE;
                     delegated('open');
-                    return after(holder.openThrough(key, typeof path === 'string' ? path : path.path, flags), (handle) => { owed = true; return handle; });
+                    return after(holder.openThrough(key, typeof path === 'string' ? path : path.path, flags), (handle) => { owed = true; return heldOpen(handle); });
                 });
             };
             return after(through(), (handle) => (handle === DELEGATE ? changing('open', () => authority.open(path, flags)) : handle));
@@ -585,7 +588,10 @@ export function residentFilesystem(session, resident, delegation) {
         delegated('open');
         return after(authority.open(path, flags), (handle) => {
             readers.add(handle.id);
-            pendingDirectories.set(handle.id, keyOf(handle.path));
+            // A directory is listed here while its name still leads to it.
+            const { type, dev, ino } = handle.stat;
+            if (type === 'directory' && dev === store.device)
+                directories.set(handle.id, { key: keyOf(handle.path), dev, ino });
             return handle;
         });
     };
@@ -599,16 +605,7 @@ export function residentFilesystem(session, resident, delegation) {
             return statOf(holder.fstat(handleId));
         }
         delegated('fstat');
-        return after(authority.fstat(handleId), (stat) => {
-            // A directory opened read-only is listed here while its name still leads to it.
-            const key = pendingDirectories.get(handleId);
-            if (key !== undefined) {
-                pendingDirectories.delete(handleId);
-                if (stat.type === 'directory' && stat.dev === store.device)
-                    directories.set(handleId, { key, dev: stat.dev, ino: stat.ino });
-            }
-            return stat;
-        });
+        return authority.fstat(handleId);
     };
     /**
      * A write-through description's stat: the session's, of its description's
@@ -693,7 +690,6 @@ export function residentFilesystem(session, resident, delegation) {
             return after(authority.close(reader), report);
         }
         if (readers.delete(handleId)) {
-            pendingDirectories.delete(handleId);
             directories.delete(handleId);
             delegated('close');
             return authority.close(handleId);
@@ -730,19 +726,20 @@ export function residentFilesystem(session, resident, delegation) {
         });
     }
     // A descriptor of the holder's is reopened here where the holder decides it,
-    // else at the session by the file's identity, once what was decided is sent.
+    // else, once what was decided is sent, by its file's name while that name has it.
     const bySessionReopen = Reflect.get(fs, 'reopen');
     if (typeof bySessionReopen === 'function') {
         Reflect.set(fs, 'reopen', (target, flags, options) => {
-            if (!('handle' in target) || !holder?.owns(target.handle))
+            if (!holder?.owns(target.handle))
                 return Reflect.apply(bySessionReopen, fs, [target, flags, options]);
             const local = holder.reopen(target.handle, flags);
             if (local !== undefined) {
                 counts.local++;
-                return local;
+                return heldOpen(local);
             }
-            const { dev, ino } = holder.fstat(target.handle);
-            return holder.flush().then(() => Reflect.apply(bySessionReopen, fs, [{ dev, ino }, flags, options]));
+            const identity = holder.fstat(target.handle);
+            const name = '/' + holder.keyOf(target.handle);
+            return holder.flush().then(() => openIdentified(fs, name, flags, identity));
         });
     }
     for (const name of ['fchmod', 'fchown', 'futimes', 'dup']) {

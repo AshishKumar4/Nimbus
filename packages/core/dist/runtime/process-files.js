@@ -1061,11 +1061,11 @@ class AwaitingProcessBridge {
                 abandon(node);
                 throw error;
             }
-            return this.descriptors.issue(node, opened);
+            return this.descriptors.open(node, opened);
         });
     }
     reopen(target, flags, options) {
-        if (!('handle' in target) || !this.awaits(target.handle))
+        if (!this.awaits(target.handle))
             return this.bridge.reopen(target, flags, options);
         // A file on a mount that answers by awaiting: reopened there, by the name it is held by.
         this.live();
@@ -1090,7 +1090,7 @@ class AwaitingProcessBridge {
                 abandon(node);
                 throw error;
             }
-            return this.descriptors.issue(node, opened);
+            return this.descriptors.open(node, opened);
         });
     }
     /** The bridge's own descriptor, or this face's answer for one that awaits. */
