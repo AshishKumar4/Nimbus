@@ -79,6 +79,8 @@ function commandContext(args) {
       async stat() { return { type: 'directory', size: 0, mtimeMs: 0, dev: 1 }; },
       // Each directory is empty: a destination is one a clone may take.
       async readdir() { return []; },
+      // And so holds no file to read (a config the clone looks for).
+      async readFile(path) { throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' }); },
     },
   };
 }
