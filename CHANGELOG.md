@@ -8,15 +8,14 @@ published independently in the `@nimbus-sh` npm scope.
 - Changed: real Vite (`NIMBUS_REAL_VITE=1 vite`) runs as one of the session's
   resident processes, with the lifecycle every resident has. `vite` returns
   once Vite listens, and a Vite that fails to boot fails the command instead
-  of its first page. `vite stop` ends it as SIGTERM (143; it was 0). Fixed: a
-  server whose isolate the platform resets ends with 137 and frees its port,
-  and the next request brings it back under a new pid; before, its pid stayed
-  running. A second `vite` ends the server it replaces; before, that pid
-  stayed running. `spawnWorker` takes `identity` (the argv, credential and
-  exec id of a process no invoker names) and `bindings` (beside the
-  process's own SUPERVISOR). Removed: the stateless fallback for hosts
-  without Durable Object facets, where no resident process can run, and
-  `/api/_diag/cirrus`.
+  of its first page. Fixed: a server whose isolate the platform resets ends
+  with 137 and frees its port, and the next request brings it back under a
+  new pid; before, its pid stayed running. A second `vite` ends the server
+  it replaces; before, that pid stayed running. `spawnWorker` takes
+  `identity` (the argv, credential and exec id of a process no invoker
+  names) and `bindings` (beside the process's own SUPERVISOR). Removed: the
+  stateless fallback for hosts without Durable Object facets, where no
+  resident process can run, and `/api/_diag/cirrus`.
 ## 2026-10-12: platform 0.8.2, core 0.18.0, fabric 0.13.0, worker 0.16.0, loom 0.2.5, sdk 0.13.1, react 0.3.1, cli 0.2.5, create-nimbus-app 0.2.2
 
 - Fixed (security): the shell's Ctrl+P palette put file names into the page as

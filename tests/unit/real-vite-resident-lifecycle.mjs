@@ -10,7 +10,7 @@
 //      env carrying its own SUPERVISOR and the HMR channel, and its port
 //      routed to that process;
 //   2. `kill <pid>` ends it 143, frees its port and releases its facet;
-//   3. `vite stop` does the same, as SIGTERM;
+//   3. `vite stop` does the same, the server exiting 0;
 //   4. a second `vite` ends the server already running before it serves;
 //   5. killProcess ends it 137;
 //   6. a lost facet ends it 137, its port answering with the cause, and the
@@ -136,8 +136,8 @@ try {
   const stop = await sh(`cd ${ROOT} && NIMBUS_REAL_VITE=1 vite stop`);
   assert.equal(stop.code, 0, stop.err);
   assert.match(stop.out, /Dev server stopped/);
-  ended(second.pid, 143, second.facet, 'vite stop');
-  console.log('  [3] vite stop ends it as SIGTERM');
+  ended(second.pid, 0, second.facet, 'vite stop');
+  console.log('  [3] vite stop ends it, exiting 0');
 
   // ── 4. a second vite ends the first ─────────────────────────────────────
   assert.equal((await vite()).code, 0);

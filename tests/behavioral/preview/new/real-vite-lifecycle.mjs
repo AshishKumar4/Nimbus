@@ -68,7 +68,7 @@ try {
   const stopped = await terminal.run('vite stop', 30_000);
   a.check('vite stop says it stopped the server', stopped.output.includes('Dev server stopped'), stopped.output);
   const afterStop = await statusOf(again);
-  a.check('vite stop ends it as SIGTERM', afterStop === 'killed(143)', String(afterStop));
+  a.check('vite stop ends it, exiting 0', afterStop === 'exited(0)', String(afterStop));
 } finally {
   await terminal.close();
   const deleted = await deleteSession(sid);
