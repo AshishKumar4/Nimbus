@@ -4017,28 +4017,34 @@ function prefetchNeed(closureBytes) {
  * waits under `wait`: a launch whose process ends meanwhile is never admitted.
  */
 async function admitPrefetch(wait, bytes = SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES) {
-    // Attributed so it lands under `prefetchBundleBytes`, not the unattributed remainder.
-    const immediate = tryAcquireSupervisorAllocation(bytes);
-    let lease = immediate;
-    if (lease === null) {
-        const waiting = wait?.();
-        try {
-            lease = await acquireSupervisorAllocation(bytes, waiting?.signal);
-            // Room came as its launch ended: given back, not used.
-            if (waiting?.signal.aborted) {
-                lease.release();
-                throw waiting.signal.reason;
-            }
+    const now = tryAdmitPrefetch(bytes);
+    if (now !== null)
+        return now;
+    const waiting = wait?.();
+    try {
+        const lease = await acquireSupervisorAllocation(bytes, waiting?.signal);
+        // Room came as its launch ended: given back, not used.
+        if (waiting?.signal.aborted) {
+            lease.release();
+            throw waiting.signal.reason;
         }
-        finally {
-            waiting?.dispose();
-        }
+        return admissionOf(lease, bytes, true);
     }
-    const admitted = lease;
+    finally {
+        waiting?.dispose();
+    }
+}
+/** admitPrefetch's admission where there is room now, at once (no await); null where it would wait. */
+function tryAdmitPrefetch(bytes) {
+    const lease = tryAcquireSupervisorAllocation(bytes);
+    return lease === null ? null : admissionOf(lease, bytes, false);
+}
+function admissionOf(admitted, bytes, queued) {
+    // Attributed so it lands under `prefetchBundleBytes`, not the unattributed remainder.
     let held = bytes;
     prefetchBundleStart(held);
     return {
-        queued: immediate === null,
+        queued,
         fit(closureBytes) {
             const need = prefetchNeed(closureBytes);
             if (held === 0 || need >= held)
@@ -6031,8 +6037,13 @@ export class FacetManager {
         if (this.buildAdmissions.has(pid)) {
             return this._generateWithin(pid, vfsState, others, generate).finally(() => this._releaseBuildAdmission(pid));
         }
-        // Its closure is known: what the map needs is taken at once.
-        return withPrefetchAllocation(async () => await this._generateWithin(pid, vfsState, others, generate), () => this._launchEnds(pid), prefetchNeed(vfsState.rawBytes ?? 0));
+        // Its closure is known: what the map needs is taken at once, with no
+        // await where there is room (a cache hit's path).
+        const need = prefetchNeed(vfsState.rawBytes ?? 0);
+        const now = tryAdmitPrefetch(need);
+        if (now !== null)
+            return this._generateWithin(pid, vfsState, others, generate).finally(() => now.release());
+        return withPrefetchAllocation(async () => await this._generateWithin(pid, vfsState, others, generate), () => this._launchEnds(pid), need);
     }
     /** _generateUnderCeiling's work, under its admission. */
     async _generateWithin(pid, vfsState, others, generate) {
