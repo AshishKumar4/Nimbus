@@ -4000,30 +4000,50 @@ export async function buildPrefetchBundle(vfs, options) {
  * over its base (2.5 times).
  */
 const PREFETCH_PEAK_PER_BYTE = 3;
+/** What work made from a closure of `closureBytes` holds at its peak, within the budget. */
+function prefetchNeed(closureBytes) {
+    return Math.min(SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, Math.max(1, Math.ceil(closureBytes * PREFETCH_PEAK_PER_BYTE)));
+}
 /**
- * An admission (Kinu #29): the whole of the supervisor's admitted transient
- * budget, taken at once, until its work has measured the closure it is made
- * from (`fit`), then PREFETCH_PEAK_PER_BYTE times that at most, the rest
- * given back to the work queued behind it. A launch's build gathers its
- * cells and serializes them under one, and keeps it until its module map is
- * generated (FacetManager.buildAdmissions), so no other build runs beside
- * them beyond what the budget holds. Nothing asks the pool while holding one
- * (two builds holding their cells while a third queued for more deadlocked
- * every one).
+ * An admission (Kinu #29): `bytes` of the supervisor's admitted transient
+ * budget, by default the whole of it, taken at once, until its work has
+ * measured the closure it is made from (`fit`), then PREFETCH_PEAK_PER_BYTE
+ * times that at most, the rest given back to the work queued behind it. A
+ * launch's build gathers its cells and serializes them under one, and keeps
+ * it until its module map is generated (FacetManager.buildAdmissions), so no
+ * other build runs beside them beyond what the budget holds. Nothing asks
+ * the pool while holding one (two builds holding their cells while a third
+ * queued for more deadlocked every one). One that has to wait for room
+ * waits under `wait`: a launch whose process ends meanwhile is never admitted.
  */
-async function admitPrefetch() {
+async function admitPrefetch(wait, bytes = SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES) {
     // Attributed so it lands under `prefetchBundleBytes`, not the unattributed remainder.
-    const immediate = tryAcquireSupervisorAllocation(SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES);
-    const lease = immediate ?? await acquireSupervisorAllocation(SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES);
-    let held = SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES;
+    const immediate = tryAcquireSupervisorAllocation(bytes);
+    let lease = immediate;
+    if (lease === null) {
+        const waiting = wait?.();
+        try {
+            lease = await acquireSupervisorAllocation(bytes, waiting?.signal);
+            // Room came as its launch ended: given back, not used.
+            if (waiting?.signal.aborted) {
+                lease.release();
+                throw waiting.signal.reason;
+            }
+        }
+        finally {
+            waiting?.dispose();
+        }
+    }
+    const admitted = lease;
+    let held = bytes;
     prefetchBundleStart(held);
     return {
         queued: immediate === null,
         fit(closureBytes) {
-            const need = Math.max(1, Math.ceil(closureBytes * PREFETCH_PEAK_PER_BYTE));
+            const need = prefetchNeed(closureBytes);
             if (held === 0 || need >= held)
                 return;
-            lease.shrinkTo(need);
+            admitted.shrinkTo(need);
             prefetchBundleEnd(held - need);
             held = need;
         },
@@ -4032,13 +4052,13 @@ async function admitPrefetch() {
                 return;
             prefetchBundleEnd(held);
             held = 0;
-            lease.release();
+            admitted.release();
         },
     };
 }
-/** `work` under an admission of its own, given back as it ends. */
-async function withPrefetchAllocation(work) {
-    const admission = await admitPrefetch();
+/** `work` under an admission of its own (admitPrefetch's `wait` and `bytes`), given back as it ends. */
+async function withPrefetchAllocation(work, wait, bytes) {
+    const admission = await admitPrefetch(wait, bytes);
     try {
         return await work(admission);
     }
@@ -5974,7 +5994,7 @@ export class FacetManager {
             return { state: vfsState, shared: { state: { ...vfsState }, revision } };
         };
         const building = (async () => {
-            const admission = await admitPrefetch();
+            const admission = await admitPrefetch(() => this._launchEnds(entry.pid));
             try {
                 const built = await buildUnder(admission);
                 this.buildAdmissions.set(entry.pid, admission);
@@ -6011,10 +6031,8 @@ export class FacetManager {
         if (this.buildAdmissions.has(pid)) {
             return this._generateWithin(pid, vfsState, others, generate).finally(() => this._releaseBuildAdmission(pid));
         }
-        return withPrefetchAllocation(async (admission) => {
-            admission.fit(vfsState.rawBytes ?? 0);
-            return await this._generateWithin(pid, vfsState, others, generate);
-        });
+        // Its closure is known: what the map needs is taken at once.
+        return withPrefetchAllocation(async () => await this._generateWithin(pid, vfsState, others, generate), () => this._launchEnds(pid), prefetchNeed(vfsState.rawBytes ?? 0));
     }
     /** _generateUnderCeiling's work, under its admission. */
     async _generateWithin(pid, vfsState, others, generate) {
@@ -7280,7 +7298,7 @@ export class FacetManager {
             const serialized = _serializeBundleForFacet(gathered.bundle);
             assertStagedBundleFitsRpcPayload(serialized, gathered.bundle);
             return { vfsState: gathered, vfsBundle: serialized };
-        });
+        }, () => this._launchEnds(entry.pid));
         const stageSpec = {
             mode,
             argv: opts.argv,
@@ -7489,6 +7507,19 @@ export class FacetManager {
         if (this.processes.get(pid)?.state === 'running')
             return;
         throw new Error(`Nimbus: the launch for pid ${pid} was cancelled while it was suspended`);
+    }
+    /**
+     * What `pid`'s launch waits for room under (admitPrefetch): aborted once
+     * its process ends, so a launch killed or destroyed while it queued is
+     * never admitted after its end.
+     */
+    _launchEnds(pid) {
+        this._assertLaunchStillOwned(pid);
+        const ended = new AbortController();
+        const dispose = this.processes.subscribeTerminal(pid, () => {
+            ended.abort(new Error(`Nimbus: the launch for pid ${pid} was cancelled while it waited for room`));
+        });
+        return { signal: ended.signal, dispose };
     }
     /**
      * The one way this manager boots a resident process. Every resident process

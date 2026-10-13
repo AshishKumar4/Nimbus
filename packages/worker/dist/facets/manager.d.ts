@@ -2038,6 +2038,12 @@ export declare class FacetManager {
      */
     private _assertLaunchStillOwned;
     /**
+     * What `pid`'s launch waits for room under (admitPrefetch): aborted once
+     * its process ends, so a launch killed or destroyed while it queued is
+     * never admitted after its end.
+     */
+    private _launchEnds;
+    /**
      * The one way this manager boots a resident process. Every resident process
      * is a facet of this session; there is nothing to place and nothing here
      * decides anything about where a program runs.
