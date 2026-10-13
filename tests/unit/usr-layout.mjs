@@ -187,7 +187,7 @@ const ETC = ['etc/profile', 'etc/hostname', 'etc/os-release'];
   const kernel0 = first.vfs.as(CRED_KERNEL);
   const user = first.vfs.as(CRED_SESSION_USER);
   // As an earlier release left it: no store yet, and /usr/lib the user's.
-  kernel0.rmdir('usr/lib/nimbus');
+  if (kernel0.statIfPresent('usr/lib/nimbus', false) !== null) kernel0.rmdir('usr/lib/nimbus');
   kernel0.chown('usr/lib', USER, USER);
   // A runtime of the user's own making in a store the user made.
   const pkg = toyPackage({ name: 'forged' });
@@ -225,7 +225,7 @@ const ETC = ['etc/profile', 'etc/hostname', 'etc/os-release'];
   const kernel = ws.vfs.as(CRED_KERNEL);
   // Only root could have done this (through sudo): the kernel still writes nothing through it.
   kernel.mkdir('etc/elsewhere', { mode: 0o755 });
-  kernel.rmdir('usr/lib/nimbus');
+  if (kernel.statIfPresent('usr/lib/nimbus', false) !== null) kernel.rmdir('usr/lib/nimbus');
   kernel.symlink('/etc/elsewhere', 'usr/lib/nimbus');
   await assert.rejects(ws.runtimes.installPackage(toyPackage()), /usr\/lib\/nimbus/);
   assert.deepEqual(kernel.readdir('etc/elsewhere'), [], 'nothing was written through it');
