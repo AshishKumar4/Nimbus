@@ -265,14 +265,16 @@ try {
       hostGitIn(work, work, ['init', '-q', '-b', 'main', hostRepo]);
       hostGitIn(work, hostRepo, ['commit', '-q', '--allow-empty', '-m', 'mine']);
       hostGitIn(work, hostRepo, ['remote', 'add', 'origin', url]);
+      hostGitIn(work, hostRepo, ['branch', 'other']);
       const repo = '/home/user/rpc-repo';
       assert.equal((await session.git('/home/user', ['init', '-q', '-b', 'main', repo])).code, 0);
       session.kernel.writeFile(`${repo.slice(1)}/a.txt`, 'a\n');
-      for (const args of [['add', 'a.txt'], ['commit', '-q', '-m', 'mine'], ['remote', 'add', 'origin', url]]) {
+      for (const args of [['add', 'a.txt'], ['commit', '-q', '-m', 'mine'], ['remote', 'add', 'origin', url], ['branch', 'other']]) {
         const step = await session.git(repo, args, { GIT_AUTHOR_NAME: 'a', GIT_AUTHOR_EMAIL: 'a@b', GIT_COMMITTER_NAME: 'a', GIT_COMMITTER_EMAIL: 'a@b' });
         assert.equal(step.code, 0, `${args[0]}: ${step.stderr}`);
       }
-      for (const args of [['fetch', 'origin'], ['pull', 'origin', 'main'], ['push', 'origin', 'main:other']]) {
+      // A branch the remote lacks: its push sends a pack.
+      for (const args of [['fetch', 'origin'], ['pull', 'origin', 'main'], ['push', 'origin', 'other']]) {
         const h = await realGit(hostRepo, args);
         const o = await session.git(repo, args);
         assert.deepEqual([o.code, said(o.stderr)], [h.code, said(h.stderr)], `${args[0]} (git's: ${h.stderr}; ours: ${o.stderr})`);

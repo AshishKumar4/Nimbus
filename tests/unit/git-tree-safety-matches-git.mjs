@@ -254,7 +254,7 @@ console.log('  ok  .g\u200cit under core.protectHFS: refused, as git does');
       const lines = (text) => text.split('\n').filter((line) => line && !line.startsWith('Cloning into') && !line.startsWith('[git]'));
       assert.equal(ours.code, host.code, `clone ${flags.join(' ')}: exit (git's: ${host.stderr}; ours: ${ours.stderr})`);
       assert.deepEqual(lines(ours.stderr), lines(host.stderr), `clone ${flags.join(' ')}: git's errors`);
-      assert.deepEqual(sessionState(`/home/user/${dest}`).filter((line) => !line.startsWith('.git/')), ['.git/'], `clone ${flags.join(' ')}: nothing checked out`);
+      assert.deepEqual(sessionState(`/home/user/${dest}`).filter((line) => !line.startsWith('.git/')), [], `clone ${flags.join(' ')}: nothing checked out`);
       assert.equal(user.exists(`home/user/${dest}/.git/index`), false, `clone ${flags.join(' ')}: no index, as git leaves none`);
       for (const probe of [['rev-parse', 'HEAD'], ['ls-tree', '-r', 'HEAD']]) {
         assert.equal(hostGit(session.materialize(`home/user/${dest}`, join(work, `${dest}-copy`)), probe).stdout,
