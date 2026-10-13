@@ -168,6 +168,14 @@ const third = devServer('third', { warn: true, onLog: (message, server) => { if 
 assert.equal(await third.server.start(), false, 'a start stopped as it served reports it');
 assert.equal(third.server.isRunning, false, 'and the server does not serve');
 assert.equal(third.watching(), false, 'nor watch');
+
+// ── a server stopped, then started again, starts ─────────────────────────
+const fourth = devServer('fourth');
+assert.equal(await fourth.server.start(), true);
+fourth.server.stop();
+assert.equal(await fourth.server.start(), true, 'a start after a stop that came before it starts');
+assert.equal(fourth.server.isRunning, true);
+fourth.server.stop();
 assert.deepEqual(firstBuilt, [true], '"Worker built" is said once the Worker serves');
 
 console.log('ok - wrangler-dev-superseded-build ("Worker built" once it serves; a superseded build says and changes nothing)');
