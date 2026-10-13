@@ -160,6 +160,29 @@ export function esmLink(records, lists) {
     }
     return { exports: byExportedName(exports, lists), requests, namespaces, stars };
 }
+/** The bindings of a module linked as `link`. */
+export function esmBindings(link, lists) {
+    const exports = lists.list();
+    for (let i = 0; i < link.exports.length; i++)
+        lists.push(exports, link.exports[i].exported);
+    const imports = lists.list();
+    for (let i = 0; i < link.requests.length; i++) {
+        const names = lists.list();
+        const bindings = link.requests[i].bindings;
+        for (let j = 0; j < bindings.length; j++) {
+            const binding = bindings[j];
+            if (binding.kind === 'named')
+                lists.push(names, binding.imported);
+        }
+        lists.push(imports, names);
+    }
+    for (let i = 0; i < link.exports.length; i++) {
+        const entry = link.exports[i];
+        if (entry.kind === 'reexport')
+            lists.push(imports[entry.request], entry.name);
+    }
+    return { exports, imports, stars: link.stars };
+}
 /** `entries` sorted by exported name, stably: a merge sort, which calls nothing of the realm's. */
 function byExportedName(entries, lists) {
     const n = entries.length;

@@ -1,4 +1,4 @@
-import { reflectApply, resume, resumeThrowing, withElement } from './intrinsics.js';
+import { SafeWeakSet, SyntaxError, reflectApply, reflectHas, resume, resumeThrowing, withElement } from './intrinsics.js';
 import { ROOT_ENV, TDZ, tdzError } from './runtime.js';
 import { initializeStack, popStack, pushStack, stampStack, suspendedStack } from './stack.js';
 /** The wrapper function that runs `plan`. */
@@ -45,7 +45,17 @@ export function moduleCell(plan, ops, helpers) {
         });
     };
 }
-/** The export getters installed; each request required in order, its interop made; then the import namespaces, then `export *`. */
+/** The exports objects of the modules whose link has finished: every name they export is there, `export *`'s too. */
+const linked = new SafeWeakSet();
+/**
+ * The export getters installed; each request required in order, its interop
+ * made; then the import namespaces, then `export *`. Then, before the body
+ * runs, each name read of an ES module is checked to be one it exports, as
+ * Node's linker checks it: a registry's namespace, or a module this
+ * interpreter linked. One still linking (a cycle) is not yet complete, and a
+ * CommonJS module's names are its source's (cjs-module-lexer's), not its
+ * exports object's; neither is checked here.
+ */
 function link(plan, env, requireArg, helpers, exportsObject, define) {
     const { exports, requests, namespaces, stars } = plan;
     for (let i = 0; i < exports.length; i++)
@@ -62,6 +72,22 @@ function link(plan, env, requireArg, helpers, exportsObject, define) {
         env[namespaces[i].slot] = reflectApply(helpers.namespace, undefined, [env[namespaces[i].from]]);
     for (let i = 0; i < stars.length; i++)
         reflectApply(helpers.star, undefined, [exportsObject, define, env[stars[i]]]);
+    if (typeof exportsObject === 'object' && exportsObject !== null)
+        linked.add(exportsObject);
+    for (let i = 0; i < requests.length; i++) {
+        const { source, module, names } = requests[i];
+        if (module < 0 || names.length === 0)
+            continue;
+        const m = env[module];
+        if (reflectApply(helpers.interop, undefined, [m]) !== m || typeof m !== 'object' || m === null)
+            continue;
+        if (!linked.has(m) && reflectHas(m, '__esModule'))
+            continue;
+        for (let j = 0; j < names.length; j++) {
+            if (!reflectHas(m, names[j]))
+                throw new SyntaxError(`The requested module '${source}' does not provide an export named '${names[j]}'`);
+        }
+    }
 }
 /** The getter of `entry` over one evaluation's frame. */
 function exportGetter(env, entry, helpers) {

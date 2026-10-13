@@ -88,8 +88,9 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
     for (let id = 0; id < table.length; id++)
         ids.set(`module:${table[id][1]}`, id);
     const names = new Map();
-    /** The row of a facade or JSON module, added the first time it is named. */
-    const member = (kind, key, source) => {
+    const bindings = [];
+    /** The row of a facade or JSON module, which exports `exported` beside `default`, added the first time it is named. */
+    const member = (kind, key, exported, source) => {
         let id = ids.get(`${kind}:${key}`);
         if (id === undefined) {
             id = table.length;
@@ -97,6 +98,7 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
             const name = esmRowName(row, id);
             table.push(row);
             members[name] = source(id, name);
+            bindings[id] = ['default', ...exported];
             ids.set(`${kind}:${key}`, id);
         }
         return id;
@@ -208,11 +210,9 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
         resolver.assertLoadable(resolution);
         if (resolution.format === 'builtin') {
             const builtin = (resolution.builtin ?? resolution.url).replace(/^node:/, '');
-            if (!FACET_PROVIDED_PACKAGES.includes(builtin)) {
-                return member('builtin', builtin, (id, name) => builtinFacadeModule(name, id, NODE_BUILTIN_EXPORTS[builtin] ?? []));
-            }
             // A package the process provides loads as the process's own module, with its names.
-            return member('builtin', builtin, (id, name) => builtinFacadeModule(name, id, PROVIDED_PACKAGE_EXPORTS[builtin] ?? []));
+            const exported = (FACET_PROVIDED_PACKAGES.includes(builtin) ? PROVIDED_PACKAGE_EXPORTS[builtin] : NODE_BUILTIN_EXPORTS[builtin]) ?? [];
+            return member('builtin', builtin, exported, (id, name) => builtinFacadeModule(name, id, exported));
         }
         if (resolution.path === undefined)
             throw new Error(`Nimbus: ${resolution.url} has no file to stage`);
@@ -237,13 +237,13 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
                 throw notStaged(resolution.path, resolution.url);
             // Node's JSON translator: the object require() gives for the same
             // file, one in require.cache whichever loads it first.
-            return member('json', key, (id, name) => jsonFacadeModule(name, id));
+            return member('json', key, [], (id, name) => jsonFacadeModule(name, id));
         }
         // CommonJS by Node's format for it, loaded by require().
         if (!isCode(key))
             throw notStaged(resolution.path, resolution.url);
         const exported = await exportNames(resolution.path);
-        return member('commonjs', key, (id, name) => commonJsFacadeModule(name, id, exported));
+        return member('commonjs', key, exported, (id, name) => commonJsFacadeModule(name, id, exported));
     };
     // A `.js` that is a module by its syntax alone, outside node_modules,
     // under a package.json with no "type": Node's loader warns of it (ESM_TYPELESS).
@@ -293,6 +293,20 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
             }
         }
         targetNames.push(targets);
+        // What its static imports read of their rows, by the specifiers as written.
+        const read = sites.bindings;
+        if (read !== undefined && read.imports.length === sites.statics.length) {
+            const imports = [];
+            for (let at = 0; at < sites.statics.length; at++) {
+                if (rowTargets[at] >= 0 && read.imports[at].length > 0)
+                    imports.push([rowTargets[at], sites.statics[at].specifier, ...read.imports[at]]);
+            }
+            const stars = read.stars.map((at) => rowTargets[at]).filter((row) => row >= 0);
+            bindings[id] = [read.exports, stars, imports];
+        }
+        else {
+            bindings[id] = null;
+        }
         id++;
     }
     // The require() calls a module's top level can make static imports
@@ -326,7 +340,9 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
         }));
         id++;
     }
-    return { modules, members, table, missing, ms: Date.now() - started };
+    for (let row = 0; row < table.length; row++)
+        bindings[row] ??= null;
+    return { modules, members, table, missing, bindings, ms: Date.now() - started };
 }
 /**
  * Whether the module of row `requirer` may import row `target` in place of

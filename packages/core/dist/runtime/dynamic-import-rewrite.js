@@ -28,6 +28,7 @@
  */
 import { Parser, parseExpressionAt, tokenizer, tokTypes } from 'acorn';
 import { applySourceEdits, isAstNode, MODULE_PARSE_OPTIONS, parseStatements } from './javascript-ast.js';
+import { esmBindings, esmLink, esmRecord } from './esm-interop.js';
 import { createModuleLexer } from './module-lexer.js';
 import { ambiguousSlashes, htmlComments, lineEnd, Lines, parenthesisEnd, skipTrivia } from './import-lexer-hazards.js';
 export const DYNAMIC_IMPORT_HELPER = '__nimbusDynamicImport';
@@ -95,9 +96,10 @@ function attributesClauseAfter(source, site, lastEnd) {
 }
 /**
  * The lexer's reading of a cell's import() calls, import.meta and static
- * specifiers, or null where only the grammar can decide (see the header).
+ * specifiers, and with `withBindings` its bindings, or null where only the
+ * grammar can decide (see the header).
  */
-function lexedImportSites(code) {
+function lexedImportSites(code, withBindings = false) {
     // The lexer reads a hashbang line as code. Blank it: lengths, and so
     // every position, stay the cell's.
     const hashbang = code.startsWith('#!') ? lineEnd(code, 0) : 0;
@@ -111,6 +113,8 @@ function lexedImportSites(code) {
     const sites = [];
     const metas = [];
     const statics = [];
+    const imports = [];
+    const stars = [];
     for (const entry of lexed) {
         if (entry.t === DYNAMIC_IMPORT)
             sites.push({ ss: entry.ss, se: entry.se, d: entry.d, lexed: true });
@@ -124,6 +128,15 @@ function lexedImportSites(code) {
             const attributes = Object.fromEntries(entry.at ?? []);
             const clause = Object.keys(attributes).length > 0 ? attributesClause(source, site, entry.se) : undefined;
             statics.push({ ...site, specifier: entry.n, attributes, ...(clause ? { clause } : {}) });
+            if (withBindings) {
+                // The declaration up to its specifier's quote: what it reads of that module.
+                const read = clauseNames(source.slice(entry.ss, site.start));
+                if (read === null)
+                    return null;
+                if (read.star)
+                    stars.push(imports.length);
+                imports.push(read.names);
+            }
         }
         else {
             // A phase import (`import source`, `import defer`): the grammar's to refuse or read.
@@ -154,7 +167,116 @@ function lexedImportSites(code) {
         }
         calls.push({ start: site.ss, open: site.d });
     }
-    return { calls, metas, statics, moduleSyntax: lexing[3] === true };
+    const sitesRead = { calls, metas, statics, moduleSyntax: lexing[3] === true };
+    if (!withBindings)
+        return sitesRead;
+    const exports = exportNames(lexing[1]);
+    return exports === null ? null : { ...sitesRead, bindings: { exports, imports, stars } };
+}
+/** The names of the lexer's exports, or null for an entry it did not name. */
+function exportNames(lexedExports) {
+    if (!Array.isArray(lexedExports))
+        return null;
+    const names = [];
+    for (const entry of lexedExports) {
+        const name = typeof entry === 'object' && entry !== null ? Reflect.get(entry, 'n') : undefined;
+        if (typeof name !== 'string')
+            return null;
+        names.push(name);
+    }
+    return names;
+}
+/**
+ * What a static import or re-export the lexer read (`clause`, from its
+ * `import` or `export` to its specifier) reads of its module: the names it
+ * imports (`default` a default import's) or re-exports, and whether it is
+ * `export * from`. Null for a declaration of another shape.
+ */
+function clauseNames(clause) {
+    const tokens = [];
+    try {
+        for (const token of tokenizer(clause, MODULE_PARSE_OPTIONS))
+            tokens.push({ type: token.type, value: Reflect.get(token, 'value') });
+    }
+    catch {
+        return null;
+    }
+    let at = 1;
+    const is = (type) => tokens[at]?.type === type;
+    /** The name at `at` (an identifier, a keyword, a string), or null; with `value`, only that word. */
+    const word = (value) => {
+        const token = tokens[at];
+        if (token === undefined || typeof token.value !== 'string')
+            return null;
+        if (token.type !== tokTypes.name && token.type !== tokTypes.string && token.type.keyword === undefined)
+            return null;
+        if (value !== undefined && (token.value !== value || token.type === tokTypes.string))
+            return null;
+        return token.value;
+    };
+    /** `{ a, b as c }` from `at`: each specifier's first name (an import's imported, a re-export's local). */
+    const list = () => {
+        const names = [];
+        at++;
+        while (!is(tokTypes.braceR)) {
+            const name = word();
+            if (name === null)
+                return null;
+            names.push(name);
+            at++;
+            if (word('as') !== null) {
+                at++;
+                if (word() === null)
+                    return null;
+                at++;
+            }
+            if (is(tokTypes.comma))
+                at++;
+            else if (!is(tokTypes.braceR))
+                return null;
+        }
+        at++;
+        return names;
+    };
+    const from = (names, star) => (word('from') !== null && at === tokens.length - 1 ? { names, star } : null);
+    if (tokens[0]?.type === tokTypes._import) {
+        if (at === tokens.length)
+            return { names: [], star: false };
+        const names = [];
+        if (!is(tokTypes.star) && !is(tokTypes.braceL)) {
+            if (word() === null)
+                return null;
+            names.push('default');
+            at++;
+            if (!is(tokTypes.comma))
+                return from(names, false);
+            at++;
+        }
+        if (is(tokTypes.star)) {
+            at++;
+            if (word('as') === null)
+                return null;
+            at += 2;
+            return from(names, false);
+        }
+        if (!is(tokTypes.braceL))
+            return null;
+        const named = list();
+        return named === null ? null : from([...names, ...named], false);
+    }
+    if (tokens[0]?.type !== tokTypes._export)
+        return null;
+    if (is(tokTypes.star)) {
+        at++;
+        if (word('as') === null)
+            return from([], true);
+        at += 2;
+        return from([], false);
+    }
+    if (!is(tokTypes.braceL))
+        return null;
+    const named = list();
+    return named === null ? null : from(named, false);
 }
 /** The cell rewritten from the lexer's reading, or null where only the grammar can decide. */
 function rewriteFromLexer(code, call) {
@@ -171,7 +293,7 @@ function rewriteFromLexer(code, call) {
 export function readModuleImportSites(code) {
     let lexed;
     try {
-        lexed = lexedImportSites(code);
+        lexed = lexedImportSites(code, true);
     }
     catch (error) {
         if (!(isLexerError(error) || error instanceof SyntaxError || error instanceof RangeError))
@@ -183,6 +305,7 @@ export function readModuleImportSites(code) {
     const calls = [];
     const metas = [];
     const statics = [];
+    const records = [];
     let declarations = false;
     parseStatements(code, MODULE_PARSE_OPTIONS, {
         onNode: (node) => {
@@ -192,6 +315,12 @@ export function readModuleImportSites(code) {
                 metas.push({ start: node.start, end: node.end });
         },
         onStatement: (statement) => {
+            if (statement.type === 'ImportDeclaration' || statement.type === 'ExportNamedDeclaration'
+                || statement.type === 'ExportDefaultDeclaration' || statement.type === 'ExportAllDeclaration') {
+                const record = esmRecord(statement, ARRAY_LISTS);
+                if (record !== null)
+                    records.push(record);
+            }
             if (statement.type === 'ExportDefaultDeclaration')
                 declarations = true;
             if (statement.type !== 'ImportDeclaration' && statement.type !== 'ExportAllDeclaration' && statement.type !== 'ExportNamedDeclaration')
@@ -213,8 +342,13 @@ export function readModuleImportSites(code) {
     });
     calls.sort((a, b) => a.start - b.start);
     metas.sort((a, b) => a.start - b.start);
-    return { calls, metas, statics, moduleSyntax: declarations || metas.length > 0 };
+    return {
+        calls, metas, statics, moduleSyntax: declarations || metas.length > 0,
+        bindings: esmBindings(esmLink(records, ARRAY_LISTS), ARRAY_LISTS),
+    };
 }
+/** esm-interop's lists, as arrays. */
+const ARRAY_LISTS = { list: () => [], push: (list, value) => { list.push(value); } };
 /** Marks the lexer reports only where it reads the marked spot as code. */
 const CODE_MARK = ' import.meta ';
 /**

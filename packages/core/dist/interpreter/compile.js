@@ -7,13 +7,27 @@ import { AWAIT, BREAK, CONTINUE, Completion, DELEGATE, FunctionInfo, PrivateName
 import { arrayIteration, asyncFromSyncIterator, asyncIteratorClose, closeArrayIteration, describe, getIterator, iteratorFrom, iteratorMethod, spreadInto, } from './iteration.js';
 import { asGen, genCode, suspendedBind, suspendedSync, syncCode } from './code.js';
 import { classMaking, } from './classes.js';
-import { esmLink, esmRecord } from '../runtime/esm-interop.js';
+import { esmBindings, esmLink, esmRecord } from '../runtime/esm-interop.js';
 import { arrayWithHoles, callValue, constructValue, copyDataProperties, defineAccessor, keyOnce, nullBase, requireObjectCoercible, signalOf, templateObject, toPropertyKey, withHas, } from './operations.js';
 /** The lists esm-interop.ts makes for the interpreter: SafeLists. */
 const SAFE_LISTS = {
     list: newSafeList,
     push: (list, value) => { list[list.length] = value; },
 };
+/** How a module program's declarations link (esm-interop.ts). */
+function programLink(program) {
+    const records = newSafeList();
+    for (let n = 0; n < program.body.length; n++) {
+        const record = esmRecord(program.body[n], SAFE_LISTS);
+        if (record !== null)
+            append(records, record);
+    }
+    return esmLink(records, SAFE_LISTS);
+}
+/** What Node's linker checks of a module program: what each request must export, and what it exports (a late graph's link plan). */
+export function programBindings(program) {
+    return esmBindings(programLink(program), SAFE_LISTS);
+}
 /** The value an optional chain short-circuits to, inside the chain. */
 const SHORT = objectFreeze({ short: true });
 /** Compile `fi`'s body from `site`: called by the runtime on the function's first call. */
@@ -3780,13 +3794,9 @@ export class Compiler {
      * namespace import's holds the namespace.
      */
     modulePlan(program, root) {
-        const records = newSafeList();
-        for (let n = 0; n < program.body.length; n++) {
-            const record = esmRecord(program.body[n], SAFE_LISTS);
-            if (record !== null)
-                append(records, record);
-        }
-        const link = esmLink(records, SAFE_LISTS);
+        const link = programLink(program);
+        // What each request must export, which linking checks (modules.ts link).
+        const required = esmBindings(link, SAFE_LISTS).imports;
         // Each kept request's module goes to a slot of its own, and its interop
         // to another; a named import reads its name of one of them at each use.
         const requests = newSafeList();
@@ -3807,7 +3817,7 @@ export class Compiler {
                 if (binding.kind === 'named')
                     this.importBinding(root, binding.local, 'named', binding.imported, binding.imported === 'default' ? interop : module);
             }
-            append(requests, { source: request.source, module, interop });
+            append(requests, { source: request.source, module, interop, names: required[i] });
         }
         // An import's namespace goes to its binding; a re-export's
         // (`export * as`) to a slot of its own, when first read.

@@ -174,4 +174,19 @@ export interface EsmLink<Binding extends EsmImportBinding = EsmImportBinding> {
 }
 /** The link of a module whose declarations are `records`, in source order. */
 export declare function esmLink<Binding extends EsmImportBinding>(records: ArrayLike<EsmRecord<Binding>>, lists: EsmLists): EsmLink<Binding>;
+/**
+ * What Node's linker checks of a module, before any module of its graph
+ * runs: each name an import or a re-export reads of a requested module is
+ * one that module exports.
+ */
+export interface ModuleBindings {
+    /** The names it exports itself: its own, by name from a requested module, `export * as`. `export *` adds its modules' (`stars`). */
+    readonly exports: readonly string[];
+    /** By request, in source order (a static specifier's place): the names it imports or re-exports from that module, `default` a default import's. */
+    readonly imports: readonly (readonly string[])[];
+    /** The requests whose names `export *` re-exports. */
+    readonly stars: readonly number[];
+}
+/** The bindings of a module linked as `link`. */
+export declare function esmBindings(link: EsmLink, lists: EsmLists): ModuleBindings;
 //# sourceMappingURL=esm-interop.d.ts.map

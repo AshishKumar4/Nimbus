@@ -27,6 +27,9 @@ import { type StackUnit } from './stack.js';
 import { type Env, FunctionInfo, type FunctionShape, type InterpreterRuntime } from './runtime.js';
 import { type Code } from './code.js';
 import type { ModulePlan } from './modules.js';
+import { type ModuleBindings } from '../runtime/esm-interop.js';
+/** What Node's linker checks of a module program: what each request must export, and what it exports (a late graph's link plan). */
+export declare function programBindings(program: Program): ModuleBindings;
 /** What the host gives a compiled unit. */
 export interface UnitHost {
     /** The unit's `import(specifier, options)`. */

@@ -51,11 +51,16 @@ export interface ModulePlan {
     readonly dirnameSlot: number;
     /** The export getters, in the order they are installed. */
     readonly exports: readonly ModuleExport[];
-    /** Each requested module, required in order: the slot it goes to, and its interop's (a default import's); -1 for none. */
+    /**
+     * Each requested module, required in order: the slot it goes to, and its
+     * interop's (a default import's), -1 for none; and the names its imports
+     * and re-exports read of it (esm-interop.ts ModuleBindings).
+     */
     readonly requests: readonly {
         readonly source: string;
         readonly module: number;
         readonly interop: number;
+        readonly names: readonly string[];
     }[];
     /** Each import's namespace, made into `slot` from the module in `from` once every request is required. */
     readonly namespaces: readonly {
