@@ -1,13 +1,16 @@
 /**
  * git/pack/remote-failure.ts — a git server that could not be reached, or
- * refused, as git says it (remote-curl.c discover_refs, http.c
+ * refused, as git says it (remote-curl.c discover_refs and run_slot, http.c
  * handle_curl_result).
  *
- * The facet records what failed (remoteFailureOf): the transport (no
- * answer), or the HTTP status the server answered with, and the text it
- * sent with it when that is plain text. The command says it in git's words
- * (remoteFailureText), and exits as git does (128; a pull, whose fetch is
- * git's child, 1).
+ * The facet records what failed (remoteFailureOf): for the discovery, the
+ * transport (no answer), or the HTTP status the server answered with, and
+ * the text it sent with it when that is plain text; for the request for the
+ * pack (git's RPC, a POST), the status or the transport alone, its body
+ * never read, as git discards it. Every failing answer is taken in by one
+ * capture (answeredFailure). The command says it in git's words, the
+ * credentials it offered taken out (remoteFailureText), and exits as git
+ * does (128; a pull, whose fetch is git's child, 1).
  */
 import type { HttpClient } from '../../../vendor/git-http.generated.js';
 /** Why a request to the git server failed. */
@@ -22,7 +25,19 @@ export type RemoteFailure =
     kind: 'status';
     status: number;
     message?: string;
+}
+/** The request for the pack failed: the status it was answered with (null: no answer), and curl's words for it. */
+ | {
+    kind: 'rpc';
+    status: number | null;
+    detail: string;
 };
+/** Which request failed: the discovery (GET info/refs), or the request for the pack (a POST, git's RPC). */
+export type RemoteRequest = 'discovery' | 'rpc';
+/** A failure the server answered: its status. */
+type AnsweredFailure = Exclude<RemoteFailure, {
+    kind: 'transport';
+}>;
 /**
  * transport_anonymize_url: `url` without the user name and password its
  * authority may carry.
@@ -55,8 +70,14 @@ export declare function redactCredentials(text: string, secrets: readonly string
 export declare function remoteFailureText(url: string, failure: RemoteFailure, credentials: OfferedCredentials, secrets?: readonly string[]): string;
 /** What git says of a remote that names neither a configured remote nor a repository (transport.c, connect.c). */
 export declare function noSuchRemoteText(remote: string): string;
-/** The message of an answer's body, when its type is text/plain; the body is read (or cancelled). */
-export declare function plainTextMessage(contentType: string | null, body: ReadableStream<Uint8Array> | null): Promise<string | undefined>;
+/**
+ * The failure an answer with a failing `status` is, its body read or let
+ * go: a discovery's message is its body's first MESSAGE_BYTES when that is
+ * text/plain; the request for the pack's body is never read (rpc_in).
+ */
+export declare function answeredFailure(request: RemoteRequest, status: number, contentType: string | null | undefined, body: AsyncIterable<Uint8Array> | null | undefined): Promise<AnsweredFailure>;
+/** No answer to `request`: the transport's words for why. */
+export declare function transportFailure(request: RemoteRequest, detail: string): RemoteFailure;
 /**
  * What `error`, the facet's failure, says failed at the git server: an
  * UploadPackError's (a clone's own requests), or cf-git's through `http`;
@@ -70,9 +91,10 @@ export interface ObservedGitHttp extends HttpClient {
 }
 /**
  * `http` with each failure kept: a request that threw (the transport: that
- * error), and an answer with a failing status (its status, and its body when
- * plain text, which cf-git still reads after). cf-git's HttpError for that
- * status, or the transport's own error, is then known for what it is.
+ * error), and an answer with a failing status (answeredFailure; cf-git then
+ * reads an empty body). cf-git's HttpError for that status, or the
+ * transport's own error, is then known for what it is.
  */
 export declare function observedGitHttp(http: HttpClient): ObservedGitHttp;
+export {};
 //# sourceMappingURL=remote-failure.d.ts.map

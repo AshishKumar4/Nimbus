@@ -25,7 +25,8 @@
  */
 
 import { GRAPH_RECORDS_DIR, commitRecord } from './commit-graph.js';
-import { decodeBatch, parseTree, MODE_GITLINK, MODE_TREE } from './plan.js';
+import { decodeBatch, MODE_GITLINK, MODE_TREE } from './plan.js';
+import { TreeEntries } from './tree-object.js';
 import { OID_BYTES, oidToHex, PackFormatError } from './format.js';
 import {
   STAGE_DIR,
@@ -84,7 +85,6 @@ export interface HistoryStepResult {
   tagsFound?: string[];
 }
 
-const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 function transport(context: CloneContext): UploadPackOptions {
@@ -135,13 +135,14 @@ function lister(kind: HistoryKind, list: ListWriter, graph: ListWriter): StorePa
     const seen = new Set<string>();
     return (object) => {
       if (object.type !== 'tree') return;
-      for (const entry of parseTree(object.data)) {
-        if (entry.mode === MODE_TREE || entry.mode === MODE_GITLINK) continue;
-        const oid = object.data.subarray(entry.oidAt, entry.oidAt + OID_BYTES);
+      const data = object.data;
+      for (const e = new TreeEntries(data); e.next();) {
+        if (e.mode === MODE_TREE || e.mode === MODE_GITLINK) continue;
+        const oid = data.subarray(e.oidAt, e.oidAt + OID_BYTES);
         const hex = oidToHex(oid);
         if (seen.has(hex)) continue;
         seen.add(hex);
-        const name = encoder.encode(entry.name);
+        const name = data.subarray(e.nameAt, e.nameEnd);
         const record = new Uint8Array(OID_BYTES + 2 + name.byteLength);
         record.set(oid);
         new DataView(record.buffer).setUint16(OID_BYTES, name.byteLength);
