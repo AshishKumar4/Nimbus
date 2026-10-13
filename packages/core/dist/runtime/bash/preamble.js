@@ -816,7 +816,7 @@ function makeProc(s, pid, ppid, fds) {
                 return;
             }
             const sp = stackPointer();
-            proc.captures.sweep(proc.inst.exports.memory, sp);
+            proc.captures.sweep(sp);
             proc.captures.setting(env);
             c.reason = 'capture';
             c.captureEnv = env;
@@ -830,7 +830,7 @@ function makeProc(s, pid, ppid, fds) {
                 c.rewinding = false;
                 return;
             }
-            proc.captures.sweep(proc.inst.exports.memory, stackPointer());
+            proc.captures.sweep(stackPointer());
             c.reason = 'longjmp';
             c.ljEnv = env;
             c.ljVal = val;
@@ -1001,11 +1001,11 @@ function makeProc(s, pid, ppid, fds) {
     // Every copy bash makes of a jmp_buf, and every end of a saved one (wasm/bash/patches/procenv.patch).
     const nimbus_procenv = {
         copy: (dst, src) => {
-            proc.captures.sweep(proc.inst.exports.memory, stackPointer());
+            proc.captures.sweep(stackPointer());
             proc.captures.copied(proc.inst.exports.memory, dst, src);
         },
         drop: (at) => {
-            proc.captures.sweep(proc.inst.exports.memory, stackPointer());
+            proc.captures.sweep(stackPointer());
             proc.captures.dropped(at);
         },
     };

@@ -16,9 +16,12 @@
  * registry, buffer address → capture, and a count per capture of the buffers
  * that name it. A buffer on the stack ends without a hook, when its frame
  * returns or a longjmp skips it: below the stack pointer, it is dead
- * (sweep). A capture no buffer names is freed, and its space is taken back
- * from the top, or by sliding the live captures down when an unwind needs
- * the room. No memory is scanned.
+ * (sweep, at every hook, over the stack's buffers only). A buffer written
+ * over without a hook no longer holds its capture's words; that only keeps
+ * the capture longer, so it is looked for only when an unwind needs room.
+ * A capture no buffer names is freed, and its space is taken back from the
+ * top, or by sliding the live captures down when an unwind needs the room.
+ * No memory is scanned.
  *
  * A jmp_buf as this store writes it: word 0 names the capture (TAG | a
  * 16-bit id), word 1 is setjmp's return value (the only word nimbus-proc.c
@@ -73,8 +76,8 @@ export declare class CaptureStore {
      * the next unwind, when captures are the only unwound data.
      */
     unwindAt(memory: WebAssembly.Memory, stats: CaptureStats, pid: number): number;
-    /** Before each hook's effect: let go of the buffers that ended without one. `sp`: the current stack pointer. */
-    sweep(memory: WebAssembly.Memory, sp: number): void;
+    /** Before each hook's effect: the stack's buffers below `sp`, the current stack pointer, ended with their frames. */
+    sweep(sp: number): void;
     /** setjmp(env) is about to capture: env stops naming what it named. */
     setting(env: number): void;
     /**
