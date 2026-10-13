@@ -118,7 +118,7 @@ async function until(ready, what) {
 // ── "Worker built" is said once the build serves ──────────────────────────
 const first = devServer('first');
 assert.equal(await first.server.start(), true, 'the project builds');
-assert.deepEqual(first.built().map((entry) => entry.serving), [true], '"Worker built" is said once the Worker serves');
+const firstBuilt = first.built().map((entry) => entry.serving);
 assert.equal(await answer(), 'v1 served=1');
 
 // ── a stopped server's build says nothing and changes nothing ─────────────
@@ -153,5 +153,6 @@ await settle();
 assert.equal(await answer(), 'v5 served=2', 'the overtaken rebuild does not replace it');
 assert.equal(second.built().length, builtAfter, 'nor say "Worker built"');
 second.server.stop();
+assert.deepEqual(firstBuilt, [true], '"Worker built" is said once the Worker serves');
 
 console.log('ok - wrangler-dev-superseded-build ("Worker built" once it serves; a superseded build says and changes nothing)');
