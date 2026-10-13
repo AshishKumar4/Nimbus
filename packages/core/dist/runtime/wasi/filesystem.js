@@ -72,6 +72,18 @@ const num = (value) => {
     return n;
 };
 /**
+ * The lowest descriptor number at or above `from` that no entry of `taken`
+ * holds and is not `reserved`, as POSIX open(2) and dup(2) choose one. Every
+ * WASI host's allocator: fd_renumber and dup2 place entries at numbers the
+ * guest picks, so a counter would hand one of them out again.
+ */
+export function lowestFreeFd(taken, from, reserved) {
+    let fd = from;
+    while (taken.has(fd) || fd === reserved)
+        fd++;
+    return fd;
+}
+/**
  * st_mode of a stat: its type's format bits, and its permission bits, or
  * Node's defaults (0755 for a directory, 0644 otherwise) where the backend
  * keeps none, as a node process's fs.stat reports them.
