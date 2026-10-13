@@ -6905,13 +6905,10 @@ error: the Oxc transform crashed (${reason})`);
   }
 
   var ESM_EXPORTS_HELPER = '(() => { const O = ({}).constructor; const tag = O.getOwnPropertySymbols(O.getPrototypeOf(async () => {}))[0]; return (exports) => { O.defineProperty(exports, "__esModule", { value: true }); O.defineProperty(exports, tag, { value: "Module" }); return (name, get) => O.defineProperty(exports, name, { enumerable: true, get }); }; })()';
-  var ES_MODULE_TEST = '(m && (m.__esModule || (typeof m === "object" && ({}).constructor.getPrototypeOf(m) === null && ({}).constructor.getOwnPropertyDescriptor(m, ({}).constructor.getOwnPropertySymbols(({}).constructor.getPrototypeOf(async () => {}))[0])?.value === "Module")))';
-  var ESM_INTEROP_HELPER = `(m) => ${ES_MODULE_TEST} ? m : { default: m }`;
-  var ESM_NAMESPACE_HELPER = `(m) => { if (${ES_MODULE_TEST}) return m; const O = ({}).constructor; const ns = O.create(m != null ? O.getPrototypeOf(m) : null); O.defineProperty(ns, "default", { value: m, enumerable: true }); if (m != null) for (const k of O.getOwnPropertyNames(m)) if (k !== "default") O.defineProperty(ns, k, { get: () => m[k], enumerable: O.getOwnPropertyDescriptor(m, k).enumerable }); return ns; }`;
   var ESM_STAR_HELPER = '(exports, define, m) => { for (const k in m) if (k !== "default" && !({}).hasOwnProperty.call(exports, k)) define(k, () => m[k]); }';
   var ESM_STATIC_IMPORT = "nimbus:static-import";
   var ESM_LOAD_HELPER = `(require, source, type) => require(source, "${ESM_STATIC_IMPORT}", type)`;
-  var ESM_MODULE_HELPERS = `{ exports: ${ESM_EXPORTS_HELPER}, interop: ${ESM_INTEROP_HELPER}, namespace: ${ESM_NAMESPACE_HELPER}, star: ${ESM_STAR_HELPER}, load: ${ESM_LOAD_HELPER} }`;
+  var ESM_MODULE_HELPERS = `{ exports: ${ESM_EXPORTS_HELPER}, star: ${ESM_STAR_HELPER}, load: ${ESM_LOAD_HELPER} }`;
   function exportName(node) {
     return node.type === "Identifier" ? node.name : `${node.value}`;
   }
@@ -6983,20 +6980,15 @@ error: the Oxc transform crashed (${reason})`);
     const namespaces = lists.list();
     const stars = lists.list();
     const none = lists.list();
-    const request = (source, type, kept, interop, bindings) => {
-      lists.push(requests, { source, type, kept, interop, bindings });
+    const request = (source, type, kept, bindings) => {
+      lists.push(requests, { source, type, kept, bindings });
       return requests.length - 1;
     };
     for (let i = 0; i < records.length; i++) {
       const record = records[i];
       switch (record.kind) {
         case "import": {
-          let interop = false;
-          for (let j = 0; j < record.bindings.length; j++) {
-            const binding = record.bindings[j];
-            if (binding.kind === "named" && binding.imported === "default") interop = true;
-          }
-          const at2 = request(record.source, record.type, record.bindings.length > 0, interop, record.bindings);
+          const at2 = request(record.source, record.type, record.bindings.length > 0, record.bindings);
           for (let j = 0; j < record.bindings.length; j++) {
             const binding = record.bindings[j];
             if (binding.kind === "namespace") lists.push(namespaces, { request: at2, local: binding.local });
@@ -7011,7 +7003,7 @@ error: the Oxc transform crashed (${reason})`);
             }
             break;
           }
-          const at2 = request(record.source, record.type, true, false, none);
+          const at2 = request(record.source, record.type, true, none);
           for (let j = 0; j < record.names.length; j++) {
             const name = record.names[j];
             if (name.kind === "named") {
@@ -7027,7 +7019,7 @@ error: the Oxc transform crashed (${reason})`);
           lists.push(exports, { kind: "default", exported: "default" });
           break;
         case "export-all":
-          lists.push(stars, request(record.source, record.type, true, false, none));
+          lists.push(stars, request(record.source, record.type, true, none));
           break;
       }
     }

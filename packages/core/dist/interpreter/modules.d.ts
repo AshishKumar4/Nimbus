@@ -4,10 +4,10 @@
  * with Node's semantics: node-shims' adoption), as Node's CommonJS wrapper
  * function, linked as runtime/esm-interop.ts says. Its imports are calls of
  * the require it is given, told each is an import (ESM_LOAD_HELPER), which
- * the loader resolves as Node's ESM loader does,
- * and its exports the getters of module.exports. compile.ts makes the plan
- * (Compiler.modulePlan); this runs it, with the interop helpers the launch
- * compiled from esm-interop.ts's text (InterpreterHost).
+ * the loader resolves, checks and links as Node's ESM loader does, giving
+ * each module's namespace; its exports are the getters of module.exports.
+ * compile.ts makes the plan (Compiler.modulePlan); this runs it, with the
+ * helpers the launch compiled from esm-interop.ts's text (InterpreterHost).
  */
 import type { Code } from './code.js';
 import type { HostOperators, NativeFunction } from './host-ops.js';
@@ -18,26 +18,14 @@ export type ModuleCell = (exports: unknown, require: unknown, module: unknown, f
 /** esm-interop.ts's helpers, compiled from their text (ESM_MODULE_HELPERS). */
 export interface ModuleHelpers {
     readonly exports: NativeFunction;
-    readonly interop: NativeFunction;
-    readonly namespace: NativeFunction;
     readonly star: NativeFunction;
     readonly load: NativeFunction;
 }
-/**
- * What an export's getter reads: its value from the evaluation's frame, or a
- * re-exported namespace (`export * as`), made into `slot` from the module in
- * `from` when first read.
- */
-export type ModuleExport = {
-    readonly kind: 'read';
+/** An export's getter: `read` of the evaluation's frame. */
+export interface ModuleExport {
     readonly name: string;
     readonly read: (env: Env) => unknown;
-} | {
-    readonly kind: 'namespace';
-    readonly name: string;
-    readonly slot: number;
-    readonly from: number;
-};
+}
 /** A module, compiled. */
 export interface ModulePlan {
     readonly stack: StackInfo;
@@ -53,21 +41,12 @@ export interface ModulePlan {
     readonly exports: readonly ModuleExport[];
     /**
      * Each requested module, required in order with its `type` attribute
-     * (which the loader checks): the slot it goes to, and its interop's (a
-     * default import's), -1 for none; and the names its imports and re-exports
-     * read of it (esm-interop.ts ModuleBindings).
+     * (which the loader checks): the slot its namespace goes to, -1 for none.
      */
     readonly requests: readonly {
         readonly source: string;
         readonly type: string | null;
         readonly module: number;
-        readonly interop: number;
-        readonly names: readonly string[];
-    }[];
-    /** Each import's namespace, made into `slot` from the module in `from` once every request is required. */
-    readonly namespaces: readonly {
-        readonly slot: number;
-        readonly from: number;
     }[];
     /** Slots of the modules whose names `export *` copies. */
     readonly stars: readonly number[];

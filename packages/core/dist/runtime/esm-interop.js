@@ -3,24 +3,6 @@ import { bindingIdentifiers } from './binding-pattern.js';
 export const ESM_EXPORTS_HELPER = '(() => { const O = ({}).constructor; const tag = O.getOwnPropertySymbols(O.getPrototypeOf(async () => {}))[0]; '
     + 'return (exports) => { O.defineProperty(exports, "__esModule", { value: true }); O.defineProperty(exports, tag, { value: "Module" }); '
     + 'return (name, get) => O.defineProperty(exports, name, { enumerable: true, get }); }; })()';
-/**
- * Whether a required module is an ES module's: one marked `__esModule`, or a
- * module namespace the registry made (a null prototype, tagged `Module`),
- * which the interpreter's static import of a staged ES module gets.
- */
-const ES_MODULE_TEST = '(m && (m.__esModule || (typeof m === "object" && ({}).constructor.getPrototypeOf(m) === null '
-    + '&& ({}).constructor.getOwnPropertyDescriptor(m, ({}).constructor.getOwnPropertySymbols(({}).constructor.getPrototypeOf(async () => {}))[0])?.value === "Module")))';
-/** What a default import reads `default` of: an ES module's as it is, else `{ default: module }`. */
-export const ESM_INTEROP_HELPER = `(m) => ${ES_MODULE_TEST} ? m : { default: m }`;
-/**
- * A required module as a namespace, as Node and esbuild read a CommonJS
- * module: an ES module's as it is; any other with its exports as `default`,
- * its other own names read through.
- */
-export const ESM_NAMESPACE_HELPER = `(m) => { if (${ES_MODULE_TEST}) return m; const O = ({}).constructor; `
-    + 'const ns = O.create(m != null ? O.getPrototypeOf(m) : null); O.defineProperty(ns, "default", { value: m, enumerable: true }); '
-    + 'if (m != null) for (const k of O.getOwnPropertyNames(m)) if (k !== "default") '
-    + 'O.defineProperty(ns, k, { get: () => m[k], enumerable: O.getOwnPropertyDescriptor(m, k).enumerable }); return ns; }';
 /** `export *`: each name of the module but `default` and those already exported, read through. */
 export const ESM_STAR_HELPER = '(exports, define, m) => { for (const k in m) if (k !== "default" && !({}).hasOwnProperty.call(exports, k)) define(k, () => m[k]); }';
 /**
@@ -33,7 +15,7 @@ export const ESM_STATIC_IMPORT = 'nimbus:static-import';
 /** A static import's module: the importer's require, told the request is an import, with its `type` attribute (or null). */
 export const ESM_LOAD_HELPER = `(require, source, type) => require(source, "${ESM_STATIC_IMPORT}", type)`;
 /** The helpers as an object literal's source: what a launch compiles for its interpreter (interpreter/modules.ts ModuleHelpers). */
-export const ESM_MODULE_HELPERS = `{ exports: ${ESM_EXPORTS_HELPER}, interop: ${ESM_INTEROP_HELPER}, namespace: ${ESM_NAMESPACE_HELPER}, star: ${ESM_STAR_HELPER}, load: ${ESM_LOAD_HELPER} }`;
+export const ESM_MODULE_HELPERS = `{ exports: ${ESM_EXPORTS_HELPER}, star: ${ESM_STAR_HELPER}, load: ${ESM_LOAD_HELPER} }`;
 /** A ModuleExportName: an identifier, or a string such as `export { a as "b-c" }`. */
 function exportName(node) {
     return node.type === 'Identifier' ? node.name : `${node.value}`;
@@ -119,21 +101,15 @@ export function esmLink(records, lists) {
     const namespaces = lists.list();
     const stars = lists.list();
     const none = lists.list();
-    const request = (source, type, kept, interop, bindings) => {
-        lists.push(requests, { source, type, kept, interop, bindings });
+    const request = (source, type, kept, bindings) => {
+        lists.push(requests, { source, type, kept, bindings });
         return requests.length - 1;
     };
     for (let i = 0; i < records.length; i++) {
         const record = records[i];
         switch (record.kind) {
             case 'import': {
-                let interop = false;
-                for (let j = 0; j < record.bindings.length; j++) {
-                    const binding = record.bindings[j];
-                    if (binding.kind === 'named' && binding.imported === 'default')
-                        interop = true;
-                }
-                const at = request(record.source, record.type, record.bindings.length > 0, interop, record.bindings);
+                const at = request(record.source, record.type, record.bindings.length > 0, record.bindings);
                 for (let j = 0; j < record.bindings.length; j++) {
                     const binding = record.bindings[j];
                     if (binding.kind === 'namespace')
@@ -151,7 +127,7 @@ export function esmLink(records, lists) {
                     }
                     break;
                 }
-                const at = request(record.source, record.type, true, false, none);
+                const at = request(record.source, record.type, true, none);
                 for (let j = 0; j < record.names.length; j++) {
                     const name = record.names[j];
                     if (name.kind === 'named') {
@@ -168,7 +144,7 @@ export function esmLink(records, lists) {
                 lists.push(exports, { kind: 'default', exported: 'default' });
                 break;
             case 'export-all':
-                lists.push(stars, request(record.source, record.type, true, false, none));
+                lists.push(stars, request(record.source, record.type, true, none));
                 break;
         }
     }

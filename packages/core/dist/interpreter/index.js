@@ -36,6 +36,10 @@ import { programRequests } from './module-requests.js';
 import { stampStack, stackFrames } from './stack.js';
 export { INTERPRETER_UNSUPPORTED, UnsupportedSyntax } from './unsupported.js';
 export { replLineBody } from './repl-line.js';
+// What a late module's import of a CommonJS module the launch did not stage
+// names (node-shims __nimbusCommonJsNames): Node's lexer runs on the
+// module's source before it runs, so the interpreter's runtime carries it.
+export { cjsModuleExportNames } from '../runtime/cjs-module-exports.js';
 /** The parameters of Node's CommonJS module wrapper. */
 const WRAPPER_PARAMS = ['exports', 'require', 'module', '__filename', '__dirname'];
 /** Extensions whose text is not JavaScript acorn can parse. */

@@ -11910,6 +11910,18 @@ const __nimbusAdvised = new WeakSet();
 // The ES modules the interpreter evaluated from files outside the map, with
 // their compiled cells: a later require() asks whether their graphs await.
 const __nimbusRuntimeEsModules = new WeakMap();
+// Whether the module of format \`format\` loaded at \`key\`, as the instance
+// \`instance\` (its key, or a query's or fragment's URL), is an ES module: by
+// its format, else (a typeless file) staged as one, or detected as one when
+// the interpreter compiled it. The loader's knowledge, never the exports'.
+function __nimbusLoadedEsModule(key, instance, format) {
+  if (format === "module") return true;
+  if (format !== "detect") return false;
+  if (__nimbusEsmId("module", key) !== -1) return true;
+  const cacheKey = instance === key ? "/" + key : instance;
+  const mod = __NodeModule._cache[cacheKey] ?? __nimbusEsmInstances.get(cacheKey);
+  return mod !== undefined && __nimbusRuntimeEsModules.has(mod);
+}
 // Whether a runtime ES module's graph awaits at its top level (its text read again).
 function __nimbusRuntimeGraphAwaits(key, cell) {
   const text = __readFileOr(key, null);
@@ -12038,6 +12050,14 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
         evaluating = true;
         throw __nimbusRequireAsync(parent, filename);
       }
+      // A require() of an ES module links its graph before any of it runs,
+      // as an import() of it does (__nimbusEsmLinkStaged): every name a
+      // module imports is one its module exports.
+      if (required && runtimeEsModule) {
+        const late = { modules: new Map(), rows: [] };
+        __nimbusEsmLinkPlan(normalizedPath, moduleUrl, new Set(), [], new Set(), late);
+        __nimbusEsmCheckBindings(late, moduleUrl);
+      }
       // An imported .js its syntax made an ES module warns as a staged one does.
       if (!required && format === undefined && filename.endsWith(".js") && __nimbusDetectedModule(cell)) {
         const scope = __esmResolver.packageScopeSync(__nimbusEsmUrl(filename));
@@ -12151,14 +12171,16 @@ const __esmResolver = createEsmResolver({
   isBuiltin(specifier) {
     return __nimbusBuiltinId(specifier) !== null || __nimbusFacetProvidedPackages.has(specifier.replace(/^node:/, ""));
   },
-  cjsResolve(specifier, parentPath) {
-    try {
-      const dir = parentPath.slice(0, parentPath.lastIndexOf("/")).replace(/^\\/+/, "");
-      const found = __resolveFrom(specifier, dir);
-      return found ? "/" + String(found).replace(/^\\/+/, "") : null;
-    } catch { return null; }
-  },
+  cjsResolve: __nimbusCjsResolve,
 }, { conditions: __nimbusConditions, stripTypes: !__nimbusTypeScriptAsJavaScript, cwd: () => __processMod.cwd() });
+// The file require() loads for \`specifier\` from the module at \`parentPath\`, or null.
+function __nimbusCjsResolve(specifier, parentPath) {
+  try {
+    const dir = parentPath.slice(0, parentPath.lastIndexOf("/")).replace(/^\\/+/, "");
+    const found = __resolveFrom(specifier, dir);
+    return found ? "/" + String(found).replace(/^\\/+/, "") : null;
+  } catch { return null; }
+}
 const __esmNamespaces = new Map();
 /** A module namespace: its names sorted, read through to the exports. */
 function __esmNamespaceOf(names, read) {
@@ -12168,6 +12190,55 @@ function __esmNamespaceOf(names, read) {
   }
   Object.defineProperty(ns, Symbol.toStringTag, { value: "Module" });
   return Object.preventExtensions(ns);
+}
+// A builtin's namespace (or a staged N-API binding's): \`value\` as \`default\`, and its own names read through.
+function __nimbusObjectNamespace(value) {
+  const names = new Set(value && (typeof value === "object" || typeof value === "function") ? Object.keys(value) : []);
+  names.add("default");
+  return __esmNamespaceOf(names, (name) => name === "default" ? value : value[name]);
+}
+// The names cjs-module-lexer finds in the CommonJS module at \`key\` and in
+// the modules it re-exports, \`default\` first (core cjs-module-exports.ts),
+// as Node's loader names them before the module runs: a staged facade's,
+// else read here, with the interpreter's runtime.
+const __nimbusCommonJsNameCache = new Map();
+function __nimbusCommonJsNames(key) {
+  const facade = __nimbusEsmId("commonjs", key);
+  if (facade !== -1) return __nimbusEsmBindingsOf(facade);
+  const names = __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_MODULE}").cjsModuleExportNames("/" + key, {
+    source: (path) => __readFileOr(path, null),
+    resolve: __nimbusCjsResolve,
+  }, __nimbusCommonJsNameCache);
+  return [...names];
+}
+// What an ES module's import of a module that is not an ES module gives,
+// once it is loaded as \`exports\` (Node's translators), one per URL, the
+// same for import() and a static import:
+//   - JSON: its value, as \`default\` alone;
+//   - a builtin: itself as \`default\`, and its own names read through;
+//   - CommonJS (createCJSModuleWrap): module.exports as \`default\`,
+//     whatever it says of __esModule; and each name cjs-module-lexer finds
+//     its own property's value once the module has run, read once.
+function __nimbusTranslatedNamespace(resolution, exports) {
+  const cached = __esmNamespaces.get(resolution.url);
+  if (cached !== undefined) return cached;
+  let ns;
+  if (resolution.format === "json") {
+    ns = __esmNamespaceOf(["default"], () => exports);
+  } else if (resolution.format === "builtin") {
+    ns = __nimbusObjectNamespace(exports);
+  } else {
+    const names = __nimbusCommonJsNames(resolution.path.replace(/^\\/+/, ""));
+    const values = new Map();
+    for (const name of names) {
+      if (name === "default" || !Object.prototype.hasOwnProperty.call(exports, name)) continue;
+      // A getter may throw: the name is then undefined, as Node's.
+      try { values.set(name, exports[name]); } catch {}
+    }
+    ns = __esmNamespaceOf(new Set(["default", ...names]), (name) => name === "default" ? exports : values.get(name));
+  }
+  __esmNamespaces.set(resolution.url, ns);
+  return ns;
 }
 // Node's defaultLoad: a module the ES loader has no job for must have a format.
 // Its jobs are keyed by URL and attribute type; only an implicit-type one can
@@ -12735,10 +12806,7 @@ function __esmLoad(resolution) {
   if (resolution.format === "builtin") {
     const id = __nimbusEsmId("builtin", resolution.builtin);
     if (id !== -1) return __nimbusEsmImport(id);
-    const mod = builtins[resolution.builtin];
-    const names = new Set(mod && (typeof mod === "object" || typeof mod === "function") ? Object.keys(mod) : []);
-    names.add("default");
-    ns = __esmNamespaceOf(names, (name) => name === "default" ? mod : mod[name]);
+    return __nimbusTranslatedNamespace(resolution, builtins[resolution.builtin]);
   } else if (resolution.format === "data") {
     const url = new URL(resolution.url);
     const comma = url.pathname.indexOf(',');
@@ -12761,14 +12829,7 @@ function __esmLoad(resolution) {
         resolve: (id) => globalThis.__nimbusImportMetaResolve(id, resolution.url),
       } });
       // Its static imports (ESM_LOAD_HELPER: the specifier, the marker, the type attribute).
-      const requireData = (id, marker, type = null) => {
-        const resolved = __esmResolver.resolveSync(String(id), resolution.url);
-        __esmResolver.assertLoadable(resolved);
-        __esmResolver.validateAttributes(resolved.url, resolved.format, type === null ? {} : { type });
-        if (resolved.format === "builtin") return builtins[resolved.builtin];
-        if (resolved.path) return __loadModule(resolved.path.replace(/^\\/+/, ""), resolved.url, false);
-        throw nodeError(Error, "ERR_REQUIRE_ASYNC_MODULE", "Synchronous nested data-module import is unsupported");
-      };
+      const requireData = (id, marker, type = null) => __nimbusStaticImport(String(id), resolution.url, undefined, type);
       let result;
       try {
         result = cell(mod.exports, requireData, mod, undefined, undefined);
@@ -12899,8 +12960,9 @@ function __nimbusEsmLinkPlan(key, url, seen, order, checked, late) {
 }
 // What a late module's static import loads, as the link check reads its
 // names: a staged row (a module, a facade, a JSON module), a late module by
-// URL, the names of a builtin or a JSON file, or null where they are known
-// only once it runs (a CommonJS module the launch made no facade for).
+// URL, or the names of a builtin, a JSON file or a CommonJS module the launch
+// made no facade for (the lexer's, read now, as Node's loader reads them
+// before any body runs); null where its format is its syntax's (typeless).
 function __nimbusEsmLateTarget(resolution) {
   if (resolution.format === "builtin") {
     const id = __nimbusEsmId("builtin", resolution.builtin);
@@ -12919,6 +12981,7 @@ function __nimbusEsmLateTarget(resolution) {
   }
   if (resolution.format === "module" || resolution.format === "detect") return { url: resolution.url };
   if (resolution.format === "json") return { names: ["default"] };
+  if (resolution.format === "commonjs") return { names: __nimbusCommonJsNames(key), commonjs: true };
   return null;
 }
 // Throws the refusal of a static import staged module \`id\`'s graph (what
@@ -12969,7 +13032,7 @@ function __nimbusEsmCheckBindings(late, rootUrl) {
     for (const edge of edges) {
       for (const name of edge.names) {
         if (__nimbusEsmExports(late, edge.target, name, new Set()) !== false) continue;
-        const commonjs = edge.target.row !== undefined && __nimbusEsm.table[edge.target.row][0] === "commonjs";
+        const commonjs = edge.target.commonjs === true || (edge.target.row !== undefined && __nimbusEsm.table[edge.target.row][0] === "commonjs");
         const error = new SyntaxError(__nimbusEsmExportMessage(edge.specifier, name, commonjs));
         __nimbusDecorated.add(error);
         throw error;
@@ -13035,19 +13098,10 @@ function __esmLoadInterpreted(resolution, key, evaluationKey, esm) {
       __nimbusExplainCommonJSGlobalLike(e, resolution.url, false);
       throw e;
     }
-    const namespace = () => {
-      if (resolution.format === "json") return __esmNamespaceOf(["default"], () => exports);
-      // An interpreted ES module's exports: its own names, live.
-      if (exports && typeof exports === "object" && exports.__esModule === true) {
-        return __esmNamespaceOf(Object.keys(exports).filter((name) => name !== "__esModule"), (name) => exports[name]);
-      }
-      // CommonJS: module.exports is the default, its names the named exports.
-      const mod = exports;
-      const names = new Set(mod && (typeof mod === "object" || typeof mod === "function") ? Object.keys(mod) : []);
-      names.delete("default");
-      names.add("default");
-      return __esmNamespaceOf(names, (name) => name === "default" ? mod : mod[name]);
-    };
+    // An interpreted ES module's exports: its own names, live; another's, its translator's.
+    const namespace = () => __nimbusLoadedEsModule(key, evaluationKey, resolution.format)
+      ? __esmNamespaceOf(Object.keys(exports).filter((name) => name !== "__esModule"), (name) => exports[name])
+      : __nimbusTranslatedNamespace(resolution, exports);
     // A module with top-level await: the import resolves once its evaluation
     // completes, and rejects with what it throws.
     const evaluation = __moduleEvaluations.get(evaluationKey);
@@ -13475,51 +13529,57 @@ function __nimbusEsmJobCached(path) {
 function __requireFrom(id, fromDir, parent, required = true, type = null) {
   if (typeof id !== "string") throw invalidArgType("id", "string", id);
   if (id === "") throw new nodeErrorCodes.ERR_INVALID_ARG_VALUE("id", id, "must be a non-empty string");
+  const staged = __stagedBinding(id);
+  if (staged) {
+    const exports = __loadStagedBinding(staged, fromDir);
+    return required ? exports : __nimbusObjectNamespace(exports);
+  }
+  const notCarried = __stagedBindingNotCarried(id, fromDir);
+  if (notCarried) throw notCarried;
+  if (!required) {
+    return __nimbusStaticImport(id, builtins.url.pathToFileURL(parent?.filename ?? "/" + String(fromDir).replace(/^\\/+/, "") + "/[import]").href, parent, type);
+  }
   const builtin = __nimbusBuiltinId(id);
   if (builtin !== null) return builtins[builtin];
   if (__nimbusFacetProvidedPackages.has(id)) return builtins[id];
   if (id.startsWith("node:")) throw nodeError(Error, "ERR_UNKNOWN_BUILTIN_MODULE", "No such built-in module: " + id);
-  const staged = __stagedBinding(id);
-  if (staged) return __loadStagedBinding(staged, fromDir);
-  const notCarried = __stagedBindingNotCarried(id, fromDir);
-  if (notCarried) throw notCarried;
-
-  // An interpreted ES module's static import is the ES loader's: Node's
-  // ESM resolution, which refuses before the importer runs (no arrow of the importer's).
-  if (!required) {
-    const parentUrl = builtins.url.pathToFileURL(parent?.filename ?? "/" + String(fromDir).replace(/^\\/+/, "") + "/[import]").href;
-    let resolution;
-    try {
-      resolution = __esmResolver.resolveSync(id, parentUrl);
-      // Loaded, then checked against its attributes, as Node's loader does.
-      __nimbusAssertLoadable(resolution, type ?? undefined);
-      __esmResolver.validateAttributes(resolution.url, resolution.format, type === null || type === undefined ? {} : { type });
-    } catch (error) {
-      __nimbusDecorated.add(error);
-      throw error;
-    }
-    if (resolution.format === "builtin") return builtins[resolution.builtin];
-    const key = resolution.path.replace(/^\\/+/, "");
-    const esModule = resolution.format === "module" || (resolution.format === "detect" && __nimbusEsmId("module", key) !== -1);
-    // A CommonJS module still loading is one whose require() of an ES
-    // module led here: Node's loader refuses the cycle (require(esm)).
-    const loading = esModule ? undefined : __NodeModule._cache["/" + key];
-    if (loading !== undefined && __nimbusExecutingCommonJs.has(loading)) {
-      throw nodeError(Error, "ERR_REQUIRE_CYCLE_MODULE", "Cannot import CommonJS Module " + id + " in a cycle." + (parent?.filename ? " (from " + parent.filename + ")" : ""));
-    }
-    // A query's or fragment's ES module or JSON is its own instance, by its
-    // URL; a CommonJS module (by its extension, its package type or its
-    // syntax) is one module by its file, whatever the URL (Node's CommonJS
-    // translator keys its cache by filename).
-    const { search, hash } = new URL(resolution.url);
-    const instance = (search !== "" || hash !== "") && (esModule || resolution.format === "json") ? resolution.url : key;
-    const exports = __loadModule(key, instance, false, parent, esModule);
-    // A JSON module's namespace has its value as default alone, whatever it holds.
-    return resolution.format === "json" ? __esmNamespaceOf(["default"], () => exports) : exports;
-  }
   const resolved = __resolveFrom(id, fromDir, parent?.filename);
   if (!resolved) throw __nimbusModuleNotFound(id, parent);
   return __loadModule(resolved, resolved, required, parent);
+}
+// An interpreted ES module's static import of \`id\` from \`parentUrl\`, as
+// Node's ES loader makes it: resolved as an import, which refuses before the
+// importer runs (no arrow of the importer's), checked against its \`type\`
+// attribute, loaded, and given as its module's namespace.
+function __nimbusStaticImport(id, parentUrl, parent, type) {
+  let resolution;
+  try {
+    resolution = __esmResolver.resolveSync(id, parentUrl);
+    // Loaded, then checked against its attributes, as Node's loader does.
+    __nimbusAssertLoadable(resolution, type ?? undefined);
+    __esmResolver.validateAttributes(resolution.url, resolution.format, type === null || type === undefined ? {} : { type });
+  } catch (error) {
+    __nimbusDecorated.add(error);
+    throw error;
+  }
+  if (resolution.format === "builtin") return __nimbusTranslatedNamespace(resolution, builtins[resolution.builtin]);
+  if (!resolution.path) throw nodeError(Error, "ERR_REQUIRE_ASYNC_MODULE", "A static import of " + resolution.url + " has no file to load synchronously");
+  const key = resolution.path.replace(/^\\/+/, "");
+  const esModule = resolution.format === "module" || (resolution.format === "detect" && __nimbusEsmId("module", key) !== -1);
+  // A CommonJS module still loading is one whose require() of an ES
+  // module led here: Node's loader refuses the cycle (require(esm)).
+  const loading = esModule ? undefined : __NodeModule._cache["/" + key];
+  if (loading !== undefined && __nimbusExecutingCommonJs.has(loading)) {
+    throw nodeError(Error, "ERR_REQUIRE_CYCLE_MODULE", "Cannot import CommonJS Module " + id + " in a cycle." + (parent?.filename ? " (from " + parent.filename + ")" : ""));
+  }
+  // A query's or fragment's ES module or JSON is its own instance, by its
+  // URL; a CommonJS module (by its extension, its package type or its
+  // syntax) is one module by its file, whatever the URL (Node's CommonJS
+  // translator keys its cache by filename).
+  const { search, hash } = new URL(resolution.url);
+  const instance = (search !== "" || hash !== "") && (esModule || resolution.format === "json") ? resolution.url : key;
+  const exports = __loadModule(key, instance, false, parent, esModule);
+  return __nimbusLoadedEsModule(key, instance, resolution.format) ? exports : __nimbusTranslatedNamespace(resolution, exports);
 }
 
 // V8's errors compiling CommonJS that an ES module would not have

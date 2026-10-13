@@ -43,12 +43,9 @@ export interface UnitHost {
         value: unknown;
     } | null;
 }
-/** An import binding's source: the slot holds the module (named, default) or the namespace object. */
-/** A module's import binding: it holds a module (or interop) and reads `name` of it at each use, or holds a namespace. */
 /**
- * A module's import binding: it reads `name` of the value in `slot` (its
- * request's module, or for `default` the module's interop) at each use, or
- * is the namespace in its own slot.
+ * A module's import binding: it reads `name` of the namespace in `slot` (its
+ * request's module) at each use, or is that namespace.
  */
 type ImportInfo = {
     readonly kind: 'named' | 'namespace';
@@ -333,9 +330,9 @@ export declare class Compiler {
     /**
      * An ES module's plan (modules.ts): the link of its declarations
      * (esm-interop.ts) over its frame's slots, its instantiation and its
-     * statements. A named import's binding holds its module, or for `default`
-     * its interop, and each use reads the name of it (bindingRead); a
-     * namespace import's holds the namespace.
+     * statements. Each kept request's slot holds its module's namespace (what
+     * the loader gives a static import): a named import's binding reads its
+     * name of it at each use (bindingRead), a namespace import's is it.
      */
     modulePlan(program: Program, root: FunctionScope): ModulePlan;
     /**

@@ -7,6 +7,7 @@ import { type InterpretedFrame } from './stack.js';
 export type { HostOps } from './host-ops.js';
 export { INTERPRETER_UNSUPPORTED, UnsupportedSyntax } from './unsupported.js';
 export { replLineBody } from './repl-line.js';
+export { cjsModuleExportNames } from '../runtime/cjs-module-exports.js';
 export type { ModuleCell } from './modules.js';
 export type { ModuleRequest } from './module-requests.js';
 export interface InterpreterHost {
