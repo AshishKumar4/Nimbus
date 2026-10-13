@@ -5,6 +5,8 @@ export const REDIRECT_SERVER = String.raw`
 const http = require('http');
 const servers = [];
 const origins = [];
+let listening;
+const redirectReady = new Promise((resolve) => { listening = resolve; });
 const observe = async (req, origin) => {
   let body = '';
   for await (const chunk of req) body += chunk;
@@ -49,7 +51,10 @@ for (let index = 0; index < 2; index++) {
   servers.push(server);
   server.listen(Number(process.argv[index + 2] || 0), '127.0.0.1', () => {
     origins[index] = 'http://127.0.0.1:' + server.address().port;
-    if (origins[0] && origins[1]) console.log('REDIRECT_ORIGINS ' + JSON.stringify(origins));
+    if (origins[0] && origins[1]) {
+      console.log('REDIRECT_ORIGINS ' + JSON.stringify(origins));
+      listening(origins);
+    }
   });
 }
 `.trim();
@@ -67,9 +72,8 @@ export const REDIRECT_CASES = [
 export const REDIRECT_CLIENT = String.raw`
 const { request } = require('undici');
 const { Readable } = require('stream');
-const origin = process.argv[2];
 const cases = ${JSON.stringify(REDIRECT_CASES)};
-const run = async () => {
+const run = async (origin = process.argv[2]) => {
   const results = [];
   for (const entry of cases) {
     const body = entry.method === 'GET' || entry.method === 'HEAD' ? undefined : 'payload';
@@ -113,10 +117,19 @@ const run = async () => {
       invalid.push({ maxRedirections, message: error.message, code: error.code });
     }
   }
-  console.log('UNDICI_REDIRECT ' + JSON.stringify({ results, limits, invalid }));
+  const report = JSON.stringify({ results, limits, invalid });
+  require('fs').writeFileSync('undici-redirect-result.json', report);
+  console.log('UNDICI_REDIRECT ' + report);
 };
-run().catch((error) => { console.error(error.stack); process.exitCode = 1; });
+(typeof redirectReady === 'undefined' ? run() : redirectReady.then((origins) => run(origins[0])))
+  .then(() => typeof servers === 'undefined' ? undefined : Promise.all(servers.map((server) => new Promise((resolve) => server.close(resolve)))))
+  .catch((error) => { console.error(error.stack); process.exitCode = 1; });
 `.trim();
+
+// Keeping the client and listeners in one *real* process exercises the own-HTTP
+// transport, not the external-preview sanitizer (which intentionally removes
+// Nimbus bearer credentials before handing a public request to user code).
+export const REDIRECT_PROGRAM = `${REDIRECT_SERVER}\n${REDIRECT_CLIENT}`;
 
 /** Expected receiver-visible behavior of Node 22.22.3's undici 6.24.1. */
 export function redirectFailures(report) {

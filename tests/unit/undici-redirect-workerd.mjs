@@ -4,15 +4,14 @@
 // a Function evaluating the shim or a mocked fetch. Both processes run the
 // identical client/server fixtures; Node 22's real bundled undici is the oracle.
 import assert from 'node:assert/strict';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { localTerminal, startLocalProbe } from './lib/workerd-probe.mjs';
-import { REDIRECT_CLIENT, REDIRECT_SERVER, redirectFailures } from './lib/undici-redirect-fixture.mjs';
+import { REDIRECT_PROGRAM, redirectFailures } from './lib/undici-redirect-fixture.mjs';
 
 const host = mkdtempSync(join(tmpdir(), 'undici-redirect-node-'));
-let server;
 let probe;
 try {
   // No npm release or host-package resolution drift: this is the exact
@@ -27,23 +26,8 @@ try {
     '  return undici.getGlobalDispatcher().request({ ...options, origin: target.origin, path: target.pathname + target.search, method: options.method || (options.body ? "PUT" : "GET") });',
     '};',
   ].join('\n'));
-  writeFileSync(join(host, 'server.cjs'), REDIRECT_SERVER);
-  writeFileSync(join(host, 'client.cjs'), REDIRECT_CLIENT);
-  server = spawn('node', ['server.cjs'], { cwd: host, stdio: ['ignore', 'pipe', 'pipe'] });
-  let output = '';
-  let errors = '';
-  server.stderr.on('data', (chunk) => { errors += chunk; });
-  const origins = await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`Node redirect server did not listen: ${errors}`)), 10_000);
-    server.once('error', (error) => { clearTimeout(timer); reject(error); });
-    server.once('exit', (code) => { clearTimeout(timer); reject(new Error(`Node redirect server exited ${code}: ${errors}`)); });
-    server.stdout.on('data', (chunk) => {
-      output += chunk;
-      const ready = /^REDIRECT_ORIGINS (.+)$/m.exec(output);
-      if (ready) { clearTimeout(timer); resolve(JSON.parse(ready[1])); }
-    });
-  });
-  const reference = spawnSync('node', ['--expose-internals', 'client.cjs', origins[0]], { cwd: host, encoding: 'utf8', timeout: 60_000 });
+  writeFileSync(join(host, 'program.cjs'), REDIRECT_PROGRAM);
+  const reference = spawnSync('node', ['--expose-internals', 'program.cjs'], { cwd: host, encoding: 'utf8', timeout: 60_000 });
   assert.equal(reference.status, 0, `Node's real undici: ${reference.stderr}`);
   const expected = JSON.parse(/^UNDICI_REDIRECT (.+)$/m.exec(reference.stdout)?.[1] ?? 'null');
   assert.ok(expected, reference.stdout);
@@ -53,15 +37,18 @@ try {
   probe = await startLocalProbe({ runtimes: [] });
   const terminal = await localTerminal(probe, { install: [] });
   try {
-    await terminal.writeFile('/home/user/redirect-server.cjs', REDIRECT_SERVER);
-    await terminal.writeFile('/home/user/redirect-client.cjs', REDIRECT_CLIENT);
-    const boot = await terminal.run('node /home/user/redirect-server.cjs 7321 7322');
+    await terminal.writeFile('/home/user/redirect-program.cjs', REDIRECT_PROGRAM);
+    const boot = await terminal.run('cd /home/user && node redirect-program.cjs 7321 7322');
     assert.equal(boot.status, 0, boot.stdout);
     assert.match(boot.stdout, /REDIRECT_ORIGINS|facet started/, boot.stdout);
-    const result = await terminal.run('node /home/user/redirect-client.cjs http://127.0.0.1:7321', 180_000);
-    assert.equal(result.status, 0, result.stdout);
-    const actual = JSON.parse(/^UNDICI_REDIRECT (.+)$/m.exec(result.stdout)?.[1] ?? 'null');
-    assert.ok(actual, result.stdout);
+    let result;
+    for (const deadline = Date.now() + 60_000; Date.now() < deadline;) {
+      result = await terminal.run('cat /home/user/undici-redirect-result.json');
+      if (result.status === 0) break;
+      await Bun.sleep(250);
+    }
+    assert.equal(result?.status, 0, `the real process never wrote its result: ${boot.stdout}\n${result?.stdout}`);
+    const actual = JSON.parse(result.stdout.trim());
     const failures = redirectFailures(actual);
     assert.deepEqual(failures, [], failures.join('\n'));
     assert.deepEqual(actual, expected, 'the identical program agrees with real Node/undici on every header, method, body, status and error');
@@ -70,11 +57,6 @@ try {
   }
 } finally {
   if (probe) await probe.stop();
-  if (server) {
-    const ended = new Promise((resolve) => server.once('close', resolve));
-    server.kill();
-    await ended;
-  }
   rmSync(host, { recursive: true, force: true });
 }
 console.log('ok: undici.request redirects isolate credentials and match Node 22 bundled undici through the real Nimbus process');
