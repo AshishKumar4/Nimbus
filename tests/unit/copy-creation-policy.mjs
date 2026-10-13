@@ -6,19 +6,24 @@
 // as cp makes it, and a link named as the source is followed, as copyFile(2)
 // follows it, on a mount answered synchronously and on one that only
 // awaits. A tree copied off an awaiting mount answers how many entries it
-// made. Before, the bridge wrote the bytes with no mode (0644 for a 0755 or
-// a 0600 file), the awaiting path copied a link as a link, and a tree
-// copied off an awaiting mount answered 0.
+// made. A link is followed on a mount that resolves its own paths too, and
+// a copy never takes the source's set-user-ID or set-group-ID bits. Before,
+// the bridge wrote the bytes with no mode (0644 for a 0755 or a 0600 file),
+// the awaiting path copied a link as a link, and a tree copied off an
+// awaiting mount answered 0.
 //
 // A tree copied by reference on SQLite, without preserve, is made as mkdir
 // and writeFile make entries there (creationAttrs): a setgid parent's group,
 // setgid directories, and a parent's default ACL in place of the umask,
 // inherited by each new directory. Before, it took the caller's group, the
-// umask, and the source's default ACL.
+// umask, and the source's default ACL. Its SQL stays within the platform's
+// statement size whatever modes the tree holds, and a copy a reset
+// interrupted resumes as the copier it was admitted as.
 import assert from 'node:assert/strict';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { SQLITE_MAX_STATEMENT_BYTES } from '../../packages/platform/src/limits.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { testBox } from './lib/test-box.mjs';
 import { asyncOnly } from './lib/async-memory-vfs.mjs';
@@ -46,6 +51,15 @@ const check = async (name, fn) => {
     vfs.writeFile('/tree/sub/b', enc.encode('b'), { mode: 0o644 });
   }
   const box = await testBox({ mounts: { '/s': s, '/m': asyncOnly(m, { deep: true }) } });
+  const pc = new MemoryVFS({ uid: 1000, gid: 1000 });
+  const pa = new MemoryVFS({ uid: 1000, gid: 1000 });
+  for (const vfs of [pc, pa]) {
+    vfs.writeFile('/run.sh', enc.encode('#!/bin/sh\n'), { mode: 0o755 });
+    vfs.symlink('run.sh', '/link');
+  }
+  s.writeFile('/suid', enc.encode('suid'), { mode: 0o4755 });
+  box.files.vfs.mount('/pc', pc, { resolvesPaths: true });
+  box.files.vfs.mount('/pa', asyncOnly(pa, { deep: true }), { resolvesPaths: true });
   box.root.mkdir('home/user', { recursive: true });
   box.root.chown('home/user', 1000, 1000);
   box.root.writeFile('home/user/tool', 'tool');
@@ -70,6 +84,22 @@ const check = async (name, fn) => {
   await check('onto a mount: the source\'s mode', async () => {
     await fs.copyFile('/home/user/tool', '/s/tool');
     assert.equal(perms(s.stat('/tool')), '750');
+  });
+  await check('off a mount that resolves its own paths, a link followed, answered at once or awaited', async () => {
+    const copied = [];
+    for (const point of ['/pc', '/pa']) {
+      await fs.copyFile(`${point}/link`, `/home/user/r${point.slice(1)}`);
+      const stat = box.root.lstat(`home/user/r${point.slice(1)}`);
+      copied.push([stat.type, perms(stat), box.root.readFileString(`home/user/r${point.slice(1)}`)]);
+    }
+    assert.deepEqual(copied, [['file', '755', '#!/bin/sh\n'], ['file', '755', '#!/bin/sh\n']]);
+  });
+  await check('a set-user-ID file is copied without it, off a mount and onto one', async () => {
+    await fs.copyFile('/s/suid', '/home/user/suid');
+    box.root.writeFile('home/user/suid2', 'suid');
+    box.root.chmod('home/user/suid2', 0o4755);
+    await fs.copyFile('/home/user/suid2', '/s/suid2');
+    assert.deepEqual([perms(box.root.stat('home/user/suid')), perms(s.stat('/suid2'))], ['755', '755']);
   });
   await check('a tree off an awaiting mount answers the entries it made', async () => {
     assert.equal(await fs.copyTree('/m/tree', '/home/user/tree'), 4);
@@ -132,6 +162,56 @@ await check('a default ACL on the parent replaces the umask, and each new direct
   assert.deepEqual(made(kernel, 'pub/copy/a.txt'), ['600', 2000, null], 'a 0666 file is made 0600');
   ada.mkdir('pub/copy/new', { mode: 0o777 });
   assert.deepEqual(made(kernel, 'pub/copy/new'), made(kernel, 'pub/copy/sub'), 'as mkdir makes one in the copy');
+});
+
+// A tree of every mode, files and directories: the copy's SQL stays within the
+// platform's statement size (workerd refuses a longer one).
+await check('a tree holding every mode is copied within the statement size', async () => {
+  const harness = createSqliteVfsTestHarness();
+  const kernel = new SqliteVFS(harness.sql, harness.ctx).as(CRED_KERNEL);
+  kernel.mkdir('wide');
+  const dirs = [];
+  for (let m = 0; m < 0o10000; m++) dirs.push(`wide/d${m}`);
+  for (let i = 0; i < dirs.length; i += 250) kernel.mkdirBatch(dirs.slice(i, i + 250));
+  for (let m = 0; m < 0o10000; m++) {
+    kernel.writeFile(`wide/f${m}`, '');
+    kernel.chmod(`wide/f${m}`, m);
+    kernel.chmod(`wide/d${m}`, m);
+  }
+  harness.setFaultInjector((statement) => (Buffer.byteLength(statement.sql) > SQLITE_MAX_STATEMENT_BYTES ? new Error('statement too long: SQLITE_TOOBIG') : null));
+  assert.equal(kernel.copyTree('wide', 'copy'), 2 * 0o10000 + 1);
+});
+
+// A copy into a shared directory, admitted by a supplementary group, that a
+// reset interrupted before its job recorded the copier's groups: it resumes
+// to the whole tree once the directory is registered again.
+await check('an interrupted copy resumes as the copier it was admitted as', async () => {
+  const DIRS = 120_000;
+  const harness = createSqliteVfsTestHarness();
+  const vfs = new SqliteVFS(harness.sql, harness.ctx);
+  const kernel = vfs.as(CRED_KERNEL);
+  kernel.mkdir('team');
+  kernel.chown('team', 0, 1000);
+  kernel.chmod('team', 0o2775);
+  kernel.setDefaultAcl('team', 0o775);
+  vfs.registerSharedDirectory('team');
+  kernel.mkdir('src');
+  const names = [];
+  for (let i = 0; i < DIRS; i++) names.push(`src/d${String(i).padStart(6, '0')}`);
+  for (let i = 0; i < names.length; i += 250) kernel.mkdirBatch(names.slice(i, i + 250));
+  harness.failAfterTransaction({ transaction: harness.transactionCount + 3, error: new Error('reset') });
+  assert.throws(() => vfs.as(ADA).copyTree('src', 'team/copy'), /reset/);
+  harness.clearFault();
+  // As a job recorded before the groups were.
+  const [job] = harness.sql.exec("SELECT id, args FROM vfs_jobs WHERE kind = 'copyTree'");
+  const args = JSON.parse(String(job.args));
+  delete args.groups;
+  harness.sql.exec('UPDATE vfs_jobs SET args = ? WHERE id = ?', JSON.stringify(args), job.id);
+  const reopened = new SqliteVFS(createSqliteVfsTestHarness(harness.db).sql, harness.ctx);
+  reopened.registerSharedDirectory('team');
+  for (let i = 0; i < 400 && reopened.jobs().length > 0; i++) await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(reopened.jobs(), [], 'the job is done');
+  assert.equal(harness.sql.exec("SELECT COUNT(*) AS n FROM vfs_inodes WHERE path = 'team/copy' OR path LIKE 'team/copy/%'")[0].n, DIRS + 1);
 });
 
 for (const r of results) console.error(r.join('  '));
