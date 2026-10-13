@@ -19,7 +19,7 @@ export function fsError(code, syscall, path, dest, options = {}) {
 export function modeAllows(stat, want, cred) {
     if (stat.mode === undefined)
         return true;
-    return posixAccess({ mode: stat.mode, uid: stat.uid ?? -1, gid: stat.gid ?? -1 }, want, cred);
+    return posixAccess({ mode: stat.mode, uid: stat.uid ?? -1, gid: stat.gid ?? -1, type: stat.type }, want, cred);
 }
 /**
  * A lookup beneath `root` (RESOLVE_BENEATH, a WASI preopen), as the
@@ -62,7 +62,7 @@ export function* walkBeneath(root, path, follow, cred, handedOver) {
                 throw fsError('ENOENT', 'path', path);
             if (searched.type !== 'directory')
                 throw fsError('ENOTDIR', 'path', path);
-            if (!modeAllows(searched, 1, cred))
+            if (!modeAllows({ ...searched, type: 'directory' }, 1, cred))
                 throw fsError('EACCES', 'path', path);
         }
         if (segment === '.')

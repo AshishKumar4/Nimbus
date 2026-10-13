@@ -86,7 +86,7 @@ function counters(rawVfs) {
   vfs.writeFile('a-b/other.txt', 'sibling');
   vfs.writeFile('abc', 'sibling');
 
-  assert.equal(vfs.removeRecursive('a'), 5);
+  assert.deepEqual(vfs.removeRecursive('a'), { removed: ['a'], kept: [], failures: [] });
 
   const reconstructed = reopenVfs(harness);
   for (const gone of ['a', 'a/b', 'a/b/c', 'a/b/c/deep.txt', 'a/keep-me']) {
@@ -127,7 +127,7 @@ function counters(rawVfs) {
   seedTree(vfs, 'small', 1, 4); // the tree actually removed: 7 entries
 
   const from = harness.statements.length;
-  assert.equal(vfs.removeRecursive('small'), 7);
+  assert.deepEqual(vfs.removeRecursive('small'), { removed: ['small'], kept: [], failures: [] });
   assert.deepEqual(inodeTableScans(harness, from), [], 'removing a subtree read the whole inode table');
   assert.equal(vfs.exists('big/pkg-39/lib/file-19.js'), true);
 }
@@ -137,7 +137,7 @@ function counters(rawVfs) {
   const { vfs } = openVfs();
   assert.throws(() => vfs.removeRecursive('missing'), /ENOENT/);
   vfs.writeFile('solo.txt', 'x');
-  assert.equal(vfs.removeRecursive('solo.txt'), 1);
+  assert.deepEqual(vfs.removeRecursive('solo.txt'), { removed: ['solo.txt'], kept: [], failures: [] });
   assert.equal(vfs.exists('solo.txt'), false);
 }
 
@@ -147,7 +147,7 @@ function counters(rawVfs) {
   vfs.mkdir('target/inner', { recursive: true });
   vfs.writeFile('target/inner/kept.txt', 'x');
   vfs.symlink('target', 'link');
-  assert.equal(vfs.removeRecursive('link'), 1);
+  assert.deepEqual(vfs.removeRecursive('link'), { removed: ['link'], kept: [], failures: [] });
   assert.equal(vfs.exists('target/inner/kept.txt'), true);
   assert.equal(vfs.isSymlink('link'), false);
 }
@@ -158,10 +158,10 @@ function counters(rawVfs) {
   const paths = seedTree(vfs, 'tree', 24, 25); // 24 × (2 dirs + 25 files) + root
   const maintenanceBefore = rawVfs.getStats().sql.phases.maintenanceMs.count;
   const before = harness.transactionCount;
-  const removed = vfs.removeRecursive('tree');
+  assert.deepEqual(vfs.removeRecursive('tree'), { removed: ['tree'], kept: [], failures: [] });
   const transactions = harness.transactionCount - before;
+  const removed = paths.length;
 
-  assert.equal(removed, paths.length);
   assert.ok(
     transactions <= removed / 8,
     `${transactions} transactions for ${removed} entries: a regression to per-entry commits`,
@@ -208,20 +208,17 @@ function counters(rawVfs) {
   layout(grouped.vfs);
   layout(solo.vfs);
 
-  const removedByGroup = grouped.vfs.removeRecursive('app/node_modules');
+  assert.deepEqual(grouped.vfs.removeRecursive('app/node_modules'), { removed: ['app/node_modules'], kept: [], failures: [] });
 
   const removeByHand = (vfs, path) => {
-    let count = 0;
     for (const entry of vfs.readdir(path)) {
       const child = `${path}/${entry.name}`;
-      count += entry.type === 'directory' ? removeByHand(vfs, child) : (vfs.unlink(child), 1);
+      if (entry.type === 'directory') removeByHand(vfs, child);
+      else vfs.unlink(child);
     }
     vfs.rmdir(path);
-    return count + 1;
   };
-  const removedByHand = removeByHand(solo.vfs, 'app/node_modules');
-
-  assert.equal(removedByGroup, removedByHand);
+  removeByHand(solo.vfs, 'app/node_modules');
   // Maintenance is bounded per call, so drain both to the same fixpoint before
   // comparing what content survived.
   for (let pass = 0; pass < 40; pass++) {
@@ -283,7 +280,8 @@ function counters(rawVfs) {
 const CRED_USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 
 // A directory that cannot be read cannot have its entries removed — the check
-// the recursive walk got from readdir, which resolving from the index skips.
+// the recursive walk gets from readdir, which resolving from the index skips.
+// It stays, with what is in it, and its scandir refusal is the report's.
 {
   const { rawVfs, vfs } = openVfs();
   // Under a directory the user owns: removing a name from `/` is the kernel's.
@@ -296,30 +294,34 @@ const CRED_USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
   vfs.chown('w/u/opaque/secret.txt', 1000, 1000);
   vfs.chmod('w/u/opaque', 0o333);
 
+  const refusals = (report) => report.failures.map(({ path, error }) => [path, error.code, error.syscall]);
   const user = rawVfs.as(CRED_USER);
-  assert.throws(() => user.removeRecursive('w/u'), /EACCES/);
-  // Nothing was removed: the refusal precedes the first commit.
+  const refused = user.removeRecursive('w/u');
+  assert.deepEqual([refused.kept, refusals(refused)], [['w/u', 'w/u/opaque'], [['w/u/opaque', 'EACCES', 'scandir']]]);
   assert.equal(vfs.exists('w/u/opaque/secret.txt'), true);
-  assert.equal(vfs.exists('w/u/opaque'), true);
 
   vfs.chmod('w/u/opaque', 0o755);
-  assert.equal(user.removeRecursive('w/u'), 3);
+  assert.deepEqual(user.removeRecursive('w/u'), { removed: ['w/u'], kept: [], failures: [] });
 }
 
-// Removal still needs write+execute on the parent of the root.
+// Removal still needs write+execute on the parent of the root: the tree's
+// contents go, and the root stays with its refusal.
 {
   const { rawVfs, vfs } = openVfs();
   vfs.mkdir('locked/tree', { recursive: true });
   vfs.writeFile('locked/tree/file.txt', 'x');
+  vfs.chown('locked/tree', 1000, 1000);
   vfs.chmod('locked', 0o555);
   const user = rawVfs.as(CRED_USER);
-  assert.throws(() => user.removeRecursive('locked/tree'), /EACCES/);
-  assert.equal(vfs.exists('locked/tree/file.txt'), true);
+  const refused = user.removeRecursive('locked/tree');
+  assert.deepEqual(refused.failures.map(({ path, error }) => [path, error.code, error.syscall]), [['locked/tree', 'EACCES', 'rmdir']]);
+  assert.equal(vfs.exists('locked/tree'), true);
+  assert.equal(vfs.exists('locked/tree/file.txt'), false);
 }
 
-// An entry inside a directory the caller cannot write is refused, and the
-// group holding it commits nothing — the same refusal a per-entry unlink of
-// that path would have raised.
+// An entry inside a directory the caller cannot write is refused — the same
+// refusal a per-entry unlink of that path raises — and stays, with the
+// directories holding it; the rest goes.
 {
   const { rawVfs, vfs } = openVfs();
   vfs.mkdir('shared/mine', { recursive: true });
@@ -332,9 +334,10 @@ const CRED_USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 
   const user = rawVfs.as(CRED_USER);
   assert.throws(() => user.unlink('shared/theirs/file.txt'), /EACCES/);
-  assert.throws(() => user.removeRecursive('shared'), /EACCES/);
-  assert.equal(vfs.exists('shared/theirs/file.txt'), true);
-  assert.equal(vfs.exists('shared/mine'), true, 'the refused group commits nothing');
+  const refused = user.removeRecursive('shared');
+  assert.deepEqual(refused.failures.map(({ path, error }) => [path, error.code, error.syscall]), [['shared/theirs/file.txt', 'EACCES', 'unlink']]);
+  assert.deepEqual(refused.kept, ['shared', 'shared/theirs', 'shared/theirs/file.txt']);
+  assert.equal(vfs.exists('shared/mine'), false, 'the rest went');
 }
 
 // ── Faults ────────────────────────────────────────────────────────────────
@@ -366,7 +369,7 @@ const CRED_USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
       assert.equal(afterCrash.exists(path), true, `${path} lost to a fault at ${statement}`);
     }
 
-    assert.equal(vfs.removeRecursive('crash'), paths.length);
+    assert.deepEqual(vfs.removeRecursive('crash'), { removed: ['crash'], kept: [], failures: [] });
     assert.equal(reopenVfs(harness).exists('crash'), false);
     assert.equal(rawVfs._verifyCounters(), null);
   }
@@ -406,7 +409,7 @@ const CRED_USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
   }
   assert.equal(rawVfs._verifyCounters(), null);
 
-  assert.equal(vfs.removeRecursive('partial'), survivors.length);
+  assert.deepEqual(vfs.removeRecursive('partial'), { removed: ['partial'], kept: [], failures: [] });
   assert.equal(reopenVfs(harness).exists('partial'), false);
 }
 
@@ -438,7 +441,7 @@ const CRED_USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
   );
 
   rawVfs.releaseExclusiveMutation(lease.owner);
-  assert.equal(vfs.removeRecursive('leased'), survivors.length);
+  assert.deepEqual(vfs.removeRecursive('leased'), { removed: ['leased'], kept: [], failures: [] });
   assert.equal(reopenVfs(harness).exists('leased'), false);
   assert.equal(rawVfs._verifyCounters(), null);
 }
@@ -451,7 +454,7 @@ const CRED_USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
   assert.throws(() => vfs.removeRecursive('held'), /EBUSY/);
   assert.equal(vfs.exists('held'), true);
   rawVfs.releaseExclusiveMutation(lease.owner);
-  assert.ok(vfs.removeRecursive('held') > 0);
+  assert.deepEqual(vfs.removeRecursive('held'), { removed: ['held'], kept: [], failures: [] });
 }
 
 console.log('sqlite-vfs-recursive-delete: ok');

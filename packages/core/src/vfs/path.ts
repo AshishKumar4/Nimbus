@@ -103,6 +103,12 @@ export function parentKey(key: string): string {
   return key.includes('/') ? key.substring(0, key.lastIndexOf('/')) : '';
 }
 
+/** The directory a path is in, by its last '/': '/' for a path directly under the root (or none). */
+export function parentOf(path: string): string {
+  const cut = path.lastIndexOf('/');
+  return cut <= 0 ? '/' : path.slice(0, cut);
+}
+
 export function parentVfsPath(path: string): string {
   const clean = normalizeVfsPath(path);
   const idx = clean.lastIndexOf('/');

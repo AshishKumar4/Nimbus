@@ -8,7 +8,7 @@
 
 import type { RuntimeFsPath } from './os-contracts.js';
 import { fsError as nodeFsError, type FsError } from '../vfs/vfs-error.js';
-import { posixAccess } from '../vfs/posix-access.js';
+import { posixAccess, type PosixNodeType } from '../vfs/posix-access.js';
 
 export type { FsError };
 
@@ -25,9 +25,9 @@ export function fsError(
 }
 
 /** POSIX rwx for `cred` on a stat (posixAccess); a stat without a mode allows. An absent owner or group is no one's. */
-export function modeAllows(stat: { mode?: number; uid?: number; gid?: number }, want: number, cred: { uid: number; gid: number; groups: readonly number[] }): boolean {
+export function modeAllows(stat: { mode?: number; uid?: number; gid?: number; type: PosixNodeType }, want: number, cred: { uid: number; gid: number; groups: readonly number[] }): boolean {
   if (stat.mode === undefined) return true;
-  return posixAccess({ mode: stat.mode, uid: stat.uid ?? -1, gid: stat.gid ?? -1 }, want, cred);
+  return posixAccess({ mode: stat.mode, uid: stat.uid ?? -1, gid: stat.gid ?? -1, type: stat.type }, want, cred);
 }
 
 /** One lookup a walk beneath a root asks of its filesystem: a stat that does not follow a link (null when absent), or a link's target. */
@@ -74,7 +74,7 @@ export function* walkBeneath(
       const searched = (yield { stat: '/' + dir }) as Exclude<BeneathAnswer, string>;
       if (searched === null) throw fsError('ENOENT', 'path', path);
       if (searched.type !== 'directory') throw fsError('ENOTDIR', 'path', path);
-      if (!modeAllows(searched, 1, cred)) throw fsError('EACCES', 'path', path);
+      if (!modeAllows({ ...searched, type: 'directory' }, 1, cred)) throw fsError('EACCES', 'path', path);
     }
     if (segment === '.') continue;
     if (segment === '..') {

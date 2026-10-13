@@ -219,8 +219,9 @@ export class SqliteFiles {
     rename(from, to) {
         this.run('rename', from, () => this.view.rename(from, to), to);
     }
-    removeRecursive(path) {
-        this.run('rm', path, () => { this.view.removeRecursive(path); });
+    /** rm -r, with its report (SqliteVFS's, the walk's own result). */
+    removeRecursive(path, options) {
+        return this.run('rm', path, () => this.view.removeRecursive(path, options));
     }
     symlink(target, path) {
         this.run('symlink', target, () => this.view.symlink(target, path), path);
