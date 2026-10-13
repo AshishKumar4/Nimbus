@@ -1201,7 +1201,8 @@ async function routeFetch(self, request) {
     // requests are rejected by the browser before reaching the Worker.
     if (url.pathname === '/api/write-file' && request.method === 'POST') {
         try {
-            const fs = self.getFilesystemAuthority().namespaceFs(CRED_KERNEL);
+            // An owner surface: it acts as the session's user, never the kernel.
+            const fs = self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER);
             const body = await parseJsonBody(request, WriteFileBodySchema);
             const path = body.path.replace(/^\/+/, '');
             // A delegation it meets is recalled first; the whole write is repeatable.
@@ -1221,7 +1222,7 @@ async function routeFetch(self, request) {
         try {
             const body = await parseJsonBody(request, MkdirBodySchema);
             const path = body.path.replace(/^\/+/, '');
-            await withRecall(() => self.getFilesystemAuthority().namespaceFs(CRED_KERNEL).mkdir(`/${path}`, { recursive: true }));
+            await withRecall(() => self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER).mkdir(`/${path}`, { recursive: true }));
             return Response.json({ ok: true, path });
         }
         catch (e) {
@@ -1380,7 +1381,7 @@ async function routeFetch(self, request) {
         // Polished placeholder — auto-reloads when vite starts.
         // Checks the VFS for the starter app so we can offer a context-aware hint.
         const hasSeed = await withRecall(() => {
-            const fs = self.getFilesystemAuthority().namespaceFs(CRED_KERNEL);
+            const fs = self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER);
             return fs.exists(`/${SEED_PROJECT_DIR}`) && fs.exists(`/${SEED_PROJECT_DIR}/package.json`);
         }).catch(() => false);
         const hint = hasSeed
@@ -1413,7 +1414,7 @@ async function routeFetch(self, request) {
             // names so users coming from either `wrangler dev` or
             // `nimbus-wrangler dev` see a familiar hint.
             const hasWranglerConfig = await withRecall(() => {
-                const fs = self.getFilesystemAuthority().namespaceFs(CRED_KERNEL);
+                const fs = self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER);
                 return fs.exists('/home/user/wrangler.jsonc') ||
                     fs.exists('/home/user/wrangler.json') ||
                     fs.exists('/home/user/wrangler.toml');

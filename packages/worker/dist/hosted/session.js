@@ -39,7 +39,7 @@ export class HostedSession extends RpcTarget {
     /**
      * The identity a call acts as. A scoped session always names one: its own,
      * or the session user every command runs as by default, so no verb's own
-     * default (the kernel, for `files.delete`) applies to it.
+     * default applies to it.
      */
     cred(asked) {
         if (this.scope === null)
