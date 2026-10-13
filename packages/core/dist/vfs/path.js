@@ -99,6 +99,11 @@ export function pathsOverlap(left, right) {
 export function parentKey(key) {
     return key.includes('/') ? key.substring(0, key.lastIndexOf('/')) : '';
 }
+/** The directory a path is in, by its last '/': '/' for a path directly under the root (or none). */
+export function parentOf(path) {
+    const cut = path.lastIndexOf('/');
+    return cut <= 0 ? '/' : path.slice(0, cut);
+}
 export function parentVfsPath(path) {
     const clean = normalizeVfsPath(path);
     const idx = clean.lastIndexOf('/');

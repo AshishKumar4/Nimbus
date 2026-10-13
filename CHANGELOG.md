@@ -15,6 +15,14 @@ published independently in the `@nimbus-sh` npm scope.
   in a fresh isolate costs about 6 ms CPU, the fs write path's one-time
   compile; writes are no longer lost. A Node `fs` write over an existing file
   no longer reads the file it replaces (about 0.4 ms less per MiB).
+- Security: a sticky directory (mode 1777, such as `/tmp`) protects its
+  entries from every removal. Removing an ancestor (`rm -r`,
+  `fs.rmSync(..., { recursive: true })`) or deleting through a batch could
+  remove another user's file in a sticky directory below it; only the top
+  operand was checked. Changed: `rm -r` of a tree in the session's own store
+  now does what it does on a mounted directory and on Linux: an entry it may
+  not remove stays, with the directories holding it, and everything else
+  goes; it refused the whole tree before removing anything.
 - Fixed: `nimbus wrangler dev`'s Worker Loader binding (`worker_loaders`)
   cached a Worker loaded with `LOADER.get(id, …)` under its id alone, for
   the whole isolate: two Workers in co-located sessions that used the same

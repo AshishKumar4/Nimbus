@@ -83,12 +83,16 @@ assert.equal(root.exists('tmp/alice-dir'), true);
 makeDir('tmp/alice-tree', 0o777);
 root.chown('tmp/alice-tree', ALICE.uid, ALICE.gid);
 seed('tmp/alice-tree/inner', 'inner');
-assert.throws(
-  () => bob.removeRecursive('tmp/alice-tree'),
-  /EPERM/,
-  'sticky blocks a co-tenant recursive remove',
+// As on Linux, rm -r empties what the co-tenant may write (alice-tree is
+// 0777 and not sticky), and the sticky directory refuses the tree itself.
+const refused = bob.removeRecursive('tmp/alice-tree');
+assert.deepEqual(
+  refused.failures.map(({ path, error }) => [path, error.code, error.syscall]),
+  [['tmp/alice-tree', 'EPERM', 'rmdir']],
+  'sticky blocks a co-tenant recursive remove of the tree',
 );
-assert.equal(root.exists('tmp/alice-tree/inner'), true, 'the refused recursive remove did not happen');
+assert.equal(root.exists('tmp/alice-tree'), true, 'the tree stays');
+assert.equal(root.exists('tmp/alice-tree/inner'), false, 'what the co-tenant may remove in it went');
 
 // ── The bit constrains the entry, not the bytes ─────────────────────────────
 //
