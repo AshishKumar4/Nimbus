@@ -279,7 +279,7 @@ function edgesOf(host: LateLinkHost, late: LateGraph, target: LateTarget): reado
 }
 
 /** A name its module's `export *`s reach two different bindings of. */
-const AMBIGUOUS = { ambiguous: true } as const;
+const AMBIGUOUS = 'ambiguous';
 
 interface Binding {
   readonly module: string;
