@@ -82,10 +82,10 @@ export class SupervisorAllocationBudget {
     return this._acquire(bytes, signal, false);
   }
 
-  /** Reserve bytes now or not at all, driving the lifecycle as acquire does. */
-  tryAcquire(bytes: number): ResizableCreditLease | null {
+  /** Reserve bytes now or not at all, driving the lifecycle as acquire does (or not, `drivesLifecycle` false). */
+  tryAcquire(bytes: number, drivesLifecycle = true): ResizableCreditLease | null {
     const credit = this.credits.tryAcquire(bytes);
-    return credit ? this.wrap(credit, true) : null;
+    return credit ? this.wrap(credit, drivesLifecycle) : null;
   }
 
   private async _acquire(
@@ -235,6 +235,23 @@ export function acquireSupervisorReadAllocation(
   bytes: number,
   signal?: AbortSignal,
 ): Promise<ResizableCreditLease> {
+  return supervisorAllocationBudget.acquireWithoutLifecycle(bytes, signal);
+}
+
+/**
+ * Reserve bytes for a short-lived copy of what the session already holds
+ * (a launch's module map made from a staged state), now or not at all, or
+ * by waiting (`signal`): the byte credit bounds how many such copies are
+ * live at once, but the disposable VFS cache is not shrunk for one, as it
+ * is not for a read. Shrinking it for every launch of a program already
+ * built cost each one its cache, and the copy is no install.
+ */
+export function tryAcquireSupervisorCopyAllocation(bytes: number): ResizableCreditLease | null {
+  return supervisorAllocationBudget.tryAcquire(bytes, false);
+}
+
+/** {@link tryAcquireSupervisorCopyAllocation}, waiting for room. */
+export function acquireSupervisorCopyAllocation(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease> {
   return supervisorAllocationBudget.acquireWithoutLifecycle(bytes, signal);
 }
 
