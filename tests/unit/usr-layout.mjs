@@ -164,9 +164,11 @@ const ETC = ['etc/profile', 'etc/hostname', 'etc/os-release'];
 // ── what a user owned under /usr before is not the kernel's to follow ─────
 {
   const db = new Database(':memory:');
-  const kernel0 = (await open(db)).vfs.as(CRED_KERNEL);
+  // Set up through one workspace: opening another seeds /usr root's again.
+  const first = await open(db);
+  const kernel0 = first.vfs.as(CRED_KERNEL);
+  const user0 = first.vfs.as(CRED_SESSION_USER);
   for (const dir of [...ROOTS].reverse()) kernel0.chown(dir, USER, USER);
-  const user0 = (await open(db)).vfs.as(CRED_SESSION_USER);
   // As an earlier release let the user: /usr/lib a link to its home.
   user0.rename('usr/lib', 'usr/lib-old');
   user0.symlink('/home/user', 'usr/lib');
@@ -181,11 +183,12 @@ const ETC = ['etc/profile', 'etc/hostname', 'etc/os-release'];
 }
 {
   const db = new Database(':memory:');
-  const kernel0 = (await open(db)).vfs.as(CRED_KERNEL);
+  const first = await open(db);
+  const kernel0 = first.vfs.as(CRED_KERNEL);
+  const user = first.vfs.as(CRED_SESSION_USER);
   // As an earlier release left it: no store yet, and /usr/lib the user's.
   kernel0.rmdir('usr/lib/nimbus');
   kernel0.chown('usr/lib', USER, USER);
-  const user = (await open(db)).vfs.as(CRED_SESSION_USER);
   // A runtime of the user's own making in a store the user made.
   const pkg = toyPackage({ name: 'forged' });
   user.mkdir('usr/lib/nimbus/forged/1.0.0/bin', { recursive: true });
