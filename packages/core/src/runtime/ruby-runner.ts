@@ -52,7 +52,7 @@ import type { Command, CommandContext } from '../substrate/lifo/commands/types.j
 import { z } from 'zod';
 import { hasLeadingCliFlag } from './cli-flags.js';
 import type { FacetHost } from './facet-host.js';
-import { CRED_KERNEL, gateSyncLaunch, requireVfsCred, type NimbusFilesystemAuthority, type VfsCred } from './os-contracts.js';
+import { CRED_SESSION_USER, gateSyncLaunch, requireVfsCred, type NimbusFilesystemAuthority, type VfsCred } from './os-contracts.js';
 import { WASI_INSTANCE_PREAMBLE_SRC, type WasiFsSnapshot } from './wasi-instance.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import { RUBY_SOCKET_SHIM } from './ruby-socket-shim.js';
@@ -278,7 +278,8 @@ export function makeRubyRunnerFactory(deps: {
       return result.exitCode;
     };
 
-    if (deps.registry) await withHostView(deps.filesystem, CRED_KERNEL, (vfs) => registerGemBins(vfs, deps.getHome()));
+    // The owner's gems, read as the owner.
+    if (deps.registry) await withHostView(deps.filesystem, CRED_SESSION_USER, (vfs) => registerGemBins(vfs, deps.getHome()));
     return rubyBinHandler;
   };
 }

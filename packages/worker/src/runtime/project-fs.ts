@@ -95,15 +95,24 @@ export function projectFs(view: ProcessView): ProjectFs {
  * to the owner of the directory that holds it, before the tool, which now
  * acts as its caller, replaces it. Releases before 0.13.2 wrote `dist/`
  * (vite build), `package.json` (npm init, npm-fast) and
- * `node_modules/.nimbus-synthetic` (pre-bundling) as root. The calling tool
+ * `node_modules/.nimbus-synthetic` (pre-bundling) as root; releases through
+ * worker 0.17.0, `npm install -g`'s bin shims and `wrangler dev`'s KV and R2
+ * stores (`.nimbus/kv`, `.nimbus/r2`). The calling tool
  * names the one path it writes; only what is still root's there moves, and
  * only what the directory's owner could already read and replace: a world-
  * readable file with no other name (no hard link), or a world-searchable
  * directory, descending only through directories that move. Never through a
  * link, nothing on a mount, nothing for a root caller, and nothing in a
- * directory root owns.
+ * directory root owns. `descend: false` hands a directory without what is
+ * in it: a directory other state shares.
  */
-export async function handKernelArtifact(filesystem: ProcessFiles, view: ProcessView, cred: VfsCred, path: string): Promise<void> {
+export async function handKernelArtifact(
+  filesystem: ProcessFiles,
+  view: ProcessView,
+  cred: VfsCred,
+  path: string,
+  { descend = true }: { descend?: boolean } = {},
+): Promise<void> {
   if (cred.uid === 0) return;
   const at = '/' + normalizeVfsPath(path);
   const cut = at.lastIndexOf('/');
@@ -117,11 +126,11 @@ export async function handKernelArtifact(filesystem: ProcessFiles, view: Process
     let owner: VfsStat;
     try { owner = kernel.stat(dir); } catch (error) { if (recallOf(error) !== null) throw error; return; }
     if (owner.uid === 0 || owner.type !== 'directory') return;
-    hand(kernel, `${dir}/${at.slice(cut + 1)}`, owner.uid, owner.gid);
+    hand(kernel, `${dir}/${at.slice(cut + 1)}`, owner.uid, owner.gid, descend);
   });
 }
 
-function hand(kernel: CredentialedVfs, key: string, uid: number, gid: number): void {
+function hand(kernel: CredentialedVfs, key: string, uid: number, gid: number, descend: boolean): void {
   let st: VfsStat;
   try { st = kernel.lstat(key); } catch (error) { if (recallOf(error) !== null) throw error; return; }
   if (st.uid !== 0) return;
@@ -131,5 +140,6 @@ function hand(kernel: CredentialedVfs, key: string, uid: number, gid: number): v
   }
   if (st.type !== 'directory' || (st.mode & 0o005) !== 0o005) return;
   kernel.chown(key, uid, gid);
-  for (const entry of kernel.readdir(key)) hand(kernel, `${key}/${entry.name}`, uid, gid);
+  if (!descend) return;
+  for (const entry of kernel.readdir(key)) hand(kernel, `${key}/${entry.name}`, uid, gid, true);
 }

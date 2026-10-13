@@ -33,7 +33,7 @@
  *     content store answers `resolveWorkerLaunch` and this is never reached
  *     for its recipes (see `WorkerRecipe.resident`).
  */
-import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { createPortCapability } from '@nimbus-sh/core/runtime/port-registry.js';
 import { execIdField } from '@nimbus-sh/core/runtime/process-table.js';
 import { FacetManager } from './manager.js';
@@ -64,7 +64,7 @@ export function composeFacetManager(deps) {
     };
     const manager = new FacetManager(ctx, env, deps.processes, deps.portRegistry, processHostFor, { ...hooks, network: deps.network, supervise: deps.supervise });
     manager.setVfs(vfs, deps.filesystem);
-    manager.setEsbuildService(deps.esbuild ?? supervisorEsbuildService(ctx, env, deps.filesystem.namespaceFs(CRED_KERNEL)));
+    manager.setEsbuildService(deps.esbuild ?? supervisorEsbuildService(ctx, env, deps.filesystem.namespaceFs(CRED_SESSION_USER)));
     const { portRegistry } = deps;
     const capabilityHost = { ctx, portRegistry };
     return {

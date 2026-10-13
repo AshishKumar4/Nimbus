@@ -42,6 +42,7 @@ import type { CommandRegistry } from '@nimbus-sh/core/substrate/lifo/commands/re
 import type { ChildProcessHost, ChildProcessManager } from '@nimbus-sh/core/runtime/child-process-manager.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { SessionRouterRpc } from '@nimbus-sh/core/runtime/session-protocol.js';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
@@ -178,7 +179,7 @@ export interface SessionInternal extends Pick<SessionRouterRpc,
   ensureNpmInstaller(onProgress?: (msg: string) => void): Promise<NpmInstaller>;
   _setCpRegistry(r: CommandRegistry): void;
   hydrateSessionBasePath(request: Request): Promise<void>;
-  ensureGlobalPrefixDirs(prefix: string): void;
+  ensureGlobalPrefixDirs(prefix: string, cred: Readonly<VfsCred>): void;
   seedFilesystem(): void;
 
   // Class delegators that siblings dispatch through (per plan §IX.2 R3).

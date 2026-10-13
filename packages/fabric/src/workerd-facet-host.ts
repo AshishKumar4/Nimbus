@@ -412,7 +412,7 @@ export class Processes {
 
   /** Open a resident process as a facet of this actor, and start its runner. */
   spawn(
-    disk: () => ResidentDiskReader,
+    disk: (pid: number) => ResidentDiskReader,
     supervisor: ResidentSupervisorProps,
     params: ProcessHostParams,
   ): ResidentFacet {
@@ -445,7 +445,7 @@ export class Processes {
 function spawnResident(
   ctx: DurableObjectState,
   env: ResidentFacetEnv,
-  disk: () => ResidentDiskReader,
+  disk: (pid: number) => ResidentDiskReader,
   supervisor: ResidentSupervisorProps,
   params: ProcessHostParams,
 ): ResidentFacet {
@@ -685,7 +685,7 @@ function startFailure(error: unknown, name: string, pid: number): unknown {
  */
 function residentProcessClass(
   env: ResidentFacetEnv,
-  disk: () => ResidentDiskReader,
+  disk: (pid: number) => ResidentDiskReader,
   supervisor: ResidentSupervisorProps,
   params: ProcessHostParams,
   loaderKey: string,
@@ -914,18 +914,18 @@ interface JournalReaderStub {
  */
 export async function residentWorkerConfig(
   env: ResidentFacetEnv,
-  disk: () => ResidentDiskReader,
+  disk: (pid: number) => ResidentDiskReader,
   supervisor: ResidentSupervisorProps,
   boot: ResidentBootSpec,
 ): Promise<WorkerCode> {
   if (boot.kind === 'code' && boot.code.env !== undefined) {
-    const isolated = workspaceOutbound(await residentLoaderConfig(boot.code, disk(), (source) => readImmutableModuleSource(env, source)), supervisor);
+    const isolated = workspaceOutbound(await residentLoaderConfig(boot.code, disk(supervisor.pid), (source) => readImmutableModuleSource(env, source)), supervisor);
     assertModuleMapWithinCodeLimit(isolated.modules);
     return isolated;
   }
   const config = boot.kind === 'staged'
     ? await stagedBootAssembler()(env, boot.stage)
-    : await residentLoaderConfig(boot.code, disk(), (source) => readImmutableModuleSource(env, source));
+    : await residentLoaderConfig(boot.code, disk(supervisor.pid), (source) => readImmutableModuleSource(env, source));
   assertModuleMapWithinCodeLimit(config.modules);
   // The binding, not its host's capability (Supervise): a resident's calls each go one hop below its own request, at a fixed depth.
   const bindings = boot.kind === 'code' ? boot.code.bindings : undefined;

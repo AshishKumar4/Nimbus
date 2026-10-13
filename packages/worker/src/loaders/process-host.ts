@@ -36,7 +36,7 @@ export function processHostMode(env: unknown): ProcessHostMode {
 export function processHostFor(
   ctx: DurableObjectState,
   env: unknown,
-  disk: () => ResidentDiskReader,
+  disk: (pid: number) => ResidentDiskReader,
   /** The workspace's network (the session's composition supplies it); absent, the isolate's own. */
   network: () => WorkspaceNetwork = () => ISOLATE_NETWORK,
   supervise?: Supervise,

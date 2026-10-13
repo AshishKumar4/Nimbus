@@ -356,7 +356,8 @@ async function readFacetImageBytes(disk, path) {
     if (!expected) {
         throw new Error(`Nimbus: '${path}' is not a content-addressed facet image path`);
     }
-    return readContentBlob(disk, path, expected);
+    const readImage = disk.readImage;
+    return readContentBlob(readImage ? { readFile: (image) => readImage.call(disk, image) } : disk, path, expected);
 }
 /**
  * Read a content-addressed blob (image-store.ts storeContentBlob) and verify
