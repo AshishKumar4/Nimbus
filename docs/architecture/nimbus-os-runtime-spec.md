@@ -118,7 +118,10 @@ the ledger in `packages/fabric/src/budgets.ts`). The order is C or B before S:
 - A launch settles its bundle first, holding no worker: it takes C (its
   build's admission, or for a state it did not build its map's share), or
   joins B. Only then does it take S: an exec's launch admission
-  (`withLaunchAdmission`), a resident's residency.
+  (`withLaunchAdmission`), a resident's residency. A launch started inside an
+  admission it inherits (a broker's for a running program's child, an exec's
+  promoted to a resident at its first listen) gives that worker back while it
+  prepares and takes it again after.
 - Helpers its build calls (transform, build) take S as that launch's process
   (`withLaunchPreparation`) while it holds C: the same order.
 - Holding S, a launch waits on no C and no B. Its map is made under the share

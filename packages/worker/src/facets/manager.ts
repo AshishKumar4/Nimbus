@@ -9098,8 +9098,22 @@ export class FacetManager {
     const preparing = this.processes.holdWork(entry.pid);
     // Its bundle first, under the credit, then its residency's worker (the
     // lock order); its preparation's helpers wait for a worker as its process.
-    const launch = withLaunchPreparation(this.ctx, { pid: entry.pid }, () => this._runResidentLaunchBody(entry, code, command, opts, attempt));
-    return this.trackLaunchTask(launch.finally(preparing));
+    // A launch admission it is started in (a broker's, for the child whose
+    // command this is; an exec's, promoted at its first listen) is given back
+    // while it prepares and taken again before its boot (`admitted`), which
+    // claims it: a launch holding a worker waits for no credit and on no build.
+    const inherited = suspendLaunchAdmission(this.ctx);
+    let admitted: () => Promise<void> = async () => {};
+    let stopWaiting = () => {};
+    if (inherited !== undefined) {
+      const ended = new AbortController();
+      stopWaiting = this.processes.subscribeTerminal(entry.pid, () => {
+        ended.abort(new Error(`Nimbus: the launch for pid ${entry.pid} was cancelled while it waited for a worker`));
+      });
+      admitted = () => inherited(ended.signal);
+    }
+    const launch = withLaunchPreparation(this.ctx, { pid: entry.pid }, () => this._runResidentLaunchBody(entry, code, command, opts, attempt, admitted));
+    return this.trackLaunchTask(launch.finally(() => { stopWaiting(); preparing(); }));
   }
 
   private async _runResidentLaunchBody(
@@ -9108,6 +9122,7 @@ export class FacetManager {
     command: string,
     opts: ResidentSpawnOptions,
     attempt: number,
+    admitted: () => Promise<void>,
   ): Promise<void> {
     const cwd = opts.cwd || '/home/user';
     const pacer = this._launchPacer(entry.pid);
@@ -9209,7 +9224,7 @@ export class FacetManager {
       throw e;
     }
     try {
-      await this._residentLaunchBody(entry, code, command, cwd, opts, pacer, durableFacetName, launchEnv);
+      await this._residentLaunchBody(entry, code, command, cwd, opts, pacer, admitted, durableFacetName, launchEnv);
     } catch (e: unknown) {
       // Bundle construction and source staging precede the launch body's
       // resource-cleanup try/catch. An attached caller already has its pid;
@@ -9243,6 +9258,8 @@ export class FacetManager {
     cwd: string,
     opts: ResidentSpawnOptions,
     pacer: TurnBudget,
+    /** Its inherited launch admission taken again (_runResidentLaunch), once its bundle and map are settled. */
+    admitted: () => Promise<void>,
     durableFacetName?: string,
     launchEnv?: Record<string, string>,
   ): Promise<void> {
@@ -9405,6 +9422,8 @@ export class FacetManager {
       // already exited would leave a facet nothing owns, running against a
       // pid the session has finished reporting on.
       this._assertLaunchStillOwned(entry.pid);
+      // Its worker, the launch admission it was started in, before its boot claims it.
+      await admitted();
       try {
       const launchingNonce = stopNonce, launchingRun = rerun?.replay.run ?? 1;
       handle = await this._startResidentProcess(entry.pid, {
