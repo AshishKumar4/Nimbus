@@ -123,6 +123,9 @@
       "*/10 * * * *"
     ]
   },
+  "version_metadata": {
+    "binding": "CF_VERSION_METADATA"
+  },
   "env": {
     "staging": {
       "vars": {
@@ -198,6 +201,9 @@
         "crons": [
           "*/10 * * * *"
         ]
+      },
+      "version_metadata": {
+        "binding": "CF_VERSION_METADATA"
       }
     },
     "production": {
@@ -295,6 +301,9 @@
         "crons": [
           "*/10 * * * *"
         ]
+      },
+      "version_metadata": {
+        "binding": "CF_VERSION_METADATA"
       }
     }
   }

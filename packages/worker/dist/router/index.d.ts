@@ -116,6 +116,12 @@ export interface CreateNimbusHandlerOptions {
     sdk?: NimbusSdkRouterConfig;
 }
 /**
+ * The header naming the Worker version that answered: `env.CF_VERSION_METADATA.id`,
+ * from a `version_metadata` binding named `CF_VERSION_METADATA`. A deploy's
+ * readiness reads it to know the edge serves the version it uploaded.
+ */
+export declare const NIMBUS_VERSION_HEADER = "x-nimbus-version";
+/**
  * The shape every `default export` Workers handler must satisfy.
  * Exported so embedders can type their own composed default export.
  */
