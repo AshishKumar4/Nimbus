@@ -51,7 +51,7 @@ export interface HostedHttpRequest {
     url: string;
     headers: [string, string][];
     body: ReadableStream | null;
-    /** Its id, by which its coordinator can abandon it, the watermark below which the leaf forgets, and abandons it carries (SentRequests). */
+    /** Its id, by which its coordinator can abandon it, the watermark below which the peer forgets, and abandons it carries (SentRequests). */
     id: number;
     low: number;
     abandoned?: number[];
@@ -143,7 +143,7 @@ export declare class PeerHost {
     awaitBoot(workerKey: string): Promise<HostedReply<{
         payload: unknown;
     }>>;
-    /** The coordinator abandons request `id` of a process this peer hosts, at its leaf (SentRequests). */
+    /** The coordinator abandons request `id` of a process this peer hosts (SentRequests): its leaf's call is cancelled. */
     abandonHttp(workerKey: string, capability: string, id: number): Promise<void>;
     /**
      * Inbound HTTP for a port owned by a process this peer hosts.
@@ -160,7 +160,7 @@ export declare class PeerHost {
      * isolate before it is returned, for the same reason the parts exist at all:
      * what leaves here must not be an object the loaded worker owns. That
      * pipe's end is when this host's work for the response is done; the
-     * coordinator abandons the request at its leaf by its id (abandonHttp),
+     * coordinator abandons the request by its id (abandonHttp), which cancels its leaf's call,
      * before its headers or after, and the leaf's guest ending its body ends
      * the pipe.
      */

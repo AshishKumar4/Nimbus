@@ -12,7 +12,7 @@
  * that is not a Durable Object implements `ProcessHost` against the same
  * `HostedProcess` and never imports this file.
  */
-import { type HostActivityLease, type HostRequest } from './host-activity.js';
+import { type HostActivityLease } from './host-activity.js';
 import type { ModuleSourceEnv } from '@nimbus-sh/platform/module-source.js';
 import type { ResponseScope } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type HostedProcess, type OneShotParams, type ProcessHostParams, type ResidentBootSpec, type ResidentDiskReader, type ResidentSupervisorProps, type Supervise } from './process-fabric.js';
@@ -143,11 +143,10 @@ export type ResidentFacet = Omit<HostedProcess, 'describe' | 'handleHttpRequest'
     acquireActivity(signal?: AbortSignal): HostActivityLease;
     /**
      * HostedProcess.handleHttpRequest; a peer relaying its coordinator's
-     * request passes that request's numbering (SentRequests) instead of its
-     * own, and its coordinator abandons it through abandonHttpRequest.
+     * request passes the signal its coordinator abandons it by
+     * (HandledRequests) instead of the scope's end.
      */
-    handleHttpRequest(request: Request, scope: ResponseScope, relayed?: HostRequest): Promise<Response>;
-    abandonHttpRequest(id: number): Promise<void>;
+    handleHttpRequest(request: Request, scope: ResponseScope, relayed?: AbortSignal): Promise<Response>;
 };
 /**
  * The process surface of one hosting actor: how a resident process comes

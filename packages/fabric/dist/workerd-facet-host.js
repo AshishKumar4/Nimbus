@@ -13,7 +13,7 @@
  * `HostedProcess` and never imports this file.
  */
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { hostActivity, HOST_INCARNATION_HEADER, HOST_REQUEST_HEADER, HOST_WATCH_HEADER, observeResidentConfig, HOST_FAILED_HEADER, leafReceived, receivedFailure, SentRequests, } from './host-activity.js';
+import { hostActivity, HOST_INCARNATION_HEADER, HOST_REQUEST_HEADER, HOST_WATCH_HEADER, observeResidentConfig, HOST_FAILED_HEADER, receivedFailure, } from './host-activity.js';
 import { readImmutableModuleSource } from '@nimbus-sh/core/_shared/staged-source.js';
 import { classifyError, describeError, isUnexplainedPlatformError } from '@nimbus-sh/platform/oom-classify.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
@@ -446,48 +446,43 @@ function spawnResident(ctx, env, disk, supervisor, params) {
             markLost(gone);
         throw new ProcessHostLost(gone);
     };
-    // An upgrade's admission rides its headers: fetch takes a Request alone.
-    const admitted = async (request) => {
+    // A request's admission rides its headers: the leaf's entry is its fetch.
+    const admitted = async (request, signal) => {
         const headers = new Headers(request.headers);
         headers.set(HOST_REQUEST_HEADER, watchCapability);
         headers.set(HOST_INCARNATION_HEADER, await incarnation);
-        return new Request(request, { headers });
+        return new Request(request, signal === undefined ? { headers } : { headers, signal });
     };
-    const sent = new SentRequests();
-    const abandon = (id) => facet.abandonHttpRequest(watchCapability, id);
     return {
         started,
         lost,
         acquireActivity: observation.acquire,
-        // A request waits for the pinned incarnation, never for the boot.
+        // A request waits for the pinned incarnation, never for the boot. It is
+        // the leaf's fetch, whose own request signal aborts when this call is
+        // cancelled: the call carries a signal that ends when the response will
+        // not be delivered (its caller left, before any header or after), or a
+        // peer's own for the request it relays.
         handleHttpRequest: async (request, scope, relayed) => {
             const lease = observation.acquire();
-            // A peer relaying its coordinator's request leaves the numbering to it.
-            const sending = relayed ?? sent.send();
+            const cancel = relayed === undefined ? new AbortController() : null;
             scope.settled((delivered) => {
                 lease.release();
-                if (!relayed)
-                    sent.settled(sending.id, delivered, abandon);
+                if (!delivered)
+                    cancel?.abort(new DOMException('The caller left the request', 'AbortError'));
             });
+            const signal = relayed ?? cancel.signal;
             try {
                 // A live watch that found the pinned instance admits the request; without one it carries its admission.
-                const response = await (observation.validated()
-                    ? facet.hostHttpRequest(request, sending.id, sending.low, sending.abandoned)
-                    : facet.hostHttpRequest(request, sending.id, sending.low, sending.abandoned, [watchCapability, await incarnation]));
-                if (!relayed && sending.abandoned)
-                    sent.received(sending);
+                const response = await facet.fetch(observation.validated() ? request : await admitted(request), { signal });
                 if (response.status === 500 && response.headers.get(HOST_FAILED_HEADER) === watchCapability)
                     throw receivedFailure(new Error(await response.text()));
                 return response.status === 410 ? await checked(response) : response;
             }
             catch (error) {
-                if (!relayed && !leafReceived(error))
-                    sent.unsent(sending);
                 lease.release();
                 throw error;
             }
         },
-        abandonHttpRequest: abandon,
         // An upgrade hands its socket to the caller at the handshake.
         handleWebSocketRequest: async (request) => {
             const lease = observation.acquire();

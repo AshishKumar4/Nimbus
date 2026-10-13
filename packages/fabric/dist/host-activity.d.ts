@@ -46,15 +46,14 @@ export declare class HostActivity {
     private failed;
 }
 /**
- * The requests a host sends a resident's leaf, by id, so it can abandon one:
- * before its response's headers as well as after. Workers RPC carries no
- * signal, and asking per request costs a round trip; abandoning is the rare
- * path, so only it sends anything (the leaf's abandonHttpRequest). Each call
- * carries `low`, below which every id is retired (delivered, or abandoned
- * where the leaf heard it), so the leaf forgets them; and, only when there
- * are any, the ids whose abandon did not arrive (`abandoned`), which the leaf
- * abandons first. The leaf keeps an abandon that overtakes its request until
- * that request arrives (observeResidentConfig).
+ * The requests a coordinator sends the peer hosting a process, by id, so it
+ * can abandon one: before its response's headers as well as after. Workers
+ * RPC carries no signal, and asking per request costs a round trip;
+ * abandoning is the rare path, so only it sends anything (the peer's
+ * abandonHostedHttp). Each call carries `low`, below which every id is
+ * retired (delivered, or abandoned where the peer heard it), so the peer
+ * forgets them; and, only when there are any, the ids whose abandon did not
+ * arrive (`abandoned`), which the peer abandons first (HandledRequests).
  */
 export declare class SentRequests {
     #private;
@@ -66,10 +65,24 @@ export declare class SentRequests {
      * it unabandoned; an abandon that does not arrive rides the next request.
      */
     settled(id: number, delivered: boolean, abandon: (id: number) => Promise<unknown>): void;
-    /** `request`'s leaf answered: the abandons it carried arrived. */
+    /** `request`'s peer answered: the abandons it carried arrived. */
     received(request: HostRequest): void;
-    /** `request`'s call failed before its leaf saw it (leafReceived): its abandons ride the next one. */
+    /** `request`'s call failed before its peer saw it (leafReceived): its abandons ride the next one. */
     unsent(request: HostRequest): void;
+}
+/**
+ * The receiving end of SentRequests: one AbortController per request its
+ * sender may still abandon, aborted when that abandon arrives, whether before
+ * the request (kept until it comes) or after. Ids below the sender's `low`
+ * are forgotten; an id already retired when its request arrives gets a
+ * signal no abandon will reach.
+ */
+export declare class HandledRequests {
+    #private;
+    /** The signal request `request.id` runs under, once the abandons it carried are applied. */
+    signal(request: HostRequest): AbortSignal;
+    /** Its sender abandoned request `id`. */
+    abandon(id: number): void;
 }
 /**
  * The property a host sets on a guest failure its leaf answered: the call
