@@ -14,7 +14,7 @@
  * mode is refused, as the rest of this git refuses it.
  */
 import { type CheckoutWriter } from './worktree/checkout.js';
-import { type WorktreeRepo } from './worktree/repo.js';
+import type { WorktreeRepo } from './worktree/repo.js';
 export interface SparseCheckoutContext {
     wrepo: WorktreeRepo;
     /** The worktree's top, absolute. */

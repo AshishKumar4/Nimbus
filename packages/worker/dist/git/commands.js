@@ -20,7 +20,7 @@ import { exitCodeForAbortSignal, SESSION_DESTROYED } from '@nimbus-sh/core/subst
 import { bridgeCleanupFs, cleanUpClone, deleteCloneJob, GIT_CLONE_JOB_MARKER, setCloneJobPhase, writeCloneJob, } from './clone-job.js';
 import { noSuchRemoteText, remoteFailureText, selectRemoteCredentials, urlCredentials } from './pack/remote-failure.js';
 import { base64Utf8 } from '@nimbus-sh/core/_shared/crypto.js';
-import { GitGlobalsError, parseConfigParameter, withConfigOverrides, withGlobalConfig } from './config-params.js';
+import { GitGlobalsError, configBool, parseConfigParameter, withConfigOverrides, withGlobalConfig, withWorktreeConfig } from './config-params.js';
 import { gitBackend, UnsupportedGitOperation } from './routing.js';
 import { packsSeam } from './pack/store.js';
 import { PromisorFetchError, fetchMissingObjects } from './promisor.js';
@@ -35,7 +35,7 @@ import { invalidPathError, verifyPath } from './worktree/verify-path.js';
 import { DirCache, NewEntries, comparePaths } from './worktree/dircache.js';
 import { isValidRefName } from './worktree/refname.js';
 import { PairList } from './worktree/pairs.js';
-import { WorktreeRepo, configBool } from './worktree/repo.js';
+import { WorktreeRepo } from './worktree/repo.js';
 import { collectStatus, inSpecs, shortStatusLines, walkTreeAndIndex } from './worktree/status.js';
 import { EMPTY_TREE, treeLeaves, treeOf, writeTreeFromIndex } from './worktree/tree.js';
 import { DirtySet, modeFromStat, newCounters, scanWorktree, worktreeBlob, worktreeBlobId, } from './worktree/walk.js';
@@ -1107,11 +1107,13 @@ const COMMAND_HOOKS = {
     'sparse-checkout': ['post-index-change'],
 };
 /**
- * The first of `hooks` the repository makes executable, null for none:
- * where git looks for them (core.hooksPath, from -c, the repository's and
- * the global config, a relative one from `top`, the directory hooks run
- * in; else $GIT_DIR/hooks), each found as git's find_hook finds it, by
- * access(X_OK) as the command's principal.
+ * The first of `hooks` git would run or report, null for none: where git
+ * looks for them (core.hooksPath, from -c, the repository's and the global
+ * config, a relative one from `top`, the directory hooks run in; else
+ * $GIT_DIR/hooks), each found as git's find_hook finds it, by access(X_OK)
+ * on its path as the command's principal. One there and executable runs;
+ * one access refuses otherwise (EACCES: git says it ignored the hook) is
+ * real git's to report. Only one that is not there is none.
  */
 async function executableHook(ctx, git, fs, gitdir, top, hooks) {
     const configured = await git.getConfig({ fs, gitdir, path: 'core.hooksPath' })
@@ -1122,22 +1124,26 @@ async function executableHook(ctx, git, fs, gitdir, top, hooks) {
         const expanded = configured === '~' ? home : configured.startsWith('~/') ? home + configured.slice(1) : configured;
         dir = expanded.startsWith('/') ? expanded : `${top}/${expanded}`;
     }
-    // One listing (none: no hooks), then access(X_OK) only for the hooks it names.
-    let present;
+    // The directory's listing, where it can be read, says at once which hooks
+    // are not there; a directory that is not there holds none. One that
+    // cannot be listed (searchable, not readable) is looked in by path.
+    let listed = null;
     try {
-        present = new Set((await ctx.vfs.readdir(normalizeVfsPath(dir))).map((entry) => entry.name));
+        listed = new Set((await ctx.vfs.readdir(normalizeVfsPath(dir))).map((entry) => entry.name));
     }
-    catch {
-        return null;
+    catch (error) {
+        if (isVfsError(error, 'ENOENT') || isVfsError(error, 'ENOTDIR'))
+            return null;
     }
     for (const hook of hooks) {
-        if (!present.has(hook))
+        if (listed !== null && !listed.has(hook))
             continue;
         try {
             await ctx.vfs.access(normalizeVfsPath(`${dir}/${hook}`), X_OK);
         }
-        catch {
-            continue;
+        catch (error) {
+            if (isVfsError(error, 'ENOENT') || isVfsError(error, 'ENOTDIR'))
+                continue;
         }
         return hook;
     }
@@ -3570,7 +3576,7 @@ realGit) {
         };
         const fs = sessionGitFs(repoVfs, null, promisor);
         const fileGit = git;
-        git = withConfigOverrides(withGlobalConfig(git, fs, ctx.env, dir), globals.config);
+        git = withConfigOverrides(withWorktreeConfig(withGlobalConfig(git, fs, ctx.env, dir), fileGit, fs), globals.config);
         commandFs = fs;
         // The engine, as this command's principal: a repository on it takes its objects in waves (WorktreeRepo.objectWriter).
         commandEngines.set(fs, {

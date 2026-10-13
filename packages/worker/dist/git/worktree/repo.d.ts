@@ -70,12 +70,6 @@ export interface ObjectWriter {
     write(type: 'blob' | 'tree' | 'commit' | 'tag', data: Uint8Array): Promise<string>;
     flush(): Promise<void>;
 }
-/**
- * git_config_bool's spellings, from a file or command override: a key with no
- * `=` is null in the override (git's true), and an explicit empty value is ''
- * (git's false). cf-git may already have decoded a stored value to a boolean.
- */
-export declare function configBool(value: unknown): boolean | undefined;
 export declare class WorktreeRepo {
     readonly vfs: ProjectFs;
     readonly git: RepoGit;
@@ -124,8 +118,6 @@ export declare class WorktreeRepo {
      * that name.
      */
     private configFile;
-    /** `path` in the config file `file`, as cf-git reads it. */
-    private configIn;
     /**
      * init_worktree_config: extensions.worktreeConfig set, core.bare (when
      * true) and core.worktree moved from config to config.worktree, unless
@@ -134,12 +126,6 @@ export declare class WorktreeRepo {
     initWorktreeConfig(): Promise<void>;
     /** repo_config_set_worktree_gently: `path` in config.worktree (the extension being set). */
     setWorktreeSetting(path: string, value: string): Promise<void>;
-    /**
-     * A setting as git reads it for this worktree: config.worktree's when
-     * extensions.worktreeConfig is set (where clone --sparse and
-     * sparse-checkout write theirs), over the repository's config.
-     */
-    worktreeSetting(path: string): Promise<unknown>;
     /** core.sparseCheckout: whether the worktree is a sparse checkout. */
     isSparse(): Promise<boolean>;
     /**

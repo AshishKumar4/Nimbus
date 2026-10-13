@@ -19,6 +19,12 @@ export type ConfigOverrides = Map<string, Array<string | null>>;
  * parse command-line config" (128).
  */
 export declare function parseConfigParameter(text: string): [key: string, value: string | null];
+/**
+ * git_config_bool's spellings, from a file or command override: a key with no
+ * `=` is null in the override (git's true), and an explicit empty value is ''
+ * (git's false). cf-git may already have decoded a stored value to a boolean.
+ */
+export declare function configBool(value: unknown): boolean | undefined;
 /** The config reads of cf-git (isomorphic-git's getConfig and getConfigAll). */
 interface ConfigReader {
     getConfig(args: {
@@ -36,6 +42,24 @@ export declare function withGlobalConfig<G extends ConfigReader>(git: G, fs: {
         }): Promise<Uint8Array | string>;
     };
 }, env: Record<string, string>, cwd: string): G;
+/**
+ * `git` with a repository's config.worktree over its config where the
+ * repository sets extensions.worktreeConfig: git reads system, global,
+ * local, worktree, then -c (withConfigOverrides, over this). Whether it is
+ * set is the repository's own config's (`files`, cf-git reading only that
+ * file), read once per repository until this command writes a config.
+ */
+export declare function withWorktreeConfig<G extends ConfigReader & {
+    setConfig(args: {
+        path: string;
+    }): Promise<void>;
+}>(git: G, files: ConfigReader, fs: {
+    promises: {
+        readFile(path: string, options?: 'utf8' | {
+            encoding: 'utf8';
+        }): Promise<Uint8Array | string>;
+    };
+}): G;
 /**
  * `git` with `overrides` over every file's: a key `-c` set reads as its last
  * value, and all of them after the files' for a read of every value.

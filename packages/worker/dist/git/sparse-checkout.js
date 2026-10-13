@@ -17,7 +17,7 @@ import { FULL_CONE, coneMatcher, coneOf, coneSparseCheckout, parseConeSparseChec
 import { quotePath } from './unified-diff.js';
 import { updateSparsity } from './worktree/checkout.js';
 import { S_IFGITLINK, S_IFMT, compareBytes } from './worktree/dircache.js';
-import { configBool } from './worktree/repo.js';
+import { configBool } from './config-params.js';
 import { scanWorktree } from './worktree/walk.js';
 import { UnsupportedGitOperation } from './routing.js';
 const USAGE = 'usage: git sparse-checkout (init | list | set | add | reapply | disable | check-rules | clean) [<options>]\n';
@@ -221,7 +221,7 @@ async function readPatterns(wrepo) {
 async function modes(wrepo) {
     return {
         sparse: await wrepo.isSparse(),
-        cone: configBool(await wrepo.worktreeSetting('core.sparseCheckoutCone')) === true,
+        cone: configBool(await wrepo.config('core.sparseCheckoutCone')) === true,
     };
 }
 /** set_config: the worktree's sparse checkout on in cone mode, or off (`off`: index.sparse off with it). */
@@ -345,7 +345,7 @@ async function updateWorkingDirectory(ctx, sparse, cone) {
 /** write_patterns_and_update: the worktree moved to the cone of `dirs`, then the file that says so written. */
 async function writePatternsAndUpdate(ctx, dirs) {
     const { wrepo } = ctx;
-    const ignoreCase = configBool(await wrepo.worktreeSetting('core.ignorecase')) === true;
+    const ignoreCase = configBool(await wrepo.config('core.ignorecase')) === true;
     await updateWorkingDirectory(ctx, coneMatcher(coneOf(dirs), ignoreCase), true);
     await wrepo.vfs.mkdir(`${wrepo.gitdir}/info`, { recursive: true });
     await wrepo.vfs.writeFile(`${wrepo.gitdir}/info/sparse-checkout`, encoder.encode(coneSparseCheckout(dirs)));
