@@ -6,8 +6,7 @@ import assert from 'node:assert/strict';
 import { mock } from 'bun:test';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { facetImageDigest, facetImagePath } from '../../packages/fabric/src/process-fabric.ts';
-import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
-import { ReplayJournal } from '../../packages/worker/src/runtime/stop-replay-journal.ts';
+import { ReplaySessions } from '../../packages/worker/src/runtime/replay-session.ts';
 import { createFacetWorld, createProcessHost, PROCESS_HOST_MODES } from './facet-host-harness.mjs';
 
 mock.module('cloudflare:workers', () => ({ WorkerEntrypoint: class { constructor(ctx, env) { this.ctx = ctx; this.env = env; } } }));
@@ -28,18 +27,17 @@ const boot = {
 };
 
 for (const mode of PROCESS_HOST_MODES) {
-  const journal = new ReplayJournal(() => {});
+  // The session's replay sessions (FacetManager.replay): the real boundary every supervisor call goes through; no guest ran yet.
+  const replay = new ReplaySessions();
+  const { journal } = replay.open(pid, () => {});
   journal.start(writerId);
-  // The real session boundary; no guest ran yet.
-  const fm = Object.create(FacetManager.prototype);
-  fm.journals = new Map([[pid, journal]]);
   const reads = [];
   const coordinator = {
     supervisorOp(envelope) {
       const { op, args, run } = envelope;
       assert.equal(envelope.pid, pid, 'boot images retain the process filesystem authority');
       reads.push({ op, args, run });
-      return fm.journalCall(op, args, envelope.pid, run, async () => {
+      return replay.call(op, args, envelope.pid, run, async () => {
         if (op === 'stat') return { size: source.byteLength };
         if (op === 'fsReadRangeUncached') return source.subarray(args[1], args[1] + args[2]);
         throw new Error(`unexpected image-reader op: ${op}`);
@@ -72,7 +70,7 @@ for (const mode of PROCESS_HOST_MODES) {
     console.log(`${mode}: loader observations excluded, guest observations retained`);
   } finally {
     await hosted.release();
-    journal.close();
+    replay.close(pid);
   }
 }
 console.log('peer-host-stdin-image-observations: ok');

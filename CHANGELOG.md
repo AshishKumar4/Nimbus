@@ -10,7 +10,8 @@ published independently in the `@nimbus-sh` npm scope.
   reads of the process's boot images counted as the process's, and its
   second boot stopped with `reached fd 0 before the recorded answer to stat
   was delivered`. The peer reads the images through a binding no run acts
-  through, under the process's pid.
+  through, under the process's pid; the session serves such a read apart
+  from the run's own receipts.
 
 ## 2026-10-12: platform 0.8.2, core 0.18.0, fabric 0.13.0, worker 0.16.0, loom 0.2.5, sdk 0.13.1, react 0.3.1, cli 0.2.5, create-nimbus-app 0.2.2
 
