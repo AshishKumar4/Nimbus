@@ -73,7 +73,7 @@ const eacces = async (promise, what) => {
   await assert.rejects(promise, (e) => {
     assert.ok(/EACCES/.test(e?.code ?? '') || /EACCES/.test(e?.message ?? ''), `${what}: expected EACCES, got ${e?.code ?? e?.message}`);
     return true;
-  });
+  }, `${what}: expected EACCES, but it was allowed`);
 };
 
 const SECRET = 'home/user/priv/secret.txt';
@@ -124,22 +124,37 @@ const SECRET = 'home/user/priv/secret.txt';
   const { host, kernel } = makeHost();
   await eacces(rpcDeleteFile(host, SECRET, {}, STRANGER), 'delete through a 0700 directory as a stranger');
   assert.equal(kernel.exists(SECRET), true, 'refused, so still there');
+  await eacces(rpcDeleteFile(host, SECRET), 'the pid-less default, the session user, through a 0700 directory it does not own');
+  assert.equal(kernel.exists(SECRET), true, 'refused, so still there');
   await rpcDeleteFile(host, SECRET, {}, OWNER);
   assert.equal(kernel.exists(SECRET), false, 'the owner may delete it');
 
   kernel.writeFile('home/user/priv/again.txt', 'x', { mode: 0o600 });
   kernel.chown('home/user/priv/again.txt', OWNER.uid, OWNER.gid);
-  await eacces(rpcDeleteFile(host, 'home/user/priv/again.txt'), 'the pid-less default, the session user, through a 0700 directory it does not own');
-  assert.equal(kernel.exists('home/user/priv/again.txt'), true, 'refused, so still there');
   await rpcDeleteFile(host, 'home/user/priv/again.txt', {}, CRED_KERNEL);
   assert.equal(kernel.exists('home/user/priv/again.txt'), false, 'the kernel, asked for by name, deletes it');
-  // Removing `priv` itself needs write on its parent, which uid 1000 owns, and
-  // a walk through `priv`, which only its owner may: the owner of the subtree
-  // and the session user are each refused exactly as POSIX refuses them, and
-  // the kernel, asked for by name, takes it out.
+}
+
+// ── recursive delete: what may go goes, as rm -r on Linux ─────────────────
+{
+  const { host, kernel } = makeHost();
+  // The session user cannot read `priv`, so cannot empty it: it is refused
+  // with that read's EACCES, and nothing goes.
+  await eacces(rpcDeleteFile(host, 'home/user/priv', { recursive: true }), 'recursive removal through a directory the session user cannot read');
+  assert.equal(kernel.exists(SECRET), true, 'refused, so the file is still there');
+  // The subtree's owner empties it, and is refused the directory itself:
+  // removing it needs write on its parent, which uid 1000 owns.
   await eacces(rpcDeleteFile(host, 'home/user/priv', { recursive: true }, OWNER), 'recursive removal of a directory in a parent the owner cannot write');
-  await eacces(rpcDeleteFile(host, 'home/user/priv', { recursive: true }), 'recursive removal through a directory the session user cannot enter');
-  assert.equal(kernel.exists('home/user/priv'), true);
+  assert.equal(kernel.exists(SECRET), false, 'what the owner may remove goes');
+  assert.equal(kernel.exists('home/user/priv'), true, 'the directory it may not remove stays');
+  // Empty, `priv` is the session user's to remove though it cannot read it:
+  // rmdir(2) asks only for write and search on the parent, which uid 1000
+  // owns, and GNU rm -r removes an unreadable directory that is empty.
+  await rpcDeleteFile(host, 'home/user/priv', { recursive: true });
+  assert.equal(kernel.exists('home/user/priv'), false, 'the session user removes the empty directory');
+}
+{
+  const { host, kernel } = makeHost();
   await rpcDeleteFile(host, 'home/user/priv', { recursive: true }, CRED_KERNEL);
   assert.equal(kernel.exists('home/user/priv'), false, 'recursive removal by the kernel, asked for by name');
 }
