@@ -7,6 +7,8 @@ const servers = [];
 const origins = [];
 let listening;
 const redirectReady = new Promise((resolve) => { listening = resolve; });
+// Called by /handshake on the first part of a request body: a streamed upload's producer waits for it.
+let handshakeSeen = () => {};
 const observe = async (req, origin) => {
   let body = '';
   for await (const chunk of req) body += chunk;
@@ -20,12 +22,20 @@ const observe = async (req, origin) => {
 };
 for (let index = 0; index < 2; index++) {
   const server = http.createServer(async (req, res) => {
+    if (new URL(req.url, origins[index]).pathname === '/handshake') {
+      let body = '';
+      for await (const chunk of req) { body += chunk; handshakeSeen(); }
+      res.writeHead(200);
+      res.end('received ' + body);
+      return;
+    }
     const record = await observe(req, origins[index]);
     const url = new URL(req.url, origins[index]);
     if (url.pathname === '/chain') {
       const hop = Number(url.searchParams.get('hop') || 0);
       const stop = Number(url.searchParams.get('stop') || 99);
-      res.writeHead(hop === stop ? 200 : 302, {
+      const first = Number(url.searchParams.get('first') || 302);
+      res.writeHead(hop === stop ? 200 : hop === 0 ? first : 302, {
         'x-hop': String(hop), location: '/chain?hop=' + (hop + 1) + '&stop=' + stop,
       });
       res.end('hop:' + hop);
@@ -89,11 +99,27 @@ export const REDIRECT_CASES = [
 const SENT_ONCE = ['readable'];
 const SPENT_ONCE_ITERATED = ['async', 'web', 'generator'];
 const SPENT = { error: 'UND_ERR_REQ_CONTENT_LENGTH_MISMATCH', message: 'Request body length does not match content-length header' };
+/** The body kinds sent along a redirect chain (/chain?stop=2, its first hop a 302 or a 303). */
+const CHAIN_KINDS = ['string', 'bytes', 'blob', 'array', 'async', 'web', 'generator', 'readable'];
+/**
+ * Where undici 6 stops a chain of redirects with each body kind: the
+ * handler's wrapper is marked used once a hop sends it, and any redirect
+ * after that is not followed, a 303 included, until a followed 303 drops the
+ * body (lib/handler/redirect-handler.js onHeaders).
+ */
+const chainExpected = (kind, first) => {
+  if (kind === 'readable') return { statusCode: first, hop: 0 };
+  if (first === 303) return { statusCode: 200, hop: 2 };
+  if (kind === 'array') return { statusCode: 302, hop: 1 };
+  if (SPENT_ONCE_ITERATED.includes(kind)) return SPENT;
+  return { statusCode: 200, hop: 2 };
+};
 
 export const REDIRECT_CLIENT = String.raw`
 const { request } = require('undici');
 const { Readable } = require('stream');
 const cases = ${JSON.stringify(REDIRECT_CASES)};
+const chainKinds = ${JSON.stringify(CHAIN_KINDS)};
 const bodyOf = (kind, text) => {
   switch (kind) {
     case 'bytes': return Buffer.from(text);
@@ -144,6 +170,39 @@ const run = async (origin = process.argv[2]) => {
       limits.push({ options, error: error.message, name: error.name });
     }
   }
+  const chains = [];
+  for (const first of [302, 303]) for (const kind of chainKinds) {
+    try {
+      const response = await request(origin + '/chain?stop=2&first=' + first, {
+        method: 'POST', headers: { 'content-length': '7' }, body: bodyOf(kind, 'payload'), maxRedirections: 3,
+      });
+      await response.body.dump();
+      chains.push({ kind, first, statusCode: response.statusCode, hop: Number(response.headers['x-hop']) });
+    } catch (error) {
+      chains.push({ kind, first, error: error.code ?? error.name, message: error.message });
+    }
+  }
+  // A Web stream upload is sent as it is produced: its producer waits for the server to have the first part.
+  const handshakes = [];
+  for (const maxRedirections of [0, 3]) {
+    const seen = new Promise((resolve) => { handshakeSeen = resolve; });
+    let part = 0;
+    const body = new ReadableStream({
+      async pull(controller) {
+        if (part++ === 0) { controller.enqueue(new TextEncoder().encode('first,')); return; }
+        const ready = await Promise.race([seen.then(() => true), new Promise((resolve) => setTimeout(resolve, 5000, false))]);
+        if (!ready) { controller.error(new Error('the server never saw the first part')); return; }
+        controller.enqueue(new TextEncoder().encode('second'));
+        controller.close();
+      },
+    });
+    try {
+      const response = await request(origin + '/handshake', { method: 'POST', body, maxRedirections });
+      handshakes.push({ maxRedirections, statusCode: response.statusCode, body: await response.body.text() });
+    } catch (error) {
+      handshakes.push({ maxRedirections, error: error.code ?? error.name, message: error.message });
+    }
+  }
   const invalid = [];
   for (const maxRedirections of [-1, 1.5, '2']) {
     try {
@@ -154,7 +213,7 @@ const run = async (origin = process.argv[2]) => {
       invalid.push({ maxRedirections, message: error.message, code: error.code });
     }
   }
-  const report = JSON.stringify({ results, limits, invalid });
+  const report = JSON.stringify({ results, limits, chains, handshakes, invalid });
   require('fs').writeFileSync('undici-redirect-result.json', report);
   console.log('UNDICI_REDIRECT ' + report);
 };
@@ -208,6 +267,13 @@ export function redirectFailures(report) {
   check('exactly two redirects reaches the final response', report.limits[3], { options: { maxRedirections: 2, stop: 2 }, statusCode: 200, hop: 2, body: 'hop:2' });
   check('throwOnMaxRedirect rejects at the cap', report.limits[4], { options: { maxRedirections: 2, throwOnMaxRedirect: true }, error: 'max redirects', name: 'Error' });
   check('throwOnMaxRedirect rejects even a final 200 at the cap', report.limits[5], { options: { maxRedirections: 2, throwOnMaxRedirect: true, stop: 2 }, error: 'max redirects', name: 'Error' });
+  check('number of chains', report.chains.length, 2 * CHAIN_KINDS.length);
+  for (const result of report.chains) {
+    const { kind, first, ...got } = result;
+    check(`chain of redirects after a ${first}, ${kind} body`, got, chainExpected(kind, first));
+  }
+  check('a streamed upload is sent as it is produced', report.handshakes,
+    [0, 3].map((maxRedirections) => ({ maxRedirections, statusCode: 200, body: 'received first,second' })));
   check('invalid redirect counts', report.invalid, [-1, 1.5, '2'].map((maxRedirections) => ({ maxRedirections, message: 'maxRedirections must be a positive number', code: 'UND_ERR_INVALID_ARG' })));
   return failures;
 }
