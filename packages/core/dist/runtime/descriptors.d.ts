@@ -161,6 +161,8 @@ export declare class Descriptors {
     fsync(id?: number): Awaitable<void>;
     /** The absolute path a descriptor was opened at. */
     path(id: number): string;
+    /** The name descriptor `id` was opened by: what its errors name, its file having none now perhaps. */
+    openedAs(id: number): string;
     fstat(id: number): Awaitable<RuntimeVfsStat>;
     dup(id: number): RuntimeFileHandle;
     seek(id: number, offset: number, whence: 'set' | 'current' | 'end'): Awaitable<number>;

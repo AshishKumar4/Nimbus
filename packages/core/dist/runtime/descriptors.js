@@ -252,6 +252,10 @@ export class Descriptors {
     path(id) {
         return this.opened(id).node.path();
     }
+    /** The name descriptor `id` was opened by: what its errors name, its file having none now perhaps. */
+    openedAs(id) {
+        return this.opened(id).handle.path;
+    }
     fstat(id) {
         const node = this.answering(id).node;
         return node.mounted ? node.stat() : { ...node.stat(), revision: this.clock() };
