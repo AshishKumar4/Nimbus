@@ -88,7 +88,7 @@ import { NpmCache } from '../npm/cache.js';
 import { NPM_BIN_MANIFEST_NAME, parseNpmBinManifest } from '../npm/bin-links.js';
 import { mayHaveDynamicImport, type ImportSites } from '@nimbus-sh/core/runtime/dynamic-import-rewrite.js';
 import { stageEsModules, type EsmStage } from './esm-stage.js';
-import { ESM_HOST_MODULE, readEsModule } from '@nimbus-sh/core/runtime/native-esm.js';
+import { ESM_BINDINGS_MODULE, ESM_HOST_MODULE, readEsModule } from '@nimbus-sh/core/runtime/native-esm.js';
 import { relativeWasmPaths } from '@nimbus-sh/core/_shared/relative-wasm-paths.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/platform/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
@@ -2835,6 +2835,8 @@ export async function buildFacetVfsBundleSource(
   const esModules: Record<string, string> = { ...esm?.members };
   const rows: CommonJsCellRow[] = [];
   for (const [key, text] of runtimeCode ?? []) codeModules[runtimeCodeModuleName(key)] = text;
+  // Read only by a graph a program produces after its launch began (node-shims' late link plan).
+  if (esm !== undefined) codeModules[ESM_BINDINGS_MODULE] = JSON.stringify(esm.bindings);
   // An ES module's text is never its file's (its prologue, its specifiers):
   // the map carries the file beside it, when it carries the file.
   for (const [key, staged] of esm?.modules ?? []) {

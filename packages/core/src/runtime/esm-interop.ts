@@ -276,6 +276,41 @@ export function esmLink<Binding extends EsmImportBinding>(records: ArrayLike<Esm
   return { exports: byExportedName(exports, lists), requests, namespaces, stars };
 }
 
+/**
+ * What Node's linker checks of a module, before any module of its graph
+ * runs: each name an import or a re-export reads of a requested module is
+ * one that module exports.
+ */
+export interface ModuleBindings {
+  /** The names it exports itself: its own, by name from a requested module, `export * as`. `export *` adds its modules' (`stars`). */
+  readonly exports: readonly string[];
+  /** By request, in source order (a static specifier's place): the names it imports or re-exports from that module, `default` a default import's. */
+  readonly imports: readonly (readonly string[])[];
+  /** The requests whose names `export *` re-exports. */
+  readonly stars: readonly number[];
+}
+
+/** The bindings of a module linked as `link`. */
+export function esmBindings(link: EsmLink, lists: EsmLists): ModuleBindings {
+  const exports = lists.list<string>();
+  for (let i = 0; i < link.exports.length; i++) lists.push(exports, link.exports[i].exported);
+  const imports = lists.list<string[]>();
+  for (let i = 0; i < link.requests.length; i++) {
+    const names = lists.list<string>();
+    const bindings = link.requests[i].bindings;
+    for (let j = 0; j < bindings.length; j++) {
+      const binding = bindings[j];
+      if (binding.kind === 'named') lists.push(names, binding.imported);
+    }
+    lists.push(imports, names);
+  }
+  for (let i = 0; i < link.exports.length; i++) {
+    const entry = link.exports[i];
+    if (entry.kind === 'reexport') lists.push(imports[entry.request], entry.name);
+  }
+  return { exports, imports, stars: link.stars };
+}
+
 /** `entries` sorted by exported name, stably: a merge sort, which calls nothing of the realm's. */
 function byExportedName<T extends { readonly exported: string }>(entries: T[], lists: EsmLists): T[] {
   const n = entries.length;

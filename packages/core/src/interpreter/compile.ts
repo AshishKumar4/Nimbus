@@ -58,7 +58,7 @@ import {
   type ClassElement, type ClassMaker, type ClassPlan, type ClassPrivateName, type ElementKey, classMaking,
 } from './classes.js';
 import type { ModuleExport, ModulePlan } from './modules.js';
-import { type EsmLists, type EsmRecord, esmLink, esmRecord } from '../runtime/esm-interop.js';
+import { type EsmLink, type EsmLists, type EsmRecord, type ModuleBindings, esmBindings, esmLink, esmRecord } from '../runtime/esm-interop.js';
 import {
   arrayWithHoles, callValue, constructValue, copyDataProperties, defineAccessor, keyOnce, nullBase, requireObjectCoercible,
   signalOf, templateObject, toPropertyKey, withHas,
@@ -69,6 +69,21 @@ const SAFE_LISTS: EsmLists = {
   list: newSafeList,
   push: (list, value) => { list[list.length] = value; },
 };
+
+/** How a module program's declarations link (esm-interop.ts). */
+function programLink(program: Program): EsmLink {
+  const records = newSafeList<EsmRecord>();
+  for (let n = 0; n < program.body.length; n++) {
+    const record = esmRecord(program.body[n], SAFE_LISTS);
+    if (record !== null) append(records, record);
+  }
+  return esmLink(records, SAFE_LISTS);
+}
+
+/** What Node's linker checks of a module program: what each request must export, and what it exports (a late graph's link plan). */
+export function programBindings(program: Program): ModuleBindings {
+  return esmBindings(programLink(program), SAFE_LISTS);
+}
 
 /** The value an optional chain short-circuits to, inside the chain. */
 const SHORT: object = objectFreeze({ short: true });
@@ -3549,15 +3564,12 @@ export class Compiler {
    * namespace import's holds the namespace.
    */
   modulePlan(program: Program, root: FunctionScope): ModulePlan {
-    const records = newSafeList<EsmRecord>();
-    for (let n = 0; n < program.body.length; n++) {
-      const record = esmRecord(program.body[n], SAFE_LISTS);
-      if (record !== null) append(records, record);
-    }
-    const link = esmLink(records, SAFE_LISTS);
+    const link = programLink(program);
+    // What each request must export, which linking checks (modules.ts link).
+    const required = esmBindings(link, SAFE_LISTS).imports;
     // Each kept request's module goes to a slot of its own, and its interop
     // to another; a named import reads its name of one of them at each use.
-    const requests = newSafeList<{ readonly source: string; readonly module: number; readonly interop: number }>();
+    const requests = newSafeList<ModulePlan['requests'][number]>();
     const moduleSlots = newSafeList<number>();
     // Every slot linking fills starts in its TDZ (bindingRead).
     const linked = newSafeList<number>();
@@ -3572,7 +3584,7 @@ export class Compiler {
         const binding = request.bindings[j];
         if (binding.kind === 'named') this.importBinding(root, binding.local, 'named', binding.imported, binding.imported === 'default' ? interop : module);
       }
-      append(requests, { source: request.source, module, interop });
+      append(requests, { source: request.source, module, interop, names: required[i] });
     }
     // An import's namespace goes to its binding; a re-export's
     // (`export * as`) to a slot of its own, when first read.
