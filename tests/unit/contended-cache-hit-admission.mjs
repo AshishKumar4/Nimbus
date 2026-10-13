@@ -60,7 +60,8 @@ const vfs = new SqliteVFS(harness.sql, harness.ctx);
 manager.setVfs(vfs, processFiles(vfs));
 const fs = vfs.as(CRED_KERNEL);
 fs.mkdir('home/user/app', { recursive: true, mode: 0o755 });
-fs.writeFile('home/user/app/job.js', `module.exports = ${JSON.stringify('j'.repeat(64 * 1024))}.length;\n`, { mode: 0o644 });
+// Its map's share is past the pool's small-request reserve (CHUNK_SIZE), so it waits on the budget itself.
+fs.writeFile('home/user/app/job.js', `module.exports = ${JSON.stringify('j'.repeat(512 * 1024))}.length;\n`, { mode: 0o644 });
 
 const budget = () => readSupervisorAllocationBudget();
 const run = () => manager.exec("require('./job.js');", { filename: '/home/user/app/run.js', cwd: '/home/user/app', captureOutput: true });
