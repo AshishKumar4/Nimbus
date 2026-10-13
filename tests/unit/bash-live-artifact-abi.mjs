@@ -85,22 +85,23 @@ async function runBash() {
   const memory = () => instance.exports.memory;
   const view = () => new DataView(memory().buffer);
   const sp = () => instance.exports.__stack_pointer.value;
-  const unwind = () => instance.exports.asyncify_start_unwind(store.unwindAt(memory(), sp(), stats, 1));
+  const unwind = () => instance.exports.asyncify_start_unwind(store.unwindAt(memory(), stats, 1));
   const nimbus = nativeImports(() => instance, '/work', observed);
   Object.assign(nimbus, {
     getppid: () => 1, getpgid: () => 17, setpgid: () => -52, tcgetpgrp: () => -59, tcsetpgrp: () => -59,
     setjmp(env) {
       if (rewind) { instance.exports.asyncify_stop_rewind(); rewind = false; return; }
-      store.setting(memory(), env);
+      store.sweep(sp()); store.setting(env);
       captureEnv = env; captureSp = sp(); reason = 'capture'; unwind();
     },
     longjmp(env, value) {
+      store.sweep(sp());
       jumpEnv = env; jumpValue = value; reason = 'jump'; unwind();
     },
   });
   const procenv = {
-    copy(dst, src) { store.copy(dst, src); },
-    drop(at) { store.drop(at); },
+    copy(dst, src) { store.sweep(sp()); store.copied(memory(), dst, src); },
+    drop(at) { store.sweep(sp()); store.dropped(at); },
   };
   // These commands deliberately stay in Bash. Unexpected process operations
   // fail this binary proof instead of claiming success for an untested syscall.

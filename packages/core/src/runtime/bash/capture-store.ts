@@ -14,14 +14,11 @@
  * nimbus_procenv.copy and every end of a saved copy through
  * nimbus_procenv.drop (wasm/bash/patches/procenv.patch). So the store keeps a
  * registry, buffer address → capture, and a count per capture of the buffers
- * that name it. A hook only records what it saw; the records are applied, in
- * order, before the store is next asked anything (every unwind asks first),
- * so a hook costs a record, cold or not, rather than a lookup. A buffer on
- * the stack ends without a hook, when its frame returns or a longjmp skips
- * it: below the stack pointer, it is dead (swept at every unwind, over the
- * stack's buffers only). A buffer written over without a hook no longer
- * holds its capture's words; that only keeps the capture longer, so it is
- * looked for only when an unwind needs room.
+ * that name it. A buffer on the stack ends without a hook, when its frame
+ * returns or a longjmp skips it: below the stack pointer, it is dead
+ * (sweep, at every hook, over the stack's buffers only). A buffer written
+ * over without a hook no longer holds its capture's words; that only keeps
+ * the capture longer, so it is looked for only when an unwind needs room.
  * A capture no buffer names is freed, and its space is taken back from the
  * top, or by sliding the live captures down once freed space below the top
  * passes PACK_SLACK, so the arena a process touches stays near what is live
@@ -43,10 +40,6 @@ export const ARENA_SIZE = 16 << 20;
 const MIN_ROOM = 2 << 20;
 /** Freed space below the top past which the live captures are packed before the next unwind. */
 const PACK_SLACK = 1 << 20;
-/** Hook records the log holds before it grows: a copy as [dst, src], a drop as [at, DROPPED]. */
-const LOG_RECORDS = 256;
-/** A drop's second word: no jmp_buf is at address 0. */
-const DROPPED = 0;
 
 /** Where a module's shadow stack is: [low, high), from its __data_end and __heap_base (data first, as wasm-ld lays it out). */
 export interface StackBounds {
@@ -99,9 +92,6 @@ export class CaptureStore {
   /** The registered buffers on the shadow stack, ascending: those below the stack pointer are a prefix. */
   readonly #stackNames: number[];
   #view: DataView | null = null;
-  /** The hooks' records not applied yet (#apply), `#logged` words of them. */
-  #log: Int32Array;
-  #logged = 0;
   #top: number;
   /** The live captures' footprint: the arena below the top, less the space freed in it. */
   #liveBytes = 0;
@@ -112,10 +102,7 @@ export class CaptureStore {
   constructor(stack: StackBounds, base: number, size: number, from?: CaptureStore) {
     this.#stack = stack; this.base = base; this.size = size;
     this.#captures = new Map();
-    if (from === undefined) { this.#names = new Map(); this.#stackNames = []; this.#top = base; this.#log = new Int32Array(LOG_RECORDS * 2); return; }
-    // Records not applied yet are the copy's to apply, against its own memory, the same words.
-    this.#log = from.#log.slice();
-    this.#logged = from.#logged;
+    if (from === undefined) { this.#names = new Map(); this.#stackNames = []; this.#top = base; return; }
     this.#names = new Map(from.#names);
     this.#stackNames = [...from.#stackNames];
     this.#top = from.#top;
@@ -154,9 +141,7 @@ export class CaptureStore {
    * down when less than MIN_ROOM is left. Only between a rewind's end and
    * the next unwind, when captures are the only unwound data.
    */
-  unwindAt(memory: WebAssembly.Memory, sp: number, stats: CaptureStats, pid: number): number {
-    this.#apply(memory);
-    this.#sweep(sp);
+  unwindAt(memory: WebAssembly.Memory, stats: CaptureStats, pid: number): number {
     const view = this.#viewOf(memory);
     const short = this.base + this.size - this.#top < MIN_ROOM;
     if (short || this.#top - this.base - this.#liveBytes > PACK_SLACK) {
@@ -172,8 +157,8 @@ export class CaptureStore {
     return this.#top;
   }
 
-  /** The stack's buffers below `sp`, the stack pointer, ended with their frames. */
-  #sweep(sp: number): void {
+  /** Before each hook's effect: the stack's buffers below `sp`, the current stack pointer, ended with their frames. */
+  sweep(sp: number): void {
     const stack = this.#stackNames;
     let dead = 0;
     while (dead < stack.length && stack[dead] < sp) dead++;
@@ -181,8 +166,7 @@ export class CaptureStore {
   }
 
   /** setjmp(env) is about to capture: env stops naming what it named. */
-  setting(memory: WebAssembly.Memory, env: number): void {
-    this.#apply(memory);
+  setting(env: number): void {
     if (this.#names.has(env)) this.#unname(env);
   }
 
@@ -192,7 +176,6 @@ export class CaptureStore {
    * Answers where the capture is, ready to rewind.
    */
   take(memory: WebAssembly.Memory, env: number, sp: number, stats: CaptureStats, pid: number): number {
-    this.#apply(memory);
     const view = this.#viewOf(memory);
     const at = this.#top, length = view.getUint32(at, true) - (at + 8);
     for (let tried = 0; this.#captures.has(this.#nextId); tried++) {
@@ -216,47 +199,19 @@ export class CaptureStore {
     return this.#ready(view, capture);
   }
 
-  /** nimbus_procenv.copy(dst, src), after the copy: dst is to name what src named (#apply). */
-  copy(dst: number, src: number): void {
-    if (this.#logged === this.#log.length) this.#grow();
-    this.#log[this.#logged] = dst;
-    this.#log[this.#logged + 1] = src;
-    this.#logged += 2;
+  /** nimbus_procenv.copy(dst, src), after the copy: dst names what src named. */
+  copied(memory: WebAssembly.Memory, dst: number, src: number): void {
+    if (this.#names.has(dst)) this.#unname(dst);
+    const id = this.#names.get(src);
+    if (id === undefined || !this.#holds(this.#viewOf(memory), dst, id)) return;
+    this.#name(dst, id);
+    const capture = this.#captures.get(id);
+    if (capture !== undefined) capture.refs++;
   }
 
-  /** nimbus_procenv.drop(at): the saved buffer at `at` is to end (#apply). */
-  drop(at: number): void {
-    if (this.#logged === this.#log.length) this.#grow();
-    this.#log[this.#logged] = at;
-    this.#log[this.#logged + 1] = DROPPED;
-    this.#logged += 2;
-  }
-
-  #grow(): void {
-    const log = new Int32Array(this.#log.length * 2);
-    log.set(this.#log);
-    this.#log = log;
-  }
-
-  /**
-   * The hooks' records, in the order they were made: a copy's dst names what
-   * its src named, if dst still holds its words, and a drop's buffer ends.
-   */
-  #apply(memory: WebAssembly.Memory): void {
-    const logged = this.#logged;
-    if (logged === 0) return;
-    this.#logged = 0;
-    const log = this.#log, view = this.#viewOf(memory);
-    for (let i = 0; i < logged; i += 2) {
-      const at = log[i], src = log[i + 1];
-      if (this.#names.has(at)) this.#unname(at);
-      if (src === DROPPED) continue;
-      const id = this.#names.get(src);
-      if (id === undefined || !this.#holds(view, at, id)) continue;
-      this.#name(at, id);
-      const capture = this.#captures.get(id);
-      if (capture !== undefined) capture.refs++;
-    }
+  /** nimbus_procenv.drop(at): the saved buffer at `at` ends. */
+  dropped(at: number): void {
+    if (this.#names.has(at)) this.#unname(at);
   }
 
   /**
@@ -267,7 +222,6 @@ export class CaptureStore {
    * no capture held.
    */
   jump(memory: WebAssembly.Memory, env: number, value: number, pid: number): RewindTarget {
-    this.#apply(memory);
     const view = this.#viewOf(memory);
     const tag = view.getUint32(env, true), generation = view.getUint32(env + 8, true);
     const capture = (tag & 0xffff0000) >>> 0 === TAG ? this.#captures.get(tag & 0xffff) : undefined;
@@ -275,7 +229,7 @@ export class CaptureStore {
       throw new Error(`bash-runner: pid ${pid} longjmp'd through a jmp_buf whose setjmp it no longer holds (0x${tag.toString(16)}, generation ${generation})`);
     }
     // Freed by this, the capture's bytes stay as they are until the landing: no unwind comes before it.
-    this.#sweep(capture.sp);
+    this.sweep(capture.sp);
     view.setInt32(capture.env + 4, value, true);
     return { at: this.#ready(view, capture), sp: capture.sp };
   }
