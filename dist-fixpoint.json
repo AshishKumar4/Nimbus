@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "0014ac546ecc2dfb5282bf495a5244a29bbc684cddd4322f1c9867c869e78b03",
+  "fingerprint": "66e3d07c7f580e4044e33e524dd64c866b99a91e1b75ceef8aa8dca68bb1baca",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -3191,7 +3191,7 @@
     "packages/worker/src/vfs/resident/coherence.ts": "37853792368464fbfd6cdcf6a2c7772b8d97772f92081c7fe48d55b69d5783d3",
     "packages/worker/src/vfs/resident/index.ts": "c3b09ad943f6074f5c2a0a8f2860d8135896fcd3311b08ae500805d10784597c",
     "packages/worker/src/vfs/resident/lazy.ts": "80c276e191263c0bca69a5038ae8d21d40861dea3c5179889bdf62c9fe518c7a",
-    "packages/worker/src/vfs/resident/namespace.ts": "f08e6e21488eea4f381aa5eb94949b225e49385e3e7420586da310cc81664339",
+    "packages/worker/src/vfs/resident/namespace.ts": "54e22f310552bbe8f595408dd2f40eae0b323171f9f88231e6ca7726d7d473da",
     "packages/worker/src/vfs/resident/permissions.ts": "633a3132611df48475781b3dc2ca3df41460bb035254302f398fc9d67070954b",
     "packages/worker/src/vfs/resident/supervisor.ts": "518aa2c9be705021406a5c11a7d3b568dd771d8e00543dad57610b270b093cad",
     "packages/worker/src/vfs/resident/sync.ts": "d6d99c95604e444c96b42d40bd34348c71cee31d5ae808d9f20ef2d7af0b53f3",
