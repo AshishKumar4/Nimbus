@@ -28,7 +28,6 @@ import {
   listInstalledManifestsView,
   rehydrateInstalledRuntimesView,
   runtimeAbiForManifest,
-  runtimeCommandNames,
   runtimeEntrypoints,
   type MinShellRegistry,
   type RunnerFactory,
@@ -77,6 +76,14 @@ export class RuntimeManager {
    * not hold a removal open, but a resolution in flight must.
    */
   private readonly resolving = new Set<Promise<RuntimePackage>>();
+  /**
+   * What decides which tree a command runs from, one at a time: registering
+   * a runtime's commands, linking their launchers, and their removal. Two
+   * versions that provide one command, installed at once, would otherwise
+   * each register it and race for its launcher, and the name and the path
+   * could run different trees. Fetching and writing a tree stay concurrent.
+   */
+  private publishing: Promise<unknown> = Promise.resolve();
 
   constructor(options: RuntimeManagerOptions) {
     this.vfs = options.vfs;
@@ -95,12 +102,38 @@ export class RuntimeManager {
    *  on disk. Trees that fail the payload digest check are skipped, not
    *  bound — the install path repairs them on demand. */
   rehydrate(): Promise<{ count: number; bins: string[] }> {
+    return this.publish(() => this.rehydrateNow());
+  }
+
+  private rehydrateNow(): Promise<{ count: number; bins: string[] }> {
     return rehydrateInstalledRuntimesView(
       this.vfs,
       this.registry,
       (key) => this.runnerFactories.get(key),
-      (root, manifest) => linkLaunchers(this.vfs, runtimeLaunchers(manifest, root, runtimeEntrypoints(manifest))),
+      (root, manifest, handlers) => this.linkCommands(root, manifest, handlers),
     );
+  }
+
+  /** `run`, once what was published before it has been: see `publishing`. */
+  private publish<T>(run: () => Promise<T>): Promise<T> {
+    const next = this.publishing.then(run, run);
+    this.publishing = next.catch(() => {});
+    return next;
+  }
+
+  /**
+   * Link the launchers of the commands `handlers` bound (none for one no
+   * runner here runs), and register each linked launcher's path as its
+   * command: a run of `/usr/bin/<command>`, or a `#!/usr/bin/<command>`
+   * line, is the command a run by name is. A path whose launcher is not
+   * ours is left to what is there.
+   */
+  private async linkCommands(root: string, manifest: RuntimeManifest, handlers: ReadonlyMap<string, Command>): Promise<void> {
+    for (const launcher of await linkLaunchers(this.vfs, runtimeLaunchers(manifest, root, handlers.keys()))) {
+      // An entrypoint that names the path itself (bash's /usr/bin/bash) keeps its own handler.
+      if (handlers.has(launcher.command)) continue;
+      this.registry.register(launcher.command, handlers.get(launcher.binName)!);
+    }
   }
 
   /**
@@ -240,15 +273,18 @@ export class RuntimeManager {
       onProgress: options?.onProgress,
     });
 
-    const bins: string[] = [];
-    for (const { entrypoint: ep, names } of runtimeCommandNames(manifest, seeded.root)) {
-      const factory = this.runnerFactories.get(ep.runner);
-      if (!factory) continue;
-      const handler = await factory(manifest, seeded.root, ep.binName, ep.kind);
-      for (const name of names) this.registry.register(name, handler);
-      bins.push(ep.binName);
-    }
-    await linkLaunchers(this.vfs, runtimeLaunchers(manifest, seeded.root, entrypoints));
+    const bins = await this.publish(async () => {
+      const handlers = new Map<string, Command>();
+      for (const ep of entrypoints) {
+        const factory = this.runnerFactories.get(ep.runner);
+        if (!factory) continue;
+        const handler = await factory(manifest, seeded.root, ep.binName, ep.kind);
+        this.registry.register(ep.binName, handler);
+        handlers.set(ep.binName, handler);
+      }
+      await this.linkCommands(seeded.root, manifest, handlers);
+      return [...handlers.keys()];
+    });
 
     if (options?.onProgress) {
       if (seeded.written) {
@@ -289,16 +325,20 @@ export class RuntimeManager {
     }
   }
 
-  private async remove(name: string, versionOverride: string | null): Promise<void> {
+  private remove(name: string, versionOverride: string | null): Promise<void> {
+    return this.publish(() => this.removeNow(name, versionOverride));
+  }
+
+  private async removeNow(name: string, versionOverride: string | null): Promise<void> {
     const matches = (await listInstalledManifestsView(this.vfs)).filter((entry) =>
       entry.manifest.name === name
       && (versionOverride === null || entry.manifest.version === versionOverride),
     );
     for (const match of matches) {
-      for (const { names } of runtimeCommandNames(match.manifest, match.root)) {
-        for (const command of names) this.registry.unregister?.(command);
-      }
-      await unlinkLaunchers(this.vfs, runtimeLaunchers(match.manifest, match.root, runtimeEntrypoints(match.manifest)));
+      const entrypoints = runtimeEntrypoints(match.manifest);
+      for (const ep of entrypoints) this.registry.unregister?.(ep.binName);
+      const unlinked = await unlinkLaunchers(this.vfs, runtimeLaunchers(match.manifest, match.root, entrypoints.map((ep) => ep.binName)));
+      for (const launcher of unlinked) this.registry.unregister?.(launcher.command);
       if (await this.vfs.exists(match.root)) await this.vfs.remove(match.root, { recursive: true });
     }
 
@@ -307,7 +347,7 @@ export class RuntimeManager {
     // The same digest verifier rehydration uses decides what may bind, so a
     // corrupted survivor stays unbound rather than inheriting the freed bins.
     if (versionOverride !== null && matches.length > 0) {
-      await this.rehydrate();
+      await this.rehydrateNow();
     }
 
     // An empty `<store>/<name>` goes too; the store stays.

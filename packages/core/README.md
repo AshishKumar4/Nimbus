@@ -308,8 +308,9 @@ Everything Nimbus keeps per user follows it:
 
 Installed runtimes are the system's, not the user's, and do not follow
 HOME: as apt installs a package, `nimbus install` puts a runtime's tree in
-`/usr/lib/nimbus/<name>/<version>` and a launcher for each of its commands
-in `/usr/bin`. `/usr`, `/usr/bin`, `/usr/lib` and `/usr/share` are root's;
+`/usr/lib/nimbus/<name>/<version>`, and a launcher in `/usr/bin` for each
+command its tree has a `bin/` entry for (`pip`, `gem` and `bundle` have
+none, and run by name only). `/usr`, `/usr/bin`, `/usr/lib` and `/usr/share` are root's;
 `/usr/local` is the user's, and is npm's global prefix.
 
 ```ts

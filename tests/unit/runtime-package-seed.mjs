@@ -17,7 +17,7 @@ import { Database } from 'bun:sqlite';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { seedRuntimePackage } from '../../packages/core/src/runtime/runtime-package.ts';
-import { listInstalledManifestsView } from '../../packages/core/src/runtime/installed-runtimes.ts';
+import { listInstalledManifests } from '../../packages/core/src/runtime/installed-runtimes.ts';
 
 const KERNEL = { uid: 0, gid: 0, groups: [0], umask: 0o022 };
 const encoder = new TextEncoder();
@@ -78,7 +78,7 @@ const openVfs = () => {
 
   // The point of the shared layout: the reader that rehydrates a Durable
   // Object after eviction finds this exactly as it finds an R2 install.
-  const installed = (await listInstalledManifestsView(fs));
+  const installed = (await listInstalledManifests(vfs));
   assert.equal(installed.length, 1);
   assert.equal(installed[0].root, seeded.root);
   assert.equal(installed[0].manifest.entrypoints[0].binName, 'toy');
@@ -112,7 +112,7 @@ const openVfs = () => {
   // And nothing claims the install completed, so the next attempt refetches
   // rather than reporting a runtime that is half there.
   assert.equal(fs.exists('usr/lib/nimbus/toy/1.0.0/manifest.json'), false);
-  assert.equal((await listInstalledManifestsView(fs)).length, 0);
+  assert.equal((await listInstalledManifests(vfs)).length, 0);
   console.log('  ok  a blob that does not match its digest is refused, and leaves no install');
 }
 
@@ -296,7 +296,7 @@ for (const bytes of [false, true]) {
   await assert.rejects(() => seedRuntimePackage(fs, pkg), /sha256 mismatch for share\/toy\/blob-0\.bin/);
   assert.equal(fs.exists(`${root}/share/toy/blob-0.bin`), false, 'bytes that failed their digest sit at the runtime path');
   assert.deepEqual(partialsUnder(fs, `${root}/share/toy`), []);
-  assert.equal((await listInstalledManifestsView(fs)).length, 0);
+  assert.equal((await listInstalledManifests(vfs)).length, 0);
   console.log('  ok  a streamed blob that fails its digest is refused and leaves nothing at its path');
 }
 
@@ -333,7 +333,7 @@ for (const [label, failure, bytes] of [
   const root = 'usr/lib/nimbus/toy/1.0.0';
 
   await assert.rejects(() => seedRuntimePackage(fs, pkg), /source dropped the connection|ENOSPC/);
-  assert.equal((await listInstalledManifestsView(fs)).length, 0, `${label}: a partial install lists as installed`);
+  assert.equal((await listInstalledManifests(vfs)).length, 0, `${label}: a partial install lists as installed`);
   assert.equal(vfs.as(KERNEL).exists(`${root}/share/toy/blob-1.bin`), false, `${label}: a partial blob reached its path`);
   assert.deepEqual(partialsUnder(vfs.as(KERNEL), `${root}/share/toy`), []);
   assert.equal(meter.open, 0, `${label}: a blob read outlived the failed install`);

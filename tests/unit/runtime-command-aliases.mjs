@@ -234,7 +234,6 @@ class FakeVfs {
     if (this.dirs.has(path)) return { type: 'directory', uid: 0, mode: 0o40755 };
     return this.files.has(path) ? { type: 'file', uid: 0, mode: 0o100644 } : null;
   }
-  async chmod() {}
   async symlink(target, path) { this.files.set(path, `link:${target}`); }
   async readlink(path) { return this.files.get(path).slice('link:'.length); }
 }

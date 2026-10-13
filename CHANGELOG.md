@@ -15,9 +15,13 @@ published independently in the `@nimbus-sh` npm scope.
   it opens: those directories become root's, without what was put in
   them, and files keep what they hold.
 - Breaking: `nimbus install` puts a runtime where apt would: its tree in
-  `/usr/lib/nimbus/<name>/<version>`, owned by root, and a launcher for
-  each of its commands in `/usr/bin` (a link into the tree), so
-  `/usr/bin/python3` and `#!/usr/bin/python3` run it as `python3` does. A
+  `/usr/lib/nimbus/<name>/<version>`, owned by root, and a launcher in
+  `/usr/bin` (a link into the tree) for each command the tree has a
+  `bin/` entry for (`python3`, `ruby`, `clang`, …), so `/usr/bin/python3`
+  and `#!/usr/bin/python3` run it as `python3` does in Nimbus's shell.
+  Front-ends with no entry of their own (`pip`, `gem`, `bundle`) run by
+  name only, and a launcher is not a program GNU Bash (`bash -c`) can run.
+  A runtime's name and version must each be one path name. A
   configured `env.HOME` no longer chooses where runtimes go. The `root` a
   runtime list or install reports, and the paths `nimbus install` prints,
   are the new ones. Runtimes an earlier release installed below

@@ -31,13 +31,15 @@ export interface RuntimeStoreFs {
   symlink(target: string, path: string): Promise<void>;
   readlink(path: string): Promise<string>;
   unlink(path: string): Promise<void>;
-  chmod(path: string, mode: number): Promise<void>;
 }
 
-/** Whether `entry` is a directory only root may change. */
-function rootsOwn(entry: { type: string; uid?: number; mode?: number } | null): boolean {
+/** Whether `entry` (looked at without following it) is a directory only root may change. */
+export function rootsOwn(entry: { type: string; uid?: number; mode?: number } | null): boolean {
   return entry?.type === 'directory' && entry.uid === 0 && ((entry.mode ?? 0) & 0o022) === 0;
 }
+
+/** The directories from `/` to the store: each must be root's own (rootsOwn) for the store to be read or written. */
+export const RUNTIME_STORE_DIRS: readonly string[] = STORE_DIRS;
 
 /**
  * Make the store ready to write: each directory from `/usr` down made by
@@ -62,6 +64,8 @@ export async function prepareRuntimeStore(fs: RuntimeStoreFs): Promise<void> {
 
 /** A runtime command's launcher in `/usr/bin`. */
 export interface RuntimeLauncher {
+  /** The command it launches, as its entrypoint names it. */
+  binName: string;
   /** The name it runs by path, as the registry knows it: `/usr/bin/<command>`. */
   command: string;
   /** The launcher, as a key: `usr/bin/<command>`. */
@@ -70,13 +74,13 @@ export interface RuntimeLauncher {
   target: string;
 }
 
-/** A runtime's launchers: `/usr/bin/<command>` for each command its tree has a `bin/<command>` for. */
-export function runtimeLaunchers(manifest: RuntimeManifest, root: string, entrypoints: readonly { binName: string }[]): RuntimeLauncher[] {
+/** A runtime's launchers: `/usr/bin/<command>` for each of `commands` its tree has a `bin/<command>` for. */
+export function runtimeLaunchers(manifest: RuntimeManifest, root: string, commands: Iterable<string>): RuntimeLauncher[] {
   const files = new Set(manifest.files.map((file) => file.path));
   const out: RuntimeLauncher[] = [];
-  for (const { binName } of entrypoints) {
+  for (const binName of commands) {
     if (binName.includes('/') || !files.has(`bin/${binName}`)) continue;
-    out.push({ command: `/${LAUNCHER_DIR}/${binName}`, path: `${LAUNCHER_DIR}/${binName}`, target: `/${root}/bin/${binName}` });
+    out.push({ binName, command: `/${LAUNCHER_DIR}/${binName}`, path: `${LAUNCHER_DIR}/${binName}`, target: `/${root}/bin/${binName}` });
   }
   return out;
 }
@@ -87,36 +91,44 @@ async function launcherDirOwn(fs: RuntimeStoreFs): Promise<boolean> {
 }
 
 /**
- * Point each launcher at `root`'s tree, whose `bin/<command>` is made
- * executable (0755, as a package's binaries are) so a search of PATH finds
- * it. A launcher of ours that leads to another version is replaced; anything
- * else at that name (a file or link someone put there with sudo) is left,
- * and the command runs by name only.
+ * Point each launcher at its tree, and answer the ones that lead there: a
+ * launcher of ours that leads to another version is replaced; anything else
+ * at that name (a file or link someone put there with sudo) is left, and the
+ * command runs by name only. The tree's `bin/<command>` keeps the mode it was
+ * installed with: a marker the shell's registry runs by name, not a program a
+ * guest Bash could run as a script.
  */
-export async function linkLaunchers(fs: RuntimeStoreFs, launchers: readonly RuntimeLauncher[]): Promise<void> {
-  if (launchers.length === 0 || !(await launcherDirOwn(fs))) return;
-  for (const { path, target } of launchers) {
-    const bin = await fs.stat(target, { follow: false });
-    if (bin?.type === 'file' && ((bin.mode ?? 0) & 0o777) !== 0o755) await fs.chmod(target, 0o755);
+export async function linkLaunchers(fs: RuntimeStoreFs, launchers: readonly RuntimeLauncher[]): Promise<RuntimeLauncher[]> {
+  if (launchers.length === 0 || !(await launcherDirOwn(fs))) return [];
+  const linked: RuntimeLauncher[] = [];
+  for (const launcher of launchers) {
+    const { path, target } = launcher;
     const entry = await fs.stat(path, { follow: false });
     if (entry !== null) {
       if (entry.type !== 'symlink') continue;
       const current = await fs.readlink(path);
+      if (current === target) { linked.push(launcher); continue; }
       // Ours leads into the store.
-      if (current === target || !current.startsWith(`/${RUNTIME_STORE}/`)) continue;
+      if (!current.startsWith(`/${RUNTIME_STORE}/`)) continue;
       await fs.unlink(path);
     }
     await fs.symlink(target, path);
+    linked.push(launcher);
   }
+  return linked;
 }
 
-/** Remove each launcher that leads into `root`'s tree. */
-export async function unlinkLaunchers(fs: RuntimeStoreFs, launchers: readonly RuntimeLauncher[]): Promise<void> {
-  if (launchers.length === 0 || !(await launcherDirOwn(fs))) return;
-  for (const { path, target } of launchers) {
-    const entry = await fs.stat(path, { follow: false });
-    if (entry?.type === 'symlink' && (await fs.readlink(path)) === target) await fs.unlink(path);
+/** Remove each launcher that leads into its tree, and answer the ones removed. */
+export async function unlinkLaunchers(fs: RuntimeStoreFs, launchers: readonly RuntimeLauncher[]): Promise<RuntimeLauncher[]> {
+  if (launchers.length === 0 || !(await launcherDirOwn(fs))) return [];
+  const removed: RuntimeLauncher[] = [];
+  for (const launcher of launchers) {
+    const entry = await fs.stat(launcher.path, { follow: false });
+    if (entry?.type !== 'symlink' || (await fs.readlink(launcher.path)) !== launcher.target) continue;
+    await fs.unlink(launcher.path);
+    removed.push(launcher);
   }
+  return removed;
 }
 
 /**
