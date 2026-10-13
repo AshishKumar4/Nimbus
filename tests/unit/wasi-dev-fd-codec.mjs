@@ -135,6 +135,11 @@ async function processWith(files, { holding = false, session: direct = false, ke
       new Uint8Array(memory.buffer).set(a, 4096); new Uint8Array(memory.buffer).set(b, 6144);
       assert.equal(await imports.path_rename(3, 4096, a.length, 3, 6144, b.length), E.SUCCESS, `rename ${from} ${to}`);
     },
+    async unlink(path) {
+      const a = enc.encode(path);
+      new Uint8Array(memory.buffer).set(a, 4096);
+      assert.equal(await imports.path_unlink_file(3, 4096, a.length), E.SUCCESS, `unlink ${path}`);
+    },
     settle: () => (direct ? undefined : fs.settle()),
   };
 }
@@ -299,6 +304,33 @@ await check('a kept hold whose name fails its stat is not lost', async () => {
   await p.close(await p.open('home/user/other.txt'));
   await p.open('home/user/other.txt');
   assert.equal((await outcome(() => p.authority.fstat(held))).code, 'EBADF', 'the hold the failed open took is closed');
+});
+
+await check('a pinned copy this process unlinked is reopened for writing through /dev/fd, as the file it was', async () => {
+  const p = await processWith({ 'w.txt': 'old' });
+  const fd = await p.open('home/user/w.txt');
+  assert.equal(p.fds.get(fd).kind, 'resident', 'a pinned copy');
+  await p.unlink('home/user/w.txt');
+  const writer = await p.open(`dev/fd/${fd}`, { rights: RIGHT_WRITE | RIGHT_SEEK, oflags: O_TRUNC });
+  await p.write(writer, 'changed');
+  await p.close(writer);
+  const again = await p.open(`dev/fd/${fd}`);
+  assert.equal(await p.read(again, 64), 'changed', 'the unlinked file, written');
+  assert.equal(await p.openErrno('home/user/w.txt'), E.NOENT, 'its name stays gone');
+});
+
+await check('a pinned copy whose name this process replaced is reopened as itself, not as the file now there', async () => {
+  const p = await processWith({ 'r.txt': 'before', 'new.txt': 'after' });
+  const fd = await p.open('home/user/r.txt');
+  assert.equal(p.fds.get(fd).kind, 'resident', 'a pinned copy');
+  await p.rename('home/user/new.txt', 'home/user/r.txt');
+  const again = await p.open(`dev/fd/${fd}`);
+  assert.equal(await p.read(again, 64), 'before');
+  const writer = await p.open(`dev/fd/${fd}`, { rights: RIGHT_WRITE | RIGHT_SEEK, oflags: O_TRUNC });
+  await p.write(writer, 'rewritten');
+  await p.close(writer);
+  const named = await p.open('home/user/r.txt');
+  assert.equal(await p.read(named, 64), 'after', 'the name\'s file is untouched');
 });
 
 assert.deepEqual(failures, []);
