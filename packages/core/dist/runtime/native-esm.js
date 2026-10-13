@@ -48,6 +48,12 @@ export const ESM_META_MODULE = 'nimbus/meta.js';
 export const ESM_HOST_MODULE = 'nimbus/esm-host.js';
 /** Where a launch puts the facades an ES module imports a builtin or a CommonJS module through. */
 export const ESM_FACADE_DIR = 'nimbus/facade/';
+/**
+ * The map file of a launch's ES module bindings, by table row (worker
+ * esm-stage.ts EsmRowBindings): read only when a graph a program produced
+ * after its launch began links (node-shims' late link plan).
+ */
+export const ESM_BINDINGS_MODULE = 'nimbus/esm.bindings';
 /** A staged module's flag in its launch's table: its meta instance binds Bun's CommonJS names (bunScopeNames). */
 export const ESM_BUN_SCOPE = 1;
 /** A staged module's flag in its launch's table: it awaits at its top level (esm-require-hoist.ts hasTopLevelAwait). */
