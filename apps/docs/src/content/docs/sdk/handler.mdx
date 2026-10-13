@@ -54,7 +54,10 @@ bundler aliases. Use `NIMBUS_REQUIRED_ALIASES` when keeping the config by
 hand. The Worker needs `enhanced_error_serialization`, which a date of
 2026-04-21 or later enables; on an older date the generated config lists the
 flag, and a hand-kept one must too. Without it the Worker fails at startup,
-because a process's filesystem errors would lose their `code`.
+because a process's filesystem errors would lose their `code`. It also needs
+`enable_request_signal`, which no date enables, so every generated config
+lists it. Without it the Worker fails at startup too, because a process would
+keep serving a response whose client has left.
 
 ```ts
 import { buildNimbusWranglerConfig } from '@nimbus-sh/config';

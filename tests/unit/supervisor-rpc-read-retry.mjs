@@ -25,6 +25,35 @@ const { LOST_CALL_HEDGE_AFTER_MS: SUPERVISOR_READ_HEDGE_AFTER_MS } = await impor
 
 const dropped = (extra = {}) => Object.assign(new Error('Network connection lost.'), { retryable: true }, extra);
 
+for (const method of ['fsList', 'reportExit']) {
+  for (const failure of [null, new Error('injected host failure')]) {
+    const pendingReply = Promise.withResolvers();
+    let disposed = 0, replyDisposed = 0;
+    const env = { NIMBUS_SESSION: {
+      idFromName: (id) => id,
+      idFromString: (id) => id,
+      get: () => ({ supervisorOp: () => pendingReply.promise, [Symbol.dispose]() { disposed++; } }),
+    } };
+    const rpc = new SupervisorRPC({ props: { doId: 'session', pid: 7, writerId: 'control-call' } }, env);
+    const pending = method === 'fsList' ? rpc.fsList(null, 5) : rpc.reportExit(0, '');
+    assert.equal(disposed, 0, 'the host stays live while its reply is pending');
+    if (failure) {
+      const refused = assert.rejects(pending, (error) => error === failure);
+      pendingReply.reject(failure); await refused;
+    } else {
+      const value = method === 'fsList' ? { entries: [], next: null, [Symbol.dispose]() { replyDisposed++; } } : undefined;
+      pendingReply.resolve(value);
+      const consumed = await pending;
+      assert.equal(consumed, value);
+      if (value) {
+        assert.equal(replyDisposed, 1, 'the upstream reply was consumed');
+        assert.equal(Object.hasOwn(consumed, Symbol.dispose), false, 'a consumed reply must not forward its transport disposer');
+      }
+    }
+    assert.equal(disposed, 1, `${method} releases its host stub when the call ends`);
+  }
+}
+
 /** A host that fails the first `failures` calls with `error`, then answers. */
 function host(failures, error) {
   const calls = [];

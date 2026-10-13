@@ -12,6 +12,8 @@ import { PID_GEN_STRIDE, execIdField, parseExecId, type ProcessEntry } from '@ni
 import type { LogChunk, ProcessLogReadOptions } from '@nimbus-sh/core/runtime/process-logs.js';
 import { notifyTerminalEvent, type TerminalLike } from '../runtime/process-logs-api.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import { hostActivity, type HostActivityLease } from '@nimbus-sh/fabric/host-activity.js';
+import { endResidentKeepalive } from './hibernation.js';
 import type { ChildProcessManager } from '@nimbus-sh/core/runtime/child-process-manager.js';
 import type { ComposedFacetManager } from '../facets/compose.js';
 import { PortRegistry, createPortCapability, type PortEntry } from '@nimbus-sh/core/runtime/port-registry.js';
@@ -84,6 +86,8 @@ export interface ProgrammaticHost extends TimerHost {
   _w1SessionDestroyed: boolean;
   /** The log-janitor deadline this instance armed (hibernation.ts armLogJanitor), or null. */
   _w1JanitorAt: number | null;
+  /** The resident keep-alive cycle this instance armed, and the host activity it owns (hibernation.ts). */
+  _w1Keepalive: HostActivityLease | null;
   env: RuntimeCatalogEnv;
   ctx: ProgrammaticContext;
   /**
@@ -305,7 +309,7 @@ function startShellJob(
   // pid's release waits for its shell to close what it opened.
   const stopped = self.processes.holdWork(pid, (reason) => {
     try { controller.abort(reason); } catch { /* already settled */ }
-  });
+  }, controller.signal);
 
   const emit = (stream: 'stdout' | 'stderr', sink?: (data: Uint8Array) => void | Promise<void>) => (data: Uint8Array) => {
     if (job.background) {
@@ -1240,10 +1244,14 @@ async function destroySession(
   if (guardedVfs.hasExclusiveMutation({ stoppable: false })) {
     throw Object.assign(new Error('EBUSY: session has an active exclusive filesystem mutation'), { code: 'EBUSY' });
   }
+  // A cold DELETE must also close peer placements left by the previous incarnation.
+  self.ensureFacetManager();
   // Past this it completes, and nothing starts meanwhile: the table it stops
   // admits no process, and a request that would ready the session waits for
   // the one it makes again (rpcDestroy, ensureRuntimeReady).
   self.processes.closeAdmission(Object.assign(new Error('ESHUTDOWN: the session is being destroyed'), { code: 'ESHUTDOWN' }));
+  hostActivity(self.ctx).close();
+  endResidentKeepalive(self);
   const reason = typeof options.reason === 'string' && options.reason.trim()
     ? options.reason.trim().slice(0, 200)
     : null;

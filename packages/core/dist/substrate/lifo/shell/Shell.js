@@ -8,7 +8,7 @@ import { shellBuiltins } from './builtins.js';
 import { continuationState } from './lexer.js';
 import { HistoryManager } from './history.js';
 import { JobTable } from './jobs.js';
-import { signalAbortReason } from './signals.js';
+import { exitCodeForAbortSignal, signalAbortReason } from './signals.js';
 import { complete } from './completer.js';
 import { TerminalStdin } from './terminal-stdin.js';
 import { normalizeTerminalNewlines } from '../../../_shared/terminal.js';
@@ -222,6 +222,11 @@ export class Shell {
         }
     }
     bindTerminalInput() {
+        const terminal = this.terminal;
+        terminal.signal?.addEventListener('abort', () => {
+            if (this.terminal === terminal)
+                this.abortController?.abort();
+        }, { once: true });
         this.terminal.onData((data, submission) => this.handleInput(data, submission));
         this.terminal.onSubmission?.((data, id, deliver, repl) => {
             const submission = new ShellInputSubmission(id, (event) => this.terminal.shellIntegration?.(event));
@@ -347,8 +352,10 @@ export class Shell {
             stdinStream = options?.stdin;
         }
         const identity = this.resolveCommandIdentity(options?.commandContext);
-        const stopped = identity.holdWork?.(identity.pid, (reason) => abortController.abort(reason));
+        const stopped = identity.holdWork?.(identity.pid, (reason) => abortController.abort(reason), abortController.signal);
+        const workSignal = stopped?.signal ?? abortController.signal;
         try {
+            workSignal.throwIfAborted();
             const exitCode = await this.interpreter.executeLine(cmd, options?.terminalStdin, {
                 runExitTrap: options?.runExitTrap === true,
                 stdin: stdinStream,
@@ -360,7 +367,7 @@ export class Shell {
                 commandContext: options?.commandContext,
                 commandIdentity: identity,
                 runAs: options?.runAs ?? this.commandIdentity.runAs,
-                signal: abortController.signal,
+                signal: workSignal,
             });
             return { stdout: stdoutBuf, stderr: stderrBuf, exitCode };
         }
@@ -1060,8 +1067,10 @@ export class Shell {
         this.terminal.write(COMMAND_START);
         let status = null;
         const identity = this.resolveCommandIdentity(undefined);
-        const stopped = identity.holdWork?.(identity.pid, (reason) => lineAbort.abort(reason));
+        const stopped = identity.holdWork?.(identity.pid, (reason) => lineAbort.abort(reason), lineAbort.signal);
+        const workSignal = stopped?.signal ?? lineAbort.signal;
         try {
+            workSignal.throwIfAborted();
             // Saved beside the line, which does not wait for it: a reader's recall
             // the save meets (core README, process model) costs the line nothing.
             // A save that fails loses that line's history, not the line.
@@ -1072,8 +1081,14 @@ export class Shell {
                 interactive: true,
                 commandIdentity: identity,
                 runAs: this.commandIdentity.runAs,
-                signal: lineAbort.signal,
+                signal: workSignal,
             });
+        }
+        catch (error) {
+            status = workSignal.aborted ? exitCodeForAbortSignal(workSignal) : 1;
+            this.interpreter.setLastExitCode(status);
+            if (!workSignal.aborted)
+                this.writeToTerminal(`${error instanceof Error ? error.message : String(error)}\n`);
         }
         finally {
             stopped?.();

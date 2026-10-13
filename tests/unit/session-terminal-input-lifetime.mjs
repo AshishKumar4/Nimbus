@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import assert from 'node:assert/strict';
 import { WebSocketTerminal } from '../../packages/worker/src/facets/ws-terminal.ts';
-import { wsMessage } from '../../packages/worker/src/session/ws.ts';
+import * as sessionWs from '../../packages/worker/src/session/ws.ts';
 import { testBox } from './lib/test-box.mjs';
 
 const frames=[];
@@ -11,8 +11,9 @@ const terminal=new WebSocketTerminal(socket);
 const box=await testBox();
 box.shell.bindTerminal(terminal);
 const tasks=[];
-const host={shell:box.shell,kernel:box.kernel,terminal,ctx:{waitUntil(p){tasks.push(p);}},_wakeRebuild:null,processes:box.workspace.processes};
-const input=(data)=>wsMessage(host,socket,JSON.stringify({type:'input',data}));
+const host={shell:box.shell,kernel:box.kernel,terminal,ctx:{waitUntil(){assert.fail('terminal completion must belong to its own request');}},_wakeRebuild:null,processes:box.workspace.processes,
+  dispatchTerminalInput(frame){const id=this.terminal.id;tasks.push(Promise.resolve().then(()=>sessionWs.terminalInput(host,frame,id)));}};
+const input=(data)=>sessionWs.wsMessage(host,socket,JSON.stringify({type:'input',data}));
 let release;
 try {
   for(const stop of ['finish','interrupt']) {
@@ -28,6 +29,7 @@ try {
     const before=tasks.length;
     await input('controlled\r');
     await entered.promise;
+    assert.ok(tasks.length>before,'the terminal completion is owned by a dispatched request');
     assert.ok(frames.some(f=>f.data?.includes('controlled')),'the typed command is flushed while its completion remains held, without a timer turn');
     let completed=false;
     const completion=Promise.all(tasks.slice(before)).then(()=>{completed=true;});
@@ -74,7 +76,34 @@ try {
     assert.ok(reported.some(args=>args.some(x=>String(x).includes(error.message))));
     assert.ok(frames.some(frame=>frame.data?.includes(error.message)),'failed input is visible to the client');
   } finally {console.error=oldError;}
-  console.log('session-terminal-input-lifetime: command completion handed to waitUntil, Ctrl-C, concurrent REPL input and rejection');
+
+  const oldTerminal = new WebSocketTerminal(socket);
+  const replacementFrames = [];
+  const replacement = new WebSocketTerminal({ readyState: 1, send(value) { replacementFrames.push(JSON.parse(value)); }, close() {} });
+  const late = Promise.withResolvers();
+  oldTerminal.onData(() => late.promise);
+  host.terminal = oldTerminal;
+  const pending = sessionWs.terminalInput(host, JSON.stringify({ type: 'input', data: 'held' }), oldTerminal.id);
+  oldTerminal.close();
+  host.terminal = replacement;
+  let staleDelivered = false;
+  replacement.onData(() => { staleDelivered = true; });
+  try {
+    const ended = await Promise.race([pending.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 1000))]);
+    assert.equal(ended, true, 'terminal close ends an input request even when its callback ignores disposal');
+    await sessionWs.terminalInput(host, JSON.stringify({ type: 'input', data: 'stale' }), oldTerminal.id);
+    assert.equal(staleDelivered, false, 'a queued input cannot land on a replacement terminal');
+    late.reject(new Error('late terminal failure'));
+    await Promise.resolve(); await Promise.resolve();
+    replacement.flushNow();
+    assert.deepEqual(replacementFrames, [], 'late completion cannot report into a recreated terminal');
+  } finally {
+    late.resolve();
+    await pending;
+    replacement.close();
+    host.terminal = terminal;
+  }
+  console.log('session-terminal-input-lifetime: self-request completion, Ctrl-C, concurrent REPL input and rejection');
 } finally {
   release?.resolve('finish');
   terminal.close();
