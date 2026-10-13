@@ -9,6 +9,7 @@ import {
 } from '@nimbus-sh/core/runtime/session-protocol.js';
 import { WireEncoder, WireDecoder } from '@nimbus-sh/core/_shared/wire-codec.js';
 import { DEFAULT_HOME } from '@nimbus-sh/core/constants.js';
+import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 import {
   NimbusAuthError,
   isNimbusIdComponent,
@@ -333,7 +334,10 @@ async function dispatchRemoteRpc(ctx: RemoteContext): Promise<unknown> {
       fileOptions(args[1]);
       return ctx.stub._rpcMkdir(stringArg(args[0], 'path'));
     case 'deleteFile':
-      return ctx.stub._rpcDeleteFile(stringArg(args[0], 'path'), fileOptions(args[1]));
+      // A remote token is the session's user: its deletion acts as that user,
+      // as its write, chmod and rename do. The absent-credential default,
+      // CRED_KERNEL, belongs to a colocated embedder holding the DO binding.
+      return ctx.stub._rpcDeleteFile(stringArg(args[0], 'path'), fileOptions(args[1]), CRED_SESSION_USER);
     case 'installRuntime': {
       const spec = stringArg(args[0], 'spec');
       assertRuntimeAllowed(ctx, spec, 'onDemand');
