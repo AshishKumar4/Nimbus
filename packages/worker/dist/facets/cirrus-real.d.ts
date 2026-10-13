@@ -42,7 +42,7 @@
  *         client messages to the ws shim
  *
  * All traffic in / out:
- *    Browser ──/preview/* ──>  DO.fetch ──> port registry ──> handleHttpRequest
+ *    Browser ──/preview/* ──>  DO.fetch ──> handleHttpRequest (/port/N: through the port registry)
  *    Browser ──/preview/__nimbus_hmr──>  DO.fetch (WS upgrade)
  *                                  │
  *                                  ▼
@@ -76,8 +76,9 @@ export declare class CirrusReal {
     private namespace;
     private userConfigBundle;
     private extraSyntheticFiles;
-    /** The dev server's process, once launched. */
+    /** The dev server's process, once launched, and its route (FacetManager.spawnWorker's facet). */
     pid: number;
+    private route;
     private running;
     private _startedAt;
     private _snapshotStats;
@@ -126,5 +127,11 @@ export declare class CirrusReal {
     attachHmrClient(ws: WebSocket): string;
     detachHmrClient(id: string): void;
     deliverHmrClientMessage(id: string, msg: string): void;
+    /**
+     * A request through the session's preview door, `innerPath` the path after
+     * its `/preview` prefix, straight to the process's route: the body passes
+     * through untouched, as the port registry's relay does not.
+     */
+    handleRequest(request: Request, innerPath: string): Promise<Response>;
 }
 //# sourceMappingURL=cirrus-real.d.ts.map

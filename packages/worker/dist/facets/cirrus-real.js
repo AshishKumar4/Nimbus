@@ -42,7 +42,7 @@
  *         client messages to the ws shim
  *
  * All traffic in / out:
- *    Browser ──/preview/* ──>  DO.fetch ──> port registry ──> handleHttpRequest
+ *    Browser ──/preview/* ──>  DO.fetch ──> handleHttpRequest (/port/N: through the port registry)
  *    Browser ──/preview/__nimbus_hmr──>  DO.fetch (WS upgrade)
  *                                  │
  *                                  ▼
@@ -343,8 +343,8 @@ function bootOnce() {
 //
 // The session runs this module as one of its resident processes
 // (FacetManager.spawnWorker): startProcess boots Vite and answers once it
-// listens, HTTP arrives on handleHttpRequest through the port registry, and
-// fetch is the upgrade path every resident has. The HMR pump is kicked per
+// listens, HTTP arrives on handleHttpRequest (from the preview door and the
+// port registry alike), and fetch is the upgrade path every resident has. The HMR pump is kicked per
 // request through this.ctx.waitUntil.
 export class NimbusProcess extends DurableObject {
   async startProcess() {
@@ -416,8 +416,9 @@ export class CirrusReal {
     namespace;
     userConfigBundle;
     extraSyntheticFiles;
-    /** The dev server's process, once launched. */
+    /** The dev server's process, once launched, and its route (FacetManager.spawnWorker's facet). */
     pid = 0;
+    route = null;
     running = false;
     _startedAt = 0;
     _snapshotStats = null;
@@ -573,7 +574,7 @@ export class CirrusReal {
         });
         let pid;
         try {
-            ({ pid } = await launcher.spawnWorker(mainCode, 'vite (real, ' + this.root + ')', identity.cwd, {
+            ({ pid, facet: { fetch: this.route } } = await launcher.spawnWorker(mainCode, 'vite (real, ' + this.root + ')', identity.cwd, {
                 mainModule: 'main.js',
                 modules: {
                     'vite.bundle.js': realViteBundle,
@@ -617,6 +618,7 @@ export class CirrusReal {
     }
     stop() {
         this.running = false;
+        this.route = null;
         this.hmr.closeAll();
         if (this._vfsUnsub) {
             try {
@@ -639,5 +641,24 @@ export class CirrusReal {
     }
     deliverHmrClientMessage(id, msg) {
         this.hmr.deliverClientMessage(id, msg);
+    }
+    /**
+     * A request through the session's preview door, `innerPath` the path after
+     * its `/preview` prefix, straight to the process's route: the body passes
+     * through untouched, as the port registry's relay does not.
+     */
+    async handleRequest(request, innerPath) {
+        if (!this.route) {
+            return new Response('[cirrus-real] not running', { status: 503, headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
+        }
+        try {
+            const response = await this.route(new Request('http://cirrus-real' + innerPath, request));
+            return new Response(response.body, { status: response.status, statusText: response.statusText, headers: response.headers });
+        }
+        catch (e) {
+            return new Response('[cirrus-real] the dev server did not answer: ' + (e?.message || String(e)), {
+                status: 502, headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+            });
+        }
     }
 }

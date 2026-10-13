@@ -53,7 +53,7 @@ import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { dynamicWorkerHeadroom, loaderLedgerStats } from '@nimbus-sh/fabric/budgets.js';
 import { timers } from '@nimbus-sh/fabric/timers.js';
 import { isHostedWebSocket } from '@nimbus-sh/fabric/peer-host.js';
-import { readPortCapability, normalizeForwardedHttpPath, readPortReservationByName, readoptCapability, routeToSessionPort, } from './port-capability.js';
+import { isCirrusHmrPath, readPortCapability, normalizeForwardedHttpPath, readPortReservationByName, readoptCapability, routeToSessionPort, } from './port-capability.js';
 import { registerServingPort } from './serving-port.js';
 import { PREVIEW_CAPABILITY_HEADER, CALLER_SCOPES_HEADER } from '../_shared/session-router.js';
 import { renderNoDevServerHtml } from './helpers.js';
@@ -1358,9 +1358,14 @@ async function routeFetch(self, request) {
         // NIMBUS_REAL_VITE=1 or `nimbusDevServer: 'real'`.
         if (self.cirrusReal?.isRunning) {
             const previewPath = (url.pathname.replace(/^\/preview/, '') || '/') + url.search;
-            // Its port's route: HMR accepted in-DO, everything else through the
-            // port registry to the process.
-            return routeToSessionPort(self, self.cirrusReal.port, request, previewPath, self.viteBasePath);
+            // HMR WebSocket upgrade. Vite's @vite/client opens a WS against
+            // `<base>/__nimbus_hmr` (our custom HMR path); accept it in-DO and
+            // plug it into cirrusReal.hmr so the facet's ws-shim sees a
+            // 'connection' event on its next long-poll.
+            if (isCirrusHmrPath(previewPath)) {
+                return acceptCirrusHmrWs(self, request);
+            }
+            return self.cirrusReal.handleRequest(sanitizeUntrustedRequest(request), previewPath);
         }
         if (self.viteDevServer?.isRunning) {
             const previewPath = (url.pathname.replace(/^\/preview/, '') || '/') + url.search;
