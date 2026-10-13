@@ -228,4 +228,25 @@ for (const [when, landed] of [['after', true], ['partial', false]]) {
   assert.equal(await view.exists('/m/nested/node_modules/a'), false, 'nothing of a is on the mount');
 }
 
+// ── the sweep removes each stage as the user who owns it ──────────────────
+// Another user's stage in the sticky /tmp still goes. What its owner could
+// not remove stays: a directory moved to a stage's name with root's files
+// in it (a home holding the runtime store) is not the kernel's to empty.
+{
+  const OTHER = { uid: 1001, gid: 1001, groups: [1001], umask: 0o022 };
+  vfs.as(OTHER).mkdir('tmp/.npm-stage-2-other/node_modules/x', { recursive: true });
+  vfs.as(CRED_SESSION_USER).mkdir('tmp/.npm-stage-3-moved', { recursive: true });
+  root.mkdir('tmp/.npm-stage-3-moved/.nimbus', { mode: 0o755 });
+  root.writeFile('tmp/.npm-stage-3-moved/.nimbus/runtime.wasm', 'root', { mode: 0o644 });
+  vfs.as(CRED_SESSION_USER).writeFile('tmp/.npm-stage-3-moved/mine', 'mine');
+  await view.mkdir('/m/t', { recursive: true });
+  await view.writeFile('/m/t/package.json', pkgJson);
+  await install('/m/t');
+  assert.equal(root.exists('tmp/.npm-stage-2-other'), false, "another user's stage is swept");
+  assert.equal(root.exists('tmp/.npm-stage-3-moved/.nimbus/runtime.wasm'), true, "root's file in a stage is left");
+  assert.equal(root.exists('tmp/.npm-stage-3-moved/mine'), false, 'what its owner may remove goes');
+  root.removeRecursive('tmp/.npm-stage-3-moved');
+  console.log('  the sweep removes each stage as the user who owns it');
+}
+
 console.log('npm-install-async-mount: ok');
