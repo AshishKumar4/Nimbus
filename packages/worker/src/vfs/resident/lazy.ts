@@ -13,10 +13,11 @@ import type { Admission } from './admission.js';
 import type { Cells } from './cells.js';
 import type { Coherence, Cursor } from './coherence.js';
 import { nsRowAt, type Namespace } from './namespace.js';
+import type { Pages } from './pages.js';
 import type { ResidentCred } from './permissions.js';
 import type { ResidentSupervisor } from './supervisor.js';
 import type { Sync } from './sync.js';
-import { NS_DIR, NS_LINK, type ResidentTables } from './tables.js';
+import { NS_DIR, NS_LINK, RK_OWN_WRITE, type ResidentTables } from './tables.js';
 import type { Transport } from './transport.js';
 
 /** The most a lookup reads of the file it ends at, so the open that follows a stat costs no trip of its own. */
@@ -27,7 +28,9 @@ export interface Lazy {
   namespaceView(supervisor: ResidentSupervisor, device: number, cred: ResidentCred): ResidentNamespace;
 }
 
-export function createLazy(coherence: Coherence, admission: Admission, namespace: Namespace, cells: Cells, transport: Transport, sync: Sync): Lazy {
+export function createLazy(
+  coherence: Coherence, admission: Admission, namespace: Namespace, cells: Cells, transport: Transport, sync: Sync, pages: Pages,
+): Lazy {
   /**
    * Start a namespace with no names at `cursor`, to be listed on demand. Every
    * row and held file goes: nothing here is dated against the new cursor.
@@ -35,6 +38,7 @@ export function createLazy(coherence: Coherence, admission: Admission, namespace
   const beginLazy = (t: ResidentTables, cursor: Cursor): void => {
     namespace.beginLazy();
     t.clear();
+    pages.reset();
     cells.dropHeld(true);
     coherence.writeCursor(t, cursor);
     coherence.unseal();
@@ -122,7 +126,12 @@ export function createLazy(coherence: Coherence, admission: Admission, namespace
         list: (k) => transport.listDirectory(supervisor, k),
         lookup: (keys, content) => transport.lookupKeys(supervisor, keys, content ? LOOKUP_CONTENT_BYTES : 0),
         listTree: (k) => transport.listSubtree(supervisor, k),
-        content(k) {
+        content(k, revision) {
+          // Bytes older than the revision the caller saw are not its file's.
+          if (revision !== undefined) {
+            const stamped = cells.provenance(k);
+            if (stamped !== undefined && stamped !== RK_OWN_WRITE && stamped < revision) return undefined;
+          }
           const cell = cells.get(k);
           if (cell === undefined || (typeof cell === 'object' && 'error' in cell)) return undefined;
           return typeof cell === 'string' ? encoder.encode(cell) : cell;
@@ -131,10 +140,28 @@ export function createLazy(coherence: Coherence, admission: Admission, namespace
           const cursor = coherence.cursor();
           if (cursor === null) return null;
           await transport.fetchFiles(supervisor, [{ path: k, size: entry.size, rev: entry.revision, epoch: cursor.epoch, ckey: null }]);
-          const bytes = view.content(k);
+          const bytes = view.content(k, entry.revision);
           return bytes === undefined ? null : bytes;
         },
+        pages: (k, rev, size, first, last) => pages.read(supervisor, k, rev, size, first, last),
+        // Many files in batched round trips (read-ahead, core runtime/wasi/resident-filesystem.ts).
+        async fillMany(files) {
+          const cursor = coherence.cursor();
+          if (cursor === null || files.length === 0) return;
+          await transport.fetchFiles(supervisor, files.map(([k, entry]) => ({ path: k, size: entry.size, rev: entry.revision, epoch: cursor.epoch, ckey: null })));
+        },
         barrier: () => lazyBarrier(supervisor),
+        cursor: () => coherence.cursor(),
+        // An ACQUIRE answer the caller took itself, applied as the barrier applies one.
+        async admit(answer) {
+          if (!answer || typeof answer.epoch !== 'string' || typeof answer.rev !== 'number') return false;
+          const before = coherence.cursor();
+          if (before && answer.epoch === before.epoch && answer.rev < before.rev) return false;
+          await sync.applyAcquire(supervisor, answer);
+          if (!answer.poison && namespace.ready()) return true;
+          beginLazy(coherence.tables('admit'), { epoch: answer.epoch, rev: answer.rev });
+          return false;
+        },
         reserve: (bytes) => admission.pin(bytes),
         release: (bytes) => admission.unpin(bytes),
       };

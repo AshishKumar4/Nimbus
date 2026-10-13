@@ -148,6 +148,7 @@ import { createAdmission } from './admission.js';
 import { createCells } from './cells.js';
 import { createCoherence } from './coherence.js';
 import { createLazy } from './lazy.js';
+import { createPages } from './pages.js';
 import { createNamespace } from './namespace.js';
 import { createSync } from './sync.js';
 import { createTransport } from './transport.js';
@@ -163,7 +164,8 @@ export function createResidentStore(options = {}) {
     const cells = createCells(coherence, admission, namespace, observeRead);
     const transport = createTransport(coherence, admission, namespace, cells);
     const sync = createSync(coherence, admission, namespace, cells, transport);
-    const lazy = createLazy(coherence, admission, namespace, cells, transport, sync);
+    const pages = createPages(coherence, admission);
+    const lazy = createLazy(coherence, admission, namespace, cells, transport, sync, pages);
     const bindTables = (t, heap) => {
         // A store can outlive its process. Own rows left by an earlier one are
         // writes that never reached the authority or cells whose acknowledgement it
@@ -171,6 +173,7 @@ export function createResidentStore(options = {}) {
         t.dropOwn();
         coherence.bind(t, heap);
         namespace.bind(t);
+        pages.reset();
     };
     return {
         bundle: cells.bundle,
@@ -194,6 +197,7 @@ export function createResidentStore(options = {}) {
         cells,
         transport,
         sync,
+        pages,
         lazy,
     };
 }

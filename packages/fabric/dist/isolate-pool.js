@@ -77,9 +77,11 @@ export function assembleLoaderWorkerModuleSource(options) {
     }
     lines.push(`const __fn__ = ${options.fnSource};`);
     lines.push('');
-    const callExpr = options.hasBindings
-        ? '__fn__(...args, this.env)'
-        : '__fn__(...args)';
+    const callExpr = options.callBindings
+        ? '__fn__(args[0], { ...this.env, ...args[1] })'
+        : options.hasBindings
+            ? '__fn__(...args, this.env)'
+            : '__fn__(...args)';
     const requestCallExpr = options.hasBindings
         ? '__fn__(request, this.env)'
         : '__fn__(request)';
@@ -144,6 +146,8 @@ export class IsolatePool {
     /** Set by dispose() — queued dispatches reject instead of running. */
     disposed = false;
     bindings;
+    /** The bindings each call carries (IsolatePoolOptions.supervisorPerCall). */
+    callBindings;
     preamble;
     preambleHash;
     /**
@@ -272,8 +276,12 @@ export class IsolatePool {
                     route: opts?.supervisorRoute,
                     network: this.network,
                 });
-                bindings.SUPERVISOR = opts?.processSupervisor
+                const minted = opts?.processSupervisor
                     ? mintProcessSupervisor(supervisorRpc, opts.processSupervisor) : supervisorRpc({ props: supervisor });
+                if (opts.supervisorPerCall)
+                    this.callBindings = { SUPERVISOR: minted };
+                else
+                    bindings.SUPERVISOR = minted;
                 // Whatever the minted worker's env carries must be in its loader
                 // cache key — workerd's loader cache survives a DO hibernation
                 // wake while generation-strided pids (1000001 → 2000001) do not:
@@ -284,7 +292,9 @@ export class IsolatePool {
                 // across sessions, not across wakes of the same session. So does
                 // the instance a binding delivers mutations to, when it names one.
                 const run = supervisor.bindingKind === 'process' ? `:${supervisor.writerId}` : '';
-                this.supervisorKey = supervisorLoaderKey(`s${supervisor.doId.slice(0, 12)}-${supervisor.pid}${run}`, supervisor);
+                this.supervisorKey = this.callBindings === undefined
+                    ? supervisorLoaderKey(`s${supervisor.doId.slice(0, 12)}-${supervisor.pid}${run}`, supervisor)
+                    : 's-call';
             }
             else {
                 // Supervisor entrypoint unavailable — running without ctx.exports
@@ -384,6 +394,7 @@ export class IsolatePool {
             preamble: this.preamble,
             wasmEntries: allWasmEntries,
             hasBindings: this.bindings !== undefined,
+            callBindings: this.callBindings !== undefined,
         });
         // Modules map: the entry worker.js source plus any wasm modules the
         // pool was constructed with. Workerd parses the modules map at
@@ -667,7 +678,7 @@ export class IsolatePool {
         const { fnSource, fnHash } = this.#prepare(fn);
         const resilience = this.#resolve(opts);
         try {
-            return (await this.#dispatchSlot(fnSource, fnHash, 0, (entrypoint) => entrypoint.execute(arg), resilience, opts?.wasmModules));
+            return (await this.#dispatchSlot(fnSource, fnHash, 0, (entrypoint) => this.#execute(entrypoint, arg), resilience, opts?.wasmModules));
         }
         catch (error) {
             throw this.#ended(error);
@@ -695,6 +706,9 @@ export class IsolatePool {
         if (request.bodyUsed) {
             throw new BindingError('IsolatePool.submitRequest: request body is already consumed — ' +
                 'pass an unconsumed Request so retries can re-issue it.');
+        }
+        if (this.callBindings !== undefined) {
+            throw new BindingError('IsolatePool.submitRequest: a per-call supervisor rides an RPC dispatch (submit or map), not a Request.');
         }
         const { fnSource, fnHash } = this.#prepare(fn);
         const resilience = this.#resolve(opts);
@@ -751,7 +765,7 @@ export class IsolatePool {
                 if (idx >= items.length)
                     return;
                 try {
-                    const value = (await this.#dispatchSlot(fnSource, fnHash, slotIndex, (entrypoint) => entrypoint.execute(items[idx]), resilience, opts?.wasmModules, undefined, tails));
+                    const value = (await this.#dispatchSlot(fnSource, fnHash, slotIndex, (entrypoint) => this.#execute(entrypoint, items[idx]), resilience, opts?.wasmModules, undefined, tails));
                     settled[idx] = { ok: true, value };
                 }
                 catch (err) {
@@ -788,6 +802,8 @@ export class IsolatePool {
      */
     dispose() {
         this.disposed = true;
+        disposeRpcResource(this.callBindings?.SUPERVISOR);
+        this.callBindings = undefined;
         if (!this.bindings)
             return;
         for (const key of Object.keys(this.bindings)) {
@@ -795,6 +811,10 @@ export class IsolatePool {
         }
         // Prevent double-dispose from re-running the loop.
         this.bindings = undefined;
+    }
+    /** One `execute` of an argument, with the call's bindings when the pool hands them per call. */
+    #execute(entrypoint, arg) {
+        return this.callBindings === undefined ? entrypoint.execute(arg) : entrypoint.execute(arg, this.callBindings);
     }
 }
 /** Every value of `settled`, or (once all have settled) the first failure. */

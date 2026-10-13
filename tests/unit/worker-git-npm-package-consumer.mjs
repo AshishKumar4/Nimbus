@@ -45,7 +45,7 @@ try {
   const view = as(cred);
   return new Proxy(view, { get(target, key) {
    const value = Reflect.get(target, key, target);
-   if (key === 'writeFile') return (path, ...args) => { if (path.endsWith('/.git/index')) indexWrites++; return value.call(target, path, ...args); };
+   if (key === 'rename') return (from, to) => { if (to.endsWith('/.git/index')) indexWrites++; return value.call(target, from, to); };
    return typeof value === 'function' ? value.bind(target) : value;
   }});
  };

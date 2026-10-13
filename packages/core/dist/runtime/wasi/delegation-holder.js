@@ -358,14 +358,15 @@ export function delegationHolder(options) {
                 const { uid, gid } = ownership(parent);
                 const stamp = now();
                 const asked = (flags.mode ?? 0o666) & 0o777;
+                const umask = flags.umask ?? grant.umask;
                 const entry = {
                     type: 'file', dev: store.device, ino, nlink: 1, size: 0, atime: stamp, mtime: stamp, ctime: stamp,
-                    mode: 0o100000 | (asked & ~grant.umask), uid, gid, revision: 0, target: null,
+                    mode: 0o100000 | (asked & ~umask), uid, gid, revision: 0, target: null,
                 };
                 decided.set(key, entry);
                 note(parentKey(key), nameOf(key), 'file');
                 // Its mode was decided under this umask: the session applies the same one.
-                file = { key, bytes: new Uint8Array(0), length: 0, mode: asked, made: ino, umask: grant.umask };
+                file = { key, bytes: new Uint8Array(0), length: 0, mode: asked, made: ino, umask };
                 files.set(ino, file);
                 // Made here: the name exists from now on, in the log's order. Logged
                 // with its bytes, before the next decision (drain), as one call.
@@ -406,6 +407,7 @@ export function delegationHolder(options) {
                 type: 'call',
                 call: {
                     call: 'open', path: key, mode: (flags.mode ?? 0o666) & 0o7777,
+                    ...(flags.umask === undefined ? {} : { umask: flags.umask }),
                     ...(flags.create ? { create: true } : {}),
                     ...(flags.truncate ? { truncate: true } : {}),
                     ...(flags.exclusive ? { exclusive: true } : {}),
@@ -572,27 +574,7 @@ export function delegationHolder(options) {
             handles.set(id, handle);
             return { id, path: handle.path };
         },
-        reopen: (handleId, flags) => {
-            const handle = handleOf(handleId);
-            if (handle.file.through !== undefined || flags.append)
-                return undefined;
-            const entry = handle.file.detached ?? decided.get(handle.file.key) ?? store.entry(handle.file.key);
-            if (!entry)
-                throw fsError('EBADF', 'open', handle.path);
-            if (flags.create && flags.exclusive)
-                throw fsError('EEXIST', 'open', handle.path);
-            if (!modeAllows(entry, (flags.read ? 4 : 0) | (flags.write || flags.truncate ? 2 : 0), store.cred))
-                throw fsError('EACCES', 'open', handle.path);
-            const id = nextHandle--;
-            handles.set(id, { file: handle.file, readable: !!flags.read, writable: !!flags.write, append: false, position: 0, path: handle.path });
-            if (flags.truncate)
-                holder.ftruncate(id, 0);
-            return {
-                id, path: handle.path, position: 0, closed: false,
-                flags: { read: !!flags.read, write: !!flags.write, append: false, create: !!flags.create, exclusive: !!flags.exclusive, directory: false, truncate: !!flags.truncate, followSymlinks: true },
-            };
-        },
-        mkdir: (key, path, mode) => {
+        mkdir: (key, path, mode, mask) => {
             if ((mode & 0o7000) !== 0)
                 return false;
             const current = entryOf(key);
@@ -611,14 +593,15 @@ export function delegationHolder(options) {
                 return false;
             const { uid, gid, setgid } = ownership(parent);
             const stamp = now();
-            const perm = (mode & 0o777 & ~grant.umask) | (setgid ? 0o2000 : 0);
+            const umask = mask ?? grant.umask;
+            const perm = (mode & 0o777 & ~umask) | (setgid ? 0o2000 : 0);
             decided.set(key, {
                 type: 'directory', dev: store.device, ino, nlink: 2, size: 0, atime: stamp, mtime: stamp, ctime: stamp,
                 mode: 0o40000 | perm, uid, gid, revision: 0, target: null,
             });
             note(parentKey(key), nameOf(key), 'directory');
             added.set(key, added.get(key) ?? new Map());
-            log({ type: 'call', call: { call: 'mkdir', path: key, mode: mode & 0o777, ino, umask: grant.umask } });
+            log({ type: 'call', call: { call: 'mkdir', path: key, mode: mode & 0o777, ino, umask } });
             return true;
         },
         unlink: (key, path) => {

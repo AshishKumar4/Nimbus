@@ -19,6 +19,12 @@ export type ConfigOverrides = Map<string, Array<string | null>>;
  * parse command-line config" (128).
  */
 export declare function parseConfigParameter(text: string): [key: string, value: string | null];
+/**
+ * git_config_bool's spellings, from a file or command override: a key with no
+ * `=` is null in the override (git's true), and an explicit empty value is ''
+ * (git's false). cf-git may already have decoded a stored value to a boolean.
+ */
+export declare function configBool(value: unknown): boolean | undefined;
 /** The config reads of cf-git (isomorphic-git's getConfig and getConfigAll). */
 interface ConfigReader {
     getConfig(args: {
@@ -28,6 +34,41 @@ interface ConfigReader {
         path: string;
     }): Promise<unknown[]>;
 }
+/** The global files in git's order, read by cf-git's canonical config parser. */
+export declare function withGlobalConfig<G extends ConfigReader>(git: G, fs: {
+    promises: {
+        readFile(path: string, options?: 'utf8' | {
+            encoding: 'utf8';
+        }): Promise<Uint8Array | string>;
+    };
+}, env: Record<string, string>, cwd: string): G;
+/**
+ * `git` with a repository's config.worktree over its config where the
+ * repository sets extensions.worktreeConfig: git reads system, global,
+ * local, worktree, then -c (withConfigOverrides, over this). Whether it is
+ * set is the repository's own config's (`files`, cf-git reading only that
+ * file): in `known`, by gitdir, where the caller has read it already (the
+ * format guard reads every extension), else read here; forgotten when this
+ * command writes a config. A repository without it reads as it would
+ * without this layer, with no wait of its own.
+ */
+export declare function withWorktreeConfig<G extends ConfigReader & {
+    setConfig(args: {
+        path: string;
+    }): Promise<void>;
+}>(git: G, files: {
+    getConfig(args: {
+        fs: unknown;
+        gitdir: string;
+        path: string;
+    }): Promise<unknown>;
+}, fs: {
+    promises: {
+        readFile(path: string, options?: 'utf8' | {
+            encoding: 'utf8';
+        }): Promise<Uint8Array | string>;
+    };
+}, known: Map<string, boolean>): G;
 /**
  * `git` with `overrides` over every file's: a key `-c` set reads as its last
  * value, and all of them after the files' for a read of every value.

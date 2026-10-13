@@ -1,4 +1,4 @@
-import type { RuntimeVfsStat } from '../os-contracts.js';
+import type { RuntimeVfsStat, VfsCred } from '../os-contracts.js';
 import type { FilesystemSupervisor } from '../vfs-supervisor.js';
 /**
  * wasi/types.ts — the shapes the WASI shim operates on.
@@ -10,6 +10,7 @@ import type { FilesystemSupervisor } from '../vfs-supervisor.js';
  * makes the import in preamble.ts safe.
  */
 import type { VirtualSocketKernel } from '../virtual-socket-kernel.js';
+import type { ReadDirectorySupervisor } from '../read-directory-batch.js';
 /**
  * A WASI errno. Modelled as the exact set Nimbus's syscall layers can return
  * rather than `number`, so a syscall that answers with an unrelated integer — a
@@ -96,6 +97,8 @@ export type FdEntry = StdioFdEntry | PreopenFdEntry | SocketFdEntry | ListenerFd
 /** The per-process filesystem view: the root the preopens are cut from and the resident cap. */
 export interface WasiFsState {
     root: string;
+    /** The process's live creation mask, initially its credential's. */
+    umask: number;
     /** Largest regular file the authority codec answers from a resident copy. */
     residentFileCap: number;
     /** The credential the process's files are read as; null keeps every call on the authority. */
@@ -123,20 +126,13 @@ export interface WasiInitOptions {
      * (runtime/wasi/resident-filesystem.ts) under the walk and permission
      * rules the session applies; without it, every call goes to the session.
      */
-    cred?: WasiCred;
+    cred?: VfsCred;
     /** The session pid this process runs as: the parent of any child it starts (wasi/processes.ts). */
     pid?: number;
 }
 /** What a live stat answers with. */
 export type WasiStatResult = RuntimeVfsStat;
-/**
- * The supervisor a WASI guest adopts: the filesystem, and, where the guest is
- * a session process, its stdin channel (SupervisorRPC.cpReadStdin), which the
- * WASI layer reads as the guest's fd 0.
- */
-export type WasiSupervisorStub = FilesystemSupervisor & {
-    cpReadStdin?(pid: number, waitMs: number, acquire: undefined, maxBytes: number): WasiInputPacket | Promise<WasiInputPacket>;
-};
+export type WasiSupervisorStub = FilesystemSupervisor & Partial<ReadDirectorySupervisor>;
 /**
  * The two hooks the WASI layer has into the green-thread scheduler.
  * `wasi-threads.ts` owns everything else about it.
@@ -173,6 +169,8 @@ export interface WasiMakeImportsOptions {
      */
     stdoutBytes?: (bytes: Uint8Array) => void | Promise<void>;
     stderrBytes?: (bytes: Uint8Array) => void | Promise<void>;
+    /** Read at most maxBytes from one process channel; excess stays there. */
+    stdinRead?: (maxBytes: number) => WasiInputPacket | Promise<WasiInputPacket>;
 }
 /**
  * The WASI import table, exhaustively.
@@ -298,6 +296,8 @@ export interface NimbusFsImports {
     path_chmod(fd: number, lookupflags: number, path: number, pathLen: number, mode: number): SyscallResult;
     /** fchmod(2). */
     fd_chmod(fd: number, mode: number): SyscallResult;
+    /** Set the process's live umask (0777 bits), writing the previous mask as u32 to `out`. */
+    umask(mask: number, out: number): SyscallResult;
     /**
      * access(2) of `path` beneath `fd` for `mode` (R_OK 4, W_OK 2, X_OK 1;
      * F_OK 0) as the session's credential for this process may: EACCES when

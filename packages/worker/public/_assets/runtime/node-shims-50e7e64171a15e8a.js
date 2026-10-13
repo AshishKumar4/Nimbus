@@ -3166,6 +3166,24 @@ const __fsMod = (() => {
     return undefined;
   }
 
+  /**
+   * The denial _bundleLookup would answer for `absPath` (_denialCode), or
+   * null, without reading the bytes it holds there: a check before a write
+   * reassembled and copied the file it was about to replace.
+   */
+  function _denialAt(absPath) {
+    const k = _strip(absPath);
+    if (__vfsWrites && k in __vfsWrites) return _denialCode(__vfsWrites[k]);
+    if (typeof __resident === "undefined") return _denialCode(_bundleLookup(absPath));
+    const cells = __resident.cells;
+    if (cells.has(k)) return cells.denied(k) ? "EACCES" : null;
+    if (_nsActive()) {
+      const held = _nsHeldKey(k);
+      if (held !== null && held !== k && cells.has(held)) return cells.denied(held) ? "EACCES" : null;
+    }
+    return null;
+  }
+
   // Whether the store is bound: every embedding of these shims boots one (a
   // facet's SQLite, or a one-shot's heap), and this is the single place that asks.
   function _residentStorePresent() {
@@ -5875,7 +5893,7 @@ const __fsMod = (() => {
     // refused (and the parked bytes dropped) if the authority refuses it.
     const k = _parkWholeWrite(p, data, !!supervisor, mode);
     if (!supervisor) return;
-    const bytes = __nimbusVfsCellBytes(__vfsWrites[k]).slice();
+    const bytes = _cellCopy(__vfsWrites[k]);
     const decided = _decidedHere(absPath, bytes.byteLength);
     // Logged now, in program order; decided here, it is answered once logged.
     const logged = _logParked(absPath, { type: "call", call: { call: "writeFile", path: k, mode, data: bytes } }, { acknowledged: decided });
@@ -6234,8 +6252,7 @@ const __fsMod = (() => {
   /** `live`: the caller asks the authority next, so a path the namespace cannot judge is left to it. */
   function _ensureWritable(absPath, syscall, p, live, dest) {
     _ensureAncestorsTraversable(absPath, syscall, p, dest);
-    const cell = _bundleLookup(absPath);
-    const denial = _denialCode(cell);
+    const denial = _denialAt(absPath);
     if (denial) throw _fsErr(denial, syscall, p, dest);
     // Judged on what the authority says of the path (or of a file this
     // process made), never on the bytes held under its name.
@@ -6354,7 +6371,12 @@ const __fsMod = (() => {
   function writeFileSync(p, data, opts) {
     const mode = _createMode(opts, "open", p);
     const k = _parkWholeWrite(p, data, false, mode);
-    _logParked("/" + k, { type: "call", call: { call: "writeFile", path: k, mode, data: __nimbusVfsCellBytes(__vfsWrites[k]).slice() } }, { acknowledged: true });
+    _logParked("/" + k, { type: "call", call: { call: "writeFile", path: k, mode, data: _cellCopy(__vfsWrites[k]) } }, { acknowledged: true });
+  }
+
+  /** A cell's bytes as a copy of the log's own: a string's encoding is one already, bytes are copied once. */
+  function _cellCopy(cell) {
+    return typeof cell === "string" ? __nimbusVfsCellBytes(cell) : cell.slice();
   }
 
   /**
@@ -9376,33 +9398,40 @@ const __sqliteMod = (() => {
     return __getSQL();
   };
 
-  // Strip a leading slash so __vfsBundle keys (stored slash-stripped)
-  // line up with absolute paths the user passes.
-  function __vfsKey(p) {
-    return String(p).replace(/^\/+/, "");
+  // What a close compares an image against: its length and 100-byte header.
+  // SQLite increments the header's change counter (offset 24) whenever it
+  // commits a change to the file, so a rollback-journal image whose header
+  // and length are the ones read has the bytes read. A WAL database's
+  // counter does not move (offsets 18 and 19 are 2), so its SHA-256 is kept.
+  function __imageMark(bytes) {
+    const wal = bytes.length >= 20 && (bytes[18] === 2 || bytes[19] === 2);
+    return {
+      length: bytes.length,
+      // A copy: sql.js's in-memory file may own the very bytes it was given,
+      // and a Buffer's slice is a view of them.
+      header: Uint8Array.from(bytes.subarray(0, 100)),
+      digest: wal ? __cryptoMod.createHash("sha256").update(bytes).digest("hex") : null,
+    };
   }
 
-  // Synchronously read the existing DB bytes for a file-backed database
-  // from the facet's startup VFS snapshot, if present. Returns a
-  // Uint8Array or null. Pure in-memory and :memory: databases never read.
+  function __sameImage(mark, bytes) {
+    if (mark === null || mark.length !== bytes.length) return false;
+    if (mark.digest !== null) return mark.digest === __cryptoMod.createHash("sha256").update(bytes).digest("hex");
+    if (bytes.length >= 20 && (bytes[18] === 2 || bytes[19] === 2)) return false;
+    for (let i = 0; i < mark.header.length; i++) if (mark.header[i] !== bytes[i]) return false;
+    return true;
+  }
+
+  // The database file's bytes, or null for a database not yet written
+  // (missing or empty). Any other refusal is the open's own.
   function __readDbBytes(path) {
-    let bundle;
-    try { bundle = __vfsBundle; } catch { bundle = null; }
-    if (!bundle) return null;
-    const direct = bundle[path];
-    const cell = direct !== undefined ? direct : bundle[__vfsKey(path)];
-    if (cell === undefined || cell === null) return null;
-    if (cell instanceof Uint8Array) return cell.length ? cell : null;
-    if (typeof cell === "string") {
-      // A SQLite file would normally be stored as a Uint8Array cell, but
-      // an empty/zero-length placeholder may round-trip as "". Treat
-      // non-empty strings as latin1 bytes for completeness.
-      if (cell.length === 0) return null;
-      const bytes = new Uint8Array(cell.length);
-      for (let i = 0; i < cell.length; i++) bytes[i] = cell.charCodeAt(i) & 0xff;
-      return bytes;
+    let bytes;
+    try { bytes = __fsMod.readFileSync(path); }
+    catch (error) {
+      if (error && error.code === "ENOENT") return null;
+      throw error;
     }
-    return null;
+    return bytes.length ? bytes : null;
   }
 
   class StatementSync {
@@ -9473,7 +9502,6 @@ const __sqliteMod = (() => {
       } finally {
         stmt.free();
       }
-      this.__db.__dirty = true;
       const changes = handle.getRowsModified();
       const lastRowId = __lastInsertRowid(handle);
       return {
@@ -9556,7 +9584,11 @@ const __sqliteMod = (() => {
 
   function __lastInsertRowid(handle) {
     // sql.js does not expose last_insert_rowid() directly; query it.
-    const stmt = handle.prepare("SELECT last_insert_rowid()");
+    return __scalar(handle, "SELECT last_insert_rowid()");
+  }
+
+  function __scalar(handle, sql) {
+    const stmt = handle.prepare(sql);
     try {
       stmt.step();
       const row = stmt.get();
@@ -9566,6 +9598,11 @@ const __sqliteMod = (() => {
     }
   }
 
+  // The statements whose changes SQLite counts nowhere (ANALYZE's statistics,
+  // VACUUM's and REINDEX's layout, a PRAGMA's header): SQL that names one
+  // may have changed the image. Any mention counts; a false one costs a compare.
+  const __UNCOUNTED = /\b(?:analyze|vacuum|reindex|pragma)\b/i;
+
   class DatabaseSync {
     constructor(path, options) {
       const opts = options || {};
@@ -9573,16 +9610,36 @@ const __sqliteMod = (() => {
       this.__memory = !this.__path || this.__path === ":memory:";
       this.__open = false;
       this.__raw = null;
-      this.__dirty = false;
+      // The file the name denoted at open, and the mark (__imageMark) of the
+      // bytes last read from or written to it (null: none were, so close
+      // creates it).
+      this.__file = null;
+      this.__loaded = null;
+      // What SQLite counted of the connection's changes at open, and whether
+      // it ran SQL whose changes it does not count (__UNCOUNTED).
+      this.__counted = null;
+      this.__uncounted = false;
       const open = opts.open === undefined ? true : !!opts.open;
       if (open) this.__doOpen();
     }
 
     __doOpen() {
       const SQL = __getSQL();
-      const bytes = this.__memory ? null : __readDbBytes(this.__path);
+      this.__file = this.__memory ? null : __pathMod.resolve(this.__path);
+      const bytes = this.__memory ? null : __readDbBytes(this.__file);
       this.__raw = bytes ? new SQL.Database(bytes) : new SQL.Database();
+      this.__loaded = bytes ? __imageMark(bytes) : null;
+      this.__counted = this.__memory ? null : this.__counters();
       this.__open = true;
+    }
+
+    // What SQLite counts of this connection's changes: the rows any statement
+    // changed, and the header fields schema changes and programs set. Asked
+    // with PRAGMA statements, which no table of the program's can shadow.
+    __counters() {
+      const raw = this.__raw;
+      return [__scalar(raw, "SELECT total_changes()"), __scalar(raw, "PRAGMA schema_version"),
+        __scalar(raw, "PRAGMA user_version"), __scalar(raw, "PRAGMA application_id")].join(",");
     }
 
     open() {
@@ -9596,6 +9653,7 @@ const __sqliteMod = (() => {
 
     prepare(sql) {
       if (!this.__open) throw new Error("node:sqlite: database is not open");
+      if (__UNCOUNTED.test(sql)) this.__uncounted = true;
       return new StatementSync(this, String(sql));
     }
 
@@ -9604,8 +9662,8 @@ const __sqliteMod = (() => {
       // sql.js run() executes one-or-more statements with no result rows;
       // PRAGMAs are honored against the single in-memory connection (or
       // no-op where not meaningful for an in-memory whole-DB snapshot).
+      if (__UNCOUNTED.test(sql)) this.__uncounted = true;
       this.__raw.run(String(sql));
-      this.__dirty = true;
     }
 
     function() {
@@ -9632,33 +9690,28 @@ const __sqliteMod = (() => {
       throw __unsupported("DatabaseSync.prototype.loadExtension");
     }
 
-    // Flush the in-memory DB image back to the live VFS via the async
-    // supervisor bridge. Used by close() and as a public checkpoint
-    // boundary. Returns a promise pushed onto __pendingIO so the facet
-    // drains it before isolate teardown.
+    // Write the database's image back to its file, through the process's
+    // filesystem, unless its bytes are the ones last read or written there.
+    // Only a connection that SQLite says changed something, or that ran SQL
+    // whose changes it does not count, can hold a new image: no other exports.
     __flush() {
-      if (this.__memory || !this.__open || !this.__dirty) return Promise.resolve();
-      let supervisor;
-      try { supervisor = __supervisor; } catch { supervisor = null; }
-      if (!supervisor || typeof supervisor.writeFile !== "function") {
-        return Promise.resolve();
-      }
-      const bytes = this.__raw.export();
-      this.__dirty = false;
-      const task = Promise.resolve()
-        .then(() => supervisor.writeFile(this.__path, bytes))
-        .catch(() => {});
-      try { __pendingIO.push(task); } catch {}
-      return task;
+      if (this.__memory || !this.__open) return;
+      if (!this.__uncounted && this.__counters() === this.__counted) return;
+      const image = this.__raw.export();
+      if (__sameImage(this.__loaded, image)) return;
+      __fsMod.writeFileSync(this.__file, image);
+      this.__loaded = __imageMark(image);
     }
 
     close() {
       if (!this.__open) return;
-      // Capture the export + queue the flush BEFORE freeing the handle.
-      this.__flush();
-      try { this.__raw.close(); } catch {}
-      this.__raw = null;
-      this.__open = false;
+      try {
+        this.__flush();
+      } finally {
+        try { this.__raw.close(); } catch {}
+        this.__raw = null;
+        this.__open = false;
+      }
     }
 
     [Symbol.dispose]() {

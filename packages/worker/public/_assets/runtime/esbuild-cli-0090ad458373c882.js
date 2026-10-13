@@ -743,7 +743,8 @@ return globalThis.Go;
     "fsStorageGrant",
     "fsReadRangeUncached",
     "fsReadBatch",
-    "fsListTree"
+    "fsListTree",
+    "fsReadDirectories"
   ];
   var SUPERVISOR_ANSWERED_METHODS = [
     ...FILESYSTEM_ANSWERED_RPC_METHODS,

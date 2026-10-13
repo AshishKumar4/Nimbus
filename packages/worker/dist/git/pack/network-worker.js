@@ -22,6 +22,8 @@ import { GitWriteFailure, mountWriter } from './mount-writer.js';
 import { discover, requestPack } from './upload-pack.js';
 import { retryingGitHttp } from './transport.js';
 import { observedGitHttp, remoteFailureOf } from './remote-failure.js';
+import { listRefs, fetchPack, fetchPackResume, pushPack } from './remote.js';
+import { readFramedGitBody } from './remote-body.js';
 /**
  * cf-git: a copy of vendor/git.generated.mjs in the facet's own module record
  * (runtime/git-bundle-artifact.ts), there only when the facet is loaded, so
@@ -87,6 +89,13 @@ async function discardEarlierAttempts(context, opts, prefix, suffix) {
  */
 function gitPackContext(supervisor, stats, opts, root, deadline, log, worktreeRoot = null) {
     const dir = normalizeVfsPath(String(opts.dir));
+    const repository = opts.op === 'remote-fetch' ? opts.remoteFetch : undefined;
+    const gitDir = repository === undefined ? undefined : normalizeVfsPath(repository.gitDir);
+    const storage = gitDir === undefined ? undefined : {
+        gitDir,
+        commonDir: normalizeVfsPath(repository?.commonDir ?? gitDir),
+        objectDir: normalizeVfsPath(repository?.objectDir ?? (repository?.commonDir ?? gitDir) + '/objects'),
+    };
     // A pack's ranged writes, as its waves (the wave writer's deadline), stop at the phase deadline.
     const mutation = (name, call) => {
         if (deadline !== null && Date.now() >= deadline)
@@ -107,7 +116,7 @@ function gitPackContext(supervisor, stats, opts, root, deadline, log, worktreeRo
             unlink: (path) => mutation('lock', () => supervisor.unlink(path)),
             readdir: (path) => supervisorNames(supervisor, stats, path),
         },
-        writer(onReceipts) {
+        writer(onReceipts, directoryRoot) {
             const waves = createWaveWriter({
                 supervisor: {
                     // The writer's fence for this attempt goes with it: the session refuses a late original.
@@ -121,8 +130,8 @@ function gitPackContext(supervisor, stats, opts, root, deadline, log, worktreeRo
                     },
                 },
                 root,
-                worktreeRoot,
-                base: dir,
+                worktreeRoot: directoryRoot ?? worktreeRoot,
+                base: storage === undefined ? dir : undefined,
                 deadline,
                 onWave(report) {
                     stats.filesWritten += report.files;
@@ -143,6 +152,7 @@ function gitPackContext(supervisor, stats, opts, root, deadline, log, worktreeRo
             });
         },
         dir,
+        storage,
         url: opts.url ?? '',
         auth: opts.auth,
         marker: { path: '.git/' + GIT_CLONE_JOB_MARKER, text: cloneJobMarker(opts) },
@@ -208,7 +218,10 @@ export const networkWorker = {
         }
         let opts;
         try {
-            opts = await request.json();
+            const framed = await readFramedGitBody(request);
+            opts = framed.options;
+            if (framed.pack)
+                opts.remotePushPack = framed.pack;
         }
         catch (e) {
             return Response.json({
@@ -446,6 +459,25 @@ export const networkWorker = {
                 }, advertisement);
                 const prepared = 'stream' in started ? { stream: started.stream } : { fast: started };
                 return respond(true, { prepared, metadataOverlay: overlayStats() });
+            }
+            else if (opts.op === 'remote-list') {
+                if (typeof opts.url !== 'string')
+                    throw protocolError('remote URL is missing');
+                return respond(true, { remote: await listRefs({ url: opts.url, auth: opts.auth }, { forPush: opts.forPush === true }) });
+            }
+            else if (opts.op === 'remote-fetch') {
+                if (!opts.remoteFetch)
+                    throw protocolError('remote fetch request is missing');
+                const context = gitPackContext(supervisor, stats, opts, null, null, log, normalizeVfsPath(opts.dir));
+                const remote = opts.remoteFetch.resume
+                    ? await fetchPackResume(context, { pending: opts.remoteFetch.resume, budgetUnits: opts.historyBudgetUnits })
+                    : await fetchPack(context, { ...opts.remoteFetch, jobId: invocationId, budgetUnits: opts.historyBudgetUnits });
+                return respond(true, { remote, metadataOverlay: overlayStats() });
+            }
+            else if (opts.op === 'remote-push') {
+                if (typeof opts.url !== 'string' || !opts.remotePush)
+                    throw protocolError('remote push request is missing');
+                return respond(true, { remote: await pushPack({ url: opts.url, auth: opts.auth }, opts.remotePush, opts.remotePushPack ?? null) });
             }
             else if (opts.op === 'graph-filters') {
                 // A full clone's changed-path filters (git/pack/graph-filters.ts):

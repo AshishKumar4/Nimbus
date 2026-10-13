@@ -12,7 +12,6 @@ export interface AuthorityFd {
   rights: bigint;
   rightsInheriting: bigint;
   fdflags: number;
-  entries?: { name: string; type: string }[];
 }
 /**
  * A read-only open of a regular file, answered from this isolate: the bytes
@@ -284,7 +283,7 @@ export interface AuthorityFilesystemOptions {
   allocateFd(): number;
   abi?: 'preview0' | 'preview1';
   synchronous: boolean;
-  /** The guest's live umask when its process can move it after boot (bash's `umask` builtin). */
+  /** The process's live umask (bash's builtin or a nimbus-libc guest's umask). */
   umask?(): number;
   /**
    * The session answered that it holds no such process: it restarted (or
@@ -502,7 +501,10 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     if (!(e.rights & (1n << BigInt(bit)))) fail('ENOTCAPABLE');
     return e;
   };
-  const creationMode = (base: number): number | undefined => options.umask ? base & ~options.umask() : undefined;
+  const creationMode = (base: number): { mode?: number; umask?: number } => {
+    const umask = options.umask?.();
+    return umask === undefined ? {} : { mode: base & ~umask, umask };
+  };
   const pathRight = (fd: number, bit: number) => {
     const e = preopen(fd) ?? entry(fd);
     if (!((e.rights ?? 0x1fffffffn) & (1n << BigInt(bit)))) fail('ENOTCAPABLE');
@@ -602,7 +604,7 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
   }
   const flagsOf = (o: PathOpen): RuntimeOpenFlags => ({ read: !!(o.requested & 2n), write: !!(o.requested & 64n), append: !!(o.status & 1),
     create: !!(o.oflags & 1), directory: !!(o.oflags & 2), exclusive: !!(o.oflags & 4), truncate: !!(o.oflags & 8), followSymlinks: o.follow,
-    mode: creationMode(0o666) });
+    ...creationMode(0o666) });
   const opened = (o: PathOpen, handle: RuntimeOpenedFile): Errno => {
     const id = options.allocateFd();
     fds.set(id, { kind: 'authority', handle, type: handle.stat.type, rights: o.requested, rightsInheriting: o.childRights, fdflags: o.status });
@@ -801,9 +803,10 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
   imports.fd_readdir = guard(imports.fd_readdir, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, buf: number, size: number, cookie: bigint, used: number) => { pathRight(fd, 14); 
     const e = preopen(fd) ?? entry(fd);
     if (e.kind === 'resident') fail('ENOTDIR');
-    const list = e.kind === 'preopen' ? fs.readdir(e.vfsPath) : e.entries ?? fs.readdirHandle(e.handle.id);
+    // The filesystem owns the listing's revision/lease, including on a
+    // rewind (cookie 0). An unversioned copy here would outlive its recall.
+    const list = e.kind === 'preopen' ? fs.readdir(e.vfsPath) : fs.readdirHandle(e.handle.id);
     return after(list, entries => {
-      if (e.kind === 'authority') e.entries = entries;
       const all = [{ name: '.', type: 'directory' }, { name: '..', type: 'directory' }, ...entries];
       let written = 0;
       for (let i = num(cookie); i < all.length && written < size; i++) {
@@ -814,7 +817,7 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
       u32(used, written); return 0;
     });
   }, owns);
-  imports.path_create_directory = guard(imports.path_create_directory, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, p: number, n: number) => { pathRight(fd, 9); return after(fs.mkdir(at(fd, path(p, n)), { recursive: false, mode: creationMode(0o777) }), () => 0); });
+  imports.path_create_directory = guard(imports.path_create_directory, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, p: number, n: number) => { pathRight(fd, 9); return after(fs.mkdir(at(fd, path(p, n)), { recursive: false, ...creationMode(0o777) }), () => 0); });
   imports.path_remove_directory = guard(imports.path_remove_directory, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, p: number, n: number) => { pathRight(fd, 25); return after(fs.rmdir(at(fd, path(p, n))), () => 0); });
   // A name these processes take away first keeps the file of their copies there (keepCopiesBefore).
   imports.path_unlink_file = guard(imports.path_unlink_file, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, p: number, n: number) => {

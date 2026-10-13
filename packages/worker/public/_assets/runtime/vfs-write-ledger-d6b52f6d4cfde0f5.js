@@ -93,6 +93,8 @@ var __nimbusProcessFsModule = (() => {
   var SUPERVISOR_HEAP_CEILING_BYTES = 64 * 1024 * 1024;
   var FACET_OWN_WRITE_MEMORY_BYTES = 32 * 1024 * 1024;
   var WASI_RESIDENT_STORE_BYTES = 32 * 1024 * 1024;
+  var RESIDENT_PAGE_BYTES = 64 * 1024;
+  var RESIDENT_PAGE_CACHE_BYTES = 512 * 1024 * 1024;
   var SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES = 40 * 1024 * 1024;
   var SUPERVISOR_READ_RESERVE_BYTES = 1024 * 1024;
   var MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES = 8 * 1024 * 1024;
@@ -1745,7 +1747,6 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       });
     };
     let runEnded = false;
-    const givingBack =   new Set();
     const answerReadRecalls = async (owner) => {
       const port = session.grants;
       for (; ; ) {
@@ -2003,8 +2004,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       async settle() {
         settling = true;
         runEnded = true;
-        if (readLease !== null) await giveBackReadLease(readLease.owner);
-        await Promise.all([...givingBack]);
+        if (readLease !== null) void giveBackReadLease(readLease.owner);
         if (claiming !== null) await claiming;
         try {
           while (answered < logged) await client.flush();
@@ -2013,7 +2013,12 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
             timers.clearTimeout(idleTimer);
             idleTimer = null;
           }
-          for (const grant of live()) await close(grant);
+          for (const grant of live()) {
+            grant.closing = true;
+            options.freezing?.(grant.root);
+          }
+          await client.flush();
+          for (const grant of live()) void end(grant);
           settling = false;
         }
         if (processGone !== null) await retirePending().catch(() => {
@@ -2027,6 +2032,9 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       readTrusted() {
         return readLease !== null && readLease.logged === logged && now() < readLease.until;
       },
+      readUnchanged(owner) {
+        return !runEnded && readLease?.owner === owner && readLease.logged === logged;
+      },
       readLeaseAsk() {
         if (session.grants === void 0 || runEnded) return null;
         return { at: now(), logged: answered === logged ? logged : -1 };
@@ -2038,9 +2046,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
           return;
         }
         if (runEnded) {
-          const back = giveBackReadLease(lease.owner);
-          givingBack.add(back);
-          void back.finally(() => givingBack.delete(back));
+          void giveBackReadLease(lease.owner);
           return;
         }
         readLease = { owner: lease.owner, until: 0, confirmedAt: now(), logged: -1 };

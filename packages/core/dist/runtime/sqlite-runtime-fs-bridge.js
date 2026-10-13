@@ -419,7 +419,7 @@ export class SqliteRuntimeFsBridge {
             if (exists)
                 this.vfs.access(p, openAccess(normalizedFlags, directory));
             if (!exists) {
-                this.owned(owner).writeFile(p, new Uint8Array(0), { mode: flags.mode });
+                this.owned(owner).writeFile(p, new Uint8Array(0), { mode: flags.mode, umask: flags.umask });
             }
             else if (normalizedFlags.truncate) {
                 this.owned(owner).truncate(p, 0);
@@ -496,7 +496,7 @@ export class SqliteRuntimeFsBridge {
             // permission check on its parent (`/` has none).
             if (this.mayExist(located))
                 throw fsError('EEXIST', 'mkdir', path);
-            this.owned(owner).mkdir(located.path, { recursive: !!options.recursive, mode: options.mode });
+            this.owned(owner).mkdir(located.path, { recursive: !!options.recursive, mode: options.mode, umask: options.umask });
         });
     }
     /**

@@ -35,6 +35,8 @@
  *     absent: the adapter lists the directory and walks again.
  */
 import type { RuntimeFsBridge, RuntimeFsPath, RuntimeVfsDirEntry, RuntimeVfsStat } from '../os-contracts.js';
+import type { ReadDirectorySupervisor } from '../read-directory-batch.js';
+import type { VfsAcquireResult } from '../os-contracts.js';
 import type { ProcessFsJournal, ProcessFsSession, ProcessFsStats } from '../../_shared/process-fs-client.js';
 /** A name as the store holds it: its lstat, and a symlink's text. */
 export interface ResidentEntry {
@@ -78,12 +80,34 @@ export interface ResidentNamespace {
     lookup(keys: string[], content: boolean): Promise<boolean>;
     /** List everything under `key` in a few pages. False when that did not finish. */
     listTree(key: string): Promise<boolean>;
-    /** The bytes of file `key` the store holds, or undefined. */
-    content(key: string): Uint8Array | undefined;
+    /**
+     * The bytes of file `key` the store holds, or undefined; with `revision`,
+     * only bytes dated at it or later (or the facet's own): a read of older
+     * bytes that landed after a barrier admitted the change is not served.
+     */
+    content(key: string, revision?: number): Uint8Array | undefined;
     /** Fetch file `key`'s bytes (at `entry`'s revision) into the store; null when they could not be fetched. */
     fill(key: string, entry: ResidentEntry): Promise<Uint8Array | null>;
+    /**
+     * Pages `first`..`last` (RESIDENT_PAGE_BYTES each) of file `key`, `size`
+     * bytes at revision `revision`: held ones from the store, the rest read
+     * pinned to that revision and held, with how many were read. Null when
+     * the file is no longer at `revision` or a read failed.
+     */
+    pages(key: string, revision: number, size: number, first: number, last: number): Promise<{
+        pages: Uint8Array[];
+        fetched: number;
+    } | null>;
+    /** Fetch these files' bytes (each at its entry's revision) into the store in batched round trips. */
+    fillMany(files: ReadonlyArray<readonly [string, ResidentEntry]>): Promise<void>;
     /** The ACQUIRE barrier. */
     barrier(): Promise<boolean>;
+    /** The same provenance cursor and ACQUIRE admission used by the normal barrier. */
+    cursor(): {
+        epoch: string;
+        rev: number;
+    } | null;
+    admit(answer: VfsAcquireResult): Promise<boolean>;
     /** Charge `bytes` of heap held outside the store to its budget: false when they do not fit. */
     reserve(bytes: number): boolean;
     /** Return what `reserve` charged. */
@@ -107,6 +131,8 @@ export interface ResidentFilesystem extends RuntimeFsBridge {
     pinContent(path: RuntimeFsPath, stat: RuntimeVfsStat): PinnedContent | null | Promise<PinnedContent | null>;
     /** Input from outside the process arrived: the barrier is owed before the next answer. */
     inbound(): void;
+    /** A park's deadline elapsed; never install an abandoned directory open's late answer. */
+    cancelPendingDirectories(): void;
     /** Whether writes are held that the session does not have yet. */
     holding(): boolean;
     /**
@@ -129,6 +155,8 @@ export interface ResidentFilesystem extends RuntimeFsBridge {
     settle(): Promise<UnsettledWrite[]>;
     /** What the process has asked so far, and who answered: a run's filesystem cost, in calls. */
     stats(): ResidentFilesystemStats;
+    /** The directories this process opened, in order (bounded): the next run's in the same facet (ResidentDelegation.walked). */
+    walked(): readonly string[];
 }
 /** A held file the session refused part of: what a run reports, naming the file. */
 export interface UnsettledWrite {
@@ -148,9 +176,13 @@ export interface ResidentFilesystemStats {
     lookups: number;
     listings: number;
     treeListings: number;
-    /** Files fetched into the store, and their bytes. */
+    /** Files fetched into the store, and their bytes; of those, fetched ahead of their reads (and with the read that asked). */
     fills: number;
     filledBytes: number;
+    readAhead: number;
+    /** Reads of files too big to hold whole answered through the store's pages, and the pages the session was asked for. */
+    pagedReads: number;
+    pagesFetched: number;
     /** ACQUIRE barriers taken. */
     barriers: number;
     /** Wall time the process spent waiting on the session for any of the above, in ms. */
@@ -175,6 +207,14 @@ export interface ResidentDelegation {
     readonly isHomeRoot?: (key: string) => boolean;
     /** The process's own store's write log (HolderOptions.journal). */
     readonly journal?: ProcessFsJournal;
+    readonly readDirectories?: ReadDirectorySupervisor['fsReadDirectories'];
+    /**
+     * The directories the last process in this facet opened, in order (its
+     * walked()): a run that repeats it (git status, again) opens them again,
+     * so the batch prefetches them first. A guess: each prefetched
+     * description is admitted only if the namespace still vouches for it.
+     */
+    readonly walked?: readonly string[];
 }
 export declare function residentFilesystem(session: RuntimeFsBridge, resident: ResidentNamespace, delegation?: ResidentDelegation): ResidentFilesystem;
 //# sourceMappingURL=resident-filesystem.d.ts.map

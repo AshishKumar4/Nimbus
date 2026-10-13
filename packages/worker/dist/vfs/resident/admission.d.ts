@@ -28,6 +28,8 @@ export interface Admission {
     setStorage(storage: unknown, supervisor: ResidentSupervisor | null | undefined): void;
     /** The cap this store enforces, for startProcess to report. */
     storageCap(): number | null;
+    /** What the session's ledger said a user may still write, at its last answer; null before one. */
+    readonly available: number | null;
     pin(bytes: number): boolean;
     unpin(bytes: number): void;
     /** Room a one-shot's held own writes may take beside everything else. */

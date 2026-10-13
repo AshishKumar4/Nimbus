@@ -1,9 +1,10 @@
 /**
  * The resident store's tables, and its two backings (store.ts decides; a
- * backing only stores). Four tables: 'file' (one row per held path: kind,
+ * backing only stores). Five tables: 'file' (one row per held path: kind,
  * size, chunk count, revision, content key), 'chunk' (the bytes), 'meta'
- * (schema, cursor, namespace readiness) and 'ns' (the namespace: a stat per
- * visible name, keyed (parent, name)).
+ * (schema, cursor, namespace readiness), 'ns' (the namespace: a stat per
+ * visible name, keyed (parent, name)) and 'page' (pages of files too big to
+ * hold whole, each at the revision it was read at: pages.ts).
  *
  * - sqlTables: the process facet's own SQLite (ctx.storage.sql), durable
  *   across the facet's incarnations. Every statement the store has ever
@@ -21,7 +22,7 @@
  * and the kind is stored rather than inferred so a text file whose bytes happen
  * to be valid UTF-8 does not change shape between a write and a read.
  */
-export declare const RESIDENT_SCHEMA = "3";
+export declare const RESIDENT_SCHEMA = "4";
 export declare const RK_TEXT = 0;
 export declare const RK_BINARY = 1;
 export declare const RK_DENIED = 2;
@@ -87,6 +88,12 @@ export interface NsChild {
     kind: number;
     mode: number;
 }
+export interface PageRow {
+    path: string;
+    rev: number;
+    part: number;
+    size: number;
+}
 /** The one contract both backings keep. */
 export interface ResidentTables {
     /** What the store's budget counts it as holding. */
@@ -147,6 +154,15 @@ export interface ResidentTables {
     })[];
     nsChildren(parent: string): NsChild[];
     nsCount(): number;
+    pageGet(path: string, rev: number, part: number): Uint8Array | ArrayBuffer | undefined;
+    pageUse(path: string, rev: number, part: number, used: number): void;
+    /** Hold a page, answering the bytes of the one it replaced (0 for none). */
+    pagePut(path: string, rev: number, part: number, bin: Uint8Array, used: number): number;
+    pageDelete(path: string, rev: number, part: number): void;
+    /** The least recently used pages, `limit` at most. */
+    pageOldest(limit: number): PageRow[];
+    pageBytes(): number;
+    pageMaxUsed(): number;
 }
 /**
  * The heap backing's own measures. Its namespace rows count against the

@@ -121,7 +121,7 @@ async function dispatch(bytes, argv, output) {
   // its resident store and sends changes as waves (initFS cred). Red before:
   // none was passed, and every file call was a round trip (clang 10k: about
   // 100 ms a file).
-  assert.deepEqual(submitted[0]?.wasiFs?.cred, { uid: 1000, gid: 1000, groups: [1000] });
+  assert.deepEqual(submitted[0]?.wasiFs?.cred, USER_CRED);
 }
 {
   const { submitted } = await dispatch(both, []);

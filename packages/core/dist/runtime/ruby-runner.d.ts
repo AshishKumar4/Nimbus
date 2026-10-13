@@ -47,7 +47,7 @@ import type { WorkspaceNetwork } from '../_shared/workspace-network.js';
 import type { RuntimeManifest } from './runtime-manifest.js';
 import type { Command } from '../substrate/lifo/commands/types.js';
 import type { FacetHost } from './facet-host.js';
-import { type NimbusFilesystemAuthority } from './os-contracts.js';
+import { type NimbusFilesystemAuthority, type VfsCred } from './os-contracts.js';
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';
 type RubyRunnerFactory = (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Promise<Command>;
 /**
@@ -80,11 +80,7 @@ export interface RubyFacetCallArgs {
     cwd: string;
     supervisorPid?: number;
     outputControls?: import('./wasi/output-control.js').OutputControlFrame[];
-    cred: {
-        uid: number;
-        gid: number;
-        groups: number[];
-    };
+    cred: VfsCred;
 }
 export interface RubyFacetResult {
     exitCode: number;

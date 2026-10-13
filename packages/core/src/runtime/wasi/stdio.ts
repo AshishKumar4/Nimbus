@@ -8,10 +8,13 @@ export function wasiOutputRelay(target: WasiOutputTarget) {
   let chain: Promise<void> | null = null;
   let inFlight = 0;
   let lost: string | null = null;
+  /** The session's refusal because the reader of fd 1 or 2 went away (a pipe's): every later write gets it, EPIPE. */
+  let broken: Error | null = null;
   const send = (fd: 1 | 2, bytes: Uint8Array): void | Promise<void> => {
     if (bytes.byteLength === 0) return;
     let at = 0;
     const admit = (): void | Promise<void> => {
+      if (broken !== null) throw broken;
       if (lost !== null) throw new Error(lost);
       while (at < bytes.byteLength) {
         const room = WASI_OUTPUT_IN_FLIGHT_BYTES - inFlight;
@@ -30,7 +33,10 @@ export function wasiOutputRelay(target: WasiOutputTarget) {
         catch (error) { inFlight -= size; throw error; }
         if (delivered && typeof delivered.then === 'function') {
           const pending = Promise.resolve(delivered)
-            .catch((error: unknown) => { lost ??= error instanceof Error ? error.message : String(error); })
+            .catch((error: unknown) => {
+              if ((error as { code?: unknown } | null)?.code === 'EPIPE') broken ??= error as Error;
+              lost ??= error instanceof Error ? error.message : String(error);
+            })
             .finally(() => { inFlight -= size; if (chain === pending) chain = null; });
           chain = pending;
         } else inFlight -= size;
@@ -43,5 +49,7 @@ export function wasiOutputRelay(target: WasiOutputTarget) {
     stderrBytes: (bytes: Uint8Array) => send(2, bytes),
     ready: (): Promise<void> | undefined => inFlight >= WASI_OUTPUT_IN_FLIGHT_BYTES ? chain ?? undefined : undefined,
     drain: () => (chain ?? Promise.resolve()).then(() => lost),
+    /** Whether the output's reader went away (EPIPE), as a pipe's does: where a native writer would get SIGPIPE. */
+    brokenPipe: () => broken !== null,
   };
 }

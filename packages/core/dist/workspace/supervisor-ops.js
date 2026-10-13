@@ -49,7 +49,7 @@ export const SUPERVISOR_OP_TABLE = {
     wsSend: null,
     wsClose: null,
     fsOpen: 'once',
-    fsReopen: 'once',
+    fsReadDirectories: 'once',
     fsRead: null,
     fsWrite: 'once',
     fsClose: 'once',

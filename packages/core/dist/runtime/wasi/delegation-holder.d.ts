@@ -34,7 +34,7 @@
  * a guest that waits in a syscall lets it run; one computing does not
  * (the documented limit, answered by the session's recall timeout).
  */
-import type { RuntimeFileHandle, RuntimeVfsDirEntry } from '../os-contracts.js';
+import type { RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry } from '../os-contracts.js';
 import type { ResidentEntry } from './resident-filesystem.js';
 import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
 import { type ProcessFsClient, type ProcessFsJournal, type ProcessFsSession } from '../../_shared/process-fs-client.js';
@@ -86,15 +86,7 @@ export interface DelegationHolder {
      * with everything the process logged before it and answered with the
      * file's stat; the description it returns writes through (LocalFile.through).
      */
-    openThrough(key: string, path: string, flags: {
-        read?: boolean;
-        append?: boolean;
-        create?: boolean;
-        truncate?: boolean;
-        exclusive?: boolean;
-        followSymlinks?: boolean;
-        mode?: number;
-    }): Promise<RuntimeFileHandle>;
+    openThrough(key: string, path: string, flags: RuntimeOpenFlags): Promise<RuntimeFileHandle>;
     /**
      * Everything logged so far answered, what the session refused kept for the
      * next sync (flush) to report: what goes before a call to the session.
@@ -137,15 +129,7 @@ export interface DelegationHolder {
      * parent known): a descriptor of the holder's, or undefined when the
      * session is to decide it.
      */
-    open(key: string, path: string, flags: {
-        read?: boolean;
-        write?: boolean;
-        append?: boolean;
-        create?: boolean;
-        truncate?: boolean;
-        exclusive?: boolean;
-        mode?: number;
-    }): RuntimeFileHandle | undefined;
+    open(key: string, path: string, flags: RuntimeOpenFlags): RuntimeFileHandle | undefined;
     read(handleId: number, offset: number | null, length: number): Uint8Array;
     write(handleId: number, offset: number | null, bytes: Uint8Array): number;
     seek(handleId: number, offset: number, whence: 'set' | 'current' | 'end'): number;
@@ -171,7 +155,7 @@ export interface DelegationHolder {
         truncate?: boolean;
     }): RuntimeFileHandle | undefined;
     /** Decide a mkdir at `key`: true when decided here (and done), false when the session is to. */
-    mkdir(key: string, path: string, mode: number): boolean;
+    mkdir(key: string, path: string, mode: number, umask?: number): boolean;
     /** Decide an unlink of `key` (a file or link): true when decided here. */
     unlink(key: string, path: string): boolean;
     /** Decide a rename of `from` to `to` (both resolved): true when decided here. */

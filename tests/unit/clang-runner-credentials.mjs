@@ -18,6 +18,21 @@ async function expectEacces(run, args) {
   assert.equal(user.exists('home/user/main.wasm'), true);
 }
 
+// The linked executable has the mode ld and wasm-ld give a new file: 0777
+// under the caller's umask, even over one someone chmod -x'd (host clang:
+// 0755 under umask 022, 0700 under 077).
+{
+  const { run, user } = makeInvocationVfs();
+  user.writeFile('home/user/main.c', 'int main(void) { return 0; }');
+  assert.equal(await run(commandContext(['main.c', '-o', 'main.wasm']).ctx), 0);
+  assert.equal(user.stat('home/user/main.wasm').mode & 0o7777, 0o755, 'umask 022');
+  user.chmod('home/user/main.wasm', 0o644);
+  const strict = commandContext(['main.c', '-o', 'main.wasm']);
+  strict.ctx.cred = { ...strict.ctx.cred, umask: 0o077 };
+  assert.equal(await run(strict.ctx), 0);
+  assert.equal(user.stat('home/user/main.wasm').mode & 0o7777, 0o700, 'umask 077, over a chmod -x');
+}
+
 // Source lookup must not use the kernel view to traverse a directory hidden from the caller.
 {
   const { root, run } = makeInvocationVfs();

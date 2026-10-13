@@ -109,16 +109,10 @@ export interface RuntimeOpenFlags {
     directory?: boolean;
     truncate?: boolean;
     followSymlinks?: boolean;
-    /**
-     * O_PATH: the file is held, not opened for I/O. No access is asked of it
-     * but the walk's, and every other flag but `directory` and
-     * `followSymlinks` is ignored, as Linux ignores it. The descriptor answers
-     * its stat and a reopen (an unlinked file's included) until it is closed;
-     * its reads and writes are EBADF.
-     */
-    path?: boolean;
     /** Creation mode, masked by the binding's umask like mkdir's; ignored when the file exists. */
     mode?: number;
+    /** A process's live mask for this create, in place of its binding's initial mask. */
+    umask?: number;
     expectedRevision?: number;
     /**
      * O_SYNC: each write is in the store before it returns. Without it an
@@ -130,25 +124,13 @@ export interface RuntimeOpenFlags {
 export interface RuntimeFileHandle {
     id: number;
     path: string;
-    flags: Required<Omit<RuntimeOpenFlags, 'expectedRevision' | 'mode' | 'sync' | 'path'>> & {
+    flags: Required<Omit<RuntimeOpenFlags, 'expectedRevision' | 'mode' | 'umask' | 'sync'>> & {
         expectedRevision?: number;
     };
     position: number;
     closed: boolean;
 }
-/** What an open answers: the new descriptor, and its file's stat as the open found it (the opened name's revision, where it opened one). */
-export interface RuntimeOpenedFile extends RuntimeFileHandle {
-    stat: RuntimeVfsStat;
-}
 export type Awaitable<T> = T | Promise<T>;
-/**
- * The file a reopen opens again (RuntimeFsBridge.reopen): the one an open
- * descriptor of the process is on. The descriptor is the capability: a file
- * is never reopened by its number alone, which any process can name.
- */
-export type RuntimeReopenTarget = {
-    readonly handle: number;
-};
 export type RuntimeFsPath = string | {
     readonly directory: number;
     readonly path: string;
@@ -332,15 +314,7 @@ export interface RuntimeFsBridge {
         followSymlinks?: boolean;
     }): Awaitable<VfsMutationReceipt>;
     /** `options.mutationOwner`: the lease an open for writing presents. */
-    open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner): Awaitable<RuntimeOpenedFile>;
-    /**
-     * A new open file description of the file `target` is (Linux's open of
-     * /proc/self/fd/N): the file, never a name, so one renamed or unlinked
-     * since is the one opened. Its own offset; `flags`' access checked
-     * against the file as it is now; O_TRUNC and O_APPEND honored. A file on
-     * a mount is held there by its name: ESTALE once that name holds another.
-     */
-    reopen(target: RuntimeReopenTarget, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner): Awaitable<RuntimeOpenedFile>;
+    open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner): Awaitable<RuntimeFileHandle>;
     read(handleId: number, offset: number | null, length: number): Awaitable<Uint8Array>;
     write(handleId: number, offset: number | null, bytes: Uint8Array): Awaitable<number>;
     close(handleId: number): Awaitable<void>;
@@ -350,6 +324,7 @@ export interface RuntimeFsBridge {
     mkdir(path: RuntimeFsPath, options?: {
         recursive?: boolean;
         mode?: number;
+        umask?: number;
     } & RuntimeMutationOwner): Awaitable<void>;
     unlink(path: RuntimeFsPath, options?: RuntimeMutationOwner): Awaitable<void>;
     rmdir(path: RuntimeFsPath, options?: RuntimeMutationOwner): Awaitable<void>;
@@ -745,6 +720,28 @@ export declare const NIMBUS_RUNTIME_ABIS: Readonly<Record<string, RuntimePackage
  * the build its preamble was written against.
  */
 export declare const BASH_RUNNER = "bash-runner@3";
+/** Git's first runtime build imports the shared Nimbus filesystem/process extensions. */
+export declare const GIT_RUNNER = "git-runner";
+/**
+ * Set in real git's environment (the git runner): a `git` it starts (a
+ * hook's, a subcommand's) carries it, and is real git too, wherever a
+ * built-in git routes `git` between itself and real git.
+ */
+export declare const GIT_WASI_ENV = "NIMBUS_GIT_WASI";
+/**
+ * The import modules a wasm runtime built in this tree may import: WASI
+ * preview1, and the Nimbus extensions this tree's WASI hosts provide —
+ * nimbus_fs (a file's mode and owner, chmod: runtime/wasi/types.ts
+ * NimbusFsImports) and nimbus_proc (the process's children, pipes and
+ * credential: the shared WASI layer's runtime/wasi/processes.ts; bash's
+ * runner provides its own table under the name, runtime/bash/preamble.ts,
+ * bound by BASH_RUNNER). The git build's verify stage checks its image
+ * against this list (packages/worker/wasm/git/build-git.sh). An image
+ * importing an extension needs a host that provides it, so the runtime names
+ * a runner key no older host registers: git's first build names
+ * {@link GIT_RUNNER}.
+ */
+export declare const WASI_RUNTIME_IMPORT_MODULES: readonly string[];
 /** Name-to-name package rewrite at the resolver/installer boundary. */
 export interface PackageSwapEntry {
     /** Original package name the user (or a transitive dep) asked for. */
