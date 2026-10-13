@@ -20,6 +20,9 @@ import { generatedModuleSet, writeModuleSet } from './lib/module-map-bundle.mjs'
 import { createAuthority } from './lib/resident-body.mjs';
 import { processInstanceSupervisor } from './lib/process-instance-supervisor.mjs';
 
+// The one-shot runner installs its own process global once it loads.
+const realProcess = globalThis.process;
+
 let bytes = new Uint8Array([1, 2, 3]);
 const bundle = new Proxy({}, {
   has(_target, key) { return key === 'home/user/file.bin' && bytes !== null; },
@@ -113,4 +116,4 @@ const outcome = async (iterable) => {
 }
 
 console.log('node-shims-promises-watch: ok');
-process.exit(0);
+realProcess.exit(0);
