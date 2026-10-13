@@ -1171,27 +1171,45 @@ async function assertNoHooks(ctx, git, fs, repo, sub) {
 }
 /**
  * assertRepositoryImplemented's verdicts on a repository's config file, by
- * session, credential and git directory, each with the revision of the file
- * it was read at: a repository whose config is unchanged is not read again
- * for its format. A path whose revision cannot be told (0: a mount's) is
- * read every time.
+ * session, credential and git directory, each with the identity of the
+ * content it was read from (contentStamp): a repository whose config is
+ * unchanged is not read again for its format. One whose identity cannot be
+ * told (a mount's, without revisions) is read every time.
  */
 const formatVerdicts = new WeakMap();
+/**
+ * What names `path`'s content: the file it resolves to, by device, inode
+ * and revision, and a link at the path by its own. Two files of one
+ * revision (written in one transaction) are told apart by their inodes, and
+ * a link switched between them by its own revision. Null where nothing is
+ * there or a revision cannot be told (0: a mount's).
+ */
+async function contentStamp(ctx, path) {
+    try {
+        const own = await ctx.vfs.process.stat(path, { followSymlinks: false });
+        if (own === null || own.revision === 0)
+            return null;
+        const stamp = `${own.dev}:${own.ino}:${own.revision}`;
+        if (own.type !== 'symlink')
+            return stamp;
+        const target = await ctx.vfs.process.stat(path, { followSymlinks: true });
+        return target === null || target.revision === 0 ? null : `${stamp}>${target.dev}:${target.ino}:${target.revision}`;
+    }
+    catch {
+        return null;
+    }
+}
 /** assertRepositoryImplemented, its verdict kept while the repository's config file is unchanged (formatVerdicts). */
 async function assertRepositoryFormat(ctx, session, git, fs, repo) {
     if (repo.linked)
         return await assertRepositoryImplemented(git, fs, repo);
-    let revision = 0;
-    try {
-        revision = await ctx.vfs.process.revision(`${repo.gitdir}/config`);
-    }
-    catch { /* not told: read */ }
+    const stamp = await contentStamp(ctx, `${repo.gitdir}/config`);
     const key = `${ctx.cred.uid}:${ctx.cred.gid}:${ctx.cred.groups.join(',')}:${repo.gitdir}`;
     let verdicts = formatVerdicts.get(session);
     if (verdicts === undefined)
         formatVerdicts.set(session, verdicts = new Map());
     const known = verdicts.get(key);
-    if (revision !== 0 && known?.revision === revision) {
+    if (stamp !== null && known?.stamp === stamp) {
         if (known.verdict instanceof UnsupportedGitOperation)
             throw known.verdict;
         return known.verdict;
@@ -1205,8 +1223,8 @@ async function assertRepositoryFormat(ctx, session, git, fs, repo) {
             throw error;
         verdict = error;
     }
-    if (revision !== 0)
-        verdicts.set(key, { revision, verdict });
+    if (stamp !== null)
+        verdicts.set(key, { stamp, verdict });
     if (verdict instanceof UnsupportedGitOperation)
         throw verdict;
     return verdict;
