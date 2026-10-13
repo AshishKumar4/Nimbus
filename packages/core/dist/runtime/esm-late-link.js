@@ -12,8 +12,23 @@
  * carries it, which every late graph loads anyway, so a launch that never
  * links one never compiles it.
  */
+import { cjsModuleExportNames } from './cjs-module-exports.js';
 /** Every late module a link has read, by URL: what an interpreted module's `export *` asks of (starConflicts). */
 const lateModules = new Map();
+/** The CommonJS modules' names Node's lexer found, by path. */
+const commonJsNameCache = new Map();
+/**
+ * The names Node's loader finds in the CommonJS module at `key` before it
+ * runs: a staged facade's, else Node's lexer's over its source and the
+ * modules it re-exports (cjs-module-exports.ts), `default` first.
+ */
+export function commonJsNames(host, key) {
+    const facade = host.row('commonjs', key);
+    const staged = facade === -1 ? null : host.rowNames(facade);
+    if (staged !== null)
+        return staged;
+    return [...cjsModuleExportNames(`/${key}`, { source: (path) => host.source(path.replace(/^\/+/, ''), -1), resolve: host.cjsResolve }, commonJsNameCache)];
+}
 /**
  * Links the late graph of the module at `key` (`url`): throws the refusal
  * of a static import anywhere in it that does not resolve or load, or of a
@@ -111,7 +126,10 @@ function plan(host, read, key, url, seen, order, checked, late) {
 function lateTarget(host, resolution) {
     if (resolution.format === 'builtin' && resolution.builtin !== undefined) {
         const id = host.row('builtin', resolution.builtin);
-        return id !== -1 ? { row: id } : { url: resolution.url, names: host.builtinNames(resolution.builtin), commonjs: false };
+        if (id !== -1)
+            return { row: id };
+        const exports = host.builtin(resolution.builtin);
+        return { url: resolution.url, names: ['default', ...(typeof exports === 'object' && exports !== null ? Object.keys(exports) : [])], commonjs: false };
     }
     if (resolution.path === undefined)
         return null;
@@ -130,7 +148,7 @@ function lateTarget(host, resolution) {
     if (resolution.format === 'json')
         return { url: resolution.url, names: ['default'], commonjs: false };
     if (resolution.format === 'commonjs')
-        return { url: resolution.url, names: host.commonJsNames(key), commonjs: true };
+        return { url: resolution.url, names: commonJsNames(host, key), commonjs: true };
     return null;
 }
 /**
@@ -210,7 +228,7 @@ function edgesOf(host, late, target) {
     const facts = host.rowKind(target.row) === 'module' ? host.moduleFacts(target.row) : null;
     if (facts === null)
         return [];
-    return facts.imports.map(([row, specifier, ...names]) => ({ target: { row }, specifier, names }));
+    return facts[2].map(([row, specifier, ...names]) => ({ target: { row }, specifier, names }));
 }
 /** A name its module's `export *`s reach two different bindings of. */
 const AMBIGUOUS = 'ambiguous';
@@ -224,9 +242,9 @@ function factsOf(host, late, target) {
     if (facts === null)
         return null;
     return {
-        exports: facts.exports,
-        stars: facts.stars.map((row) => ({ row })),
-        reexports: facts.reexports.map(([exported, row, name]) => [exported, { row }, name]),
+        exports: facts[0],
+        stars: facts[1].map((row) => ({ row })),
+        reexports: (facts[3] ?? []).map(([exported, row, name]) => [exported, { row }, name]),
     };
 }
 /**

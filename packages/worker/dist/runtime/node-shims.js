@@ -12192,16 +12192,8 @@ function __nimbusObjectNamespace(value) {
   names.add("default");
   return __esmNamespaceOf(names, (name) => name === "default" ? value : value[name]);
 }
-// The names Node's loader finds in CommonJS module \`key\` before it runs (core cjs-module-exports.ts): a staged facade's, else lexed here.
-const __nimbusCommonJsNameCache = new Map();
 function __nimbusCommonJsNames(key) {
-  const facade = __nimbusEsmId("commonjs", key);
-  if (facade !== -1) return __nimbusEsmBindingsOf(facade);
-  const names = __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_MODULE}").cjsModuleExportNames("/" + key, {
-    source: (path) => __readFileOr(path, null),
-    resolve: __nimbusCjsResolve,
-  }, __nimbusCommonJsNameCache);
-  return [...names];
+  return __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_MODULE}").commonJsNames(__nimbusLateLinkHost, key);
 }
 // An import of a module that is not an ES module, loaded as \`exports\`, as Node's translators make it, one per URL:
 // JSON's value as default; a builtin as default, its names read through; CommonJS's module.exports as default
@@ -12875,10 +12867,7 @@ async function __nimbusEsmLinkStaged(key) {
 const __nimbusLateLinkHost = {
   row: __nimbusEsmId,
   rowKind: (row) => __nimbusEsm.table[row][0],
-  moduleFacts: (row) => {
-    const bindings = __nimbusEsmBindingsOf(row);
-    return bindings === null ? null : { exports: bindings[0], stars: bindings[1], imports: bindings[2], reexports: bindings[3] ?? [] };
-  },
+  moduleFacts: __nimbusEsmBindingsOf,
   rowNames: __nimbusEsmBindingsOf,
   rowTargets: (row) => __nimbusEsm.table[row][2],
   rowSettled: (row) => __nimbusEsmRecords[row]?.state === __ESM_DONE || __nimbusEsmRecords[row]?.state === __ESM_ADOPTED,
@@ -12891,22 +12880,9 @@ const __nimbusLateLinkHost = {
   source: (key, row) => row === -1 ? __readFileOr(key, null) : __nimbusEsmSourceText(row),
   fileFormat: (key) => __nimbusFileFormat("/" + key),
   loadUnread: (key, text, format) => { __nimbusRuntimeModule(key, text, format); },
-  resolve: (specifier, parentUrl, type) => {
-    try {
-      const resolution = __esmResolver.resolveSync(specifier, parentUrl);
-      __nimbusAssertLoadable(resolution, type ?? undefined);
-      if (type !== undefined) __esmResolver.validateAttributes(resolution.url, resolution.format, type === null ? {} : { type });
-      return resolution;
-    } catch (error) {
-      __nimbusDecorated.add(error);
-      throw error;
-    }
-  },
-  builtinNames: (builtin) => {
-    const mod = builtins[builtin];
-    return ["default", ...(mod && (typeof mod === "object" || typeof mod === "function") ? Object.keys(mod) : [])];
-  },
-  commonJsNames: __nimbusCommonJsNames,
+  resolve: __nimbusResolveImport,
+  builtin: (name) => builtins[name],
+  cjsResolve: __nimbusCjsResolve,
   exportMessage: __nimbusEsmExportMessage,
   decorate: (error) => {
     __nimbusDecorated.add(error);
@@ -13361,6 +13337,19 @@ function __nimbusEsmJobCached(path) {
   const state = id === -1 ? 0 : __nimbusEsmRecords[id]?.state ?? 0;
   return state === __ESM_DONE || state === __ESM_ADOPTED;
 }
+// \`specifier\` from \`parentUrl\` resolved as an import and loadable, and (\`type\` not undefined) checked
+// against its type attribute, as Node's loader does; else its error, the loader's own (no arrow of the importer's).
+function __nimbusResolveImport(specifier, parentUrl, type) {
+  try {
+    const resolution = __esmResolver.resolveSync(specifier, parentUrl);
+    __nimbusAssertLoadable(resolution, type ?? undefined);
+    if (type !== undefined) __esmResolver.validateAttributes(resolution.url, resolution.format, type === null ? {} : { type });
+    return resolution;
+  } catch (error) {
+    __nimbusDecorated.add(error);
+    throw error;
+  }
+}
 // Module.prototype.require from \`parent\`, its requests resolving from \`fromDir\`;
 // not \`required\`, an interpreted ES module's static import, with its \`type\` attribute.
 function __requireFrom(id, fromDir, parent, required = true, type = null) {
@@ -13389,16 +13378,7 @@ function __requireFrom(id, fromDir, parent, required = true, type = null) {
 // An interpreted ES module's static import, as Node's ES loader makes it: resolved (refused with no arrow of the
 // importer's), checked against its \`type\` attribute, loaded, and given as its module's namespace.
 function __nimbusStaticImport(id, parentUrl, parent, type) {
-  let resolution;
-  try {
-    resolution = __esmResolver.resolveSync(id, parentUrl);
-    // Loaded, then checked against its attributes, as Node's loader does.
-    __nimbusAssertLoadable(resolution, type ?? undefined);
-    __esmResolver.validateAttributes(resolution.url, resolution.format, type === null || type === undefined ? {} : { type });
-  } catch (error) {
-    __nimbusDecorated.add(error);
-    throw error;
-  }
+  const resolution = __nimbusResolveImport(id, parentUrl, type ?? null);
   if (resolution.format === "builtin") return __nimbusTranslatedNamespace(resolution, builtins[resolution.builtin]);
   if (!resolution.path) throw nodeError(Error, "ERR_REQUIRE_ASYNC_MODULE", "A static import of " + resolution.url + " has no file to load synchronously");
   const key = resolution.path.replace(/^\\/+/, "");

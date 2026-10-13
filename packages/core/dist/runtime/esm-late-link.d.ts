@@ -20,15 +20,19 @@ export interface LateResolution {
     readonly path?: string;
     readonly builtin?: string;
 }
-/** A staged module row's bindings (worker facets/esm-stage.ts EsmRowBindings, a module's). */
-export interface ModuleRowFacts {
-    readonly exports: readonly string[];
-    readonly stars: readonly number[];
-    /** By static import that reads names: the row it loads, its specifier as written, the names. */
-    readonly imports: readonly (readonly [row: number, specifier: string, ...names: string[]])[];
-    /** Its names that are another row's: the name, the row, the name there (null: its namespace). */
-    readonly reexports: readonly (readonly [exported: string, row: number, name: string | null])[];
-}
+/**
+ * A staged module row's bindings (worker facets/esm-stage.ts EsmRowBindings,
+ * a module's): its own names, the rows its `export *`s reach, by static
+ * import that reads names the row it loads, its specifier as written and the
+ * names, and its names that are another row's (the name, the row, the name
+ * there; null for its namespace).
+ */
+export type ModuleRowFacts = readonly [
+    exports: readonly string[],
+    stars: readonly number[],
+    imports: readonly (readonly [row: number, specifier: string, ...names: string[]])[],
+    reexports?: readonly (readonly [exported: string, row: number, name: string | null])[]
+];
 export interface LateLinkHost {
     /** The staged row of `kind` at `key` (a builtin's name), or -1. */
     row(kind: 'module' | 'commonjs' | 'json' | 'builtin', key: string): number;
@@ -60,10 +64,10 @@ export interface LateLinkHost {
      * else Node's error, as the loader's own (no arrow of the importer's).
      */
     resolve(specifier: string, parentUrl: string, type: string | null | undefined): LateResolution;
-    /** A builtin's export names: `default`, and its own. */
-    builtinNames(builtin: string): readonly string[];
-    /** The CommonJS module at `key`'s export names, as Node's lexer finds them. */
-    commonJsNames(key: string): readonly string[];
+    /** A builtin's exports. */
+    builtin(name: string): object | null | undefined;
+    /** The file require() loads for `specifier` from the module at `parentPath`, or null. */
+    cjsResolve(specifier: string, parentPath: string): string | null;
     /** Node's message for `name`, which the module `specifier` names does not export. */
     exportMessage(specifier: string, name: string, commonjs: boolean): string;
     /** `error` thrown as the loader's own (no arrow of the importer's). */
@@ -71,6 +75,12 @@ export interface LateLinkHost {
 }
 /** How the host reads a module's requests and bindings (interpreter/index.ts moduleRequests). */
 export type ReadRequests = (path: string, text: string, javaScript: boolean, goal: 'module' | 'commonjs' | 'detect') => ModuleRequests;
+/**
+ * The names Node's loader finds in the CommonJS module at `key` before it
+ * runs: a staged facade's, else Node's lexer's over its source and the
+ * modules it re-exports (cjs-module-exports.ts), `default` first.
+ */
+export declare function commonJsNames(host: LateLinkHost, key: string): readonly string[];
 /**
  * Links the late graph of the module at `key` (`url`): throws the refusal
  * of a static import anywhere in it that does not resolve or load, or of a
