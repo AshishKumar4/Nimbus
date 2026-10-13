@@ -251,6 +251,7 @@ for (const [when, landed] of [['after', true], ['partial', false]]) {
   vfs.as(OTHER).mkdir('tmp/.npm-stage-4-setgid', { recursive: true });
   root.chown('tmp/.npm-stage-4-setgid', OTHER.uid, 0);
   root.mkdir('tmp/.npm-stage-4-setgid/g', { mode: 0o770 });
+  root.chmod('tmp/.npm-stage-4-setgid/g', 0o770);
   root.writeFile('tmp/.npm-stage-4-setgid/g/root-group', 'root', { mode: 0o660 });
   await install('/m/t');
   assert.equal(root.exists('tmp/.npm-stage-4-setgid/g/root-group'), true, "a file only root's group may remove is left");
