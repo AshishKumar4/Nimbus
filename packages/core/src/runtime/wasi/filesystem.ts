@@ -21,12 +21,11 @@ export interface AuthorityFd {
  */
 export interface ResidentFd {
   kind: 'resident';
+  /** The file's stat at its open: its identity (dev, ino), which a path naming this descriptor opens again by. */
   stat: RuntimeVfsStat;
   bytes: Uint8Array;
-  /** The file's name, which a path naming this descriptor opens again (descriptorNamed). */
-  name: RuntimeFsPath;
-  /** Given back when the last descriptor on it goes, when the filesystem pinned the bytes for it (pinContent). */
-  release?: () => void;
+  /** The filesystem's pin on the bytes, when it pinned them (pinContent). */
+  pin?: ResidentPin;
   /**
    * Descriptors on this open: dup(2), dup2(2) and a fork's copy share it,
    * and with it its offset (shareResident, closeResident).
@@ -37,15 +36,22 @@ export interface ResidentFd {
   rightsInheriting: bigint;
   fdflags: number;
 }
+/** A pin on a resident copy's bytes, and the opens of the copy that hold it (a reopen of one shares its bytes): the last gives it back. */
+export interface ResidentPin {
+  holds: number;
+  release(): void;
+}
+
 /** Another descriptor on a resident open, as dup(2) makes one: the same offset, the same pin. */
 export function shareResident(open: ResidentFd): ResidentFd {
   open.opens++;
   return open;
 }
 
-/** One descriptor on a resident open closed; the last gives its pin back. */
+/** One descriptor on a resident open closed; the last gives back its hold on the pin, and the last hold the pin. */
 export function closeResident(open: ResidentFd): void {
-  if (--open.opens === 0) open.release?.();
+  if (--open.opens > 0 || open.pin === undefined) return;
+  if (--open.pin.holds === 0) open.pin.release();
 }
 
 export interface AuthorityPreopen {
@@ -222,10 +228,11 @@ const STANDARD_STREAMS: Readonly<Record<string, number>> = { '/dev/stdin': 0, '/
  * this one question: path_open, path_filestat_get, the extension's path_stat
  * and bash's stat_metadata.
  *
- * Linux's answer to what such a path opens: a file or directory is opened
- * again by its name, with the new open's flags (a new description, its own
- * offset, O_TRUNC and O_APPEND honored); a stream or a pipe end is shared.
- * Stat'd, it is that descriptor's stat.
+ * Linux's answer to what such a path opens: the file or directory itself
+ * is opened again, with the new open's flags (a new description, its own
+ * offset, O_TRUNC and O_APPEND honored), even one renamed or unlinked
+ * since; a stream or a pipe end is shared. Stat'd, it is that descriptor's
+ * stat.
  */
 export function descriptorNamed(fds: ReadonlyMap<number, FilesystemFd>, fd: number, path: string, cwd?: string): number | null {
   let absolute = path;
@@ -342,14 +349,6 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     if (descriptor !== null && !fds.has(descriptor)) fail('ENOENT');
     return descriptor;
   };
-  /** The name a file or directory the codec holds is opened again by; null for what the host holds. */
-  const nameOf = (descriptor: number): RuntimeFsPath | null => {
-    const e = fds.get(descriptor);
-    if (e?.kind === 'authority') return e.handle.path;
-    if (e?.kind === 'resident') return e.name;
-    if (e?.kind === 'preopen') return e.vfsPath;
-    return null;
-  };
   const at = (fd: number, p: string): RuntimeFsPath => {
     if (p.startsWith('/')) fail('ENOTCAPABLE');
     const e = fds.get(fd);
@@ -463,14 +462,15 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     if (status & ~5) fail('ENOTSUP');
     pathRight(fd, 13);
     const descriptor = named(fd, p, n);
-    const reopened = descriptor === null ? null : nameOf(descriptor);
-    if (descriptor !== null && reopened === null) { u32(out, options.duplicate?.(descriptor) ?? fail('ENXIO')); return 0; }
+    const reopened = descriptor === null ? undefined : fds.get(descriptor);
+    if (descriptor !== null && reopened?.kind !== 'authority' && reopened?.kind !== 'resident' && reopened?.kind !== 'preopen') {
+      u32(out, options.duplicate?.(descriptor) ?? fail('ENXIO')); return 0;
+    }
     if (flags & 1) pathRight(fd, 10);
     if (flags & 8) pathRight(fd, 19);
-    const target = reopened ?? at(fd, path(p, n));
+    // A preopen named by a descriptor path is its root, by name, as everything beneath it is.
+    const target = reopened?.kind === 'preopen' ? reopened.vfsPath : at(fd, path(p, n));
     const parent = preopen(fd) ?? entry(fd);
-    // A directory descriptor's name for the file outlives that descriptor; a preopen's is its own.
-    const name: RuntimeFsPath = typeof target !== 'string' && parent.kind === 'authority' ? `${parent.handle.path}/${path(p, n)}` : target;
     const requested = BigInt(rights), childRights = BigInt(inherit);
     const allowed = parent.rightsInheriting;
     if (allowed !== undefined && ((requested | childRights) & ~allowed)) fail('ENOTCAPABLE');
@@ -479,14 +479,26 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     // fd_allocate, fd_filestat_set_size. wasi-libc asks for sync and status
     // rights on every open, and a resident copy answers those itself.
     const readOnly = !(requested & ((1n << 6n) | (1n << 8n) | (1n << 22n))) && !(flags & 15) && !(status & 1);
-    const open = (): SyscallResult => after(fs.open(target, { read: !!(requested & 2n), write: !!(requested & 64n), append: !!(status & 1),
+    const opening = { read: !!(requested & 2n), write: !!(requested & 64n), append: !!(status & 1),
       create: !!(flags & 1), directory: !!(flags & 2), exclusive: !!(flags & 4), truncate: !!(flags & 8), followSymlinks,
-      mode: creationMode(0o666) }), handle =>
-      after(fs.fstat(handle.id), st => {
-        const id = options.allocateFd();
-        fds.set(id, { kind: 'authority', handle, type: st.type, rights: requested, rightsInheriting: childRights, fdflags: status });
-        u32(out, id); return 0;
-      }));
+      mode: creationMode(0o666) };
+    const opened = (handle: RuntimeFileHandle): SyscallResult => after(fs.fstat(handle.id), st => {
+      const id = options.allocateFd();
+      fds.set(id, { kind: 'authority', handle, type: st.type, rights: requested, rightsInheriting: childRights, fdflags: status });
+      u32(out, id); return 0;
+    });
+    // A file a descriptor holds is opened again as itself, never by a name a
+    // rename or an unlink may have given to another (RuntimeFsBridge.reopen).
+    if (reopened?.kind === 'authority') return after(fs.reopen({ handle: reopened.handle.id }, opening), opened);
+    if (reopened?.kind === 'resident') {
+      if (!readOnly) return after(fs.reopen({ dev: reopened.stat.dev, ino: reopened.stat.ino }, opening), opened);
+      // Read again from its own start: the same bytes, another hold on their pin.
+      if (reopened.pin !== undefined) reopened.pin.holds++;
+      const id = options.allocateFd();
+      fds.set(id, { kind: 'resident', stat: reopened.stat, bytes: reopened.bytes, ...(reopened.pin === undefined ? {} : { pin: reopened.pin }), opens: 1, position: 0, rights: requested, rightsInheriting: childRights, fdflags: status });
+      u32(out, id); return 0;
+    }
+    const open = (): SyscallResult => after(fs.open(target, opening), opened);
     if (!readOnly || residentBytes === 0) return open();
     return after(fs.stat(target, { followSymlinks }), st => {
       if (st === null) fail('ENOENT');
@@ -505,13 +517,13 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
         return after(Reflect.apply(pinContent, fs, [target, st]) as Awaitable<PinnedContent | null>, (pinned) => {
           if (pinned === null) return open();
           const id = options.allocateFd();
-          fds.set(id, { kind: 'resident', stat: st, bytes: pinned.bytes, name, release: pinned.release, opens: 1, position: 0, rights: requested, rightsInheriting: childRights, fdflags: status });
+          fds.set(id, { kind: 'resident', stat: st, bytes: pinned.bytes, pin: { holds: 1, release: pinned.release }, opens: 1, position: 0, rights: requested, rightsInheriting: childRights, fdflags: status });
           u32(out, id); return 0;
         });
       }
       return after(residentContent(fs, target, st), bytes => {
         const id = options.allocateFd();
-        fds.set(id, { kind: 'resident', stat: st, bytes, name, opens: 1, position: 0, rights: requested, rightsInheriting: childRights, fdflags: status });
+        fds.set(id, { kind: 'resident', stat: st, bytes, opens: 1, position: 0, rights: requested, rightsInheriting: childRights, fdflags: status });
         u32(out, id); return 0;
       });
     });

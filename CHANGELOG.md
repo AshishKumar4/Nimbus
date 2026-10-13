@@ -10,7 +10,9 @@ published independently in the `@nimbus-sh` npm scope.
   `/dev/stderr` now name the process's own descriptor, as on Linux. A pipe or
   a stream is shared. A file is opened again with the new open's flags, so it
   gets its own offset, and `>/dev/stdout` truncates a file that stdout writes
-  to. `stat` of the path is that descriptor's stat. Process substitution works:
+  to. It is the file itself, even one renamed or unlinked since, never
+  whatever file now has its old name. `stat` of the path is that descriptor's
+  stat. Process substitution works:
   `source <(...)`, `done < <(...)`, `diff <(...) <(...)`. Before, `/dev/fd/N`
   was not found, `/dev/stdin` read as empty, and writes to `/dev/stdout` and
   `/dev/stderr` were silently discarded.

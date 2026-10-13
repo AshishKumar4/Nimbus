@@ -499,6 +499,10 @@ export function supervisorCalls<Base extends Class>(base: Base) {
       return this._call(this._fsMutation('fsOpen', [path, flags]));
     }
 
+    async fsReopen(...args: Parameters<RuntimeFsBridge['reopen']>): Promise<Awaited<ReturnType<RuntimeFsBridge['reopen']>>> {
+      return this._call(this._fsMutation('fsReopen', args));
+    }
+
     async fsRead(handleId: number, offset: number | null, length: number): Promise<Uint8Array> {
       return this._call(this._fsOp('fsRead', [handleId, offset, length]));
     }

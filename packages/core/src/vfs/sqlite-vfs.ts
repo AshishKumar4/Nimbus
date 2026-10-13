@@ -2501,12 +2501,40 @@ export class SqliteVFS {
     holds?: () => ReadonlySet<string>,
   ): VfsOpenDescription | null {
     const origin: Principal = principal ?? this.activeOrigin ?? Object.freeze({ cred });
+    const found = this.inodeNumbered(ino);
+    return found === null ? null : this.describe(found.inode, found.key, path, cred, rights, origin, holds);
+  }
+
+  /**
+   * A new description of the file `ino` numbers, as an open of
+   * /proc/self/fd/N makes one: describeInode's file (an unlinked file a
+   * description holds included), `rights` checked against it as it is now.
+   * ENOENT once no description holds it and no name has it.
+   */
+  reopenInode(
+    ino: number,
+    path: string,
+    cred: VfsCred,
+    rights: { read: boolean; write: boolean; sync?: boolean },
+    principal?: Principal,
+    holds?: () => ReadonlySet<string>,
+    mutationOwner?: string,
+  ): VfsOpenDescription {
+    const found = this.inodeNumbered(ino);
+    if (found === null) throw vfsKeyError('ENOENT', path);
+    if (!this.accessInode(found.inode, (rights.read ? 0o4 : 0) | (rights.write ? 0o2 : 0), cred)) throw vfsKeyError('EACCES', path);
+    const origin: Principal = principal ?? this.activeOrigin ?? Object.freeze({ cred });
+    return this.describe(found.inode, found.key, path, cred, rights, origin, holds, mutationOwner);
+  }
+
+  /** The inode `ino` numbers: the one an open description holds, else the one a name has; null when neither does. */
+  private inodeNumbered(ino: number): { inode: INode; key: string | null } | null {
     for (const opened of this.openNodes) {
-      if (opened.inode.ino === ino) return this.describe(opened.inode, opened.path, path, cred, rights, origin, holds);
+      if (opened.inode.ino === ino) return { inode: opened.inode, key: opened.path };
     }
     const row = [...this.sql.exec('SELECT path FROM vfs_inodes WHERE ino = ? LIMIT 1', ino)][0];
     const inode = row === undefined ? undefined : this.inodes.get(String(row.path));
-    return inode === undefined ? null : this.describe(inode, inode.path, path, cred, rights, origin, holds);
+    return inode === undefined ? null : { inode, key: inode.path };
   }
 
   private describe(
