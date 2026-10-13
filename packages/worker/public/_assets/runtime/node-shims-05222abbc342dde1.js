@@ -9372,33 +9372,16 @@ const __sqliteMod = (() => {
     return __getSQL();
   };
 
-  // Strip a leading slash so __vfsBundle keys (stored slash-stripped)
-  // line up with absolute paths the user passes.
-  function __vfsKey(p) {
-    return String(p).replace(/^\/+/, "");
-  }
-
-  // Synchronously read the existing DB bytes for a file-backed database
-  // from the facet's startup VFS snapshot, if present. Returns a
-  // Uint8Array or null. Pure in-memory and :memory: databases never read.
+  // The database file's bytes, or null for a database not yet written
+  // (missing or empty). Any other refusal is the open's own.
   function __readDbBytes(path) {
-    let bundle;
-    try { bundle = __vfsBundle; } catch { bundle = null; }
-    if (!bundle) return null;
-    const direct = bundle[path];
-    const cell = direct !== undefined ? direct : bundle[__vfsKey(path)];
-    if (cell === undefined || cell === null) return null;
-    if (cell instanceof Uint8Array) return cell.length ? cell : null;
-    if (typeof cell === "string") {
-      // A SQLite file would normally be stored as a Uint8Array cell, but
-      // an empty/zero-length placeholder may round-trip as "". Treat
-      // non-empty strings as latin1 bytes for completeness.
-      if (cell.length === 0) return null;
-      const bytes = new Uint8Array(cell.length);
-      for (let i = 0; i < cell.length; i++) bytes[i] = cell.charCodeAt(i) & 0xff;
-      return bytes;
+    let bytes;
+    try { bytes = __fsMod.readFileSync(path); }
+    catch (error) {
+      if (error && error.code === "ENOENT") return null;
+      throw error;
     }
-    return null;
+    return bytes.length ? bytes : null;
   }
 
   class StatementSync {
@@ -9569,7 +9552,12 @@ const __sqliteMod = (() => {
       this.__memory = !this.__path || this.__path === ":memory:";
       this.__open = false;
       this.__raw = null;
+      // Whether a close has anything to write back (__changed): run() and
+      // exec() may change what SQLite does not count (ANALYZE's statistics, a
+      // VACUUM's layout), so either marks the database dirty; any statement's
+      // counted change moves its state from the one last written.
       this.__dirty = false;
+      this.__written = null;
       const open = opts.open === undefined ? true : !!opts.open;
       if (open) this.__doOpen();
     }
@@ -9579,6 +9567,22 @@ const __sqliteMod = (() => {
       const bytes = this.__memory ? null : __readDbBytes(this.__path);
       this.__raw = bytes ? new SQL.Database(bytes) : new SQL.Database();
       this.__open = true;
+      if (!this.__memory) this.__written = this.__state();
+    }
+
+    // The database's content as SQLite counts it: the rows any statement
+    // changed (whichever method ran it, an INSERT ... RETURNING through all()
+    // included), its schema, and the header fields a program sets.
+    __state() {
+      const one = (sql) => {
+        const stmt = this.__raw.prepare(sql);
+        try { stmt.step(); return stmt.get()[0]; } finally { stmt.free(); }
+      };
+      return [one("SELECT total_changes()"), one("PRAGMA schema_version"), one("PRAGMA user_version"), one("PRAGMA application_id")].join(",");
+    }
+
+    __changed() {
+      return this.__dirty || this.__state() !== this.__written;
     }
 
     open() {
@@ -9628,33 +9632,25 @@ const __sqliteMod = (() => {
       throw __unsupported("DatabaseSync.prototype.loadExtension");
     }
 
-    // Flush the in-memory DB image back to the live VFS via the async
-    // supervisor bridge. Used by close() and as a public checkpoint
-    // boundary. Returns a promise pushed onto __pendingIO so the facet
-    // drains it before isolate teardown.
+    // Write the database's image back to its file, through the process's
+    // filesystem, when it changed since it was opened or last written.
     __flush() {
-      if (this.__memory || !this.__open || !this.__dirty) return Promise.resolve();
-      let supervisor;
-      try { supervisor = __supervisor; } catch { supervisor = null; }
-      if (!supervisor || typeof supervisor.writeFile !== "function") {
-        return Promise.resolve();
-      }
+      if (this.__memory || !this.__open || !this.__changed()) return;
       const bytes = this.__raw.export();
+      __fsMod.writeFileSync(this.__path, bytes);
       this.__dirty = false;
-      const task = Promise.resolve()
-        .then(() => supervisor.writeFile(this.__path, bytes))
-        .catch(() => {});
-      try { __pendingIO.push(task); } catch {}
-      return task;
+      this.__written = this.__state();
     }
 
     close() {
       if (!this.__open) return;
-      // Capture the export + queue the flush BEFORE freeing the handle.
-      this.__flush();
-      try { this.__raw.close(); } catch {}
-      this.__raw = null;
-      this.__open = false;
+      try {
+        this.__flush();
+      } finally {
+        try { this.__raw.close(); } catch {}
+        this.__raw = null;
+        this.__open = false;
+      }
     }
 
     [Symbol.dispose]() {

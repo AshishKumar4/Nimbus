@@ -23,24 +23,22 @@
  *   2. Defines `__sqliteMod` = { DatabaseSync, ... } registered as
  *      builtins.sqlite, which only node:sqlite names (node-shims.ts __nimbusBuiltinId).
  *
- * Persistence model: a file-backed DatabaseSync loads its bytes
- * synchronously from `__vfsBundle` (the facet's startup snapshot of the
- * live SQLite VFS, which includes the working tree) on open, and flushes
- * `db.export()` back to the live VFS via the async supervisor bridge
- * (`__supervisor.writeFile`) on close and at explicit checkpoints. This
- * matches the existing sync-fs durability contract: whole-DB snapshot,
- * single in-memory connection, no page-level disk IO, no cross-process
- * WAL.
+ * Persistence model: a file-backed DatabaseSync is the process's file, read
+ * and written through the process's own filesystem (`__fsMod`): it loads
+ * the file's bytes with readFileSync on open (a missing file is a new
+ * database), and on close writes `db.export()` back with writeFileSync when
+ * the database changed. So the next open in the same run sees what the
+ * close wrote, and the session gets it in program order, as any other write.
+ * Whole-DB image, single in-memory connection, no page-level disk IO, no
+ * cross-process WAL.
  *
  * Scope (opencode's method matrix): DatabaseSync(path|:memory:, options)
  * with .prepare/.exec/.close/.loadExtension(throws); StatementSync with
  * .all/.run/.get/.setReadBigInts/.setReturnArrays. Anything else throws a
  * clear "node:sqlite: <method> not supported" — never faked.
  *
- * Runtime scope dependencies (in scope where SHIMS is interpolated):
- *   - __vfsBundle:  Record<string, string | Uint8Array>  (snapshot reads)
- *   - __supervisor: { writeFile(path, bytes): Promise } | null  (flush)
- *   - __pendingIO:  Promise[]  (so flushes are drained before teardown)
+ * Runtime scope dependency (in scope where SHIMS is interpolated):
+ *   - __fsMod: the process's node:fs (readFileSync, writeFileSync)
  */
 /**
  * Module-init preamble that prepares the sql.js `initSqlJs` factory.
