@@ -239,6 +239,26 @@ function decodeContentCoding(response: Response, port: number, method: string, o
   });
 }
 
+/**
+ * `outer` (a Request's serialized URL) with its path replaced by `pathname`,
+ * its query kept and its fragment dropped. Read off the serialization, which
+ * is already normalized, rather than parsed again for every request; an
+ * authority with userinfo, or a path that is not one, goes through URL.
+ */
+export function innerRequestUrl(outer: string, pathname: string): string {
+  const authority = outer.indexOf('://') + 3;
+  const path = outer.indexOf('/', authority);
+  if (authority < 3 || path < 0 || !pathname.startsWith('/') || outer.lastIndexOf('@', path) >= authority) {
+    const url = new URL(outer);
+    return new URL(pathname + url.search, url.origin).href;
+  }
+  const fragment = outer.indexOf('#', path);
+  const end = fragment < 0 ? outer.length : fragment;
+  const query = outer.indexOf('?', path);
+  // An empty query serializes as nothing (URL.search is '' for a bare '?').
+  return outer.slice(0, path) + pathname + (query < 0 || query > end || query + 1 === end ? '' : outer.slice(query, end));
+}
+
 export function createPortCapability(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(12));
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
@@ -542,12 +562,10 @@ export class PortRegistry {
     const { scope, owner } = responseScope(request.signal);
     let relayed = false;
     try {
-      const outerUrl = new URL(request.url);
       // Preserve query; replace the pathname with the inner path so
       // the user's HTTP server sees its own URL shape. (Fragments
       // never make it onto the wire, so there's nothing to forward.)
-      // Every caller's `pathname` is a path; one that is not resolves against the origin.
-      const innerUrl = pathname.startsWith('/') ? outerUrl.origin + pathname + outerUrl.search : new URL(pathname + outerUrl.search, outerUrl.origin).href;
+      const innerUrl = innerRequestUrl(request.url, pathname);
 
       // Rebuild a Request targeting the inner URL. Body is forwarded as
       // a stream — we do NOT await `.text()`/`.arrayBuffer()`, which
