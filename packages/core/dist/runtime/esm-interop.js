@@ -30,13 +30,27 @@ export const ESM_STAR_HELPER = '(exports, define, m) => { for (const k in m) if 
  * alone, as Node's does.
  */
 export const ESM_STATIC_IMPORT = 'nimbus:static-import';
-/** A static import's module: the importer's require, told the request is an import. */
-export const ESM_LOAD_HELPER = `(require, source) => require(source, "${ESM_STATIC_IMPORT}")`;
+/** A static import's module: the importer's require, told the request is an import, with its `type` attribute (or null). */
+export const ESM_LOAD_HELPER = `(require, source, type) => require(source, "${ESM_STATIC_IMPORT}", type)`;
 /** The helpers as an object literal's source: what a launch compiles for its interpreter (interpreter/modules.ts ModuleHelpers). */
 export const ESM_MODULE_HELPERS = `{ exports: ${ESM_EXPORTS_HELPER}, interop: ${ESM_INTEROP_HELPER}, namespace: ${ESM_NAMESPACE_HELPER}, star: ${ESM_STAR_HELPER}, load: ${ESM_LOAD_HELPER} }`;
 /** A ModuleExportName: an identifier, or a string such as `export { a as "b-c" }`. */
 function exportName(node) {
     return node.type === 'Identifier' ? node.name : `${node.value}`;
+}
+/**
+ * The attribute a static import or re-export passes its loader: its `type`,
+ * or null. V8 keeps only the keys its host supports, Node's being `type`
+ * alone, so any other key is dropped, not refused (import()'s are refused).
+ */
+export function importType(node) {
+    const attributes = node.attributes ?? [];
+    for (let i = 0; i < attributes.length; i++) {
+        const { key, value } = attributes[i];
+        if ((key.type === 'Identifier' ? key.name : key.value) === 'type' && typeof value.value === 'string')
+            return value.value;
+    }
+    return null;
 }
 /** The record of a module's top-level statement, or null for one that declares no import or export. */
 export function esmRecord(node, lists) {
@@ -53,7 +67,7 @@ export function esmRecord(node, lists) {
                         imported: specifier.type === 'ImportDefaultSpecifier' ? 'default' : exportName(specifier.imported),
                     });
             }
-            return { kind: 'import', start: node.start, end: node.end, source: `${node.source.value}`, bindings };
+            return { kind: 'import', start: node.start, end: node.end, source: `${node.source.value}`, type: importType(node), bindings };
         }
         case 'ExportNamedDeclaration': {
             const names = lists.list();
@@ -69,20 +83,20 @@ export function esmRecord(node, lists) {
                 else {
                     lists.push(names, { kind: 'named', exported: declaration.id.name, local: declaration.id.name });
                 }
-                return { kind: 'export', start: node.start, end: declaration.start, source: null, names };
+                return { kind: 'export', start: node.start, end: declaration.start, source: null, type: null, names };
             }
             for (let i = 0; i < node.specifiers.length; i++) {
                 const specifier = node.specifiers[i];
                 lists.push(names, { kind: 'named', exported: exportName(specifier.exported), local: exportName(specifier.local) });
             }
-            return { kind: 'export', start: node.start, end: node.end, source: node.source ? `${node.source.value}` : null, names };
+            return { kind: 'export', start: node.start, end: node.end, source: node.source ? `${node.source.value}` : null, type: node.source ? importType(node) : null, names };
         }
         case 'ExportDefaultDeclaration': {
             const declaration = node.declaration;
             if ((declaration.type === 'FunctionDeclaration' || declaration.type === 'ClassDeclaration') && declaration.id) {
                 const names = lists.list();
                 lists.push(names, { kind: 'named', exported: 'default', local: declaration.id.name });
-                return { kind: 'export', start: node.start, end: declaration.start, source: null, names };
+                return { kind: 'export', start: node.start, end: declaration.start, source: null, type: null, names };
             }
             return { kind: 'export-default', start: node.start, end: node.end, expression: { start: declaration.start, end: declaration.end } };
         }
@@ -90,9 +104,9 @@ export function esmRecord(node, lists) {
             if (node.exported) {
                 const names = lists.list();
                 lists.push(names, { kind: 'namespace', exported: exportName(node.exported) });
-                return { kind: 'export', start: node.start, end: node.end, source: `${node.source.value}`, names };
+                return { kind: 'export', start: node.start, end: node.end, source: `${node.source.value}`, type: importType(node), names };
             }
-            return { kind: 'export-all', start: node.start, end: node.end, source: `${node.source.value}` };
+            return { kind: 'export-all', start: node.start, end: node.end, source: `${node.source.value}`, type: importType(node) };
         }
         default:
             return null;
@@ -105,8 +119,8 @@ export function esmLink(records, lists) {
     const namespaces = lists.list();
     const stars = lists.list();
     const none = lists.list();
-    const request = (source, kept, interop, bindings) => {
-        lists.push(requests, { source, kept, interop, bindings });
+    const request = (source, type, kept, interop, bindings) => {
+        lists.push(requests, { source, type, kept, interop, bindings });
         return requests.length - 1;
     };
     for (let i = 0; i < records.length; i++) {
@@ -119,7 +133,7 @@ export function esmLink(records, lists) {
                     if (binding.kind === 'named' && binding.imported === 'default')
                         interop = true;
                 }
-                const at = request(record.source, record.bindings.length > 0, interop, record.bindings);
+                const at = request(record.source, record.type, record.bindings.length > 0, interop, record.bindings);
                 for (let j = 0; j < record.bindings.length; j++) {
                     const binding = record.bindings[j];
                     if (binding.kind === 'namespace')
@@ -137,7 +151,7 @@ export function esmLink(records, lists) {
                     }
                     break;
                 }
-                const at = request(record.source, true, false, none);
+                const at = request(record.source, record.type, true, false, none);
                 for (let j = 0; j < record.names.length; j++) {
                     const name = record.names[j];
                     if (name.kind === 'named') {
@@ -154,7 +168,7 @@ export function esmLink(records, lists) {
                 lists.push(exports, { kind: 'default', exported: 'default' });
                 break;
             case 'export-all':
-                lists.push(stars, request(record.source, true, false, none));
+                lists.push(stars, request(record.source, record.type, true, false, none));
                 break;
         }
     }
@@ -181,7 +195,10 @@ export function esmBindings(link, lists) {
         if (entry.kind === 'reexport')
             lists.push(imports[entry.request], entry.name);
     }
-    return { exports, imports, stars: link.stars };
+    const types = lists.list();
+    for (let i = 0; i < link.requests.length; i++)
+        lists.push(types, link.requests[i].type);
+    return { exports, imports, stars: link.stars, types };
 }
 /** `entries` sorted by exported name, stably: a merge sort, which calls nothing of the realm's. */
 function byExportedName(entries, lists) {

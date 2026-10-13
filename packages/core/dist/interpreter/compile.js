@@ -3817,7 +3817,7 @@ export class Compiler {
                 if (binding.kind === 'named')
                     this.importBinding(root, binding.local, 'named', binding.imported, binding.imported === 'default' ? interop : module);
             }
-            append(requests, { source: request.source, module, interop, names: required[i] });
+            append(requests, { source: request.source, type: request.type, module, interop, names: required[i] });
         }
         // An import's namespace goes to its binding; a re-export's
         // (`export * as`) to a slot of its own, when first read.

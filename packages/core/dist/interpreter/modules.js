@@ -61,8 +61,8 @@ function link(plan, env, requireArg, helpers, exportsObject, define) {
     for (let i = 0; i < exports.length; i++)
         reflectApply(define, undefined, [exports[i].name, exportGetter(env, exports[i], helpers)]);
     for (let i = 0; i < requests.length; i++) {
-        const { source, module, interop } = requests[i];
-        const m = reflectApply(helpers.load, undefined, [requireArg, source]);
+        const { source, type, module, interop } = requests[i];
+        const m = reflectApply(helpers.load, undefined, [requireArg, source, type]);
         if (module >= 0)
             env[module] = m;
         if (interop >= 0)

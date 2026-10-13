@@ -29,7 +29,7 @@
  * built-ins, so it names none (tests/unit/interpreter-primordials.mjs), and
  * it makes its lists with the caller's EsmLists.
  */
-import type { ModuleDeclaration, Statement } from 'acorn';
+import type { ExportAllDeclaration, ExportNamedDeclaration, ImportDeclaration, ModuleDeclaration, Statement } from 'acorn';
 /** The CommonJS exports object marked as an ES module's; answers the function that installs an export's getter. */
 export declare const ESM_EXPORTS_HELPER: string;
 /** What a default import reads `default` of: an ES module's as it is, else `{ default: module }`. */
@@ -49,10 +49,10 @@ export declare const ESM_STAR_HELPER = "(exports, define, m) => { for (const k i
  * alone, as Node's does.
  */
 export declare const ESM_STATIC_IMPORT = "nimbus:static-import";
-/** A static import's module: the importer's require, told the request is an import. */
-export declare const ESM_LOAD_HELPER = "(require, source) => require(source, \"nimbus:static-import\")";
+/** A static import's module: the importer's require, told the request is an import, with its `type` attribute (or null). */
+export declare const ESM_LOAD_HELPER = "(require, source, type) => require(source, \"nimbus:static-import\", type)";
 /** The helpers as an object literal's source: what a launch compiles for its interpreter (interpreter/modules.ts ModuleHelpers). */
-export declare const ESM_MODULE_HELPERS = "{ exports: (() => { const O = ({}).constructor; const tag = O.getOwnPropertySymbols(O.getPrototypeOf(async () => {}))[0]; return (exports) => { O.defineProperty(exports, \"__esModule\", { value: true }); O.defineProperty(exports, tag, { value: \"Module\" }); return (name, get) => O.defineProperty(exports, name, { enumerable: true, get }); }; })(), interop: (m) => (m && (m.__esModule || (typeof m === \"object\" && ({}).constructor.getPrototypeOf(m) === null && ({}).constructor.getOwnPropertyDescriptor(m, ({}).constructor.getOwnPropertySymbols(({}).constructor.getPrototypeOf(async () => {}))[0])?.value === \"Module\"))) ? m : { default: m }, namespace: (m) => { if ((m && (m.__esModule || (typeof m === \"object\" && ({}).constructor.getPrototypeOf(m) === null && ({}).constructor.getOwnPropertyDescriptor(m, ({}).constructor.getOwnPropertySymbols(({}).constructor.getPrototypeOf(async () => {}))[0])?.value === \"Module\")))) return m; const O = ({}).constructor; const ns = O.create(m != null ? O.getPrototypeOf(m) : null); O.defineProperty(ns, \"default\", { value: m, enumerable: true }); if (m != null) for (const k of O.getOwnPropertyNames(m)) if (k !== \"default\") O.defineProperty(ns, k, { get: () => m[k], enumerable: O.getOwnPropertyDescriptor(m, k).enumerable }); return ns; }, star: (exports, define, m) => { for (const k in m) if (k !== \"default\" && !({}).hasOwnProperty.call(exports, k)) define(k, () => m[k]); }, load: (require, source) => require(source, \"nimbus:static-import\") }";
+export declare const ESM_MODULE_HELPERS = "{ exports: (() => { const O = ({}).constructor; const tag = O.getOwnPropertySymbols(O.getPrototypeOf(async () => {}))[0]; return (exports) => { O.defineProperty(exports, \"__esModule\", { value: true }); O.defineProperty(exports, tag, { value: \"Module\" }); return (name, get) => O.defineProperty(exports, name, { enumerable: true, get }); }; })(), interop: (m) => (m && (m.__esModule || (typeof m === \"object\" && ({}).constructor.getPrototypeOf(m) === null && ({}).constructor.getOwnPropertyDescriptor(m, ({}).constructor.getOwnPropertySymbols(({}).constructor.getPrototypeOf(async () => {}))[0])?.value === \"Module\"))) ? m : { default: m }, namespace: (m) => { if ((m && (m.__esModule || (typeof m === \"object\" && ({}).constructor.getPrototypeOf(m) === null && ({}).constructor.getOwnPropertyDescriptor(m, ({}).constructor.getOwnPropertySymbols(({}).constructor.getPrototypeOf(async () => {}))[0])?.value === \"Module\")))) return m; const O = ({}).constructor; const ns = O.create(m != null ? O.getPrototypeOf(m) : null); O.defineProperty(ns, \"default\", { value: m, enumerable: true }); if (m != null) for (const k of O.getOwnPropertyNames(m)) if (k !== \"default\") O.defineProperty(ns, k, { get: () => m[k], enumerable: O.getOwnPropertyDescriptor(m, k).enumerable }); return ns; }, star: (exports, define, m) => { for (const k in m) if (k !== \"default\" && !({}).hasOwnProperty.call(exports, k)) define(k, () => m[k]); }, load: (require, source, type) => require(source, \"nimbus:static-import\", type) }";
 /**
  * One name an import binds: the module's namespace, or one of its exports
  * by name (`default` included, which `import d from` binds too). A string
@@ -90,18 +90,22 @@ export type EsmRecord<Binding extends EsmImportBinding = EsmImportBinding> = {
     readonly start: number;
     readonly end: number;
     readonly source: string;
+    readonly type: string | null;
     readonly bindings: readonly Binding[];
 } | {
     readonly kind: 'export';
     readonly start: number;
     readonly end: number;
     readonly source: string | null;
+    /** Its source's `type` attribute (importType); null with no source. */
+    readonly type: string | null;
     readonly names: readonly EsmExportName[];
 } | {
     readonly kind: 'export-all';
     readonly start: number;
     readonly end: number;
     readonly source: string;
+    readonly type: string | null;
 } | {
     readonly kind: 'export-default';
     readonly start: number;
@@ -117,11 +121,19 @@ export interface EsmLists {
     list<T>(): T[];
     push<T>(list: T[], value: T): void;
 }
+/**
+ * The attribute a static import or re-export passes its loader: its `type`,
+ * or null. V8 keeps only the keys its host supports, Node's being `type`
+ * alone, so any other key is dropped, not refused (import()'s are refused).
+ */
+export declare function importType(node: ImportDeclaration | ExportNamedDeclaration | ExportAllDeclaration): string | null;
 /** The record of a module's top-level statement, or null for one that declares no import or export. */
 export declare function esmRecord(node: Statement | ModuleDeclaration, lists: EsmLists): EsmRecord | null;
 /** A module the declarations request, required in source order. */
 export interface EsmRequest<Binding extends EsmImportBinding = EsmImportBinding> {
     readonly source: string;
+    /** Its `type` attribute (importType), which its loader checks against what it loads. */
+    readonly type: string | null;
     /** Whether the module is read again (an import's binding, a re-export, a namespace, `export *`), not only run. */
     readonly kept: boolean;
     /** Whether a default import reads it, through its interop (ESM_INTEROP_HELPER), made as it is required. */
@@ -186,6 +198,8 @@ export interface ModuleBindings {
     readonly imports: readonly (readonly string[])[];
     /** The requests whose names `export *` re-exports. */
     readonly stars: readonly number[];
+    /** By request: its `type` attribute (importType), which the loader checks against what it loads. */
+    readonly types: readonly (string | null)[];
 }
 /** The bindings of a module linked as `link`. */
 export declare function esmBindings(link: EsmLink, lists: EsmLists): ModuleBindings;

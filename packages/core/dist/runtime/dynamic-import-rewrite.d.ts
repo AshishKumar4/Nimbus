@@ -17,7 +17,7 @@ export interface StaticSpecifierSite {
     readonly start: number;
     readonly end: number;
     readonly specifier: string;
-    /** Its `with { … }` attributes, as written. */
+    /** The attributes its loader checks: its `type`, if it has one (esm-interop.ts importType). */
     readonly attributes: Readonly<Record<string, string>>;
     /** Where its attributes clause is, from the specifier's end to the clause's `}`: present with attributes. */
     readonly clause?: Span;
