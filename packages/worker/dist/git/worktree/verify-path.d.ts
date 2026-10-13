@@ -19,6 +19,10 @@ export interface PathProtection {
 export declare const DEFAULT_PATH_PROTECTION: PathProtection;
 /** git's error for a path verify_path refuses (add_index_entry_with_check, make_cache_entry). */
 export declare const invalidPathError: (path: string) => string;
-/** verify_path: whether git lets a repo-relative `path`, its entry's `mode`, into its index. */
+/**
+ * verify_path: whether git lets a repo-relative `path`, its entry's `mode`,
+ * into its index. Only a component's start, a '/' and (protecting NTFS) a
+ * '\\' are looked at, so the separators are found by indexOf.
+ */
 export declare function verifyPath(path: string, mode: number, protect: PathProtection): boolean;
 //# sourceMappingURL=verify-path.d.ts.map
