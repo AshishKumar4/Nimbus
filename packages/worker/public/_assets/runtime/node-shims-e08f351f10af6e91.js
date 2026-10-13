@@ -9419,6 +9419,7 @@ const __sqliteMod = (() => {
     }
 
     all(...params) {
+      this.__db.__noteRead();
       const stmt = this.__prepare(params);
       const rows = [];
       try {
@@ -9433,6 +9434,7 @@ const __sqliteMod = (() => {
     }
 
     get(...params) {
+      this.__db.__noteRead();
       const stmt = this.__prepare(params);
       try {
         if (!stmt.step()) return undefined;
@@ -9554,8 +9556,9 @@ const __sqliteMod = (() => {
       this.__raw = null;
       // Whether a close has anything to write back (__changed): run() and
       // exec() may change what SQLite does not count (ANALYZE's statistics, a
-      // VACUUM's layout), so either marks the database dirty; any statement's
-      // counted change moves its state from the one last written.
+      // VACUUM's layout), so either marks the database dirty. A row method may
+      // change it too (INSERT ... RETURNING): its connection's state is taken
+      // before the first one runs, and a close compares it.
       this.__dirty = false;
       this.__written = null;
       const open = opts.open === undefined ? true : !!opts.open;
@@ -9567,22 +9570,22 @@ const __sqliteMod = (() => {
       const bytes = this.__memory ? null : __readDbBytes(this.__path);
       this.__raw = bytes ? new SQL.Database(bytes) : new SQL.Database();
       this.__open = true;
-      if (!this.__memory) this.__written = this.__state();
+    }
+
+    __noteRead() {
+      if (!this.__memory && !this.__dirty && this.__written === null) this.__written = this.__state();
     }
 
     // The database's content as SQLite counts it: the rows any statement
     // changed (whichever method ran it, an INSERT ... RETURNING through all()
     // included), its schema, and the header fields a program sets.
     __state() {
-      const one = (sql) => {
-        const stmt = this.__raw.prepare(sql);
-        try { stmt.step(); return stmt.get()[0]; } finally { stmt.free(); }
-      };
-      return [one("SELECT total_changes()"), one("PRAGMA schema_version"), one("PRAGMA user_version"), one("PRAGMA application_id")].join(",");
+      const stmt = this.__raw.prepare("SELECT total_changes(), (SELECT schema_version FROM pragma_schema_version()), (SELECT user_version FROM pragma_user_version()), (SELECT application_id FROM pragma_application_id())");
+      try { stmt.step(); return stmt.get().join(","); } finally { stmt.free(); }
     }
 
     __changed() {
-      return this.__dirty || this.__state() !== this.__written;
+      return this.__dirty || (this.__written !== null && this.__state() !== this.__written);
     }
 
     open() {
@@ -9639,7 +9642,7 @@ const __sqliteMod = (() => {
       const bytes = this.__raw.export();
       __fsMod.writeFileSync(this.__path, bytes);
       this.__dirty = false;
-      this.__written = this.__state();
+      this.__written = null;
     }
 
     close() {
