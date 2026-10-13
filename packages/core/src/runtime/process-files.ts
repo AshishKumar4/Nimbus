@@ -1041,7 +1041,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
     return this.either([path], () => this.bridge.remove(path, options), async () => {
       const p = (await this.path(path, false));
       try {
-        if (!options?.recursive) return this.namespace.unlink(p);
+        if (!options?.recursive) return await this.namespace.unlink(p);
         const report = await this.namespace.removeRecursive(p, { keepVanishedAncestors: options.keepVanishedAncestors });
         if (options.report) return report;
         const failed = report.failures[0];
