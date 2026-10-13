@@ -1798,7 +1798,13 @@ const __fsMod = (() => {
    */
   function _noteLearnedStat(absPath, stat, ticket, written) {
     if (ticket.reported > (written === undefined ? ticket.rev : Math.max(written, ticket.rev))) return false;
-    __resident.namespace.noteLiveStat(_strip(absPath), stat, written);
+    const k = _strip(absPath);
+    __resident.namespace.noteLiveStat(k, stat, written);
+    // The session's own stat of a file this process made: it answers from now
+    // on (the owner of a file the process took for new, and wrote over, is
+    // the session's), unless the process has written it again since.
+    const made = _nsOwn.get(k);
+    if (stat !== null && made?.state === "file" && !_nsParked(k)) _nsOwnDrop(k, made);
     return true;
   }
 
