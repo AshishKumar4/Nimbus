@@ -135,6 +135,7 @@ type ResolvedCommand = CmdFn & { __nimbusRuntimeInstallHint?: boolean };
 type UnixCommandRegistry = {
   register(name: string, handler: Command): void;
   resolve(name: string, from?: ResolveContext): unknown;
+  has?(name: string): boolean;
 };
 
 /**
@@ -367,11 +368,20 @@ async function _pathExecutable(name: string, from: ResolveContext): Promise<stri
 /**
  * Where a user sees a command the workspace knows by name (registered, an npm
  * bin, or a runtime it would install on first use): the first executable of
- * that name on PATH (a gem's wrapper in ~/.gem/bin), else the runtime's
- * canonical bin; null for a shell builtin.
+ * that name on PATH (a gem's wrapper in ~/.gem/bin), or a runtime's launcher
+ * there (runtime-store.ts: a link to a marker, not executable, that the
+ * registry runs by its path), else the runtime's canonical bin; null for a
+ * shell builtin.
  */
-async function _knownCommandPath(name: string, from: ResolveContext): Promise<string | null> {
-  return await _pathExecutable(name, from) ?? _CANONICAL_BIN_PATHS[name] ?? null;
+async function _knownCommandPath(registry: UnixCommandRegistry, name: string, from: ResolveContext): Promise<string | null> {
+  let hit: PathSearchResult = null;
+  try {
+    hit = await searchPath(name, from);
+  } catch (error) {
+    if (!isVfsError(error)) throw error;
+  }
+  if (hit?.kind === 'program' || (hit !== null && registry.has?.(hit.path) === true)) return hit.path;
+  return _CANONICAL_BIN_PATHS[name] ?? null;
 }
 
 /**
@@ -388,7 +398,7 @@ async function _whichLookup(
   if (name.includes('/')) return { path: null, builtin: false };
   const registered = await _registryResolved(registry, name, { ...from, search: false }, { includeInstallHints: true });
   const builtin = registered !== null && !isRuntimeInstallHintHandler(registered);
-  if (registered !== null) return { path: await _knownCommandPath(name, from), builtin };
+  if (registered !== null) return { path: await _knownCommandPath(registry, name, from), builtin };
   return { path: await _pathExecutable(name, from), builtin };
 }
 
@@ -418,7 +428,7 @@ async function _describeCommand(
   if (name.includes('/')) return { kind: 'file', path: name };
   const hint = isRuntimeInstallHintHandler(resolved);
   if (!hint && BASH_BUILTINS.has(name)) return { kind: 'builtin' };
-  const path = await _knownCommandPath(name, from);
+  const path = await _knownCommandPath(registry, name, from);
   if (path !== null) return { kind: 'file', path };
   return hint ? null : { kind: 'builtin' };
 }

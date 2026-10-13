@@ -31,6 +31,7 @@ export interface RuntimeStoreFs {
   symlink(target: string, path: string): Promise<void>;
   readlink(path: string): Promise<string>;
   unlink(path: string): Promise<void>;
+  chmod(path: string, mode: number): Promise<void>;
 }
 
 /** Whether `entry` (looked at without following it) is a directory only root may change. */
@@ -94,15 +95,21 @@ async function launcherDirOwn(fs: RuntimeStoreFs): Promise<boolean> {
  * Point each launcher at its tree, and answer the ones that lead there: a
  * launcher of ours that leads to another version is replaced; anything else
  * at that name (a file or link someone put there with sudo) is left, and the
- * command runs by name only. The tree's `bin/<command>` keeps the mode it was
- * installed with: a marker the shell's registry runs by name, not a program a
- * guest Bash could run as a script.
+ * command runs by name only. The tree's `bin/<command>` is a marker the
+ * shell's registry runs by its path, not a program: one left executable (as
+ * an earlier tree may be) is made not to be, so a guest Bash that finds it
+ * is refused it rather than running its comments as an empty script. The
+ * tree is the store's, reached through root's own directories only
+ * (listInstalledManifestsView, prepareRuntimeStore).
  */
 export async function linkLaunchers(fs: RuntimeStoreFs, launchers: readonly RuntimeLauncher[]): Promise<RuntimeLauncher[]> {
   if (launchers.length === 0 || !(await launcherDirOwn(fs))) return [];
   const linked: RuntimeLauncher[] = [];
   for (const launcher of launchers) {
     const { path, target } = launcher;
+    const marker = await fs.stat(target, { follow: false });
+    if (marker?.type !== 'file') continue;
+    if (((marker.mode ?? 0) & 0o111) !== 0) await fs.chmod(target, (marker.mode ?? 0) & 0o666);
     const entry = await fs.stat(path, { follow: false });
     if (entry !== null) {
       if (entry.type !== 'symlink') continue;
