@@ -18117,11 +18117,7 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
         throw __nimbusRequireAsync(parent, filename);
       }
       // A require() of an ES module links its graph before any of it runs, as its import() does.
-      if (required && runtimeEsModule) {
-        const late = { modules: new Map(), rows: [] };
-        __nimbusEsmLinkPlan(normalizedPath, moduleUrl, new Set(), [], new Set(), late);
-        __nimbusEsmCheckBindings(late, moduleUrl);
-      }
+      if (required && runtimeEsModule) __nimbusLateLink(normalizedPath, moduleUrl);
       // An imported .js its syntax made an ES module warns as a staged one does.
       if (!required && format === undefined && filename.endsWith(".js") && __nimbusDetectedModule(cell)) {
         const scope = __esmResolver.packageScopeSync(__nimbusEsmUrl(filename));
@@ -19278,278 +19274,68 @@ function __esmLoad(resolution) {
   return ns;
 }
 // Evaluate, in import order, the staged ES modules the interpreted module at
-// `key` statically imports, and those its unstaged imports do, so the
-// interpreter finds them evaluated rather than evaluating them itself: once
-// the late graph's whole static closure links, staged modules, query and
-// fragment instances and all, and every name it imports is one its module
-// exports. A graph that does not link runs none of its bodies, as Node's
-// does: its import() rejects with the first refusal.
+// `key`'s late graph imports, once the whole graph links (core
+// esm-late-link.ts), so the interpreter finds them evaluated. A graph that
+// does not link runs none of its bodies: its import() rejects.
 async function __nimbusEsmLinkStaged(key) {
-  const order = [];
-  const url = __nimbusEsmUrl("/" + key);
-  const late = { modules: new Map(), rows: [] };
-  __nimbusEsmLinkPlan(key, url, new Set(), order, new Set(), late);
-  __nimbusEsmCheckBindings(late, url);
+  const order = __nimbusLateLink(key, __nimbusEsmUrl("/" + key));
   // What one throws ends the evaluation of what imports it, as Node's
   // does: no later import of it evaluates, and the import() rejects.
   for (const id of order) {
     if (__nimbusEsmRecord(id).state !== __ESM_DONE && !__nimbusEsmTainted(id)) await __nimbusEsmImport(id);
   }
 }
-// The staged modules a late graph imports, in import order (into
-// `order`); throws the refusal of a static import anywhere in its closure
-// that does not resolve or load. Each module once by its URL (a query's or
-// a fragment's instance is its own); `checked`, the staged rows whose
-// graphs link. Into `late`: each module of the graph the interpreter
-// evaluates, by URL, with what its static imports read (known: its
-// bindings were read); and the staged rows of it not yet evaluated.
-function __nimbusEsmLinkPlan(key, url, seen, order, checked, late) {
-  if (seen.has(url)) return;
-  seen.add(url);
-  const staged = __nimbusEsmId("module", key);
-  const text = staged === -1 ? __readFileOr(key, null) : __nimbusEsmSourceText(staged);
-  if (text === null) return;
-  // Read with the parse goal the loader gives it: an adopted staged module's, a module; another's, its format.
-  const format = staged !== -1 ? "module" : __nimbusFileFormat("/" + key);
-  const analysis = __nimbusModuleRequests(key, text, staged !== -1, format ?? "detect");
-  // A module of the graph its parser could not read (a syntax error, or
-  // TypeScript or JSX) is loaded as the interpreter loads it, for the error
-  // that load gives, before any body runs; one it does load (code staged for
-  // it) is the launch's own to link.
-  if (analysis.unread !== undefined && staged === -1) __nimbusRuntimeModule(key, text, format);
-  // The interpreter's lists (SafeLists: no methods), as arrays.
-  const bindings = analysis.bindings;
-  const statics = analysis.requests.filter((request) => request.kind === "static").length;
-  const known = bindings !== undefined && bindings.imports.length === statics;
-  const reads = known ? Array.from(bindings.imports, (names) => Array.from(names)) : [];
-  const starsAt = known ? Array.from(bindings.stars) : [];
-  const types = known ? Array.from(bindings.types) : [];
-  const reexportsAt = known ? Array.from(bindings.reexports, (entry) => Array.from(entry)) : [];
-  const node = { known, exports: known ? Array.from(bindings.exports) : [], stars: [], imports: [], reexports: [] };
-  late.modules.set(url, node);
-  __nimbusLateModules.set(url, node);
-  let at = -1;
-  for (const request of analysis.requests) {
-    if (request.kind !== "static") continue;
-    at++;
-    let resolution;
+// The facts of the launch a late graph's link reads (core esm-late-link.ts LateLinkHost).
+const __nimbusLateLinkHost = {
+  row: __nimbusEsmId,
+  rowKind: (row) => __nimbusEsm.table[row][0],
+  moduleFacts: (row) => {
+    const bindings = __nimbusEsmBindingsOf(row);
+    return bindings === null ? null : { exports: bindings[0], stars: bindings[1], imports: bindings[2], reexports: bindings[3] ?? [] };
+  },
+  rowNames: __nimbusEsmBindingsOf,
+  rowTargets: (row) => __nimbusEsm.table[row][2],
+  rowSettled: (row) => __nimbusEsmRecords[row]?.state === __ESM_DONE || __nimbusEsmRecords[row]?.state === __ESM_ADOPTED,
+  missing: (i) => {
+    const missing = __nimbusEsm.missing[i];
+    if (missing === undefined) return null;
+    if (missing.code === "ERR_NIMBUS_NOT_STAGED" && typeof missing.url === "string") return { handedOn: missing.url };
+    return { refusal: __nimbusEsmRefusal(missing) };
+  },
+  source: (key, row) => row === -1 ? __readFileOr(key, null) : __nimbusEsmSourceText(row),
+  fileFormat: (key) => __nimbusFileFormat("/" + key),
+  loadUnread: (key, text, format) => { __nimbusRuntimeModule(key, text, format); },
+  resolve: (specifier, parentUrl, type) => {
     try {
-      resolution = __esmResolver.resolveSync(request.specifier, url);
-      // Checked against its attributes as the interpreter's static import checks it (__requireFrom).
-      const type = known ? types[at] : null;
+      const resolution = __esmResolver.resolveSync(specifier, parentUrl);
       __nimbusAssertLoadable(resolution, type ?? undefined);
-      if (known) __esmResolver.validateAttributes(resolution.url, resolution.format, type === null ? {} : { type });
+      if (type !== undefined) __esmResolver.validateAttributes(resolution.url, resolution.format, type === null ? {} : { type });
+      return resolution;
     } catch (error) {
-      // As the interpreter's static import refuses it: before the importer runs, with no arrow of its.
       __nimbusDecorated.add(error);
       throw error;
     }
-    if (known) {
-      const loads = __nimbusEsmLateTarget(resolution);
-      if (starsAt.includes(at)) node.stars.push(loads);
-      if (reads[at].length > 0) node.imports.push({ target: loads, specifier: request.specifier, names: reads[at] });
-      for (const [exported, request, name] of reexportsAt) if (request === at) node.reexports.push([exported, loads, name]);
-    }
-    if (!resolution.path) continue;
-    const target = resolution.path.replace(/^\/+/, "");
-    const { search, hash } = new URL(resolution.url);
-    const id = __nimbusEsmId("module", target);
-    // An unstaged module, or a query's or fragment's instance (the
-    // interpreter's own): its closure is the late graph's too.
-    if (id === -1 || search !== "" || hash !== "") {
-      // What the interpreter loads as an ES module (a CommonJS module compiles when it evaluates, as Node's does).
-      if (resolution.format === "module" || resolution.format === "detect") {
-        __nimbusEsmLinkPlan(target, resolution.url, seen, order, checked, late);
-      }
-      continue;
-    }
-    __nimbusEsmCheckLinks(id, seen, checked, late);
-    if (!order.includes(id)) order.push(id);
-  }
+  },
+  builtinNames: (builtin) => {
+    const mod = builtins[builtin];
+    return ["default", ...(mod && (typeof mod === "object" || typeof mod === "function") ? Object.keys(mod) : [])];
+  },
+  commonJsNames: __nimbusCommonJsNames,
+  exportMessage: __nimbusEsmExportMessage,
+  decorate: (error) => {
+    __nimbusDecorated.add(error);
+    return error;
+  },
+};
+// Links the late graph of the module at `key` (`url`); the staged rows it imports, in order.
+function __nimbusLateLink(key, url) {
+  return __nimbusRegistryRequire("./nimbus/interpreter.js").linkLate(__nimbusLateLinkHost, key, url);
 }
-// What a late module's static import loads, as the link check reads its
-// names: a staged row (a module, a facade, a JSON module), a late module by
-// URL, or the names of a builtin, a JSON file or a CommonJS module the launch
-// made no facade for (the lexer's, read now, as Node's loader reads them
-// before any body runs); null where its format is its syntax's (typeless).
-function __nimbusEsmLateTarget(resolution) {
-  if (resolution.format === "builtin") {
-    const id = __nimbusEsmId("builtin", resolution.builtin);
-    if (id !== -1) return { row: id };
-    const mod = builtins[resolution.builtin];
-    return { names: ["default", ...(mod && (typeof mod === "object" || typeof mod === "function") ? Object.keys(mod) : [])], url: resolution.url };
-  }
-  if (!resolution.path) return null;
-  const key = resolution.path.replace(/^\/+/, "");
-  const { search, hash } = new URL(resolution.url);
-  if (search === "" && hash === "") {
-    const id = __nimbusEsmId("module", key);
-    if (id !== -1) return { row: id };
-    const facade = resolution.format === "json" ? __nimbusEsmId("json", key) : __nimbusEsmId("commonjs", key);
-    if (facade !== -1) return { row: facade };
-  }
-  if (resolution.format === "module" || resolution.format === "detect") return { url: resolution.url };
-  if (resolution.format === "json") return { names: ["default"], url: resolution.url };
-  if (resolution.format === "commonjs") return { names: __nimbusCommonJsNames(key), url: resolution.url, commonjs: true };
-  return null;
-}
-// Throws the refusal of a static import staged module `id`'s graph (what
-// of it is unevaluated) makes that staging refused for good. One staging
-// handed on (ERR_NIMBUS_NOT_STAGED: a query's or a fragment's instance,
-// which the interpreter evaluates where it is imported) is checked as the
-// late graph's own, and runs no body here. The graph's unevaluated rows go
-// to `late`.
-function __nimbusEsmCheckLinks(id, seen, checked, late) {
-  const visit = (at) => {
-    if (checked.has(at)) return;
-    checked.add(at);
-    const row = __nimbusEsm.table[at];
-    const state = __nimbusEsmRecords[at]?.state;
-    if (row[0] !== "module" || state === __ESM_DONE || state === __ESM_ADOPTED) return;
-    late.rows.push(at);
-    for (const target of row[2]) {
-      if (target >= 0) { visit(target); continue; }
-      const missing = __nimbusEsm.missing[-2 - target];
-      if (missing === undefined) continue;
-      if (missing.code === "ERR_NIMBUS_NOT_STAGED" && typeof missing.url === "string") {
-        const handed = new URL(missing.url);
-        __nimbusEsmLinkPlan(decodeURIComponent(handed.pathname).replace(/^\/+/, ""), missing.url, seen, [], checked, late);
-        continue;
-      }
-      throw __nimbusEsmRefusal(missing);
-    }
-  };
-  visit(id);
-}
-// Node links a graph before any module of it runs: each name a module
-// imports or re-exports is one its module exports, or the import() rejects
-// with Node's SyntaxError and no body runs. The late graph's modules (the
-// interpreter's, and the staged rows not yet evaluated) are checked
-// dependencies first, as Node's linker reaches them; a name whose module's
-// names are not known here is the interpreter's to check (modules.ts link).
-function __nimbusEsmCheckBindings(late, rootUrl) {
-  const pending = new Set(late.rows);
-  const visited = new Set();
-  const visit = (target) => {
-    if (target === null || target.names !== undefined) return;
-    if (target.row !== undefined && !pending.has(target.row)) return;
-    const mark = target.url !== undefined ? "u" + target.url : "r" + target.row;
-    if (visited.has(mark)) return;
-    visited.add(mark);
-    const edges = __nimbusEsmEdges(late, target);
-    for (const edge of edges) visit(edge.target);
-    for (const edge of edges) {
-      for (const name of edge.names) {
-        const resolution = __nimbusEsmResolveExport(late, edge.target, name, new Set());
-        if (resolution !== null && resolution !== __NIMBUS_AMBIGUOUS) continue;
-        const commonjs = edge.target.commonjs === true || (edge.target.row !== undefined && __nimbusEsm.table[edge.target.row][0] === "commonjs");
-        const error = new SyntaxError(resolution === __NIMBUS_AMBIGUOUS
-          ? "The requested module '" + edge.specifier + "' contains conflicting star exports for name '" + name + "'"
-          : __nimbusEsmExportMessage(edge.specifier, name, commonjs));
-        __nimbusDecorated.add(error);
-        throw error;
-      }
-    }
-  };
-  visit({ url: rootUrl });
-  for (const url of late.modules.keys()) visit({ url });
-  for (const row of late.rows) visit({ row });
-}
-// A late module's or a staged row's imports that read names: [{ target, specifier as written, names }].
-function __nimbusEsmEdges(late, target) {
-  if (target.url !== undefined) {
-    const node = late.modules.get(target.url);
-    return node === undefined ? [] : node.imports;
-  }
-  const bindings = __nimbusEsmBindingsOf(target.row);
-  if (bindings === null || __nimbusEsm.table[target.row][0] !== "module") return [];
-  return bindings[2].map(([row, specifier, ...names]) => ({ target: { row }, specifier, names }));
-}
-// ECMA-262 ResolveExport of `name` of `target` over the late graph's and the rows' facts: { module, binding },
-// null for none, __NIMBUS_AMBIGUOUS where its export *s reach two bindings, undefined where not known here.
-const __NIMBUS_AMBIGUOUS = { ambiguous: true };
-function __nimbusEsmResolveExport(late, target, name, resolving) {
-  if (target === null) return undefined;
-  if (target.names !== undefined) return target.names.includes(name) ? { module: "u" + target.url, binding: name } : null;
-  const module = target.url !== undefined ? "u" + target.url : "r" + target.row;
-  // A circular import request: nothing more to find this way.
-  if (resolving.has(module + " " + name)) return null;
-  resolving.add(module + " " + name);
-  let exports;
-  let stars;
-  let reexports;
-  if (target.url !== undefined) {
-    const node = late.modules.get(target.url);
-    if (node === undefined || !node.known) return undefined;
-    ({ exports, stars, reexports } = node);
-  } else {
-    const bindings = __nimbusEsmBindingsOf(target.row);
-    if (bindings === null) return undefined;
-    if (__nimbusEsm.table[target.row][0] !== "module") return bindings.includes(name) ? { module, binding: name } : null;
-    exports = bindings[0];
-    stars = bindings[1].map((row) => ({ row }));
-    reexports = (bindings[3] ?? []).map(([exported, row, imported]) => [exported, { row }, imported]);
-  }
-  for (const [exported, from, imported] of reexports) {
-    if (exported !== name) continue;
-    if (imported !== null) return __nimbusEsmResolveExport(late, from, imported, resolving);
-    if (from === null) return undefined;
-    return { module: from.url !== undefined ? "u" + from.url : "r" + from.row, binding: "*" };
-  }
-  if (exports.includes(name)) return { module, binding: name };
-  if (name === "default") return null;
-  let found = null;
-  let unknown = false;
-  for (const star of stars) {
-    const resolution = __nimbusEsmResolveExport(late, star, name, resolving);
-    if (resolution === __NIMBUS_AMBIGUOUS) return resolution;
-    if (resolution === undefined) unknown = true;
-    else if (resolution === null) continue;
-    else if (found === null) found = resolution;
-    else if (found.module !== resolution.module || found.binding !== resolution.binding) return __NIMBUS_AMBIGUOUS;
-  }
-  return unknown ? undefined : found;
-}
-// GetExportedNames of `target` (its own names, its stars' but default); null where not known here.
-function __nimbusEsmExportedNames(late, target, seen) {
-  if (target === null) return null;
-  if (target.names !== undefined) return target.names;
-  const module = target.url !== undefined ? "u" + target.url : "r" + target.row;
-  if (seen.has(module)) return [];
-  seen.add(module);
-  let exports;
-  let stars;
-  if (target.url !== undefined) {
-    const node = late.modules.get(target.url);
-    if (node === undefined || !node.known) return null;
-    ({ exports, stars } = node);
-  } else {
-    const bindings = __nimbusEsmBindingsOf(target.row);
-    if (bindings === null) return null;
-    if (__nimbusEsm.table[target.row][0] !== "module") return bindings;
-    exports = bindings[0];
-    stars = bindings[1].map((row) => ({ row }));
-  }
-  const names = new Set(exports);
-  for (const star of stars) {
-    const starred = __nimbusEsmExportedNames(late, star, seen);
-    if (starred === null) return null;
-    for (const starName of starred) if (starName !== "default") names.add(starName);
-  }
-  return [...names];
-}
-// The late modules the link plans read, by URL.
-const __nimbusLateModules = new Map();
 // The names an interpreted module's (at `url`) export *s reach two bindings of, which its namespace omits.
 function __nimbusEsmStarConflicts(url) {
-  const late = { modules: __nimbusLateModules, rows: [] };
   const plain = url.startsWith("file:") && !url.includes("?") && !url.includes("#");
   const row = plain ? __nimbusEsmId("module", builtins.url.fileURLToPath(url).replace(/^\/+/, "")) : -1;
-  const target = __nimbusLateModules.has(url) ? { url } : row !== -1 ? { row } : null;
-  if (target === null) return [];
-  const names = __nimbusEsmExportedNames(late, target, new Set());
-  if (names === null) return [];
-  return names.filter((name) => __nimbusEsmResolveExport(late, target, name, new Set()) === __NIMBUS_AMBIGUOUS);
+  return __nimbusRegistryRequire("./nimbus/interpreter.js").starConflicts(__nimbusLateLinkHost, url, row);
 }
 function __esmLoadInterpreted(resolution, key, evaluationKey, esm) {
   let ns;

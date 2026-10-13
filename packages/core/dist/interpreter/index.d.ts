@@ -3,11 +3,13 @@ import { type ModuleCell, type ModuleHelpers } from './modules.js';
 import type { HostOps, NativeFunction } from './host-ops.js';
 import { type ModuleRequest } from './module-requests.js';
 import type { ModuleBindings } from '../runtime/esm-interop.js';
+import { type LateLinkHost } from '../runtime/esm-late-link.js';
 import { type InterpretedFrame } from './stack.js';
 export type { HostOps } from './host-ops.js';
 export { INTERPRETER_UNSUPPORTED, UnsupportedSyntax } from './unsupported.js';
 export { replLineBody } from './repl-line.js';
 export { cjsModuleExportNames } from '../runtime/cjs-module-exports.js';
+export { starConflicts } from '../runtime/esm-late-link.js';
 export type { ModuleCell } from './modules.js';
 export type { ModuleRequest } from './module-requests.js';
 export interface InterpreterHost {
@@ -90,6 +92,8 @@ export interface Interpreter {
  * whatever the path's extension (a staged module's, as compileModule's).
  */
 export declare function moduleRequests(path: string, text: string, javaScript?: boolean, goal?: 'module' | 'commonjs' | 'detect'): ModuleRequests;
+/** esm-late-link.ts linkLateGraph, reading each module with moduleRequests. */
+export declare function linkLate(host: LateLinkHost, key: string, url: string): number[];
 /** moduleRequests' answer. */
 export interface ModuleRequests {
     readonly requests: ModuleRequest[];
