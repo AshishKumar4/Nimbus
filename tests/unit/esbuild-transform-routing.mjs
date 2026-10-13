@@ -91,7 +91,9 @@ console.log('esbuild-transform-routing: ok');
     const result = await service.transform(source, at);
     assert.equal(result.code, source, 'native ES-module source is unchanged');
     assert.equal(result.esModule, 'node');
-    assert.deepEqual(JSON.parse(result.map), { calls: [], metas: [], statics: [], moduleSyntax: true });
+    assert.deepEqual(JSON.parse(result.map), {
+      calls: [], metas: [], statics: [], moduleSyntax: true, bindings: { exports: [source.startsWith('export const a') ? 'a' : 'x'], imports: [], stars: [] },
+    });
   }
   assert.equal(loads, 0, 'native ES-module staging loads no engine');
 }
