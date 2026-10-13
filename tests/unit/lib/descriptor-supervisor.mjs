@@ -48,7 +48,7 @@ export function descriptorSupervisor(supervisor) {
       const handle = { id: nextHandle++, path: name, flags, position: 0, closed: false };
       handles.set(handle.id, handle);
       // An open answers its file's stat (RuntimeOpenedFile).
-      return { ...handle, stat: decorate(name, await supervisor.stat(name)) };
+      return { ...handle, stat: decorate(name, flags.truncate ? await supervisor.stat(name) : info) };
     },
     async fsFstat(id) { const name = get(id).path; return decorate(name, await supervisor.stat(name)); },
     async fsRead(id, offset, length) {

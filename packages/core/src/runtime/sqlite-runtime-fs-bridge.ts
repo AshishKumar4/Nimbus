@@ -934,7 +934,8 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       if (normalizedFlags.directory && kind !== 'directory') { node.close(); throw fsError('ENOTDIR', 'open', named); }
       if (kind === 'directory' && (normalizedFlags.write || normalizedFlags.truncate || normalizedFlags.append)) { node.close(); throw fsError('EISDIR', 'open', named); }
       if (normalizedFlags.truncate) node.truncate(0);
-      return syncValue(this.descriptors.open(node, normalizedFlags));
+      // Named as the descriptor it reopens was: an unlinked file has no name of its own.
+      return syncValue(this.descriptors.open(node, normalizedFlags, named));
     });
   }
 
