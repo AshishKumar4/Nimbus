@@ -85,12 +85,6 @@ const within = (promise, ms) => Promise.race([promise, new Promise((resolve) => 
   await backlog.return();
   assert.deepEqual(await within(backlog.next(), 1000), { value: undefined, done: true }, 'a change queued before return() is not yielded after it');
   assert.equal(timers.size, before, 'and its polling stopped');
-  const controller = new AbortController();
-  const aborting = fs.promises.watch('/home/user/file.bin', { signal: controller.signal })[Symbol.asyncIterator]();
-  const waiting = aborting.next();
-  controller.abort('stop');
-  await assert.rejects(waiting, { name: 'AbortError' });
-  assert.deepEqual(await within(aborting.next(), 1000), { value: undefined, done: true }, 'after its abort, it is done');
 }
 
 // ── its signal ends it (the real one-shot runner, whose AbortError is Node's) ──
@@ -111,13 +105,19 @@ const outcome = async (iterable) => {
   setTimeout(() => controller.abort('stop'), 1300);
   const aborted = await Promise.race([watching, sleep(4000).then(() => ({ timeout: true }))]);
   const already = await Promise.race([outcome(fs.promises.watch('/home/user/file.bin', { signal: controller.signal })), sleep(1000).then(() => ({ timeout: true }))]);
+  // After its abort, a watcher is done.
+  const second = new AbortController();
+  const aborting = fs.promises.watch('/home/user/file.bin', { signal: second.signal })[Symbol.asyncIterator]();
+  const waitingNext = aborting.next().then(() => 'resolved', (error) => error.name);
+  second.abort('again');
+  const afterAbort = [await waitingNext, await aborting.next()];
   // return() while a next() waits on an unchanged file ends both at once.
   const iterator = fs.promises.watch('/home/user/file.bin')[Symbol.asyncIterator]();
   const pending = iterator.next();
   await sleep(700);
   const returned = await Promise.race([iterator.return(), sleep(2000).then(() => 'timeout')]);
   const settled = await Promise.race([pending, sleep(2000).then(() => 'timeout')]);
-  console.log(JSON.stringify({ aborted, already, returned, settled }));
+  console.log(JSON.stringify({ aborted, already, returned, settled, afterAbort }));
   process.exit(0);
 })();
 `;
@@ -144,6 +144,7 @@ const outcome = async (iterable) => {
     const seen = JSON.parse(body.stdout);
     assert.deepEqual(seen.aborted, { name: 'AbortError', code: 'ABORT_ERR', cause: 'stop' },
       'an unchanged 3 MiB file yields nothing, and the signal ends the iterator with an AbortError');
+    assert.deepEqual(seen.afterAbort, ['AbortError', { done: true }], 'its abort rejects the waiting next(), and after it, it is done');
     assert.deepEqual([seen.returned, seen.settled], [{ done: true }, { done: true }],
       'return() while a next() waits ends the iterator and settles the waiting next()');
     assert.deepEqual(seen.already, { name: 'AbortError', code: 'ABORT_ERR', cause: 'stop' }, 'an already-aborted signal refuses it');
