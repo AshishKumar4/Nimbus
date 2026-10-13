@@ -735,6 +735,11 @@ const wranglerHandler = (invokedAs: 'wrangler' | 'nimbus-wrangler') =>
     // The dev server reads its config, migrations and stores, and bundles
     // its Worker, as the process that started it, for as long as it runs.
     const cred = requireVfsCred(ctx.cred, invokedAs);
+    // Releases through worker 0.17.0 kept the KV and R2 stores as root: what
+    // is still root's is handed to the project's owner (handKernelArtifact).
+    for (const store of ['.nimbus', '.nimbus/kv', '.nimbus/r2']) {
+      await handKernelArtifact(workspace.filesystem, ctx.vfs, cred, `/${rootPath}/${store}`);
+    }
     self.nimbusWrangler = new NimbusWrangler({
       // The dev server's Worker goes out through the network of the command that started it.
       network: workspace.network.forProcess(ctx.pid),
@@ -1082,7 +1087,7 @@ installNpmBinFallbackResolver(registry, {
 // Register core npm — the install work itself goes through the port,
 // which owns the NpmInstaller, prefix dirs and bin materialisation.
 const coreNpmCmd = createNpmCommand(registry, shellExecute, kernel, {
-  installer: createNpmInstallPort(self),
+  installer: createNpmInstallPort(self, workspace.filesystem),
 });
 registry.register('npm', async (ctx: any) => {
   const args: string[] = ctx.args || [];

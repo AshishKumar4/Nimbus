@@ -11,13 +11,16 @@
  * running command's pid — it authorizes the batch-facet writes.
  */
 import type { NpmInstallPort } from '@nimbus-sh/core/substrate/lifo/commands/system/npm.js';
+import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { ProcessFiles, ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { materializeNpmBinShims } from '../npm/bin-links.js';
+import { handKernelArtifact } from '../runtime/project-fs.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 import type { SessionInternal } from './internal.js';
 
 type InstallHost = Pick<SessionInternal, 'ensureSqliteFs' | 'ensureNpmInstaller' | 'ensureGlobalPrefixDirs' | 'processes'>;
 
-export function createNpmInstallPort(self: InstallHost): NpmInstallPort {
+export function createNpmInstallPort(self: InstallHost, filesystem: ProcessFiles): NpmInstallPort {
   return {
     async install(spec) {
       const globalPrefix = spec.global ? spec.globalPrefix : undefined;
@@ -28,6 +31,7 @@ export function createNpmInstallPort(self: InstallHost): NpmInstallPort {
       const cred = self.processes.cred(spec.pid);
       // The session's own engine calls here wait for a delegation they meet: each is repeatable.
       if (globalPrefix) await withRecall(() => self.ensureGlobalPrefixDirs(globalPrefix, cred));
+      if (globalBinDir) await handKernelBins(filesystem, filesystem.view({ pid: spec.pid, cred }), cred, globalBinDir);
       const installCwd = globalPrefix ? `${globalPrefix}/lib` : spec.projectDir;
 
       const result = await installer.install(installCwd, {
@@ -70,4 +74,15 @@ export function createNpmInstallPort(self: InstallHost): NpmInstallPort {
       };
     },
   };
+}
+
+/**
+ * Releases through worker 0.17.0 wrote the shims in `binDir` and their
+ * manifest as root: each still root's is handed to the directory's owner
+ * (handKernelArtifact), so an install, as its process, can replace it.
+ */
+async function handKernelBins(filesystem: ProcessFiles, view: ProcessView, cred: VfsCred, binDir: string): Promise<void> {
+  let entries: readonly { name: string }[];
+  try { entries = await view.readdir(binDir); } catch { return; }
+  for (const { name } of entries) await handKernelArtifact(filesystem, view, cred, `${binDir}/${name}`);
 }

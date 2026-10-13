@@ -10,12 +10,18 @@ published independently in the `@nimbus-sh` npm scope.
   migrations, kept its KV and R2 stores, and bundled its Worker as
   `CRED_KERNEL`, so a project symlink made it read a file its user could
   not; a resident process's boot read the `.wasm` files it named as the
-  kernel; `npm install -g` made its prefix and wrote its bin shims as the
-  kernel; and global npm and gem commands, and a command lookup with no
-  caller, were discovered by reading as the kernel. Each now acts as the
-  process that ran it (the session's user for discovery), and is refused
-  what that process is refused. The shared build service's default view is
-  the session's user's.
+  kernel; `npm install -g` wrote its bin shims as the kernel; and global
+  npm and gem commands, and a command lookup with no caller, were
+  discovered by reading as the kernel. Each now acts as the process that
+  ran it (the session's user for discovery), and is refused what that
+  process is refused. Shims and stores an earlier release left as root are
+  handed to the owner of the directory holding them, the first time they
+  are written. The shared build service's default view is the session's
+  user's.
+- Changed: `npm install -g` makes a missing prefix (`<prefix>/lib`,
+  `<prefix>/bin`) as the process that runs it, where it always used the
+  session's user: `sudo npm install -g --prefix <new dir>` now makes it
+  root's, as on Linux.
 - Fixed: `nimbus wrangler dev`'s Worker Loader binding (`worker_loaders`)
   cached a Worker loaded with `LOADER.get(id, …)` under its id alone, for
   the whole isolate: two Workers in co-located sessions that used the same

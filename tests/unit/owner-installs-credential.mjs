@@ -64,7 +64,6 @@ for (const legacy of [false, true]) {
   const files = new ProcessFiles(vfs);
   const port = createNpmInstallPort({
     ensureSqliteFs: () => vfs,
-    getFilesystemAuthority: () => files,
     // The tree is already in place: this installer only links its bins.
     ensureNpmInstaller: async () => ({
       async install(_cwd, options) {
@@ -73,7 +72,7 @@ for (const legacy of [false, true]) {
     }),
     ensureGlobalPrefixDirs() {},
     processes,
-  });
+  }, files);
   const result = await port.install({ projectDir: '/home/user', packages: ['tool'], global: true, globalPrefix: '/usr/local', pid: entry.pid });
   assert.equal(result.linkedBins, 1, 'one bin linked');
   const shim = kernel.stat('usr/local/bin/tool');
