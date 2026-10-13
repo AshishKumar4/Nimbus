@@ -637,9 +637,9 @@ export async function registerHostedCommands(self, workspace) {
             ctx.stderr.write(`${invokedAs}: the Worker dev server serves only projects on the workspace filesystem; /${rootPath} is on a mounted one\n`);
             return 1;
         }
-        // Stop existing
-        if (self.nimbusWrangler?.isRunning)
-            self.nimbusWrangler.stop();
+        // The dev server before this one stops, a start still under way included:
+        // left to finish, it would serve, watch and rebuild beside this one.
+        self.nimbusWrangler?.stop();
         // Pre-flight: read the wrangler config ourselves and call out any
         // binding fields nimbus-wrangler can't provide. NimbusWrangler will
         // still try to bundle + load, but user sees up-front why their
@@ -685,12 +685,15 @@ export async function registerHostedCommands(self, workspace) {
                 }
             },
         });
-        const ok = await self.nimbusWrangler.start();
+        const server = self.nimbusWrangler;
+        const ok = await server.start();
         if (!ok) {
-            ctx.stderr.write('  \x1b[31mFailed to start Worker dev server.\x1b[0m\n');
+            ctx.stderr.write(server.wasStopped
+                ? '  \x1b[33mWorker dev server stopped before it started.\x1b[0m\n'
+                : '  \x1b[31mFailed to start Worker dev server.\x1b[0m\n');
             return 1;
         }
-        const cfg = self.nimbusWrangler.stats;
+        const cfg = server.stats;
         // runtime primitive support (P5): banner advertises the canonical
         // `/__nimbus/worker/` route. The legacy `/worker/` URL is still
         // accepted for one release (Sunset 2027-01-01) but new sessions

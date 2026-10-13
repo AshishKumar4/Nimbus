@@ -24,6 +24,15 @@ published independently in the `@nimbus-sh` npm scope.
   fs write path's one-time compile. Writes are no longer lost. A Node `fs`
   write over an existing file no longer reads the file it replaces (about
   0.4 ms less per MiB).
+- Fixed: `nimbus wrangler dev` could serve an old build after a rebuild
+  or a restart. A rebuild still bundling when `wrangler dev` was run again
+  (or when a later rebuild overtook it) went on: it printed "Worker built"
+  while the new server was still building, so opening the Worker then
+  showed the waiting page, and it ended the new server's Durable Objects
+  and put its own old classes in their place. A superseded build now says
+  and changes nothing, "Worker built" is printed once the build serves,
+  and `wrangler dev` stops the server before it even while that one is
+  still starting.
 - Fixed (security): the session's owner surfaces acted as the kernel. The
   browser editor's saves, reads and listings, the agent's `read_file`,
   `write_file` and `list_files`, and `POST /api/write-file` and
