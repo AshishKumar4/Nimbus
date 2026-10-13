@@ -2418,14 +2418,15 @@ export declare class SqliteVFS {
      * a batch's deletions and a rename. A removal pages (subtree, descending).
      */
     /**
-     * Each entry a batch deletes below the roots it names, as unlink(2) and
-     * rmdir(2) would judge it: the directory holding it (deleted with it)
-     * written and searched by `cred`, and, when that directory is sticky, it or
-     * the entry `cred`'s. A batch deleting a tree deletes every entry of it, so
-     * each is judged; the roots are judged where they are named
-     * (authorizeBatchNow).
+     * Each entry a batch deletes below the roots it names (`below`), as
+     * unlink(2) and rmdir(2) would judge it: the directory holding it (deleted
+     * with it) written and searched by `cred`, and, when that directory is
+     * sticky, it or the entry `cred`'s. A batch deleting a tree deletes every
+     * entry of it, so each is judged; the roots are judged where they are
+     * named (authorizeBatchNow).
      */
     private authorizeDeletions;
+    /** `below`: given, it also gets the inodes that are under a root and not a root themselves. */
     private collectSubtreeInodes;
     /**
      * Bulk mkdir: create all directories in a single transactionSync.
