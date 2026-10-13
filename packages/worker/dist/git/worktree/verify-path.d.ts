@@ -21,8 +21,9 @@ export declare const DEFAULT_PATH_PROTECTION: PathProtection;
 export declare const invalidPathError: (path: string) => string;
 /**
  * verify_path: whether git lets a repo-relative `path`, its entry's `mode`,
- * into its index. Only a component's start, a '/' and (protecting NTFS) a
- * '\\' are looked at, so the separators are found by indexOf.
+ * into its index: each component's start checked, then its characters
+ * passed over to the next '/', a '\\' after its first character (protecting
+ * NTFS) checked as a separator.
  */
 export declare function verifyPath(path: string, mode: number, protect: PathProtection): boolean;
 //# sourceMappingURL=verify-path.d.ts.map
