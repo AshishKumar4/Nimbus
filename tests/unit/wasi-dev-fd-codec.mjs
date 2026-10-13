@@ -5,15 +5,17 @@
  * process's filesystem: the session's SQLite authority behind the real
  * resident store (vfs/resident/index.ts), as a JSPI guest has it.
  *
- * A file is opened again by its name, with the new open's flags: its own
+ * The file itself is opened again, with the new open's flags: its own
  * description (a fresh offset), O_TRUNC honored, and, for a copy the codec
- * answers from the store, its own pin on the bytes, charged to the store's
- * budget for as long as either descriptor lives.
+ * answers from the store, a hold on the bytes' pin, charged to the store's
+ * budget for as long as either descriptor lives. Never a name: a file
+ * renamed since, at the session or in a subtree the process holds, is the
+ * one opened, and the new file at its old name is left alone.
  *
- * Red before: the open dup'd. A resident copy took the original's bytes with
- * no pin of its own, so closing the original returned the bytes' charge
- * while the copy still held them; an authority file's copy shared the
- * original's offset and ignored O_TRUNC.
+ * Red before: the open dup'd (a resident copy took the original's bytes
+ * with no pin, an authority file's copy shared the original's offset and
+ * ignored O_TRUNC); then it reopened the old name, and truncated whatever
+ * file had it now.
  */
 
 import assert from 'node:assert/strict';
@@ -33,8 +35,8 @@ const E = { SUCCESS: 0, NOENT: 44 };
 const RIGHT_READ = 2n, RIGHT_SEEK = 4n, RIGHT_WRITE = 64n;
 const O_TRUNC = 8, FDFLAG_APPEND = 1;
 
-/** A process over a session seeded with `files` (beneath /home/user), its store's charge counted. */
-async function processWith(files) {
+/** A process over a session seeded with `files` (beneath /home/user), its store's charge counted; `holding`: it holds /home/user from its first change. */
+async function processWith(files, { holding = false } = {}) {
   const harness = createSqliteVfsTestHarness();
   const session = new ProcessFiles(new SqliteVFS(harness.sql, harness.ctx));
   const kernel = session.bind({ pid: 1, cred: CRED_KERNEL });
@@ -79,7 +81,19 @@ async function processWith(files) {
     reserve: (bytes) => { const fits = view.reserve(bytes); if (fits) charged += bytes; return fits; },
     release: (bytes) => { charged -= bytes; view.release(bytes); },
   };
-  const fs = residentFilesystem(authority, counted);
+  const port = {
+    openWriter: async () => null,
+    writeBatchStream: async (stream, _fence, owner) => authority.writeStream(stream, owner === undefined ? {} : { mutationOwner: owner }),
+    grants: {
+      acquire: async (path, delegate) => authority.acquireExclusiveMutation(path, { delegate }),
+      release: async (owner) => { authority.releaseExclusiveMutation(owner); },
+      awaitRecall: (owner, waitMs) => authority.awaitRecall(owner, waitMs),
+      recalled: async (owner, kind) => { authority.recalled(owner, kind); },
+    },
+  };
+  const fs = holding
+    ? residentFilesystem(authority, counted, { session: port, isHomeRoot: (key) => key === 'home/user', grantAfter: 0 })
+    : residentFilesystem(authority, counted);
 
   const memory = new WebAssembly.Memory({ initial: 2 });
   const fds = new Map([[3, { kind: 'preopen', vfsPath: '', wasiPath: '/' }]]);
@@ -111,6 +125,11 @@ async function processWith(files) {
       assert.equal(await imports.fd_write(fd, 128, 1, 136), E.SUCCESS);
     },
     close: async (fd) => assert.equal(await imports.fd_close(fd), E.SUCCESS),
+    async rename(from, to) {
+      const a = enc.encode(from), b = enc.encode(to);
+      new Uint8Array(memory.buffer).set(a, 4096); new Uint8Array(memory.buffer).set(b, 6144);
+      assert.equal(await imports.path_rename(3, 4096, a.length, 3, 6144, b.length), E.SUCCESS, `rename ${from} ${to}`);
+    },
     settle: () => fs.settle(),
   };
 }
@@ -145,6 +164,37 @@ await check('an authority file opened through /dev/fd with O_TRUNC is truncated,
   await p.close(original);
   await p.settle();
   assert.equal(dec.decode(await p.authority.readFile('/home/user/w.txt')), 'xy', 'truncated by the second open; the first appends after it');
+});
+
+await check('a renamed file opened through /dev/fd is that file, not the new one at its old name', async () => {
+  const p = await processWith({ 'a.txt': 'old' });
+  const original = await p.open('home/user/a.txt', { rights: RIGHT_READ | RIGHT_WRITE | RIGHT_SEEK });
+  await p.rename('home/user/a.txt', 'home/user/b.txt');
+  const replacement = await p.open('home/user/a.txt', { rights: RIGHT_WRITE | RIGHT_SEEK, oflags: 1 | O_TRUNC });
+  await p.write(replacement, 'new');
+  await p.close(replacement);
+  const copy = await p.open(`dev/fd/${original}`, { rights: RIGHT_WRITE | RIGHT_SEEK, oflags: O_TRUNC });
+  await p.write(copy, 'changed');
+  await p.close(copy);
+  await p.close(original);
+  await p.settle();
+  assert.equal(dec.decode(await p.authority.readFile('/home/user/a.txt')), 'new');
+  assert.equal(dec.decode(await p.authority.readFile('/home/user/b.txt')), 'changed');
+});
+
+await check('a file a held subtree decided, renamed there, is the one /dev/fd opens', async () => {
+  const p = await processWith({}, { holding: true });
+  const original = await p.open('home/user/h.txt', { rights: RIGHT_READ | RIGHT_WRITE | RIGHT_SEEK, oflags: 1 | O_TRUNC });
+  await p.write(original, 'held');
+  await p.rename('home/user/h.txt', 'home/user/i.txt');
+  const copy = await p.open(`dev/fd/${original}`, { rights: RIGHT_READ | RIGHT_WRITE | RIGHT_SEEK, oflags: O_TRUNC });
+  await p.write(copy, 'x');
+  await p.close(copy);
+  assert.equal(await p.read(original, 64), '', 'the original reads on from its own offset, past the cut');
+  await p.close(original);
+  await p.settle();
+  assert.equal(dec.decode(await p.authority.readFile('/home/user/i.txt')), 'x');
+  assert.equal(await p.authority.stat('/home/user/h.txt'), null);
 });
 
 assert.deepEqual(failures, []);

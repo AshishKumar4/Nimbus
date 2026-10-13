@@ -31,6 +31,11 @@ const cases = [
   { script: '{ printf old; printf new >/dev/stdout; } >/tmp/o; cat /tmp/o', stdout: 'new', exitCode: 0 },
   { script: 'printf abc >/tmp/a; exec 5>>/tmp/a; printf x >/dev/fd/5; cat /tmp/a', stdout: 'x', exitCode: 0 },
   { script: 'printf data >/tmp/f; exec 4</tmp/f; read -r -n 2 c <&4; cat /dev/fd/4; echo; read -r rest <&4; echo "rest=$rest"', stdout: 'data\nrest=ta\n', exitCode: 0 },
+  // The file itself, never its old name: renamed, the descriptor's file is written and the new one at the name is not;
+  // unlinked, it is still read.
+  { script: 'printf old >/tmp/a; exec 4<>/tmp/a; mv /tmp/a /tmp/b; printf new >/tmp/a; printf changed >/dev/fd/4; cat /tmp/a; printf :; cat /tmp/b', stdout: 'new:changed', exitCode: 0 },
+  { script: 'printf old >/tmp/c; exec 4</tmp/c; rm /tmp/c; cat /dev/fd/4', stdout: 'old', exitCode: 0 },
+  { script: 'printf old >/tmp/d; exec 4</tmp/d; mv /tmp/d /tmp/e; printf new >/tmp/d; cat /dev/fd/4; printf :; cat /tmp/d', stdout: 'old:new', exitCode: 0 },
   // Stat'd, it is that file's: its mode, by an absolute name or one relative to the cwd.
   { script: 'printf data >/tmp/p; chmod 400 /tmp/p; exec 4</tmp/p; stat -Lc %a /dev/fd/4', stdout: '400\n', exitCode: 0 },
   { script: 'cd /; printf d >/tmp/g; chmod 640 /tmp/g; exec 4</tmp/g; stat -Lc %a ./dev/fd/4', stdout: '640\n', exitCode: 0 },
