@@ -93,6 +93,9 @@ export interface StartRealViteResult {
   cfgPath: string | null;
 }
 
+/** Per session host: the server whose restore intent VITE_CONFIG_KEY holds now. */
+const intentOf = new WeakMap<object, number>();
+
 /**
  * Boot a cirrus-real dev server on `self` as a resident process serving its
  * port, and persist the config restore needs. One already running is ended
@@ -188,12 +191,12 @@ export async function startRealVite(self: any, opts: StartRealViteOptions): Prom
     // The intent lasts as long as the server: its end (a kill, vite stop, a
     // lost host, a replacing vite) forgets it, so nothing restores a server
     // that ended. A session that sleeps never ends it, and wakes to restore it.
-    // It names its server, and an end forgets only its own server's: a start
-    // that overlapped this one may have written its own since.
+    // An end forgets only its own server's intent: a start that overlapped
+    // this one may have written its own since (intentOf).
     const pid = cirrusReal.pid;
+    intentOf.set(self, pid);
     try {
       await self.ctx.storage.put(VITE_CONFIG_KEY, {
-        pid,
         devServer: 'real',
         root: opts.root,
         port: opts.port,
@@ -203,9 +206,9 @@ export async function startRealVite(self: any, opts: StartRealViteOptions): Prom
       });
     } catch { /* persistence is best-effort; the server still serves now */ }
     const forget = (): void => {
-      self.ctx.storage.transaction(async (txn: any) => {
-        if ((await txn.get<{ pid?: number }>(VITE_CONFIG_KEY))?.pid === pid) await txn.delete(VITE_CONFIG_KEY);
-      }).catch(() => {});
+      if (intentOf.get(self) !== pid) return;
+      intentOf.delete(self);
+      self.ctx.storage.delete(VITE_CONFIG_KEY).catch(() => {});
     };
     if (self.processes.get(pid)?.state !== 'running') forget();
     else self.processes.subscribeTerminal(pid, forget);
