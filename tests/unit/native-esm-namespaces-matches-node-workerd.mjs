@@ -98,6 +98,16 @@ const FILES = {
   'attributes-staged/plain.mjs': 'export default 1;\n',
   ...Object.fromEntries(ATTRIBUTE_CASES.map(([name, text]) => [`attributes-staged/${name.slice(2)}`, text])),
   'attributes-staged/main.mjs': staged(ATTRIBUTE_CASES),
+  // import()'s own attributes: an unknown key, none for JSON, json for JavaScript.
+  'attributes-dynamic/data.json': '{"n":1}\n',
+  'attributes-dynamic/plain.mjs': 'export default 1;\n',
+  'attributes-dynamic/main.mjs': [
+    "const cases = [['unknown-key', './data.json', { with: { type: 'json', mode: 'x' } }], ['missing', './data.json', undefined], ['js-as-json', './plain.mjs', { with: { type: 'json' } }]];",
+    'for (const [label, specifier, options] of cases) {',
+    "  try { console.log(label, JSON.stringify((await import(specifier, options)).default)); }",
+    "  catch (e) { console.log(label, 'rejected', e.name, e.code, e.message); }",
+    '}',
+  ].join('\n') + '\n',
 };
 for (const name of Object.keys(FILES)) if (FILES[name] === null) FILES[name] = FILES[name.replace('star-staged/', 'star/')];
 
@@ -108,6 +118,7 @@ const COMMANDS = [
   'node star-staged/main.mjs',
   'node attributes/main.mjs',
   'node attributes-staged/main.mjs',
+  'node attributes-dynamic/main.mjs',
 ];
 
 await matchNodeInWorkerd('native-esm-namespaces-matches-node-workerd', W, FILES, COMMANDS);
