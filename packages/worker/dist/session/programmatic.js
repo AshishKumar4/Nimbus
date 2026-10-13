@@ -477,10 +477,6 @@ export async function rpcKillProcess(self, pid) {
     let ok = false;
     if (self._viteShimPid === n) {
         try {
-            if (self.cirrusReal?.isRunning) {
-                self.cirrusReal.stop(self.ctx);
-                self.cirrusReal = null;
-            }
             if (self.viteDevServer?.isRunning) {
                 self.viteDevServer.stop();
                 self.viteDevServer = null;
@@ -1032,9 +1028,6 @@ async function destroySession(self, options) {
         const pid = Number(entry.pid);
         try {
             if (self._viteShimPid === pid) {
-                if (self.cirrusReal?.isRunning)
-                    self.cirrusReal.stop(self.ctx);
-                self.cirrusReal = null;
                 if (self.viteDevServer?.isRunning)
                     self.viteDevServer.stop();
                 self.viteDevServer = null;

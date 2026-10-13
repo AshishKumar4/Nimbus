@@ -621,27 +621,29 @@ export class SqliteRuntimeFsBridge {
                     this.unlink(path);
                     return;
                 }
-                const located = this.locateMutation(path, false, 'remove');
-                if (located.mount) {
-                    const mount = located.mount;
-                    if (!mount.removeRecursive)
-                        removeTree(mount, located.path);
-                    else {
-                        // A walked removal carries on past an entry it cannot remove and
-                        // reports it; rm -r fails with the first.
-                        const failed = mount.removeRecursive(located.path)?.failures[0];
-                        if (failed)
-                            throw failed.error;
-                    }
-                }
-                else
+                const located = this.locateMutation(path, false, options.report ? 'rm' : 'remove');
+                if (!options.report && !located.mount) {
                     this.vfs.removeRecursive(located.path);
+                    return;
+                }
+                const report = located.mount ? located.mount.removeRecursive(located.path, { keepVanishedAncestors: options.keepVanishedAncestors })
+                    : this.namespace !== undefined ? this.namespace.sync.removeRecursive('/' + located.path, { keepVanishedAncestors: options.keepVanishedAncestors })
+                        : this.removeStored(located.path, path);
+                if (options.report)
+                    return report;
+                const failed = report.failures[0];
+                if (failed)
+                    throw failed.error;
             }
             catch (error) {
                 if (!(options.force && hasErrorCode(error, 'ENOENT')))
                     throw error;
             }
         });
+    }
+    removeStored(key, path) {
+        this.vfs.removeRecursive(key);
+        return { removed: [typeof path === 'string' ? path : path.path], kept: [], failures: [] };
     }
     copyFile(from, to) {
         const call = { syscall: 'copyfile', path: from, dest: to };
@@ -914,7 +916,7 @@ export class SqliteRuntimeFsBridge {
      * confined caller's /tmp/x is its private file, not the shared tmp/x.
      */
     leaseAllows(path, owner) {
-        this.rawVfs.assertMutationAllowed(this.vfs.storageKey(normalizeVfsPath(path)), owner, this.vfs.holds);
+        this.rawVfs.assertMutationAllowed(path, owner, this.vfs.holds, this.vfs.cred);
     }
     /** Operations with SQLite-only semantics (journals, atomic renames, mutation leases) refuse kernel mounts. */
     sqlitePath(path, followSymlinks, call) {
@@ -992,20 +994,6 @@ function mountOp(fn, ...args) {
     if (typeof fn !== 'function')
         throw callError('ENOTSUP', args.length === 2 ? { syscall: args[0], path: args[1] } : args[0]);
     return fn;
-}
-/** Depth-first removal with base operations, for a backend without its own. */
-function removeTree(mount, path) {
-    const stat = mount.stat(path, { follow: false });
-    if (stat === null)
-        throw fsError('ENOENT', 'rm', path);
-    if (stat.type === 'directory') {
-        for (const entry of mount.readdir(path))
-            removeTree(mount, `${path === '/' ? '' : path}/${entry.name}`);
-        mountOp(mount.rmdir, 'rmdir', path)(path);
-    }
-    else {
-        mount.unlink(path);
-    }
 }
 /** mkdir -p of a mounted path's parent. */
 function mountParents(mount, path) {

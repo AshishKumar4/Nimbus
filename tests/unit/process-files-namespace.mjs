@@ -86,8 +86,8 @@ assert.match(listed.stdout, /memory \/mnt\/data/);
   });
   const fs = files.bind({ pid: 4245, cred: USER });
   await assert.rejects(() => fs.remove('/partial/tree', { recursive: true }), {
-    name: 'VfsError', code: 'EACCES', errno: -13, syscall: 'rm', path: '/partial/tree/kept',
-    message: "EACCES: permission denied, rm '/partial/tree/kept'",
+    name: 'VfsError', code: 'EACCES', errno: -13, syscall: 'unlink', path: '/partial/tree/kept',
+    message: "EACCES: permission denied, unlink '/partial/tree/kept'",
   });
 }
 
