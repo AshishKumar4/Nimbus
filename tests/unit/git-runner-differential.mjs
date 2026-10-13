@@ -173,6 +173,39 @@ try {
     steps.push(parks ? 'a commit\'s editor' : 'a commit\'s editor, refused by name');
   }
 
+  // Real git's commit -a with an executable pre-commit hook. Without JSPI
+  // the hook's spawn is refused through the ABI (an errno, its name on
+  // stderr): git's own error path runs, the commit fails as git reports a
+  // hook it cannot run, and its index.lock is removed. With JSPI the hook
+  // runs, as host git's does.
+  {
+    await step('a pre-commit hook', { files: { '.git/hooks/pre-commit': '#!/bin/sh\nexit 0\n', 'a.txt': 'hooked\n' }, git: [] });
+    chmodSync(join(hostDir, 'repo/.git/hooks/pre-commit'), 0o755);
+    await sessionChmod('755', '.git/hooks/pre-commit');
+    const before = await ws.exec('cd repo && git rev-parse HEAD && git ls-files -s');
+    const got = await ws.exec(`cd repo && ${exports} TZ=UTC NIMBUS_GIT_WASI=1 git commit -a -q -m hooked`);
+    const parks = typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function';
+    const lock = await ws.exec('test -e repo/.git/index.lock');
+    assert.notEqual(lock.exitCode, 0, `no index.lock is left behind (git's stderr: ${got.stderr})`);
+    if (parks) {
+      const host = execFileSync('git', ['commit', '-a', '-q', '-m', 'hooked'], { cwd: join(hostDir, 'repo'), env: hostEnv, encoding: 'utf8' });
+      assert.deepEqual([got.exitCode, got.stdout], [0, host], `the hook runs and the commit is made: ${got.stderr}`);
+    } else {
+      assert.notEqual(got.exitCode, 0, 'the commit fails');
+      assert.match(got.stderr, /nimbus_proc\.spawn has to wait for its answer, and this guest cannot be suspended/, `the refusal is named: ${got.stderr}`);
+      assert.match(got.stderr, /cannot spawn \.git\/hooks\/pre-commit/, `git reports the hook it cannot run: ${got.stderr}`);
+      assert.equal((await ws.exec('cd repo && git rev-parse HEAD && git ls-files -s')).stdout, before.stdout, 'nothing is committed or staged');
+      // The host repository as the session's: the change, uncommitted.
+    }
+    rmSync(join(hostDir, 'repo/.git/hooks/pre-commit'));
+    assert.equal((await ws.exec('rm repo/.git/hooks/pre-commit')).exitCode, 0);
+    if (!parks) {
+      execFileSync('git', ['checkout', '--', 'a.txt'], { cwd: join(hostDir, 'repo'), env: hostEnv });
+      assert.equal((await ws.exec(`cd repo && ${exports} git checkout -- a.txt`)).exitCode, 0);
+    }
+    steps.push(parks ? 'a pre-commit hook' : 'a pre-commit hook, refused through the ABI');
+  }
+
   // Output that is not UTF-8, byte for byte: a binary blob and a diff of a Latin-1 file.
   const binary = Uint8Array.from({ length: 4096 }, (_, i) => (i * 37 + 11) & 0xff);
   const latin1 = Buffer.from('caf\xe9 cr\xe8me\n', 'latin1');
