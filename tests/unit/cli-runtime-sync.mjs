@@ -33,8 +33,8 @@ const savedPath = process.env.PATH;
 const savedAccount = process.env.CLOUDFLARE_ACCOUNT_ID;
 try {
   const scripts = join(root, 'packages/worker/scripts');
-  mkdirSync(scripts, { recursive: true });
-  for (const script of ['bundle-runtime.mjs', 'runtime-specs.mjs', 'artifact-inputs.mjs']) cpSync(join(WORKER, 'scripts', script), join(scripts, script));
+  // The publisher and the helpers it imports, as the repository has them.
+  cpSync(join(WORKER, 'scripts'), scripts, { recursive: true });
   cpSync(join(WORKER, 'runtime-contracts'), join(root, 'packages/worker/runtime-contracts'), { recursive: true });
   // The module, busybox, and the recipe and provenance the publisher checks them against (wasm/bash/inputs.mjs).
   cpSync(join(WORKER, 'wasm/bash'), join(root, 'packages/worker/wasm/bash'), { recursive: true });
