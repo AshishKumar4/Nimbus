@@ -20,6 +20,13 @@ export interface SavedVariable {
   readonly array: (string | undefined)[] | undefined;
 }
 
+/** A variable dictionary: prototype names are ordinary variable names too. */
+export function cloneEnv(source: Readonly<Record<string, string>>): Record<string, string> {
+  const env = { ...source };
+  Object.setPrototypeOf(env, null);
+  return env;
+}
+
 /** `name=value` (`name+=value` with `append`); on an array, its first element. False for a readonly name. */
 export function assignVariable(store: VariableStore, name: string, value: string, append = false): boolean {
   if (store.readonlyNames.has(name)) return false;

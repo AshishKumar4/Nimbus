@@ -28,6 +28,7 @@ import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network
 import type { RemoteFailure } from './pack/remote-failure.js';
 import type { WaveStats } from '@nimbus-sh/platform/wave-writer.js';
 import { type MetadataOverlayStats, type SupervisorRpcCounters } from './pack/facet-supervisor.js';
+import type { PathProtection } from './worktree/verify-path.js';
 export type GitNetworkOp = 'clone' | 'fetch' | 'push' | 'fetch-objects' | 'graph-filters';
 /** One step of a clone's changed-path filters pass (git/pack/graph-filters.ts). */
 export type GraphFiltersStep = {
@@ -125,6 +126,8 @@ export interface GitNetworkOpts {
     filter?: string;
     /** `git clone --sparse`: a cone-mode sparse checkout of the top's files only. */
     sparse?: boolean;
+    /** clone: the names its checkout refuses beyond verify_path's own, as its command is configured. */
+    protect?: PathProtection;
     /** Fast clone, full history: blobs per history request (tuning; history.ts by default). */
     historyBlobsPerBatch?: number;
     /** Fast clone, full history: root trees per history request (tuning; history.ts by default). */

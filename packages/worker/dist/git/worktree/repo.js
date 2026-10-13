@@ -18,6 +18,7 @@ import { coneMatcher, parseConeSparseCheckout } from '../pack/sparse.js';
 import { DirCache, compareBytes, objectId } from './dircache.js';
 import { Excludes, parsePatternList } from './excludes.js';
 import { EMPTY_TREE, treeOf } from './tree.js';
+import { DEFAULT_PATH_PROTECTION } from './verify-path.js';
 import { matchStat, newCounters, worktreeBlobId } from './walk.js';
 /** git's core.looseCompression when unset: Z_BEST_SPEED. */
 const LOOSE_COMPRESSION = 1;
@@ -325,6 +326,14 @@ export class WorktreeRepo {
         if (cone === null)
             throw new Error('fatal: a sparse checkout without cone mode is not supported');
         return coneMatcher(cone, configBool(await this.worktreeSetting('core.ignorecase')) === true);
+    }
+    /** core.protectHFS and core.protectNTFS, the repository's over the global, else git's defaults (verify-path.ts). */
+    async pathProtection() {
+        const setting = async (key) => configBool(await this.config(key) ?? await this.globalConfig(key));
+        return {
+            hfs: await setting('core.protecthfs') ?? DEFAULT_PATH_PROTECTION.hfs,
+            ntfs: await setting('core.protectntfs') ?? DEFAULT_PATH_PROTECTION.ntfs,
+        };
     }
     /** The worktree with the settings its comparisons take. */
     async worktree() {

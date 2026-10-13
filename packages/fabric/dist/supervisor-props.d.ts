@@ -75,6 +75,44 @@ export declare function workspaceOutbound<C extends object>(config: C, network: 
 export declare function egressMarker(network: Pick<SupervisorBindingProps, 'egress'>): {
     NIMBUS_EGRESS?: true;
 };
+/**
+ * The props of a SUPERVISOR binding no run acts through: a host's own work,
+ * never a process's. It acts as `pid` (0 is none) for authority, but nothing
+ * read through it is an observation of that process's run (stop/replay).
+ * Minted in the Durable Object whose state is `ctx`, reaching `options.doId`
+ * (this object by default) by `options.route`, on `options.network`.
+ */
+export declare function infrastructureSupervisorProps(ctx: {
+    readonly id: {
+        toString(): string;
+    };
+}, pid: number, options: {
+    doId?: string;
+    route?: HostRoute;
+    network: WorkspaceNetwork;
+}): {
+    egress?: undefined;
+    networkId?: undefined;
+    bindingKind: "infrastructure";
+    hostIncarnation?: string;
+    waveWriter?: string;
+    waveWriterMintedAt?: number;
+    doId: string;
+    pid: number;
+    route: HostRoute | undefined;
+} | {
+    egress: WorkspaceEgress;
+    networkId: string;
+    bindingKind: "infrastructure";
+    hostIncarnation?: string;
+    waveWriter?: string;
+    waveWriterMintedAt?: number;
+    doId: string;
+    pid: number;
+    route: HostRoute | undefined;
+};
+/** What infrastructureSupervisorProps mints: a binding no run acts through. */
+export type InfrastructureSupervisorProps = ReturnType<typeof infrastructureSupervisorProps>;
 /** The one mint for SUPERVISOR/outbound capabilities handed to a process. */
 export declare function mintProcessSupervisor<T>(mint: (options: {
     props: SupervisorBindingProps;
@@ -87,6 +125,8 @@ export declare function mintProcessSupervisor<T>(mint: (options: {
  * call on it is a request to the host.
  */
 export declare function bindingSupervisor(props: SupervisorBindingProps, exports?: unknown): object;
+/** A binding no run acts through (infrastructureSupervisorProps), minted as bindingSupervisor mints a process's. */
+export declare function infrastructureSupervisor(props: InfrastructureSupervisorProps, exports?: unknown): object;
 /**
  * `key`, for a loader cache entry whose worker holds a binding with `props`:
  * made specific to the host instance the binding names, since the loader

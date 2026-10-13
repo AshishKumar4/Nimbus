@@ -161,7 +161,7 @@ export function processHost(opts) {
         return pipe.end().catch(() => { });
     };
     /** The answer once `dropped` (a drop's wait, if it has one) is done. */
-    const after = (dropped) => (dropped ? dropped.then(() => E.SUCCESS) : E.SUCCESS);
+    const after = (dropped) => (dropped ? opts.park(dropped.then(() => E.SUCCESS)) : E.SUCCESS);
     /** The strings in a NUL-separated buffer the guest passed. */
     const strings = (ptr, len) => {
         if (len === 0)
@@ -357,7 +357,7 @@ export function processHost(opts) {
             for (const target of [stdout, stderr])
                 if (target !== null && typeof target !== 'number')
                     target.pipe.writers++;
-            return (async () => {
+            return opts.park((async () => {
                 // The child sees what this process wrote before it started.
                 await opts.release();
                 let childPid;
@@ -450,7 +450,7 @@ export function processHost(opts) {
                 })();
                 view().setInt32(pidPtr, childPid, true);
                 return E.SUCCESS;
-            })();
+            })());
         },
         start(pid) {
             const child = children.get(pid);
@@ -468,7 +468,7 @@ export function processHost(opts) {
             if (now !== null)
                 return now;
             mustWait('start');
-            return parkedWait((wake) => child.waiters.push(wake), answer).ready.then((started) => started ?? E.INTR);
+            return opts.park(parkedWait((wake) => child.waiters.push(wake), answer).ready.then((started) => started ?? E.INTR));
         },
         wait(pid, options, statusPtr, waitedPtr) {
             const candidates = pid === -1 || pid === 0 ? [...children.values()] : [children.get(pid)].filter((c) => c !== undefined);
@@ -498,8 +498,8 @@ export function processHost(opts) {
                 return E.SUCCESS;
             }
             mustWait('wait');
-            return parkedWait((wake) => { for (const child of candidates)
-                child.waiters.push(wake); }, reap).ready.then((reaped) => reaped ?? E.INTR);
+            return opts.park(parkedWait((wake) => { for (const child of candidates)
+                child.waiters.push(wake); }, reap).ready.then((reaped) => reaped ?? E.INTR));
         },
         kill(pid, signal) {
             const sup = supervisor();
@@ -513,7 +513,7 @@ export function processHost(opts) {
             if (!name)
                 return E.INVAL;
             mustWait('kill');
-            return Promise.resolve(sup.cpKill(pid, name)).then((delivered) => (delivered ? E.SUCCESS : E.SRCH));
+            return opts.park(Promise.resolve(sup.cpKill(pid, name)).then((delivered) => (delivered ? E.SUCCESS : E.SRCH)));
         },
     };
     const read = (fd, iovs, iovsLen, nread) => {
@@ -542,7 +542,7 @@ export function processHost(opts) {
             try {
                 const packet = opts.input(room);
                 return packet && typeof packet.then === 'function'
-                    ? Promise.resolve(packet).then(finish, () => E.IO) : finish(packet);
+                    ? opts.park(Promise.resolve(packet).then(finish, () => E.IO)) : finish(packet);
             }
             catch {
                 return E.IO;
@@ -577,7 +577,7 @@ export function processHost(opts) {
             return now;
         if (((entry.fdflags ?? 0) & FDFLAGS_NONBLOCK) !== 0)
             return E.AGAIN;
-        return parkedWait((wake) => pipe.waiters.push(wake), answer).ready.then((read) => read ?? E.INTR);
+        return opts.park(parkedWait((wake) => pipe.waiters.push(wake), answer).ready.then((read) => read ?? E.INTR));
     };
     const write = (fd, iovs, iovsLen, nwritten) => {
         const entry = pipeEntry(fd);
@@ -594,12 +594,12 @@ export function processHost(opts) {
         if (pipe.readers === 0)
             return E.PIPE;
         if (pipe.forward) {
-            return pipe.forward(bytes).then((ok) => {
+            return opts.park(pipe.forward(bytes).then((ok) => {
                 if (!ok)
                     return E.PIPE;
                 view().setUint32(nwritten, bytes.byteLength, true);
                 return E.SUCCESS;
-            });
+            }));
         }
         const admit = () => {
             const decision = decideWrite({ queued: pipe.buffered, readers: pipe.readers, writers: pipe.writers }, bytes.byteLength, 'jspi', PIPE_CAPACITY, PIPE_CAPACITY);
@@ -619,7 +619,7 @@ export function processHost(opts) {
             return now;
         if (((entry.fdflags ?? 0) & FDFLAGS_NONBLOCK) !== 0)
             return E.AGAIN;
-        return parkedWait((wake) => pipe.waiters.push(wake), admit).ready.then((written) => written ?? E.INTR);
+        return opts.park(parkedWait((wake) => pipe.waiters.push(wake), admit).ready.then((written) => written ?? E.INTR));
     };
     const close = (fd) => {
         const entry = pipeEntry(fd);

@@ -42,6 +42,7 @@
  */
 import { configureWsHibernation } from '@nimbus-sh/fabric/ws-hibernation-config.js';
 import { timers } from '@nimbus-sh/fabric/timers.js';
+import { hostActivity } from '@nimbus-sh/fabric/host-activity.js';
 import { RESIDENT_KEEPALIVE_DETACHED_MS, RESIDENT_KEEPALIVE_MS } from '@nimbus-sh/platform/limits.js';
 import { SESSION_DESTROYED_KEY, W9_FLUSH_DEBOUNCE_MS } from './keys.js';
 /**
@@ -303,13 +304,18 @@ export function ensureLogJanitor(host, ctx) {
  * pid namespace, dropping its attached terminal and its port. The alarm is
  * the event; its dispatch is the whole payload.
  *
+ * While the cycle holds the host for a client, it owns the residents' host
+ * activity: that client's requests share one open watch per resident (and a
+ * peer its data stub) rather than each opening its own. The cycle's end
+ * releases it, so a host with no client present observes nothing.
+ *
  * The one rule for both hosts: the session DO schedules through the fabric
  * timer mux, a hosted runtime through its embedder's lifecycle. Idempotent
- * per instance via `_w1KeepaliveArmed`; `residentKeepaliveFired` clears the
- * flag when the cycle ends, so the next resident spawn re-arms it.
+ * per instance via `_w1Keepalive`; `residentKeepaliveFired` ends the cycle,
+ * so the next resident spawn re-arms it.
  */
-export function armResidentKeepalive(host, schedule) {
-    if (host._w1KeepaliveArmed)
+export function armResidentKeepalive(host, cycle) {
+    if (host._w1Keepalive)
         return;
     if (host.processes.residentRunning === 0)
         return;
@@ -318,19 +324,24 @@ export function armResidentKeepalive(host, schedule) {
     // an eternal keep-alive loop on a session that no longer exists.
     if (host._w1SessionDestroyed)
         return;
-    // Optimistic flag (dedupes same-turn spawns), CONFIRMED by the schedule
-    // outcome: a failure with the flag left set would mean no alarm AND
-    // nothing ever re-arming until the instance recycles.
-    host._w1KeepaliveArmed = true;
-    void schedule(Date.now() + RESIDENT_KEEPALIVE_MS).then((ok) => {
-        if (!ok)
-            host._w1KeepaliveArmed = false;
+    // Optimistic (dedupes same-turn spawns), CONFIRMED by the schedule
+    // outcome: a failure left armed would mean no alarm AND nothing ever
+    // re-arming until the instance recycles.
+    const lease = host._w1Keepalive = cycle.observe();
+    void cycle.schedule(Date.now() + RESIDENT_KEEPALIVE_MS).then((ok) => {
+        if (!ok && host._w1Keepalive === lease)
+            endResidentKeepalive(host);
     });
+}
+/** W1: the cycle is over: release what it owned, so the next spawn or client arms it again. */
+export function endResidentKeepalive(host) {
+    host._w1Keepalive?.release();
+    host._w1Keepalive = null;
 }
 /**
  * W1: the keep-alive alarm fired. Deliberately no work: the alarm exists so
  * the object HAS an event, and being dispatched is the entire payload.
- * Returns when to fire next, or null after clearing the armed flag.
+ * Returns when to fire next, or null after ending the cycle.
  *
  * Re-arms only while a resident process runs AND a client is present — the
  * rule the janitor learned the hard way (see dispatchAlarm): an
@@ -343,7 +354,7 @@ export function residentKeepaliveFired(host, now) {
     if (!host._w1SessionDestroyed && host.processes.residentRunning > 0 && residentClientPresent(host, now)) {
         return now + RESIDENT_KEEPALIVE_MS;
     }
-    host._w1KeepaliveArmed = false;
+    endResidentKeepalive(host);
     return null;
 }
 /**
@@ -352,12 +363,16 @@ export function residentKeepaliveFired(host, now) {
  * whose client came back before the platform evicted it still holds its
  * process, and the next quiet stretch must not idle it out mid-session.
  */
-export function noteResidentClient(host, schedule) {
+export function noteResidentClient(host, cycle) {
     host._w1LastClientActivityAt = Date.now();
-    armResidentKeepalive(host, schedule);
+    armResidentKeepalive(host, cycle);
+}
+/** The session DO's cycle: the fabric timer mux, and the session's host activity. */
+function sessionKeepaliveCycle(host, ctx) {
+    return { schedule: (at) => timers(host, ctx).schedule('resident-keepalive', at), observe: () => hostActivity(ctx).acquire() };
 }
 export function ensureResidentKeepalive(host, ctx) {
-    armResidentKeepalive(host, (at) => timers(host, ctx).schedule('resident-keepalive', at));
+    armResidentKeepalive(host, sessionKeepaliveCycle(host, ctx));
 }
 /** W9: idempotent SQL schema bootstrap. */
 export function ensureHibSchema(host, ctx) {
@@ -384,15 +399,16 @@ export function ensureHibSchema(host, ctx) {
  * Only traffic delivered through this runtime's client boundaries counts.
  * A host's socket table belongs to its embedder, not to Nimbus, and even an
  * attached runtime terminal cannot renew an alarm forever without traffic.
- * Attach/input/port requests renew this bounded interest; alarms and facet
- * supervisor calls never do.
+ * Attach/input/port requests renew bounded interest. A routed preview socket
+ * remains interest until it closes; alarms and facet RPC never renew it.
  */
 export function residentClientPresent(host, now) {
-    return now - host._w1LastClientActivityAt < RESIDENT_KEEPALIVE_DETACHED_MS;
+    return host.portRegistry.clientSocketCount > 0 || (host._cirrusHmrWsClients?.size ?? 0) > 0
+        || now - host._w1LastClientActivityAt < RESIDENT_KEEPALIVE_DETACHED_MS;
 }
 /** W1: a client reached the session DO (see noteResidentClient). */
 export function noteClientActivity(host, ctx) {
-    noteResidentClient(host, (at) => timers(host, ctx).schedule('resident-keepalive', at));
+    noteResidentClient(host, sessionKeepaliveCycle(host, ctx));
 }
 /**
  * W9: ensure the alarm is set for the next flush window. Cheap to
@@ -433,11 +449,9 @@ export function scheduleHibFlush(host, ctx) {
  *     and SQL; re-arm at the next retention deadline, if any.
  *   - `'resident-keepalive'` → no work; the fire IS the work. Re-arms
  *     while a resident process is running, so the object stays in memory.
- *   - `'hosting-watch'` → hostingWatch (fabric PeerHost.watchFired):
- *     a host holding processes for other sessions tells them of its own
- *     reset; re-arms while it holds one.
+ *   - `'hosting-watch'` → retire a legacy alarm without rearming it.
  */
-export function dispatchAlarm(host, ctx, pumpResidentLaunches, alarmInfo, hostingWatch) {
+export function dispatchAlarm(host, ctx, pumpResidentLaunches, alarmInfo) {
     return timers(host, ctx).dispatch({
         'w9-flush': () => {
             host.processes.flushLogs();
@@ -455,11 +469,6 @@ export function dispatchAlarm(host, ctx, pumpResidentLaunches, alarmInfo, hostin
         },
         'resident-keepalive': (now) => {
             const rearmAt = residentKeepaliveFired(host, now);
-            if (rearmAt !== null)
-                return { rearmAt };
-        },
-        'hosting-watch': async () => {
-            const rearmAt = await hostingWatch?.() ?? null;
             if (rearmAt !== null)
                 return { rearmAt };
         },

@@ -43,12 +43,13 @@ import type { NimbusWorkspace } from '@nimbus-sh/core/workspace';
 import type { RuntimeManager } from '@nimbus-sh/core/runtime/runtime-manager.js';
 import { type SessionAiHost } from './ai.js';
 import { type TryEnableReplicasResult as _W12EnableResult } from '../replica/routing.js';
+import type { HostActivityLease } from '@nimbus-sh/fabric/host-activity.js';
 import { type InitSessionOptions } from './init.js';
 import * as _rpc from './rpc.js';
 import { SessionFilesystem } from './session-filesystem.js';
 import type { SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { type SupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
-import type { HostedHttpRequest, HostedHttpResponse, PeerHost } from '@nimbus-sh/fabric/peer-host.js';
+import type { HostedHttpRequest, PeerHost } from '@nimbus-sh/fabric/peer-host.js';
 import type { FanoutShardOptions } from '@nimbus-sh/fabric/fanout.js';
 import { WebSocketRelay } from './ws-relay.js';
 import * as _portCapability from './port-capability.js';
@@ -162,10 +163,11 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
      *  CF DO docs). The alarm itself lives in DO storage at key
      *  `w1_next_alarm_reasons`. */
     _w1JanitorAt: number | null;
-    /** W1: idempotency flag for the resident keep-alive alarm cycle — the
-     *  recurring event that holds this object in memory for as long as a
-     *  resident process runs (hibernation.ts ensureResidentKeepalive). */
-    _w1KeepaliveArmed: boolean;
+    /** W1: the resident keep-alive alarm cycle while armed — the recurring
+     *  event that holds this object in memory for as long as a resident
+     *  process runs and its client is present — and the host activity it owns
+     *  (hibernation.ts armResidentKeepalive). */
+    _w1Keepalive: HostActivityLease | null;
     /** W1: when a runtime client last reached this session over HTTP/WS; the keep-alive
      *  holds the object only while traffic was observed within
      *  RESIDENT_KEEPALIVE_DETACHED_MS (hibernation.ts residentClientPresent). */
@@ -444,17 +446,10 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
     _rpcProcessHostProbe(): {
         isolateToken: string;
     };
-    _rpcHostProcess(boot: unknown, opts: unknown): Promise<{
-        ok: boolean;
-    }>;
-    _rpcAwaitHostedOpen(workerKey: string): Promise<{
-        ok: boolean;
-    }>;
-    _rpcAwaitHostedBoot(workerKey: string): Promise<{
-        payload: unknown;
-    }>;
-    _rpcRouteHostedHttp(workerKey: string, request: HostedHttpRequest): Promise<HostedHttpResponse>;
-    _rpcHostLost(workerKey: string, capability: string): Promise<boolean>;
+    _rpcHostProcess(boot: unknown, opts: unknown): ReturnType<typeof _rpc._rpcHostProcess>;
+    _rpcAwaitHostedBoot(workerKey: string): ReturnType<typeof _rpc._rpcAwaitHostedBoot>;
+    _rpcAbandonHostedHttp(workerKey: string, capability: string, id: number): Promise<void>;
+    _rpcRouteHostedHttp(workerKey: string, request: HostedHttpRequest): ReturnType<typeof _rpc._rpcRouteHostedHttp>;
     _rpcCancelHostProcess(workerKey: string): Promise<{
         cancelled: boolean;
     }>;
@@ -807,6 +802,10 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
      * checks and changes nothing.
      */
     seedFilesystem(): void;
+    private terminalInputDispatcher;
+    private terminalInputPending;
+    dispatchTerminalInput(frame: string): void;
+    _rpcTerminalInput(frame: string, terminalId: string): Promise<void>;
     webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void>;
     webSocketClose(ws: WebSocket, code?: number, reason?: string, wasClean?: boolean): Promise<void>;
     webSocketError(ws: WebSocket, error?: any): Promise<void>;

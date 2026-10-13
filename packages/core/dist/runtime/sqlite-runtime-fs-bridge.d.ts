@@ -2,7 +2,7 @@ import { type CredentialedVfs, type DelegationTerms, type SqliteVFS } from '../v
 import type { WriteStreamOptions } from './wave-contracts.js';
 import { WaveIngest } from './wave-ingest.js';
 import { type CompositeVFS } from '../vfs/composite.js';
-import { type Awaitable } from '../vfs/vfs.js';
+import { type Awaitable, type VfsRemoval } from '../vfs/vfs.js';
 export { fsError, modeAllows, walkBeneath, type BeneathLookup } from './beneath-walk.js';
 import type { RuntimeFileHandle, RuntimeFsPath, RuntimeReadOptions, RuntimeSynchronousFs, RuntimeFsBridge, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat, VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeMutationOwner, ExclusiveMutationGrant, ExclusiveMutationRequest } from './os-contracts.js';
 export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
@@ -115,7 +115,10 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     remove(path: RuntimeFsPath, options?: {
         recursive?: boolean;
         force?: boolean;
-    }): void;
+        report?: boolean;
+        keepVanishedAncestors?: boolean;
+    }): void | VfsRemoval;
+    private removeStored;
     copyFile(from: RuntimeFsPath, to: RuntimeFsPath): void;
     copyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: {
         preserve?: boolean;

@@ -19,6 +19,160 @@ published independently in the `@nimbus-sh` npm scope.
   it, and an unknown type is refused. A static import's unknown attribute
   key is ignored, as Node ignores it; it was refused.
 
+## 2026-10-13: platform 0.9.0, core 0.19.0, fabric 0.14.0, worker 0.17.0, config 0.3.1, loom 0.3.0, sdk 0.14.0, react 0.3.2, cli 0.2.6, create-nimbus-app 0.2.3
+
+- Fixed: in a WASI program (an uploaded program, CPython), a socket read that
+  followed a poll which gave up on the socket could lose a chunk that arrived
+  just before the socket closed. A read or an accept that the 10 s park
+  deadline answered with EAGAIN wrote into the guest's buffer, or adopted a
+  connection, when its input arrived later; the input now waits for the next
+  call. A threaded program reading a pipe its other thread writes no longer
+  waits 8 s for EINTR. An open after `fd_renumber` or `dup2` no longer
+  replaces the descriptor moved there.
+- Fixed: walked recursive removal attempts unreadable entries, continues past
+  failures, and reports each entry that remains. The shell reports vanished
+  children unless `rm -f` was requested.
+- Changed: `rm -r` enters mounted subtrees and removes their writable contents,
+  as Linux does. It keeps busy mount points and their ancestors.
+- Fixed: credentialed SQLite paths follow links before `..`, matching the
+  namespace while keeping plain lookups on their indexed fast path.
+- Changed: real Vite (`NIMBUS_REAL_VITE=1 vite`) runs as one of the session's
+  resident processes, with the lifecycle every resident has. `vite` returns
+  once Vite listens, and a Vite that fails to boot fails the command instead
+  of its first page. Time moves with it: `vite` takes about 0.4 s longer,
+  the first page about 1 s less (start to first page about 0.4 s less), and
+  the page's first modules about 70-80 ms more each, the entry's transform no
+  longer hidden behind the boot's wait. Fixed: a server whose isolate the platform resets ends
+  with 137 and frees its port; before, its pid stayed running. A second
+  `vite` ends the server it replaces; before, that pid stayed running. A
+  server that ended (`kill`, `vite stop`, a lost isolate) stays ended;
+  before, the next request to the preview or its port started it again. A
+  session that sleeps and wakes still restores the server it was running. `spawnWorker` takes
+  `identity` (the argv, credential and exec id of a process no invoker
+  names) and `bindings` (beside the process's own SUPERVISOR). Removed: the
+  stateless fallback for hosts without Durable Object facets, where no
+  resident process can run, and `/api/_diag/cirrus`.
+- Fixed (security): JS git refuses a tree entry whose path native git
+  refuses: a `.git` component in any case, `.` or `..`, and the names
+  NTFS (and, with `core.protectHFS`, HFS+) read as `.git`. `checkout` and
+  `reset --hard` write nothing and say git's `invalid path` error, `reset`
+  leaves the index, and a clone keeps its repository with nothing checked
+  out. A clone honours `core.protectHFS` and `core.protectNTFS` from `-c`
+  and the user's `~/.gitconfig`, as git's does. Before, a fetched commit
+  could write `.git/config` or a file above the worktree.
+- Fixed (security): a malformed tree object is git's error
+  (`too-short tree object`, `malformed mode in tree entry`, `empty
+  filename in tree entry`). One reader looped forever on such a tree,
+  growing until the session ran out of memory.
+- Fixed (security): when a git server refuses the request for a pack after
+  answering its discovery, clone, fetch, pull, push and a partial clone's
+  lazy fetch say `RPC failed` as git does, and never print the server's
+  answer. Before, they printed it whole, credentials it echoed included.
+- Changed: `npm install`'s background warming of browser bundles and the
+  Vite dev server's `/@modules/` bundles are one path. Install now warms a
+  package subpath the dev server can resolve (a directory with its own
+  `package.json`), skips a package whose entry is a native or WebAssembly
+  payload with the same reason the dev server gives, and holds only the
+  memory a slice needs while it builds.
+- Fixed: a peer-hosted resident whose boot reads stdin (a synchronous read of
+  fd 0) was replayed against reads it never made: the hosting peer's own
+  reads of the process's boot images counted as the process's, and its
+  second boot stopped with `reached fd 0 before the recorded answer to stat
+  was delivered`. The peer reads the images through a binding no run acts
+  through, under the process's pid; the session serves such a read apart
+  from the run's own receipts.
+- Fixed: Node programs report Node's navigator identity and ICU locale, so
+  packages such as pg choose their Node transport. Worker identity and
+  hardware concurrency stay unchanged.
+- Added: `NimbusWorkspace.shellState(name)` reads the named shell's saved cwd
+  and exact environment, without its call pid. Reads share the shell's queue
+  and distinguish lone UTF-16 surrogates and variables named `__proto__`,
+  `constructor` or `toString`. Listings and UTF-8 pipes are unchanged.
+- Fixed: fabric connections preserve the host's socket type in lookups and
+  listings, so callers can use methods such as `send` without type assertions.
+- Fixed: Cloudflare account lookup validates only the successful account
+  result and reports malformed responses with their HTTP status and cause.
+  Account names are trimmed; blank names use the account id.
+- Fixed (security): `undici.request()` no longer forwards explicit Authorization,
+  Cookie or Proxy-Authorization headers across an origin-changing redirect.
+  Redirects now match Node 22's bundled undici: Host is regenerated on every
+  hop, 303 drops the body and content headers (keeping HEAD), 301/302 and
+  307/308 retain the method and body, and redirect limits honor
+  `throwOnMaxRedirect`. Along a redirect, a Node stream body stops at the
+  first redirect; an async or sync iterable, an array or a Web ReadableStream
+  is iterated again for the next hop that keeps the body, so a spent one fails
+  its Content-Length (`UND_ERR_REQ_CONTENT_LENGTH_MISMATCH`), and no redirect
+  after that hop is followed until a 303 drops the body. A string, bytes, a
+  Blob, FormData and URLSearchParams are the same on every hop (for FormData
+  and URLSearchParams, undici's own handler differs). A Web ReadableStream is
+  streamed on the first request, as before. Sync iterables and arrays are now
+  accepted as request bodies.
+- Fixed: peer placement put a process in the isolate another process of the
+  same coordinator already ran in, and two processes placed at once in the
+  same one: the isolates in use were checked but never recorded. Each
+  placement now reserves its isolate when it accepts it, and frees it when
+  the process is released, fails to open, or its host closes.
+
+- Breaking: a Worker that composes the fabric needs the `enable_request_signal`
+  compatibility flag, which no compatibility date enables. Add
+  `"enable_request_signal"` to `compatibility_flags` in your wrangler config;
+  `buildNimbusWranglerConfig` lists it. Without it `composeFabric` refuses the
+  Worker at startup, naming the flag. A client that leaves a response a
+  process is serving is seen only through that flag.
+- Breaking: `RouteableFacetTarget.handleHttpRequest(request, scope)` and
+  `HostedProcess.handleHttpRequest(request, scope)` take a `ResponseScope`
+  (`signal`, `settled`): the process owns work for the response until the
+  caller is done with its body or its client leaves. `relayRpcBody` and
+  `responseScope` (`@nimbus-sh/core/runtime/port-registry.js`) relay a body
+  with that scope.
+- Fixed: a client that leaves a response a resident Node server is still
+  writing reaches that server as it does in Node: the response closes
+  unfinished and later writes are refused, on facet and peer hosts alike. The
+  process's work, and the session, are no longer held until it writes again.
+- Changed: a resident process's HTTP requests reach it through its fetch
+  entrypoint, as its WebSocket upgrades already did, instead of an RPC call;
+  routed requests cost less than before. Its request signal is that call's
+  own: the process is loaded with `enable_request_signal` and
+  `request_signal_passthrough`, unless its program turned either off, so a
+  request it forwards is cancelled when its client leaves.
+- Fixed: a resident's request is admitted by the instance its host opened,
+  checked in the request itself; one the platform put in its place refuses it
+  before any guest code runs, and the process reports its host lost once. A
+  request no longer waits for a separate host validation first.
+- Fixed: a quiet client WebSocket routed through a port remains resident
+  interest until it closes; unrelated embedder sockets and idle terminals keep
+  their bounded traffic rule. Closing a preview begins that bounded idle grace.
+- Changed: peer residents retain a passive native coordinator-lifetime socket;
+  idle traffic on the hosting peer no longer ends a process while its coordinator
+  is alive. Releasing or losing the coordinator ends residency without polling.
+- Changed: durable application spawns require facet hosting and fail before
+  announcing a pid under peer mode; retained SQLite is not silently relocated.
+- Fixed: a resident's host loss is reported on that process and cannot refuse
+  unrelated commands or healthy siblings. Resident preparation and streamed
+  HTTP responses retain their work ownership through startup or body completion.
+- Breaking: the retired peer control operations `awaitHostedOpen` and `hostLost`
+  are removed. Staged boot assemblers return the shared `WorkerCode` contract.
+- Fixed: peer process hosts use activity-owned, abortable loss observation and
+  validate incarnation on use; idle peers no longer hold a permanent hosting
+  RPC or fire a five-second hosting-watch alarm. Cold cleanup drops legacy
+  throwaway-only hosting records without a physical facet name, logs that the
+  peer facet could not be named, and never guesses which facet to delete.
+- Fixed (security): the remote sandbox API deleted files as the kernel. A
+  `sandbox:use` token's `deleteFile` reached the session without a
+  credential, and an absent credential acts as `CRED_KERNEL`, so a remote
+  caller could delete files the session's user cannot, such as host-governed
+  files in sticky directories. A remote deletion now acts as the session's
+  user, as its writes already did; a colocated embedder calling the session
+  binding directly keeps the kernel default.
+- Added: `createNimbusHandler` names the Worker version that answered on the
+  replies a deploy's readiness reads (`POST /new`, the terminal WebSocket
+  upgrade, `DELETE /s/<id>/` and the remote API), as `x-nimbus-version`, when
+  the Worker binds `version_metadata` as `CF_VERSION_METADATA`. The hosted
+  demo binds it on every tier. Staging and production promotion now grade a
+  hosted-demo upload only after the edge answered as that version alone; one
+  old-version reply during the deploy overlap had made a promotion's `/try`
+  check report the session gone.
+
 ## 2026-10-12: platform 0.8.2, core 0.18.0, fabric 0.13.0, worker 0.16.0, loom 0.2.5, sdk 0.13.1, react 0.3.1, cli 0.2.5, create-nimbus-app 0.2.2
 
 - Fixed (security): the shell's Ctrl+P palette put file names into the page as

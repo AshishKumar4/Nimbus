@@ -202,8 +202,14 @@ export interface VFS {
      * for any other files. Absent: the backend object is.
      */
     readonly fileStore?: object;
-    /** rm -r; nothing returned means the whole operand went. */
-    removeRecursive?(path: string): Awaitable<VfsRemoval | void>;
+    /**
+     * rm -r; nothing returned means the whole operand went.
+     * `keepVanishedAncestors`: a child that vanished mid-walk keeps the
+     * directories holding it, as GNU rm -r leaves them.
+     */
+    removeRecursive?(path: string, options?: {
+        keepVanishedAncestors?: boolean;
+    }): Awaitable<VfsRemoval | void>;
     symlink?(target: string, path: string): Awaitable<void>;
     readlink?(path: string): Awaitable<string>;
     chmod?(path: string, mode: number): Awaitable<void>;
@@ -310,7 +316,9 @@ export interface SyncVFS {
         read: boolean;
         write: boolean;
     }): VfsOpenFile;
-    removeRecursive?(path: string): VfsRemoval | void;
+    removeRecursive?(path: string, options?: {
+        keepVanishedAncestors?: boolean;
+    }): VfsRemoval | void;
     symlink?(target: string, path: string): void;
     readlink?(path: string): string;
     chmod?(path: string, mode: number): void;
@@ -380,6 +388,8 @@ export interface VfsRemoval {
     removed: string[];
     kept: string[];
     failures: VfsRemovalFailure[];
+    /** Entries gone before this walk could remove them; consumers decide whether to diagnose them. */
+    vanished?: string[];
 }
 export interface VfsRemovalFailure {
     path: string;

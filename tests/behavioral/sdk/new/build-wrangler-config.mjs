@@ -18,6 +18,9 @@ const { buildNimbusWranglerConfig, defineNimbusConfig, NIMBUS_REQUIRED_ALIASES }
   a.check('default date carries enhanced_error_serialization', c.compatibility_date >= '2026-04-21');
   a.check('default date enables nodejs_compat and does not also name it',
     c.compatibility_date >= '2026-08-04' && !c.compatibility_flags.includes('nodejs_compat'));
+  // No date enables enable_request_signal; composeFabric refuses a Worker without it.
+  a.check('enable_request_signal is listed on the default date',
+    JSON.stringify(c.compatibility_flags) === '["enable_request_signal"]', JSON.stringify(c.compatibility_flags));
   a.check('NIMBUS_SESSION DO binding', c.durable_objects.bindings.length === 1
     && c.durable_objects.bindings[0].name === 'NIMBUS_SESSION'
     && c.durable_objects.bindings[0].class_name === 'NimbusSession');
@@ -48,11 +51,11 @@ const { buildNimbusWranglerConfig, defineNimbusConfig, NIMBUS_REQUIRED_ALIASES }
 {
   const c = buildNimbusWranglerConfig({ name: 'older', compatibilityDate: '2026-05-01' });
   a.check('compat date passed through', c.compatibility_date === '2026-05-01');
-  a.check('2026-05-01: nodejs_compat only',
-    JSON.stringify(c.compatibility_flags) === '["nodejs_compat"]', JSON.stringify(c.compatibility_flags));
+  a.check('2026-05-01: nodejs_compat and enable_request_signal',
+    JSON.stringify(c.compatibility_flags) === '["nodejs_compat","enable_request_signal"]', JSON.stringify(c.compatibility_flags));
   const kinu = buildNimbusWranglerConfig({ name: 'kinu', compatibilityDate: '2025-12-01' });
-  a.check('2025-12-01: nodejs_compat and enhanced_error_serialization',
-    JSON.stringify(kinu.compatibility_flags) === '["nodejs_compat","enhanced_error_serialization"]',
+  a.check('2025-12-01: nodejs_compat, enhanced_error_serialization and enable_request_signal',
+    JSON.stringify(kinu.compatibility_flags) === '["nodejs_compat","enhanced_error_serialization","enable_request_signal"]',
     JSON.stringify(kinu.compatibility_flags));
 }
 

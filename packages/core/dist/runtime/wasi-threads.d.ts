@@ -46,10 +46,14 @@
  *     sock_send/recv, …)                              wasi-instance,
  *                                                     `withParkDeadline`
  *                                                       → `parkIo`
+ *   a pipe's or a child's wait (pipe fds, nimbus_proc) wasi/processes.ts,
+ *                                                     its `park` option
+ *                                                       → `parkIo`
  *
- * The WASI leg is one integration point rather than eight because
+ * The WASI leg is two integration points rather than eight because
  * `withParkDeadline` already wraps every parkable import and already knows
- * "this call returned a promise, so it is a real park".
+ * "this call returned a promise, so it is a real park", and the process host
+ * answers by promise only where it waits, under its own bound (EINTR).
  *
  * ── 3. The software futex, and why there is no `futex_wake` ────────────────
  *
