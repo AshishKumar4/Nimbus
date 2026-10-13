@@ -61,6 +61,8 @@ export interface Cells {
   head(path: string): FileHead | undefined;
   /** Whether `path` is held, in the tables or in memory. */
   has(path: string): boolean;
+  /** Whether the cell held for `path` is a denial (what get answers { error } for), its bytes not read. */
+  denied(path: string): boolean;
   get(path: string): ResidentCell | undefined;
   /** Write one cell as `rev`, or as an own write when `rev` is not a number (see put below). */
   put(t: ResidentTables, path: string, cell: ResidentCell | ArrayBuffer, rev?: number, ckey?: unknown): boolean;
@@ -434,6 +436,12 @@ export function createCells(
     dropDated,
     head,
     has: (path) => head(path) !== undefined || held.has(path),
+    denied: (path) => {
+      const found = head(path);
+      if (found !== undefined) return found.kind === RK_DENIED;
+      const cell = held.get(path)?.cell;
+      return typeof cell === 'object' && cell !== null && !(cell instanceof Uint8Array) && typeof (cell as { error?: unknown }).error === 'string';
+    },
     get,
     put,
     putChunk,
