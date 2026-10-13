@@ -39,6 +39,13 @@
 //       ended and whose next began in the same turn (wait-only for an
 //       instant) is not refused; one still wait-only on the later turn is.
 //       Before, the refusal was committed inside the change, in that instant.
+//  (11) a wait outside the ledger (for the supervisor's credit, on another
+//       launch's build: waitOutsideLedger) is one more wait-for edge: ten
+//       running programs hold every worker, each waiting on its child, and
+//       each child waits for credit whose holder's helper waits here for a
+//       worker. The helper's wait is refused (Kinu #29's cycle through a
+//       program's children). Credit held by something the session cannot
+//       name may end on its own: nothing is refused then.
 //
 // Before: every such wait waited for good; then a refusal was told from
 // ancestry, then from guest-named pids and a news count a late report
@@ -58,6 +65,7 @@ import {
   loaderLedgerStats,
   processWaitGraphChanged,
   setProcessBlocked,
+  waitOutsideLedger,
 } from '../../packages/fabric/src/budgets.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
@@ -375,6 +383,39 @@ adoptCtxExports(createCtxExports(() => { throw new Error('no disk'); }));
   await tick();
   assert.deepEqual(log, ['refused 110'], 'still stuck on the later turn: refused then');
   await release(holds, waits);
+}
+
+// ── (11) a wait outside the ledger is a wait-for edge too ──────────────────
+{
+  const { ctx, procs } = freshCtx();
+  const holds = new Map();
+  for (let k = 1; k <= 10; k++) {
+    procs.spawn(k, 0);
+    holds.set(k, beginLoaderFetch(ctx, `run-${k}`, undefined, k));
+    procs.spawn(100 + k, k);
+  }
+  // Each child waits for the credit: its holders named, or not (null).
+  let holders = null;
+  const outside = Array.from({ length: 10 }, (_, i) => waitOutsideLedger(ctx, 101 + i, () => holders));
+  procs.spawn(200, 0);
+  const log = [];
+  const helper = beginLoaderFetchWhenFree(ctx, 'transform-helper', { process: { pid: 200 } }).then(
+    (end) => { log.push('in 200'); end(); },
+    (error) => { log.push(isDynamicWorkerDeadlock(error) ? `refused ${error.pid}` : String(error)); },
+  );
+  for (let k = 1; k <= 10; k++) report(ctx, k);
+  await tick();
+  await tick();
+  assert.deepEqual(log, [], 'credit held by something unnamed may end on its own: nothing is refused');
+  holders = [200];
+  processWaitGraphChanged(ctx);
+  await tick();
+  await tick();
+  assert.deepEqual(log, ['refused 200'], 'every worker held by a program whose child waits on the helper\'s launch: its wait is refused');
+  await helper;
+  for (const end of outside) end();
+  for (const [, end] of holds) end();
+  assert.equal(dynamicWorkerHeadroom(ctx), DO_DYNAMIC_WORKER_LIMIT);
 }
 
 console.log('ok - dynamic-worker-deadlock (refused from the session\'s process graph and current reports; a builtin, a busy shell, news, or a stale or late report keeps them waiting)');

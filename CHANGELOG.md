@@ -13,6 +13,12 @@ published independently in the `@nimbus-sh` npm scope.
   runtime 5.2.37-5 (runner `bash-runner@5`); a session with 5.2.37-3 is told
   to install it. The bash module is now built by a reproducible recipe
   (`scripts/ci/remote-bash-build.mjs`) and carries its provenance.
+- Fixed: in a WASI program (an uploaded program, CPython), a filesystem call
+  the session took more than 10 s to answer failed with EAGAIN, which no
+  filesystem call returns on Linux: `os.makedirs` raised `BlockingIOError`
+  when the process's first change waited on the session. It now waits for
+  the answer. Only a socket's or a poll's wait still ends with EAGAIN at the
+  10 s park deadline.
 - Fixed: in a WASI program (bash and its commands, CPython, any compiled
   program), `/dev/fd/N`, `/proc/self/fd/N`, `/dev/stdin`, `/dev/stdout` and
   `/dev/stderr` now name the process's own descriptor, as on Linux. A pipe or
@@ -45,6 +51,16 @@ published independently in the `@nimbus-sh` npm scope.
   -c 'import sys; print(sys.stdin.read())'`). The WASI layer now reads every
   runtime's fd 0 from its process's input channel; before, only the generic
   wasm runner wired it, and the others read an empty stdin.
+- Fixed: a Node program's launch holds its share of the session's memory
+  budget while it packs the files it staged, and until its module map is
+  made, not only while it gathers them, so several launches at once queue
+  instead of building side by side past the budget. Launches of the same
+  program at once build it once. A launch killed, or whose session is
+  destroyed, while it waits for room is never admitted. A launch takes its
+  memory, or waits for another launch's build of its program, before it
+  takes a Dynamic Worker, never after, so launches waiting on each other
+  across the two can no longer hang (the order is in the runtime spec's
+  Facet Resource Contract).
 - Added: real git 2.53, built for WASI, in the default runtime catalog.
   `git` runs it for every command, option or repository format the
   built-in git does not fully implement (for example `log --graph`,

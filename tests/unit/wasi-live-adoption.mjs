@@ -10,7 +10,7 @@ import { memorySupervisor } from './lib/descriptor-supervisor.mjs';
 
 import assert from 'node:assert';
 import { buildRubySocketProcessWorker } from '../../packages/worker/src/runtime/ruby-resident.ts';
-import { makeImportsWithoutJSPI } from './lib/wasi-imports.mjs';
+import { makeImportsWithoutJSPI, makeParkingImports } from './lib/wasi-imports.mjs';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -127,33 +127,41 @@ const INIT = () => ({ root: '', preopens: [{ wasiPath: '/', vfsPath: '' }] });
 
 console.log('wasi-live-adoption: all assertions passed');
 
-// ── 5. A park that never settles must yield an errno, never hang ────────────
-// Measured ceiling: a cross-request suspension past ~15-18s idle leaves the
-// promise permanently unsettled. Without a deadline the guest wedges silently.
+// ── 5. A socket wait that never settles answers EAGAIN, never hangs ─────────
+// A socket's or a poll's wait is bounded by the park deadline (preamble.ts
+// withParkDeadline), and answered EAGAIN, which its caller retries: a peer
+// that never answers must not wedge the guest. A filesystem call has no such
+// answer and waits for the session's, however long (wasi-park-deadline-fs):
+// a suspension resumes after 25 and 60 s, in a foreground run and in a
+// long-running process's later request alike (throwaway tw-parkceil1,
+// 2026-10-13), where the 15-18 s ceiling measured on 2026-08-02 had it wedge.
 {
-  const sup = memorySupervisor({ 'home/user/wedge.txt': 'ten bytes!' });
-  // A supervisor whose read never settles is exactly the wedge case.
-  sup.fsReadRange = () => new Promise(() => {});
   P.__wasiInitFS(INIT());
-  P.__wasiAdoptSupervisor(sup);
-  const h = host();
-  const { fd } = await h.open('home/user/wedge.txt');
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  // The guarded table a parking guest gets, its imports callable from here.
+  const { wasiImport } = makeParkingImports(P, { argv: ['prog'], env: {}, getMemory: () => memory, stdoutWrite: () => {}, stderrWrite: () => {} });
+  // A socket whose peer never sends: its read never settles.
+  P.fdTable.set(40, {
+    kind: 'socket', socket: { opened: Promise.resolve(), readable: new ReadableStream({ start() {} }), writable: new WritableStream(), close() {} },
+    reader: null, writer: null, readBuf: new Uint8Array(0), readBufOffset: 0, eof: false, closed: false, halfClosedWr: false, fdflags: 0,
+  });
+  const view = new DataView(memory.buffer);
+  view.setUint32(0, 64, true); view.setUint32(4, 16, true);
   // The deadline is read off the timer the park arms, and that timer is run
-  // at once: the case is about which delay is asked for and what the read
+  // at once: the case is about which delay is asked for and what the wait
   // answers when it fires, not about waiting ten seconds.
   const realSetTimeout = globalThis.setTimeout;
   const delays = [];
   globalThis.setTimeout = (fn, ms, ...rest) => { delays.push(ms); return realSetTimeout(fn, 0, ...rest); };
-  let settled;
+  let errno;
   try {
-    settled = await h.read(fd).then(() => 'settled');
+    errno = await wasiImport.sock_recv(40, 0, 1, 0, 8, 12);
   } finally {
     globalThis.setTimeout = realSetTimeout;
   }
-  assert.equal(settled, 'settled',
-    'a never-settling park must resolve to an errno rather than hang forever');
-  assert.ok(delays.length > 0 && Math.max(...delays) < 15000,
-    `the park deadline must fire below the measured 15-18s suspension ceiling (armed ${delays.join(', ')} ms)`);
+  assert.equal(errno, 6, 'a socket wait that never settles answers EAGAIN');
+  assert.ok(delays.length > 0 && Math.max(...delays) < 15000, `the park deadline fires at its own bound (armed ${delays.join(', ')} ms)`);
+  P.fdTable.delete(40);
 }
 
 // ── 6. No supervisor means no filesystem, never a write that evaporates ─────
