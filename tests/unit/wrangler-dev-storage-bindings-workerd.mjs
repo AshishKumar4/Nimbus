@@ -129,7 +129,7 @@ try {
       const diag = await fetch(`${probe.base}/s/${sid}/api/_diag/memory`, { headers: requestHeaders() })
         .then((r) => r.json()).then((d) => JSON.stringify({ hib: d.hib, recoveryEvents: d.recoveryEvents, lastFailures: d.lastFailures }), (error) => String(error));
       assert.fail(`step ${step} answered ${response.headers.get('content-type')}: ${body.slice(0, 200)}\n${stripAnsi(terminal.buf).slice(-1500)}\n`
-        + `isolate generation before the build ${genBefore}, now ${await isolateGen()}\nsession: ${diag.slice(0, 6000)}\nworkerd: ${probe.log().slice(-6000)}`);
+        + `isolate generation before the build ${genBefore}, now ${await isolateGen()}\nsession: ${diag.slice(0, 6000)}\nworkerd, what is not a call's own error: ${probe.log().split('\n').filter((line) => /broken|reset|exceed|abort|gate|SQLITE|Durable Object|memory|overload|internal error/i.test(line)).slice(-60).join('\n')}`);
     }
     const answer = JSON.parse(body);
     assert.deepEqual(answer, nimbusAnswer(expectedAnswer(step)), `Nimbus answers step ${step} as Cloudflare does\n${body}`);
