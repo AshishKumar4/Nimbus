@@ -13,6 +13,11 @@
 //       started in first. It gives that admission back for good and boots on
 //       a slot of its own; before, it tried to take the closed admission
 //       back and failed before its boot (InternalScallop, at 6da388863).
+//       Its run is a lifetime one: the fake holds its start call open, as
+//       the runner does, for as long as it runs. Returned at once, the
+//       fabric released its residency ~20 ms after the boot, and the check
+//       that it holds its slot passed only when it polled inside that
+//       window (red under load in full runs).
 // Each is started while another holder has the whole credit: its build
 // waits for credit holding no worker, then boots once the credit is given
 // back. Before, it waited for credit holding the inherited worker
@@ -44,8 +49,12 @@ adoptCtxExports({
   }),
 });
 
+// A lifetime run (an attached TTY's resident, startContract 'lifetime')
+// holds its start call open for its life, as the runner's does: the fabric
+// releases its residency as that call returns. Set for (3), ended at its kill.
+let lifetime = null;
 const world = createFacetWorld(() => ({
-  async startProcess() { return { ok: true }; },
+  async startProcess() { if (lifetime !== null) await lifetime.promise; return { ok: true }; },
   async handleHttpRequest() { return new Response('ok'); },
 }));
 const ctx = createFacetCtx(world, 'resident-inherited-admission');
@@ -131,6 +140,7 @@ const until = async (ok, label) => {
 // (3) Brokered and deferred: the broker's admission closes as spawnNode answers, before the boot.
 {
   const child = processes.spawn('node tui.js', ['node', 'tui.js'], '/home/user/app');
+  lifetime = Promise.withResolvers();
   const other = await acquireSupervisorAllocation(SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES);
   await withLaunchAdmission(ctx, { pid: child.pid }, undefined, () => manager.spawnNode("require('./tui.js');", {
     filename: '/home/user/app/tui.js', cwd: '/home/user/app', command: 'node tui.js', skipSpawn: true, callerPid: child.pid, attachedTty: true,
@@ -142,7 +152,13 @@ const until = async (ok, label) => {
     'deferred: it boots, or ends, once the credit is given back');
   assert.equal(processes.get(child.pid)?.state, 'running', `deferred: it boots on a slot of its own, not failing before (${JSON.stringify(processes.get(child.pid))})`);
   assert.ok(launchHeld(child.pid).length > 0, 'deferred: its residency holds its own slot');
+  // For as long as it runs, not only as it boots.
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(processes.get(child.pid)?.state, 'running', 'deferred: it is still running');
+  assert.ok(launchHeld(child.pid).length > 0, 'deferred: its residency still holds its slot past its boot');
   manager.kill(child.pid);
+  lifetime.resolve();
+  lifetime = null;
 }
 
 assert.equal(budget().current, 0, 'every launch gave its credit back');
