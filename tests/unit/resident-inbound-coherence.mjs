@@ -196,7 +196,7 @@ await runScenarios(import.meta.path, {
         },
         async wait() { return { done: true, exitCode: 0, signal: null }; },
         stdinEnd() {},
-        parentOf: (pid) => auth.host.processes.get(pid)?.parentPid,
+        isHeldBy: (pid, caller) => { const parent = auth.host.processes.get(pid)?.parentPid; return parent !== undefined && auth.host.processes.lineage(parent).includes(caller); },
       }),
     });
     const { made } = await callsDuring(log, async () => {

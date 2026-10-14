@@ -43,8 +43,8 @@ const asked = [];
 const session = Object.create(NimbusSession.prototype);
 session.processes = processes;
 session._ensureChildProcessManager = () => ({
-  // Who spawned each child, as the broker records it at the spawn.
-  parentOf: (pid) => processes.get(pid)?.parentPid,
+  // Whose handle each child is: its spawner and every process above it, as the broker records them at the spawn.
+  isHeldBy: (pid, caller) => { const parent = processes.get(pid)?.parentPid; return parent !== undefined && processes.lineage(parent).includes(caller); },
   kill: (pid, signal) => { asked.push(['kill', pid, signal]); return true; },
   readOutput: async (pid) => { asked.push(['readOutput', pid]); return { chunks: [], closed: false, seq: 0 }; },
   drainOutput: (pid) => { asked.push(['drainOutput', pid]); return { stdout: new Uint8Array(), stderr: new Uint8Array(), stdoutClosed: false, stderrClosed: false }; },
