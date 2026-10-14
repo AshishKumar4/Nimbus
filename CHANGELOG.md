@@ -9,11 +9,15 @@ published independently in the `@nimbus-sh` npm scope.
   back, stored the message a second time when the first had reached the
   session. A message is now sent under an id the browser chooses (`id`, a
   UUID, in the `POST /api/agent/messages` body), and the session takes
-  each id once. Sent again, the message is answered again only if it is
-  the conversation's last and has no complete answer; otherwise the reply
-  is the conversation as it is. A repeat while its answer is still being
-  written is refused (409 `E_AGENT_TURN_RUNNING`), as is an id another
-  message holds (409 `E_AGENT_MESSAGE_ID_TAKEN`).
+  each id once: it keeps the ids of its last 512 sends, past the 80
+  messages it stores, until the conversation is cleared. Sent again, the
+  message is answered again only if it is the conversation's last and has
+  no complete answer; otherwise the reply is the conversation as it is. A
+  repeat while its answer is still being written is refused (409
+  `E_AGENT_TURN_RUNNING`), as is an id another message or an answer holds
+  (409 `E_AGENT_MESSAGE_ID_TAKEN`). An answer now names the message it
+  answers (`replyTo`), so with two turns answering at once, a retry or a
+  message sent again finds its own answer, and replaces only that one.
 - Fixed: in a core workspace, a process that ends after the exec that
   started it (a background job) leaves the process table a minute after it
   ended, at the next exec, as in a hosted session. It stayed, with its

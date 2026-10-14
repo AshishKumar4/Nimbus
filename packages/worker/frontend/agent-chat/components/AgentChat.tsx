@@ -230,7 +230,7 @@ export function AgentChat({ onReady }: { onReady(refresh: () => void): void }) {
 
   const runTurn = useCallback(async (
     body: api.ChatRequestBody,
-    sendCtx?: { id: string; text: string },
+    sendCtx?: { id: string; text: string; row: StoredMessage },
   ) => {
     if (abortRef.current) return;
     const controller = new AbortController();
@@ -265,10 +265,11 @@ export function AgentChat({ onReady }: { onReady(refresh: () => void): void }) {
     } catch (error) {
       if (!accepted && sendCtx) {
         // No answer came back for this send: drop the optimistic message
-        // and put the text back in the user's hands. Sent again, it goes
-        // under the same id, so a copy the server holds is not doubled.
-        unansweredRef.current = sendCtx;
-        setMessages((current) => current.filter((message) => message.id !== sendCtx.id));
+        // this send put up (never a row history holds under its id) and put
+        // the text back in the user's hands. Sent again, it goes under the
+        // same id, so a copy the server holds is not doubled.
+        unansweredRef.current = { id: sendCtx.id, text: sendCtx.text };
+        setMessages((current) => current.filter((message) => message !== sendCtx.row));
         setDraft((current) => current || sendCtx.text);
         if (!isAbortError(error)) {
           setTurnError({ message: errorMessage(error), resendText: sendCtx.text });
@@ -311,13 +312,9 @@ export function AgentChat({ onReady }: { onReady(refresh: () => void): void }) {
     const unanswered = unansweredRef.current;
     const id = unanswered !== null && unanswered.text === text ? unanswered.id : crypto.randomUUID();
     setDraft((current) => (current.trim() === text ? '' : current));
-    setMessages((current) => (current.some((message) => message.id === id) ? current : [...current, {
-      id,
-      role: 'user',
-      content: text,
-      createdAt: Date.now(),
-    }]));
-    void runTurn({ message: text, id, stream: true }, { id, text });
+    const row: StoredMessage = { id, role: 'user', content: text, createdAt: Date.now() };
+    setMessages((current) => (current.some((message) => message.id === id) ? current : [...current, row]));
+    void runTurn({ message: text, id, stream: true }, { id, text, row });
   }, [runTurn]);
 
   const retryTurn = useCallback((resendText: string | null) => {
