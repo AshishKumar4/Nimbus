@@ -28,6 +28,7 @@
 import { exitCodeForAbortSignal } from '../../shell/signals.js';
 import { realmOutcome, startRealm } from '../../../../runtime/realm.js';
 import { synchronousFilesystem } from '../../node-compat/filesystem.js';
+import { SinkWriter } from '../../../../_shared/byte-stream.js';
 import { VfsError } from '../../../../vfs/vfs-error.js';
 import { dispatchWorkspaceRequest } from '../net/kernel-fetch.js';
 import { isEgressGuestEvent, isEgressHostEvent, RealmEgress } from '../../../../runtime/realm-egress.js';
@@ -222,16 +223,22 @@ export async function runNodeInRealm(program, ctx, kernel) {
     if (ctx.signal.aborted)
         return exitCodeForAbortSignal(ctx.signal);
     const filesystem = synchronousFilesystem(ctx.vfs);
-    // Output in the order it was written, each write after the last.
+    // Output in the order it was written, each write after the last; bytes
+    // for an output that takes text are decoded across writes, as one stream.
     let written = Promise.resolve();
+    const writers = new Map();
+    const writerOf = (stream) => {
+        let writer = writers.get(stream);
+        if (writer === undefined)
+            writers.set(stream, writer = new SinkWriter(stream));
+        return writer;
+    };
     const write = (stream, data) => {
         written = written.then(async () => {
             if (typeof data === 'string')
                 await stream.write(data);
-            else if (stream.writeBytes)
-                await stream.writeBytes(data);
             else
-                await stream.write(new TextDecoder().decode(data));
+                await writerOf(stream).write(data);
         }).catch(() => { });
     };
     // The realm, once it has started: a request for one of the guest's servers waits for none before.
@@ -345,6 +352,8 @@ export async function runNodeInRealm(program, ctx, kernel) {
     for (const watch of watches.values())
         watch.close();
     await written;
+    for (const writer of writers.values())
+        await writer.end().catch(() => { });
     if (end.terminated)
         return exitCodeForAbortSignal(ctx.signal);
     if (end.failure !== null) {

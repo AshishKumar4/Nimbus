@@ -1,6 +1,15 @@
 import { Buffer } from 'node:buffer';
 import realm from 'node:process';
 import { SinkWriter } from '../../../_shared/byte-stream.js';
+/** `write`'s outcome, made now: its failure, thrown or rejected, is the promise's. */
+function settled(write) {
+    try {
+        return Promise.resolve(write());
+    }
+    catch (error) {
+        return Promise.reject(error);
+    }
+}
 /** Every program's process.stdout and process.stderr this realm has made. */
 const standardStreams = new WeakSet();
 let pipeLeavesThemOpen = false;
@@ -34,8 +43,13 @@ export function standardStream(output, fd) {
     const { Writable } = realm.getBuiltinModule('node:stream');
     const writer = new SinkWriter(output);
     const stream = Object.assign(new Writable({
+        // A UTF-8 string goes to the output as text; any other is made bytes in its encoding.
+        decodeStrings: false,
         write(chunk, encoding, callback) {
-            writer.write(typeof chunk === 'string' ? Buffer.from(chunk, encoding) : chunk).catch((error) => stream.destroy(error));
+            const done = typeof chunk === 'string' && (encoding === 'utf8' || encoding === 'utf-8')
+                ? settled(() => output.write(chunk))
+                : writer.write(typeof chunk === 'string' ? Buffer.from(chunk, encoding) : chunk);
+            done.catch((error) => stream.destroy(error));
             callback();
         },
         final(callback) {
