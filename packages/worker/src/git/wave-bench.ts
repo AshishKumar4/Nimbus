@@ -235,14 +235,14 @@ function waveBenchSink(session: WaveBenchSession): WaveBenchSinkTarget {
     }
 
     async drain(stream: ReadableStream<Uint8Array>): Promise<unknown> {
-      return this.read(stream, false);
+      return this.#read(stream, false);
     }
 
     async drainWriting(stream: ReadableStream<Uint8Array>): Promise<unknown> {
-      return this.read(stream, true);
+      return this.#read(stream, true);
     }
 
-    private async read(stream: ReadableStream<Uint8Array>, writing: boolean): Promise<unknown> {
+    async #read(stream: ReadableStream<Uint8Array>, writing: boolean): Promise<unknown> {
       const reader = stream.getReader({ mode: 'byob' });
       let reads = 0;
       let bytes = 0;

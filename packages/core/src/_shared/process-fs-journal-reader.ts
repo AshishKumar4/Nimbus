@@ -14,24 +14,26 @@ import { DurableObject } from 'cloudflare:workers';
 import { sqlJournal, type ProcessFsNumbering } from './process-fs-journal.js';
 
 export class NimbusFsJournalReader extends DurableObject {
-  private journal() {
+  // `#private`: a string-named method is callable by whoever holds the stub,
+  // and the journal's own functions append to it and replace it.
+  #journal() {
     return sqlJournal(this.ctx.storage.sql);
   }
 
   numberings(): ProcessFsNumbering[] {
-    return this.journal().numberings();
+    return this.#journal().numberings();
   }
 
   number(numbering: ProcessFsNumbering): void {
-    this.journal().number(numbering);
+    this.#journal().number(numbering);
   }
 
   readAfter(after: number, maxBytes: number): ReturnType<ReturnType<typeof sqlJournal>['readAfter']> {
-    return this.journal().readAfter(after, maxBytes);
+    return this.#journal().readAfter(after, maxBytes);
   }
 
   dropThrough(jid: number): void {
-    this.journal().dropThrough(jid);
+    this.#journal().dropThrough(jid);
   }
 }
 

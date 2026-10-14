@@ -127,6 +127,25 @@ export interface Resend {
 
 export const TRANSPORT: unique symbol = Symbol('supervisor transport');
 
+// The binding's calls of itself: behind symbols too, for the same reason.
+// Its process names only the methods below them (readFile, cpSpawn, …), each
+// of which builds its own envelope.
+export const OP: unique symbol = Symbol('supervisor op');
+const CALLER: unique symbol = Symbol('supervisor caller');
+const FS_OP: unique symbol = Symbol('supervisor fsOp');
+const FS_READ: unique symbol = Symbol('supervisor fsRead');
+const FS_MUTATION: unique symbol = Symbol('supervisor fsMutation');
+const RESENT: unique symbol = Symbol('supervisor resent');
+const MUTATION_OWNER: unique symbol = Symbol('supervisor mutationOwner');
+const HOST_INCARNATION: unique symbol = Symbol('supervisor hostIncarnation');
+const REPORTING_PID: unique symbol = Symbol('supervisor reportingPid');
+export const CALL: unique symbol = Symbol('supervisor call');
+const CACHE_READ: unique symbol = Symbol('supervisor cacheRead');
+const INFRASTRUCTURE_CACHE: unique symbol = Symbol('supervisor infrastructureCache');
+export const NETWORK: unique symbol = Symbol('supervisor network');
+export const PID: unique symbol = Symbol('supervisor pid');
+export const RUN_ID: unique symbol = Symbol('supervisor runId');
+
 type Class = abstract new (...args: any[]) => object;
 
 /**
@@ -138,24 +157,24 @@ export function supervisorCalls<Base extends Class>(base: Base) {
   abstract class SupervisorCalls extends base {
     abstract [TRANSPORT](): SupervisorTransport;
 
-    _op<T>(
+    [OP]<T>(
       op: SupervisorOpName,
       args: readonly unknown[] = [],
       extra: Omit<SupervisorOpEnvelope, 'op' | 'args'> = {},
     ): Promise<T> {
       // Every call says which run of the process made it: a process that can
       // stop at a read of stdin is answered for its current run only.
-      return this[TRANSPORT]().send(this._caller({ op, args, ...extra })) as Promise<T>;
+      return this[TRANSPORT]().send(this[CALLER]({ op, args, ...extra })) as Promise<T>;
     }
 
     /** Every path (including resent reads/mutations) uses the bound caller. */
-    _caller(envelope: SupervisorOpEnvelope): SupervisorOpEnvelope {
+    [CALLER](envelope: SupervisorOpEnvelope): SupervisorOpEnvelope {
       const props = this[TRANSPORT]().props as { pid?: unknown; bindingKind?: unknown } | undefined;
       const pid = props?.pid;
       // The spawn/build helper has the explicitly bound pid 0. It is not a
-      // process and cannot use filesystem credentials (_pid still refuses it).
+      // process and cannot use filesystem credentials ([PID] still refuses it).
       if (typeof pid !== 'number' || !Number.isInteger(pid) || pid < 0) throw new Error('SupervisorRPC: missing or invalid caller pid in props');
-      const run = this._runId();
+      const run = this[RUN_ID]();
       if (props?.bindingKind === 'infrastructure') {
         if (run !== undefined) throw new Error('infrastructure supervisor cannot carry a process run');
         if (['stdout', 'stderr', 'reportExit', 'reportRuntimeCode', 'cpSpawn', 'cpStdinWrite', 'cpStdinEnd', 'cpReadStdin', 'cpReadOutput', 'cpDrainOutput', 'cpCloseOutput', 'cpKill', 'cpWait', 'cpBlocked', 'replayBoundary', 'stdinFileRead', 'stdinPrepared', 'netTls', 'outbound'].includes(envelope.op)) {
@@ -166,8 +185,8 @@ export function supervisorCalls<Base extends Class>(base: Base) {
     }
 
     /** Stamp filesystem credentials from the binding, not the supplied arguments. */
-    _fsOp<T>(op: SupervisorOpName, args: readonly unknown[] = []): Promise<T> {
-      return this._op<T>(op, args, { pid: this._pid() });
+    [FS_OP]<T>(op: SupervisorOpName, args: readonly unknown[] = []): Promise<T> {
+      return this[OP]<T>(op, args, { pid: this[PID]() });
     }
 
     /**
@@ -191,9 +210,9 @@ export function supervisorCalls<Base extends Class>(base: Base) {
      * session nothing but a second copy of the answer. Mutations are not
      * hedged: their repeats stay bounded by the delivery retry window.
      */
-    _fsRead<T>(op: SupervisorJoinedReadOpName, args: readonly unknown[] = []): Promise<T> {
-      return this._resent<T>(
-        { op, args, pid: this._pid(), readId: crypto.randomUUID() },
+    [FS_READ]<T>(op: SupervisorJoinedReadOpName, args: readonly unknown[] = []): Promise<T> {
+      return this[RESENT]<T>(
+        { op, args, pid: this[PID](), readId: crypto.randomUUID() },
         { kind: 'read' },
         { hedgeAfterMs: LOST_CALL_HEDGE_AFTER_MS },
       );
@@ -221,69 +240,69 @@ export function supervisorCalls<Base extends Class>(base: Base) {
      * The id is random because this entrypoint keeps nothing between calls and
      * may answer from any isolate; the pid still comes from the binding.
      */
-    _fsMutation<T>(op: SupervisorDeliveredOpName, args: NonNullable<SupervisorOpEnvelope['args']>): Promise<T> {
-      const hostIncarnation = this._hostIncarnation();
+    [FS_MUTATION]<T>(op: SupervisorDeliveredOpName, args: NonNullable<SupervisorOpEnvelope['args']>): Promise<T> {
+      const hostIncarnation = this[HOST_INCARNATION]();
       // A binding minted under an exclusive mutation lease presents it on every
       // mutation, as writeBatchStream does: the leased writer's own ranged
       // writes land under its root, and every other writer's are EBUSY.
-      const mutationOwner = this._mutationOwner();
+      const mutationOwner = this[MUTATION_OWNER]();
       const lease = mutationOwner === undefined ? {} : { mutationOwner };
-      if (hostIncarnation === undefined) return this._op<T>(op, args, { pid: this._pid(), ...lease });
+      if (hostIncarnation === undefined) return this[OP]<T>(op, args, { pid: this[PID](), ...lease });
       const id = crypto.randomUUID();
-      return this._resent<T>(
-        { op: SUPERVISOR_DELIVER_OP, args, pid: this._pid(), delivery: { op, id, hostIncarnation }, ...lease },
+      return this[RESENT]<T>(
+        { op: SUPERVISOR_DELIVER_OP, args, pid: this[PID](), delivery: { op, id, hostIncarnation }, ...lease },
         { kind: 'deliver', operationId: id },
         { retryWindowMs: VFS_DELIVERY_RETRY_WINDOW_MS },
       );
     }
 
     /** `envelope`, sent as `trace.kind`, and re-sent as `policy` says where the platform can drop it. */
-    _resent<T>(
+    [RESENT]<T>(
       envelope: SupervisorOpEnvelope,
       trace: Resend['trace'],
       policy?: DoCallRetryPolicy,
     ): Promise<T> {
-      return this[TRANSPORT]().send(this._caller(envelope), { trace, policy }) as Promise<T>;
+      return this[TRANSPORT]().send(this[CALLER](envelope), { trace, policy }) as Promise<T>;
     }
 
-    _mutationOwner(): string | undefined {
+    [MUTATION_OWNER](): string | undefined {
       const props = this[TRANSPORT]().props;
       if (typeof props !== 'object' || props === null || !('mutationOwner' in props)) return undefined;
       return typeof props.mutationOwner === 'string' ? props.mutationOwner : undefined;
     }
 
-    _hostIncarnation(): string | undefined {
+    [HOST_INCARNATION](): string | undefined {
       const props = this[TRANSPORT]().props;
       if (typeof props !== 'object' || props === null || !('hostIncarnation' in props)) return undefined;
       const incarnation = props.hostIncarnation;
       return typeof incarnation === 'string' && incarnation.length > 0 ? incarnation : undefined;
     }
 
-    _reportingPid(): number {
+    [REPORTING_PID](): number {
       const pid = (this[TRANSPORT]().props as { pid?: unknown } | undefined)?.pid;
       return typeof pid === 'number' && Number.isInteger(pid) && pid > 0 ? pid : 0;
     }
 
-    async _call<T>(promise: Promise<T>): Promise<T> {
+    async [CALL]<T>(promise: Promise<T>): Promise<T> {
       const value = await useRpcResource(promise, (reply) => reply);
       if (value !== null && (typeof value === 'object' || typeof value === 'function') && Object.hasOwn(value, Symbol.dispose)) {
         Reflect.deleteProperty(value, Symbol.dispose);
       }
       return value;
     }
-    async _cacheRead<T>(plan: { ticket?: string; readOnly: boolean }, produce: (client: R2CacheClient) => Promise<T>): Promise<T> {
+    async [CACHE_READ]<T>(plan: { ticket?: string; readOnly: boolean }, produce: (client: R2CacheClient) => Promise<T>): Promise<T> {
       const client = new R2CacheClient((this[TRANSPORT]().env as any)?.NPM_TARBALL_CACHE ?? null, (this[TRANSPORT]().env as any)?.NPM_PACKUMENT_CACHE ?? null, plan.readOnly);
       let value: T;
       try { value = await produce(client); }
       catch (error) {
-        if (plan.ticket) await this._call(this._op('cacheResult', [plan.ticket, { failed: true, failure: recordFailure(error) }]));
+        if (plan.ticket) await this[CALL](this[OP]('cacheResult', [plan.ticket, { failed: true, failure: recordFailure(error) }]));
         throw error;
       }
-      if (plan.ticket) await this._call(this._op('cacheResult', [plan.ticket, { value }]));
+      if (plan.ticket) await this[CALL](this[OP]('cacheResult', [plan.ticket, { value }]));
       return value;
     }
-    _infrastructureCache(op: SupervisorOpName, args: readonly unknown[]): boolean {
-      const caller = this._caller({ op, args });
+    [INFRASTRUCTURE_CACHE](op: SupervisorOpName, args: readonly unknown[]): boolean {
+      const caller = this[CALLER]({ op, args });
       return (this[TRANSPORT]().props as { bindingKind?: unknown })?.bindingKind === 'infrastructure' && caller.run === undefined;
     }
 
@@ -293,12 +312,12 @@ export function supervisorCalls<Base extends Class>(base: Base) {
      * this isolate's own. Every request the binding makes for the process —
      * its fetch, its sockets, its packument reads — goes through it.
      */
-    _network(): WorkspaceNetwork {
+    [NETWORK](): WorkspaceNetwork {
       const props = this[TRANSPORT]().props as { egress?: WorkspaceEgress; networkId?: string } | undefined;
       return props?.egress === undefined ? ISOLATE_NETWORK : workspaceNetwork(props.egress, props.networkId);
     }
 
-    _pid(): number {
+    [PID](): number {
       const pid = (this[TRANSPORT]().props as any)?.pid;
       if (!Number.isInteger(pid) || typeof pid !== 'number' || pid <= 0) {
         throw new Error('SupervisorRPC: missing or invalid process pid in props');
@@ -307,7 +326,7 @@ export function supervisorCalls<Base extends Class>(base: Base) {
     }
 
     /** The run of the process this binding was minted for, when it has one. */
-    _runId(): string | undefined {
+    [RUN_ID](): string | undefined {
       const run = (this[TRANSPORT]().props as { writerId?: unknown } | undefined)?.writerId;
       return typeof run === 'string' && run.length > 0 ? run : undefined;
     }
@@ -330,7 +349,7 @@ export function supervisorCalls<Base extends Class>(base: Base) {
     }
 
     async readFile(path: string): Promise<string | null> {
-      return this._call(this._fsRead('readFile', [path]));
+      return this[CALL](this[FS_READ]('readFile', [path]));
     }
 
     /**
@@ -338,7 +357,7 @@ export function supervisorCalls<Base extends Class>(base: Base) {
      * object/pack files where the text readFile would corrupt content.
      */
     async readFileBytes(path: RuntimeFsPath): Promise<Uint8Array | null> {
-      return this._call(this._fsRead('readFileBytes', [path]));
+      return this[CALL](this[FS_READ]('readFileBytes', [path]));
     }
 
     async writeFile(path: RuntimeFsPath, content: string | Uint8Array): Promise<number> {
@@ -347,32 +366,32 @@ export function supervisorCalls<Base extends Class>(base: Base) {
       // decode every Uint8Array write — mangling bytes ≥ 0x80 to U+FFFD
       // and corrupting binary content. RPC structured-clone handles
       // Uint8Array transparently; downstream _rpcWriteFile also accepts
-      return this._call(this._fsMutation('writeFile', [path, content]));
+      return this[CALL](this[FS_MUTATION]('writeFile', [path, content]));
     }
 
     /** writeFile, answering the revision and the path's stat after it (supervisor-op.ts writeFileStat). */
     async writeFileStat(path: RuntimeFsPath, content: string | Uint8Array): Promise<WriteFileStatAnswer> {
-      return this._call(this._fsMutation('writeFileStat', [path, content]));
+      return this[CALL](this[FS_MUTATION]('writeFileStat', [path, content]));
     }
 
     async stat(path: RuntimeFsPath, options?: { followSymlinks?: boolean }): Promise<Awaited<ReturnType<RuntimeFsBridge['stat']>>> {
-      return this._call(this._fsRead('stat', [path, options]));
+      return this[CALL](this[FS_READ]('stat', [path, options]));
     }
 
     async lstat(path: string): Promise<any> {
-      return this._call(this._fsRead('lstat', [path]));
+      return this[CALL](this[FS_READ]('lstat', [path]));
     }
 
     async utimes(path: RuntimeFsPath, atimeMs: number, mtimeMs: number): Promise<VfsMutationReceipt> {
-      return this._call(this._fsMutation('utimes', [path, atimeMs, mtimeMs]));
+      return this[CALL](this[FS_MUTATION]('utimes', [path, atimeMs, mtimeMs]));
     }
 
     async chmod(path: RuntimeFsPath, mode: number): Promise<VfsMutationReceipt> {
-      return this._call(this._fsMutation('chmod', [path, mode]));
+      return this[CALL](this[FS_MUTATION]('chmod', [path, mode]));
     }
 
     async access(path: RuntimeFsPath, mode: number): Promise<void> {
-      return this._call(this._fsRead('access', [path, mode]));
+      return this[CALL](this[FS_READ]('access', [path, mode]));
     }
 
     async chown(
@@ -381,43 +400,43 @@ export function supervisorCalls<Base extends Class>(base: Base) {
       gid: number,
       options?: { followSymlinks?: boolean },
     ): Promise<VfsMutationReceipt> {
-      return this._call(this._fsMutation('chown', [path, uid, gid, options]));
+      return this[CALL](this[FS_MUTATION]('chown', [path, uid, gid, options]));
     }
 
     async setUmask(mask: number): Promise<number> {
-      return this._call(this._fsOp('setUmask', [mask]));
+      return this[CALL](this[FS_OP]('setUmask', [mask]));
     }
 
     async readdir(path: RuntimeFsPath): Promise<{ name: string; type: string }[]> {
-      return this._call(this._fsRead('readdir', [path]));
+      return this[CALL](this[FS_READ]('readdir', [path]));
     }
 
     async exists(path: string): Promise<boolean> {
-      return this._call(this._fsRead('exists', [path]));
+      return this[CALL](this[FS_READ]('exists', [path]));
     }
 
     async mkdir(path: RuntimeFsPath, options?: Parameters<RuntimeFsBridge['mkdir']>[1]): Promise<void> {
-      return this._call(this._fsMutation('mkdir', [path, options]));
+      return this[CALL](this[FS_MUTATION]('mkdir', [path, options]));
     }
 
     async rmdir(path: RuntimeFsPath): Promise<void> {
-      return this._call(this._fsMutation('rmdir', [path]));
+      return this[CALL](this[FS_MUTATION]('rmdir', [path]));
     }
 
     async rename(from: RuntimeFsPath, to: RuntimeFsPath): Promise<void> {
-      return this._call(this._fsMutation('rename', [from, to]));
+      return this[CALL](this[FS_MUTATION]('rename', [from, to]));
     }
 
     async unlink(path: RuntimeFsPath): Promise<void> {
-      return this._call(this._fsMutation('unlink', [path]));
+      return this[CALL](this[FS_MUTATION]('unlink', [path]));
     }
 
     async readlink(path: RuntimeFsPath): Promise<string | null> {
-      return this._call(this._fsRead('readlink', [path]));
+      return this[CALL](this[FS_READ]('readlink', [path]));
     }
 
     async symlink(target: string, path: RuntimeFsPath): Promise<void> {
-      return this._call(this._fsMutation('symlink', [target, path]));
+      return this[CALL](this[FS_MUTATION]('symlink', [target, path]));
     }
 
     /**
@@ -433,16 +452,16 @@ export function supervisorCalls<Base extends Class>(base: Base) {
      * invalidation log, so a dropped call is repeated like any other read.
      */
     async fsAcquire(epoch: string | null, cursor: number, options?: VfsAcquireOptions): Promise<VfsAcquireResult> {
-      return this._call(this._fsRead('fsAcquire', options === undefined ? [epoch, cursor] : [epoch, cursor, options]));
+      return this[CALL](this[FS_READ]('fsAcquire', options === undefined ? [epoch, cursor] : [epoch, cursor, options]));
     }
 
     /** fsAcquire and one read in a single call (session/rpc.ts _rpcFsAcquired). */
     async fsAcquired(acquire: unknown, op: string, args: unknown[]): Promise<FsAcquiredAnswer> {
-      return this._call(this._fsRead('fsAcquired', [acquire, op, args]));
+      return this[CALL](this[FS_READ]('fsAcquired', [acquire, op, args]));
     }
 
     async fsRevision(path?: string): Promise<number> {
-      return this._call(this._fsRead('fsRevision', [path]));
+      return this[CALL](this[FS_READ]('fsRevision', [path]));
     }
 
     /**
@@ -464,16 +483,16 @@ export function supervisorCalls<Base extends Class>(base: Base) {
      */
     /** N18: `bytes` more for this process's facet store, reporting what it measures. */
     async fsStorageGrant(facet: string, bytes: number, databaseSize: number): Promise<{ granted: number; available?: number }> {
-      return this._call(this._fsOp('fsStorageGrant', [facet, bytes, databaseSize]));
+      return this[CALL](this[FS_OP]('fsStorageGrant', [facet, bytes, databaseSize]));
     }
 
     async fsList(after?: string | null, limit?: number | null): Promise<VfsListPage> {
-      return this._call(this._fsRead('fsList', [after ?? null, limit ?? null]));
+      return this[CALL](this[FS_READ]('fsList', [after ?? null, limit ?? null]));
     }
 
     /** Everything beneath directory `root`, in one page and one revision; E2BIG past `maxEntries` (session/rpc.ts _rpcFsListTree). */
     async fsListTree(root: string, maxEntries: number): Promise<VfsListTree> {
-      return this._call(this._fsRead('fsListTree', [root, maxEntries]));
+      return this[CALL](this[FS_READ]('fsListTree', [root, maxEntries]));
     }
 
     /**
@@ -485,108 +504,108 @@ export function supervisorCalls<Base extends Class>(base: Base) {
      * facet's next synchronous read serves bytes the authority has replaced.
      */
     async wsOpen(url: string, protocols: string[], headers?: WsRelayHeaders, refusalBody?: boolean): Promise<WsRelayOpened> {
-      return this._call(this._fsOp('wsOpen', [url, protocols, headers ?? [], refusalBody === true]));
+      return this[CALL](this[FS_OP]('wsOpen', [url, protocols, headers ?? [], refusalBody === true]));
     }
 
     async wsPoll(id: number, waitMs: number): Promise<unknown[]> {
-      return this._call(this._fsOp('wsPoll', [id, waitMs]));
+      return this[CALL](this[FS_OP]('wsPoll', [id, waitMs]));
     }
 
     async wsSend(id: number, text: string | null, bytes: Uint8Array | null): Promise<void> {
-      return this._call(this._fsOp('wsSend', [id, text, bytes]));
+      return this[CALL](this[FS_OP]('wsSend', [id, text, bytes]));
     }
 
     async wsClose(id: number, code?: number, reason?: string): Promise<void> {
-      return this._call(this._fsOp('wsClose', [id, code, reason]));
+      return this[CALL](this[FS_OP]('wsClose', [id, code, reason]));
     }
 
     async fsOpen(path: RuntimeFsPath, flags: RuntimeOpenFlags): Promise<RuntimeFileHandle> {
-      return this._call(this._fsMutation('fsOpen', [path, flags]));
+      return this[CALL](this[FS_MUTATION]('fsOpen', [path, flags]));
     }
 
     async fsReopen(...args: Parameters<RuntimeFsBridge['reopen']>): Promise<Awaited<ReturnType<RuntimeFsBridge['reopen']>>> {
-      return this._call(this._fsMutation('fsReopen', args));
+      return this[CALL](this[FS_MUTATION]('fsReopen', args));
     }
 
     async fsReadDirectories(request: ReadDirectoryBatchRequest): Promise<ReadDirectoryBatchResult> {
-      return this._call(this._fsMutation('fsReadDirectories', [request]));
+      return this[CALL](this[FS_MUTATION]('fsReadDirectories', [request]));
     }
 
     async fsRead(handleId: number, offset: number | null, length: number): Promise<Uint8Array> {
-      return this._call(this._fsOp('fsRead', [handleId, offset, length]));
+      return this[CALL](this[FS_OP]('fsRead', [handleId, offset, length]));
     }
 
     async fsWrite(handleId: number, offset: number | null, bytes: Uint8Array | ArrayBuffer | number[]): Promise<number> {
-      return this._call(this._fsMutation('fsWrite', [handleId, offset, bytes]));
+      return this[CALL](this[FS_MUTATION]('fsWrite', [handleId, offset, bytes]));
     }
 
     /** A descriptor's stat and its directory listing move nothing: re-sent like any read. */
     async fsFstat(...args: Parameters<RuntimeFsBridge['fstat']>): Promise<Awaited<ReturnType<RuntimeFsBridge['fstat']>>> {
-      return this._call(this._fsRead('fsFstat', args));
+      return this[CALL](this[FS_READ]('fsFstat', args));
     }
     async fsDup(...args: Parameters<RuntimeFsBridge['dup']>): Promise<Awaited<ReturnType<RuntimeFsBridge['dup']>>> {
-      return this._call(this._fsMutation('fsDup', args));
+      return this[CALL](this[FS_MUTATION]('fsDup', args));
     }
     async fsSeek(...args: Parameters<RuntimeFsBridge['seek']>): Promise<Awaited<ReturnType<RuntimeFsBridge['seek']>>> {
-      return this._call(this._fsMutation('fsSeek', args));
+      return this[CALL](this[FS_MUTATION]('fsSeek', args));
     }
     async fsSetStatus(...args: Parameters<RuntimeFsBridge['setStatus']>): Promise<Awaited<ReturnType<RuntimeFsBridge['setStatus']>>> {
-      return this._call(this._fsMutation('fsSetStatus', args));
+      return this[CALL](this[FS_MUTATION]('fsSetStatus', args));
     }
     async fsReaddirHandle(...args: Parameters<RuntimeFsBridge['readdirHandle']>): Promise<Awaited<ReturnType<RuntimeFsBridge['readdirHandle']>>> {
-      return this._call(this._fsRead('fsReaddirHandle', args));
+      return this[CALL](this[FS_READ]('fsReaddirHandle', args));
     }
     async fsFtruncate(...args: Parameters<RuntimeFsBridge['ftruncate']>): Promise<Awaited<ReturnType<RuntimeFsBridge['ftruncate']>>> {
-      return this._call(this._fsMutation('fsFtruncate', args));
+      return this[CALL](this[FS_MUTATION]('fsFtruncate', args));
     }
     async fsFchmod(...args: Parameters<RuntimeFsBridge['fchmod']>): Promise<Awaited<ReturnType<RuntimeFsBridge['fchmod']>>> {
-      return this._call(this._fsMutation('fsFchmod', args));
+      return this[CALL](this[FS_MUTATION]('fsFchmod', args));
     }
     async fsFchown(...args: Parameters<RuntimeFsBridge['fchown']>): Promise<Awaited<ReturnType<RuntimeFsBridge['fchown']>>> {
-      return this._call(this._fsMutation('fsFchown', args));
+      return this[CALL](this[FS_MUTATION]('fsFchown', args));
     }
     async fsFutimes(...args: Parameters<RuntimeFsBridge['futimes']>): Promise<Awaited<ReturnType<RuntimeFsBridge['futimes']>>> {
-      return this._call(this._fsMutation('fsFutimes', args));
+      return this[CALL](this[FS_MUTATION]('fsFutimes', args));
     }
     async fsSync(...args: Parameters<RuntimeFsBridge['fsync']>): Promise<Awaited<ReturnType<RuntimeFsBridge['fsync']>>> {
-      return this._call(this._fsMutation('fsSync', args));
+      return this[CALL](this[FS_MUTATION]('fsSync', args));
     }
     async fsRealpath(...args: Parameters<RuntimeFsBridge['realpath']>): Promise<Awaited<ReturnType<RuntimeFsBridge['realpath']>>> {
-      return this._call(this._fsRead('fsRealpath', args));
+      return this[CALL](this[FS_READ]('fsRealpath', args));
     }
     async fsLinkLeadsTo(...args: Parameters<RuntimeFsBridge['linkLeadsTo']>): Promise<Awaited<ReturnType<RuntimeFsBridge['linkLeadsTo']>>> {
-      return this._call(this._fsRead('fsLinkLeadsTo', args));
+      return this[CALL](this[FS_READ]('fsLinkLeadsTo', args));
     }
     async fsRemove(...args: Parameters<RuntimeFsBridge['remove']>): Promise<Awaited<ReturnType<RuntimeFsBridge['remove']>>> {
-      return this._call(this._fsMutation('fsRemove', args));
+      return this[CALL](this[FS_MUTATION]('fsRemove', args));
     }
     async fsCopyFile(...args: Parameters<RuntimeFsBridge['copyFile']>): Promise<Awaited<ReturnType<RuntimeFsBridge['copyFile']>>> {
-      return this._call(this._fsMutation('fsCopyFile', args));
+      return this[CALL](this[FS_MUTATION]('fsCopyFile', args));
     }
     async fsCopyTree(...args: Parameters<RuntimeFsBridge['copyTree']>): Promise<Awaited<ReturnType<RuntimeFsBridge['copyTree']>>> {
-      return this._call(this._fsMutation('fsCopyTree', args));
+      return this[CALL](this[FS_MUTATION]('fsCopyTree', args));
     }
     async fsAcquireExclusiveMutation(...args: Parameters<RuntimeFsBridge['acquireExclusiveMutation']>): Promise<Awaited<ReturnType<RuntimeFsBridge['acquireExclusiveMutation']>>> {
-      return this._call(this._fsMutation('fsAcquireExclusiveMutation', args));
+      return this[CALL](this[FS_MUTATION]('fsAcquireExclusiveMutation', args));
     }
     async fsReleaseExclusiveMutation(...args: Parameters<RuntimeFsBridge['releaseExclusiveMutation']>): Promise<Awaited<ReturnType<RuntimeFsBridge['releaseExclusiveMutation']>>> {
-      return this._call(this._fsMutation('fsReleaseExclusiveMutation', args));
+      return this[CALL](this[FS_MUTATION]('fsReleaseExclusiveMutation', args));
     }
     /** A delegation's holder waits here for its next recall (a long poll, sent once: a lost one is asked again). */
     async fsAwaitRecall(owner: string, waitMs?: number): Promise<RecallKind | null> {
-      return this._call(this._fsOp('fsAwaitRecall', waitMs === undefined ? [owner] : [owner, waitMs]));
+      return this[CALL](this[FS_OP]('fsAwaitRecall', waitMs === undefined ? [owner] : [owner, waitMs]));
     }
     /** The holder has answered recall `kind`: delivered once. */
     async fsRecalled(owner: string, kind: RecallKind): Promise<void> {
-      return this._call(this._fsMutation('fsRecalled', [owner, kind]));
+      return this[CALL](this[FS_MUTATION]('fsRecalled', [owner, kind]));
     }
     /** Settled once the process's held writes are published (RuntimeFsBridge.published). */
     async fsPublished(options?: { escape?: boolean }): Promise<void> {
-      return this._call(this._fsOp('fsPublished', options === undefined ? [] : [options]));
+      return this[CALL](this[FS_OP]('fsPublished', options === undefined ? [] : [options]));
     }
 
     async fsClose(handleId: number): Promise<void> {
-      return this._call(this._fsMutation('fsClose', [handleId]));
+      return this[CALL](this[FS_MUTATION]('fsClose', [handleId]));
     }
 
     /**
@@ -595,7 +614,7 @@ export function supervisorCalls<Base extends Class>(base: Base) {
      * hibernation and never rewrite whole files for partial updates.
      */
     async fsReadRange(path: string, offset: number, length: number): Promise<Uint8Array | null> {
-      return this._call(this._fsRead('fsReadRange', [path, offset, length]));
+      return this[CALL](this[FS_READ]('fsReadRange', [path, offset, length]));
     }
 
     /**
@@ -605,7 +624,7 @@ export function supervisorCalls<Base extends Class>(base: Base) {
      * session's heap for the rest of its life.
      */
     async fsReadRangeUncached(path: string, offset: number, length: number): Promise<Uint8Array | null> {
-      return this._call(this._fsRead('fsReadRangeUncached', [path, offset, length]));
+      return this[CALL](this[FS_READ]('fsReadRangeUncached', [path, offset, length]));
     }
 
     /**
@@ -633,18 +652,18 @@ export function supervisorCalls<Base extends Class>(base: Base) {
       setLastRpcFrame('fsReadBatch', payloadBytes);
       rpcPayloadStart(payloadBytes);
       try {
-        return await this._call(this._fsRead('fsReadBatch', [requests]));
+        return await this[CALL](this[FS_READ]('fsReadBatch', [requests]));
       } finally {
         rpcPayloadEnd(payloadBytes);
       }
     }
 
     async fsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer): Promise<VfsMutationReceipt> {
-      return this._call(this._fsMutation('fsWriteRange', [path, offset, bytes]));
+      return this[CALL](this[FS_MUTATION]('fsWriteRange', [path, offset, bytes]));
     }
 
     async fsTruncate(path: string, size: number): Promise<VfsMutationReceipt> {
-      return this._call(this._fsMutation('fsTruncate', [path, size]));
+      return this[CALL](this[FS_MUTATION]('fsTruncate', [path, size]));
     }
 
     /**
@@ -668,7 +687,7 @@ export function supervisorCalls<Base extends Class>(base: Base) {
       setLastRpcFrame('writeBatch', payloadBytes);
       rpcPayloadStart(payloadBytes);
       try {
-        return await this._call(this._fsMutation('writeBatch', [payload]));
+        return await this[CALL](this[FS_MUTATION]('writeBatch', [payload]));
       } finally {
         rpcPayloadEnd(payloadBytes);
       }
@@ -703,14 +722,14 @@ export function supervisorCalls<Base extends Class>(base: Base) {
      * is minted anew: a writer that numbers afresh never reuses an epoch.
      */
     async openWaveWriter(first = false): Promise<string | null> {
-      if (this._hostIncarnation() === undefined) return null;
+      if (this[HOST_INCARNATION]() === undefined) return null;
       const props = this[TRANSPORT]().props as { waveWriter?: unknown; waveWriterMintedAt?: unknown } | undefined;
       if (first && typeof props?.waveWriter === 'string' && typeof props.waveWriterMintedAt === 'number'
         && Date.now() - props.waveWriterMintedAt < WAVE_EPOCH_TTL_MS / 4) {
         return props.waveWriter;
       }
-      const answer = await this._call(this._resent<{ writer: string }>(
-        { op: 'openWaveWriter', args: [], pid: this._pid() },
+      const answer = await this[CALL](this[RESENT]<{ writer: string }>(
+        { op: 'openWaveWriter', args: [], pid: this[PID]() },
         { kind: 'open' },
         { hedgeAfterMs: LOST_CALL_HEDGE_AFTER_MS },
       ));
@@ -723,9 +742,9 @@ export function supervisorCalls<Base extends Class>(base: Base) {
      * it sends next. Harmless to repeat, so a lost call is re-sent.
      */
     async retireWaveWriter(writer: string): Promise<void> {
-      if (this._hostIncarnation() === undefined) return;
-      await this._call(this._resent<void>(
-        { op: 'retireWaveWriter', args: [writer], pid: this._pid() },
+      if (this[HOST_INCARNATION]() === undefined) return;
+      await this[CALL](this[RESENT]<void>(
+        { op: 'retireWaveWriter', args: [writer], pid: this[PID]() },
         { kind: 'open' },
         { hedgeAfterMs: LOST_CALL_HEDGE_AFTER_MS },
       ));
@@ -755,12 +774,12 @@ export function supervisorCalls<Base extends Class>(base: Base) {
       setLastRpcFrame('writeBatchStream', -1);
       rpcPayloadStart(STREAM_RESIDENT_BYTES);
       try {
-        const hostIncarnation = this._hostIncarnation();
-        return await this._call(this._resent<WriteBatchStreamResult>({
+        const hostIncarnation = this[HOST_INCARNATION]();
+        return await this[CALL](this[RESENT]<WriteBatchStreamResult>({
           op: 'writeBatchStream',
           args: [],
-          pid: this._pid(),
-          mutationOwner: owner ?? this._mutationOwner(),
+          pid: this[PID](),
+          mutationOwner: owner ?? this[MUTATION_OWNER](),
           stream,
           waveFence: fence && hostIncarnation !== undefined ? { ...fence, hostIncarnation } : undefined,
         }, { kind: 'deliver', operationId: fence ? `${fence.writer}:${fence.wave}:${fence.attempt}` : undefined }, { maxAttempts: 1 }));
@@ -805,9 +824,9 @@ export function supervisorCalls<Base extends Class>(base: Base) {
     async getCachedTarball(
       integrity: string,
     ): Promise<{ bytes: Uint8Array | null; events: CacheStatEvent[] }> {
-      const plan = this._infrastructureCache('getCachedTarball', [integrity]) ? { readOnly: false }
-        : await this._call(this._op<{ ticket?: string; readOnly: boolean }>('getCachedTarball', [integrity]));
-      return this._cacheRead(plan, async (client) => {
+      const plan = this[INFRASTRUCTURE_CACHE]('getCachedTarball', [integrity]) ? { readOnly: false }
+        : await this[CALL](this[OP]<{ ticket?: string; readOnly: boolean }>('getCachedTarball', [integrity]));
+      return this[CACHE_READ](plan, async (client) => {
         const bytes = await client.getTarball(integrity);
         return { bytes: bytes?.length && bytes.length <= MAX_R2_TARBALL_BYTES ? bytes : null, events: client._cacheEvents };
       });
@@ -828,7 +847,7 @@ export function supervisorCalls<Base extends Class>(base: Base) {
       // its own cacheStatEvents list before calling putCachedTarball.
       // This RPC remains a one-way write (returns bool); the L4 event
       // does NOT flow through this return path.
-      if (!this._infrastructureCache('putCachedTarball', [integrity, bytes])) await this._call(this._op('putCachedTarball', [integrity, bytes]));
+      if (!this[INFRASTRUCTURE_CACHE]('putCachedTarball', [integrity, bytes])) await this[CALL](this[OP]('putCachedTarball', [integrity, bytes]));
       return new R2CacheClient((this[TRANSPORT]().env as any)?.NPM_TARBALL_CACHE ?? null, null).putTarball(integrity, bytes);
     }
 
@@ -850,9 +869,9 @@ export function supervisorCalls<Base extends Class>(base: Base) {
       name: string,
       options?: PackumentReadOptions,
     ): Promise<PackumentReadThrough & { events: CacheStatEvent[] }> {
-      const plan = this._infrastructureCache('getPackument', [name, options]) ? { readOnly: false }
-        : await this._call(this._op<{ ticket?: string; readOnly: boolean }>('getPackument', [name, options]));
-      return this._cacheRead(plan, async (client) => ({ ...await client.readThroughPackument(name, options, this._network()), events: client._cacheEvents }));
+      const plan = this[INFRASTRUCTURE_CACHE]('getPackument', [name, options]) ? { readOnly: false }
+        : await this[CALL](this[OP]<{ ticket?: string; readOnly: boolean }>('getPackument', [name, options]));
+      return this[CACHE_READ](plan, async (client) => ({ ...await client.readThroughPackument(name, options, this[NETWORK]()), events: client._cacheEvents }));
     }
 
     // ── Process I/O ───────────────────────────────────────────────────────
@@ -864,11 +883,11 @@ export function supervisorCalls<Base extends Class>(base: Base) {
     // `at` and `run`: where the chunk falls in what the run printed, and which
     // run of the process printed it (runtime/stop-replay.ts, ReplayOutputGate).
     async stdout(data: Uint8Array, at?: number, run?: number): Promise<void> {
-      return this._call(this._op('stdout', at === undefined || run === undefined ? [data] : [data, at, run], { pid: this._reportingPid() }));
+      return this[CALL](this[OP]('stdout', at === undefined || run === undefined ? [data] : [data, at, run], { pid: this[REPORTING_PID]() }));
     }
 
     async stderr(data: Uint8Array, at?: number, run?: number): Promise<void> {
-      return this._call(this._op('stderr', at === undefined || run === undefined ? [data] : [data, at, run], { pid: this._reportingPid() }));
+      return this[CALL](this[OP]('stderr', at === undefined || run === undefined ? [data] : [data, at, run], { pid: this[REPORTING_PID]() }));
     }
 
     /**
@@ -884,7 +903,7 @@ export function supervisorCalls<Base extends Class>(base: Base) {
      * all for its command's next launch (launch-learning-store.ts).
      */
     async reportExit(code: number, tail?: string, dataReads?: string[], profileUnread?: string[], runtimeCode?: unknown[], executedModules?: string[]): Promise<void> {
-      return this._call(this._op('reportExit', [code, tail || '', dataReads ?? [], profileUnread ?? null, runtimeCode ?? [], executedModules ?? []], { pid: this._reportingPid() }));
+      return this[CALL](this[OP]('reportExit', [code, tail || '', dataReads ?? [], profileUnread ?? null, runtimeCode ?? [], executedModules ?? []], { pid: this[REPORTING_PID]() }));
     }
 
     /**
@@ -893,27 +912,27 @@ export function supervisorCalls<Base extends Class>(base: Base) {
      * the files it read that its launch lacked (launch-learning-store.ts).
      */
     async reportRuntimeCode(entries: unknown[], executedModules: string[] = [], dataReads: string[] = []): Promise<void> {
-      return this._call(this._op('reportRuntimeCode', [entries, executedModules, dataReads], { pid: this._reportingPid() }));
+      return this[CALL](this[OP]('reportRuntimeCode', [entries, executedModules, dataReads], { pid: this[REPORTING_PID]() }));
     }
 
     // ── Prefetch ──────────────────────────────────────────────────────────
 
     async prefetch(cwd: string, entryCode: string): Promise<Record<string, string>> {
-      return this._call(this._op('prefetch', [cwd, entryCode]));
+      return this[CALL](this[OP]('prefetch', [cwd, entryCode]));
     }
 
     // ── Port registration ─────────────────────────────────────────────────
 
     async registerPort(port: number): Promise<void> {
-      return this._call(this._op('registerPort', [port], { pid: this._reportingPid() }));
+      return this[CALL](this[OP]('registerPort', [port], { pid: this[REPORTING_PID]() }));
     }
 
     async allocatePort(): Promise<number> {
-      return this._call(this._op('allocatePort', [], { pid: this._reportingPid() }));
+      return this[CALL](this[OP]('allocatePort', [], { pid: this[REPORTING_PID]() }));
     }
 
     async unregisterPort(port: number): Promise<void> {
-      return this._call(this._op('unregisterPort', [port], { pid: this._reportingPid() }));
+      return this[CALL](this[OP]('unregisterPort', [port], { pid: this[REPORTING_PID]() }));
     }
 
     /**
@@ -923,19 +942,19 @@ export function supervisorCalls<Base extends Class>(base: Base) {
      * facet reach another facet's server in-session (e.g. `opencode attach` →
      * `opencode serve`). Returns the target's Response, streamed over RPC.
      *
-     * NOT routed through `_call`: that disposes the RPC resource after mapping,
+     * NOT routed through `[CALL]`: that disposes the RPC resource after mapping,
      * which would close a streaming Response body (SSE). We return the RPC promise
      * directly so the body streams to the caller for the response's lifetime —
      * exactly how PortRegistry.routeRequest returns the facet's Response as-is.
      */
     async routeLoopback(port: number, request: Request): Promise<Response> {
-      return this._op('routeLoopback', [port, request]);
+      return this[OP]('routeLoopback', [port, request]);
     }
 
     // ── Esbuild transform ─────────────────────────────────────────────────
 
     async transform(code: string, loader: string): Promise<{ code: string; map: string } | null> {
-      return this._call(this._op('transform', [code, loader]));
+      return this[CALL](this[OP]('transform', [code, loader]));
     }
 
     // ── child_process [W8 Phase 1] ────────────────────────────────────────
@@ -946,15 +965,15 @@ export function supervisorCalls<Base extends Class>(base: Base) {
     //
 
     async cpSpawn(req: any): Promise<{ childPid: number }> {
-      return this._call(this._op('cpSpawn', [{ ...req, parentPid: this._pid() }]));
+      return this[CALL](this[OP]('cpSpawn', [{ ...req, parentPid: this[PID]() }]));
     }
 
     async cpStdinWrite(childPid: number, data: Uint8Array): Promise<{ ok: boolean; full?: boolean }> {
-      return this._call(this._op('cpStdinWrite', [childPid, data]));
+      return this[CALL](this[OP]('cpStdinWrite', [childPid, data]));
     }
 
     async cpStdinEnd(childPid: number): Promise<void> {
-      return this._call(this._op('cpStdinEnd', [childPid]));
+      return this[CALL](this[OP]('cpStdinEnd', [childPid]));
     }
 
     /**
@@ -969,19 +988,19 @@ export function supervisorCalls<Base extends Class>(base: Base) {
     // run before stopped at; a TLS connection it opens through the session.
 
     async replayBoundary(): Promise<void> {
-      return this._call(this._op('replayBoundary', [], { pid: this._pid() }));
+      return this[CALL](this[OP]('replayBoundary', [], { pid: this[PID]() }));
     }
 
     /** fd-0 preparation, not a program's ordinary read of this pathname. */
     async stdinFileRead(path: string, offset: number, length: number): Promise<{ data: Uint8Array; size: number }> {
-      return this._call(this._op('stdinFileRead', [path, offset, length]));
+      return this[CALL](this[OP]('stdinFileRead', [path, offset, length]));
     }
-    async stdinPrepared(): Promise<void> { return this._call(this._op('stdinPrepared')); }
+    async stdinPrepared(): Promise<void> { return this[CALL](this[OP]('stdinPrepared')); }
 
     async netTls(action: 'open' | 'upgrade', token: string, payload: Record<string, unknown>): Promise<unknown> {
-      const egress = this._network().egress;
+      const egress = this[NETWORK]().egress;
       if (egress !== undefined) {
-        this._caller({ op: 'netTls' });
+        this[CALLER]({ op: 'netTls' });
         if (action !== 'open' && action !== 'upgrade') throw new Error('netTls: unknown action ' + action);
         const hostname = typeof payload.host === 'string' ? payload.host : '';
         const port = Number(payload.port);
@@ -1000,7 +1019,7 @@ export function supervisorCalls<Base extends Class>(base: Base) {
           throw error;
         }
       }
-      return this._call(this._op('netTls', [action, token, payload], { pid: this._pid() }));
+      return this[CALL](this[OP]('netTls', [action, token, payload], { pid: this[PID]() }));
     }
 
     async cpReadStdin(childPid: number, waitMs: number, acquire?: FsAcquireArgs, maxBytes?: number): Promise<{
@@ -1013,8 +1032,8 @@ export function supervisorCalls<Base extends Class>(base: Base) {
       // The run reading: a run of the process that has stopped takes nothing
       // (worker runtime/stop-replay.ts StdinTaken).
       const writerId = (this[TRANSPORT]().props as { writerId?: unknown } | undefined)?.writerId;
-      return this._call(this._op('cpReadStdin', [childPid, waitMs, acquire ?? null, ...(maxBytes === undefined ? [] : [maxBytes])], {
-        pid: this._reportingPid(),
+      return this[CALL](this[OP]('cpReadStdin', [childPid, waitMs, acquire ?? null, ...(maxBytes === undefined ? [] : [maxBytes])], {
+        pid: this[REPORTING_PID](),
         ...(typeof writerId === 'string' && writerId.length > 0 ? { writerId } : {}),
       }));
     }
@@ -1026,20 +1045,20 @@ export function supervisorCalls<Base extends Class>(base: Base) {
       waitMs: number,
       acquire?: FsAcquireArgs,
     ): Promise<{ chunks: { seq: number; data: Uint8Array }[]; closed: boolean; maxSeq: number; news?: number[]; acquired?: VfsDeliveredAcquire }> {
-      return this._call(this._op('cpReadOutput', [childPid, fd, sinceSeq, waitMs, acquire ?? null], { pid: this._reportingPid() }));
+      return this[CALL](this[OP]('cpReadOutput', [childPid, fd, sinceSeq, waitMs, acquire ?? null], { pid: this[REPORTING_PID]() }));
     }
 
     async cpDrainOutput(childPid: number): Promise<{ stdout: Uint8Array; stderr: Uint8Array; stdoutClosed: boolean; stderrClosed: boolean }> {
-      return this._call(this._op('cpDrainOutput', [childPid]));
+      return this[CALL](this[OP]('cpDrainOutput', [childPid]));
     }
 
     /** The parent closes its read end of the child's fd 1 or 2: the child's writes there fail, EPIPE. */
     async cpCloseOutput(childPid: number, fd: 1 | 2): Promise<void> {
-      return this._call(this._op('cpCloseOutput', [childPid, fd]));
+      return this[CALL](this[OP]('cpCloseOutput', [childPid, fd]));
     }
 
     async cpKill(childPid: number, signal: string): Promise<boolean> {
-      return this._call(this._op('cpKill', [childPid, signal]));
+      return this[CALL](this[OP]('cpKill', [childPid, signal]));
     }
 
     /**
@@ -1052,7 +1071,7 @@ export function supervisorCalls<Base extends Class>(base: Base) {
       acquire?: FsAcquireArgs,
       knownStarted?: boolean,
     ): Promise<{ done: boolean; exitCode: number | null; signal: string | null; spawnError?: string; started?: boolean; news?: number[]; acquired?: VfsDeliveredAcquire }> {
-      return this._call(this._op('cpWait', [childPid, waitMs, acquire ?? null, knownStarted !== false], { pid: this._reportingPid() }));
+      return this[CALL](this[OP]('cpWait', [childPid, waitMs, acquire ?? null, knownStarted !== false], { pid: this[REPORTING_PID]() }));
     }
 
     /**
@@ -1062,7 +1081,7 @@ export function supervisorCalls<Base extends Class>(base: Base) {
      * it: fabric budgets.ts setProcessBlocked). `seq` increases per report.
      */
     async cpBlocked(report: { blocked: boolean; frontier: number; seq: number }): Promise<void> {
-      return this._call(this._op('cpBlocked', [report], { pid: this._pid() }));
+      return this[CALL](this[OP]('cpBlocked', [report], { pid: this[PID]() }));
     }
   }
   return SupervisorCalls;

@@ -322,7 +322,8 @@ export const SUPERVISOR_OP_ROUTES: Readonly<Record<Exclude<SupervisorOpName, Nat
   reportRuntimeCode: { method: '_rpcReportRuntimeCode', args: ['pid',0,1,2] },
   routeLoopback: { method: '_rpcRouteLoopback', args: [0,1] },
   transform: { method: '_rpcTransform', args: [0,1] },
-  cpSpawn: { method: '_rpcCpSpawn', args: [0] },
+  // The parent is the envelope's pid, which its binding stamped; never the request's.
+  cpSpawn: { method: '_rpcCpSpawn', args: [0, 'pid'] },
   cpStdinWrite: { method: '_rpcCpStdinWrite', args: [0,1] },
   cpStdinEnd: { method: '_rpcCpStdinEnd', args: [0] },
   cpReadStdin: { method: '_rpcCpReadStdin', args: [0,1,2,'pid','writerId',3] },

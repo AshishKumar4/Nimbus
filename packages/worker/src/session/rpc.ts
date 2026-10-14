@@ -1422,9 +1422,15 @@ export async function _rpcTransform(self: RpcHost, code: string, loader: string)
   // facet calls cp* before the supervisor has initialized the broker
   // (e.g., immediately after DO hibernation wake-up).
 
-export async function _rpcCpSpawn(self: RpcHost, req: any): Promise<{ childPid: number }> {
+/**
+ * A child of `parentPid`, the process whose envelope asked for it (the
+ * supervisor route passes the pid its binding stamped): the parent a request
+ * names is overridden, so no process spawns a child as another's. A host's
+ * own call, which no process makes, names the parent in the request.
+ */
+export async function _rpcCpSpawn(self: RpcHost, req: any, parentPid?: number): Promise<{ childPid: number }> {
     const fpm = self._ensureChildProcessManager();
-    return fpm.spawn(req);
+    return fpm.spawn(parentPid === undefined ? req : { ...req, parentPid });
 }
 
 /**

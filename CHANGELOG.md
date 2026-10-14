@@ -5,6 +5,26 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed (security): guests could call methods of the platform's RPC classes
+  that were meant only for the platform's own use. Workers RPC exposes every
+  string-named method of a WorkerEntrypoint, RpcTarget or Durable Object to
+  whoever holds its stub, whatever TypeScript's `private` says.
+  - The real-Vite resident's `CIRRUS_HMR` binding answered the session's
+    Durable Object stub and its raw dispatch. Through that dispatch, the
+    project's Vite config or plugins could act as any process, or as the
+    kernel.
+  - Every process's `SUPERVISOR` answered its generic dispatch helpers.
+    These sent any operation the session serves, past the methods that stamp
+    their arguments: a process could spawn a child as another process's,
+    inheriting that process's stdin. They also answered the process's network
+    without the recording that replay depends on.
+  - The Worker Loader shim's entrypoint answered the props it was minted with
+    (its egress among them) and the raw loaded entrypoint.
+  - A scoped `HostedSession` answered the unscoped runtime it serves.
+
+  These helpers are no longer on any class's RPC surface. The session also
+  takes a spawned child's parent from the pid its binding stamped, never
+  from the request.
 - Fixed (Node `fs`): `fs.promises.realpath` and callback `fs.realpath`
   resolve symlinks and refuse a missing path with `ENOENT`, giving
   `realpathSync`'s answer; they returned the path as written. A link the
