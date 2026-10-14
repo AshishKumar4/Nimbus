@@ -18,7 +18,7 @@
  * must not share either.
  */
 import { sha256Incremental } from '../_shared/crypto.js';
-import { BASH_RUNNER, CRED_KERNEL, NIMBUS_ABI_TARGET, NIMBUS_RUNTIME_ABIS, NATIVE_UNSUPPORTED_ABI, } from './os-contracts.js';
+import { BASH_RUNNER, CPYTHON_RUNNER, CRED_KERNEL, NIMBUS_ABI_TARGET, NIMBUS_RUNTIME_ABIS, NATIVE_UNSUPPORTED_ABI, } from './os-contracts.js';
 import { parseRuntimeManifest, } from './runtime-manifest.js';
 import { RUNTIME_STORE, RUNTIME_STORE_DIRS, rootsOwn, runtimeTreeOwn } from './runtime-store.js';
 export function runtimeAbiForManifest(manifest) {
@@ -55,8 +55,8 @@ export const RUNTIME_EXTRA_ENTRYPOINTS = {
     // may claim it. The python row went with python-runner: Pyodide's manifest
     // still names that runner, so it could not serve pip even if it were listed.
     cpython: [
-        { binName: 'pip', runner: 'cpython-runner', kind: 'pip', args: [] },
-        { binName: 'pip3', runner: 'cpython-runner', kind: 'pip', args: [] },
+        { binName: 'pip', runner: CPYTHON_RUNNER, kind: 'pip', args: [] },
+        { binName: 'pip3', runner: CPYTHON_RUNNER, kind: 'pip', args: [] },
     ],
     ruby: [
         { binName: 'gem', runner: 'ruby-runner', kind: 'gem', args: [] },

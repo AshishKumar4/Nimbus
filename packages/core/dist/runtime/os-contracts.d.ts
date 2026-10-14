@@ -753,6 +753,15 @@ export declare const NIMBUS_RUNTIME_ABIS: Readonly<Record<string, RuntimePackage
  * the build its preamble was written against.
  */
 export declare const BASH_RUNNER = "bash-runner@5";
+/**
+ * The runner key a CPython manifest entrypoint names: the contract between the
+ * CPython preamble (cpython-preamble.ts) and the wasm build in
+ * `packages/worker/wasm/python`. 3.13.14-2 imports nimbus_fs and nimbus_proc,
+ * which an older runner does not give the module, so it is `@2`; 3.13.14-1
+ * and before were published under `cpython-runner`. A rebuild that changes
+ * what the module imports or exports takes the next number, as BASH_RUNNER's do.
+ */
+export declare const CPYTHON_RUNNER = "cpython-runner@2";
 /** Git's first runtime build imports the shared Nimbus filesystem/process extensions. */
 export declare const GIT_RUNNER = "git-runner";
 /**
