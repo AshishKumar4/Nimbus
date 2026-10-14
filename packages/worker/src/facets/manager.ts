@@ -70,7 +70,7 @@ import { PORT_CAPABILITY_KEY_PREFIX } from '../session/keys.js';
 import { sessionIdentity, unbindPublicPortCapability } from '../router/public-directory.js';
 import {
   prefetchForRequire, requireFsOverBridge, resolveDeferredImport, ClosureBoundExceededError,
-  type BridgeRequireFs, type DeferredImport, type PrefetchResult, type PreloadModuleRoot, type RequiredModuleRoot,
+  type BridgeRequireFs, type DeferredImport, type PreloadModuleRoot, type RequiredModuleRoot,
 } from '@nimbus-sh/core/runtime/require-resolver.js';
 import { typeScriptStripOptions, type NodeLaunch } from '@nimbus-sh/core/runtime/node-cli.js';
 import type { NodeTypeScript } from '@nimbus-sh/core/runtime/typescript-strip.js';
@@ -4600,6 +4600,13 @@ export interface PrefetchBundleOptions {
   entryEsModule?: string;
   /** A module's static filesystem references, as the data plan reads them (collectClosureWasmImages). */
   staticRefs?: (path: string) => Promise<StaticFsRefs | null>;
+  /**
+   * The files as they are, for a program that runs its own code and only
+   * reads them (opencode's snapshot, _stageOpencodeFacet): the same files
+   * and bound, without the module pass. Nothing is compiled, and the bound
+   * charges what is carried.
+   */
+  dataOnly?: boolean;
 }
 
 /** A tool's config file: `<tool>.config.js|ts|mjs|cjs|mts|cts` (vite.config.ts, astro.config.mjs). */
@@ -4800,56 +4807,29 @@ async function gatherPrefetchBundle(vfs: LaunchFs, options: PrefetchBundleOption
   }
 }
 
-/**
- * The files a launch stages, chosen and read: the walk's closure, the runs'
- * evidence, and the passes that guess at what the program reads. A Node
- * launch's module map is made from them (_buildPrefetchBundle), and so is
- * the snapshot a staged program only reads (gatherDataBundle).
- */
-interface LaunchFiles {
-  /** The VFS cursor the files were read at. */
-  cursor: { epoch: string; rev: number };
-  /** Where the build's time went, by phase (FacetVfsState.phases); `phase` charges the time since the last one. */
-  phases: Record<string, number>;
-  phase(name: string): void;
-  /** The walk's result. */
-  prefetch: PrefetchResult;
-  /** Path → the file's content, as read. */
-  bundle: Record<string, string | Uint8Array>;
-  /** The walk's required closure: only it can fail a launch on the bound. */
-  closurePaths: ReadonlySet<string>;
-  /** Paths earlier runs of this entry read and missed, and other sessions' misses (read-profile.ts). */
-  observedPaths: Set<string>;
-  learnedPaths: Set<string>;
-  /** The optional module groups, each kept or evicted whole, and what was staged before them. */
-  groups: OptionalModuleGroup[];
-  independentBeforeGroups: Set<string>;
-  learnedMembers: Set<string>;
-  /** What the passes staged to run, and what the passes that stage code staged. */
-  stagedToRun: Set<string>;
-  codePaths: Set<string>;
-  /** The wasm images a bin's siblings carry (addBinTargetSiblings). */
-  wasmPaths: string[];
-  /** Spends the bundle's weight on the launch's pacer. */
-  paceAfterPass(): Promise<void>;
-}
-
-async function gatherLaunchFiles(
+async function _buildPrefetchBundle(
   vfs: LaunchFs,
   {
     scriptPath,
     cwd,
     entryCode,
+    esbuild,
     bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE,
+    moduleScope = 'node',
     observedReads,
     pacer,
     maxBundleBytes = VFS_BUNDLE_MAX_BYTES,
     learnedFor,
     executedModules,
+    transformStore,
     conditions = [],
+    stripTypes = null,
     preloads = [],
+    entryEsModule,
+    staticRefs,
+    dataOnly = false,
   }: PrefetchBundleOptions,
-): Promise<LaunchFiles> {
+): Promise<FacetVfsState> {
   // Read the cursor BEFORE the walk: a mutation that lands while the bundle
   // is being assembled must be reported as invalidated, not silently missed.
   const admitted = await vfs.acquire(null, 0);
@@ -4890,6 +4870,7 @@ async function gatherLaunchFiles(
   const learnedPaths = new Set<string>();
   let room = maxBundleBytes;
   for (const path of closurePaths) room -= _bundleCellRawBytes(bundle[path]);
+  let truncated = false;
   const budgetState = { totalBytes: 0, fileCount: 0 };
   // Each enrichment pass below re-scans the bundle accumulated so far, so a
   // pass costs about what the bundle currently weighs however little it adds
@@ -5025,161 +5006,10 @@ async function gatherLaunchFiles(
   void absScanAdd;
   await paceAfterPass();
 
-  return {
-    cursor, phases, phase, prefetch, bundle, closurePaths, observedPaths, learnedPaths,
-    groups, independentBeforeGroups, learnedMembers, stagedToRun, codePaths,
-    wasmPaths: binSiblingAdd.wasmPaths, paceAfterPass,
-  };
-}
-
-/**
- * 4. The snapshot's size guard, in the unit the session DO's memory was
- *    measured in and the require walk counts: raw bytes, a cell's UTF-8
- *    length (VFS_BUNDLE_MAX_BYTES, platform/limits.ts, unless the caller
- *    set its own), as `rawBytes` charges each path. The per-module text
- *    limit is met by side modules and is not a reason to evict. Only
- *    OPTIONAL enrichment is evictable; the static require closure stays, and
- *    a closure past the bound by itself fails the launch by name.
- *
- *    Evicting an enrichment file is a real loss — the sync fs reads it
- *    exists for cannot fall back to the supervisor — so the paths that
- *    went are named rather than silently dropped. Each leaves `bundle` for
- *    `evictedCells`.
- */
-async function boundLaunchFiles(
-  { bundle, closurePaths, prefetch, observedPaths, learnedPaths, groups, independentBeforeGroups, learnedMembers, phases }: LaunchFiles,
-  rawBytes: ReadonlyMap<string, number>,
-  rawTotal: number,
-  { scriptPath, maxBundleBytes = VFS_BUNDLE_MAX_BYTES, pacer }: Pick<PrefetchBundleOptions, 'scriptPath' | 'maxBundleBytes' | 'pacer'>,
-): Promise<{ rawTotal: number; truncated: boolean; evictedCells: Record<string, string | Uint8Array> }> {
-  /** What the bound evicts, held until its images and reads are named. */
-  const evictedCells: Record<string, string | Uint8Array> = {};
-  Object.setPrototypeOf(evictedCells, null);
-  if (rawTotal <= maxBundleBytes) return { rawTotal, truncated: false, evictedCells };
-  // Only the walk's closure can fail a launch, and the path it names is the
-  // one whose bytes (with its emit) crossed the bound, in walk order.
-  let closureBytes = 0;
-  let crossedAt: string | null = null;
-  for (const path of closurePaths) {
-    closureBytes += rawBytes.get(path) ?? 0;
-    if (crossedAt === null && closureBytes > maxBundleBytes) crossedAt = path;
-  }
-  if (crossedAt !== null) {
-    throw new ClosureBoundExceededError({
-      kind: 'closure-exceeds-bound',
-      entry: scriptPath ?? 'entry code',
-      bytesSeen: closureBytes,
-      bound: maxBundleBytes,
-      lastPath: crossedAt,
-    });
-  }
-  // An emit goes with its source: required when the source is.
-  //
-  // Order matters as much as the bound. Largest-first alone ranks a cell by
-  // what it costs and never by what losing it costs: an admitted module and
-  // the sibling it imports are both "optional", and shedding the sibling
-  // leaves a module in the bundle that cannot load. On `astro dev` the
-  // snapshot breached its bound by 591 files, and among the largest were
-  // modules while 3,291 declaration files (never a require target) stayed.
-  //
-  // Unloadable cells first, then enrichment largest-first, then dynamic-import
-  // subtrees last-discovered first, so a CLI's own `import()` deferral is shed last.
-  const speculativeRank = new Map<string, number>();
-  for (const path of prefetch.speculative) speculativeRank.set(path, speculativeRank.size);
-  const rankOf = (path: string): number => speculativeRank.get(path) ?? -1;
-  // Evidence goes after all enrichment: what others learned before this
-  // session's own misses, each tier last-admitted first.
-  const tierOf = (path: string): number =>
-    closurePaths.has(path) ? 3 : observedPaths.has(path) ? 2 : learnedPaths.has(path) ? 1 : 0;
-  const members = new Set<string>();
-  for (const group of groups) for (const path of group.members) members.add(path);
-  // A learned closure was staged before the greedy pass and is a group all the same.
-  const independent = new Set(Object.keys(bundle).filter(path =>
-    !members.has(path) || (independentBeforeGroups.has(path) && !learnedMembers.has(path))));
-  const keptGroups = new Set(groups);
-  const weight = (path: string) => rawBytes.get(path) ?? 0;
-  const unitBytes = new Map<string, number>();
-  for (const group of groups) {
-    let total = 0;
-    for (const member of group.members) if (!independent.has(member)) total += weight(member);
-    unitBytes.set(group.root, total);
-    if (pacer) await pacer.spend(group.members.size * 256);
-  }
-  const lastAdmittedFirst = (tier: Set<string>): string[] => [...tier].reverse().filter(path => independent.has(path));
-  const enrichment = [...independent, ...groups.map(group => group.root)]
-    .filter(path => tierOf(path) === 0)
-    .sort((a, b) => {
-      const loadable = (_isLoadableModuleCell(a) ? 1 : 0) - (_isLoadableModuleCell(b) ? 1 : 0);
-      if (loadable !== 0) return loadable;
-      const rankA = rankOf(a);
-      const rankB = rankOf(b);
-      if (rankA !== rankB) return rankA < 0 ? -1 : rankB < 0 ? 1 : rankB - rankA;
-      return (unitBytes.get(b) ?? weight(b)) - (unitBytes.get(a) ?? weight(a));
-    });
-  const evictable = [...enrichment, ...lastAdmittedFirst(learnedPaths), ...lastAdmittedFirst(observedPaths)];
-  const kept = await retainWithinBound(maxBundleBytes, rawTotal, independent, keptGroups, evictable, rawBytes, pacer);
-  const retained = kept.retained;
-  rawTotal = kept.rawTotal;
-  const evicted: BundleCellSize[] = [];
-  for (const k of Object.keys(bundle)) {
-    if (retained.has(k)) continue;
-    evicted.push([k, rawBytes.get(k) ?? 0]);
-    evictedCells[k] = bundle[k]!;
-    delete bundle[k];
-  }
-  // How many it evicted, beside the phases' times (exec telemetry).
-  phases.evicted = evicted.length;
-  if (evicted.length > 0) {
-    console.warn(
-      `[facet-manager] prefetch snapshot exceeded ${maxBundleBytes} bytes; `
-        + `evicted ${evicted.length} optional file(s). They still exist and `
-        + `async reads still return them; synchronous reads raise EAGAIN: `
-        + `${describeBundleCells(evicted)}`,
-    );
-  }
-  return { rawTotal, truncated: evicted.length > 0, evictedCells };
-}
-
-/**
- * The files a launch stages, carried as they are, for a program that only
- * reads them: opencode's snapshot (_stageOpencodeFacet), whose code is its
- * own artifact. The same selection and bound as a Node launch's
- * (gatherLaunchFiles, boundLaunchFiles), without the module pass: nothing is
- * compiled, and the bound charges what is carried.
- */
-export async function gatherDataBundle(vfs: LaunchFs, cwd: string): Promise<FacetVfsState> {
-  const files = await gatherLaunchFiles(vfs, { cwd, entryCode: '' });
-  const rawBytes = new Map<string, number>();
-  let rawTotal = 0;
-  for (const [path, cell] of Object.entries(files.bundle)) {
-    const bytes = _bundleCellRawBytes(cell);
-    rawBytes.set(path, bytes);
-    rawTotal += bytes;
-  }
-  const bounded = await boundLaunchFiles(files, rawBytes, rawTotal, {});
-  files.phase('guard');
-  return {
-    bundle: files.bundle,
-    phases: files.phases,
-    cursor: files.cursor,
-    reachableCount: Object.keys(files.bundle).length,
-    truncated: bounded.truncated,
-    rawBytes: bounded.rawTotal,
-  };
-}
-
-async function _buildPrefetchBundle(vfs: LaunchFs, options: PrefetchBundleOptions): Promise<FacetVfsState> {
-  const {
-    scriptPath, cwd, entryCode, esbuild, moduleScope = 'node', pacer, maxBundleBytes = VFS_BUNDLE_MAX_BYTES,
-    transformStore, conditions = [], stripTypes = null, entryEsModule, staticRefs,
-  } = options;
-  const files = await gatherLaunchFiles(vfs, options);
-  const { cursor, phases, phase, prefetch, bundle, observedPaths, learnedPaths, groups, stagedToRun, codePaths, paceAfterPass } = files;
-
   // 2.5 The module pass (core bundle-cell-transform.ts): each ES module read
   //     for staging, TypeScript stripped or compiled, CommonJS's import()
   //     routed; each result is the path's emit, and each ES module's import
-  //     sites are kept for its staging below.
+  //     sites are kept for its staging below. A data-only build has none.
   const emits = new Map<string, string>();
   const esModules = new Map<string, string>();
   // A file staged only to run carries its emit and not itself
@@ -5205,62 +5035,156 @@ async function _buildPrefetchBundle(vfs: LaunchFs, options: PrefetchBundleOption
   };
   let transforms: BundleCellTransformStats | undefined;
   phase('enrich');
-  const packageTypeOf = await cellPackageTypes(vfs, Object.keys(bundle).filter(isBundleModuleCandidate));
-  if (esbuild) {
-    // Transient failures propagate through the launch failure path before
-    // serialization/cache/LOADER publication. Per-source verdicts still use
-    // the lazy diagnostic cells installed by transformBundleModules.
-    transforms = await transformBundleModules(bundle, placeEmit, esModules, packageTypeOf, moduleScope, stripTypes, esbuild, pacer, transformStore);
-    phase('transforms');
-  } else {
-    // No esbuild service was given: the ESM cells stage as diagnostics that
-    // say so, rather than as source the registry rejects without a reason.
-    _markBundleEsmAsFailed(bundle, placeEmit, packageTypeOf, 'no esbuild service was given to this launch');
-  }
-  // Each module's bundled records of the runtime's provided packages are
-  // bound to them: the emit's, or the file's own when it is its module (a
-  // TypeScript source never is). A file that changes has the result as its emit.
-  for (const path of Object.keys(bundle)) {
-    const cell = bundle[path];
-    const code = emits.get(path) ?? (isBundleModuleCandidate(path) && bundleCompiledLoader(path) === null ? cell : undefined);
-    // An ES module was bound before it was read (esbuild-service.ts preparedTransformSource).
-    if (typeof code !== 'string' || esModules.has(path)) continue;
-    await pacer?.spend(code.length);
-    let bound: string;
-    try {
-      bound = rewriteProvidedCommonJsModules(code);
-    } catch {
-      // Unparseable: an emit stays as esbuild wrote it, and its require says
-      // why; a file is not a module and has no records to bind (a LICENSE).
-      continue;
+  if (!dataOnly) {
+    const packageTypeOf = await cellPackageTypes(vfs, Object.keys(bundle).filter(isBundleModuleCandidate));
+    if (esbuild) {
+      // Transient failures propagate through the launch failure path before
+      // serialization/cache/LOADER publication. Per-source verdicts still use
+      // the lazy diagnostic cells installed by transformBundleModules.
+      transforms = await transformBundleModules(bundle, placeEmit, esModules, packageTypeOf, moduleScope, stripTypes, esbuild, pacer, transformStore);
+      phase('transforms');
+    } else {
+      // No esbuild service was given: the ESM cells stage as diagnostics that
+      // say so, rather than as source the registry rejects without a reason.
+      _markBundleEsmAsFailed(bundle, placeEmit, packageTypeOf, 'no esbuild service was given to this launch');
     }
-    if (bound !== code) placeEmit(path, bound);
+    // Each module's bundled records of the runtime's provided packages are
+    // bound to them: the emit's, or the file's own when it is its module (a
+    // TypeScript source never is). A file that changes has the result as its emit.
+    for (const path of Object.keys(bundle)) {
+      const cell = bundle[path];
+      const code = emits.get(path) ?? (isBundleModuleCandidate(path) && bundleCompiledLoader(path) === null ? cell : undefined);
+      // An ES module was bound before it was read (esbuild-service.ts preparedTransformSource).
+      if (typeof code !== 'string' || esModules.has(path)) continue;
+      await pacer?.spend(code.length);
+      let bound: string;
+      try {
+        bound = rewriteProvidedCommonJsModules(code);
+      } catch {
+        // Unparseable: an emit stays as esbuild wrote it, and its require says
+        // why; a file is not a module and has no records to bind (a LICENSE).
+        continue;
+      }
+      if (bound !== code) placeEmit(path, bound);
+    }
+    await paceAfterPass();
+    phase('bind');
   }
-  await paceAfterPass();
-  phase('bind');
-  // 4. The snapshot's size guard (boundLaunchFiles). A module's emit is part
-  //    of what its path costs, beside its file when that is carried.
+  // 4. The snapshot's size guard, in the unit the session DO's memory was
+  //    measured in and the require walk counts: raw bytes, a cell's UTF-8
+  //    length (VFS_BUNDLE_MAX_BYTES, platform/limits.ts, unless the caller
+  //    set its own). The per-module text limit is met by side modules and is
+  //    not a reason to evict. Only
+  //    OPTIONAL enrichment is evictable; the static require closure stays, and
+  //    a closure past the bound by itself fails the launch by name.
+  //
+  //    Evicting an enrichment file is a real loss — the sync fs reads it
+  //    exists for cannot fall back to the supervisor — so the paths that
+  //    went are named rather than silently dropped.
   const size = encodedBundleSize(bundle);
   const rawBytes = new Map<string, number>();
   let rawTotal = 0;
+  /** What the bound evicts, held until its images and reads are named below. */
+  const evictedCells: Record<string, string | Uint8Array> = {};
+  Object.setPrototypeOf(evictedCells, null);
   for (const [path, cell] of Object.entries(bundle)) {
     const bytes = codeOnly.has(path) ? 0 : _bundleCellRawBytes(cell);
     rawBytes.set(path, bytes);
     rawTotal += bytes;
   }
+  // A module's emit is part of what its path costs, beside its file when that is carried.
   for (const [path, emit] of emits) {
     const bytes = _encodedSourceBytes(emit);
     rawBytes.set(path, (rawBytes.get(path) ?? 0) + bytes);
     rawTotal += bytes;
   }
-  const bounded = await boundLaunchFiles(files, rawBytes, rawTotal, { scriptPath, maxBundleBytes, pacer });
-  rawTotal = bounded.rawTotal;
-  const { truncated, evictedCells } = bounded;
-  for (const k of Object.keys(evictedCells)) {
-    emits.delete(k);
-    esModules.delete(k);
-    codeOnly.delete(k);
-    size.remove(k);
+  if (rawTotal > maxBundleBytes) {
+    // Only the walk's closure can fail a launch, and the path it names is the
+    // one whose bytes (with its emit) crossed the bound, in walk order.
+    let closureBytes = 0;
+    let crossedAt: string | null = null;
+    for (const path of closurePaths) {
+      closureBytes += rawBytes.get(path) ?? 0;
+      if (crossedAt === null && closureBytes > maxBundleBytes) crossedAt = path;
+    }
+    if (crossedAt !== null) {
+      throw new ClosureBoundExceededError({
+        kind: 'closure-exceeds-bound',
+        entry: scriptPath ?? 'entry code',
+        bytesSeen: closureBytes,
+        bound: maxBundleBytes,
+        lastPath: crossedAt,
+      });
+    }
+    // An emit goes with its source: required when the source is.
+    //
+    // Order matters as much as the bound. Largest-first alone ranks a cell by
+    // what it costs and never by what losing it costs: an admitted module and
+    // the sibling it imports are both "optional", and shedding the sibling
+    // leaves a module in the bundle that cannot load. On `astro dev` the
+    // snapshot breached its bound by 591 files, and among the largest were
+    // modules while 3,291 declaration files (never a require target) stayed.
+    //
+    // Unloadable cells first, then enrichment largest-first, then dynamic-import
+    // subtrees last-discovered first, so a CLI's own `import()` deferral is shed last.
+    const speculativeRank = new Map<string, number>();
+    for (const path of prefetch.speculative) speculativeRank.set(path, speculativeRank.size);
+    const rankOf = (path: string): number => speculativeRank.get(path) ?? -1;
+    // Evidence goes after all enrichment: what others learned before this
+    // session's own misses, each tier last-admitted first.
+    const tierOf = (path: string): number =>
+      closurePaths.has(path) ? 3 : observedPaths.has(path) ? 2 : learnedPaths.has(path) ? 1 : 0;
+    const members = new Set<string>();
+    for (const group of groups) for (const path of group.members) members.add(path);
+    // A learned closure was staged before the greedy pass and is a group all the same.
+    const independent = new Set(Object.keys(bundle).filter(path =>
+      !members.has(path) || (independentBeforeGroups.has(path) && !learnedMembers.has(path))));
+    const keptGroups = new Set(groups);
+    const weight = (path: string) => rawBytes.get(path) ?? 0;
+    const unitBytes = new Map<string, number>();
+    for (const group of groups) {
+      let total = 0;
+      for (const member of group.members) if (!independent.has(member)) total += weight(member);
+      unitBytes.set(group.root, total);
+      if (pacer) await pacer.spend(group.members.size * 256);
+    }
+    const lastAdmittedFirst = (tier: Set<string>): string[] => [...tier].reverse().filter(path => independent.has(path));
+    const enrichment = [...independent, ...groups.map(group => group.root)]
+      .filter(path => tierOf(path) === 0)
+      .sort((a, b) => {
+        const loadable = (_isLoadableModuleCell(a) ? 1 : 0) - (_isLoadableModuleCell(b) ? 1 : 0);
+        if (loadable !== 0) return loadable;
+        const rankA = rankOf(a);
+        const rankB = rankOf(b);
+        if (rankA !== rankB) return rankA < 0 ? -1 : rankB < 0 ? 1 : rankB - rankA;
+        return (unitBytes.get(b) ?? weight(b)) - (unitBytes.get(a) ?? weight(a));
+      });
+    const evictable = [...enrichment, ...lastAdmittedFirst(learnedPaths), ...lastAdmittedFirst(observedPaths)];
+    const kept = await retainWithinBound(maxBundleBytes, rawTotal, independent, keptGroups, evictable, rawBytes, pacer);
+    const retained = kept.retained;
+    rawTotal = kept.rawTotal;
+    const evicted: BundleCellSize[] = [];
+    for (const k of Object.keys(bundle)) {
+      if (retained.has(k)) continue;
+      evicted.push([k, rawBytes.get(k) ?? 0]);
+      evictedCells[k] = bundle[k]!;
+      delete bundle[k];
+      emits.delete(k);
+      esModules.delete(k);
+      codeOnly.delete(k);
+      size.remove(k);
+    }
+    // How many it evicted, beside the phases' times (exec telemetry).
+    phases.evicted = evicted.length;
+    if (evicted.length > 0) {
+      truncated = true;
+      console.warn(
+        `[facet-manager] prefetch snapshot exceeded ${maxBundleBytes} bytes; `
+          + `evicted ${evicted.length} optional file(s). They still exist and `
+          + `async reads still return them; synchronous reads raise EAGAIN: `
+          + `${describeBundleCells(evicted)}`,
+      );
+    }
   }
 
   const fileCount = Object.keys(bundle).length;
@@ -5283,7 +5207,7 @@ async function _buildPrefetchBundle(vfs: LaunchFs, options: PrefetchBundleOption
   // An evicted module is still one the program may load late (as runtime
   // code, through an import()): its images ride in the map, bytes only since
   // they compile on first use, and its reads are named for that import().
-  const wasmImages = (await collectClosureWasmImages(vfs, { ...bundle, ...evictedCells }, files.wasmPaths, staticRefs));
+  const wasmImages = dataOnly ? [] : await collectClosureWasmImages(vfs, { ...bundle, ...evictedCells }, binSiblingAdd.wasmPaths, staticRefs);
   phase('wasm');
   const readers = evictedReaders(evictedCells);
 
@@ -8534,7 +8458,7 @@ export class FacetManager {
 
     // Snapshot the working tree so opencode's sync fs reads resolve, and a
     // directory manifest so readdir/stat are coherent: the files as they are,
-    // since opencode runs its own code and only reads them (gatherDataBundle).
+    // since opencode runs its own code and only reads them (dataOnly).
     // opencode creates its home dirs (~/.local/share/opencode, …) via
     // fs.promises.mkdir; those and other writes flush live through the
     // SUPERVISOR RPC bridge.
@@ -8543,7 +8467,7 @@ export class FacetManager {
     // Gathered and serialized under one admission (Kinu #29).
     const { vfsState, vfsBundle } = await withPrefetchAllocation(async (admission) => {
       const gathered: FacetVfsState = processVfs
-        ? await gatherDataBundle(processVfs, opts.cwd)
+        ? await gatherPrefetchBundle(processVfs, { cwd: opts.cwd, entryCode: '', dataOnly: true })
         : { bundle: {}, reachableCount: 0, truncated: false };
       admission.fit(gathered.rawBytes ?? 0);
       const serialized = _serializeBundleForFacet(gathered.bundle);

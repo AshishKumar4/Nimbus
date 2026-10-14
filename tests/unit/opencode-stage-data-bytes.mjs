@@ -11,7 +11,7 @@
 // transform service ran, and the installed module's cell was its emit.
 
 import assert from 'node:assert/strict';
-import * as manager from '../../packages/worker/src/facets/manager.ts';
+import { buildPrefetchBundle } from '../../packages/worker/src/facets/manager.ts';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { CRED, createAuthority } from './lib/resident-body.mjs';
 import { oneShotManager, runnerLoader } from './lib/one-shot-runner.mjs';
@@ -65,7 +65,7 @@ for (const [path, cell] of Object.entries(bundle)) {
 assert.deepEqual(transforms, [], 'staging opencode\'s snapshot compiled nothing');
 
 // What the stage charges its admission is what it carries.
-const data = await manager.gatherDataBundle(processFiles(rawVfs).bind({ pid: 9, cred: CRED }), `/${ROOT}`);
+const data = await buildPrefetchBundle(processFiles(rawVfs).bind({ pid: 9, cred: CRED }), { cwd: `/${ROOT}`, entryCode: '', dataOnly: true });
 const carried = Object.values(data.bundle).reduce((sum, cell) => sum + bytes(cell).byteLength, 0);
 assert.equal(data.rawBytes, carried, 'the raw bytes charged are the bytes staged');
 
