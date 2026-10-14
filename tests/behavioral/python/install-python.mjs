@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // python/install-python — `nimbus install python` lays down the CPython
-// wasm32-wasi runtime in the per-user VFS at ~/.nimbus/runtimes/cpython/3.13.14/
+// wasm32-wasi runtime in the session VFS at /usr/lib/nimbus/cpython/3.13.14/
 // and registers the `python` + `python3` bins. Asserts the install completed and
 // that the artifacts are present at their expected sizes.
 //
@@ -21,7 +21,7 @@ if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit
 const a = makeAsserter('python/install-python');
 console.log(`python/install-python — ${process.env.BASE}`);
 
-const RUNTIME_ROOT = '~/.nimbus/runtimes/cpython/3.13.14-1';
+const RUNTIME_ROOT = '/usr/lib/nimbus/cpython/3.13.14-1';
 
 const sid = await mintSession();
 console.log(`SID: ${sid}`);
@@ -34,7 +34,7 @@ await t.waitForPrompt(60_000);
 {
   const { elapsed, output } = await t.run('nimbus install python', 300_000);
   const stripped = stripAnsi(output);
-  const installedOk = /installed at .*\/\.nimbus\/runtimes\/cpython\/3\.13\.14/.test(stripped)
+  const installedOk = /installed at .*usr\/lib\/nimbus\/cpython\/3\.13\.14/.test(stripped)
     || /(cpython|python).*installed/i.test(stripped);
   const notCmdNotFound = !/nimbus: command not found/.test(stripped);
   a.check('nimbus install python completes with success marker',

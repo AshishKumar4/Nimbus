@@ -125,7 +125,7 @@ const { createSqliteVfsTestHarness } = await import('./lib/sqlite-vfs-test-harne
 async function installed(env, manifest, fetch = fetchBlob) {
   const harness = createSqliteVfsTestHarness();
   const fs = new SqliteVFS(harness.sql, harness.ctx).as({ uid: 0, gid: 0, groups: [0], umask: 0o022 });
-  const seeded = await seedRuntimePackage(fs, '/home/user', { manifest, readBlob: (file) => fetch(env, file) });
+  const seeded = await seedRuntimePackage(fs, { manifest, readBlob: (file) => fetch(env, file) });
   return fs.readFile(`${seeded.root}/${manifest.files[0].path}`);
 }
 

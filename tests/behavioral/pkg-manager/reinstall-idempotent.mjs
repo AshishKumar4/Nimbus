@@ -37,7 +37,7 @@ await t.waitForPrompt(60_000);
 // Snapshot manifest mtime+content for comparison after second install.
 let firstMtime = '';
 {
-  const { output } = await t.run('stat -c %Y ~/.nimbus/runtimes/clang/binji-2020/manifest.json 2>/dev/null || cat ~/.nimbus/runtimes/clang/binji-2020/manifest.json | wc -c', 10_000);
+  const { output } = await t.run('stat -c %Y /usr/lib/nimbus/clang/binji-2020/manifest.json 2>/dev/null || cat /usr/lib/nimbus/clang/binji-2020/manifest.json | wc -c', 10_000);
   firstMtime = stripAnsi(output).trim();
 }
 
@@ -58,7 +58,7 @@ let firstMtime = '';
 
 // 3. Manifest unchanged.
 {
-  const { output } = await t.run('stat -c %Y ~/.nimbus/runtimes/clang/binji-2020/manifest.json 2>/dev/null || cat ~/.nimbus/runtimes/clang/binji-2020/manifest.json | wc -c', 10_000);
+  const { output } = await t.run('stat -c %Y /usr/lib/nimbus/clang/binji-2020/manifest.json 2>/dev/null || cat /usr/lib/nimbus/clang/binji-2020/manifest.json | wc -c', 10_000);
   const secondMtime = stripAnsi(output).trim();
   a.check('manifest preserved across idempotent reinstall', firstMtime === secondMtime,
     `before=${firstMtime} after=${secondMtime}`);

@@ -53,7 +53,7 @@ const stub = {
   async _rpcListRuntimes() {
     calls.push(['listRuntimes']);
     return {
-      installed: [{ name: 'clang', version: 'wasi-libc-modern', root: '/home/user/.nimbus/runtimes/clang/wasi-libc-modern', abi: 'wasm32-wasi-nimbus', bins: ['clang', 'wasm-ld'], sizeBytes: 1, license: 'Apache-2.0' }],
+      installed: [{ name: 'clang', version: 'wasi-libc-modern', root: '/usr/lib/nimbus/clang/wasi-libc-modern', abi: 'wasm32-wasi-nimbus', bins: ['clang', 'wasm-ld'], sizeBytes: 1, license: 'Apache-2.0' }],
       available: [{ name: 'python', abi: 'pyodide', defaultVersion: '0.29.4', versions: [] }],
     };
   },

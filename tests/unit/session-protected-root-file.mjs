@@ -63,4 +63,34 @@ await assert.rejects(
   /does not exist/,
 );
 
+// ── It follows no link the guest made ──────────────────────────────────────
+// Every name on the way to the file is the guest's to replace: a link there
+// would have the kernel make another directory sticky and world-writable, or
+// overwrite and take over the file the link leads to.
+root.mkdir('etc/victim', { recursive: true, mode: 0o755 });
+root.writeFile('etc/victim/keep', 'keep', { mode: 0o644 });
+const untouched = () => {
+  assert.equal(root.readFileString('etc/victim/keep'), 'keep', 'the file a link leads to is unchanged');
+  const keep = root.stat('etc/victim/keep');
+  assert.deepEqual([keep.uid, keep.mode & 0o7777], [0, 0o644]);
+  assert.equal(root.stat('etc/victim').mode & 0o7777, 0o755, 'and so is the directory');
+};
+// The file's own name.
+user.symlink('/etc/victim/keep', 'home/user/POLICY.md');
+await _rpcWriteProtectedRootFile(host, '/home/user', '/home/user/POLICY.md', 'policy');
+untouched();
+assert.equal(user.lstat('home/user/POLICY.md').type, 'file', 'the link is replaced by the protected file');
+assert.equal(user.readFileString('home/user/POLICY.md'), 'policy');
+// The declared root.
+user.symlink('/etc/victim', 'home/user/linked');
+await assert.rejects(() => _rpcWriteProtectedRootFile(host, '/home/user/linked', '/home/user/linked/SOUL.md', 'x'), /link/);
+untouched();
+assert.equal(root.exists('etc/victim/SOUL.md'), false);
+// A directory above it.
+root.mkdir('etc/victim/session', { mode: 0o755 });
+user.symlink('/etc/victim', 'home/user/sessions');
+await assert.rejects(() => _rpcWriteProtectedRootFile(host, '/home/user/sessions/session', '/home/user/sessions/session/SOUL.md', 'x'), /link/);
+untouched();
+assert.equal(root.stat('etc/victim/session').mode & 0o7777, 0o755, 'the directory a link leads to stays as it was');
+
 console.log('session protected root file: ok');

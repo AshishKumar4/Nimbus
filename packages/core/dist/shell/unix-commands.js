@@ -128,7 +128,7 @@ async function readSymlinkTarget(vfs, path) {
  * SHELL-FOLLOWUPS-1 (2026-05-11): POSIX-conformant `which`.
  *
  * Pre-fix: `which clang` printed `clang: nimbus built-in`. Real POSIX
- * which prints the resolved absolute path (`/usr/local/bin/clang`)
+ * which prints the resolved absolute path (`/usr/bin/clang`)
  * or exits 1 silently. Scripts using `which` output to feed into
  * `dirname`, `$()`, etc. all broke:
  *   PATH_PREFIX=$(dirname $(which clang))   # expected /usr/local/bin
@@ -144,10 +144,13 @@ async function readSymlinkTarget(vfs, path) {
  * For our facet-direct runtimes (clang, node, bun, python, ruby,
  * git, npm, etc.), we don't have real on-disk binaries — they
  * dispatch through the registry. To preserve script compatibility,
- * we return canonical POSIX paths under /usr/local/bin and /usr/bin:
+ * we return canonical POSIX paths under /usr/local/bin and /usr/bin.
+ * An installable runtime's are in /usr/bin, where `nimbus install` puts its
+ * launchers (runtime-store.ts), which a PATH search finds once installed:
  *
- *   clang, clang++, cc                → /usr/local/bin/clang
- *   wasm-ld, lld                      → /usr/local/bin/wasm-ld
+ *   clang, cc                         → /usr/bin/clang
+ *   clang++                           → /usr/bin/clang++
+ *   wasm-ld, lld                      → /usr/bin/wasm-ld
  *   node, nodejs                      → /usr/local/bin/node
  *   bun                               → /usr/local/bin/bun
  *   npm, npx                          → /usr/local/bin/npm
@@ -168,12 +171,13 @@ async function readSymlinkTarget(vfs, path) {
  * VFS-resolved path over the canonical fallback.
  */
 const _CANONICAL_BIN_PATHS = {
+    // /usr/bin (an installable runtime's launchers)
+    clang: '/usr/bin/clang',
+    'clang++': '/usr/bin/clang++',
+    cc: '/usr/bin/clang',
+    'wasm-ld': '/usr/bin/wasm-ld',
+    lld: '/usr/bin/wasm-ld',
     // /usr/local/bin (locally-installed runtimes)
-    clang: '/usr/local/bin/clang',
-    'clang++': '/usr/local/bin/clang++',
-    cc: '/usr/local/bin/clang',
-    'wasm-ld': '/usr/local/bin/wasm-ld',
-    lld: '/usr/local/bin/wasm-ld',
     node: '/usr/local/bin/node',
     nodejs: '/usr/local/bin/node',
     bun: '/usr/local/bin/bun',
@@ -253,11 +257,21 @@ async function _pathExecutable(name, from) {
 /**
  * Where a user sees a command the workspace knows by name (registered, an npm
  * bin, or a runtime it would install on first use): the first executable of
- * that name on PATH (a gem's wrapper in ~/.gem/bin), else the runtime's
- * canonical bin; null for a shell builtin.
+ * that name on PATH (a gem's wrapper in ~/.gem/bin), or a runtime's launcher
+ * there (runtime-store.ts: a link to a marker, not executable, that the
+ * registry runs by its path), else the runtime's canonical bin; null for a
+ * shell builtin.
  */
-async function _knownCommandPath(name, from) {
-    return await _pathExecutable(name, from) ?? _CANONICAL_BIN_PATHS[name] ?? null;
+async function _knownCommandPath(registry, name, from) {
+    let hit = null;
+    try {
+        hit = await searchPath(name, from, (path) => registry.has?.(path) === true);
+    }
+    catch (error) {
+        if (!isVfsError(error))
+            throw error;
+    }
+    return hit?.kind === 'program' ? hit.path : _CANONICAL_BIN_PATHS[name] ?? null;
 }
 /**
  * What `which` knows of a name, from one search of PATH: the executable file
@@ -271,7 +285,7 @@ async function _whichLookup(registry, name, from) {
     const registered = await _registryResolved(registry, name, { ...from, search: false }, { includeInstallHints: true });
     const builtin = registered !== null && !isRuntimeInstallHintHandler(registered);
     if (registered !== null)
-        return { path: await _knownCommandPath(name, from), builtin };
+        return { path: await _knownCommandPath(registry, name, from), builtin };
     return { path: await _pathExecutable(name, from), builtin };
 }
 /**
@@ -300,7 +314,7 @@ async function _describeCommand(registry, name, from, shellBuiltin) {
     const hint = isRuntimeInstallHintHandler(resolved);
     if (!hint && BASH_BUILTINS.has(name))
         return { kind: 'builtin' };
-    const path = await _knownCommandPath(name, from);
+    const path = await _knownCommandPath(registry, name, from);
     if (path !== null)
         return { kind: 'file', path };
     return hint ? null : { kind: 'builtin' };

@@ -48,7 +48,7 @@ function fakePackage(contents, { name = 'toy', version = '1.0.0', runner = 'toy-
   });
   const fs = ws.vfs.as(CRED_KERNEL);
 
-  assert.ok(!fs.exists('home/user/.nimbus'), 'on-demand create wrote the runtime payload');
+  assert.ok(!fs.exists('usr/lib/nimbus/toy'), 'on-demand create wrote the runtime payload');
 
   // The runner is registered after create — a host compositor binds runners
   // the workspace itself never had — and the stub still reaches it, because
@@ -60,7 +60,7 @@ function fakePackage(contents, { name = 'toy', version = '1.0.0', runner = 'toy-
   const ran = await ws.exec('toy');
   assert.equal(ran.exitCode, 0, ran.stderr);
   assert.equal(ran.stdout, 'ran toy\n');
-  assert.ok(fs.exists('home/user/.nimbus/runtimes/toy/1.0.0/manifest.json'),
+  assert.ok(fs.exists('usr/lib/nimbus/toy/1.0.0/manifest.json'),
     'first use installed through the manager');
 
   // Second use dispatches the real handler the install registered — the stub
@@ -80,7 +80,7 @@ function fakePackage(contents, { name = 'toy', version = '1.0.0', runner = 'toy-
   const missing = await ws.exec('toy');
   assert.equal(missing.exitCode, 127);
   assert.match(missing.stderr, /toy-runner.*not registered|runner.*not registered/);
-  assert.ok(!fs.exists('home/user/.nimbus'), 'a refused install still wrote payload');
+  assert.ok(!fs.exists('usr/lib/nimbus/toy'), 'a refused install still wrote payload');
 
   const listed = await ws.exec('nimbus install --list');
   assert.match(listed.stdout + listed.stderr, /no runtimes installed/i);
@@ -112,7 +112,7 @@ for (const runtimeInstall of ['eager', 'on-demand']) {
 // above), so an unknown key is not refused there.
 {
   const ws = await openWorkspace({ runtimes: [fakePackage({ 'bin/toy': '# t\n' }, { runner: 'retired-runner' })] });
-  assert.ok(ws.vfs.as(CRED_KERNEL).exists('home/user/.nimbus/runtimes/toy/1.0.0/manifest.json'));
+  assert.ok(ws.vfs.as(CRED_KERNEL).exists('usr/lib/nimbus/toy/1.0.0/manifest.json'));
 }
 
 // ── A remote source's alias resolves as a lazy command ────────────────────
