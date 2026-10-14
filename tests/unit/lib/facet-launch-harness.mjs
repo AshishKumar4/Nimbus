@@ -9,7 +9,7 @@ import { PortRegistry } from '../../../packages/core/src/runtime/port-registry.t
 import { PID_GEN_STRIDE } from '../../../packages/core/src/runtime/process-table.ts';
 import { SessionProcessSupervisor } from '../../../packages/core/src/runtime/session-process-supervisor.ts';
 import { SqliteVFS } from '../../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createFacetCtx, createFacetWorld, captureProcessBoots, residentRunner } from '../facet-host-harness.mjs';
+import { atTestEnd, createFacetCtx, createFacetWorld, captureProcessBoots, residentRunner } from '../facet-host-harness.mjs';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { processFiles } from './process-bridge.mjs';
 import { stagedAssets } from './staged-assets.mjs';
@@ -48,5 +48,8 @@ export function launchManager(label, {
     ctx, { LOADER: world.loader, ASSETS: stagedAssets, ...env }, processes, ports, captureProcessBoots(world), hooks,
   );
   manager.setVfs(session.vfs, processFiles(session.vfs));
+  // What the test leaves running ends with it, as a session's teardown ends its processes:
+  // a resident would otherwise hold the file open until its timers fire (the uptime proof's 120 s).
+  atTestEnd(() => { for (const entry of processes.getRunning()) processes.kill(entry.pid); });
   return { world, ctx, processes, ports, manager, vfs: session.vfs };
 }

@@ -53,7 +53,7 @@ async function adapterFor(capability) {
  * nothing again. A test that leaves a resident running would otherwise sit
  * until that resident's timers fire (the uptime proof's 120 s).
  */
-const atTestEnd = (() => {
+export const atTestEnd = (() => {
   const closes = [];
   return (close) => {
     if (closes.push(close) > 1 || process.argv[1] === undefined) return;
