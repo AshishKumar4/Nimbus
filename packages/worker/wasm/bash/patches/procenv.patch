@@ -143,10 +143,52 @@ diff -r a/unwind_prot.c b/unwind_prot.c
  	  else
  	    (*(elt->head.cleanup)) (elt->arg.v);
  	}
-@@ -353,6 +373,42 @@
+@@ -332,27 +352,66 @@
+     internal_warning (_("unwind_frame_run: %s: frame not found"), tag);
+ }
+ 
++/* Nimbus: the unwind-protect element that saves SIZE bytes of VAR, restored
++   by CLEANUP. A procenv_t is saved through nimbus_procenv_copy (PROCENV), so
++   the runner hears of the copy; any other variable is copied as is. */
+ static void
+-unwind_protect_mem_internal (var, psize)
++unwind_protect_saved (var, size, cleanup, procenv)
+      char *var;
+-     char *psize;
++     int size;
++     Function *cleanup;
++     int procenv;
+ {
+-  int size, allocated;
++  int allocated;
+   UNWIND_ELT *elt;
+ 
+-  size = *(int *) psize;
+   allocated = size + offsetof (UNWIND_ELT, sv.v.desired_setting[0]);
+   if (allocated < sizeof (UNWIND_ELT))
+     allocated = sizeof (UNWIND_ELT);
+   elt = (UNWIND_ELT *)xmalloc (allocated);
+   elt->head.next = unwind_protect_list;
+-  elt->head.cleanup = (Function *) restore_variable;
++  elt->head.cleanup = cleanup;
+   elt->sv.v.variable = var;
+   elt->sv.v.size = size;
+-  FASTCOPY (var, elt->sv.v.desired_setting, size);
++  if (procenv)
++    nimbus_procenv_copy (elt->sv.v.desired_setting, var);
++  else
++    FASTCOPY (var, elt->sv.v.desired_setting, size);
    unwind_protect_list = elt;
  }
  
++static void
++unwind_protect_mem_internal (var, psize)
++     char *var;
++     char *psize;
++{
++  unwind_protect_saved (var, *(int *) psize, (Function *) restore_variable, 0);
++}
++
 +/* Nimbus: a procenv_t saved as unwind_protect_mem_internal saves a variable,
 +   copied in and out through nimbus_procenv_copy. */
 +static void
@@ -154,19 +196,7 @@ diff -r a/unwind_prot.c b/unwind_prot.c
 +     char *var;
 +     char *ignore;
 +{
-+  int allocated;
-+  UNWIND_ELT *elt;
-+
-+  allocated = sizeof (procenv_t) + offsetof (UNWIND_ELT, sv.v.desired_setting[0]);
-+  if (allocated < sizeof (UNWIND_ELT))
-+    allocated = sizeof (UNWIND_ELT);
-+  elt = (UNWIND_ELT *)xmalloc (allocated);
-+  elt->head.next = unwind_protect_list;
-+  elt->head.cleanup = (Function *) restore_procenv;
-+  elt->sv.v.variable = var;
-+  elt->sv.v.size = sizeof (procenv_t);
-+  nimbus_procenv_copy (elt->sv.v.desired_setting, var);
-+  unwind_protect_list = elt;
++  unwind_protect_saved (var, sizeof (procenv_t), (Function *) restore_procenv, 1);
 +}
 +
 +static void
