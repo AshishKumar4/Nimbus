@@ -650,14 +650,14 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     });
   }
 
-  copyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: { preserve?: boolean }): Promise<number> {
+  copyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: { preserve?: boolean; follow?: boolean }): Promise<number> {
     const call: FsCall = { syscall: 'cp', path: from, dest: to };
     return called(call, () => {
-      const source = this.locate(from, false);
+      const source = this.locate(from, options?.follow === true);
       if (source === null) throw callError('ELOOP', call);
       const target = this.locateMutation(to, false, call);
       if (source.mount || target.mount) throw callError('EXDEV', call);
-      return this.vfs.copyTreeAsync(source.path, target.path, options);
+      return this.vfs.copyTreeAsync(source.path, target.path, { preserve: options?.preserve });
     }).catch((error: unknown) => { throw failure(error, call); });
   }
 
