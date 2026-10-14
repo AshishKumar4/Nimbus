@@ -5,8 +5,8 @@
 import assert from 'node:assert/strict';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
-const { NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint } = await importWorkerBundle({
-  'packages/fabric/src/bindings.ts': ['NimbusLoaderRPC', 'NimbusLoadedWorker', 'NimbusLoadedEntrypoint'],
+const { NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, resolveLoadedEntrypoint } = await importWorkerBundle({
+  'packages/fabric/src/bindings.ts': ['NimbusLoaderRPC', 'NimbusLoadedWorker', 'NimbusLoadedEntrypoint', 'resolveLoadedEntrypoint'],
 });
 
 const native = { gets: [] };
@@ -21,7 +21,7 @@ const exports = {
 };
 const loaderFor = (props) => Object.assign(Object.create(NimbusLoaderRPC.prototype), { ctx: { props, exports }, env });
 const worker = (body) => ({ compatibilityDate: '2026-09-26', mainModule: 'w.js', modules: { 'w.js': `export default { fetch() { return new Response(${JSON.stringify(body)}); } };` } });
-const resolvedCode = async (loaded) => { await loaded.getEntrypoint()._resolveEntrypoint(); return native.gets.at(-1).code; };
+const resolvedCode = async (loaded) => { await resolveLoadedEntrypoint(loaded.getEntrypoint()); return native.gets.at(-1).code; };
 
 const network = { networkId: 'default-network' };
 const first = loaderFor({ depth: 1, namespace: 'owner-a', ...network });

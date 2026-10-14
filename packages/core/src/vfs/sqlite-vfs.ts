@@ -76,7 +76,7 @@ export { RecallRequired, recallOf, withRecall } from './recall.js';
 interface LexicalVfsKey { readonly kind: 'lexical'; readonly value: string; readonly spelling: string }
 interface PhysicalVfsKey { readonly kind: 'physical'; readonly value: string }
 interface DeletionVfsKey { readonly key: PhysicalVfsKey; readonly literal: INode | undefined }
-import { readDeclaredSource, syncValue, type Principal, type VfsContentRef, type VfsDirentType, type VfsRemoval, type VfsWriteEvent } from './vfs.js';
+import { copiedPermissions, readDeclaredSource, syncValue, type Principal, type VfsContentRef, type VfsDirentType, type VfsRemoval, type VfsWriteEvent } from './vfs.js';
 import { errnoCodeOf, toVfsError, vfsError } from './vfs-error.js';
 import { walkRemoval, type RemovalSteps } from './removal-walk.js';
 import {
@@ -506,7 +506,7 @@ export interface CredentialedVfs {
    * Copy a tree to a new path by reference (`cp -r`; `preserve` is `-p`).
    * Returns the entries copied. See SqliteVFS.copyTree.
    */
-  copyTree(src: string, dest: string, options?: { preserve?: boolean; at?: string }): number;
+  copyTree(src: string, dest: string, options?: { preserve?: boolean; at?: string; follow?: boolean }): number;
   /**
    * copyTree in slices of JOB_SLICE_PAGES transactions with a yield between,
    * for trees too large for one synchronous turn (workerd resets an object
@@ -519,7 +519,7 @@ export interface CredentialedVfs {
    * runs under (its holder awaits it), so it writes inside the lease and a
    * quiescing snapshot never holds it.
    */
-  copyTreeAsync(src: string, dest: string, options?: { preserve?: boolean; at?: string; mutationOwner?: string }): Promise<number>;
+  copyTreeAsync(src: string, dest: string, options?: { preserve?: boolean; at?: string; follow?: boolean; mutationOwner?: string }): Promise<number>;
   writeBatch(payload: BatchWritePayload): { inodes: number; chunks: number };
   /**
    * A wave on this filesystem as this view's caller (WaveIngest): its
@@ -3045,7 +3045,7 @@ export class SqliteVFS {
    * a confined principal's creation drops setuid/setgid here, the one grant
    * its umask cannot refuse. Sticky only restricts others and is kept.
    */
-  private creationMode(requested: number, cred: VfsCred): number {
+  private creationMode(requested: number, cred: Pick<VfsCred, 'uid' | 'umask'>): number {
     return requested & ~cred.umask & (this.isConfined(cred) ? 0o1777 : 0o7777);
   }
 
@@ -3056,11 +3056,31 @@ export class SqliteVFS {
    *   its base entries, no umask, and a new directory inherits the ACL;
    * - a setgid parent gives its group, and a new directory is setgid too
    *   (Linux; Kinu N26). Otherwise the caller's umask and primary group.
+   * Beneath a registered shared directory only its group's members make
+   * entries (sharedAdmission), and they are made its group's.
    */
   private creationAttrs(
     key: string,
     requested: number,
     cred: VfsCred,
+    directory: boolean,
+    staged?: ReadonlyMap<string, { mode: number; gid: number; defaultAcl: number | null }>,
+  ): { mode: number; gid: number; defaultAcl: number | null } {
+    this.sharedAdmission(key, cred);
+    return this.createdAttrs(key, requested, cred, directory, staged);
+  }
+
+  /** EPERM for a caller outside the group of the registered shared directory `key` is beneath. */
+  private sharedAdmission(key: string, cred: VfsCred): void {
+    const shared = cred.uid === 0 ? undefined : this.sharedDirectory(key);
+    if (shared && cred.gid !== shared.gid && !cred.groups.includes(shared.gid)) throw vfsError('EPERM', key, 'shared group membership required');
+  }
+
+  /** creationAttrs past its admission: for a caller admitted already (a copy's planned job). */
+  private createdAttrs(
+    key: string,
+    requested: number,
+    cred: Pick<VfsCred, 'uid' | 'gid' | 'umask'>,
     directory: boolean,
     staged?: ReadonlyMap<string, { mode: number; gid: number; defaultAcl: number | null }>,
   ): { mode: number; gid: number; defaultAcl: number | null } {
@@ -3077,7 +3097,6 @@ export class SqliteVFS {
     }
     const shared = this.sharedDirectory(key);
     if (shared) {
-      if (cred.uid !== 0 && cred.gid !== shared.gid && !cred.groups.includes(shared.gid)) throw vfsError('EPERM', key, 'shared group membership required');
       mode = this.sharedMode(mode, directory);
       gid = shared.gid;
       return { mode, gid, defaultAcl: directory ? shared.acl : null };
@@ -3085,7 +3104,7 @@ export class SqliteVFS {
     return { mode, gid, defaultAcl: directory ? acl : null };
   }
 
-  private isConfined(cred: VfsCred): boolean {
+  private isConfined(cred: Pick<VfsCred, 'uid'>): boolean {
     return cred.uid !== 0 && this.confinedTmpRoots.has(cred.uid);
   }
 
@@ -5770,8 +5789,8 @@ export class SqliteVFS {
 
   private chmodInode(inode: INode, mode: number, cred: VfsCred, path: string | null): void {
     if (cred.uid !== 0 && cred.uid !== inode.uid) throw vfsKeyError('EPERM', path ?? 'detached inode');
+    if (path !== null) this.sharedAdmission(path, cred);
     const shared = path === null ? undefined : this.sharedDirectory(path);
-    if (shared && cred.uid !== 0 && cred.gid !== shared.gid && !cred.groups.includes(shared.gid)) throw vfsError('EPERM', path ?? 'detached inode', 'shared group membership required');
     let gid = inode.gid;
     if (shared) {
       const delegated = 0o070 | (inode.isDir ? 0o2000 : 0);
@@ -6586,7 +6605,7 @@ export class SqliteVFS {
     if (prior && !this.accessInode(prior, 0o2, cred)) throw vfsKeyError('EACCES', target.path);
     if (!prior) this.checkParentAccess(target.path, cred);
     const now = this.now();
-    const made = prior ? undefined : this.creationAttrs(target.path, inode.mode & 0o777, cred, false);
+    const made = prior ? undefined : this.creationAttrs(target.path, copiedPermissions(inode.mode, false), cred, false);
     const builder = this.newPlan();
     builder.addInode({
       path: target.path,
@@ -6623,20 +6642,22 @@ export class SqliteVFS {
    *
    * `at` copies from a snapshot instead of the live tree: lock-free, since
    * the snapshot's rows never change while writers keep writing the source,
-   * and a snapshot a job reads from cannot be dropped.
+   * and a snapshot a job reads from cannot be dropped. `follow` copies what
+   * a link named as the source leads to; otherwise the link is copied.
    */
-  private planCopyTree(src: string, dst: string, cred: VfsCred, options: { preserve?: boolean; at?: string } = {}): CopyTreeJob {
+  private planCopyTree(src: string, dst: string, cred: VfsCred, options: { preserve?: boolean; at?: string; follow?: boolean } = {}): CopyTreeJob {
     const atGen = options.at === undefined ? undefined : this.requireSnapshot(options.at);
-    if (atGen !== undefined) this.assertSnapshotLocal(atGen, normalizeVfsPath(src), options.at!);
     const tree: InodeLookup = atGen === undefined ? this.inodes : { get: (path) => this.inodeAt(path, atGen) };
-    const source = this.checkAccess(src, 0o4, cred, { followLeaf: false, tree });
+    const source = this.checkAccess(src, 0o4, cred, { followLeaf: options.follow === true, tree });
+    // The tree copied is the one the source resolves to, a link followed.
+    if (atGen !== undefined) this.assertSnapshotLocal(atGen, source.path, options.at!);
     const root = source.inode!;
     const target = this.checkAccess(dst, 0, cred, { followLeaf: false, allowMissingLeaf: true });
     this.assertMutationsAllowed([this.lexicalKey(dst, cred).value, target.path]);
     if (target.inode) throw vfsKeyError('EEXIST', target.path);
     this.checkParentAccess(target.path, cred);
-    const sharing = this.sharedDirectory(target.path);
-    if (sharing && cred.uid !== 0 && cred.gid !== sharing.gid && !cred.groups.includes(sharing.gid)) throw vfsError('EPERM', target.path, 'shared group membership required');
+    // The whole copy is admitted here; its slices make what it was admitted to.
+    this.sharedAdmission(target.path, cred);
     if (target.path === source.path || target.path.startsWith(`${source.path}/`)) {
       throw vfsError('EINVAL', source.path, 'cannot copy a directory into itself');
     }
@@ -6741,20 +6762,22 @@ export class SqliteVFS {
     let cursor = jobId === null ? null : String([...this.sql.exec('SELECT cursor FROM vfs_jobs WHERE id = ?', jobId)][0]!.cursor);
     let copied = 0;
     let pages = 0;
+    const policy = this.copyPolicy(job);
     for (;;) {
       const now = this.now();
       const page = cursor === null
-        ? [...this.sql.exec(`SELECT path, kind, size FROM ${source} WHERE path = ?`, job.src)]
+        ? [...this.sql.exec(`SELECT path, kind, size, mode FROM ${source} WHERE path = ?`, job.src)]
         : [...(range.upper === null
-          ? this.sql.exec(`SELECT path, kind, size FROM ${source} WHERE path > ? ORDER BY path LIMIT ?`, cursor, COPY_PAGE_ROWS)
+          ? this.sql.exec(`SELECT path, kind, size, mode FROM ${source} WHERE path > ? ORDER BY path LIMIT ?`, cursor, COPY_PAGE_ROWS)
           : this.sql.exec(
-            `SELECT path, kind, size FROM ${source} WHERE path > ? AND path < ? ORDER BY path LIMIT ?`,
+            `SELECT path, kind, size, mode FROM ${source} WHERE path > ? AND path < ? ORDER BY path LIMIT ?`,
             cursor,
             range.upper,
             COPY_PAGE_ROWS,
           ))];
       const last = page.length > 0 ? String(page[page.length - 1]!.path) : null;
       const done = cursor !== null && page.length < COPY_PAGE_ROWS;
+      const attrs = page.length > 0 ? policy(cursor === null, page) : null;
       let gen = 0;
       const inserted = new Set<string>();
       // The slice that publishes the copy's root adds a name to the
@@ -6783,10 +6806,6 @@ export class SqliteVFS {
           if (page.length > 0) {
             const lower = cursor === null ? job.src : cursor;
             const tail = job.src.length + 1;
-            const shared = this.sharedDirectory(job.dst);
-            const copiedMode = shared
-              ? '((mode & ~' + job.clearBits + ' & ~56) | ((mode & ~' + job.clearBits + ' & 448) >> 3) | CASE WHEN kind = ' + INODE_KIND_DIRECTORY + ' THEN 1024 ELSE 0 END)'
-              : '(mode & ~' + job.clearBits + ')';
             // A path another writer made first keeps its row (OR IGNORE): what
             // this page inserted is what RETURNING names, and only that is its.
             for (const row of this.sql.exec(
@@ -6796,17 +6815,17 @@ export class SqliteVFS {
                       CASE WHEN path = ? THEN ? ELSE ? || substr(parent_path, ?) END,
                       kind, size,
                       CASE WHEN ? THEN atime ELSE ? END, CASE WHEN ? THEN mtime ELSE ? END, ?,
-                      CASE WHEN kind = ${INODE_KIND_SYMLINK} THEN mode ELSE ${copiedMode} END,
+                      ${attrs!.mode},
                       CASE WHEN ? THEN uid ELSE ? END,
-                      ${shared ? 'CASE WHEN kind = ' + INODE_KIND_SYMLINK + ' THEN CASE WHEN ? THEN gid ELSE ? END ELSE ' + shared.gid + ' END' : 'CASE WHEN ? THEN gid ELSE ? END'},
+                      ${attrs!.gid},
                       ? + row_number() OVER (ORDER BY path) - 1, ?, chunk_id, content_id,
-                      ${shared ? 'CASE WHEN kind = ' + INODE_KIND_DIRECTORY + ' THEN ' + shared.acl + ' ELSE dacl END' : 'dacl'}
+                      ${attrs!.dacl}
                FROM ${source} WHERE path ${cursor === null ? '=' : '>'} ? AND path <= ? ORDER BY path
                RETURNING path`,
               job.dst, tail,
               job.src, parentKey(job.dst), job.dst, tail,
               job.preserveTimes ? 1 : 0, now, job.preserveTimes ? 1 : 0, now, now,
-              job.preserveOwner ? 1 : 0, job.uid, job.preserveOwner ? 1 : 0, job.gid,
+              job.preserveOwner ? 1 : 0, job.uid,
               firstIno, gen,
               lower, last,
             )) inserted.add(String(row.path));
@@ -6848,10 +6867,8 @@ export class SqliteVFS {
       // entry it removed (a watch of any path in the tree hears its own):
       // nothing stood at any path it copies to (planCopyTree refuses an
       // existing target).
-      const observed = this.writeObservers.size > 0;
-      this.emitMutations(made.map(({ type, path }) => ({
-        type, path, ...(observed ? { change: { before: null, after: this.inodes.get(path) ?? null } } : {}),
-      })));
+      this.emitMutations(this.writeObservers.size === 0 ? made
+        : made.map(({ type, path }) => ({ type, path, change: { before: null, after: this.inodes.get(path) ?? null } })));
       if (cursor === null) {
         cursor = job.src === '' ? '' : `${job.src}/`;
         if (Number(page[0]?.kind) !== INODE_KIND_DIRECTORY) {
@@ -6865,6 +6882,57 @@ export class SqliteVFS {
       cursor = last!;
       if (++pages >= maxPages) return { copied, id: jobId, done: false };
     }
+  }
+
+  /**
+   * What a copy makes its entries with, for one slice: SQL over each source
+   * row's kind and mode, for the modes of the page at hand. Without
+   * preserve, what a creation there makes (creationAttrs) of the source's
+   * permissions (copiedPermissions): the root's beneath the destination's
+   * parent, every other's beneath the copied root, as each directory the
+   * copy makes is made alike (its group and default ACL are the root's).
+   * With it, the source's, and its group when root copies. A registered
+   * shared directory's rule holds for both. A link keeps its mode.
+   */
+  private copyPolicy(job: CopyTreeJob): (root: boolean, page: readonly SqlRow[]) => { mode: string; gid: string; dacl: string } {
+    const shared = this.sharedDirectory(job.dst);
+    const cred = { uid: job.uid, gid: job.gid, umask: job.clearBits & 0o777 };
+    const owner = job.preserveOwner ? 'gid' : String(job.gid);
+    const form = (at: string) => {
+      const made = new Map<number, number>();
+      let attrs: { gid: string; dacl: string } | null = null;
+      return (page: readonly SqlRow[]) => {
+        const keys = new Set<number>();
+        for (const row of page) {
+          const kind = Number(row.kind);
+          const mode = Number(row.mode);
+          const key = kind * 0o200000 + mode;
+          keys.add(key);
+          if (made.has(key)) continue;
+          const dir = kind === INODE_KIND_DIRECTORY;
+          const perms = kind === INODE_KIND_SYMLINK ? mode & 0o7777
+            : job.preserveTimes ? (shared ? this.sharedMode(mode & 0o7777, dir) : mode & 0o7777)
+              : this.createdAttrs(at, copiedPermissions(mode, dir), cred, dir).mode;
+          made.set(key, (mode & ~0o7777) | perms);
+        }
+        if (attrs === null) {
+          if (!job.preserveTimes) {
+            const root = this.createdAttrs(at, 0, cred, true);
+            attrs = { gid: String(root.gid), dacl: `CASE WHEN kind = ${INODE_KIND_DIRECTORY} THEN ${root.defaultAcl ?? 'NULL'} END` };
+          } else {
+            attrs = {
+              gid: shared ? `CASE WHEN kind = ${INODE_KIND_SYMLINK} THEN ${owner} ELSE ${shared.gid} END` : owner,
+              dacl: shared ? `CASE WHEN kind = ${INODE_KIND_DIRECTORY} THEN ${shared.acl} ELSE dacl END` : 'dacl',
+            };
+          }
+        }
+        const cases = [...keys].sort((a, b) => a - b).map((key) => `WHEN ${key} THEN ${made.get(key)}`).join(' ');
+        return { mode: `CASE kind * ${0o200000} + mode ${cases} END`, ...attrs };
+      };
+    };
+    const root = form(job.dst);
+    const rest = form(`${job.dst}/`);
+    return (atRoot, page) => (atRoot ? root : rest)(page);
   }
 
   /**

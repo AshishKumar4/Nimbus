@@ -54,7 +54,8 @@ async function runAs(commandName, ctx, userName, argv) {
         return (await ctx.runAs((await targetCredential(ctx, userName)), argv)).status;
     }
     catch (error) {
-        const message = isVfsError(error, 'ENOENT') && error.syscall === 'execvp'
+        // sudo finds only an executable file: one it may not run is not found either.
+        const message = isVfsError(error) && error.syscall === 'execvp' && (error.code === 'ENOENT' || error.code === 'EACCES')
             ? `${argv[0]}: command not found`
             : error instanceof Error ? error.message : String(error);
         (await ctx.stderr.write(`${commandName}: ${message}\n`));

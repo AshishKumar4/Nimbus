@@ -32,6 +32,7 @@ import { DELEGATION_RECALL_TIMEOUT_MS } from './delegations.js';
  * meets a closed scope.
  */
 const HELD_WORK_STOP_MS = DELEGATION_RECALL_TIMEOUT_MS;
+const ONCE = { once: true };
 export class SessionProcessSupervisor {
     table = new ProcessTable();
     /** Why no process is admitted any more (closeAdmission); null while they are. */
@@ -286,17 +287,18 @@ export class SessionProcessSupervisor {
      */
     holdWork(pid, stop, signal) {
         const owner = new AbortController();
-        const abort = () => owner.abort(signal?.reason);
-        signal?.addEventListener('abort', abort, { once: true });
-        if (signal?.aborted)
-            abort();
-        const work = {
-            stop: (reason) => { owner.abort(reason); stop?.(reason); },
-            stopped: false, signal: owner.signal,
-            observation: owner.signal.aborted ? undefined : this.observeWork?.(pid),
-        };
+        const ownSignal = owner.signal;
+        // Each of the two ways the work is stopped ends what observes it: no listener of its own for that.
         const stopObserving = () => work.observation?.release();
-        owner.signal.addEventListener('abort', stopObserving, { once: true });
+        const abort = () => { owner.abort(signal?.reason); stopObserving(); };
+        signal?.addEventListener('abort', abort, ONCE);
+        if (signal?.aborted)
+            owner.abort(signal.reason);
+        const work = {
+            stop: (reason) => { owner.abort(reason); stopObserving(); stop?.(reason); },
+            stopped: false, signal: ownSignal,
+            observation: ownSignal.aborted ? undefined : this.observeWork?.(pid),
+        };
         let pieces = this.held.get(pid);
         if (!pieces)
             this.held.set(pid, pieces = new Set());
@@ -307,7 +309,6 @@ export class SessionProcessSupervisor {
                 return;
             done = true;
             signal?.removeEventListener('abort', abort);
-            owner.signal.removeEventListener('abort', stopObserving);
             stopObserving();
             const now = this.held.get(pid);
             now?.delete(work);
@@ -315,7 +316,11 @@ export class SessionProcessSupervisor {
                 this.held.delete(pid);
             this.releaseEnded(pid);
         };
-        return Object.assign(release, { signal: owner.signal });
+        return Object.assign(release, { signal: ownSignal });
+    }
+    /** Whether `pid` runs, on work this session holds for it (holdWork, setTerminator): what a kill of it stops. */
+    runsWork(pid) {
+        return this.table.get(pid)?.state === 'running' && (this.held.has(pid) || this.terminators.has(pid));
     }
     /** Stop the work behind `pid`: its terminator, and every piece held for it, once each, for `reason`. */
     terminate(pid, reason) {
@@ -338,6 +343,34 @@ export class SessionProcessSupervisor {
     }
     cred(pid) {
         return this.table.credOf(pid);
+    }
+    /**
+     * Whether `caller` may signal `pid`, by Linux's rule (kill(2)): root may
+     * signal any process, any other caller only a process of its own uid. The
+     * one rule every kill path a process or user takes asks.
+     */
+    maySignal(caller, pid) {
+        if (caller.uid === 0)
+            return true;
+        if (this.table.get(pid) === undefined)
+            return false;
+        return this.table.credOf(pid).uid === caller.uid;
+    }
+    /** {@link kill}, as `caller`: refused with EPERM where {@link maySignal} refuses it. */
+    killAs(caller, pid, exitCode, reason) {
+        if (!this.maySignal(caller, pid))
+            throw Object.assign(new Error(`EPERM: operation not permitted, kill ${pid}`), { code: 'EPERM', errno: -1 });
+        return this.kill(pid, exitCode, reason);
+    }
+    /** Whether `pid` is `ancestor` or one of the processes spawned under it, transitively. */
+    isWithin(pid, ancestor) {
+        const seen = new Set();
+        for (let at = pid; at !== undefined && !seen.has(at); at = this.table.get(at)?.parentPid) {
+            if (at === ancestor)
+                return true;
+            seen.add(at);
+        }
+        return false;
     }
     liveCred(pid) {
         return this.table.liveCred(pid);
@@ -592,13 +625,15 @@ export class SessionProcessSupervisor {
      */
     async forgetReleased(entries) {
         const failures = [];
-        for (const entry of entries) {
-            const failed = await this.releaseOf(entry.pid);
+        // Each release began at its process's end: they are waited for together.
+        const released = await Promise.all(entries.map((entry) => this.releaseOf(entry.pid)));
+        entries.forEach((entry, i) => {
+            const failed = released[i];
             if (failed !== null)
                 failures.push({ pid: entry.pid, error: failed.error });
             this.releases.delete(entry.pid);
             this.table.forget(entry.pid);
-        }
+        });
         if (entries.length > 0)
             this.logRetention?.();
         return { reaped: entries.length, failures };

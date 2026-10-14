@@ -1434,9 +1434,15 @@ export async function _rpcTransform(self: RpcHost, code: string, loader: string)
   // facet calls cp* before the supervisor has initialized the broker
   // (e.g., immediately after DO hibernation wake-up).
 
-export async function _rpcCpSpawn(self: RpcHost, req: any): Promise<{ childPid: number }> {
+/**
+ * A child of `parentPid`, the process whose envelope asked for it (the
+ * supervisor route passes the pid its binding stamped): the parent a request
+ * names is overridden, so no process spawns a child as another's. A host's
+ * own call, which no process makes, names the parent in the request.
+ */
+export async function _rpcCpSpawn(self: RpcHost, req: any, parentPid?: number): Promise<{ childPid: number }> {
     const fpm = self._ensureChildProcessManager();
-    return fpm.spawn(req);
+    return fpm.spawn(parentPid === undefined ? req : { ...req, parentPid });
 }
 
 /**
@@ -1446,12 +1452,28 @@ export async function _rpcCpSpawn(self: RpcHost, req: any): Promise<{ childPid: 
  * the store used to take text, decoded here, which turned a byte that is not
  * UTF-8 into U+FFFD.
  */
-export async function _rpcCpStdinWrite(self: RpcHost, childPid: number, data: Uint8Array): Promise<{ ok: boolean; full?: boolean }> {
+export async function _rpcCpStdinWrite(self: RpcHost, childPid: number, data: Uint8Array, pid?: number): Promise<{ ok: boolean; full?: boolean }> {
+    childOf(self, childPid, pid);
     return self.processes.writeInputBytesWait(childPid, data);
 }
 
-export async function _rpcCpStdinEnd(self: RpcHost, childPid: number): Promise<void> {
+export async function _rpcCpStdinEnd(self: RpcHost, childPid: number, pid?: number): Promise<void> {
+    childOf(self, childPid, pid);
     await self.processes.endInputAfterWrites(childPid);
+}
+
+/**
+ * A child process's handle (its stdin, its output, its wait, its kill) is
+ * its parent's, or an ancestor's: `caller`, the pid its binding stamped,
+ * must have spawned `childPid`, directly or not. Another gets ESRCH, as
+ * waitpid answers for a pid that is not its child. A call with no caller is
+ * the session's own.
+ */
+function childOf(self: ProcessRpcHost, childPid: number, caller: number | undefined): void {
+    if (caller === undefined) return;
+    if (childPid === caller || !self.processes.isWithin(childPid, caller)) {
+        throw Object.assign(new Error(`ESRCH: no such child process ${childPid}`), { code: 'ESRCH', errno: -3 });
+    }
 }
 
 /**
@@ -1470,29 +1492,37 @@ async function withDeliveredAcquire<T extends object>(
   return acquired ? { ...reply, acquired } : reply;
 }
 
+/**
+ * A process's read of its stdin. It reads its own, the pid its binding
+ * stamped, whatever channel it names: a stdin it inherited as fd 0 is its
+ * own channel's alias (SessionProcessSupervisor.inheritInput), and no other
+ * process's is reachable by naming it. A call with no caller is the
+ * session's own, and reads the channel it names.
+ */
 export async function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs: number, acquire?: unknown, pid?: number, writerId?: string, maxBytes?: number) {
+    const reader = pid ?? childPid;
     // Prior-generation straggler: its ProcessInputStore died with the old
     // instance. Deliver a kill so the facet's stdin pump unwinds immediately
     // with explicit semantics (__ProcessExit(137) → reportExit → the honest
     // prior-generation exit mark above) instead of polling a void.
-    if (isPriorGenerationPid(self, childPid)) {
+    if (isPriorGenerationPid(self, reader)) {
       return { signal: 'SIGKILL', ended: true };
     }
     // A process that can stop at a read of stdin: only its current run takes
     // from the channel, and the session keeps what that run took
     // (worker runtime/stop-replay.ts StdinTaken).
-    const taken = self.facetManager?.stdinTakenBy?.(childPid);
+    const taken = self.facetManager?.stdinTakenBy?.(reader);
     if (taken && !taken.admits(writerId)) return { data: new Uint8Array(0), ended: false };
     let packet: { data: Uint8Array; ended: boolean; resize?: { columns: number; rows: number }; signal?: string };
     // Every child and terminal descriptor is a reference onto the same store.
-    const input = await self.processes.readInput(childPid, waitMs, maxBytes);
+    const input = await self.processes.readInput(reader, waitMs, maxBytes);
     packet = { ...input, data: typeof input.data === 'string' ? enc.encode(input.data) : input.data };
     if (taken) {
       // The run stopped while this read waited: what it would have taken goes
       // back in front of the channel for the run after it.
       if (!taken.admits(writerId)) {
         if (packet.data.byteLength > 0) {
-          self.processes.unreadInput(childPid, [{ data: packet.data, ended: false }]);
+          self.processes.unreadInput(reader, [{ data: packet.data, ended: false }]);
         }
         return { data: new Uint8Array(0), ended: false };
       }
@@ -1512,21 +1542,29 @@ export async function _rpcCpReadOutput(
   acquire?: unknown,
   pid?: number,
 ) {
+    childOf(self, childPid, pid);
     const fpm = self._ensureChildProcessManager();
     const output = await fpm.readOutput(childPid, fd, sinceSeq, waitMs);
     return withDeliveredAcquire(self, output, output.chunks.length > 0 || output.closed, acquire, pid);
 }
 
-export async function _rpcCpDrainOutput(self: RpcHost, childPid: number) {
+export async function _rpcCpDrainOutput(self: RpcHost, childPid: number, pid?: number) {
+    childOf(self, childPid, pid);
     const fpm = self._ensureChildProcessManager();
     return fpm.drainOutput(childPid);
 }
 
-export async function _rpcCpCloseOutput(self: RpcHost, childPid: number, fd: 1 | 2): Promise<void> {
+export async function _rpcCpCloseOutput(self: RpcHost, childPid: number, fd: 1 | 2, pid?: number): Promise<void> {
+    childOf(self, childPid, pid);
     self._ensureChildProcessManager().closeOutput(childPid, fd);
 }
 
-export async function _rpcCpKill(self: RpcHost, childPid: number, signal: string): Promise<boolean> {
+/** A child's kill: its parent's, and as Linux's kill(2) allows (SessionProcessSupervisor.maySignal). */
+export async function _rpcCpKill(self: RpcHost, childPid: number, signal: string, pid?: number): Promise<boolean> {
+    childOf(self, childPid, pid);
+    if (pid !== undefined && !self.processes.maySignal(self.processes.liveCred(pid), childPid)) {
+        throw Object.assign(new Error(`EPERM: operation not permitted, kill ${childPid}`), { code: 'EPERM', errno: -1 });
+    }
     const fpm = self._ensureChildProcessManager();
     return fpm.kill(childPid, signal);
 }
@@ -1549,6 +1587,7 @@ export async function _rpcCpBlocked(self: RpcHost, pid: number, report: unknown)
 }
 
 export async function _rpcCpWait(self: RpcHost, childPid: number, waitMs: number, acquire?: unknown, pid?: number, knownStarted?: boolean) {
+    childOf(self, childPid, pid);
     const fpm = self._ensureChildProcessManager();
     const status = await fpm.wait(childPid, waitMs, knownStarted !== false);
     return withDeliveredAcquire(self, status, status.done, acquire, pid);

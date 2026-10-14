@@ -1,5 +1,5 @@
 // A workspace shell for tests that need a shell, its registry and its kernel
-// (ports, DNS, process table): the one filesystem a session has (SQLite at
+// (ports, DNS): the one filesystem a session has (SQLite at
 // `/`, /proc, /dev), in memory. `harness` and `vfs` share a store with the
 // test; `mounts` adds backends to the namespace (point → VFS).
 

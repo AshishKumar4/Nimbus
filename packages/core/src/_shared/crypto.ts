@@ -1,4 +1,5 @@
 import { dec, enc } from './bytes.js';
+import { realmBuiltin } from '@nimbus-sh/platform/realm-builtin.js';
 
 const SEALED_JSON_V2 = 'v2.';
 const SEALED_JSON_V1 = 'v1.';
@@ -41,7 +42,6 @@ export interface Sha256Digest {
 }
 
 type NodeCrypto = { createHash(algorithm: 'sha256'): { update(bytes: Uint8Array): unknown; digest(encoding: 'hex'): string } };
-type BuiltinModules = { process?: { getBuiltinModule?(id: 'node:crypto'): NodeCrypto | undefined } };
 
 /** Web Crypto has no incremental digest: workerd offers `crypto.DigestStream`, Node and Bun `node:crypto`. */
 export function sha256Incremental(): Sha256Digest {
@@ -56,7 +56,7 @@ export function sha256Incremental(): Sha256Digest {
       },
     };
   }
-  const nodeCrypto = (globalThis as BuiltinModules).process?.getBuiltinModule?.('node:crypto');
+  const nodeCrypto = realmBuiltin<NodeCrypto>('node:crypto');
   if (!nodeCrypto) throw new Error('incremental SHA-256 needs crypto.DigestStream or node:crypto');
   const hash = nodeCrypto.createHash('sha256');
   return {

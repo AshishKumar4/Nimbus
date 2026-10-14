@@ -1,25 +1,7 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-op.js';
-import { TRANSPORT, type Resend, type SupervisorTransport } from './supervisor-calls.js';
+import { TRANSPORT, OP, CALLER, FS_OP, FS_READ, FS_MUTATION, RESENT, MUTATION_OWNER, HOST_INCARNATION, REPORTING_PID, CALL, CACHE_READ, INFRASTRUCTURE_CACHE, NETWORK, PID, RUN_ID, type Resend, type SupervisorTransport } from './supervisor-calls.js';
 declare const SupervisorRPC_base: (abstract new (...args: any[]) => {
-    _op<T>(op: import("@nimbus-sh/core/workspace/supervisor-ops.js").SupervisorOpName, args?: readonly unknown[], extra?: Omit<SupervisorOpEnvelope, "op" | "args">): Promise<T>;
-    _caller(envelope: SupervisorOpEnvelope): SupervisorOpEnvelope;
-    _fsOp<T>(op: import("@nimbus-sh/core/workspace/supervisor-ops.js").SupervisorOpName, args?: readonly unknown[]): Promise<T>;
-    _fsRead<T>(op: import("@nimbus-sh/core/workspace/supervisor-ops.js").SupervisorJoinedReadOpName, args?: readonly unknown[]): Promise<T>;
-    _fsMutation<T>(op: import("@nimbus-sh/core/workspace/supervisor-ops.js").SupervisorDeliveredOpName, args: NonNullable<SupervisorOpEnvelope["args"]>): Promise<T>;
-    _resent<T>(envelope: SupervisorOpEnvelope, trace: Resend["trace"], policy?: import("@nimbus-sh/fabric/do-calls.js").DoCallRetryPolicy): Promise<T>;
-    _mutationOwner(): string | undefined;
-    _hostIncarnation(): string | undefined;
-    _reportingPid(): number;
-    _call<T>(promise: Promise<T>): Promise<T>;
-    _cacheRead<T>(plan: {
-        ticket?: string;
-        readOnly: boolean;
-    }, produce: (client: import("../npm/r2-cache.js").R2CacheClient) => Promise<T>): Promise<T>;
-    _infrastructureCache(op: import("@nimbus-sh/core/workspace/supervisor-ops.js").SupervisorOpName, args: readonly unknown[]): boolean;
-    _network(): import("@nimbus-sh/core/_shared/workspace-network.js").WorkspaceNetwork;
-    _pid(): number;
-    _runId(): string | undefined;
     answer(method: import("@nimbus-sh/core/runtime/vfs-supervisor.js").SupervisorAnsweredMethod, args: unknown[]): Promise<import("@nimbus-sh/core/runtime/vfs-supervisor.js").SupervisorAnswer>;
     readFile(path: string): Promise<string | null>;
     readFileBytes(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath): Promise<Uint8Array | null>;
@@ -88,6 +70,7 @@ declare const SupervisorRPC_base: (abstract new (...args: any[]) => {
     fsCopyFile(from: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath, to: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["copyFile"]>>>;
     fsCopyTree(from: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath, to: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath, options?: {
         preserve?: boolean;
+        follow?: boolean;
     } | undefined): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["copyTree"]>>>;
     fsAcquireExclusiveMutation(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath, options?: import("@nimbus-sh/core/runtime/os-contracts.js").ExclusiveMutationRequest | undefined): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["acquireExclusiveMutation"]>>>;
     fsReleaseExclusiveMutation(owner: string): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["releaseExclusiveMutation"]>>>;
@@ -188,6 +171,24 @@ declare const SupervisorRPC_base: (abstract new (...args: any[]) => {
         seq: number;
     }): Promise<void>;
     [TRANSPORT](): SupervisorTransport;
+    [OP]<T>(op: import("@nimbus-sh/core/workspace/supervisor-ops.js").SupervisorOpName, args?: readonly unknown[], extra?: Omit<SupervisorOpEnvelope, "op" | "args">): Promise<T>;
+    [CALLER](envelope: SupervisorOpEnvelope): SupervisorOpEnvelope;
+    [FS_OP]<T>(op: import("@nimbus-sh/core/workspace/supervisor-ops.js").SupervisorOpName, args?: readonly unknown[]): Promise<T>;
+    [FS_READ]<T>(op: import("@nimbus-sh/core/workspace/supervisor-ops.js").SupervisorJoinedReadOpName, args?: readonly unknown[]): Promise<T>;
+    [FS_MUTATION]<T>(op: import("@nimbus-sh/core/workspace/supervisor-ops.js").SupervisorDeliveredOpName, args: NonNullable<SupervisorOpEnvelope["args"]>): Promise<T>;
+    [RESENT]<T>(envelope: SupervisorOpEnvelope, trace: Resend["trace"], policy?: import("@nimbus-sh/fabric/do-calls.js").DoCallRetryPolicy): Promise<T>;
+    [MUTATION_OWNER](): string | undefined;
+    [HOST_INCARNATION](): string | undefined;
+    [REPORTING_PID](): number;
+    [CALL]<T>(promise: Promise<T>): Promise<T>;
+    [CACHE_READ]<T>(plan: {
+        ticket?: string;
+        readOnly: boolean;
+    }, produce: (client: import("../npm/r2-cache.js").R2CacheClient) => Promise<T>): Promise<T>;
+    [INFRASTRUCTURE_CACHE](op: import("@nimbus-sh/core/workspace/supervisor-ops.js").SupervisorOpName, args: readonly unknown[]): boolean;
+    [NETWORK](): import("@nimbus-sh/core/_shared/workspace-network.js").WorkspaceNetwork;
+    [PID](): number;
+    [RUN_ID](): string | undefined;
 }) & typeof WorkerEntrypoint;
 /**
  * A process's SUPERVISOR as a service binding (`env.SUPERVISOR`), and its

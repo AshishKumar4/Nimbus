@@ -77,8 +77,12 @@ export interface DescriptorScope {
   /** The process's open descriptions its waves name (W7Call description), by the id it chose: descriptors of its own. */
   waveDescriptions: Map<string, number>;
   closed: boolean;
-  /** Aborted when the scope closes; cancels in-flight stream commits. */
-  abort: AbortController;
+  /**
+   * Aborted when the scope closes; cancels in-flight stream commits. Made by
+   * the first that asks for it (scopeSignal): a scope nothing streamed on
+   * makes none, and its close aborts nothing.
+   */
+  abort: AbortController | null;
   subscriptions: Set<() => void>;
   /** The exclusive leases the process took itself (not delegations), by owner: each one's release, among the subscriptions. */
   leases: Map<string, () => void>;
@@ -109,7 +113,22 @@ export function awaitsRefusal(path: string): Error {
 }
 
 export function createDescriptorScope(): DescriptorScope {
-  return { nextId: 1, handles: new Map(), held: new Set(), waveDescriptions: new Map(), closed: false, abort: new AbortController(), subscriptions: new Set(), leases: new Map() };
+  return { nextId: 1, handles: new Map(), held: new Set(), waveDescriptions: new Map(), closed: false, abort: null, subscriptions: new Set(), leases: new Map() };
+}
+
+/** The signal `scope`'s close aborts, made on first ask: already aborted once it has closed. */
+export function scopeSignal(scope: DescriptorScope): AbortSignal {
+  if (scope.abort === null) {
+    scope.abort = new AbortController();
+    if (scope.closed) scope.abort.abort();
+  }
+  return scope.abort.signal;
+}
+
+/** `scope` closes: what asked for its signal hears of it. */
+export function closeScopeSignal(scope: DescriptorScope): void {
+  scope.closed = true;
+  scope.abort?.abort();
 }
 
 /**

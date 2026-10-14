@@ -416,10 +416,12 @@ export interface RuntimeFsBridge {
      * Copy the tree at `from` to the new path `to` (`cp -r`; `preserve` is
      * `-p`), returning the entries copied. Within one SQLite filesystem this
      * copies inode rows, never bytes; across mounts it fails EXDEV and the
-     * caller copies entry by entry.
+     * caller copies entry by entry. `follow` copies what a link named as the
+     * source leads to; otherwise the link is copied.
      */
     copyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: {
         preserve?: boolean;
+        follow?: boolean;
     }): Awaitable<number>;
     fstat(handleId: number): Awaitable<RuntimeVfsStat>;
     dup(handleId: number): Awaitable<RuntimeFileHandle>;
@@ -747,7 +749,7 @@ export declare const NIMBUS_RUNTIME_ABIS: Readonly<Record<string, RuntimePackage
  * catalog is shared by every deployment reading it and a workspace binds only
  * the build its preamble was written against.
  */
-export declare const BASH_RUNNER = "bash-runner@3";
+export declare const BASH_RUNNER = "bash-runner@5";
 /** Git's first runtime build imports the shared Nimbus filesystem/process extensions. */
 export declare const GIT_RUNNER = "git-runner";
 /**

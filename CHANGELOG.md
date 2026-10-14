@@ -58,6 +58,123 @@ published independently in the `@nimbus-sh` npm scope.
   moved to a staging name had root's files in it removed too. Each
   staging directory is now cleared as the user who owns it, so another
   user's stale one still goes, and what that user could not remove stays.
+- Fixed: `test` and `[` run as programs (`xargs test`, `find -exec test`)
+  evaluate as the shell's builtin does. `test 1 -eq 2` run so returned 0,
+  and `[ 1 -eq 1` ran without its closing `]`.
+- Fixed: `xargs` runs each command as a child process with stdin from
+  `/dev/null`, as GNU xargs does. `printf x | xargs -I {} cat /dev/zero |
+  head -c1` failed, and one command's `umask` reached the next. It ends
+  with GNU's statuses: 127 for a command that cannot be found, 126 for a
+  file it may not execute, 125 at once for one a signal ends (a `kill` of
+  it from another shell included), 124 at once for one that exits 255, and
+  123 when any other command fails. It returned the last failing status.
+  `sudo` of a file it may not execute answers "command not found", as
+  sudo does.
+- Fixed: `command NAME` runs a builtin as bash does, skipping only
+  functions and aliases (a function named `command` is still that
+  function). `command kill %1` answered "no such job", and `command cd`,
+  `command wait` and the like ran no builtin.
+- Changed: a background job is a process of the session's process table, a
+  child of the shell that started it, as a fork makes one. `$!`, `jobs -l`
+  and `jobs -p` give that pid, the session's `ps` lists it, and a session's
+  destroy stops it. Its commands run as that process, so a `umask` in the
+  job stays the job's, as in bash.
+- Changed: `$$` in the session's terminal shell and in a script's shell
+  (`sh x.sh`) is that shell's pid in the session's table, as in bash; it
+  was 1. `kill` of the terminal shell's pid answers "Operation not
+  permitted".
+- Changed: `kill` run as a program (`xargs kill`, `sudo kill`) has no jobs,
+  as procps kill has none: `%2` answers "no such job". The shell's own
+  `kill %2` still ends job 2, and `kill PID` from any shell ends a job by
+  its pid. A signal to a process of another uid answers "Operation not
+  permitted" unless the caller is root, as kill(2) does (`kill -0` too), and a
+  default-ignored signal (`WINCH`, `CHLD`, `URG`) to a job leaves it
+  running and succeeds.
+- Changed: `wait PID` for a process that is no job of this shell answers
+  "pid PID is not a child of this shell" with status 127, as bash does. It
+  waited for another shell's job.
+- Breaking (embedders): the lifo `ProcessRegistry` and
+  `Kernel.processRegistry` are gone. A `Shell` takes the session's process
+  table (`SessionProcessSupervisor`), `ShellCommandIdentity` drops
+  `accountWork` and `holdWork` (the shell counts and holds its work in that
+  table), and `createKillCommand(host)`, `createPsCommand(processes)` and
+  `createTopCommand(processes)` read it.
+
+## 2026-10-14: platform 0.10.0, core 0.20.0, fabric 0.15.0, worker 0.18.0, sdk 0.15.0, loom 0.3.1, react 0.3.3, cli 0.2.7, create-nimbus-app 0.2.4 (config 0.3.1 unchanged)
+
+The 2026-10-13 versions reached production but were never published to npm; these carry their changes too.
+
+- Fixed (Node `fs`): a write keeps the bytes it was given. `writeFileSync`,
+  `appendFileSync`, `fs.promises.writeFile` and a descriptor's `write` used
+  the program's own buffer as the file's bytes, so changing or reusing the
+  buffer afterwards changed what `readFileSync` read and what the session
+  stored, and growing such a file through a descriptor could write past the
+  end of the buffer it came from, into memory the program used for other
+  data. Each write now takes a copy, as Node does.
+- Fixed: in an isolate that runs several Node programs one after another
+  (a warm facet's one-shots and children), each program's setup wrapped
+  `Buffer`, `crypto`, `zlib`, `events` and `URL` again around the last
+  program's wrappers. Every call into them grew one layer deeper per
+  program run, `new URL()` accepted a string that is not a URL, and a
+  program that replaced `zlib.crc32` broke the file writes of the programs
+  after it. Each builtin is now wrapped once, around the platform's own,
+  and the runtime's checksums use the platform's builtins.
+- Changed: a Node program's file writes cost less CPU in a warm isolate:
+  about 6 ms less for a run that writes one file, and about 0.1 ms less for
+  each further file.
+- Fixed: a copy makes its files as any creation there makes them. A
+  program's `copyFile` (or the editor's and SDK's copy) between a mount and
+  the session's own files keeps the source's mode less the umask, as `cp`
+  does; it wrote 0644 for a 0755 script or a 0600 key. Off a mount that
+  answers asynchronously, `copyFile` of a symlink copies the file it names
+  rather than the link, and a tree copied off one answers how many entries
+  it made (it answered 0). `cp -r` and a recursive copy into a setgid
+  directory take its group, and their directories are setgid; under a
+  directory with a default ACL the ACL replaces the umask and each new
+  directory inherits it, as `mkdir` and `writeFile` there do (the copy took
+  the copier's group, the umask, and the source's default ACL).
+- Fixed (security): guests could call methods of the platform's RPC classes
+  that were meant only for the platform's own use. Workers RPC exposes every
+  string-named method of a WorkerEntrypoint, RpcTarget or Durable Object to
+  whoever holds its stub, whatever TypeScript's `private` says.
+  - The real-Vite resident's `CIRRUS_HMR` binding answered the session's
+    Durable Object stub and its raw dispatch. Through that dispatch, the
+    project's Vite config or plugins could act as any process, or as the
+    kernel.
+  - Every process's `SUPERVISOR` answered its generic dispatch helpers.
+    These sent any operation the session serves, past the methods that stamp
+    their arguments: a process could spawn a child as another process's,
+    inheriting that process's stdin. They also answered the process's network
+    without the recording that replay depends on.
+  - The Worker Loader shim's entrypoint answered the props it was minted with
+    (its egress among them) and the raw loaded entrypoint.
+  - A scoped `HostedSession` answered the unscoped runtime it serves.
+  These helpers are no longer on any class's RPC surface, and the KV, R2
+  and D1 emulators that wrangler dev hands its Worker keep theirs out of
+  reach too. The session also takes a spawned child's parent from the pid
+  its binding stamped, never from the request.
+- Fixed (security): a process could act on another process through the
+  child_process operations, which acted on whatever pid they were given. It
+  could read another process's stdin, write to it or end it, read or close
+  its output, wait on it, or kill it. Each operation is now refused unless
+  the process owns the target:
+  - a child's handle belongs to its parent or an ancestor; any other
+    process gets ESRCH;
+  - a process reads only its own stdin, whatever channel it names: the
+    stdin it inherited as fd 0 when it did, never another process's;
+  - a signal follows Linux's rule for kill(2): only root, or a process of
+    the target's uid, may send it; any other process gets EPERM.
+- Fixed: `nimbus wrangler dev`'s assets binding read a project's assets as
+  the session's user. It now reads them as the process that started the
+  server, as it reads the project's config, bundle and stores.
+- Fixed: in the installed GNU bash, an `exit` or `return` inside `eval`, a
+  sourced file, a function or an EXIT trap now ends with the status bash
+  chose. Before, a jump through one of bash's saved copies of its jump
+  buffers could land in another capture: `eval 'exit 7'` exited 0, an EXIT
+  trap's exit was lost, and code after a `return` ran. This needs the bash
+  runtime 5.2.37-5 (runner `bash-runner@5`); a session with 5.2.37-3 is told
+  to install it. The bash module is now built by a reproducible recipe
+  (`scripts/ci/remote-bash-build.mjs`) and carries its provenance.
 - Fixed (Node `fs`): `fs.promises.realpath` and callback `fs.realpath`
   resolve symlinks and refuse a missing path with `ENOENT`, giving
   `realpathSync`'s answer; they returned the path as written. A link the
@@ -106,7 +223,7 @@ published independently in the `@nimbus-sh` npm scope.
   `return` inside `eval`, a sourced file, or an EXIT trap) now fails with
   "bash-runner: pid N returned from _start mid-rewind, its longjmp or resume
   target lost". It used to report exit status 0. The jump itself is fixed
-  with the next bash runtime build (bash-runner@4).
+  with the next bash runtime build (bash-runner@5).
 - Fixed: on Cloudflare, piping into the installed GNU bash (`printf x | bash
   -c 'read -r y'`) failed with "The RPC receiver does not implement the
   method "call"". bash now reads its piped stdin.

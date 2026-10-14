@@ -216,10 +216,7 @@ export interface VFS {
     chown?(path: string, uid: number, gid: number): Awaitable<void>;
     utimes?(path: string, atimeMs: number, mtimeMs: number): Awaitable<void>;
     /** Copy within this backend (SQLite copies rows, not bytes). Returns entries copied. */
-    copy?(from: string, to: string, options?: {
-        recursive?: boolean;
-        preserve?: boolean;
-    }): Awaitable<number>;
+    copy?(from: string, to: string, options?: VfsCopyOptions): Awaitable<number>;
     /** Compare-and-write. Never emulated with read, compare, write. */
     writeFileIfRevision?(path: string, data: Uint8Array, expected: VfsRevision): Awaitable<VfsCasResult>;
     /** Exactly that version, or a refusal; never the current file in its place. */
@@ -324,10 +321,7 @@ export interface SyncVFS {
     chmod?(path: string, mode: number): void;
     chown?(path: string, uid: number, gid: number): void;
     utimes?(path: string, atimeMs: number, mtimeMs: number): void;
-    copy?(from: string, to: string, options?: {
-        recursive?: boolean;
-        preserve?: boolean;
-    }): number;
+    copy?(from: string, to: string, options?: VfsCopyOptions): number;
     writeFileIfRevision?(path: string, data: Uint8Array, expected: VfsRevision): VfsCasResult;
     readFileAtRevision?(path: string, revision: VfsRevision, range?: VfsRange): Uint8Array;
 }
@@ -359,6 +353,24 @@ export declare const S_IFREG = 32768;
 export declare const S_IFDIR = 16384;
 export declare const S_IFCHR = 8192;
 export declare const S_IFLNK = 40960;
+/**
+ * A copy: a tree with \`recursive\` (\`preserve\` is cp -p); \`follow\`
+ * copies what a link named as the source leads to, as copyfile does, where
+ * a tree copy otherwise copies the link.
+ */
+export interface VfsCopyOptions {
+    recursive?: boolean;
+    preserve?: boolean;
+    follow?: boolean;
+}
+/**
+ * The permission bits a copy without preserve asks to make an entry with:
+ * the source's, never its set-user-ID or set-group-ID (cp makes a new file,
+ * not the source's owner's); a directory keeps its sticky bit. The
+ * filesystem it lands on applies its creation policy (umask, a default ACL,
+ * a setgid parent's group) as to any entry made there.
+ */
+export declare function copiedPermissions(mode: number, directory: boolean): number;
 /** True for a character device such as `/dev/zero`, which streams rather than stores. */
 export declare function isCharacterDevice(mode: number | undefined): boolean;
 /** The `ls -l` type character for a mode, falling back to the entry's type. */

@@ -42,17 +42,17 @@ export class KvEmulator {
     // ── public API ────────────────────────────────────────────────────────
     async get(key, options) {
         const opts = typeof options === 'string' ? { type: options } : (options || {});
-        const r = await this._readResolved(key);
+        const r = await this.#readResolved(key);
         if (r == null)
             return null;
-        return this._project(r.body, opts.type);
+        return this.#project(r.body, opts.type);
     }
     async getWithMetadata(key, options) {
         const opts = typeof options === 'string' ? { type: options } : (options || {});
-        const r = await this._readResolved(key);
+        const r = await this.#readResolved(key);
         if (r == null)
             return { value: null, metadata: null, cacheStatus: null };
-        const value = this._project(r.body, opts.type);
+        const value = this.#project(r.body, opts.type);
         return { value, metadata: (r.meta?.meta ?? null), cacheStatus: null };
     }
     async put(key, value, options) {
@@ -85,15 +85,15 @@ export class KvEmulator {
         }
     }
     async delete(key) {
-        this._lazyDelete(objectFileName(key));
+        this.#lazyDelete(objectFileName(key));
     }
     async list(options) {
         const entries = [];
         for (const { key, fileName } of listObjectFiles(this.vfs, this.dir, options?.prefix || '')) {
-            const meta = this._readMeta(fileName);
+            const meta = this.#readMeta(fileName);
             // Skip expired
             if (meta?.exp != null && meta.exp <= _kvNow()) {
-                this._lazyDelete(fileName);
+                this.#lazyDelete(fileName);
                 continue;
             }
             const out = { name: key };
@@ -114,7 +114,7 @@ export class KvEmulator {
         return out;
     }
     // ── internals ─────────────────────────────────────────────────────────
-    _project(body, type) {
+    #project(body, type) {
         const t = type || 'text';
         if (t === 'text')
             return new TextDecoder().decode(body);
@@ -132,20 +132,20 @@ export class KvEmulator {
             return bodyStream(body);
         return new TextDecoder().decode(body);
     }
-    async _readResolved(key) {
+    async #readResolved(key) {
         const enc = objectFileName(key);
         const path = this.dir + '/' + enc;
         if (!this.vfs.exists(path))
             return null;
-        const meta = this._readMeta(enc);
+        const meta = this.#readMeta(enc);
         if (meta?.exp != null && meta.exp <= _kvNow()) {
-            this._lazyDelete(enc);
+            this.#lazyDelete(enc);
             return null;
         }
         const body = this.vfs.readFile(path);
         return { body, meta };
     }
-    _readMeta(encName) {
+    #readMeta(encName) {
         if (this.metaCache.has(encName))
             return this.metaCache.get(encName);
         const mp = this.dir + '/' + encName + '.meta';
@@ -162,7 +162,7 @@ export class KvEmulator {
             return null;
         }
     }
-    _lazyDelete(encName) {
+    #lazyDelete(encName) {
         removeObjectFiles(this.vfs, this.dir, encName);
         this.metaCache.delete(encName);
     }

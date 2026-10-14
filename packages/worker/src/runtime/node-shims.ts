@@ -110,12 +110,28 @@ const ABI_ADVISORIES_LITERAL = JSON.stringify(PACKAGE_ABI_POLICY.rejects.map(
  */
 export function generateShimsCode(): string {
   return `
+// What this setup puts in front of a value the realm shares (a builtin, a
+// global) stands in front of the realm's own value, never in front of an
+// earlier run's: a warm isolate runs the setup again for each program it
+// hosts, and a front of the last run's front made each call one layer deeper
+// per program. The realm keeps each front's own value (__nimbusFronted); a
+// front an earlier run made is taken back to it (__nimbusFrontBase).
+const __nimbusFronts = globalThis[Symbol.for("nimbus.fronts")] ??= new WeakMap();
+const __nimbusFrontRun = {};
+function __nimbusFrontBase(value) {
+  const front = __nimbusFronts.get(value);
+  return front === undefined || front.run === __nimbusFrontRun ? value : front.own;
+}
+function __nimbusFronted(front, base) {
+  __nimbusFronts.set(front, { own: __nimbusFronts.get(base)?.own ?? base, run: __nimbusFrontRun });
+  return front;
+}
 // The platform's own builtins, which every native front below forwards to: a
 // generated runner's static imports of them (NODE_SHIMS_IMPORTS), else the
-// host's process.getBuiltinModule, captured before the program's process
-// replaces the global one.
+// host's process.getBuiltinModule (the realm's own process, not a program's).
+const __nimbusHostProcess = __nimbusFrontBase(globalThis.process);
 const __nativeBuiltin = ((host) => typeof __nimbusNativeBuiltins === "undefined" ? host
-  : (id) => (Object.hasOwn(__nimbusNativeBuiltins, id) ? __nimbusNativeBuiltins[id] : host(id)))(globalThis.process.getBuiltinModule.bind(globalThis.process));
+  : (id) => (Object.hasOwn(__nimbusNativeBuiltins, id) ? __nimbusNativeBuiltins[id] : host(id)))(__nimbusHostProcess.getBuiltinModule.bind(__nimbusHostProcess));
 // What process.exit throws to end the program where it stands; its host
 // catches it as the exit.
 class __ProcessExit extends Error {
@@ -1452,8 +1468,8 @@ const __fsMod = (() => {
    * that the path is there, and the retirement of any revision stamp the old
    * content carried. One place, because every sync mutation owes all three.
    */
-  function _parkWrite(k, cell, mode = 0o666) {
-    _noteCreation(k, mode);
+  function _parkWrite(k, cell, mode = 0o666, absent) {
+    _noteCreation(k, mode, absent);
     _ownWriteTimes[k] = Date.now();
     __vfsWrites[k] = cell;
     if (__vfsBundle) __vfsBundle[k] = cell;
@@ -1472,7 +1488,7 @@ const __fsMod = (() => {
    * never staged may exist at the authority, owned by someone else. Each is
    * kept with the mode the call that made it asked for (before the umask).
    */
-  function _noteCreation(k, mode = 0o666) {
+  function _noteCreation(k, mode = 0o666, absent) {
     if (typeof __resident === "undefined") return;
     // A file it made is still that file, and a new write to it is not yet the session's.
     const made = _nsOwn.get(k);
@@ -1480,7 +1496,8 @@ const __fsMod = (() => {
     const absPath = "/" + k;
     // Known absent: the namespace names everything this credential can see,
     // except on a mount where the launch did not list it, which is unknown.
-    if (_statLadder(absPath) !== undefined || _nsUnlisted(absPath, true, false) !== null) return;
+    // \`absent\`: what the write's own check found just now (_ensureWritable).
+    if (absent === undefined ? _statLadder(absPath) !== undefined || _nsUnlisted(absPath, true, false) !== null : !absent) return;
     _nsOwnSet(k, "file", { mode, landing: true });
   }
   /**
@@ -3947,7 +3964,7 @@ const __fsMod = (() => {
     // refused (and the parked bytes dropped) if the authority refuses it.
     const k = _parkWholeWrite(p, data, !!supervisor, mode);
     if (!supervisor) return;
-    const bytes = _cellCopy(__vfsWrites[k]);
+    const bytes = __nimbusVfsCellBytes(__vfsWrites[k]);
     const decided = _decidedHere(absPath, bytes.byteLength);
     // Logged now, in program order; decided here, it is answered once logged.
     const logged = _logParked(absPath, { type: "call", call: { call: "writeFile", path: k, mode, data: bytes } }, { acknowledged: decided });
@@ -4307,7 +4324,12 @@ const __fsMod = (() => {
     if (stat !== undefined && !_modeAllows(stat, 4)) throw _fsErr("EACCES", syscall, p);
   }
 
-  /** \`live\`: the caller asks the authority next, so a path the namespace cannot judge is left to it. */
+  /**
+   * \`live\`: the caller asks the authority next, so a path the namespace
+   * cannot judge is left to it. Answers whether nothing is there (the
+   * namespace knows): true for a create, false for a file there, undefined
+   * when it cannot say.
+   */
   function _ensureWritable(absPath, syscall, p, live, dest) {
     _ensureAncestorsTraversable(absPath, syscall, p, dest);
     const denial = _denialAt(absPath);
@@ -4317,12 +4339,12 @@ const __fsMod = (() => {
     const stat = _statLadder(absPath);
     if (stat !== undefined) {
       if (!_modeAllows(stat, 2)) throw _fsErr("EACCES", syscall, p, dest);
-      return;
+      return false;
     }
     // Not known to be absent: on a mount, in a directory the launch did not list.
     const mount = _nsUnlisted(absPath, true, false);
     if (mount !== null) {
-      if (live) return;
+      if (live) return undefined;
       throw _nsUnlistedErr(mount, syscall, p, "fs.promises." + (syscall === "open" ? "writeFile" : syscall), dest);
     }
     // Nothing there: a create, judged by the parent the namespace describes.
@@ -4332,7 +4354,7 @@ const __fsMod = (() => {
     if (parentStat !== undefined) {
       if (!parentStat.isDirectory()) throw _fsErr("ENOTDIR", syscall, p, dest);
       if (!_modeAllows(parentStat, 3)) throw _fsErr("EACCES", syscall, p, dest);
-      return;
+      return true;
     }
 
     throw _fsErr("ENOENT", syscall, p, dest);
@@ -4429,12 +4451,18 @@ const __fsMod = (() => {
   function writeFileSync(p, data, opts) {
     const mode = _createMode(opts, "open", p);
     const k = _parkWholeWrite(p, data, false, mode);
-    _logParked("/" + k, { type: "call", call: { call: "writeFile", path: k, mode, data: _cellCopy(__vfsWrites[k]) } }, { acknowledged: true });
+    _logParked("/" + k, { type: "call", call: { call: "writeFile", path: k, mode, data: __nimbusVfsCellBytes(__vfsWrites[k]) } }, { acknowledged: true });
   }
 
-  /** A cell's bytes as a copy of the log's own: a string's encoding is one already, bytes are copied once. */
-  function _cellCopy(cell) {
-    return typeof cell === "string" ? __nimbusVfsCellBytes(cell) : cell.slice();
+  /**
+   * What a write keeps of the caller's data: its bytes copied, as Node has
+   * written them before the call returns (a program may reuse its buffer at
+   * once, and Buffer#slice is a view of it), a string as it is. The copy is
+   * the view's cell and the log's data both: a cell is never changed within
+   * its length (_spliceCell makes a new one or grows past it).
+   */
+  function _ownedCell(data) {
+    return data instanceof Uint8Array ? new Uint8Array(data) : typeof data === "string" ? data : String(data);
   }
 
   /**
@@ -4444,13 +4472,9 @@ const __fsMod = (() => {
    */
   function _parkWholeWrite(p, data, live, mode) {
     const absPath = _resolveFollow(p, "open");
-    _ensureWritable(absPath, "open", p, live);
+    const absent = _ensureWritable(absPath, "open", p, live);
     const k = _strip(absPath);
-    let cell;
-    if (data instanceof Uint8Array) cell = data;
-    else if (typeof data === "string") cell = data;
-    else cell = String(data);
-    _parkWrite(k, cell, mode);
+    _parkWrite(k, _ownedCell(data), mode, absent);
     _parkedPartial.delete(k);
     return k;
   }
@@ -4469,40 +4493,35 @@ const __fsMod = (() => {
   function _appendLocal(p, data, opts, acknowledged) {
     const mode = _createMode(opts, "open", p);
     const absPath = _resolveFollow(p, "open");
-    _ensureWritable(absPath, "open", p);
+    const absent = _ensureWritable(absPath, "open", p);
     const k = _strip(absPath);
     const hadPendingWrite = Object.prototype.hasOwnProperty.call(__vfsWrites, k);
     const wholeBefore = hadPendingWrite && _parkedPartial.get(k) !== __vfsWriteGenerations[k];
     const existing = _bundleLookup(absPath);
-    const existingDefined = existing !== undefined;
-    const dataIsBytes = data instanceof Uint8Array;
-    const existingIsBytes = existingDefined && _isBytes(existing);
+    const piece = _ownedCell(data);
 
     let cell;
-    if (!existingDefined) {
+    if (existing === undefined) {
       // No prior content — same shape as a writeFileSync.
-      if (dataIsBytes) cell = data;
-      else if (typeof data === "string") cell = data;
-      else cell = String(data);
-    } else if (dataIsBytes || existingIsBytes) {
+      cell = piece;
+    } else if (typeof piece !== "string" || _isBytes(existing)) {
       // Promote both to bytes and concat.
       const a = _asBytes(existing);
-      const b = _asBytes(dataIsBytes ? data : (typeof data === "string" ? data : String(data)));
+      const b = _asBytes(piece);
       const out = new Uint8Array(a.byteLength + b.byteLength);
       out.set(a, 0);
       out.set(b, a.byteLength);
       cell = out;
     } else {
       // Both strings — string concat.
-      cell = existing + (typeof data === "string" ? data : String(data));
+      cell = existing + piece;
     }
-    _parkWrite(k, cell, mode);
+    _parkWrite(k, cell, mode, absent);
     // Bundle content is only a sync-view cache and may be stale: only a
     // pending whole write of this process's owns the cell's prefix.
     if (wholeBefore) _parkedPartial.delete(k);
     else _parkedPartial.set(k, __vfsWriteGenerations[k]);
-    const appended = _asBytes(dataIsBytes ? data : (typeof data === "string" ? data : String(data))).slice();
-    return _logParked(absPath, { type: "call", call: { call: "appendFile", path: k, mode, data: appended } }, { acknowledged, partial: !wholeBefore });
+    return _logParked(absPath, { type: "call", call: { call: "appendFile", path: k, mode, data: __nimbusVfsCellBytes(piece) } }, { acknowledged, partial: !wholeBefore });
   }
 
   // ── existsSync ──
@@ -5255,8 +5274,8 @@ const __fsMod = (() => {
         _parkWrite(parkedKey, _spliceCell(base, writeAt, bytes));
         _parkedPartial.delete(parkedKey);
         const logged = _logParked(this._abs, this._flags.append
-          ? { type: "call", call: { call: "append", path: parkedKey, data: bytes.slice() } }
-          : { type: "call", call: { call: "write", path: parkedKey, offset: writeAt, data: bytes.slice() } });
+          ? { type: "call", call: { call: "append", path: parkedKey, data: _ownedCell(bytes) } }
+          : { type: "call", call: { call: "write", path: parkedKey, offset: writeAt, data: _ownedCell(bytes) } });
         await _fsRpc(logged.answer, "write", this._path, () => undefined);
         await logged.claimed;
         _markVfsStale();
@@ -5270,8 +5289,8 @@ const __fsMod = (() => {
           this._abs,
           () => _fsRpc(
             _vfsCall(this._flags.append
-              ? { call: "append", path: key, data: bytes.slice() }
-              : { call: "write", path: key, offset: writeAt, data: bytes.slice() }),
+              ? { call: "append", path: key, data: _ownedCell(bytes) }
+              : { call: "write", path: key, offset: writeAt, data: _ownedCell(bytes) }),
             "write", this._path,
             (answer) => {
               if (this._flags.append && answer.receipt !== undefined) writeAt = answer.receipt.size - bytes.byteLength;
@@ -5383,8 +5402,8 @@ const __fsMod = (() => {
         : (pos === null ? this._position : pos);
       const key = _strip(this._abs);
       this._commit(_spliceCell(base, at, bytes), this._flags.append
-        ? { type: "call", call: { call: "append", path: key, data: bytes.slice() } }
-        : { type: "call", call: { call: "write", path: key, offset: at, data: bytes.slice() } });
+        ? { type: "call", call: { call: "append", path: key, data: _ownedCell(bytes) } }
+        : { type: "call", call: { call: "write", path: key, offset: at, data: _ownedCell(bytes) } });
       if (pos === null || this._flags.append) this._position = at + bytes.byteLength;
       return bytes.byteLength;
     }
@@ -7634,7 +7653,7 @@ Object.defineProperties(__nimbusInspect, {
 // straight off the native constructor below, already answered false for
 // these strings; the constructor now agrees with it.
 (() => {
-  const _Orig = globalThis.URL;
+  const _Orig = __nimbusFrontBase(globalThis.URL);
   const inspectCustom = Symbol.for("nodejs.util.inspect.custom");
   // Named URL, as Node's class is: its name is what inspect and errors print.
   class URL extends _Orig {
@@ -7699,7 +7718,7 @@ Object.defineProperties(__nimbusInspect, {
   // class.prototype as read-only. Inheritance via "extends _Orig" is enough:
   // URL instances are instanceof _Orig, and URL.prototype's __proto__ is
   // _Orig.prototype (so all native URL methods are reachable via the chain).
-  globalThis.URL = URL;
+  globalThis.URL = __nimbusFronted(URL, _Orig);
   // URLSearchParams prints as Node's does (lib/internal/url.js, v22.22.3).
   Object.defineProperty(globalThis.URLSearchParams.prototype, inspectCustom, {
     value: function (recurseTimes, ctx) {
@@ -10659,6 +10678,7 @@ const __processMod = Object.setPrototypeOf({
   constructor: { value: { process() {} }.process, writable: true, enumerable: false, configurable: true },
 }));
 Reflect.apply(__eventsMod, __processMod, []);
+__nimbusFronted(__processMod, __nimbusHostProcess);
 // Node's per_thread.js methods (lib/internal/process/per_thread.js
 // wrapProcessMethods, and its hrtime, assert, ref and unref) over
 // __nimbusProcessMethods, from Node's library when first read; then each a
@@ -11927,6 +11947,7 @@ function __nimbusNodeShaped(e) {
 // \`fn\`, its errors Node's; \`callbacks\`: a last function argument is a
 // callback, whose first argument is the error.
 function __nimbusNodeErrorsOf(fn, callbacks) {
+  fn = __nimbusFrontBase(fn);
   const shaped = function (...args) {
     const last = args.length - 1;
     if (callbacks && last >= 0 && typeof args[last] === "function") {
@@ -11946,7 +11967,7 @@ function __nimbusNodeErrorsOf(fn, callbacks) {
   };
   Object.defineProperty(shaped, "name", { value: fn.name, configurable: true });
   Object.defineProperty(shaped, "length", { value: fn.length, configurable: true });
-  return shaped;
+  return __nimbusFronted(shaped, fn);
 }
 // A class, its constructor's errors Node's (its statics and prototype
 // reached through, so \`instanceof\` and subclassing hold), and with

@@ -1,6 +1,6 @@
 import { ROOT_DIRECTORY_MODE, ROOT_INODE } from '../vfs/sqlite-vfs.js';
 import { BUFFERED_WRITE_BYTES, describeMounted, flagsRefusal, openAccess, openFollows, openMounted, reopenMounted } from '../vfs/mounted-description.js';
-import { closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost, settleHeldAt } from './descriptors.js';
+import { closeDescriptions, closeScopeSignal, createDescriptorScope, Descriptors, openFlags, processView, reportLost, settleHeldAt } from './descriptors.js';
 import { WaveIngest } from './wave-ingest.js';
 import { runtimeStatOf } from '../vfs/composite.js';
 import { abandon, andThen, isPromise, readDeclaredSource, readRangeOrWhole, syncValue } from '../vfs/vfs.js';
@@ -35,8 +35,7 @@ export class SqliteRuntimeFsBridge {
     }
     dispose() {
         const lost = closeDescriptions(this.scope);
-        this.scope.closed = true;
-        this.scope.abort.abort();
+        closeScopeSignal(this.scope);
         return andThen(lost, reportLost);
     }
     /**
@@ -663,23 +662,20 @@ export class SqliteRuntimeFsBridge {
                 this.vfs.copyFile(source.path, target.path);
                 return;
             }
-            const bytes = source.mount ? source.mount.readFile(source.path) : this.vfs.readFile(source.path);
-            if (target.mount)
-                target.mount.writeFile(target.path, bytes);
-            else
-                this.vfs.writeFile(target.path, bytes);
+            // Across filesystems, the namespace's copy, from the file the source leads to (a backend that resolves its own paths follows it there).
+            this.mounted.copy(source.mount ? source.path : '/' + source.path, target.mount ? target.path : '/' + target.path, { follow: true });
         });
     }
     copyTree(from, to, options) {
         const call = { syscall: 'cp', path: from, dest: to };
         return called(call, () => {
-            const source = this.locate(from, false);
+            const source = this.locate(from, options?.follow === true);
             if (source === null)
                 throw callError('ELOOP', call);
             const target = this.locateMutation(to, false, call);
             if (source.mount || target.mount)
                 throw callError('EXDEV', call);
-            return this.vfs.copyTreeAsync(source.path, target.path, options);
+            return this.vfs.copyTreeAsync(source.path, target.path, { preserve: options?.preserve });
         }).catch((error) => { throw failure(error, call); });
     }
     /** Where the namespace places it: atomic on SQLite, a routed wave when a record lands on a mount. */

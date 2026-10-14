@@ -23,6 +23,7 @@
  */
 import { type CommandRegistry, type ResolveContext } from '../substrate/lifo/commands/registry.js';
 import { type ProcessView } from '../runtime/process-files.js';
+import { type VfsErrorCode } from '../vfs/vfs-error.js';
 export interface ShebangLine {
     /** Interpreter as written (e.g. "/usr/bin/env" resolved → "node"). */
     interpreter: string;
@@ -87,10 +88,19 @@ export type Resolution = {
     readonly kind: 'program';
     readonly path: string;
 } | {
+    readonly kind: 'directory';
+} | {
     readonly kind: 'failed';
 };
 /** How `command` was resolved, when this resolver gave it; undefined for a registered command. */
 export declare function resolutionOf(command: object): Resolution | undefined;
+/**
+ * What execve(2) refuses `command`, what `name` resolved to from `cwd`, as
+ * `view` sees it: EACCES for a directory, the error its X_OK check meets for
+ * a path name's file or the one a PATH search found; null when it may run
+ * (a registered command by its name always may).
+ */
+export declare function execRefusal(name: string, cwd: string, command: object, view: Pick<ProcessView, 'access'>): Promise<VfsErrorCode | null>;
 /**
  * Resolve path-shaped names, and bare names along PATH, to what the file is.
  * Everything is looked at through the caller's view; `fs` is the view of a

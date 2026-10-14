@@ -1,0 +1,232 @@
+diff -r a/bashjmp.h b/bashjmp.h
+--- a/bashjmp.h	2021-11-05 08:10:26.000000000 -0500
++++ b/bashjmp.h	2026-10-13 00:11:22.516252011 -0500
+@@ -32,8 +32,10 @@
+ 
+ #define SHFUNC_RETURN()	sh_longjmp (return_catch, 1)
+ 
++/* Nimbus: every copy of a procenv_t goes through nimbus_procenv_copy, so the
++   wasm runner knows which buffers name which setjmp (nimbus-proc.h). */
+ #define COPY_PROCENV(old, save) \
+-	xbcopy ((char *)old, (char *)save, sizeof (procenv_t));
++	nimbus_procenv_copy ((void *)(save), (const void *)(old));
+ 
+ /* Values for the second argument to longjmp/siglongjmp. */
+ #define NOT_JUMPED	0	/* Not returning from a longjmp. */
+diff -r a/expr.c b/expr.c
+--- a/expr.c	2022-11-05 16:27:50.000000000 -0500
++++ b/expr.c	2026-10-13 00:11:22.516378902 -0500
+@@ -416,7 +416,7 @@
+   noeval = 0;
+   already_expanded = (flags&EXP_EXPANDED);
+ 
+-  FASTCOPY (evalbuf, oevalbuf, sizeof (evalbuf));
++  nimbus_procenv_copy (oevalbuf, evalbuf);
+ 
+   c = setjmp_nosigs (evalbuf);
+ 
+@@ -430,7 +430,7 @@
+       expr_depth = 0;	/* XXX - make sure */
+ 
+       /* We copy in case we've called evalexp recursively */
+-      FASTCOPY (oevalbuf, evalbuf, sizeof (evalbuf));
++      nimbus_procenv_copy (evalbuf, oevalbuf);
+ 
+       if (validp)
+ 	*validp = 0;
+@@ -442,7 +442,7 @@
+   if (validp)
+     *validp = 1;
+ 
+-  FASTCOPY (oevalbuf, evalbuf, sizeof (evalbuf));
++  nimbus_procenv_copy (evalbuf, oevalbuf);
+ 
+   return (val);
+ }
+diff -r a/lib/readline/callback.c b/lib/readline/callback.c
+--- a/lib/readline/callback.c	2022-04-29 11:02:56.000000000 -0500
++++ b/lib/readline/callback.c	2026-10-13 00:11:22.516676226 -0500
+@@ -138,7 +138,7 @@
+ 
+   eof = 0;
+ 
+-  memcpy ((void *)olevel, (void *)_rl_top_level, sizeof (procenv_t));
++  nimbus_procenv_copy ((void *)olevel, (const void *)_rl_top_level);
+ #if defined (HAVE_POSIX_SIGSETJMP)
+   jcode = sigsetjmp (_rl_top_level, 0);
+ #else
+@@ -148,7 +148,7 @@
+     {
+       (*rl_redisplay_function) ();
+       _rl_want_redisplay = 0;
+-      memcpy ((void *)_rl_top_level, (void *)olevel, sizeof (procenv_t));
++      nimbus_procenv_copy ((void *)_rl_top_level, (const void *)olevel);
+ 
+       /* If we longjmped because of a timeout, handle it here. */
+       if (RL_ISSTATE (RL_STATE_TIMEOUT))
+diff -r a/lib/sh/timers.c b/lib/sh/timers.c
+--- a/lib/sh/timers.c	2021-03-10 08:58:10.000000000 -0600
++++ b/lib/sh/timers.c	2026-10-13 00:11:22.516517376 -0500
+@@ -62,6 +62,7 @@
+ 
+   t->alrm_handler = t->old_handler = 0;
+ 
++  nimbus_procenv_drop (t->jmpenv);
+   memset (t->jmpenv, '\0', sizeof (t->jmpenv));
+ 
+   t->tm_handler = 0;
+@@ -91,6 +92,7 @@
+ void
+ shtimer_dispose (sh_timer *t)
+ {
++  nimbus_procenv_drop (t->jmpenv);
+   free (t);
+ }
+ 
+diff -r a/unwind_prot.c b/unwind_prot.c
+--- a/unwind_prot.c	2021-12-22 09:49:36.000000000 -0600
++++ b/unwind_prot.c	2026-10-13 00:47:45.414383671 -0500
+@@ -46,6 +46,7 @@
+ #include "command.h"
+ #include "general.h"
+ #include "unwind_prot.h"
++#include "bashjmp.h"	/* Nimbus: procenv_t, for unwind_protect_procenv */
+ #include "sig.h"
+ #include "quit.h"
+ #include "bashintl.h"	/* for _() */
+@@ -99,9 +100,20 @@
+ #define uwpfree(elt)	free(elt)
+ #else
+ #define uwpalloc(elt)	ocache_alloc (uwcache, UNWIND_ELT, elt)
+-#define uwpfree(elt)	ocache_free (uwcache, UNWIND_ELT, elt)
++#define uwpfree(elt)	do { procenv_release (elt); ocache_free (uwcache, UNWIND_ELT, elt); } while (0)
+ #endif
+ 
++static void restore_procenv PARAMS((SAVED_VAR *));
++
++/* Nimbus: the saved procenv_t an element holds ends with the element. */
++static inline void
++procenv_release (elt)
++     UNWIND_ELT *elt;
++{
++  if (elt->head.cleanup == (Function *) restore_procenv)
++    nimbus_procenv_drop (elt->sv.v.desired_setting);
++}
++
+ void
+ uwp_init ()
+ {
+@@ -253,11 +265,17 @@
+ clear_unwind_protects_internal (flag, ignore)
+      char *flag, *ignore;
+ {
++  UNWIND_ELT *elt;
++
+   if (flag)
+     {
+       while (unwind_protect_list)
+ 	remove_unwind_protect_internal ((char *)NULL, (char *)NULL);
+     }
++  else
++    /* Nimbus: the list is forgotten, not freed: its saved procenvs end here. */
++    for (elt = unwind_protect_list; elt; elt = elt->head.next)
++      procenv_release (elt);
+   unwind_protect_list = (UNWIND_ELT *)NULL;
+ }
+ 
+@@ -322,6 +340,8 @@
+ 	{
+ 	  if (elt->head.cleanup == (Function *) restore_variable)
+ 	    restore_variable (&elt->sv.v);
++	  else if (elt->head.cleanup == (Function *) restore_procenv)
++	    restore_procenv (&elt->sv.v);
+ 	  else
+ 	    (*(elt->head.cleanup)) (elt->arg.v);
+ 	}
+@@ -332,27 +352,66 @@
+     internal_warning (_("unwind_frame_run: %s: frame not found"), tag);
+ }
+ 
++/* Nimbus: the unwind-protect element that saves SIZE bytes of VAR, restored
++   by CLEANUP. A procenv_t is saved through nimbus_procenv_copy (PROCENV), so
++   the runner hears of the copy; any other variable is copied as is. */
+ static void
+-unwind_protect_mem_internal (var, psize)
++unwind_protect_saved (var, size, cleanup, procenv)
+      char *var;
+-     char *psize;
++     int size;
++     Function *cleanup;
++     int procenv;
+ {
+-  int size, allocated;
++  int allocated;
+   UNWIND_ELT *elt;
+ 
+-  size = *(int *) psize;
+   allocated = size + offsetof (UNWIND_ELT, sv.v.desired_setting[0]);
+   if (allocated < sizeof (UNWIND_ELT))
+     allocated = sizeof (UNWIND_ELT);
+   elt = (UNWIND_ELT *)xmalloc (allocated);
+   elt->head.next = unwind_protect_list;
+-  elt->head.cleanup = (Function *) restore_variable;
++  elt->head.cleanup = cleanup;
+   elt->sv.v.variable = var;
+   elt->sv.v.size = size;
+-  FASTCOPY (var, elt->sv.v.desired_setting, size);
++  if (procenv)
++    nimbus_procenv_copy (elt->sv.v.desired_setting, var);
++  else
++    FASTCOPY (var, elt->sv.v.desired_setting, size);
+   unwind_protect_list = elt;
+ }
+ 
++static void
++unwind_protect_mem_internal (var, psize)
++     char *var;
++     char *psize;
++{
++  unwind_protect_saved (var, *(int *) psize, (Function *) restore_variable, 0);
++}
++
++/* Nimbus: a procenv_t saved as unwind_protect_mem_internal saves a variable,
++   copied in and out through nimbus_procenv_copy. */
++static void
++unwind_protect_procenv_internal (var, ignore)
++     char *var;
++     char *ignore;
++{
++  unwind_protect_saved (var, sizeof (procenv_t), (Function *) restore_procenv, 1);
++}
++
++static void
++restore_procenv (sv)
++     SAVED_VAR *sv;
++{
++  nimbus_procenv_copy (sv->variable, sv->desired_setting);
++}
++
++void
++unwind_protect_procenv (var)
++     char *var;
++{
++  without_interrupts (unwind_protect_procenv_internal, var, (char *)NULL);
++}
++
+ /* Save the value of a variable so it will be restored when unwind-protects
+    are run.  VAR is a pointer to the variable.  SIZE is the size in
+    bytes of VAR.  */
+diff -r a/unwind_prot.h b/unwind_prot.h
+--- a/unwind_prot.h	2020-06-05 11:59:09.000000000 -0500
++++ b/unwind_prot.h	2026-10-13 00:11:22.516433621 -0500
+@@ -47,6 +47,9 @@
+ #define unwind_protect_short	unwind_protect_var
+ #define unwind_protect_string	unwind_protect_var
+ #define unwind_protect_pointer	unwind_protect_var
+-#define unwind_protect_jmp_buf	unwind_protect_var
++/* Nimbus: a saved procenv_t is copied in and out through nimbus_procenv_copy,
++   and dropped when its element goes (unwind_prot.c). */
++extern void unwind_protect_procenv PARAMS((char *));
++#define unwind_protect_jmp_buf(X)	unwind_protect_procenv ((char *)(X))
+ 
+ #endif /* _UNWIND_PROT_H */

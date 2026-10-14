@@ -64,7 +64,7 @@ const harness = createSqliteVfsTestHarness(db);
 const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, generation: 1, cwd: '/home/user', facets: host });
 {
   const fs = ws.vfs.as(KERNEL);
-  const root = 'usr/lib/nimbus/bash/5.2.37-3';
+  const root = 'usr/lib/nimbus/bash/5.2.37-5';
   const manifest = [];
   const applets = readFileSync(`${WASM_DIR}bash/coreutils/busybox.applets`, 'utf8').split('\n').filter(Boolean);
   const all = [...files, ...applets.map((name) => [`bin/${name}`, null])];
@@ -72,10 +72,10 @@ const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harnes
     const bytes = disk === null ? Buffer.from('Nimbus WASI multicall entry\n') : readFileSync(disk);
     fs.mkdir(`${root}/${path}`.replace(/\/[^/]+$/, ''), { recursive: true });
     fs.writeFile(`${root}/${path}`, new Uint8Array(bytes), { mode: path.startsWith('bin/') ? 0o755 : 0o644 });
-    manifest.push({ path, content: `blobs/bash-5.2.37-3/${path}`, sha256: createHash('sha256').update(bytes).digest('hex'), size: bytes.length });
+    manifest.push({ path, content: `blobs/bash-5.2.37-5/${path}`, sha256: createHash('sha256').update(bytes).digest('hex'), size: bytes.length });
   }
   fs.writeFile(`${root}/manifest.json`, JSON.stringify({
-    name: 'bash', version: '5.2.37-3', license: 'GPL-3.0-or-later', wasi_namespace: 'wasi_snapshot_preview1',
+    name: 'bash', version: '5.2.37-5', license: 'GPL-3.0-or-later', wasi_namespace: 'wasi_snapshot_preview1',
     files: manifest, entrypoints: [{ binName: 'bash', runner: BASH_RUNNER, args: [] }],
   }));
 }

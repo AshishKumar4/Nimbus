@@ -17,8 +17,9 @@
 // checked there.
 //
 // And mutants, each caught: the process table counting an await as a
-// process's only work while it has other work (the background job's shell,
-// its `sleep` running) refuses the job while the shell would go on. Between
+// process's only work while it has other work (the pipeline's shell, its
+// `sleep` running beside the element awaiting the program) refuses the
+// program while the shell would go on to kill it. Between
 // `sleep` and `kill`, the shell counting only its commands (no WorkThread)
 // is wait-only for an instant: with the ledger deciding on that change's own
 // path (both, as before) the program is refused in the turn `sleep` ends in;
@@ -65,7 +66,7 @@ const mutant = {
     };
   },
 };
-const { found } = await explore(mutant, [{ parent: 'R', children: ['g'] }], { maxStates: 500_000 });
+const { found } = await explore(mutant, [{ parent: 'R', children: ['k'] }], { maxStates: 500_000 });
 assert.ok(found.length > 0, 'the model catches a mutant that counts an await as the only work of a busy shell');
 assert.match(found[0].violation, /refused .* while a holder could still make progress/);
 console.log(`  caught: an await counted as a busy shell's only work (${found[0].violation}; ${describe(found[0].path)})`);

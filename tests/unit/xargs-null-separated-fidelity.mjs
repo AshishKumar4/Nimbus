@@ -76,7 +76,12 @@ async function runXargs(args, stdin) {
     stderr: { write: (value) => { stderr += String(value); } },
     signal: new AbortController().signal,
     setUmask: () => {},
-    runAs: async () => ({ status: 126, signal: null }),
+    // Each command xargs runs is a child started from the parent it hands over, as the shell's runAs does.
+    runAs: async (cred, argv, options) => {
+      const target = await registry.resolve(argv[0]);
+      assert.ok(target, `${argv[0]} is registered`);
+      return { status: await target({ ...options.parent, cred, args: argv.slice(1) }), signal: null };
+    },
   });
   assert.equal(stderr, '', `xargs ${args.join(' ')} wrote to stderr: ${stderr}`);
   return exitCode;

@@ -205,6 +205,29 @@ export class HmrBridge {
     }
 }
 /**
+ * The session's stub and its dispatch, for the CirrusHmrRPC whose props and
+ * env these are. A function of the module, not a method: every string-named
+ * method of an RPC class is callable by whoever holds its stub, TypeScript's
+ * `private` notwithstanding, and the guest that holds env.CIRRUS_HMR must
+ * not get the session's stub, or a dispatch that acts as any caller.
+ */
+function hostStub(props, env) {
+    const doId = props?.doId;
+    if (!doId)
+        return null;
+    let stub = null;
+    try {
+        const route = props?.route;
+        const binding = hostNamespaceBinding(env, 'CirrusHmrRPC', route);
+        stub = binding.get(binding.idFromString(doId));
+        return { stub, dispatch: hostOpDispatch(stub, 'CirrusHmrRPC', route) };
+    }
+    catch (error) {
+        disposeRpcResource(stub);
+        throw error;
+    }
+}
+/**
  * WorkerEntrypoint the facet talks to via `env.CIRRUS_HMR`.
  *
  * hmrSend CANNOT write to browser WSs directly (workerd forbids
@@ -219,24 +242,8 @@ export class HmrBridge {
  *          HmrBridge.
  */
 export class CirrusHmrRPC extends WorkerEntrypoint {
-    _stub() {
-        const doId = this.ctx.props?.doId;
-        if (!doId)
-            return null;
-        let stub = null;
-        try {
-            const route = this.ctx.props?.route;
-            const binding = hostNamespaceBinding(this.env, 'CirrusHmrRPC', route);
-            stub = binding.get(binding.idFromString(doId));
-            return { stub, dispatch: hostOpDispatch(stub, 'CirrusHmrRPC', route) };
-        }
-        catch (error) {
-            disposeRpcResource(stub);
-            throw error;
-        }
-    }
     async hmrSend(clientId, msg) {
-        const resolved = this._stub();
+        const resolved = hostStub(this.ctx.props, this.env);
         if (!resolved)
             return;
         // The host's supervisorOp routes hmrRelay to its own RPC — running in
@@ -253,7 +260,7 @@ export class CirrusHmrRPC extends WorkerEntrypoint {
         }
     }
     async hmrNextEvent(timeoutMs = 25_000) {
-        const resolved = this._stub();
+        const resolved = hostStub(this.ctx.props, this.env);
         if (!resolved)
             return [];
         try {

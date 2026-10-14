@@ -245,7 +245,7 @@ export class SqliteFiles {
                 this.view.copyFile(from, to);
                 return 1;
             }
-            return this.view.copyTree(from, to, { preserve: options.preserve });
+            return this.view.copyTree(from, to, { preserve: options.preserve, follow: options.follow });
         }, to);
     }
     /**

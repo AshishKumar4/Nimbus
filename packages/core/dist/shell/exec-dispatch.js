@@ -151,6 +151,30 @@ export function resolutionOf(command) {
     return resolutions.get(command);
 }
 /**
+ * What execve(2) refuses `command`, what `name` resolved to from `cwd`, as
+ * `view` sees it: EACCES for a directory, the error its X_OK check meets for
+ * a path name's file or the one a PATH search found; null when it may run
+ * (a registered command by its name always may).
+ */
+export async function execRefusal(name, cwd, command, view) {
+    const resolution = resolutions.get(command);
+    if (resolution?.kind === 'directory')
+        return 'EACCES';
+    const path = name.includes('/') ? '/' + resolveVfsPath(name, normalizeVfsPath(cwd))
+        : resolution?.kind === 'program' ? resolution.path : null;
+    if (path === null)
+        return null;
+    try {
+        await view.access(path, X_OK);
+        return null;
+    }
+    catch (error) {
+        if (isVfsError(error))
+            return error.code;
+        throw error;
+    }
+}
+/**
  * A command whose resolution failed on what the namespace could not answer,
  * or would not show the caller: it fails as execve's error does.
  */
@@ -226,10 +250,12 @@ export function installPathExecResolver(registry, fs, getCwd) {
         if (inspected === null)
             return undefined;
         if (inspected === 'directory') {
-            return async (ctx) => {
+            const directory = async (ctx) => {
                 (await ctx.stderr.write(`${name}: Is a directory\n`));
                 return 126;
             };
+            resolutions.set(directory, { kind: 'directory' });
+            return directory;
         }
         const { mode, head } = inspected;
         const accessPath = resolved;

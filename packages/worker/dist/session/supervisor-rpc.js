@@ -4,7 +4,9 @@ import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { hostNamespaceBinding, hostOpDispatch } from '@nimbus-sh/fabric/host-dispatch.js';
 import { idempotent } from '@nimbus-sh/fabric/do-calls.js';
 import { ReplayBodyRecord, recordFailure, failureOf } from '../runtime/stop-replay-body.js';
-import { supervisorCalls, TRANSPORT } from './supervisor-calls.js';
+// Every symbol the mixin's methods are keyed by is imported, though not all
+// are used here: the class's declaration names them.
+import { supervisorCalls, TRANSPORT, OP, CALL, NETWORK, PID, RUN_ID, } from './supervisor-calls.js';
 /**
  * Runs whose network the session no longer records: each did something
  * outside itself, so it cannot be run again and nothing it reads is checked
@@ -86,12 +88,12 @@ export class SupervisorRPC extends supervisorCalls(WorkerEntrypoint) {
         const method = request.method.toUpperCase();
         // A run the session no longer records (it did something outside itself
         // and cannot be run again): its network goes straight out.
-        const run = this._runId();
+        const run = this[RUN_ID]();
         // Out through the workspace's egress, when it has one: the record above is unchanged, only the last hop.
-        const network = this._network();
+        const network = this[NETWORK]();
         if (run !== undefined && UNRECORDED_RUNS.has(run))
             return network.fetch(request);
-        const outbound = (action, payload) => this._call(this._op('outbound', [action, payload], { pid: this._pid() }));
+        const outbound = (action, payload) => this[CALL](this[OP]('outbound', [action, payload], { pid: this[PID]() }));
         if ((method !== 'GET' && method !== 'HEAD') || request.headers.has('upgrade')) {
             const answer = await outbound('effect', { what: `${method} ${request.url}` });
             if (run !== undefined && typeof answer === 'object' && answer.unrecorded)
@@ -211,7 +213,7 @@ export class SupervisorRPC extends supervisorCalls(WorkerEntrypoint) {
         // opens needs it, and hosts without it (unit tests under Bun) load this
         // module all the same.
         const { connect: connectSocket } = await import('cloudflare:sockets');
-        const outbound = (action, payload) => this._call(this._op('outbound', [action, payload], { pid: this._pid() }));
+        const outbound = (action, payload) => this[CALL](this[OP]('outbound', [action, payload], { pid: this[PID]() }));
         // A program can close its side before anything below is answered (it
         // destroyed the socket at once): then nothing is waited for.
         const gone = socket.closed.then(() => null, () => null);
@@ -220,7 +222,7 @@ export class SupervisorRPC extends supervisorCalls(WorkerEntrypoint) {
             return;
         const address = info.localAddress ?? '';
         const named = /^([0-9a-f]{32})\.nimbus-net\.invalid:\d+$/.exec(address);
-        const egress = this._network().egress;
+        const egress = this[NETWORK]().egress;
         if (named && egress !== undefined) {
             // A TLS socket under an egress (netTls refused it already): nothing goes out.
             await socket.close().catch(() => { });
@@ -228,7 +230,7 @@ export class SupervisorRPC extends supervisorCalls(WorkerEntrypoint) {
         }
         if (!named) {
             const answer = await outbound('connect', { token: address });
-            const run = this._runId();
+            const run = this[RUN_ID]();
             if (run !== undefined && answer && answer.unrecorded)
                 unrecorded(run);
             // Through the workspace's egress (its connect carries plain TCP), when it has one.

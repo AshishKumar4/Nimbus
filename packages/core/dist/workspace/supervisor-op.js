@@ -157,9 +157,12 @@ export const SUPERVISOR_OP_ROUTES = {
     reportRuntimeCode: { method: '_rpcReportRuntimeCode', args: ['pid', 0, 1, 2] },
     routeLoopback: { method: '_rpcRouteLoopback', args: [0, 1] },
     transform: { method: '_rpcTransform', args: [0, 1] },
-    cpSpawn: { method: '_rpcCpSpawn', args: [0] },
-    cpStdinWrite: { method: '_rpcCpStdinWrite', args: [0, 1] },
-    cpStdinEnd: { method: '_rpcCpStdinEnd', args: [0] },
+    // The parent is the envelope's pid, which its binding stamped; never the request's.
+    cpSpawn: { method: '_rpcCpSpawn', args: [0, 'pid'] },
+    // A child's handle is its parent's: each passes the stamped pid, which the
+    // session checks the child against (rpc.ts childOf).
+    cpStdinWrite: { method: '_rpcCpStdinWrite', args: [0, 1, 'pid'] },
+    cpStdinEnd: { method: '_rpcCpStdinEnd', args: [0, 'pid'] },
     cpReadStdin: { method: '_rpcCpReadStdin', args: [0, 1, 2, 'pid', 'writerId', 3] },
     stdinFileRead: { method: '_rpcStdinFileRead', args: [0, 1, 2, 'pid'] },
     stdinPrepared: { method: '_rpcStdinPrepared', args: ['pid', 'run'] },
@@ -168,9 +171,9 @@ export const SUPERVISOR_OP_ROUTES = {
     getPackument: { method: '_rpcGetPackument', args: [0, 1, 'pid', 'run'] },
     cacheResult: { method: '_rpcCacheResult', args: [0, 1, 'pid', 'run'] },
     cpReadOutput: { method: '_rpcCpReadOutput', args: [0, 1, 2, 3, 4, 'pid'] },
-    cpDrainOutput: { method: '_rpcCpDrainOutput', args: [0] },
-    cpCloseOutput: { method: '_rpcCpCloseOutput', args: [0, 1] },
-    cpKill: { method: '_rpcCpKill', args: [0, 1] },
+    cpDrainOutput: { method: '_rpcCpDrainOutput', args: [0, 'pid'] },
+    cpCloseOutput: { method: '_rpcCpCloseOutput', args: [0, 1, 'pid'] },
+    cpKill: { method: '_rpcCpKill', args: [0, 1, 'pid'] },
     cpWait: { method: '_rpcCpWait', args: [0, 1, 2, 'pid', 3] },
     cpBlocked: { method: '_rpcCpBlocked', args: ['pid', 0] },
     innerDoFetch: { method: '_rpcInnerDoFetch', args: [0] },
@@ -252,7 +255,7 @@ const NATIVE_OPS = {
         keepVanishedAncestors: z.boolean().optional(),
     }).optional().parse(e.args?.[1]))),
     fsCopyFile: (e, t) => fsFor(e, t).copyFile(FsPath.parse(e.args?.[0]), FsPath.parse(e.args?.[1])),
-    fsCopyTree: (e, t) => fsFor(e, t).copyTree(FsPath.parse(e.args?.[0]), FsPath.parse(e.args?.[1]), z.object({ preserve: z.boolean().optional() }).optional().parse(e.args?.[2])),
+    fsCopyTree: (e, t) => fsFor(e, t).copyTree(FsPath.parse(e.args?.[0]), FsPath.parse(e.args?.[1]), z.object({ preserve: z.boolean().optional(), follow: z.boolean().optional() }).optional().parse(e.args?.[2])),
     fsAcquireExclusiveMutation: (e, t) => fsFor(e, t).acquireExclusiveMutation(FsPath.parse(e.args?.[0]), z.object({
         includeMissingAncestors: z.boolean().optional(),
         delegate: z.object({

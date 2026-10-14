@@ -1,5 +1,7 @@
 import { RpcTarget } from 'cloudflare:workers';
-import { supervisorCalls, TRANSPORT } from './supervisor-calls.js';
+// Every symbol the mixin's methods are keyed by is imported, though not
+// used here: the class's declaration names them.
+import { supervisorCalls, TRANSPORT, } from './supervisor-calls.js';
 /**
  * A one-shot's SUPERVISOR as a capability its host hands it in the call that
  * runs it, answered by `answer`, the host Durable Object's own

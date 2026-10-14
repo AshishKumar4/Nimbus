@@ -34,10 +34,11 @@ import { sqliteFiles } from '../vfs/sqlite-files.js';
 import { isVfsError, syscallError, toVfsError, VfsError } from '../vfs/vfs-error.js';
 import { normalizeVfsPath } from '../vfs/path.js';
 import { abandon, andThen, readDeclaredSource, readRangeOrWhole, readText, type Awaitable } from '../vfs/vfs.js';
-import type { VFS, VfsDirent, VfsRemoval, VfsRemovalFailure, VfsStat } from '../vfs/vfs.js';
+import type { VFS, VfsCopyOptions, VfsDirent, VfsRemoval, VfsRemovalFailure, VfsStat } from '../vfs/vfs.js';
 import { formatProcMounts } from '../shell/mount-commands.js';
 import {
   CRED_KERNEL,
+  isVfsCred,
   requireVfsCred,
   type NimbusFilesystemAuthority,
   type NimbusFilesystemBinding,
@@ -66,12 +67,14 @@ import {
   type RuntimeMutationOwner,
 } from './os-contracts.js';
 import { fsError, modeAllows, SqliteRuntimeFsBridge, walkBeneath } from './sqlite-runtime-fs-bridge.js';
-import { closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost, settleHeldAt, type DescriptorScope } from './descriptors.js';
+import { closeDescriptions, closeScopeSignal, createDescriptorScope, Descriptors, openFlags, processView, reportLost, scopeSignal, settleHeldAt, type DescriptorScope } from './descriptors.js';
 import { BUFFERED_WRITE_BYTES, flagsRefusal, openFollows, openMounted, reopenMounted } from '../vfs/mounted-description.js';
 import { registerDirectoryReadBridge, directoryReadHandleClosed } from './read-directory-batch.js';
 import { readLeaseCovers, SESSION_KERNEL_ROOTS } from '../_shared/read-lease-cover.js';
 
 function immutableCredential(cred: Readonly<VfsCred>): VfsCred {
+  // One frozen whole already (a process table's: ProcessTable.credOf) is kept, not copied again.
+  if (Object.isFrozen(cred) && Object.isFrozen(cred.groups) && isVfsCred(cred)) return cred;
   const checked = requireVfsCred(cred, 'filesystem binding');
   return Object.freeze({ uid: checked.uid, gid: checked.gid, groups: Object.freeze([...checked.groups]), umask: checked.umask });
 }
@@ -211,7 +214,7 @@ class GuardedProcessBridge implements RuntimeFsBridge {
   realpath(path: RuntimeFsPath): string { this.guard(); return this.target.realpath(path); }
   remove(path: RuntimeFsPath, options?: { recursive?: boolean; force?: boolean; report?: boolean; keepVanishedAncestors?: boolean }): void | VfsRemoval { this.guard(); return this.target.remove(path, options); }
   copyFile(from: RuntimeFsPath, to: RuntimeFsPath): void { this.guard(); return this.target.copyFile(from, to); }
-  copyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: { preserve?: boolean }): number | Promise<number> {
+  copyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: { preserve?: boolean; follow?: boolean }): number | Promise<number> {
     this.guard(); return this.target.copyTree(from, to, options);
   }
   fstat(handleId: number): RuntimeVfsStat { this.guard(); return this.target.fstat(handleId); }
@@ -227,7 +230,7 @@ class GuardedProcessBridge implements RuntimeFsBridge {
   writeBatch(payload: BatchWritePayload, options?: { signal?: AbortSignal }): Promise<{ inodes: number; chunks: number }> {
     this.guard();
     // As writeStream: closing the scope cancels the commit.
-    const linked = linkedSignal([options?.signal, this.signal, this.scope.abort.signal]);
+    const linked = linkedSignal([options?.signal, this.signal, scopeSignal(this.scope)]);
     return Promise.resolve(this.target.writeBatch(payload, { signal: linked.signal })).finally(linked.dispose);
   }
   writeStream(
@@ -237,7 +240,7 @@ class GuardedProcessBridge implements RuntimeFsBridge {
     this.guard();
     // Closing the scope cancels the commit, so a released process cannot keep
     // publishing groups into a filesystem it no longer holds descriptors on.
-    const linked = linkedSignal([options?.signal, this.signal, this.scope.abort.signal]);
+    const linked = linkedSignal([options?.signal, this.signal, scopeSignal(this.scope)]);
     return this.target.writeStream(stream, { ...options, signal: linked.signal }).finally(linked.dispose);
   }
   acquireExclusiveMutation(path: RuntimeFsPath, options?: ExclusiveMutationRequest): ExclusiveMutationGrant {
@@ -588,8 +591,7 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     scope.handles.clear();
     scope.held.clear();
     scope.waveDescriptions.clear();
-    scope.closed = true;
-    scope.abort.abort();
+    closeScopeSignal(scope);
     this.stopSubscriptions(scope);
     return { lost };
   }
@@ -634,8 +636,7 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     if (scope.closed) return;
     const lost = closeDescriptions(scope);
     this.stopSubscriptions(scope);
-    scope.closed = true;
-    scope.abort.abort();
+    closeScopeSignal(scope);
     return andThen(lost, reportLost);
   }
 
@@ -647,16 +648,26 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     // A process's calls are made by the delegations it holds: its own lookups
     // recall none of them, on SQLite and through the namespace alike.
     const holds = pid === undefined ? undefined : () => this.delegations.holdsOf(pid);
-    const view = this.vfs.as(cred, undefined, landed ? { landed } : undefined).scoped(() => assertScopeLive(scope, signal), undefined, holds);
     const continues = pid === undefined ? undefined : () => this.continuing.has(pid);
-    const target = new SqliteRuntimeFsBridge(this.engine.as(cred, { holds, continues, ...(landed ? { landed } : {}) }), this.engine, scope, view, this.bufferedWriteBytes, this.waves);
-    const guarded = new GuardedProcessBridge(target, scope, signal, pid, this.hydrator, this.delegations, this.outputGate);
+    // The views and the bridges under the awaiting one, made at the binding's
+    // first call on the filesystem: a process that makes none (a child that
+    // runs `true`, `echo`) makes none of them. What a release, a kill or a
+    // lease ends is the scope, made now.
+    let made: ProcessBridgeParts | undefined;
+    const parts = (): ProcessBridgeParts => {
+      if (made !== undefined) return made;
+      const namespace = this.vfs.as(cred, undefined, landed ? { landed } : undefined).scoped(() => assertScopeLive(scope, signal), undefined, holds);
+      const target = new SqliteRuntimeFsBridge(this.engine.as(cred, { holds, continues, ...(landed ? { landed } : {}) }), this.engine, scope, namespace, this.bufferedWriteBytes, this.waves);
+      made = { guarded: new GuardedProcessBridge(target, scope, signal, pid, this.hydrator, this.delegations, this.outputGate), namespace };
+      return made;
+    };
     // Every other method forwards to the guarded bridge.
     const listing = pid === undefined ? () => undefined : (create: boolean) => this.listingOf(pid, create);
     const clock = () => this.engine.revision();
-    const bridge = new AwaitingProcessBridge(guarded, view, clock, cred, new Descriptors(scope, clock), scope, listing, this.bufferedWriteBytes, signal);
+    const bridge = new AwaitingProcessBridge(parts, clock, cred, new Descriptors(scope, clock), scope, listing, this.bufferedWriteBytes, signal);
     registerDirectoryReadBridge(bridge, scope, async (path) => {
       const real = await bridge.realpath(path);
+      const view = parts().namespace;
       if (real === '/' || view.composes(real)) return null;
       const route = await view.route(real, { follow: true });
       const key = normalizeVfsPath(real);
@@ -711,10 +722,17 @@ function mountsBeyondSqlite(view: CompositeVFS): boolean {
  * sync fs, non-JSPI WASI, host reads that cannot wait) stays the guarded
  * bridge, where such a mount's refusal is the answer.
  */
+/** What a process's awaiting bridge forwards to: made at its first call (ProcessFiles.bridgeFor). */
+interface ProcessBridgeParts {
+  readonly guarded: GuardedProcessBridge;
+  readonly namespace: CompositeVFS;
+}
+
 class AwaitingProcessBridge implements RuntimeFsBridge {
+  private made: ProcessBridgeParts | undefined;
+
   constructor(
-    private readonly bridge: GuardedProcessBridge,
-    private readonly namespace: CompositeVFS,
+    private readonly parts: () => ProcessBridgeParts,
     private readonly clock: () => number,
     private readonly cred: VfsCred,
     private readonly descriptors: Descriptors,
@@ -724,6 +742,9 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
     private readonly bufferedWriteBytes: number | undefined,
     private readonly signal?: AbortSignal,
   ) {}
+
+  private get bridge(): GuardedProcessBridge { return (this.made ??= this.parts()).guarded; }
+  private get namespace(): CompositeVFS { return (this.made ??= this.parts()).namespace; }
 
   get synchronous(): RuntimeSynchronousFs { return this.bridge; }
 
@@ -1065,13 +1086,10 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
     });
   }
   copyFile(from: RuntimeFsPath, to: RuntimeFsPath) {
-    return this.either<void | number>([from, to], () => this.bridge.copyFile(from, to), async () => this.namespace.copy((await this.path(from)), (await this.path(to)), { recursive: false }));
+    return this.either<void | number>([from, to], () => this.bridge.copyFile(from, to), async () => this.namespace.copy((await this.path(from)), (await this.path(to)), { follow: true }));
   }
-  copyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: { preserve?: boolean }) {
-    return this.either([from, to], () => this.bridge.copyTree(from, to, options), async () => {
-      await this.namespace.copy((await this.path(from)), (await this.path(to)), { recursive: true, preserve: options?.preserve });
-      return 0;
-    });
+  copyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: { preserve?: boolean; follow?: boolean }) {
+    return this.either([from, to], () => this.bridge.copyTree(from, to, options), async () => this.namespace.copy((await this.path(from)), (await this.path(to)), { recursive: true, preserve: options?.preserve, follow: options?.follow }));
   }
 
   // ── descriptors on an asynchronous mount ─────────────────────────────
@@ -1412,10 +1430,10 @@ export class ProcessView implements VFS {
   async utimes(path: string, atimeMs: number | null | undefined, mtimeMs: number | null | undefined, options?: { follow?: boolean }): Promise<void> {
     await this.call(options?.follow === false ? 'lutime' : 'utime', path, () => this.fs.utimes(path, atimeMs, mtimeMs, { followSymlinks: options?.follow !== false }));
   }
-  /** cp: a file, or with `recursive` a tree, onto a name that is not there. */
-  async copy(from: string, to: string, options?: { recursive?: boolean; preserve?: boolean }): Promise<number> {
+  /** cp: a file (a link named as the source followed), or with `recursive` a tree, onto a name that is not there. */
+  async copy(from: string, to: string, options?: VfsCopyOptions): Promise<number> {
     return await this.call(options?.recursive ? 'cp' : 'copyfile', from, async () => {
-      if (options?.recursive) return await this.fs.copyTree(from, to, { preserve: options.preserve });
+      if (options?.recursive) return await this.fs.copyTree(from, to, { preserve: options.preserve, follow: options.follow });
       await this.fs.copyFile(from, to);
       return 1;
     }, to);

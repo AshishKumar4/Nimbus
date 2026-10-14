@@ -94,9 +94,8 @@ export interface NimbusWorkspaceOptions {
     /** Absent means headless: `.exec` captures output and nothing is drawn. */
     readonly terminal?: ITerminal;
     /**
-     * Who the shell acts as, when the host keeps a process table that can answer
-     * for it. Absent, commands run as uid 1000 with a umask of 022 and no
-     * process behind them, which is the Shell's own default.
+     * Who the shell acts as: a process of `processes`, which the host keeps
+     * alive. Absent, the workspace spawns the shell's process there.
      */
     readonly identity?: ShellCommandIdentity;
     /**
