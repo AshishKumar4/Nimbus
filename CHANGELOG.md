@@ -24,6 +24,24 @@ published independently in the `@nimbus-sh` npm scope.
   `EF BB BF 68 69` read back as two bytes synchronously and five from
   `fs.promises.readFile`. `require()` of a JSON file and a package's
   resolution through its `package.json` still skip the mark, as Node's do.
+- Fixed (security): a public application URL is forwarded only to the
+  session its capability belongs to. Put under another session's id of the
+  same tenant, the capability was forwarded to that session, which woke
+  (or, for an id no session had, was created) only to refuse it; now the
+  router answers 404 and names no session.
+- Breaking (embedders): `createNimbusHandler`'s hooks no longer declare
+  `onSessionEnd`. It was reserved and never called: a function passed as
+  it never ran. TypeScript now refuses it in a `hooks` literal; at run time
+  nothing changes. Remove it from the hooks you pass. The next
+  `@nimbus-sh/worker` publish is a minor version, and so is
+  `@nimbus-sh/sdk`'s, whose `@nimbus-sh/sdk/worker` entry re-exports
+  `NimbusHooks`.
+- Breaking (embedders): `isValidAppName` and `APP_NAME_RE` are removed from
+  `@nimbus-sh/worker/port-capability`. An application name has one rule,
+  `isPreviewHostName` from `@nimbus-sh/worker/preview-host`, which checks
+  what `isValidAppName` checked; no re-export remains. The public
+  directory's `bind` checks a name by the same rule. The next
+  `@nimbus-sh/worker` publish is a minor version.
 - Fixed (Node `fs`): `fs.cpSync`, `fs.promises.cp` and `fs.cp` are Node's
   own `cp`, run over Nimbus's `fs`, so they answer as Node 22 does. The async
   forms took a file the program had not read for a directory (EISDIR), and

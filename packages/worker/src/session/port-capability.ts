@@ -25,6 +25,7 @@
 
 import { z } from 'zod/v4';
 import { PUBLIC_BEARER_HEADER, renderSessionStatusPage } from '../_shared/session-router.js';
+import { isPreviewHostName } from '../_shared/preview-host.js';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { PORT_CAPABILITY_KEY_PREFIX } from './keys.js';
 
@@ -58,19 +59,8 @@ const PortCapabilitySchema = z.string().regex(/^[a-f0-9]{24}$/);
 /** 'scoped' is the default: capability-checked but never the public bearer. */
 const PortVisibilitySchema = z.enum(['scoped', 'public']);
 export type PortVisibility = z.infer<typeof PortVisibilitySchema>;
-/**
- * The optional name alias a reservation may carry: one DNS label, so it can
- * stand where the port stands in a preview host (`<name>--<sid>`). Never
- * purely numeric — a numeric middle label IS a port. No `--`: that is the
- * host-label separator. No 24 lowercase hex: that is ambiguous with a
- * capability label, so parsing could mistake a name for a bearer.
- */
-export const APP_NAME_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
-export function isValidAppName(name: string): boolean {
-  return APP_NAME_RE.test(name) && !name.includes('--')
-    && !/^\d+$/.test(name) && !/^[a-f0-9]{24}$/.test(name);
-}
-const AppNameSchema = z.string().refine(isValidAppName, 'app name must be a DNS label: no --, not numeric, not 24 lowercase hex');
+/** The optional name alias a reservation may carry: a preview host's name label. */
+const AppNameSchema = z.string().refine(isPreviewHostName, 'app name must be a DNS label: no --, not numeric, not 24 lowercase hex');
 export const PortRecordSchema = z.object({
   kind: z.enum(['explicit', 'derived']).default('explicit'),
   capability: PortCapabilitySchema.nullable(),
@@ -141,7 +131,7 @@ export async function readPortReservationByName(
   ctx: { storage: PortReservationTransaction },
   name: string,
 ): Promise<{ port: number; reservation: PortReservation } | null> {
-  if (!isValidAppName(name)) return null;
+  if (!isPreviewHostName(name)) return null;
   for (const [port, reservation] of await listPortReservations(ctx)) {
     if (reservation.name === name) return { port, reservation };
   }
@@ -184,7 +174,7 @@ export async function reservePort(
     name?: string;
   },
 ): Promise<number> {
-  if (input.name !== undefined && !isValidAppName(input.name)) {
+  if (input.name !== undefined && !isPreviewHostName(input.name)) {
     throw conflict(`'${input.name}' is not a valid app name (one DNS label, not numeric, not 24 hex)`);
   }
   const claim = async (txn: PortReservationTransaction): Promise<number> => {
