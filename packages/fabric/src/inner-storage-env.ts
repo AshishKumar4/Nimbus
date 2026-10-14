@@ -269,7 +269,11 @@ function kvGetOptions(options: KvGivenGetOptions | undefined): string | KvGetOpt
   return out;
 }
 
-/** env.KV: the namespace's calls, their options converted as workerd's client converts them. */
+/**
+ * env.KV: the namespace's calls, their options converted as workerd's
+ * client converts them. A conversion that fails rejects the call's promise,
+ * as an argument workerd cannot convert does for a method that answers one.
+ */
 class KVNamespace {
   readonly #remote: KvBindingRemote;
 
@@ -277,37 +281,37 @@ class KVNamespace {
     this.#remote = remote;
   }
 
-  get(key: string | string[], options?: KvGivenGetOptions): Promise<unknown> {
-    return this.#remote.get(key, kvGetOptions(options));
+  async get(key: string | string[], options?: KvGivenGetOptions): Promise<unknown> {
+    return await this.#remote.get(key, kvGetOptions(options));
   }
 
-  getWithMetadata(key: string | string[], options?: KvGivenGetOptions): Promise<unknown> {
-    return this.#remote.getWithMetadata(key, kvGetOptions(options));
+  async getWithMetadata(key: string | string[], options?: KvGivenGetOptions): Promise<unknown> {
+    return await this.#remote.getWithMetadata(key, kvGetOptions(options));
   }
 
-  put(key: string, value: KvPutValue, options?: { expiration?: number | string | object; expirationTtl?: number | string | object; metadata?: KvJson }): Promise<void> {
-    if (options === undefined) return this.#remote.put(key, value);
+  async put(key: string, value: KvPutValue, options?: { expiration?: number | string | object; expirationTtl?: number | string | object; metadata?: KvJson }): Promise<void> {
+    if (options === undefined) return await this.#remote.put(key, value);
     const out: KvPutOptions = {};
     const expiration = jsgInt(options.expiration);
     if (expiration !== undefined) out.expiration = expiration;
     const expirationTtl = jsgInt(options.expirationTtl);
     if (expirationTtl !== undefined) out.expirationTtl = expirationTtl;
     if (options.metadata !== undefined) out.metadata = options.metadata;
-    return this.#remote.put(key, value, out);
+    return await this.#remote.put(key, value, out);
   }
 
-  delete(key: string): Promise<void> {
-    return this.#remote.delete(key);
+  async delete(key: string): Promise<void> {
+    return await this.#remote.delete(key);
   }
 
-  list(options?: { prefix?: string | null; limit?: number | string | object; cursor?: string | null }): Promise<unknown> {
-    if (options === undefined) return this.#remote.list();
+  async list(options?: { prefix?: string | null; limit?: number | string | object; cursor?: string | null }): Promise<unknown> {
+    if (options === undefined) return await this.#remote.list();
     const out: KvListOptions = {};
     const limit = jsgInt(options.limit);
     if (limit !== undefined) out.limit = limit;
     if (options.prefix !== undefined && options.prefix !== null) out.prefix = String(options.prefix);
     if (options.cursor !== undefined && options.cursor !== null) out.cursor = String(options.cursor);
-    return this.#remote.list(out);
+    return await this.#remote.list(out);
   }
 }
 
