@@ -51,8 +51,8 @@ class ClientRequest extends EventEmitter {
     options;
     body = '';
     aborted = false;
-    /** What abort() ends: the wait for a local server's answer among it. */
-    abortController = new AbortController();
+    /** What abort() ends: the wait for a local server's answer among it. Made when a wait needs it. */
+    abortController = null;
     portRegistry;
     routeLoopback;
     protocol;
@@ -76,7 +76,16 @@ class ClientRequest extends EventEmitter {
     }
     abort() {
         this.aborted = true;
-        this.abortController.abort();
+        this.abortController?.abort();
+    }
+    /** This request's signal, which abort() aborts. */
+    signal() {
+        if (this.abortController === null) {
+            this.abortController = new AbortController();
+            if (this.aborted)
+                this.abortController.abort();
+        }
+        return this.abortController.signal;
     }
     async execute() {
         if (this.aborted)
@@ -98,7 +107,7 @@ class ClientRequest extends EventEmitter {
                     const headers = {};
                     for (const [name, value] of Object.entries(this.options.headers ?? {}))
                         headers[name.toLowerCase()] = String(value);
-                    const served = await serveFromPort(handler, { method, url: path, headers, body: hasBody ? this.body : '' }, this.abortController.signal);
+                    const served = await serveFromPort(handler, { method, url: path, headers, body: hasBody ? this.body : '' }, () => this.signal());
                     if (served.kind === 'served')
                         this.answerServed(served.response);
                     else
@@ -109,7 +118,7 @@ class ClientRequest extends EventEmitter {
                     method,
                     headers: this.options.headers,
                     body: hasBody ? this.body : undefined,
-                    signal: this.abortController.signal,
+                    signal: this.signal(),
                 }));
                 if (result.kind === 'response')
                     await this.answer(result.response);

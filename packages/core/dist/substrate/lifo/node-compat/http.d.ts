@@ -45,8 +45,8 @@ declare class ClientRequest extends EventEmitter {
     private options;
     private body;
     private aborted;
-    /** What abort() ends: the wait for a local server's answer among it. */
-    private readonly abortController;
+    /** What abort() ends: the wait for a local server's answer among it. Made when a wait needs it. */
+    private abortController;
     private portRegistry?;
     private routeLoopback?;
     private protocol;
@@ -54,6 +54,8 @@ declare class ClientRequest extends EventEmitter {
     write(data: string): void;
     end(data?: string): void;
     abort(): void;
+    /** This request's signal, which abort() aborts. */
+    private signal;
     private execute;
     /** A local hop that got no response: nothing for an abort; the connection's error otherwise. */
     private failed;

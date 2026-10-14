@@ -33,11 +33,12 @@ export type ServedResult = {
 };
 /**
  * `request` served by `handler`, a server of a port registry: its response
- * once the handler has ended it (the _donePromise a ServerResponse attaches),
- * however late, unless `signal` aborts first or 30 s pass. A handler that
- * throws refuses the request.
+ * once the handler has ended it (the _donePromise a ServerResponse attaches
+ * while the response is open), however late, unless the request's signal
+ * aborts first or 30 s pass. `signal` is asked for only when there is an end
+ * to wait for. A handler that throws refuses the request.
  */
-export declare function serveFromPort(handler: VirtualRequestHandler, request: VirtualRequest, signal: AbortSignal): Promise<ServedResult>;
+export declare function serveFromPort(handler: VirtualRequestHandler, request: VirtualRequest, signal: () => AbortSignal): Promise<ServedResult>;
 /** A served response's body as HTTP carries it: none for 204 and 304. */
 export declare function servedBody(response: VirtualResponse): string | null;
 /**

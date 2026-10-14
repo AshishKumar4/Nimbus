@@ -14,16 +14,17 @@ import { ISOLATE_NETWORK } from '../../../../_shared/workspace-network.js';
 import { applyRedirectPolicy, isRedirectStatus } from '../../../../runtime/http-redirect-policy.js';
 /**
  * `request` served by `handler`, a server of a port registry: its response
- * once the handler has ended it (the _donePromise a ServerResponse attaches),
- * however late, unless `signal` aborts first or 30 s pass. A handler that
- * throws refuses the request.
+ * once the handler has ended it (the _donePromise a ServerResponse attaches
+ * while the response is open), however late, unless the request's signal
+ * aborts first or 30 s pass. `signal` is asked for only when there is an end
+ * to wait for. A handler that throws refuses the request.
  */
 export async function serveFromPort(handler, request, signal) {
     const response = { statusCode: 200, headers: {}, body: '' };
     try {
         handler(request, response);
         if (response._donePromise) {
-            const result = await waitForSignalOrTimeout(response._donePromise, signal, 30_000);
+            const result = await waitForSignalOrTimeout(response._donePromise, signal(), 30_000);
             if (result.type === 'aborted')
                 return { kind: 'aborted' };
             if (result.type === 'timeout')
@@ -80,7 +81,7 @@ export async function dispatchWorkspaceRequest(kernel, port, request) {
             url: url.pathname + url.search,
             headers: Object.fromEntries(request.headers.entries()),
             body: request.body ? await request.text() : '',
-        }, request.signal);
+        }, () => request.signal);
         if (served.kind !== 'served')
             return served;
         const status = served.response.statusCode;
