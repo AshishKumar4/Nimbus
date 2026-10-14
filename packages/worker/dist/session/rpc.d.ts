@@ -22,6 +22,7 @@
  */
 import { type SessionFileStat } from '@nimbus-sh/core/runtime/session-protocol.js';
 import type { InnerDoFetchAnswer } from '@nimbus-sh/fabric/bindings.js';
+import type { D1QueryResponse, D1QuerySql, KvCall, R2Call } from '@nimbus-sh/fabric/inner-storage-env.js';
 import type { RuntimeVfsStat } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type FanoutShardOptions } from '@nimbus-sh/fabric/fanout.js';
 import { PeerHost, type HostedHttpRequest, type HostedHttpResponse, type HostedReply } from '@nimbus-sh/fabric/peer-host.js';
@@ -95,6 +96,33 @@ export declare function _rpcInnerDoCall(self: RpcHost, req: {
     path: string[];
     args: unknown[] | null;
 }): Promise<unknown>;
+/** The session's filesystem, as a `wrangler dev` Worker's KV and R2 bindings reach it. */
+type StorageHost = Pick<NimbusSession, 'sqliteFs' | 'ensureSqliteFs'>;
+/**
+ * The store a storage binding's props name (fabric bindings.ts
+ * NimbusKVNamespace, NimbusD1Binding, NimbusR2Bucket): the project, and its
+ * KV namespace's or R2 bucket's binding name, or its D1 database.
+ */
+declare const StorageTargetSchema: z.ZodObject<{
+    root: z.ZodString;
+    store: z.ZodString;
+}, z.core.$strip>;
+type StorageTarget = z.infer<typeof StorageTargetSchema>;
+/** A call of a `wrangler dev` Worker's KV binding, on the namespace its props name. */
+export declare function _rpcKvCall(self: StorageHost, target: StorageTarget, call: KvCall, cred?: VfsCred): Promise<void | import("../bindings/kv.js").KvValue | Map<string, import("@nimbus-sh/fabric/inner-storage-env.js").KvJson> | {
+    value: import("../bindings/kv.js").KvValue;
+    metadata: import("@nimbus-sh/fabric/inner-storage-env.js").KvJson;
+    cacheStatus: null;
+} | import("../bindings/kv.js").KvListResult>;
+/** A call of a `wrangler dev` Worker's R2 binding, on the bucket its props name. */
+export declare function _rpcR2Call(self: StorageHost, target: StorageTarget, call: R2Call, cred?: VfsCred): Promise<void | import("@nimbus-sh/fabric/inner-storage-env.js").R2WireObject | import("@nimbus-sh/fabric/inner-storage-env.js").R2WireGetResult | import("@nimbus-sh/fabric/inner-storage-env.js").R2WireObjects | null>;
+/**
+ * A `wrangler dev` Worker's D1 queries, in the database its props name: the
+ * project's facet, got in this request.
+ */
+export declare function _rpcD1Query(self: {
+    readonly ctx: DurableObjectState;
+}, target: StorageTarget, queries: D1QuerySql[]): Promise<D1QueryResponse>;
 export declare function _rpcWriteFile(self: RpcHost, path: string, content: string | Uint8Array, pid?: number, cred?: VfsCred): Promise<number>;
 /**
  * Write one host-governed file at a session root and let ordinary Unix

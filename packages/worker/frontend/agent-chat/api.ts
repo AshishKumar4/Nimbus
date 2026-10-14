@@ -60,12 +60,14 @@ export async function selectAccount(accountId: string): Promise<void> {
   });
 }
 
-export type ChatRequestBody = { message: string; stream: true } | { retry: true; stream: true };
+/** A message is sent under the id its client chose: the server takes each id once. */
+export type ChatRequestBody = { message: string; id: string; stream: true } | { retry: true; stream: true };
 
 /**
  * POST a chat turn and return the NDJSON stream (consumed via stream.ts).
  * A resolved promise means the server accepted the turn (and persisted the
- * user message); a rejection means the server never saw it.
+ * user message). A rejection does not mean the server never saw it: the
+ * request may have arrived and only its response been lost.
  */
 export async function postChatTurn(body: ChatRequestBody, signal: AbortSignal): Promise<ReadableStream<Uint8Array>> {
   const response = await fetch(MESSAGES_URL, {

@@ -317,6 +317,15 @@ export declare const REPLAY_OPERATION_POLICY: {
     innerDoCall: {
         readonly kind: "effect";
     };
+    kvCall: {
+        readonly kind: "effect";
+    };
+    r2Call: {
+        readonly kind: "effect";
+    };
+    d1Query: {
+        readonly kind: "effect";
+    };
     fanoutExecute: {
         readonly kind: "effect";
     };
