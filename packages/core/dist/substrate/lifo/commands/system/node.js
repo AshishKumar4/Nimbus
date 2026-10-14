@@ -7,8 +7,8 @@ import { isEsModuleFile, isEsModuleInput } from '../../../../runtime/module-form
 import { packageScopeType } from '../../../../runtime/require-resolution.js';
 import { createProcess } from '../../node-compat/process.js';
 import { createConsole } from '../../node-compat/console.js';
-import { pathToFileURL } from '../../node-compat/url.js';
 import { createNativeEsmLoader } from '../../node-compat/native-esm-loader.js';
+import { pathToFileURL } from '../../node-compat/file-url.js';
 import { leaveStandardStreamsOpen } from '../../node-compat/standard-streams.js';
 import { runNodeInRealm } from './node-realm.js';
 const NODE_VERSION = 'v20.0.0';
