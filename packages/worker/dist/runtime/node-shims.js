@@ -3913,11 +3913,17 @@ const __fsMod = (() => {
         _ownCompact(destK, rec);
       }
       if (receipt !== undefined) {
-        _noteLearnedStat(destAbs, _receiptStat(receipt), ticket, receipt.revision);
-        // A file this process made, still answering for itself (beneath a
+        const learned = _noteLearnedStat(destAbs, _receiptStat(receipt), ticket, receipt.revision);
+        // A file this process made, still answering for itself, or one the
+        // copy made where only this process's own names answer (beneath a
         // directory it made just now): the receipt's stat is its stat.
-        const made = _nsOwnGet(destK);
-        if (made !== undefined && made === asked.made && made.state === "file") {
+        let made = _nsOwnGet(destK);
+        const unnamed = learned && made === undefined && asked.made === undefined && _statLadder(destAbs) === undefined;
+        if (unnamed) {
+          _nsOwnSet(destK, "file", { settled: true });
+          made = _nsOwnGet(destK);
+        }
+        if (made !== undefined && (made === asked.made || unnamed) && made.state === "file") {
           made.stat = { size: Number(receipt.size), mode: Number(receipt.mode), uid: Number(receipt.uid), gid: Number(receipt.gid) };
           if (Number.isFinite(receipt.mtimeMs)) made.written = receipt.mtimeMs;
           made.word = _nsWordOf(made);
