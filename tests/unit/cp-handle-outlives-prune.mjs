@@ -63,6 +63,8 @@ session._setCpRegistry(registry);
 
 // A child that prints one line, waits for the test, prints a second, and exits.
 const gates = [];
+// A child that ends at once: a parent whose own child outlives it.
+registry.register('quick', async () => 0);
 registry.register('two-lines', async (ctx) => {
   await ctx.stdout.write('one\n');
   await new Promise((resolve) => gates.push(resolve));
@@ -107,6 +109,29 @@ try {
     await assert.rejects(session._rpcCpWait(child, 0, undefined, sibling.pid), (error) => error.code === 'ESRCH', `${what}: nor wait on it`);
     assert.equal(await session._rpcCpKill(child, 'SIGTERM', parent.pid), false, `${what}: a kill of the ended child answers false`);
     console.log(`  ✓ ${what}: the handle outlives the child's row`);
+  }
+
+  // A grandparent's handle on its grandchild (G reads C, which P spawned):
+  // after P and C have ended and been pruned, who spawned whom is still the
+  // broker's record, for each.
+  {
+    const middle = (await session._rpcCpSpawn({ command: 'quick', args: [], env: {}, cwd: '/home/user', stdio: ['pipe', 'pipe', 'pipe'], parentPid: parent.pid })).childPid;
+    const grandchild = (await session._rpcCpSpawn({ command: 'two-lines', args: [], env: {}, cwd: '/home/user', stdio: ['pipe', 'pipe', 'pipe'], parentPid: middle })).childPid;
+    await session._rpcCpStdinEnd(grandchild, parent.pid);
+    const first = await session._rpcCpReadOutput(grandchild, 1, 0, 1000, undefined, parent.pid);
+    assert.equal(text(first), 'one\n');
+    gates.shift()();
+    for (let i = 0; i < 100 && [middle, grandchild].some((pid) => processes.get(pid)?.state === 'running'); i++) await settle();
+    await settle();
+    ahead += 61_000;
+    await processes.reap();
+    assert.deepEqual([processes.get(middle), processes.get(grandchild)], [undefined, undefined], 'the prune forgot both rows');
+    const rest = await session._rpcCpReadOutput(grandchild, 1, first.maxSeq, 1000, undefined, parent.pid);
+    assert.deepEqual({ text: text(rest), closed: rest.closed }, { text: 'two\n', closed: true }, 'the grandparent reads the rest');
+    const waited = await session._rpcCpWait(grandchild, 1000, undefined, parent.pid);
+    assert.deepEqual({ done: waited.done, exitCode: waited.exitCode }, { done: true, exitCode: 0 });
+    await assert.rejects(session._rpcCpReadOutput(grandchild, 1, 0, 0, undefined, sibling.pid), (error) => error.code === 'ESRCH', 'another process may not');
+    console.log('  ✓ a grandparent\'s handle outlives its child\'s and grandchild\'s rows');
   }
 } finally {
   Date.now = realNow;
