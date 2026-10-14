@@ -5,6 +5,15 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: Python's `os.umask` governs the files it creates, `os.open` makes a
+  file with the mode asked for (under the umask, as Linux does), and
+  `os.getuid()`/`os.getgid()` are the session user's, not 0. Before, the
+  umask was the interpreter's own variable, which nothing read, and every
+  file was made 0644. This needs the CPython runtime 3.13.14-2 and core
+  0.22.0 or later.
+- Fixed: a Python program that resolves more than 64 distinct hostnames gets
+  `socket.gaierror` (EAI_MEMORY) for the 65th, instead of an address that
+  stood for another name, which a connect would have dialed.
 - Security: a D1 binding under `wrangler dev` is a database of its own (a
   Durable Object facet of the session, its own SQLite), as on Cloudflare.
   It ran its statements in the session's own database, and a table name it

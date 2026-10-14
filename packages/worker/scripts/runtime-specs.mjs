@@ -227,13 +227,18 @@ export const SPECS = {
   // -1: the same CPython 3.13.14 rebuilt by build-python.sh, now reproducible
   // (fixed stamps), at neutral build paths: 3.13.14's files carried the build
   // machine's paths (OpenSSL's directories, .pyc source paths, sysconfig).
-  'cpython/3.13.14-1': {
+  // -2: linked with nimbus-libc (the nimbus_fs and nimbus_proc imports), so
+  // its umask is the host's live one, a file is made with the mode asked for,
+  // and getuid is the session's; and a full name table refuses a new name.
+  'cpython/3.13.14-2': {
     license: 'PSF-2.0',
     wasi_namespace: 'wasi_snapshot_preview1',
     local_base: '../wasm/python',
     npm: {
       name: '@nimbus-sh/runtime-cpython',
       summary: 'CPython 3.13.14, cross-compiled to wasm32-wasi, with its stdlib',
+      // The first core whose cpython-runner gives the module nimbus_fs and nimbus_proc.
+      core: '>=0.22.0',
     },
     files: [
       { src: 'python.wasm',   vfs: 'share/cpython/python.wasm' },

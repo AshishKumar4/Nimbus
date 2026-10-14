@@ -36,6 +36,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+NIMBUS_LIBC="$HERE/../nimbus-libc"
 # The recipe's toolchain (see require_recipe, which every compiling stage runs
 # first); fetch and verify use none.
 WASI_SDK="${WASI_SDK:-/wasi-sdk}"
@@ -244,10 +245,16 @@ stage_nimbus() {
 		"$CC" $TARGET_CFLAGS -std=c11 -Wall -Wextra -Werror \
 		  -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_MMAN \
 		  -D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI_EMULATED_GETPID \
-		  -I"$HERE/include" -include "$HERE/include/nimbus-net.h" \
+		  -I"$HERE/include" -I"$NIMBUS_LIBC" -include "$HERE/include/nimbus-net.h" \
 		  -include "$HERE/include/nimbus-wasi-compat.h" \
 		  -c "$HERE/$unit.c" -o "$WORK/nimbus/$unit.o"
 	done
+	# The shared libc of Nimbus's images (git's too): a file's mode under the
+	# live umask, and the session's credential, over the nimbus_fs and
+	# nimbus_proc imports. Its open(2) asks wasi-libc's own (__real_open):
+	# CPython's open is it, by --wrap=open (nimbus-wasi-compat.c).
+	"$CC" $TARGET_CFLAGS -std=c11 -D_GNU_SOURCE=1 -Wall -Wextra -Werror -Dopen=__real_open \
+	  -c "$NIMBUS_LIBC/nimbus-fs.c" -o "$WORK/nimbus/nimbus-fs.o"
 	"$AR" rcs "$DEPS/lib/libnimbuswasi.a" "$WORK/nimbus"/*.o
 }
 
@@ -290,7 +297,7 @@ stage_wasi() {
 	  # --wrap lets nimbus-net own accept and close without colliding with the
 	  # wasi-libc definitions that are still in the archive.
 	  export LDFLAGS="--target=wasm32-wasi -L$DEPS/lib \
-	    -Wl,--wrap=close -Wl,--wrap=accept -Wl,--wrap=accept4"
+	    -Wl,--wrap=close -Wl,--wrap=accept -Wl,--wrap=accept4 -Wl,--wrap=open"
 	  export LIBS="-lnimbuswasi -lwasi-emulated-signal -lwasi-emulated-process-clocks \
 	    -lwasi-emulated-mman -lwasi-emulated-getpid"
 	  mkdir -p Modules && cp "$HERE/Setup.local" Modules/Setup.local
@@ -670,20 +677,11 @@ stage_verify() {
 		echo "ERROR: a required module or function is missing; see build-wasi/config.log" >&2
 		exit 1
 	fi
-	# Nothing but preview1 may be imported: the artifacts have to stay stock WASI
-	# modules that any conforming host can instantiate. Both variants, because
-	# the sci one links C++ and a second libc, either of which could drag in an
-	# import the base build never had.
-	local variant ns
-	for variant in python.wasm python-sci.wasm; do
-		ns=$(node -e "
-		  const m = new WebAssembly.Module(require('fs').readFileSync('$HERE/$variant'));
-		  const s = new Set(WebAssembly.Module.imports(m).map(i => i.module));
-		  process.stdout.write([...s].sort().join(','));")
-		echo "  $variant import namespaces: $ns"
-		[ "$ns" = "wasi_snapshot_preview1" ] || {
-			echo "ERROR: unexpected import namespace in $variant" >&2; exit 1; }
-	done
+	# What a Nimbus host gives a runtime, and no more (core os-contracts.ts
+	# WASI_RUNTIME_IMPORT_MODULES): preview1 and the nimbus_fs/nimbus_proc
+	# extensions nimbus-libc imports. Both variants, because the sci one links
+	# C++ and a second libc, either of which could drag in another import.
+	node "$NIMBUS_LIBC/verify-imports.mjs" "$HERE/python.wasm" "$HERE/python-sci.wasm"
 
 	# The sci variant's extensions have to be registered under the dotted names
 	# the packages import them by. A build that linked the objects but lost the

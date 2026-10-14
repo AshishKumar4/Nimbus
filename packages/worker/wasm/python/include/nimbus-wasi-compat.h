@@ -1,4 +1,5 @@
-/* Declarations for the wasi-libc gaps nimbus-wasi-compat.c fills. Force-included
+/* Declarations for the wasi-libc gaps nimbus-wasi-compat.c and nimbus-libc's
+ * nimbus-fs.c (the identity calls: the session's credential) fill. Force-included
  * into every translation unit, so that third-party sources see them without
  * edits; the sysroot hides these behind __wasilibc_unmodified_upstream, which
  * cannot be defined selectively.
