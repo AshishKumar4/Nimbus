@@ -614,8 +614,9 @@ function workspaceShellIdentity(processes, shellProcess, getShell) {
         finally {
             endWork();
             endAwait();
-            processes.exit(child.pid, exitCode);
+            // Its program has returned, its cleanup done: what it bound is released at its end.
             stopped();
+            processes.exit(child.pid, exitCode);
         }
     };
     const commandIdentityFor = (pid) => ({

@@ -20,7 +20,6 @@ export function execIdField(entry) {
     return entry?.execId === undefined ? {} : { execId: entry.execId };
 }
 function immutableCred(cred) {
-    // A parent's (credOf) is frozen whole already: a child's is the same one.
     if (Object.isFrozen(cred) && Object.isFrozen(cred.groups))
         return cred;
     return Object.freeze({
@@ -96,11 +95,14 @@ export class ProcessTable {
             exitCode: null,
             startTime: Date.now(),
             endTime: null,
-            cred: immutableCred(options.cred ?? inheritedCred),
+            // A parent's, frozen whole already, is the child's as it is.
+            cred: options.cred === undefined || options.cred === inheritedCred ? inheritedCred : immutableCred(options.cred),
             parentPid: options.parentPid,
-            ...(execId === undefined ? {} : { execId }),
-            ...(options.restartedFrom === undefined ? {} : { restartedFrom: { ...options.restartedFrom } }),
         };
+        if (execId !== undefined)
+            entry.execId = execId;
+        if (options.restartedFrom !== undefined)
+            entry.restartedFrom = { ...options.restartedFrom };
         this.processes.set(pid, entry);
         return entry;
     }
@@ -201,7 +203,8 @@ export class ProcessTable {
     descendantsOf(pid) {
         const found = [];
         const frontier = new Set([pid]);
-        for (const entry of [...this.processes.values()].sort((a, b) => a.startTime - b.startTime)) {
+        // The map holds entries in spawn order: oldest first, each after its parent.
+        for (const entry of this.processes.values()) {
             if (entry.parentPid !== undefined && frontier.has(entry.parentPid)) {
                 frontier.add(entry.pid);
                 found.push(entry);
