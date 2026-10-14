@@ -2333,7 +2333,7 @@ export class SqliteVFS {
             rmdir: (path) => this.rmdir(path, bound),
             removeRecursive: (path, options) => this.removeRecursive(path, bound, options),
             rename: (oldPath, newPath) => this.rename(oldPath, newPath, bound),
-            copyFile: (src, dest) => this.copyFile(src, dest, bound),
+            copyFile: (src, dest, options) => this.copyFile(src, dest, bound, options),
             copyTree: (src, dest, options) => this.copyTreeNow(this.planCopyTree(src, dest, bound, options)),
             copyTreeAsync: (src, dest, options) => {
                 const owner = mutationOwner ?? options?.mutationOwner;
@@ -5653,9 +5653,14 @@ export class SqliteVFS {
      * manifest. No byte is read or written; a later write to either side
      * copies on write (rewriteFile's sharing probes). A new file has the
      * source's permission bits less the copier's umask, as cp(1) makes it; a
-     * file there keeps its own mode.
+     * file there keeps its own mode. With \`keepMode\` (copyfile, as libuv's
+     * fchmod leaves it), the copy has the source's permission bits exactly, a
+     * file there too, set in this one write; a file there not the caller's
+     * is EPERM, as fchmod is. Answers the copy's stat, and the file copied
+     * (its key) with its revision: bytes held of that file at that revision
+     * or later are the copy's.
      */
-    copyFile(src, dest, cred) {
+    copyFile(src, dest, cred, options) {
         const source = this.checkAccess(src, 0o4, cred);
         const inode = source.inode;
         if (!inode)
@@ -5677,6 +5682,15 @@ export class SqliteVFS {
             this.checkParentAccess(target.path, cred);
         const now = this.now();
         const made = prior ? undefined : this.creationAttrs(target.path, copiedPermissions(inode.mode, false), cred, false);
+        let mode = prior ? prior.mode : made.mode;
+        if (options?.keepMode) {
+            if (prior && cred.uid !== 0 && cred.uid !== prior.uid)
+                throw vfsKeyError('EPERM', target.path);
+            const exact = inode.mode & 0o7777;
+            this.assertConfinedModeChange(prior ?? { mode }, exact, cred, target.path);
+            const shared = this.sharedDirectory(target.path);
+            mode = inodeTypeBits('file') | (shared ? this.sharedMode(exact, false) : exact);
+        }
         const builder = this.newPlan();
         builder.addInode({
             path: target.path,
@@ -5686,13 +5700,14 @@ export class SqliteVFS {
             size: inode.size,
             atime: now,
             mtime: now,
-            mode: prior ? prior.mode : made.mode,
+            mode,
             uid: prior?.uid ?? cred.uid,
             gid: prior?.gid ?? made.gid,
             content: { type: 'ref', chunkId: inode.chunkId, contentId: inode.contentId },
         });
         this._writeBatchOnce({ plan: builder.build(), deletedInodes: [] }, { source: 'strict-batch', limitMode: 'bounded' });
         this.runContentMaintenanceSafely(1);
+        return { ...this.stat(dest, cred, true), from: { path: source.path, revision: this.pathRevision(source.path, inode) } };
     }
     /**
      * Copy the tree at `src` to a new path `dst` by reference (`cp -r`): one
@@ -8488,7 +8503,7 @@ export class SqliteVFS {
                 }
             }
             else if (call.call === 'copyFile')
-                this.copyFile(call.from, call.path, cred);
+                return this.copyFile(call.from, call.path, cred, { keepMode: true });
             else if (call.call === 'lchown')
                 this.chown(call.path, call.uid, call.gid, cred, false);
             else if (call.call === 'lutimes')

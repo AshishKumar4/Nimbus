@@ -356,12 +356,16 @@ export declare const S_IFLNK = 40960;
 /**
  * A copy: a tree with \`recursive\` (\`preserve\` is cp -p); \`follow\`
  * copies what a link named as the source leads to, as copyfile does, where
- * a tree copy otherwise copies the link.
+ * a tree copy otherwise copies the link. \`keepMode\`, a file's copy as
+ * copyfile makes it (libuv's fchmod): the source's permission bits exactly,
+ * a file there too, where cp's are the umask's for a new file and a file
+ * there keeps its own.
  */
 export interface VfsCopyOptions {
     recursive?: boolean;
     preserve?: boolean;
     follow?: boolean;
+    keepMode?: boolean;
 }
 /**
  * The permission bits a copy without preserve asks to make an entry with:

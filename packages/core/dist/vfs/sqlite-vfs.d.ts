@@ -264,7 +264,14 @@ export interface CredentialedVfs {
         keepVanishedAncestors?: boolean;
     }): VfsRemoval;
     rename(oldPath: string, newPath: string): void;
-    copyFile(src: string, dest: string): void;
+    copyFile(src: string, dest: string, options?: {
+        keepMode?: boolean;
+    }): VfsStat & {
+        from: {
+            path: string;
+            revision: number;
+        };
+    };
     /**
      * Copy a tree to a new path by reference (`cp -r`; `preserve` is `-p`).
      * Returns the entries copied. See SqliteVFS.copyTree.
@@ -1689,7 +1696,12 @@ export declare class SqliteVFS {
      * manifest. No byte is read or written; a later write to either side
      * copies on write (rewriteFile's sharing probes). A new file has the
      * source's permission bits less the copier's umask, as cp(1) makes it; a
-     * file there keeps its own mode.
+     * file there keeps its own mode. With \`keepMode\` (copyfile, as libuv's
+     * fchmod leaves it), the copy has the source's permission bits exactly, a
+     * file there too, set in this one write; a file there not the caller's
+     * is EPERM, as fchmod is. Answers the copy's stat, and the file copied
+     * (its key) with its revision: bytes held of that file at that revision
+     * or later are the copy's.
      */
     private copyFile;
     /**

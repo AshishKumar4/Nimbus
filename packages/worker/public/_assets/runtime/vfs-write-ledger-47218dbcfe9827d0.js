@@ -1608,7 +1608,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
           settled(entry);
           let answered2 = {};
           const op = ops[index];
-          const path = op.type === "call" && ("data" in op.call || op.call.call === "open") ? op.call.path : null;
+          const path = op.type === "call" && ("data" in op.call || op.call.call === "open" || op.call.call === "copyFile") ? op.call.path : null;
           const published = answer.receipts[receipt];
           if (path !== null && published?.path === path) {
             receipt++;

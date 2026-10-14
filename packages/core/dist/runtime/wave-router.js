@@ -226,7 +226,7 @@ async function applyRecord(ns, cleanup, record, pinned) {
                 throw new VfsError('ENOTSUP', `${call.call} on a mount`, call.path);
             // copyfile: the namespace's copy, the source's link followed.
             else if (call.call === 'copyFile')
-                await ns.copy(call.from, call.path, { follow: true });
+                await ns.copy(call.from, call.path, { follow: true, keepMode: true });
             // An open is the router's own (WaveRouter.open), and a description's close the binding's.
             else if (call.call === 'open' || call.call === 'close')
                 throw new Error(`internal: a ${call.call} call is not a record the router applies`);

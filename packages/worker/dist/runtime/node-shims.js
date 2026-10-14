@@ -3830,50 +3830,44 @@ const __fsMod = (() => {
 
   // fs.promises.copyFile: one copy the session makes (the W7 copyFile call),
   // logged in program order, so it copies what the program wrote to the
-  // source before it, and no byte of the file is read or sent. Left as
-  // copyfile leaves it: the source's mode exactly, and a file there narrowed
-  // for others before the bytes go in (_copyLeaves).
+  // source before it, left as copyfile leaves it (the source's mode exactly,
+  // a file there too, set in the copy itself), and no byte of the file is
+  // read or sent.
   async function _copyFileAsync(src, dest, mode) {
     if ((Number(mode) & __fsConstants.COPYFILE_EXCL) !== 0 && await _existsAsync(dest)) {
       throw _fsErr("EEXIST", "copyfile", src, dest);
     }
-    const supervisor = _supervisor();
-    if (!supervisor) return copyFileSync(src, dest, mode);
-    try {
-      const from = (await _statAsync(src)).mode & 0o7777;
-      let there;
-      try { there = await _statAsync(dest); }
-      catch (error) { if (error?.code !== "ENOENT") throw error; }
-      const left = _copyLeaves(there, from);
-      if (there !== undefined && !there.isDirectory() && left !== (there.mode & 0o7777)) await _chmodAsync(dest, left);
-      await _copyLogged(src, dest, from, there !== undefined);
-      if (left !== from) await _chmodAsync(dest, from);
-    } catch (error) { throw _asCallError(error, "copyfile", src, dest); }
+    if (!_supervisor()) return copyFileSync(src, dest, mode);
+    try { await _copyLogged(src, dest); } catch (error) { throw _asCallError(error, "copyfile", src, dest); }
   }
 
   /**
    * The session's copy of \`src\` to \`dest\`, each as named, and what the view
-   * holds of it: the source's bytes when it held them. In a subtree it holds,
-   * where no one else can have changed the source since, the source's cell
-   * is the copy's at once, claimed by the copy (_logParked); otherwise the
-   * copy is read once the session has made it. A source whose bytes the view
-   * never held leaves the copy as unread, its stat learned. Decided here, it
-   * is answered once logged.
+   * holds of it. Where the process holds the source's subtree, no one else
+   * can have changed it: its whole cell is the copy's at once, claimed by the
+   * copy (_logParked), with the source's mode, and the copy is answered once
+   * logged where it is decided here. Elsewhere the copy's answer names the
+   * file it copied and that file's revision: the source's cell, dated that
+   * late or later, is the copy's; one older is read back; a source the view
+   * never held leaves the copy unread, its stat the answer's.
    */
-  async function _copyLogged(src, dest, mode, there) {
+  async function _copyLogged(src, dest) {
     const srcAbs = _resolveFollow(src, "copyfile");
     const destAbs = _resolveFollow(dest, "copyfile");
-    // The copy's name is judged as any write's is, where the view can.
-    const absent = _ensureWritable(destAbs, "copyfile", src, true, dest) ?? !there;
+    const absent = _ensureWritable(destAbs, "copyfile", src, true, dest);
     const destK = _strip(destAbs);
+    const srcK = _strip(srcAbs);
     const call = { call: "copyFile", path: _strip(_resolve(dest)), from: _strip(_resolve(src)) };
     const content = _bundleLookup(srcAbs, false);
-    const srcK = _strip(srcAbs);
     const whole = content !== undefined && _denialCode(content) === null && _parkedPartial.get(srcK) !== __vfsWriteGenerations[srcK];
-    const decided = _decidedHere(destAbs);
-    if (whole && typeof __nimbusHeldHere === "function" && __nimbusHeldHere(srcAbs)) {
+    const sourceMode = whole ? _statLadder(srcAbs)?.mode : undefined;
+    if (sourceMode !== undefined && typeof __nimbusHeldHere === "function" && __nimbusHeldHere(srcAbs)) {
+      const mode = Number(sourceMode) & 0o7777;
       _parkWrite(destK, content, mode, absent);
+      const local = _setLocalAttr(_localModes, destK, mode, false);
+      const decided = _decidedHere(destAbs);
       const logged = _logParked(destAbs, { type: "call", call }, { acknowledged: decided });
+      logged.claimed.then(() => _settleLocalAttr(local), () => _settleLocalAttr(local));
       if (decided) {
         _detachStructuralMutation(__nimbusDecided(logged.claimed), "copyfile", dest);
         return;
@@ -3884,17 +3878,31 @@ const __fsMod = (() => {
       return;
     }
     // What the view held under the copy's name stands for nothing once the
-    // copy lands (a parked write there is logged ahead of it). A name made
-    // is the copy's own until the copy is answered.
+    // copy lands (a parked write there is logged ahead of it).
     _flushParkedWrite(destAbs, _supervisor());
     if (__vfsBundle) delete __vfsBundle[destK];
     delete __vfsBundleRevisions[destK];
     if (__vfsWrites) delete __vfsWrites[destK];
     _forgetSyncPath(destK);
-    if (absent && typeof __resident !== "undefined") _nsOwnSet(destK, "file", { mode });
-    await _queueStructuralMutation(destAbs, "copyfile", src, () => _vfsCall(call), dest);
+    const ticket = _beginFill(destK);
+    let receipt;
+    try {
+      await _queueStructuralMutation(destAbs, "copyfile", src, () => _vfsCall(call).then((answer) => { receipt = answer?.receipt; return answer; }), dest);
+      if (receipt !== undefined) {
+        _noteLearnedStat(destAbs, _receiptStat(receipt), ticket, receipt.revision);
+        const from = receipt.from;
+        const provenance = whole && typeof __resident !== "undefined" ? __resident.cells.provenance(srcK) : undefined;
+        if (from !== undefined && from.path === srcK && typeof provenance === "number" && provenance >= from.revision) {
+          ticket.rev = receipt.revision;
+          _installResident(destAbs, content, ticket);
+          return;
+        }
+      }
+    } finally {
+      _endFill(ticket);
+    }
     if (whole) await _readFileAsync(dest);
-    else await _learnLive(destAbs, _supervisor());
+    else if (receipt === undefined) await _learnLive(destAbs, _supervisor());
   }
 
   async function _existsAsync(p) {
