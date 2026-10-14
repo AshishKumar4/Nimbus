@@ -146,8 +146,9 @@ export async function runNodeProgram(program, host) {
     const ga = globalThis;
     ga.process = main.process;
     // So are the realm's own warnings, a native builtin's (util.deprecate,
-    // Buffer(), events): Node delivers a warning to the process that raised it.
-    realm.emitWarning = main.process.emitWarning;
+    // Buffer(), events): Node delivers a warning to the process that raised
+    // it, through whatever its emitWarning is when the warning is raised.
+    realm.emitWarning = (...warning) => { main.process.emitWarning(...warning); };
     realm.removeAllListeners('warning');
     realm.on('warning', (warning) => { main.process.emit('warning', warning); });
     ga.Buffer = Buffer;

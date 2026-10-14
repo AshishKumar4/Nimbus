@@ -44,7 +44,7 @@ import { generateSqliteShimCode } from './sqlite-shim.js';
 import { DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE } from './javascript-string-literal.js';
 import { CHILD_NEWS_SOURCE } from '@nimbus-sh/core/runtime/child-news.js';
 import { generateUndiciShimCode } from '@nimbus-sh/core/runtime/undici-shim.js';
-import { ESM_RESOLVER_PREAMBLE, HTTP2_MODULE_PREAMBLE, NODE_ERROR_PREAMBLE, NODE_SHIM_RESOLUTION_PREAMBLE, RELATIVE_WASM_PATHS_PREAMBLE, } from '../loaders/generated-workers.js';
+import { ESM_RESOLVER_PREAMBLE, HTTP2_MODULE_PREAMBLE, NODE_ERROR_PREAMBLE, NODE_SHIM_RESOLUTION_PREAMBLE, NODE_WARNING_PREAMBLE, RELATIVE_WASM_PATHS_PREAMBLE, } from '../loaders/generated-workers.js';
 import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '@nimbus-sh/core/_shared/ai-egress.js';
 import { EGRESS_TLS_REFUSAL } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { EGRESS_TLS_CLIENT_SOURCE } from './egress-tls-client.js';
@@ -125,6 +125,7 @@ class __ProcessExit extends Error {
 // runtime and generated code reach them as __nimbusNodeError and
 // __nimbusNodeSystemError.
 ${NODE_ERROR_PREAMBLE}
+${NODE_WARNING_PREAMBLE}
 Object.defineProperties(globalThis, {
   __nimbusNodeError: { value: __nimbusGeneratedNodeError, configurable: true },
   __nimbusNodeSystemError: { value: nodeSystemError, configurable: true },
@@ -10438,68 +10439,10 @@ function __nimbusSignalSelf(signal) {
 }
 
 // Node's process.emitWarning and the 'warning' listener it installs unless
-// told not to (lib/internal/process/warning.js, lib/internal/process/
-// pre_execution.js setupWarningHandler, v22.22.3): the warning is an Error
-// named for its type, emitted on the next tick; the listener prints
-// "(node:<pid>) <Type>: <message>" to stderr, the first time with how to
-// trace it. --disable-warning and --redirect-warnings are not read.
-let __nimbusTraceWarningHelperShown = false;
-function __nimbusOnWarning(warning) {
-  if (!(warning instanceof Error)) return;
-  const isDeprecation = warning.name === "DeprecationWarning";
-  if (isDeprecation && __processMod.noDeprecation) return;
-  const trace = __processMod.traceProcessWarnings || (isDeprecation && __processMod.traceDeprecation);
-  let msg = "(node:" + __processMod.pid + ") ";
-  if (warning.code) msg += "[" + warning.code + "] ";
-  if (trace && warning.stack) msg += warning.stack;
-  else msg += typeof warning.toString === "function" ? String(warning.toString()) : Error.prototype.toString.call(warning);
-  if (typeof warning.detail === "string") msg += "\\n" + warning.detail;
-  if (!trace && !__nimbusTraceWarningHelperShown) {
-    const flag = isDeprecation ? "--trace-deprecation" : "--trace-warnings";
-    const argv0 = __pathMod.basename(__processMod.argv0 || "node", ".exe");
-    msg += "\\n(Use \`" + argv0 + " " + flag + " ...\` to show where the warning was created)";
-    __nimbusTraceWarningHelperShown = true;
-  }
-  __consoleMod.error(msg);
-}
-function __nimbusProcessEmitWarning(warning, type, code, ctor) {
-  if (__processMod.noDeprecation && type === "DeprecationWarning") return;
-  let detail;
-  if (type !== null && typeof type === "object" && !Array.isArray(type)) {
-    ctor = type.ctor;
-    code = type.code;
-    if (typeof type.detail === "string") detail = type.detail;
-    type = type.type || "Warning";
-  } else if (typeof type === "function") {
-    ctor = type;
-    code = undefined;
-    type = "Warning";
-  }
-  if (type !== undefined && typeof type !== "string") throw invalidArgType("type", "string", type);
-  if (typeof code === "function") {
-    ctor = code;
-    code = undefined;
-  } else if (code !== undefined && typeof code !== "string") {
-    throw invalidArgType("code", "string", code);
-  }
-  if (typeof warning === "string") {
-    const limit = Error.stackTraceLimit;
-    Error.stackTraceLimit = 0;
-    warning = new Error(warning);
-    Error.stackTraceLimit = limit;
-    warning.name = String(type || "Warning");
-    if (code !== undefined) warning.code = code;
-    if (detail !== undefined) warning.detail = detail;
-    Error.captureStackTrace(warning, ctor || __processMod.emitWarning);
-  } else if (!(warning instanceof Error)) {
-    throw invalidArgType("warning", ["string", "Error"], warning);
-  }
-  if (warning.name === "DeprecationWarning") {
-    if (__processMod.noDeprecation) return;
-    if (__processMod.throwDeprecation) return __processMod.nextTick(() => { throw warning; });
-  }
-  __processMod.nextTick(() => __processMod.emit("warning", warning));
-}
+// told not to (core _shared/node-warning.ts, lifo's node's too): the warning
+// is an Error named for its type, emitted on the next tick; the listener
+// prints it to stderr, the first time with how to trace it.
+const __nimbusWarnings = createProcessWarnings(() => __processMod, (text) => __consoleMod.error(text));
 let __processUmask = Number(cred.umask) & 0o777;
 // What the process's filesystem client stamps on each create it logs (W7Call umask): the ledger's, in this scope, not a global.
 if (typeof __nimbusProcessUmaskOf !== "undefined") __nimbusProcessUmaskOf = () => __processUmask;
@@ -10584,7 +10527,7 @@ const __processMod = Object.setPrototypeOf({
   stderr: __makeProcessOutputStream("stderr"),
   stdin: __makeProcessStdin(),
   nextTick: (fn, ...a) => queueMicrotask(() => fn(...a)),
-  emitWarning: __nimbusProcessEmitWarning,
+  emitWarning: __nimbusWarnings.emitWarning,
   // Seconds since the process started.
   uptime: () => (performance.now() - __nimbusStartedAt) / 1000,
   // The signal syscall process.kill makes (Node's binding): 0, or the errno.
@@ -10708,9 +10651,7 @@ Object.defineProperty(__processMod, "allowedNodeEnvironmentFlags", {
   enumerable: true, configurable: true,
 });
 // The 'warning' listener Node installs (setupWarningHandler), unless warnings are off.
-if (__processMod.env.NODE_NO_WARNINGS !== "1" && !String(__processMod.env.NODE_OPTIONS || "").split(/\\s+/).includes("--no-warnings")) {
-  __processMod.on("warning", __nimbusOnWarning);
-}
+if (__nimbusWarnings.installs) __processMod.on("warning", __nimbusWarnings.onWarning);
 // Node's process reads as one: Object.prototype.toString gives "[object
 // process]", which axios (utils.kindOf) and others test to pick their Node
 // paths (axios: its http adapter rather than its fetch one). As Node defines

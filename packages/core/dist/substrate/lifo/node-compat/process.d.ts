@@ -1,16 +1,8 @@
 import type { CommandOutputStream } from '../commands/types.js';
+import { type WarningConstructor, type WarningOptions } from '../../../_shared/node-warning.js';
 export declare class ProcessExitError extends Error {
     exitCode: number;
     constructor(code: number);
-}
-/** A function a warning's stack starts above (process.emitWarning's `ctor`). */
-type WarningConstructor = (...args: never[]) => unknown;
-/** process.emitWarning's options form. */
-export interface WarningOptions {
-    type?: string;
-    code?: string;
-    detail?: string;
-    ctor?: WarningConstructor;
 }
 export interface ProcessOptions {
     argv: string[];
@@ -137,5 +129,4 @@ export declare function createProcess(opts: ProcessOptions): {
         tls: boolean;
     };
 };
-export {};
 //# sourceMappingURL=process.d.ts.map
