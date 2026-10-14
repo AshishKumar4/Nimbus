@@ -1,4 +1,5 @@
 import type { Command, CommandContext, CommandOutputStream } from '../types.js';
+import type { VfsCred } from '../../../../runtime/os-contracts.js';
 import { resolveJobSpec, type JobTable } from '../../shell/jobs.js';
 import { formatSignalList, parseSignalName, signalOperand } from '../../shell/signals.js';
 
@@ -18,19 +19,21 @@ export interface HostProcessSignals {
   /** Whether `pid` is a live process of this host. `kill -0` asks only this. */
   isLive(pid: number): boolean;
   /**
-   * Deliver `signal` (a parsed name, never `0`) to a live pid of this host.
-   * A teardown step that failed without keeping the process alive is
-   * reported on `stderr`.
+   * Deliver `signal` (a parsed name, never `0`) to a live pid of this host,
+   * from `caller`, whom kill(2)'s rule may refuse (`not-permitted`). A
+   * teardown step that failed without keeping the process alive is reported
+   * on `stderr`.
    */
-  signal(pid: number, signal: string, stderr: CommandOutputStream): Promise<HostSignalResult>;
+  signal(pid: number, signal: string, stderr: CommandOutputStream, caller: Readonly<VfsCred>): Promise<HostSignalResult>;
 }
 
 /**
- * `kill`, by the shell's builtin with its `jobs`, or as a program, which has
- * no jobs and finds a jobspec names none (procps kill).
+ * `kill` from `caller`, by the shell's builtin with its `jobs`, or as a
+ * program, which has no jobs and finds a jobspec names none (procps kill).
  */
 export async function runKill(
   ctx: Pick<CommandContext, 'args' | 'stdout' | 'stderr'>,
+  caller: Readonly<VfsCred>,
   jobs: Pick<JobTable, 'list' | 'byPid' | 'signal'> | null,
   host?: HostProcessSignals,
 ): Promise<number> {
@@ -70,19 +73,25 @@ export async function runKill(
         status = 1;
         continue;
       }
-      if (signal !== '0') jobs?.signal(job, signal);
+      if (signal !== '0' && jobs?.signal(job, signal, caller) === false) {
+        await ctx.stderr.write(`kill: (${job.pid}) - Operation not permitted\n`);
+        status = 1;
+      }
       continue;
     }
     if (!/^\d+$/.test(target)) { await ctx.stderr.write(`kill: \`${target}': not a pid or valid job spec\n`); status = 1; continue; }
     const pid = Number(target);
     const job = jobs?.byPid(pid);
     if (job && job.status !== 'done') {
-      if (signal !== '0') jobs?.signal(job, signal);
+      if (signal !== '0' && jobs?.signal(job, signal, caller) === false) {
+        await ctx.stderr.write(`kill: (${pid}) - Operation not permitted\n`);
+        status = 1;
+      }
       continue;
     }
     if (host?.isLive(pid) === true) {
       if (signal === '0') continue;
-      const result = await host.signal(pid, signal, ctx.stderr);
+      const result = await host.signal(pid, signal, ctx.stderr, caller);
       if (result === 'delivered') continue;
       await ctx.stderr.write(result === 'unsupported'
         ? `kill: (${pid}) - Operation not supported (SIG${signal} cannot be delivered to a hosted process)\n`
@@ -98,5 +107,5 @@ export async function runKill(
 
 /** `kill` as a program (`xargs kill`, `sudo kill`): it reaches the processes `host` does. */
 export function createKillCommand(host?: HostProcessSignals): Command {
-  return async (ctx) => await runKill(ctx, null, host);
+  return async (ctx) => await runKill(ctx, ctx.cred, null, host);
 }

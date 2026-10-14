@@ -81,6 +81,11 @@ export function exitCodeForAbortSignal(signal: AbortSignal, fallback = 130): num
   return isSignalAbortReason(signal.reason) ? signal.reason.exitCode : fallback;
 }
 
+/** The signal `signal` was aborted by, when a signal ended its work; null otherwise. */
+export function signalAbortReasonOf(signal: AbortSignal): SignalAbortReason | null {
+  return signal.aborted && isSignalAbortReason(signal.reason) ? signal.reason : null;
+}
+
 function isSignalAbortReason(value: unknown): value is SignalAbortReason {
   if (!value || typeof value !== 'object') return false;
   const kind = Object.getOwnPropertyDescriptor(value, 'kind')?.value;

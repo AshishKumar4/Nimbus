@@ -122,6 +122,8 @@ export interface BuiltinExecutionContext {
   /** The state of the shell running the builtin: a child shell's own, after a fork. */
   shell: ShellState;
   getLastExitCode(): number;
+  /** The credential of the process the builtin runs as: a kill's caller. */
+  cred(): VfsCred;
 }
 
 export interface InlineExecutionOptions {
@@ -902,9 +904,13 @@ export class Interpreter {
     // status becomes the shell's exit status and nothing after it runs.
     const replacesShell = name === 'exec' && args.length > 0 && !(args.length === 1 && args[0] === '--');
     if (replacesShell) [name, ...args] = args[0] === '--' ? args.slice(1) : args;
+    // `command name [args]` runs name as a builtin or a program, never as a
+    // function or an alias (bash); `command -v`/`-V` describe, by the registry's.
+    const viaCommand = name === 'command' && args.length > 0 && (args[0] === '--' ? args.length > 1 : !args[0].startsWith('-'));
+    if (viaCommand) [name, ...args] = args[0] === '--' ? args.slice(1) : args;
 
     // Check alias expansion
-    const aliases = replacesShell ? undefined : this.config.aliases;
+    const aliases = replacesShell || viaCommand ? undefined : this.config.aliases;
     if (aliases) {
       const aliasValue = aliases.get(name);
       if (aliasValue !== undefined) {
@@ -972,7 +978,7 @@ export class Interpreter {
         exitCode = 0;
       } else {
         // Check functions
-        const funcBody = replacesShell ? undefined : this.functions.get(name);
+        const funcBody = replacesShell || viaCommand ? undefined : this.functions.get(name);
         if (funcBody) {
           exitCode = await this.executeFunction(funcBody, args, this.createIoFromFds(io, fds));
         } else {
@@ -1006,6 +1012,10 @@ export class Interpreter {
             shell: this.config,
             interactive: io.interactive,
             getLastExitCode: () => this.lastExitCode,
+            cred: () => {
+              if (!io.commandIdentity) throw new Error('shell command identity is unavailable');
+              return io.commandIdentity.cred;
+            },
               });
             } catch (error) {
               // A write the store or a device refused fails the builtin, as it
@@ -1076,8 +1086,10 @@ export class Interpreter {
     }
     if (writeFailed && exitCode === 0) exitCode = 1;
 
+    // `command` takes a special builtin's failure from fatal to an ordinary status (POSIX).
     const fatalSpecialBuiltin = io.scriptMode === true
       && exitCode !== 0
+      && !viaCommand
       && isFatalSpecialBuiltin(name);
     this.lastExitCode = exitCode;
     if (fatalSpecialBuiltin) throw new ErrexitSignal(exitCode);
