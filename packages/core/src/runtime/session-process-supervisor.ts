@@ -639,12 +639,14 @@ export class SessionProcessSupervisor implements ProcessOutput {
     entries: readonly ProcessEntry[],
   ): Promise<{ reaped: number; failures: { pid: number; error: unknown }[] }> {
     const failures: { pid: number; error: unknown }[] = [];
-    for (const entry of entries) {
-      const failed = await this.releaseOf(entry.pid);
+    // Each release began at its process's end: they are waited for together.
+    const released = await Promise.all(entries.map((entry) => this.releaseOf(entry.pid)));
+    entries.forEach((entry, i) => {
+      const failed = released[i];
       if (failed !== null) failures.push({ pid: entry.pid, error: failed.error });
       this.releases.delete(entry.pid);
       this.table.forget(entry.pid);
-    }
+    });
     if (entries.length > 0) this.logRetention?.();
     return { reaped: entries.length, failures };
   }

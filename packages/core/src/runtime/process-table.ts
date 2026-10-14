@@ -177,9 +177,9 @@ export class ProcessTable {
       // A parent's, frozen whole already, is the child's as it is.
       cred: options.cred === undefined || options.cred === inheritedCred ? inheritedCred : immutableCred(options.cred),
       parentPid: options.parentPid,
-      ...(execId === undefined ? {} : { execId }),
-      ...(options.restartedFrom === undefined ? {} : { restartedFrom: { ...options.restartedFrom } }),
     };
+    if (execId !== undefined) entry.execId = execId;
+    if (options.restartedFrom !== undefined) entry.restartedFrom = { ...options.restartedFrom };
     this.processes.set(pid, entry);
     return entry;
   }
@@ -284,7 +284,8 @@ export class ProcessTable {
   descendantsOf(pid: number): ProcessEntry[] {
     const found: ProcessEntry[] = [];
     const frontier = new Set<number>([pid]);
-    for (const entry of [...this.processes.values()].sort((a, b) => a.startTime - b.startTime)) {
+    // The map holds entries in spawn order: oldest first, each after its parent.
+    for (const entry of this.processes.values()) {
       if (entry.parentPid !== undefined && frontier.has(entry.parentPid)) {
         frontier.add(entry.pid);
         found.push(entry);
