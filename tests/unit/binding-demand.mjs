@@ -115,4 +115,13 @@ const packages = {
   assert.deepEqual(report.missing.map((m) => m.key), ['astro-compiler@0.5.3']);
 }
 
+// ── an alias to another package installs that package, which no build serves ──
+{
+  const aliased = structuredClone(packages);
+  aliased.vite.versions['8.3.4'].dependencies.rolldown = 'npm:@rolldown/fork@^1.2.12';
+  aliased['@rolldown/fork'] = { 'dist-tags': { latest: '1.2.13' }, versions: { '1.2.13': {} } };
+  const report = await missingBindings({ specs: SPECS, demand: DEMAND, packument: registry(aliased) });
+  assert.deepEqual(report.missing.map((m) => [m.key, m.via.join(' > ')]), [['@rolldown/fork@1.2.13', 'vite@8.3.4 > @rolldown/fork@1.2.13']]);
+}
+
 console.log('binding-demand: ok');
