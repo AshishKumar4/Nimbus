@@ -53,9 +53,11 @@ export class SinkWriter {
      * {@link bytesWritten}, which is what was written as bytes.
      */
     async writeText(text) {
+        // No text is no boundary: the bytes before and after decode as one.
+        if (!text)
+            return;
         const unfinished = this.decoder ? this.decoder.decode() : '';
-        if (unfinished || text)
-            await this.sink.write(unfinished + text);
+        await this.sink.write(unfinished + text);
     }
     async end() {
         if (!this.decoder)

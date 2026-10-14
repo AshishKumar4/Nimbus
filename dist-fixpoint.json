@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "d8e14660161e9ad05348308fe5cff7c6417f6bfc67766b1705162f17186c9b28",
+  "fingerprint": "7eae10e207d26e2880e63718fd34ba53bd9d929348028f7ad934a8f3ce49011b",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -89,8 +89,8 @@
     "packages/core/dist/_shared/ai-egress.d.ts.map": "0f78c29cce57241971fed547f11bed15b230b16a6e2074884cb2a122171393b7",
     "packages/core/dist/_shared/ai-egress.js": "a23a419673bd0fb7771344c1164f058147e9d0aa1a5bdb190eb21d6e397302ff",
     "packages/core/dist/_shared/byte-stream.d.ts": "0ce42bb25e298074c9f4aad04a53f72cdbcdf094a62322ded867935435f61a30",
-    "packages/core/dist/_shared/byte-stream.d.ts.map": "1cccf8c6b6954b2fbb0b7cda706d96cf840041ee8f9b229a6d0ff82e80a698e9",
-    "packages/core/dist/_shared/byte-stream.js": "3cfc69a5ec016bee48cc41951c8d2a2924168c748818ff19013cd79218d262ad",
+    "packages/core/dist/_shared/byte-stream.d.ts.map": "78a22bd895912f98b45d6da7bf1a5b635fffa29d663ed5de345d77144c4e80c6",
+    "packages/core/dist/_shared/byte-stream.js": "27fbb561e751149f5df52431c81f64fc52dbe2acff90dac0dee3c0ac8ab062a0",
     "packages/core/dist/_shared/bytes.d.ts": "c0f46977910628f954aa221c72a42f2cae636303f827d23a680b55da1f31e47c",
     "packages/core/dist/_shared/bytes.d.ts.map": "4e1fe87b7c09c3d7d06112eb8a54285bd718e8af8267dc0f806d0a208476cf32",
     "packages/core/dist/_shared/bytes.js": "7e3c899530a1f6beda1920a1ac8be91b7a58148c3f2f2a9e27ba04a22d05e240",
@@ -1347,7 +1347,7 @@
     "packages/core/scripts/pin-transform-pipeline.mjs": "1f75e2146c5d68ca4ecfd7a679cdabfb91948686bd45338d15bec9d09eeb5711",
     "packages/core/src/_shared/after-turn.ts": "c5e21250c5c954c34793df772527d05893f052e499479a7a4fc01268caf7e6bd",
     "packages/core/src/_shared/ai-egress.ts": "48ae7ab718a366c1feae54dd85797cd01bb329d6b74b8fd6d9863ba0b2313bc8",
-    "packages/core/src/_shared/byte-stream.ts": "32f0f644ae047dccb57fb72ab38d905f2a0758b02f6ba991cc7ed56557fd161a",
+    "packages/core/src/_shared/byte-stream.ts": "ad41e9469fcc664089c32f5b6f4f39944d87af5ba08ee2b1f7ee47815b817119",
     "packages/core/src/_shared/bytes.ts": "6958d601d7d6b354cffde996416c3c2a26f30db46f52b81f83c48945e0eae892",
     "packages/core/src/_shared/cache-stats.ts": "6df1f9692371db35ee488da13c48068b79f0457d14086e039e5cce646c02bd80",
     "packages/core/src/_shared/commonjs-cell.ts": "abd10b664a2d6edf46e3e650a306f486ee3bec6c1ae00250fc7d74261ef3e02e",
