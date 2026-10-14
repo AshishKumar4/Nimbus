@@ -147,10 +147,10 @@ async function readManifest(source, dir, manifests) {
 /**
  * The resolvers' filesystem (require-resolution.ts) over the plan's source,
  * each answer asked once per plan: a resolved file is the one the lookup
- * reaches through every symlink on its path, or, past MAX_LINK_HOPS, the
- * path itself, which then names nothing a stat finds.
+ * reaches through every symlink on its path (`links`), or, past
+ * MAX_LINK_HOPS, the path itself, which then names nothing a stat finds.
  */
-function resolutionFs(source) {
+function resolutionFs(source, links) {
     const stats = new Map();
     const texts = new Map();
     const stat = (path) => {
@@ -177,7 +177,7 @@ function resolutionFs(source) {
             const found = await stat(path);
             return found === null ? null : { size: found.size };
         },
-        realpath: async (path) => (await throughLinks(source, key(path))) ?? key(path),
+        realpath: async (path) => (await throughLinks(links, key(path))) ?? key(path),
     };
 }
 /**
@@ -239,6 +239,16 @@ export async function planFacetData(source, input) {
         if (typescriptRoot === null && root.endsWith('node_modules/typescript'))
             typescriptRoot = root;
     }
+    // Each link question once per plan: the paths it resolves share prefixes.
+    const linkAnswers = new Map();
+    const links = {
+        linkTarget: (path) => {
+            let answer = linkAnswers.get(path);
+            if (answer === undefined)
+                linkAnswers.set(path, answer = source.linkTarget(path));
+            return answer;
+        },
+    };
     const conventionDirs = new Set([joinKey(cwd, 'node_modules')]);
     for (let d = cwd;; d = parentOf(d)) {
         conventionDirs.add(d);
@@ -375,6 +385,9 @@ export async function planFacetData(source, input) {
             }
             const segs = k.split('/');
             if (entry.kind === 'symlink') {
+                // A package linked into node_modules (pnpm's, a workspace's) is installed there.
+                if (packageRootOf(k + '/x') === k)
+                    packageRoots.add(k);
                 if (raw.linkTarget === undefined)
                     continue;
                 const inProject = (cwdPrefix === '' || k.startsWith(cwdPrefix))
@@ -475,7 +488,7 @@ export async function planFacetData(source, input) {
     for (const [k, sync] of exact) {
         if (!sync || planned.has(k) || seenFiles.has(k))
             continue;
-        const target = await throughLinks(source, k);
+        const target = await throughLinks(links, k);
         if (target === null || target === k || planned.has(target))
             continue;
         const found = await source.stat(target);
@@ -485,7 +498,7 @@ export async function planFacetData(source, input) {
         if (!closure.has(target))
             take(entry, 'static');
     }
-    const files = resolutionFs(source);
+    const files = resolutionFs(source, links);
     const conditions = input.conditions ?? [];
     const projectManifest = await readManifest(source, cwd, manifests);
     /** Where Node finds package \`name\` from \`from\`: its own node_modules, then each ancestor's. */
@@ -516,7 +529,7 @@ export async function planFacetData(source, input) {
         const text = pkgDir === null ? null : await source.readText(pkgDir + '/package.json');
         const pkg = text === null ? null : parseResolvablePackageJson(text);
         const target = pkg === null ? null : resolvePackageEntry(pkg, at < 0 ? '.' : '.' + spec.slice(at));
-        return pkgDir === null || target === null ? null : joinKey(pkgDir, target);
+        return pkgDir === null || target === null ? null : await throughLinks(links, joinKey(pkgDir, target));
     };
     const hold = async (k) => {
         if (k === null || planned.has(k))
