@@ -1,5 +1,7 @@
 #!/usr/bin/env bun
-// Paired in-process CPU comparison. remote-vfs-lookup-cpu supplies the baseline sources.
+// Paired in-process CPU comparison, one run of it. remote-vfs-lookup-cpu supplies the baseline
+// sources and judges the runs together: a process's own state (where its heap and databases
+// landed) moves a whole run, which an interval over one run's pairs cannot show.
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -22,13 +24,11 @@ const median = (values) => {
   const sorted = [...values].sort((a, b) => a - b);
   return (sorted[Math.floor((sorted.length - 1) / 2)] + sorted[Math.floor(sorted.length / 2)]) / 2;
 };
-const quantile = (values, fraction) => [...values].sort((a, b) => a - b)[Math.floor(fraction * (values.length - 1))];
 const USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 const ITERATIONS = 24_000;
 const PAIRS = 36;
 let checksum = 0;
 const results = [];
-const failures = [];
 
 try {
   // Both arms load the measured files from a copy of their own, beside the
@@ -144,31 +144,18 @@ try {
       }
       pairs.push({ ...samples, delta: samples.B - (samples.A1 + samples.A2) / 2 });
     }
-    const deltas = pairs.map((pair) => pair.delta);
-    const aa = pairs.map((pair) => pair.A2 - pair.A1);
-    const boot = [];
-    let state = 0x51_53;
-    for (let sample = 0; sample < 3000; sample++) {
-      const draw = [];
-      for (let i = 0; i < PAIRS; i++) {
-        state ^= state << 13; state ^= state >>> 17; state ^= state << 5;
-        draw.push(deltas[(state >>> 0) % PAIRS]);
-      }
-      boot.push(median(draw));
-    }
-    const interval = [quantile(boot, 0.025), quantile(boot, 0.975)];
-    const spread = [Math.min(...aa), Math.max(...aa)];
-    const result = { kind, iterations: kind === 'walked-removal' ? 2000 : ITERATIONS, pairs: PAIRS, medianA: median(pairs.map(({ A1, A2 }) => (A1 + A2) / 2)), medianB: median(pairs.map(({ B }) => B)), medianDelta: median(deltas), ci95: interval, aaSpread: spread, samples: pairs };
+    const result = {
+      kind, iterations: kind === 'walked-removal' ? 2000 : ITERATIONS, pairs: PAIRS,
+      medianA: median(pairs.map(({ A1, A2 }) => (A1 + A2) / 2)), medianB: median(pairs.map(({ B }) => B)),
+      medianDelta: median(pairs.map((pair) => pair.delta)), medianAA: median(pairs.map((pair) => pair.A2 - pair.A1)), samples: pairs,
+    };
     results.push(result);
     writeFileSync(output, `${JSON.stringify(results, null, 2)}\n`);
     const { samples, ...summary } = result;
     console.log(JSON.stringify(summary));
-    if (result.medianDelta > 0) failures.push(`${kind}: median paired CPU delta ${result.medianDelta} ms is positive`);
-    if (interval[1] >= 0 && (interval[0] < spread[0] || interval[1] > spread[1])) failures.push(`${kind}: confidence interval is outside A/A spread`);
     for (let i = 0; i < leases.length; i++) arms[i].engine.releaseExclusiveMutation(leases[i].owner);
   }
   assert.ok(checksum > 0);
-  assert.deepEqual(failures, [], failures.join('\n'));
 } finally {
   for (const fixture of fixtures) rmSync(fixture, { recursive: true, force: true });
 }
