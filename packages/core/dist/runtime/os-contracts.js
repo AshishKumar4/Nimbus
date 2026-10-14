@@ -131,6 +131,13 @@ export const BASH_RUNNER = 'bash-runner@5';
  * what the module imports or exports takes the next number, as BASH_RUNNER's do.
  */
 export const CPYTHON_RUNNER = 'cpython-runner@2';
+/**
+ * The contracts this tree's CPython runner implements, and the keys it is
+ * registered under: each build's imports are a subset of what it gives a
+ * module (preview1, and nimbus_fs and nimbus_proc since @2), and an
+ * instantiation ignores the ones a module does not import.
+ */
+export const CPYTHON_RUNNER_CONTRACTS = ['cpython-runner', CPYTHON_RUNNER];
 /** Git's first runtime build imports the shared Nimbus filesystem/process extensions. */
 export const GIT_RUNNER = 'git-runner';
 /**
