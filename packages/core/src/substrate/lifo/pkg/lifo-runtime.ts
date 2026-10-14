@@ -194,9 +194,11 @@ async function executeCjsCommand(
   ctx: CommandContext,
   lifo: LifoAPI,
 ): Promise<number> {
+  // The command's own mask, a copy of the shell's as it started, as a child's is.
+  let mask = ctx.cred.umask;
   const nodeCtx: NodeContext = {
-    filesystem: synchronousFilesystem(ctx.vfs),
-    identity: { pid: ctx.pid, uid: ctx.cred.uid, gid: ctx.cred.gid, groups: ctx.cred.groups, umask: ctx.cred.umask, setUmask: (mask) => ctx.setUmask(mask) },
+    filesystem: synchronousFilesystem(ctx.vfs, () => mask),
+    identity: { pid: ctx.pid, uid: ctx.cred.uid, gid: ctx.cred.gid, groups: ctx.cred.groups, umask: mask, setUmask: (next) => { mask = next; } },
     cwd: ctx.cwd,
     env: ctx.env,
     stdout: ctx.stdout,

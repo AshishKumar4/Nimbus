@@ -54,7 +54,7 @@ export type NodeCall =
   | { readonly op: 'unlisten'; readonly port: number }
   /** Watch `path` as watch `id` (NodeFilesystem.watch); a null path stops it. */
   | { readonly op: 'watch'; readonly id: number; readonly path: string | null }
-  /** umask(2): the process's mask in the session. */
+  /** umask(2): the mask the program creates with from now on (its own copy: the shell's is not changed). */
   | { readonly op: 'umask'; readonly mask: number };
 
 /** A response to a request that stayed on the box, as data, either way across. */
@@ -167,7 +167,7 @@ export interface RealmServices {
   unlisten(port: number): void;
   /** Watch `path` as watch `id`, or stop it (null). */
   watch(id: number, path: string | null): void;
-  /** umask(2): the process's mask in the session. */
+  /** umask(2): the mask the program creates with from now on. */
   setUmask(mask: number): void;
 }
 
@@ -301,7 +301,9 @@ export function serveRealmCall(call: unknown, services: RealmServices): Promise<
  */
 export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, kernel: NodeRealmKernel | undefined): Promise<number> {
   if (ctx.signal.aborted) return exitCodeForAbortSignal(ctx.signal);
-  const filesystem = synchronousFilesystem(ctx.vfs);
+  // The program's own mask, a copy of the shell's as it started, as a child's is.
+  let mask = ctx.cred.umask;
+  const filesystem = synchronousFilesystem(ctx.vfs, () => mask);
 
   // Output in the order it was written, each write after the last; bytes
   // for an output that takes text are decoded across writes, as one stream.
@@ -356,7 +358,7 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
     unlisten: (port) => {
       if (ports.delete(port)) kernel?.portRegistry.delete(port);
     },
-    setUmask: (mask) => ctx.setUmask(mask),
+    setUmask: (next) => { mask = next; },
     watch: (id, path) => {
       watches.get(id)?.close();
       watches.delete(id);

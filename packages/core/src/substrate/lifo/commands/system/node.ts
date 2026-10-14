@@ -131,7 +131,7 @@ export interface NodeProgramHost {
 	readonly portRegistry?: Map<number, VirtualRequestHandler>;
 	readonly routeLoopback?: LoopbackRouter;
 	readonly dns?: DNSResolver;
-	/** umask(2): the process's mask in the session. */
+	/** umask(2): the mask the program creates with from now on. */
 	readonly setUmask: (mask: number) => void;
 }
 
