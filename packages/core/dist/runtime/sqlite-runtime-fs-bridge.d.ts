@@ -122,6 +122,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     copyFile(from: RuntimeFsPath, to: RuntimeFsPath): void;
     copyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: {
         preserve?: boolean;
+        follow?: boolean;
     }): Promise<number>;
     /** Where the namespace places it: atomic on SQLite, a routed wave when a record lands on a mount. */
     writeBatch(payload: Parameters<CredentialedVfs['writeBatch']>[0], options?: {

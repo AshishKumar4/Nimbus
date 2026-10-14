@@ -5717,10 +5717,11 @@ export class SqliteVFS {
      */
     planCopyTree(src, dst, cred, options = {}) {
         const atGen = options.at === undefined ? undefined : this.requireSnapshot(options.at);
-        if (atGen !== undefined)
-            this.assertSnapshotLocal(atGen, normalizeVfsPath(src), options.at);
         const tree = atGen === undefined ? this.inodes : { get: (path) => this.inodeAt(path, atGen) };
         const source = this.checkAccess(src, 0o4, cred, { followLeaf: options.follow === true, tree });
+        // The tree copied is the one the source resolves to, a link followed.
+        if (atGen !== undefined)
+            this.assertSnapshotLocal(atGen, source.path, options.at);
         const root = source.inode;
         const target = this.checkAccess(dst, 0, cred, { followLeaf: false, allowMissingLeaf: true });
         this.assertMutationsAllowed([this.lexicalKey(dst, cred).value, target.path]);
