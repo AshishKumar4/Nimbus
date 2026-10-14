@@ -3301,7 +3301,7 @@
     "packages/worker/wasm/bash/probe-setjmp-asyncify.c": "43e67fa84151fec6e67441e7a490836f5eb0bdcbdbe2479c07dcf9a7a5d62e56",
     "packages/worker/wasm/bash/probe-setjmp-asyncify.mjs": "a40043912f9c6eb65109d6011566ef7cca4d92559c657dee16daeb64e13b3609",
     "packages/worker/wasm/bash/probe-sjlj-asyncify.c": "48f42e6291746306653a9581acc2c477056cf573bf40ba4cf44a069352181c75",
-    "packages/worker/wasm/bash/provenance.json": "37e71a6b56972813654aae55a92fb303db4f13f5e1f284d0aa4504f576bfb94e",
+    "packages/worker/wasm/bash/provenance.json": "e6c79a0b4c49f1c5e13f24c5eff51e53114152ad7cc81190b3bf4d7627f4f9c9",
     "packages/worker/wasm/bash/run-bash-fork.mjs": "adc395810be7a0fe7c16b69556c0b384de2af664734d9a9516fb18ae4af09c4e",
     "packages/worker/wasm/bash/run-bash-local.mjs": "c545a9e45cb56ab484fb54e3fc49a23cad601208f7855895a5678ef5773d2507",
     "packages/worker/wasm/git/.gitignore": "1bf536437fd1d0698626668eacfebd8f7572bc5c3be00f38150eeebe86401b84",
