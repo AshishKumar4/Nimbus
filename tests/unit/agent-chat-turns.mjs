@@ -2,7 +2,9 @@
 // agent-chat-turns — POST /api/agent/messages contract: cancelling the
 // NDJSON stream aborts the model turn and persists the partial assistant
 // message; { retry: true } re-runs the last user turn without duplicating
-// history. The Workers AI provider is mocked at the fetch seam (SSE).
+// history; turns write their own messages into one conversation, which a
+// clear empties for good. The Workers AI provider is mocked at the fetch
+// seam (SSE).
 
 import assert from 'node:assert/strict';
 import { handleAgentRequest } from '../../packages/worker/src/session/agent.ts';
@@ -554,6 +556,70 @@ function assistantWrites(writes) {
     globalThis.fetch = realFetch;
   }
   console.log(`ok - a turn runs ${40} tool rounds to the model's own answer`);
+}
+
+// ── Two turns at once: each writes its own message into the one conversation ──
+// SES-4. Red before: each turn checkpointed its own copy of the whole
+// conversation, so turn A's next checkpoint put back the conversation as A
+// saw it, without B's question and answer.
+{
+  const { host, store } = makeHost();
+  const providerA = controlledProviderFetch();
+  globalThis.fetch = providerA.fetch;
+  try {
+    const responseA = await postChat(host, { message: 'question A', stream: true });
+    const streamA = collectEvents(responseA);
+    await providerA.ready;
+    providerA.emitText('answer A begins');
+    await waitFor(() => store.get(MESSAGES_KEY)?.some((m) => m.role === 'assistant' && m.status === 'streaming'), 'A checkpoints');
+
+    globalThis.fetch = mockProviderFetch('complete');
+    const responseB = await postChat(host, { message: 'question B', stream: true });
+    await readEventsUntil(responseB, (list) => list.some((event) => event.type === 'done'));
+
+    providerA.emitText(' and goes on' + 'x'.repeat(1024));
+    providerA.finish();
+    await streamA.done;
+
+    const stored = store.get(MESSAGES_KEY);
+    const texts = stored.map((m) => `${m.role}:${m.role === 'assistant' ? m.content.slice(0, 15) : m.content}`);
+    assert.deepEqual(texts, ['user:question A', 'assistant:answer A begins', 'user:question B', 'assistant:Hello world'],
+      `both turns' messages stay, each written in place: ${JSON.stringify(texts)}`);
+    assert.equal(stored[1].status, 'complete');
+    assert.equal(stored[3].status, 'complete');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log('ok - two concurrent turns each write their own messages into one conversation');
+}
+
+// ── Clear while a turn streams: the turn writes nothing after it ──────
+// SES-4. Red before: the streaming turn's next checkpoint wrote back the
+// conversation the clear had deleted.
+{
+  const { host, store } = makeHost();
+  const provider = controlledProviderFetch();
+  globalThis.fetch = provider.fetch;
+  try {
+    const response = await postChat(host, { message: 'before the clear', stream: true });
+    const stream = collectEvents(response);
+    await provider.ready;
+    provider.emitText('partial');
+    await waitFor(() => store.get(MESSAGES_KEY)?.some((m) => m.role === 'assistant'), 'the turn checkpoints');
+
+    const cleared = await handleAgentRequest(host, new Request(CHAT_URL, { method: 'DELETE' }), new URL(CHAT_URL));
+    assert.deepEqual((await cleared.json()).messages, []);
+
+    provider.emitText('x'.repeat(1024));
+    provider.finish();
+    await stream.done;
+    const after = await handleAgentRequest(host, new Request(CHAT_URL), new URL(CHAT_URL));
+    assert.deepEqual((await after.json()).messages, [], 'the cleared conversation stays cleared');
+    assert.equal(store.get(MESSAGES_KEY) ?? null, null);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log('ok - a turn that outlives a clear writes nothing back');
 }
 
 console.log('agent-chat-turns: all assertions passed');

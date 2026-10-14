@@ -103,6 +103,8 @@ interface OAuthStateCookie extends OAuthStatePayload {
 }
 
 const MESSAGES_KEY = 'nimbus:agent:messages';
+/** How many times the conversation was cleared: a turn writes only into the conversation it started in. */
+const GENERATION_KEY = 'nimbus:agent:generation';
 const STATE_COOKIE = '__Host-nimbus_agent_oauth_state';
 const STATE_COOKIE_PURPOSE = 'nimbus-agent-oauth-state';
 const MAX_STORED_MESSAGES = 80;
@@ -153,7 +155,7 @@ export async function handleAgentRequest(self: Host, request: Request, url: URL)
   }
 
   if (path === '/api/agent/messages' && request.method === 'DELETE') {
-    await self.ctx.storage.delete(MESSAGES_KEY);
+    await clearConversation(self);
     return json({ ok: true, messages: [] });
   }
 
@@ -343,43 +345,52 @@ async function agentChat(self: Host, request: Request, url: URL): Promise<Respon
     }, 409);
   }
 
-  const messages = await loadMessages(self);
-  let userMessage: StoredMessage;
-  if (retry) {
-    // Re-run the last user turn: drop the trailing assistant answer (if
-    // any) and stream a fresh one. No duplicate user message is stored.
-    if (messages[messages.length - 1]?.role === 'assistant') messages.pop();
-    const last = messages[messages.length - 1];
-    if (!last || last.role !== 'user') {
-      return json({ error: 'nothing to retry', code: 'E_AGENT_NOTHING_TO_RETRY' }, 400);
+  const turn = await changeConversation(self, async (messages, generation): Promise<Turn | null> => {
+    let userMessage: StoredMessage;
+    if (retry) {
+      // Re-run the last user turn: drop the trailing assistant answer (if
+      // any) and stream a fresh one. No duplicate user message is stored.
+      if (messages[messages.length - 1]?.role === 'assistant') messages.pop();
+      const last = messages[messages.length - 1];
+      if (!last || last.role !== 'user') return null;
+      userMessage = last;
+    } else {
+      userMessage = makeMessage('user', text);
+      messages.push(userMessage);
     }
-    userMessage = last;
     await saveMessages(self, messages);
-  } else {
-    userMessage = makeMessage('user', text);
-    messages.push(userMessage);
-    await saveMessages(self, messages);
-  }
+    return { generation, messages: structuredClone(messages), userMessage };
+  });
+  if (turn === null) return json({ error: 'nothing to retry', code: 'E_AGENT_NOTHING_TO_RETRY' }, 400);
 
   if (body?.stream === false) {
-    return agentChatJson(self, messages);
+    return agentChatJson(self, turn);
   }
 
-  return agentChatStream(self, messages, userMessage);
+  return agentChatStream(self, turn);
 }
 
-async function agentChatJson(self: Host, messages: StoredMessage[]): Promise<Response> {
+/**
+ * A turn: the conversation as it started (the model's context), the user
+ * message it answers, and the conversation's generation it writes into.
+ */
+interface Turn {
+  generation: number;
+  messages: StoredMessage[];
+  userMessage: StoredMessage;
+}
+
+async function agentChatJson(self: Host, { generation, messages }: Turn): Promise<Response> {
   try {
     const result = await runAiSdkTurn(self, messages);
     const assistantMessage = makeMessage('assistant', result.text || 'Done.');
     assistantMessage.parts = result.parts;
     assistantMessage.status = 'complete';
-    const nextMessages = [...messages, assistantMessage];
-    await saveMessages(self, nextMessages);
+    const conversation = await checkpointTurn(self, generation, assistantMessage);
     return json({
       ok: true,
       message: assistantMessage,
-      messages: trimMessagesForClient(nextMessages),
+      messages: trimMessagesForClient(conversation ?? []),
     });
   } catch (e: any) {
     return json({
@@ -390,11 +401,7 @@ async function agentChatJson(self: Host, messages: StoredMessage[]): Promise<Res
   }
 }
 
-function agentChatStream(
-  self: Host,
-  messages: StoredMessage[],
-  userMessage: StoredMessage,
-): Response {
+function agentChatStream(self: Host, { generation, messages, userMessage }: Turn): Response {
   const headers = new Headers();
   headers.set('Cache-Control', 'no-store');
   headers.set('Content-Type', 'application/x-ndjson; charset=utf-8');
@@ -442,9 +449,7 @@ function agentChatStream(
 
       const enqueueStreamingPersistence = (): Promise<void> => {
         const message = assistantSnapshot('streaming');
-        upsertStoredMessage(messages, message);
-        const snapshot = structuredClone(messages);
-        const write = persistenceQueue.then(() => saveMessages(self, snapshot));
+        const write = persistenceQueue.then(async () => { await checkpointTurn(self, generation, message); });
         persistenceQueue = write.catch((error: unknown) => {
           persistenceError ??= error;
         });
@@ -490,9 +495,7 @@ function agentChatStream(
           'interrupted',
           terminalError === undefined ? { aborted: true } : { error: terminalError },
         );
-        upsertStoredMessage(messages, assistantMessage);
-        await saveMessages(self, messages);
-        return messages;
+        return (await checkpointTurn(self, generation, assistantMessage)) ?? [];
       };
 
       emit({ type: 'start', messages: trimMessagesForClient(messages) });
@@ -555,12 +558,11 @@ function agentChatStream(
           parts: structuredClone(parts),
           status: 'complete',
         };
-        upsertStoredMessage(messages, assistantMessage);
-        await saveMessages(self, messages);
+        const conversation = await checkpointTurn(self, generation, assistantMessage);
         emit({
           type: 'done',
           message: assistantMessage,
-          messages: trimMessagesForClient(messages),
+          messages: trimMessagesForClient(conversation ?? []),
         });
       } catch (e: any) {
         if (cancelled || e?.name === 'AbortError') {
@@ -1005,23 +1007,64 @@ function cookieSecret(self: Host): string {
 }
 
 async function loadMessages(self: Host): Promise<StoredMessage[]> {
-  const messages = await self.ctx.storage.get(MESSAGES_KEY) as StoredMessage[] | undefined;
-  if (!Array.isArray(messages)) return [];
-  const activeMessages = activeAssistantMessages.get(self);
-  let recovered = false;
-  for (const message of messages) {
-    if (message.role !== 'assistant' || message.status !== 'streaming' || activeMessages?.has(message.id)) continue;
-    message.status = 'interrupted';
-    if (message.parts) interruptRunningTools(message.parts, 'Interrupted before completion');
-    recovered = true;
-  }
-  if (recovered) {
+  return changeConversation(self, async (messages) => {
+    const activeMessages = activeAssistantMessages.get(self);
+    let recovered = false;
+    for (const message of messages) {
+      if (message.role !== 'assistant' || message.status !== 'streaming' || activeMessages?.has(message.id)) continue;
+      message.status = 'interrupted';
+      if (message.parts) interruptRunningTools(message.parts, 'Interrupted before completion');
+      recovered = true;
+    }
+    if (recovered) {
+      await saveMessages(self, messages);
+      // TODO(agent-turn-forensics): immediately persist an agent-turn-orphaned
+      // recovery record (cause reset/interrupted, dataLoss true) once the
+      // observability API supports recovery-only writes beyond its failure gate.
+    }
+    return messages;
+  });
+}
+
+/**
+ * The conversation's changes, one at a time per session: each reads the
+ * conversation the last one left (its messages and its generation) and is
+ * the only writer until it returns. So a turn's checkpoint changes its own
+ * message in the conversation as it is, and never puts back an older one.
+ */
+const conversationChanges = new WeakMap<Host, Promise<void>>();
+
+function changeConversation<T>(self: Host, change: (messages: StoredMessage[], generation: number) => Promise<T>): Promise<T> {
+  const previous = conversationChanges.get(self) ?? Promise.resolve();
+  const changed = previous.then(async () => {
+    const messages = await self.ctx.storage.get<StoredMessage[]>(MESSAGES_KEY);
+    const generation = await self.ctx.storage.get<number>(GENERATION_KEY);
+    return change(Array.isArray(messages) ? messages : [], typeof generation === 'number' ? generation : 0);
+  });
+  conversationChanges.set(self, changed.then(() => {}, () => {}));
+  return changed;
+}
+
+/**
+ * A turn's message, as it is now, into the conversation it started in: its
+ * row, by its id, changed or added. Nothing, when the conversation was
+ * cleared since (null). The conversation after it, otherwise.
+ */
+function checkpointTurn(self: Host, generation: number, message: StoredMessage): Promise<StoredMessage[] | null> {
+  return changeConversation(self, async (messages, current) => {
+    if (current !== generation) return null;
+    upsertStoredMessage(messages, message);
     await saveMessages(self, messages);
-    // TODO(agent-turn-forensics): immediately persist an agent-turn-orphaned
-    // recovery record (cause reset/interrupted, dataLoss true) once the
-    // observability API supports recovery-only writes beyond its failure gate.
-  }
-  return messages;
+    return messages;
+  });
+}
+
+/** The conversation emptied, and every turn still running told so by its generation. */
+function clearConversation(self: Host): Promise<void> {
+  return changeConversation(self, async (_messages, generation) => {
+    await self.ctx.storage.delete(MESSAGES_KEY);
+    await self.ctx.storage.put(GENERATION_KEY, generation + 1);
+  });
 }
 
 async function saveMessages(self: Host, messages: StoredMessage[]): Promise<void> {
