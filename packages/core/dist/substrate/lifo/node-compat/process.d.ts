@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { Writable } from 'node:stream';
 import type { CommandOutputStream } from '../commands/types.js';
 import { type WarningConstructor, type WarningOptions } from '../../../_shared/node-warning.js';
 export declare class ProcessExitError extends Error {
@@ -25,23 +26,15 @@ export declare function createProcess(opts: ProcessOptions): EventEmitter & {
     cwd: () => string;
     chdir: (_dir: string) => never;
     exit: (code?: number) => never;
-    stdout: {
-        write: (data: string) => true;
+    stdout: Writable & {
         isTTY: boolean;
         fd: number;
-        bytesWritten: number;
         columns: number;
-        on: () => void;
-        once: () => void;
     };
-    stderr: {
-        write: (data: string) => true;
+    stderr: Writable & {
         isTTY: boolean;
         fd: number;
-        bytesWritten: number;
         columns: number;
-        on: () => void;
-        once: () => void;
     };
     stdin: {
         isTTY: boolean;

@@ -1,12 +1,18 @@
+import { Readable, Writable } from 'node:stream';
 import { clearLine, clearScreenDown, cursorTo, moveCursor } from './readline.js';
-import { Readable, Writable } from './stream.js';
 /**
  * Node.js `tty` module shim for Lifo.
  *
  * In the browser there is no real TTY, so ReadStream/WriteStream behave like
  * plain streams with the TTY-specific properties stubbed to sensible defaults.
  */
+// The engine's own stream classes. Neither is joined to a descriptor yet: a
+// ReadStream gives nothing, and what a WriteStream is given goes nowhere, as
+// lifo's own streams did.
 export class ReadStream extends Readable {
+    constructor() {
+        super({ read() { } });
+    }
     isTTY = true;
     isRaw = false;
     setRawMode(_mode) {
@@ -15,6 +21,9 @@ export class ReadStream extends Readable {
     }
 }
 export class WriteStream extends Writable {
+    constructor() {
+        super({ write(_chunk, _encoding, callback) { callback(); } });
+    }
     isTTY = true;
     columns = 80;
     rows = 24;

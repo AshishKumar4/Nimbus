@@ -1,4 +1,4 @@
-import { Readable, Writable } from './stream.js';
+import { Readable, Writable } from 'node:stream';
 /**
  * Node.js `tty` module shim for Lifo.
  *
@@ -6,11 +6,13 @@ import { Readable, Writable } from './stream.js';
  * plain streams with the TTY-specific properties stubbed to sensible defaults.
  */
 export declare class ReadStream extends Readable {
+    constructor();
     readonly isTTY = true;
     readonly isRaw = false;
     setRawMode(_mode: boolean): this;
 }
 export declare class WriteStream extends Writable {
+    constructor();
     readonly isTTY = true;
     columns: number;
     rows: number;
