@@ -3,12 +3,13 @@
 // formats with the engine's util (substrate/lifo/node-compat). Bun and Node
 // provide them; workerd under nodejs_compat.
 declare module 'node:buffer' {
-  type BufferEncoding = 'utf8' | 'utf-8' | 'utf16le' | 'ucs2' | 'latin1' | 'binary' | 'ascii' | 'base64' | 'base64url' | 'hex';
   export class Buffer extends Uint8Array {
-    static from(value: string | ArrayBuffer | ArrayLike<number> | Iterable<number>, encodingOrMapFn?: BufferEncoding | ((v: number, k: number) => number)): Buffer;
+    static from(value: string | ArrayBuffer | ArrayLike<number> | Iterable<number>, encodingOrMapFn?: string | ((v: number, k: number) => number)): Buffer;
     static alloc(size: number): Buffer;
     static concat(list: readonly Uint8Array[], totalLength?: number): Buffer;
-    toString(encoding?: BufferEncoding, start?: number, end?: number): string;
+    static isEncoding(encoding: string): boolean;
+    /** An encoding the engine does not know throws, as in Node. */
+    toString(encoding?: string, start?: number, end?: number): string;
   }
 }
 
