@@ -17,6 +17,7 @@ import type { ProcessFiles, ProcessView } from '@nimbus-sh/core/runtime/process-
 import { materializeNpmBinShims, NPM_BIN_MANIFEST_NAME, npmBinDirPath, unlinkNpmBins } from '../npm/bin-links.js';
 import { handKernelArtifact, projectFs } from '../runtime/project-fs.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
+import { canonicalTreePath, holdTree } from '@nimbus-sh/core/_shared/npm-tree.js';
 import type { SessionInternal } from './internal.js';
 
 type InstallHost = Pick<SessionInternal, 'ensureSqliteFs' | 'ensureNpmInstaller' | 'ensureGlobalPrefixDirs' | 'processes'>;
@@ -73,6 +74,14 @@ export function createNpmInstallPort(self: InstallHost, filesystem: ProcessFiles
         fromCacheHits: result.cachedHits,
         linkedBins: result.linkedBins ?? 0,
       };
+    },
+
+    // The tree as the installer holds it while it installs (installer.ts
+    // install): its canonical path, in the session's engine.
+    async hold({ modulesDir, pid, signal }) {
+      const view = filesystem.view({ pid, cred: self.processes.cred(pid) });
+      const held = holdTree(filesystem.engine, await canonicalTreePath((path) => view.realpath(path), modulesDir), signal);
+      return typeof held === 'function' ? held : await held;
     },
 
     // The bins the installer linked for what `npm uninstall` removed: in the

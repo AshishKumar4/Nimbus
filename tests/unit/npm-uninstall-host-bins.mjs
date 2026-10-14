@@ -6,9 +6,14 @@
 // keeps; a staged artifact's bin (opencode-ai's) names no file in the
 // package. Before, uninstall removed the package and <prefix>/bin/<bin>
 // and left both manifest entries and the .bin shim: the next global install
-// linked the removed package's command into <prefix>/bin again. Run
-// through the hosted install port and the session's installer, with core's
-// npm command over them, as the hosted runtime composes them.
+// linked the removed package's command into <prefix>/bin again. And the
+// uninstall changes the tree under the hold its installs take: an install
+// that starts while an uninstall is retiring a bin waits for it. Before, the
+// uninstall wrote back the manifest it had read, over what the install had
+// linked meanwhile: the install's own command, of the same name, was
+// unlinked. Run through the hosted install port and the session's
+// installer, with core's npm command over them, as the hosted runtime
+// composes them.
 
 import assert from 'node:assert/strict';
 import { makeFanoutEnv } from './npm-fanout-test-env.mjs';
@@ -40,6 +45,9 @@ const kernel = vfs.as(CRED_KERNEL);
 const packages = {
   'opencode-ai': { resolvedBin: { opencode: 'nimbus-staged:opencode' }, bin: { opencode: 'bin/opencode.exe' }, files: { 'bin/opencode.exe': 'MZ' } },
   tool: { resolvedBin: { tool: 'bin/cli.js' }, bin: { tool: 'bin/cli.js' }, files: { 'bin/cli.js': 'console.log("tool")\n' } },
+  // Two packages with one command.
+  old: { resolvedBin: { cmd: 'bin/cli.js' }, bin: { cmd: 'bin/cli.js' }, files: { 'bin/cli.js': 'console.log("old")\n' } },
+  new: { resolvedBin: { cmd: 'bin/cli.js' }, bin: { cmd: 'bin/cli.js' }, files: { 'bin/cli.js': 'console.log("new")\n' } },
 };
 const env = makeFanoutEnv({
   root: user,
@@ -68,7 +76,29 @@ const session = {
 const context = { ctx: { id: { toString: () => 'coordinator-do-id' }, storage: { ...harness.ctx.storage, sql: harness.sql } }, env, network: () => ISOLATE_NETWORK };
 session.ensureNpmInstaller = () => ensureNpmInstaller(session, context);
 session.ensureGlobalPrefixDirs = (prefix, cred) => ensureGlobalPrefixDirs(session, context, prefix, cred);
-ws.registry.register('npm', createNpmCommand(ws.registry, undefined, ws.kernel, { installer: createNpmInstallPort(session, ws.filesystem) }));
+
+// The port's namespace, whose views can stop the uninstall's retirement once it has read the tree's bin manifest.
+const TREE_MANIFEST = '/usr/local/lib/node_modules/.bin/.nimbus-bin-map.json';
+const gate = { armed: false, reached: Promise.withResolvers(), open: Promise.withResolvers() };
+const bound = (target, key) => {
+  const value = Reflect.get(target, key);
+  return typeof value === 'function' ? value.bind(target) : value;
+};
+const gatedView = (view) => new Proxy(view, {
+  get: (target, key) => (key !== 'readFileString' ? bound(target, key) : async (path) => {
+    const text = await target.readFileString(path);
+    if (gate.armed && path === TREE_MANIFEST) {
+      gate.armed = false;
+      gate.reached.resolve();
+      await gate.open.promise;
+    }
+    return text;
+  }),
+});
+const files = new Proxy(ws.filesystem, {
+  get: (target, key) => (key === 'view' ? (...args) => gatedView(target.view(...args)) : bound(target, key)),
+});
+ws.registry.register('npm', createNpmCommand(ws.registry, undefined, ws.kernel, { installer: createNpmInstallPort(session, files) }));
 
 const sh = async (line) => {
   const r = await ws.exec(line);
@@ -105,6 +135,25 @@ try {
   await sh('cd /home/user/p && npm uninstall opencode-ai');
   assert.deepEqual(bins('home/user/p/node_modules/.bin'), { shims: ['tool'], manifest: ['tool'] }, 'a project\'s uninstall unlinks the package\'s bins and leaves the rest');
   console.log('  a project\'s uninstall unlinks the package\'s bins and keeps the others\'');
+
+  // An install of `new` while the uninstall of `old`, whose command it has, has read the manifest and not written it.
+  await sh('cd /home/user && npm install -g old');
+  gate.armed = true;
+  const order = [];
+  const uninstalling = ws.exec('cd /home/user && npm uninstall -g old').then((r) => { order.push('uninstall'); return r; });
+  await gate.reached.promise;
+  const installing = ws.exec('cd /home/user && npm install -g new').then((r) => { order.push('install'); return r; });
+  // The install runs to its end now unless it waits for the tree: it is given the turns it takes, then the uninstall goes on.
+  for (let turn = 0; turn < 2000 && order.length === 0; turn++) await new Promise((resolve) => setImmediate(resolve));
+  gate.open.resolve();
+  for (const r of await Promise.all([uninstalling, installing])) assert.equal(r.exitCode, 0, r.stdout + r.stderr);
+  const owner = (dir) => JSON.parse(kernel.readFileString(`${dir}/.nimbus-bin-map.json`)).bins.cmd?.packageName;
+  assert.equal(owner(IN_TREE), 'new', 'the install\'s command is the tree\'s');
+  assert.deepEqual(bins(IN_TREE).shims, ['cmd', 'tool'], 'and its shim is there');
+  assert.equal(owner(ON_PATH), 'new', 'and on PATH');
+  assert.deepEqual(bins(ON_PATH).shims, ['cmd', 'tool']);
+  assert.deepEqual(order, ['uninstall', 'install'], 'the install waited for the uninstall');
+  console.log('  an install waits for an uninstall changing its tree, and keeps its command');
 } finally {
   await ws.close();
 }
