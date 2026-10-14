@@ -232,7 +232,9 @@ export function serveRealmCall(call, services) {
 export async function runNodeInRealm(program, ctx, kernel) {
     if (ctx.signal.aborted)
         return exitCodeForAbortSignal(ctx.signal);
-    const filesystem = synchronousFilesystem(ctx.vfs);
+    // The program's own mask, a copy of the shell's as it started, as a child's is.
+    let mask = ctx.cred.umask;
+    const filesystem = synchronousFilesystem(ctx.vfs, () => mask);
     // Output in the order it was written, each write after the last; bytes
     // for an output that takes text are decoded across writes, as one stream.
     let written = Promise.resolve();
@@ -294,7 +296,7 @@ export async function runNodeInRealm(program, ctx, kernel) {
             if (ports.delete(port))
                 kernel?.portRegistry.delete(port);
         },
-        setUmask: (mask) => ctx.setUmask(mask),
+        setUmask: (next) => { mask = next; },
         watch: (id, path) => {
             watches.get(id)?.close();
             watches.delete(id);

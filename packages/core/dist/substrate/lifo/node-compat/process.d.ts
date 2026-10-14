@@ -23,9 +23,13 @@ export interface ProcessIdentity {
     readonly uid: number;
     readonly gid: number;
     readonly groups: readonly number[];
-    /** Its mask as it started. */
+    /** Its mask as it started: the invoking process's. */
     readonly umask: number;
-    /** umask(2): the process's mask in the session. */
+    /**
+     * umask(2): the mask the program creates with from now on. The program is
+     * a child of the shell, with its own copy of the mask: the shell's is not
+     * changed.
+     */
     setUmask(mask: number): void;
 }
 export interface ProcessOptions {
@@ -93,7 +97,7 @@ export declare function createProcess(opts: ProcessOptions): LifoProcess & {
     geteuid: () => number;
     getegid: () => number;
     getgroups: () => number[];
-    /** Its live mask; a new one (a number or an octal string) is the process's in the session, and the one before is answered. */
+    /** Its mask; a new one (a number or an octal string) is what it creates with from now on, and the one before is answered. */
     umask: (next?: number | string) => number;
     binding: (name: string) => {
         errname: (code: number) => string;

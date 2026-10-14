@@ -114,7 +114,7 @@ export function createProcess(opts) {
         geteuid: () => identity.uid,
         getegid: () => identity.gid,
         getgroups: () => [...identity.groups],
-        /** Its live mask; a new one (a number or an octal string) is the process's in the session, and the one before is answered. */
+        /** Its mask; a new one (a number or an octal string) is what it creates with from now on, and the one before is answered. */
         umask: (next) => {
             const previous = mask;
             if (next === undefined)

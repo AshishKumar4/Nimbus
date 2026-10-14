@@ -57,7 +57,7 @@ export type NodeCall = {
     readonly id: number;
     readonly path: string | null;
 }
-/** umask(2): the process's mask in the session. */
+/** umask(2): the mask the program creates with from now on (its own copy: the shell's is not changed). */
  | {
     readonly op: 'umask';
     readonly mask: number;
@@ -134,7 +134,7 @@ export interface RealmServices {
     unlisten(port: number): void;
     /** Watch `path` as watch `id`, or stop it (null). */
     watch(id: number, path: string | null): void;
-    /** umask(2): the process's mask in the session. */
+    /** umask(2): the mask the program creates with from now on. */
     setUmask(mask: number): void;
 }
 /**
