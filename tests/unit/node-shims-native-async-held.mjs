@@ -83,6 +83,20 @@ await check('ignored', `
 const crypto = require('crypto');
 console.log('ignored', crypto.getHashes(() => {}).includes('sha256'), crypto.getCiphers(() => {}).length > 0);
 `, 'ignored true true\n');
+// The API's own callback holds the program, wherever it is, and an argument
+// after it that the API ignores holds nothing: a function there (held, it
+// would never settle) or a value there (not held, the program would end
+// first).
+await check('trailing', `
+const crypto = require('crypto');
+require('zlib').deflate(Buffer.alloc(8), (error, out) => {
+  console.log('deflate', error ?? null, out.length > 0);
+  crypto.pbkdf2('pw', 'salt', 600000, 32, 'sha512', (error, key) => {
+    console.log('function after', error ?? null, key.length);
+    crypto.pbkdf2('pw', 'salt', 600000, 16, 'sha512', (error, key) => console.log('value after', error ?? null, key.length), 1);
+  }, () => {});
+}, () => {});
+`, 'deflate null true\nfunction after null 32\nvalue after null 16\n');
 // A call that throws before it starts holds nothing: the program still ends.
 await check('refused', `
 try { require('zlib').deflate(1, () => {}); } catch (error) { console.log('refused', error.code); }

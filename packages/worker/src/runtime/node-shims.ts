@@ -11887,18 +11887,19 @@ function __nimbusNodeShaped(e) {
 }
 // \`fn\`, its errors Node's; \`callbacks\`: a last function argument is a
 // callback, whose first argument is the error. With \`held\` (one of
-// __nimbusCallbackWork's), a call given a callback is work the engine runs
-// off the program's turn (zlib's and crypto's threadpool), live until its
-// callback, as Node's active requests keep its event loop: a one-shot
-// program that waits on nothing else is not ended before it.
-function __nimbusNodeErrorsOf(fn, callbacks, held = false) {
+// __nimbusCallbackWork's: where the API reads its callback from), a call
+// given a callback is work the engine runs off the program's turn (zlib's
+// and crypto's threadpool), live until that callback, as Node's active
+// requests keep its event loop: a one-shot program that waits on nothing
+// else is not ended before it. An argument the API ignores holds nothing.
+function __nimbusNodeErrorsOf(fn, callbacks, held = null) {
   fn = __nimbusFrontBase(fn);
   const shaped = function (...args) {
-    const last = args.length - 1;
+    const slot = held !== null ? held(args) : callbacks ? args.length - 1 : -1;
     let settle = null;
-    if (callbacks && last >= 0 && typeof args[last] === "function") {
-      const callback = args[last];
-      if (held) {
+    if (slot >= 0 && typeof args[slot] === "function") {
+      const callback = args[slot];
+      if (held !== null) {
         globalThis.__nimbusPendingOps++;
         settle = () => {
           if (settle === null) return;
@@ -11907,7 +11908,7 @@ function __nimbusNodeErrorsOf(fn, callbacks, held = false) {
           globalThis.__nimbusHandleReleased?.();
         };
       }
-      args[last] = function (...results) {
+      args[slot] = function (...results) {
         settle?.();
         if (results.length > 0) __nimbusNodeShaped(results[0]);
         return __nimbusReflectApply(callback, this, results);
@@ -11951,7 +11952,7 @@ function __nimbusNodeErrorsOfClass(C, prototypes) {
 // A module's functions and classes with their errors Node's: a copy of it,
 // or with \`inPlace\` (a class that is the module) its own functions
 // replaced. A global (URL, Blob, Buffer) stays itself.
-function __nimbusNodeErrorsAt(mod, { callbacks = false, prototypes = false, inPlace = false, held = [] } = {}) {
+function __nimbusNodeErrorsAt(mod, { callbacks = false, prototypes = false, inPlace = false, held = {} } = {}) {
   if (mod === null || (typeof mod !== "object" && typeof mod !== "function")) return mod;
   const target = inPlace ? mod : Object.create(Object.getPrototypeOf(mod));
   for (const key of Reflect.ownKeys(mod)) {
@@ -11965,7 +11966,7 @@ function __nimbusNodeErrorsAt(mod, { callbacks = false, prototypes = false, inPl
       const isClass = /^[A-Z]/.test(key) && typeof v.prototype === "object" && v.prototype !== null;
       if (isClass && inPlace) continue;
       if (inPlace && !d.configurable && !d.writable) continue;
-      Object.defineProperty(target, key, { ...d, value: isClass ? __nimbusNodeErrorsOfClass(v, prototypes) : __nimbusNodeErrorsOf(v, callbacks, held.includes(key)) });
+      Object.defineProperty(target, key, { ...d, value: isClass ? __nimbusNodeErrorsOfClass(v, prototypes) : __nimbusNodeErrorsOf(v, callbacks, Object.hasOwn(held, key) ? held[key] : null) });
     } else if (!inPlace) {
       Object.defineProperty(target, key, d);
     }
@@ -11973,13 +11974,34 @@ function __nimbusNodeErrorsAt(mod, { callbacks = false, prototypes = false, inPl
   return target;
 }
 // The functions whose callback form is work the engine runs off the
-// program's turn, until it calls back (Node 22's lib/zlib.js convenience
-// methods; lib/crypto.js's asynchronous forms). A function not named here
-// that is given a function argument holds nothing: Node's ignore one
-// (crypto.getHashes(() => {}) returns, and never calls it).
+// program's turn, until it calls back, each with where it reads its callback
+// from, as Node 22 reads it (lib/zlib.js createConvenienceMethod;
+// lib/internal/crypto/*.js): an optional argument before it may be the
+// callback. A function not named here holds nothing for a function argument
+// (crypto.getHashes(() => {}) returns, and never calls it), nor does one
+// named here for an argument it ignores.
+const __nimbusCallbackAt = (slot) => () => slot;
+const __nimbusCallbackAfterOptional = (optional) => (args) => (typeof args[optional] === "function" ? optional : optional + 1);
+const __nimbusZlibCallback = __nimbusCallbackAfterOptional(1);
 const __nimbusCallbackWork = {
-  zlib: ["deflate", "deflateRaw", "gzip", "gunzip", "inflate", "inflateRaw", "unzip", "brotliCompress", "brotliDecompress", "zstdCompress", "zstdDecompress"],
-  crypto: ["randomBytes", "randomFill", "randomInt", "pbkdf2", "scrypt", "hkdf", "generateKeyPair", "generateKey", "generatePrime", "checkPrime", "sign", "verify"],
+  zlib: Object.fromEntries(["deflate", "deflateRaw", "gzip", "gunzip", "inflate", "inflateRaw", "unzip", "brotliCompress", "brotliDecompress", "zstdCompress", "zstdDecompress"]
+    .map((name) => [name, __nimbusZlibCallback])),
+  crypto: {
+    randomBytes: __nimbusCallbackAt(1),
+    // randomFill(buffer[, offset[, size]], callback)
+    randomFill: (args) => [1, 2].find((at) => typeof args[at] === "function") ?? 3,
+    // randomInt([min, ]max[, callback]): no max after min, no callback.
+    randomInt: (args) => (typeof args[1] === "function" ? 1 : args[1] === undefined ? -1 : 2),
+    pbkdf2: __nimbusCallbackAt(5),
+    scrypt: __nimbusCallbackAfterOptional(3),
+    hkdf: __nimbusCallbackAt(5),
+    generateKeyPair: __nimbusCallbackAfterOptional(1),
+    generateKey: __nimbusCallbackAfterOptional(1),
+    generatePrime: __nimbusCallbackAfterOptional(1),
+    checkPrime: __nimbusCallbackAfterOptional(1),
+    sign: __nimbusCallbackAt(3),
+    verify: __nimbusCallbackAt(4),
+  },
 };
 // Those whose functions throw workerd's NodeError (node-builtin-errors-match-node-workerd).
 for (const name of ["zlib", "crypto"]) builtins[name] = __nimbusNodeErrorsAt(builtins[name], { callbacks: true, prototypes: true, held: __nimbusCallbackWork[name] });
