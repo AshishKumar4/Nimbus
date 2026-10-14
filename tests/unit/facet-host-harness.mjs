@@ -17,6 +17,8 @@
 import { hostActivity, observeResidentConfig, HOST_WATCH_HEADER, HOST_INCARNATION_HEADER, HOST_REQUEST_HEADER } from '../../packages/fabric/src/host-activity.ts';
 import { importModuleSet } from './lib/module-map-bundle.mjs';
 import { installHostWatchSocket } from './lib/host-watch-socket.mjs';
+import { resolve as resolvePath } from 'node:path';
+import { pathToFileURL } from 'node:url';
 installHostWatchSocket();
 
 /** A guest the generated adapter extends, forwarding to the harness's instance. */
@@ -46,6 +48,21 @@ async function adapterFor(capability) {
  *   admits requests; otherwise the stub models that adapter around a guest.
  */
 /**
+ * `close`, once the test file has finished: its top level and every await of
+ * it. A dynamic import of the entry module settles exactly then, and runs
+ * nothing again. A test that leaves a resident running would otherwise sit
+ * until that resident's timers fire (the uptime proof's 120 s).
+ */
+const atTestEnd = (() => {
+  const closes = [];
+  return (close) => {
+    if (closes.push(close) > 1 || process.argv[1] === undefined) return;
+    const run = () => { for (const each of closes.splice(0)) each(); };
+    import(pathToFileURL(resolvePath(process.argv[1])).href).then(run, run);
+  };
+})();
+
+/**
  * A resident's runner as the real one keeps its start (process-fabric's
  * StartContract): an attached TTY's run holds its start call open for its
  * process's life, failing as its facet is aborted (a kill), as the platform
@@ -53,11 +70,18 @@ async function adapterFor(capability) {
  * process table says which (`processes`), as the runner's own args do. A
  * runner that returned a lifetime start at once ended its residency ~20 ms
  * after its boot, and a test of that residency passed only by timing.
- * Every request is answered by `respond`.
+ * Every request is answered by `respond`. Every process it started that is
+ * still running when the test ends is killed (atTestEnd), as a session's
+ * teardown ends its residents.
  */
 export function residentRunner(processes, respond = () => new Response('ok')) {
+  const started = new Set();
+  atTestEnd(() => {
+    for (const pid of started) if (processes.get(pid)?.state === 'running') processes.kill(pid);
+  });
   return (_config, { died }) => ({
     async startProcess(args) {
+      if (typeof args?.pid === 'number') started.add(args.pid);
       if (processes.get(args?.pid)?.attachedTty === true) await died;
       return { ok: true };
     },
