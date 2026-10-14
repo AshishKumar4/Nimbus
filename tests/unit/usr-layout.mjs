@@ -254,6 +254,19 @@ const ETC = ['etc/profile', 'etc/hostname', 'etc/os-release'];
   console.log('  an install is not written through a runtime\'s directories a user made');
 }
 
+// ── an install is not written through a directory in its tree a user owns ──
+{
+  // A home configured inside a runtime's tree is the user's, made so by root.
+  const db = new Database(':memory:');
+  const ws = await open(db, { env: { HOME: '/usr/lib/nimbus/toy/1.0.0/share' } });
+  const kernel = ws.vfs.as(CRED_KERNEL);
+  ws.vfs.as(CRED_SESSION_USER).symlink('/etc', 'usr/lib/nimbus/toy/1.0.0/share/toy');
+  await assert.rejects(ws.runtimes.installPackage(toyPackage()), /usr\/lib\/nimbus\/toy\/1\.0\.0\/share/, 'the install is refused');
+  assert.equal(kernel.exists('etc/data'), false, 'nothing is written through it');
+  db.close();
+  console.log('  an install is not written through a directory in its tree a user owns');
+}
+
 // ── a runtime's name and version are one name each ────────────────────────
 {
   const db = new Database(':memory:');
