@@ -33,8 +33,8 @@ published independently in the `@nimbus-sh` npm scope.
   the process owns the target:
   - a child's handle belongs to its parent or an ancestor; any other
     process gets ESRCH;
-  - a stdin channel belongs to its own process, or to a descendant that
-    inherited it as fd 0; any other process gets EPERM;
+  - a process reads only its own stdin, whatever channel it names: the
+    stdin it inherited as fd 0 when it did, never another process's;
   - a signal follows Linux's rule for kill(2): only root, or a process of
     the target's uid, may send it; any other process gets EPERM.
 - Fixed: `nimbus wrangler dev`'s assets binding read a project's assets as

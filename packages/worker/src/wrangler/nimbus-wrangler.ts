@@ -18,7 +18,6 @@ import { loaderOutbound, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/w
 import { applyFacetLimits, facetLimits, type FacetResourceLimits } from '@nimbus-sh/fabric/facet-limits.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { EsbuildReadFs, EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import type { VfsEvent } from '@nimbus-sh/core/vfs/events.js';
 import type { CompositeVFS } from '@nimbus-sh/core/vfs/composite.js';
@@ -41,8 +40,6 @@ export interface NimbusWranglerOptions {
   vfs: CredentialedVfs;
   /** The namespace, as the same process: what the Worker's bundle reads. */
   bundleFs: EsbuildReadFs;
-  /** The credential of that process: its assets binding reads as it. */
-  cred: Readonly<VfsCred>;
   /** The session's namespace, whose changes rebuild the worker (CompositeVFS.watchChanges). */
   namespace: Pick<CompositeVFS, 'watchChanges'>;
   esbuild: EsbuildService;
@@ -176,7 +173,6 @@ export class NimbusWrangler {
   private readonly network: WorkspaceNetwork;
   private vfs: CredentialedVfs;
   private bundleFs: EsbuildReadFs;
-  private cred: Readonly<VfsCred>;
   private namespace: Pick<CompositeVFS, 'watchChanges'>;
   private esbuild: EsbuildService;
   private loaderEnv: any;
@@ -206,7 +202,6 @@ export class NimbusWrangler {
   constructor(opts: NimbusWranglerOptions) {
     this.vfs = opts.vfs;
     this.bundleFs = opts.bundleFs;
-    this.cred = opts.cred;
     this.namespace = opts.namespace;
     this.esbuild = opts.esbuild;
     this.loaderEnv = opts.env;
@@ -614,8 +609,8 @@ export class NimbusWrangler {
             vfsRoot: this.root,
             assetsDir,
             doId,
-            // Assets are read as the process that started the server.
-            cred: this.cred,
+            // Assets are read as the process that started the server, as its engine is.
+            cred: this.vfs.cred,
             route: hostRoute() ?? undefined,
           },
         }));
