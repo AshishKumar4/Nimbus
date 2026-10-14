@@ -58,14 +58,21 @@ try {
   a.check('the dev server is a process while it runs', /wrangler dev/.test(stripAnsi(t.buf)), JSON.stringify(stripAnsi(t.buf).slice(-600)));
 
   // ── an instance reset ──
-  const abort = await fetch(`${BASE}/s/${sid}/api/_diag/abort`, { method: 'POST', headers: requestHeaders({}, sid) });
-  a.check('_diag/abort answers the reset', abort.status === 204, `status=${abort.status}`);
+  const reset = async (what) => {
+    const abort = await fetch(`${BASE}/s/${sid}/api/_diag/abort`, { method: 'POST', headers: requestHeaders({}, sid) });
+    a.check(`_diag/abort answers ${what}`, abort.status === 204, `status=${abort.status}`);
+    // A request sent right after the 204 can still reach the instance being
+    // reset; the reset ends the instance's sockets, so this terminal's close marks it.
+    const deadline = Date.now() + 10_000;
+    while (!t.closed && Date.now() < deadline) await sleep(50);
+    a.check(`${what} ended the instance (its terminal socket dropped)`, t.closed, `closed=${t.closed}`);
+  };
+  await reset('the reset');
   const afterAbort = await worker('/after-reset');
   a.check('after an instance reset the Worker is served', served(afterAbort, '/after-reset'), JSON.stringify(afterAbort));
 
   // ── the session idles out and is re-created ──
   const before = await generation();
-  t.close();
   await sleep(150_000);
   const afterIdle = await worker('/after-idle');
   const after = await generation();
@@ -81,8 +88,7 @@ try {
   a.check('wrangler stop stops it', /Worker dev server stopped/.test(stripAnsi(t.buf)), JSON.stringify(stripAnsi(t.buf).slice(-400)));
   const stopped = await worker('/stopped');
   a.check('a stopped dev server serves nothing', !served(stopped, '/stopped'), JSON.stringify(stopped));
-  const again = await fetch(`${BASE}/s/${sid}/api/_diag/abort`, { method: 'POST', headers: requestHeaders({}, sid) });
-  a.check('_diag/abort answers the second reset', again.status === 204, `status=${again.status}`);
+  await reset('the second reset');
   const afterStoppedReset = await worker('/stopped-reset');
   a.check('a stopped dev server is not brought back by a reset', !served(afterStoppedReset, '/stopped-reset'), JSON.stringify(afterStoppedReset));
 } finally {
