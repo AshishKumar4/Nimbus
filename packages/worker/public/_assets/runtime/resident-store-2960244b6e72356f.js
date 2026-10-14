@@ -620,6 +620,10 @@ var __nimbusResidentModule = (() => {
       return out;
     };
     const copy = (cell) => ({ txt: cell.txt ?? null, bin: cell.bin ? cell.bin.slice() : null });
+    const owned = (bin) => {
+      const bytes = residentBytes(bin);
+      return bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength ? bytes : bytes.slice();
+    };
     const dropChunks = (path) => {
       const parts = chunks.get(path);
       if (!parts) return;
@@ -788,10 +792,10 @@ var __nimbusResidentModule = (() => {
         addChunk(path, Number(part), { txt: String(txt), bin: null }, false);
       },
       chunkAddBin(path, part, bin) {
-        addChunk(path, Number(part), { txt: null, bin: residentBytes(bin).slice() }, false);
+        addChunk(path, Number(part), { txt: null, bin: owned(bin) }, false);
       },
       chunkSetBin(path, part, bin) {
-        addChunk(path, Number(part), { txt: null, bin: residentBytes(bin).slice() }, true);
+        addChunk(path, Number(part), { txt: null, bin: owned(bin) }, true);
       },
       chunkCopy(to, from) {
         const parts = chunks.get(from);
@@ -800,7 +804,7 @@ var __nimbusResidentModule = (() => {
         if (held) {
           for (const part of parts.keys()) if (held.has(part)) throw new Error("UNIQUE constraint failed: chunk.path, chunk.part");
         }
-        for (const [part, cell] of [...parts]) addChunk(to, part, { txt: cell.txt, bin: cell.bin ? cell.bin.slice() : null }, false);
+        for (const [part, cell] of [...parts]) addChunk(to, part, { txt: cell.txt, bin: cell.bin }, false);
       },
       chunkDelete(path) {
         dropChunks(path);
@@ -1439,7 +1443,7 @@ var __nimbusResidentModule = (() => {
         return false;
       }
       for (let part = 0; part < chunks; part++) {
-        const slice = body.slice(part * limit, (part + 1) * limit);
+        const slice = typeof body === "string" ? body.slice(part * limit, (part + 1) * limit) : body.subarray(part * limit, (part + 1) * limit);
         if (typeof slice === "string") t.chunkAddText(path, part, slice);
         else t.chunkAddBin(path, part, slice);
       }

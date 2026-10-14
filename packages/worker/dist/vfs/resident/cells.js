@@ -102,7 +102,8 @@ export function createCells(coherence, admission, namespace, observeRead) {
             return false;
         }
         for (let part = 0; part < chunks; part++) {
-            const slice = body.slice(part * limit, (part + 1) * limit);
+            // Bytes are viewed, not copied: the table keeps what it is given as its own (tables.ts).
+            const slice = typeof body === 'string' ? body.slice(part * limit, (part + 1) * limit) : body.subarray(part * limit, (part + 1) * limit);
             if (typeof slice === 'string')
                 t.chunkAddText(path, part, slice);
             else
