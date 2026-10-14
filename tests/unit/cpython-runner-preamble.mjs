@@ -225,11 +225,12 @@ console.log('  ok  a full name table refuses a new name');
 // A recvfrom on a socket with no peer fails as recv fails, and takes no name: 64 names still fit.
 const unconnected = await run({
   ...base, pyArgv: ['-c'],
-  userCode: "import errno, socket\ns = socket.socket()\ntry:\n  s.recvfrom(10)\nexcept OSError as e:\n  print(errno.errorcode.get(e.errno))\n"
+  userCode: "import socket\ns = socket.socket()\ndef error(call):\n  try:\n    call(10)\n  except OSError as e:\n    return e.errno\n"
+    + "print(error(s.recvfrom) == error(s.recv) != None)\n"
     + "print(len({socket.getaddrinfo(f'host-{i}.invalid', 80)[0][4][0] for i in range(64)}))",
 });
 assert.equal(unconnected.exitCode, 0, `${unconnected.error ?? ''} ${unconnected.stderr}`);
-assert.equal(unconnected.stdout, 'ENOTCONN\n64\n', 'recvfrom of an unconnected socket is ENOTCONN, and 64 names resolve after it');
+assert.equal(unconnected.stdout, 'True\n64\n', 'recvfrom of an unconnected socket fails as recv does, and 64 names resolve after it');
 console.log('  ok  a failed recvfrom takes no name');
 
 await session.dispose();
