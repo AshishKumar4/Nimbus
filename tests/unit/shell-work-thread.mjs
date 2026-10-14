@@ -16,14 +16,14 @@
 //     commands: with `sleep` over and `kill` not yet begun, its one unit of
 //     work was the await of `node x`, and the ledger could refuse a wait the
 //     `kill` was about to free. The same with a background job beside a
-//     line's steps.
+//     line's steps: the job is a process of its own, whose one unit of work
+//     is the await of its program.
 //   - a shell that truly only awaits its program is still told as such, in
 //     a sequence (`step a; prog`) or an and-or list (`prog && true`).
 //   - every unit a line took is let go when it ends.
 
 import assert from 'node:assert/strict';
 import { Shell } from '../../packages/core/src/substrate/lifo/shell/Shell.ts';
-import { ProcessRegistry } from '../../packages/core/src/substrate/lifo/shell/ProcessRegistry.ts';
 import { createDefaultRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { memoryFiles } from './lib/test-box.mjs';
@@ -69,12 +69,11 @@ const shell = new Shell(
   vfs,
   registry,
   { HOME: '/home/user', USER: 'user', HOSTNAME: 'nimbus' },
-  new ProcessRegistry(),
+  processes,
   {
     pid: shellPid,
     get cred() { return cred; },
     setUmask: (mask) => { cred = { ...cred, umask: mask }; },
-    accountWork: (pid) => processes.beginWork(pid),
   },
 );
 
@@ -119,6 +118,9 @@ const assertNothingLeft = (what) => {
   const done = shell.execute('prog & step a; stop $(echo x)');
   await settle();
   assert.equal(processes.awaitsOnly(shellPid), null, 'while `step a` runs, the shell has work of its own');
+  const job = processes.get(program)?.parentPid;
+  assert.equal(processes.get(job)?.parentPid, shellPid, 'the job is a process of its own, under the shell');
+  assert.deepEqual(processes.awaitsOnly(job), [program], 'the job does nothing but await its program');
   open('a');
   const result = await done;
   assert.equal(result.exitCode, 0, result.stderr);

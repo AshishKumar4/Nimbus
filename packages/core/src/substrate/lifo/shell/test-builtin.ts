@@ -1,7 +1,6 @@
 import type { ProcessView } from '../../../runtime/process-files.js';
 import type { ProcessStat } from '../../../runtime/process-files.js';
 import type { CommandOutputStream } from '../commands/types.js';
-import type { BuiltinExecutionContext } from './interpreter.js';
 import type { WordPart } from './types.js';
 import { expandWord, type ExpandContext } from './expander.js';
 import { globMatch, hasGlobChars } from '../utils/glob.js';
@@ -10,14 +9,25 @@ import { S_IFCHR, S_IFMT } from '../../../vfs/vfs.js';
 import { lstatOrThrow, statOrThrow } from '../../../vfs/vfs.js';
 
 /**
- * Implementation of the `test` / `[` shell builtin (POSIX `test`).
+ * What a test asks of the running command: the directory a relative path
+ * operand is resolved against, and whether an fd is a terminal (-t). The
+ * shell's builtin and the registry's `test`, run by name, both answer it.
+ */
+export interface TestContext {
+  readonly cwd: string;
+  isFdTerminal?(fd: number): boolean;
+}
+
+/**
+ * Implementation of the `test` / `[` shell builtin (POSIX `test`), and of
+ * `test` and `[` run by name (`command test`, `env [`, xargs).
  * `bracket` is true for `[`, whose last argument must be `]`.
  */
 export async function evaluateTest(
   args: string[],
   vfs: ProcessView,
   stderr: CommandOutputStream,
-  context?: BuiltinExecutionContext,
+  context?: TestContext,
   bracket = false,
 ): Promise<number> {
   let operands = args;
@@ -40,7 +50,7 @@ export async function evaluateDoubleBracketWords(
   expandCtx: ExpandContext,
   vfs: ProcessView,
   stderr: CommandOutputStream,
-  context?: BuiltinExecutionContext,
+  context?: TestContext,
 ): Promise<number> {
   const expanded = new Map<number, TestArg>();
   const operands: Operands = {
@@ -100,7 +110,7 @@ async function evaluateTestExpression(
   operands: Operands,
   vfs: ProcessView,
   stderr: CommandOutputStream,
-  context: BuiltinExecutionContext | undefined,
+  context: TestContext | undefined,
   mode: TestMode,
 ): Promise<number> {
   if (operands.length === 0) {
@@ -132,7 +142,7 @@ async function evaluateTestExpression(
  */
 async function evaluateByArgCount(
   ops: Operands, start: number, count: number, vfs: ProcessView,
-  context: BuiltinExecutionContext | undefined,
+  context: TestContext | undefined,
 ): Promise<boolean | undefined> {
   const at = (i: number) => ops.literal(start + i) ?? '';
   switch (count) {
@@ -180,7 +190,7 @@ interface ExprResult {
  */
 async function parseOr(
   ops: Operands, pos: number, vfs: ProcessView,
-  context: BuiltinExecutionContext | undefined, mode: TestMode, evaluate: boolean,
+  context: TestContext | undefined, mode: TestMode, evaluate: boolean,
 ): Promise<ExprResult> {
   let left = await parseAnd(ops, pos, vfs, context, mode, evaluate);
 
@@ -194,7 +204,7 @@ async function parseOr(
 
 async function parseAnd(
   ops: Operands, pos: number, vfs: ProcessView,
-  context: BuiltinExecutionContext | undefined, mode: TestMode, evaluate: boolean,
+  context: TestContext | undefined, mode: TestMode, evaluate: boolean,
 ): Promise<ExprResult> {
   let left = await parsePrimary(ops, pos, vfs, context, mode, evaluate);
 
@@ -208,7 +218,7 @@ async function parseAnd(
 
 async function parsePrimary(
   ops: Operands, pos: number, vfs: ProcessView,
-  context: BuiltinExecutionContext | undefined, mode: TestMode, evaluate: boolean,
+  context: TestContext | undefined, mode: TestMode, evaluate: boolean,
 ): Promise<ExprResult> {
   if (pos >= ops.length) {
     return { value: false, pos };
@@ -289,7 +299,7 @@ function evaluateBinary(op: string, left: TestArg, right: TestArg, mode: TestMod
 }
 
 async function evaluateUnary(
-  op: string, operand: string, vfs: ProcessView, context: BuiltinExecutionContext | undefined,
+  op: string, operand: string, vfs: ProcessView, context: TestContext | undefined,
 ): Promise<boolean> {
   switch (op) {
     case '-z':
@@ -297,7 +307,7 @@ async function evaluateUnary(
     case '-n':
       return operand.length > 0;
     case '-t':
-      return context?.isFdTerminal(toInt(operand)) ?? false;
+      return context?.isFdTerminal?.(toInt(operand)) ?? false;
     default:
       return await evaluateFileTest(op[1], operand, vfs, context?.cwd);
   }

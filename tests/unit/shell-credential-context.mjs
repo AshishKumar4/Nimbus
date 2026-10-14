@@ -19,23 +19,41 @@ try {
     { execute: (command, options) => box.shell.execute(command, options) },
   );
 
-  const commandContext = { pid: 41, cred: CRED_KERNEL };
+  const processes = box.workspace.processes;
+  const pid = processes.spawn('host', ['host'], '/', { cred: CRED_KERNEL }).pid;
+  const commandContext = { pid, cred: CRED_KERNEL };
+  // A background job is a process of its own, a child of the one the line runs as, with its credential.
   const cases = [
-    ['direct command', 'credprobe'],
-    ['pipeline stage', 'credprobe | cat'],
-    ['subshell', '(credprobe)'],
-    ['background job', 'credprobe & wait'],
-    ['nested shell', "sh -c 'credprobe'"],
+    ['direct command', 'credprobe', (seen) => seen === pid],
+    ['pipeline stage', 'credprobe | cat', (seen) => seen === pid],
+    ['subshell', '(credprobe)', (seen) => seen === pid],
+    ['background job', 'credprobe & wait', (seen) => seen !== pid && processes.get(seen)?.parentPid === pid],
+    ['nested shell', "sh -c 'credprobe'", (seen) => seen === pid],
   ];
 
-  for (const [name, command] of cases) {
+  for (const [name, command, runsAs] of cases) {
     observed.length = 0;
     const result = await box.shell.execute(command, { commandContext });
     assert.equal(result.exitCode, 0, `${name}: exit code`);
     assert.equal(observed.length, 1, `${name}: command invoked once`);
-    assert.equal(observed[0].pid, 41, `${name}: pid is preserved`);
+    assert.ok(runsAs(observed[0].pid), `${name}: runs as pid ${observed[0].pid}`);
     assert.deepEqual(observed[0].cred, CRED_KERNEL, `${name}: credential is preserved`);
   }
+
+  // A job a root line started is root's: a later line of the same shell, as the
+  // session's user, neither probes nor ends it, by its jobspec or its pid (kill(2)).
+  const rootJob = await box.shell.execute('rm -f /tmp/go; while [ ! -e /tmp/go ]; do sleep 0.05; done & echo $!', { commandContext });
+  const jobPid = Number(rootJob.stdout.trim());
+  for (const operand of ['%1', String(jobPid)]) {
+    for (const flag of ['-0', '-TERM']) {
+      const refused = await box.shell.execute(`kill ${flag} ${operand}; echo "status=$?"`);
+      assert.deepEqual({ stdout: refused.stdout, stderr: refused.stderr }, { stdout: 'status=1\n', stderr: `kill: (${jobPid}) - Operation not permitted\n` }, `kill ${flag} ${operand} as the user`);
+    }
+  }
+  assert.equal(processes.get(jobPid)?.state, 'running', 'the root job runs on');
+  assert.equal((await box.shell.execute('kill -0 %1; echo "status=$?"', { commandContext })).stdout, 'status=0\n', 'root probes its own job');
+  await box.fs.writeFile('/tmp/go', '');
+  await processes.whenEnded(jobPid);
 } finally {
   box.destroy();
 }

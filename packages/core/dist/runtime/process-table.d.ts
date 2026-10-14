@@ -107,6 +107,7 @@ export declare class ProcessTable {
     onPidStride(listener: (stride: number) => void): void;
     /** Allocate a PID and register a new process. */
     spawn(command: string, argv: string[], cwd: string, options?: ProcessTableSpawnOptions): ProcessEntry;
+    /** `pid`'s credential, as its entry keeps it: frozen, replaced (never changed) by setUmask. */
     credOf(pid: number): VfsCred;
     liveCred(pid: number): VfsCred;
     cred(pid: number): VfsCred;

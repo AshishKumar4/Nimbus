@@ -16,7 +16,50 @@ published independently in the `@nimbus-sh` npm scope.
   Node's does. A warning, the program's own `process.emitWarning` or a
   builtin's (`util.deprecate`), reaches the program's `'warning'` listeners
   and is written on its stderr as Node writes it; it was written as
-  `Warning: <message>` and told no listener.
+  `Warning: <message>` and told no listener. A program has one `process`,
+  as in Node: each of its modules had one of its own, none of them
+  `globalThis.process` or `require('process')`.
+- Fixed: `test` and `[` run as programs (`xargs test`, `find -exec test`)
+  evaluate as the shell's builtin does. `test 1 -eq 2` run so returned 0,
+  and `[ 1 -eq 1` ran without its closing `]`.
+- Fixed: `xargs` runs each command as a child process with stdin from
+  `/dev/null`, as GNU xargs does. `printf x | xargs -I {} cat /dev/zero |
+  head -c1` failed, and one command's `umask` reached the next. It ends
+  with GNU's statuses: 127 for a command that cannot be found, 126 for a
+  file it may not execute, 125 at once for one a signal ends (a `kill` of
+  it from another shell included), 124 at once for one that exits 255, and
+  123 when any other command fails. It returned the last failing status.
+  `sudo` of a file it may not execute answers "command not found", as
+  sudo does.
+- Fixed: `command NAME` runs a builtin as bash does, skipping only
+  functions and aliases (a function named `command` is still that
+  function). `command kill %1` answered "no such job", and `command cd`,
+  `command wait` and the like ran no builtin.
+- Changed: a background job is a process of the session's process table, a
+  child of the shell that started it, as a fork makes one. `$!`, `jobs -l`
+  and `jobs -p` give that pid, the session's `ps` lists it, and a session's
+  destroy stops it. Its commands run as that process, so a `umask` in the
+  job stays the job's, as in bash.
+- Changed: `$$` in the session's terminal shell and in a script's shell
+  (`sh x.sh`) is that shell's pid in the session's table, as in bash; it
+  was 1. `kill` of the terminal shell's pid answers "Operation not
+  permitted".
+- Changed: `kill` run as a program (`xargs kill`, `sudo kill`) has no jobs,
+  as procps kill has none: `%2` answers "no such job". The shell's own
+  `kill %2` still ends job 2, and `kill PID` from any shell ends a job by
+  its pid. A signal to a process of another uid answers "Operation not
+  permitted" unless the caller is root, as kill(2) does (`kill -0` too), and a
+  default-ignored signal (`WINCH`, `CHLD`, `URG`) to a job leaves it
+  running and succeeds.
+- Changed: `wait PID` for a process that is no job of this shell answers
+  "pid PID is not a child of this shell" with status 127, as bash does. It
+  waited for another shell's job.
+- Breaking (embedders): the lifo `ProcessRegistry` and
+  `Kernel.processRegistry` are gone. A `Shell` takes the session's process
+  table (`SessionProcessSupervisor`), `ShellCommandIdentity` drops
+  `accountWork` and `holdWork` (the shell counts and holds its work in that
+  table), and `createKillCommand(host)`, `createPsCommand(processes)` and
+  `createTopCommand(processes)` read it.
 
 ## 2026-10-14: platform 0.10.0, core 0.20.0, fabric 0.15.0, worker 0.18.0, sdk 0.15.0, loom 0.3.1, react 0.3.3, cli 0.2.7, create-nimbus-app 0.2.4 (config 0.3.1 unchanged)
 
