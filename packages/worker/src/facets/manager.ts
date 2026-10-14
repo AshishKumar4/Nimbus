@@ -2196,7 +2196,7 @@ interface FacetVfsState {
   cursor?: { epoch: string; rev: number };
   /** Diagnostics: how many files survived the cap (post-greedy-oversample). */
   reachableCount: number;
-  /** Diagnostics: was the bundle truncated by the encoded-size cap? */
+  /** Diagnostics: did the snapshot's raw-byte bound evict optional files? */
   truncated: boolean;
   /**
    * The raw bytes the snapshot's guard counted for the cells it kept: a
@@ -2239,8 +2239,6 @@ interface FacetVfsState {
    * not exceed the main module's text-size ceiling.
    */
   bundleSource?: FacetVfsBundleSource;
-  /** Move the bundle out of the main module when combined state exceeds its ceiling. */
-  bundleSideModulesRequired?: boolean;
   /**
    * The wasm images the closure holds, by path and content digest — see
    * `collectClosureWasmImages`. A launch stages each as a wasm map entry.
@@ -2477,7 +2475,7 @@ async function facetVfsBundleSourceFor(
   }
   return vfsState.bundleSource
     ?? await buildFacetVfsBundleSource(
-      vfsState.bundle, vfsState.bundleSideModulesRequired, pacer,
+      vfsState.bundle, pacer,
       { emits: vfsState.emits, esm: vfsState.esm, codeOnly: vfsState.codeOnly, dataModules: vfsState.dataModules },
     );
 }
@@ -2611,40 +2609,11 @@ function retainedVfsStateBytes(state: FacetVfsState): number {
 }
 
 /**
- * UTF-8 byte length of `JSON.stringify(value)` — computed, for the string
- * case, without building the string. A source cell can be megabytes on its
- * own, and the point of the incremental accounting is that sizing the
- * snapshot never allocates a second copy of anything in it.
- *
- * Uint8Array has no JSON representation of its own: JSON.stringify expands
- * it to `{"0":byte,"1":byte,...}`. Materializing that form while merely
- * sizing a binary cell can allocate more than twelve times the file's raw
- * bytes, so count its punctuation and decimal digits directly too.
- *
- * Other values here are the small manifest object or a permission-denial
- * marker and can take the direct route.
+ * UTF-8 byte length of `JSON.stringify(value)`, computed without building
+ * the string: a source cell can be megabytes on its own, and sizing a
+ * generated source never allocates a second copy of anything in it.
  */
-function _jsonEncodedBytes(value: unknown): number {
-  if (value instanceof Uint8Array) {
-    let bytes = 2; // the surrounding braces
-    let indexDigits = 1;
-    let nextIndexWidth = 10;
-    for (let index = 0; index < value.byteLength; index++) {
-      if (index === nextIndexWidth) {
-        indexDigits++;
-        nextIndexWidth *= 10;
-      }
-      if (index > 0) bytes += 1; // comma
-      // `"index":byte`: quotes + decimal key + colon + decimal byte.
-      const byte = value[index];
-      const byteDigits = byte < 10 ? 1 : byte < 100 ? 2 : 3;
-      bytes += 3 + indexDigits + byteDigits;
-    }
-    return bytes;
-  }
-  if (typeof value !== 'string') {
-    return new TextEncoder().encode(JSON.stringify(value)).length;
-  }
+function _jsonEncodedBytes(value: string): number {
   let bytes = 2; // the surrounding quotes
   for (let i = 0; i < value.length; i++) {
     const code = value.charCodeAt(i);
@@ -2667,49 +2636,6 @@ function _jsonEncodedBytes(value: unknown): number {
     bytes += 3;
   }
   return bytes;
-}
-
-/** `{"bundle":` + `}`: the frame around the one member. */
-const ENCODED_PAYLOAD_FRAME_BYTES = 11;
-
-/**
- * Running UTF-8 byte length of `JSON.stringify({ bundle, manifest })`,
- * accumulated one cell at a time.
- *
- * Measuring it by materializing the payload — `encode(stringify(...))`,
- * which the eviction loop used to redo after every single eviction — puts
- * several full copies of a multi-megabyte bundle in the supervisor DO at
- * once. On a working tree carrying one large data file that is enough to
- * reset the DO, which drops the shell's WebSocket server-side without
- * closing it and wedges the user's terminal with no error anywhere.
- *
- * JSON object serialization is `{` + `"key":value` joined by `,` + `}`, so
- * the total is a sum of independent per-cell terms: exact, incremental, and
- * never holding more than one cell's worth of scratch.
- */
-export function encodedBundleSize(bundle: FacetVfsBundle) {
-  const cells = new Map<string, number>();
-  let cellSum = 0;
-  const self = {
-    add(path: string, cell: FacetVfsBundle[string]): void {
-      if (cells.has(path)) return;
-      const bytes = _jsonEncodedBytes(path) + 1 + _jsonEncodedBytes(cell);
-      cells.set(path, bytes);
-      cellSum += bytes;
-    },
-    remove(path: string): void {
-      const bytes = cells.get(path);
-      if (bytes === undefined) return;
-      cells.delete(path);
-      cellSum -= bytes;
-    },
-    get bytes(): number {
-      const separators = Math.max(0, cells.size - 1);
-      return ENCODED_PAYLOAD_FRAME_BYTES + 2 + cellSum + separators;
-    },
-  };
-  for (const [path, cell] of Object.entries(bundle)) self.add(path, cell);
-  return self;
 }
 
 /**
@@ -2805,7 +2731,7 @@ const FACET_VFS_MODULE_SOURCE_MARGIN = 1024;
  * its own `.length` — and the encode also flattens the string it is given,
  * so a rope the template builder had not yet paid for becomes flat too.
  *
- * Same discipline `_jsonEncodedBytes` already applies to the snapshot:
+ * Same discipline `_jsonEncodedBytes` applies to a cell's JSON text:
  * sizing something never allocates a copy of it. Exactly equivalent to the
  * encoder, including its replacement of an unpaired surrogate with U+FFFD.
  */
@@ -2897,7 +2823,6 @@ function isCodeCellPath(path: string): boolean {
  */
 export async function buildFacetVfsBundleSource(
   bundle: FacetVfsBundle,
-  forceSideModules = false,
   pacer?: TurnBudget,
   {
     consume = false,
@@ -2961,7 +2886,7 @@ export async function buildFacetVfsBundleSource(
     }
   }
   return {
-    ...await serializeFacetVfsData(data, forceSideModules, pacer, consume),
+    ...await serializeFacetVfsData(data, pacer, consume),
     codeModules,
     esModules,
     codeCells: JSON.stringify(rows),
@@ -2973,20 +2898,15 @@ export async function buildFacetVfsBundleSource(
 
 async function serializeFacetVfsData(
   bundle: FacetVfsBundle,
-  forceSideModules: boolean,
   pacer: TurnBudget | undefined,
   consume: boolean,
 ): Promise<Pick<FacetVfsBundleSource, 'expression' | 'imports' | 'modules'>> {
   // Consumed, side modules always: an inline expression is copied again into
-  // the runner's own source.
-  if (consume) forceSideModules = true;
-  // Size the inline form before building it. A bundle that will be split has
-  // no use for the whole-bundle expression, and building one to read its
-  // length off cost a second full copy of the largest string this DO makes.
-  if (
-    !forceSideModules
-    && _inlineBundleSourceBytes(bundle) <= BUNDLE_MAX_ENCODED_BYTES
-  ) {
+  // the runner's own source. Otherwise the inline form is sized before it is
+  // built: a bundle that will be split has no use for the whole-bundle
+  // expression, and building one to read its length off cost a second full
+  // copy of the largest string this DO makes.
+  if (!consume && _inlineBundleSourceBytes(bundle) <= BUNDLE_MAX_ENCODED_BYTES) {
     return { expression: _serializeBundleForFacet(bundle), imports: '', modules: {} };
   }
   if (Object.keys(bundle).length === 0) {
@@ -3110,8 +3030,8 @@ async function serializeFacetVfsData(
  * A staged spec crosses the fabric as ONE RPC payload, so its snapshot has
  * no side-module relief: `MAX_RPC_SAFE_PAYLOAD_BYTES` is a hard physical
  * ceiling, not a policy knob that can be raised. Base64-reviving binary
- * cells inflates the serialized form ~4/3 over the raw bytes the encoded-size
- * pass measured, so the payload can clear that pass and still not fit.
+ * cells inflates the serialized form ~4/3 over the raw bytes the snapshot's
+ * guard measured, so the payload can clear that guard and still not fit.
  *
  * Fail here, naming the cells that dominate the snapshot. Shipping a
  * shortened one instead would surface inside the facet as an
@@ -5090,7 +5010,6 @@ async function _buildPrefetchBundle(
   //    Evicting an enrichment file is a real loss — the sync fs reads it
   //    exists for cannot fall back to the supervisor — so the paths that
   //    went are named rather than silently dropped.
-  const size = encodedBundleSize(bundle);
   const rawBytes = new Map<string, number>();
   let rawTotal = 0;
   /** What the bound evicts, held until its images and reads are named below. */
@@ -5181,7 +5100,6 @@ async function _buildPrefetchBundle(
       emits.delete(k);
       esModules.delete(k);
       codeOnly.delete(k);
-      size.remove(k);
     }
     // How many it evicted, beside the phases' times (exec telemetry).
     phases.evicted = evicted.length;
@@ -5197,7 +5115,6 @@ async function _buildPrefetchBundle(
   }
 
   const fileCount = Object.keys(bundle).length;
-  const bundleSideModulesRequired = size.bytes > BUNDLE_MAX_ENCODED_BYTES;
 
   phase('guard');
   // What only an import() reaches: phase 2's modules, less any a staged
@@ -5285,7 +5202,6 @@ async function _buildPrefetchBundle(
     ...(transforms ? { transforms } : {}),
     ...(lazyModules.length > 0 ? { lazyModules, lazyImporters } : {}),
     ...(readers.length > 0 ? { evictedReaders: readers } : {}),
-    bundleSideModulesRequired,
     ...(wasmImages.length > 0 ? { wasmImages } : {}),
   };
 }
@@ -7067,7 +6983,6 @@ export class FacetManager {
       const serializeFrom = Date.now();
       vfsState.bundleSource = await buildFacetVfsBundleSource(
         vfsState.bundle,
-        vfsState.bundleSideModulesRequired,
         pacer,
         {
           consume: true,
