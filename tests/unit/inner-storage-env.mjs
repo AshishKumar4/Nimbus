@@ -1,9 +1,12 @@
 #!/usr/bin/env bun
-// inner-storage-env — a `wrangler dev` Worker's env.DB and env.BUCKET are
+// inner-storage-env — a `wrangler dev` Worker's env.KV, env.DB and env.BUCKET are
 // local objects of the platform's shape over the bindings the loader
 // passes, as the build-time expression the adapter module runs makes them:
 //
-//   - a name whose binding is absent is left alone, and env.KV is not touched;
+//   - a name whose binding is absent is left alone;
+//   - KV: each call reaches the binding as it was made, its options
+//     converted as workerd's client converts them (ints by ToNumber, a
+//     BigInt refused, an object's valueOf called);
 //   - D1: prepare and bind answer at once; bind converts a value as workerd's
 //     D1 client does or throws its D1_TYPE_ERROR; first, all, run and raw
 //     shape the binding's rows and columns; batch sends its statements as
@@ -47,13 +50,37 @@ const r2Remote = {
   async delete(keys) { asked.push(['delete', keys]); },
   async list(options) { asked.push(['list', options]); return { objects: [object], truncated: false, delimitedPrefixes: [] }; },
 };
-const kv = { get() {} };
+const kvCalls = [];
+const kv = Object.fromEntries(['get', 'getWithMetadata', 'put', 'delete', 'list'].map((method) => [method, async (...args) => { kvCalls.push([method, ...args]); return null; }]));
 const env = { DB: d1Remote, BUCKET: r2Remote, KV: kv };
-innerStorageAdapter({ d1: ['DB', 'ABSENT'], r2: ['BUCKET'] }, env);
-assert.equal(env.KV, kv, 'a KV binding is the binding');
+innerStorageAdapter({ kv: ['KV'], d1: ['DB', 'ABSENT'], r2: ['BUCKET'] }, env);
+assert.equal(env.KV.constructor.name, 'KvNamespace');
 assert.equal('ABSENT' in env, false, 'a name the env has no binding for is left alone');
 assert.equal(env.DB.constructor.name, 'D1Database');
 assert.equal(env.BUCKET.constructor.name, 'R2Bucket');
+
+// ── KV ─────────────────────────────────────────────────────────────────────
+await env.KV.get('k', 'json');
+await env.KV.get(['a', 'b'], { type: 'text', cacheTtl: '60' });
+await env.KV.put('k', 'v', { expirationTtl: 3600.7, metadata: { m: 1 } });
+await env.KV.put('k', 'v');
+await env.KV.list({ prefix: 'p/', limit: { valueOf: () => 2 }, cursor: null });
+await env.KV.list();
+await env.KV.delete('k');
+assert.deepEqual(kvCalls, [
+  ['get', 'k', 'json'],
+  ['get', ['a', 'b'], { type: 'text', cacheTtl: 60 }],
+  ['put', 'k', 'v', { expirationTtl: 3600, metadata: { m: 1 } }],
+  ['put', 'k', 'v'],
+  ['list', { limit: 2, prefix: 'p/' }],
+  ['list'],
+  ['delete', 'k'],
+], 'each KV call reaches the binding, its options converted');
+const kvBefore = kvCalls.length;
+await assert.rejects(env.KV.list({ limit: 1n }), TypeError);
+await assert.rejects(env.KV.get('k', { cacheTtl: { valueOf: () => 1n } }), TypeError);
+await assert.rejects(env.KV.put('k', 'v', { expiration: 2 ** 31 }), { name: 'TypeError', message: 'Value out of range. Must be between -2147483648 and 2147483647 (inclusive).' });
+assert.equal(kvCalls.length, kvBefore, 'an option the client refuses never reaches the binding');
 
 // ── D1 ─────────────────────────────────────────────────────────────────────
 const DB = env.DB;
@@ -145,6 +172,11 @@ for (const [limit, sent] of [[1.5, 1], ['2', 2], [NaN, 0], [undefined, undefined
   await BUCKET.list(limit === undefined ? {} : { limit });
   assert.equal(asked.at(-1)[1].limit, sent, `a list limit of ${String(limit)} is sent as workerd's int (${String(sent)})`);
 }
+// ToNumber, which refuses a BigInt, given or made by valueOf, and calls valueOf.
+await assert.rejects(BUCKET.list({ limit: 1n }), TypeError);
+await assert.rejects(BUCKET.list({ limit: { valueOf: () => 1n } }), TypeError);
+await BUCKET.list({ limit: { valueOf: () => 2 } });
+assert.equal(asked.at(-1)[1].limit, 2, 'a limit object is its valueOf');
 await assert.rejects(BUCKET.list({ limit: 2 ** 31 }), { name: 'TypeError', message: 'Value out of range. Must be between -2147483648 and 2147483647 (inclusive).' });
 const bogus = asked.length;
 await assert.rejects(BUCKET.list({ include: ['bogus'] }), { name: 'RangeError', message: 'Unsupported include value bogus' });
@@ -161,4 +193,4 @@ await BUCKET.delete(['a', 'b']);
 assert.deepEqual(asked.at(-1), ['delete', ['a', 'b']]);
 await assert.rejects(BUCKET.createMultipartUpload('k'), /not supported/);
 
-console.log('inner-storage-env: env.DB and env.BUCKET are the platform\'s API over the bindings');
+console.log('inner-storage-env: env.KV, env.DB and env.BUCKET are the platform\'s API over the bindings');

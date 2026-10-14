@@ -24,7 +24,8 @@
 
 import { z } from 'zod/v4';
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import { jsgInt, type KvCall, type KvGetOptions, type KvJson, type KvListOptions, type KvPutOptions } from '@nimbus-sh/fabric/inner-storage-env.js';
+import type { KvCall, KvGetOptions, KvJson, KvListOptions, KvPutOptions } from '@nimbus-sh/fabric/inner-storage-env.js';
+import { jsgInt } from '@nimbus-sh/fabric/jsg-int.js';
 import { ensureBindingDir, fileStream, writeBody } from './body.js';
 import { cursorAfter, cursorKey, listObjectFiles, objectFileName, objectStoreDir, removeObjectFiles, uploadFileName, utf8Order } from './object-store.js';
 

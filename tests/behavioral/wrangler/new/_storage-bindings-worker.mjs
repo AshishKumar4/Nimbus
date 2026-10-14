@@ -111,6 +111,11 @@ async function kv(KV) {
     (await KV.list({ prefix: 'p/', limit: NaN })).keys.length,
   ]);
   out.ttlNaN = await attempt(() => KV.put('t3', 'x', { expirationTtl: NaN }));
+  out.limitBigInt = {
+    direct: await attempt(() => KV.list({ prefix: 'p/', limit: 1n })),
+    valueOf: await attempt(() => KV.list({ prefix: 'p/', limit: { valueOf: () => 1n } })),
+    numberValueOf: await attempt(async () => (await KV.list({ prefix: 'p/', limit: { valueOf: () => 2 } })).keys.length),
+  };
   out.listLimitNotPositive = await attempt(async () => [(await KV.list({ prefix: 'p/', limit: 0 })).keys.length, (await KV.list({ prefix: 'p/', limit: -1 })).keys.length]);
   out.bigStream = await attempt(async () => {
     const refused = await attempt(() => KV.put('big', pieces(1024)));
@@ -366,6 +371,11 @@ async function r2(BUCKET) {
     (await BUCKET.list({ prefix: 'v/', limit: 2.9 })).truncated,
   ]);
   out.listLimitNaN = await attempt(() => BUCKET.list({ limit: NaN }));
+  out.listLimitBigInt = {
+    direct: await attempt(() => BUCKET.list({ limit: 1n })),
+    valueOf: await attempt(() => BUCKET.list({ limit: { valueOf: () => 1n } })),
+    numberValueOf: await attempt(async () => (await BUCKET.list({ prefix: 'v/', limit: { valueOf: () => 2 } })).objects.map((o) => o.key)),
+  };
   out.delete = await attempt(async () => {
     const one = await BUCKET.delete('hello.txt');
     const many = await BUCKET.delete(['v/string', 'v/buffer', 'never-stored']);
@@ -476,6 +486,7 @@ const EXPECTED = {
       "bulkJsonNull": {"value": [["jnull", null], ["missing", null]]},
       "limitsCoerced": {"value": [2, 1, 3]},
       "ttlNaN": {"error": {"name": "Error", "message": "KV PUT failed: 400 Invalid expiration_ttl of 0. Please specify integer greater than 0."}},
+      "limitBigInt": {"direct": {"error": {"name": "TypeError", "message": "Cannot convert a BigInt value to a number"}}, "valueOf": {"error": {"name": "TypeError", "message": "Cannot convert a BigInt value to a number"}}, "numberValueOf": {"value": 2}},
       "listLimitNotPositive": {"value": [3, 3]},
       "bigStream": {"value": {"name": "Error", "message": "KV PUT failed: 413 Value length of N exceeds limit of 26214400.", "pastLimit": true, "stored": null}},
       errors: {
@@ -563,6 +574,7 @@ const EXPECTED = {
       "listLimit": {"error": {"name": "Error", "message": "list: MaxKeys params must be positive integer <= 1000. (10022)"}},
       "listLimitCoerced": {"value": [["v/blob"], ["v/blob", "v/buffer"], true]},
       "listLimitNaN": {"error": {"name": "Error", "message": "list: MaxKeys params must be positive integer <= 1000. (10022)"}},
+      "listLimitBigInt": {"direct": {"error": {"name": "TypeError", "message": "Cannot convert a BigInt value to a number"}}, "valueOf": {"error": {"name": "TypeError", "message": "Cannot convert a BigInt value to a number"}}, "numberValueOf": {"value": ["v/blob", "v/buffer"]}},
       "delete": {"value": [null, null, null, ["v/blob", "v/null", "v/stream", "v/view"]]},
       "longKey": {"error": {"name": "Error", "message": "put: The specified object name is not valid. (10020)"}},
       "metadataCoerced": {"value": {"put": {"class": "HeadResult", "keys": ["ssecKeyMd5", "storageClass", "range", "customMetadata", "httpMetadata", "uploaded", "checksums", "httpEtag", "etag", "size", "version", "key"], "key": "meta.txt", "size": 1, "etag": "6f8f57715090da2632453988d9a1501b", "httpEtag": "\"6f8f57715090da2632453988d9a1501b\"", "version": true, "uploaded": true, "httpMetadata": {"contentType": "1"}, "customMetadata": {"count": "1", "flag": "true"}, "checksums": {"md5": "6f8f57715090da2632453988d9a1501b"}, "md5": "6f8f57715090da2632453988d9a1501b", "storageClass": "", "body": false, "writeHttpMetadata": "function"}, "head": {"class": "HeadResult", "keys": ["ssecKeyMd5", "storageClass", "range", "customMetadata", "httpMetadata", "uploaded", "checksums", "httpEtag", "etag", "size", "version", "key"], "key": "meta.txt", "size": 1, "etag": "6f8f57715090da2632453988d9a1501b", "httpEtag": "\"6f8f57715090da2632453988d9a1501b\"", "version": true, "uploaded": true, "httpMetadata": {"contentType": "1"}, "customMetadata": {"count": "1", "flag": "true"}, "range": {"offset": 0, "length": 1}, "checksums": {"md5": "6f8f57715090da2632453988d9a1501b"}, "md5": "6f8f57715090da2632453988d9a1501b", "storageClass": "", "body": false, "writeHttpMetadata": "function"}, "get": {"class": "GetResult", "keys": ["ssecKeyMd5", "storageClass", "range", "customMetadata", "httpMetadata", "uploaded", "checksums", "httpEtag", "etag", "size", "version", "key"], "key": "meta.txt", "size": 1, "etag": "6f8f57715090da2632453988d9a1501b", "httpEtag": "\"6f8f57715090da2632453988d9a1501b\"", "version": true, "uploaded": true, "httpMetadata": {"contentType": "1"}, "customMetadata": {"count": "1", "flag": "true"}, "range": {"offset": 0, "length": 1}, "checksums": {"md5": "6f8f57715090da2632453988d9a1501b"}, "md5": "6f8f57715090da2632453988d9a1501b", "storageClass": "", "body": true, "writeHttpMetadata": "function"}, "text": "m"}},

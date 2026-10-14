@@ -112,6 +112,10 @@ try {
   await write('/home/user/storage/wrangler.jsonc', JSON.stringify(WRANGLER_CONFIG));
   await write('/home/user/storage/src/index.js', WORKER);
   await terminal.run('cd /home/user/storage', 10_000);
+  /** The session's isolate generation (hib.isolateGen): it changes when the session is evicted or reset. */
+  const isolateGen = () => fetch(`${probe.base}/s/${sid}/api/_diag/memory`, { headers: requestHeaders() })
+    .then((r) => r.json()).then((diag) => diag.hib?.isolateGen ?? 'unknown', (error) => `unavailable: ${error}`);
+  const genBefore = await isolateGen();
   terminal.reset();
   terminal.cmd('wrangler dev');
   await terminal.waitFor((b) => /Worker built|Failed to start/.test(stripAnsi(b)), 120_000, 'wrangler dev build');
@@ -123,7 +127,8 @@ try {
     if (!(response.headers.get('content-type') ?? '').startsWith('application/json')) {
       // The session's own record says whether it restarted (and lost its dev server) since it began.
       const diag = await fetch(`${probe.base}/s/${sid}/api/_diag/memory`, { headers: requestHeaders() }).then((r) => r.text(), (error) => String(error));
-      assert.fail(`step ${step} answered ${response.headers.get('content-type')}: ${body.slice(0, 600)}\n${stripAnsi(terminal.buf).slice(-1500)}\nsession: ${diag.slice(0, 3000)}`);
+      assert.fail(`step ${step} answered ${response.headers.get('content-type')}: ${body.slice(0, 600)}\n${stripAnsi(terminal.buf).slice(-1500)}\n`
+        + `isolate generation before the build ${genBefore}, now ${await isolateGen()}\nsession: ${diag.slice(0, 3000)}`);
     }
     const answer = JSON.parse(body);
     assert.deepEqual(answer, nimbusAnswer(expectedAnswer(step)), `Nimbus answers step ${step} as Cloudflare does\n${body}`);

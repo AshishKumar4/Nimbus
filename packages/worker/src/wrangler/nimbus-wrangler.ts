@@ -450,12 +450,13 @@ export class NimbusWrangler {
       }
 
       // One load, with the full env. A Durable Object binding is a local
-      // namespace in the inner isolate, and a D1 or R2 binding the
+      // namespace in the inner isolate, and a KV, D1 or R2 binding the
       // platform's API, over the binding the loader passes (inner-env.ts):
       // the bundle's first import replaces it in the env every handler,
       // entrypoint and object of the isolate sees.
       const { mainModule, modules, classesEntrypoint } = innerWorkerModules(bundledCode, {
         durableObjects: doBindings.map((b) => b.name),
+        kv: (this.config.kv_namespaces ?? []).flatMap((kv) => (kv.binding ? [kv.binding] : [])),
         d1: (this.config.d1_databases ?? []).flatMap((d1) => (d1.binding ? [d1.binding] : [])),
         r2: (this.config.r2_buckets ?? []).flatMap((r2) => (r2.binding ? [r2.binding] : [])),
       });
@@ -691,8 +692,8 @@ export class NimbusWrangler {
     // .nimbus/{kv,r2}/<binding>, read and written as the process that
     // started the server; a D1 database is a facet of the session with its
     // own SQLite (bindings/d1-database.ts), so the session's tables are out
-    // of every statement's reach. The D1 and R2 APIs are made in the inner
-    // isolate over the binding (inner-storage-env.ts, inner-env.ts).
+    // of every statement's reach. The KV, D1 and R2 APIs are made in the
+    // inner isolate over the binding (inner-storage-env.ts, inner-env.ts).
     const supervisorDoId = this.supervisorCtx?.id?.toString?.() || '';
     const storageExports = this.supervisorCtx?.exports;
     const store = (name: string, cred?: VfsCred) => ({

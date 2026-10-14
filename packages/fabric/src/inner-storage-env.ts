@@ -17,17 +17,21 @@
  * flag) over the binding's `query`, which is D1's binding contract; and an
  * R2Bucket as workerd's (r2-bucket.c++), whose objects it makes from the
  * fields the binding answers. Each checks its arguments, and throws, as
- * workerd does before it sends a request. A KV binding needs no adapter:
- * its methods take and answer values that cross RPC, streams included, so
- * the binding is the Worker's env.KV as it is (bindings.ts
- * NimbusKVNamespace).
+ * workerd does before it sends a request. A KV binding's calls and answers
+ * cross RPC as they are, streams included; its env.KV converts only the
+ * options, as workerd's KV client does before it sends them: an int by
+ * ToNumber (jsg-int.ts), which an object's valueOf answers, and whose
+ * function would not cross RPC as one.
  *
  * Self-contained: compiled with its dependencies into an expression at
  * build time, which runs in the inner isolate.
  */
 
-/** The D1 and R2 bindings an inner Worker's env holds, by name. */
+import { jsgInt } from './jsg-int.js';
+
+/** The KV, D1 and R2 bindings an inner Worker's env holds, by name. */
 export interface InnerStorageNames {
+  kv: readonly string[];
   d1: readonly string[];
   r2: readonly string[];
 }
@@ -61,6 +65,15 @@ export type KvCall =
   | { method: 'put'; key: string; value: KvPutValue; options?: KvPutOptions }
   | { method: 'delete'; key: string }
   | { method: 'list'; options?: KvListOptions };
+
+/** The binding the loader passes for a KV namespace: KV's API, its options already converted. */
+export interface KvBindingRemote {
+  get(key: string | string[], options?: string | KvGetOptions): Promise<unknown>;
+  getWithMetadata(key: string | string[], options?: string | KvGetOptions): Promise<unknown>;
+  put(key: string, value: KvPutValue, options?: KvPutOptions): Promise<void>;
+  delete(key: string): Promise<void>;
+  list(options?: KvListOptions): Promise<unknown>;
+}
 
 // ── D1's binding contract (workerd d1-api.ts D1BindingService) ─────────────
 
@@ -216,6 +229,10 @@ export interface R2BucketRemote {
  * local object over it.
  */
 export function innerStorageAdapter(names: InnerStorageNames, env: object): void {
+  for (const name of names.kv) {
+    const remote: unknown = Reflect.get(env, name);
+    if (isRemote<KvBindingRemote>(remote, ['get', 'getWithMetadata', 'put', 'delete', 'list'])) Reflect.set(env, name, new KVNamespace(remote));
+  }
   for (const name of names.d1) {
     const remote: unknown = Reflect.get(env, name);
     if (isRemote<D1BindingRemote>(remote, ['query'])) Reflect.set(env, name, new D1Database(remote));
@@ -224,21 +241,6 @@ export function innerStorageAdapter(names: InnerStorageNames, env: object): void
     const remote: unknown = Reflect.get(env, name);
     if (isRemote<R2BucketRemote>(remote, ['head', 'get', 'put', 'delete', 'list'])) Reflect.set(env, name, new R2Bucket(remote));
   }
-}
-
-/**
- * An option workerd takes as an `int` (jsg's int wrapper): the number it
- * converts to (ToNumber), 0 for one that is not finite, truncated; out of
- * int32's range, the TypeError workerd throws.
- */
-export function jsgInt(value: number | string | undefined): number | undefined {
-  if (value === undefined) return undefined;
-  const number = Number(value);
-  if (!Number.isFinite(number)) return 0;
-  if (number < -2147483648 || number > 2147483647) {
-    throw new TypeError('Value out of range. Must be between -2147483648 and 2147483647 (inclusive).');
-  }
-  return Math.trunc(number);
 }
 
 /** Whether `value` is the binding the loader passes, with each of `methods` (an RPC stub's methods are its properties). */
@@ -251,6 +253,65 @@ function isRemote<T extends object>(value: unknown, methods: readonly (keyof T &
 function named<T extends abstract new (...args: never[]) => object>(type: T, name: string): T {
   return Object.defineProperty(type, 'name', { value: name, configurable: true });
 }
+
+// ── KV ─────────────────────────────────────────────────────────────────────
+
+/** KV's get options as workerd's client reads them: a type string, or a type and a cacheTtl int. */
+type KvGivenGetOptions = string | { type?: string | object; cacheTtl?: number | string | object };
+
+function kvGetOptions(options: KvGivenGetOptions | undefined): string | KvGetOptions | undefined {
+  if (options === undefined) return undefined;
+  if (typeof options !== 'object') return String(options);
+  const out: KvGetOptions = {};
+  if (options.type !== undefined) out.type = String(options.type);
+  const cacheTtl = jsgInt(options.cacheTtl);
+  if (cacheTtl !== undefined) out.cacheTtl = cacheTtl;
+  return out;
+}
+
+/** env.KV: the namespace's calls, their options converted as workerd's client converts them. */
+class KVNamespace {
+  readonly #remote: KvBindingRemote;
+
+  constructor(remote: KvBindingRemote) {
+    this.#remote = remote;
+  }
+
+  get(key: string | string[], options?: KvGivenGetOptions): Promise<unknown> {
+    return this.#remote.get(key, kvGetOptions(options));
+  }
+
+  getWithMetadata(key: string | string[], options?: KvGivenGetOptions): Promise<unknown> {
+    return this.#remote.getWithMetadata(key, kvGetOptions(options));
+  }
+
+  put(key: string, value: KvPutValue, options?: { expiration?: number | string | object; expirationTtl?: number | string | object; metadata?: KvJson }): Promise<void> {
+    if (options === undefined) return this.#remote.put(key, value);
+    const out: KvPutOptions = {};
+    const expiration = jsgInt(options.expiration);
+    if (expiration !== undefined) out.expiration = expiration;
+    const expirationTtl = jsgInt(options.expirationTtl);
+    if (expirationTtl !== undefined) out.expirationTtl = expirationTtl;
+    if (options.metadata !== undefined) out.metadata = options.metadata;
+    return this.#remote.put(key, value, out);
+  }
+
+  delete(key: string): Promise<void> {
+    return this.#remote.delete(key);
+  }
+
+  list(options?: { prefix?: string | null; limit?: number | string | object; cursor?: string | null }): Promise<unknown> {
+    if (options === undefined) return this.#remote.list();
+    const out: KvListOptions = {};
+    const limit = jsgInt(options.limit);
+    if (limit !== undefined) out.limit = limit;
+    if (options.prefix !== undefined && options.prefix !== null) out.prefix = String(options.prefix);
+    if (options.cursor !== undefined && options.cursor !== null) out.cursor = String(options.cursor);
+    return this.#remote.list(out);
+  }
+}
+
+named(KVNamespace, 'KvNamespace');
 
 // ── D1 ─────────────────────────────────────────────────────────────────────
 

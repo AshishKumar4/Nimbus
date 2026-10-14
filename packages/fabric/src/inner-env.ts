@@ -39,7 +39,7 @@ export function innerWorkerModules(bundle: string, names: InnerBindingNames): {
   modules: Record<string, string>;
   classesEntrypoint: string | null;
 } {
-  const storage = names.d1.length > 0 || names.r2.length > 0;
+  const storage = names.kv.length > 0 || names.d1.length > 0 || names.r2.length > 0;
   if (names.durableObjects.length === 0 && !storage) return { mainModule: MAIN_MODULE, modules: { [MAIN_MODULE]: bundle }, classesEntrypoint: null };
   const adapter = ["import { env, RpcStub, WorkerEntrypoint } from 'cloudflare:workers';"];
   let head = `import './${ADAPTER_MODULE}';`;
@@ -58,7 +58,7 @@ export function innerWorkerModules(bundle: string, names: InnerBindingNames): {
   if (storage) {
     adapter.push(
       `const { innerStorageAdapter } = ${INNER_STORAGE_ADAPTER_SOURCE};`,
-      `innerStorageAdapter(${JSON.stringify({ d1: names.d1, r2: names.r2 })}, env);`,
+      `innerStorageAdapter(${JSON.stringify({ kv: names.kv, d1: names.d1, r2: names.r2 })}, env);`,
     );
   }
   // A hashbang must stay first.
