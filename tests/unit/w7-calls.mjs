@@ -57,7 +57,7 @@ function oneByOne(user, calls) {
         case 'unlink': user.unlink(call.path); break;
         case 'rmdir': user.rmdir(call.path); break;
         case 'symlink': user.symlink(call.target, call.path); break;
-        case 'copyFile': user.copyFile(call.from, call.path); break;
+        case 'copyFile': user.copyFile(call.from, call.path, { keepMode: true }); break;
       }
     } catch (error) {
       return { refusedAt: index, errno: error.code };

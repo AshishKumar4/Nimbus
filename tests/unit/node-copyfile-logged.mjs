@@ -2,10 +2,12 @@
 // fs.promises.copyFile, and fs.copyFile, are one copy the session makes, in
 // program order: it copies what the program wrote to the source before it,
 // the file's bytes neither read by the process nor sent back, and the copy
-// is left as copyfile leaves it (the source's mode exactly, past the umask;
+// is left as copyfile leaves it (the source's mode exactly, past the umask,
+// a file there too, set in the copy itself: one change at the session;
 // COPYFILE_EXCL refuses a name that is there). The program's own view has
 // the copy's bytes at once (readFileSync, require). Red before: the copy
-// read the whole source (fsReadBatch) and sent it back as a write.
+// read the whole source (fsReadBatch) and sent it back as a write; then its
+// mode came after it, a change of its own.
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -33,6 +35,11 @@ kernel.mkdir('srv/data', { recursive: true });
 kernel.chown('srv/data', 1000, 1000);
 authority.rawVfs.as(cred).writeFile('srv/data/unread.bin', big);
 authority.rawVfs.as(cred).chmod('srv/data/unread.bin', 0o666);
+// A file there, narrower than what is copied over it.
+authority.rawVfs.as(cred).writeFile('home/user/c.txt', 'old');
+authority.rawVfs.as(cred).chmod('home/user/c.txt', 0o640);
+const changesToC = [];
+kernel.subscribe('home/user', (event) => { if (event.path === 'home/user/c.txt') changesToC.push(event.type); });
 
 const program = `
 const fs = require('fs');
@@ -47,7 +54,6 @@ const fs = require('fs');
   await fs.promises.copyFile('/srv/data/unread.bin', '/home/user/copy.bin');
   seen.copyMode = (await fs.promises.stat('/home/user/copy.bin')).mode & 0o777;
   // Over a file that is there, and refused with COPYFILE_EXCL.
-  fs.writeFileSync('/home/user/c.txt', 'old');
   await new Promise((resolve, reject) => fs.copyFile('/home/user/a.txt', '/home/user/c.txt', (e) => (e ? reject(e) : resolve())));
   try { await fs.promises.copyFile('/home/user/a.txt', '/home/user/c.txt', fs.constants.COPYFILE_EXCL); seen.excl = 'copied'; }
   catch (error) { seen.excl = error.code + ' ' + error.syscall; }
@@ -91,6 +97,7 @@ check('the program reads the copy at once', () => assert.equal(seen.syncRead, 's
 check('a file it never read is copied whole', () => assert.deepEqual(kernel.readFile('home/user/copy.bin'), big));
 check('with the source\'s mode exactly, past the umask', () => assert.deepEqual([seen.copyMode, kernel.stat('home/user/copy.bin').mode & 0o777], [0o666, 0o666]));
 check('over a file that is there', () => assert.equal(text('home/user/c.txt'), 'second'));
+check('with the source\'s mode, in the one change the copy is', () => assert.deepEqual([kernel.stat('home/user/c.txt').mode & 0o777, changesToC.length], [0o644, 1], JSON.stringify(changesToC)));
 check('COPYFILE_EXCL refuses a name that is there', () => assert.equal(seen.excl, 'EEXIST copyfile'));
 check('no byte of a source is read by the process', () => assert.deepEqual(reads, [], JSON.stringify(reads).slice(0, 600)));
 for (const r of results) realProcess.stderr.write(r.join('  ') + '\n');
