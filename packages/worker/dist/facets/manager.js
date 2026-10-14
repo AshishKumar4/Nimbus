@@ -44,7 +44,7 @@ import { sessionIdentity, unbindPublicPortCapability } from '../router/public-di
 import { prefetchForRequire, requireFsOverBridge, resolveDeferredImport, ClosureBoundExceededError, } from '@nimbus-sh/core/runtime/require-resolver.js';
 import { typeScriptStripOptions } from '@nimbus-sh/core/runtime/node-cli.js';
 import { findStaticFsReferences } from '@nimbus-sh/core/runtime/static-fs-refs.js';
-import { packageScopeType } from '@nimbus-sh/core/runtime/require-resolution.js';
+import { fileCell, packageScopeType } from '@nimbus-sh/core/runtime/require-resolution.js';
 import { isManifestKey, linkTargetOf, packageRootOf, planFacetData } from './data-plan.js';
 import { principalTag, profilePrincipal, ReadProfile, verifiedEvidence, } from './read-profile.js';
 /** What the shared read profile may add to one launch: an eighth of its module map's bytes. */
@@ -1901,18 +1901,13 @@ async function facetVfsBundleSourceFor(vfsState, pacer) {
             + 'it cannot generate a second one');
     }
     return vfsState.bundleSource
-        ?? await buildFacetVfsBundleSource(vfsState.bundle, vfsState.bundleSideModulesRequired, pacer, { emits: vfsState.emits, esm: vfsState.esm, codeOnly: vfsState.codeOnly, dataModules: vfsState.dataModules });
+        ?? await buildFacetVfsBundleSource(vfsState.bundle, pacer, { emits: vfsState.emits, esm: vfsState.esm, codeOnly: vfsState.codeOnly, dataModules: vfsState.dataModules });
 }
 /**
- * hardening-r5: read a file from the VFS and decide whether to keep it
- * as a string (valid UTF-8 text — the hot path for source code,
- * package.json, configs) or as Uint8Array bytes (binary — wasm
- * modules, images, sqlite blobs, etc.).
- *
- * Strategy: read bytes, attempt a fatal UTF-8 decode. If decode
- * succeeds the file IS valid UTF-8 and the string round-trips
- * losslessly through JSON; return string. If decode throws (any
- * invalid byte sequence) return Uint8Array.
+ * hardening-r5: read a file from the VFS as a cell (fileCell): a string when
+ * it is valid UTF-8 (source code, package.json, configs), every byte kept, a
+ * leading byte order mark too, so the string round-trips losslessly; else
+ * its Uint8Array bytes (wasm modules, images, sqlite blobs).
  *
  * Throws on read errors (caller wraps in try/catch — matches the
  * pre-fix readFileString contract).
@@ -1921,12 +1916,7 @@ async function _readBundleCell(vfs, path) {
     const bytes = await filesOf(vfs).readBytes(path);
     if (bytes === null)
         throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT', path });
-    try {
-        return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-    }
-    catch {
-        return bytes;
-    }
+    return fileCell(bytes);
 }
 /**
  * hardening-r5: byte-length of a bundle cell for budget accounting.
@@ -2009,41 +1999,11 @@ function retainedVfsStateBytes(state) {
     return bytes;
 }
 /**
- * UTF-8 byte length of `JSON.stringify(value)` — computed, for the string
- * case, without building the string. A source cell can be megabytes on its
- * own, and the point of the incremental accounting is that sizing the
- * snapshot never allocates a second copy of anything in it.
- *
- * Uint8Array has no JSON representation of its own: JSON.stringify expands
- * it to `{"0":byte,"1":byte,...}`. Materializing that form while merely
- * sizing a binary cell can allocate more than twelve times the file's raw
- * bytes, so count its punctuation and decimal digits directly too.
- *
- * Other values here are the small manifest object or a permission-denial
- * marker and can take the direct route.
+ * UTF-8 byte length of `JSON.stringify(value)`, computed without building
+ * the string: a source cell can be megabytes on its own, and sizing a
+ * generated source never allocates a second copy of anything in it.
  */
 function _jsonEncodedBytes(value) {
-    if (value instanceof Uint8Array) {
-        let bytes = 2; // the surrounding braces
-        let indexDigits = 1;
-        let nextIndexWidth = 10;
-        for (let index = 0; index < value.byteLength; index++) {
-            if (index === nextIndexWidth) {
-                indexDigits++;
-                nextIndexWidth *= 10;
-            }
-            if (index > 0)
-                bytes += 1; // comma
-            // `"index":byte`: quotes + decimal key + colon + decimal byte.
-            const byte = value[index];
-            const byteDigits = byte < 10 ? 1 : byte < 100 ? 2 : 3;
-            bytes += 3 + indexDigits + byteDigits;
-        }
-        return bytes;
-    }
-    if (typeof value !== 'string') {
-        return new TextEncoder().encode(JSON.stringify(value)).length;
-    }
     let bytes = 2; // the surrounding quotes
     for (let i = 0; i < value.length; i++) {
         const code = value.charCodeAt(i);
@@ -2084,50 +2044,6 @@ function _jsonEncodedBytes(value) {
         bytes += 3;
     }
     return bytes;
-}
-/** `{"bundle":` + `}`: the frame around the one member. */
-const ENCODED_PAYLOAD_FRAME_BYTES = 11;
-/**
- * Running UTF-8 byte length of `JSON.stringify({ bundle, manifest })`,
- * accumulated one cell at a time.
- *
- * Measuring it by materializing the payload — `encode(stringify(...))`,
- * which the eviction loop used to redo after every single eviction — puts
- * several full copies of a multi-megabyte bundle in the supervisor DO at
- * once. On a working tree carrying one large data file that is enough to
- * reset the DO, which drops the shell's WebSocket server-side without
- * closing it and wedges the user's terminal with no error anywhere.
- *
- * JSON object serialization is `{` + `"key":value` joined by `,` + `}`, so
- * the total is a sum of independent per-cell terms: exact, incremental, and
- * never holding more than one cell's worth of scratch.
- */
-export function encodedBundleSize(bundle) {
-    const cells = new Map();
-    let cellSum = 0;
-    const self = {
-        add(path, cell) {
-            if (cells.has(path))
-                return;
-            const bytes = _jsonEncodedBytes(path) + 1 + _jsonEncodedBytes(cell);
-            cells.set(path, bytes);
-            cellSum += bytes;
-        },
-        remove(path) {
-            const bytes = cells.get(path);
-            if (bytes === undefined)
-                return;
-            cells.delete(path);
-            cellSum -= bytes;
-        },
-        get bytes() {
-            const separators = Math.max(0, cells.size - 1);
-            return ENCODED_PAYLOAD_FRAME_BYTES + 2 + cellSum + separators;
-        },
-    };
-    for (const [path, cell] of Object.entries(bundle))
-        self.add(path, cell);
-    return self;
 }
 /**
  * Bounded `path (N bytes)` listing, largest first. A snapshot diagnostic has
@@ -2218,7 +2134,7 @@ const FACET_VFS_MODULE_SOURCE_MARGIN = 1024;
  * its own `.length` — and the encode also flattens the string it is given,
  * so a rope the template builder had not yet paid for becomes flat too.
  *
- * Same discipline `_jsonEncodedBytes` already applies to the snapshot:
+ * Same discipline `_jsonEncodedBytes` applies to a cell's JSON text:
  * sizing something never allocates a copy of it. Exactly equivalent to the
  * encoder, including its replacement of an unpaired surrogate with U+FFFD.
  */
@@ -2307,7 +2223,7 @@ function isCodeCellPath(path) {
  * split into ordered fragments; the merge expression concatenates those
  * fragments back to the original string or Uint8Array.
  */
-export async function buildFacetVfsBundleSource(bundle, forceSideModules = false, pacer, { consume = false, emits, esm, codeOnly, dataModules, runtimeCode, } = {}) {
+export async function buildFacetVfsBundleSource(bundle, pacer, { consume = false, emits, esm, codeOnly, dataModules, runtimeCode, } = {}) {
     const storageBytes = moduleMapStorageBytes(bundle, codeOnly);
     const codeModules = {};
     const esModules = { ...esm?.members };
@@ -2356,7 +2272,7 @@ export async function buildFacetVfsBundleSource(bundle, forceSideModules = false
         }
     }
     return {
-        ...await serializeFacetVfsData(data, forceSideModules, pacer, consume),
+        ...await serializeFacetVfsData(data, pacer, consume),
         codeModules,
         esModules,
         codeCells: JSON.stringify(rows),
@@ -2365,16 +2281,13 @@ export async function buildFacetVfsBundleSource(bundle, forceSideModules = false
         storageBytes,
     };
 }
-async function serializeFacetVfsData(bundle, forceSideModules, pacer, consume) {
+async function serializeFacetVfsData(bundle, pacer, consume) {
     // Consumed, side modules always: an inline expression is copied again into
-    // the runner's own source.
-    if (consume)
-        forceSideModules = true;
-    // Size the inline form before building it. A bundle that will be split has
-    // no use for the whole-bundle expression, and building one to read its
-    // length off cost a second full copy of the largest string this DO makes.
-    if (!forceSideModules
-        && _inlineBundleSourceBytes(bundle) <= BUNDLE_MAX_ENCODED_BYTES) {
+    // the runner's own source. Otherwise the inline form is sized before it is
+    // built: a bundle that will be split has no use for the whole-bundle
+    // expression, and building one to read its length off cost a second full
+    // copy of the largest string this DO makes.
+    if (!consume && _inlineBundleSourceBytes(bundle) <= BUNDLE_MAX_ENCODED_BYTES) {
         return { expression: _serializeBundleForFacet(bundle), imports: '', modules: {} };
     }
     if (Object.keys(bundle).length === 0) {
@@ -2490,8 +2403,8 @@ async function serializeFacetVfsData(bundle, forceSideModules, pacer, consume) {
  * A staged spec crosses the fabric as ONE RPC payload, so its snapshot has
  * no side-module relief: `MAX_RPC_SAFE_PAYLOAD_BYTES` is a hard physical
  * ceiling, not a policy knob that can be raised. Base64-reviving binary
- * cells inflates the serialized form ~4/3 over the raw bytes the encoded-size
- * pass measured, so the payload can clear that pass and still not fit.
+ * cells inflates the serialized form ~4/3 over the raw bytes the snapshot's
+ * guard measured, so the payload can clear that guard and still not fit.
  *
  * Fail here, naming the cells that dominate the snapshot. Shipping a
  * shortened one instead would surface inside the facet as an
@@ -4441,7 +4354,6 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
     //    Evicting an enrichment file is a real loss — the sync fs reads it
     //    exists for cannot fall back to the supervisor — so the paths that
     //    went are named rather than silently dropped.
-    const size = encodedBundleSize(bundle);
     const rawBytes = new Map();
     let rawTotal = 0;
     /** What the bound evicts, held until its images and reads are named below. */
@@ -4540,7 +4452,6 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
             emits.delete(k);
             esModules.delete(k);
             codeOnly.delete(k);
-            size.remove(k);
         }
         // How many it evicted, beside the phases' times (exec telemetry).
         phases.evicted = evicted.length;
@@ -4553,7 +4464,6 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
         }
     }
     const fileCount = Object.keys(bundle).length;
-    const bundleSideModulesRequired = size.bytes > BUNDLE_MAX_ENCODED_BYTES;
     phase('guard');
     // What only an import() reaches: phase 2's modules, less any a staged
     // package entry's static walk reaches (a synchronous require of that entry
@@ -4653,7 +4563,6 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
         ...(transforms ? { transforms } : {}),
         ...(lazyModules.length > 0 ? { lazyModules, lazyImporters } : {}),
         ...(readers.length > 0 ? { evictedReaders: readers } : {}),
-        bundleSideModulesRequired,
         ...(wasmImages.length > 0 ? { wasmImages } : {}),
     };
 }
@@ -5723,8 +5632,6 @@ export class FacetManager {
             return held.json;
         }
         const vfs = this.filesystem.bind({ pid: entry.pid, cred });
-        // The text is the file's bytes, a byte order mark included.
-        const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
         const files = {};
         let bytes = 0;
         for (let after = null;;) {
@@ -5739,13 +5646,10 @@ export class FacetManager {
                 const read = await filesOf(vfs).readBytes(k).catch(() => null);
                 if (read === null || await sha256Hex(read) !== listed.contentKey)
                     continue;
-                let text;
-                try {
-                    text = decoder.decode(read);
-                }
-                catch {
+                // The text is the file's bytes, a byte order mark included.
+                const text = fileCell(read);
+                if (typeof text !== 'string')
                     continue;
-                }
                 files[k] = [listed.contentKey, text];
                 bytes += read.byteLength;
                 await pacer.spend(read.byteLength);
@@ -6105,7 +6009,7 @@ export class FacetManager {
             // serves (a cache hit included).
             vfsState.moduleStorageBytes = moduleMapStorageBytes(vfsState.bundle, vfsState.codeOnly);
             const serializeFrom = Date.now();
-            vfsState.bundleSource = await buildFacetVfsBundleSource(vfsState.bundle, vfsState.bundleSideModulesRequired, pacer, {
+            vfsState.bundleSource = await buildFacetVfsBundleSource(vfsState.bundle, pacer, {
                 consume: true,
                 emits: vfsState.emits,
                 esm: vfsState.esm,

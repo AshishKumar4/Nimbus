@@ -32,6 +32,7 @@ import { stripLeadingSlashes } from '../vfs/path.js';
 import { isNativeBinPath } from './os-contracts.js';
 import { stripCommentsForImports } from './comment-strip.js';
 import { createEsmResolver } from '../_shared/esm-resolver.js';
+import { packageJsonText } from '../_shared/exports-resolver.js';
 import { forEachNode, parseJavaScriptProgram } from './javascript-ast.js';
 import { requireWrapperCalls } from './require-wrappers.js';
 // The CommonJS resolver this walk stages from (require-resolution.ts).
@@ -242,11 +243,14 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
                 return null;
             }
         }
-        let content;
+        // The cell copies the file: its every byte, a leading byte order mark too.
+        let content = null;
         try {
-            content = reuseHeld ? heldText : await vfs.readFileString(path);
+            const bytes = reuseHeld ? null : await vfs.readBytes(path);
+            content = reuseHeld ? heldText : bytes === null ? null : heldCellText(bytes);
         }
-        catch {
+        catch { /* unreadable */ }
+        if (content === null) {
             if (policy)
                 declined = { kind: 'dependency-closure-declined', path, reason: 'unreadable' };
             return null;
@@ -304,7 +308,7 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
     function deferBins(manifestPath) {
         let manifest;
         try {
-            manifest = JSON.parse(String(bundle[manifestPath]));
+            manifest = JSON.parse(packageJsonText(String(bundle[manifestPath])));
         }
         catch {
             return;

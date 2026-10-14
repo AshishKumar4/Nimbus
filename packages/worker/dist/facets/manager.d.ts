@@ -356,7 +356,7 @@ interface FacetVfsState {
     };
     /** Diagnostics: how many files survived the cap (post-greedy-oversample). */
     reachableCount: number;
-    /** Diagnostics: was the bundle truncated by the encoded-size cap? */
+    /** Diagnostics: did the snapshot's raw-byte bound evict optional files? */
     truncated: boolean;
     /**
      * The raw bytes the snapshot's guard counted for the cells it kept: a
@@ -399,8 +399,6 @@ interface FacetVfsState {
      * not exceed the main module's text-size ceiling.
      */
     bundleSource?: FacetVfsBundleSource;
-    /** Move the bundle out of the main module when combined state exceeds its ceiling. */
-    bundleSideModulesRequired?: boolean;
     /**
      * The wasm images the closure holds, by path and content digest — see
      * `collectClosureWasmImages`. A launch stages each as a wasm map entry.
@@ -523,26 +521,6 @@ interface FacetVfsBundleSource {
     storageBytes: number;
 }
 /**
- * Running UTF-8 byte length of `JSON.stringify({ bundle, manifest })`,
- * accumulated one cell at a time.
- *
- * Measuring it by materializing the payload — `encode(stringify(...))`,
- * which the eviction loop used to redo after every single eviction — puts
- * several full copies of a multi-megabyte bundle in the supervisor DO at
- * once. On a working tree carrying one large data file that is enough to
- * reset the DO, which drops the shell's WebSocket server-side without
- * closing it and wedges the user's terminal with no error anywhere.
- *
- * JSON object serialization is `{` + `"key":value` joined by `,` + `}`, so
- * the total is a sum of independent per-cell terms: exact, incremental, and
- * never holding more than one cell's worth of scratch.
- */
-export declare function encodedBundleSize(bundle: FacetVfsBundle): {
-    add(path: string, cell: FacetVfsBundle[string]): void;
-    remove(path: string): void;
-    readonly bytes: number;
-};
-/**
  * Serialize a VFS bundle for Worker Loader without dropping required files.
  *
  * Every code cell becomes its own `{ cjs }` module (commonjs-cell.ts), which
@@ -560,7 +538,7 @@ export declare function encodedBundleSize(bundle: FacetVfsBundle): {
  * split into ordered fragments; the merge expression concatenates those
  * fragments back to the original string or Uint8Array.
  */
-export declare function buildFacetVfsBundleSource(bundle: FacetVfsBundle, forceSideModules?: boolean, pacer?: TurnBudget, { consume, emits, esm, codeOnly, dataModules, runtimeCode, }?: {
+export declare function buildFacetVfsBundleSource(bundle: FacetVfsBundle, pacer?: TurnBudget, { consume, emits, esm, codeOnly, dataModules, runtimeCode, }?: {
     consume?: boolean;
     /** The module of each cell a transform changed (FacetVfsState.emits). */
     emits?: ReadonlyMap<string, string>;
@@ -577,8 +555,8 @@ export declare function buildFacetVfsBundleSource(bundle: FacetVfsBundle, forceS
  * A staged spec crosses the fabric as ONE RPC payload, so its snapshot has
  * no side-module relief: `MAX_RPC_SAFE_PAYLOAD_BYTES` is a hard physical
  * ceiling, not a policy knob that can be raised. Base64-reviving binary
- * cells inflates the serialized form ~4/3 over the raw bytes the encoded-size
- * pass measured, so the payload can clear that pass and still not fit.
+ * cells inflates the serialized form ~4/3 over the raw bytes the snapshot's
+ * guard measured, so the payload can clear that guard and still not fit.
  *
  * Fail here, naming the cells that dominate the snapshot. Shipping a
  * shortened one instead would surface inside the facet as an
