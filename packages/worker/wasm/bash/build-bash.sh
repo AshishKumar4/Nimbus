@@ -1,14 +1,9 @@
 #!/usr/bin/env bash
 # Build unmodified GNU bash 5.2 -> wasm32-wasi + the Nimbus fork/exec/pipe layer.
-# Reproducible off-platform recipe (REAL-FORK-BASH-PLAN §3 route 2). Presented
-# as-is, maintained by Claude. Requires: wasi-sdk >= 24, a host cc (build tools).
-#
-# Status (2026-07-20): configure SUCCEEDS; bash core objects compile to wasm
-# (general.o, eval.o verified; shell/execute_cmd/subst compile once generated
-# headers exist). Remaining to a running bash.wasm: (1) let the real Makefile
-# drive the target build with these flags (build tools native, target with
-# SjLj+overlay); (2) link with nimbus-proc.o + __wasm_setjmp/__wasm_longjmp;
-# (3) wasm-opt --asyncify the nimbus_proc blocking imports. See BRINGUP.md.
+# The published bash.async.wasm is built by build-in-bwrap.sh, which runs this
+# with pinned sources in a sandbox (scripts/ci/remote-bash-build.mjs runs that
+# on armada). Requires: wasi-sdk 25 (WASI_SDK), an extracted bash 5.2.37 tree
+# (BASH_SRC), wasm-opt on PATH, and a host gcc and make for bash's build tools.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 : "${WASI_SDK:?set WASI_SDK to the wasi-sdk root (bin/wasm32-wasi-clang)}"
@@ -34,6 +29,8 @@ if [ ! -f config.status ]; then
   # cross.cache holds target answers only, never a machine's configure
   # environment (its CC, its build triple). configure writes its cache
   # back, so it gets a copy.
+  # Every jmp_buf copy recorded for the runner (bash-runner@5: nimbus-proc.c's log).
+  patch -p1 --forward < "$HERE/patches/procenv.patch"
   cp "$HERE/cross.cache" nimbus-cross.cache
   CC="$CC" \
   CFLAGS="-std=gnu17 -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI_EMULATED_MMAN -O2" \
@@ -61,7 +58,7 @@ make -j"${NIMBUS_BUILD_JOBS:-1}" CC_FOR_BUILD='gcc -std=gnu17' CFLAGS="$TARGET_C
 
 # nimbus-proc.o: the process/setjmp/termios/signal trap layer linked into bash.
 "$CC" -std=gnu17 -D_GNU_SOURCE -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS $INC -O2 \
-  -c "$HERE/nimbus-proc.c" -o "$HERE/nimbus-proc.o"
+  -c "$HERE/nimbus-proc.c" -o nimbus-proc.o
 
 # Explicit link. --no-gc-sections is REQUIRED: bash's main() is K&R 3-arg, so the
 # wasi crt's weak __main_argc_argv→main link doesn't root it under gc-sections and
@@ -77,8 +74,9 @@ OBJS="shell.o eval.o y.tab.o general.o make_cmd.o print_cmd.o dispose_cmd.o exec
 "$CC" -O2 -o bash $OBJS \
   -L./builtins -L./lib/readline -L./lib/glob -L./lib/tilde -L./lib/sh \
   -lbuiltins -lglob -lsh -lreadline -lhistory ./lib/termcap/libtermcap.a -ltilde \
-  "$HERE/nimbus-proc.o" $TARGET_LDFLAGS \
-  -Wl,--export=__stack_pointer -Wl,--allow-undefined -Wl,--no-gc-sections \
+  nimbus-proc.o $TARGET_LDFLAGS \
+  -Wl,--export=__stack_pointer -Wl,--export=__data_end -Wl,--export=__heap_base \
+  -Wl,--allow-undefined -Wl,--no-gc-sections \
   -Wl,--wrap=dup2 -Wl,--wrap=dup -Wl,--wrap=fcntl
 
 # fpcast-emu: bash's unwind_protect casts function pointers, which wasm's

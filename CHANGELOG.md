@@ -18,6 +18,11 @@ published independently in the `@nimbus-sh` npm scope.
 - Fixed: a process's recursive copy beneath a WASI preopen on a mount that
   answers asynchronously followed a link named as the source even when the
   copy did not ask to follow it.
+
+## 2026-10-14: platform 0.10.0, core 0.20.0, fabric 0.15.0, worker 0.18.0, sdk 0.15.0, loom 0.3.1, react 0.3.3, cli 0.2.7, create-nimbus-app 0.2.4 (config 0.3.1 unchanged)
+
+The 2026-10-13 versions reached production but were never published to npm; these carry their changes too.
+
 - Fixed (Node `fs`): a write keeps the bytes it was given. `writeFileSync`,
   `appendFileSync`, `fs.promises.writeFile` and a descriptor's `write` used
   the program's own buffer as the file's bytes, so changing or reusing the
@@ -81,6 +86,14 @@ published independently in the `@nimbus-sh` npm scope.
 - Fixed: `nimbus wrangler dev`'s assets binding read a project's assets as
   the session's user. It now reads them as the process that started the
   server, as it reads the project's config, bundle and stores.
+- Fixed: in the installed GNU bash, an `exit` or `return` inside `eval`, a
+  sourced file, a function or an EXIT trap now ends with the status bash
+  chose. Before, a jump through one of bash's saved copies of its jump
+  buffers could land in another capture: `eval 'exit 7'` exited 0, an EXIT
+  trap's exit was lost, and code after a `return` ran. This needs the bash
+  runtime 5.2.37-5 (runner `bash-runner@5`); a session with 5.2.37-3 is told
+  to install it. The bash module is now built by a reproducible recipe
+  (`scripts/ci/remote-bash-build.mjs`) and carries its provenance.
 - Fixed (Node `fs`): `fs.promises.realpath` and callback `fs.realpath`
   resolve symlinks and refuse a missing path with `ENOENT`, giving
   `realpathSync`'s answer; they returned the path as written. A link the
@@ -129,7 +142,7 @@ published independently in the `@nimbus-sh` npm scope.
   `return` inside `eval`, a sourced file, or an EXIT trap) now fails with
   "bash-runner: pid N returned from _start mid-rewind, its longjmp or resume
   target lost". It used to report exit status 0. The jump itself is fixed
-  with the next bash runtime build (bash-runner@4).
+  with the next bash runtime build (bash-runner@5).
 - Fixed: on Cloudflare, piping into the installed GNU bash (`printf x | bash
   -c 'read -r y'`) failed with "The RPC receiver does not implement the
   method "call"". bash now reads its piped stdin.

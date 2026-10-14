@@ -14,6 +14,7 @@
 #include "nimbus-proc.h"
 #include <errno.h>
 #include <string.h>
+#include <stdint.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -190,6 +191,28 @@ int sigsetjmp(sigjmp_buf env, int savesigs) { (void)savesigs; __np_setjmp((void 
 _Noreturn void longjmp(jmp_buf env, int val) { __np_longjmp((void *)env, val ? val : 1); __builtin_unreachable(); }
 _Noreturn void _longjmp(jmp_buf env, int val) { __np_longjmp((void *)env, val ? val : 1); __builtin_unreachable(); }
 _Noreturn void siglongjmp(sigjmp_buf env, int val) { __np_longjmp((void *)env, val ? val : 1); __builtin_unreachable(); }
+
+/* The hooks only record what they saw, here, in the module's own memory: a
+ * copy as (dst, src), a drop as (at, 0). The runner applies the records, in
+ * order, before it is next asked anything (setjmp's capture, longjmp, every
+ * unwind), so a hook is a store, not a call into the runner: thousands of
+ * them a run cost a cold runner a microsecond or more each as calls. A full
+ * log is handed over at once (nimbus_procenv.full, off asyncify's import
+ * list: it never unwinds). The record is the log's only writer here; the
+ * runner empties it. */
+#define NIMBUS_PROCENV_RECORDS 512
+static struct { uint32_t logged; uint32_t records[NIMBUS_PROCENV_RECORDS * 2]; } nimbus_procenv_log;
+__attribute__((import_module("nimbus_procenv"), import_name("full"))) extern void __np_procenv_full(void);
+/* Where the log is, for the runner: its count, then the records. */
+__attribute__((export_name("nimbus_procenv_log"))) void *nimbus_procenv_log_at(void) { return &nimbus_procenv_log; }
+static void nimbus_procenv_record(const void *at, const void *src) {
+  if (nimbus_procenv_log.logged == NIMBUS_PROCENV_RECORDS) { __np_procenv_full(); nimbus_procenv_log.logged = 0; }
+  uint32_t i = nimbus_procenv_log.logged++ * 2;
+  nimbus_procenv_log.records[i] = (uint32_t)(uintptr_t)at;
+  nimbus_procenv_log.records[i + 1] = (uint32_t)(uintptr_t)src;
+}
+void nimbus_procenv_copy(void *dst, const void *src) { memcpy(dst, src, sizeof(jmp_buf)); nimbus_procenv_record(dst, src); }
+void nimbus_procenv_drop(void *at) { nimbus_procenv_record(at, 0); }
 
 /* ---- termios (the RuntimeTtyOptions seam; non-interactive bash never calls
  * these — stubbed to a sane cooked-mode default. tcget/set route to the
