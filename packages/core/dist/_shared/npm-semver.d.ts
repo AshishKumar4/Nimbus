@@ -33,6 +33,19 @@ export declare function isSemverRange(range: string): boolean;
  * (ETARGET).
  */
 export declare function pickPackumentVersion(versions: unknown, distTags: unknown, range: string | null | undefined): string | null;
+/**
+ * The version a request for a package Nimbus stages builds of installs
+ * (`staged`: its staged versions, oldest first): the newest staged for an
+ * open range, else the highest staged the range admits; null where it admits
+ * none, and the request installs as any other (pickInstalledVersion).
+ */
+export declare function stagedBindingVersion(staged: readonly string[], range: string | null | undefined): string | null;
+/**
+ * The version a registry request installs, as every npm here installs it:
+ * the staged version the range takes (stagedBindingVersion), where the
+ * packument publishes it; else pickPackumentVersion's.
+ */
+export declare function pickInstalledVersion(versions: unknown, distTags: unknown, range: string | null | undefined, staged?: readonly string[]): string | null;
 /** The highest version satisfying `range`, or null; an open range is the caller's dist-tag lookup. */
 export declare function resolveVersion(versions: readonly string[], range: string): string | null;
 //# sourceMappingURL=npm-semver.d.ts.map

@@ -12,18 +12,32 @@ published independently in the `@nimbus-sh` npm scope.
   (`modules: { 'x.wasm': { wasm } }`) boots again after the session
   restarts. Its stored image wrote the module's bytes as `{}`, so the
   restarted program could not compile it. An image stored before this fix
-  has lost those bytes: its restart fails, naming the image, and the
-  application has to be spawned again.
+  has lost those bytes: unless the launch's `vfsWasmModules` or
+  `vfsTextModules` supplies the same module, its restart fails, naming the
+  image, and the application has to be spawned again.
 - Fixed: `opencode` reads the files of its working tree and installed
   packages as they are. Its snapshot was prepared as a Node program's
   module map: an installed module came back as Nimbus's rendering of it,
   and every module and TypeScript file went through the compiler for code
   opencode never runs.
-
+- Security: a D1 binding under `wrangler dev` is a database of its own (a
+  Durable Object facet of the session, its own SQLite), as on Cloudflare.
+  It ran its statements in the session's own database, and a table name it
+  had not created passed through unchanged, so a migration in the project's
+  `migrations_dir` could read or change the session's internal tables (its
+  filesystem, its storage ledger, its scrollback). A statement naming one
+  now finds no such table. Embedders re-export the new `NimbusD1Database`
+  class from their Worker's main module, as they do the other Nimbus
+  classes (`export * from '@nimbus-sh/sdk/entrypoints'` does); without it a
+  D1 binding is not made. A project's local D1 data starts empty in the new
+  database: its migrations apply again on the next `wrangler dev`.
+- Fixed: a D1 migration under `wrangler dev` applies whole or not at all,
+  as `wrangler d1 migrations apply` does. A failing statement left the rest
+  of its migration applied and the migration recorded as applied; now it is
+  rolled back, not recorded, logged, and ends the run, and the next
+  `wrangler dev` tries it again. The ledger is wrangler's `d1_migrations`.
 ## 2026-10-14: platform 0.10.0, core 0.21.0, fabric 0.16.0, worker 0.19.0, sdk 0.15.0, loom 0.3.1, react 0.3.3, cli 0.2.7, create-nimbus-app 0.2.4 (config 0.3.1 unchanged)
-
 The 2026-10-13 versions, and core 0.20.0, fabric 0.15.0 and worker 0.18.0 of this date, reached production but were never published to npm; these carry their changes too.
-
 - Fixed: a Node program's `http.get` or `http.request` to a server of the
   same program waits for the server's `res.end()`, as Node does. It
   answered at once, so a handler that ended from a timer or after an

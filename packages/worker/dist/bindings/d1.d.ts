@@ -1,41 +1,22 @@
 /**
- * binding-d1.ts — D1 database emulator for nimbus-wrangler.
+ * d1.ts — the D1 binding nimbus-wrangler gives a Worker under `wrangler
+ * dev` (https://developers.cloudflare.com/d1/worker-api/).
  *
- * Implements the Workers D1 runtime API
- * (https://developers.cloudflare.com/d1/worker-api/) backed by the
- * supervisor's own SqlStorage. Tables are namespaced per-binding via a
- * lightweight identifier-rewriter so two D1 bindings on the same
- * SqlStorage don't collide.
- *
- * Plan §14.1 (post-review amendment) recommends a child-DO-facet-per-
- * binding architecture for full isolation in production. Implementation
- * cost: a new DO class registered in src/index.ts + a wrangler.jsonc
- * migration entry. Deferred to W10.5 — for W10 we ship the simpler
- * single-storage variant with prefix-rewriting. Test seam preserves
- * the contract so the upgrade is a drop-in replacement.
- *
- * Rewriter scope (deliberately narrow):
- *   - CREATE [TABLE|INDEX|TRIGGER|VIEW] <name>      → prefixed
- *   - DROP TABLE <name>                              → prefixed
- *   - INSERT [OR ...] INTO <name>                    → prefixed
- *   - SELECT ... FROM <name> [, <name>] ... [JOIN <name>] ...  → prefixed
- *   - UPDATE <name>                                  → prefixed
- *   - DELETE FROM <name>                             → prefixed
- *   - WITH <cte> AS (SELECT ...)                     → CTE alias is NOT
- *     prefixed (it's a query-local alias, not a real table); the inner
- *     FROM <table> IS prefixed if it matches a known table
- *
- * SQL keywords are matched case-insensitively. We DO NOT rewrite inside
- * string literals (single-quoted) or quoted identifiers in
- * CREATE/INSERT/etc — the rewriter walks tokens, not bytes.
+ * Statements are prepared here and run in the binding's own database, a
+ * Durable Object facet of the session (d1-database.ts): never in the
+ * session's database, whose tables no statement can name.
  *
  * Bind parameter forms: '?' positional only. Named parameters (':name')
  * are NOT supported (D1 itself doesn't support them).
  */
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-export interface D1Result<T = Record<string, any>> {
+import type { D1Migration, D1MigrationOutcome, D1Statement } from './d1-database.js';
+/** A value SQLite stores, as workerd's SqlStorage gives and takes it. */
+export type SqlValue = ArrayBuffer | string | number | null;
+export type D1Row = Record<string, SqlValue>;
+export interface D1Result {
     success: boolean;
-    results?: T[];
+    results?: D1Row[];
     meta: D1Meta;
     error?: string;
 }
@@ -53,50 +34,51 @@ export interface D1ExecResult {
     count: number;
     duration: number;
 }
+/** The binding's database, as its facet's stub answers (d1-database.ts NimbusD1Database). */
+export interface D1Database {
+    query(statements: readonly D1Statement[], atomic: boolean): Promise<D1Result[]>;
+    exec(query: string): Promise<D1ExecResult>;
+    applyMigrations(migrations: readonly D1Migration[]): Promise<D1MigrationOutcome>;
+}
+/**
+ * The facet a project's database is: `d1:` and the project root and the
+ * database, each whole (a name made of either cannot be another's).
+ */
+export declare function d1DatabaseFacetName(root: string, database: string): string;
 export interface D1EmulatorOptions {
-    /** workerd SqlStorage instance, e.g. ctx.storage.sql. */
-    sqlStorage: any;
+    /**
+     * The binding's database. Called for each use: a facet's stub belongs to
+     * the request that got it.
+     */
+    database: () => D1Database;
     binding: string;
     vfs?: CredentialedVfs;
     root?: string;
     migrationsDir?: string;
     onLog?: (msg: string) => void;
 }
-export declare const RUN_ONE: unique symbol;
-export declare const RUN_ONE_SYNC: unique symbol;
 export declare class D1PreparedStatementEmu {
-    /** @internal */
-    _sql: string;
-    /** @internal */
-    _params: any[];
-    private _emu;
-    constructor(emu: D1Emulator, sql: string, params: any[]);
-    bind(...values: any[]): D1PreparedStatementEmu;
-    first<T = any>(colName?: string): Promise<T | null>;
-    run<T = any>(): Promise<D1Result<T>>;
-    all<T = any>(): Promise<D1Result<T>>;
-    raw<T = any>(): Promise<T[]>;
+    #private;
+    constructor(emu: D1Emulator, statement: D1Statement);
+    bind(...values: SqlValue[]): D1PreparedStatementEmu;
+    first(colName?: string): Promise<D1Row | SqlValue | null>;
+    run(): Promise<D1Result>;
+    all(): Promise<D1Result>;
+    raw(): Promise<SqlValue[][]>;
 }
 export declare class D1Emulator {
     #private;
-    private sql;
-    private prefix;
-    private prefixer;
-    private migrationsRun;
-    private migrationsDir?;
-    private vfs?;
-    private root?;
-    private onLog;
+    readonly database: () => D1Database;
     constructor(opts: D1EmulatorOptions);
     prepare(query: string): D1PreparedStatementEmu;
-    batch<T = any>(stmts: D1PreparedStatementEmu[]): Promise<D1Result<T>[]>;
+    /** All of `stmts` or none: the first failure rolls the batch back and is thrown. */
+    batch(stmts: readonly D1PreparedStatementEmu[]): Promise<D1Result[]>;
     exec(query: string): Promise<D1ExecResult>;
-    /** @internal */
-    [RUN_ONE](sql: string, params: any[]): D1Result<any>;
-    /** Synchronous core (workerd SqlStorage.exec is sync). */
-    /** @internal */
-    [RUN_ONE_SYNC](sql: string, params: any[]): D1Result<any>;
-    /** Apply migrations from migrations_dir if present. Idempotent. */
+    /**
+     * Apply the migrations in migrations_dir the database has not, in name
+     * order, each one whole or not at all; the first that fails is logged and
+     * ends the run. Once per emulator.
+     */
     applyMigrations(): Promise<{
         applied: number;
     }>;
