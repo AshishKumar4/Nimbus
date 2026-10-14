@@ -393,8 +393,8 @@ export class DirCache {
   /** read_index_from on bytes already read. */
   static parse(bytes: Uint8Array, timestamp: number): DirCache {
     if (bytes.length < HEADER_BYTES + OID_BYTES) throw new IndexFormatError('index file corrupt');
-    // verify_hdr: its signature (printed as the bytes read on a little-endian host), its version, and its
-    // checksum, which a null trailer (index.skipHash) leaves unchecked.
+    // verify_hdr: its signature (printed as the bytes read on a little-endian host) and its version. Its
+    // checksum git checks only for fsck (verify_index_checksum): a command reads the index whatever it is.
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     if (decodePath(bytes.subarray(0, 4)) !== 'DIRC') {
       throw new IndexFormatError('index file corrupt', `bad signature 0x${view.getUint32(0, true).toString(16).padStart(8, '0')}`);
@@ -403,13 +403,6 @@ export class DirCache {
     if (version < 2 || version > 4) throw new IndexFormatError('index file corrupt', `bad index version ${version}`);
     const count = view.getUint32(8);
     const end = bytes.length - OID_BYTES;
-    const trailer = bytes.subarray(end);
-    if (trailer.some((byte) => byte !== 0)) {
-      const digest = createHash('sha1').update(bytes.subarray(0, end)).digest();
-      if (compareBytes(new Uint8Array(digest.buffer, digest.byteOffset, OID_BYTES), trailer) !== 0) {
-        throw new IndexFormatError('index file corrupt', 'bad index file sha1 signature');
-      }
-    }
     let at = HEADER_BYTES;
     let entries: Uint8Array = bytes;
     const offsets = new Uint32Array(count);

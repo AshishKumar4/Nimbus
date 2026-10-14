@@ -1308,8 +1308,9 @@ try {
   // that fails is git's to report in its own words, the command stopped
   // before any effect. A directory at .git/index opens and is checked by the
   // size its stat gives; a file too small to hold a header is; verify_hdr
-  // reports a bad signature, version or checksum, then git dies "index file
-  // corrupt". A null trailer (index.skipHash) is no checksum to check. ──
+  // reports a bad signature or version, then git dies "index file corrupt".
+  // Its checksum git checks only for fsck: a wrong one, or a null one
+  // (index.skipHash), is read as any index is. ──
   {
     const repo = scenario(({ put, git }) => {
       put('a.txt', 'a\n'); put('b.txt', 'b\n');
@@ -1327,7 +1328,6 @@ try {
       small: good.subarray(0, 10),
       signature: withBytes((b) => b.set(new TextEncoder().encode('NOPE'), 0)),
       version: withBytes((_, v) => v.setUint32(4, 9)),
-      checksum: withBytes((b) => { b[b.length - 21] ^= 0xff; }),
     };
     const put = (bytes) => {
       if (bytes === null) {
@@ -1360,17 +1360,23 @@ try {
         checks++;
       }
     }
-    // A null trailer: read, its entries as git reads them.
-    const unhashed = withBytes((b) => b.fill(0, b.length - 20));
-    for (const words of [['status', '--porcelain'], ['ls-files', '-s'], ['diff', '--cached', '--stat']]) {
-      put(unhashed);
-      const expected = realGit(repo.disk, words);
-      const actual = await nimbusGit(repo.virtual, words);
-      assert.equal(actual.code, expected.code, `null trailer: git ${words.join(' ')}: exit code (git: ${expected.stderr}; nimbus: ${actual.stderr})`);
-      assert.equal(actual.stdout.toString(), expected.stdout.toString(), `null trailer: git ${words.join(' ')}: stdout`);
-      assert.equal(actual.stderr, expected.stderr, `null trailer: git ${words.join(' ')}: stderr`);
-      restore();
-      checks++;
+    // A checksum that is wrong, or null: read, its entries as git reads them.
+    const UNCHECKED = {
+      'wrong checksum': withBytes((b) => { b[b.length - 1] ^= 0xff; }),
+      'null checksum': withBytes((b) => b.fill(0, b.length - 20)),
+    };
+    for (const [kind, bytes] of Object.entries(UNCHECKED)) {
+      for (const words of [['status', '--porcelain'], ['ls-files', '-s'], ['diff', '--cached', '--stat']]) {
+        const label = `index with a ${kind}: git ${words.join(' ')}`;
+        put(bytes);
+        const expected = realGit(repo.disk, words);
+        const actual = await nimbusGit(repo.virtual, words);
+        assert.equal(actual.code, expected.code, `${label}: exit code (git: ${expected.stderr}; nimbus: ${actual.stderr})`);
+        assert.equal(actual.stdout.toString(), expected.stdout.toString(), `${label}: stdout`);
+        assert.equal(actual.stderr, expected.stderr, `${label}: stderr`);
+        restore();
+        checks++;
+      }
     }
   }
 
