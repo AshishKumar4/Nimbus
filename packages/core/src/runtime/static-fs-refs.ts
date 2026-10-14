@@ -90,8 +90,12 @@ function mergeRefs(list: readonly PathRef[]): PathRef[] {
 const BARE_SUBPATH = /^(?:@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*(?:\/[\w.@-]+)+\.[a-z0-9]+$/i;
 /** `/x/y.z`: an absolute path of name characters, no wider than a literal a path is spelled as. */
 const ABSOLUTE_LITERAL = /^\/[\w.\-/]{1,510}$/;
+/** Whether a literal's text is an absolute path (ABSOLUTE_LITERAL): its first character decides for nearly every string. */
+const absoluteLiteral = (text: string): boolean => text.charCodeAt(0) === 0x2f && ABSOLUTE_LITERAL.test(text);
 /** What `require('path').<name>` is when it is the module again, not one of its functions. */
 const PATH_NAMESPACES = new Set(['default', 'posix']);
+/** The path functions folding evaluates (evaluate's CallExpression). */
+const PATH_FUNCTIONS = new Set(['join', 'resolve', 'dirname']);
 
 function parseAny(source: string): AstNode | null {
   for (const sourceType of ['module', 'script'] as const) {
@@ -176,7 +180,7 @@ export function findStaticFsReferences(source: string, filename: string): Static
       const init = (node.init as AstNode | null) ?? null;
       if (id.type === 'Identifier') {
         bind(String(id.name), init);
-        if (init?.type === 'MemberExpression' && !init.computed && init.property.type === 'Identifier' && !PATH_NAMESPACES.has(init.property.name)) {
+        if (init?.type === 'MemberExpression' && !init.computed && init.property.type === 'Identifier' && PATH_FUNCTIONS.has(init.property.name)) {
           aliases.push({ name: String(id.name), method: init.property.name, init, object: init.object.type === 'Identifier' ? init.object.name : null });
         } else if (requiresPath(init)) pathBindings.add(String(id.name));
         if (init && init.type === 'CallExpression' && calleeName(init.callee) === 'createRequire') resolvers.add(String(id.name));
@@ -308,13 +312,13 @@ export function findStaticFsReferences(source: string, filename: string): Static
       if (typeof node.value === 'string' && BARE_SUBPATH.test(node.value)) {
         refs.subpaths.push({ from: dir, spec: node.value });
       }
-      if (typeof node.value === 'string' && ABSOLUTE_LITERAL.test(node.value)) refs.literals.push(normalize(node.value));
+      if (typeof node.value === 'string' && absoluteLiteral(node.value)) refs.literals.push(normalize(node.value));
       return;
     }
     if (node.type === 'TemplateLiteral') {
       const text = node.expressions.length === 0 ? node.quasis[0]?.value.cooked : undefined;
       if (typeof text === 'string' && BARE_SUBPATH.test(text)) refs.subpaths.push({ from: dir, spec: text });
-      if (typeof text === 'string' && ABSOLUTE_LITERAL.test(text)) refs.literals.push(normalize(text));
+      if (typeof text === 'string' && absoluteLiteral(text)) refs.literals.push(normalize(text));
       return;
     }
     if (node.type === 'NewExpression') {
@@ -449,7 +453,7 @@ export function scanStaticFsTokens(source: string, filename: string): StaticFsRe
       // is the string it spells, one token, as a quoted one is.
       const quasi = at(0);
       if (type === '`' && quasi?.type === 'template' && typeof quasi.value === 'string' && isPunct(at(1), '`')) {
-        recent.splice(recent.length - 2, 2);
+        recent.length -= 2;
         type = 'string';
         value = quasi.value;
       }
@@ -458,7 +462,7 @@ export function scanStaticFsTokens(source: string, filename: string): StaticFsRe
       if (type === 'string' && typeof value === 'string' && BARE_SUBPATH.test(value)) {
         refs.subpaths.push({ from: dir, spec: value });
       }
-      if (type === 'string' && typeof value === 'string' && ABSOLUTE_LITERAL.test(value)) refs.literals.push(normalize(value));
+      if (type === 'string' && typeof value === 'string' && absoluteLiteral(value)) refs.literals.push(normalize(value));
       if (type !== ')') continue;
       // new URL('lit', import.meta.url)
       if (at(1)?.value === 'url' && isPunct(at(2), '.') && at(3)?.value === 'meta' && isPunct(at(4), '.')
