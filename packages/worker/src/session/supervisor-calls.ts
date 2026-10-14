@@ -131,17 +131,17 @@ export const TRANSPORT: unique symbol = Symbol('supervisor transport');
 // Its process names only the methods below them (readFile, cpSpawn, …), each
 // of which builds its own envelope.
 export const OP: unique symbol = Symbol('supervisor op');
-const CALLER: unique symbol = Symbol('supervisor caller');
-const FS_OP: unique symbol = Symbol('supervisor fsOp');
-const FS_READ: unique symbol = Symbol('supervisor fsRead');
-const FS_MUTATION: unique symbol = Symbol('supervisor fsMutation');
-const RESENT: unique symbol = Symbol('supervisor resent');
-const MUTATION_OWNER: unique symbol = Symbol('supervisor mutationOwner');
-const HOST_INCARNATION: unique symbol = Symbol('supervisor hostIncarnation');
-const REPORTING_PID: unique symbol = Symbol('supervisor reportingPid');
+export const CALLER: unique symbol = Symbol('supervisor caller');
+export const FS_OP: unique symbol = Symbol('supervisor fsOp');
+export const FS_READ: unique symbol = Symbol('supervisor fsRead');
+export const FS_MUTATION: unique symbol = Symbol('supervisor fsMutation');
+export const RESENT: unique symbol = Symbol('supervisor resent');
+export const MUTATION_OWNER: unique symbol = Symbol('supervisor mutationOwner');
+export const HOST_INCARNATION: unique symbol = Symbol('supervisor hostIncarnation');
+export const REPORTING_PID: unique symbol = Symbol('supervisor reportingPid');
 export const CALL: unique symbol = Symbol('supervisor call');
-const CACHE_READ: unique symbol = Symbol('supervisor cacheRead');
-const INFRASTRUCTURE_CACHE: unique symbol = Symbol('supervisor infrastructureCache');
+export const CACHE_READ: unique symbol = Symbol('supervisor cacheRead');
+export const INFRASTRUCTURE_CACHE: unique symbol = Symbol('supervisor infrastructureCache');
 export const NETWORK: unique symbol = Symbol('supervisor network');
 export const PID: unique symbol = Symbol('supervisor pid');
 export const RUN_ID: unique symbol = Symbol('supervisor runId');

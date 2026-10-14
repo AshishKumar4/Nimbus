@@ -702,7 +702,7 @@ function callHttpHandler(ep: LoadedEntrypoint, request: Request): Promise<Respon
 /** Hop 3: a named-or-default entrypoint. Exposes .fetch() and .handleHttpRequest(). */
 export class NimbusLoadedEntrypoint extends WorkerEntrypoint<NimbusLoaderShimEnv, NimbusLoadedEntrypointProps> {
   async handleHttpRequest(request: Request): Promise<Response> {
-    const ep = await resolveLoadedEntrypoint(this);
+    const ep = await resolveLoadedEntrypoint({ ctx: this.ctx, env: this.env });
     try {
       if (typeof ep.handleHttpRequest !== 'function' && typeof ep.fetch !== 'function') {
         disposeRpcResource(ep);
@@ -723,7 +723,7 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint<NimbusLoaderShimEnv
    * cross-request-I/O limitation.
    */
   async fetch(request: Request): Promise<Response> {
-    const ep = await resolveLoadedEntrypoint(this);
+    const ep = await resolveLoadedEntrypoint({ ctx: this.ctx, env: this.env });
     try {
       // Cancelled with the request it forwards (a staged run its host ended).
       const forwarded = new Request(await materializeNestedRpcRequest(request), { signal: request.signal });
