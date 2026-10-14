@@ -22,11 +22,19 @@
  *
  * A sidecar from an older release has a sha256 etag and neither version nor
  * checksums: its etag stands for its version, and it has no checksums.
+ *
+ * A body is streamed to a file beside its key's as it arrives, hashed as it
+ * goes, and replaces the key's once whole and checked: one past R2's
+ * per-upload limit is refused as it passes it, its stream cancelled, and
+ * one that fails its checksum or condition leaves the object it would have
+ * replaced. A get streams its body from the file a piece at a time.
  */
 import { createHash } from 'node:crypto';
 import { z } from 'zod/v4';
-import { bodyStream, coerceBindingBody, ensureBindingDir } from './body.js';
-import { cursorAfter, cursorKey, listObjectFiles, objectFileName, objectStoreDir, removeObjectFiles, utf8Order } from './object-store.js';
+import { ensureBindingDir, fileStream, writeBody } from './body.js';
+import { cursorAfter, cursorKey, listObjectFiles, objectFileName, objectStoreDir, removeObjectFiles, uploadFileName, utf8Order } from './object-store.js';
+/** R2's limit on one upload (a put): 5 GiB less 5 MiB. */
+const MAX_UPLOAD_BYTES = 5 * 1024 * 1024 * 1024 - 5 * 1024 * 1024;
 const HttpMetadataSchema = z.object({
     contentType: z.string().optional(),
     contentLanguage: z.string().optional(),
@@ -34,6 +42,44 @@ const HttpMetadataSchema = z.object({
     contentEncoding: z.string().optional(),
     cacheControl: z.string().optional(),
     cacheExpiry: z.coerce.date().optional(),
+});
+/** The options of a call, as a Worker's binding sends them; anything else is refused before it is stored. */
+const EtagSchema = z.union([
+    z.object({ type: z.literal('wildcard') }),
+    z.object({ type: z.enum(['strong', 'weak']), value: z.string() }),
+]);
+const ConditionalSchema = z.object({
+    etagMatches: z.array(EtagSchema).optional(),
+    etagDoesNotMatch: z.array(EtagSchema).optional(),
+    uploadedBefore: z.date().optional(),
+    uploadedAfter: z.date().optional(),
+    secondsGranularity: z.boolean().optional(),
+});
+const GetOptionsSchema = z.object({
+    onlyIf: ConditionalSchema.optional(),
+    range: z.object({ offset: z.number().optional(), length: z.number().optional(), suffix: z.number().optional() }).optional(),
+    rangeHeader: z.string().optional(),
+});
+const PutOptionsSchema = z.object({
+    onlyIf: ConditionalSchema.optional(),
+    httpMetadata: z.object({
+        contentType: z.string().optional(),
+        contentLanguage: z.string().optional(),
+        contentDisposition: z.string().optional(),
+        contentEncoding: z.string().optional(),
+        cacheControl: z.string().optional(),
+        cacheExpiry: z.date().optional(),
+    }).optional(),
+    customMetadata: z.record(z.string(), z.string()).optional(),
+    checksums: z.partialRecord(z.enum(['md5', 'sha1', 'sha256', 'sha384', 'sha512']), z.string().regex(/^[0-9a-f]+$/)).optional(),
+});
+const ListOptionsSchema = z.object({
+    limit: z.number().int().optional(),
+    prefix: z.string().optional(),
+    cursor: z.string().optional(),
+    delimiter: z.string().optional(),
+    startAfter: z.string().optional(),
+    include: z.array(z.enum(['httpMetadata', 'customMetadata'])).optional(),
 });
 /** An object's sidecar, as the store wrote it. */
 const R2SidecarSchema = z.object({
@@ -47,6 +93,12 @@ const R2SidecarSchema = z.object({
     v: z.literal(1),
 });
 const MAX_KEY_BYTES = 1024;
+/** The most a put's custom metadata may be, each key and value counted as serialisedLength counts it. */
+const MAX_METADATA_BYTES = 2048;
+/** A metadata string's length as R2 counts it: double when any character is past U+00FF. */
+function serialisedLength(text) {
+    return [...text].some((char) => char.charCodeAt(0) >= 256) ? text.length * 2 : text.length;
+}
 const MAX_LIST_KEYS = 1000;
 /** The most objects a listing answers that includes metadata. */
 const MAX_LIST_KEYS_WITH_METADATA = 100;
@@ -144,9 +196,11 @@ function requestedRange(options, size) {
 export class R2Emulator {
     vfs;
     dir;
+    maxUploadBytes;
     constructor(opts) {
         this.vfs = opts.vfs;
         this.dir = objectStoreDir(opts.root, 'r2', opts.binding);
+        this.maxUploadBytes = opts.maxUploadBytes ?? MAX_UPLOAD_BYTES;
     }
     // ── public API ────────────────────────────────────────────────────────
     async head(key) {
@@ -164,49 +218,64 @@ export class R2Emulator {
             return { object: this.#object(key, side, { offset: 0, length: side.size }), body: null };
         }
         const range = requestedRange(options, side.size);
-        const body = this.vfs.readFile(this.dir + '/' + fileName);
+        const path = this.dir + '/' + fileName;
         if (range === undefined)
-            return { object: this.#object(key, side, { offset: 0, length: side.size }), body: bodyStream(body) };
-        return {
-            object: this.#object(key, side, { offset: range.start, length: range.end - range.start + 1 }),
-            body: bodyStream(body.slice(range.start, range.end + 1)),
-        };
+            return { object: this.#object(key, side, { offset: 0, length: side.size }), body: fileStream(this.vfs, path, 0, side.size) };
+        const length = range.end - range.start + 1;
+        return { object: this.#object(key, side, { offset: range.start, length }), body: fileStream(this.vfs, path, range.start, length) };
     }
     async put(key, value, options) {
-        const body = await coerceBindingBody(value);
-        const checksums = { md5: hex(createHash('md5').update(body).digest()) };
-        for (const { name, label } of HASHES) {
-            const provided = options.checksums?.[name];
-            if (provided === undefined)
-                continue;
-            const computed = hex(createHash(name).update(body).digest());
-            if (provided !== computed) {
-                throw r2Error('put', [
-                    `The ${label} checksum you specified did not match what we received.`,
-                    `You provided a ${label} checksum with value: ${provided}`,
-                    `Actual ${label} was: ${computed}`,
-                ].join('\n'), 10037);
-            }
-            checksums[name] = computed;
-        }
         validateKey('put', key);
-        const fileName = objectFileName(key);
-        if (options.onlyIf !== undefined && !conditionHolds(options.onlyIf, this.#readSide(fileName)))
-            return null;
-        const side = {
-            etag: checksums.md5 ?? '',
-            version: hex(crypto.getRandomValues(new Uint8Array(16))),
-            size: body.byteLength,
-            uploaded: Date.now(),
-            checksums,
-            httpMetadata: options.httpMetadata ?? {},
-            customMetadata: options.customMetadata ?? {},
-            v: 1,
-        };
+        // MD5 always (the etag), and the one digest the caller gave to check.
+        const digests = HASHES.filter(({ name }) => name === 'md5' || options.checksums?.[name] !== undefined)
+            .map((hash) => ({ ...hash, digest: createHash(hash.name) }));
         ensureBindingDir(this.vfs, this.dir);
-        this.vfs.writeFile(this.dir + '/' + fileName, body);
-        this.vfs.writeFile(this.dir + '/' + fileName + '.meta', JSON.stringify(side));
-        return this.#object(key, side, undefined);
+        const upload = this.dir + '/' + uploadFileName();
+        const size = await writeBody(this.vfs, upload, value, this.maxUploadBytes, () => r2Error('put', 'Your proposed upload exceeds the maximum allowed object size.', 100100), (piece) => { for (const { digest } of digests)
+            digest.update(piece); });
+        try {
+            let metadataBytes = 0;
+            for (const [name, field] of Object.entries(options.customMetadata ?? {}))
+                metadataBytes += serialisedLength(name) + serialisedLength(field);
+            if (metadataBytes > MAX_METADATA_BYTES)
+                throw r2Error('put', 'Your metadata headers exceed the maximum allowed metadata size.', 10012);
+            const checksums = {};
+            for (const { name, label, digest } of digests) {
+                const computed = hex(digest.digest());
+                const provided = options.checksums?.[name];
+                if (provided !== undefined && provided !== computed) {
+                    throw r2Error('put', [
+                        `The ${label} checksum you specified did not match what we received.`,
+                        `You provided a ${label} checksum with value: ${provided}`,
+                        `Actual ${label} was: ${computed}`,
+                    ].join('\n'), 10037);
+                }
+                checksums[name] = computed;
+            }
+            const fileName = objectFileName(key);
+            if (options.onlyIf !== undefined && !conditionHolds(options.onlyIf, this.#readSide(fileName))) {
+                this.vfs.unlink(upload);
+                return null;
+            }
+            const side = {
+                etag: checksums.md5 ?? '',
+                version: hex(crypto.getRandomValues(new Uint8Array(16))),
+                size,
+                uploaded: Date.now(),
+                checksums,
+                httpMetadata: options.httpMetadata ?? {},
+                customMetadata: options.customMetadata ?? {},
+                v: 1,
+            };
+            this.vfs.rename(upload, this.dir + '/' + fileName);
+            this.vfs.writeFile(this.dir + '/' + fileName + '.meta', JSON.stringify(side));
+            return this.#object(key, side, undefined);
+        }
+        catch (error) {
+            if (this.vfs.exists(upload))
+                this.vfs.unlink(upload);
+            throw error;
+        }
     }
     async delete(keys) {
         const list = Array.isArray(keys) ? keys : [keys];
@@ -308,12 +377,15 @@ export class R2Emulator {
     }
 }
 /** One call of the R2 API (fabric bindings.ts NimbusR2Bucket), served by `r2`. */
-export function serveR2Call(r2, call) {
+export async function serveR2Call(r2, call) {
     switch (call.method) {
         case 'head': return r2.head(String(call.key));
-        case 'get': return r2.get(String(call.key), call.options);
-        case 'put': return r2.put(String(call.key), call.value, call.options);
+        case 'get': return r2.get(String(call.key), GetOptionsSchema.parse(call.options ?? {}));
+        case 'put': return r2.put(String(call.key), call.value, PutOptionsSchema.parse(call.options ?? {}));
         case 'delete': return r2.delete(Array.isArray(call.keys) ? call.keys.map(String) : String(call.keys));
-        case 'list': return r2.list(call.options);
+        case 'list': return r2.list(ListOptionsSchema.parse(call.options ?? {}));
+        default:
+            call;
+            throw new TypeError('R2 has no such method');
     }
 }

@@ -6,7 +6,8 @@
  *   <root>/.nimbus/<kind>/<binding>/<key>.meta   — sidecar JSON
  *
  * A key is stored URL-encoded, so any key is one path segment of its
- * binding's own directory, and so is the binding's name. Each emulator keeps
+ * binding's own directory, and so is the binding's name; a name that does
+ * not decode is no key's (an upload being written). Each emulator keeps
  * its own sidecar schema and policies: KV's expiry, R2's conditionals,
  * ranges and delimiters. Both list keys in UTF-8 byte order and page with
  * Cloudflare's local cursor, the last key listed in base64.
@@ -19,11 +20,19 @@ export function objectStoreDir(root, kind, binding) {
 }
 /**
  * The file a key's body is stored in; its sidecar is the same name plus
- * `.meta`. URL-encoding leaves `.` and `..` as they are, which name the
- * directory and its parent, so their dots are encoded too.
+ * `.meta`. URL-encoding leaves dots as they are, so the dots of `.` and
+ * `..` (the directory and its parent) are encoded, and so is the last dot
+ * of a key ending `.meta` (another key's sidecar).
  */
 export function objectFileName(key) {
-    return key === '.' || key === '..' ? key.replaceAll('.', '%2E') : encodeURIComponent(key);
+    if (key === '.' || key === '..')
+        return key.replaceAll('.', '%2E');
+    const name = encodeURIComponent(key);
+    return name.endsWith('.meta') ? `${name.slice(0, -5)}%2Emeta` : name;
+}
+/** A file a body is written to before it replaces its key's: no key's name, as it does not decode. */
+export function uploadFileName() {
+    return `%upload-${crypto.randomUUID()}`;
 }
 /** Remove a key's body and its sidecar, each where it exists. */
 export function removeObjectFiles(vfs, dir, fileName) {
@@ -64,7 +73,7 @@ export function listObjectFiles(vfs, dir, prefix) {
             key = decodeURIComponent(entry.name);
         }
         catch {
-            key = entry.name;
+            continue;
         }
         if (key.startsWith(prefix))
             objects.push({ key, fileName: entry.name });

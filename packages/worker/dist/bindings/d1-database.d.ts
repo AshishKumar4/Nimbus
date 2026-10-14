@@ -33,11 +33,13 @@ export declare class NimbusD1Database extends DurableObject {
     #private;
     /**
      * D1's binding contract: every query of a request, in order, in one
-     * transaction, each answered as its columns and rows; or, when one fails,
-     * none applied and the failure. A query that is only blanks and comments
-     * is dropped, and a request left with none fails.
+     * transaction, each answered as its columns and rows, and the database's
+     * bookmark after them; or, when one fails, none applied and the failure.
+     * A query that is only blanks and comments is dropped, and a request left
+     * with none fails. There is one copy of the database, so any bookmark a
+     * session holds is already met, and none is waited for.
      */
-    query(queries: readonly D1QuerySql[]): D1QueryResponse;
+    query(queries: readonly D1QuerySql[]): Promise<D1QueryResponse>;
     /**
      * Apply each of `migrations` not in the ledger, in order, as `wrangler d1
      * migrations apply` does: each one whole, and recorded, or not at all; the

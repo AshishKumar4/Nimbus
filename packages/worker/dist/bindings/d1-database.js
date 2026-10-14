@@ -19,20 +19,24 @@ const SERVED_BY = 'nimbus-d1-emu';
 export class NimbusD1Database extends DurableObject {
     /**
      * D1's binding contract: every query of a request, in order, in one
-     * transaction, each answered as its columns and rows; or, when one fails,
-     * none applied and the failure. A query that is only blanks and comments
-     * is dropped, and a request left with none fails.
+     * transaction, each answered as its columns and rows, and the database's
+     * bookmark after them; or, when one fails, none applied and the failure.
+     * A query that is only blanks and comments is dropped, and a request left
+     * with none fails. There is one copy of the database, so any bookmark a
+     * session holds is already met, and none is waited for.
      */
-    query(queries) {
+    async query(queries) {
         const sql = queries.filter((query) => query.sql.replace(/^\s+--.*/gm, '').trim().length > 0);
         if (sql.length === 0)
             return { success: false, error: { name: 'Error', message: 'No SQL statements detected.' } };
+        let queryResults;
         try {
-            return { success: true, results: { queryResults: this.ctx.storage.transactionSync(() => sql.map((query) => this.#run(query))) } };
+            queryResults = this.ctx.storage.transactionSync(() => sql.map((query) => this.#run(query)));
         }
         catch (error) {
             return { success: false, error: { name: 'Error', message: error instanceof Error ? error.message : String(error) } };
         }
+        return { success: true, results: { queryResults, bookmark: await this.ctx.storage.getCurrentBookmark() } };
     }
     /**
      * Apply each of `migrations` not in the ledger, in order, as `wrangler d1

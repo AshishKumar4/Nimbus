@@ -814,7 +814,11 @@ export class NimbusKVNamespace extends WorkerEntrypoint {
 }
 /** A D1 database's binding: D1's own binding contract, `query`, and nothing else. */
 export class NimbusD1Binding extends WorkerEntrypoint {
-    /** All of `request`'s queries, run in one transaction. */
+    /**
+     * All of `request`'s queries, run in one transaction, answered with the
+     * database's bookmark after them. The request's bookmark is not sent on:
+     * the database has one copy, which every bookmark is already met by.
+     */
     async query(request) {
         const queries = Array.isArray(request?.queries) ? request.queries : [];
         const answer = await storageOp(this.env, this.ctx.props, 'NimbusD1Binding', { op: 'd1Query', call: queries });

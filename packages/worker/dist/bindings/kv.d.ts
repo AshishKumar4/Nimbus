@@ -13,6 +13,11 @@
  *        meta?: <JSON>,           // user-supplied metadata
  *        v: 1 }                   // schema version
  *
+ * A value is streamed to its file as it arrives, and one past KV's 25 MiB
+ * is refused as it passes it, its stream cancelled; it is written beside
+ * the key's file and replaces it once whole, so a refused put leaves the
+ * value it would have replaced.
+ *
  * Test seam: `_setKvNow(() => ts)` replaces the wall clock (Date.now/1000)
  * for TTL probes. Production reads Date.now() / 1000.
  */

@@ -89,11 +89,15 @@ export interface D1QuerySqlResult {
         rows: D1Value[][];
     };
 }
-/** All of a request's queries, in one transaction, or the error that rolled it back. */
+/**
+ * All of a request's queries, in one transaction, and the database's
+ * bookmark after them; or the error that rolled them back.
+ */
 export type D1QueryResponse = {
     success: true;
     results: {
         queryResults: D1QuerySqlResult[];
+        bookmark?: string;
     };
 } | {
     success: false;
@@ -102,11 +106,14 @@ export type D1QueryResponse = {
         message: string;
     };
 };
+/** A request by D1's binding contract: its queries, and the bookmark (or constraint) of the session sending them. */
+export interface D1QueryRequest {
+    queries: D1QuerySql[];
+    bookmark?: string;
+}
 /** The binding the loader passes for a D1 database. */
 export interface D1BindingRemote {
-    query(request: {
-        queries: D1QuerySql[];
-    }): Promise<D1QueryResponse>;
+    query(request: D1QueryRequest): Promise<D1QueryResponse>;
 }
 /** One etag of a condition, as R2 compares it (r2-bucket.c++ R2Bucket::Etag). */
 export type R2EtagCondition = {

@@ -26,7 +26,7 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { z } from 'zod/v4';
 import type { HostRoute } from './composition.js';
-import type { D1QueryResponse, D1QuerySql, KvGetOptions, KvListOptions, KvPutOptions, KvPutValue, R2PutBody, R2WireGetOptions, R2WireListOptions, R2WirePutOptions } from './inner-storage-env.js';
+import type { D1QueryRequest, D1QueryResponse, KvGetOptions, KvListOptions, KvPutOptions, KvPutValue, R2PutBody, R2WireGetOptions, R2WireListOptions, R2WirePutOptions } from './inner-storage-env.js';
 import { type FacetCodePolicy } from './facet-limits.js';
 import { type SupervisorBindingProps } from './supervisor-props.js';
 import type { WorkspaceEgress } from '@nimbus-sh/core/_shared/workspace-network.js';
@@ -307,10 +307,12 @@ export declare class NimbusKVNamespace extends WorkerEntrypoint<object, NimbusSt
 }
 /** A D1 database's binding: D1's own binding contract, `query`, and nothing else. */
 export declare class NimbusD1Binding extends WorkerEntrypoint<object, NimbusStorageProps> {
-    /** All of `request`'s queries, run in one transaction. */
-    query(request: {
-        queries: D1QuerySql[];
-    }): Promise<D1QueryResponse>;
+    /**
+     * All of `request`'s queries, run in one transaction, answered with the
+     * database's bookmark after them. The request's bookmark is not sent on:
+     * the database has one copy, which every bookmark is already met by.
+     */
+    query(request: D1QueryRequest): Promise<D1QueryResponse>;
 }
 /** An R2 bucket's binding: the methods of Cloudflare's API, taking and answering the fields its objects are made of. */
 export declare class NimbusR2Bucket extends WorkerEntrypoint<object, NimbusStorageProps> {

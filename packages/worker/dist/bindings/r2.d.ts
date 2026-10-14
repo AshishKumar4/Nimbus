@@ -22,6 +22,12 @@
  *
  * A sidecar from an older release has a sha256 etag and neither version nor
  * checksums: its etag stands for its version, and it has no checksums.
+ *
+ * A body is streamed to a file beside its key's as it arrives, hashed as it
+ * goes, and replaces the key's once whole and checked: one past R2's
+ * per-upload limit is refused as it passes it, its stream cancelled, and
+ * one that fails its checksum or condition leaves the object it would have
+ * replaced. A get streams its body from the file a piece at a time.
  */
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { R2Call, R2PutBody, R2WireGetOptions, R2WireGetResult, R2WireListOptions, R2WireObject, R2WireObjects, R2WirePutOptions } from '@nimbus-sh/fabric/inner-storage-env.js';
@@ -29,11 +35,14 @@ export interface R2EmulatorOptions {
     vfs: CredentialedVfs;
     root: string;
     binding: string;
+    /** The most one put may store; R2's limit unless a test lowers it. */
+    maxUploadBytes?: number;
 }
 export declare class R2Emulator {
     #private;
     private vfs;
     private dir;
+    private maxUploadBytes;
     constructor(opts: R2EmulatorOptions);
     head(key: string): Promise<R2WireObject | null>;
     get(key: string, options: R2WireGetOptions): Promise<R2WireGetResult | null>;
