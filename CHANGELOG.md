@@ -14,6 +14,12 @@ published independently in the `@nimbus-sh` npm scope.
   default `force: true`, where Node overwrites. Directory modes and errors
   (`ERR_FS_CP_*`) differed from Node's, and copying a directory into itself
   never ended.
+- Changed (Node `fs`): `fs.cp` and `fs.cpSync` create directories as Node
+  does: 0777 less the umask, with the mode set only where Node sets it.
+  `fs.cpSync` leaves each directory it makes that way, and `fs.promises.cp`
+  and `fs.cp` give each one the source's mode once its entries are in. Each
+  file is still given the source's mode. A copied directory used to take the
+  source's mode, and while it was being filled only its owner could open it.
 - Added (Node `fs`): `fs.symlinkSync` and `fs.readlinkSync`.
 - Fixed: a process's recursive copy beneath a WASI preopen on a mount that
   answers asynchronously followed a link named as the source even when the
