@@ -40,14 +40,21 @@ var __nimbusProcessFsModule = (() => {
     unsettledNoteOf: () => unsettledNoteOf
   });
 
+  function realmBuiltin(id) {
+    try {
+      const global = globalThis;
+      const current = global.process;
+      const own = current && global[  Symbol.for("nimbus.fronts")]?.get(current)?.own;
+      return (own ?? current)?.getBuiltinModule?.(id);
+    } catch {
+      return void 0;
+    }
+  }
+
   var CRC_NATIVE_MIN_BYTES = 128;
   var nativeCrc32 = (() => {
-    try {
-      const crc322 = globalThis.process?.getBuiltinModule?.("node:zlib")?.crc32;
-      return typeof crc322 === "function" ? crc322 : null;
-    } catch {
-      return null;
-    }
+    const crc322 = realmBuiltin("node:zlib")?.crc32;
+    return typeof crc322 === "function" ? crc322 : null;
   })();
   var crcTables = null;
   function createCrcTables() {
