@@ -38,7 +38,7 @@
 //      process awaiting it, while a builtin runs, then `wait`: a builtin whose
 //      work is awaiting the job (JobTable.awaitEnd), so the shell is then
 //      doing nothing but await it.
-//   G  `sh -c 'node x & (sleep 1; kill x) & wait $!'`: the program in one
+//   G  `sh -c 'node x & j=$!; (sleep 1; kill $j) & wait $j'`: the program in one
 //      background job, a second job that sleeps then kills it, and `wait` on
 //      the first alone. The shell awaits one job, but its other one runs: it
 //      is not stuck while that one can still free it.
@@ -259,7 +259,7 @@ class Run {
       killer.killer = killer.line.fork();
       this.holdEnd(`${killer.id}:sleep`, killer.killer.beginWork());
       killer.killPhase = 'sleeping';
-      // `wait $!`: a builtin whose work is awaiting the first job.
+      // `wait $j`: a builtin whose work is awaiting the first job.
       this.holdEnd(s.id, line.beginWork());
       this.holdEnd(s.id, this.processes.beginAwait(s.pid, job.pid));
       s.awaits = job.id;

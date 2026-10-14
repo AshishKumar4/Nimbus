@@ -6,7 +6,7 @@
 // (`sh -c 'npm run build'`, build `node x && true`: a shell awaiting a shell
 // awaiting the program), a background job beside a builtin
 // (`sh -c 'node x & sleep 1; wait'`), a background job beside another that
-// kills it (`sh -c 'node x & (sleep 1; kill x) & wait $!'`), and a pipeline whose second element
+// kills it (`sh -c 'node x & j=$!; (sleep 1; kill $j) & wait $j'`), and a pipeline whose second element
 // ends the program after a builtin (`sh -c 'node x | (sleep 1; kill x)'`,
 // the `kill` begun in the turn `sleep` ends in, or a later one), alone,
 // beside queued children and other shells, and under another holder.
