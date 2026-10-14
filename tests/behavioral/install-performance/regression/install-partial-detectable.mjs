@@ -35,7 +35,7 @@ a.check('install completed', /installed at/.test(s1),
 // runtimes/cpython/<version> while python/python3/pip stay as its bins.
 const { output: lo } = await t.run('nimbus install --list', 15_000);
 const sList = stripAnsi(lo);
-const rootMatch = sList.match(/(\S*\.nimbus\/runtimes\/([\w.-]+)\/([\w.-]+))/);
+const rootMatch = sList.match(/(\S*usr\/lib\/nimbus\/([\w.-]+)\/([\w.-]+))/);
 const runtimeName = rootMatch ? rootMatch[2] : null;
 const version = rootMatch ? rootMatch[3] : null;
 a.check('--list reports the installed runtime and version', version !== null,
@@ -47,7 +47,7 @@ if (!version) {
 }
 
 // manifest.json present at the expected path.
-const manifestPath = `~/.nimbus/runtimes/${runtimeName}/${version}/manifest.json`;
+const manifestPath = `/usr/lib/nimbus/${runtimeName}/${version}/manifest.json`;
 // Ask for a byte count rather than reading ls: the path is echoed in both
 // the success and the failure line, and ls reports a miss as `ENOENT:`,
 // which the old `No such file` guard did not match — so this assertion

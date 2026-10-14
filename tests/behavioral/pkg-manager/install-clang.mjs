@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // pkg-manager/install-clang — black-box probe that `nimbus install clang`
 // pulls the wasm-clang bundle from R2 + Cache API and lays it down in
-// the per-user VFS at ~/.nimbus/runtimes/clang/<version>/.
+// the session VFS at /usr/lib/nimbus/clang/<version>/.
 //
 // Category: H (hybrid — install observable + sha-pinned content sizes).
 //
@@ -32,9 +32,9 @@ let installedVersion = null;
 {
   const { elapsed, output } = await t.run('nimbus install clang', 120_000);
   const stripped = stripAnsi(output);
-  // `installed at home/user/.nimbus/runtimes/clang/<version>` — strip
+  // `installed at usr/lib/nimbus/clang/<version>` — strip
   // the trailing `(50.6 MiB)` size if present.
-  const m = stripped.match(/installed at\s+(?:\/)?home\/user\/\.nimbus\/runtimes\/clang\/([\w.-]+)/);
+  const m = stripped.match(/installed at\s+(?:\/)?usr\/lib\/nimbus\/clang\/([\w.-]+)/);
   installedVersion = m ? m[1] : null;
   a.check('nimbus install clang completes with success marker + version path',
     installedVersion !== null,
@@ -51,14 +51,14 @@ if (installedVersion === null) {
   const sum = a.summary();
   process.exit(sum.fail > 0 ? 1 : 0);
 }
-const RUNTIME_DIR = `~/.nimbus/runtimes/clang/${installedVersion}`;
+const RUNTIME_DIR = `/usr/lib/nimbus/clang/${installedVersion}`;
 
 // 2. The installed bin path exists in VFS. `ls /path/to/file` echoes
 //    the path on success and emits an ENOENT-style line on miss.
 {
   const { output } = await t.run(`ls ${RUNTIME_DIR}/bin/clang`, 15_000);
   const stripped = stripAnsi(output);
-  const matched = stripped.includes(`/.nimbus/runtimes/clang/${installedVersion}/bin/clang`)
+  const matched = stripped.includes(`/usr/lib/nimbus/clang/${installedVersion}/bin/clang`)
     && !/ENOENT|No such|cannot access|not found/i.test(stripped);
   a.check('installed bin/clang exists at expected path', matched,
     matched ? '' : `output=${JSON.stringify(stripped.slice(-200))}`);

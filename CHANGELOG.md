@@ -14,6 +14,60 @@ published independently in the `@nimbus-sh` npm scope.
   forgot the ended child's row. A parent that paused for a minute between
   reads got ESRCH and lost the rest of the child's output and its exit
   status. A `kill()` of such a child returns false, as in Node.
+- Breaking: `/usr` is laid out as on Linux. `/usr`, `/usr/bin`, `/usr/lib`
+  and `/usr/share`, and the global module folders `/usr/lib/node_modules`
+  and `/usr/share/pkg/node_modules`, are root's 0755, so writing into them
+  needs `sudo`; `/usr/local` stays the session user's, and `npm i -g`
+  installs there without it. `/etc/profile`, `/etc/hostname` and
+  `/etc/os-release` are root's 0644; put your own settings in
+  `~/.profile`. A session an earlier release made is moved over once, as
+  it opens: those directories become root's, without what was put in
+  them, and files keep what they hold.
+- Breaking: `nimbus install` puts a runtime where apt would: its tree in
+  `/usr/lib/nimbus/<name>/<version>`, owned by root, and a launcher in
+  `/usr/bin` (a link into the tree) for each command the tree has a
+  `bin/` entry for (`python3`, `ruby`, `clang`, …), so `/usr/bin/python3`
+  and `#!/usr/bin/python3` run it as `python3` does in Nimbus's shell.
+  Front-ends with no entry of their own (`pip`, `gem`, `bundle`) run by
+  name only, and a launcher is not a program GNU Bash (`bash -c`) can run.
+  A runtime's name and version must each be one path name, and a
+  configured `env.HOME` may not be inside `/usr/lib/nimbus` or `/.nimbus`,
+  the system's own stores, nor be made through a link (a home already
+  there is left as it is). A
+  configured `env.HOME` no longer chooses where runtimes go. The `root` a
+  runtime list or install reports, and the paths `nimbus install` prints,
+  are the new ones. Runtimes an earlier release installed below
+  `~/.nimbus/runtimes` are moved into place once, and a link is left
+  there. For embedders: `seedRuntimePackage`, `installRoot`,
+  `listInstalledManifests(View)`, `listInstalledRuntimes` and
+  `rehydrateInstalledRuntimesView` no longer take a home, and
+  `RuntimeManager` no longer takes `getHome`. `which clang` (and `cc`,
+  `clang++`, `wasm-ld`, `lld`) says `/usr/bin`, where its launcher is.
+- Fixed (security): the kernel kept the images resident processes boot
+  from, its copies of inline wasm and of staged native bindings below
+  `/var/lib/nimbus`, and `/var` is the session user's. A user who moved
+  `/var/lib` aside and put a link where a store was had the kernel write
+  those files into any directory, and the image sweep remove, as root,
+  every file there it did not recognise. The stores are now below
+  `/.nimbus`, in root's `/`, where no user can make, move or remove a
+  name; the kernel checks that `/.nimbus` is its own directory, which no
+  one else may write, before each use. `/var` is now the user's alone: a
+  process may hold a delegation of it. The old stores are left below
+  `/var/lib/nimbus`, since a durable worker an earlier release made may
+  still boot from them; once none does, `sudo rm -r /var/lib/nimbus`
+  frees their space.
+- Fixed (security): `writeProtectedRootFile` followed links the session's
+  user had made. A link at the file's name had the kernel overwrite the
+  file it led to and make it root's, read-only; a link at the declared
+  root or above it had the kernel make the directory it led to sticky and
+  world-writable. A link at the file's name is now replaced by the file,
+  and a root reached through a link is refused.
+- Fixed: `npm install` cleared what an earlier install cut short left in
+  `/tmp` as root, whatever was inside: a directory the session's user
+  moved to a staging name had root's files in it removed too. Each
+  staging directory is now cleared as the user who owns it, so another
+  user's stale one still goes, and what that user could not remove stays.
+
 - Fixed: a Ruby program and a threaded WASI program end as other WASI
   programs do: what they wrote is in the workspace before their result
   returns, and a run whose session restarted under it, or whose writes the

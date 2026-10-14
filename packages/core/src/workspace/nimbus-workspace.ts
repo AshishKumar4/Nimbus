@@ -54,6 +54,8 @@ import { exitCodeForSignal, signalAbortReason, signalAbortReasonOf, signalDispos
 import type { FacetHost } from '../runtime/facet-host.js';
 import { runtimeEntrypoints, type RunnerFactory } from '../runtime/installed-runtimes.js';
 import { RuntimeManager } from '../runtime/runtime-manager.js';
+import { moveHomeRuntimes, RUNTIME_STORE } from '../runtime/runtime-store.js';
+import { normalizeVfsPath } from '../vfs/path.js';
 import { makeNimbusVerbHandler } from '../runtime/nimbus-command.js';
 import {
   composeRuntimeSources,
@@ -352,6 +354,15 @@ export class NimbusWorkspace {
     // seeded home directory, its /etc/passwd entry, PATH and the XDG dirs.
     const home = options.env?.HOME ?? DEFAULT_HOME;
     if (!home.startsWith('/')) throw new Error(`HOME must be an absolute path, got ${JSON.stringify(home)}`);
+    // Root makes a home and hands it to the user: inside the system's own
+    // stores, the runtimes' (runtime-store.ts) or the kernel's, that would
+    // hand the user a directory the kernel writes, unpacks into and clears.
+    const homeKey = normalizeVfsPath(home);
+    for (const store of [RUNTIME_STORE, '.nimbus']) {
+      if (homeKey === store || homeKey.startsWith(`${store}/`)) {
+        throw new Error(`HOME must not be inside /${store}, the system's own store, got ${JSON.stringify(home)}`);
+      }
+    }
     // The namespace (SQLite at `/`, /proc, /dev, and an embedder's mounts)
     // and what binds processes to it. The base is seeded through it, so a
     // mount over /home or /etc gets what a program writing there would.
@@ -484,11 +495,17 @@ export class NimbusWorkspace {
       const runtimes = new RuntimeManager({
         vfs: new ProcessView(runtimeLease.fs),
         registry,
-        getHome,
         source: options.runtimeSource
           ? composeRuntimeSources([suppliedRuntimeSource(options.runtimes ?? []), options.runtimeSource])
           : suppliedRuntimeSource(options.runtimes ?? []),
       });
+      // Runtimes an earlier release installed below the home move into the
+      // store (/usr/lib/nimbus), once, before anything installs or binds.
+      try {
+        moveHomeRuntimes(kernelFs, home);
+      } catch (error) {
+        console.error('[nimbus] runtimes below ~/.nimbus/runtimes were not moved to /usr/lib/nimbus:', error);
+      }
 
       if (facets) {
         registerWasmRuntimes({
@@ -999,14 +1016,50 @@ const WORKSPACE_TABLES = [
 type SeedStep =
   | { op: 'exists'; as: 'kernel' | 'user'; path: string }
   | { op: 'stat'; as: 'kernel'; path: string }
+  | { op: 'lstat'; as: 'kernel'; path: string }
   | { op: 'readText'; as: 'kernel'; path: string }
-  | { op: 'mkdir'; as: 'kernel' | 'user'; path: string; recursive?: boolean; mode?: number }
+  | {
+    op: 'mkdir'; as: 'kernel' | 'user'; path: string; recursive?: boolean; mode?: number;
+    /**
+     * Who the made directory is handed to, in the same step: a lone mkdir,
+     * then a chown of the name it made, not followed. On the session's
+     * engine one synchronous turn, so nothing comes between them.
+     */
+    handTo?: { uid: number; gid: number };
+    /**
+     * Made below a directory its user may change: handed over only where
+     * the step is one turn (the engine). On a mount, where another writer
+     * could replace the name between the two calls, it is refused.
+     */
+    atomicOnly?: boolean;
+  }
   | { op: 'chown'; as: 'kernel'; path: string; uid: number; gid: number }
   | { op: 'chmod'; as: 'kernel'; path: string; mode: number }
   | { op: 'writeFile'; as: 'kernel' | 'user'; path: string; content: string; mode?: number };
 
 /** What a `stat` step answers. */
 interface SeedStat { uid: number; gid: number; mode: number }
+
+/** What an `lstat` step answers: the entry itself, not followed; null when there is none. */
+type SeedEntry = (SeedStat & { type: string }) | null;
+
+/** Whether the session's user may make a name in the directory `entry` is (its write bit for the user). */
+function userMayWrite(entry: SeedEntry): boolean {
+  if (entry === null) return false;
+  const { uid, gid, groups } = CRED_SESSION_USER;
+  if (entry.uid === uid) return (entry.mode & 0o200) !== 0;
+  if (entry.gid === gid || groups.includes(entry.gid)) return (entry.mode & 0o020) !== 0;
+  return (entry.mode & 0o002) !== 0;
+}
+
+/**
+ * Root's own directories below `/usr`, as on Linux: made by root and kept
+ * root's, parent before child (a directory is re-asserted only once its
+ * parent is root's, so no user can replace it in between), the runtime
+ * store among them. `/usr/local` is the session user's, below them: npm's
+ * global prefix, needing no sudo.
+ */
+const USR_ROOT_DIRS = ['usr', 'usr/bin', 'usr/lib', 'usr/share', 'usr/lib/node_modules', RUNTIME_STORE, 'usr/share/pkg', 'usr/share/pkg/node_modules'];
 
 /**
  * The base seed's one statement, driven by seedBaseFilesystem: on the
@@ -1020,30 +1073,95 @@ function* baseSeed(home: string): Generator<SeedStep, void, unknown> {
   const stat = function* (path: string): Generator<SeedStep, SeedStat, unknown> {
     return (yield { op: 'stat', as: 'kernel', path }) as SeedStat;
   };
+  const lstat = function* (path: string): Generator<SeedStep, SeedEntry, unknown> {
+    return (yield { op: 'lstat', as: 'kernel', path }) as SeedEntry;
+  };
 
   // Top-level directories are the kernel's to make (`/` is 0755 root), and
   // handed to the session user, who owns their own tree: seeding them owned
   // by the kernel is what makes a workspace where `.fs` cannot write.
+  // `/etc` and `/usr` are root's, below.
   for (const top of SEEDED_TOP_LEVEL_DIRS) {
-    if (top === 'etc' || (yield* exists('kernel', top))) continue;
+    if (top === 'etc' || top === 'usr' || (yield* exists('kernel', top))) continue;
     yield { op: 'mkdir', as: 'kernel', path: top, mode: 0o777 & ~CRED_SESSION_USER.umask };
     yield { op: 'chown', as: 'kernel', path: top, uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid };
   }
+  // /usr as on Linux: root's, re-asserted rather than only created, as /etc
+  // is. A session an earlier release made had them the user's; each that is
+  // a real directory becomes root's 0755, without what is in it (a package a
+  // user put in a global folder stays theirs). A link or a file at one is
+  // left, and nothing below it is looked at: every name below would be
+  // reached through it (the runtime store refuses to be, runtime-store.ts).
+  const rootsDirs = new Set(['']);
+  for (const dir of USR_ROOT_DIRS) {
+    if (!rootsDirs.has(dir.slice(0, Math.max(0, dir.lastIndexOf('/'))))) continue;
+    const entry = yield* lstat(dir);
+    if (entry === null) {
+      yield { op: 'mkdir', as: 'kernel', path: dir, mode: 0o755 };
+      rootsDirs.add(dir);
+      continue;
+    }
+    if (entry.type !== 'directory') continue;
+    if (entry.uid !== 0 || entry.gid !== 0) yield { op: 'chown', as: 'kernel', path: dir, uid: 0, gid: 0 };
+    if ((entry.mode & 0o7777) !== 0o755) yield { op: 'chmod', as: 'kernel', path: dir, mode: 0o755 };
+    rootsDirs.add(dir);
+  }
+  // /usr/local is made by root and handed to the user, as the home is.
+  if (rootsDirs.has('usr') && !(yield* exists('kernel', 'usr/local'))) {
+    yield { op: 'mkdir', as: 'kernel', path: 'usr/local', mode: 0o755 };
+    yield { op: 'chown', as: 'kernel', path: 'usr/local', uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid };
+  }
   // The home is made the way useradd -m makes it: by root, wherever it is,
-  // then handed to the user. Its parents stay root's.
+  // then handed to the user. Its parents stay root's. A home already there
+  // is left as it is. One to make is made through no link: each name from /
+  // to it is looked at without following it, and a link or a file on the way
+  // refuses the home, so root never makes, or hands the user, a directory a
+  // link the user made leads to (the runtime store, the kernel's /.nimbus,
+  // /etc). And it is handed over where no one else can redirect it: root
+  // makes the home's directories only below directories only root may
+  // change, where no name can be replaced between its mkdir and its chown;
+  // below one the user may write, the user makes the rest itself, and owns
+  // it from the start. Below one the user may change but has made
+  // unwritable to itself, root makes it and hands it over in one step,
+  // which only the session's own filesystem makes indivisible: on a mount,
+  // such a home is refused.
   const homeDir = home.replace(/^\/+/, '').replace(/\/+$/, '');
   if (homeDir !== '' && !(yield* exists('kernel', homeDir))) {
-    yield { op: 'mkdir', as: 'kernel', path: homeDir, recursive: true, mode: 0o755 };
-    yield { op: 'chown', as: 'kernel', path: homeDir, uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid };
+    const names = homeDir.split('/');
+    const user = { uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid };
+    let rootsOnly = true;
+    let parent: SeedEntry = { type: 'directory', uid: 0, gid: 0, mode: 0o755 };
+    for (let i = 1; i <= names.length; i++) {
+      const path = names.slice(0, i).join('/');
+      const leaf = i === names.length;
+      const entry = yield* lstat(path);
+      if (entry === null) {
+        if (rootsOnly) {
+          // Its parents stay root's; the home itself is the user's.
+          yield { op: 'mkdir', as: 'kernel', path, mode: 0o755, ...(leaf ? { handTo: user } : {}) };
+          parent = { type: 'directory', ...(leaf ? user : { uid: 0, gid: 0 }), mode: 0o755 };
+        } else if (userMayWrite(parent)) {
+          yield { op: 'mkdir', as: 'user', path, mode: 0o755 };
+          parent = { type: 'directory', ...user, mode: 0o755 };
+        } else {
+          yield { op: 'mkdir', as: 'kernel', path, mode: 0o755, handTo: user, atomicOnly: true };
+          parent = { type: 'directory', ...user, mode: 0o755 };
+        }
+        continue;
+      }
+      if (entry.type !== 'directory') {
+        throw new Error(`HOME ${home} passes through ${entry.type === 'symlink' ? 'a link' : `a ${entry.type}`} at /${path}: a home is made through directories only`);
+      }
+      rootsOnly &&= entry.uid === 0 && (entry.mode & 0o022) === 0;
+      parent = entry;
+    }
   }
   // HOME=/ is root's directory, not one Nimbus populates for the user.
   const homeChildren = homeDir === '' ? [] : [`${homeDir}/.config`, `${homeDir}/projects`];
   for (const dir of [
     ...homeChildren,
     'tmp', 'var/log',
-    'usr/bin', 'usr/lib', 'usr/lib/node_modules',
-    'usr/share', 'usr/share/pkg', 'usr/share/pkg/node_modules',
-    'usr/local', 'usr/local/lib', 'usr/local/lib/node_modules', 'usr/local/bin',
+    'usr/local/lib', 'usr/local/lib/node_modules', 'usr/local/bin',
   ]) {
     if (!(yield* exists('user', dir))) yield { op: 'mkdir', as: 'user', path: dir, recursive: true };
   }
@@ -1058,17 +1176,6 @@ function* baseSeed(home: string): Generator<SeedStep, void, unknown> {
     if ((etc.mode & 0o7777) !== 0o755) yield { op: 'chmod', as: 'kernel', path: 'etc', mode: 0o755 };
   }
 
-  if (!(yield* exists('kernel', 'etc/hostname'))) {
-    yield { op: 'writeFile', as: 'kernel', path: 'etc/hostname', content: `${DEFAULT_HOSTNAME}\n` };
-    yield { op: 'chown', as: 'kernel', path: 'etc/hostname', uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid };
-  }
-  if (!(yield* exists('kernel', 'etc/os-release'))) {
-    yield {
-      op: 'writeFile', as: 'kernel', path: 'etc/os-release',
-      content: `NAME="Nimbus"\nVERSION="${NIMBUS_VERSION}"\nID=nimbus\n` + 'PRETTY_NAME="Nimbus — Cloud Dev Environment"\n',
-    };
-    yield { op: 'chown', as: 'kernel', path: 'etc/os-release', uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid };
-  }
 
   // Root-owned 0644, and re-asserted rather than only created: these decide
   // what `id`, `chown` and `su` believe, so a user-writable /etc/passwd would
@@ -1088,6 +1195,10 @@ function* baseSeed(home: string): Generator<SeedStep, void, unknown> {
     yield { op: 'writeFile', as: 'kernel', path: 'etc/passwd', content: passwdFor(home) };
   }
   yield* accountFile('etc/group', 'root:x:0:\nuser:x:1000:user\n');
+  // The system's own, as on Linux: root's 0644, whatever an earlier release
+  // handed the user (their content stays).
+  yield* accountFile('etc/hostname', `${DEFAULT_HOSTNAME}\n`);
+  yield* accountFile('etc/os-release', `NAME="Nimbus"\nVERSION="${NIMBUS_VERSION}"\nID=nimbus\n` + 'PRETTY_NAME="Nimbus — Cloud Dev Environment"\n');
 
   // `$HOME` is expanded when the profile is sourced, so one profile serves
   // whatever home the session has.
@@ -1099,10 +1210,10 @@ function* baseSeed(home: string): Generator<SeedStep, void, unknown> {
     'export PATH=/usr/bin:/bin\nexport EDITOR=nano\n',
     `export PATH=${defaultPath(DEFAULT_HOME)}\nexport EDITOR=nano\n`,
   ];
-  if (!(yield* exists('kernel', 'etc/profile'))) {
-    yield { op: 'writeFile', as: 'kernel', path: 'etc/profile', content: defaultProfile };
-    yield { op: 'chown', as: 'kernel', path: 'etc/profile', uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid };
-  } else if (seededProfiles.includes((yield { op: 'readText', as: 'kernel', path: 'etc/profile' }) as string)) {
+  // Root's 0644, as on Linux: a user's own settings go in ~/.profile. One
+  // an earlier release handed the user keeps what they wrote in it.
+  yield* accountFile('etc/profile', defaultProfile);
+  if (seededProfiles.includes((yield { op: 'readText', as: 'kernel', path: 'etc/profile' }) as string)) {
     yield { op: 'writeFile', as: 'kernel', path: 'etc/profile', content: defaultProfile };
   }
 
@@ -1156,8 +1267,9 @@ async function seedOnNamespace(steps: Generator<SeedStep, void, unknown>, filesy
     const cred = call.as === 'kernel' ? CRED_KERNEL : CRED_SESSION_USER;
     // A directory above a mount point is the root's, as a wave's directory
     // record there is. A step is placed as its call looks its name up: every
-    // one follows a link at it but a lone mkdir (mkdir -p stats it first).
-    const follow = call.op !== 'mkdir' || call.recursive === true;
+    // one follows a link at it but an lstat and a lone mkdir (mkdir -p stats
+    // it first).
+    const follow = call.op === 'lstat' ? false : call.op !== 'mkdir' || call.recursive === true;
     if (filesystem.waves.placesHere(engine[call.as], [call.path], { aboveMounts: true, follow })) {
       answer = engineStep(engine[call.as], call);
     } else {
@@ -1171,8 +1283,20 @@ async function seedOnNamespace(steps: Generator<SeedStep, void, unknown>, filesy
           answer = { uid: found.uid ?? 0, gid: found.gid ?? 0, mode: found.mode ?? 0 };
           break;
         }
+        case 'lstat': {
+          const found = await view.stat(path, { follow: false });
+          answer = found === null ? null : { type: found.type, uid: found.uid ?? 0, gid: found.gid ?? 0, mode: found.mode ?? 0 };
+          break;
+        }
         case 'readText': answer = new TextDecoder().decode(await view.readFile(path)); break;
-        case 'mkdir': await view.mkdir(path, { ...(call.recursive ? { recursive: true } : {}), ...(call.mode === undefined ? {} : { mode: call.mode }) }); break;
+        case 'mkdir':
+          if (call.atomicOnly) {
+            throw new Error(`seed: ${path} is below a directory its user may change, on a mount, where it cannot be made and handed over in one step`);
+          }
+          await view.mkdir(path, { ...(call.recursive ? { recursive: true } : {}), ...(call.mode === undefined ? {} : { mode: call.mode }) });
+          // Below directories only root may change: no one can replace the name in between.
+          if (call.handTo) await unlessUnsupported(view.chown(path, call.handTo.uid, call.handTo.gid));
+          break;
         // A mount that keeps no owners or modes (ENOTSUP) has none to hand over.
         case 'chown': await unlessUnsupported(view.chown(path, call.uid, call.gid)); break;
         case 'chmod': await unlessUnsupported(view.chmod(path, call.mode)); break;
@@ -1188,8 +1312,16 @@ function engineStep(view: ReturnType<SqliteVFS['as']>, call: SeedStep): unknown 
   switch (call.op) {
     case 'exists': return view.exists(call.path);
     case 'stat': return view.stat(call.path);
+    case 'lstat': {
+      const found = view.statIfPresent(call.path, false);
+      return found === null ? null : { type: found.type, uid: found.uid, gid: found.gid, mode: found.mode };
+    }
     case 'readText': return view.readFileString(call.path);
-    case 'mkdir': view.mkdir(call.path, { ...(call.recursive ? { recursive: true } : {}), ...(call.mode === undefined ? {} : { mode: call.mode }) }); return undefined;
+    case 'mkdir':
+      view.mkdir(call.path, { ...(call.recursive ? { recursive: true } : {}), ...(call.mode === undefined ? {} : { mode: call.mode }) });
+      // In the same synchronous turn, and not through a link: the name it just made.
+      if (call.handTo) view.chown(call.path, call.handTo.uid, call.handTo.gid, { followSymlinks: false });
+      return undefined;
     case 'chown': view.chown(call.path, call.uid, call.gid); return undefined;
     case 'chmod': view.chmod(call.path, call.mode); return undefined;
     case 'writeFile': view.writeFile(call.path, call.content, call.mode === undefined ? undefined : { mode: call.mode }); return undefined;

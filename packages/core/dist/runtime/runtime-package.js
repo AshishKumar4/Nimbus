@@ -3,7 +3,7 @@
  * the network.
  *
  * `nimbus install <name>` reads a catalog out of R2 and writes the result into
- * `~/.nimbus/runtimes/<name>/<version>/`. That is the Cloudflare deployment's
+ * `/usr/lib/nimbus/<name>/<version>/`. That is the Cloudflare deployment's
  * answer to "where do the bytes come from", and it needs a bucket, a binding
  * and a colo cache. An embedder who ran `npm i @nimbus-sh/runtime-bash` has
  * already answered the same question: the bytes are on disk beside their
@@ -149,9 +149,9 @@ export function composeRuntimeSources(sources) {
  * pieces of blobs, never a whole one, and bytes that fail their digest never
  * sit at a path a runner would execute.
  */
-export async function seedRuntimePackage(vfs, homeDir, runtimePackage, options) {
+export async function seedRuntimePackage(vfs, runtimePackage, options) {
     const manifest = parseRuntimeManifest(runtimePackage.manifest);
-    const root = installRoot(homeDir, manifest.name, manifest.version);
+    const root = installRoot(manifest.name, manifest.version);
     const marker = `${root}/manifest.json`;
     if (!options?.force && (await vfs.exists(marker))) {
         if (await runtimeManifestIntact(vfs, root, manifest)) {

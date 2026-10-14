@@ -16,7 +16,7 @@ await t.waitForPrompt(60_000);
 
 // Probe 1: whereis clang
 const r1 = await t.run('whereis clang', 5_000);
-a.check('whereis clang → "clang: /usr/local/bin/clang"', termBody(r1.output) === 'clang: /usr/local/bin/clang', `body=${JSON.stringify(termBody(r1.output))}`);
+a.check('whereis clang → "clang: /usr/bin/clang"', termBody(r1.output) === 'clang: /usr/bin/clang', `body=${JSON.stringify(termBody(r1.output))}`);
 
 // Probe 2: whereis git
 const r2 = await t.run('whereis git', 5_000);

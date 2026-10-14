@@ -2,7 +2,7 @@
 // python/install-python3-alias — `python3` gives an install hint before
 // install, and `nimbus install python3` installs the Python runtime.
 //
-// The install used to be pinned to ~/.nimbus/runtimes/python/0.29.4. That is
+// The install used to be pinned to /usr/lib/nimbus/python/0.29.4. That is
 // the superseded Pyodide entry: it still declares `python` and `python3`, it
 // still comes first in the catalog, and its runner is no longer registered — so
 // the assertion held while the install laid down two bins nothing could invoke,
@@ -46,7 +46,7 @@ await t.waitForPrompt(60_000);
   const { output } = await t.run('nimbus install python3', 180_000);
   const stripped = stripAnsi(output);
   a.check('nimbus install python3 installs canonical python runtime',
-    /installed at .*\/\.nimbus\/runtimes\/cpython\/3\.13\.14/.test(stripped)
+    /installed at .*usr\/lib\/nimbus\/cpython\/3\.13\.14/.test(stripped)
       && !/runner '[^']*' not registered/.test(stripped),
     JSON.stringify(stripped.slice(-500)));
 }

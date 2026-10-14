@@ -229,8 +229,8 @@ const mkdir = (path) => ({ type: 'call', call: { call: 'mkdir', path, mode: 0o75
   const { readLease } = reader.acquire(s.engine.epoch, s.engine.revision(), { lease: true });
   // As a launch writes the process's boot image: the kernel, through its binding, held for the reader's recall.
   const launching = s.files.bind({ pid: PID, cred: CRED_KERNEL }).synchronous;
-  launching.mkdir('/var/lib/nimbus/facet-images', { recursive: true, mode: 0o755 });
-  launching.writeFile('/var/lib/nimbus/facet-images/a.js', 'image');
+  launching.mkdir('/.nimbus/facet-images', { recursive: true, mode: 0o755 });
+  launching.writeFile('/.nimbus/facet-images/a.js', 'image');
   let land;
   const landing = new Promise((resolve) => { land = resolve; });
   // The transport delivers the escape late.
