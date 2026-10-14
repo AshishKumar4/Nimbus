@@ -3473,7 +3473,7 @@ const __fsMod = (() => {
       case "link": return { target: entry.target };
       case "alias": return { from: entry.from, link: entry.link };
       case "dir": return { made: "directory", hide: entry.hide, mode: entry.mode };
-      default: return { made: "file", mode: entry.mode };
+      default: return { made: "file", mode: entry.mode, stat: entry.stat };
     }
   }
   function _nsWord(k) { return _nsOwn.get(k)?.word; }
@@ -3611,8 +3611,11 @@ const __fsMod = (() => {
       meta = { type: "directory", size: 0, mode: 0o40000 | ((own.mode ?? 0o777) & ~__processUmask), uid: cred.uid, gid: cred.gid, own: true };
     } else if (own?.made === "file") {
       // A file this process made: its owner and the mode it asked for (or
-      // chmod set since), until a barrier reports the session's own stat.
-      meta = { type: "file", size: Number(found.row?.size ?? 0), mode: 0o100000 | ((own.mode ?? 0o666) & ~__processUmask), uid: cred.uid, gid: cred.gid, own: true };
+      // chmod set since), until a barrier reports the session's own stat;
+      // or the stat a receipt gave it (a copy over it), `own.stat`.
+      meta = own.stat !== undefined
+        ? { type: "file", size: own.stat.size, mode: own.stat.mode, uid: own.stat.uid, gid: own.stat.gid, own: true }
+        : { type: "file", size: Number(found.row?.size ?? 0), mode: 0o100000 | ((own.mode ?? 0o666) & ~__processUmask), uid: cred.uid, gid: cred.gid, own: true };
     } else if (found.row !== undefined) {
       meta = _nsRowMeta(found.row);
     } else {
@@ -6081,7 +6084,7 @@ const __fsMod = (() => {
     // view holds of the name as the copy is asked, the copy supersedes; a
     // write or attribute after it is the program's later word.
     _flushParkedWrite(destAbs, _supervisor());
-    const asked = { generation: __vfsWriteGenerations[destK], mode: _localModes.get(destK), times: _localTimes.get(destK), written: _ownWriteTimes[destK] };
+    const asked = { generation: __vfsWriteGenerations[destK], mode: _localModes.get(destK), times: _localTimes.get(destK), written: _ownWriteTimes[destK], made: _nsOwn.get(destK) };
     const ticket = _beginFill(destK);
     let receipt;
     try {
@@ -6100,6 +6103,14 @@ const __fsMod = (() => {
       if (_ownWriteTimes[destK] === asked.written) delete _ownWriteTimes[destK];
       if (receipt !== undefined) {
         _noteLearnedStat(destAbs, _receiptStat(receipt), ticket, receipt.revision);
+        // A file this process made, still answering for itself (beneath a
+        // directory it made just now): the receipt's stat is its stat.
+        const made = _nsOwn.get(destK);
+        if (made !== undefined && made === asked.made && made.state === "file") {
+          made.stat = { size: Number(receipt.size), mode: Number(receipt.mode), uid: Number(receipt.uid), gid: Number(receipt.gid) };
+          made.word = _nsWordOf(made);
+          if (Number.isFinite(receipt.mtimeMs)) _ownWriteTimes[destK] = receipt.mtimeMs;
+        }
         const from = receipt.from;
         if (from !== undefined && from.path === srcK && typeof dated === "number" && dated >= from.revision) {
           ticket.rev = receipt.revision;
