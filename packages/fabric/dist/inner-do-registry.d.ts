@@ -39,6 +39,12 @@ export declare function registerInnerDoClass(supervisorDoId: string, bindingName
 /** Clear all registrations belonging to a supervisor DO (called on rebuild). */
 export declare function clearInnerDoClasses(supervisorDoId: string): void;
 /**
+ * The facet a `wrangler dev` Worker's Durable Object `id` of binding
+ * `bindingName` runs as: `innerDO:` and the pair, each whole, so no two
+ * objects share one (and none is a D1 database's `d1:` facet).
+ */
+export declare function innerDoFacetName(bindingName: string, id: string): string;
+/**
  * Record that this incarnation opens `facetName` for `bindingName`. True on the
  * name's first open since the incarnation began or the binding's facets were
  * last aborted: whatever still runs under it has a class this build no longer
