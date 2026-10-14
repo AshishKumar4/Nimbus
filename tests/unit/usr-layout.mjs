@@ -86,9 +86,13 @@ const ETC = ['etc/profile', 'etc/hostname', 'etc/os-release'];
   kernel.chmod('usr/lib/nimbus/toy/1.0.0/bin/toy', 0o755);
   await ws.runtimes.rehydrate();
   assert.equal(kernel.stat('usr/lib/nimbus/toy/1.0.0/bin/toy').mode & 0o111, 0, 'an executable marker is made not to be');
-  // And `which` and `type` find the command at its launcher all the same.
+  // And `which` and `type` find the command at its launcher all the same,
+  // past a file of that name earlier on PATH that is not executable.
   assert.equal((await ws.exec('which toy')).stdout, '/usr/bin/toy\n');
   assert.equal((await ws.exec('type toy')).stdout, 'toy is /usr/bin/toy\n');
+  await ws.exec('touch /usr/local/bin/toy && chmod 644 /usr/local/bin/toy');
+  assert.equal((await ws.exec('which toy')).stdout, '/usr/bin/toy\n', 'a non-executable file earlier on PATH is passed over');
+  await ws.exec('rm /usr/local/bin/toy');
 
   // A file someone put at a launcher's name is never replaced, and runs as itself.
   kernel.unlink('usr/bin/toy');
@@ -219,6 +223,35 @@ const ETC = ['etc/profile', 'etc/hostname', 'etc/os-release'];
   assert.deepEqual((await ws.runtimes.list()).map((r) => r.name), [], 'nor listed');
   db.close();
   console.log('  a runtime the user made in the store is not the system\'s');
+}
+
+// ── an install is not written through a runtime's directories a user made ──
+{
+  const db = new Database(':memory:');
+  const first = await open(db);
+  const kernel0 = first.vfs.as(CRED_KERNEL);
+  const user = first.vfs.as(CRED_SESSION_USER);
+  // As an earlier release left it: no store, /usr/lib the user's, and in the
+  // store the user made, the runtime's own files with `bin` a link to a
+  // directory of the user's.
+  if (kernel0.statIfPresent('usr/lib/nimbus', false) !== null) kernel0.rmdir('usr/lib/nimbus');
+  kernel0.chown('usr/lib', USER, USER);
+  const pkg = toyPackage();
+  user.mkdir('usr/lib/nimbus/toy/1.0.0/share/toy', { recursive: true });
+  user.mkdir('home/user/outside', { recursive: true });
+  for (const file of pkg.manifest.files) {
+    const at = file.path.startsWith('bin/') ? `home/user/outside/${file.path.slice(4)}` : `usr/lib/nimbus/toy/1.0.0/${file.path}`;
+    user.writeFile(at, pkg.readBlob(file), { mode: 0o755 });
+  }
+  user.symlink('/home/user/outside', 'usr/lib/nimbus/toy/1.0.0/bin');
+  user.writeFile('usr/lib/nimbus/toy/1.0.0/manifest.json', JSON.stringify(pkg.manifest));
+  const ws = await open(db);
+  const kernel = ws.vfs.as(CRED_KERNEL);
+  await assert.rejects(ws.runtimes.installPackage(toyPackage()), /usr\/lib\/nimbus\/toy/, 'the install is refused, not written through them');
+  assert.equal(kernel.stat('home/user/outside/toy').mode & 0o777, 0o755, 'nothing outside the store is changed');
+  assert.equal(kernel.statIfPresent('usr/bin/toy', false), null, 'and nothing is linked to it');
+  db.close();
+  console.log('  an install is not written through a runtime\'s directories a user made');
 }
 
 // ── a runtime's name and version are one name each ────────────────────────
