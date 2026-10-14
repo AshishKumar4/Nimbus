@@ -15,6 +15,12 @@ published independently in the `@nimbus-sh` npm scope.
   processes between. A parent that paused for a minute between reads got
   ESRCH and lost the rest of the child's output and its exit status. A
   `kill()` of such a child returns false, as in Node.
+- Changed: `kill -STOP` (and `-TSTP`, `-TTIN`, `-TTOU`) of a shell job is
+  refused with "Operation not supported" and status 1, as it is for a
+  hosted resident: nothing can pause a job's work. It used to answer 0 and
+  list the job as Stopped while the job ran on. `kill -CONT` of a job
+  succeeds and does nothing, `jobs -s` lists nothing, and `bg` of a job
+  says "bg: job N already in background", as bash does of a running one.
 - Fixed: two sessions served by one isolate decode their background
   processes' terminal output each on its own. Their processes are numbered
   alike, and one isolate-wide decoder per process number let a character
