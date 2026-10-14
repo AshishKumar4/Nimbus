@@ -183,10 +183,25 @@ try {
   // A part still targets five minutes with one CPU or four. Forty files
   // costing thirty CPU seconds need four one-CPU parts, or one four-CPU part.
   const equal = Array.from({ length: 40 }, (_, i) => `${i}.mjs`);
+  const planTree = tree('plan', Object.fromEntries(equal.map((name) => [name, pass])));
+  mkdirSync(join(planTree, 'scripts/ci/lib'), { recursive: true });
+  copyFileSync(join(repo, 'scripts/ci/unit.mjs'), join(planTree, 'scripts/ci/unit.mjs'));
+  const planTimings = join(scratch, 'plan-timings.json');
+  writeFileSync(planTimings, JSON.stringify({ files: Object.fromEntries(equal.map((name) => [name, 30])) }));
   for (const [jobs, count] of [[1, 4], [4, 1]]) {
     const sized = partition(equal, count, { expectedMs: () => 30_000, runsAlone: () => false, jobs });
     assert.deepEqual(sized.map((part) => part.expectedMs), Array(count).fill(300_000));
     assert.deepEqual(sized.flatMap((part) => part.names).sort(), [...equal].sort(), 'changing the CPU width loses no files');
+    // The real plan's arithmetic, with only its resource reader replaced.
+    writeFileSync(join(planTree, 'scripts/ci/lib/cpus.mjs'), `export const unitJobs = () => ${jobs};\n`);
+    const planned = spawnSync(process.execPath, [join(planTree, 'scripts/ci/unit.mjs'), 'plan', '--target', '300', '--timings', planTimings], {
+      cwd: planTree, encoding: 'utf8', timeout: 30_000, env: inherited,
+    });
+    assert.equal(planned.status, 0, planned.stderr);
+    const { include } = JSON.parse(planned.stdout);
+    assert.equal(include.length, count, `the ${jobs}-CPU plan must change the part count`);
+    assert.deepEqual(include.map((part) => part.weight), Array(count).fill(300));
+    assert.deepEqual(include.flatMap((part) => part.rows.map((row) => row.name)).sort(), [...equal].sort());
   }
 
   // ── Environment, in whatever isolation this suite runs under ────────
