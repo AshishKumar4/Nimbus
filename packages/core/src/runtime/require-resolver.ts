@@ -35,6 +35,7 @@ import {
   type PkgJsonSink,
   type RequireFs,
   type ResolveSubpathResult,
+  type StagingRequireFs,
   type WalkProgress,
 } from './require-resolution.js';
 
@@ -43,11 +44,12 @@ import { stripLeadingSlashes } from '../vfs/path.js';
 import { isNativeBinPath } from './os-contracts.js';
 import { stripCommentsForImports } from './comment-strip.js';
 import { createEsmResolver } from '../_shared/esm-resolver.js';
+import { packageJsonText } from '../_shared/exports-resolver.js';
 import { forEachNode, parseJavaScriptProgram } from './javascript-ast.js';
 import { requireWrapperCalls } from './require-wrappers.js';
 
 // The CommonJS resolver this walk stages from (require-resolution.ts).
-export { requireFsOverBridge, type BridgeRequireFs, type RequireFs } from './require-resolution.js';
+export { requireFsOverBridge, type BridgeRequireFs, type RequireFs, type StagingRequireFs } from './require-resolution.js';
 export { requireWrapperCalls } from './require-wrappers.js';
 
 // Match literal-string require/require.resolve with single, double, or
@@ -262,18 +264,18 @@ export interface PreloadModuleRoot {
  * `require` and `import` alike, as the process resolves under them.
  */
 export function prefetchForRequire(
-  vfs: RequireFs, entryCode: string, cwd: string, entryFile?: string,
+  vfs: StagingRequireFs, entryCode: string, cwd: string, entryFile?: string,
   maxBundleBytes?: number, progress?: WalkProgress, policy?: undefined, requiredRoots?: Iterable<RequiredModuleRoot | PreloadModuleRoot>,
   conditions?: readonly string[],
 ): Promise<PrefetchOutcome>;
 export function prefetchForRequire(
-  vfs: RequireFs, entryCode: string, cwd: string, entryFile: string | undefined,
+  vfs: StagingRequireFs, entryCode: string, cwd: string, entryFile: string | undefined,
   maxBundleBytes: number | undefined, progress: WalkProgress | undefined,
   policy: DependencyClosurePolicy, requiredRoots?: Iterable<RequiredModuleRoot | PreloadModuleRoot>,
   conditions?: readonly string[],
 ): Promise<DependencyClosureOutcome>;
 export async function prefetchForRequire(
-  vfs: RequireFs,
+  vfs: StagingRequireFs,
   entryCode: string,
   cwd: string,
   entryFile?: string,
@@ -373,9 +375,13 @@ export async function prefetchForRequire(
         return null;
       }
     }
-    let content: string;
-    try { content = reuseHeld ? heldText : await vfs.readFileString(path); }
-    catch {
+    // The cell copies the file: its every byte, a leading byte order mark too.
+    let content: string | null = null;
+    try {
+      const bytes = reuseHeld ? null : await vfs.readBytes(path);
+      content = reuseHeld ? heldText : bytes === null ? null : heldCellText(bytes);
+    } catch { /* unreadable */ }
+    if (content === null) {
       if (policy) declined = { kind: 'dependency-closure-declined', path, reason: 'unreadable' };
       return null;
     }
@@ -422,7 +428,7 @@ export async function prefetchForRequire(
   // deferral the code names itself.
   function deferBins(manifestPath: string): void {
     let manifest: unknown;
-    try { manifest = JSON.parse(String(bundle[manifestPath])); } catch { return; }
+    try { manifest = JSON.parse(packageJsonText(String(bundle[manifestPath]))); } catch { return; }
     const bin = manifest !== null && typeof manifest === 'object' && 'bin' in manifest ? manifest.bin : undefined;
     const targets = typeof bin === 'string' ? [bin] : bin !== null && typeof bin === 'object' ? Object.values(bin) : [];
     const fromDir = manifestPath.slice(0, manifestPath.lastIndexOf('/'));

@@ -17893,10 +17893,13 @@ function __fileExists(path) {
 }
 // Resolution is the compiled core generator, over the guest's resident fs.
 // Metadata/refusal handling stays here; selection and probing never do.
-var { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, NIMBUS_TYPESCRIPT_REQUIRE_POLICY, TYPESCRIPT_INDEX_CANDIDATES, createNodePackageMapPolicy, createRequireResolver, isWebSocketUpgradeRequest, packageSelfReferenceSubpath, presentedCredential, requireNodeModulePaths, resolveExports, resolvePackageEntry, selectPackageMap, stripsTypeScript, typescriptFallbackCandidates } = (() => {
+var { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, NIMBUS_TYPESCRIPT_REQUIRE_POLICY, TYPESCRIPT_INDEX_CANDIDATES, createNodePackageMapPolicy, createRequireResolver, isWebSocketUpgradeRequest, packageJsonText, packageSelfReferenceSubpath, presentedCredential, requireNodeModulePaths, resolveExports, resolvePackageEntry, selectPackageMap, stripsTypeScript, typescriptFallbackCandidates } = (() => {
 var DEFAULT_ESM_CONDITIONS = ["import", "node", "node-addons", "module-sync"];
 var DEFAULT_CJS_CONDITIONS = ["require", "node", "node-addons", "module-sync"];
 var DEFAULT_BUILD_CONDITIONS = ["import", "module", "browser", "default"];
+function packageJsonText(text) {
+  return text.charCodeAt(0) === 65279 ? text.slice(1) : text;
+}
 var codeOf = (error2) => error2 !== null && typeof error2 === "object" && "code" in error2 ? error2.code : void 0;
 function patternKeyCompare(a, b) {
   const aStar = a.indexOf("*");
@@ -18208,7 +18211,7 @@ function createRequireResolver(host, options = {}) {
     }
     let pkg;
     try {
-      pkg = JSON.parse(text);
+      pkg = JSON.parse(packageJsonText(text));
     } catch {
       throw error("ERR_INVALID_PACKAGE_CONFIG", "Invalid package config " + path + ".");
     }
@@ -18450,6 +18453,8 @@ function createRequireResolver(host, options = {}) {
   };
 }
 var fileTextDecoder = new TextDecoder();
+var cellDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+var cellTextDecoder = new TextDecoder("utf-8", { ignoreBOM: true });
 
 function presentedCredential(value) {
   const trimmed = value.trim();
@@ -18459,7 +18464,7 @@ function presentedCredential(value) {
 function isWebSocketUpgradeRequest(headers) {
   return headers.get("upgrade")?.toLowerCase() === "websocket";
 }
-return { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, NIMBUS_TYPESCRIPT_REQUIRE_POLICY, TYPESCRIPT_INDEX_CANDIDATES, createNodePackageMapPolicy, createRequireResolver, isWebSocketUpgradeRequest, packageSelfReferenceSubpath, presentedCredential, requireNodeModulePaths, resolveExports, resolvePackageEntry, selectPackageMap, stripsTypeScript, typescriptFallbackCandidates };
+return { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, NIMBUS_TYPESCRIPT_REQUIRE_POLICY, TYPESCRIPT_INDEX_CANDIDATES, createNodePackageMapPolicy, createRequireResolver, isWebSocketUpgradeRequest, packageJsonText, packageSelfReferenceSubpath, presentedCredential, requireNodeModulePaths, resolveExports, resolvePackageEntry, selectPackageMap, stripsTypeScript, typescriptFallbackCandidates };
 })();
 
 const __requireResolver = createRequireResolver({
@@ -18792,7 +18797,7 @@ function createEsmResolver(host, options = {}) {
     if (text === null) return { exists: false, pjsonPath, type: "none" };
     let parsed;
     try {
-      parsed = JSON.parse(text);
+      parsed = JSON.parse(packageJsonText(text));
     } catch {
       throw nodeError(
         Error,
@@ -20196,7 +20201,7 @@ function __stagedOwnerVersion(owner, fromDir) {
   if (parts.length <= depth || parts[depth - 1] === "") return { version: null, manifest: null };
   const manifest = "/" + dir.slice(0, at) + "node_modules/" + parts.slice(0, depth).join("/") + "/package.json";
   let found = null;
-  try { found = JSON.parse(builtins.fs.readFileSync(manifest, "utf8")); } catch {}
+  try { found = JSON.parse(packageJsonText(builtins.fs.readFileSync(manifest, "utf8"))); } catch {}
   if (!found || found.name !== owner || typeof found.version !== "string") return { version: null, manifest: null };
   return { version: found.version, manifest };
 }

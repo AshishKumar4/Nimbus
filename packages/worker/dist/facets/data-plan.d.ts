@@ -36,6 +36,8 @@ export interface DataPlanInput {
     refs: readonly StaticFsRefs[];
     /** Paths learned from earlier misses (absolute or keys). */
     learned?: Iterable<string>;
+    /** The program's own conditions (`node --conditions`), which its resolutions use beside Node's. */
+    conditions?: readonly string[];
     /** Called with the bytes of each listed page, to pace a long walk. */
     spend?: (units: number) => Promise<void>;
 }

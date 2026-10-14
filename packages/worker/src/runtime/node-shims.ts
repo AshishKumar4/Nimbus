@@ -13545,7 +13545,7 @@ function __stagedOwnerVersion(owner, fromDir) {
   if (parts.length <= depth || parts[depth - 1] === "") return { version: null, manifest: null };
   const manifest = "/" + dir.slice(0, at) + "node_modules/" + parts.slice(0, depth).join("/") + "/package.json";
   let found = null;
-  try { found = JSON.parse(builtins.fs.readFileSync(manifest, "utf8")); } catch {}
+  try { found = JSON.parse(packageJsonText(builtins.fs.readFileSync(manifest, "utf8"))); } catch {}
   if (!found || found.name !== owner || typeof found.version !== "string") return { version: null, manifest: null };
   return { version: found.version, manifest };
 }

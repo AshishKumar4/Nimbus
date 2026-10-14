@@ -19,7 +19,16 @@ export interface RequireFs {
     /** Hosts with links must supply this; immutable link-free maps may omit it. */
     realpath?(path: string): Awaitable<string>;
 }
-export interface BridgeRequireFs extends RequireFs {
+/**
+ * The filesystem a module map is staged from: its cells copy each file's
+ * bytes (fileCell), which readFileString, the text a resolver parses, does
+ * not.
+ */
+export interface StagingRequireFs extends RequireFs {
+    /** A file's bytes, or null when it does not exist. */
+    readBytes(path: string): Awaitable<Uint8Array | null>;
+}
+export interface BridgeRequireFs extends StagingRequireFs {
     stat(path: string): Promise<RuntimeVfsStat | null>;
     lstat(path: string): Promise<RuntimeVfsStat | null>;
     readBytes(path: string): Promise<Uint8Array | null>;
@@ -90,11 +99,16 @@ export declare function createRequireResolver(host: RequireResolverHost, options
     packageScopeSync: (dir: string) => RequirePackageScope | null;
 };
 /**
- * The text RequireFs.readFileString answers for a file whose content is
- * `cell`, a cell a module map already holds: a text cell is that text; a
- * byte cell (a file that is not valid UTF-8, facets/manager.ts
- * _readBundleCell) is decoded as readFileString decodes it. A walk reuses
- * and compares a held cell through this, in the one representation it reads.
+ * A file's bytes as a module map's cell carries them: its text when the
+ * bytes are UTF-8, every byte kept, else the bytes.
+ */
+export declare function fileCell(bytes: Uint8Array): string | Uint8Array;
+/**
+ * The text a module walk reads a cell as, or a file's bytes it stages: a
+ * text cell is that text; bytes are decoded as a copy of the file, which is
+ * the cell's text when the file is UTF-8 (fileCell), and as Node decodes
+ * source otherwise. A walk stages, reuses and compares cells through this,
+ * in the one representation it reads.
  */
 export declare function heldCellText(cell: string | Uint8Array): string;
 export declare function requireFsOverBridge(bridge: RuntimeFsBridge): BridgeRequireFs;

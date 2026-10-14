@@ -12,6 +12,25 @@ published independently in the `@nimbus-sh` npm scope.
   anything the TUI sent it. Its build now gives it a `worker_threads` of its
   own that says it is a worker. Its file reads and writes (`fs/promises`) are
   the session's filesystem, as checked in a real facet.
+- Fixed: a long-running `node` process holds from its start the file a
+  package specifier its code resolves names as Node resolves it. A
+  `createRequire(...).resolve('pkg/data')` of a package whose `exports`
+  lists `require` and `import` targets read the `require` one, as Node's
+  require does, but the process held the `import` one, so the synchronous
+  read failed. Its program's `--conditions` count too.
+- Fixed: `node` stages what its code reads by a path it spells out even
+  after a URL string on the same line. `node -e 'const u =
+  "http://example.com"; fs.readFileSync("/home/user/data/x.txt")'` raised
+  EAGAIN for a file outside the working directory. A read through a name
+  given a path function (`const resolve = require('path').resolve`) is
+  found as one too.
+- Fixed: `node`'s `fs.readFileSync` returns a file that opens with a UTF-8
+  byte order mark with the mark, as Node does, wherever the launch staged
+  it from: a working-tree file, a required module or JSON file, an
+  installed package's `package.json`. The staged copy used to drop it, so
+  `EF BB BF 68 69` read back as two bytes synchronously and five from
+  `fs.promises.readFile`. `require()` of a JSON file and a package's
+  resolution through its `package.json` still skip the mark, as Node's do.
 - Fixed (Node `fs`): `fs.cpSync`, `fs.promises.cp` and `fs.cp` are Node's
   own `cp`, run over Nimbus's `fs`, so they answer as Node 22 does. The async
   forms took a file the program had not read for a directory (EISDIR), and

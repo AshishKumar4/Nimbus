@@ -21,7 +21,7 @@
  * self-contained function: nothing inside may refer to this module.
  */
 import { invalidArgType, nodeError } from './node-error.js';
-import { createNodePackageMapPolicy, DEFAULT_ESM_CONDITIONS, selectPackageMap } from './exports-resolver.js';
+import { createNodePackageMapPolicy, DEFAULT_ESM_CONDITIONS, packageJsonText, selectPackageMap } from './exports-resolver.js';
 /** Node's ERR_UNKNOWN_FILE_EXTENSION message for the file at `path`. */
 export function unknownFileExtensionMessage(path) {
     const base = path.slice(path.lastIndexOf('/') + 1);
@@ -80,7 +80,7 @@ export function createEsmResolver(host, options = {}) {
             return { exists: false, pjsonPath, type: 'none' };
         let parsed;
         try {
-            parsed = JSON.parse(text);
+            parsed = JSON.parse(packageJsonText(text));
         }
         catch {
             // Node's message names the file and the import, not the parse error.
