@@ -30,7 +30,7 @@ const BUILTINS = {
     readonly: builtinReadonly,
     read: builtinRead,
     wait: builtinWait,
-    kill: ({ args, stdout, stderr, state, host, context }) => runKill({ args, stdout, stderr }, context.cred(), state.jobTable, host.hostProcessSignals()),
+    kill: ({ args, stdout, stderr, state, host, context }) => runKill({ args, stdout, stderr }, context.identity().cred, state.jobTable, host.hostProcessSignals()),
     unset: builtinUnset,
     local: (call) => builtinDeclare('local', call),
     declare: (call) => builtinDeclare('declare', call),
@@ -345,12 +345,15 @@ async function builtinRead({ args, stdin, stderr, state, context }) {
     }
     return 0;
 }
-async function builtinWait({ args, stderr, state }) {
+async function builtinWait({ args, stderr, state, context }) {
     if (args[0] === '--')
         args = args.slice(1);
+    const waiter = context.identity().pid;
     if (args.length === 0) {
+        // Every job, one at a time: all must end, and the one awaited now is what the shell is blocked by.
         const jobs = state.jobTable.list();
-        await Promise.all(jobs.map((job) => job.promise.catch(() => undefined)));
+        for (const job of jobs)
+            await state.jobTable.awaitEnd(job, waiter);
         for (const job of jobs)
             state.jobTable.remove(job.id);
         state.jobTable.clearWaited();
@@ -375,7 +378,7 @@ async function builtinWait({ args, stderr, state }) {
             last = 127;
             continue;
         }
-        last = await job.promise;
+        last = await state.jobTable.awaitEnd(job, waiter);
         state.jobTable.reap(job);
     }
     return last;
@@ -593,8 +596,8 @@ async function builtinFg({ args, stdout, stderr, state, context }) {
         return 1;
     }
     await stdout.write(`${job.command}\n`);
-    state.jobTable.signal(job, 'CONT', context.cred());
-    const exitCode = await job.promise;
+    state.jobTable.signal(job, 'CONT', context.identity().cred);
+    const exitCode = await state.jobTable.awaitEnd(job, context.identity().pid);
     state.jobTable.reap(job);
     return exitCode;
 }
@@ -614,7 +617,7 @@ async function builtinBg({ args, stdout, stderr, state, context }) {
         await stderr.write(`bg: ${spec}: ${job === 'ambiguous' ? 'ambiguous job spec' : 'no such job'}\n`);
         return 1;
     }
-    state.jobTable.signal(job, 'CONT', context.cred());
+    state.jobTable.signal(job, 'CONT', context.identity().cred);
     await stdout.write(`[${job.id}]+ ${job.command} &\n`);
     return 0;
 }

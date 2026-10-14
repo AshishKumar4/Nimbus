@@ -15,12 +15,13 @@
  * module (.mjs, a .js under "type": "module", or ESM syntax) goes to the
  * realm's native ES module loader, not the CommonJS wrapper.
  */
+import { Buffer } from 'node:buffer';
+import { fileURLToPath } from 'node:url';
 import { createModuleMap, ProcessExitError } from './index.js';
 import { createModuleShim } from './module.js';
-import { Buffer } from './buffer.js';
+import { pathToFileURL } from './file-url.js';
 import { escapedIdentifierNames, rewriteDynamicImports } from '../../../runtime/dynamic-import-rewrite.js';
 import { isEsModuleFile } from '../../../runtime/module-format.js';
-import { fileURLToPath, pathToFileURL } from './url.js';
 import { resolve, dirname } from '../utils/path.js';
 import { invalidArgType } from '../../../_shared/node-error.js';
 import { createRequireResolver, NIMBUS_TYPESCRIPT_REQUIRE_POLICY, requireNodeModulePaths } from '../../../runtime/require-resolution.js';
@@ -84,13 +85,15 @@ const rollupNativeStub = {
     xxhashBase16: stubHash(16),
 };
 /**
- * A loader over `context`'s filesystem. `scope` gives each module its
- * console and process (each module has its own, as the node command's
- * modules always have had).
+ * A loader over `context`'s filesystem. `scope` is the program's console and
+ * process, every module's, as Node has one process; require('process') and
+ * require('console') are them.
  */
 export function createCjsLoader(context, scope, options = {}) {
     const filesystem = context.filesystem;
     const moduleMap = createModuleMap(context);
+    moduleMap.process = () => scope.process;
+    moduleMap.console = () => scope.console;
     const builtins = new Map();
     let native;
     const cache = Object.create(null);
@@ -192,7 +195,7 @@ export function createCjsLoader(context, scope, options = {}) {
         classified.set(found.path, found.packageType);
         return found.path;
     }
-    function wrapperArguments(filename, module, moduleScope) {
+    function wrapperArguments(filename, module) {
         const dir = filename === '[eval]' ? context.cwd : dirname(filename);
         const require = requireFrom(dir, filename);
         // Resolution failures reject import()'s promise; none are thrown by the call itself.
@@ -203,10 +206,10 @@ export function createCjsLoader(context, scope, options = {}) {
         });
         return [
             module.exports, require, module, filename, dir,
-            moduleScope.console, moduleScope.process, Buffer,
+            scope.console, scope.process, Buffer,
             globalThis.setTimeout, globalThis.setInterval,
             globalThis.clearTimeout, globalThis.clearInterval,
-            { process: moduleScope.process, Buffer, console: moduleScope.console },
+            { process: scope.process, Buffer, console: scope.console },
             importDynamic,
         ];
     }
@@ -241,7 +244,7 @@ export function createCjsLoader(context, scope, options = {}) {
             throw err;
         }
         try {
-            fn(...wrapperArguments(filename, module, scope(filename)));
+            fn(...wrapperArguments(filename, module));
         }
         catch (e) {
             delete cache[filename];

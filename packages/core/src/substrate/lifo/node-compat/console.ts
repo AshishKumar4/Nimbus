@@ -1,27 +1,32 @@
+import type { Console as EngineConsole } from 'node:console';
+import realm from 'node:process';
+import type { InspectOptions } from 'node:util';
 import type { CommandOutputStream } from '../commands/types.js';
-import { format } from './util.js';
+
+/** A line as Node's console writes it: the engine's own util.format. */
+const format = (...args: unknown[]): string => realm.getBuiltinModule('node:util').format(...args);
 
 export function createConsole(stdout: CommandOutputStream, stderr: CommandOutputStream) {
   const timers = new Map<string, number>();
 
   return {
     log: (...args: unknown[]) => {
-      stdout.write(format(args[0] as string, ...args.slice(1)) + '\n');
+      stdout.write(format(...args) + '\n');
     },
     info: (...args: unknown[]) => {
-      stdout.write(format(args[0] as string, ...args.slice(1)) + '\n');
+      stdout.write(format(...args) + '\n');
     },
     warn: (...args: unknown[]) => {
-      stderr.write(format(args[0] as string, ...args.slice(1)) + '\n');
+      stderr.write(format(...args) + '\n');
     },
     error: (...args: unknown[]) => {
-      stderr.write(format(args[0] as string, ...args.slice(1)) + '\n');
+      stderr.write(format(...args) + '\n');
     },
     debug: (...args: unknown[]) => {
-      stdout.write(format(args[0] as string, ...args.slice(1)) + '\n');
+      stdout.write(format(...args) + '\n');
     },
-    dir: (obj: unknown) => {
-      stdout.write(format('%o', obj) + '\n');
+    dir: (obj: unknown, options?: InspectOptions) => {
+      stdout.write(realm.getBuiltinModule('node:util').inspect(obj, { customInspect: false, ...options }) + '\n');
     },
     time: (label = 'default') => {
       timers.set(label, performance.now());
@@ -40,15 +45,15 @@ export function createConsole(stdout: CommandOutputStream, stderr: CommandOutput
       const start = timers.get(label);
       if (start !== undefined) {
         const elapsed = performance.now() - start;
-        stdout.write(`${label}: ${elapsed.toFixed(3)}ms ${args.map((a) => format('%o', a)).join(' ')}\n`);
+        stdout.write(format('%s: %s', label, `${elapsed.toFixed(3)}ms`, ...args) + '\n');
       }
     },
     trace: (...args: unknown[]) => {
-      stderr.write('Trace: ' + format(args[0] as string, ...args.slice(1)) + '\n');
+      stderr.write('Trace: ' + format(...args) + '\n');
     },
     assert: (condition: unknown, ...args: unknown[]) => {
       if (!condition) {
-        stderr.write('Assertion failed: ' + (args.length > 0 ? format(args[0] as string, ...args.slice(1)) : '') + '\n');
+        stderr.write('Assertion failed: ' + (args.length > 0 ? format(...args) : '') + '\n');
       }
     },
     clear: () => { /* no-op */ },
@@ -64,7 +69,11 @@ export function createConsole(stdout: CommandOutputStream, stderr: CommandOutput
     group: () => { /* no-op */ },
     groupEnd: () => { /* no-op */ },
     table: (data: unknown) => {
-      stdout.write(format('%o', data) + '\n');
+      stdout.write(format(data) + '\n');
+    },
+    /** The engine's Console class, as Node's console has it (loaded when first reached). */
+    get Console(): typeof EngineConsole {
+      return realm.getBuiltinModule('node:console').Console;
     },
   };
 }

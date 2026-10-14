@@ -1,4 +1,4 @@
-import { Buffer } from './buffer.js';
+import { Buffer } from 'node:buffer';
 type ZlibCallback = (err: Error | null, result?: Buffer) => void;
 /**
  * Node's async surface: the callback is required, with options optional in

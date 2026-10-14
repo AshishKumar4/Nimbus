@@ -1,9 +1,5 @@
-import { EventEmitter } from './events.js';
-import { type LoopbackRouter, type VirtualRequestHandler, type VirtualResponse } from '../kernel/index.js';
-/** Extended VirtualResponse with a done promise for async middleware */
-export interface VirtualResponseWithDone extends VirtualResponse {
-    _donePromise?: Promise<void>;
-}
+import { EventEmitter } from 'node:events';
+import { type LoopbackRouter, type VirtualRequestHandler } from '../kernel/index.js';
 interface RequestOptions {
     hostname?: string;
     host?: string;
@@ -45,6 +41,8 @@ declare class ClientRequest extends EventEmitter {
     private options;
     private body;
     private aborted;
+    /** What abort() ends: the wait for a local server's answer among it. Made when a wait needs it. */
+    private abortController;
     private portRegistry?;
     private routeLoopback?;
     private protocol;
@@ -52,7 +50,13 @@ declare class ClientRequest extends EventEmitter {
     write(data: string): void;
     end(data?: string): void;
     abort(): void;
+    /** This request's signal, which abort() aborts. */
+    private signal;
     private execute;
+    /** A local hop that got no response: nothing for an abort; the connection's error otherwise. */
+    private failed;
+    /** `response` as this request's: its status, reason and headers, then its body and end. */
+    private answer;
     setTimeout(_ms: number, cb?: () => void): this;
 }
 declare class ServerResponse extends EventEmitter {

@@ -8,30 +8,7 @@
 // The native side runs in a child bounded in time and memory: a trap that
 // starts itself again (a RETURN trap that runs `return`) grows without
 // bound, so no such case is here, and any that slipped in ends at its cap.
-import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { runScript } from './lib/bash-preamble.mjs';
-
-const NATIVE_TIMEOUT_MS = 5000;
-const NATIVE_MEMORY_KIB = 256 * 1024;
-
-const version = spawnSync('bash', ['--norc', '--noprofile', '-c', 'echo "$BASH_VERSION"'], { encoding: 'utf8', timeout: NATIVE_TIMEOUT_MS });
-assert.match(version.stdout ?? '', /^5\.2\./, `the reference is GNU bash 5.2 (found ${JSON.stringify(version.stdout)})`);
-
-/** `script` under the host's bash, in a child capped at NATIVE_MEMORY_KIB of address space and NATIVE_TIMEOUT_MS. */
-function native(script) {
-  const run = spawnSync('bash', ['--norc', '--noprofile', '-c', `ulimit -v ${NATIVE_MEMORY_KIB} && exec bash --norc --noprofile -c "$1"`, 'native', script], {
-    encoding: 'utf8', timeout: NATIVE_TIMEOUT_MS, killSignal: 'SIGKILL', cwd: '/tmp', env: { PATH: '/usr/bin:/bin', HOME: '/tmp', LC_ALL: 'C' },
-  });
-  assert.equal(run.error, undefined, `native bash ran ${JSON.stringify(script)} within its bounds`);
-  return { stdout: run.stdout, code: run.status };
-}
-
-async function wasm(script) {
-  const r = await runScript(script, { dirs: ['tmp'], modes: { tmp: 7 } });
-  assert.equal(r.state, 'exited', `${script}: ${r.error ?? r.stderr}`);
-  return { stdout: r.stdout, code: r.exitCode };
-}
+import { assertMatchesNativeBash } from './lib/native-bash.mjs';
 
 const CASES = [
   // ERR: exit, with a status and without one (the failing command's).
@@ -52,17 +29,5 @@ const CASES = [
   "printf 'return 2\\n' > /tmp/s.sh; trap 'echo \"R $?\"' RETURN; . /tmp/s.sh; echo \"s=$?\"",
 ];
 
-const failures = [];
-for (const script of CASES) {
-  const expected = native(script);
-  const actual = await wasm(script);
-  try {
-    assert.deepEqual(actual, expected);
-    console.log(`  ✓ ${script}`);
-  } catch {
-    failures.push(script);
-    console.log(`  ✗ ${script}\n      native ${JSON.stringify(expected)}\n      wasm   ${JSON.stringify(actual)}`);
-  }
-}
-assert.deepEqual(failures, []);
-console.log(`bash-trap-nonlocal-differential: ok (${version.stdout.trim()})`);
+const version = await assertMatchesNativeBash(CASES);
+console.log(`bash-trap-nonlocal-differential: ok (${version})`);

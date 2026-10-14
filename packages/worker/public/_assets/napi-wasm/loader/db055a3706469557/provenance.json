@@ -12,7 +12,7 @@
       "packages/worker/scripts/napi-wasm/inputs.mjs": "5bac3fae82b6bc1bf7f23fc75ff8cb81098d53cbd4325ae0ccb495362348dbd6",
       "packages/worker/scripts/napi-wasm/loader/napi-wasm-loader.ts": "be1f648fadb9ad0fef6f0317d37dd616076a10e4ffc0e186609ee23361fe2918",
       "packages/worker/scripts/napi-wasm/loader/wasi-trampoline.mjs": "cb857b5989626e502f2a1d86198ba32cec763f360e09bab108bacde3746bbd62",
-      "packages/worker/scripts/napi-wasm/specs.mjs": "98589599adbff293b45810e688e6216546cd427eff740d288b9248f7a3dc9d10",
+      "packages/worker/scripts/napi-wasm/specs.mjs": "620c3977a3fc18514806a5d438057c26993067f8ab61192adb0051e50d598260",
       "packages/worker/scripts/stage-asset.mjs": "2187cb40e0491884adea0ae5deb543205f431e995a4e1e3a726d93d4e1173929",
       "packages/worker/tsconfig.json": "fa6f4d05c31f08aebf48fc3a2373a2478cb3df3f937c5246a9c47a310ec08c0b",
       "tsconfig.base.json": "6003784c8e56ac1d084c3a15b9a48776154644c8534e5be3bbe212d9ebfc8038",
@@ -46,7 +46,7 @@
       "bun.lock#esbuild": "add5ecc823d2dd6f81362b09025f25d76ab708b382ff33103bd0314cb655dee7",
       "package.json": "ad4e12d103ff459ecf586c4121377f48f238a4dc8e59823a8afb711438e424d8",
       "packages/core/package.json": "77d59b4dc539cc5116c4d8cceabd19a7912df9989e55c4a3d9e9916112873182",
-      "packages/worker/package.json": "48be0364d352710d67478c026a94506afc1a1986d11f49552ecfd82e42cb7dd2"
+      "packages/worker/package.json": "d3eb481b04c9d9cd2d38dc67831568e9d3fd8287a70c5964e87db8055f8c5d53"
     },
     "graph": [
       "packages/core/src/runtime/wasi/filesystem.ts",

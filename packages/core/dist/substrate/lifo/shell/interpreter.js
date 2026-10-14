@@ -747,10 +747,10 @@ export class Interpreter {
                                 shell: this.config,
                                 interactive: io.interactive,
                                 getLastExitCode: () => this.lastExitCode,
-                                cred: () => {
+                                identity: () => {
                                     if (!io.commandIdentity)
                                         throw new Error('shell command identity is unavailable');
-                                    return io.commandIdentity.cred;
+                                    return io.commandIdentity;
                                 },
                             });
                         }

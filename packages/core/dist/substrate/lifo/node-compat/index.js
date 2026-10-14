@@ -1,26 +1,21 @@
+import { Buffer } from 'node:buffer';
+import realm from 'node:process';
 import { createFs } from './fs.js';
-import pathModule from './path.js';
+import { createPath, createUrl } from './cwd-relative.js';
 import { createOs } from './os.js';
 import { createProcess } from './process.js';
-import { EventEmitter } from './events.js';
-import { Buffer } from './buffer.js';
-import * as utilModule from './util.js';
+import { EventEmitter } from 'node:events';
 import { createHttp } from './http.js';
 import { createChildProcess } from './child_process.js';
-import * as streamModule from './stream.js';
-import * as urlModule from './url.js';
-import * as timersModule from './timers.js';
-import * as cryptoModule from './crypto.js';
 import * as zlibModule from './zlib.js';
-import * as stringDecoderModule from './string_decoder.js';
-import * as ttyModule from './tty.js';
+import { createTty } from './tty-streams.js';
 import { createDns } from './dns.js';
 import { createModuleShim } from './module.js';
 import * as readlineModule from './readline.js';
 import { createRimraf } from './rimraf.js';
 import { createEsbuild } from './esbuild.js';
-import { assertEqualHolds } from './loose-equality.js';
 import { createHttp2Module } from '../../../_shared/http2-module.js';
+import { nodeError } from '../../../_shared/node-error.js';
 /**
  * The net and tls stubs: a socket that accepts writes and goes nowhere, and a
  * server that listens on nothing. Vite imports both and opens neither
@@ -47,11 +42,25 @@ class StubServer extends EventEmitter {
     unref() { return this; }
     ref() { return this; }
 }
+/** What would reach past the program (the host's files, loader or process), refused as an unavailable feature. */
+function unavailable(feature) {
+    throw nodeError(TypeError, 'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM', `The feature ${feature} is unavailable on the current platform, which is being used to run Node.js`);
+}
+/** The engine's `module` with each of `names` refused (unavailable). */
+function withoutHostReach(module, name, names) {
+    const refused = Object.fromEntries(names.map((method) => [method, () => unavailable(`${name}.${method}`)]));
+    return { ...module, ...refused };
+}
 export function createModuleMap(ctx) {
+    // One path module for every name it has (path, path/posix, path/win32).
+    let path;
+    const programPath = () => path ??= createPath(ctx.cwd);
     const map = {
-        fs: () => createFs(ctx.filesystem(), ctx.cwd, ctx.stdin),
-        'fs/promises': () => createFs(ctx.filesystem(), ctx.cwd, ctx.stdin).promises,
-        path: () => pathModule,
+        fs: () => createFs(ctx.filesystem(), ctx.cwd, ctx.stdin, ctx.reachStreams),
+        'fs/promises': () => createFs(ctx.filesystem(), ctx.cwd, ctx.stdin, ctx.reachStreams).promises,
+        path: programPath,
+        'path/posix': () => programPath().posix,
+        'path/win32': () => programPath().win32,
         os: () => createOs(ctx.env),
         process: () => createProcess({
             argv: ctx.argv,
@@ -60,36 +69,24 @@ export function createModuleMap(ctx) {
             stdout: ctx.stdout,
             stderr: ctx.stderr,
         }),
-        events: () => {
-            // Node.js CJS: require('events') returns the EventEmitter constructor itself
-            const mod = EventEmitter;
-            mod.EventEmitter = EventEmitter;
-            mod.default = EventEmitter;
-            return mod;
-        },
-        buffer: () => ({ Buffer }),
-        util: () => utilModule,
+        events: () => realm.getBuiltinModule('node:events'),
+        // The engine's own, as its require gives them (X-3), loaded when first
+        // required. `realm` is the host's process: the program's globalThis.process
+        // is lifo's.
+        buffer: () => realm.getBuiltinModule('node:buffer'),
+        util: () => realm.getBuiltinModule('node:util'),
         http: () => createHttp(ctx.portRegistry, 'http:', ctx.routeLoopback),
         https: () => createHttp(ctx.portRegistry, 'https:', ctx.routeLoopback),
         child_process: () => createChildProcess(ctx.executeCapture),
-        stream: () => {
-            // Node.js CJS: require('stream') returns the Stream base class with
-            // .Readable, .Writable, .Duplex, .PassThrough, .Stream attached
-            const Stream = EventEmitter;
-            Stream.Stream = Stream;
-            Stream.Readable = streamModule.Readable;
-            Stream.Writable = streamModule.Writable;
-            Stream.Duplex = streamModule.Duplex;
-            Stream.PassThrough = streamModule.PassThrough;
-            Stream.default = Stream;
-            return Stream;
-        },
-        url: () => urlModule,
-        timers: () => timersModule,
-        crypto: () => cryptoModule,
+        stream: () => (ctx.reachStreams?.(), realm.getBuiltinModule('node:stream')),
+        'stream/promises': () => (ctx.reachStreams?.(), realm.getBuiltinModule('node:stream/promises')),
+        'stream/consumers': () => (ctx.reachStreams?.(), realm.getBuiltinModule('node:stream/consumers')),
+        'stream/web': () => (ctx.reachStreams?.(), realm.getBuiltinModule('node:stream/web')),
+        url: () => createUrl(ctx.cwd),
+        crypto: () => realm.getBuiltinModule('node:crypto'),
         zlib: () => zlibModule,
-        string_decoder: () => stringDecoderModule,
-        tty: () => ttyModule,
+        string_decoder: () => realm.getBuiltinModule('node:string_decoder'),
+        tty: () => (ctx.reachStreams?.(), createTty()),
         dns: () => createDns(ctx.dns),
         'dns/promises': () => createDns(ctx.dns).promises,
         readline: () => readlineModule,
@@ -99,68 +96,28 @@ export function createModuleMap(ctx) {
             const os = createOs(ctx.env);
             return { ...os.constants, ...fs.constants };
         },
-        querystring: () => ({
-            parse: (str) => {
-                const out = {};
-                new URLSearchParams(str).forEach((value, key) => {
-                    out[key] = value;
-                });
-                return out;
-            },
-            stringify: (obj) => new URLSearchParams(obj).toString(),
-            escape: encodeURIComponent,
-            unescape: decodeURIComponent,
-        }),
-        assert: () => {
-            const assert = (value, message) => {
-                if (!value)
-                    throw new Error(message || 'AssertionError');
-            };
-            assert.ok = assert;
-            assert.equal = (a, b, msg) => { if (!assertEqualHolds(a, b))
-                throw new Error(msg || `${a} != ${b}`); };
-            assert.strictEqual = (a, b, msg) => { if (a !== b)
-                throw new Error(msg || `${a} !== ${b}`); };
-            assert.notEqual = (a, b, msg) => { if (assertEqualHolds(a, b))
-                throw new Error(msg || `${a} == ${b}`); };
-            assert.notStrictEqual = (a, b, msg) => { if (a === b)
-                throw new Error(msg || `${a} === ${b}`); };
-            assert.deepStrictEqual = (a, b, msg) => {
-                if (JSON.stringify(a) !== JSON.stringify(b))
-                    throw new Error(msg || 'deepStrictEqual failed');
-            };
-            assert.throws = (fn, msg) => {
-                try {
-                    fn();
-                    throw new Error(msg || 'Expected function to throw');
-                }
-                catch (e) {
-                    if (e instanceof Error && e.message === (msg || 'Expected function to throw'))
-                        throw e;
-                }
-            };
-            return assert;
-        },
-        // v8 — stub (vite side-effect imports it)
-        v8: () => ({
-            getHeapStatistics: () => ({
-                total_heap_size: 0, used_heap_size: 0, heap_size_limit: 0,
-                total_physical_size: 0, total_available_size: 0,
-                malloced_memory: 0, peak_malloced_memory: 0,
-            }),
-            serialize: (v) => new Uint8Array(0),
-            deserialize: () => undefined,
-        }),
-        // perf_hooks — vite uses { performance } which is a browser global
-        perf_hooks: () => ({
-            performance,
-            PerformanceObserver: typeof PerformanceObserver === 'undefined'
-                ? class PerformanceObserver {
-                    observe() { }
-                    disconnect() { }
-                }
-                : PerformanceObserver,
-        }),
+        // The engine's own, context-free (X-3). v8 is the engine's but for what
+        // would reach the host's files or flags (a heap snapshot file, coverage,
+        // V8 flags), each refused. vm, domain, trace_events and wasi are refused
+        // whole: vm's main-context loader imports past the program's module map,
+        // domain sets the engine's own process (its domain and uncaught-exception
+        // capture), and trace_events and wasi reach the host's files.
+        assert: () => realm.getBuiltinModule('node:assert'),
+        'assert/strict': () => realm.getBuiltinModule('node:assert/strict'),
+        async_hooks: () => realm.getBuiltinModule('node:async_hooks'),
+        diagnostics_channel: () => realm.getBuiltinModule('node:diagnostics_channel'),
+        domain: () => unavailable('domain'),
+        perf_hooks: () => realm.getBuiltinModule('node:perf_hooks'),
+        punycode: () => realm.getBuiltinModule('node:punycode'),
+        querystring: () => realm.getBuiltinModule('node:querystring'),
+        sys: () => realm.getBuiltinModule('node:sys'),
+        timers: () => realm.getBuiltinModule('node:timers'),
+        'timers/promises': () => realm.getBuiltinModule('node:timers/promises'),
+        'util/types': () => realm.getBuiltinModule('node:util/types'),
+        v8: () => withoutHostReach(realm.getBuiltinModule('node:v8'), 'v8', ['writeHeapSnapshot', 'setFlagsFromString', 'setHeapSnapshotNearHeapLimit', 'takeCoverage', 'stopCoverage']),
+        vm: () => unavailable('vm'),
+        trace_events: () => unavailable('trace_events'),
+        wasi: () => unavailable('wasi'),
         // net — stub (vite imports it but only uses it for actual TCP in server mode)
         net: () => ({
             createServer: () => new StubServer(),
@@ -200,14 +157,13 @@ export function createModuleMap(ctx) {
         }),
         // http2 — Node's exports; opening HTTP/2 refuses (core/_shared/http2-module.ts,
         // which the node shims embed too)
-        http2: () => createHttp2Module({
+        http2: () => (ctx.reachStreams?.(), createHttp2Module({
             EventEmitter,
-            Readable: streamModule.Readable,
-            // This stream module has no legacy Stream base; its streams are EventEmitters.
-            Stream: EventEmitter,
+            Readable: realm.getBuiltinModule('node:stream').Readable,
+            Stream: realm.getBuiltinModule('node:stream'),
             Buffer,
             emitWarning: (message) => { ctx.stderr.write(`Warning: ${message}\n`); },
-        }),
+        })),
         // inspector — stub (vite only uses it in --profile mode)
         inspector: () => ({
             Session: class Session extends EventEmitter {
