@@ -1,7 +1,8 @@
 // agent/new/agent-chat-ui — the built agent-chat island: mount, seeded
 // history rendering (markdown + syntax highlighting + tool cards + copy
-// button), streaming send/stop, pin-to-bottom, error card + retry, and the
-// unified markdown pipeline. Rendering fidelity is driven with intercepted
+// button), streaming send/stop, pin-to-bottom, error card + retry, a send
+// whose response is lost sent again under its id, and the unified markdown
+// pipeline. Rendering fidelity is driven with intercepted
 // agent APIs (no Workers AI spend); the live-send path honors the
 // model-auth boundary honestly: with no connected credential it asserts
 // the connect-gate UX instead of faking a turn.
@@ -47,17 +48,22 @@ try {
   await applyProbeCookies(page);
   await exchangeAttachCookie(page, sid);
   const runtimeErrors = [];
+  // The POSTs this probe fails on purpose (lost, or refused 409), whose
+  // failures Chrome logs.
+  let failedPosts = 0;
   page.on('pageerror', (err) => runtimeErrors.push(err.message || String(err)));
   page.on('console', (msg) => {
     const location = msg.location?.() || {};
-    if (msg.type() === 'error' && !String(location.url || '').endsWith('/favicon.ico')) {
+    const url = String(location.url || '');
+    const failedPost = failedPosts > 0 && url.endsWith('/api/agent/messages') && /net::ERR_FAILED|status of 409/.test(msg.text());
+    if (msg.type() === 'error' && !url.endsWith('/favicon.ico') && !failedPost) {
       runtimeErrors.push(msg.text());
     }
   });
 
   // ── Phase 1: rendering fidelity with intercepted agent APIs ─────────
   let interceptAgentApis = true;
-  let postMode = 'stream'; // 'stream' | 'error' | 'eof'
+  let postMode = 'stream'; // 'stream' | 'error' | 'eof' | 'lost' | 'lost-running'
   const postBodies = [];
   let mockMessages = structuredClone(seededMessages);
   await page.setRequestInterception(true);
@@ -96,9 +102,28 @@ try {
       if (requestBody.retry === true) {
         if (history.at(-1)?.role === 'assistant') history.pop();
         user = history.at(-1);
+      } else if (history.some((message) => message.id === requestBody.id)) {
+        // A send the session holds, sent again: as the session does, store
+        // nothing; refuse it while its answer is being written, else answer
+        // with the conversation as it is.
+        if (history.some((message) => message.replyTo === requestBody.id && message.status === 'streaming')) {
+          failedPosts += 1;
+          request.respond({
+            status: 409,
+            contentType: 'application/json',
+            body: JSON.stringify({ error: 'the turn is still running', code: 'E_AGENT_TURN_RUNNING' }),
+          });
+          return;
+        }
+        request.respond({
+          status: 200,
+          contentType: 'application/x-ndjson',
+          body: ndjsonBody([{ type: 'start', messages: history }]),
+        });
+        return;
       } else {
         user = {
-          id: `u-live-${postBodies.length}`,
+          id: requestBody.id,
           role: 'user',
           content: requestBody.message,
           createdAt: Date.now(),
@@ -136,6 +161,20 @@ try {
       } else if (postMode === 'eof') {
         mockMessages = [...history, interrupted];
         events = [...base, { type: 'text-delta', delta: 'Recovered partial text.' }];
+      } else if (postMode === 'lost') {
+        // The session took the send and answered; its response never
+        // reaches the browser.
+        mockMessages = [...history, complete];
+        failedPosts += 1;
+        request.abort('failed');
+        return;
+      } else if (postMode === 'lost-running') {
+        // The session took the send and is still answering it; the
+        // response never reaches the browser.
+        mockMessages = [...history, { ...interrupted, content: 'Still answering', parts: [{ type: 'text', text: 'Still answering' }], status: 'streaming', replyTo: user.id }];
+        failedPosts += 1;
+        request.abort('failed');
+        return;
       } else {
         mockMessages = [...history, complete];
         events = [...base,
@@ -266,6 +305,61 @@ try {
       && !last.querySelector('.agent-interrupted');
   }, { timeout: 15_000 });
   a.check('retry clears the error card and completes', !(await page.$('.agent-error-card')));
+
+  // A send whose response is lost: the session took it, the browser never
+  // heard. "Send again" sends it under the same id, which the session holds
+  // once.
+  postMode = 'lost';
+  await page.type('#agentInput', 'lost on the way back');
+  await page.click('#agentSend');
+  await page.waitForSelector('.agent-error-card', { timeout: 15_000 });
+  a.check('a send with no response offers Send again',
+    await page.$eval('.error-retry', (el) => el.textContent === 'Send again'));
+  postMode = 'stream';
+  const postsBeforeResend = postBodies.length;
+  await page.click('.error-retry');
+  await page.waitForFunction(() => {
+    const last = document.querySelector('.agent-thread')?.lastElementChild;
+    return !document.querySelector('.agent-error-card')
+      && document.getElementById('agentSend')?.textContent === 'Send'
+      && last?.matches('.agent-msg.assistant')
+      && last.querySelector('.agent-text')?.textContent.includes('Streamed answer.');
+  }, { timeout: 15_000 });
+  const [lostBody, resentBody] = postBodies.slice(postsBeforeResend - 1);
+  a.check('Send again sends the message under the id it was first sent with',
+    postBodies.length === postsBeforeResend + 1
+      && typeof lostBody?.id === 'string' && lostBody.id.length > 0
+      && resentBody?.id === lostBody.id && resentBody.message === lostBody.message,
+    JSON.stringify(postBodies.slice(postsBeforeResend - 1)));
+  a.check('the message the session already held is shown once, with its answer',
+    await page.$$eval('.agent-msg.user .agent-bubble', (rows) => (
+      rows.filter((row) => row.textContent === 'lost on the way back').length === 1
+    )));
+
+  // The same, with the session still answering: history, refreshed, shows the
+  // send, and Send again is refused (409) while it answers. The refusal
+  // takes away only a row the send itself put up, never history's.
+  postMode = 'lost-running';
+  await page.type('#agentInput', 'answered as we speak');
+  await page.click('#agentSend');
+  await page.waitForSelector('.agent-error-card', { timeout: 15_000 });
+  postMode = 'stream';
+  await page.evaluate(() => window.NimbusAgent.ensureLoaded());
+  const heldBubble = () => page.$$eval('.agent-msg.user .agent-bubble', (rows) => (
+    rows.filter((row) => row.textContent === 'answered as we speak').length
+  ));
+  await page.waitForFunction(() => Array.from(document.querySelectorAll('.agent-msg.user .agent-bubble'))
+    .some((row) => row.textContent === 'answered as we speak'), { timeout: 15_000 });
+  await page.click('.error-retry');
+  await page.waitForFunction(() => document.querySelector('.error-body')?.textContent.includes('the turn is still running')
+    && document.getElementById('agentSend')?.textContent === 'Send', { timeout: 15_000 });
+  a.check('a refused Send again leaves the send history holds in place', (await heldBubble()) === 1, String(await heldBubble()));
+  await page.click('.error-dismiss');
+  await page.$eval('#agentInput', (input) => {
+    input.value = '';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  mockMessages = mockMessages.map((message) => (message.status === 'streaming' ? { ...message, status: 'complete' } : message));
 
   // Clean EOF after live parts is an interrupted turn, never a silent drop.
   postMode = 'eof';

@@ -1,7 +1,7 @@
 export interface ErrorCardProps {
   message: string;
   streaming: boolean;
-  /** Action label - "Send again" for an unsent draft, retry otherwise. */
+  /** Action label - "Send again" for a send no answer came back for, retry otherwise. */
   retryLabel: string;
   onRetry(): void;
   onDismiss(): void;

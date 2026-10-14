@@ -3,15 +3,16 @@ import { ISOLATE_NETWORK, type WorkspaceNetwork } from '../../../../_shared/work
 import { resolveContext, type CommandRegistry } from '../registry.js';
 import type { ProcessView as VFS } from '../../../../runtime/process-files.js';
 import type { Kernel } from '../../kernel/index.js';
-import { resolve, join } from '../../utils/path.js';
+import { basename, join, relative, resolve } from '../../utils/path.js';
 import { writeTarballStream, type TarballWriteResult } from '../../../../_shared/tarball.js';
 import { isNativeBinPath } from '../../../../runtime/os-contracts.js';
 import { npmBinMap } from '../../../../runtime/npm-bin-map.js';
 import { pickPackumentVersion } from '../../../../_shared/npm-semver.js';
 import { parseRegistryRequest, splitPackageSpec } from '../../../../_shared/npm-spec.js';
 import {
-	canonicalTreePath, depthOf, holdTree, namedPackages, placementName, projectRoots, readPackageJson, saveNamed,
-	type PackageJsonDocument, type TreePackage, type TreeRoot,
+	canonicalTreePath, depthOf, holdTree, isOptional, manifestEdges, meets, namedPackages, packageJsonText, parentPlacement, placementName,
+	projectRoots, readPackageJson, saveNamed, withoutDeclared,
+	type PackageJsonDocument, type ProjectManifest, type TreePackage, type TreeRoot,
 } from '../../../../_shared/npm-tree.js';
 import { planTree, requiredFailures, type OmitTypes, type TreeNode, type TreeResolution } from '../../../../_shared/npm-arborist/plan.js';
 import { InstallJournal } from './npm-journal.js';
@@ -27,8 +28,9 @@ import {
   parseNpmInstallInvocation,
   type NpmInstallInvocation,
 } from './npm-install-args.js';
-import { installSummary, npmLogEnabled, type NpmLogEmitter } from './npm-log.js';
+import { installSummary, npmLogEnabled, npmRemovedLine, type NpmLogEmitter } from './npm-log.js';
 import { exists } from '../../../../vfs/vfs.js';
+import { isVfsError } from '../../../../vfs/vfs-error.js';
 import { direntTypeIn } from '../../../../vfs/dirent-type.js';
 
 /** The registry an install reads from when its env names none. */
@@ -100,10 +102,31 @@ export interface NpmInstallPort {
     npmLog?: NpmLogEmitter | null;
     onProgress?: (line: string) => void;
   }): Promise<{ installed: string[]; failed: string[]; totalFiles?: number; fromCacheHits?: number; linkedBins?: number }>;
+  /**
+   * The host's records of the bins of `packages`, which `npm uninstall`
+   * removed from `modulesDir`: retired, shims and all, so no later install
+   * links them again. `globalBinDir`: a global uninstall's, the prefix's bin
+   * directory, where the host put them on PATH. `pid` authorizes the writes.
+   */
+  unlinkBins?(spec: { modulesDir: string; globalBinDir?: string; pid: number; packages: readonly string[] }): Promise<void>;
+  /**
+   * The hold the host's installs take on the tree at `modulesDir` (core
+   * npm-tree.ts holdTree), for a command that changes it otherwise (`npm
+   * uninstall`): one change to a tree at a time. Answers its release; one
+   * that `signal` stops while it waits never holds it. A host with none
+   * shares the shell's own installs' hold.
+   */
+  hold?(spec: { modulesDir: string; pid: number; signal: AbortSignal }): Promise<() => void>;
 }
 
 export interface NpmCommandDeps {
   installer?: NpmInstallPort;
+  /**
+   * The host's, before the command replaces a file of the project
+   * (package.json): one an earlier release of the host wrote as root is
+   * handed to its directory's owner, so the command, as its process, can.
+   */
+  beforeWrite?: (ctx: CommandContext, path: string) => Promise<void>;
 }
 
 /** The end-of-install report (installSummary), on the command's own streams. */
@@ -659,9 +682,7 @@ function shellInstallPort(ctx: CommandContext, registry: CommandRegistry, kernel
 			};
 			// The project's package.json is read and written under the tree's
 			// hold, so two installs at once add to it one after the other.
-			const canonical = await canonicalTreePath((path) => vfs.realpath(path), targetBase);
-			const held = holdTree(kernel ?? NO_KERNEL, canonical, signal);
-			const release = typeof held === 'function' ? held : await held;
+			const release = await holdShellTree(vfs, kernel, targetBase, signal);
 			try {
 				if (globalBinDir) {
 					for (const dir of [targetBase, globalBinDir]) await vfs.mkdir(dir, { recursive: true });
@@ -689,6 +710,12 @@ function shellInstallPort(ctx: CommandContext, registry: CommandRegistry, kernel
 	};
 }
 
+/** The tree at `modulesDir` held for one change (holdTree), by its canonical path, in the shell's namespace: its kernel's. */
+async function holdShellTree(vfs: VFS, kernel: Kernel | undefined, modulesDir: string, signal: AbortSignal): Promise<() => void> {
+	const held = holdTree(kernel ?? NO_KERNEL, await canonicalTreePath((path) => vfs.realpath(path), modulesDir), signal);
+	return typeof held === 'function' ? held : await held;
+}
+
 /** npm's prefix resolution: --prefix wins, then npm_config_prefix, then
  *  /usr/local; a relative value resolves against cwd. Absolute result. */
 function resolveNpmPrefixVfs(cwd: string, env: Record<string, string>, explicit: string | null): string {
@@ -696,109 +723,240 @@ function resolveNpmPrefixVfs(cwd: string, env: Record<string, string>, explicit:
 	return resolve(cwd, raw);
 }
 
-async function npmUninstall(ctx: CommandContext, _registry: CommandRegistry): Promise<number> {
-	const args = ctx.args.slice(1);
-	let isGlobal = false;
-	const packages: string[] = [];
+/**
+ * The invocation as npm's configuration reads it (npm-config.ts: npm's
+ * definitions and nopt, so `--global=false` is local and `--location=global`
+ * global; its .npmrc files and npm_config_* too), its warnings printed: the
+ * names it gives, and the global prefix it acts on, null for the project.
+ * npm's libraries load the first time a session runs one.
+ */
+async function npmInvocation(ctx: CommandContext): Promise<{ names: readonly string[]; prefix: string | null; save: boolean }> {
+	const config = await (await import('./npm-config.js')).loadNpmConfig(ctx.vfs, ctx.cwd, ctx.env, ctx.args);
+	for (const warning of config.warnings) await ctx.stderr.write(`npm warn ${warning}\n`);
+	const global = config.get('global') === true || config.get('location') === 'global';
+	return {
+		names: config.positionals.slice(1),
+		prefix: global ? resolve(ctx.cwd, String(config.get('prefix'))) : null,
+		save: config.get('save') !== false,
+	};
+}
 
-	for (const arg of args) {
-		if (arg === '-g' || arg === '--global') {
-			isGlobal = true;
-		} else if (!arg.startsWith('-')) {
-			packages.push(arg);
-		}
-	}
-
-	if (packages.length === 0) {
-		await ctx.stderr.write('npm uninstall requires at least one package name\n');
+/**
+ * `npm uninstall`: each package named (as written: npm takes no version)
+ * goes from the tree, its bins with it (reify trashes a package's path and
+ * its binPaths), and from every field of package.json that declares it,
+ * whether it was installed or not (add-rm-pkg-deps rm). `-g`: from the
+ * global prefix, its bins from the prefix's bin directory; `--no-save`
+ * leaves package.json as it is. The host's records of the bins go too (its
+ * port's unlinkBins). All of it happens under the hold an install into the
+ * tree takes (its port's hold), so an install and an uninstall at once each
+ * see the tree, its bins and package.json whole. package.json is read
+ * first: one it cannot read fails the command before anything changes, one
+ * it cannot write fails it; one that is not a JSON object is left as it
+ * is. A package it cannot reach or remove fails the command, and the others
+ * go on. Unlike npm's reify, what only a removed package depended on stays
+ * installed.
+ */
+async function npmUninstall(ctx: CommandContext, kernel?: Kernel, deps?: NpmCommandDeps): Promise<number> {
+	const startedAt = Date.now();
+	const { names, prefix, save } = await npmInvocation(ctx);
+	if (names.length === 0) {
+		await ctx.stderr.write('npm error Must provide a package name to remove\n');
 		return 1;
 	}
-	const globalPrefix = isGlobal ? resolveNpmPrefixVfs(ctx.cwd, ctx.env, null) : null;
-	const targetBase = isGlobal ? `${globalPrefix}/lib/node_modules` : join(ctx.cwd, 'node_modules');
-	const globalBinDir = isGlobal ? `${globalPrefix}/bin` : null;
+	const modulesDir = prefix === null ? join(ctx.cwd, 'node_modules') : `${prefix}/lib/node_modules`;
+	// The tree, its bins and package.json change under the hold installs into the tree take.
+	const hold = deps?.installer?.hold;
+	const release = hold === undefined
+		? await holdShellTree(ctx.vfs, kernel, modulesDir, ctx.signal)
+		: await hold({ modulesDir, pid: ctx.pid, signal: ctx.signal });
+	try {
+		const binDir = prefix === null ? join(modulesDir, '.bin') : `${prefix}/bin`;
+		const pkgPath = join(ctx.cwd, 'package.json');
 
-	for (const name of packages) {
-		const targetDir = join(targetBase, name);
-
-		if (!(await ctx.vfs.exists(targetDir))) {
-			await ctx.stderr.write(`npm warn: ${name} is not installed\n`);
-			continue;
-		}
-
-		// Unlink global binaries
-		if (isGlobal && globalBinDir) {
+		let project: { readonly text: string; readonly json: Readonly<Record<string, unknown>> } | null = null;
+		if (prefix === null && save) {
 			try {
-				const pkg: PackageJson = JSON.parse((await ctx.vfs.readFileString(join(targetDir, 'package.json'))));
-				for (const binName of Object.keys(getBinEntries(pkg))) {
-					try { (await ctx.vfs.unlink(join(globalBinDir, binName))); } catch { /* ignore */ }
+				const text = await ctx.vfs.readFileString(pkgPath);
+				const read = readPackageJson(text);
+				if (read !== null) project = { text, json: read.json };
+			} catch (error) {
+				if (!isVfsError(error, 'ENOENT')) {
+					await ctx.stderr.write(`npm ERR! could not update package.json: ${describeError(error)}\n`);
+					return 1;
 				}
-			} catch { /* ignore */ }
-		}
-
-		// Remove the package
-		try {
-			(await ctx.vfs.remove(targetDir, { recursive: true }));
-		} catch (e) {
-			await ctx.stderr.write(`npm ERR! could not remove ${name}: ${e instanceof Error ? e.message : String(e)}\n`);
-			return 1;
-		}
-
-		// Update package.json for local uninstalls
-		if (!isGlobal) {
-			const pkg = (await readProjectPackageJson(ctx.vfs, ctx.cwd));
-			if (pkg) {
-				if (pkg.dependencies) delete pkg.dependencies[name];
-				if (pkg.devDependencies) delete pkg.devDependencies[name];
-				(await writeProjectPackageJson(ctx.vfs, ctx.cwd, pkg));
 			}
 		}
 
-		await ctx.stdout.write(`removed ${name}\n`);
-	}
+		// A package it cannot reach or remove fails the command, and the rest go on.
+		const removed: string[] = [];
+		let failed = false;
+		for (const name of names) {
+			const dir = join(modulesDir, name);
+			try {
+				if ((await ctx.vfs.stat(dir, { follow: false })) === null) continue;
+				const manifest = (await packageJsonIn(ctx.vfs, dir))?.json;
+				const own = manifest?.name;
+				await ctx.vfs.remove(dir, { recursive: true, force: true });
+				for (const bin of npmBinMap(typeof own === 'string' ? own : name, manifest?.bin).keys()) await ctx.vfs.remove(join(binDir, bin), { force: true });
+				removed.push(name);
+			} catch (error) {
+				await ctx.stderr.write(`npm ERR! could not remove ${name}: ${describeError(error)}\n`);
+				failed = true;
+			}
+		}
+		const unlinkBins = deps?.installer?.unlinkBins;
+		if (removed.length > 0 && unlinkBins !== undefined) {
+			try {
+				await unlinkBins({ modulesDir, globalBinDir: prefix === null ? undefined : binDir, pid: ctx.pid, packages: removed });
+			} catch (error) {
+				await ctx.stderr.write(`npm ERR! could not remove the bins of ${removed.join(', ')}: ${describeError(error)}\n`);
+				failed = true;
+			}
+		}
 
-	return 0;
+		if (project !== null) {
+			const text = packageJsonText(withoutDeclared(project.json, names), project.text);
+			if (text.trim() !== project.text.trim()) {
+				try {
+					await deps?.beforeWrite?.(ctx, pkgPath);
+					await ctx.vfs.writeFile(pkgPath, text);
+				} catch (error) {
+					await ctx.stderr.write(`npm ERR! could not update package.json: ${describeError(error)}\n`);
+					return 1;
+				}
+			}
+		}
+		if (failed) return 1;
+		await ctx.stdout.write(`\n${npmRemovedLine(removed.length, Date.now() - startedAt)}\n`);
+		return 0;
+	} finally {
+		release();
+	}
 }
 
+/** What `npm ls` prints in a dependency's place, and what it finds wrong with it. */
+interface ListedNode {
+	readonly pkgid: string;
+	readonly label: string;
+	readonly problems: readonly string[];
+}
+
+const byPkgid = new Intl.Collator('en');
+
+/**
+ * `npm ls` at its default depth, as npm prints it (lib/commands/ls.js over
+ * arborist's actual tree): the root; then, sorted as npm sorts them, each
+ * dependency it declares, installed, UNMET where it is not (OPTIONAL for an
+ * optional one), or invalid for its range; and each package in node_modules
+ * nothing installed depends on, extraneous. `-g`: every package in the
+ * global prefix, none extraneous. A missing required or an invalid
+ * dependency fails the command (ELSPROBLEMS), an extraneous package alone
+ * does not; a root package.json that is not a JSON object fails it
+ * (EJSONPARSE) once the tree is printed.
+ */
 async function npmList(ctx: CommandContext): Promise<number> {
-	const args = ctx.args.slice(1);
-	const isGlobal = args.includes('-g') || args.includes('--global');
-	const globalPrefix = isGlobal ? resolveNpmPrefixVfs(ctx.cwd, ctx.env, null) : null;
-	const modulesDir = isGlobal ? `${globalPrefix}/lib/node_modules` : join(ctx.cwd, 'node_modules');
-	const header = isGlobal
-		? `${globalPrefix}/lib`
-		: ((await readProjectPackageJson(ctx.vfs, ctx.cwd))?.name || ctx.cwd);
-	await ctx.stdout.write(`${header}\n`);
+	const { prefix } = await npmInvocation(ctx);
+	const global = prefix !== null;
+	const root = global ? `${prefix}/lib` : ctx.cwd;
+	const modulesDir = join(root, 'node_modules');
 
-	if (!(await ctx.vfs.exists(modulesDir))) {
-		await ctx.stdout.write('└── (empty)\n');
-		return 0;
-	}
-
-	const packages: { name: string; version: string }[] = [];
-	for await (const name of packagesIn(ctx.vfs, modulesDir)) {
-		packages.push({ name, version: await readPkgVersion(ctx.vfs, join(modulesDir, name)) });
-	}
-
-	if (packages.length === 0) {
-		await ctx.stdout.write('└── (empty)\n');
-	} else {
-		for (let i = 0; i < packages.length; i++) {
-			const p = packages[i];
-			const last = i === packages.length - 1;
-			await ctx.stdout.write(`${last ? '└── ' : '├── '}${p.name}@${p.version}\n`);
+	let text: string | null = null;
+	if (!global) {
+		try {
+			text = await ctx.vfs.readFileString(join(root, 'package.json'));
+		} catch (error) {
+			if (!isVfsError(error, 'ENOENT')) {
+				await ctx.stderr.write(`npm error ${describeError(error)}\n`);
+				return 1;
+			}
 		}
 	}
+	const project = text === null ? null : readPackageJson(text);
+	const json = project?.json ?? {};
+	const field = (key: string) => {
+		const value = json[key];
+		return typeof value === 'string' ? value : '';
+	};
+	const rootId = `${field('name') || basename(root)}@${field('version')}`;
+	const rootReal = await ctx.vfs.realpath(root).catch(() => root);
 
-	return 0;
-}
-
-async function readPkgVersion(vfs: VFS, pkgDir: string): Promise<string> {
-	try {
-		const pkg = JSON.parse((await vfs.readFileString(join(pkgDir, 'package.json'))));
-		return pkg.version || '?';
-	} catch {
-		return '?';
+	// Every package in the tree, at its placement; those its root's edges reach, through node_modules upward from each (Node.resolve).
+	const placements = new Set(await installedPlacements(ctx.vfs, modulesDir, () => true));
+	const resolveFrom = (from: string, name: string): string | null => {
+		for (let at = from; ; at = parentPlacement(at)) {
+			const placement = at === '' ? name : `${at}/node_modules/${name}`;
+			if (placements.has(placement)) return placement;
+			if (at === '') return null;
+		}
+	};
+	const nodes = new Map<string, { readonly pkgid: string; readonly version: string; readonly manifest: ProjectManifest; readonly link: string | null }>();
+	const nodeAt = async (placement: string) => {
+		const known = nodes.get(placement);
+		if (known !== undefined) return known;
+		const dir = join(modulesDir, placement);
+		const read = await packageJsonIn(ctx.vfs, dir);
+		const name = placementName(placement);
+		const own = read?.json.name;
+		const written = read?.json.version;
+		const version = typeof written === 'string' ? written : '';
+		const alias = typeof own === 'string' && own !== '' && own !== name ? `npm:${own}@` : '';
+		const link = (await ctx.vfs.isSymlink(dir)) ? await ctx.vfs.realpath(dir).then((real) => relative(rootReal, real), () => null) : null;
+		const node = { pkgid: `${name}@${alias}${version}`, version, manifest: read?.manifest ?? {}, link };
+		nodes.set(placement, node);
+		return node;
+	};
+	const edges = global ? [] : projectRoots(project?.manifest ?? null, []);
+	const reached = new Set<string>();
+	const pending = edges.map(({ name }): [string, string] => ['', name]);
+	for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+		const at = resolveFrom(...next);
+		if (at === null || reached.has(at)) continue;
+		reached.add(at);
+		const node = await nodeAt(at);
+		// A link's dependencies are its target's, resolved where the target is.
+		if (node.link === null) for (const edge of manifestEdges(node.manifest)) pending.push([at, edge.name]);
 	}
+
+	const listed: ListedNode[] = [];
+	const linked = (node: { readonly link: string | null }) => (node.link === null ? '' : ` -> ./${node.link}`);
+	for (const edge of edges) {
+		if (!placements.has(edge.name)) {
+			const pkgid = `${edge.name}@${edge.range}`;
+			const optional = isOptional(edge.type);
+			listed.push({ pkgid, label: `UNMET ${optional ? 'OPTIONAL ' : ''}DEPENDENCY ${pkgid}`, problems: optional ? [] : [`missing: ${pkgid}, required by ${rootId}`] });
+			continue;
+		}
+		const node = await nodeAt(edge.name);
+		const invalid = !meets(node.version, edge);
+		listed.push({
+			pkgid: node.pkgid,
+			label: `${node.pkgid}${invalid ? ` invalid: ${JSON.stringify(edge.range)} from the root project` : ''}${linked(node)}`,
+			problems: invalid ? [`invalid: ${node.pkgid} ${join(modulesDir, edge.name)}`] : [],
+		});
+	}
+	for (const name of placements) {
+		if (name.includes('/node_modules/') || reached.has(name)) continue;
+		const node = await nodeAt(name);
+		listed.push({
+			pkgid: node.pkgid,
+			label: `${node.pkgid}${global ? '' : ' extraneous'}${linked(node)}`,
+			problems: global ? [] : [`extraneous: ${node.pkgid} ${join(modulesDir, name)}`],
+		});
+	}
+	listed.sort((a, b) => byPkgid.compare(a.pkgid, b.pkgid));
+
+	const header = global || Object.keys(json).length === 0 ? root : `${rootId} ${root}`;
+	const lines = listed.length === 0 ? ['└── (empty)'] : listed.map(({ label }, i) => `${i === listed.length - 1 ? '└── ' : '├── '}${label}`);
+	await ctx.stdout.write(`${header}\n${lines.join('\n')}\n\n`);
+	if (text !== null && project === null) {
+		await ctx.stderr.write('npm error code EJSONPARSE\nnpm error JSON.parse Failed to parse root package.json\nnpm error JSON.parse Failed to parse JSON data.\nnpm error JSON.parse Note: package.json must be actual JSON, not just JavaScript.\n');
+		return 1;
+	}
+	const problems = listed.flatMap(({ problems }) => problems);
+	if (problems.every((problem) => problem.startsWith('extraneous:'))) return 0;
+	await ctx.stderr.write(['code ELSPROBLEMS', ...problems].map((line) => `npm error ${line}\n`).join(''));
+	return 1;
 }
 
 async function npmRun(ctx: CommandContext, shellExecute?: ShellExecuteFn, registry?: CommandRegistry, kernel?: Kernel): Promise<number> {
@@ -1013,7 +1171,7 @@ export function createNpmCommand(
 			case 'remove':
 			case 'rm':
 			case 'un':
-				return (await npmUninstall(ctx, registry));
+				return (await npmUninstall(ctx, kernel, deps));
 			case 'list':
 			case 'ls':
 				return (await npmList(ctx));

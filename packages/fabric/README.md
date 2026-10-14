@@ -401,7 +401,7 @@ Nesting is capped at depth 4. Raise it with `NIMBUS_INNER_LOADER_DEPTH`.
 
 A classic Durable Object binding is a local namespace inside the inner
 Worker (`inner-do-env.ts`), because a namespace's API is synchronous and an
-RpcPromise cannot travel as an argument. `innerWorkerModules` makes an adapter
+RpcPromise cannot travel as an argument. `innerWorkerModules` (`inner-env.ts`) makes an adapter
 the bundle's first import; it replaces `env.MY_DO` in the env every handler,
 entrypoint and object of the isolate sees, so
 `env.MY_DO.get(env.MY_DO.idFromName('x'))` needs no `await`. A stub is
@@ -424,6 +424,21 @@ Limits, where a stub differs from Cloudflare's:
   child's code and loads it again in each later request, so the child's env
   can carry nothing made in one request; a namespace is refused there on
   Cloudflare too.
+
+`NimbusKVNamespace`, `NimbusD1Binding` and `NimbusR2Bucket` are a KV, D1 or
+R2 binding. The session mints each for one store of one project, named in
+its props, and each call is a supervisor op (`kvCall`, `d1Query`,
+`r2Call`) the session serves for that store only. The same adapter
+replaces each with a local object (`inner-storage-env.ts`). KV's calls and
+answers cross RPC as they are, so its `KvNamespace` only converts options
+as workerd's client does (an int by ToNumber, `jsg-int.ts`, where an
+object argument's `valueOf` would cross as a stub). The D1 and R2 APIs
+cannot cross RPC (a statement is bound synchronously; an R2 object has
+methods): a `D1Database` as workerd's own over the binding's `query`, D1's
+binding contract, and an `R2Bucket` whose objects it makes from the
+fields the binding answers.
+tests/unit/wrangler-dev-storage-bindings-workerd.mjs checks all three
+against the local bindings `wrangler dev` gives a Worker.
 
 ## Measured platform limits
 
