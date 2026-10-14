@@ -1,0 +1,62 @@
+#!/usr/bin/env bun
+// Commands run by name (command, env, xargs) are the registry's, and they must
+// be the same programs the shell runs. `test` and `[` by name evaluate as the
+// builtin does, and xargs starts each command as a child process: its own
+// process, with xargs's stdout and stderr facts and /dev/null for stdin.
+import assert from 'node:assert/strict';
+import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+
+const harness = createSqliteVfsTestHarness();
+const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx });
+const failures = [];
+const check = async (what, run) => {
+  try { await run(); console.log(`  ✓ ${what}`); } catch (error) { failures.push(what); console.log(`  ✗ ${what}: ${error.message}`); }
+};
+const run = async (script) => {
+  const r = await ws.exec(script);
+  return { code: r.exitCode, stdout: r.stdout, stderr: r.stderr };
+};
+
+try {
+  await check('test by name compares integers as the builtin does', async () => {
+    assert.deepEqual(await run('command test 1 -eq 2; echo $?'), { code: 0, stdout: '1\n', stderr: '' });
+    assert.deepEqual(await run('env test 3 -gt 2; echo $?'), { code: 0, stdout: '0\n', stderr: '' });
+    assert.deepEqual(await run('env test a = a -a 1 -gt 2; echo $?'), { code: 0, stdout: '1\n', stderr: '' });
+  });
+
+  await check('test by name negates and tests files as the builtin does', async () => {
+    assert.deepEqual(await run('command test ! -e /nope; echo $?'), { code: 0, stdout: '0\n', stderr: '' });
+    assert.deepEqual(await run('touch f; command test -s f; echo $?'), { code: 0, stdout: '1\n', stderr: '' });
+  });
+
+  await check('[ by name needs its closing ], as the builtin does', async () => {
+    const missing = await run('command [ 1 -eq 1; echo $?');
+    assert.equal(missing.stdout, '2\n');
+    assert.equal(missing.stderr, '[: missing ]\n');
+    assert.deepEqual(await run('command [ 1 -eq 1 ]; echo $?'), { code: 0, stdout: '0\n', stderr: '' });
+  });
+
+  await check('xargs runs a child whose stdout is the pipe: an endless device streams into it', async () => {
+    assert.deepEqual(await run('printf x | xargs -I {} cat /dev/zero | head -c1 | od -An -tx1'), { code: 0, stdout: ' 00\n', stderr: '' });
+  });
+
+  await check('each command xargs runs is a process of its own: its umask is not the next one\'s', async () => {
+    assert.deepEqual(await run("printf 'a\\nb\\n' | xargs -I {} sh -c 'umask; umask 077'"), { code: 0, stdout: '0022\n0022\n', stderr: '' });
+  });
+
+  await check('a command xargs runs reads /dev/null, not xargs\'s input', async () => {
+    assert.deepEqual(await run("printf 'a\\nb\\n' | xargs -n 1 sh -c 'cat; echo \"$0\"'"), { code: 0, stdout: 'a\nb\n', stderr: '' });
+  });
+
+  await check('xargs keeps its exit policy: a failing command makes it fail, a missing one is 127', async () => {
+    assert.deepEqual(await run('echo x | xargs false; echo $?'), { code: 0, stdout: '1\n', stderr: '' });
+    const missing = await run('echo x | xargs no-such-command; echo $?');
+    assert.equal(missing.stdout, '127\n');
+  });
+} finally {
+  await ws.dispose?.();
+}
+
+assert.deepEqual(failures, []);
+console.log('shell registry children: ok');
