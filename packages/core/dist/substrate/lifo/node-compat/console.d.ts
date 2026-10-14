@@ -1,3 +1,4 @@
+import type { Console as EngineConsole } from 'node:console';
 import type { InspectOptions } from 'node:util';
 import type { CommandOutputStream } from '../commands/types.js';
 export declare function createConsole(stdout: CommandOutputStream, stderr: CommandOutputStream): {
@@ -18,5 +19,7 @@ export declare function createConsole(stdout: CommandOutputStream, stderr: Comma
     group: () => void;
     groupEnd: () => void;
     table: (data: unknown) => void;
+    /** The engine's Console class, as Node's console has it (loaded when first reached). */
+    readonly Console: typeof EngineConsole;
 };
 //# sourceMappingURL=console.d.ts.map
