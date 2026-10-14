@@ -29,9 +29,26 @@ const WORKER = join(REPO, 'packages', 'worker');
 
 /** What we publish, and the manifest each package must turn out to carry. */
 const RUNTIMES = [
-  { runtime: 'bash', version: '5.2.37-5' },
-  { runtime: 'cpython', version: '3.13.14-1' },
+  { runtime: 'bash', version: '5.2.37-5', command: 'bash -c "echo hi"' },
+  { runtime: 'cpython', version: '3.13.14-1', command: 'python -c "print(6*7)"' },
 ];
+
+/** An embedder that installs the runtime package `name` alone and runs `command` through it. */
+const floorEmbedder = (name, command) => `import { DatabaseSync } from 'node:sqlite';
+import { ISOLATE_NETWORK, NimbusWorkspace, localFacetHost } from '@nimbus-sh/core';
+import runtime from '${name}';
+
+const db = new DatabaseSync(':memory:');
+const sql = { exec: (query, ...bindings) => db.prepare(query).all(...bindings) };
+const transactions = { storage: { transactionSync(callback) {
+  db.exec('BEGIN');
+  try { const result = callback(); db.exec('COMMIT'); return result; } catch (error) { db.exec('ROLLBACK'); throw error; }
+} } };
+const workspace = await NimbusWorkspace.create({ sql, transactions, generation: 1, cwd: '/home/user', facets: localFacetHost(ISOLATE_NETWORK), runtimes: [runtime] });
+const result = await workspace.exec(${JSON.stringify(command)});
+if (result.exitCode !== 0) throw new Error(${JSON.stringify(command)} + ' exited ' + result.exitCode + ': ' + result.stderr);
+console.log('FLOOR OK');
+`;
 
 /**
  * The whole of what an embedder writes: a SQLite, a facet host, and the two
@@ -147,6 +164,38 @@ try {
     }
   }
   console.log('  ok  each package carries the publisher manifest and every blob it names');
+
+  // ── 1b. Each package's core floor runs it ───────────────────────────────
+  // npm installs a runtime package beside any core its peer range admits, so
+  // the range's floor must be a core that runs it: the runner its manifest
+  // names registered, the embedder API it is used through there. The lowest
+  // published core the range admits is installed from npm and must run the
+  // runtime's command; a floor above every published core admits none yet
+  // (the next release's), and step 3 installs it beside this tree's core.
+  const published = JSON.parse(run('npm', ['view', '@nimbus-sh/core', 'versions', '--json'], work));
+  const byVersion = (a, b) => Bun.semver.order(a, b);
+  for (const [i, dir] of staged.entries()) {
+    const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
+    const floor = pkg.peerDependencies['@nimbus-sh/core'];
+    const lowest = published.filter((v) => Bun.semver.satisfies(v, floor)).sort(byVersion)[0];
+    if (lowest === undefined) {
+      console.log(`  ok  ${pkg.name}: core ${floor} admits no published core (newest ${[...published].sort(byVersion).at(-1)})`);
+      continue;
+    }
+    const at = mkdtempSync(join(work, `floor-${RUNTIMES[i].runtime}-`));
+    writeFileSync(join(at, 'package.json'), `${JSON.stringify({ name: 'nimbus-floor', version: '0.0.0', private: true, type: 'module' })}\n`);
+    const tarball = JSON.parse(run('npm', ['pack', dir, '--json', '--ignore-scripts', '--pack-destination', at], at))[0].filename;
+    run('npm', ['install', '--no-audit', '--no-fund', `@nimbus-sh/core@${lowest}`, join(at, tarball)], at);
+    writeFileSync(join(at, 'floor.mjs'), floorEmbedder(pkg.name, RUNTIMES[i].command));
+    let output;
+    try {
+      output = run('node', ['floor.mjs'], at);
+    } catch (error) {
+      assert.fail(`${pkg.name}: its core floor ${floor} admits core ${lowest}, which does not run it: ${error.stderr || error.message}`);
+    }
+    assert.match(output, /^FLOOR OK$/m, `${pkg.name} under core ${lowest}: ${output}`);
+    console.log(`  ok  ${pkg.name}: core ${lowest}, the lowest published core ${floor} admits, runs it`);
+  }
 
   // ── 2. Pack what a consumer installs ────────────────────────────────────
   // `--ignore-scripts` so packing core does not rebuild this repo's dist as a
