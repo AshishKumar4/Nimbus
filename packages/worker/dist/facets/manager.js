@@ -1074,7 +1074,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
     async function __drainPendingIO(maxPasses = 12) {
       for (let __pass = 0; __pass < maxPasses; __pass++) {
         await new Promise(r => globalThis.__nimbusRawSetTimeout(r, 0));
-        // What is in it is outstanding (PENDING_IO_SOURCE).
+        // It is empty once nothing is outstanding (PENDING_IO_SOURCE).
         if (__pendingIO.length === 0) break;
         await Promise.allSettled([...__pendingIO]);
       }
@@ -1330,7 +1330,7 @@ async function __nimbusFlushRuntime() {
       const turn = Promise.withResolvers();
       __nimbusPlatformSetTimeout(turn.resolve, 0);
       await turn.promise;
-      // What is in it is outstanding (PENDING_IO_SOURCE).
+      // It is empty once nothing is outstanding (PENDING_IO_SOURCE).
       if (rt.pendingIO.length === 0) break;
       await Promise.allSettled([...rt.pendingIO]);
     }

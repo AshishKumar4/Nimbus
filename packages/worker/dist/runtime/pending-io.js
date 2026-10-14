@@ -7,25 +7,37 @@
  * kills, its port registrations, its exit report. A boundary (a one-shot's
  * end, a resident's response or exit, opencode's teardown) waits for what is
  * in it. The shims push to it and check that it is an Array, so it is one.
- * Each entry leaves as it settles, fulfilled or rejected: a server that logs
- * with no HTTP traffic, or a long one-shot run, holds what is outstanding,
- * not every write it ever made.
+ * Its settled entries, fulfilled or rejected, leave together once they are
+ * half of it, so each costs a constant to remove: it holds at most twice what
+ * is outstanding, and is empty when nothing is. A server that logs with no
+ * HTTP traffic, or a long one-shot run, holds what is outstanding, not every
+ * write it ever made.
  *
  * Spliced where the runner's process scope begins, before the shims.
  */
 export const PENDING_IO_SOURCE = `
 const __pendingIO = [];
 {
-  const __append = __pendingIO.push.bind(__pendingIO);
+  const append = __pendingIO.push.bind(__pendingIO);
+  const settled = new WeakSet();
+  let settledCount = 0;
+  const leave = (task) => {
+    settled.add(task);
+    if (++settledCount * 2 < __pendingIO.length) return;
+    let kept = 0;
+    for (let at = 0; at < __pendingIO.length; at++) {
+      const entry = __pendingIO[at];
+      if (!settled.has(entry)) __pendingIO[kept++] = entry;
+    }
+    __pendingIO.length = kept;
+    settledCount = 0;
+  };
   __pendingIO.push = (...pushed) => {
     for (const each of pushed) {
       const task = Promise.resolve(each);
-      __append(task);
-      const leave = () => {
-        const at = __pendingIO.indexOf(task);
-        if (at >= 0) __pendingIO.splice(at, 1);
-      };
-      task.then(leave, leave);
+      append(task);
+      const done = () => leave(task);
+      task.then(done, done);
     }
     return __pendingIO.length;
   };
