@@ -953,7 +953,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
       const name = await this.path(path, follow);
       if (options?.maxBytes !== undefined) {
         const stat = await this.namespace.stat(name, { follow });
-        if (stat !== null && !fitsWholeRead(stat, options.maxBytes)) throw syscallError('EFBIG', 'read', path);
+        if (stat !== null && !fitsWholeRead(stat, options.maxBytes)) throw syscallError('EFBIG', 'read', name);
       }
       return (await this.viewed(name, follow)) ?? this.namespace.readFile(name);
     }));
