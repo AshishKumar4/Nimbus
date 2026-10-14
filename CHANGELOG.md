@@ -5,6 +5,17 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: two sessions served by one isolate decode their background
+  processes' terminal output each on its own. Their processes are numbered
+  alike, and one isolate-wide decoder per process number let a character
+  one session's process split across two writes take in the other's text
+  (a replacement character on its terminal); one session's process ending
+  dropped the other's pending bytes. A process that is killed leaves no
+  decoder behind.
+- Fixed: the agent's conversation is one record that turns change, not a
+  copy each turn writes back whole. A second message sent while a turn was
+  still answering was overwritten by that turn's next save, and clearing
+  the conversation during a turn was undone by it.
 - Fixed: a Ruby program and a threaded WASI program end as other WASI
   programs do: what they wrote is in the workspace before their result
   returns, and a run whose session restarted under it, or whose writes the
