@@ -4,12 +4,8 @@ import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
 import { PIPE_CAPACITY, decideRead, decideWrite, heldExitSettles, holdsExit, pipeBudget, pipeLimitMessage, readerStops } from './pipe-rules.js';
 import { wasiOutputRelay } from '../wasi/stdio.js';
 import { outputControlReader } from '../wasi/output-control.js';
+import { ARENA_SIZE, CaptureStore } from './capture-store.js';
 const PAGE = 65536, te = new TextEncoder(), td = new TextDecoder();
-// Sizing is measurement-grounded (local pre-gate stats): bash's deepest
-// observed asyncify capture is ~25 KiB (full control suite), so 8 MiB
-// main / 256 KiB slots carry 300×/10× margin while keeping a full
-// instance ~17 MiB — several forks fit the ~180-200 MiB facet ceiling.
-const MAIN_SIZE = 8 << 20, SLOT_SIZE = 256 << 10, NSLOT = 32;
 const E = { ACCES: 2, BADF: 8, EXIST: 20, INVAL: 28, ISDIR: 31, LOOP: 32, NOENT: 44, NOSYS: 52, NOTDIR: 54, NOTEMPTY: 55, PERM: 63, SPIPE: 70, SRCH: 71 };
 // WASI clock ids. MONOTONIC and the two CPUTIME clocks are answered from a
 // monotonic source; an id outside this set is EINVAL, never a silent realtime
@@ -98,7 +94,7 @@ function newSession(args) {
         output: wasiOutputRelay({ stdout: bytes => target.stdout(bytes), stderr: bytes => { const data = outputControl ? outputControl.feed(bytes) : bytes; if (data.length)
                 return target.stderr(data); } }),
         missingWasi: new Set(),
-        stats: { instances: 0, reused: 0, memPeak: 0, mainHi: 0, slotHi: 0 },
+        stats: { instances: 0, reused: 0, memPeak: 0, mainHi: 0, captureBytesHi: 0, captureCompactions: 0, captureLiveHi: 0, forkCopied: 0 },
         error: null,
         processGone: null,
         gone: (refusal) => { session.processGone ??= refusal; },
@@ -188,6 +184,10 @@ function closeFd(s, proc, fd) {
     if (!e)
         return;
     proc.fds.delete(fd);
+    releaseEntry(s, e);
+}
+/** A descriptor's claim on what it holds, given up. */
+function releaseEntry(s, e) {
     // The entry is gone either way: a release that fails has still released
     // this process's claim on it, and letting the rejection reach s.error
     // would report the whole slice as failed instead of its exit code.
@@ -658,18 +658,17 @@ function requestSharedInput(s) {
 function makeProc(s, pid, ppid, fds) {
     const proc = {
         pid, ppid, fds, preopenMoved: new Map(), cwd: s.cwd, inst: null, __s: s,
-        ctx: freshCtx(),
-        MAIN_BUF: 0, SLOT0: 0, pendingRead: null, writeResumed: false,
-        slotByEnv: new Map(), freeSlots: [], resident: new Map(),
+        ctx: freshCtx(), incarnation: 0,
+        pendingRead: null, writeResumed: false, resident: new Map(),
     };
     const DV = () => new DataView(proc.inst.exports.memory.buffer);
     const U8 = () => new Uint8Array(proc.inst.exports.memory.buffer);
     proc.DV = DV;
     proc.U8 = U8;
-    const slotAddr = (i) => proc.SLOT0 + i * SLOT_SIZE;
-    proc.slotAddr = slotAddr;
-    const initHdr = (a, sz) => { const dv = DV(); dv.setUint32(a, a + 8, true); dv.setUint32(a + 4, a + sz, true); };
-    proc.initHdr = initHdr;
+    /** Unwind the whole stack, from the import calling this, into the arena's top. */
+    const startUnwind = () => { proc.inst.exports.asyncify_start_unwind(proc.captures.unwindAt(proc.inst.exports.memory, stackPointer(), s.stats, proc.pid)); };
+    /** The shadow stack pointer at the import calling this: its caller's frame bottom (nimbus-proc.c's wrappers keep no frame). */
+    const stackPointer = () => Number(proc.inst.exports.__stack_pointer.value);
     const wstr = (p, str) => { const b = te.encode(str); U8().set(b, p); return b.length; };
     const c = proc.ctx;
     function suspend(name, call) {
@@ -690,8 +689,7 @@ function makeProc(s, pid, ppid, fds) {
             pending.promise = result.then(value => { pending.value = value; pending.settled = true; }, error => { pending.value = refusalErrno(error, s.gone); pending.settled = true; });
             proc.pendingFs = pending;
             c.reason = 'filesystem';
-            initHdr(proc.MAIN_BUF, MAIN_SIZE);
-            proc.inst.exports.asyncify_start_unwind(proc.MAIN_BUF);
+            startUnwind();
             return 0;
         };
     }
@@ -713,8 +711,7 @@ function makeProc(s, pid, ppid, fds) {
             dv.setUint32(nread, 0, true);
             c.reason = 'blockread';
             c.pipeReq = { fd, iov, nreadPtr: nread };
-            initHdr(proc.MAIN_BUF, MAIN_SIZE);
-            proc.inst.exports.asyncify_start_unwind(proc.MAIN_BUF);
+            startUnwind();
             return 0;
         },
         write: (fd, bytes) => writeThroughFd(s, proc, fd, bytes),
@@ -731,8 +728,7 @@ function makeProc(s, pid, ppid, fds) {
             if (!writePipe(s, proc, fd) && outputWait) {
                 c.reason = 'blockwrite';
                 c.outputWait = outputWait;
-                initHdr(proc.MAIN_BUF, MAIN_SIZE);
-                proc.inst.exports.asyncify_start_unwind(proc.MAIN_BUF);
+                startUnwind();
                 return WRITE_UNWOUND;
             }
             const pp = writePipe(s, proc, fd);
@@ -740,8 +736,7 @@ function makeProc(s, pid, ppid, fds) {
                 return undefined;
             c.reason = 'blockwrite';
             c.writeFd = fd;
-            initHdr(proc.MAIN_BUF, MAIN_SIZE);
-            proc.inst.exports.asyncify_start_unwind(proc.MAIN_BUF);
+            startUnwind();
             return WRITE_UNWOUND;
         },
         poll: (inPtr, outPtr, nsubs, retPtr) => {
@@ -779,8 +774,7 @@ function makeProc(s, pid, ppid, fds) {
             dv.setUint32(retPtr, 0, true);
             c.reason = 'blockread';
             c.pipeReq = { fd: blockSub.fd, iov: EMPTY_IOV, nreadPtr: 0, pollUserdata: blockSub.userdata };
-            initHdr(proc.MAIN_BUF, MAIN_SIZE);
-            proc.inst.exports.asyncify_start_unwind(proc.MAIN_BUF);
+            startUnwind();
             return 0;
         },
     };
@@ -802,34 +796,6 @@ function makeProc(s, pid, ppid, fds) {
             U8()[p++] = 0;
         } return 0; },
     };
-    // Slot allocator. Each setjmp captures into a FRESH physical slot
-    // (overwriting a slot in place while its snapshot is still a live
-    // longjmp target corrupts the asyncify rewind — the exit-builtin's
-    // jump_to_top_level recursion proved this). Correct recycling: a
-    // re-setjmp of the SAME jmp_buf makes that buf's previous slot a dead
-    // target (POSIX: only the most recent setjmp per buf is live), so we
-    // return it to a FIFO free-list — reused only after other allocations
-    // cycle through, never the just-freed address. This bounds slot use
-    // for long interactive sessions (bash re-setjmps top_level per
-    // command) without the in-place-overwrite hazard.
-    const allocSlot = (env) => {
-        const prev = proc.slotByEnv.get(env);
-        if (prev !== undefined) {
-            proc.slotByEnv.delete(env);
-            proc.freeSlots.push(prev);
-        }
-        let idx;
-        if (proc.freeSlots.length > 1)
-            idx = proc.freeSlots.shift();
-        else if (c.nextSlot < NSLOT)
-            idx = c.nextSlot++;
-        else
-            idx = proc.freeSlots.shift();
-        if (idx === undefined)
-            throw new Error('bash-runner: setjmp slot budget exceeded (' + NSLOT + ')');
-        proc.slotByEnv.set(env, idx);
-        return idx;
-    };
     const nimbus_proc = {
         startup_cwd: (ptr, capacity) => {
             const bytes = te.encode(proc.cwd);
@@ -842,21 +808,21 @@ function makeProc(s, pid, ppid, fds) {
             return bytes.length;
         },
         capture_cwd: (ptr, length) => { proc.cwd = td.decode(U8().subarray(ptr, ptr + length)); return 0; },
+        // A landing (the capture's own rewind, or a longjmp's) stops the rewind and runs no hook.
         setjmp: (env) => {
             if (c.rewinding) {
                 proc.inst.exports.asyncify_stop_rewind();
                 c.rewinding = false;
                 return;
             }
+            const sp = stackPointer();
+            proc.captures.setting(proc.inst.exports.memory, env);
             c.reason = 'capture';
             c.captureEnv = env;
-            const idx = allocSlot(env);
-            const dv = DV();
-            dv.setInt32(env, idx, true);
-            dv.setInt32(env + 4, 0, true);
-            initHdr(slotAddr(idx), SLOT_SIZE);
-            proc.inst.exports.asyncify_start_unwind(slotAddr(idx));
+            c.captureSp = sp;
+            startUnwind();
         },
+        // The current stack is unwound and discarded; the target is resolved once it is (step).
         longjmp: (env, val) => {
             if (c.rewinding) {
                 proc.inst.exports.asyncify_stop_rewind();
@@ -866,8 +832,7 @@ function makeProc(s, pid, ppid, fds) {
             c.reason = 'longjmp';
             c.ljEnv = env;
             c.ljVal = val;
-            initHdr(proc.MAIN_BUF, MAIN_SIZE);
-            proc.inst.exports.asyncify_start_unwind(proc.MAIN_BUF);
+            startUnwind();
         },
         fork: () => {
             if (c.rewinding) {
@@ -876,8 +841,7 @@ function makeProc(s, pid, ppid, fds) {
                 return c.resume;
             }
             c.reason = 'fork';
-            initHdr(proc.MAIN_BUF, MAIN_SIZE);
-            proc.inst.exports.asyncify_start_unwind(proc.MAIN_BUF);
+            startUnwind();
             return 0;
         },
         vfork: () => nimbus_proc.fork(),
@@ -892,8 +856,7 @@ function makeProc(s, pid, ppid, fds) {
             c.reason = 'waitpid';
             c.waitTarget = pid;
             c.waitStatusPtr = statusPtr;
-            initHdr(proc.MAIN_BUF, MAIN_SIZE);
-            proc.inst.exports.asyncify_start_unwind(proc.MAIN_BUF);
+            startUnwind();
             return 0;
         },
         execve: (pathPtr, argvFlatPtr, argvLen, envFlatPtr, envLen) => {
@@ -912,8 +875,7 @@ function makeProc(s, pid, ppid, fds) {
             // The child's REAL environment (bash's export set at exec time —
             // PWD tracks the shell's cd, unlike the boot-time s.environ).
             c.execEnv = td.decode(u8.subarray(envFlatPtr, envFlatPtr + envLen)).split('\0').filter((x) => x.length);
-            initHdr(proc.MAIN_BUF, MAIN_SIZE);
-            proc.inst.exports.asyncify_start_unwind(proc.MAIN_BUF);
+            startUnwind();
             return 0;
         },
         pipe: (fdsPtr) => {
@@ -1034,17 +996,43 @@ function makeProc(s, pid, ppid, fds) {
         sock_recv: suspend('sock_recv', wasi.sock_recv),
         sock_shutdown: suspend('sock_shutdown', wasi.sock_shutdown),
     };
-    proc.inst = new WebAssembly.Instance(s.mod, { wasi_snapshot_preview1: suspendedWasi, nimbus_proc, env: envImports });
-    if (typeof proc.inst.exports.__nimbus_signal_disposition !== 'function') {
-        throw new Error('bash-runner@3 requires the signal disposition export; install bash 5.2.37-3');
-    }
+    // Every copy bash makes of a jmp_buf, and every end of a saved one (wasm/bash/patches/procenv.patch).
+    // The jmp_buf hooks record into the module's own log (nimbus-proc.c); a full one is applied at once.
+    const nimbus_procenv = { full: () => { proc.captures.applyLog(proc.inst.exports.memory); } };
+    proc.inst = new WebAssembly.Instance(s.mod, { wasi_snapshot_preview1: suspendedWasi, nimbus_proc, nimbus_procenv, env: envImports });
+    s.stack ??= checkedLayout(s.mod, proc.inst);
+    proc.captures = new CaptureStore(s.stack, 0, 0);
     s.stats.instances++;
     s.procs.set(pid, proc);
     return proc;
 }
+/**
+ * The module's shadow stack and hook log, after checking it is the
+ * bash-runner@5 module: one that records its jmp_buf copies in its own log
+ * (nimbus_procenv_log, handed over by nimbus_procenv.full), exports the
+ * stack's bounds, and the stack pointer a longjmp and a fork set.
+ */
+function checkedLayout(mod, inst) {
+    const ex = inst.exports;
+    const logs = WebAssembly.Module.imports(mod).some((i) => i.module === 'nimbus_procenv' && i.name === 'full');
+    if (!logs || typeof ex.nimbus_procenv_log !== 'function' || typeof ex.__nimbus_signal_disposition !== 'function'
+        || !(ex.__data_end instanceof WebAssembly.Global) || !(ex.__heap_base instanceof WebAssembly.Global)) {
+        throw new Error('bash-runner@5 needs the bash 5.2.37-5 module (its jmp_buf copies recorded in nimbus_procenv_log); install bash 5.2.37-5');
+    }
+    try {
+        ex.__stack_pointer.value = ex.__stack_pointer.value;
+    }
+    catch {
+        throw new Error('bash-runner@5 needs a mutable __stack_pointer export; install bash 5.2.37-5');
+    }
+    const low = Number(ex.__data_end.value), high = Number(ex.__heap_base.value), sp = Number(ex.__stack_pointer.value);
+    if (!(low < sp && sp <= high))
+        throw new Error(`bash-runner@5: the module's stack is not [__data_end, __heap_base) (${low}, ${sp}, ${high})`);
+    return { low, high, log: ex.nimbus_procenv_log() };
+}
 /** A process's unwind state before it first runs; a reason's own fields are set when it unwinds for that reason. */
 function freshCtx() {
-    return { reason: null, rewinding: false, captureEnv: 0, ljEnv: 0, ljVal: 0, nextSlot: 0, resume: 0, writeFd: -1 };
+    return { reason: null, rewinding: false, captureEnv: 0, captureSp: 0, ljEnv: 0, ljVal: 0, resume: 0, writeFd: -1 };
 }
 /** Exited processes kept for reuse at most (BashSession.idle): what a fork loop keeps live at once, with room. */
 const IDLE_MAX = 4;
@@ -1087,53 +1075,52 @@ function reincarnate(s, bytes, pid, ppid, fds) {
     for (const key of Object.keys(proc.ctx))
         Reflect.deleteProperty(proc.ctx, key);
     Object.assign(proc.ctx, freshCtx());
-    proc.MAIN_BUF = 0;
-    proc.SLOT0 = 0;
     proc.pendingRead = null;
     proc.writeResumed = false;
-    proc.slotByEnv = new Map();
-    proc.freeSlots = [];
+    // A fork gives it the parent's captures (doFork); it holds none of the process that exited.
+    proc.captures = proc.captures.emptied();
+    proc.incarnation++;
     proc.resident.clear();
     s.stats.reused++;
     s.procs.set(pid, proc);
     return proc;
 }
+function forkSource(proc) {
+    return { pid: proc.pid, incarnation: proc.incarnation, captures: proc.captures.fork(), unwound: proc.DV().getUint32(proc.captures.top, true) };
+}
 /**
  * What of the parent's memory a forked child can read, copied into it: the
- * data, stack and heap below the arena and above it, the unwind the child
- * rewinds from (MAIN_BUF, to its current end), and each live setjmp
- * capture (to the high-water mark its jmp_buf keeps at +8, restored before
- * every longjmp). The rest of the arena is only ever written before it is
- * read, so it is not copied: a 17 MB image is about 1 MB of this.
+ * data, stack and heap below the arena and above it, each live setjmp
+ * capture, and the unwind the child rewinds from. The rest of the arena is
+ * freed or not yet written, so it is not copied: a 17 MB image is about
+ * 1 MB of this.
  */
-function copyForkImage(parent, child) {
+function copyForkImage(s, parent, child, source) {
     const src = new Uint8Array(parent.inst.exports.memory.buffer);
     const dst = new Uint8Array(child.inst.exports.memory.buffer);
-    const dv = parent.DV();
-    const range = (from, to) => { if (to > from)
-        dst.set(src.subarray(from, to), from); };
-    const within = (at, low, high) => Math.min(Math.max(at, low), high);
-    range(0, parent.MAIN_BUF);
-    range(parent.MAIN_BUF, within(dv.getUint32(parent.MAIN_BUF, true), parent.MAIN_BUF + 8, parent.MAIN_BUF + MAIN_SIZE));
-    for (const [env, idx] of parent.slotByEnv) {
-        const slot = parent.slotAddr(idx);
-        range(slot, within(dv.getUint32(env + 8, true), slot + 8, slot + SLOT_SIZE));
-    }
-    range(parent.SLOT0 + NSLOT * SLOT_SIZE, src.length);
+    const { base, size } = source.captures;
+    let copied = 0;
+    const range = (from, to) => { if (to > from) {
+        dst.set(src.subarray(from, to), from);
+        copied += to - from;
+    } };
+    range(0, base);
+    for (const [from, to] of source.captures.liveRanges(source.unwound))
+        range(from, to);
+    range(base + size, src.length);
+    s.stats.forkCopied = copied;
 }
 function setupArena(proc) {
     const base = proc.inst.exports.memory.buffer.byteLength;
-    const need = MAIN_SIZE + NSLOT * SLOT_SIZE;
-    proc.inst.exports.memory.grow(Math.ceil(need / PAGE));
-    proc.MAIN_BUF = base;
-    proc.SLOT0 = proc.MAIN_BUF + MAIN_SIZE;
+    proc.inst.exports.memory.grow(Math.ceil(ARENA_SIZE / PAGE));
+    proc.captures = new CaptureStore(proc.captures.layout, base, ARENA_SIZE);
 }
 // ── scheduler ─────────────────────────────────────────────────────────
 function resumeProc(proc) {
     if (!proc.__s.procs.has(proc.pid))
         return;
     proc.ctx.rewinding = true;
-    proc.inst.exports.asyncify_start_rewind(proc.MAIN_BUF);
+    proc.inst.exports.asyncify_start_rewind(proc.captures.top);
     proc.__s.runnable.push(proc);
     wakeScheduler(proc.__s);
 }
@@ -1150,13 +1137,9 @@ function wakeScheduler(s) {
         wake();
     }
 }
-function trackArena(s, proc, bufAddr, size, isSlot) {
-    const used = proc.DV().getUint32(bufAddr, true) - (bufAddr + 8);
-    if (isSlot) {
-        if (used > s.stats.slotHi)
-            s.stats.slotHi = used;
-    }
-    else if (used > s.stats.mainHi)
+function trackArena(s, proc) {
+    const at = proc.captures.top, used = proc.DV().getUint32(at, true) - (at + 8);
+    if (used > s.stats.mainHi)
         s.stats.mainHi = used;
 }
 function step(s, proc) {
@@ -1187,37 +1170,33 @@ function step(s, proc) {
     ex.asyncify_stop_unwind();
     const r = c.reason;
     c.reason = null;
-    const dv = proc.DV();
     const mem = proc.inst.exports.memory.buffer.byteLength;
     if (mem > s.stats.memPeak)
         s.stats.memPeak = mem;
     if (r === 'capture') {
-        const idx = dv.getInt32(c.captureEnv, true);
-        trackArena(s, proc, proc.slotAddr(idx), SLOT_SIZE, true);
-        dv.setUint32(c.captureEnv + 8, dv.getUint32(proc.slotAddr(idx), true), true);
         c.rewinding = true;
-        ex.asyncify_start_rewind(proc.slotAddr(idx));
+        ex.asyncify_start_rewind(proc.captures.take(ex.memory, c.captureEnv, c.captureSp, s.stats, proc.pid));
         s.runnable.push(proc);
     }
     else if (r === 'longjmp') {
-        trackArena(s, proc, proc.MAIN_BUF, MAIN_SIZE, false);
-        const idx = dv.getInt32(c.ljEnv, true), hw = dv.getUint32(c.ljEnv + 8, true);
-        dv.setInt32(c.ljEnv + 4, c.ljVal, true);
-        dv.setUint32(proc.slotAddr(idx), hw, true);
+        trackArena(s, proc);
+        // The current stack is discarded; the landing runs on the stack pointer setjmp's caller had.
+        const target = proc.captures.jump(ex.memory, c.ljEnv, c.ljVal, proc.pid);
+        ex.__stack_pointer.value = target.sp;
         c.rewinding = true;
-        ex.asyncify_start_rewind(proc.slotAddr(idx));
+        ex.asyncify_start_rewind(target.at);
         s.runnable.push(proc);
     }
     else if (r === 'fork') {
-        trackArena(s, proc, proc.MAIN_BUF, MAIN_SIZE, false);
-        queueSessionTask(s, doFork(s, proc));
+        trackArena(s, proc);
+        queueSessionTask(s, doFork(s, proc, forkSource(proc)));
     }
     else if (r === 'waitpid') {
-        trackArena(s, proc, proc.MAIN_BUF, MAIN_SIZE, false);
+        trackArena(s, proc);
         doWait(s, proc);
     }
     else if (r === 'blockread') {
-        trackArena(s, proc, proc.MAIN_BUF, MAIN_SIZE, false);
+        trackArena(s, proc);
         const target = blockTarget(s, proc, c.pipeReq.fd);
         if (!target) { // fd closed under us: deliver EOF
             proc.pendingRead = { iov: c.pipeReq.iov, bytes: new Uint8Array(0), nreadPtr: c.pipeReq.nreadPtr, pollUserdata: c.pipeReq.pollUserdata };
@@ -1229,7 +1208,7 @@ function step(s, proc) {
         }
     }
     else if (r === 'blockwrite') {
-        trackArena(s, proc, proc.MAIN_BUF, MAIN_SIZE, false);
+        trackArena(s, proc);
         if (c.outputWait) {
             const pending = c.outputWait;
             c.outputWait = undefined;
@@ -1248,7 +1227,7 @@ function step(s, proc) {
         }
     }
     else if (r === 'exec') {
-        trackArena(s, proc, proc.MAIN_BUF, MAIN_SIZE, false);
+        trackArena(s, proc);
         // With JSPI a child parks on a pipe it would block on; without it, it runs
         // synchronously, so it waits here until what it could depend on has run.
         if (s.parking === 'jspi')
@@ -1583,13 +1562,20 @@ async function doExec(s, proc) {
     }
     finishProc(s, proc, code, signal);
 }
-async function doFork(s, parent) {
+async function doFork(s, parent, source) {
     const childPid = s.pidNext++;
     const childFds = new Map();
     for (const [fd, e] of parent.fds) {
         childFds.set(fd, e.kind === 'authority' ? { ...e, handle: await s.fs.dup(e.handle.id) } : shareEntry(e));
         if (e.kind === 'pipe')
             bumpPipe(s, e, 1);
+    }
+    // The parent exited while its descriptors were copied (a signal), and its
+    // instance may be another process's now: the fork never happened.
+    if (!s.procs.has(source.pid) || parent.pid !== source.pid || parent.incarnation !== source.incarnation) {
+        for (const e of childFds.values())
+            releaseEntry(s, e);
+        return;
     }
     const pmem = parent.inst.exports.memory;
     // An exited process's instance, when one is idle, rather than a new one.
@@ -1599,25 +1585,20 @@ async function doFork(s, parent) {
     const cmem = child.inst.exports.memory;
     if (cmem.buffer.byteLength < pmem.buffer.byteLength)
         cmem.grow((pmem.buffer.byteLength - cmem.buffer.byteLength) / PAGE);
-    copyForkImage(parent, child);
-    for (const [k, v] of Object.entries(parent.inst.exports))
-        if (v instanceof WebAssembly.Global)
-            child.inst.exports[k].value = v.value;
-    child.MAIN_BUF = parent.MAIN_BUF;
-    child.SLOT0 = parent.SLOT0;
-    child.ctx.nextSlot = parent.ctx.nextSlot;
-    child.slotByEnv = new Map(parent.slotByEnv);
-    child.freeSlots = parent.freeSlots.slice();
+    copyForkImage(s, parent, child, source);
+    // The one global the child's rewind needs (the asyncify state is its own; __data_end and __heap_base are constants).
+    child.inst.exports.__stack_pointer.value = parent.inst.exports.__stack_pointer.value;
+    child.captures = source.captures;
     const total = s.procs.size;
     if (total * cmem.buffer.byteLength > s.stats.memPeak)
         s.stats.memPeak = total * cmem.buffer.byteLength;
     child.ctx.resume = 0;
     child.ctx.rewinding = true;
-    child.inst.exports.asyncify_start_rewind(child.MAIN_BUF);
+    child.inst.exports.asyncify_start_rewind(child.captures.top);
     s.runnable.push(child);
     parent.ctx.resume = childPid;
     parent.ctx.rewinding = true;
-    parent.inst.exports.asyncify_start_rewind(parent.MAIN_BUF);
+    parent.inst.exports.asyncify_start_rewind(parent.captures.top);
     s.runnable.push(parent);
 }
 function doWait(s, proc) {
@@ -1744,6 +1725,7 @@ function finishProc(s, proc, code, signal = 0) {
     // already have happened above if this process read its own pipe.
     if (held.size === 0)
         publishExit(s, proc.pid, proc.ppid, st);
+    proc.captures = proc.captures.emptied();
     retire(s, proc, signal);
 }
 /** Make `pid`'s wait status reapable, handing it to its parent's pending wait. */
