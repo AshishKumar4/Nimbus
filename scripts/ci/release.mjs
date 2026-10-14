@@ -6,6 +6,9 @@
 //
 // Run it in a clean worktree at <commit> (default HEAD): the upload reads
 // the apps' wrangler configs and the worker's public assets from it.
+//   0. Every staged napi binding the consumers' latest releases install has
+//      a build at <commit> (lib/binding-demand.mjs); else it refuses, naming
+//      the builds to make.
 //   1. CI builds the release (scripts/ci/lib/release.mjs): the dist gate,
 //      the demo's assets, and the modules of apps/probe and of
 //      apps/hosted-demo for env.staging and env.production, which must be
@@ -30,7 +33,7 @@
 // staged.json records the versions, the matrix's verdict and the digest of
 // the whole release manifest; promote.mjs promotes only a release whose
 // matrix was green, and only if its manifest still has that digest.
-// Exit: 0, staged and the matrix green; 1, a red row or a failed upload;
+// Exit: 0, staged and the matrix green; 1, a red row, a failed upload or a missing staged binding;
 // 2, not graded.
 import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -79,6 +82,27 @@ const sha = resolved.stdout.trim();
 if (git(repo, ['rev-parse', 'HEAD']).stdout.trim() !== sha) notGraded(`${sha.slice(0, 12)} is not this worktree's HEAD: the upload reads the checkout`);
 if (!process.env.CLOUDFLARE_ACCOUNT_ID) notGraded('CLOUDFLARE_ACCOUNT_ID is not set: the deploy pins the account');
 assertInstalled(repo, 'release');
+
+// 0. Every staged napi binding the consumers' latest releases install has a
+// build here (lib/binding-demand.mjs): one missing breaks every new project
+// of that consumer, so the release refuses it, naming the builds to make.
+{
+  const { missingBindings } = await import('./lib/binding-demand.mjs');
+  let report;
+  try {
+    report = await missingBindings();
+  } catch (error) {
+    // The registry unreadable, or a chain that no longer maps to a staged build (its message names what to update).
+    notGraded(`the staged bindings' demand could not be judged: ${error.message}`);
+  }
+  if (report.missing.length > 0) {
+    for (const m of report.missing) console.log(`release: no staged build of ${m.key}, which ${m.via.join(' > ')} installs`);
+    console.log(`release: refused; build them first: bun scripts/ci/remote-napi-binding.mjs ${report.missing.map((m) => m.key).join(' ')}`);
+    process.exit(1);
+  }
+  console.log(`release: every staged binding in demand has a build (${report.demanded.map((d) => d.key).join(', ')})`);
+}
+
 // Imported once the install is known to be here: the upload path parses wrangler configs through it.
 const { fetchRelease, releaseDigest } = await import('./lib/release.mjs');
 const { holdLease } = await import('./lib/lease.mjs');

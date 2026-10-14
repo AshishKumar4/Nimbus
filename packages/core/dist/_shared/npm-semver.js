@@ -114,6 +114,29 @@ export function pickPackumentVersion(versions, distTags, range) {
     }
     return picked;
 }
+/**
+ * The version a request for a package Nimbus stages builds of installs
+ * (`staged`: its staged versions, oldest first): the newest staged for an
+ * open range, else the highest staged the range admits; null where it admits
+ * none, and the request installs as any other (pickInstalledVersion).
+ */
+export function stagedBindingVersion(staged, range) {
+    if (staged.length === 0)
+        return null;
+    const requested = range === null || range === undefined ? '' : String(range).trim();
+    return OPEN_RANGES.has(requested) ? staged[staged.length - 1] ?? null : resolveVersion(staged, requested);
+}
+/**
+ * The version a registry request installs, as every npm here installs it:
+ * the staged version the range takes (stagedBindingVersion), where the
+ * packument publishes it; else pickPackumentVersion's.
+ */
+export function pickInstalledVersion(versions, distTags, range, staged = []) {
+    const preferred = stagedBindingVersion(staged, range);
+    if (preferred !== null && versions !== null && typeof versions === 'object' && Object.prototype.hasOwnProperty.call(versions, preferred))
+        return preferred;
+    return pickPackumentVersion(versions, distTags, range);
+}
 /** The highest version satisfying `range`, or null; an open range is the caller's dist-tag lookup. */
 export function resolveVersion(versions, range) {
     const trimmed = String(range ?? '').trim();
