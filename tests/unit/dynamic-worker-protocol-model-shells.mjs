@@ -5,14 +5,16 @@
 // (`sh -c 'sleep 1; node x'`), npm's script wrapper
 // (`sh -c 'npm run build'`, build `node x && true`: a shell awaiting a shell
 // awaiting the program), a background job beside a builtin
-// (`sh -c 'node x & sleep 1; wait'`), and a pipeline whose second element
+// (`sh -c 'node x & sleep 1; wait'`), a background job beside another that
+// kills it (`sh -c 'node x & (sleep 1; kill x) & wait $!'`), and a pipeline whose second element
 // ends the program after a builtin (`sh -c 'node x | (sleep 1; kill x)'`,
 // the `kill` begun in the turn `sleep` ends in, or a later one), alone,
 // beside queued children and other shells, and under another holder.
 //
 // The same two properties, for every family: never a refusal while a holder
 // can progress, and always one when all are stuck, a shell `wait`ing on its
-// background job included (its `wait` awaits the job, JobTable.awaitEnd).
+// background job included (its `wait` awaits the job, JobTable.awaitEnd),
+// and a shell awaiting one job while another, which can free it, runs.
 //
 // And mutants, each caught: the process table counting an await as a
 // process's only work while it has other work (the pipeline's shell, its
@@ -43,6 +45,10 @@ const families = [
   [{ parent: 'R', children: ['g', 'q'] }],
   [{ parent: 'R', children: ['g'] }, { parent: 'R', children: ['q'] }],
   [{ parent: 'R', children: ['g'] }, { parent: 0, children: ['s'] }],
+  [{ parent: 'R', children: ['G'] }],
+  [{ parent: 'R', children: ['G', 'q'] }],
+  [{ parent: 'R', children: ['G'] }, { parent: 0, children: ['q'] }],
+  [{ parent: 'R', children: ['G'] }, { parent: 'R', children: ['g'] }],
   [{ parent: 'R', children: ['k'] }],
   [{ parent: 'R', children: ['k', 'q'] }],
   [{ parent: 'R', children: ['k'] }, { parent: 0, children: ['q'] }],

@@ -38,6 +38,10 @@
 //      process awaiting it, while a builtin runs, then `wait`: a builtin whose
 //      work is awaiting the job (JobTable.awaitEnd), so the shell is then
 //      doing nothing but await it.
+//   G  `sh -c 'node x & (sleep 1; kill x) & wait $!'`: the program in one
+//      background job, a second job that sleeps then kills it, and `wait` on
+//      the first alone. The shell awaits one job, but its other one runs: it
+//      is not stuck while that one can still free it.
 //   k  `sh -c 'node x | (sleep 1; kill x)'`: the program in one element of a
 //      pipeline, and in the other a builtin, then a `kill` of the program,
 //      begun in the same turn the builtin ends;
@@ -100,7 +104,7 @@ export class CommandsOnly {
 const tick = async () => { for (let i = 0; i < 3; i++) await null; };
 
 /** Shell kinds: a shell child of a guest, with the program it ends up awaiting. */
-const SHELL_KINDS = new Set(['s', 'f', 'n', 'g', 'k', 'K']);
+const SHELL_KINDS = new Set(['s', 'f', 'n', 'g', 'G', 'k', 'K']);
 
 /**
  * The family's processes, as model records: `id` is a readable label (R is
@@ -242,6 +246,26 @@ class Run {
       s.phase = 'sleeping';
       return;
     }
+    if (s.shell === 'G') {
+      // `node x &`, then `(sleep 1; kill x) &`: two jobs, each a process of its own on its own line.
+      const job = { id: s.id * 10 + 3, parent: s.id, kind: 'shell', shell: 'job', phase: 'starting', program: s.program };
+      const killer = { id: s.id * 10 + 4, parent: s.id, kind: 'shell', shell: 'killer', phase: 'running', program: s.program };
+      for (const p of [job, killer]) {
+        this.byId.set(p.id, p);
+        this.spawn(p);
+        p.line = this.thread(p.pid);
+      }
+      this.runProgram(job, job.line);
+      killer.killer = killer.line.fork();
+      this.holdEnd(`${killer.id}:sleep`, killer.killer.beginWork());
+      killer.killPhase = 'sleeping';
+      // `wait $!`: a builtin whose work is awaiting the first job.
+      this.holdEnd(s.id, line.beginWork());
+      this.holdEnd(s.id, this.processes.beginAwait(s.pid, job.pid));
+      s.awaits = job.id;
+      s.phase = 'waiting';
+      return;
+    }
     if (s.shell === 'k' || s.shell === 'K') {
       // `node x | (sleep 1; kill x)`: two elements the line waits on.
       s.element = line.fork();
@@ -306,8 +330,10 @@ class Run {
         if (p.state === 'blocked' && g.inflight.length === 0) waitsOn.set(p.id, this.children(p.id));
       } else if (p.kind === 'shell' && (p.phase === 'awaiting' || p.phase === 'waiting')) {
         // Awaiting its program (or its wrapper), or `wait`ing on its background
-        // job; with a `kill` of it still to run, never stuck.
-        if (p.killPhase === undefined || p.killPhase === 'done') waitsOn.set(p.id, [p.awaits]);
+        // job, and so on every child it has running, any of which may free it
+        // (G's killer); with a `kill` of its own still to run, never stuck.
+        const live = this.children(p.id).filter((c) => c !== p.awaits);
+        if (p.killPhase === undefined || p.killPhase === 'done') waitsOn.set(p.id, [p.awaits, ...live]);
       }
     }
     const stuck = new Set([...waitsOn].filter(([, on]) => on.length > 0).map(([id]) => id));
@@ -452,7 +478,7 @@ class Run {
         return tick();
       case 'sleepEnd':
         this.runEnds(`${id}:sleep`);
-        if (p.shell === 'k') {
+        if (p.shell === 'k' || p.shell === 'killer') {
           // `kill` begins in the turn `sleep` ends in.
           this.holdEnd(`${id}:kill`, p.killer.beginWork());
           p.killPhase = 'killing';
