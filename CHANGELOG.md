@@ -19,6 +19,11 @@ published independently in the `@nimbus-sh` npm scope.
   module map: an installed module came back as Nimbus's rendering of it,
   and every module and TypeScript file went through the compiler for code
   opencode never runs.
+
+## 2026-10-14: platform 0.10.0, core 0.21.0, fabric 0.16.0, worker 0.19.0, sdk 0.15.0, loom 0.3.1, react 0.3.3, cli 0.2.7, create-nimbus-app 0.2.4 (config 0.3.1 unchanged)
+
+The 2026-10-13 versions, and core 0.20.0, fabric 0.15.0 and worker 0.18.0 of this date, reached production but were never published to npm; these carry their changes too.
+
 - Fixed: a Node program's `http.get` or `http.request` to a server of the
   same program waits for the server's `res.end()`, as Node does. It
   answered at once, so a handler that ended from a timer or after an
@@ -155,11 +160,6 @@ published independently in the `@nimbus-sh` npm scope.
   `accountWork` and `holdWork` (the shell counts and holds its work in that
   table), and `createKillCommand(host)`, `createPsCommand(processes)` and
   `createTopCommand(processes)` read it.
-
-## 2026-10-14: platform 0.10.0, core 0.20.0, fabric 0.15.0, worker 0.18.0, sdk 0.15.0, loom 0.3.1, react 0.3.3, cli 0.2.7, create-nimbus-app 0.2.4 (config 0.3.1 unchanged)
-
-The 2026-10-13 versions reached production but were never published to npm; these carry their changes too.
-
 - Fixed (Node `fs`): a write keeps the bytes it was given. `writeFileSync`,
   `appendFileSync`, `fs.promises.writeFile` and a descriptor's `write` used
   the program's own buffer as the file's bytes, so changing or reusing the
