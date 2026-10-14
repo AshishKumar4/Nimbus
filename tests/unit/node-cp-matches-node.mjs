@@ -94,8 +94,9 @@ const PROGRAM = `async (fs, root) => {
       ['missing-source', () => cp(P('seed/nope'), out('nope'))],
       ['bad-option', () => cp(P('seed/a.txt'), out('bad'), { force: 'yes' })],
       ['dir-onto-dir-noforce-error', async () => {
-        await cp(P('seed'), out('twice'), { recursive: true });
-        await cp(P('seed'), out('twice'), { recursive: true, force: false, errorOnExist: true });
+        // One file there, so which one refuses first is not the directory's order.
+        await cp(P('seed/sub'), out('twice'), { recursive: true });
+        await cp(P('seed/sub'), out('twice'), { recursive: true, force: false, errorOnExist: true });
       }],
       ['dir-onto-dir-noforce', async () => {
         await cp(P('own'), out('again'), { recursive: true });
