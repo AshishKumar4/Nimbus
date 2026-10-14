@@ -33,7 +33,7 @@
 // staged.json records the versions, the matrix's verdict and the digest of
 // the whole release manifest; promote.mjs promotes only a release whose
 // matrix was green, and only if its manifest still has that digest.
-// Exit: 0, staged and the matrix green; 1, a red row or a failed upload;
+// Exit: 0, staged and the matrix green; 1, a red row, a failed upload or a missing staged binding;
 // 2, not graded.
 import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
