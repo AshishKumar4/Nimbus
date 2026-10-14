@@ -51,8 +51,10 @@ async function run(code, name) {
 }
 
 const failed = [];
+// Each run bounded: a program held open forever is a failure, not a hang.
+const within = (promise, ms) => Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve({ exitCode: `still running after ${ms} ms`, stdout: '', stderr: '' }), ms))]);
 const check = async (name, code, want) => {
-  const body = await run(code, name);
+  const body = await within(run(code, name), 60_000);
   if (body.exitCode !== 0 || body.stdout !== want) failed.push(`${name}: exit ${body.exitCode}, stdout ${JSON.stringify(body.stdout)}, want ${JSON.stringify(want)}; stderr ${JSON.stringify(body.stderr).slice(0, 300)}`);
 };
 
