@@ -5317,7 +5317,7 @@ export class FacetManager {
      * checked, not assumed, each time: made if absent, and refused unless it is
      * the kernel's own real directory that no one else may write (only root,
      * through sudo, could have made it anything else). The stores releases
-     * through worker 0.17.0 kept below `/var/lib/nimbus` are left: a durable
+     * through worker 0.18.0 kept below `/var/lib/nimbus` are left: a durable
      * worker one made may still boot from a path there, and a root-owned
      * directory at that name, below the user's `/var`, is no proof the kernel
      * made it.

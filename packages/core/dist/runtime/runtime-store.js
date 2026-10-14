@@ -8,7 +8,7 @@
  * down is checked to be root's own real directory, writable by no one else,
  * before the kernel writes there. One a session's user owns, or a link (only
  * root could have made either), refuses the install rather than be written
- * through. Releases through core 0.19 kept runtimes below `~/.nimbus/runtimes`;
+ * through. Releases through core 0.20 kept runtimes below `~/.nimbus/runtimes`;
  * a workspace moves them here once, as it opens (moveHomeRuntimes).
  */
 /** Where installed runtimes live: `<store>/<name>/<version>`. */
