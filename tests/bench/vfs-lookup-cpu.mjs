@@ -90,7 +90,17 @@ try {
     return { engine, root, store, namespace, process, paths, packagePaths, chainPaths, removal, seedRemoval };
   };
   const { SqliteFiles } = await import('../../packages/core/src/vfs/sqlite-files.ts');
-  const arms = [await make(Before, NamespaceBefore, FilesBefore, FilesClassBefore, ProcessesBefore), await make(SqliteVFS, CompositeVFS, sqliteFiles, SqliteFiles, ProcessFiles)];
+  // Made in a random order, and run in one each pair: where an arm's heap and
+  // database landed moves it by as much as many deltas, which is then noise
+  // across runs rather than a bias of every run.
+  const makers = [() => make(Before, NamespaceBefore, FilesBefore, FilesClassBefore, ProcessesBefore), () => make(SqliteVFS, CompositeVFS, sqliteFiles, SqliteFiles, ProcessFiles)];
+  const arms = [];
+  for (const at of Math.random() < 0.5 ? [0, 1] : [1, 0]) arms[at] = await makers[at]();
+  const shuffled = (items) => {
+    const out = [...items];
+    for (let i = out.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [out[i], out[j]] = [out[j], out[i]]; }
+    return out;
+  };
   const run = async ({ store, namespace, process, paths, packagePaths, chainPaths, removal }, kind) => {
     if (kind === 'walked-removal') {
       const report = removal.removeRecursive('/home/user/tree');
@@ -131,9 +141,7 @@ try {
       // A1 and A2 run one copy of the code twice a pair, so B's runs twice
       // too (W, untimed): a copy that ran half as often would sit at a colder
       // JIT tier, and that bias is larger than many deltas.
-      const order = ['A1', 'B', 'A2', 'W'];
-      for (let k = 0; k < pair % 4; k++) order.push(order.shift());
-      for (const label of order) {
+      for (const label of shuffled(['A1', 'B', 'A2', 'W'])) {
         const used = await cpu(arms[label === 'B' || label === 'W' ? 1 : 0], kind);
         if (label !== 'W') samples[label] = used;
       }
