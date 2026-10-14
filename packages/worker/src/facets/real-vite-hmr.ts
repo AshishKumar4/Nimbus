@@ -199,6 +199,30 @@ export class HmrBridge {
 }
 
 
+type CirrusHmrProps = { doId?: string; route?: HostRoute };
+
+/**
+ * The session's stub and its dispatch, for the CirrusHmrRPC whose props and
+ * env these are. A function of the module, not a method: every string-named
+ * method of an RPC class is callable by whoever holds its stub, TypeScript's
+ * `private` notwithstanding, and the guest that holds env.CIRRUS_HMR must
+ * not get the session's stub, or a dispatch that acts as any caller.
+ */
+function hostStub(props: CirrusHmrProps | undefined, env: object): { stub: DurableObjectStub; dispatch: HostOpDispatch } | null {
+  const doId = props?.doId;
+  if (!doId) return null;
+  let stub: DurableObjectStub | null = null;
+  try {
+    const route = props?.route;
+    const binding = hostNamespaceBinding(env, 'CirrusHmrRPC', route);
+    stub = binding.get(binding.idFromString(doId));
+    return { stub, dispatch: hostOpDispatch(stub, 'CirrusHmrRPC', route) };
+  } catch (error) {
+    disposeRpcResource(stub);
+    throw error;
+  }
+}
+
 /**
  * WorkerEntrypoint the facet talks to via `env.CIRRUS_HMR`.
  *
@@ -213,25 +237,9 @@ export class HmrBridge {
  *   doId — the supervisor DO's id, used to find the right stub +
  *          HmrBridge.
  */
-export class CirrusHmrRPC extends WorkerEntrypoint<object, { doId?: string; route?: HostRoute }> {
-
-  private _stub(): { stub: DurableObjectStub; dispatch: HostOpDispatch } | null {
-    const doId = this.ctx.props?.doId;
-    if (!doId) return null;
-    let stub: DurableObjectStub | null = null;
-    try {
-      const route = this.ctx.props?.route;
-      const binding = hostNamespaceBinding(this.env, 'CirrusHmrRPC', route);
-      stub = binding.get(binding.idFromString(doId));
-      return { stub, dispatch: hostOpDispatch(stub, 'CirrusHmrRPC', route) };
-    } catch (error) {
-      disposeRpcResource(stub);
-      throw error;
-    }
-  }
-
+export class CirrusHmrRPC extends WorkerEntrypoint<object, CirrusHmrProps> {
   async hmrSend(clientId: string | null, msg: string): Promise<void> {
-    const resolved = this._stub();
+    const resolved = hostStub(this.ctx.props, this.env);
     if (!resolved) return;
     // The host's supervisorOp routes hmrRelay to its own RPC — running in
     // the DO's context, it can legally call ws.send() on hibernatable
@@ -249,7 +257,7 @@ export class CirrusHmrRPC extends WorkerEntrypoint<object, { doId?: string; rout
   }
 
   async hmrNextEvent(timeoutMs: number = 25_000): Promise<HmrEvent[]> {
-    const resolved = this._stub();
+    const resolved = hostStub(this.ctx.props, this.env);
     if (!resolved) return [];
     try {
       // The queue belongs to the session DO, just like its WebSockets. A

@@ -872,14 +872,14 @@ export class NimbusSession extends CloudflareDurableObject {
         return _rpc._rpcCancelHostProcess(this, workerKey);
     }
     // W8 child_process RPC
-    async _rpcCpSpawn(req) { return _rpc._rpcCpSpawn(this, req); }
-    async _rpcCpStdinWrite(childPid, data) { return _rpc._rpcCpStdinWrite(this, childPid, data); }
-    async _rpcCpStdinEnd(childPid) { return _rpc._rpcCpStdinEnd(this, childPid); }
+    async _rpcCpSpawn(req, parentPid) { return _rpc._rpcCpSpawn(this, req, parentPid); }
+    async _rpcCpStdinWrite(childPid, data, pid) { return _rpc._rpcCpStdinWrite(this, childPid, data, pid); }
+    async _rpcCpStdinEnd(childPid, pid) { return _rpc._rpcCpStdinEnd(this, childPid, pid); }
     async _rpcCpReadStdin(childPid, waitMs, acquire, pid, writerId, maxBytes) { return _rpc._rpcCpReadStdin(this, childPid, waitMs, acquire, pid, writerId, maxBytes); }
     async _rpcCpReadOutput(childPid, fd, sinceSeq, waitMs, acquire, pid) { return _rpc._rpcCpReadOutput(this, childPid, fd, sinceSeq, waitMs, acquire, pid); }
-    async _rpcCpDrainOutput(childPid) { return _rpc._rpcCpDrainOutput(this, childPid); }
-    async _rpcCpCloseOutput(childPid, fd) { return _rpc._rpcCpCloseOutput(this, childPid, fd); }
-    async _rpcCpKill(childPid, signal) { return _rpc._rpcCpKill(this, childPid, signal); }
+    async _rpcCpDrainOutput(childPid, pid) { return _rpc._rpcCpDrainOutput(this, childPid, pid); }
+    async _rpcCpCloseOutput(childPid, fd, pid) { return _rpc._rpcCpCloseOutput(this, childPid, fd, pid); }
+    async _rpcCpKill(childPid, signal, pid) { return _rpc._rpcCpKill(this, childPid, signal, pid); }
     async _rpcCpWait(childPid, waitMs, acquire, pid, knownStarted) { return _rpc._rpcCpWait(this, childPid, waitMs, acquire, pid, knownStarted); }
     async _rpcCpBlocked(pid, report) { return _rpc._rpcCpBlocked(this, pid, report); }
     // Programmatic sandbox SDK RPC

@@ -159,13 +159,13 @@ export interface IsolatePoolOptions {
   /**
    * Process pid baked into the auto-injected SUPERVISOR binding's props.
    * The supervisor derives the write credential from this pid
-   * (`SupervisorRPC._pid()` → `processes.cred(pid)`), so any facet that
+   * (`SupervisorRPC[PID]()` → `processes.cred(pid)`), so any facet that
    * calls a filesystem RPC (`writeBatchStream`, `writeFile`, …) must be
    * dispatched with the invoking process's real pid — otherwise the RPC
    * throws "missing or invalid process pid in props". npm install threads
    * the shell command's `ctx.pid` here so package files land as the user.
    * Left 0 (default) for pools whose facets touch only cache/registry RPCs
-   * (npm resolve, pre-bundle), which never call `_pid()`.
+   * (npm resolve, pre-bundle), which never call `[PID]()`.
    */
   supervisorPid?: number;
   /** A runtime program's explicit pid/run capability; helpers keep their infrastructure binding. */

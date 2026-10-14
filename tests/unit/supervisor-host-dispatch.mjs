@@ -483,7 +483,7 @@ for (const [op, route] of cases) {
   // cpSpawn rewrites parentPid before the envelope is built.
   const sentArgs = op === 'cpSpawn' ? [{ ...req, parentPid: pid }] : envelopeArgs;
   const expected = !route ? [] : op === 'cpSpawn'
-    ? [{ ...req, parentPid: pid }]
+    ? [{ ...req, parentPid: pid }, pid]
     : route.args.map((slot) => typeof slot === 'number' ? envelopeArgs[slot] : PROPS[slot]);
   let result, failure;
   // Cache RPCs have a begin/result protocol: these canonical envelopes are

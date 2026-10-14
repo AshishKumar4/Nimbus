@@ -5,6 +5,7 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+<<<<<<< HEAD
 - Fixed: `test` and `[` run by name (`command test`, `find -exec test`)
   evaluate as the shell's builtin does. `command test 1 -eq 2` returned 0,
   and `command [ 1 -eq 1` ran without its closing `]`.
@@ -35,6 +36,43 @@ published independently in the `@nimbus-sh` npm scope.
   `accountWork` and `holdWork` (the shell counts and holds its work in that
   table), and `createKillCommand(host)`, `createPsCommand(processes)` and
   `createTopCommand(processes)` read it.
+=======
+- Fixed (security): guests could call methods of the platform's RPC classes
+  that were meant only for the platform's own use. Workers RPC exposes every
+  string-named method of a WorkerEntrypoint, RpcTarget or Durable Object to
+  whoever holds its stub, whatever TypeScript's `private` says.
+  - The real-Vite resident's `CIRRUS_HMR` binding answered the session's
+    Durable Object stub and its raw dispatch. Through that dispatch, the
+    project's Vite config or plugins could act as any process, or as the
+    kernel.
+  - Every process's `SUPERVISOR` answered its generic dispatch helpers.
+    These sent any operation the session serves, past the methods that stamp
+    their arguments: a process could spawn a child as another process's,
+    inheriting that process's stdin. They also answered the process's network
+    without the recording that replay depends on.
+  - The Worker Loader shim's entrypoint answered the props it was minted with
+    (its egress among them) and the raw loaded entrypoint.
+  - A scoped `HostedSession` answered the unscoped runtime it serves.
+
+  These helpers are no longer on any class's RPC surface, and the KV, R2
+  and D1 emulators that wrangler dev hands its Worker keep theirs out of
+  reach too. The session also takes a spawned child's parent from the pid
+  its binding stamped, never from the request.
+- Fixed (security): a process could act on another process through the
+  child_process operations, which acted on whatever pid they were given. It
+  could read another process's stdin, write to it or end it, read or close
+  its output, wait on it, or kill it. Each operation is now refused unless
+  the process owns the target:
+  - a child's handle belongs to its parent or an ancestor; any other
+    process gets ESRCH;
+  - a process reads only its own stdin, whatever channel it names: the
+    stdin it inherited as fd 0 when it did, never another process's;
+  - a signal follows Linux's rule for kill(2): only root, or a process of
+    the target's uid, may send it; any other process gets EPERM.
+- Fixed: `nimbus wrangler dev`'s assets binding read a project's assets as
+  the session's user. It now reads them as the process that started the
+  server, as it reads the project's config, bundle and stores.
+>>>>>>> origin/main
 - Fixed (Node `fs`): `fs.promises.realpath` and callback `fs.realpath`
   resolve symlinks and refuse a missing path with `ENOENT`, giving
   `realpathSync`'s answer; they returned the path as written. A link the

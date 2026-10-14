@@ -62,6 +62,8 @@ export interface D1EmulatorOptions {
     migrationsDir?: string;
     onLog?: (msg: string) => void;
 }
+export declare const RUN_ONE: unique symbol;
+export declare const RUN_ONE_SYNC: unique symbol;
 export declare class D1PreparedStatementEmu {
     /** @internal */
     _sql: string;
@@ -76,6 +78,7 @@ export declare class D1PreparedStatementEmu {
     raw<T = any>(): Promise<T[]>;
 }
 export declare class D1Emulator {
+    #private;
     private sql;
     private prefix;
     private prefixer;
@@ -89,11 +92,10 @@ export declare class D1Emulator {
     batch<T = any>(stmts: D1PreparedStatementEmu[]): Promise<D1Result<T>[]>;
     exec(query: string): Promise<D1ExecResult>;
     /** @internal */
-    _runOne(sql: string, params: any[]): D1Result<any>;
+    [RUN_ONE](sql: string, params: any[]): D1Result<any>;
     /** Synchronous core (workerd SqlStorage.exec is sync). */
     /** @internal */
-    _runOneSync(sql: string, params: any[]): D1Result<any>;
-    private _meta;
+    [RUN_ONE_SYNC](sql: string, params: any[]): D1Result<any>;
     /** Apply migrations from migrations_dir if present. Idempotent. */
     applyMigrations(): Promise<{
         applied: number;

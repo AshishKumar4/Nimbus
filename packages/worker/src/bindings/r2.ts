@@ -167,19 +167,19 @@ export class R2Emulator {
   // ── public API ────────────────────────────────────────────────────────
 
   async head(key: string): Promise<R2Object | null> {
-    const side = this._readSide(key);
+    const side = this.#readSide(key);
     if (!side) return null;
     return new R2Object(key, side);
   }
 
   async get(key: string, options?: R2GetOptions): Promise<R2ObjectBody | null> {
-    const side = this._readSide(key);
+    const side = this.#readSide(key);
     if (!side) return null;
-    if (options?.onlyIf && !this._evalConditional(side, options.onlyIf)) return null;
+    if (options?.onlyIf && !this.#evalConditional(side, options.onlyIf)) return null;
 
-    let body = this._readBody(key);
+    let body = this.#readBody(key);
     if (options?.range) {
-      body = this._applyRange(body, options.range);
+      body = this.#applyRange(body, options.range);
     }
     return new R2ObjectBody(key, side, body);
   }
@@ -191,10 +191,10 @@ export class R2Emulator {
   ): Promise<R2Object | null> {
     // Conditional: check existing
     if (options?.onlyIf) {
-      const existing = this._readSide(key);
+      const existing = this.#readSide(key);
       // For PUT, the conditional checks the SOURCE state (existing object).
       // If onlyIf fails, return null without writing.
-      if (existing && !this._evalConditional(existing, options.onlyIf)) return null;
+      if (existing && !this.#evalConditional(existing, options.onlyIf)) return null;
       if (!existing && options.onlyIf.etagMatches) {
         // etagMatches against missing object: fails
         return null;
@@ -208,7 +208,7 @@ export class R2Emulator {
     if (options?.md5 || options?.sha1 || options?.sha256 || options?.sha512) {
       // We only compute sha256 anyway; verify against the matching one.
       if (options.sha256 != null) {
-        const want = this._normalizeHash(options.sha256);
+        const want = this.#normalizeHash(options.sha256);
         if (want.toLowerCase() !== etag.toLowerCase()) {
           throw new Error('R2 put: sha256 verification failed');
         }
@@ -250,7 +250,7 @@ export class R2Emulator {
 
     let entries: { key: string; side: R2Sidecar }[] = [];
     for (const { key, fileName } of listObjectFiles(this.vfs, this.dir, prefix)) {
-      const side = this._readSideEnc(fileName);
+      const side = this.#readSideEnc(fileName);
       if (side) entries.push({ key, side });
     }
 
@@ -294,11 +294,11 @@ export class R2Emulator {
 
 
 
-  private _readSide(key: string): R2Sidecar | null {
-    return this._readSideEnc(objectFileName(key));
+  #readSide(key: string): R2Sidecar | null {
+    return this.#readSideEnc(objectFileName(key));
   }
 
-  private _readSideEnc(enc: string): R2Sidecar | null {
+  #readSideEnc(enc: string): R2Sidecar | null {
     const mp = this.dir + '/' + enc + '.meta';
     if (!this.vfs.exists(mp)) {
       // No sidecar — but the body might exist (legacy). Synthesize.
@@ -314,17 +314,17 @@ export class R2Emulator {
     }
   }
 
-  private _readBody(key: string): Uint8Array {
+  #readBody(key: string): Uint8Array {
     const path = this.dir + '/' + objectFileName(key);
     return this.vfs.readFile(path);
   }
 
-  private _evalConditional(side: R2Sidecar, c: R2Conditional): boolean {
+  #evalConditional(side: R2Sidecar, c: R2Conditional): boolean {
     if (c.etagMatches != null) {
-      if (this._normalizeEtag(c.etagMatches) !== side.etag) return false;
+      if (this.#normalizeEtag(c.etagMatches) !== side.etag) return false;
     }
     if (c.etagDoesNotMatch != null) {
-      if (this._normalizeEtag(c.etagDoesNotMatch) === side.etag) return false;
+      if (this.#normalizeEtag(c.etagDoesNotMatch) === side.etag) return false;
     }
     if (c.uploadedAfter instanceof Date) {
       if (side.uploaded <= c.uploadedAfter.getTime()) return false;
@@ -335,11 +335,11 @@ export class R2Emulator {
     return true;
   }
 
-  private _normalizeEtag(e: string): string {
+  #normalizeEtag(e: string): string {
     return String(e).replace(/^"+|"+$/g, '').toLowerCase();
   }
 
-  private _applyRange(body: Uint8Array, range: R2Range): Uint8Array {
+  #applyRange(body: Uint8Array, range: R2Range): Uint8Array {
     if (range.suffix != null) {
       const len = Math.min(range.suffix, body.byteLength);
       return body.slice(body.byteLength - len);
@@ -350,7 +350,7 @@ export class R2Emulator {
     return body.slice(off, Math.min(off + len, body.byteLength));
   }
 
-  private _normalizeHash(input: string | ArrayBuffer): string {
+  #normalizeHash(input: string | ArrayBuffer): string {
     if (typeof input === 'string') return input.replace(/^"+|"+$/g, '').toLowerCase();
     const u = new Uint8Array(input);
     return [...u].map(b => b.toString(16).padStart(2, '0')).join('');

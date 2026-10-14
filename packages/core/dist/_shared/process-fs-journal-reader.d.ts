@@ -12,7 +12,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { sqlJournal, type ProcessFsNumbering } from './process-fs-journal.js';
 export declare class NimbusFsJournalReader extends DurableObject {
-    private journal;
+    #private;
     numberings(): ProcessFsNumbering[];
     number(numbering: ProcessFsNumbering): void;
     readAfter(after: number, maxBytes: number): ReturnType<ReturnType<typeof sqlJournal>['readAfter']>;
