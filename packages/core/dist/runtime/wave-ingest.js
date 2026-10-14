@@ -42,7 +42,7 @@ function recordPaths(record) {
         case 'directory':
         case 'file-begin': return [record.inode.path];
         case 'rename': return [record.from, record.to];
-        case 'call': return [record.call.path];
+        case 'call': return record.call.call === 'copyFile' ? [record.call.path, record.call.from] : [record.call.path];
         default: return [];
     }
 }
@@ -1020,6 +1020,20 @@ export class WaveIngest {
                 }
                 if (call.call !== 'mkdir')
                     at.routes.clear();
+                // A copy with either name on a mount is the namespace's copy (by its
+                // bytes across filesystems); both here, this filesystem's, by reference.
+                if (call.call === 'copyFile') {
+                    const to = await mountOf('file', call.path);
+                    const from = await mountOf('file', call.from);
+                    if (to === null && from === null)
+                        return false;
+                    at.setPhase('publish');
+                    await at.settleBefore();
+                    reached();
+                    await backend(router.apply({ type: 'call', call: { call: 'copyFile', path: to ?? '/' + call.path, from: from ?? '/' + call.from } }, cred, at.guard, owner));
+                    at.committed(null, 0);
+                    return true;
+                }
                 const placed = await mountOf(call.call === 'mkdir' ? 'directory'
                     : call.call === 'symlink' || call.call === 'ftruncate' || call.call === 'lchown' || call.call === 'lutimes' || call.call === 'open' ? 'file' : 'delete', call.path);
                 if (placed === null)

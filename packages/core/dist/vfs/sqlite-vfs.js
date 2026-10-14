@@ -8487,6 +8487,8 @@ export class SqliteVFS {
                         throw error;
                 }
             }
+            else if (call.call === 'copyFile')
+                this.copyFile(call.from, call.path, cred);
             else if (call.call === 'lchown')
                 this.chown(call.path, call.uid, call.gid, cred, false);
             else if (call.call === 'lutimes')

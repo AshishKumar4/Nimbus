@@ -3827,23 +3827,71 @@ const __fsMod = (() => {
     return readdirSync(p, opts);
   }
 
-  // fs.promises.copyFile: the source read as fs.promises.readFile reads it,
-  // the copy written as writeFile writes it.
+  // fs.promises.copyFile: one copy the session makes (the W7 copyFile call),
+  // logged in program order, so it copies what the program wrote to the
+  // source before it, and no byte of the file is read or sent. Left as
+  // copyfile leaves it: the source's mode exactly, and a file there narrowed
+  // for others before the bytes go in (_copyLeaves).
   async function _copyFileAsync(src, dest, mode) {
     if ((Number(mode) & __fsConstants.COPYFILE_EXCL) !== 0 && await _existsAsync(dest)) {
       throw _fsErr("EEXIST", "copyfile", src, dest);
     }
+    const supervisor = _supervisor();
+    if (!supervisor) return copyFileSync(src, dest, mode);
     try {
-      const data = await _readFileAsync(src);
       const from = (await _statAsync(src)).mode & 0o7777;
       let there;
       try { there = await _statAsync(dest); }
       catch (error) { if (error?.code !== "ENOENT") throw error; }
       const left = _copyLeaves(there, from);
       if (there !== undefined && !there.isDirectory() && left !== (there.mode & 0o7777)) await _chmodAsync(dest, left);
-      await _writeFileAsync(dest, data, { mode: from });
+      await _copyLogged(src, dest, from, there === undefined);
       if (left !== from) await _chmodAsync(dest, from);
     } catch (error) { throw _asCallError(error, "copyfile", src, dest); }
+  }
+
+  /**
+   * The session's copy of \`src\` to \`dest\`, each as named, and what the view
+   * holds of it: the source's bytes when it held them. In a subtree it holds,
+   * where no one else can have changed the source since, the source's cell
+   * is the copy's at once, claimed by the copy (_logParked); otherwise the
+   * copy is read once the session has made it. A source whose bytes the view
+   * never held leaves the copy as unread, its stat learned. Decided here, it
+   * is answered once logged.
+   */
+  async function _copyLogged(src, dest, mode, absent) {
+    const srcAbs = _resolveFollow(src, "copyfile");
+    const destAbs = _resolveFollow(dest, "copyfile");
+    const destK = _strip(destAbs);
+    const call = { call: "copyFile", path: _strip(_resolve(dest)), from: _strip(_resolve(src)) };
+    const content = _bundleLookup(srcAbs);
+    const srcK = _strip(srcAbs);
+    const whole = content !== undefined && _denialCode(content) === null && _parkedPartial.get(srcK) !== __vfsWriteGenerations[srcK];
+    const decided = _decidedHere(destAbs);
+    if (whole && typeof __nimbusHeldHere === "function" && __nimbusHeldHere(srcAbs)) {
+      _parkWrite(destK, content, mode, absent);
+      const logged = _logParked(destAbs, { type: "call", call }, { acknowledged: decided });
+      if (decided) {
+        _detachStructuralMutation(__nimbusDecided(logged.claimed), "copyfile", dest);
+        return;
+      }
+      await _fsRpc(logged.answer, "copyfile", src, (result) => result, dest);
+      await logged.claimed;
+      _markVfsStale();
+      return;
+    }
+    // What the view held under the copy's name stands for nothing once the
+    // copy lands (a parked write there is logged ahead of it). A name made
+    // is the copy's own until the copy is answered.
+    _flushParkedWrite(destAbs, _supervisor());
+    if (__vfsBundle) delete __vfsBundle[destK];
+    delete __vfsBundleRevisions[destK];
+    if (__vfsWrites) delete __vfsWrites[destK];
+    _forgetSyncPath(destK);
+    if (absent && typeof __resident !== "undefined") _nsOwnSet(destK, "file", { mode });
+    await _queueStructuralMutation(destAbs, "copyfile", src, () => _vfsCall(call), dest);
+    if (whole) await _readFileAsync(dest);
+    else await _learnLive(destAbs, _supervisor());
   }
 
   async function _existsAsync(p) {

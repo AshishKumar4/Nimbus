@@ -819,6 +819,10 @@ function parsePathCall(value, path) {
                 call: 'symlink', path: path(value.path, 'symlink path'), target: boundedString(value.target, 'symlink target', MAX_PATH_BYTES),
                 ...(value.ino === undefined ? {} : { ino: inodeNumber(value.ino, 'symlink ino') }),
             };
+        case 'copyFile':
+            if (keys !== 'call,from,path')
+                break;
+            return { call: 'copyFile', path: path(value.path, 'copyFile path'), from: path(value.from, 'copyFile from') };
         case 'ftruncate':
             if (keys.replace(',description', '').replace(',ino', '') !== 'call,path,size')
                 break;
