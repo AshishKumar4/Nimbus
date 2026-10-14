@@ -169,6 +169,15 @@ try {
   }
   console.log('  [6] TERM 143, KILL 137, INT 130, HUP 129 in the table and the exit record');
 
+  // ── 7a. kill(2)'s rule: another uid's process is neither probed nor ended ─
+  const rootd = processes.spawn('rootd', ['rootd'], '/', { cred: { uid: 0, gid: 0, groups: [0], umask: 0o022 } });
+  for (const flag of ['-0', '-TERM']) {
+    assert.deepEqual(await sh(`kill ${flag} ${rootd.pid}`), { code: 1, out: '', err: `kill: (${rootd.pid}) - Operation not permitted\n` }, `kill ${flag} of root's process`);
+  }
+  assert.equal(running(rootd.pid), true, 'root\'s process runs on');
+  processes.exit(rootd.pid, 0);
+  console.log('  [7a] another uid\'s process: kill -0 and kill are not permitted');
+
   // ── 7. a shell's job is a process of the table ─────────────────────────
   const jobPid = Number((await sh('sleep 30 & echo $!')).out.trim());
   assert.equal(running(jobPid), true, `the job's pid (${jobPid}) runs in the session table`);

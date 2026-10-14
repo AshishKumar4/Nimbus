@@ -13,6 +13,11 @@ const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harnes
 // Programs that exit 255 (GNU xargs's signal to stop) and 126 (a status, not a refused exec).
 ws.registry.register('exit255', async () => 255);
 ws.registry.register('exit126', async () => 126);
+// A program whose cancellation meets a closed pipe: aborted, it throws EPIPE.
+ws.registry.register('pipe-on-abort', async (ctx) => {
+  await new Promise((resolve) => ctx.signal.addEventListener('abort', resolve, { once: true }));
+  throw Object.assign(new Error('EPIPE: broken pipe, write'), { code: 'EPIPE' });
+});
 const failures = [];
 const check = async (what, run) => {
   try { await run(); console.log(`  ✓ ${what}`); } catch (error) { failures.push(what); console.log(`  ✗ ${what}: ${error.message}`); }
@@ -72,6 +77,19 @@ try {
     const r = await pending;
     assert.deepEqual({ code: r.exitCode, stderr: r.stderr }, { code: 125, stderr: 'xargs: sleep: terminated by signal 15\n' });
     assert.ok(performance.now() - started < 10_000, 'the second sleep never ran');
+  });
+
+  await check('a child killed while its cancellation meets a closed pipe ends as the kill, as the table says', async () => {
+    const pending = ws.exec('echo 1 | xargs pipe-on-abort');
+    let child;
+    for (let i = 0; i < 200 && !child; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      child = ws.processes.getRunning().find((entry) => entry.argv.join(' ') === 'pipe-on-abort 1');
+    }
+    assert.ok(child, 'the child runs as a process of the table');
+    assert.deepEqual(await run(`kill ${child.pid}`), { code: 0, stdout: '', stderr: '' });
+    const r = await pending;
+    assert.deepEqual({ code: r.exitCode, stderr: r.stderr }, { code: 125, stderr: 'xargs: pipe-on-abort: terminated by signal 15\n' });
   });
 
   await check('command NAME runs the builtin: command kill %1 ends the shell\'s job', async () => {
