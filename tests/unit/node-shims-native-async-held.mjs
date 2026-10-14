@@ -32,29 +32,30 @@ authority.kfs.mkdir('home/user', { recursive: true });
 authority.rawVfs.as(CRED_KERNEL).chown('home/user', 1000, 1000);
 const sources = nodeFacetSources(generateShimsCode());
 
+// The program's run bounded (not its build): a program held open forever is a failure, not a hang.
+const within = (promise, ms) => Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve(null), ms))]);
+
 async function run(code, name) {
   const generated = await generateEntrypointCode(code, { bundle: {} }, false, sources);
   const runner = await import(writeModuleSet(join(dir, name), generatedModuleSet(generated, 'runner.mjs'), 'runner.mjs'));
   const process = processInstanceSupervisor(authority, cred);
   try {
-    const response = await runner.default.fetch(new Request('http://facet/', {
+    const response = await within(runner.default.fetch(new Request('http://facet/', {
       method: 'POST',
       body: JSON.stringify({
         argv: [], env: {}, cwd: '/home/user', filename: '/home/user/main.js', dirname: '/home/user',
         stdin: '', captureOutput: true, cred, pid: process.pid,
       }),
-    }), { SUPERVISOR: process.supervisor });
-    return await response.json();
+    }), { SUPERVISOR: process.supervisor }), 120_000);
+    return response === null ? { exitCode: 'still running after 120000 ms', stdout: '', stderr: '' } : await response.json();
   } finally {
     await process.close();
   }
 }
 
 const failed = [];
-// Each run bounded: a program held open forever is a failure, not a hang.
-const within = (promise, ms) => Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve({ exitCode: `still running after ${ms} ms`, stdout: '', stderr: '' }), ms))]);
 const check = async (name, code, want) => {
-  const body = await within(run(code, name), 60_000);
+  const body = await run(code, name);
   if (body.exitCode !== 0 || body.stdout !== want) failed.push(`${name}: exit ${body.exitCode}, stdout ${JSON.stringify(body.stdout)}, want ${JSON.stringify(want)}; stderr ${JSON.stringify(body.stderr).slice(0, 300)}`);
 };
 
