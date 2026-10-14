@@ -858,14 +858,18 @@ function request(path = 'first') {
     createProcessFacetCtx(`vfs-durability-${++facetSeq}`),
     { SUPERVISOR: asLaunchSupervisor(supervisor) },
   );
-  const first = worker.handleHttpRequest(request('pending-drain'));
+  let firstCompleted = false;
+  const first = worker.handleHttpRequest(request('pending-drain')).then((response) => {
+    firstCompleted = true;
+    return response;
+  });
   await started;
   const rawSetTimeout = globalThis.__nimbusRawSetTimeout || setTimeout;
   for (let attempt = 0; attempt < 100; attempt++) {
     if (generated.__nimbusTestRuntimeState()?.outputPending === true) break;
     await new Promise((resolve) => rawSetTimeout(resolve, 0));
   }
-  assert.equal(generated.__nimbusTestRuntimeState()?.outputPending, true, 'the first flush waits for the prior output');
+  assert.equal(generated.__nimbusTestRuntimeState()?.outputPending, true, 'the handler\'s output is outstanding');
 
   let secondCompleted = false;
   const second = worker.handleHttpRequest(request('concurrent-drain')).then((response) => {
@@ -873,6 +877,7 @@ function request(path = 'first') {
     return response;
   });
   await new Promise((resolve) => rawSetTimeout(resolve, 10));
+  assert.equal(firstCompleted, false, 'the first request is not answered while the output its handler wrote is held');
   assert.equal(secondCompleted, false, 'second flush cannot skip work claimed by the first drain');
 
   releaseOutput();
