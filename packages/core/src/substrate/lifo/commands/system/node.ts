@@ -200,7 +200,7 @@ export async function runNodeProgram(program: NodeProgram, host: NodeProgramHost
 		// streams (the worker's, which its plumbing needs), not the program's.
 		const { Readable } = realm.getBuiltinModule('node:stream');
 		const pipe = Readable.prototype.pipe;
-		Readable.prototype.pipe = function <T extends Writable>(this: Readable, destination: T, options?: PipeOptions): T {
+		Readable.prototype.pipe = function (this: Readable, destination: Writable, options?: PipeOptions): Writable {
 			const standard = destination === main.process.stdout || destination === main.process.stderr;
 			return pipe.call(this, destination, standard ? { ...options, end: false } : options);
 		};

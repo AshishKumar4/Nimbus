@@ -54,7 +54,8 @@ declare module 'node:stream' {
   }
   export class Readable extends Stream {
     constructor(options?: ReadableOptions);
-    pipe<T extends Writable>(destination: T, options?: PipeOptions): T;
+    /** Pipes into `destination`, and answers it. */
+    pipe(destination: Writable, options?: PipeOptions): Writable;
     readonly readable: boolean;
     push(chunk: Uint8Array | string | null, encoding?: string): boolean;
     setEncoding(encoding: string): this;
