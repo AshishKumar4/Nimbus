@@ -1,4 +1,4 @@
-import { EventEmitter } from './events.js';
+import { EventEmitter } from 'node:events';
 import { isLoopbackHost, } from '../kernel/index.js';
 import { awaitServedEnd, routeToLoopback, serveFromPort, servedBody, statusText } from '../kernel/local-serve.js';
 class IncomingMessage extends EventEmitter {
