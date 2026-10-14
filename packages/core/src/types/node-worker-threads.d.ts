@@ -73,6 +73,8 @@ declare module 'node:process' {
     getBuiltinModule(id: 'node:stream'): typeof NodeStream;
     getBuiltinModule(id: 'node:stream/promises' | 'node:stream/consumers' | 'node:stream/web'): object;
     getBuiltinModule(id: 'node:string_decoder'): typeof NodeStringDecoder;
+    getBuiltinModule(id: 'node:assert' | 'node:assert/strict' | 'node:diagnostics_channel' | 'node:domain' | 'node:perf_hooks' | 'node:punycode'
+      | 'node:querystring' | 'node:sys' | 'node:timers' | 'node:timers/promises' | 'node:util/types' | 'node:v8' | 'node:vm'): object;
     getBuiltinModule(id: 'node:util'): typeof NodeUtil;
   }
   const process: RealmProcess;

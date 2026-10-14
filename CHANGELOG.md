@@ -6,6 +6,17 @@ published independently in the `@nimbus-sh` npm scope.
 ## Unreleased
 
 - Fixed: the library's built-in `node` gives a program the engine's own
+  `assert` (and `assert/strict`), `querystring`, `timers` (and
+  `timers/promises`), `perf_hooks` and `v8`, and the context-free builtins
+  it did not have: `async_hooks`, `diagnostics_channel`, `domain`,
+  `punycode`, `sys`, `util/types`, `vm`, `path/posix` and `path/win32`.
+  `require('console')` is the program's console. lifo's `assert` compared
+  values as JSON (two different Maps were equal) and threw plain Errors;
+  its `querystring` kept one of repeated keys and stringified arrays with
+  commas; its `v8.serialize` returned no bytes. `v8`'s functions that would
+  reach the host's files or the engine's flags (`writeHeapSnapshot`,
+  `setFlagsFromString`, coverage) refuse as unavailable.
+- Fixed: the library's built-in `node` gives a program the engine's own
   `path` and `url`, against the program's working directory: `path.resolve`
   and `path.relative` start from it, as does `url.pathToFileURL` of a
   relative path. lifo's `path` resolved from `/`, dropped a trailing
