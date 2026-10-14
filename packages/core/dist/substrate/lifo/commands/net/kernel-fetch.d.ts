@@ -48,7 +48,6 @@ export declare function servedBody(response: VirtualResponse): string | null;
  * resolver (a curl bound to a bare port registry) knows loopback by name only.
  */
 export declare function workspaceRequestPort(kernel: Partial<Pick<Kernel, 'dns'>>, url: URL): number | null;
-/** HTTP reason phrase — virtual responses carry no status text. */
 export declare function statusText(status: number): string;
 /**
  * Serve `request` through the kernel's port registry, else its host's

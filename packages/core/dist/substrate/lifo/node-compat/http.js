@@ -105,8 +105,10 @@ class ClientRequest extends EventEmitter {
                 if (handler) {
                     // As Node gives them to a server: header names lower-cased.
                     const headers = {};
-                    for (const [name, value] of Object.entries(this.options.headers ?? {}))
-                        headers[name.toLowerCase()] = String(value);
+                    const given = this.options.headers;
+                    if (given)
+                        for (const name of Object.keys(given))
+                            headers[name.toLowerCase()] = String(given[name]);
                     const served = serveFromPort(handler, { method, url: path, headers, body: hasBody ? this.body : '' });
                     if (served.kind === 'refused') {
                         this.failed('refused', host, port);
