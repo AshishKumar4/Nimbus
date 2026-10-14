@@ -9,8 +9,9 @@
  * scheduler's result as it came, so either could report a clean run whose
  * session had restarted under it.
  *
- * The guest is the resident one (lib/wasi-resident-guest.mjs), its module
- * the WASI body with the runtime's tail after it, as a facet composes them.
+ * The guest is the resident one (lib/wasi-resident-guest.mjs): its module is
+ * the WASI body (which carries the threads scheduler), with Ruby's tail after
+ * it for Ruby, as a facet composes them.
  * Ruby's VM is not in this repo (its runtime package is, for
  * core-ruby-clang-bun.mjs), so the VM here is the runner's bootstrap with an
  * init that makes the program's calls as ruby.wasm would, through the
@@ -18,7 +19,6 @@
  */
 
 import assert from 'node:assert/strict';
-import { WASI_THREADS_PREAMBLE_SRC } from '../../packages/core/src/runtime/wasi-threads.ts';
 import { RUBY_RUNNER_PREAMBLE_TAIL } from '../../packages/core/src/runtime/ruby-runner.ts';
 import { canPark, residentGuest, USER } from './lib/wasi-resident-guest.mjs';
 
@@ -53,13 +53,13 @@ const threaded = async (guest) => {
   const sched = globalThis.__wasiThreadsCreate({ memory: guest.memory, startThread: () => { throw new Error('this program starts no threads'); } });
   return await globalThis.__wasiRunStartThreads({ exports: { _start: () => {} } }, sched);
 };
-await withGuest(WASI_THREADS_PREAMBLE_SRC, async (guest) => {
+await withGuest('', async (guest) => {
   await program(guest, { restart: false });
   const run = await threaded(guest);
   assert.deepEqual(run, { exitCode: 0 });
   assert.equal(readKept(guest), 'kept by the settle', 'what the program wrote is in the session when the run returns');
 });
-await withGuest(WASI_THREADS_PREAMBLE_SRC, async (guest) => {
+await withGuest('', async (guest) => {
   await program(guest, { restart: true });
   const run = await threaded(guest);
   assert.equal(run.exitCode, 1, 'a threaded run whose session restarted under it fails');
