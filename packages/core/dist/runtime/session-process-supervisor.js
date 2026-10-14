@@ -366,15 +366,13 @@ export class SessionProcessSupervisor {
             throw Object.assign(new Error(`EPERM: operation not permitted, kill ${pid}`), { code: 'EPERM', errno: -1 });
         return this.kill(pid, exitCode, reason);
     }
-    /** Whether `pid` is `ancestor` or one of the processes spawned under it, transitively. */
-    isWithin(pid, ancestor) {
-        const seen = new Set();
-        for (let at = pid; at !== undefined && !seen.has(at); at = this.table.get(at)?.parentPid) {
-            if (at === ancestor)
-                return true;
-            seen.add(at);
+    /** `pid` and the processes above it, nearest first, as the table has them now. */
+    lineage(pid) {
+        const chain = [];
+        for (let entry = this.table.get(pid); entry !== undefined && !chain.includes(entry.pid); entry = entry.parentPid === undefined ? undefined : this.table.get(entry.parentPid)) {
+            chain.push(entry.pid);
         }
-        return false;
+        return chain;
     }
     liveCred(pid) {
         return this.table.liveCred(pid);
