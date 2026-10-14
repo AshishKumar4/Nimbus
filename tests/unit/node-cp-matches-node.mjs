@@ -101,9 +101,12 @@ const PROGRAM = `async (fs, root) => {
       ['dir-onto-dir-noforce', async () => {
         await cp(P('own'), out('again'), { recursive: true });
         fs.writeFileSync(P('own/x.txt'), 'x2');
+        fs.writeFileSync(P('own/deep/y.txt'), 'y2');
         await cp(P('own'), out('again'), { recursive: true, force: false });
         fs.writeFileSync(P('own/x.txt'), 'x');
+        fs.writeFileSync(P('own/deep/y.txt'), 'y');
       }],
+      ['buffer-paths', () => cp(Buffer.from(P('seed/a.txt')), Buffer.from(out('buffered.txt')))],
     ];
     if (form !== 'sync') cases.push(['async-filter', () => cp(P('seed'), out('afilter'), { recursive: true, filter: async (src) => !src.endsWith('run.sh') })]);
     for (const [name, run] of cases) {
@@ -113,6 +116,10 @@ const PROGRAM = `async (fs, root) => {
     }
     results[form + ':tree'] = await tree('out/' + form);
   }
+  // A link the session lists, renamed, then read and copied by its new name.
+  fs.renameSync(P('seed/link-to-a'), P('seed/link-moved'));
+  results.renamedLink = [fs.readlinkSync(P('seed/link-moved')), (fs.cpSync(P('seed/link-moved'), P('out/moved-link-copy'), { verbatimSymlinks: true }), fs.readlinkSync(P('out/moved-link-copy')))];
+  fs.renameSync(P('seed/link-moved'), P('seed/link-to-a'));
   // A link made and read by the sync forms.
   const attempt = (fn) => { try { return fn(); } catch (e) { return outcome(e); } };
   results.symlinkSync = attempt(() => { fs.symlinkSync('own/x.txt', P('out/made-link')); return fs.readlinkSync(P('out/made-link')); });
