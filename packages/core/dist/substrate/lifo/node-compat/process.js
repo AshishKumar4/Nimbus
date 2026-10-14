@@ -1,3 +1,4 @@
+import { invalidArgType } from '../../../_shared/node-error.js';
 export class ProcessExitError extends Error {
     exitCode;
     constructor(code) {
@@ -93,7 +94,9 @@ export function createProcess(opts) {
         uptime: () => (Date.now() - startTime) / 1000,
         release: { name: 'node' },
         config: {},
-        emitWarning: (msg) => { opts.stderr.write(`Warning: ${msg}\n`); },
+        emitWarning: (warning, type, code, ctor) => {
+            emitWarning(warning, type, code, ctor);
+        },
         // POSIX identity stubs (needed by many npm packages)
         getuid: () => 1000,
         getgid: () => 1000,
@@ -172,5 +175,79 @@ export function createProcess(opts) {
         allowedNodeEnvironmentFlags: new Set(),
         features: { inspector: false, debug: false, uv: false, tls_alpn: false, tls_sni: false, tls_ocsp: false, tls: false },
     };
+    const flags = proc;
+    /** Node's process.emitWarning (lib/internal/process/warning.js): the warning is told to 'warning' listeners on the next tick. */
+    function emitWarning(warning, type, code, ctor) {
+        if (flags.noDeprecation && type === 'DeprecationWarning')
+            return;
+        let name = type;
+        let detail;
+        if (typeof type === 'object' && type !== null && !Array.isArray(type)) {
+            ctor = type.ctor;
+            code = type.code;
+            if (typeof type.detail === 'string')
+                detail = type.detail;
+            name = type.type || 'Warning';
+        }
+        else if (typeof type === 'function') {
+            ctor = type;
+            code = undefined;
+            name = 'Warning';
+        }
+        if (name !== undefined && typeof name !== 'string')
+            throw invalidArgType('type', 'string', name);
+        if (typeof code === 'function') {
+            ctor = code;
+            code = undefined;
+        }
+        else if (code !== undefined && typeof code !== 'string') {
+            throw invalidArgType('code', 'string', code);
+        }
+        let told;
+        if (typeof warning === 'string') {
+            told = Object.assign(new Error(warning), { name: String(name || 'Warning') }, code === undefined ? {} : { code }, detail === undefined ? {} : { detail });
+            Error.captureStackTrace(told, ctor ?? proc.emitWarning);
+        }
+        else if (warning instanceof Error) {
+            told = warning;
+        }
+        else {
+            throw invalidArgType('warning', ['Error', 'string'], warning);
+        }
+        if (told.name === 'DeprecationWarning') {
+            if (flags.noDeprecation)
+                return;
+            if (flags.throwDeprecation) {
+                proc.nextTick(() => { throw told; });
+                return;
+            }
+        }
+        proc.nextTick(() => proc.emit('warning', told));
+    }
+    // Node's own 'warning' listener (onWarning), unless NODE_NO_WARNINGS=1:
+    // each warning on stderr, the hint at how to trace one written once.
+    let hintWritten = false;
+    const writeWarning = (warning) => {
+        if (!(warning instanceof Error))
+            return;
+        const isDeprecation = warning.name === 'DeprecationWarning';
+        if (isDeprecation && flags.noDeprecation)
+            return;
+        const trace = flags.traceProcessWarnings || (isDeprecation && flags.traceDeprecation);
+        let message = `(${proc.release.name}:${proc.pid}) `;
+        if ('code' in warning && warning.code)
+            message += `[${String(warning.code)}] `;
+        message += trace && warning.stack ? warning.stack : String(warning);
+        if ('detail' in warning && typeof warning.detail === 'string')
+            message += `\n${warning.detail}`;
+        if (!trace && !hintWritten) {
+            const argv0 = String(proc.argv0 || 'node').replace(/^.*\//, '').replace(/\.exe$/, '');
+            message += `\n(Use \`${argv0} ${isDeprecation ? '--trace-deprecation' : '--trace-warnings'} ...\` to show where the warning was created)`;
+            hintWritten = true;
+        }
+        opts.stderr.write(`${message}\n`);
+    };
+    if (proc.env.NODE_NO_WARNINGS !== '1')
+        proc.on('warning', writeWarning);
     return proc;
 }

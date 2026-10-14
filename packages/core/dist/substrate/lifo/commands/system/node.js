@@ -1,4 +1,5 @@
 import { Buffer } from 'node:buffer';
+import realm from 'node:process';
 import { resolve, dirname, extname } from '../../utils/path.js';
 import { ProcessExitError } from '../../node-compat/index.js';
 import { createCjsLoader, moduleWrapper, stripShebang } from '../../node-compat/cjs-loader.js';
@@ -145,6 +146,11 @@ export async function runNodeProgram(program, host) {
     // (not a CommonJS wrapper parameter) finds the program's.
     const ga = globalThis;
     ga.process = main.process;
+    // So are the realm's own warnings, a native builtin's (util.deprecate,
+    // Buffer(), events): Node delivers a warning to the process that raised it.
+    realm.emitWarning = main.process.emitWarning;
+    realm.removeAllListeners('warning');
+    realm.on('warning', (warning) => { main.process.emit('warning', warning); });
     ga.Buffer = Buffer;
     ga.console = main.console;
     ga.global = globalThis;
