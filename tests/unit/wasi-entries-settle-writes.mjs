@@ -49,9 +49,17 @@ async function program(guest, { restart }) {
 const readKept = (guest) => guest.kernel.readFileString(KEPT);
 
 // ── The threaded entry ────────────────────────────────────────────────────
+// A module whose _start returns at once: the program's calls are the test's, made before it runs.
+const EMPTY_START = new WebAssembly.Module(new Uint8Array([
+  0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+  0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
+  0x03, 0x02, 0x01, 0x00,
+  0x07, 0x0a, 0x01, 0x06, 0x5f, 0x73, 0x74, 0x61, 0x72, 0x74, 0x00, 0x00,
+  0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b,
+]));
 const threaded = async (guest) => {
   const sched = globalThis.__wasiThreadsCreate({ memory: guest.memory, startThread: () => { throw new Error('this program starts no threads'); } });
-  return await globalThis.__wasiRunStartThreads({ exports: { _start: () => {} } }, sched);
+  return await globalThis.__wasiRunStartThreads(new WebAssembly.Instance(EMPTY_START), sched);
 };
 await withGuest('', async (guest) => {
   await program(guest, { restart: false });
