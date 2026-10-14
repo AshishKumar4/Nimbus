@@ -27,33 +27,38 @@ export type WorkspaceRequestResult =
   | { kind: 'aborted' }
   | { kind: 'timeout' };
 
-/** How a server of the port registry answered: its response once its handler ended it, or how it failed. */
-export type ServedResult =
-  | { kind: 'served'; response: VirtualResponse }
-  | { kind: 'refused' }
-  | { kind: 'aborted' }
-  | { kind: 'timeout' };
-
 /**
- * `request` served by `handler`, a server of a port registry: its response
- * once the handler has ended it (the _donePromise a ServerResponse attaches
- * while the response is open), however late, unless the request's signal
- * aborts first or 30 s pass. `signal` is asked for only when there is an end
- * to wait for. A handler that throws refuses the request.
+ * How a server of a port registry took a request: its response, with the end
+ * still to wait for when its handler returned before ending it (the
+ * _donePromise a ServerResponse attaches while the response is open); or a
+ * refusal, when the handler threw.
  */
-export async function serveFromPort(handler: VirtualRequestHandler, request: VirtualRequest, signal: () => AbortSignal): Promise<ServedResult> {
+export type Served =
+  | { kind: 'served'; response: VirtualResponse; end: Promise<void> | null }
+  | { kind: 'refused' };
+
+/** `request` handed to `handler`, a server of a port registry, synchronously, as a server takes a request. */
+export function serveFromPort(handler: VirtualRequestHandler, request: VirtualRequest): Served {
   const response: VirtualResponse & { _donePromise?: Promise<void> } = { statusCode: 200, headers: {}, body: '' };
   try {
     handler(request, response);
-    if (response._donePromise) {
-      const result = await waitForSignalOrTimeout(response._donePromise, signal(), 30_000);
-      if (result.type === 'aborted') return { kind: 'aborted' };
-      if (result.type === 'timeout') return { kind: 'timeout' };
-    }
   } catch {
     return { kind: 'refused' };
   }
-  return { kind: 'served', response };
+  return { kind: 'served', response, end: response._donePromise ?? null };
+}
+
+/**
+ * The wait for a served response's `end`, however late its handler ends it,
+ * unless `signal` aborts first or 30 s pass: `ended`, or how the wait stopped.
+ */
+export async function awaitServedEnd(end: Promise<void>, signal: AbortSignal): Promise<'ended' | 'refused' | 'aborted' | 'timeout'> {
+  try {
+    const result = await waitForSignalOrTimeout(end, signal, 30_000);
+    return result.type === 'aborted' ? 'aborted' : result.type === 'timeout' ? 'timeout' : 'ended';
+  } catch {
+    return 'refused';
+  }
 }
 
 /** A served response's body as HTTP carries it: none for 204 and 304. */
@@ -101,13 +106,15 @@ export async function dispatchWorkspaceRequest(
   const handler = kernel.portRegistry.get(port);
   if (handler) {
     const url = new URL(request.url);
-    const served = await serveFromPort(handler, {
+    const served = serveFromPort(handler, {
       method: request.method,
       url: url.pathname + url.search,
       headers: Object.fromEntries(request.headers.entries()),
       body: request.body ? await request.text() : '',
-    }, () => request.signal);
-    if (served.kind !== 'served') return served;
+    });
+    if (served.kind === 'refused') return served;
+    const ended = served.end === null ? 'ended' : await awaitServedEnd(served.end, request.signal);
+    if (ended !== 'ended') return { kind: ended };
     const status = served.response.statusCode;
     return {
       kind: 'response',

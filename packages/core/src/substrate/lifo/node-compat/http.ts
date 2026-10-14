@@ -5,7 +5,7 @@ import {
   type VirtualRequestHandler,
   type VirtualResponse,
 } from '../kernel/index.js';
-import { dispatchWorkspaceRequest, serveFromPort, servedBody, statusText } from '../commands/net/kernel-fetch.js';
+import { awaitServedEnd, dispatchWorkspaceRequest, serveFromPort, servedBody, statusText } from '../commands/net/kernel-fetch.js';
 
 /** The ports of an http module made without a registry: none listens. */
 const NO_PORTS: Map<number, VirtualRequestHandler> = new Map();
@@ -153,9 +153,14 @@ class ClientRequest extends EventEmitter {
           // As Node gives them to a server: header names lower-cased.
           const headers: Record<string, string> = {};
           for (const [name, value] of Object.entries(this.options.headers ?? {})) headers[name.toLowerCase()] = String(value);
-          const served = await serveFromPort(handler, { method, url: path, headers, body: hasBody ? this.body : '' }, () => this.signal());
-          if (served.kind === 'served') this.answerServed(served.response);
-          else this.failed(served.kind, host, port);
+          const served = serveFromPort(handler, { method, url: path, headers, body: hasBody ? this.body : '' });
+          if (served.kind === 'refused') {
+            this.failed('refused', host, port);
+            return;
+          }
+          const ended = served.end === null ? 'ended' : await awaitServedEnd(served.end, this.signal());
+          if (ended === 'ended') this.answerServed(served.response);
+          else this.failed(ended, host, port);
           return;
         }
         const result = await dispatchWorkspaceRequest(
