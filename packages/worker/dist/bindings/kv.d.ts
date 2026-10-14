@@ -56,6 +56,7 @@ export interface KvListResult {
 }
 export declare function _setKvNow(fn: () => number): void;
 export declare class KvEmulator {
+    #private;
     private vfs;
     private dir;
     private metaCache;
@@ -70,9 +71,5 @@ export declare class KvEmulator {
     put(key: string, value: string | ArrayBuffer | ArrayBufferView | ReadableStream | Uint8Array | null, options?: KvPutOptions): Promise<void>;
     delete(key: string): Promise<void>;
     list(options?: KvListOptions): Promise<KvListResult>;
-    private _project;
-    private _readResolved;
-    private _readMeta;
-    private _lazyDelete;
 }
 //# sourceMappingURL=kv.d.ts.map

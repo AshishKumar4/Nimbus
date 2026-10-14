@@ -1,7 +1,12 @@
 import { RpcTarget } from 'cloudflare:workers';
 import type { SupervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import type { SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-op.js';
-import { supervisorCalls, TRANSPORT, type SupervisorTransport } from './supervisor-calls.js';
+// Every symbol the mixin's methods are keyed by is imported, though not
+// used here: the class's declaration names them.
+import {
+  supervisorCalls, TRANSPORT, OP, CALLER, FS_OP, FS_READ, FS_MUTATION, RESENT, MUTATION_OWNER, HOST_INCARNATION, REPORTING_PID, CALL, CACHE_READ, INFRASTRUCTURE_CACHE, NETWORK, PID, RUN_ID,
+  type SupervisorTransport,
+} from './supervisor-calls.js';
 
 /**
  * A one-shot's SUPERVISOR as a capability its host hands it in the call that

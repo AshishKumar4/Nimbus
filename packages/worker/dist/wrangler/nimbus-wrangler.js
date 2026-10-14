@@ -556,6 +556,8 @@ export class NimbusWrangler {
                         vfsRoot: this.root,
                         assetsDir,
                         doId,
+                        // Assets are read as the process that started the server, as its engine is.
+                        cred: this.vfs.cred,
                         route: hostRoute() ?? undefined,
                     },
                 }));

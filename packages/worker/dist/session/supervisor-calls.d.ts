@@ -81,6 +81,21 @@ export interface Resend {
     policy?: DoCallRetryPolicy;
 }
 export declare const TRANSPORT: unique symbol;
+export declare const OP: unique symbol;
+export declare const CALLER: unique symbol;
+export declare const FS_OP: unique symbol;
+export declare const FS_READ: unique symbol;
+export declare const FS_MUTATION: unique symbol;
+export declare const RESENT: unique symbol;
+export declare const MUTATION_OWNER: unique symbol;
+export declare const HOST_INCARNATION: unique symbol;
+export declare const REPORTING_PID: unique symbol;
+export declare const CALL: unique symbol;
+export declare const CACHE_READ: unique symbol;
+export declare const INFRASTRUCTURE_CACHE: unique symbol;
+export declare const NETWORK: unique symbol;
+export declare const PID: unique symbol;
+export declare const RUN_ID: unique symbol;
 type Class = abstract new (...args: any[]) => object;
 /**
  * Everything a process's SUPERVISOR answers, over either transport: a
@@ -88,77 +103,6 @@ type Class = abstract new (...args: any[]) => object;
  * the call that runs it (ProcessSupervisor).
  */
 export declare function supervisorCalls<Base extends Class>(base: Base): (abstract new (...args: any[]) => {
-    _op<T>(op: SupervisorOpName, args?: readonly unknown[], extra?: Omit<SupervisorOpEnvelope, "op" | "args">): Promise<T>;
-    /** Every path (including resent reads/mutations) uses the bound caller. */
-    _caller(envelope: SupervisorOpEnvelope): SupervisorOpEnvelope;
-    /** Stamp filesystem credentials from the binding, not the supplied arguments. */
-    _fsOp<T>(op: SupervisorOpName, args?: readonly unknown[]): Promise<T>;
-    /**
-     * A filesystem read changes nothing on the host, so a call the platform
-     * dropped on the way to it is repeated on a fresh stub. Measured: the
-     * host's `stat` failing with "Network connection lost." (`retryable`) is
-     * what failed CPython's start in about one fresh session in twenty.
-     *
-     * A read can also never answer: under concurrent sessions a burst of reads
-     * from one facet left some attempts pending for minutes without reaching
-     * the host, and the program waiting on them never exited
-     * (preview/new/lucide-barrel-cache-widens). So a read still unanswered
-     * after LOST_CALL_HEDGE_AFTER_MS is hedged: sent again on a fresh
-     * stub, the first attempt left running, the first answer taken.
-     *
-     * A read can equally be slow at the session — queued behind the read
-     * budget, a lazy import, a busy input gate — and a hedge must not make it
-     * read again there. So every attempt carries the one read id minted here,
-     * and the session joins a repeat to the read it is still serving
-     * (`SupervisorDeliveries.joinRead`): a hedge that did arrive costs the
-     * session nothing but a second copy of the answer. Mutations are not
-     * hedged: their repeats stay bounded by the delivery retry window.
-     */
-    _fsRead<T>(op: SupervisorJoinedReadOpName, args?: readonly unknown[]): Promise<T>;
-    /**
-     * A filesystem mutation, delivered exactly once. The platform drops this
-     * hop too — measured: pip's `fsWrite` of a wheel member and a FileHandle
-     * write loop, each failing "Network connection lost." (`retryable`) as
-     * EIO — and a dropped mutation may or may not have run.
-     *
-     * So on a binding whose host names its incarnation, every attempt carries
-     * the one delivery id minted here, under SUPERVISOR_DELIVER_OP, and that
-     * host instance applies the id at most once: a repeat of a mutation that
-     * ran is answered from its receipt and never applied again, even over
-     * another writer's newer write; one that never arrived applies on the
-     * repeat. Any other instance, and any host that predates delivery, refuses
-     * the envelope outright, and that refusal is never repeated. Repeats stop
-     * VFS_DELIVERY_RETRY_WINDOW_MS after the first attempt, inside the host's
-     * receipt retention.
-     *
-     * A binding minted by a host that dedupes nothing names no incarnation,
-     * and its mutations are sent once.
-     *
-     * The id is random because this entrypoint keeps nothing between calls and
-     * may answer from any isolate; the pid still comes from the binding.
-     */
-    _fsMutation<T>(op: SupervisorDeliveredOpName, args: NonNullable<SupervisorOpEnvelope["args"]>): Promise<T>;
-    /** `envelope`, sent as `trace.kind`, and re-sent as `policy` says where the platform can drop it. */
-    _resent<T>(envelope: SupervisorOpEnvelope, trace: Resend["trace"], policy?: DoCallRetryPolicy): Promise<T>;
-    _mutationOwner(): string | undefined;
-    _hostIncarnation(): string | undefined;
-    _reportingPid(): number;
-    _call<T>(promise: Promise<T>): Promise<T>;
-    _cacheRead<T>(plan: {
-        ticket?: string;
-        readOnly: boolean;
-    }, produce: (client: R2CacheClient) => Promise<T>): Promise<T>;
-    _infrastructureCache(op: SupervisorOpName, args: readonly unknown[]): boolean;
-    /**
-     * The network this binding's process reaches out through: its workspace's
-     * egress when its host supplied one (SupervisorBindingProps.egress), else
-     * this isolate's own. Every request the binding makes for the process —
-     * its fetch, its sockets, its packument reads — goes through it.
-     */
-    _network(): WorkspaceNetwork;
-    _pid(): number;
-    /** The run of the process this binding was minted for, when it has one. */
-    _runId(): string | undefined;
     /**
      * The filesystem call `method` (one of SUPERVISOR_ANSWERED_METHODS), with a
      * refusal answered as a value: a facet's client (core vfs-supervisor.ts
@@ -465,7 +409,7 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
      * facet reach another facet's server in-session (e.g. `opencode attach` →
      * `opencode serve`). Returns the target's Response, streamed over RPC.
      *
-     * NOT routed through `_call`: that disposes the RPC resource after mapping,
+     * NOT routed through `[CALL]`: that disposes the RPC resource after mapping,
      * which would close a streaming Response body (SSE). We return the RPC promise
      * directly so the body streams to the caller for the response's lifetime —
      * exactly how PortRegistry.routeRequest returns the facet's Response as-is.
@@ -552,6 +496,77 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
         seq: number;
     }): Promise<void>;
     [TRANSPORT](): SupervisorTransport;
+    [OP]<T>(op: SupervisorOpName, args?: readonly unknown[], extra?: Omit<SupervisorOpEnvelope, "op" | "args">): Promise<T>;
+    /** Every path (including resent reads/mutations) uses the bound caller. */
+    [CALLER](envelope: SupervisorOpEnvelope): SupervisorOpEnvelope;
+    /** Stamp filesystem credentials from the binding, not the supplied arguments. */
+    [FS_OP]<T>(op: SupervisorOpName, args?: readonly unknown[]): Promise<T>;
+    /**
+     * A filesystem read changes nothing on the host, so a call the platform
+     * dropped on the way to it is repeated on a fresh stub. Measured: the
+     * host's `stat` failing with "Network connection lost." (`retryable`) is
+     * what failed CPython's start in about one fresh session in twenty.
+     *
+     * A read can also never answer: under concurrent sessions a burst of reads
+     * from one facet left some attempts pending for minutes without reaching
+     * the host, and the program waiting on them never exited
+     * (preview/new/lucide-barrel-cache-widens). So a read still unanswered
+     * after LOST_CALL_HEDGE_AFTER_MS is hedged: sent again on a fresh
+     * stub, the first attempt left running, the first answer taken.
+     *
+     * A read can equally be slow at the session — queued behind the read
+     * budget, a lazy import, a busy input gate — and a hedge must not make it
+     * read again there. So every attempt carries the one read id minted here,
+     * and the session joins a repeat to the read it is still serving
+     * (`SupervisorDeliveries.joinRead`): a hedge that did arrive costs the
+     * session nothing but a second copy of the answer. Mutations are not
+     * hedged: their repeats stay bounded by the delivery retry window.
+     */
+    [FS_READ]<T>(op: SupervisorJoinedReadOpName, args?: readonly unknown[]): Promise<T>;
+    /**
+     * A filesystem mutation, delivered exactly once. The platform drops this
+     * hop too — measured: pip's `fsWrite` of a wheel member and a FileHandle
+     * write loop, each failing "Network connection lost." (`retryable`) as
+     * EIO — and a dropped mutation may or may not have run.
+     *
+     * So on a binding whose host names its incarnation, every attempt carries
+     * the one delivery id minted here, under SUPERVISOR_DELIVER_OP, and that
+     * host instance applies the id at most once: a repeat of a mutation that
+     * ran is answered from its receipt and never applied again, even over
+     * another writer's newer write; one that never arrived applies on the
+     * repeat. Any other instance, and any host that predates delivery, refuses
+     * the envelope outright, and that refusal is never repeated. Repeats stop
+     * VFS_DELIVERY_RETRY_WINDOW_MS after the first attempt, inside the host's
+     * receipt retention.
+     *
+     * A binding minted by a host that dedupes nothing names no incarnation,
+     * and its mutations are sent once.
+     *
+     * The id is random because this entrypoint keeps nothing between calls and
+     * may answer from any isolate; the pid still comes from the binding.
+     */
+    [FS_MUTATION]<T>(op: SupervisorDeliveredOpName, args: NonNullable<SupervisorOpEnvelope["args"]>): Promise<T>;
+    /** `envelope`, sent as `trace.kind`, and re-sent as `policy` says where the platform can drop it. */
+    [RESENT]<T>(envelope: SupervisorOpEnvelope, trace: Resend["trace"], policy?: DoCallRetryPolicy): Promise<T>;
+    [MUTATION_OWNER](): string | undefined;
+    [HOST_INCARNATION](): string | undefined;
+    [REPORTING_PID](): number;
+    [CALL]<T>(promise: Promise<T>): Promise<T>;
+    [CACHE_READ]<T>(plan: {
+        ticket?: string;
+        readOnly: boolean;
+    }, produce: (client: R2CacheClient) => Promise<T>): Promise<T>;
+    [INFRASTRUCTURE_CACHE](op: SupervisorOpName, args: readonly unknown[]): boolean;
+    /**
+     * The network this binding's process reaches out through: its workspace's
+     * egress when its host supplied one (SupervisorBindingProps.egress), else
+     * this isolate's own. Every request the binding makes for the process —
+     * its fetch, its sockets, its packument reads — goes through it.
+     */
+    [NETWORK](): WorkspaceNetwork;
+    [PID](): number;
+    /** The run of the process this binding was minted for, when it has one. */
+    [RUN_ID](): string | undefined;
 }) & Base;
 export {};
 //# sourceMappingURL=supervisor-calls.d.ts.map

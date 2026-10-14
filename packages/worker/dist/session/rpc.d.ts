@@ -399,7 +399,13 @@ export declare function _rpcTransform(self: RpcHost, code: string, loader: strin
     code: string;
     map: string;
 } | null>;
-export declare function _rpcCpSpawn(self: RpcHost, req: any): Promise<{
+/**
+ * A child of `parentPid`, the process whose envelope asked for it (the
+ * supervisor route passes the pid its binding stamped): the parent a request
+ * names is overridden, so no process spawns a child as another's. A host's
+ * own call, which no process makes, names the parent in the request.
+ */
+export declare function _rpcCpSpawn(self: RpcHost, req: any, parentPid?: number): Promise<{
     childPid: number;
 }>;
 /**
@@ -409,11 +415,18 @@ export declare function _rpcCpSpawn(self: RpcHost, req: any): Promise<{
  * the store used to take text, decoded here, which turned a byte that is not
  * UTF-8 into U+FFFD.
  */
-export declare function _rpcCpStdinWrite(self: RpcHost, childPid: number, data: Uint8Array): Promise<{
+export declare function _rpcCpStdinWrite(self: RpcHost, childPid: number, data: Uint8Array, pid?: number): Promise<{
     ok: boolean;
     full?: boolean;
 }>;
-export declare function _rpcCpStdinEnd(self: RpcHost, childPid: number): Promise<void>;
+export declare function _rpcCpStdinEnd(self: RpcHost, childPid: number, pid?: number): Promise<void>;
+/**
+ * A process's read of its stdin. It reads its own, the pid its binding
+ * stamped, whatever channel it names: a stdin it inherited as fd 0 is its
+ * own channel's alias (SessionProcessSupervisor.inheritInput), and no other
+ * process's is reachable by naming it. A call with no caller is the
+ * session's own, and reads the channel it names.
+ */
 export declare function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs: number, acquire?: unknown, pid?: number, writerId?: string, maxBytes?: number): Promise<{
     data: Uint8Array;
     ended: boolean;
@@ -427,9 +440,10 @@ export declare function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs:
     ended: boolean;
 }>;
 export declare function _rpcCpReadOutput(self: RpcHost, childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number, acquire?: unknown, pid?: number): Promise<any>;
-export declare function _rpcCpDrainOutput(self: RpcHost, childPid: number): Promise<any>;
-export declare function _rpcCpCloseOutput(self: RpcHost, childPid: number, fd: 1 | 2): Promise<void>;
-export declare function _rpcCpKill(self: RpcHost, childPid: number, signal: string): Promise<boolean>;
+export declare function _rpcCpDrainOutput(self: RpcHost, childPid: number, pid?: number): Promise<any>;
+export declare function _rpcCpCloseOutput(self: RpcHost, childPid: number, fd: 1 | 2, pid?: number): Promise<void>;
+/** A child's kill: its parent's, and as Linux's kill(2) allows (SessionProcessSupervisor.maySignal). */
+export declare function _rpcCpKill(self: RpcHost, childPid: number, signal: string, pid?: number): Promise<boolean>;
 /**
  * Process `pid` says whether its only remaining work is waiting on its
  * children, and how far it has applied its news (fabric setProcessBlocked).
