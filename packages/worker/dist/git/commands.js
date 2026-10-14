@@ -32,7 +32,7 @@ import { DEFAULT_CONTEXT, DEFAULT_RENAME_SCORE, absentSpec, binaryPath, bytesFro
 import { CheckoutRefused, UnmergedIndex, switchTrees } from './worktree/checkout.js';
 import { parseSparseCheckoutArgs, sparseCheckout } from './sparse-checkout.js';
 import { invalidPathError, verifyPath } from './worktree/verify-path.js';
-import { DirCache, NewEntries, comparePaths } from './worktree/dircache.js';
+import { DirCache, IndexFormatError, IndexReadError, NewEntries, comparePaths } from './worktree/dircache.js';
 import { isValidRefName } from './worktree/refname.js';
 import { PairList } from './worktree/pairs.js';
 import { WorktreeRepo } from './worktree/repo.js';
@@ -4342,11 +4342,21 @@ realGit) {
             await ctx.stderr.write(e.lines);
             return e.code;
         }
-        // A config file there that cannot be read (cf-git's readConfigText): git's access_or_die, its path as git names it from the top.
+        // A file git reads that cannot be read, named as git names it, from the top.
+        const fromTop = (file) => (top !== null && file.startsWith(`${top}/`) ? file.slice(top.length + 1) : file);
+        // A config file (cf-git's readConfigText): git's access_or_die.
         if (typeof e?.configFile === 'string') {
-            const file = e.configFile;
-            const shown = top !== null && file.startsWith(`${top}/`) ? file.slice(top.length + 1) : file;
-            await ctx.stderr.write(`fatal: unable to access '${shown}': ${strerror(e.cause)}\n`);
+            await ctx.stderr.write(`fatal: unable to access '${fromTop(e.configFile)}': ${strerror(e.cause)}\n`);
+            return 128;
+        }
+        // The index: git's do_read_index, its words for the step that failed (with the errno, but for its size).
+        if (e instanceof IndexReadError) {
+            await ctx.stderr.write(`fatal: ${fromTop(e.file)}: ${e.words}${e.step === 'size' ? '' : `: ${strerror(e.cause)}`}\n`);
+            return 128;
+        }
+        // Its header: what verify_hdr found, then git dies.
+        if (e instanceof IndexFormatError && e.detail !== undefined) {
+            await ctx.stderr.write(`error: ${e.detail}\nfatal: ${e.message}\n`);
             return 128;
         }
         // The reader went away (`git diff | head`): git dies of SIGPIPE, silently.
