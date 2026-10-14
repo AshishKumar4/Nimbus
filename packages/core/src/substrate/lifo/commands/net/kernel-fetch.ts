@@ -56,6 +56,8 @@ export async function dispatchWorkspaceRequest(
       body: request.body ? await request.text() : '',
     });
     if (served === null) return { kind: 'refused' };
+    // An aborted request is aborted, though its handler has already ended the response.
+    if (request.signal.aborted) return { kind: 'aborted' };
     const ended = served._donePromise === undefined ? 'ended' : await awaitServedEnd(served._donePromise, request.signal);
     if (ended !== 'ended') return { kind: ended };
     const status = served.statusCode;

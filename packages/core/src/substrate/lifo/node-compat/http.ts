@@ -147,11 +147,14 @@ class ClientRequest extends EventEmitter {
           const headers: Record<string, string> = {};
           const given = this.options.headers;
           if (given) for (const name of Object.keys(given)) headers[name.toLowerCase()] = String(given[name]);
-          const served = serveFromPort(handler, { method, url: path, headers, body: hasBody ? this.body : '' });
+          // Node's HTTP carries a GET's body too: only a Fetch Request (below) may not.
+          const served = serveFromPort(handler, { method, url: path, headers, body: this.body });
           if (served === null) {
             this.failed('refused', host, port);
             return;
           }
+          // Aborted while its server answered (its handler can reach it): nothing more is said.
+          if (this.aborted) return;
           const ended = served._donePromise === undefined ? 'ended' : await awaitServedEnd(served._donePromise, this.signal());
           if (ended !== 'ended') {
             this.failed(ended, host, port);
