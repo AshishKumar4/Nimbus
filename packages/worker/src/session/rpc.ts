@@ -108,6 +108,7 @@ export async function _rpcStdinPrepared(self: RpcHost, pid?: number, run?: strin
 }
 
 type ProcessRpcHost = Pick<NimbusSession, 'processes'>;
+type CpRpcHost = ProcessRpcHost & Pick<NimbusSession, '_ensureChildProcessManager'>;
 type ReportRpcHost = ProcessRpcHost & Pick<NimbusSession, 'facetManager'>;
 type ExitRpcHost = ReportRpcHost & Pick<NimbusSession,
   'terminal' | 'shell' | 'webSocketRelay' | 'supervisorDeliveries' | 'servedReads' | '_emitExitDump' | 'nimbusDebug' | 'childProcessManager'
@@ -1489,11 +1490,14 @@ export async function _rpcCpStdinEnd(self: RpcHost, childPid: number, pid?: numb
  * its parent's, or an ancestor's: `caller`, the pid its binding stamped,
  * must have spawned `childPid`, directly or not. Another gets ESRCH, as
  * waitpid answers for a pid that is not its child. A call with no caller is
- * the session's own.
+ * the session's own. Who holds the handle is the broker's, taken at the
+ * spawn, which lasts as the handle does (its output and exit not yet read):
+ * the table may forget the rows of the child and of those above it first (a
+ * prune).
  */
-function childOf(self: ProcessRpcHost, childPid: number, caller: number | undefined): void {
+function childOf(self: CpRpcHost, childPid: number, caller: number | undefined): void {
     if (caller === undefined) return;
-    if (childPid === caller || !self.processes.isWithin(childPid, caller)) {
+    if (!self._ensureChildProcessManager().isHeldBy(childPid, caller)) {
         throw Object.assign(new Error(`ESRCH: no such child process ${childPid}`), { code: 'ESRCH', errno: -3 });
     }
 }
@@ -1584,7 +1588,8 @@ export async function _rpcCpCloseOutput(self: RpcHost, childPid: number, fd: 1 |
 /** A child's kill: its parent's, and as Linux's kill(2) allows (SessionProcessSupervisor.maySignal). */
 export async function _rpcCpKill(self: RpcHost, childPid: number, signal: string, pid?: number): Promise<boolean> {
     childOf(self, childPid, pid);
-    if (pid !== undefined && !self.processes.maySignal(self.processes.liveCred(pid), childPid)) {
+    // kill(2)'s rule, for a child the table still holds: one it forgot has ended, and its kill is moot (false).
+    if (pid !== undefined && self.processes.get(childPid) !== undefined && !self.processes.maySignal(self.processes.liveCred(pid), childPid)) {
         throw Object.assign(new Error(`EPERM: operation not permitted, kill ${childPid}`), { code: 'EPERM', errno: -1 });
     }
     const fpm = self._ensureChildProcessManager();

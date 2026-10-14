@@ -35,6 +35,22 @@ published independently in the `@nimbus-sh` npm scope.
 - Fixed: a process's recursive copy beneath a WASI preopen on a mount that
   answers asynchronously followed a link named as the source even when the
   copy did not ask to follow it.
+- Fixed: in a core workspace, a process that ends after the exec that
+  started it (a background job) leaves the process table a minute after it
+  ended, at the next exec, as in a hosted session. It stayed, with its
+  logs, until the workspace closed.
+- Fixed: a Node program's `child_process` handle stays its own, and its
+  ancestors', while the child's output and exit are still to be read,
+  though the process table forgot the rows of the ended child and of the
+  processes between. A parent that paused for a minute between reads got
+  ESRCH and lost the rest of the child's output and its exit status. A
+  `kill()` of such a child returns false, as in Node.
+- Changed: `kill -STOP` (and `-TSTP`, `-TTIN`, `-TTOU`) of a shell job is
+  refused with "Operation not supported" and status 1, as it is for a
+  hosted resident: nothing can pause a job's work. It used to answer 0 and
+  list the job as Stopped while the job ran on. `kill -CONT` of a job
+  succeeds and does nothing, `jobs -s` lists nothing, and `bg` of a job
+  says "bg: job N already in background", as bash does of a running one.
 - Fixed: two sessions served by one isolate decode their background
   processes' terminal output each on its own. Their processes are numbered
   alike, and one isolate-wide decoder per process number let a character
