@@ -10,6 +10,12 @@ published independently in the `@nimbus-sh` npm scope.
   same tenant, the capability was forwarded to that session, which woke
   (or, for an id no session had, was created) only to refuse it; now the
   router answers 404 and names no session.
+- Breaking (embedders): `isValidAppName` and `APP_NAME_RE` are removed from
+  `@nimbus-sh/worker/port-capability`. An application name has one rule,
+  `isPreviewHostName` from `@nimbus-sh/worker/preview-host`, which checks
+  what `isValidAppName` checked; no re-export remains. The public
+  directory's `bind` checks a name by the same rule. The next
+  `@nimbus-sh/worker` publish is a minor version.
 - Fixed: in a core workspace, a process that ends after the exec that
   started it (a background job) leaves the process table a minute after it
   ended, at the next exec, as in a hosted session. It stayed, with its
