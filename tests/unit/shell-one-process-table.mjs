@@ -45,10 +45,12 @@ try {
     assert.equal((await run('(exit 3) & wait $!; echo "status=$?"')).stdout, 'status=3\n');
   });
 
-  await check('kill -STOP %1 marks the job Stopped for jobs, and -CONT running again', async () => {
-    const r = await run(`${HOLD}; hold & kill -STOP %1; jobs; kill -CONT %1; jobs; touch /tmp/go; wait`);
-    assert.match(r.stdout, /Stopped\s+hold/);
-    assert.match(r.stdout, /Running\s+hold/);
+  await check('kill -STOP %1 is refused and the job runs on; -CONT succeeds', async () => {
+    const r = await run(`${HOLD}; hold & kill -STOP %1; echo "stop=$?"; jobs; kill -CONT %1; echo "cont=$?"; touch /tmp/go; wait`);
+    assert.match(r.stdout, /^stop=1\n\[1\]\+\s+Running\s+hold/);
+    assert.match(r.stdout, /cont=0\n/);
+    assert.doesNotMatch(r.stdout, /Stopped/);
+    assert.match(r.stderr, /Operation not supported \(SIGSTOP cannot be delivered to a hosted process\)/);
   });
 
   await check('another shell ends a job by pid; its wait is not that shell\'s', async () => {
