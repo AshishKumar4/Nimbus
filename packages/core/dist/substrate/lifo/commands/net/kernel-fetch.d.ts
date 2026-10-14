@@ -8,7 +8,7 @@
  * than null: 'aborted' and 'timeout' surface to the caller's own reporting
  * instead of being mistaken for "no listener".
  */
-import { type Kernel } from '../../kernel/index.js';
+import { type Kernel, type VirtualRequest, type VirtualRequestHandler, type VirtualResponse } from '../../kernel/index.js';
 /** Outcomes of one workspace-local hop, for callers that report failure. */
 export type WorkspaceRequestResult = {
     kind: 'response';
@@ -20,6 +20,26 @@ export type WorkspaceRequestResult = {
 } | {
     kind: 'timeout';
 };
+/** How a server of the port registry answered: its response once its handler ended it, or how it failed. */
+export type ServedResult = {
+    kind: 'served';
+    response: VirtualResponse;
+} | {
+    kind: 'refused';
+} | {
+    kind: 'aborted';
+} | {
+    kind: 'timeout';
+};
+/**
+ * `request` served by `handler`, a server of a port registry: its response
+ * once the handler has ended it (the _donePromise a ServerResponse attaches),
+ * however late, unless `signal` aborts first or 30 s pass. A handler that
+ * throws refuses the request.
+ */
+export declare function serveFromPort(handler: VirtualRequestHandler, request: VirtualRequest, signal: AbortSignal): Promise<ServedResult>;
+/** A served response's body as HTTP carries it: none for 204 and 304. */
+export declare function servedBody(response: VirtualResponse): string | null;
 /**
  * The loopback port a URL asks for, or null when it is not loopback. A name
  * is resolved through the kernel's /etc/hosts; a caller that holds no

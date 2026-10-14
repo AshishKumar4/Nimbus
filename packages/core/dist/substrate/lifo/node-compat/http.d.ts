@@ -55,6 +55,10 @@ declare class ClientRequest extends EventEmitter {
     end(data?: string): void;
     abort(): void;
     private execute;
+    /** A local hop that got no response: nothing for an abort; the connection's error otherwise. */
+    private failed;
+    /** A server of this program's answer, as this request's: its status and reason, its headers, then its body and end. */
+    private answerServed;
     /** `response` as this request's: its status, reason and headers, then its body and end. */
     private answer;
     setTimeout(_ms: number, cb?: () => void): this;

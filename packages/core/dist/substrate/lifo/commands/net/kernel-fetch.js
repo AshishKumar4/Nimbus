@@ -13,6 +13,33 @@ import { waitForSignalOrTimeout } from '../signal.js';
 import { ISOLATE_NETWORK } from '../../../../_shared/workspace-network.js';
 import { applyRedirectPolicy, isRedirectStatus } from '../../../../runtime/http-redirect-policy.js';
 /**
+ * `request` served by `handler`, a server of a port registry: its response
+ * once the handler has ended it (the _donePromise a ServerResponse attaches),
+ * however late, unless `signal` aborts first or 30 s pass. A handler that
+ * throws refuses the request.
+ */
+export async function serveFromPort(handler, request, signal) {
+    const response = { statusCode: 200, headers: {}, body: '' };
+    try {
+        handler(request, response);
+        if (response._donePromise) {
+            const result = await waitForSignalOrTimeout(response._donePromise, signal, 30_000);
+            if (result.type === 'aborted')
+                return { kind: 'aborted' };
+            if (result.type === 'timeout')
+                return { kind: 'timeout' };
+        }
+    }
+    catch {
+        return { kind: 'refused' };
+    }
+    return { kind: 'served', response };
+}
+/** A served response's body as HTTP carries it: none for 204 and 304. */
+export function servedBody(response) {
+    return response.statusCode === 204 || response.statusCode === 304 ? null : response.body;
+}
+/**
  * The loopback port a URL asks for, or null when it is not loopback. A name
  * is resolved through the kernel's /etc/hosts; a caller that holds no
  * resolver (a curl bound to a bare port registry) knows loopback by name only.
@@ -47,38 +74,22 @@ export function statusText(status) {
 export async function dispatchWorkspaceRequest(kernel, port, request) {
     const handler = kernel.portRegistry.get(port);
     if (handler) {
-        const vReq = {
+        const url = new URL(request.url);
+        const served = await serveFromPort(handler, {
             method: request.method,
-            url: new URL(request.url).pathname + new URL(request.url).search,
+            url: url.pathname + url.search,
             headers: Object.fromEntries(request.headers.entries()),
             body: request.body ? await request.text() : '',
-        };
-        const vRes = {
-            statusCode: 200,
-            headers: {},
-            body: '',
-        };
-        try {
-            handler(vReq, vRes);
-            if (vRes._donePromise) {
-                const result = await waitForSignalOrTimeout(vRes._donePromise, request.signal, 30_000);
-                if (result.type === 'aborted')
-                    return { kind: 'aborted' };
-                if (result.type === 'timeout')
-                    return { kind: 'timeout' };
-            }
-        }
-        catch {
-            return { kind: 'refused' };
-        }
-        const status = vRes.statusCode;
-        const body = (status === 204 || status === 304) ? null : vRes.body;
+        }, request.signal);
+        if (served.kind !== 'served')
+            return served;
+        const status = served.response.statusCode;
         return {
             kind: 'response',
-            response: new Response(body, {
+            response: new Response(servedBody(served.response), {
                 status,
                 statusText: statusText(status),
-                headers: vRes.headers,
+                headers: served.response.headers,
             }),
         };
     }
