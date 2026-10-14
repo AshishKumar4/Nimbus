@@ -742,7 +742,10 @@ module.exports = {
       return Object.assign(error, { errno, code, path, syscall });
     };
     const status = (path, follow) => {
-      try { return { stat: follow ? fs().statSync(path) : fs().lstatSync(path) }; } catch (error) { return { error }; }
+      try {
+        const stat = follow ? fs().statSync(path, { throwIfNoEntry: false }) : fs().lstatSync(path, { throwIfNoEntry: false });
+        return stat === undefined ? { error: { code: "ENOENT" } } : { stat };
+      } catch (error) { return { error }; }
     };
     // std::filesystem::equivalent: one file, by its device and inode where
     // both have one (a file this process made has none yet), else by where
@@ -761,11 +764,8 @@ module.exports = {
       const at = trimmed.lastIndexOf("/");
       return at < 0 ? "" : at === 0 ? "/" : trimmed.slice(0, at).replace(/\/+$/, "") || "/";
     };
-    // A file's copy (std::filesystem::copy_file, libuv's copyfile): its bytes, then its mode.
-    const copyFile = (src, dest, mode) => {
-      fs().copyFileSync(src, dest, mode);
-      fs().chmodSync(dest, fs().statSync(src).mode & 0o7777);
-    };
+    // A file's copy (std::filesystem::copy_file, libuv's copyfile): its bytes and its mode, as copyFileSync leaves them.
+    const copyFile = (src, dest, mode) => fs().copyFileSync(src, dest, mode);
     // CopyUtimes: the source's times, followed, on the copy.
     const copyUtimes = (src, dest) => {
       let stat;
@@ -837,8 +837,12 @@ module.exports = {
         if (preserveTimestamps) copyUtimes(src, dest);
       },
       cpSyncCopyDir(src, dest, force, dereference, errorOnExist, verbatimSymlinks, preserveTimestamps) {
+        const existed = status(dest, true).stat !== undefined;
         try { fs().mkdirSync(dest, { recursive: true }); } catch (error) { throw errnoException(error.code, "cp", dest); }
-        const copyDirContents = (src, dest) => {
+        // \`fresh\`: \`dest\` was made by this copy, so nothing is in it to look for.
+        // An entry's kind is its dirent's: a link is one, and what is not a
+        // link is what it is (upstream's is_directory and is_regular_file follow only links).
+        const copyDirContents = (src, dest, fresh) => {
           for (const entry of fs().readdirSync(src, { withFileTypes: true })) {
             const entryPath = pathMod.join(src, entry.name);
             const destFilePath = pathMod.join(dest, entry.name);
@@ -849,7 +853,7 @@ module.exports = {
                 try { fs().symlinkSync(target, destFilePath); } catch (error) { throw errnoException(error.code, "cp", dest); }
                 continue;
               }
-              if (status(destFilePath, true).stat) {
+              if (!fresh && status(destFilePath, true).stat) {
                 if (status(destFilePath, false).stat.isSymbolicLink()) {
                   let current;
                   try { current = fs().readlinkSync(destFilePath); } catch (error) { throw errnoException(error.code, "cp", dest); }
@@ -865,11 +869,15 @@ module.exports = {
                 }
               }
               try { fs().symlinkSync(weaklyCanonical(pathMod.resolve(src, target)), destFilePath); } catch (error) { throw errnoException(error.code, "cp", dest); }
-            } else if (isDirectory(entryPath)) {
-              try { fs().mkdirSync(destFilePath); } catch (error) { if (!isDirectory(destFilePath)) throw errnoException(error.code, "cp", dest); }
-              copyDirContents(entryPath, destFilePath);
-            } else if (status(entryPath, true).stat?.isFile()) {
-              if (status(destFilePath, true).stat) {
+            } else if (entry.isDirectory()) {
+              let made = true;
+              try { fs().mkdirSync(destFilePath); } catch (error) {
+                if (fresh || !isDirectory(destFilePath)) throw errnoException(error.code, "cp", dest);
+                made = false;
+              }
+              copyDirContents(entryPath, destFilePath, made);
+            } else if (entry.isFile()) {
+              if (!fresh && status(destFilePath, true).stat) {
                 if (!force && !errorOnExist) continue;
                 if (!force) throw coded("ERR_FS_CP_EEXIST", "[ERR_FS_CP_EEXIST]: Target already exists: cp returned EEXIST (" + destFilePath + " already exists)");
               }
@@ -878,7 +886,7 @@ module.exports = {
             }
           }
         };
-        copyDirContents(src, dest);
+        copyDirContents(src, dest, !existed);
       },
     };
   }
