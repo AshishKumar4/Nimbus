@@ -147,15 +147,28 @@ export function resolutionOf(command) {
     return resolutions.get(command);
 }
 /**
- * The file execve(2) checks its caller may execute, for `command`, what
- * `name` resolved to from `cwd`: a path name's file, or the one a PATH
- * search found; null for a registered command.
+ * What execve(2) refuses `command`, what `name` resolved to from `cwd`, as
+ * `view` sees it: EACCES for a directory, the error its X_OK check meets for
+ * a path name's file or the one a PATH search found; null when it may run
+ * (a registered command by its name always may).
  */
-export function executablePath(name, cwd, command) {
-    if (name.includes('/'))
-        return '/' + resolveVfsPath(name, normalizeVfsPath(cwd));
+export async function execRefusal(name, cwd, command, view) {
     const resolution = resolutions.get(command);
-    return resolution?.kind === 'program' ? resolution.path : null;
+    if (resolution?.kind === 'directory')
+        return 'EACCES';
+    const path = name.includes('/') ? '/' + resolveVfsPath(name, normalizeVfsPath(cwd))
+        : resolution?.kind === 'program' ? resolution.path : null;
+    if (path === null)
+        return null;
+    try {
+        await view.access(path, X_OK);
+        return null;
+    }
+    catch (error) {
+        if (isVfsError(error))
+            return error.code;
+        throw error;
+    }
 }
 /**
  * A command whose resolution failed on what the namespace could not answer,
@@ -233,10 +246,12 @@ export function installPathExecResolver(registry, fs, getCwd) {
         if (inspected === null)
             return undefined;
         if (inspected === 'directory') {
-            return async (ctx) => {
+            const directory = async (ctx) => {
                 (await ctx.stderr.write(`${name}: Is a directory\n`));
                 return 126;
             };
+            resolutions.set(directory, { kind: 'directory' });
+            return directory;
         }
         const { mode, head } = inspected;
         const accessPath = resolved;

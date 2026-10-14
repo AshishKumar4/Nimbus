@@ -1,7 +1,7 @@
-import { X_OK, bindProcessView } from '../../../runtime/process-files.js';
+import { bindProcessView } from '../../../runtime/process-files.js';
 import { resolveContext } from '../commands/registry.js';
-import { isVfsError, syscallError } from '../../../vfs/vfs-error.js';
-import { executablePath } from '../../../shell/exec-dispatch.js';
+import { syscallError } from '../../../vfs/vfs-error.js';
+import { execRefusal } from '../../../shell/exec-dispatch.js';
 import { withRecall } from '../../../vfs/recall.js';
 import { lex } from './lexer.js';
 import { parse } from './parser.js';
@@ -861,18 +861,10 @@ export class Interpreter {
         const command = await this.config.registry.resolve(name, resolveContext(spec.cwd, spec.env, vfs));
         if (!command)
             throw syscallError('ENOENT', 'execvp', name);
-        // execve(2) refuses a file the child may not execute: its caller reports that, as it does a missing one.
-        const path = executablePath(name, spec.cwd, command);
-        if (path !== null) {
-            try {
-                await vfs.access(path, X_OK);
-            }
-            catch (error) {
-                if (isVfsError(error))
-                    throw syscallError(error.code, 'execvp', name);
-                throw error;
-            }
-        }
+        // execve(2) refuses a directory or a file the child may not execute: its caller reports that, as it does a missing one.
+        const refused = await execRefusal(name, spec.cwd, command, vfs);
+        if (refused !== null)
+            throw syscallError(refused, 'execvp', name);
         return await this.runCommand(command, name, args, {
             ...spec,
             vfs,
