@@ -1455,7 +1455,10 @@ export class SqliteVFS {
             this._cacheBytes -= existing.length;
             this.cache.delete(chunkId);
         }
-        const owned = this.copyBytes(data);
+        // A chunk's bytes as loadChunks reads them are the cache's own: a fresh
+        // buffer nobody else holds. Only a view into a larger buffer is copied,
+        // which caching would pin whole.
+        const owned = data.byteOffset === 0 && data.byteLength === data.buffer.byteLength ? data : this.copyBytes(data);
         this._cacheBytes += owned.length;
         this.cache.set(chunkId, owned);
         this.enforceCacheLimit();
@@ -1739,7 +1742,8 @@ export class SqliteVFS {
                 throw vfsKeyError('EBADF', path);
             if (node.isDir)
                 throw vfsKeyError('EISDIR', path);
-            return this.readNodeRange(node, offset, length, false);
+            // Through the chunk LRU, as a read by path is: a chunk is named by its content.
+            return this.readNodeRange(node, offset, length, true);
         };
         const description = {
             get ino() { return live().ino; },
