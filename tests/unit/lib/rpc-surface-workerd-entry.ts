@@ -5,8 +5,12 @@
 
 import { DurableObject } from 'cloudflare:workers';
 import { CirrusHmrRPC } from '../../../packages/worker/src/facets/real-vite-hmr.ts';
+import { SupervisorRPC } from '../../../packages/worker/src/session/supervisor-rpc.ts';
+import { HostedSession } from '../../../packages/worker/src/hosted/session.ts';
+import { NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint } from '../../../packages/fabric/src/bindings.ts';
+import { NimbusFsJournalReader } from '../../../packages/core/src/_shared/process-fs-journal-reader.ts';
 
-export { CirrusHmrRPC };
+export { CirrusHmrRPC, SupervisorRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusFsJournalReader };
 
 /** The session, as the platform's RPC classes reach it: each envelope it is asked to dispatch is kept. */
 export class Session extends DurableObject {
@@ -20,6 +24,13 @@ export class Session extends DurableObject {
   async asked(): Promise<unknown[]> {
     return this.envelopes;
   }
+
+  /** A session scoped to one shell, as a hosted runtime hands one to an embedder's client in another isolate. */
+  scoped(): HostedSession {
+    // Only what a scoped call that reaches its owner needs; each reach is kept.
+    const owner = { noteClientActivity: () => { this.envelopes.push({ op: 'owner: client activity' }); } };
+    return new HostedSession(owner as unknown as ConstructorParameters<typeof HostedSession>[0], { shellId: 'scoped' });
+  }
 }
 
 type Outcome = { ok: true; value: unknown } | { ok: false; error: string };
@@ -32,10 +43,10 @@ async function outcome(run: () => Promise<unknown>): Promise<Outcome> {
   }
 }
 
-/** What a guest can do with what it holds: each method a caller of the stub can name. */
-async function asGuest(binding: Record<string, unknown>, method: string, args: unknown[]): Promise<Outcome & { forged?: Outcome }> {
+/** What a guest can do with what it holds: `method`, as any caller of the stub can name it. */
+async function asGuest(binding: object, method: string, args: unknown[]): Promise<Outcome & { forged?: Outcome }> {
   const called = await outcome(async () => {
-    const named = binding[method];
+    const named: unknown = Reflect.get(binding, method);
     if (typeof named !== 'function') throw new TypeError(`the stub has no ${method}`);
     return await Reflect.apply(named, binding, args);
   });
@@ -50,17 +61,62 @@ async function asGuest(binding: Record<string, unknown>, method: string, args: u
   return { ok: true, value: Object.keys(answered), forged };
 }
 
+type Env = {
+  NIMBUS_SESSION: DurableObjectNamespace<Session>;
+  READER: DurableObjectNamespace<NimbusFsJournalReader>;
+};
+type Exports = Record<string, (options: { props: unknown }) => object>;
+
+const GUEST_WORKER = {
+  compatibilityDate: '2026-09-26',
+  mainModule: 'w.js',
+  modules: { 'w.js': 'export default { fetch() { return new Response("guest"); } };' },
+};
+
+/** The stub a guest of `kind` is given, for the session `id`. */
+async function held(kind: string, id: DurableObjectId, env: Env, exports: Exports): Promise<object> {
+  switch (kind) {
+    // The real-Vite resident's env.CIRRUS_HMR (cirrus-real.ts).
+    case 'CirrusHmrRPC':
+      return exports.CirrusHmrRPC({ props: { doId: id.toString() } });
+    // A process's env.SUPERVISOR, as supervisorBindingProps mints it.
+    case 'SupervisorRPC':
+      return exports.SupervisorRPC({ props: { doId: id.toString(), pid: 7, bindingKind: 'process', writerId: 'run-7' } });
+    // A wrangler-dev guest's worker_loaders binding (nimbus-wrangler.ts), and what its load hands back.
+    case 'NimbusLoaderRPC':
+      return exports.NimbusLoaderRPC({ props: { depth: 1, namespace: 'owner:LOADER' } });
+    case 'NimbusLoadedWorker': {
+      const loader = exports.NimbusLoaderRPC({ props: { depth: 1, namespace: 'owner:LOADER' } });
+      return await Reflect.apply(Reflect.get(loader, 'load'), loader, [GUEST_WORKER]);
+    }
+    case 'NimbusLoadedEntrypoint': {
+      const loader = exports.NimbusLoaderRPC({ props: { depth: 1, namespace: 'owner:LOADER' } });
+      const loaded: object = await Reflect.apply(Reflect.get(loader, 'load'), loader, [GUEST_WORKER]);
+      return await Reflect.apply(Reflect.get(loaded, 'getEntrypoint'), loaded, []);
+    }
+    // A hosted runtime's scoped session, held by an embedder's client.
+    case 'HostedSession': {
+      const session = env.NIMBUS_SESSION.get(id);
+      return await session.scoped();
+    }
+    // An ended process's journal reader, as the session's drain holds it.
+    case 'NimbusFsJournalReader':
+      return env.READER.get(env.READER.idFromName(id.toString()));
+    default:
+      throw new Error(`no such class: ${kind}`);
+  }
+}
+
 export default {
-  async fetch(request: Request, env: { NIMBUS_SESSION: DurableObjectNamespace<Session> }, ctx: ExecutionContext & { exports: Record<string, (options: { props: unknown }) => Record<string, unknown>> }): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext & { exports: Exports }): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === '/ready') return new Response('ok');
     const id = env.NIMBUS_SESSION.idFromName(url.searchParams.get('session') ?? 'session');
-    const session = env.NIMBUS_SESSION.get(id);
-    if (url.pathname === '/asked') return Response.json(await session.asked());
-    // The binding as the real-Vite resident holds it (cirrus-real.ts).
-    const binding = ctx.exports.CirrusHmrRPC({ props: { doId: id.toString() } });
-    const method = url.searchParams.get('method')!;
-    const args = JSON.parse(url.searchParams.get('args') ?? '[]') as unknown[];
+    if (url.pathname === '/asked') return Response.json(await env.NIMBUS_SESSION.get(id).asked());
+    const binding = await held(url.searchParams.get('class') ?? 'CirrusHmrRPC', id, env, ctx.exports);
+    const method = url.searchParams.get('method') ?? '';
+    const args: unknown[] = JSON.parse(url.searchParams.get('args') ?? '[]');
+    if (url.searchParams.get('request') !== null) args.push(new Request('https://guest.test/'));
     return Response.json(await asGuest(binding, method, args));
   },
 };
