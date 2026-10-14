@@ -764,6 +764,17 @@ const WORKSPACE_TABLES = [
     ...STORE_TABLES,
     SHELLS_TABLE,
 ];
+/** Whether the session's user may make a name in the directory `entry` is (its write bit for the user). */
+function userMayWrite(entry) {
+    if (entry === null)
+        return false;
+    const { uid, gid, groups } = CRED_SESSION_USER;
+    if (entry.uid === uid)
+        return (entry.mode & 0o200) !== 0;
+    if (entry.gid === gid || groups.includes(entry.gid))
+        return (entry.mode & 0o020) !== 0;
+    return (entry.mode & 0o002) !== 0;
+}
 /**
  * Root's own directories below `/usr`, as on Linux: made by root and kept
  * root's, parent before child (a directory is re-asserted only once its
@@ -836,22 +847,33 @@ function* baseSeed(home) {
     // makes the home's directories only below directories only root may
     // change, where no name can be replaced between its mkdir and its chown;
     // below one the user may write, the user makes the rest itself, and owns
-    // it from the start.
+    // it from the start. Below one the user may change but has made
+    // unwritable to itself, root makes it and hands it over in one step,
+    // which only the session's own filesystem makes indivisible: on a mount,
+    // such a home is refused.
     const homeDir = home.replace(/^\/+/, '').replace(/\/+$/, '');
     if (homeDir !== '' && !(yield* exists('kernel', homeDir))) {
         const names = homeDir.split('/');
+        const user = { uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid };
         let rootsOnly = true;
+        let parent = { type: 'directory', uid: 0, gid: 0, mode: 0o755 };
         for (let i = 1; i <= names.length; i++) {
             const path = names.slice(0, i).join('/');
+            const leaf = i === names.length;
             const entry = yield* lstat(path);
             if (entry === null) {
                 if (rootsOnly) {
-                    yield { op: 'mkdir', as: 'kernel', path, mode: 0o755 };
-                    if (i === names.length)
-                        yield { op: 'chown', as: 'kernel', path, uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid };
+                    // Its parents stay root's; the home itself is the user's.
+                    yield { op: 'mkdir', as: 'kernel', path, mode: 0o755, ...(leaf ? { handTo: user } : {}) };
+                    parent = { type: 'directory', ...(leaf ? user : { uid: 0, gid: 0 }), mode: 0o755 };
+                }
+                else if (userMayWrite(parent)) {
+                    yield { op: 'mkdir', as: 'user', path, mode: 0o755 };
+                    parent = { type: 'directory', ...user, mode: 0o755 };
                 }
                 else {
-                    yield { op: 'mkdir', as: 'user', path, mode: 0o755 };
+                    yield { op: 'mkdir', as: 'kernel', path, mode: 0o755, handTo: user, atomicOnly: true };
+                    parent = { type: 'directory', ...user, mode: 0o755 };
                 }
                 continue;
             }
@@ -859,6 +881,7 @@ function* baseSeed(home) {
                 throw new Error(`HOME ${home} passes through ${entry.type === 'symlink' ? 'a link' : `a ${entry.type}`} at /${path}: a home is made through directories only`);
             }
             rootsOnly &&= entry.uid === 0 && (entry.mode & 0o022) === 0;
+            parent = entry;
         }
     }
     // HOME=/ is root's directory, not one Nimbus populates for the user.
@@ -984,7 +1007,13 @@ async function seedOnNamespace(steps, filesystem) {
                     answer = new TextDecoder().decode(await view.readFile(path));
                     break;
                 case 'mkdir':
+                    if (call.atomicOnly) {
+                        throw new Error(`seed: ${path} is below a directory its user may change, on a mount, where it cannot be made and handed over in one step`);
+                    }
                     await view.mkdir(path, { ...(call.recursive ? { recursive: true } : {}), ...(call.mode === undefined ? {} : { mode: call.mode }) });
+                    // Below directories only root may change: no one can replace the name in between.
+                    if (call.handTo)
+                        await unlessUnsupported(view.chown(path, call.handTo.uid, call.handTo.gid));
                     break;
                 // A mount that keeps no owners or modes (ENOTSUP) has none to hand over.
                 case 'chown':
@@ -1013,6 +1042,9 @@ function engineStep(view, call) {
         case 'readText': return view.readFileString(call.path);
         case 'mkdir':
             view.mkdir(call.path, { ...(call.recursive ? { recursive: true } : {}), ...(call.mode === undefined ? {} : { mode: call.mode }) });
+            // In the same synchronous turn, and not through a link: the name it just made.
+            if (call.handTo)
+                view.chown(call.path, call.handTo.uid, call.handTo.gid, { followSymlinks: false });
             return undefined;
         case 'chown':
             view.chown(call.path, call.uid, call.gid);
