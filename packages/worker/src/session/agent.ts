@@ -109,6 +109,12 @@ const GENERATION_KEY = 'nimbus:agent:generation';
 /** A message id a client may choose: what `crypto.randomUUID()` answers. */
 const MESSAGE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 /**
+ * A UTF-16 code unit no pair completes: what makes a string not well-formed
+ * (`String.prototype.isWellFormed`, past this lib). A digest encodes text as
+ * UTF-8, where each such unit becomes U+FFFD, so two such texts would share it.
+ */
+const LONE_SURROGATE_RE = /\p{Surrogate}/u;
+/**
  * The sends this conversation took under their clients' ids, oldest first:
  * each id with its text's SHA-256. They outlive the stored rows, which keep
  * only the last MAX_STORED_MESSAGES, and are cleared with the conversation.
@@ -357,6 +363,9 @@ async function agentChat(self: Host, request: Request, url: URL): Promise<Respon
   const retry = body?.retry === true;
   const text = String(body?.message || '').trim();
   if (!retry && !text) return json({ error: 'message is required' }, 400);
+  if (!retry && LONE_SURROGATE_RE.test(text)) {
+    return json({ error: 'message must be well-formed text: no lone surrogate', code: 'E_AGENT_BAD_MESSAGE_TEXT' }, 400);
+  }
   // The client's id for the message it sends: a send repeated under it (the
   // first's answer lost on its way back) is that message, never a second one.
   const id = retry || body?.id === undefined ? undefined : String(body.id);
@@ -392,7 +401,7 @@ async function agentChat(self: Host, request: Request, url: URL): Promise<Respon
       return json({ error: 'the message id is taken by another message', code: 'E_AGENT_MESSAGE_ID_TAKEN' }, 409);
     }
     let userMessage: StoredMessage;
-    let receipted: Promise<void> | null = null;
+    let receipted: Array<[string, string]> | undefined;
     if (retry || receipt !== undefined) {
       // Re-run the last user turn, or the repeated one: drop its own answer
       // (if any) and stream a fresh one. No duplicate user message is stored.
@@ -427,11 +436,10 @@ async function agentChat(self: Host, request: Request, url: URL): Promise<Respon
       messages.push(userMessage);
       if (send !== undefined) {
         receipts.set(send.id, send.digest);
-        receipted = self.ctx.storage.put(RECEIPTS_KEY, [...receipts].slice(-MAX_RECEIPTS));
+        receipted = [...receipts].slice(-MAX_RECEIPTS);
       }
     }
-    // No await between the receipt's put and the message's: one write.
-    await Promise.all([receipted, saveMessages(self, messages)]);
+    await saveMessages(self, messages, receipted);
     const started: Turn = { generation, messages: structuredClone(messages), userMessage };
     activeTurns.set(self, running.set(turnKey(generation, userMessage.id), started));
     return started;
@@ -1145,14 +1153,16 @@ function endTurn(self: Host, turn: Turn): void {
 
 /**
  * Where `messages` holds the answer to the user message `id`: the assistant
- * message that names it or, stored before answers named their question,
- * the first one after it with no other question between. -1 for none.
+ * message that names it or, when none does, the first answer stored before
+ * answers named their question that comes after it with no other question
+ * between. -1 for none.
  */
 function answerIndex(messages: StoredMessage[], id: string): number {
+  const named = messages.findIndex((message) => message.role === 'assistant' && message.replyTo === id);
+  if (named >= 0) return named;
   const asked = messages.findIndex((message) => message.id === id);
-  return messages.findIndex((message, index) => message.role === 'assistant' && (message.replyTo === undefined
-    ? asked >= 0 && index > asked && messages.slice(asked + 1, index).every((between) => between.role !== 'user')
-    : message.replyTo === id));
+  return asked < 0 ? -1 : messages.findIndex((message, index) => index > asked && message.role === 'assistant'
+    && message.replyTo === undefined && messages.slice(asked + 1, index).every((between) => between.role !== 'user'));
 }
 
 /**
@@ -1198,8 +1208,16 @@ function clearConversation(self: Host): Promise<void> {
   });
 }
 
-async function saveMessages(self: Host, messages: StoredMessage[]): Promise<void> {
-  await self.ctx.storage.put(MESSAGES_KEY, trimMessagesForClient(messages));
+/**
+ * The conversation's messages stored and, given them, its receipts, in the
+ * same put: a put refused (a value past the limit) stores neither, so no
+ * receipt stands for a message the session does not hold.
+ */
+async function saveMessages(self: Host, messages: StoredMessage[], receipts?: Array<[string, string]>): Promise<void> {
+  const stored = trimMessagesForClient(messages);
+  await (receipts === undefined
+    ? self.ctx.storage.put(MESSAGES_KEY, stored)
+    : self.ctx.storage.put({ [MESSAGES_KEY]: stored, [RECEIPTS_KEY]: receipts }));
 }
 
 function trimMessagesForClient(messages: StoredMessage[]): StoredMessage[] {

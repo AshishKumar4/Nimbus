@@ -15,16 +15,28 @@ const CHAT_URL = 'http://session.test/api/agent/messages';
 function makeHost(initialStore = new Map()) {
   const store = initialStore;
   const writes = [];
+  // Keys whose next put is refused, as SQLite refuses a value past its limit
+  // (SQLITE_TOOBIG): the whole put fails and writes nothing.
+  const refusals = new Set();
   return {
     host: {
       ctx: {
         storage: {
           // As Durable Object storage answers: a copy, never the stored value itself.
           async get(key) { const value = store.get(key); return value === undefined ? undefined : structuredClone(value); },
+          // One key and value, or an object of them, put as one.
           async put(key, value) {
-            const snapshot = structuredClone(value);
-            writes.push({ key, value: snapshot });
-            store.set(key, snapshot);
+            const entries = typeof key === 'string' ? [[key, value]] : Object.entries(key);
+            const refused = entries.find(([name]) => refusals.has(name));
+            if (refused !== undefined) {
+              refusals.delete(refused[0]);
+              throw new Error(`string or blob too big: SQLITE_TOOBIG (${refused[0]})`);
+            }
+            for (const [name, entry] of entries) {
+              const snapshot = structuredClone(entry);
+              writes.push({ key: name, value: snapshot });
+              store.set(name, snapshot);
+            }
           },
           async delete(key) { store.delete(key); },
           async deleteAll() { store.clear(); },
@@ -44,6 +56,7 @@ function makeHost(initialStore = new Map()) {
     },
     store,
     writes,
+    refuseNextPut(key) { refusals.add(key); },
   };
 }
 
@@ -1091,6 +1104,87 @@ function controlledProviderQueue() {
     globalThis.fetch = realFetch;
   }
   console.log('ok - a producer a clear left running releases only its own turn');
+}
+
+// ── A send its storage refused is not taken ──────────────────────────
+// Review 2, F1. Red before: the receipt and the message were two puts; when
+// the message's was refused (a conversation past the value limit), the
+// receipt stayed, and the send sent again was answered as a repeat of a
+// message the session never stored.
+{
+  const { host, store, refuseNextPut } = makeHost();
+  const id = crypto.randomUUID();
+  globalThis.fetch = mockProviderFetch('complete');
+  try {
+    refuseNextPut(MESSAGES_KEY);
+    await assert.rejects(postChat(host, { message: 'too much', id, stream: true }), /SQLITE_TOOBIG/);
+    assert.equal(store.get(MESSAGES_KEY), undefined, 'the message is not stored');
+    const again = await postChat(host, { message: 'too much', id, stream: true });
+    const [events] = await readEventsUntil(again, (list) => list.some((event) => event.type === 'done'));
+    assert.ok(events.some((event) => event.type === 'done'), `sent again, it is stored and answered: ${JSON.stringify(events.map((event) => event.type))}`);
+    assert.deepEqual(rows(store.get(MESSAGES_KEY)), ['user:too much', 'assistant:Hello world']);
+    assert.equal(store.get(MESSAGES_KEY)[0].id, id);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log('ok - a send whose storage was refused is taken when sent again');
+}
+
+// ── An answer that names its question is its answer, before any by place ─
+// Review 2, F2. Red before: the first answer in place won, so a legacy
+// answer stored before answers named their question was taken for B's, and
+// a second retry of B removed A's answer.
+{
+  const history = [
+    { id: 'u-a', role: 'user', content: 'question A', createdAt: 1 },
+    { id: 'u-b', role: 'user', content: 'question B', createdAt: 2 },
+    { id: 'a-b', role: 'assistant', content: 'legacy B', createdAt: 3, status: 'complete' },
+    { id: 'a-a', role: 'assistant', content: 'legacy A', createdAt: 4, status: 'complete' },
+  ];
+  const { host, store } = makeHost(new Map([[MESSAGES_KEY, structuredClone(history)]]));
+  globalThis.fetch = mockProviderFetch('complete');
+  try {
+    for (const attempt of [1, 2]) {
+      const response = await postChat(host, { retry: true, stream: true });
+      await readEventsUntil(response, (list) => list.some((event) => event.type === 'done'));
+      const stored = store.get(MESSAGES_KEY);
+      assert.deepEqual(rows(stored), ['user:question A', 'user:question B', 'assistant:legacy A', 'assistant:Hello world'],
+        `retry ${attempt} replaces B's answer alone`);
+      assert.equal(stored[3].replyTo, 'u-b');
+    }
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log('ok - an answer that names its question is found before a legacy one by place');
+}
+
+// ── Text that is not well-formed is refused ──────────────────────────
+// Review 2, F3. Red before: a lone surrogate was stored as sent, but its
+// digest was that of U+FFFD, so '\ufffd' under the same id passed as a
+// repeat of it.
+{
+  const { host, store } = makeHost();
+  const id = crypto.randomUUID();
+  const provider = countingProviderFetch();
+  globalThis.fetch = provider.fetch;
+  try {
+    for (const message of ['\ud800', 'a\udc00b', '\ude00\ud83d']) {
+      const refused = await postChat(host, { message, id, stream: true });
+      assert.equal(refused.status, 400, `${JSON.stringify(message)} is refused`);
+      assert.equal((await refused.json()).code, 'E_AGENT_BAD_MESSAGE_TEXT');
+    }
+    assert.equal(store.get(MESSAGES_KEY), undefined, 'nothing is stored for it');
+    const replacement = await postChat(host, { message: '\ufffd', id, stream: true });
+    const [events] = await readEventsUntil(replacement, (list) => list.some((event) => event.type === 'done'));
+    assert.ok(events.some((event) => event.type === 'done'), 'U+FFFD itself is a message, under the id');
+    assert.deepEqual(rows(store.get(MESSAGES_KEY)), ['user:\ufffd', 'assistant:Hello world']);
+    const pair = await postChat(host, { message: '\ud83d\ude00', id: crypto.randomUUID(), stream: true });
+    assert.equal(pair.status, 200, 'a surrogate pair is well-formed');
+    await readEventsUntil(pair, (list) => list.some((event) => event.type === 'done'));
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log('ok - text with a lone surrogate is refused before it is stored or hashed');
 }
 
 console.log('agent-chat-turns: all assertions passed');

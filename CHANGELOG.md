@@ -15,9 +15,11 @@ published independently in the `@nimbus-sh` npm scope.
   no complete answer; otherwise the reply is the conversation as it is. A
   repeat while its answer is still being written is refused (409
   `E_AGENT_TURN_RUNNING`), as is an id another message or an answer holds
-  (409 `E_AGENT_MESSAGE_ID_TAKEN`). An answer now names the message it
-  answers (`replyTo`), so with two turns answering at once, a retry or a
-  message sent again finds its own answer, and replaces only that one.
+  (409 `E_AGENT_MESSAGE_ID_TAKEN`). A message whose text is not
+  well-formed (a lone UTF-16 surrogate) is refused (400
+  `E_AGENT_BAD_MESSAGE_TEXT`). An answer now names the message it answers
+  (`replyTo`), so with two turns answering at once, a retry or a message
+  sent again finds its own answer, and replaces only that one.
 - Fixed (Node `fs`): `fs.cpSync`, `fs.promises.cp` and `fs.cp` are Node's
   own `cp`, run over Nimbus's `fs`, so they answer as Node 22 does. The async
   forms took a file the program had not read for a directory (EISDIR), and
