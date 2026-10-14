@@ -19,7 +19,7 @@
       "inputs.mjs": "37c87a06c71fa578299e82bc675567845204d7097e015ac9174b95c443cc547d",
       "meson-wasi-link.py": "8c23ab5124988e1664c35680a5acbc181ec1316b7963dce2e3c9ce0db4037cfd",
       "nimbus-cxx-noeh.c": "1629fcec5c8da61e875684b055a8141d3ff32311422242c0465d2bab4e46b3f1",
-      "nimbus-net.c": "2ac529edaf5fe35bffc4ad0f78c1c5083ef1529c058d17c43b5832f25243714b",
+      "nimbus-net.c": "fd8289d9265f47d877fc5ade89ad469ac27a0d1855d3ac3b672b46e860409a76",
       "nimbus-py.c": "a7744fe02da952defd2ab2b9f62b08af216407b6ce090d65de82a388bfa0b9c7",
       "nimbus-wasi-compat.c": "2fe35f16a990687f9de2c2146b54a97f060f2dbd0880b79371ea5833bc179166",
       "patches/0001-pthread-stubs-support-tls-destructors.patch": "6d6b6facc6c418209795884eab7a508b4c09245cbcaeee44f3e6264653dab8be",
@@ -28,8 +28,8 @@
     }
   },
   "outputs": {
-    "python-sci.wasm": "5e84f27727a4ae5240e3ab62d82bf8d08debca4c5f24b148b6db2a64f18365a4",
-    "python.wasm": "f4d893ef0a838e88d2c7b4f0f03558a263dd4e9ce104c566bb63c825a9ced8bf",
+    "python-sci.wasm": "0f37652af64adacb3b8c8bbc1b56cfa8f7148c7ada843021a752751dcf63f3c2",
+    "python.wasm": "7d34d1fa9d8ea5f609fb812b0720c185552e4727751e775904698b5f90d0fe38",
     "python313.zip": "62ff741c1fc8e0d67120c41a27737d2a91a3f1558c2a3c7f132ce3efc4c39d02",
     "sci-packages.zip": "c8f75fa904af325b5b2bc5c800936cd398bb74ea3df49fd519962dc8bbe6ca19"
   }
