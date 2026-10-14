@@ -130,6 +130,7 @@ import type { ServerIdentity } from '@nimbus-sh/core/runtime/server-launch.js';
 import { disposeRpcResource, disposeRpcResources } from '@nimbus-sh/platform/rpc-dispose.js';
 import { SUPERVISOR_ANSWERING_SRC } from '@nimbus-sh/core/runtime/supervisor-answering.generated.js';
 import { STOP_REPLAY_SOURCE } from '../runtime/stop-replay.js';
+import { PENDING_IO_SOURCE } from '../runtime/pending-io.js';
 import { encodeBase64, OwnedPieces, ReplayOutputGate, StdinTaken, stopRecordOf } from '../runtime/stop-replay-host.js';
 import { answerDigest } from '../runtime/stop-replay-journal.js';
 import { REPLAY_PREFIX_MAX_BYTES, REPLAY_JOURNAL_MAX_ENTRIES, REPLAY_READ_RECEIPT_MAX_BYTES, STOP_LIMIT, type ReplayLaunch, type StopRecord } from '../runtime/stop-replay-contracts.js';
@@ -1128,7 +1129,7 @@ function __nimbusInstallNodeNavigator(__version) {
 function nodeProgramRuntime(sources: NodeFacetSources, esModule: boolean): ModuleSource {
   return moduleSource`
     const __vfsBundle = __resident.bundle;
-    const __pendingIO = [];
+${PENDING_IO_SOURCE}
     let __rpcDrops = 0;
     let __rpcDropBytes = 0;
     let __rpcLastError = "";
@@ -1411,13 +1412,11 @@ ${nodeProgramRuntime(sources, entry.esModule)}
     // resumption barrier is the program's, and its round trip (and the read
     // lease it is answered with) is nothing an ended program needs.
     async function __drainPendingIO(maxPasses = 12) {
-      let __settledIO = 0;
       for (let __pass = 0; __pass < maxPasses; __pass++) {
         await new Promise(r => globalThis.__nimbusRawSetTimeout(r, 0));
-        if (__pendingIO.length <= __settledIO) break;
-        const __slice = __pendingIO.slice(__settledIO);
-        __settledIO = __pendingIO.length;
-        await Promise.allSettled(__slice);
+        // What is in it is outstanding (PENDING_IO_SOURCE).
+        if (__pendingIO.length === 0) break;
+        await Promise.allSettled([...__pendingIO]);
       }
     }
 
@@ -1714,14 +1713,9 @@ async function __nimbusFlushRuntime() {
       const turn = Promise.withResolvers();
       __nimbusPlatformSetTimeout(turn.resolve, 0);
       await turn.promise;
-      if (rt.pendingIO.length <= rt.settledIO) break;
-      const slice = rt.pendingIO.slice(rt.settledIO);
-      rt.settledIO = rt.pendingIO.length;
-      await Promise.allSettled(slice);
-    }
-    if (rt.settledIO === rt.pendingIO.length) {
-      rt.pendingIO.length = 0;
-      rt.settledIO = 0;
+      // What is in it is outstanding (PENDING_IO_SOURCE).
+      if (rt.pendingIO.length === 0) break;
+      await Promise.allSettled([...rt.pendingIO]);
     }
     // After the drain, so the program's writes are durable whatever happens
     // to the report; unacknowledged entries are sent again by the next flush.
@@ -1916,7 +1910,6 @@ ${nodeProgramRuntime(sources, entry.esModule)}
     __nimbusRuntime = {
       supervisor: __supervisor,
       pendingIO: __pendingIO,
-      settledIO: 0,
       vfsWrites: __vfsWrites,
       flushVfsWrite: __nimbusFlushVfsWrite,
       drainVfsMutations: __nimbusDrainVfsMutations,
