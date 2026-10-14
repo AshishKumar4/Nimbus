@@ -2,6 +2,7 @@ import { registerHostedCommands } from '../hosted/commands.js';
 import { runtimeCatalogSource } from '../runtime/runtime-catalog.js';
 import { NimbusWorkspace } from '@nimbus-sh/core/workspace';
 import { CRED_KERNEL, CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 // Runtime factories (clang/python/ruby/bash/wasm) are imported lazily at
@@ -41,7 +42,7 @@ export function initSession(self, ws, options = {}) {
     const running = self.building;
     if (running !== null)
         return running.then(() => joinBuilt(self, ws, options));
-    const usable = Promise.withResolvers();
+    const usable = withResolvers();
     // Waited on by the callers that need it; a build that fails says so through `building` too.
     usable.promise.catch(() => { });
     self.usable = usable.promise;
