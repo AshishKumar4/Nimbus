@@ -16,13 +16,15 @@ import { beginNimbusCloudflareOAuth, exchangeNimbusCloudflareOAuthCode, createNi
 import { clearSessionAiCredential, createSessionAiModel, describeSessionAiConnection, readSessionAiConfig, resolveSessionAiCredential, sessionAiAccountIsAvailable, setSessionAiAccount, storeSessionAiCredential, } from './ai.js';
 import { ensureProgrammaticReady, rpcExec, rpcEnsureRuntimes, rpcInstallRuntime, rpcExposeApp, rpcKillProcess, rpcListApps, rpcListPorts, rpcListProcesses, rpcProcessLogs, rpcStartProcess, } from './programmatic.js';
 import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
-import { appendTextPart, interruptRunningTools, textFromParts, upsertStoredMessage, upsertToolPart, AGENT_OAUTH_RESULT_CHANNEL, } from './agent-contract.js';
+import { appendTextPart, interruptRunningTools, isInterruptedMessage, textFromParts, upsertStoredMessage, upsertToolPart, AGENT_OAUTH_RESULT_CHANNEL, } from './agent-contract.js';
 import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 const MESSAGES_KEY = 'nimbus:agent:messages';
 /** How many times the conversation was cleared: a turn writes only into the conversation it started in. */
 const GENERATION_KEY = 'nimbus:agent:generation';
+/** A message id a client may choose: what `crypto.randomUUID()` answers. */
+const MESSAGE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const STATE_COOKIE = '__Host-nimbus_agent_oauth_state';
 const STATE_COOKIE_PURPOSE = 'nimbus-agent-oauth-state';
 const MAX_STORED_MESSAGES = 80;
@@ -248,6 +250,12 @@ async function agentChat(self, request, url) {
     const text = String(body?.message || '').trim();
     if (!retry && !text)
         return json({ error: 'message is required' }, 400);
+    // The client's id for the message it sends: a send repeated under it (the
+    // first's answer lost on its way back) is that message, never a second one.
+    const id = retry || body?.id === undefined ? undefined : String(body.id);
+    if (id !== undefined && !MESSAGE_ID_RE.test(id)) {
+        return json({ error: 'id must be a lowercase UUID', code: 'E_AGENT_BAD_MESSAGE_ID' }, 400);
+    }
     const resolution = await resolveSessionAiCredential(self);
     if (!resolution.ok) {
         return json({
@@ -257,23 +265,35 @@ async function agentChat(self, request, url) {
     }
     const turn = await changeConversation(self, async (messages, generation) => {
         recoverOrphanedTurns(self, messages);
+        const sent = id === undefined ? undefined : messages.find((message) => message.id === id);
+        if (sent !== undefined && (sent.role !== 'user' || sent.content !== text)) {
+            return json({ error: 'the message id is taken by another message', code: 'E_AGENT_MESSAGE_ID_TAKEN' }, 409);
+        }
         let userMessage;
-        if (retry) {
-            // Re-run the last user turn: drop the trailing assistant answer (if
-            // any) and stream a fresh one. No duplicate user message is stored.
+        if (retry || sent !== undefined) {
+            // Re-run the last user turn, or the repeated one: drop the trailing
+            // assistant answer (if any) and stream a fresh one. No duplicate user
+            // message is stored.
             const answer = messages[messages.length - 1]?.role === 'assistant' ? messages[messages.length - 1] : null;
             const last = messages[messages.length - (answer === null ? 1 : 2)];
-            if (!last || last.role !== 'user')
+            const target = sent ?? last;
+            if (!target || target.role !== 'user')
                 return json({ error: 'nothing to retry', code: 'E_AGENT_NOTHING_TO_RETRY' }, 400);
             // Its answer is still being written: a second would stand beside it.
-            if (activeTurns.get(self)?.has(last.id))
+            if (activeTurns.get(self)?.has(target.id))
                 return json({ error: 'the turn is still running', code: 'E_AGENT_TURN_RUNNING' }, 409);
+            // A repeated send is answered again only while it is the last turn
+            // and its answer is missing or interrupted; otherwise it is answered
+            // with the conversation, as it is.
+            if (target !== last || (sent !== undefined && answer !== null && !isInterruptedMessage(answer))) {
+                return conversationResponse(messages, body?.stream !== false);
+            }
             if (answer !== null)
                 messages.pop();
-            userMessage = last;
+            userMessage = target;
         }
         else {
-            userMessage = makeMessage('user', text);
+            userMessage = makeMessage('user', text, id);
             messages.push(userMessage);
         }
         await saveMessages(self, messages);
@@ -287,6 +307,17 @@ async function agentChat(self, request, url) {
         return agentChatJson(self, turn);
     }
     return agentChatStream(self, turn);
+}
+/** The answer to a send that runs no turn: the conversation, as a turn's stream starts with it. */
+function conversationResponse(messages, stream) {
+    const conversation = trimMessagesForClient(messages);
+    if (!stream)
+        return json({ ok: true, messages: conversation });
+    const start = { type: 'start', messages: conversation };
+    return new Response(JSON.stringify(start) + '\n', {
+        status: 200,
+        headers: { 'Cache-Control': 'no-store', 'Content-Type': 'application/x-ndjson; charset=utf-8' },
+    });
 }
 async function agentChatJson(self, turn) {
     const { messages } = turn;
@@ -995,13 +1026,12 @@ async function saveMessages(self, messages) {
 function trimMessagesForClient(messages) {
     return messages.slice(-MAX_STORED_MESSAGES);
 }
-function makeMessage(role, content, name) {
+function makeMessage(role, content, id = crypto.randomUUID()) {
     return {
-        id: crypto.randomUUID(),
+        id,
         role,
         content,
         createdAt: Date.now(),
-        ...(name ? { name } : {}),
     };
 }
 function stringProp(description) {
