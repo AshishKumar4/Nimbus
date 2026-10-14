@@ -1,8 +1,6 @@
 import { EventEmitter } from './events.js';
 import { isLoopbackHost, } from '../kernel/index.js';
-import { awaitServedEnd, dispatchWorkspaceRequest, serveFromPort, servedBody, statusText } from '../commands/net/kernel-fetch.js';
-/** The ports of an http module made without a registry: none listens. */
-const NO_PORTS = new Map();
+import { awaitServedEnd, routeToLoopback, serveFromPort, servedBody, statusText } from '../kernel/local-serve.js';
 class IncomingMessage extends EventEmitter {
     statusCode;
     statusMessage;
@@ -121,7 +119,11 @@ class ClientRequest extends EventEmitter {
                         this.failed(ended, host, port);
                     return;
                 }
-                const result = await dispatchWorkspaceRequest({ portRegistry: NO_PORTS, routeLoopback: this.routeLoopback }, port, new Request(`${this.protocol}//${host}:${port}${path}`, {
+                if (!this.routeLoopback) {
+                    this.failed('refused', host, port);
+                    return;
+                }
+                const result = await routeToLoopback(this.routeLoopback, port, new Request(`${this.protocol}//${host}:${port}${path}`, {
                     method,
                     headers: this.options.headers,
                     body: hasBody ? this.body : undefined,

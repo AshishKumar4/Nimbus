@@ -8,47 +8,15 @@
  * than null: 'aborted' and 'timeout' surface to the caller's own reporting
  * instead of being mistaken for "no listener".
  */
-import { type Kernel, type VirtualRequest, type VirtualRequestHandler, type VirtualResponse } from '../../kernel/index.js';
-/** Outcomes of one workspace-local hop, for callers that report failure. */
-export type WorkspaceRequestResult = {
-    kind: 'response';
-    response: Response;
-} | {
-    kind: 'refused';
-} | {
-    kind: 'aborted';
-} | {
-    kind: 'timeout';
-};
-/**
- * How a server of a port registry took a request: its response, with the end
- * still to wait for when its handler returned before ending it (the
- * _donePromise a ServerResponse attaches while the response is open); or a
- * refusal, when the handler threw.
- */
-export type Served = {
-    kind: 'served';
-    response: VirtualResponse;
-    end: Promise<void> | null;
-} | {
-    kind: 'refused';
-};
-/** `request` handed to `handler`, a server of a port registry, synchronously, as a server takes a request. */
-export declare function serveFromPort(handler: VirtualRequestHandler, request: VirtualRequest): Served;
-/**
- * The wait for a served response's `end`, however late its handler ends it,
- * unless `signal` aborts first or 30 s pass: `ended`, or how the wait stopped.
- */
-export declare function awaitServedEnd(end: Promise<void>, signal: AbortSignal): Promise<'ended' | 'refused' | 'aborted' | 'timeout'>;
-/** A served response's body as HTTP carries it: none for 204 and 304. */
-export declare function servedBody(response: VirtualResponse): string | null;
+import { type Kernel } from '../../kernel/index.js';
+import { type WorkspaceRequestResult } from '../../kernel/local-serve.js';
 /**
  * The loopback port a URL asks for, or null when it is not loopback. A name
  * is resolved through the kernel's /etc/hosts; a caller that holds no
  * resolver (a curl bound to a bare port registry) knows loopback by name only.
  */
 export declare function workspaceRequestPort(kernel: Partial<Pick<Kernel, 'dns'>>, url: URL): number | null;
-export declare function statusText(status: number): string;
+/** HTTP reason phrase — virtual responses carry no status text. */
 /**
  * Serve `request` through the kernel's port registry, else its host's
  * loopback router. The handler's virtual response is adapted to a real

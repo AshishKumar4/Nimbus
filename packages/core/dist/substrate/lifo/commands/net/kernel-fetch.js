@@ -8,38 +8,10 @@
  * than null: 'aborted' and 'timeout' surface to the caller's own reporting
  * instead of being mistaken for "no listener".
  */
-import { isLoopbackHost, } from '../../kernel/index.js';
-import { waitForSignalOrTimeout } from '../signal.js';
+import { isLoopbackHost } from '../../kernel/index.js';
+import { awaitServedEnd, routeToLoopback, serveFromPort, servedBody, statusText, } from '../../kernel/local-serve.js';
 import { ISOLATE_NETWORK } from '../../../../_shared/workspace-network.js';
 import { applyRedirectPolicy, isRedirectStatus } from '../../../../runtime/http-redirect-policy.js';
-/** `request` handed to `handler`, a server of a port registry, synchronously, as a server takes a request. */
-export function serveFromPort(handler, request) {
-    const response = { statusCode: 200, headers: {}, body: '' };
-    try {
-        handler(request, response);
-    }
-    catch {
-        return { kind: 'refused' };
-    }
-    return { kind: 'served', response, end: response._donePromise ?? null };
-}
-/**
- * The wait for a served response's `end`, however late its handler ends it,
- * unless `signal` aborts first or 30 s pass: `ended`, or how the wait stopped.
- */
-export async function awaitServedEnd(end, signal) {
-    try {
-        const result = await waitForSignalOrTimeout(end, signal, 30_000);
-        return result.type === 'aborted' ? 'aborted' : result.type === 'timeout' ? 'timeout' : 'ended';
-    }
-    catch {
-        return 'refused';
-    }
-}
-/** A served response's body as HTTP carries it: none for 204 and 304. */
-export function servedBody(response) {
-    return response.statusCode === 204 || response.statusCode === 304 ? null : response.body;
-}
 /**
  * The loopback port a URL asks for, or null when it is not loopback. A name
  * is resolved through the kernel's /etc/hosts; a caller that holds no
@@ -54,17 +26,6 @@ export function workspaceRequestPort(kernel, url) {
     return url.port ? Number(url.port) : (url.protocol === 'http:' ? 80 : 443);
 }
 /** HTTP reason phrase — virtual responses carry no status text. */
-const STATUS_TEXT = {
-    200: 'OK', 201: 'Created', 202: 'Accepted', 204: 'No Content',
-    301: 'Moved Permanently', 302: 'Found', 303: 'See Other',
-    304: 'Not Modified', 307: 'Temporary Redirect', 308: 'Permanent Redirect',
-    400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden',
-    404: 'Not Found', 405: 'Method Not Allowed', 500: 'Internal Server Error',
-    502: 'Bad Gateway', 503: 'Service Unavailable',
-};
-export function statusText(status) {
-    return STATUS_TEXT[status] ?? '';
-}
 /**
  * Serve `request` through the kernel's port registry, else its host's
  * loopback router. The handler's virtual response is adapted to a real
@@ -97,16 +58,7 @@ export async function dispatchWorkspaceRequest(kernel, port, request) {
             }),
         };
     }
-    if (kernel.routeLoopback) {
-        const routed = await waitForSignalOrTimeout(kernel.routeLoopback(port, request), request.signal, 30_000);
-        if (routed.type === 'aborted')
-            return { kind: 'aborted' };
-        if (routed.type === 'timeout')
-            return { kind: 'timeout' };
-        if (routed.value)
-            return { kind: 'response', response: routed.value };
-    }
-    return { kind: 'refused' };
+    return kernel.routeLoopback ? await routeToLoopback(kernel.routeLoopback, port, request) : { kind: 'refused' };
 }
 /** How many redirects a walk follows before it gives up: curl's and wget's default. */
 export const MAX_REDIRECTS = 20;
