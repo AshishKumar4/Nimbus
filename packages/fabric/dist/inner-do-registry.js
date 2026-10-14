@@ -27,6 +27,7 @@
  * only use is `ctx.facets.get(name, { class: cls, id })`, which is exactly what
  * workerd's `DurableObjectClass` models.
  */
+import { facetName } from '@nimbus-sh/core/_shared/facet-name.js';
 const _NIMBUS_INNER_DO_CLASSES = new Map();
 /** Look up a registered inner-DO class. Returns undefined if not found. */
 export function getInnerDoClass(supervisorDoId, bindingName) {
@@ -48,6 +49,14 @@ export function clearInnerDoClasses(supervisorDoId) {
         if (k.startsWith(prefix))
             _NIMBUS_INNER_DO_CLASSES.delete(k);
     }
+}
+/**
+ * The facet a `wrangler dev` Worker's Durable Object `id` of binding
+ * `bindingName` runs as: no two objects share one, whatever their names'
+ * length (and none is a D1 database's `d1:` facet).
+ */
+export function innerDoFacetName(bindingName, id) {
+    return facetName('innerDO', [bindingName, id]);
 }
 /** Inner-DO facet names each incarnation has opened, by binding; keyed off ctx, so a new incarnation starts empty. */
 const openedInnerDoFacets = new WeakMap();

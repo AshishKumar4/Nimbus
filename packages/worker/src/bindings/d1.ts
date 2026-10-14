@@ -10,6 +10,7 @@
  * are NOT supported (D1 itself doesn't support them).
  */
 
+import { facetName } from '@nimbus-sh/core/_shared/facet-name.js';
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { D1Migration, D1MigrationOutcome, D1Statement } from './d1-database.js';
 
@@ -46,11 +47,11 @@ export interface D1Database {
 }
 
 /**
- * The facet a project's database is: `d1:` and the project root and the
- * database, each whole (a name made of either cannot be another's).
+ * The facet a project's database is: its project root and database, each
+ * whole, so no two projects' databases are one, whatever the root's length.
  */
 export function d1DatabaseFacetName(root: string, database: string): string {
-  return 'd1:' + JSON.stringify([root, database]);
+  return facetName('d1', [root, database]);
 }
 
 export interface D1EmulatorOptions {
