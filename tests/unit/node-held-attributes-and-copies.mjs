@@ -11,7 +11,7 @@
 // file; and every copy waited for its own.
 
 import assert from 'node:assert/strict';
-import { createAuthority, facetSupervisor, launchResident, residentDataPlan, runScenarios, until } from './lib/resident-body.mjs';
+import { createAuthority, facetSupervisor, launchResident, residentDataPlan, runScenarios, sleep, until } from './lib/resident-body.mjs';
 
 const PROGRAM = `
 const fs = require("fs");
@@ -63,8 +63,8 @@ async function boot() {
 /** What the session holds at `path`, read as a peer reads it (recalling the process's subtree). */
 const peerRead = async (authority, path) => new TextDecoder().decode(await authority.peer.readFile(path));
 
-/** Whether `work` settles while the session answers nothing. */
-const answeredAtOnce = (work) => Promise.race([work.then(() => 'answered'), new Promise((resolve) => setTimeout(() => resolve('waiting'), 50))]);
+/** Whether `work` settles while the session answers nothing (a timer of the host's, which no barrier holds). */
+const answeredAtOnce = (work) => Promise.race([work.then(() => 'answered'), sleep(50).then(() => 'waiting')]);
 
 await runScenarios(import.meta.path, {
   async 'an awaited chmod, utimes and chown in a held subtree are answered once logged'() {
