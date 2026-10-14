@@ -14,6 +14,36 @@ published independently in the `@nimbus-sh` npm scope.
 - Fixed: a Python program that resolves more than 64 distinct hostnames gets
   `socket.gaierror` (EAI_MEMORY) for the 65th, instead of an address that
   stood for another name, which a connect would have dialed.
+- Fixed (Node `fs`): `fs.cpSync`, `fs.promises.cp` and `fs.cp` are Node's
+  own `cp`, run over Nimbus's `fs`, so they answer as Node 22 does. The async
+  forms took a file the program had not read for a directory (EISDIR), and
+  ignored `filter`, `force: false`, `errorOnExist`, `dereference`,
+  `verbatimSymlinks`, `preserveTimestamps` and `mode`. They also copied a
+  link as the file it names. `cpSync` refused `errorOnExist` even under the
+  default `force: true`, where Node overwrites. Directory modes and errors
+  (`ERR_FS_CP_*`) differed from Node's, and copying a directory into itself
+  never ended.
+- Changed (Node `fs`): `fs.cpSync` is faster than before, and
+  `fs.promises.cp` and `fs.cp` are slower, about 1.6 ms per file in a warm
+  isolate (a 200-file tree: +315 ms warm, +247 ms cold). Node's `cp` stats
+  each source entry twice and each copied file's destination once, every
+  stat a call to the session, and each file's copy waits for the session.
+- Changed (Node `fs`): `fs.cp` and `fs.cpSync` create directories as Node
+  does: 0777 less the umask, with the mode set only where Node sets it.
+  `fs.cpSync` leaves each directory it makes that way, and `fs.promises.cp`
+  and `fs.cp` give each one the source's mode once its entries are in. Each
+  file is still given the source's mode. A copied directory used to take the
+  source's mode, and while it was being filled only its owner could open it.
+- Added (Node `fs`): `fs.symlinkSync` and `fs.readlinkSync`.
+- Changed (Node `fs`): `fs.promises.copyFile` and `fs.copyFile` are now a
+  single copy the session makes, in program order. The program neither
+  reads the file nor sends it back, and within one filesystem the copy
+  shares the source's stored content. The copy still has the source's mode
+  exactly, and the program can read it at once if it held the source's
+  bytes.
+- Fixed: a process's recursive copy beneath a WASI preopen on a mount that
+  answers asynchronously followed a link named as the source even when the
+  copy did not ask to follow it.
 - Fixed: in a core workspace, a process that ends after the exec that
   started it (a background job) leaves the process table a minute after it
   ended, at the next exec, as in a hosted session. It stayed, with its

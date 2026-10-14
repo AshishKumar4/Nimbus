@@ -19,7 +19,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { generateNodeLibModule, generateNodeLibRestModule, generateNodeDnsModule } from '../../packages/worker/src/runtime/node-lib-module.ts';
+import { generateNodeLibModule, generateNodeLibRestModule, generateNodeDnsModule, generateNodeCpModule } from '../../packages/worker/src/runtime/node-lib-module.ts';
 import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { bundleResidentStore } from '../../packages/worker/scripts/resident-store-bundle.mjs';
 import * as pins from '../../packages/worker/src/node-shims-artifact.generated.ts';
@@ -42,6 +42,7 @@ const cases = [
   { name: 'NODE_LIB', source: 'generateNodeLibModule()', current: generateNodeLibModule() },
   { name: 'NODE_LIB_REST', source: 'generateNodeLibRestModule()', current: generateNodeLibRestModule() },
   { name: 'NODE_DNS', source: 'generateNodeDnsModule()', current: generateNodeDnsModule() },
+  { name: 'NODE_CP', source: 'generateNodeCpModule()', current: generateNodeCpModule() },
   { name: 'ESM_LATE', source: 'the late link bundle of core src', current: interpreter.esmLate },
   { name: 'NODE_REGISTRY', source: 'the registry bundle of core src', current: await bundleRegistry({ start: workerRoot }) },
 ];
