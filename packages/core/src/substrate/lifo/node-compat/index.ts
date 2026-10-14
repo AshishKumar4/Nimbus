@@ -11,7 +11,6 @@ import { createHttp } from './http.js';
 import type { LoopbackRouter, VirtualRequestHandler } from '../kernel/index.js';
 import type { DNSResolver } from '../kernel/dns-resolver.js';
 import { createChildProcess } from './child_process.js';
-import * as streamModule from './stream.js';
 import * as urlModule from './url.js';
 import * as timersModule from './timers.js';
 import * as zlibModule from './zlib.js';
@@ -94,9 +93,10 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
     http: () => createHttp(ctx.portRegistry, 'http:', ctx.routeLoopback),
     https: () => createHttp(ctx.portRegistry, 'https:', ctx.routeLoopback),
     child_process: () => createChildProcess(ctx.executeCapture),
-    // Node.js CJS: require('stream') is the legacy Stream, with .Readable,
-    // .Writable, .Duplex, .PassThrough and .Stream on it.
-    stream: () => streamModule.Stream,
+    stream: () => realm.getBuiltinModule('node:stream'),
+    'stream/promises': () => realm.getBuiltinModule('node:stream/promises'),
+    'stream/consumers': () => realm.getBuiltinModule('node:stream/consumers'),
+    'stream/web': () => realm.getBuiltinModule('node:stream/web'),
     url: () => urlModule,
     timers: () => timersModule,
     crypto: () => realm.getBuiltinModule('node:crypto'),
@@ -198,8 +198,8 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
     // which the node shims embed too)
     http2: () => createHttp2Module({
       EventEmitter,
-      Readable: streamModule.Readable,
-      Stream: streamModule.Stream,
+      Readable: realm.getBuiltinModule('node:stream').Readable,
+      Stream: realm.getBuiltinModule('node:stream'),
       Buffer,
       emitWarning: (message) => { ctx.stderr.write(`Warning: ${message}\n`); },
     }),

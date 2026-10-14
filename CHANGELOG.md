@@ -6,6 +6,15 @@ published independently in the `@nimbus-sh` npm scope.
 ## Unreleased
 
 - Fixed: the library's built-in `node` gives a program the engine's own
+  `stream` (with `stream/promises`, `stream/consumers` and `stream/web`),
+  and `fs.createReadStream` and `fs.createWriteStream` are the engine's
+  `ReadStream` and `WriteStream` over the program's files. lifo's streams
+  pushed a whole file as one string (no Buffers, no `start`/`end` ranges in
+  pieces, no `setEncoding`), had no `pipeline`, `Readable.from`,
+  `Transform` or async iteration, and ended the program's stdout on a pipe
+  into it. `process.stdout` and `process.stderr` are Writables, and `fs.read`
+  and the new `fs.write` call back with what Node's do.
+- Fixed: the library's built-in `node` gives a program the engine's own
   `events`, and every emitter it hands one (a stream, a watcher, a request,
   a readline interface, `process` itself) is the engine's `EventEmitter`.
   lifo's had no `once()`, `on()`, `errorMonitor`, `captureRejections`,

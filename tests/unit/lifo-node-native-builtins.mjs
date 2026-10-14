@@ -28,6 +28,14 @@
 // engine's EventEmitter, with errorMonitor, captureRejections, once() and an
 // unheard 'error' thrown. Red before: lifo's EventEmitter had none of them,
 // swallowed an unheard 'error', and the process was no emitter at all.
+//
+// The engine's own streams (X3c): fs read and write streams are the engine's
+// ReadStream and WriteStream over the program's filesystem, Buffers in
+// ranges and pieces as Node reads them, and stream/promises and
+// stream/consumers are there; process.stdout is a Writable a stream may pipe
+// into and leave open. Red before: lifo's streams pushed the whole file as one
+// string, had no pipeline, from(), Transform or async iteration, and
+// process.stdout was no stream.
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -133,6 +141,34 @@ const programs = {
     "const w = new Error('plain'); w.toString = undefined; process.emitWarning(w);",
     "const v = new Error('custom'); v.toString = () => 'CustomText'; process.emitWarning(v);",
   ]),
+  // Streams, one step after another so the order is the program's.
+  'streams.js': [
+    "const fs = require('fs');",
+    "const stream = require('stream');",
+    'const { Readable, Writable, PassThrough, Transform, Duplex, pipeline, finished } = stream;',
+    "const step = (name, run) => new Promise((resolve) => { Promise.resolve().then(run).then(resolve, (e) => { console.log(name, 'threw', e.code, e.message); resolve(); }); });",
+    '(async () => {',
+    "  fs.writeFileSync('s.txt', 'héllo\\nworld\\n');",
+    "  await step('chunks', () => new Promise((resolve) => fs.createReadStream('s.txt').on('data', (c) => console.log('chunk', Buffer.isBuffer(c), c.length)).on('end', () => { console.log('end'); resolve(); })));",
+    "  await step('range', () => new Promise((resolve) => fs.createReadStream('s.txt', { encoding: 'utf8', start: 1, end: 4 }).on('data', (c) => console.log('range', JSON.stringify(c))).on('close', resolve)));",
+    "  await step('setEncoding', () => new Promise((resolve) => { const r = fs.createReadStream('s.txt'); r.setEncoding('hex'); r.on('data', (c) => console.log('hex', c)); r.on('end', resolve); }));",
+    "  await step('iterate', async () => { let n = 0; for await (const c of fs.createReadStream('s.txt', { highWaterMark: 4 })) n += c.length; console.log('iterated', n); });",
+    "  await step('events', () => new Promise((resolve) => { const r = fs.createReadStream('s.txt'); const seen = []; for (const e of ['open', 'ready', 'end', 'close']) r.on(e, () => { seen.push(e); if (e === 'close') { console.log('events', seen.join(' '), r.bytesRead, r.pending); resolve(); } }); r.resume(); }));",
+    "  await step('missing', () => new Promise((resolve) => fs.createReadStream('nope.txt').on('error', (e) => { console.log('missing', e.code, e.syscall); resolve(); })));",
+    "  await step('from', async () => { const out = []; for await (const c of Readable.from(['a', 'b', 'c'])) out.push(c); console.log('from', out.join('')); });",
+    "  await step('pipeline', () => new Promise((resolve) => pipeline(Readable.from(['x', 'y']), new Transform({ transform(c, e, cb) { cb(null, String(c).toUpperCase()); } }), fs.createWriteStream('o.txt'), (err) => { console.log('pipeline', err ?? null, fs.readFileSync('o.txt', 'utf8')); resolve(); })));",
+    "  await step('promises', async () => { const { pipeline: pp } = require('stream/promises'); await pp(Readable.from(['p', 'q']), fs.createWriteStream('p.txt')); console.log('promises', fs.readFileSync('p.txt', 'utf8')); });",
+    "  await step('append', () => new Promise((resolve) => { const w = fs.createWriteStream('o.txt', { flags: 'a' }); w.write('Z'); w.end('!', () => { console.log('append', fs.readFileSync('o.txt', 'utf8'), w.bytesWritten); resolve(); }); }));",
+    "  await step('writable', () => new Promise((resolve) => { const got = []; const w = new Writable({ write(c, e, cb) { got.push(String(c)); cb(); } }); w.on('finish', () => { console.log('writable', got); resolve(); }); w.write('1'); w.end('2'); }));",
+    "  await step('passthrough', () => new Promise((resolve) => { const p = new PassThrough(); p.on('data', (c) => console.log('pt', String(c))); p.on('end', resolve); p.end('through'); }));",
+    "  await step('finished', () => new Promise((resolve) => { const r = Readable.from(['f']); finished(r, (err) => { console.log('finished', err ?? null); resolve(); }); r.resume(); }));",
+    "  await step('duplex', () => { const d = new Duplex({ read() {}, write(c, e, cb) { cb(); } }); console.log('duplex', d instanceof Readable, d instanceof Writable, d.readable, d.writable); });",
+    "  await step('classes', () => { console.log('classes', typeof fs.ReadStream, fs.createReadStream('s.txt').destroy() instanceof fs.ReadStream, fs.createWriteStream('c.txt').destroy() instanceof fs.WriteStream, typeof stream.compose, typeof stream.addAbortSignal, stream.Stream === stream); });",
+    "  await step('consumers', async () => { const { text } = require('stream/consumers'); console.log('consumers', await text(Readable.from(['t', 'x']))); });",
+    "  await step('tty', () => { const tty = require('tty'); console.log('tty', typeof tty.WriteStream, typeof tty.ReadStream, typeof tty.isatty); });",
+    "  await step('stdout', () => new Promise((resolve) => { Readable.from(['to ', 'stdout\\n']).pipe(process.stdout).on('unpipe', () => { process.stdout.write('stdout still open\\n'); console.log('stdout', process.stdout instanceof Writable, process.stdout.writable); resolve(); }); }));",
+    '})();',
+  ].join('\n'),
 };
 /** Node writes its pid in a warning: `(node:<pid>)`. */
 const samePid = (text) => text.replace(/\(node:\d+\)/g, '(node:PID)');

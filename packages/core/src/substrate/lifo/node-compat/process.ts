@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { Writable } from 'node:stream';
 import type { CommandOutputStream } from '../commands/types.js';
 import { createProcessWarnings, type WarningConstructor, type WarningOptions } from '../../../_shared/node-warning.js';
 
@@ -17,6 +18,24 @@ interface WarningFlags {
   throwDeprecation?: boolean;
   traceDeprecation?: boolean;
   traceProcessWarnings?: boolean;
+}
+
+/**
+ * process.stdout or process.stderr: a Writable over the program's output, as
+ * Node's is a stream. Each write reaches the output as it is made, so it
+ * keeps its place among the console's.
+ */
+function outputStream(output: CommandOutputStream, fd: number) {
+  const decoder = new TextDecoder();
+  return Object.assign(new Writable({
+    decodeStrings: false,
+    write(chunk, _encoding, callback) {
+      if (typeof chunk === 'string') output.write(chunk);
+      else if (output.writeBytes) output.writeBytes(chunk);
+      else output.write(decoder.decode(chunk));
+      callback();
+    },
+  }), { isTTY: false, fd, columns: 80 });
 }
 
 export interface ProcessOptions {
@@ -47,24 +66,8 @@ export function createProcess(opts: ProcessOptions) {
       }
       throw new ProcessExitError(code);
     },
-    stdout: {
-      write: (data: string) => { opts.stdout.write(data); return true; },
-      isTTY: false,
-      fd: 1,
-      bytesWritten: 0,
-      columns: 80,
-      on: () => {},
-      once: () => {},
-    },
-    stderr: {
-      write: (data: string) => { opts.stderr.write(data); return true; },
-      isTTY: false,
-      fd: 2,
-      bytesWritten: 0,
-      columns: 80,
-      on: () => {},
-      once: () => {},
-    },
+    stdout: outputStream(opts.stdout, 1),
+    stderr: outputStream(opts.stderr, 2),
     stdin: {
       isTTY: false,
       fd: 0,

@@ -194,6 +194,12 @@ export async function runNodeProgram(program: NodeProgram, host: NodeProgramHost
 		realm.emitWarning = (...warning) => { main.process.emitWarning(...warning); };
 		realm.removeAllListeners('warning');
 		realm.on('warning', (warning) => { main.process.emit('warning', warning); });
+		// And its standard streams: the engine's own stream code knows them as
+		// process.stdout and process.stderr (a pipe into one leaves it open).
+		Object.defineProperties(realm, {
+			stdout: { value: main.process.stdout, configurable: true, enumerable: true, writable: true },
+			stderr: { value: main.process.stderr, configurable: true, enumerable: true, writable: true },
+		});
 		ga.Buffer = Buffer;
 		ga.console = main.console;
 		ga.global = globalThis;

@@ -1,4 +1,5 @@
-// The `node:buffer`, `node:events`, `node:util` and `node:string_decoder` surface core uses:
+// The `node:buffer`, `node:events`, `node:stream`, `node:util` and `node:string_decoder` surface core uses
+// (and node:fs's stream classes):
 // lifo's node gives a program the engine's own builtins, and its console
 // formats with the engine's util (substrate/lifo/node-compat); lifo's
 // commands know whose code is running by `node:async_hooks`. Bun and Node
@@ -31,6 +32,52 @@ declare module 'node:events' {
     eventNames(): (string | symbol)[];
     setMaxListeners(n: number): this;
     getMaxListeners(): number;
+  }
+}
+
+declare module 'node:stream' {
+  import { EventEmitter } from 'node:events';
+  type Callback = (error?: Error | null) => void;
+  export interface ReadableOptions {
+    highWaterMark?: number;
+    encoding?: string;
+    read?(this: Readable, size: number): void;
+  }
+  export interface WritableOptions {
+    highWaterMark?: number;
+    decodeStrings?: boolean;
+    write?(this: Writable, chunk: Uint8Array | string, encoding: string, callback: Callback): void;
+  }
+  export class Stream extends EventEmitter {}
+  export class Readable extends Stream {
+    constructor(options?: ReadableOptions);
+    readonly readable: boolean;
+    push(chunk: Uint8Array | string | null, encoding?: string): boolean;
+    setEncoding(encoding: string): this;
+    destroy(error?: Error): this;
+  }
+  export class Writable extends Stream {
+    constructor(options?: WritableOptions);
+    readonly writable: boolean;
+    write(chunk: Uint8Array | string, callback?: Callback): boolean;
+    end(callback?: () => void): this;
+    destroy(error?: Error): this;
+  }
+  export class Duplex extends Readable {}
+  export class PassThrough extends Duplex {}
+  const stream: typeof Stream & { Readable: typeof Readable; Writable: typeof Writable; Duplex: typeof Duplex; PassThrough: typeof PassThrough };
+  export default stream;
+}
+
+declare module 'node:fs' {
+  import type { Readable, Writable } from 'node:stream';
+  /** A read stream over the `fs` it is given (open, read, close), as Node's createReadStream takes one. */
+  export class ReadStream extends Readable {
+    constructor(path: string | undefined, options?: object);
+  }
+  /** A write stream over the `fs` it is given (open, write, close). */
+  export class WriteStream extends Writable {
+    constructor(path: string | undefined, options?: object);
   }
 }
 
