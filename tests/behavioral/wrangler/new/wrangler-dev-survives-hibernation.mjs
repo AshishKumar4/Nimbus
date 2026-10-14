@@ -92,7 +92,9 @@ try {
   const afterStoppedReset = await worker('/stopped-reset');
   a.check('a stopped dev server is not brought back by a reset', !served(afterStoppedReset, '/stopped-reset'), JSON.stringify(afterStoppedReset));
 } finally {
-  t.close();
-  await deleteSession(sid);
+  await t.close().catch(() => {});
+  const cleanup = await deleteSession(sid);
+  a.check('probe session deleted', cleanup.ok, `status=${cleanup.status}`);
 }
-a.done();
+const sum = a.summary();
+process.exit(sum.fail > 0 ? 1 : 0);
