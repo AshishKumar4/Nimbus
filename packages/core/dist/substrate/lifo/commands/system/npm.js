@@ -1,7 +1,6 @@
 import { ISOLATE_NETWORK } from '../../../../_shared/workspace-network.js';
 import { resolveContext } from '../registry.js';
 import { basename, join, relative, resolve } from '../../utils/path.js';
-import { parseArgs } from '../../utils/args.js';
 import { writeTarballStream } from '../../../../_shared/tarball.js';
 import { isNativeBinPath } from '../../../../runtime/os-contracts.js';
 import { npmBinMap } from '../../../../runtime/npm-bin-map.js';
@@ -531,37 +530,49 @@ function resolveNpmPrefixVfs(cwd, env, explicit) {
     const raw = explicit ?? env['npm_config_prefix'] ?? '/usr/local';
     return resolve(cwd, raw);
 }
-const UNINSTALL_ARGS = {
-    global: { type: 'boolean', short: 'g' },
-    prefix: { type: 'string' },
-    'no-save': { type: 'boolean' },
-};
-/** `--prefix`, where it is given. */
-const prefixFlag = (flags) => (typeof flags.prefix === 'string' && flags.prefix !== '' ? flags.prefix : null);
+/**
+ * The invocation as npm's configuration reads it (npm-config.ts: npm's
+ * definitions and nopt, so `--global=false` is local and `--location=global`
+ * global; its .npmrc files and npm_config_* too), its warnings printed: the
+ * names it gives, and the global prefix it acts on, null for the project.
+ * npm's libraries load the first time a session runs one.
+ */
+async function npmInvocation(ctx) {
+    const config = await (await import('./npm-config.js')).loadNpmConfig(ctx.vfs, ctx.cwd, ctx.env, ctx.args);
+    for (const warning of config.warnings)
+        await ctx.stderr.write(`npm warn ${warning}\n`);
+    const global = config.get('global') === true || config.get('location') === 'global';
+    return {
+        names: config.positionals.slice(1),
+        prefix: global ? resolve(ctx.cwd, String(config.get('prefix'))) : null,
+        save: config.get('save') !== false,
+    };
+}
 /**
  * `npm uninstall`: each package named (as written: npm takes no version)
  * goes from the tree, its bins with it (reify trashes a package's path and
  * its binPaths), and from every field of package.json that declares it,
  * whether it was installed or not (add-rm-pkg-deps rm). `-g`: from the
  * global prefix, its bins from the prefix's bin directory; `--no-save`
- * leaves package.json as it is. package.json is read first: one it cannot
- * read fails the command before anything changes, one it cannot write fails
- * it; one that is not a JSON object is left as it is. Unlike npm's reify,
- * what only a removed package depended on stays installed.
+ * leaves package.json as it is. The host's records of the bins go too (its
+ * port's unlinkBins). package.json is read first: one it cannot read fails
+ * the command before anything changes, one it cannot write fails it; one
+ * that is not a JSON object is left as it is. A package it cannot reach or
+ * remove fails the command, and the others go on. Unlike npm's reify, what
+ * only a removed package depended on stays installed.
  */
 async function npmUninstall(ctx, deps) {
     const startedAt = Date.now();
-    const { flags, positional: names } = parseArgs(ctx.args.slice(1), UNINSTALL_ARGS);
+    const { names, prefix, save } = await npmInvocation(ctx);
     if (names.length === 0) {
         await ctx.stderr.write('npm error Must provide a package name to remove\n');
         return 1;
     }
-    const prefix = flags.global === true ? resolveNpmPrefixVfs(ctx.cwd, ctx.env, prefixFlag(flags)) : null;
     const modulesDir = prefix === null ? join(ctx.cwd, 'node_modules') : `${prefix}/lib/node_modules`;
     const binDir = prefix === null ? join(modulesDir, '.bin') : `${prefix}/bin`;
     const pkgPath = join(ctx.cwd, 'package.json');
     let project = null;
-    if (prefix === null && flags['no-save'] !== true) {
+    if (prefix === null && save) {
         try {
             const text = await ctx.vfs.readFileString(pkgPath);
             const read = readPackageJson(text);
@@ -575,22 +586,33 @@ async function npmUninstall(ctx, deps) {
             }
         }
     }
-    let removed = 0;
+    // A package it cannot reach or remove fails the command, and the rest go on.
+    const removed = [];
     let failed = false;
     for (const name of names) {
         const dir = join(modulesDir, name);
-        if ((await ctx.vfs.stat(dir, { follow: false })) === null)
-            continue;
-        const manifest = (await packageJsonIn(ctx.vfs, dir))?.json;
-        const own = manifest?.name;
         try {
+            if ((await ctx.vfs.stat(dir, { follow: false })) === null)
+                continue;
+            const manifest = (await packageJsonIn(ctx.vfs, dir))?.json;
+            const own = manifest?.name;
             await ctx.vfs.remove(dir, { recursive: true, force: true });
             for (const bin of npmBinMap(typeof own === 'string' ? own : name, manifest?.bin).keys())
                 await ctx.vfs.remove(join(binDir, bin), { force: true });
-            removed++;
+            removed.push(name);
         }
         catch (error) {
             await ctx.stderr.write(`npm ERR! could not remove ${name}: ${describeError(error)}\n`);
+            failed = true;
+        }
+    }
+    const unlinkBins = deps?.installer?.unlinkBins;
+    if (removed.length > 0 && unlinkBins !== undefined) {
+        try {
+            await unlinkBins({ modulesDir, globalBinDir: prefix === null ? undefined : binDir, pid: ctx.pid, packages: removed });
+        }
+        catch (error) {
+            await ctx.stderr.write(`npm ERR! could not remove the bins of ${removed.join(', ')}: ${describeError(error)}\n`);
             failed = true;
         }
     }
@@ -609,13 +631,9 @@ async function npmUninstall(ctx, deps) {
     }
     if (failed)
         return 1;
-    await ctx.stdout.write(`\n${npmRemovedLine(removed, Date.now() - startedAt)}\n`);
+    await ctx.stdout.write(`\n${npmRemovedLine(removed.length, Date.now() - startedAt)}\n`);
     return 0;
 }
-const LS_ARGS = {
-    global: { type: 'boolean', short: 'g' },
-    prefix: { type: 'string' },
-};
 const byPkgid = new Intl.Collator('en');
 /**
  * `npm ls` at its default depth, as npm prints it (lib/commands/ls.js over
@@ -629,9 +647,9 @@ const byPkgid = new Intl.Collator('en');
  * (EJSONPARSE) once the tree is printed.
  */
 async function npmList(ctx) {
-    const { flags } = parseArgs(ctx.args.slice(1), LS_ARGS);
-    const global = flags.global === true;
-    const root = global ? `${resolveNpmPrefixVfs(ctx.cwd, ctx.env, prefixFlag(flags))}/lib` : ctx.cwd;
+    const { prefix } = await npmInvocation(ctx);
+    const global = prefix !== null;
+    const root = global ? `${prefix}/lib` : ctx.cwd;
     const modulesDir = join(root, 'node_modules');
     let text = null;
     if (!global) {
