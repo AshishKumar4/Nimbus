@@ -14,8 +14,12 @@ const pairs = [
   ['home/user', 'a:b'],
   ['home/user/a"', 'b'],
   ['home/user/a', '"b'],
+  ['home/user/' + 'p/'.repeat(120), 'app'],
 ];
 const names = pairs.map(([root, database]) => d1DatabaseFacetName(root, database));
 assert.equal(new Set(names).size, pairs.length, `each (root, database) its own facet: ${JSON.stringify(names)}`);
-for (const name of names) assert.ok(name.startsWith('d1:'), `a D1 database's facet is in the d1: names: ${name}`);
+for (const name of names) {
+  assert.ok(name.startsWith('d1:'), `a D1 database's facet is in the d1: names: ${name}`);
+  assert.ok(new TextEncoder().encode(name).length <= 256, `within workerd's 256-byte facet names: ${name.length}`);
+}
 console.log('d1-database-facet-name: ok');

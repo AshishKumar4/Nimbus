@@ -161,7 +161,6 @@ The handler owns the router, auth, and the session protocol. Its options:
   auth?: { mode?: 'auto' | 'enforce' | 'legacy'; legacyPublic?: boolean };
   hooks?: {
     onSessionStart?: (ctx) => void | Promise<void>;
-    onSessionEnd?:   (ctx) => void | Promise<void>;  // reserved v0.2
   };
   routes?: (request, env, ctx) => Response | null | Promise<Response | null>;
   sdk?: {
