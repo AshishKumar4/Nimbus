@@ -5422,7 +5422,7 @@ module.exports = {
     get "internal/dns/callback_resolver"() { return require("./node-dns.js").sources["internal/dns/callback_resolver"]; },
     get "internal/dns/promises"() { return require("./node-dns.js").sources["internal/dns/promises"]; },
     get "internal/net"() { return require("./node-dns.js").sources["internal/net"]; },
-    get "internal/fs/cp/cp"() { return require("./node-lib-rest.js").sources["internal/fs/cp/cp"]; },
-    get "internal/fs/cp/cp-sync"() { return require("./node-lib-rest.js").sources["internal/fs/cp/cp-sync"]; },
+    get "internal/fs/cp/cp"() { return require("./node-cp.js").sources["internal/fs/cp/cp"]; },
+    get "internal/fs/cp/cp-sync"() { return require("./node-cp.js").sources["internal/fs/cp/cp-sync"]; },
   },
 };

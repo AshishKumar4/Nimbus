@@ -8,8 +8,9 @@
  * punycode never compiles it. Of Node's modules it carries only what
  * formatting a value requires (util.inspect, as an uncaught error's report
  * and console.log of an object do); the others are in
- * RUNTIME_NODE_LIB_REST_MODULE and DNS's in RUNTIME_NODE_DNS_MODULE, each
- * compiled the first time a program requires one of its modules. Staged as
+ * RUNTIME_NODE_LIB_REST_MODULE, DNS's in RUNTIME_NODE_DNS_MODULE and cp's
+ * (lib/internal/fs/cp) in RUNTIME_NODE_CP_MODULE, each compiled the first
+ * time a program requires one of its modules. Staged as
  * assets beside the shims (scripts/bundle-node-shims.mjs).
  */
 import { NODE_LIB_HOST_SOURCE, WORKERD_SLOTS_SOURCE } from './node-lib-host.js';
@@ -40,10 +41,16 @@ function requireClosure(root) {
 }
 /** What formatting a value runs (node-shims.ts __nimbusNodeInspect), carried by RUNTIME_NODE_LIB_MODULE itself. */
 const FORMATTING = requireClosure('internal/util/inspect');
-const restModule = (id) => !dnsModule(id) && !FORMATTING.has(id);
+const cpModule = (id) => id.startsWith('internal/fs/cp/');
+const restModule = (id) => !dnsModule(id) && !cpModule(id) && !FORMATTING.has(id);
 export function generateNodeDnsModule() {
     return `module.exports = { createCaresBinding: ${NODE_DNS_BINDING_SOURCE}, sources: {\n`
         + Object.entries(NODE_LIB_SOURCES).filter(([id]) => dnsModule(id)).map(([id, text]) => moduleFactory(id, text)).join('\n')
+        + '\n} };';
+}
+export function generateNodeCpModule() {
+    return 'module.exports = { sources: {\n'
+        + Object.entries(NODE_LIB_SOURCES).filter(([id]) => cpModule(id)).map(([id, text]) => moduleFactory(id, text)).join('\n')
         + '\n} };';
 }
 export function generateNodeLibRestModule() {
@@ -54,7 +61,8 @@ export function generateNodeLibRestModule() {
 export function generateNodeLibModule() {
     const sources = Object.entries(NODE_LIB_SOURCES).map(([id, text]) => dnsModule(id)
         ? deferredFactory('./node-dns.js', id)
-        : restModule(id) ? deferredFactory('./node-lib-rest.js', id) : moduleFactory(id, text)).join('\n');
+        : cpModule(id) ? deferredFactory('./node-cp.js', id)
+            : restModule(id) ? deferredFactory('./node-lib-rest.js', id) : moduleFactory(id, text)).join('\n');
     return `module.exports = {
   createCaresBinding: (...args) => require("./node-dns.js").createCaresBinding(...args),
   createNodeLib: ${NODE_LIB_HOST_SOURCE},

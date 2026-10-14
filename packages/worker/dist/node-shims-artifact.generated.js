@@ -37,17 +37,21 @@ export const JS_PARSER_ENTRY = "/_assets/runtime/js-parser-c8d022179f0f679e.js";
 export const JS_PARSER_BUILD_ID = "c8d022179f0f679e";
 export const JS_PARSER_SHA256 = "c8d022179f0f679e691a2a5e721f967bf9b9711f8bbf82c2d2371cde49258907";
 /** dist/runtime/node-lib-module.js generateNodeLibModule() */
-export const NODE_LIB_ENTRY = "/_assets/runtime/node-lib-ebddb3ae48b0f278.js";
-export const NODE_LIB_BUILD_ID = "ebddb3ae48b0f278";
-export const NODE_LIB_SHA256 = "ebddb3ae48b0f27829e955c2dea32287b4449e6410b8f471168686ee7db0ed67";
+export const NODE_LIB_ENTRY = "/_assets/runtime/node-lib-204a0f068852fda2.js";
+export const NODE_LIB_BUILD_ID = "204a0f068852fda2";
+export const NODE_LIB_SHA256 = "204a0f068852fda2c3e74f93250b41c7871c952121dd62dfbbeedb8d4de9bde6";
 /** dist/runtime/node-lib-module.js generateNodeLibRestModule() */
-export const NODE_LIB_REST_ENTRY = "/_assets/runtime/node-lib-rest-b8206cd473cf8aa6.js";
-export const NODE_LIB_REST_BUILD_ID = "b8206cd473cf8aa6";
-export const NODE_LIB_REST_SHA256 = "b8206cd473cf8aa61b4f76ca740db673786e49dfbab3e35bf000e82749d45bef";
+export const NODE_LIB_REST_ENTRY = "/_assets/runtime/node-lib-rest-f11f64906eddd5c3.js";
+export const NODE_LIB_REST_BUILD_ID = "f11f64906eddd5c3";
+export const NODE_LIB_REST_SHA256 = "f11f64906eddd5c3b42a6b1e9dd04327ef04b5e2344e3f6f2bc1534321b3eacf";
 /** dist/runtime/node-lib-module.js generateNodeDnsModule() */
 export const NODE_DNS_ENTRY = "/_assets/runtime/node-dns-cb7f3315fd57bcc8.js";
 export const NODE_DNS_BUILD_ID = "cb7f3315fd57bcc8";
 export const NODE_DNS_SHA256 = "cb7f3315fd57bcc80cc56f8acb984bb8dc9bdfe9e4fe2e6e7718cfc2ac91bddd";
+/** dist/runtime/node-lib-module.js generateNodeCpModule() */
+export const NODE_CP_ENTRY = "/_assets/runtime/node-cp-c2a0830c818ad019.js";
+export const NODE_CP_BUILD_ID = "c2a0830c818ad019";
+export const NODE_CP_SHA256 = "c2a0830c818ad019134064a2bfef1f5bdc0a0b6018d9d515135176239cf56966";
 /** @nimbus-sh/core src/runtime/esm-late-link.ts, bundled by scripts/interpreter-bundle.mjs */
 export const ESM_LATE_ENTRY = "/_assets/runtime/esm-late-4ef73be4b1ec0691.js";
 export const ESM_LATE_BUILD_ID = "4ef73be4b1ec0691";
