@@ -146,7 +146,7 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
     };
     ReadStream: {
         new (path: string | URL | null | undefined, options?: string | StreamOptions): {
-            pipe<T extends import("node:stream").Writable>(destination: T, options?: import("node:stream").PipeOptions): T;
+            pipe(destination: import("node:stream").Writable, options?: import("node:stream").PipeOptions): import("node:stream").Writable;
             readonly readable: boolean;
             push(chunk: Uint8Array | string | null, encoding?: string): boolean;
             setEncoding(encoding: string): /*elided*/ any;
@@ -188,7 +188,7 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
         };
     };
     createReadStream: (path: string | URL, options?: string | StreamOptions) => {
-        pipe<T extends import("node:stream").Writable>(destination: T, options?: import("node:stream").PipeOptions): T;
+        pipe(destination: import("node:stream").Writable, options?: import("node:stream").PipeOptions): import("node:stream").Writable;
         readonly readable: boolean;
         push(chunk: Uint8Array | string | null, encoding?: string): boolean;
         setEncoding(encoding: string): /*elided*/ any;
