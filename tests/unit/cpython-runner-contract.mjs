@@ -1,21 +1,22 @@
 #!/usr/bin/env bun
 // CPython 3.13.14-2 imports nimbus_fs and nimbus_proc, which a deployment
 // whose CPython runner predates them does not give the module: it would fail
-// at instantiation. So -2 names a runner key of its own, as bash's rebuilds
-// do, and a deployment binds only the build its runner was written for. The
-// catalog keeps -1 as its default (--keep-default) for the deployments that
-// bind it. What has to hold, with -2's entrypoints as runtime-specs publishes
-// them:
+// at instantiation. So -2 names a contract of its own (cpython-runner@2), as
+// bash's rebuilds do. This tree's runner implements both contracts (its
+// imports are a superset of -1's), so it is registered under both, and the
+// catalog keeps -1 as its default (--keep-default) until a later release
+// flips it. What has to hold, with -2's entrypoints as runtime-specs
+// publishes them:
 //
-//   - a deployment that registers only -1's key (cpython-runner) installs -1
-//     for `cpython`, and refuses `cpython@3.13.14-2` by its runner;
-//   - this tree's core workspace and its hosted runtime install -2 for
-//     `cpython` against that catalog, and against a catalog that has only -1
-//     refuse it by -1's runner rather than bind a build they were not written
-//     for.
+//   - an older deployment (only cpython-runner) keeps -1 for `cpython`, and
+//     refuses `cpython@3.13.14-2` by its runner;
+//   - this tree, as a core workspace and as the hosted runtime: against a
+//     catalog with only -1, `cpython` installs -1; against one with both, -2
+//     when it is the default or asked for, and -1 while -1 is the default.
 //
 // Red before: -2 named cpython-runner, -1's key, so the older deployment
-// installed -2 when asked and the newer one took the -1 default.
+// installed -2 when asked; then this tree registered only @2 and refused -1,
+// the catalog's default and every installed session's build.
 
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
@@ -106,14 +107,18 @@ for (const [what, open] of [
     return workspace;
   }],
 ]) {
-  const fresh = await open(catalog(v1, v2));
-  try {
-    assert.equal((await fresh.runtimes.install('cpython')).version, '3.13.14-2', `${what}: this tree takes -2 over the -1 default`);
-  } finally { await fresh.close(); }
-  const stale = await open(catalog(v1));
-  try {
-    await assert.rejects(stale.runtimes.install('cpython'), /cpython@3\.13\.14-1: runner 'cpython-runner' not registered/, `${what}: a catalog with only -1 is refused by -1's runner`);
-  } finally { await stale.close(); }
-  console.log(`  ✓ ${what}: -2 against the new catalog; a catalog with only -1 is refused by its runner`);
+  for (const [offered, spec, version] of [
+    [[v1], 'cpython', '3.13.14-1'],
+    [[v1, v2], 'cpython', '3.13.14-1'],
+    [[v1, v2], 'cpython@3.13.14-2', '3.13.14-2'],
+    [[v2, v1], 'cpython', '3.13.14-2'],
+  ]) {
+    const workspace = await open(catalog(...offered));
+    try {
+      const catalogs = `${offered.map((build) => build.manifest.version).join(', ')} (default ${offered[0].manifest.version})`;
+      assert.equal((await workspace.runtimes.install(spec)).version, version, `${what}: ${spec} against ${catalogs}`);
+    } finally { await workspace.close(); }
+  }
+  console.log(`  ✓ ${what}: -1 from a catalog with only -1; -2 when it is the default or asked for, -1 while -1 is the default`);
 }
 console.log('cpython-runner-contract: ok');
