@@ -2,6 +2,10 @@
 import assert from 'node:assert/strict';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { Shell } from '../../packages/core/src/substrate/lifo/shell/Shell.ts';
+import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
+import { createDefaultRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
+import { memoryFiles } from './lib/test-box.mjs';
 
 const cases = [
   ['sleep 30 & sleep 31 & jobs; kill %1 %2; wait', '[1]-  Running                    sleep 30 &\n[2]+  Running                    sleep 31 &\n'],
@@ -41,17 +45,33 @@ try {
   const started = await ws.shell.execute('rm -f /tmp/signal-release; hold() { while [ ! -e /tmp/signal-release ]; do :; done; }; hold & echo $!');
   const pid = Number(started.stdout.trim());
   const job = ws.shell.getJobTable().byPid(pid);
+  // Nothing can pause a job's work: a stop signal is refused, as a resident refuses it, and the job runs on.
   for (const signal of ['STOP', 'TSTP', 'TTIN', 'TTOU']) {
-    assert.equal((await ws.shell.execute(`kill -${signal} ${pid}`)).exitCode, 0);
-    assert.equal(job.status, 'stopped', signal);
+    const refused = await ws.shell.execute(`kill -${signal} ${pid}`);
+    assert.deepEqual({ code: refused.exitCode, err: refused.stderr }, { code: 1, err: `kill: (${pid}) - Operation not supported (SIG${signal} cannot be delivered to a hosted process)\n` }, signal);
+    assert.equal(job.status, 'running', `${signal} leaves the job running`);
     assert.equal(ws.processes.get(pid)?.state, 'running', `${signal} must not terminate`);
-    assert.equal((await ws.shell.execute(`kill -CONT ${pid}`)).exitCode, 0);
-    assert.equal(job.status, 'running');
-    assert.equal(ws.processes.get(pid)?.state, 'running');
+    assert.deepEqual(await ws.shell.execute(`kill -CONT ${pid}; echo "cont=$?"`), { exitCode: 0, stdout: 'cont=0\n', stderr: '' });
   }
   await ws.fs.writeFile('/tmp/signal-release', 'release');
   assert.equal(await job.promise, 0);
 } finally {
   await ws.close();
+}
+
+// bg on a job, which nothing ever stops, is bash's for a running one.
+{
+  const written = [];
+  const shell = new Shell(
+    { write(text) { written.push(text); }, writeln(text) { written.push(`${text}\n`); }, onData() {}, cols: 80, rows: 24, focus() {}, clear() {} },
+    memoryFiles().files,
+    createDefaultRegistry(),
+    { HOME: '/', USER: 'user', HOSTNAME: 'nimbus' },
+    new SessionProcessSupervisor(),
+  );
+  await shell.executeLine('sleep 0.2 & bg %1; echo "rc=$?"; wait');
+  const out = written.join('');
+  assert.match(out, /bg: job 1 already in background\r?\n/);
+  assert.match(out, /rc=0/);
 }
 console.log('shell-job-control: job names, markers, signals and repeat waits');

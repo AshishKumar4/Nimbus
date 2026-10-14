@@ -215,8 +215,8 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
     maySignal(caller: Readonly<VfsCred>, pid: number): boolean;
     /** {@link kill}, as `caller`: refused with EPERM where {@link maySignal} refuses it. */
     killAs(caller: Readonly<VfsCred>, pid: number, exitCode?: number, reason?: SignalAbortReason): boolean;
-    /** Whether `pid` is `ancestor` or one of the processes spawned under it, transitively. */
-    isWithin(pid: number, ancestor: number): boolean;
+    /** `pid` and the processes above it, nearest first, as the table has them now. */
+    lineage(pid: number): number[];
     liveCred(pid: number): VfsCred;
     setUmask(pid: number, umask: number): number;
     /**
@@ -267,6 +267,7 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
      * waits for a prune after it has.
      */
     reap(maxAge?: number): Promise<number>;
+    private reapExpired;
     /**
      * How an ended process lets go of what it bound in the filesystem (its
      * descriptor scope, its delegations, its watches): the `releaseProcess` of
