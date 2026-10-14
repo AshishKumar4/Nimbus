@@ -38,7 +38,8 @@ try {
   });
 
   await check('xargs runs a child whose stdout is the pipe: an endless device streams into it', async () => {
-    assert.deepEqual(await run('printf x | xargs -I {} cat /dev/zero | head -c1 | od -An -tx1'), { code: 0, stdout: ' 00\n', stderr: '' });
+    // The child ends of SIGPIPE once head has its byte, which GNU xargs reports so.
+    assert.deepEqual(await run('printf x | xargs -I {} cat /dev/zero | head -c1 | od -An -tx1'), { code: 0, stdout: ' 00\n', stderr: 'xargs: cat: terminated by signal 13\n' });
   });
 
   await check('each command xargs runs is a process of its own: its umask is not the next one\'s', async () => {
@@ -51,11 +52,10 @@ try {
 
   await check('xargs keeps its exit policy: a failing command makes it fail, a missing one is 127', async () => {
     assert.deepEqual(await run('echo x | xargs false; echo $?'), { code: 0, stdout: '1\n', stderr: '' });
-    const missing = await run('echo x | xargs no-such-command; echo $?');
-    assert.equal(missing.stdout, '127\n');
+    assert.deepEqual(await run('echo x | xargs no-such-command; echo $?'), { code: 0, stdout: '127\n', stderr: 'xargs: no-such-command: No such file or directory\n' });
   });
 } finally {
-  await ws.dispose?.();
+  await ws.close();
 }
 
 assert.deepEqual(failures, []);
