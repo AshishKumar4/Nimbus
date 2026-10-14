@@ -13,6 +13,11 @@
 //       started in first. It gives that admission back for good and boots on
 //       a slot of its own; before, it tried to take the closed admission
 //       back and failed before its boot (InternalScallop, at 6da388863).
+//       Its run is a lifetime one: the fake holds its start call open, as
+//       the runner does, for as long as it runs. Returned at once, the
+//       fabric released its residency ~20 ms after the boot, and the check
+//       that it holds its slot passed only when it polled inside that
+//       window (red under load in full runs).
 // Each is started while another holder has the whole credit: its build
 // waits for credit holding no worker, then boots once the credit is given
 // back. Before, it waited for credit holding the inherited worker
@@ -32,7 +37,7 @@ import { STOP_RECORD_PREFIX } from '../../packages/worker/src/runtime/stop-repla
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
+import { createFacetCtx, createFacetWorld, residentRunner } from './facet-host-harness.mjs';
 import { processFiles } from './lib/process-bridge.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 
@@ -44,10 +49,9 @@ adoptCtxExports({
   }),
 });
 
-const world = createFacetWorld(() => ({
-  async startProcess() { return { ok: true }; },
-  async handleHttpRequest() { return new Response('ok'); },
-}));
+const processes = new SessionProcessSupervisor();
+// (3)'s attached TTY runs for its life (residentRunner): the fabric releases its residency as that call returns.
+const world = createFacetWorld(residentRunner(processes));
 const ctx = createFacetCtx(world, 'resident-inherited-admission');
 // A one-shot's run stops at its first listen once `listen` is opened.
 let openListen;
@@ -74,7 +78,6 @@ const env = {
   },
   ASSETS: stagedAssets,
 };
-const processes = new SessionProcessSupervisor();
 const manager = new FacetManager(
   ctx, env, processes, new PortRegistry(), processHostFor,
   { requestLaunchTurn: () => { setTimeout(() => { void manager.pumpResidentLaunches(); }, 0); }, onExternalExit: () => {} },
@@ -142,6 +145,10 @@ const until = async (ok, label) => {
     'deferred: it boots, or ends, once the credit is given back');
   assert.equal(processes.get(child.pid)?.state, 'running', `deferred: it boots on a slot of its own, not failing before (${JSON.stringify(processes.get(child.pid))})`);
   assert.ok(launchHeld(child.pid).length > 0, 'deferred: its residency holds its own slot');
+  // For as long as it runs, not only as it boots.
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(processes.get(child.pid)?.state, 'running', 'deferred: it is still running');
+  assert.ok(launchHeld(child.pid).length > 0, 'deferred: its residency still holds its slot past its boot');
   manager.kill(child.pid);
 }
 

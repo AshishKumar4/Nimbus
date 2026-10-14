@@ -5,9 +5,9 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
-- Fixed: `test` and `[` run by name (`command test`, `find -exec test`)
-  evaluate as the shell's builtin does. `command test 1 -eq 2` returned 0,
-  and `command [ 1 -eq 1` ran without its closing `]`.
+- Fixed: `test` and `[` run as programs (`xargs test`, `find -exec test`)
+  evaluate as the shell's builtin does. `test 1 -eq 2` run so returned 0,
+  and `[ 1 -eq 1` ran without its closing `]`.
 - Fixed: `xargs` runs each command as a child process with stdin from
   `/dev/null`, as GNU xargs does. `printf x | xargs -I {} cat /dev/zero |
   head -c1` failed, and one command's `umask` reached the next. It ends
@@ -46,6 +46,24 @@ published independently in the `@nimbus-sh` npm scope.
   `accountWork` and `holdWork` (the shell counts and holds its work in that
   table), and `createKillCommand(host)`, `createPsCommand(processes)` and
   `createTopCommand(processes)` read it.
+- Fixed (Node `fs`): a write keeps the bytes it was given. `writeFileSync`,
+  `appendFileSync`, `fs.promises.writeFile` and a descriptor's `write` used
+  the program's own buffer as the file's bytes, so changing or reusing the
+  buffer afterwards changed what `readFileSync` read and what the session
+  stored, and growing such a file through a descriptor could write past the
+  end of the buffer it came from, into memory the program used for other
+  data. Each write now takes a copy, as Node does.
+- Fixed: in an isolate that runs several Node programs one after another
+  (a warm facet's one-shots and children), each program's setup wrapped
+  `Buffer`, `crypto`, `zlib`, `events` and `URL` again around the last
+  program's wrappers. Every call into them grew one layer deeper per
+  program run, `new URL()` accepted a string that is not a URL, and a
+  program that replaced `zlib.crc32` broke the file writes of the programs
+  after it. Each builtin is now wrapped once, around the platform's own,
+  and the runtime's checksums use the platform's builtins.
+- Changed: a Node program's file writes cost less CPU in a warm isolate:
+  about 6 ms less for a run that writes one file, and about 0.1 ms less for
+  each further file.
 - Fixed: a copy makes its files as any creation there makes them. A
   program's `copyFile` (or the editor's and SDK's copy) between a mount and
   the session's own files keeps the source's mode less the umask, as `cp`

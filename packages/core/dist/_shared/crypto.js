@@ -1,4 +1,5 @@
 import { dec, enc } from './bytes.js';
+import { realmBuiltin } from '@nimbus-sh/platform/realm-builtin.js';
 const SEALED_JSON_V2 = 'v2.';
 const SEALED_JSON_V1 = 'v1.';
 const HKDF_SALT = enc.encode('nimbus-sh sealed-json v2');
@@ -32,7 +33,7 @@ export function sha256Incremental() {
             },
         };
     }
-    const nodeCrypto = globalThis.process?.getBuiltinModule?.('node:crypto');
+    const nodeCrypto = realmBuiltin('node:crypto');
     if (!nodeCrypto)
         throw new Error('incremental SHA-256 needs crypto.DigestStream or node:crypto');
     const hash = nodeCrypto.createHash('sha256');

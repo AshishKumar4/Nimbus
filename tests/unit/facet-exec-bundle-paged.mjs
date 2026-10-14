@@ -34,7 +34,7 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
+import { createFacetCtx, createFacetWorld, residentRunner } from './facet-host-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { readExecTelemetry, resetExecTelemetry } from '../../packages/worker/src/facets/exec-telemetry.ts';
 import { processFiles } from './lib/process-bridge.mjs';
@@ -58,10 +58,8 @@ adoptCtxExports({
  * granted — the observable that says a build suspended.
  */
 function makeManager(label, turns, { chunkBytes = '2048' } = {}) {
-  const world = createFacetWorld(() => ({
-    async startProcess() { return { ok: true }; },
-    async handleHttpRequest() { return new Response('ok'); },
-  }));
+  const processes = new SessionProcessSupervisor();
+  const world = createFacetWorld(residentRunner(processes));
   const ctx = createFacetCtx(world, label);
   const oneShotMaps = [];
   const env = {
@@ -83,7 +81,7 @@ function makeManager(label, turns, { chunkBytes = '2048' } = {}) {
   };
   const exits = [];
   const manager = new FacetManager(
-    ctx, env, new SessionProcessSupervisor(), new PortRegistry(), processHostFor,
+    ctx, env, processes, new PortRegistry(), processHostFor,
     {
       requestLaunchTurn: () => {
         turns.count++;
