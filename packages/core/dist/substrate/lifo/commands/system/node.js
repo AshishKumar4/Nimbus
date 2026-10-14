@@ -1,6 +1,5 @@
 import { Buffer } from 'node:buffer';
 import realm from 'node:process';
-import { pathToFileURL } from 'node:url';
 import { resolve, dirname, extname } from '../../utils/path.js';
 import { ProcessExitError } from '../../node-compat/index.js';
 import { createCjsLoader, moduleWrapper, stripShebang } from '../../node-compat/cjs-loader.js';
@@ -9,6 +8,7 @@ import { packageScopeType } from '../../../../runtime/require-resolution.js';
 import { createProcess } from '../../node-compat/process.js';
 import { createConsole } from '../../node-compat/console.js';
 import { createNativeEsmLoader } from '../../node-compat/native-esm-loader.js';
+import { pathToFileURL } from '../../node-compat/file-url.js';
 import { runNodeInRealm } from './node-realm.js';
 const NODE_VERSION = 'v20.0.0';
 /** The same walk for the main script, through the shell's own view before any `require` runs. */
