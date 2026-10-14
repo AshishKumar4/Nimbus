@@ -58,22 +58,26 @@ export function initSession(self, ws, options = {}) {
 }
 /**
  * A socket that waited on another caller's build, given its terminal as a
- * warm rejoin gives it, and told the session is ready as a cold start tells
- * its socket. A wake's frame is delivered when this returns, so the shell's
- * login files have run first, as a wake's own build has them.
+ * warm rejoin gives it (which tells it the session is ready). A wake's frame
+ * is delivered when this returns, so the shell's login files have run first,
+ * as a wake's own build has them, whether or not the socket had the
+ * terminal already.
  */
 async function joinBuilt(self, ws, options) {
     const { shell, terminal } = self;
-    if (ws === null || shell === null || terminal === null || terminal.ws === ws)
+    if (ws === null || shell === null || terminal === null)
         return;
     if (options.resume === 'wake') {
-        terminal.attach(ws, shellTerminalTee(self));
+        const attaching = terminal.ws !== ws;
+        if (attaching)
+            terminal.attach(ws, shellTerminalTee(self));
         await self.shellStarted;
+        if (attaching)
+            ws.send(JSON.stringify({ type: 'ready' }));
+        return;
     }
-    else {
+    if (terminal.ws !== ws)
         joinExistingSession(self, shell, terminal, ws, shellTerminalTee(self), loadScrollback);
-    }
-    ws.send(JSON.stringify({ type: 'ready' }));
 }
 async function buildSession(self, ws, options, markUsable) {
     const replayScrollback = options.resume !== 'wake';

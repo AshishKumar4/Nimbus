@@ -84,7 +84,9 @@ import { PRIOR_GENERATION_EXIT_REASON } from './rpc.js';
 export async function bindShellSocket(self, ws) {
     if (ws.readyState !== WS_READY_STATE_OPEN)
         return false;
-    if (self.shell == null || self.terminal == null || self.kernel == null) {
+    // Not built, or being built: the frame waits for the session's one build
+    // and its shell's start (init.ts initSession), each frame after the last.
+    if (self.shell == null || self.terminal == null || self.kernel == null || self.building != null) {
         if (!self._wakeRebuild) {
             self._wakeRebuild = self.initSession(ws, { resume: 'wake' })
                 .finally(() => { self._wakeRebuild = null; });
