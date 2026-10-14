@@ -108,7 +108,7 @@ const KEYS = ['a/b c', 'a/b%d', 'b#1', 'a/ü'];
 
   await r2.delete(['a/b c', 'blob']);
   assert.equal(await r2.head('a/b c'), null);
-  assert.deepEqual((await r2.list()).objects.map((o) => o.key), ['a/b%d', 'a/ü', 'b#1']);
+  assert.deepEqual((await r2.list({})).objects.map((o) => o.key), ['a/b%d', 'a/ü', 'b#1']);
   assert.ok([...vfs.files.keys()].every((p) => p.startsWith('home/user/app/.nimbus/r2/BUCKET/')));
   assert.equal(vfs.files.size, 6, 'a delete removes the body and its sidecar');
 
