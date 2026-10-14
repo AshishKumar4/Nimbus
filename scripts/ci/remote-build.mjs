@@ -40,6 +40,9 @@ const lastLines = (text, lines) => text.split('\n').slice(-lines).join('\n');
 /** How remote-build names its patch, and what comes after it is applied. */
 export const DIST_PATCH = { client: 'remote-build', name: 'dist patch', next: 'run scripts/ci/remote-unit.mjs on that commit' };
 
+/** This checkout's build script laid over the commit, with all it imports: the verdict is the one this client reads. */
+export const DIST_OVERLAY = ['scripts/ci/build.mjs', 'scripts/ci/lib/output-patch.mjs', 'scripts/ci/lib/step.mjs'];
+
 if (import.meta.main) {
   const argv = process.argv.slice(2);
   const args = argv.filter((arg) => arg === '--no-cache');
@@ -62,7 +65,7 @@ if (import.meta.main) {
     repo = git(process.cwd(), ['rev-parse', '--show-toplevel']);
     sha = git(repo, ['rev-parse', '--verify', `${positional[0] ?? 'HEAD'}^{commit}`]);
     const mapped = await mapOnArmada({
-      repo, sha, files: ['scripts/ci/build.mjs', 'scripts/ci/lib/step.mjs'], items: [1], label: `remote-build ${sha.slice(0, 12)}`,
+      repo, sha, files: DIST_OVERLAY, items: [1], label: `remote-build ${sha.slice(0, 12)}`,
       command: ['bun', 'scripts/ci/build.mjs', '--out', '{out}', ...args],
     });
     const [outcome] = mapped.outcomes;

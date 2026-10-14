@@ -24,7 +24,8 @@ import { dirname, join } from 'node:path';
 
 import { armadaClient, overlayCommit } from '../../scripts/ci/lib/armada.mjs';
 import { applyPatch } from '../../scripts/ci/lib/apply-patch.mjs';
-import { DIST_PATCH } from '../../scripts/ci/remote-build.mjs';
+import { DIST_OVERLAY, DIST_PATCH } from '../../scripts/ci/remote-build.mjs';
+import { OPENCODE_OVERLAY } from '../../scripts/ci/remote-opencode.mjs';
 
 const BUILD = join(import.meta.dirname, '..', '..', 'scripts', 'ci', 'build.mjs');
 
@@ -243,6 +244,37 @@ if (import.meta.main && existsSync('pkg/dist/old.bin')) { renameSync('pkg/dist/o
     assert.equal(git(dir, 'rev-parse', 'HEAD'), sha, 'no branch moved');
     assert.equal(git(dir, 'status', '--porcelain'), '', 'the worktree and its index are untouched');
     console.log('  ok  overlayCommit: the lane\'s tree with the overlay\'s bytes and modes, on no branch, new each time');
+  }
+  {
+    // A client's overlay carries its producer whole: every module it imports
+    // from scripts/ci, so the producer runs on a commit that has none of them.
+    const repoRoot = join(import.meta.dirname, '..', '..');
+    const transpiler = new Bun.Transpiler({ loader: 'js' });
+    const imported = (entry) => {
+      const seen = new Set([entry]);
+      for (const path of seen) {
+        for (const { path: specifier } of transpiler.scanImports(readFileSync(join(repoRoot, path), 'utf8').replace(/^#!.*\n/, ''))) {
+          if (!specifier.startsWith('.')) continue;
+          const target = join(dirname(path), specifier);
+          if (target.startsWith('scripts/ci/')) seen.add(target);
+        }
+      }
+      return [...seen].sort();
+    };
+    assert.deepEqual(imported('scripts/ci/build.mjs'), [...DIST_OVERLAY].sort(), "remote-build's overlay is build.mjs and what it imports from scripts/ci");
+    assert.deepEqual(imported('scripts/ci/rebuild-opencode.mjs'), [...OPENCODE_OVERLAY].sort(), "remote-opencode's overlay is rebuild-opencode.mjs and what it imports from scripts/ci");
+    // remote-build's, on a lane commit with no scripts/ci at all: build.mjs loads (its usage, exit 2).
+    const dir = checkout('older-lane', {});
+    const sha = git(dir, 'rev-parse', 'HEAD');
+    const commit = overlayCommit(dir, sha, DIST_OVERLAY, repoRoot);
+    const tree = join(root, 'older-lane-overlaid');
+    mkdirSync(tree);
+    const unpacked = run(dir, 'sh', ['-c', `git archive ${commit} | tar -x -C "$1"`, 'sh', tree]);
+    assert.equal(unpacked.status, 0, unpacked.stderr);
+    const loaded = run(tree, process.execPath, ['scripts/ci/build.mjs']);
+    assert.equal(loaded.status, 2, `the overlaid build.mjs loads on a commit without scripts/ci:\n${loaded.stderr}`);
+    assert.match(loaded.stderr, /usage: bun scripts\/ci\/build\.mjs --out <file>/);
+    console.log('  ok  each client\'s overlay carries its producer and all it imports from scripts/ci; remote-build\'s loads on a commit without them');
   }
   {
     // The pinned client: a clean checkout of the pin, and the pin on its repository's main.
