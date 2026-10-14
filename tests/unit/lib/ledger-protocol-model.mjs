@@ -35,10 +35,9 @@
 //   n  `sh -c 'npm run build'` with build `node x && true`: a shell awaiting
 //      npm's script wrapper, itself a shell awaiting the program;
 //   g  `sh -c 'node x & sleep 1; wait'`: the program in a background job, a
-//      process awaiting it, while a builtin runs, then `wait`. Awaiting the
-//      job is never the shell's only work by the session's account (`wait` is
-//      a builtin), so a family with g that is truly stuck waits rather than
-//      refuses: a known limit, checked for safety only.
+//      process awaiting it, while a builtin runs, then `wait`: a builtin whose
+//      work is awaiting the job (JobTable.awaitEnd), so the shell is then
+//      doing nothing but await it.
 //   k  `sh -c 'node x | (sleep 1; kill x)'`: the program in one element of a
 //      pipeline, and in the other a builtin, then a `kill` of the program,
 //      begun in the same turn the builtin ends;
@@ -144,7 +143,6 @@ class Run {
     this.guests = new Map();
     this.holds = new Map();
     this.violations = [];
-    this.knownLimit = topology.some((h) => h.children.includes('g'));
     /** Admitted children whose start is news still to produce (after the ledger call that admitted them). */
     this.starting = [];
     /** Work and await ends the production paths hold, by label. */
@@ -462,8 +460,9 @@ class Run {
         else if (p.shell === 'f') this.runProgram(p, p.line);
         else if (p.backgroundDone) p.phase = 'finishing';
         else {
-          // g: `wait`, a builtin: the shell's work, awaiting its background job.
+          // g: `wait`, a builtin: the shell's work, which is awaiting its background job.
           this.holdEnd(id, p.line.beginWork());
+          this.holdEnd(id, this.processes.beginAwait(p.pid, this.get(p.awaits).pid));
           p.phase = 'waiting';
         }
         return tick();
@@ -591,7 +590,7 @@ export async function explore(production, topology, { maxStates = 200_000, colle
     if (moves.length === 0) {
       finals++;
       const unfinished = [...run.byId.values()].filter((p) => !p.exited).map((p) => p.id);
-      if (unfinished.length > 0 && !run.knownLimit) {
+      if (unfinished.length > 0) {
         found.push({ violation: `ended stuck with no refusal: ${unfinished.join(', ')} never finished`, path, guests: run.snapshot() });
       }
       continue;

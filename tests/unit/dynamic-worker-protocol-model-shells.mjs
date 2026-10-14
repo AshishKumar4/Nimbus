@@ -10,11 +10,9 @@
 // the `kill` begun in the turn `sleep` ends in, or a later one), alone,
 // beside queued children and other shells, and under another holder.
 //
-// The same two properties: never a refusal while a holder can progress, and
-// always one when all are stuck, except where a background job is awaited
-// by `wait`: by the session's account that is never the shell's only work,
-// so such a family, truly stuck, waits (a known limit), and only safety is
-// checked there.
+// The same two properties, for every family: never a refusal while a holder
+// can progress, and always one when all are stuck, a shell `wait`ing on its
+// background job included (its `wait` awaits the job, JobTable.awaitEnd).
 //
 // And mutants, each caught: the process table counting an await as a
 // process's only work while it has other work (the pipeline's shell, its

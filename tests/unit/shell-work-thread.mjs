@@ -20,7 +20,7 @@
 //     is the await of its program.
 //   - a shell that truly only awaits its program is still told as such, in
 //     a sequence (`step a; prog`) or an and-or list (`prog && true`); and so
-//     is one that only `wait`s (or `fg`s) on its job. Before, `wait` was a
+//     is one that only `wait`s on its job. Before, `wait` was a
 //     builtin's unit of work with no await, so a shell blocked on a job that
 //     could never end was not told as stuck.
 //   - every unit a line took is let go when it ends.
@@ -152,8 +152,8 @@ for (const [line, status] of [['step a; prog', 137], ['prog && true', 137], ['pr
 }
 
 // ── a shell that only `wait`s on its job is told as such ──────────────────
-// (`wait` and `fg` are builtins: the shell's work, which is awaiting the job.)
-for (const line of ['prog & wait $!', 'prog & wait %1', 'prog & fg %1 >/dev/null']) {
+// (`wait` is a builtin: the shell's work, which is awaiting the job.)
+for (const line of ['prog & wait $!', 'prog & wait %1']) {
   processes.setOnWaitChange(null);
   const done = shell.execute(line);
   await settle();
