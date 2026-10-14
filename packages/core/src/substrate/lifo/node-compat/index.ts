@@ -1,23 +1,19 @@
+import { Buffer } from 'node:buffer';
+import realm from 'node:process';
 import type { NodeFilesystem } from './filesystem.js';
 import type { CommandOutputStream } from '../commands/types.js';
 import { createFs } from './fs.js';
-import pathModule from './path.js';
+import { createPath, createUrl } from './cwd-relative.js';
 import { createOs } from './os.js';
 import { createProcess } from './process.js';
-import { EventEmitter } from './events.js';
-import { Buffer } from './buffer.js';
-import * as utilModule from './util.js';
+import { EventEmitter } from 'node:events';
 import { createHttp } from './http.js';
 import type { LoopbackRouter, VirtualRequestHandler } from '../kernel/index.js';
 import type { DNSResolver } from '../kernel/dns-resolver.js';
 import { createChildProcess } from './child_process.js';
-import * as streamModule from './stream.js';
-import * as urlModule from './url.js';
 import * as timersModule from './timers.js';
-import * as cryptoModule from './crypto.js';
 import * as zlibModule from './zlib.js';
-import * as stringDecoderModule from './string_decoder.js';
-import * as ttyModule from './tty.js';
+import { createTty } from './tty-streams.js';
 import { createDns } from './dns.js';
 import { createModuleShim } from './module.js';
 import * as readlineModule from './readline.js';
@@ -43,6 +39,8 @@ export interface NodeContext {
   routeLoopback?: LoopbackRouter;
   /** The kernel's resolver, which dns.lookup answers from as curl and wget do. */
   dns?: DNSResolver;
+  /** Told when the program first reaches the engine's stream classes (a stream module, an fs or tty stream, process.stdout). */
+  reachStreams?: () => void;
 }
 
 /**
@@ -76,9 +74,9 @@ class StubServer extends EventEmitter {
 
 export function createModuleMap(ctx: NodeContext): Record<string, () => unknown> {
   const map: Record<string, () => unknown> = {
-    fs: () => createFs(ctx.filesystem(), ctx.cwd, ctx.stdin),
-    'fs/promises': () => createFs(ctx.filesystem(), ctx.cwd, ctx.stdin).promises,
-    path: () => pathModule,
+    fs: () => createFs(ctx.filesystem(), ctx.cwd, ctx.stdin, ctx.reachStreams),
+    'fs/promises': () => createFs(ctx.filesystem(), ctx.cwd, ctx.stdin, ctx.reachStreams).promises,
+    path: () => createPath(ctx.cwd),
     os: () => createOs(ctx.env),
     process: () => createProcess({
       argv: ctx.argv,
@@ -87,43 +85,25 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
       stdout: ctx.stdout,
       stderr: ctx.stderr,
     }),
-    events: () => {
-      // Node.js CJS: require('events') returns the EventEmitter constructor itself
-      const mod = EventEmitter as typeof EventEmitter & { EventEmitter: typeof EventEmitter; default: typeof EventEmitter };
-      mod.EventEmitter = EventEmitter;
-      mod.default = EventEmitter;
-      return mod;
-    },
-    buffer: () => ({ Buffer }),
-    util: () => utilModule,
+    events: () => realm.getBuiltinModule('node:events'),
+    // The engine's own, as its require gives them (X-3), loaded when first
+    // required. `realm` is the host's process: the program's globalThis.process
+    // is lifo's.
+    buffer: () => realm.getBuiltinModule('node:buffer'),
+    util: () => realm.getBuiltinModule('node:util'),
     http: () => createHttp(ctx.portRegistry, 'http:', ctx.routeLoopback),
     https: () => createHttp(ctx.portRegistry, 'https:', ctx.routeLoopback),
     child_process: () => createChildProcess(ctx.executeCapture),
-    stream: () => {
-      // Node.js CJS: require('stream') returns the Stream base class with
-      // .Readable, .Writable, .Duplex, .PassThrough, .Stream attached
-      const Stream = EventEmitter as unknown as (typeof EventEmitter & {
-        Stream: typeof EventEmitter;
-        Readable: typeof streamModule.Readable;
-        Writable: typeof streamModule.Writable;
-        Duplex: typeof streamModule.Duplex;
-        PassThrough: typeof streamModule.PassThrough;
-        default: typeof EventEmitter;
-      });
-      Stream.Stream = Stream;
-      Stream.Readable = streamModule.Readable;
-      Stream.Writable = streamModule.Writable;
-      Stream.Duplex = streamModule.Duplex;
-      Stream.PassThrough = streamModule.PassThrough;
-      Stream.default = Stream;
-      return Stream;
-    },
-    url: () => urlModule,
+    stream: () => (ctx.reachStreams?.(), realm.getBuiltinModule('node:stream')),
+    'stream/promises': () => (ctx.reachStreams?.(), realm.getBuiltinModule('node:stream/promises')),
+    'stream/consumers': () => (ctx.reachStreams?.(), realm.getBuiltinModule('node:stream/consumers')),
+    'stream/web': () => (ctx.reachStreams?.(), realm.getBuiltinModule('node:stream/web')),
+    url: () => createUrl(ctx.cwd),
     timers: () => timersModule,
-    crypto: () => cryptoModule,
+    crypto: () => realm.getBuiltinModule('node:crypto'),
     zlib: () => zlibModule,
-    string_decoder: () => stringDecoderModule,
-    tty: () => ttyModule,
+    string_decoder: () => realm.getBuiltinModule('node:string_decoder'),
+    tty: () => (ctx.reachStreams?.(), createTty()),
     dns: () => createDns(ctx.dns),
     'dns/promises': () => createDns(ctx.dns).promises,
     readline: () => readlineModule,
@@ -217,14 +197,13 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
     }),
     // http2 — Node's exports; opening HTTP/2 refuses (core/_shared/http2-module.ts,
     // which the node shims embed too)
-    http2: () => createHttp2Module({
+    http2: () => (ctx.reachStreams?.(), createHttp2Module({
       EventEmitter,
-      Readable: streamModule.Readable,
-      // This stream module has no legacy Stream base; its streams are EventEmitters.
-      Stream: EventEmitter,
+      Readable: realm.getBuiltinModule('node:stream').Readable,
+      Stream: realm.getBuiltinModule('node:stream'),
       Buffer,
       emitWarning: (message) => { ctx.stderr.write(`Warning: ${message}\n`); },
-    }),
+    })),
     // inspector — stub (vite only uses it in --profile mode)
     inspector: () => ({
       Session: class Session extends EventEmitter {

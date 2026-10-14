@@ -7,6 +7,13 @@
 #ifndef NIMBUS_PROC_H
 #define NIMBUS_PROC_H
 
+/* wasi-libc's sigset_t is a one-byte placeholder (__typedef_sigset_t.h),
+ * too small for SIGCHLD: musl's, which the signal-set ops in nimbus-proc.c
+ * index, is put in its place before any wasi-libc header is read. */
+#define __wasilibc___typedef_sigset_t_h
+#define __DEFINED_sigset_t
+typedef struct __sigset_t { unsigned long __bits[128 / sizeof (long)]; } sigset_t;
+
 #include <sys/types.h>
 #include <stddef.h>
 

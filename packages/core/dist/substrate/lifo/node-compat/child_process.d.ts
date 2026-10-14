@@ -1,4 +1,4 @@
-import { EventEmitter } from './events.js';
+import { EventEmitter } from 'node:events';
 type ExecuteCapture = (input: string) => Promise<string>;
 export declare function createChildProcess(executeCapture?: ExecuteCapture): {
     exec: (cmd: string, optionsOrCb?: Record<string, unknown> | ((err: Error | null, stdout: string, stderr: string) => void), cb?: (err: Error | null, stdout: string, stderr: string) => void) => EventEmitter;

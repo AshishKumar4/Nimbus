@@ -5,7 +5,7 @@
  * and the modern rimraf v4+ promise-based API, all backed by the VFS
  * fs shim's recursive rmdir.
  */
-import { resolve } from './path.js';
+import { resolve } from '../utils/path.js';
 import { isVfsError } from '../../../vfs/vfs-error.js';
 export function createRimraf(vfs, cwd) {
     function removeSync(p) {

@@ -1,20 +1,3 @@
-/**
- * The lifo node's CommonJS loader: how `require` resolves a name, runs the
- * module it names and caches it, for the node command's programs and the
- * lifo command runtime's packages alike.
- *
- * A name is a built-in (`fs`, `node:fs`), a `#` import of the nearest
- * package.json's "imports", a relative or absolute file (Node's exact, `.js`,
- * `.json`, `.node` and main/index probing), or a package: the nearest
- * node_modules up from the requiring module's directory, then the global
- * /usr/lib/node_modules and the legacy /usr/share/pkg/node_modules, its
- * entry from "exports" (by the shared resolver, _shared/exports-resolver.ts,
- * under require's conditions), else "main", then
- * index.js; a `#` name likewise from "imports". A module runs once, cached
- * by its path before it runs (so a cycle sees its partial exports); an ES
- * module (.mjs, a .js under "type": "module", or ESM syntax) goes to the
- * realm's native ES module loader, not the CommonJS wrapper.
- */
 import { type NodeContext } from './index.js';
 import { type RequireFunction } from './module.js';
 import { type RequireResolverOptions } from '../../../runtime/require-resolution.js';
@@ -59,12 +42,11 @@ export interface CjsLoader {
     /** The arguments a module's wrapper is called with, `require` its own. */
     wrapperArguments(filename: string, module: {
         exports: unknown;
-    }, scope: ModuleScope): unknown[];
+    }): unknown[];
 }
 /**
- * A loader over `context`'s filesystem. `scope` gives each module its
- * console and process (each module has its own, as the node command's
- * modules always have had).
+ * A loader over `context`'s filesystem. `scope` is the program's console and
+ * process, every module's, as Node has one process; require('process') is it.
  */
-export declare function createCjsLoader(context: NodeContext, scope: (filename: string) => ModuleScope, options?: RequireResolverOptions): CjsLoader;
+export declare function createCjsLoader(context: NodeContext, scope: ModuleScope, options?: RequireResolverOptions): CjsLoader;
 //# sourceMappingURL=cjs-loader.d.ts.map

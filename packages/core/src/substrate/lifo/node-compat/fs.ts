@@ -1,15 +1,16 @@
+import { EventEmitter } from 'node:events';
+import { Buffer } from 'node:buffer';
+import realm from 'node:process';
 import type { NodeFilesystem as VFS, NodeWatch } from './filesystem.js';
 
 import type { RuntimeOpenFlags, RuntimeVfsStat as VfsStat } from '../../../runtime/os-contracts.js';
 import type { VfsEvent } from '../../../vfs/events.js';
 import { resolve, basename } from '../utils/path.js';
 import { encode, decode } from '../utils/encoding.js';
-import { Readable, Writable } from './stream.js';
-import { EventEmitter } from './events.js';
-import { Buffer } from './buffer.js';
 import { errnoCodeOf, fsError, isVfsError, type FsError } from '../../../vfs/vfs-error.js';
 import { DIRENT_TYPES, direntTypeOfStat } from '../../../vfs/dirent-type.js';
 import { S_IFMT } from '../../../vfs/vfs.js';
+import { invalidArgType, nodeError } from '../../../_shared/node-error.js';
 
 export interface FSWatcher extends EventEmitter {
   close(): void;
@@ -111,6 +112,24 @@ function toNodeStat(stat: VfsStat): NodeStat {
 type NodeError = FsError;
 
 type Callback<T> = (err: NodeError | null, result?: T) => void;
+type ReadCallback = (err: NodeError | null, bytesRead?: number, buffer?: Uint8Array) => void;
+type WriteCallback = (err: NodeError | null, written?: number, data?: Uint8Array | string) => void;
+
+/** What Node's ReadStream and WriteStream take; `fs` is the filesystem they open, read, write and close through. */
+interface StreamOptions {
+  fs?: object;
+  flags?: string;
+  encoding?: string;
+  fd?: number;
+  mode?: number;
+  start?: number;
+  end?: number;
+  highWaterMark?: number;
+  autoClose?: boolean;
+  emitClose?: boolean;
+  /** A WriteStream's: fsync before it closes. */
+  flush?: boolean;
+}
 
 function resolvePath(cwd: string, p: string | URL): string {
   const str = typeof p === 'string' ? p : p.pathname;
@@ -180,7 +199,7 @@ const STDIN_PATHS: Record<string, true> = { '/dev/stdin': true, '/dev/fd/0': tru
  * read of it does in Node; what it returned is all fd 0 holds, so a second
  * read finds it at its end.
  */
-export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array) {
+export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array, reachStreams?: () => void) {
   let stdinRead = false;
   const readStdin = (): Uint8Array => {
     if (stdinRead) return new Uint8Array(0);
@@ -521,8 +540,28 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array) {
     wrapCallback(() => closeSync(fd), cb);
   }
 
-  function read(fd: number, buffer: Uint8Array, offset: number, length: number, position: number | null, cb: Callback<number>): void {
-    wrapCallback(() => readSync(fd, buffer, offset, length, position), cb);
+  /** Node's fs.read: its callback is given the bytes read and the buffer. */
+  function read(fd: number, buffer: Uint8Array, offset: number, length: number, position: number | null, cb: ReadCallback): void {
+    wrapCallback(() => readSync(fd, buffer, offset, length, position), (err, bytesRead) => cb(err, bytesRead, buffer));
+  }
+
+  /**
+   * Node's fs.write, (fd, buffer, offset?, length?, position?, callback) or
+   * (fd, string, position?, encoding?, callback): its callback is given the
+   * bytes written and what was written.
+   */
+  function write(fd: number, data: Uint8Array | string, ...rest: (number | string | null | undefined | WriteCallback)[]): void {
+    const callback = rest.pop();
+    if (typeof callback !== 'function') throw invalidArgType('cb', 'function', callback);
+    const [first, second, third] = rest.map((arg) => (typeof arg === 'function' ? undefined : arg));
+    const at = (arg: typeof first): number | null | undefined => (typeof arg === 'string' ? undefined : arg);
+    wrapCallback(() => (typeof data === 'string'
+      ? writeSync(fd, data, at(first), typeof second === 'string' ? second : undefined)
+      : writeSync(fd, data, at(first), typeof second === 'number' ? second : undefined, at(third))), (err, written) => callback(err, written, data));
+  }
+
+  function fsync(fd: number, cb: Callback<void>): void {
+    wrapCallback(() => fsyncSync(fd), cb);
   }
 
   function fstat(fd: number, cb: Callback<NodeStat>): void {
@@ -544,69 +583,33 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array) {
 
   // ─── Stream API ───
 
-  // The whole file is read, then pushed to the stream.
-  function createReadStream(path: string | URL, options?: { encoding?: string; start?: number; end?: number; highWaterMark?: number }): Readable {
-    const abs = resolvePath(cwd, path);
-    const stream = new Readable();
-
-    queueMicrotask(() => {
-      try {
-        const data = vfs.readFile(abs);
-        const start = options?.start ?? 0;
-        const end = options?.end !== undefined ? options.end + 1 : data.length;
-        const slice = data.subarray(start, end);
-
-        if (options?.encoding) {
-          stream.push(decode(slice));
-        } else {
-          // Push as string since our Readable works with strings
-          stream.push(decode(slice));
-        }
-        stream.push(null);
-      } catch (e) {
-        stream.emit('error', e);
-      }
-    });
-
-    return stream;
-  }
-
-  function createWriteStream(path: string | URL, options?: { flags?: string; encoding?: string }): Writable {
-    const abs = resolvePath(cwd, path);
-    const flags = options?.flags ?? 'w';
-    const chunks: string[] = [];
-
-    if (flags.includes('w')) {
-      // Truncate on open
-      try { vfs.writeFile(abs, ''); } catch { /* parent may not exist yet */ }
+  // The engine's own read and write streams, over this filesystem: Node's
+  // ReadStream and WriteStream read and write through the `fs` they are given.
+  const engineFs = realm.getBuiltinModule('node:fs');
+  const streamFs = { open, read, write, close, fsync };
+  const streamPath = (path: string | URL | null | undefined): string | undefined => (path === null || path === undefined ? undefined : resolvePath(cwd, path));
+  // A stream given no fs of its own (none, undefined or null, which Node's
+  // `options.fs || fs` reads as its default) goes through this filesystem,
+  // its descriptors this filesystem's: never the engine's own.
+  const streamOptions = (options: string | StreamOptions | undefined): StreamOptions => {
+    const given = typeof options === 'string' ? { encoding: options } : options ?? {};
+    return { ...given, fs: given.fs || streamFs };
+  };
+  class ReadStream extends engineFs.ReadStream {
+    constructor(path: string | URL | null | undefined, options?: string | StreamOptions) {
+      reachStreams?.();
+      super(streamPath(path), streamOptions(options));
     }
-
-    const stream = new Writable();
-
-    stream.write = (chunk: string, _encoding?: string, cb?: () => void): boolean => {
-      chunks.push(chunk);
-      try {
-        if (flags.includes('a')) {
-          vfs.appendFile(abs, chunk);
-        } else {
-          vfs.writeFile(abs, chunks.join(''));
-        }
-      } catch (e) {
-        stream.emit('error', e);
-        return false;
-      }
-      if (cb) cb();
-      return true;
-    };
-
-    stream.end = (chunk?: string): void => {
-      if (chunk) stream.write(chunk);
-      stream.emit('finish');
-      stream.emit('close');
-    };
-
-    return stream;
   }
+  class WriteStream extends engineFs.WriteStream {
+    constructor(path: string | URL | null | undefined, options?: string | StreamOptions) {
+      reachStreams?.();
+      super(streamPath(path), streamOptions(options));
+    }
+  }
+  const createReadStream = (path: string | URL, options?: string | StreamOptions): ReadStream => new ReadStream(path, options);
+  const createWriteStream = (path: string | URL, options?: string | StreamOptions): WriteStream => new WriteStream(path, options);
+
 
   // ─── Watch API ───
 
@@ -616,6 +619,13 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array) {
    * any depth when recursive), or as the watched file itself.
    */
   function watch(filename: string | URL, optionsOrListener?: WatchOptions | string | WatchListener, listener?: WatchListener): FSWatcher {
+    // A copy, as Node takes: what the caller does to its options after is not the watch's.
+    const options: WatchOptions = typeof optionsOrListener === 'string' ? { encoding: optionsOrListener }
+      : typeof optionsOrListener === 'object' && optionsOrListener !== null ? { ...optionsOrListener } : {};
+    // Node checks the encoding first, whatever the path.
+    if (options.encoding && options.encoding !== 'buffer' && !Buffer.isEncoding(options.encoding)) {
+      throw nodeError(TypeError, 'ERR_INVALID_ARG_VALUE', `The argument 'encoding' is invalid encoding. Received '${options.encoding}'`);
+    }
     const given = typeof filename === 'string' ? filename : filename.pathname;
     let abs: string;
     try {
@@ -627,8 +637,6 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array) {
     }
     const directory = vfs.isDirectory(abs);
     const base = basename(given);
-    const options = typeof optionsOrListener === 'string' ? { encoding: optionsOrListener }
-      : typeof optionsOrListener === 'object' && optionsOrListener !== null ? optionsOrListener : {};
     const cb = typeof optionsOrListener === 'function' ? optionsOrListener : listener;
     let closed = false;
     let persistent = options.persistent !== false;
@@ -797,9 +805,13 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array) {
     open,
     close,
     read,
+    write,
+    fsync,
     fstat,
     realpath,
     // Streams
+    ReadStream,
+    WriteStream,
     createReadStream,
     createWriteStream,
     // Watch

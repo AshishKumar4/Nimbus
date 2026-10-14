@@ -5,7 +5,9 @@
  * Node's require(esm) checks file/node/data specifiers before calling a hook,
  * so a private non-file scheme cannot serve a synchronous module graph.
  */
+import { fileURLToPath } from 'node:url';
 import { createEsmResolver, type EsmResolution } from '../../../_shared/esm-resolver.js';
+import { pathToFileURL } from './file-url.js';
 import { cjsModuleExportNames } from '../../../runtime/cjs-module-exports.js';
 import { NODE_BUILTIN_EXPORTS } from '../../../runtime/node-builtin-exports.js';
 import { escapedIdentifierNames, readModuleImportSites } from '../../../runtime/dynamic-import-rewrite.js';
@@ -17,7 +19,6 @@ import {
 } from '../../../runtime/native-esm.js';
 import { requiredEsModule, sourceColumn, type RequiredEsModule } from '../../../runtime/native-esm-runtime.js';
 import { dirname } from '../utils/path.js';
-import { fileURLToPath, pathToFileURL } from './url.js';
 import type { CjsLoader, NativeModuleLoader } from './cjs-loader.js';
 import type { NodeContext } from './index.js';
 

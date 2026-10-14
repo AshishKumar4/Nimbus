@@ -1,4 +1,4 @@
-import { EventEmitter } from './events.js';
+import { EventEmitter } from 'node:events';
 import { type LoopbackRouter, type VirtualRequestHandler, type VirtualResponse } from '../kernel/index.js';
 /** Extended VirtualResponse with a done promise for async middleware */
 export interface VirtualResponseWithDone extends VirtualResponse {

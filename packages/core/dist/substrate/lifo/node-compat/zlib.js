@@ -1,5 +1,5 @@
+import { Buffer } from 'node:buffer';
 import { invalidArgType, nodeError } from '../../../_shared/node-error.js';
-import { Buffer } from './buffer.js';
 /**
  * One funnel for every entry point. The result views the caller's exact
  * byte region — byteOffset and byteLength preserved, element values never

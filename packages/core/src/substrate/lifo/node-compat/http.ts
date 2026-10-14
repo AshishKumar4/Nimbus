@@ -1,4 +1,4 @@
-import { EventEmitter } from './events.js';
+import { EventEmitter } from 'node:events';
 import {
   isLoopbackHost,
   type LoopbackRouter,
