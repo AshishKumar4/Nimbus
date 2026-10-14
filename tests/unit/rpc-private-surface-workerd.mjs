@@ -189,7 +189,7 @@ try {
   }
   await nothingElse('ProcessSupervisor', [
     ['_op', ['stdout', ['forged']]], ['_fsMutation', ['unlink', ['/x']]], ['_network'], ['_cacheRead', [{ readOnly: false }]],
-    ['_mutationOwner'], ['_pid'], ['read:#transport'],
+    ['_mutationOwner'], ['_pid'], ['read:#transport'], ...COMMON,
   ]);
 
   // ── the Worker Loader shim: NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint ──
@@ -213,6 +213,12 @@ try {
     console.log('  ok  NimbusAssetsRPC: fetch reads as the process the host named');
   }
   await nothingElse('NimbusAssetsRPC', COMMON);
+  {
+    const id = await asGuest('dons-intended', 'idFromName', ['room'], 'NimbusDurableObjectNamespace');
+    assert.equal(id.ok, true, `idFromName: ${JSON.stringify(id)}`);
+    assert.equal(typeof id.value, 'string');
+    console.log('  ok  NimbusDurableObjectNamespace: idFromName answers');
+  }
   await nothingElse('NimbusDurableObjectNamespace', COMMON);
   await nothingElse('NimbusDOStub', COMMON);
 
@@ -223,7 +229,7 @@ try {
     assert.match(other.error, /EPERM: this session runs commands only in shell 'scoped'/, other.error);
     console.log('  ok  HostedSession: a scoped call is refused another shell');
   }
-  await nothingElse('HostedSession', [['client'], ['cred', [{ uid: 0, gid: 0, groups: [0], umask: 18 }]], ['exec', [{ shellId: 'scoped' }]], ['read:owner'], ['read:scope']]);
+  await nothingElse('HostedSession', [['client'], ['cred', [{ uid: 0, gid: 0, groups: [0], umask: 18 }]], ['exec', [{ shellId: 'scoped' }]], ['read:owner'], ['read:scope'], ...COMMON]);
 
   // ── NimbusFsJournalReader ──────────────────────────────────────────────────
   {

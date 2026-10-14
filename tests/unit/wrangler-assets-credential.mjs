@@ -10,9 +10,9 @@ import { NimbusWrangler } from '../../packages/worker/dist/wrangler/nimbus-wrang
 const RUN_AS = Object.freeze({ uid: 1001, gid: 1001, groups: Object.freeze([1001]), umask: 0o022 });
 const minted = [];
 const wrangler = new NimbusWrangler({
-  vfs: {}, namespace: { watchChanges: () => () => {} }, esbuild: {},
+  // The engine as the process that started the server (CredentialedVfs.cred).
+  vfs: { cred: RUN_AS }, namespace: { watchChanges: () => () => {} }, esbuild: {},
   bundleFs: {},
-  cred: RUN_AS,
   env: {},
   ctx: {
     id: { toString: () => 'session-id' },

@@ -5,8 +5,8 @@
 //   - a child's handle (its stdin, its output, its wait, its kill) is its
 //     parent's, or an ancestor's: another process gets ESRCH, as waitpid
 //     answers for a pid that is not a child;
-//   - a stdin channel is read by its own process, or by a descendant that
-//     inherited it as fd 0: another process gets EPERM;
+//   - a process reads its own stdin, whatever channel it names: the one it
+//     inherited as fd 0 when it did, and never another process's;
 //   - a signal reaches its target only as Linux's kill(2) allows it: the
 //     caller is root, or has the target's uid; else EPERM.
 //
@@ -80,13 +80,20 @@ await refused(as(sibling, 'cpStdinEnd', [child.pid]), 'ESRCH', "the end of anoth
 await as(parent, 'cpStdinWrite', [child.pid, new TextEncoder().encode('to the child\n')]);
 console.log("  a child's handle is its parent's, or an ancestor's");
 
-// ── a stdin channel is read by its process, or one that inherited it ──────
-await refused(as(sibling, 'cpReadStdin', [child.pid, 0, null]), 'EPERM', "a read of another process's stdin");
-await refused(as(parent, 'cpReadStdin', [child.pid, 0, null]), 'EPERM', "a parent's read of its child's stdin");
-const own = await as(child, 'cpReadStdin', [child.pid, 0, null]);
-assert.equal(new TextDecoder().decode(own.data), 'to the child\n', 'a process reads its own stdin');
-await as(grandchild, 'cpReadStdin', [parent.pid, 0, null]);
-console.log('  a stdin channel is read by its process, or one that inherited it');
+// ── a process reads its own stdin, whatever channel it names ──────────────
+const text = (packet) => new TextDecoder().decode(packet.data);
+assert.equal(text(await as(sibling, 'cpReadStdin', [child.pid, 0, null])), '', "a sibling naming the child's channel drains nothing of it");
+assert.equal(text(await as(parent, 'cpReadStdin', [child.pid, 0, null])), '', "nor does its parent");
+assert.equal(text(await as(child, 'cpReadStdin', [child.pid, 0, null])), 'to the child\n', 'the child reads its own stdin');
+// A grandchild whose stdin is a pipe of its own (not inherited) drains
+// nothing of its ancestor's channel by naming it; one that inherited it reads it.
+processes.openInput(grandchild.pid);
+processes.writeInputBytes(parent.pid, new TextEncoder().encode('to the parent\n'));
+assert.equal(text(await as(grandchild, 'cpReadStdin', [parent.pid, 0, null])), '', "a child with a pipe of its own drains nothing of its ancestor's stdin");
+const inheriting = processes.spawn('node', ['inheriting.js'], '/home/user', { parentPid: parent.pid });
+processes.inheritInput(inheriting.pid, parent.pid);
+assert.equal(text(await as(inheriting, 'cpReadStdin', [parent.pid, 0, null])), 'to the parent\n', 'one that inherited it reads it');
+console.log('  a process reads its own stdin, whatever channel it names');
 
 // ── a signal reaches its target as Linux's kill(2) allows ─────────────────
 await refused(as(parent, 'cpKill', [otherUidChild.pid, 'SIGTERM']), 'EPERM', "a kill of a child of another uid");
