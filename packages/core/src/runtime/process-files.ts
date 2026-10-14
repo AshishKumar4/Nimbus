@@ -1486,7 +1486,6 @@ export class ProcessView implements VFS {
   /** access(2): `mode` is F_OK or any of R_OK, W_OK, X_OK. */
   async access(path: string, mode: number): Promise<void> { await this.call('access', path, () => this.fs.access(path, mode)); }
   async realpath(path: string): Promise<string> { return await this.call('realpath', path, () => this.fs.realpath(path)); }
-  /** Append through an O_APPEND descriptor, so concurrent appenders never overwrite each other. */
   /**
    * An open file description of this process on `path` (open(2)): its reads
    * and writes are the file the open found, whatever the name names after,
@@ -1497,6 +1496,7 @@ export class ProcessView implements VFS {
     return new ProcessFile(this.fs, path, opened.id, vfsStatOf(opened.stat));
   }
 
+  /** Append through an O_APPEND descriptor, so concurrent appenders never overwrite each other. */
   async appendFile(path: string, content: Uint8Array | string): Promise<void> {
     const data = typeof content === 'string' ? new TextEncoder().encode(content) : content;
     await this.call('open', path, async () => {
