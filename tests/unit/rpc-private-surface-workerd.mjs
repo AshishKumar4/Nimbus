@@ -130,8 +130,8 @@ async function nothingElse(kind, others) {
   }
   console.log(`  ok  ${kind}: ${others.map(([m]) => m).join(', ')} answer nothing`);
 }
-/** Fields and inherited helpers every class is asked for, as a caller might read or call them. */
-const COMMON = [['read:ctx'], ['read:env'], ['read:props'], ['constructor']];
+/** Fields every class is asked for, as a caller might read them. (A stub's `constructor` is its own class, not a call.) */
+const COMMON = [['read:ctx'], ['read:env'], ['read:props']];
 
 try {
   for (const until = Date.now() + 30_000; ;) {
