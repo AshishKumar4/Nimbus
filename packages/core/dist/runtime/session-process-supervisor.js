@@ -491,6 +491,8 @@ export class SessionProcessSupervisor {
         if (!this.release)
             return 0;
         const expired = this.table.expired(maxAge).filter((entry) => !this.unpublishedEnds.has(entry.pid) && !this.held.has(entry.pid));
+        if (expired.length === 0)
+            return 0;
         const { reaped, failures } = await this.forgetReleased(expired);
         for (const { pid, error } of failures)
             this.appendOutput(pid, 'stderr', `${error instanceof Error ? error.message : String(error)}\n`);
