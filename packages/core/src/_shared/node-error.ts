@@ -327,7 +327,7 @@ export const nodeErrorCodes: Readonly<Record<string, NodeErrorConstructor>> = Ob
     constructor.HideStackFramesError = constructor;
     return [code, constructor];
   }),
-]));
+]);
 
 /**
  * lib/internal/errors.js hideStackFrames: `fn`, whose error's stack starts
