@@ -5,6 +5,18 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed: in a directory tree a node process writes often enough to hold,
+  `fs.promises.chmod`, `utimes` and `chown` (and their callback and
+  `FileHandle` forms) now resolve once the change is logged, as `mkdir`,
+  `unlink` and a file's `rename` already did. Elsewhere they still wait for
+  the session. Each waited for the session's durable commit, about 30–40 ms
+  deployed, so `fs.promises.cp` (a copy, then a chmod, per file) took about
+  twice as long as before it became Node's own. An async `chown` now refuses
+  `EPERM` itself, as `chownSync` does.
+- Changed: `fs.promises.copyFile` of a file the program just wrote, which the
+  session has not answered yet, resolves once logged when both names are in
+  a tree the process holds. The copy reads as those bytes, with the source's
+  mode, at once.
 - Fixed: two Durable Objects of a `wrangler dev` Worker could run as one
   (one instance, one storage): an object's facet was named by its binding
   and its id joined with `-`, so binding `A-B`'s object `c` and binding
