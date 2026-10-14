@@ -421,14 +421,13 @@ export class SessionProcessSupervisor implements ProcessOutput {
     return this.kill(pid, exitCode, reason);
   }
 
-  /** Whether `pid` is `ancestor` or one of the processes spawned under it, transitively. */
-  isWithin(pid: number, ancestor: number): boolean {
-    const seen = new Set<number>();
-    for (let at: number | undefined = pid; at !== undefined && !seen.has(at); at = this.table.get(at)?.parentPid) {
-      if (at === ancestor) return true;
-      seen.add(at);
+  /** `pid` and the processes above it, nearest first, as the table has them now. */
+  lineage(pid: number): number[] {
+    const chain: number[] = [];
+    for (let entry = this.table.get(pid); entry !== undefined && !chain.includes(entry.pid); entry = entry.parentPid === undefined ? undefined : this.table.get(entry.parentPid)) {
+      chain.push(entry.pid);
     }
-    return false;
+    return chain;
   }
 
   liveCred(pid: number): VfsCred {

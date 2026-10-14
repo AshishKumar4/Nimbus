@@ -1468,22 +1468,14 @@ export async function _rpcCpStdinEnd(self: RpcHost, childPid: number, pid?: numb
  * its parent's, or an ancestor's: `caller`, the pid its binding stamped,
  * must have spawned `childPid`, directly or not. Another gets ESRCH, as
  * waitpid answers for a pid that is not its child. A call with no caller is
- * the session's own. Who spawned the child is the broker's record of it,
- * which lasts as the handle does (its output and exit not yet read): the
- * table may forget an ended child's row first (a prune).
+ * the session's own. Who holds the handle is the broker's, taken at the
+ * spawn, which lasts as the handle does (its output and exit not yet read):
+ * the table may forget the rows of the child and of those above it first (a
+ * prune).
  */
 function childOf(self: CpRpcHost, childPid: number, caller: number | undefined): void {
     if (caller === undefined) return;
-    const broker = self._ensureChildProcessManager();
-    // Up the broker's spawn records, which a prune leaves, to the caller or
-    // the first process the broker did not spawn; above that, the table's.
-    let ancestor = broker.parentOf(childPid);
-    while (ancestor !== undefined && ancestor !== caller) {
-        const above = broker.parentOf(ancestor);
-        if (above === undefined) break;
-        ancestor = above;
-    }
-    if (childPid === caller || ancestor === undefined || (ancestor !== caller && !self.processes.isWithin(ancestor, caller))) {
+    if (!self._ensureChildProcessManager().isHeldBy(childPid, caller)) {
         throw Object.assign(new Error(`ESRCH: no such child process ${childPid}`), { code: 'ESRCH', errno: -3 });
     }
 }
