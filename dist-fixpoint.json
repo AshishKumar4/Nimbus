@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "70380864962db3ce85973ebde73d8c32cec3d84ca5d74041db5a8c1c208ef68f",
+  "fingerprint": "21a61ba1357c485159cc789f77bd9fe043288db36854db8e9f631ebff19a3717",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -19,8 +19,8 @@
     "apps/probe/wrangler.jsonc"
   ],
   "outputs": {
-    "apps/hosted-demo/wrangler.jsonc": "6a59e504b3dd62fcef57abf0ebf3350dd3af1ff5a2efcac406c95313388928ee",
-    "apps/probe/wrangler.jsonc": "ef2a3da74b1259a1e5fa44f5c95b0fcb21a6010653971ee0456d19bcf3c4b4ea",
+    "apps/hosted-demo/wrangler.jsonc": "9017522f649bf71efbca843f0e94c0c0ec0f222095c4b28999a15567c9e8d90e",
+    "apps/probe/wrangler.jsonc": "a23011ed35f364da0c90a5ebae02e3023affd9e67026d6f80db297d02c5fa617",
     "packages/cli/LICENSE": "9abf902a70f15256b6d108767fc510341854ec2297e3874c5bc6df496a895617",
     "packages/cli/NOTICE.md": "68465263ab6d7060d9e2fede5037971c202824c5fee3d75e9ef2e01624e2d329",
     "packages/cli/README.md": "e0b43c83dbf2fd2cc6a98924231b0e0fb5bf12e5f5a8c24ea7112b20d3044a12",
