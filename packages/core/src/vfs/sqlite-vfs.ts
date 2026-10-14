@@ -433,10 +433,11 @@ export interface CredentialedVfs {
   writeFile(path: string, content: string | Uint8Array, options?: { mode?: number; umask?: number; exclusive?: boolean }): void;
   /**
    * writeFile of a file whose `size` bytes arrive over time from `source`,
-   * published whole once they have (see SqliteVFS.writeFileFrom). Answers
-   * the revision the publication produced.
+   * published whole once they have (see SqliteVFS.writeFileFrom). With
+   * `atMost`, `size` is the most `source` may yield, and the file is what
+   * it yields. Answers the revision the publication produced.
    */
-  writeFileFrom(path: string, size: number, source: AsyncIterable<Uint8Array>, options?: { mode?: number }): Promise<number>;
+  writeFileFrom(path: string, size: number, source: AsyncIterable<Uint8Array>, options?: { mode?: number; atMost?: boolean }): Promise<number>;
   symlink(target: string, path: string): void;
   readlink(path: string): string;
   resolveSymlink(path: string): string | null;
@@ -9171,7 +9172,10 @@ export class SqliteVFS {
    * transactions, and the file published whole by the last one, as
    * replaceFileWithStagedContent does for a file too large for one
    * transaction. `size` is what `source` must yield; a source that ends
-   * short, runs long or throws publishes nothing.
+   * short, runs long or throws publishes nothing. With `atMost`, `size` is
+   * the most it may yield (its length is not known ahead): what it yields up
+   * to a chunk is held, and written as writeFile writes a file that small,
+   * and a source past the bound publishes nothing.
    *
    * Appending the same bytes a piece at a time (writeRange) re-cuts the
    * file's tail on every piece, and a piece past half a transaction's blob
@@ -9181,12 +9185,13 @@ export class SqliteVFS {
     path: string,
     size: number,
     source: AsyncIterable<Uint8Array>,
-    options: { mode?: number } | undefined,
+    options: { mode?: number; atMost?: boolean } | undefined,
     cred: VfsCred,
     mutationOwner?: string,
     origin: Principal | null = null,
   ): Promise<number> {
     if (!Number.isSafeInteger(size) || size < 0) throw vfsError('EINVAL', path, `invalid size ${size}`);
+    const atMost = options?.atMost === true;
     // uid 0 may use the ledger's kernel reserve (callerView), but that view
     // only covers a call's synchronous part, and this one awaits its source:
     // each transaction below is run with the caller's own privilege, as its call.
@@ -9200,9 +9205,9 @@ export class SqliteVFS {
     const target = (await withRecall(() => asCaller(() => this.fileWriteInode(path, size, options, cred)))).path;
     const sourceMismatch = (received: number) => vfsError(
       'EINVAL',
-      `${target}: source ${received > size ? 'ran past' : `ended after ${received} of`} the ${size} bytes declared`,
+      `${target}: source ${received > size ? 'ran past' : `ended after ${received} of`} the ${size} bytes ${atMost ? 'allowed' : 'declared'}`,
     );
-    if (size <= CHUNK_SIZE) {
+    if (!atMost && size <= CHUNK_SIZE) {
       // One chunk, named from its inode: no cut to stream into.
       const data = await readDeclaredSource(source, size, sourceMismatch);
       return withRecall(() => asCaller(() => {
@@ -9216,22 +9221,45 @@ export class SqliteVFS {
     const flush = writer.flush;
     const stage = (data: Uint8Array): void => writer.stage({ data, hash: chunkHash(data) });
     const cutter = new ContentCutter();
+    // A staged chunk is held until its transaction; one that is a view of
+    // the source's piece is copied, since the source may reuse it.
+    const cut = (piece: Uint8Array): void => {
+      for (const data of cutter.push(piece)) stage(data.buffer === piece.buffer ? data.slice() : data);
+    };
+    // Of a source of unknown length, what it has yielded while that is no
+    // more than a chunk: a file that small is the one chunk writeFile makes.
+    let held: Uint8Array[] | null = atMost ? [] : null;
     let received = 0;
     try {
       for await (const piece of source) {
         received += piece.byteLength;
         if (received > size) throw sourceMismatch(received);
-        // A staged chunk is held until its transaction; one that is a view
-        // of the source's piece is copied, since the source may reuse it.
-        for (const data of cutter.push(piece)) stage(data.buffer === piece.buffer ? data.slice() : data);
+        if (held === null) {
+          cut(piece);
+        } else if (received <= CHUNK_SIZE) {
+          held.push(piece.slice());
+        } else {
+          for (const prior of held) cut(prior);
+          held = null;
+          cut(piece);
+        }
       }
-      if (received !== size) throw sourceMismatch(received);
+      if (held !== null) {
+        const data = new Uint8Array(received);
+        let at = 0;
+        for (const piece of held) { data.set(piece, at); at += piece.byteLength; }
+        return await withRecall(() => asCaller(() => {
+          this.writeFile(path, data, options, cred);
+          return this._revision;
+        }));
+      }
+      if (!atMost && received !== size) throw sourceMismatch(received);
       for (const data of cutter.finish()) stage(data);
       flush();
       // Refused again as it publishes: what it meets now (a lease taken while
       // it streamed) is recalled first, and the staging waits for it.
       return await withRecall(() => asCaller(() => {
-        this.publishStagedFile(this.fileWriteInode(path, size, options, cred), staging);
+        this.publishStagedFile(this.fileWriteInode(path, received, options, cred), staging);
         // Read in the turn that published it: after an await it could be a peer's.
         return this._revision;
       }));
