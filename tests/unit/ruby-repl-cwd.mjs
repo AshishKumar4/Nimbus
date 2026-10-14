@@ -44,7 +44,8 @@ if (spawnSync('ruby', ['--version'], { encoding: 'utf8' }).status !== 0) {
 
 // The facet's scope: the runner tail, with the VM and the WASI mount stood in for.
 const evaluated = [];
-Object.assign(globalThis, { __wasiSupervisorOutput: wasiOutputRelay, __wasiOutputControl: outputControlReader, __nimbusRubyStep: async () => ({ resumed: false, alive: false }) });
+// With no mount, the run's settle (wasi/preamble.ts __wasiSettled) has nothing to send: its result stands.
+Object.assign(globalThis, { __wasiSupervisorOutput: wasiOutputRelay, __wasiOutputControl: outputControlReader, __wasiSettled: async (result) => result, __nimbusRubyStep: async () => ({ resumed: false, alive: false }) });
 const stand = [
   'function __nimbusInstallRubyFs() {}',
   // What __rubyRun re-adopts after the mount: the supervisor the entry published.
