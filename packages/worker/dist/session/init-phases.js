@@ -75,7 +75,11 @@ export function setPhase(self, toState, trigger) {
 export function classifyWsUpgrade(self, sockets, now = Date.now()) {
     if (self.shell == null || self.terminal == null || self.kernel == null)
         return 'cold';
-    return hasLiveShellOwner(self.ctx, sockets, now) ? 'conflict' : 'warm-join';
+    // Another browser's live terminal holds it, built or being built.
+    if (hasLiveShellOwner(self.ctx, sockets, now))
+        return 'conflict';
+    // A session being built is joined once it is (init.ts initSession), never mid-build.
+    return self.building != null ? 'cold' : 'warm-join';
 }
 /**
  * [B'.5] Run the warm-rejoin path. Skips Phase B (kernel + shell are
@@ -90,7 +94,7 @@ export function classifyWsUpgrade(self, sockets, now = Date.now()) {
  * needed here; init-phases.ts shouldn't grow a circular dep on
  * nimbus-session-internal.
  */
-export function joinExistingSession(self, ws, tee, loadScrollback) {
+export function joinExistingSession(self, shell, terminal, ws, tee, loadScrollback) {
     // Phase R — pure SQL reads. No-op on warm rejoin (live state is
     // already correct in self.shell / self.terminal). Recorded in the
     // ring for symmetry with cold init.
@@ -100,14 +104,12 @@ export function joinExistingSession(self, ws, tee, loadScrollback) {
     // the same WebSocketTerminal instance is preserved (we mutate
     // its internal ws ref via attach()).
     setPhase(self, 'wire', 'warm-rejoin');
-    self.terminal.attach(ws, tee);
+    terminal.attach(ws, tee);
     // Replay scrollback to the new ws so the user sees the prior
     // session's terminal contents. Same shape as cold-init's replay
     // when persisted state exists.
     try {
-        const replay = loadScrollback(self.ctx);
-        if (replay.length > 0)
-            self.terminal.write(replay);
+        terminal.replay(loadScrollback(self.ctx));
     }
     catch (e) {
         try {
@@ -115,7 +117,7 @@ export function joinExistingSession(self, ws, tee, loadScrollback) {
         }
         catch { }
     }
-    self.shell.announcePrompt();
+    shell.announcePrompt();
     // Phase O is SKIPPED on warm rejoin (just like warm path of
     // initSession). The original cold-start banner is in the replay.
     // Settle to 'hydrated' as the terminal phase via setPhase so the

@@ -81,7 +81,6 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
     #private;
     get childProcessHost(): import("@nimbus-sh/core/runtime/child-process-manager.js").ChildProcessHost;
     runtimeWorkspace: NimbusWorkspace | null;
-    private runtimeReady;
     get runtimeManager(): RuntimeManager;
     routeLoopback(port: number, request: Request): Promise<Response | null>;
     /** The destroy running (programmatic.ts rpcDestroy), until it is answered. */
@@ -807,6 +806,12 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
      * build instead of starting its own. See session/ws.ts bindShellSocket.
      */
     _wakeRebuild: Promise<void> | null;
+    /** The session's one build in flight (session/init.ts initSession). */
+    building: Promise<void> | null;
+    /** The latest build's session usable: its own commands registered. */
+    usable: Promise<void> | null;
+    /** The latest build's shell started: its login files run. */
+    shellStarted: Promise<void> | null;
     ensureGlobalPrefixDirs(prefix: string, cred: Readonly<VfsCred>): void;
     /**
      * The starter content a fresh Nimbus session shows a user: the banner, the

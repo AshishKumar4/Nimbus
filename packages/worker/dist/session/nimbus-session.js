@@ -216,7 +216,6 @@ export class NimbusSession extends CloudflareDurableObject {
     get childProcessHost() { return this.#runtimeServices.childProcessHost; }
     // this.ctx and this.env are provided by the DurableObject base class
     runtimeWorkspace = null;
-    runtimeReady = null;
     get runtimeManager() {
         if (!this.runtimeWorkspace)
             throw new Error('Nimbus runtime is not initialized');
@@ -236,12 +235,18 @@ export class NimbusSession extends CloudflareDurableObject {
         // A request that comes while the session is destroyed is served by the one made again.
         while (this.destroying !== null)
             await this.destroying.catch(() => { });
-        if (this.shell)
+        // Built and not being built again: a shell exists from the middle of a
+        // build on (before the session's own commands are registered).
+        if (this.shell !== null && this.building === null)
             return;
-        this.runtimeReady ??= this.initSession(null).then(() => {
-            this._b4Phase = 'drained';
-        }).finally(() => { this.runtimeReady = null; });
-        await this.runtimeReady;
+        if (this.building !== null) {
+            // Usable once its commands are registered: the build's own login files
+            // may call here, and must not wait on the build that runs them.
+            await this.usable;
+            return;
+        }
+        await this.initSession(null);
+        this._b4Phase = 'drained';
     }
     /** The session's filesystem (SessionFilesystem): opened on first use, closed whole by a destroy. */
     filesystem = null;
@@ -1122,6 +1127,12 @@ export class NimbusSession extends CloudflareDurableObject {
      * build instead of starting its own. See session/ws.ts bindShellSocket.
      */
     _wakeRebuild = null;
+    /** The session's one build in flight (session/init.ts initSession). */
+    building = null;
+    /** The latest build's session usable: its own commands registered. */
+    usable = null;
+    /** The latest build's shell started: its login files run. */
+    shellStarted = null;
     // ── Filesystem seeding ────────────────────────────────────────────────
     ensureGlobalPrefixDirs(prefix, cred) { return this.#runtimeServices.ensureGlobalPrefixDirs(prefix, cred); }
     /**

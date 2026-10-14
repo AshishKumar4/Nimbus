@@ -74,6 +74,8 @@ export interface WsHost {
     _b4Phase: import('@nimbus-sh/platform/oom-discriminator.js').SessionState | null;
     /** The session rebuild a woken instance has in flight; see bindShellSocket. */
     _wakeRebuild: Promise<void> | null;
+    /** The session's one build in flight (init.ts initSession), or null. */
+    building: Promise<void> | null;
     initSession(ws: WebSocket, options?: InitSessionOptions): Promise<void>;
     _w5PersistRing(): Promise<void> | null;
     _w9FlushOnClose(): void;
