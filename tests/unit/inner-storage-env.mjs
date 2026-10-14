@@ -16,8 +16,9 @@
 //   - R2: an object's fields are its own, read-only, in workerd's order, its
 //     class workerd's; a body reads once; a condition and a range are sent
 //     as R2's client sends them, metadata values as strings (workerd's
-//     Dict<kj::String>), and a range, etag or include it refuses is refused
-//     before the binding is asked.
+//     Dict<kj::String>), a list limit as the int workerd converts it to, and
+//     a range, etag or include it refuses is refused before the binding is
+//     asked.
 //
 // The live differential is wrangler-dev-storage-bindings-workerd.
 
@@ -140,6 +141,11 @@ assert.equal(asked.length, refusedBefore, 'what the client refuses never reaches
 await BUCKET.put('k', 'v', { customMetadata: { count: 1, flag: true }, httpMetadata: { contentType: 1, cacheExpiry: new Date(5_000) } });
 assert.deepEqual(asked.at(-1)[3], { customMetadata: { count: '1', flag: 'true' }, httpMetadata: { contentType: '1', cacheExpiry: new Date(5_000) } },
   'metadata values cross as strings, as workerd coerces them');
+for (const [limit, sent] of [[1.5, 1], ['2', 2], [NaN, 0], [undefined, undefined]]) {
+  await BUCKET.list(limit === undefined ? {} : { limit });
+  assert.equal(asked.at(-1)[1].limit, sent, `a list limit of ${String(limit)} is sent as workerd's int (${String(sent)})`);
+}
+await assert.rejects(BUCKET.list({ limit: 2 ** 31 }), { name: 'TypeError', message: 'Value out of range. Must be between -2147483648 and 2147483647 (inclusive).' });
 const bogus = asked.length;
 await assert.rejects(BUCKET.list({ include: ['bogus'] }), { name: 'RangeError', message: 'Unsupported include value bogus' });
 assert.equal(asked.length, bogus, 'an include R2 does not have is refused before the binding is asked');

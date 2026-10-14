@@ -11,6 +11,9 @@
 //   - no key or binding name reaches outside its binding's directory: `.`,
 //     `..` and `../..` are names in it, and a key ending `.meta` is not
 //     another key's sidecar;
+//   - a body read after its get answered (a stream the Worker reads later)
+//     waits for another holder's delegation over it to be recalled, as a
+//     call the session serves does, and errors if the recall changed it;
 //   - a body is streamed to its file as it arrives, never held whole: the
 //     store writes each piece before it asks for the next; a body past the
 //     platform's limit (25 MiB for a KV value, R2's per-upload limit) is
@@ -32,15 +35,38 @@ import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const MiB = 1024 * 1024;
 
-/** The session's filesystem, as the session's user, with a project at home/user/app. */
-function sessionFs() {
+/** The session's filesystem (`raw`, the engine), as the session's user, with a project at home/user/app. */
+function sessionVfs() {
   const harness = createSqliteVfsTestHarness();
-  const vfs = new SqliteVFS(harness.sql, harness.ctx);
-  const kernel = vfs.as(CRED_KERNEL);
+  const raw = new SqliteVFS(harness.sql, harness.ctx);
+  const kernel = raw.as(CRED_KERNEL);
   kernel.mkdir('home/user/app', { recursive: true });
   kernel.chown('home/user', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
   kernel.chown('home/user/app', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
-  return vfs.as(CRED_SESSION_USER);
+  return { raw, fs: raw.as(CRED_SESSION_USER) };
+}
+const sessionFs = () => sessionVfs().fs;
+
+/**
+ * Another process's delegation of `root`, covering reads: a read under it
+ * waits for `recall`, which does what the holder decided (`decide`, as the
+ * holder) and is counted.
+ */
+function delegate(raw, root, decide = () => {}) {
+  const recalls = [];
+  let owned;
+  const lease = raw.acquireExclusiveMutation(root, {
+    delegation: {
+      reads: true,
+      async recall(kind) {
+        recalls.push(kind);
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        decide(owned);
+      },
+    },
+  });
+  owned = raw.as(CRED_KERNEL, { mutationOwner: lease.owner });
+  return recalls;
 }
 
 /** Every file under `dir`, as paths relative to it, depth first. */
@@ -229,6 +255,39 @@ const KEYS = ['a/b c', 'a/b%d', 'b#1', 'a/ü'];
   assert.equal(await r2.head('m'), null, 'nothing was stored');
   const kv = new KvEmulator({ vfs: fs, root: 'home/user/app', binding: 'CACHE' });
   await assert.rejects(serveKvCall(kv, { method: 'nope', key: 'k' }));
+}
+
+// ── A body read later waits for a delegation over it, and is the object it began ──
+{
+  const size = 3 * MiB + 5;
+  const expected = Uint8Array.from({ length: size }, (_, i) => i & 0xff);
+  for (const kind of ['R2', 'KV']) {
+    const { raw, fs } = sessionVfs();
+    const r2 = new R2Emulator({ vfs: fs, root: 'home/user/app', binding: 'BUCKET' });
+    const kv = new KvEmulator({ vfs: fs, root: 'home/user/app', binding: 'CACHE' });
+    const store = kind === 'R2' ? r2 : kv;
+    const read = async () => (kind === 'R2' ? (await r2.get('big.bin', {})).body : await kv.get('big.bin', { type: 'stream' }));
+    await store.put('big.bin', lazyStream(size).stream, {});
+    // Obtained, then another process delegates the store before a byte is read.
+    const later = await read();
+    const recalls = delegate(raw, 'home/user/app/.nimbus');
+    const bytes = new Uint8Array(await new Response(later).arrayBuffer());
+    assert.ok(recalls.length > 0, `${kind}: the read met the delegation`);
+    assert.equal(bytes.length, size, `${kind}: the whole body is read once the delegation is recalled`);
+    assert.ok(bytes.every((byte, i) => byte === expected[i]), `${kind}: and it is the body`);
+
+    // A recall that replaces the object: the body errors rather than mix two objects.
+    const { raw: raw2, fs: fs2 } = sessionVfs();
+    const store2 = kind === 'R2' ? new R2Emulator({ vfs: fs2, root: 'home/user/app', binding: 'BUCKET' }) : new KvEmulator({ vfs: fs2, root: 'home/user/app', binding: 'CACHE' });
+    await store2.put('big.bin', lazyStream(size).stream, {});
+    const stream = kind === 'R2' ? (await store2.get('big.bin', {})).body : await store2.get('big.bin', { type: 'stream' });
+    const reader = stream.getReader();
+    const first = await reader.read();
+    assert.equal(first.value.byteLength, MiB, `${kind}: a body is read a piece at a time`);
+    const path = `home/user/app/.nimbus/${kind === 'R2' ? 'r2/BUCKET' : 'kv/CACHE'}/big.bin`;
+    delegate(raw2, 'home/user/app/.nimbus', (owned) => owned.writeFile(path, 'replaced'));
+    await assert.rejects(reader.read(), /the object changed while its body was read/, `${kind}: a body whose object the recall replaced errors`);
+  }
 }
 
 // ── The store writes each piece before it asks for the next: no body is held whole ──

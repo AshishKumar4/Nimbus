@@ -226,6 +226,21 @@ export function innerStorageAdapter(names: InnerStorageNames, env: object): void
   }
 }
 
+/**
+ * An option workerd takes as an `int` (jsg's int wrapper): the number it
+ * converts to (ToNumber), 0 for one that is not finite, truncated; out of
+ * int32's range, the TypeError workerd throws.
+ */
+export function jsgInt(value: number | string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 0;
+  if (number < -2147483648 || number > 2147483647) {
+    throw new TypeError('Value out of range. Must be between -2147483648 and 2147483647 (inclusive).');
+  }
+  return Math.trunc(number);
+}
+
 /** Whether `value` is the binding the loader passes, with each of `methods` (an RPC stub's methods are its properties). */
 function isRemote<T extends object>(value: unknown, methods: readonly (keyof T & string)[]): value is T {
   return value !== null && (typeof value === 'object' || typeof value === 'function')
@@ -785,8 +800,11 @@ class R2Bucket {
     return this.#remote.delete(Array.isArray(keys) ? keys.map(String) : String(keys));
   }
 
-  async list(options?: Omit<R2WireListOptions, 'include'> & { include?: string[] }): Promise<{ objects: HeadResult[]; truncated: boolean; cursor?: string; delimitedPrefixes: string[] }> {
-    const { include: given, ...rest } = options ?? {};
+  async list(options?: Omit<R2WireListOptions, 'include' | 'limit'> & { include?: string[]; limit?: number | string }): Promise<{ objects: HeadResult[]; truncated: boolean; cursor?: string; delimitedPrefixes: string[] }> {
+    const { include: given, limit: givenLimit, ...others } = options ?? {};
+    // ListOptions.limit is an int to workerd.
+    const limit = jsgInt(givenLimit);
+    const rest: R2WireListOptions = limit === undefined ? others : { ...others, limit };
     const include: NonNullable<R2WireListOptions['include']> = [];
     for (const field of given ?? []) {
       if (field !== 'httpMetadata' && field !== 'customMetadata') throw new RangeError(`Unsupported include value ${field}`);
