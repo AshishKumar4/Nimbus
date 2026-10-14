@@ -6,8 +6,11 @@ published independently in the `@nimbus-sh` npm scope.
 ## Unreleased
 
 - Fixed: a session's `npm uninstall` and `npm ls` do what npm 10 does.
-  `npm uninstall -g p` removes the global p and its bins; it removed the
-  project's p and its declaration instead. `npm uninstall p` removes p's
+  `npm uninstall -g p` removes the global p and its commands, for good (no
+  later global install links them again); it removed the project's p and
+  its declaration instead. Both read their options as npm reads them
+  (`--global=false` is the project, `--location=global` the global
+  prefix, and `.npmrc` counts). `npm uninstall p` removes p's
   bins with it, and every declaration of p, installed or not (each
   dependency field and `bundleDependencies`); package.json keeps its own
   indent, its dependency fields sorted and empty ones dropped, and
@@ -18,7 +21,8 @@ published independently in the `@nimbus-sh` npm scope.
   depends on is `extraneous`; a missing or invalid one fails the command
   (`ELSPROBLEMS`). `npm ls -g` lists the global prefix, not the project.
   For embedders: `createNpmCommand` takes `beforeWrite`, called before the
-  command replaces the project's package.json.
+  command replaces the project's package.json, and an `NpmInstallPort` may
+  have `unlinkBins`, called with the packages an uninstall removed.
 - Fixed: two npm installs at once in a session no longer remove each
   other's staged packages. Each install built its own installer, so one
   starting could sweep the staging directory of another installing into a

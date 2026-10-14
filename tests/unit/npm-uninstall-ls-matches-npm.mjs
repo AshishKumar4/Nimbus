@@ -15,7 +15,9 @@
 // - uninstall: the package and its bins go, and so does every declaration
 //   of it, installed or not; package.json keeps its indent, its dependency
 //   fields sorted and empty ones dropped. -g acts on the global prefix,
-//   --no-save leaves package.json, a name with a version names nothing.
+//   and an explicit false (--global=false, -g=false, --global false) on the
+//   project; --no-save leaves package.json, a name with a version names
+//   nothing.
 //
 // Before: the hosted runtime answered both itself. `npm uninstall -g p`
 // removed the project's p and its declaration and left the global one and
@@ -181,6 +183,8 @@ try {
   link('../lib/node_modules/g1/cli.js', `${PREFIX}/bin/g1`);
   await both('ls -g: the global prefix', L, ['ls', '-g']);
   await both('ls --global', L, ['ls', '--global']);
+  await both('ls --location=global', L, ['ls', '--location=global']);
+  await both('ls --global=false: the project', L, ['ls', '--global=false']);
 
   const B = `${HOME}/bare`;
   pkg(`${B}/node_modules/plain`, { name: 'plain', version: '1.0.0' });
@@ -253,6 +257,17 @@ try {
   pkg(`${U9}/node_modules/@s/a`, { name: '@s/a', version: '1.0.0', bin: 'cli.js' }, { 'cli.js': BIN });
   link('../@s/a/cli.js', `${U9}/node_modules/.bin/a`);
   await both('uninstall: a scoped package and the bin named for it', U9, ['uninstall', '@s/a'], { files: [`${U9}/package.json`], trees: [U9] });
+
+  // An explicit false is local, however it is spelled; `both` is installed in the project and globally.
+  pkg(`${PREFIX}/lib/node_modules/both`, { name: 'both', version: '1.0.0', bin: { bothbin: 'cli.js' } }, { 'cli.js': BIN });
+  link('../lib/node_modules/both/cli.js', `${PREFIX}/bin/bothbin`);
+  for (const [i, flag] of [['--global=false'], ['-g=false'], ['--global', 'false']].entries()) {
+    const U = `${HOME}/uf${i}`;
+    pkg(U, { name: `uf${i}`, version: '1.0.0', dependencies: { both: '^1.0.0' } });
+    pkg(`${U}/node_modules/both`, { name: 'both', version: '1.0.0', bin: { bothbin: 'cli.js' } }, { 'cli.js': BIN });
+    link('../both/cli.js', `${U}/node_modules/.bin/bothbin`);
+    await both(`uninstall ${flag.join(' ')}: the project's package`, U, ['uninstall', ...flag, 'both'], { files: [`${U}/package.json`], trees: [PREFIX, U] });
+  }
 
   assert.deepEqual(mismatches, [], `${mismatches.length} case(s) differ from npm ${npmVersion}:\n\n${mismatches.join('\n\n')}`);
 } finally {

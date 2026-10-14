@@ -231,6 +231,28 @@ export async function materializeNpmBinShims(
   return entries.length;
 }
 
+/**
+ * The bins `binDir`'s manifest credits to `packageNames`, packages that have
+ * left the tree, unlinked: each shim and its entry. A manifest that keeps
+ * them would link them again (a staged artifact's target needs no package).
+ */
+export async function unlinkNpmBins(
+  vfs: VfsLike & Pick<ProjectFs, 'writeFile' | 'unlink'>,
+  binDir: string,
+  packageNames: readonly string[],
+): Promise<void> {
+  const manifestPath = `${normalizeVfsPath(binDir)}/${NPM_BIN_MANIFEST_NAME}`;
+  const manifest = await readNpmBinManifest(vfs, manifestPath);
+  const gone = Object.values(manifest?.bins ?? {}).filter((entry) => packageNames.includes(entry.packageName));
+  if (manifest === null || gone.length === 0) return;
+  for (const { name } of gone) {
+    const shim = `${normalizeVfsPath(binDir)}/${name}`;
+    if (await vfs.exists(shim)) await vfs.unlink(shim);
+    delete manifest.bins[name];
+  }
+  await vfs.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
+}
+
 async function resolveNpmBinAt(vfs: VfsLike, nodeModulesPath: string, name: string): Promise<NpmBinResolution | null> {
   const binDir = npmBinDirPath(nodeModulesPath);
   const shimPath = `${binDir}/${name}`;

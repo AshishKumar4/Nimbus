@@ -188,6 +188,20 @@ try {
     console.log('  npm uninstall and init update a package.json an earlier release wrote as root; a root-only one fails them');
   }
 
+  // ── a package npm uninstall cannot reach fails alone ───────────────────
+  {
+    await runtime.exec('mkdir -p /home/user/l/node_modules/@locked/a /home/user/l/node_modules/b && cd /home/user/l '
+      + '&& printf \'{"name":"l","dependencies":{"@locked/a":"1.0.0","b":"1.0.0"}}\' > package.json && chmod 600 node_modules/@locked');
+    const line = await runtime.exec('cd /home/user/l && npm uninstall @locked/a b; echo un=$?; cat package.json');
+    // Written in the file's own format, as npm writes it: one line, and no line end after it.
+    assert.equal(line.stdout, 'un=1\n{"name":"l"}', line.stderr);
+    assert.match(line.stderr, /^npm ERR! could not remove @locked\/a: EACCES/);
+    const kernel = vfs.as(bundle.CRED_KERNEL);
+    assert.equal(kernel.exists('home/user/l/node_modules/b'), false, 'the package it can reach is removed');
+    assert.equal(kernel.exists('home/user/l/node_modules/@locked/a'), true, 'the one it cannot is not');
+    console.log('  npm uninstall removes what it can reach when one package fails, and fails');
+  }
+
   // ── item 6: bun run ─────────────────────────────────────────────────────
   {
     const { home, mount } = await both('mkdir -p {dir}/b && cd {dir}/b && printf \'{"name":"b","scripts":{"hello":"echo hello-bun"}}\' > package.json '
