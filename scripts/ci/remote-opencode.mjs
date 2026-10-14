@@ -3,26 +3,28 @@
 // scripts/ci/rebuild-opencode.mjs: the pinned upstream source built with the
 // commit's recipe (packages/worker/scripts/opencode), then staged as a normal
 // worker build stages it. The difference from the commit's staged assets and
-// src/opencode-artifact.generated.ts comes back as a patch.
+// src/opencode-artifact.generated.ts comes back as a patch with its blobs,
+// and is applied as remote-build applies dist's (lib/apply-patch.mjs).
 //
 //   bun scripts/ci/remote-opencode.mjs [<commit>]
 //
 // Run it in the lane's worktree. <commit> defaults to HEAD; what is built is
-// the commit, never the working tree. Exit 0: the build reproduces the
-// commit's staged assets byte for byte, and nothing is written. Exit 1: the
-// build failed, or the assets differ: the patch is applied to the worktree
-// when <commit> is its HEAD and none of the staged paths has local changes,
-// else left beside the run's log, whose path is printed. Then commit them, and
-// run scripts/ci/remote-build.mjs for the dist fixpoint. Exit 2: not graded.
+// the commit, never the working tree. The patch and the build's log are kept
+// under ~/.local/state/nimbus/remote-opencode/, named by time, commit and job.
+//
+// Exit: 0, the build reproduces the commit's staged assets byte for byte;
+// 1, the build failed, or the assets differ and the patch was applied (then
+// commit them and run scripts/ci/remote-build.mjs) or left for you; 2, not
+// graded.
 import { spawnSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { applyPatch } from './lib/apply-patch.mjs';
 import { mapOnArmada } from './lib/armada.mjs';
+import { NIMBUS_STATE } from './lib/state-dir.mjs';
 
-const repoRoot = spawnSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).stdout.trim();
-const git = (args, input) => {
-  const done = spawnSync('git', args, { encoding: 'utf8', input, cwd: repoRoot });
+const git = (cwd, args) => {
+  const done = spawnSync('git', args, { cwd, encoding: 'utf8' });
   if (done.status !== 0) throw new Error(`git ${args[0]} failed: ${(done.stderr || '').trim()}`);
   return done.stdout.trim();
 };
@@ -31,9 +33,15 @@ if (argv.length > 1 || argv.some((arg) => arg.startsWith('--'))) {
   console.error('usage: bun scripts/ci/remote-opencode.mjs [<commit>]');
   process.exit(2);
 }
-const repo = repoRoot;
-const sha = git(['rev-parse', `${argv[0] ?? 'HEAD'}^{commit}`]);
-const STAGED = ['packages/worker/public/_assets/opencode', 'packages/worker/src/opencode-artifact.generated.ts'];
+/** Not graded: whatever went wrong before a result was in hand. */
+const notGraded = (why) => {
+  console.error(`remote-opencode: NOT GRADED — ${why}`);
+  process.exit(2);
+};
+
+const repo = git(process.cwd(), ['rev-parse', '--show-toplevel']);
+const sha = git(repo, ['rev-parse', '--verify', `${argv[0] ?? 'HEAD'}^{commit}`]);
+// The result is large (the staged parser alone is megabytes): xz and base64 after the log.
 const MARK = '---NIMBUS-OPENCODE-RESULT---';
 const script = String.raw`
 {
@@ -47,35 +55,32 @@ const script = String.raw`
   xz -9 < "$W/result.json" | base64 -w0
   echo
 } > {out} 2>&1`;
-const r = await mapOnArmada({ repo, sha, files: [], items: [1], label: `opencode assets of ${sha.slice(0, 12)}`, timeout: 3600, command: ['bash', '-c', script] });
-const output = r.outputs?.[0] ?? r.outcomes?.[0]?.tail ?? '';
-const [log, encoded] = output.split(MARK);
+// This checkout's producer laid over the commit, as remote-build lays build.mjs: the result is the shape this client reads.
+const mapped = await mapOnArmada({ repo, sha, files: ['scripts/ci/rebuild-opencode.mjs', 'scripts/ci/lib/output-patch.mjs'], items: [1], label: `opencode assets of ${sha.slice(0, 12)}`, timeout: 3600, command: ['bash', '-c', script] });
+const [outcome] = mapped.outcomes;
+const [log, encoded] = (mapped.outputs?.[0] ?? outcome?.tail ?? '').split(MARK);
 console.log(log.trim());
-if (r.outcomes?.[0]?.kind !== 'exited') {
-  console.error(`remote-opencode: armada could not run the build (job ${r.jobId}, ${r.outcomes?.[0]?.kind} ${r.outcomes?.[0]?.exitCode}); not graded`);
-  process.exit(2);
-}
+if (outcome?.kind !== 'exited') notGraded(`armada could not run the build (job ${mapped.jobId}, ${outcome?.kind ?? 'no outcome'})`);
 if (encoded === undefined || encoded.trim() === '') {
-  console.error(`remote-opencode: the build returned no result (exit ${r.outcomes[0].exitCode})`);
+  console.error(`remote-opencode: the build returned no result (job ${mapped.jobId}, exit ${outcome.exitCode})`);
   process.exit(1);
 }
 const xz = spawnSync('xz', ['-d'], { input: Buffer.from(encoded.trim(), 'base64'), maxBuffer: 1 << 30 });
-if (xz.status !== 0) throw new Error(`xz -d failed: ${xz.stderr}`);
+if (xz.status !== 0) notGraded(`xz -d failed: ${xz.stderr}`);
 const result = JSON.parse(xz.stdout.toString('utf8'));
-const saved = join(tmpdir(), `remote-opencode-${sha.slice(0, 12)}.patch`);
-// rebuild-opencode.mjs trims its git diff; a patch ends with its last line's newline.
-writeFileSync(saved, `${result.patch}\n`);
+// The result is for the commit this run made, and nothing else.
+if (result.head !== mapped.commit) notGraded(`the result is for ${result.head}, not ${mapped.commit} (job ${mapped.jobId})`);
+if (typeof result.blobs !== 'object' || result.blobs === null) notGraded(`the result names no blobs to check a patch against (job ${mapped.jobId})`);
 console.log(`source ${result.sourceCommit}; ${result.assets.length} assets`);
-if (result.patch.trim() === '') {
-  console.log(`remote-opencode: the build reproduces ${sha.slice(0, 12)}'s staged assets byte for byte`);
+
+const state = join(NIMBUS_STATE, 'remote-opencode');
+mkdirSync(state, { recursive: true });
+const stem = join(state, `${new Date().toISOString().replace(/[-:]/g, '').slice(0, 15)}-${sha.slice(0, 12)}-${mapped.jobId}`);
+writeFileSync(`${stem}.log`, log);
+if (result.patch === null) {
+  console.log(`remote-opencode: the build reproduces ${sha.slice(0, 12)}'s staged assets byte for byte (job ${mapped.jobId})`);
   process.exit(0);
 }
-const head = git(['rev-parse', 'HEAD']);
-const dirty = git(['status', '--porcelain', '--', ...STAGED]);
-if (head !== sha || dirty !== '') {
-  console.log(`remote-opencode: the staged assets differ; the patch is ${saved} (${head !== sha ? 'the commit is not HEAD' : 'the staged paths have local changes'}), so nothing was written. Apply it with git apply --binary at the repository root.`);
-  process.exit(1);
-}
-git(['apply', '--binary', saved]);
-console.log(`remote-opencode: applied the rebuilt assets (patch ${saved}). Review and commit them, then run scripts/ci/remote-build.mjs.`);
+writeFileSync(`${stem}.patch`, result.patch);
+console.log(applyPatch(repo, sha, `${stem}.patch`, result.blobs, { client: 'remote-opencode', name: 'opencode assets patch', next: 'run scripts/ci/remote-build.mjs on that commit for the dist fixpoint' }));
 process.exit(1);

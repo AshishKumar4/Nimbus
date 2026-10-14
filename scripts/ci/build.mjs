@@ -28,6 +28,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { outputPatch } from './lib/output-patch.mjs';
 import { OUTPUT_CAP, step } from './lib/step.mjs';
 
 const argv = process.argv.slice(2);
@@ -111,36 +112,16 @@ if (stray.length > 0) {
   if (fixpoint.exitCode === 0) fixpoint.exitCode = 1;
 }
 
-// The patch, through a scratch index so the checkout's own is untouched.
-const scratch = mkdtempSync(join(tmpdir(), 'ci-build-index-'));
+// The patch and its blobs (lib/output-patch.mjs).
 let patch = null;
 /** Why the patch could not be made, if it could not. @type {string | null} */
 let unmade = null;
 /** @type {Record<string, { mode: string, blob: string } | null>} */
-const blobs = {};
+let blobs = {};
 try {
-  const env = { ...process.env, GIT_INDEX_FILE: join(scratch, 'index') };
-  // An output neither on disk nor at HEAD (a record never written) is no pathspec git can add.
-  const present = outputs.filter((path) => existsSync(join(root, path)) || git(['cat-file', '-e', `HEAD:${path}`], { cwd: root }).status === 0);
-  for (const args of [['read-tree', 'HEAD'], ['add', '--all', '--', ...present]]) {
-    const done = git(args, { cwd: root, env });
-    if (done.status !== 0) throw new Error(`git ${args[0]} failed: ${done.stderr}`);
-  }
-  const diff = git(['diff', '--cached', '--binary', 'HEAD', '--', ...outputs], { cwd: root, env });
-  if (diff.status !== 0) throw new Error(`git diff failed: ${diff.stderr}`);
-  patch = diff.stdout || null;
-  // `:<old mode> <new mode> <old blob> <new blob> <status>\0<path>\0` per path.
-  const raw = git(['diff', '--cached', '--raw', '-z', '--no-renames', '--no-abbrev', 'HEAD', '--', ...outputs], { cwd: root, env });
-  if (raw.status !== 0) throw new Error(`git diff --raw failed: ${raw.stderr}`);
-  const fields = raw.stdout.split('\0');
-  for (let i = 0; i + 1 < fields.length; i += 2) {
-    const [, mode, , blob, status] = fields[i].slice(1).split(' ');
-    blobs[fields[i + 1]] = status === 'D' ? null : { mode, blob };
-  }
+  ({ patch, blobs } = outputPatch(root, outputs));
 } catch (error) {
   unmade = error.message;
-} finally {
-  rmSync(scratch, { recursive: true, force: true });
 }
 // No patch can be trusted: not graded, with what failed.
 if (unmade !== null) finish(head, [fixpoint, { name: 'patch', exitCode: 2, seconds: 0, output: unmade }], null, 2);

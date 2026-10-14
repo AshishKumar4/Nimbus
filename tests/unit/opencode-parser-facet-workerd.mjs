@@ -5,7 +5,7 @@
 // date and flags), hosts the parser through the runner's own Worker polyfill
 // (WORKER_POLYFILL_SRC) on the facet's one thread, where workerd's
 // worker_threads says main: OpenTUI's GET_PERFORMANCE gets its
-// PERFORMANCE_RESPONSE.
+// PERFORMANCE_RESPONSE, without taking the facet's console for its own logs.
 //
 // And a bare "fs/promises", as the parser imports it, is the module map's
 // `node:fs/promises` (the facet's bridge to the session's filesystem, as
@@ -33,6 +33,7 @@ ${WORKER_POLYFILL_SRC}
 export class Leaf extends DurableObject {
   async run() {
     const answers = [];
+    const parentConsole = [console.log, console.error, console.warn];
     const worker = new Worker('./${OPENCODE_TUI_PARSER_WORKER}');
     worker.onmessage = (event) => answers.push(event.data);
     worker.onerror = (event) => answers.push({ error: String(event.message) });
@@ -40,7 +41,8 @@ export class Leaf extends DurableObject {
     for (let i = 0; i < 500 && answers.length === 0; i++) await new Promise((r) => setTimeout(r, 10));
     const { isMainThread } = await import('node:worker_threads');
     const { bridged } = await import('fs-probe.js');
-    return { answers, isMainThread, bridged };
+    const consoleKept = [console.log, console.error, console.warn].every((method, i) => method === parentConsole[i]);
+    return { answers, isMainThread, bridged, consoleKept };
   }
 }
 `;
@@ -122,6 +124,7 @@ try {
   assert.equal(result.answers[0]?.type, 'PERFORMANCE_RESPONSE', `the parser answers GET_PERFORMANCE within 5 s (answers: ${JSON.stringify(result.answers)})\n${logs.slice(-2000)}`);
   assert.equal(result.answers[0].messageId, 1);
   assert.equal(result.bridged, true, 'a bare "fs/promises" is the map\'s node:fs/promises');
+  assert.equal(result.consoleKept, true, "the parser's console is its own: the facet's console keeps its methods");
   console.log('opencode-parser-facet-workerd: ok');
 } finally {
   child.kill('SIGKILL');

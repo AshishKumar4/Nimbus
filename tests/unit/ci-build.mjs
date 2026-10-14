@@ -23,7 +23,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { armadaClient, overlayCommit } from '../../scripts/ci/lib/armada.mjs';
-import { applyPatch } from '../../scripts/ci/remote-build.mjs';
+import { applyPatch } from '../../scripts/ci/lib/apply-patch.mjs';
+import { DIST_PATCH } from '../../scripts/ci/remote-build.mjs';
 
 const BUILD = join(import.meta.dirname, '..', '..', 'scripts', 'ci', 'build.mjs');
 
@@ -208,7 +209,7 @@ if (import.meta.main && existsSync('pkg/dist/old.bin')) { renameSync('pkg/dist/o
     const clone = join(root, 'moved-clone');
     git(root, 'clone', '-q', dir, clone);
     writeFileSync(join(root, 'moved.patch'), verdict.patch);
-    assert.match(applyPatch(clone, sha, join(root, 'moved.patch'), verdict.blobs), /applied the dist patch \(2 files\)/);
+    assert.match(applyPatch(clone, sha, join(root, 'moved.patch'), verdict.blobs, DIST_PATCH), /applied the dist patch \(2 files\)/);
     assert.equal(readFileSync(join(clone, 'pkg/dist/new.bin'), 'utf8'), 'the same bytes, at a new path');
     assert.equal(git(clone, 'status', '--porcelain', '--', 'pkg/dist/old.bin'), 'D pkg/dist/old.bin');
     console.log('  ok  a moved output is a removal and an addition in the receipts, and remote-build applies its patch');

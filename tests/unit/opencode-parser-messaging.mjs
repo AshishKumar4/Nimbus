@@ -7,10 +7,14 @@
 // worker_threads of its own (packages/worker/scripts/opencode/build-node.ts).
 // Through the real generated attached runner, its real polyfill and the real
 // staged parser module: OpenTUI's GET_PERFORMANCE gets its
-// PERFORMANCE_RESPONSE.
+// PERFORMANCE_RESPONSE; and the parser's console is its own: its worker
+// branch reroutes console.log/error/warn to WORKER_LOG messages, which must
+// not take the TUI's console with it (the runner routes that to stdout and
+// stderr).
 //
 // Red before: the staged parser read the platform's isMainThread (true here,
-// as in workerd: src/node/worker_threads.ts) and never answered.
+// as in workerd: src/node/worker_threads.ts) and never answered; then, once
+// it answered, it replaced the shared console's methods.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -41,6 +45,7 @@ try {
     mode: 'attached', program: 'export async function nimbusMain() {}\n', env: { NIMBUS_ATTACHED_TTY: '1' },
     members: { [OPENCODE_TUI_PARSER_WORKER]: { js: readFileSync(path.join(assetDir, OPENCODE_TUI_PARSER_WORKER), 'utf8') } },
   }));
+  const parentConsole = { log: console.log, error: console.error, warn: console.warn };
   const parser = new globalThis.Worker(new URL(`file:///opencode/${OPENCODE_TUI_PARSER_WORKER}`), {});
   const answers = [];
   parser.onmessage = (event) => answers.push(event.data);
@@ -52,6 +57,8 @@ try {
   while (answers.length === 0 && Date.now() < deadline) await new Promise((resolve) => rawSetTimeout(resolve, 10));
   assert.equal(answers[0]?.type, 'PERFORMANCE_RESPONSE', `the parser answers GET_PERFORMANCE within 5 s (answers: ${JSON.stringify(answers)})`);
   assert.equal(answers[0].messageId, 1);
+  assert.deepEqual({ log: console.log === parentConsole.log, error: console.error === parentConsole.error, warn: console.warn === parentConsole.warn },
+    { log: true, error: true, warn: true }, "the parser's console is its own: the TUI's console keeps its methods");
   realStdout('opencode-parser-messaging: ok\n');
   realProcess.exit(0);
 } catch (error) {

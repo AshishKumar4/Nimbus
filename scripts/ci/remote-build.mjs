@@ -14,7 +14,7 @@
 //
 // The patch is applied only when <commit> is the worktree's HEAD and every
 // file it touches is as HEAD has it, and the result is checked against the
-// tree the build made (applyPatch). Otherwise it is saved and the command to
+// tree the build made (lib/apply-patch.mjs). Otherwise it is saved and the command to
 // apply it printed. The verdict and patch are kept under
 // ~/.local/state/nimbus/remote-builds/, named by time, commit and job.
 //
@@ -22,9 +22,9 @@
 // applied or saved, or the typecheck or the gate failed; 2, not graded.
 // armada is reached as scripts/ci/lib/armada.mjs says.
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { applyPatch } from './lib/apply-patch.mjs';
 import { mapOnArmada } from './lib/armada.mjs';
 import { NIMBUS_STATE } from './lib/state-dir.mjs';
 
@@ -37,50 +37,8 @@ const git = (cwd, args, options = {}) => {
 /** The last `lines` lines of `text`. */
 const lastLines = (text, lines) => text.split('\n').slice(-lines).join('\n');
 
-/**
- * Apply the build's patch to the worktree only if the result is exactly the
- * build's: the patch applied to <sha> in a scratch index must give every
- * path the mode and blob the container reported it left (`blobs`, apart
- * from the patch), every file it touches must be as HEAD (= <sha>) has it,
- * and once applied those files must hash the same again. git's whitespace
- * repair is off throughout, so no side is rewritten to agree. Otherwise
- * nothing is applied, and the patch is left for you. Returns what happened.
- */
-export function applyPatch(repo, sha, patch, blobs) {
-  const scratch = mkdtempSync(join(tmpdir(), 'remote-build-apply-'));
-  try {
-    const indexed = (name) => ({ ...process.env, GIT_INDEX_FILE: join(scratch, name) });
-    git(repo, ['read-tree', sha], { env: indexed('built') });
-    git(repo, ['apply', '--cached', '--whitespace=nowarn', patch], { env: indexed('built') });
-    const tree = git(repo, ['write-tree'], { env: indexed('built') });
-    // Without renames, as the build's receipts are: a moved output is its old path and its new one.
-    const touched = git(repo, ['diff', '--name-only', '--no-renames', '-z', sha, tree]).split('\0').filter(Boolean);
-    const expected = Object.keys(blobs).sort();
-    if (JSON.stringify([...touched].sort()) !== JSON.stringify(expected)) {
-      throw new Error(`the patch touches ${touched.length} paths, and the build reported ${expected.length}`);
-    }
-    const mismatch = (ofTree) => {
-      const listed = new Map(git(repo, ['ls-tree', '-r', '-z', ofTree, '--', ...touched]).split('\0').filter(Boolean)
-        .map((line) => { const [meta, path] = line.split('\t'); const [mode, , blob] = meta.split(' '); return [path, { mode, blob }]; }));
-      return touched.filter((path) => JSON.stringify(listed.get(path) ?? null) !== JSON.stringify(blobs[path]));
-    };
-    const unlike = mismatch(tree);
-    if (unlike.length > 0) throw new Error(`the patch does not make what the build left: ${unlike.join(', ')}`);
-    const leave = (why) => `remote-build: the dist patch (${touched.length} files) is ${patch}; ${why}, so nothing was applied. Apply it on ${sha.slice(0, 12)} with \`git apply ${patch}\`, then commit it.`;
-    if (git(repo, ['rev-parse', 'HEAD']) !== sha) return leave(`${sha.slice(0, 12)} is not this worktree's HEAD`);
-    const local = git(repo, ['status', '--porcelain', '--untracked-files=all', '--', ...touched]);
-    if (local) return leave(`files it touches have local changes:\n${local}\n`);
-    git(repo, ['apply', '--whitespace=nowarn', patch]);
-    git(repo, ['read-tree', 'HEAD'], { env: indexed('applied') });
-    git(repo, ['add', '--all', '--', ...touched], { env: indexed('applied') });
-    const applied = git(repo, ['write-tree'], { env: indexed('applied') });
-    const differ = mismatch(applied);
-    if (differ.length > 0) throw new Error(`the applied files differ from what the build left: ${differ.join(', ')}`);
-    return `remote-build: applied the dist patch (${touched.length} files) to ${repo}, each file the blob the build left. Review it and commit it, then run scripts/ci/remote-unit.mjs on that commit.`;
-  } finally {
-    rmSync(scratch, { recursive: true, force: true });
-  }
-}
+/** How remote-build names its patch, and what comes after it is applied. */
+export const DIST_PATCH = { client: 'remote-build', name: 'dist patch', next: 'run scripts/ci/remote-unit.mjs on that commit' };
 
 if (import.meta.main) {
   const argv = process.argv.slice(2);
@@ -135,7 +93,7 @@ if (import.meta.main) {
     if (exitCode === 2) status = 2;
     if (verdict.patch !== null) {
       writeFileSync(`${stem}.patch`, verdict.patch);
-      console.log(applyPatch(repo, sha, `${stem}.patch`, verdict.blobs));
+      console.log(applyPatch(repo, sha, `${stem}.patch`, verdict.blobs, DIST_PATCH));
     }
     console.log(`remote-build: ${status === 0 ? 'dist is the fixpoint of src and the typecheck is clean' : 'see above'}; verdict ${stem}.json (job ${jobId})`);
     process.exit(status);
