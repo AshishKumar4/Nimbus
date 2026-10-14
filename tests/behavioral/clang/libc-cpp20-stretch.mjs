@@ -24,7 +24,7 @@ await t.run('nimbus install clang', 120_000);
 // clang++ available — node-existence check (avoid lifo-sh which-hang).
 {
   const { output } = await t.run(
-    `node -e "const ok = require('fs').existsSync(process.env.HOME + '/.nimbus/runtimes/clang/binji-2020/bin/clang++'); console.log('C'+'PP-STATE:' + (ok ? 'YES' : 'NO'))"`,
+    `node -e "const ok = require('fs').existsSync('/usr/lib/nimbus/clang/binji-2020/bin/clang++'); console.log('C'+'PP-STATE:' + (ok ? 'YES' : 'NO'))"`,
     10_000,
   );
   const stripped = stripAnsi(output);

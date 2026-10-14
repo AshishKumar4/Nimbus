@@ -38,7 +38,7 @@ const BOUND_SPEC = {
 
 const DISK = {
   readFile: (path) => {
-    assert.match(path, /^\/var\/lib\/nimbus\/facet-images\//);
+    assert.match(path, /^\/\.nimbus\/facet-images\//);
     return new TextEncoder().encode(`image-bytes:${path}`);
   },
 };

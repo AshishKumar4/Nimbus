@@ -29,7 +29,7 @@ export interface PythonReplDeps {
     /** Owns the installed interpreter blobs the prompt is booted from. */
     authority: NimbusFilesystemAuthority;
     terminal: WebSocketTerminal;
-    /** Per-user-VFS install dir, e.g. 'home/user/.nimbus/runtimes/cpython/3.13.14'. */
+    /** Per-user-VFS install dir, e.g. 'usr/lib/nimbus/cpython/3.13.14'. */
     installRoot: string;
     /** The invoking command's HOME: its pip packages decide the interpreter, and the prompt runs with it. */
     home: string;

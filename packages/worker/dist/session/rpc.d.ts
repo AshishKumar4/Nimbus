@@ -137,6 +137,13 @@ export declare function _rpcWriteFile(self: RpcHost, path: string, content: stri
  * Deliberately absent from the remote HTTP RPC dispatcher, so only an
  * embedder holding the DO stub may write it.
  *
+ * It follows no link: the guest may own every directory on the way, and a
+ * link there would have the kernel make another directory sticky and
+ * world-writable. Each directory from `/` to the root must be a directory
+ * itself, or the call is refused; a link at the file's own name is replaced
+ * by the file. One synchronous turn, so nothing changes between a look and
+ * the write.
+ *
  * It guards against accidents, not against the session's code: the session's
  * user has passwordless root (`sudo`, `su`), and a program that runs `sudo`
  * can replace or remove this file. Do not rely on it to keep a value from code

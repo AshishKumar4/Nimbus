@@ -19,7 +19,7 @@ await t.waitForPrompt(60_000);
 
 // Probe 1: `which clang` returns POSIX absolute path
 const r1 = await t.run('which clang', 5_000);
-a.check('which clang → /usr/local/bin/clang', termBody(r1.output) === '/usr/local/bin/clang', `body=${JSON.stringify(termBody(r1.output))}`);
+a.check('which clang → /usr/bin/clang', termBody(r1.output) === '/usr/bin/clang', `body=${JSON.stringify(termBody(r1.output))}`);
 
 // Probe 2: which node
 const r2 = await t.run('which node', 5_000);
@@ -43,7 +43,7 @@ a.check('which git → /usr/bin/git', termBody(r6.output) === '/usr/bin/git', `b
 
 // Probe 7: script pattern `dirname $(which X)`
 const r7 = await t.run('dirname $(which clang)', 5_000);
-a.check('`dirname $(which clang)` → /usr/local/bin', termBody(r7.output) === '/usr/local/bin', `body=${JSON.stringify(termBody(r7.output))}`);
+a.check('`dirname $(which clang)` → /usr/bin', termBody(r7.output) === '/usr/bin', `body=${JSON.stringify(termBody(r7.output))}`);
 
 await t.close();
 const sum = a.summary();

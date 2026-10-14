@@ -3,7 +3,7 @@
  * the network.
  *
  * `nimbus install <name>` reads a catalog out of R2 and writes the result into
- * `~/.nimbus/runtimes/<name>/<version>/`. That is the Cloudflare deployment's
+ * `/usr/lib/nimbus/<name>/<version>/`. That is the Cloudflare deployment's
  * answer to "where do the bytes come from", and it needs a bucket, a binding
  * and a colo cache. An embedder who ran `npm i @nimbus-sh/runtime-bash` has
  * already answered the same question: the bytes are on disk beside their
@@ -94,7 +94,7 @@ export class RuntimeBlobDigestMismatch extends Error {
 export interface SeededRuntime {
   readonly name: string;
   readonly version: string;
-  /** VFS path of the install root, e.g. `home/user/.nimbus/runtimes/bash/5.2.37`. */
+  /** VFS path of the install root, e.g. `usr/lib/nimbus/bash/5.2.37`. */
   readonly root: string;
   /** False when the runtime was already installed at `root` and nothing was written. */
   readonly written: boolean;
@@ -235,7 +235,6 @@ export function composeRuntimeSources(sources: readonly RuntimeSource[]): Runtim
  */
 export async function seedRuntimePackage(
   vfs: CredentialedVfs,
-  homeDir: string,
   runtimePackage: RuntimePackage,
   options?: {
     force?: boolean;
@@ -244,7 +243,7 @@ export async function seedRuntimePackage(
   },
 ): Promise<SeededRuntime> {
   const manifest = parseRuntimeManifest(runtimePackage.manifest);
-  const root = installRoot(homeDir, manifest.name, manifest.version);
+  const root = installRoot(manifest.name, manifest.version);
   const marker = `${root}/manifest.json`;
 
   if (!options?.force && (await vfs.exists(marker))) {
