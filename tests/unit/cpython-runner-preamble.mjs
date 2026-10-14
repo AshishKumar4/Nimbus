@@ -222,5 +222,15 @@ assert.equal(names.exitCode, 0, `${names.error ?? ''} ${names.stderr}`);
 assert.equal(names.stdout, '64\nrefused True\nTrue\n', 'the 65th name is refused; a known name keeps its address');
 console.log('  ok  a full name table refuses a new name');
 
+// A recvfrom on a socket with no peer fails as recv fails, and takes no name: 64 names still fit.
+const unconnected = await run({
+  ...base, pyArgv: ['-c'],
+  userCode: "import errno, socket\ns = socket.socket()\ntry:\n  s.recvfrom(10)\nexcept OSError as e:\n  print(errno.errorcode.get(e.errno))\n"
+    + "print(len({socket.getaddrinfo(f'host-{i}.invalid', 80)[0][4][0] for i in range(64)}))",
+});
+assert.equal(unconnected.exitCode, 0, `${unconnected.error ?? ''} ${unconnected.stderr}`);
+assert.equal(unconnected.stdout, 'ENOTCONN\n64\n', 'recvfrom of an unconnected socket is ENOTCONN, and 64 names resolve after it');
+console.log('  ok  a failed recvfrom takes no name');
+
 await session.dispose();
 console.log('cpython-runner-preamble: all cases passed');
