@@ -673,7 +673,7 @@ export function __nimbusTestPendingIOLength() {
 }
 export function __nimbusTestRuntimeState() {
   return __nimbusRuntime
-    ? { pendingIOLength: __nimbusRuntime.pendingIO.length, settledIO: __nimbusRuntime.settledIO }
+    ? { pendingIOLength: __nimbusRuntime.pendingIO.length, outputPending: __nimbusRuntime.outputPending() !== null }
     : null;
 }`;
   return importModuleSet({ ...residentModules(), 'worker.js': source }, 'worker.js');
@@ -832,7 +832,7 @@ function request(path = 'first') {
 }
 
 // Concurrent flush callers share one pending-I/O drain owner: neither request
-// may complete while a prior stdout task claimed by the first drain is blocked.
+// may complete while a prior stdout task the first drain waits for is blocked.
 {
   delete globalThis.__portRegistry;
   let releaseOutput;
@@ -862,10 +862,10 @@ function request(path = 'first') {
   await started;
   const rawSetTimeout = globalThis.__nimbusRawSetTimeout || setTimeout;
   for (let attempt = 0; attempt < 100; attempt++) {
-    if (generated.__nimbusTestRuntimeState()?.settledIO === 1) break;
+    if (generated.__nimbusTestRuntimeState()?.outputPending === true) break;
     await new Promise((resolve) => rawSetTimeout(resolve, 0));
   }
-  assert.equal(generated.__nimbusTestRuntimeState()?.settledIO, 1, 'first flush claimed prior output');
+  assert.equal(generated.__nimbusTestRuntimeState()?.outputPending, true, 'the first flush waits for the prior output');
 
   let secondCompleted = false;
   const second = worker.handleHttpRequest(request('concurrent-drain')).then((response) => {
@@ -881,8 +881,8 @@ function request(path = 'first') {
   assert.equal(secondResponse.status, 200);
   assert.deepEqual(
     generated.__nimbusTestRuntimeState(),
-    { pendingIOLength: 0, settledIO: 0 },
-    'completed drain work is compacted after both callers finish',
+    { pendingIOLength: 0, outputPending: false },
+    'nothing is outstanding after both callers finish',
   );
 }
 
