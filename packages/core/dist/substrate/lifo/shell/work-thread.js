@@ -1,6 +1,6 @@
 /**
  * One thread of a shell's control as its process's work: a line, an element
- * of a pipeline, a background job. The session tells a process doing nothing
+ * of a pipeline, a background job's own line. The session tells a process doing nothing
  * but await its children by counting its units of work against its awaits
  * (SessionProcessSupervisor.beginWork / beginAwait, CommandIdentity.beginWork):
  * a command that runs a program counts one of each, a builtin one of work.
@@ -17,12 +17,11 @@
  * still told as such.
  *
  * A pipeline's elements are threads the pipeline's thread waits on (fork):
- * it lends its unit to them as to a command. A background job runs beside
- * the thread that started it (sibling), on a unit of its own.
+ * it lends its unit to them as to a command. A background job is a process
+ * of its own (JobTable.start), on a thread of its own pid.
  */
 export class WorkThread {
     begin;
-    root;
     /** The thread's own unit, while no unit under it is in flight. */
     held;
     /** Units under it in flight: commands, and threads it waits on. */
@@ -31,11 +30,9 @@ export class WorkThread {
     /**
      * @param begin a unit of the process's work (or of the thread this one
      *   is under), as SessionProcessSupervisor.beginWork gives one.
-     * @param root the process's own, for a thread beside this one.
      */
-    constructor(begin, root = begin) {
+    constructor(begin) {
         this.begin = begin;
-        this.root = root;
         this.held = begin();
     }
     /** A unit of work under this thread (a command it runs), until the returned function is called. */
@@ -58,11 +55,7 @@ export class WorkThread {
     }
     /** A thread this one waits on (a pipeline element), lent this one's unit while it runs. */
     fork() {
-        return new WorkThread(() => this.beginWork(), this.root);
-    }
-    /** A thread beside this one (a background job), on a unit of the process's own. */
-    sibling() {
-        return new WorkThread(this.root);
+        return new WorkThread(() => this.beginWork());
     }
     /** The thread has ended: its unit is let go, and is not taken back. */
     close() {

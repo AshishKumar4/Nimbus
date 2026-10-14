@@ -41,7 +41,7 @@ import { PID_GEN_STRIDE } from '../runtime/process-table.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import { ChildProcessManager } from '../runtime/child-process-manager.js';
 import { resolveWorkspaceChild } from './child-process-runner.js';
-import { exitCodeForSignal } from '../substrate/lifo/shell/signals.js';
+import { exitCodeForSignal, signalAbortReason, signalDisposition } from '../substrate/lifo/shell/signals.js';
 import { runtimeEntrypoints } from '../runtime/installed-runtimes.js';
 import { RuntimeManager } from '../runtime/runtime-manager.js';
 import { makeNimbusVerbHandler } from '../runtime/nimbus-command.js';
@@ -218,9 +218,25 @@ export class NimbusWorkspace {
             shellProcessPid = shellProcess.pid;
             identity = workspaceShellIdentity(processes, shellProcess, () => shell);
         }
-        shell = new Shell(options.terminal ?? new HeadlessTerminal(), filesystem, registry, env, kernel.processRegistry, identity);
+        shell = new Shell(options.terminal ?? new HeadlessTerminal(), filesystem, registry, env, processes, identity);
         if (options.cwd)
             shell.setCwd(options.cwd);
+        // Past a shell's own jobs, `kill` reaches by pid every process this
+        // workspace runs work for (another shell's job, an exec, a child
+        // process), and ends it by stopping that work; never the workspace's
+        // own shell, which outlives every line it runs. A host that runs
+        // processes of its own replaces this (Shell.setHostProcessSignals).
+        const processSignals = {
+            isLive: (pid) => processes.runsWork(pid),
+            async signal(pid, signal) {
+                if (pid === shellProcessPid)
+                    return 'not-permitted';
+                if (signalDisposition(signal) !== 'terminate')
+                    return 'unsupported';
+                return processes.kill(pid, exitCodeForSignal(signal), signalAbortReason(signal)) ? 'delivered' : 'no-such-process';
+            },
+        };
+        shell.setHostProcessSignals(processSignals);
         // node/curl/wget are bound to THIS workspace's kernel: their localhost
         // traffic resolves through its port registry and loopback router, not the
         // process-wide defaults the lazily-loaded commands would share.
@@ -229,8 +245,8 @@ export class NimbusWorkspace {
         registry.register('wget', createWgetCommand(kernel));
         registry.register('dig', createDigCommand(kernel));
         registry.register('ping', createPingCommand(kernel));
-        // kill signals this workspace's own processes and jobs (bash's builtin).
-        registry.register('kill', createKillCommand(kernel.processRegistry));
+        // kill as a program (`xargs kill`): no jobs, the processes the shell's reaches by pid.
+        registry.register('kill', createKillCommand(processSignals));
         const getHome = () => shell.getEnv().HOME ?? DEFAULT_HOME;
         const kernelFs = vfs.as(CRED_KERNEL);
         // Everything from the first lease on can throw — a lease refused, a
@@ -433,13 +449,11 @@ export class NimbusWorkspace {
      */
     shellFor(pid, state) {
         const processes = this.processes;
-        const shell = new Shell(new HeadlessTerminal(), this.filesystem, this.registry, { ...this.shell.getEnv(), ...state.env, $: String(pid) }, this.kernel.processRegistry, {
+        const shell = new Shell(new HeadlessTerminal(), this.filesystem, this.registry, { ...this.shell.getEnv(), ...state.env }, processes, {
             pid,
             get cred() { return processes.cred(pid); },
             setUmask: (mask) => processes.setUmask(pid, mask),
             runAs: this.shell.getRunAsHost(),
-            accountWork: (worker) => processes.beginWork(worker),
-            holdWork: (worker, stop, signal) => processes.holdWork(worker, stop, signal),
         });
         const hostSignals = this.shell.getHostProcessSignals();
         if (hostSignals)
@@ -613,8 +627,6 @@ function workspaceShellIdentity(processes, shellProcess, getShell) {
             processes.setUmask(pid, mask);
         },
         runAs: runAsProcess,
-        accountWork: (worker) => processes.beginWork(worker),
-        holdWork: (worker, stop, signal) => processes.holdWork(worker, stop, signal),
     });
     return commandIdentityFor(shellProcess.pid);
 }

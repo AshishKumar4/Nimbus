@@ -115,9 +115,9 @@ export class Interpreter {
     /**
      * A child shell, as fork(2) makes one: its own copy of the shell's state
      * (forkShellState) and of its functions, $? and open descriptors, so
-     * nothing it changes reaches this shell. Shared: the process registry and
-     * filesystem, command registry and terminal; `$$` stays this shell's. The
-     * child runs its own EXIT trap when it finishes (`finishChild`).
+     * nothing it changes reaches this shell. Shared: the filesystem, command
+     * registry and terminal; `$$` stays this shell's. The child runs its own
+     * EXIT trap when it finishes (`finishChild`).
      */
     fork() {
         const child = new Interpreter({ ...this.config, ...forkShellState(this.config) });
@@ -224,8 +224,9 @@ export class Interpreter {
         if (abortCode !== null)
             return abortCode;
         if (list.background) {
-            const abortController = new AbortController();
-            const commandText = this.getListCommandText(list);
+            const parent = io.commandIdentity;
+            if (!parent)
+                throw new Error('shell command identity is unavailable');
             const backgroundIo = this.createCommandIo(io);
             // A job does not read the terminal by default: before any redirection
             // of its own, its stdin is /dev/null, as POSIX gives an asynchronous
@@ -238,32 +239,27 @@ export class Interpreter {
                 backgroundIo.terminalFds = { ...io.terminalFds, stdin: false };
             }
             backgroundIo.background = true;
-            backgroundIo.signal = abortController.signal;
-            backgroundIo.registerProcess = false;
             backgroundIo.positionals = this.forkPositionals(io);
-            // A job runs beside the line that started it, as work of its own.
-            backgroundIo.workThread = io.workThread?.sibling();
+            // A job is a process of its own, as a fork makes one: its commands run
+            // as it, on its own thread of work, until a kill of it stops them.
             const child = this.fork();
-            const promise = (async () => {
+            const job = this.config.jobTable.start({ command: this.getListCommandText(list), cwd: this.config.getCwd(), parent }, async ({ identity, signal }) => {
+                backgroundIo.commandIdentity = identity;
+                backgroundIo.signal = signal;
+                backgroundIo.vfs = bindProcessView(this.config.filesystem, { pid: identity.pid, cred: identity.cred, signal });
+                const workThread = new WorkThread(identity.beginWork);
+                backgroundIo.workThread = workThread;
                 try {
                     return await child.finishChild(async () => (await child.executeListEntries(list.entries, backgroundIo)), backgroundIo);
                 }
                 finally {
-                    backgroundIo.workThread?.close();
+                    workThread.close();
                 }
-            })();
-            const { pid, id: jobId } = this.config.jobTable.start({
-                command: commandText,
-                cwd: this.config.getCwd(),
-                promise,
-                abortController,
             });
-            this.config.env['!'] = String(pid);
+            this.config.env['!'] = String(job.pid);
             // An interactive bash reports the job; a script (bash -c) says nothing.
             if (io.interactive)
-                this.writeTerminal(io, `[${jobId}] ${pid}\n`);
-            // Don't auto-reap - let Shell collect zombies before next prompt
-            // This matches Linux behavior where zombies persist until reaped
+                this.writeTerminal(io, `[${job.id}] ${job.pid}\n`);
             return 0;
         }
         return (await this.executeListEntries(list.entries, io));
@@ -796,7 +792,6 @@ export class Interpreter {
                                     isFdPipe: (fd) => isPipeEnd(fds.outputFds.get(fd) ?? fds.inputFds.get(fd)),
                                     signal: io.signal ?? this.config.getAbortSignal?.() ?? new AbortController().signal,
                                     runAs: io.runAs,
-                                    register: io.registerProcess !== false,
                                     shellBuiltin: BASH_BUILTINS.has(name),
                                 });
                             }
@@ -854,21 +849,18 @@ export class Interpreter {
         return await this.runCommand(command, name, args, {
             ...spec,
             vfs,
-            register: true,
             shellBuiltin: false,
         });
     }
     /**
-     * A resolved command, run as a process of this shell's: listed for ps,
-     * jobs and kill while it runs, aborted with `spec.signal`, and its failure
-     * (a closed pipe, an abort, a throw) turned into the status a process
-     * would end with.
+     * A resolved command, run as the process `spec.identity` names: aborted
+     * with `spec.signal`, and its failure (a closed pipe, an abort, a throw)
+     * turned into the status a process would end with.
      */
     async runCommand(command, name, args, spec) {
         const abortController = new AbortController();
         const unlinkShellSignal = linkAbortSignal(spec.signal, abortController);
         const { identity, terminalStdin, stderr } = spec;
-        let pid;
         const ctx = {
             ...spec.commandContext,
             pid: identity.pid,
@@ -897,51 +889,8 @@ export class Interpreter {
                 ? (await spec.runAs(options?.parent ?? ctx, cred, argv))
                 : exited(126),
         };
-        // Register process BEFORE executing so ps can see itself
-        let commandPromise;
-        if (spec.register) {
-            let resolvePromise;
-            let rejectPromise;
-            const registeredPromise = new Promise((resolve, reject) => {
-                resolvePromise = resolve;
-                rejectPromise = reject;
-            });
-            pid = this.config.processRegistry.spawn({
-                command: name,
-                args: [name, ...args],
-                cwd: spec.cwd,
-                isForeground: true,
-                promise: registeredPromise,
-                abortController,
-            });
-            commandPromise = command(ctx).then((code) => {
-                resolvePromise?.(code);
-                return exited(code);
-            }, async (err) => {
-                if (isBrokenPipe(err)) {
-                    // SIGPIPE: a builtin's ends its element (the catch below
-                    // rethrows it); any other command alone dies, silently.
-                    resolvePromise?.(KILLED_BY_SIGPIPE.status);
-                    if (spec.shellBuiltin)
-                        throw err;
-                    return KILLED_BY_SIGPIPE;
-                }
-                rejectPromise?.(err);
-                if (err instanceof Error && err.name === 'AbortError')
-                    return exited(130);
-                // Surface the failure: this rejection handler resolves
-                // commandPromise to an exit code, so the catch below
-                // never sees the error — without this write a throwing
-                // registered command dies silently at the prompt.
-                (await stderr.write(`${name}: ${err instanceof Error ? err.message : String(err)}\n`));
-                return exited(1);
-            });
-        }
-        else {
-            commandPromise = command(ctx).then(exited);
-        }
         try {
-            return await commandPromise;
+            return exited(await command(ctx));
         }
         catch (e) {
             if (e instanceof Error && e.name === 'AbortError')
@@ -959,10 +908,6 @@ export class Interpreter {
         }
         finally {
             unlinkShellSignal();
-            if (spec.register && pid !== undefined) {
-                await Promise.resolve();
-                this.config.processRegistry.reap(pid);
-            }
         }
     }
     assignEnv(name, value) {
@@ -1134,8 +1079,6 @@ export class Interpreter {
             next.scriptMode = true;
         if (io.signal)
             next.signal = io.signal;
-        if (io.registerProcess === false)
-            next.registerProcess = false;
         if (io.positionals)
             next.positionals = io.positionals;
         if (io.commandContext)

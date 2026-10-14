@@ -1,7 +1,7 @@
 import { Shell, createCurlCommand, createNpmCommand, NPM_VERSION, createTopCommand, createWatchCommand, createHelpCommand } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { createKillCommand } from '@nimbus-sh/core/substrate/lifo/commands/system/kill.js';
 import { installSummary } from '@nimbus-sh/core/substrate/lifo/commands/system/npm-log.js';
-import { exitCodeForSignal, signalDisposition } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
+import { exitCodeForSignal, signalAbortReason, signalDisposition } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
 import { BASH_RUNNER, GIT_RUNNER, CRED_KERNEL, CRED_SESSION_USER, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
@@ -43,7 +43,6 @@ export async function registerHostedCommands(self, workspace) {
     const kernel = workspace.kernel;
     const shell = workspace.shell;
     const registry = workspace.registry;
-    const processRegistry = kernel.processRegistry;
     const env = workspace.env;
     const terminal = self.terminal;
     if (!terminal)
@@ -55,15 +54,16 @@ export async function registerHostedCommands(self, workspace) {
         get cred() { return self.processes.cred(pid); },
         setUmask: (mask) => self.processes.setUmask(pid, mask),
         runAs: runAsProcess,
-        accountWork: (worker) => self.processes.beginWork(worker),
-        holdWork: (worker, stop, signal) => self.processes.holdWork(worker, stop, signal),
     });
-    // `kill` is the shell's builtin; the session's own processes (resident
-    // servers, the vite shim), numbered in this table's pid space, are reached
+    // `kill` is the shell's builtin; the session's processes past its jobs
+    // (resident servers, the vite shim, another shell's jobs) are reached
     // through here, and their teardown releases what they hold.
     const hostSignals = {
         isLive: (pid) => self._viteShimPid === pid || self.processes.get(pid)?.state === 'running',
         async signal(pid, signal, stderr) {
+            // The terminal's shell outlives every line it runs.
+            if (pid === workspace.shellProcessPid)
+                return 'not-permitted';
             // Ending one is the only thing a resident's teardown can do: it has no
             // stop, continue or handler delivery behind it.
             if (signalDisposition(signal) !== 'terminate')
@@ -92,7 +92,7 @@ export async function registerHostedCommands(self, workspace) {
                 self._viteShimPort = null;
                 return 'delivered';
             }
-            return facetMgr.kill(pid, signal) ? 'delivered' : 'no-such-process';
+            return facetMgr.kill(pid, signal, signalAbortReason(signal)) ? 'delivered' : 'no-such-process';
         },
     };
     shell.setHostProcessSignals(hostSignals);
@@ -878,7 +878,7 @@ export async function registerHostedCommands(self, workspace) {
             try {
                 const identity = commandIdentityFor(childProcess.pid);
                 const terminal = new HeadlessTerminal();
-                const childShell = new Shell(terminal, workspace.filesystem, registry, { ...env, ...(options?.env || {}) }, processRegistry, identity);
+                const childShell = new Shell(terminal, workspace.filesystem, registry, { ...env, ...(options?.env || {}) }, self.processes, identity);
                 childShell.setHostProcessSignals(hostSignals);
                 HeredocHandler.install(childShell, terminal);
                 if (options?.cwd)
@@ -1500,8 +1500,8 @@ export async function registerHostedCommands(self, workspace) {
         }
         return 0;
     });
-    registry.register('kill', createKillCommand(processRegistry, hostSignals));
-    registry.register('top', createTopCommand(processRegistry));
+    registry.register('kill', createKillCommand(hostSignals));
+    registry.register('top', createTopCommand(self.processes));
     registry.register('watch', createWatchCommand(registry));
     registry.register('help', createHelpCommand(registry, () => shell.builtinNames()));
 }

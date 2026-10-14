@@ -6,7 +6,6 @@ import type { ChildExit, CommandOutputStream, CommandInputStream, CommandRunAsHo
 import type { VfsCred } from '../../../runtime/os-contracts.js';
 import { type CapturedCommand } from './expander.js';
 import { type ShellState } from './state.js';
-import { ProcessRegistry } from './ProcessRegistry.js';
 import { WorkThread } from './work-thread.js';
 export declare class BreakSignal {
     levels: number;
@@ -92,7 +91,6 @@ type ExecutionIo = {
     background?: boolean;
     scriptMode?: boolean;
     signal?: AbortSignal;
-    registerProcess?: boolean;
     positionals?: PositionalFrame;
     /** Host-supplied fields merged into each command's CommandContext. */
     commandContext?: Record<string, unknown>;
@@ -151,7 +149,6 @@ export interface InterpreterConfig extends ShellState {
     filesystem: NimbusFilesystemAuthority;
     registry: CommandRegistry;
     builtins: Map<string, BuiltinFn>;
-    processRegistry: ProcessRegistry;
     writeToTerminal: (text: string) => void;
     /** Returns the current abort signal for foreground commands */
     getAbortSignal?: () => AbortSignal;
@@ -183,9 +180,9 @@ export declare class Interpreter {
     /**
      * A child shell, as fork(2) makes one: its own copy of the shell's state
      * (forkShellState) and of its functions, $? and open descriptors, so
-     * nothing it changes reaches this shell. Shared: the process registry and
-     * filesystem, command registry and terminal; `$$` stays this shell's. The
-     * child runs its own EXIT trap when it finishes (`finishChild`).
+     * nothing it changes reaches this shell. Shared: the filesystem, command
+     * registry and terminal; `$$` stays this shell's. The child runs its own
+     * EXIT trap when it finishes (`finishChild`).
      */
     fork(): Interpreter;
     getLastExitCode(): number;
@@ -240,10 +237,9 @@ export declare class Interpreter {
      */
     runProgram(argv: readonly string[], spec: ProgramSpec): Promise<ChildExit>;
     /**
-     * A resolved command, run as a process of this shell's: listed for ps,
-     * jobs and kill while it runs, aborted with `spec.signal`, and its failure
-     * (a closed pipe, an abort, a throw) turned into the status a process
-     * would end with.
+     * A resolved command, run as the process `spec.identity` names: aborted
+     * with `spec.signal`, and its failure (a closed pipe, an abort, a throw)
+     * turned into the status a process would end with.
      */
     private runCommand;
     private assignEnv;

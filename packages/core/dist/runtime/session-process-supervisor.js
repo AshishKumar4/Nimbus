@@ -316,6 +316,10 @@ export class SessionProcessSupervisor {
         };
         return Object.assign(release, { signal: owner.signal });
     }
+    /** Whether `pid` runs, on work this session holds for it (holdWork, setTerminator): what a kill of it stops. */
+    runsWork(pid) {
+        return this.table.get(pid)?.state === 'running' && (this.held.has(pid) || this.terminators.has(pid));
+    }
     /** Stop the work behind `pid`: its terminator, and every piece held for it, once each, for `reason`. */
     terminate(pid, reason) {
         const terminator = this.terminators.get(pid);
