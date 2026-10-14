@@ -5,6 +5,11 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: Astro projects run again. `@astrojs/compiler-binding` 0.5.2,
+  published 2026-10-14, is what `npm create astro` now installs, and Nimbus
+  had a build only of 0.5.1, so `astro dev` and `astro build` failed with
+  "Cannot find native binding". Nimbus now stages a build of 0.5.2 as well
+  as 0.5.1.
 - Fixed: the library's built-in `node` gives a program the engine's own
   `path` and `url`, against the program's working directory: `path.resolve`
   and `path.relative` start from it, as does `url.pathToFileURL` of a
