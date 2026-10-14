@@ -18,6 +18,14 @@ published independently in the `@nimbus-sh` npm scope.
   cannot (status 1). A symbolic link named on the command line is now
   followed, as GNU cp follows it, unless `-r`, `-a`, `-P` or `-d` copies
   the link itself.
+- Fixed: two Durable Objects of a `wrangler dev` Worker could run as one
+  (one instance, one storage): an object's facet was named by its binding
+  and its id joined with `-`, so binding `A-B`'s object `c` and binding
+  `A`'s object `B-c` were the same. Each pair now names its own facet, of
+  a bounded length (a long object id named one over workerd's limit). An
+  object's local storage under `wrangler dev` starts empty once, under its
+  new name; so does a D1 database's, whose facet name is bounded the same
+  way (a long project path named one over the limit).
 - Fixed (security): a public application URL is forwarded only to the
   session its capability belongs to. Put under another session's id of the
   same tenant, the capability was forwarded to that session, which woke
