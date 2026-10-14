@@ -22,8 +22,9 @@ const source = (path) => `../../packages/core/${underBun ? 'src' : 'dist'}/${pat
 const { NimbusWorkspace } = await import(source('workspace/nimbus-workspace'));
 const { createLifoCommand } = await import(source('substrate/lifo/pkg/lifo-runtime'));
 
+// The deprecations the host hears (its others, node:sqlite's ExperimentalWarning under node, are its own).
 const hostHeard = [];
-process.on('warning', (warning) => hostHeard.push(warning.code));
+process.on('warning', (warning) => { if (warning.name === 'DeprecationWarning') hostHeard.push(warning.code); });
 
 const command = `
 const util = require('util');
