@@ -1318,6 +1318,8 @@ export declare class FacetManager {
      * memory only grows.
      */
     private esbuild;
+    /** The store `_transformStore` opened over the current VFS and esbuild service; their setters drop it. */
+    private transformStore;
     /**
      * Prefetch-bundle cache. buildPrefetchBundle does a full VFS reachable-set
      * walk + greedy oversample + the module pass on EVERY foreground
@@ -1541,7 +1543,8 @@ export declare class FacetManager {
      * session's database, admitted through its storage ledger, bound to the
      * esbuild service's transform host. None when the host has no identity (a
      * result could not be told apart from another host's) or there is no
-     * filesystem to admit against.
+     * filesystem to admit against. One store serves every launch and module
+     * until either changes: it opens its schema once, not per transform.
      */
     private _transformStore;
     /**
@@ -1992,6 +1995,7 @@ export declare class FacetManager {
      * when it did — live-diagnosed 2026-07-16).
      */
     private _stageOpencodeFacet;
+    private _stageOpencodeSpec;
     /**
      * Run a headless `opencode serve` as a resident, routeable server facet. The
      * server binds a KNOWN loopback port (honouring an explicit --port/-p/env.PORT,

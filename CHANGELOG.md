@@ -35,6 +35,10 @@ published independently in the `@nimbus-sh` npm scope.
 - Fixed: a process's recursive copy beneath a WASI preopen on a mount that
   answers asynchronously followed a link named as the source even when the
   copy did not ask to follow it.
+- Fixed: an `opencode` launch that fails while it is prepared (a working
+  tree whose snapshot serializes past the RPC payload ceiling, say) ends
+  the process it started, exit 1, with the reason in its exit. It was left
+  running in the process table, for a program that never started.
 - Fixed: in a core workspace, a process that ends after the exec that
   started it (a background job) leaves the process table a minute after it
   ended, at the next exec, as in a hosted session. It stayed, with its

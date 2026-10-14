@@ -44,7 +44,7 @@ import { generateSqliteShimCode } from './sqlite-shim.js';
 import { DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE } from './javascript-string-literal.js';
 import { CHILD_NEWS_SOURCE } from '@nimbus-sh/core/runtime/child-news.js';
 import { generateUndiciShimCode } from '@nimbus-sh/core/runtime/undici-shim.js';
-import { ESM_RESOLVER_PREAMBLE, HTTP2_MODULE_PREAMBLE, NODE_ERROR_PREAMBLE, NODE_SHIM_RESOLUTION_PREAMBLE, NODE_WARNING_PREAMBLE, RELATIVE_WASM_PATHS_PREAMBLE, } from '../loaders/generated-workers.js';
+import { ESM_RESOLVER_PREAMBLE, HTTP2_MODULE_PREAMBLE, NODE_ERROR_PREAMBLE, NODE_SHIM_RESOLUTION_PREAMBLE, NODE_WARNING_PREAMBLE, RELATIVE_WASM_PATHS_PREAMBLE, WASM_IMAGE_KEY_PREAMBLE, } from '../loaders/generated-workers.js';
 import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '@nimbus-sh/core/_shared/ai-egress.js';
 import { EGRESS_TLS_REFUSAL } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { EGRESS_TLS_CLIENT_SOURCE } from './egress-tls-client.js';
@@ -382,25 +382,15 @@ const __nimbusWasmModuleTag = Symbol.for("nimbus.precompiledWasmModule");
  */
 const __nimbusPrecompiledWasmByDigest = globalThis.__nimbusPrecompiledWasmByDigest instanceof Map
   ? globalThis.__nimbusPrecompiledWasmByDigest : new Map();
-/**
- * A synchronous content key: length and FNV-1a over every byte.
- *
- * Synchronous because new WebAssembly.Module(bytes) is, and SubtleCrypto is
- * not. Collisions do not matter for correctness the way they would in a
- * security check: the set is the handful of images one launch registered, and
- * the length is part of the key.
- */
+// The key a launch registers each image under: its own code
+// (facets/wasm-image-key.ts wasmImageDigest), not a copy of it.
+${WASM_IMAGE_KEY_PREAMBLE}
+/** The key of the bytes a compile was handed; null for anything but a Uint8Array or an ArrayBuffer. */
 function __nimbusWasmDigest(bytes) {
   const view = bytes instanceof Uint8Array
     ? bytes
     : (bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : null);
-  if (!view) return null;
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < view.length; i++) {
-    hash ^= view[i];
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return view.length + ":" + hash.toString(16);
+  return view === null ? null : wasmImageDigest(view);
 }
 (() => {
   const WA = globalThis.WebAssembly;

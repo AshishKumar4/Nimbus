@@ -9,6 +9,7 @@
  *   - @nimbus-sh/core src/_shared/esm-resolver.ts (Node's ESM resolver, for the node shims)
  *   - @nimbus-sh/core src/_shared/http2-module.ts (node:http2, for the node shims)
  *   - @nimbus-sh/core src/_shared/node-shim-resolution.ts (resolution, credential and upgrade rules, for the node shims)
+ *   - src/facets/wasm-image-key.ts (the wasm image content key, for the node shims)
  *
  * Consumed by fabric/isolate-pool.ts callers via the `preamble`
  * option. The preamble is injected at the top of every generated
@@ -61,3 +62,6 @@ export const NODE_SHIM_RESOLUTION_PREAMBLE: string = "var { DEFAULT_CJS_CONDITIO
 
 /** Declares `function relativeWasmPaths(source, filename)`; the node shims call it. */
 export const RELATIVE_WASM_PATHS_PREAMBLE: string = "var { relativeWasmPaths } = (() => {\nfunction relativeWasmPaths(source, filename) {\n  const literals = /[\"'`]((?:\\.{1,2}\\/)*[\\w@.-]+(?:\\/[\\w@.-]+)*\\.wasm)[\"'`]/g;\n  const dir = filename.replace(/^\\/+/, \"\").split(\"/\").slice(0, -1);\n  const paths =   new Set();\n  for (const match of source.matchAll(literals)) {\n    const segments = [...dir];\n    for (const segment of match[1].split(\"/\")) {\n      if (segment === \"..\") segments.pop();\n      else if (segment !== \".\") segments.push(segment);\n    }\n    paths.add(segments.join(\"/\"));\n  }\n  return [...paths];\n}\nreturn { relativeWasmPaths };\n})();\n";
+
+/** Declares `function wasmImageDigest(bytes)`, the key a launch registers a wasm image under; the node shims call it. */
+export const WASM_IMAGE_KEY_PREAMBLE: string = "var { WASM_IMAGE_HASH_SEED, wasmImageDigest, wasmImageHash, wasmImageKey } = (() => {\nvar WASM_IMAGE_HASH_SEED = 2166136261;\nfunction wasmImageHash(hash, bytes) {\n  for (let i = 0; i < bytes.length; i++) {\n    hash ^= bytes[i];\n    hash = Math.imul(hash, 16777619) >>> 0;\n  }\n  return hash;\n}\nfunction wasmImageKey(length, hash) {\n  return length + \":\" + hash.toString(16);\n}\nfunction wasmImageDigest(bytes) {\n  return wasmImageKey(bytes.length, wasmImageHash(WASM_IMAGE_HASH_SEED, bytes));\n}\nreturn { WASM_IMAGE_HASH_SEED, wasmImageDigest, wasmImageHash, wasmImageKey };\n})();\n";

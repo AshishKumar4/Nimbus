@@ -14,7 +14,7 @@ import {
   findInlineWasmImages,
   facetWasmImports,
 } from '../../packages/worker/src/facets/manager.ts';
-import { wasmImageDigest } from '../../packages/worker/src/facets/wasm-image-digest.ts';
+import { wasmImageDigest } from '../../packages/worker/src/facets/wasm-image-key.ts';
 
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { launchFs } from './lib/launch-fs.mjs';

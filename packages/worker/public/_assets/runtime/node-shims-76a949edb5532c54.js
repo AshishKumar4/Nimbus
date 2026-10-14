@@ -2590,25 +2590,32 @@ const __nimbusWasmModuleTag = Symbol.for("nimbus.precompiledWasmModule");
  */
 const __nimbusPrecompiledWasmByDigest = globalThis.__nimbusPrecompiledWasmByDigest instanceof Map
   ? globalThis.__nimbusPrecompiledWasmByDigest : new Map();
-/**
- * A synchronous content key: length and FNV-1a over every byte.
- *
- * Synchronous because new WebAssembly.Module(bytes) is, and SubtleCrypto is
- * not. Collisions do not matter for correctness the way they would in a
- * security check: the set is the handful of images one launch registered, and
- * the length is part of the key.
- */
+// The key a launch registers each image under: its own code
+// (facets/wasm-image-key.ts wasmImageDigest), not a copy of it.
+var { WASM_IMAGE_HASH_SEED, wasmImageDigest, wasmImageHash, wasmImageKey } = (() => {
+var WASM_IMAGE_HASH_SEED = 2166136261;
+function wasmImageHash(hash, bytes) {
+  for (let i = 0; i < bytes.length; i++) {
+    hash ^= bytes[i];
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return hash;
+}
+function wasmImageKey(length, hash) {
+  return length + ":" + hash.toString(16);
+}
+function wasmImageDigest(bytes) {
+  return wasmImageKey(bytes.length, wasmImageHash(WASM_IMAGE_HASH_SEED, bytes));
+}
+return { WASM_IMAGE_HASH_SEED, wasmImageDigest, wasmImageHash, wasmImageKey };
+})();
+
+/** The key of the bytes a compile was handed; null for anything but a Uint8Array or an ArrayBuffer. */
 function __nimbusWasmDigest(bytes) {
   const view = bytes instanceof Uint8Array
     ? bytes
     : (bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : null);
-  if (!view) return null;
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < view.length; i++) {
-    hash ^= view[i];
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return view.length + ":" + hash.toString(16);
+  return view === null ? null : wasmImageDigest(view);
 }
 (() => {
   const WA = globalThis.WebAssembly;
