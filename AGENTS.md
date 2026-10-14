@@ -315,8 +315,13 @@ Everything that executes Nimbus code runs on armada, never on the
 workstation: unit files, red-first tests, benches, profiles, probes, the
 typecheck, builds and workerd. On 2026-10-12 a red-first test run on the
 workstation against a decoder that never terminated reached 41 GB and took
-the user's machine down twice. The workstation runs git, file edits, small
-scripts over receipts, and the `scripts/ci/remote-*.mjs` clients (§ CI).
+the user's machine down twice. So do reference programs used as a
+differential oracle (`bash`, `node`, `git`, `python` running a case under
+study): on 2026-10-14 a local `bash` asked how a RETURN trap that runs
+`return` behaves recursed to 30 GB and took it down again. Run the case in
+a committed differential test on armada. The workstation runs git, file
+edits, small scripts over receipts, and the `scripts/ci/remote-*.mjs`
+clients (§ CI).
 One unit file is `remote-unit --only <file>`; one probe is `remote-probes
 --only <probe>`. A bench or profile is committed and run through
 `remote-unit --only` or `mapOnArmada` (`scripts/ci/lib/armada.mjs`).
