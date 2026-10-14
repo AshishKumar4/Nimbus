@@ -5,6 +5,19 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed (Node `fs`): `fs.cpSync`, `fs.promises.cp` and `fs.cp` are Node's
+  own `cp`, run over Nimbus's `fs`, so they answer as Node 22 does. The async
+  forms took a file the program had not read for a directory (EISDIR), and
+  ignored `filter`, `force: false`, `errorOnExist`, `dereference`,
+  `verbatimSymlinks`, `preserveTimestamps` and `mode`. They also copied a
+  link as the file it names. `cpSync` refused `errorOnExist` even under the
+  default `force: true`, where Node overwrites. Directory modes and errors
+  (`ERR_FS_CP_*`) differed from Node's, and copying a directory into itself
+  never ended.
+- Added (Node `fs`): `fs.symlinkSync` and `fs.readlinkSync`.
+- Fixed: a process's recursive copy beneath a WASI preopen on a mount that
+  answers asynchronously followed a link named as the source even when the
+  copy did not ask to follow it.
 - Fixed (Node `fs`): a write keeps the bytes it was given. `writeFileSync`,
   `appendFileSync`, `fs.promises.writeFile` and a descriptor's `write` used
   the program's own buffer as the file's bytes, so changing or reusing the
