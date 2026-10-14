@@ -4,7 +4,7 @@ export declare function createPath(cwd: string): PlatformPath;
 /**
  * The engine's url, whose pathToFileURL of a relative path starts from `cwd`,
  * in the path platform the call asks for (Windows mode: drive and UNC paths
- * are absolute).
+ * are absolute, a drive-relative one is its drive's).
  */
 export declare function createUrl(cwd: string): {
     pathToFileURL: (path: string, options?: {
