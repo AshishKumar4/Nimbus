@@ -64,6 +64,10 @@ export declare class JobTable {
     fork(): JobTable;
     byPid(pid: number): Job | undefined;
     get(id: number): Job | undefined;
+    /**
+     * What `wait` names, by jobspec or by pid: a job of this table, else one
+     * it has waited for, whose status it still answers with (bash's).
+     */
     waitTarget(spec: string): Job | 'ambiguous' | undefined;
     reap(job: Job): void;
     clearWaited(): void;

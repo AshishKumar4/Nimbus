@@ -111,7 +111,15 @@ export class JobTable {
     get(id) {
         return this.jobs.get(id);
     }
+    /**
+     * What `wait` names, by jobspec or by pid: a job of this table, else one
+     * it has waited for, whose status it still answers with (bash's).
+     */
     waitTarget(spec) {
+        if (!spec.startsWith('%')) {
+            const pid = Number(spec);
+            return this.byPid(pid) ?? [...this.waited.values()].find((job) => job.pid === pid);
+        }
         const live = resolveJobSpec(spec, this.list());
         if (live !== undefined)
             return live;
