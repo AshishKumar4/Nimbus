@@ -184,6 +184,12 @@ export interface SessionInternal extends Pick<SessionRouterRpc,
 
   // Class delegators that siblings dispatch through (per plan §IX.2 R3).
   initSession(ws: WebSocket | null, options?: InitSessionOptions): Promise<void>;
+  /** The session's one build in flight (session/init.ts initSession), or null. */
+  building: Promise<void> | null;
+  /** The latest build's session usable: its own commands registered (initSession). */
+  usable: Promise<void> | null;
+  /** The latest build's shell started: its login files run. */
+  shellStarted: Promise<void> | null;
   /** Rebuild in flight for a shell socket that woke a hibernated instance (session/ws.ts). */
   _wakeRebuild: Promise<void> | null;
   _w9FlushOnClose(): void;

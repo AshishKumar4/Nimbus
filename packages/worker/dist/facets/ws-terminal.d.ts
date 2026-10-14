@@ -53,6 +53,12 @@ export declare class WebSocketTerminal {
     write(data: string): void;
     writeln(data: string): void;
     /**
+     * What the session already recorded (its scrollback), shown on the socket
+     * after anything written before it, and not recorded again: the tee is
+     * for what the session writes.
+     */
+    replay(data: string): void;
+    /**
      * REPL-A1 (master plan §1): drain the buffer synchronously, bypassing
      * the turn coalescer. Used by ReplSession.submitLine to emit stdout,
      * stderr, and the next-prompt as three discrete frames in deterministic

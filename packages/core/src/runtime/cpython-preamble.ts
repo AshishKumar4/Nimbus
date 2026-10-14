@@ -186,16 +186,10 @@ globalThis.__nimbusVirtualSocketRouteLoopback = globalThis.__nimbusVirtualSocket
 // (wasi/resident-filesystem.ts) goes to the session before the result says
 // the run happened, and a file the session refused fails the run, named.
 async function __nimbusPySettled(result) {
-  let failed = null;
-  try {
-    failed = typeof globalThis.__wasiSettleWrites === 'function' ? await globalThis.__wasiSettleWrites() : null;
-  } catch (e) {
-    failed = (e && e.message) || String(e);
-  }
-  const outputFailure = __nimbusPyOutput ? await __nimbusPyOutput.drain() : null;
-  failed = failed || outputFailure;
-  if (failed === null) return result;
-  return { ...result, exitCode: result.exitCode || 1, error: result.error ? result.error + '; ' + failed : failed };
+  const settled = await globalThis.__wasiSettled(result);
+  const lost = __nimbusPyOutput ? await __nimbusPyOutput.drain() : null;
+  if (lost === null) return settled;
+  return { ...settled, exitCode: settled.exitCode || 1, error: settled.error ? settled.error + '; ' + lost : lost };
 }
 
 // ── One-shot entry point ───────────────────────────────────────────────────

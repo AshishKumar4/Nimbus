@@ -130,6 +130,7 @@ import type { ServerIdentity } from '@nimbus-sh/core/runtime/server-launch.js';
 import { disposeRpcResource, disposeRpcResources } from '@nimbus-sh/platform/rpc-dispose.js';
 import { SUPERVISOR_ANSWERING_SRC } from '@nimbus-sh/core/runtime/supervisor-answering.generated.js';
 import { STOP_REPLAY_SOURCE } from '../runtime/stop-replay.js';
+import { PENDING_IO_SOURCE } from '../runtime/pending-io.js';
 import { encodeBase64, OwnedPieces, ReplayOutputGate, StdinTaken, stopRecordOf } from '../runtime/stop-replay-host.js';
 import { answerDigest } from '../runtime/stop-replay-journal.js';
 import { REPLAY_PREFIX_MAX_BYTES, REPLAY_JOURNAL_MAX_ENTRIES, REPLAY_READ_RECEIPT_MAX_BYTES, STOP_LIMIT, type ReplayLaunch, type StopRecord } from '../runtime/stop-replay-contracts.js';
@@ -1128,7 +1129,7 @@ function __nimbusInstallNodeNavigator(__version) {
 function nodeProgramRuntime(sources: NodeFacetSources, esModule: boolean): ModuleSource {
   return moduleSource`
     const __vfsBundle = __resident.bundle;
-    const __pendingIO = [];
+${PENDING_IO_SOURCE}
     let __rpcDrops = 0;
     let __rpcDropBytes = 0;
     let __rpcLastError = "";
@@ -1139,6 +1140,12 @@ function nodeProgramRuntime(sources: NodeFacetSources, esModule: boolean): Modul
     };
     let __rpcWriteChain = Promise.resolve();
     let __rpcWriteCount = 0;
+    // The output's own ledger, beside the registry (PENDING_IO_SOURCE): its
+    // batches go in order, so the chain's tail is answered once every batch
+    // before it is. A drain waits for the tail while one is outstanding.
+    let __rpcWritesOutstanding = 0;
+    const __rpcWriteSettled = () => { __rpcWritesOutstanding--; };
+    const __outputPending = () => (__rpcWritesOutstanding === 0 ? null : __rpcWriteChain);
     // The batch writes still join: queued, its turn in the chain not yet come.
     let __rpcOpenBatch = null;
     const __RPC_BATCH_BYTES = 64 * 1024;
@@ -1155,7 +1162,8 @@ function nodeProgramRuntime(sources: NodeFacetSources, esModule: boolean): Modul
     // them, not one round trip a line. The batch is sealed when its turn
     // comes, and sent from its first chunk's offset once its last write's
     // gate is released (gates release in order). Each write is answered as
-    // its batch is, so its callback, drain and __pendingIO mean what they did.
+    // its batch is, so its callback, its stream's 'drain' and a drain's wait
+    // for the output ledger mean what they did.
     const __queueRpcWrite = (method, bytes) => {
       const __chunk = __nimbusStopReplay.write(method, bytes);
       if (__chunk === null) return;
@@ -1189,8 +1197,8 @@ function nodeProgramRuntime(sources: NodeFacetSources, esModule: boolean): Modul
           if (e && e.code === "EPIPE") throw e;
         });
       __batch.task = __task;
-      __rpcWriteChain = __task.then(() => {}, () => {});
-      __pendingIO.push(__task);
+      __rpcWritesOutstanding++;
+      __rpcWriteChain = __task.then(__rpcWriteSettled, __rpcWriteSettled);
       return __task;
     };
     const __rpcBatchBytes = (batch) => {
@@ -1230,8 +1238,8 @@ ${RESIDENCY_MISS_REPORT}
       // At the output gate, as all of the process's output is.
       const __gate = __nimbusOutputGate();
       const __task = __rpcWriteChain.then(() => __gate).then(() => __supervisor.stderr(__bytes)).catch((e) => __onRpcDrop(__bytes.byteLength, e));
-      __rpcWriteChain = __task.then(() => {}, () => {});
-      __pendingIO.push(__task);
+      __rpcWritesOutstanding++;
+      __rpcWriteChain = __task.then(__rpcWriteSettled, __rpcWriteSettled);
     };
 
     try { globalThis.console = __consoleMod; } catch {}
@@ -1411,13 +1419,12 @@ ${nodeProgramRuntime(sources, entry.esModule)}
     // resumption barrier is the program's, and its round trip (and the read
     // lease it is answered with) is nothing an ended program needs.
     async function __drainPendingIO(maxPasses = 12) {
-      let __settledIO = 0;
       for (let __pass = 0; __pass < maxPasses; __pass++) {
         await new Promise(r => globalThis.__nimbusRawSetTimeout(r, 0));
-        if (__pendingIO.length <= __settledIO) break;
-        const __slice = __pendingIO.slice(__settledIO);
-        __settledIO = __pendingIO.length;
-        await Promise.allSettled(__slice);
+        const __output = __outputPending();
+        // The registry is empty once nothing in it is outstanding (PENDING_IO_SOURCE).
+        if (__pendingIO.length === 0 && __output === null) break;
+        await Promise.allSettled([...__pendingIO, __output]);
       }
     }
 
@@ -1714,14 +1721,10 @@ async function __nimbusFlushRuntime() {
       const turn = Promise.withResolvers();
       __nimbusPlatformSetTimeout(turn.resolve, 0);
       await turn.promise;
-      if (rt.pendingIO.length <= rt.settledIO) break;
-      const slice = rt.pendingIO.slice(rt.settledIO);
-      rt.settledIO = rt.pendingIO.length;
-      await Promise.allSettled(slice);
-    }
-    if (rt.settledIO === rt.pendingIO.length) {
-      rt.pendingIO.length = 0;
-      rt.settledIO = 0;
+      const output = rt.outputPending();
+      // The registry is empty once nothing in it is outstanding (PENDING_IO_SOURCE).
+      if (rt.pendingIO.length === 0 && output === null) break;
+      await Promise.allSettled([...rt.pendingIO, output]);
     }
     // After the drain, so the program's writes are durable whatever happens
     // to the report; unacknowledged entries are sent again by the next flush.
@@ -1916,7 +1919,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
     __nimbusRuntime = {
       supervisor: __supervisor,
       pendingIO: __pendingIO,
-      settledIO: 0,
+      outputPending: __outputPending,
       vfsWrites: __vfsWrites,
       flushVfsWrite: __nimbusFlushVfsWrite,
       drainVfsMutations: __nimbusDrainVfsMutations,
@@ -4597,6 +4600,13 @@ export interface PrefetchBundleOptions {
   entryEsModule?: string;
   /** A module's static filesystem references, as the data plan reads them (collectClosureWasmImages). */
   staticRefs?: (path: string) => Promise<StaticFsRefs | null>;
+  /**
+   * The files as they are, for a program that runs its own code and only
+   * reads them (opencode's snapshot, _stageOpencodeFacet): the same files
+   * and bound, without the module pass. Nothing is compiled, and the bound
+   * charges what is carried.
+   */
+  dataOnly?: boolean;
 }
 
 /** A tool's config file: `<tool>.config.js|ts|mjs|cjs|mts|cts` (vite.config.ts, astro.config.mjs). */
@@ -4817,6 +4827,7 @@ async function _buildPrefetchBundle(
     preloads = [],
     entryEsModule,
     staticRefs,
+    dataOnly = false,
   }: PrefetchBundleOptions,
 ): Promise<FacetVfsState> {
   // Read the cursor BEFORE the walk: a mutation that lands while the bundle
@@ -4998,7 +5009,7 @@ async function _buildPrefetchBundle(
   // 2.5 The module pass (core bundle-cell-transform.ts): each ES module read
   //     for staging, TypeScript stripped or compiled, CommonJS's import()
   //     routed; each result is the path's emit, and each ES module's import
-  //     sites are kept for its staging below.
+  //     sites are kept for its staging below. A data-only build has none.
   const emits = new Map<string, string>();
   const esModules = new Map<string, string>();
   // A file staged only to run carries its emit and not itself
@@ -5024,39 +5035,41 @@ async function _buildPrefetchBundle(
   };
   let transforms: BundleCellTransformStats | undefined;
   phase('enrich');
-  const packageTypeOf = await cellPackageTypes(vfs, Object.keys(bundle).filter(isBundleModuleCandidate));
-  if (esbuild) {
-    // Transient failures propagate through the launch failure path before
-    // serialization/cache/LOADER publication. Per-source verdicts still use
-    // the lazy diagnostic cells installed by transformBundleModules.
-    transforms = await transformBundleModules(bundle, placeEmit, esModules, packageTypeOf, moduleScope, stripTypes, esbuild, pacer, transformStore);
-    phase('transforms');
-  } else {
-    // No esbuild service was given: the ESM cells stage as diagnostics that
-    // say so, rather than as source the registry rejects without a reason.
-    _markBundleEsmAsFailed(bundle, placeEmit, packageTypeOf, 'no esbuild service was given to this launch');
-  }
-  // Each module's bundled records of the runtime's provided packages are
-  // bound to them: the emit's, or the file's own when it is its module (a
-  // TypeScript source never is). A file that changes has the result as its emit.
-  for (const path of Object.keys(bundle)) {
-    const cell = bundle[path];
-    const code = emits.get(path) ?? (isBundleModuleCandidate(path) && bundleCompiledLoader(path) === null ? cell : undefined);
-    // An ES module was bound before it was read (esbuild-service.ts preparedTransformSource).
-    if (typeof code !== 'string' || esModules.has(path)) continue;
-    await pacer?.spend(code.length);
-    let bound: string;
-    try {
-      bound = rewriteProvidedCommonJsModules(code);
-    } catch {
-      // Unparseable: an emit stays as esbuild wrote it, and its require says
-      // why; a file is not a module and has no records to bind (a LICENSE).
-      continue;
+  if (!dataOnly) {
+    const packageTypeOf = await cellPackageTypes(vfs, Object.keys(bundle).filter(isBundleModuleCandidate));
+    if (esbuild) {
+      // Transient failures propagate through the launch failure path before
+      // serialization/cache/LOADER publication. Per-source verdicts still use
+      // the lazy diagnostic cells installed by transformBundleModules.
+      transforms = await transformBundleModules(bundle, placeEmit, esModules, packageTypeOf, moduleScope, stripTypes, esbuild, pacer, transformStore);
+      phase('transforms');
+    } else {
+      // No esbuild service was given: the ESM cells stage as diagnostics that
+      // say so, rather than as source the registry rejects without a reason.
+      _markBundleEsmAsFailed(bundle, placeEmit, packageTypeOf, 'no esbuild service was given to this launch');
     }
-    if (bound !== code) placeEmit(path, bound);
+    // Each module's bundled records of the runtime's provided packages are
+    // bound to them: the emit's, or the file's own when it is its module (a
+    // TypeScript source never is). A file that changes has the result as its emit.
+    for (const path of Object.keys(bundle)) {
+      const cell = bundle[path];
+      const code = emits.get(path) ?? (isBundleModuleCandidate(path) && bundleCompiledLoader(path) === null ? cell : undefined);
+      // An ES module was bound before it was read (esbuild-service.ts preparedTransformSource).
+      if (typeof code !== 'string' || esModules.has(path)) continue;
+      await pacer?.spend(code.length);
+      let bound: string;
+      try {
+        bound = rewriteProvidedCommonJsModules(code);
+      } catch {
+        // Unparseable: an emit stays as esbuild wrote it, and its require says
+        // why; a file is not a module and has no records to bind (a LICENSE).
+        continue;
+      }
+      if (bound !== code) placeEmit(path, bound);
+    }
+    await paceAfterPass();
+    phase('bind');
   }
-  await paceAfterPass();
-  phase('bind');
   // 4. The snapshot's size guard, in the unit the session DO's memory was
   //    measured in and the require walk counts: raw bytes, a cell's UTF-8
   //    length (VFS_BUNDLE_MAX_BYTES, platform/limits.ts, unless the caller
@@ -5194,7 +5207,7 @@ async function _buildPrefetchBundle(
   // An evicted module is still one the program may load late (as runtime
   // code, through an import()): its images ride in the map, bytes only since
   // they compile on first use, and its reads are named for that import().
-  const wasmImages = (await collectClosureWasmImages(vfs, { ...bundle, ...evictedCells }, binSiblingAdd.wasmPaths, staticRefs));
+  const wasmImages = dataOnly ? [] : await collectClosureWasmImages(vfs, { ...bundle, ...evictedCells }, binSiblingAdd.wasmPaths, staticRefs);
   phase('wasm');
   const readers = evictedReaders(evictedCells);
 
@@ -5648,8 +5661,8 @@ export interface ResolvedWorkerLaunch {
   /** Null is the absent answer — the same JSON the image blob carries. */
   env: ResidentCodeSpec['env'] | null;
   globalOutbound: ResidentCodeSpec['globalOutbound'];
-  /** Module name → source text, including the main module under its name. */
-  modules: Record<string, string>;
+  /** Module name → source text or inline wasm (`{ wasm }`), including the main module, text, under its name. */
+  modules: Record<string, string | { wasm: ArrayBuffer }>;
   /** Module name → VFS path of a wasm image, restored with the launch. */
   vfsWasmModules?: Record<string, string>;
   /** Module name → VFS path of a content-addressed module source, restored with the launch. */
@@ -8444,15 +8457,17 @@ export class FacetManager {
       : opts.env;
 
     // Snapshot the working tree so opencode's sync fs reads resolve, and a
-    // directory manifest so readdir/stat are coherent. opencode creates its
-    // home dirs (~/.local/share/opencode, …) via fs.promises.mkdir; those and
-    // other writes flush live through the SUPERVISOR RPC bridge.
+    // directory manifest so readdir/stat are coherent: the files as they are,
+    // since opencode runs its own code and only reads them (dataOnly).
+    // opencode creates its home dirs (~/.local/share/opencode, …) via
+    // fs.promises.mkdir; those and other writes flush live through the
+    // SUPERVISOR RPC bridge.
     if (this.vfs) this.imageStore.ensureDir(entry.pid);
     const processVfs = this.filesystem ? this.filesystem.bind({ pid: entry.pid, cred: entry.cred }) : null;
     // Gathered and serialized under one admission (Kinu #29).
     const { vfsState, vfsBundle } = await withPrefetchAllocation(async (admission) => {
       const gathered: FacetVfsState = processVfs
-        ? await gatherPrefetchBundle(processVfs, { cwd: opts.cwd, entryCode: '', esbuild: this.esbuild || undefined })
+        ? await gatherPrefetchBundle(processVfs, { cwd: opts.cwd, entryCode: '', dataOnly: true })
         : { bundle: {}, reachableCount: 0, truncated: false };
       admission.fit(gathered.rawBytes ?? 0);
       const serialized = _serializeBundleForFacet(gathered.bundle);
@@ -8976,7 +8991,7 @@ export class FacetManager {
         if (resolved === null) return undefined;
         const mainModule = resolved.mainModule ?? recipe.mainModule ?? DEFAULT_WORKER_MAIN_MODULE;
         const { [mainModule]: workerCode, ...modules } = resolved.modules;
-        if (workerCode === undefined) throw new Error(`resolved worker launch carries no ${mainModule} main module`);
+        if (typeof workerCode !== 'string') throw new Error(`resolved worker launch carries no ${mainModule} main module source`);
         return this._spawnWorker(workerCode, record.command, recipe.cwd, {
           port: recipe.resident ? record.port : recipe.port > 0 ? recipe.port : undefined, modules, compatibilityDate: recipe.compatibilityDate,
           compatibilityFlags: recipe.compatibilityFlags, startArgs: resolved.startArgs ?? recipe.startArgs,
