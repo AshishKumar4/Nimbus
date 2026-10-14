@@ -115,7 +115,7 @@ const programs = {
     "const h = new EventEmitter(); setTimeout(() => h.emit('ready', 1, 2)); once(h, 'ready').then((v) => console.log('once', v));",
     "const m = new EventEmitter(); for (let i = 0; i < 11; i++) m.on('many', () => {}); console.log(getEventListeners(m, 'many').length, EventEmitter.listenerCount(m, 'many'));",
     "class Mine extends EventEmitter {} const x = new Mine(); x.setMaxListeners(1); x.on('a', () => {}); x.on('a', () => {}); console.log(x.getMaxListeners());",
-    "const s = require('stream'); console.log(new s.Readable() instanceof EventEmitter, new s.PassThrough() instanceof EventEmitter, s.Stream.prototype instanceof EventEmitter, s === s.Stream);",
+    "const s = require('stream'); console.log(new s.Readable() instanceof EventEmitter, new s.PassThrough() instanceof EventEmitter, s.Stream.prototype instanceof EventEmitter, s === s.Stream, new s.Readable() instanceof s, new s.Writable() instanceof s);",
     "const w = require('fs').watch('.', () => {}); console.log(w instanceof EventEmitter); w.close();",
     "console.log(require('http').request('http://127.0.0.1:1/').on('error', () => {}) instanceof EventEmitter);",
     "console.log(require('readline').createInterface({ input: new (require('stream').PassThrough)() }) instanceof EventEmitter);",
