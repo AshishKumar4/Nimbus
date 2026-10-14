@@ -25,6 +25,8 @@ import { RuntimeManager } from '../../packages/core/src/runtime/runtime-manager.
 import { ProcessFiles, ProcessView } from '../../packages/core/src/runtime/process-files.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { localFacetHost } from '../../packages/core/src/runtime/local-facet-host.ts';
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
@@ -88,7 +90,8 @@ const registry = () => {
 for (const [what, open] of [
   ['core', async (runtimeSource) => {
     const { harness } = openVfs();
-    return await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, generation: 1, runtimeSource });
+    // A workspace binds runtimes through a facet host: without one it registers no runner at all.
+    return await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, generation: 1, runtimeSource, facets: localFacetHost(ISOLATE_NETWORK) });
   }],
   ['hosted', async (runtimeSource) => {
     const world = createFacetWorld(() => ({ async startProcess() { return { ok: true }; }, async handleHttpRequest() { return new Response('ok'); } }), { resolveConfig: false });
