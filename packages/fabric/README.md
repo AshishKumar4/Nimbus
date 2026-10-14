@@ -400,7 +400,7 @@ Nesting is capped at depth 4. Raise it with `NIMBUS_INNER_LOADER_DEPTH`.
 
 A classic Durable Object binding is a local namespace inside the inner
 Worker (`inner-do-env.ts`), because a namespace's API is synchronous and an
-RpcPromise cannot travel as an argument. `innerWorkerModules` makes an adapter
+RpcPromise cannot travel as an argument. `innerWorkerModules` (`inner-env.ts`) makes an adapter
 the bundle's first import; it replaces `env.MY_DO` in the env every handler,
 entrypoint and object of the isolate sees, so
 `env.MY_DO.get(env.MY_DO.idFromName('x'))` needs no `await`. A stub is

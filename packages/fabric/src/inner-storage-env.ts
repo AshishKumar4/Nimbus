@@ -11,7 +11,7 @@
  * writeHttpMetadata), which cannot cross RPC at all.
  *
  * So the module that adapts the isolate's env before any of the Worker's
- * code runs (inner-do-env.ts innerWorkerModules) replaces each with a local
+ * code runs (inner-env.ts innerWorkerModules) replaces each with a local
  * object of the platform's shape: a D1Database as workerd's own
  * (cloudflare-internal:d1-api, without the experimental d1_binding_jsrpc
  * flag) over the binding's `query`, which is D1's binding contract; and an
@@ -363,7 +363,7 @@ class D1PreparedStatement {
     return rowsAsObjects(answer);
   }
 
-  async raw(options?: { columnNames?: boolean }): Promise<D1Value[][] | [string[], ...D1Value[][]]> {
+  async raw(options?: { columnNames?: boolean }): Promise<D1Value[][]> {
     const [answer] = await sendD1(this.#session, [statementQuery(this)], 'D1_ERROR');
     const { columns, rows } = answer.results;
     return options?.columnNames ? [columns, ...rows] : rows;

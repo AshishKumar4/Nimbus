@@ -10,9 +10,9 @@
  * an argument ("Could not serialize object of type RpcPromise").
  *
  * So a module the inner Worker runs before any of its own code (its main
- * module's first import, `innerWorkerModules`) replaces each such binding in
- * the isolate's env, which every handler, entrypoint and Durable Object of the
- * isolate sees, with a local namespace. Ids are made locally, and `get`
+ * module's first import, inner-env.ts `innerWorkerModules`) replaces each
+ * such binding in the isolate's env, which every handler, entrypoint and
+ * Durable Object of the isolate sees, with a local namespace. Ids are made locally, and `get`
  * answers at once an RPC stub (`new RpcStub(target)`) of a local target that
  * relays each member the stub's caller reaches (a call, a read, or a path
  * through members, fetch included) to the binding's `callOn` or `getOn`,
@@ -36,8 +36,6 @@
  */
 
 import type { RpcStub, WorkerEntrypoint } from 'cloudflare:workers';
-import { INNER_DO_ADAPTER_SOURCE, INNER_STORAGE_ADAPTER_SOURCE } from './compiled-bodies.generated.js';
-import type { InnerStorageNames } from './inner-storage-env.js';
 
 /**
  * The id string a name gives: deterministic (FNV-style, 64-bit hex), with the
@@ -72,8 +70,6 @@ export interface InnerDoRuntime {
   RpcStub: typeof RpcStub;
 }
 
-/** The entrypoint a build asks which Durable Object classes are missing, unless the bundle spells it. */
-const CLASSES_ENTRYPOINT = 'NimbusDurableObjectClasses';
 /**
  * The adapter, as it runs in the inner isolate: it replaces each of `names`
  * in `runtime.env` that holds the binding with a local DurableObjectNamespace,
@@ -179,58 +175,4 @@ export function innerDoAdapter(
     if (isRemote(remote)) Reflect.set(runtime.env, name, new DurableObjectNamespace(remote));
   }
   return { NimbusDurableObjectClasses };
-}
-
-/** The inner Worker's own module, as bundled, and the adapter's. */
-const MAIN_MODULE = 'worker.js';
-const ADAPTER_MODULE = 'nimbus-do-env.js';
-
-/** The bindings of an inner Worker's env that the adapter replaces, by name. */
-export interface InnerBindingNames extends InnerStorageNames {
-  durableObjects: readonly string[];
-}
-
-/**
- * The modules an inner Worker runs with the bindings `names`: its bundle as
- * the main module, whose first import is the adapter (so the adapter has run
- * before any of the Worker's code), and the adapter. With Durable Object
- * bindings the main module also exports the class check as
- * `classesEntrypoint`. The import shares the bundle's first line, so line
- * numbers stay the bundle's. A Worker with no such binding runs its bundle
- * as it is; one with no Durable Object binding has no class check (null).
- *
- * `classesEntrypoint` is a name the bundle never spells, so it exports no
- * such name itself (a bundler prints an ASCII name as it is).
- */
-export function innerWorkerModules(bundle: string, names: InnerBindingNames): {
-  mainModule: string;
-  modules: Record<string, string>;
-  classesEntrypoint: string | null;
-} {
-  const storage = names.d1.length > 0 || names.r2.length > 0;
-  if (names.durableObjects.length === 0 && !storage) return { mainModule: MAIN_MODULE, modules: { [MAIN_MODULE]: bundle }, classesEntrypoint: null };
-  const adapter = ["import { env, RpcStub, WorkerEntrypoint } from 'cloudflare:workers';"];
-  let head = `import './${ADAPTER_MODULE}';`;
-  let classesEntrypoint: string | null = null;
-  if (names.durableObjects.length > 0) {
-    classesEntrypoint = CLASSES_ENTRYPOINT;
-    for (let n = 2; bundle.includes(classesEntrypoint); n++) classesEntrypoint = `${CLASSES_ENTRYPOINT}_${n}`;
-    head = `export { ${CLASSES_ENTRYPOINT} as ${classesEntrypoint} } from './${ADAPTER_MODULE}';`;
-    adapter.push(
-      `import * as main from './${MAIN_MODULE}';`,
-      `const { innerDoAdapter, innerDoIdFromName } = ${INNER_DO_ADAPTER_SOURCE};`,
-      `const { ${CLASSES_ENTRYPOINT} } = innerDoAdapter(innerDoIdFromName, ${JSON.stringify(names.durableObjects)}, main, { env, RpcStub, WorkerEntrypoint });`,
-      `export { ${CLASSES_ENTRYPOINT} };`,
-    );
-  }
-  if (storage) {
-    adapter.push(
-      `const { innerStorageAdapter } = ${INNER_STORAGE_ADAPTER_SOURCE};`,
-      `innerStorageAdapter(${JSON.stringify({ d1: names.d1, r2: names.r2 })}, env);`,
-    );
-  }
-  // A hashbang must stay first.
-  const at = bundle.startsWith('#!') ? bundle.indexOf('\n') + 1 : 0;
-  const main = bundle.slice(0, at) + head + bundle.slice(at);
-  return { mainModule: MAIN_MODULE, modules: { [MAIN_MODULE]: main, [ADAPTER_MODULE]: adapter.join('\n') }, classesEntrypoint };
 }

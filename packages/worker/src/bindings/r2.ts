@@ -54,7 +54,7 @@ const R2SidecarSchema = z.object({
   version: z.string().optional(),
   size: z.number(),
   uploaded: z.number(),
-  checksums: z.record(z.enum(['md5', 'sha1', 'sha256', 'sha384', 'sha512']), z.string()).optional(),
+  checksums: z.partialRecord(z.enum(['md5', 'sha1', 'sha256', 'sha384', 'sha512']), z.string()).optional(),
   httpMetadata: HttpMetadataSchema.optional(),
   customMetadata: z.record(z.string(), z.string()).optional(),
   v: z.literal(1),

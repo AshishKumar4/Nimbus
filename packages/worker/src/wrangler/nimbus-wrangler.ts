@@ -25,7 +25,7 @@ import type { CompositeVFS } from '@nimbus-sh/core/vfs/composite.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { registerInnerDoClass, clearInnerDoClasses, abortInnerDoFacets } from '@nimbus-sh/fabric/inner-do-registry.js';
-import { innerWorkerModules } from '@nimbus-sh/fabric/inner-do-env.js';
+import { innerWorkerModules } from '@nimbus-sh/fabric/inner-env.js';
 import { applyD1Migrations, d1Database } from '../bindings/d1.js';
 import { hostRoute } from '@nimbus-sh/fabric/composition.js';
 import { parseWranglerJsonc, type WranglerConfig } from './wrangler-config.js';
@@ -451,9 +451,9 @@ export class NimbusWrangler {
 
       // One load, with the full env. A Durable Object binding is a local
       // namespace in the inner isolate, and a D1 or R2 binding the
-      // platform's API, over the binding the loader passes (inner-do-env.ts,
-      // inner-storage-env.ts): the bundle's first import replaces it in the
-      // env every handler, entrypoint and object of the isolate sees.
+      // platform's API, over the binding the loader passes (inner-env.ts):
+      // the bundle's first import replaces it in the env every handler,
+      // entrypoint and object of the isolate sees.
       const { mainModule, modules, classesEntrypoint } = innerWorkerModules(bundledCode, {
         durableObjects: doBindings.map((b) => b.name),
         d1: (this.config.d1_databases ?? []).flatMap((d1) => (d1.binding ? [d1.binding] : [])),
@@ -692,7 +692,7 @@ export class NimbusWrangler {
     // started the server; a D1 database is a facet of the session with its
     // own SQLite (bindings/d1-database.ts), so the session's tables are out
     // of every statement's reach. The D1 and R2 APIs are made in the inner
-    // isolate over the binding (inner-storage-env.ts, innerWorkerModules).
+    // isolate over the binding (inner-storage-env.ts, inner-env.ts).
     const supervisorDoId = this.supervisorCtx?.id?.toString?.() || '';
     const storageExports = this.supervisorCtx?.exports;
     const store = (name: string, cred?: VfsCred) => ({

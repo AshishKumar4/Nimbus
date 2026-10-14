@@ -22,7 +22,8 @@
 //     binding as it is.
 
 import assert from 'node:assert/strict';
-import { innerDoAdapter, innerDoIdFromName, innerWorkerModules } from '../../packages/fabric/src/inner-do-env.ts';
+import { innerDoAdapter, innerDoIdFromName } from '../../packages/fabric/src/inner-do-env.ts';
+import { innerWorkerModules } from '../../packages/fabric/src/inner-env.ts';
 
 const calls = [];
 /** The binding the loader passes: one access to one object. */

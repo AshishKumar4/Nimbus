@@ -774,7 +774,7 @@ interface NimbusDoNamespaceProps {
  * session's isolate). The inner Worker does not use it as its namespace: a
  * DurableObjectNamespace's API is synchronous, and this one's answers are
  * RpcPromises, which cannot travel as arguments. The inner Worker replaces it
- * with a local namespace (inner-do-env.ts, innerWorkerModules) that makes ids
+ * with a local namespace (inner-do-env.ts, inner-env.ts) that makes ids
  * and stubs itself, and relays each member a stub's caller reaches, its
  * fetch included, to `callOn` or `getOn`.
  *
