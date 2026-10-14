@@ -250,6 +250,16 @@ await check('an encoding Node does not know is refused at the call, as Node refu
   await settled();
 });
 
+await check('a watch keeps the options it was given, whatever the caller does to them after, as Node copies them', async () => {
+  const options = { encoding: 'hex' };
+  const { heard, watcher } = hearing('/w/watched.txt', options);
+  options.encoding = 'bogus';
+  kernel.writeFile('w/watched.txt', 'kept');
+  await settled();
+  watcher.close();
+  assert.deepEqual(heard, [`change ${Buffer.from('watched.txt').toString('hex')}`]);
+});
+
 await check('the realm accepts only complete filesystem change events', () => {
   const changed = (event, id = 1) => ({ type: 'changed', id, event });
   for (const type of ['add', 'change', 'unlink', 'addDir', 'unlinkDir', 'rename']) {

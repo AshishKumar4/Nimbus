@@ -617,8 +617,9 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array) {
    * any depth when recursive), or as the watched file itself.
    */
   function watch(filename: string | URL, optionsOrListener?: WatchOptions | string | WatchListener, listener?: WatchListener): FSWatcher {
-    const options = typeof optionsOrListener === 'string' ? { encoding: optionsOrListener }
-      : typeof optionsOrListener === 'object' && optionsOrListener !== null ? optionsOrListener : {};
+    // A copy, as Node takes: what the caller does to its options after is not the watch's.
+    const options: WatchOptions = typeof optionsOrListener === 'string' ? { encoding: optionsOrListener }
+      : typeof optionsOrListener === 'object' && optionsOrListener !== null ? { ...optionsOrListener } : {};
     // Node checks the encoding first, whatever the path.
     if (options.encoding && options.encoding !== 'buffer' && !Buffer.isEncoding(options.encoding)) {
       throw nodeError(TypeError, 'ERR_INVALID_ARG_VALUE', `The argument 'encoding' is invalid encoding. Received '${options.encoding}'`);
