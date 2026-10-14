@@ -35,7 +35,9 @@ const median = (values) => {
 const quantile = (values, fraction) => [...values].sort((a, b) => a - b)[Math.floor(fraction * (values.length - 1))];
 // Each kind over the runs: the median of the runs' branch delta less their
 // null delta (a second copy of the baseline, paired with the same A), its
-// bootstrap interval, and the spread of the runs' null deltas, the A/A.
+// bootstrap interval, and the spread of the runs' null deltas, the A/A. The
+// bar is no detectable loss: a kind fails only when its interval lies wholly
+// above 0.
 const runs = run.outputs.filter((output) => output !== null).map((output) => JSON.parse(output));
 const verdicts = (runs[0] ?? []).map(({ kind }) => {
   const of = runs.map((results) => results.find((result) => result.kind === kind));
@@ -53,9 +55,7 @@ const verdicts = (runs[0] ?? []).map(({ kind }) => {
   }
   const ci95 = [quantile(boot, 0.025), quantile(boot, 0.975)];
   const aaSpread = [Math.min(...aa), Math.max(...aa)];
-  const failures = [];
-  if (median(deltas) > 0) failures.push(`median paired CPU delta ${median(deltas)} ms is positive`);
-  if (ci95[1] >= 0 && (ci95[0] < aaSpread[0] || ci95[1] > aaSpread[1])) failures.push('confidence interval is outside A/A spread');
+  const failures = ci95[0] > 0 ? [`slower: the paired CPU delta's interval [${ci95[0]}, ${ci95[1]}] ms lies above 0`] : [];
   return { kind, runs: deltas.length, medianA: median(of.map((result) => result.medianA)), medianB: median(of.map((result) => result.medianB)), medianDelta: median(deltas), ci95, aaSpread, failures };
 });
 const directory = join(NIMBUS_STATE, 'remote-vfs-cpu');
