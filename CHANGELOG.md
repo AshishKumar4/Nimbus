@@ -25,6 +25,16 @@ published independently in the `@nimbus-sh` npm scope.
   module map: an installed module came back as Nimbus's rendering of it,
   and every module and TypeScript file went through the compiler for code
   opencode never runs.
+- Fixed: a terminal that reconnects is shown its session's history without
+  storing it again. Each reconnect wrote the replayed history back into the
+  scrollback, so the next reconnect showed it twice, then four times, until
+  the size cap evicted real history to keep the copies.
+- Fixed: a session has one build. An SDK call, a shell connection and the
+  frame of a socket that woke a hibernated session, arriving while the
+  session was being built, each started a build of their own, replacing the
+  first's terminal, workspace and shell process under it; and an SDK call
+  could proceed before the session's own commands were registered. They
+  now wait for the one build, and a socket among them is attached to it.
 - Security: a D1 binding under `wrangler dev` is a database of its own (a
   Durable Object facet of the session, its own SQLite), as on Cloudflare.
   It ran its statements in the session's own database, and a table name it

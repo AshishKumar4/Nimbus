@@ -2,6 +2,7 @@ import { registerHostedCommands } from '../hosted/commands.js';
 import { runtimeCatalogSource } from '../runtime/runtime-catalog.js';
 import { NimbusWorkspace } from '@nimbus-sh/core/workspace';
 import { CRED_KERNEL, CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 // Runtime factories (clang/python/ruby/bash/wasm) are imported lazily at
@@ -20,7 +21,7 @@ import { takeLegacyResetNotice } from './legacy-reset.js';
 import { ensureSessionStateSchema, loadShellState, stampHydratedAt, countSessionStateKeys, loadScrollback, type ShellStateSnapshot } from './state-store.js';
 import { recordRecoveryEvent } from '@nimbus-sh/platform/oom-discriminator.js';
 import { sessionAiEnv } from './ai.js';
-import { setPhase } from './init-phases.js';
+import { joinExistingSession, setPhase } from './init-phases.js';
 import { shellTerminalTee } from './ws.js';
 import type { SessionInternal } from './internal.js';
 import { editorViews, serveEditorFs } from './editor-fs.js';
@@ -56,10 +57,64 @@ export interface InitSessionOptions {
   resume?: 'reconnect' | 'wake';
 }
 
-export async function initSession(
+/**
+ * The session's one build. Whatever needs the session while it is being
+ * built (an SDK call, a cold upgrade, the frame of a socket that woke this
+ * instance) waits on that build, and then has its socket joined to it,
+ * rather than starting a second build that replaces the first's terminal,
+ * workspace and shell process under it.
+ *
+ * `self.usable` settles first: once the session's own commands are
+ * registered, before the user's login files run, so a command those files
+ * run that needs the session (`nimbus app list`) finds it usable rather
+ * than waiting on the build that runs it.
+ */
+export function initSession(
   self: InitHost,
   ws: WebSocket | null,
   options: InitSessionOptions = {},
+): Promise<void> {
+  const running = self.building;
+  if (running !== null) return running.then(() => joinBuilt(self, ws, options));
+  const usable = withResolvers<void>();
+  // Waited on by the callers that need it; a build that fails says so through `building` too.
+  usable.promise.catch(() => {});
+  self.usable = usable.promise;
+  const building: Promise<void> = buildSession(self, ws, options, usable.resolve).then(undefined, (error: unknown) => {
+    usable.reject(error);
+    throw error;
+  }).finally(() => {
+    if (self.building === building) self.building = null;
+  });
+  self.building = building;
+  return building;
+}
+
+/**
+ * A socket that waited on another caller's build, given its terminal as a
+ * warm rejoin gives it (which tells it the session is ready). A wake's frame
+ * is delivered when this returns, so the shell's login files have run first,
+ * as a wake's own build has them, whether or not the socket had the
+ * terminal already.
+ */
+async function joinBuilt(self: InitHost, ws: WebSocket | null, options: InitSessionOptions): Promise<void> {
+  const { shell, terminal } = self;
+  if (ws === null || shell === null || terminal === null) return;
+  if (options.resume === 'wake') {
+    const attaching = terminal.ws !== ws;
+    if (attaching) terminal.attach(ws, shellTerminalTee(self));
+    await self.shellStarted;
+    if (attaching) ws.send(JSON.stringify({ type: 'ready' }));
+    return;
+  }
+  if (terminal.ws !== ws) joinExistingSession(self, shell, terminal, ws, shellTerminalTee(self), loadScrollback);
+}
+
+async function buildSession(
+  self: InitHost,
+  ws: WebSocket | null,
+  options: InitSessionOptions,
+  markUsable: () => void,
 ): Promise<void> {
     const replayScrollback = options.resume !== 'wake';
     self.ensureSqliteFs();
@@ -109,16 +164,12 @@ export async function initSession(
     // On cold start (no row) loadScrollback returns '' so this is a
     // no-op and the MOTD/Phase O block below runs normally.
     //
-    // The replay itself goes through terminal.write → flush → tee,
-    // so the replayed bytes also re-append to scrollback. That's the
-    // correct semantics: a user who reconnects twice should see the
-    // same scrollback both times. The cap eviction keeps total bytes
-    // bounded.
+    // The replay is shown, not recorded again (terminal.replay): a user
+    // who reconnects twice sees the same scrollback both times.
     if (persisted.hasPersistedState) {
       if (replayScrollback) {
         try {
-          const replay = loadScrollback(self.ctx);
-          if (replay.length > 0) self.terminal.write(replay);
+          self.terminal.replay(loadScrollback(self.ctx));
         } catch (e: any) {
           try { console.warn('[B\'.3] scrollback replay failed:', e?.message || e); } catch {}
         }
@@ -275,6 +326,7 @@ if (persisted.cwd) {
     }
 
     await registerHostedCommands(self, workspace);
+    markUsable();
 
     // ── Phase O: one-shot online output [B'.1] ─────────────────────────
     //
@@ -404,6 +456,7 @@ if (persisted.cwd) {
     const started = workspace.start().catch((e: unknown) => {
       console.warn('[nimbus] shell start failed:', errorText(e));
     });
+    self.shellStarted = started;
     if (options.resume === 'wake') await started;
 
     ws?.send(JSON.stringify({ type: 'ready' }));
