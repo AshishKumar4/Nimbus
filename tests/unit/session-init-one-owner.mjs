@@ -89,4 +89,50 @@ const socket = () => ({ readyState: 1, send() {}, close() {} });
   assert.deepEqual(sent, ['ready'], 'it is told ready once the shell has started');
 }
 
+// The same, for a socket that already had the terminal (a later frame of it
+// attached it mid-build): it still waits for the login files, and is not
+// told ready again.
+{
+  const build = gate();
+  const shellStart = gate();
+  const sent = [];
+  const ws = { readyState: 1, send: (frame) => sent.push(JSON.parse(frame).type), close() {} };
+  const host = {
+    building: build.promise,
+    shellStarted: shellStart.promise,
+    shell: { announcePrompt() {} },
+    terminal: { ws, attach() { throw new Error('attached again'); }, replay() {} },
+    ctx: {},
+  };
+  let answered = false;
+  const woke = initSession(host, ws, { resume: 'wake' }).then(() => { answered = true; });
+  build.release();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(answered, false, 'an attached wake joining a build still waits for the login files');
+  shellStart.release();
+  await woke;
+  assert.deepEqual(sent, [], 'and is not told ready by the join');
+}
+
+// A socket that is not a wake's, joining a build, is told ready once.
+{
+  const build = gate();
+  const sent = [];
+  const ws = { readyState: 1, send: (frame) => sent.push(JSON.parse(frame).type), close() {} };
+  const host = {
+    building: build.promise,
+    shellStarted: Promise.resolve(),
+    shell: { announcePrompt() {} },
+    terminal: { ws: null, attach(socket) { this.ws = socket; }, replay() {} },
+    ctx: {},
+    _b4Phase: null,
+    _b4WarmJoinCount: 0,
+    _b4PhaseRing: [],
+  };
+  const joined = initSession(host, ws);
+  build.release();
+  await joined;
+  assert.deepEqual(sent, ['ready'], 'a joined socket is told ready exactly once');
+}
+
 console.log('session-init-one-owner: ok');

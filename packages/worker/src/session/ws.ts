@@ -92,6 +92,8 @@ export interface WsHost {
   _b4Phase: import('@nimbus-sh/platform/oom-discriminator.js').SessionState | null;
   /** The session rebuild a woken instance has in flight; see bindShellSocket. */
   _wakeRebuild: Promise<void> | null;
+  /** The session's one build in flight (init.ts initSession), or null. */
+  building: Promise<void> | null;
   initSession(ws: WebSocket, options?: InitSessionOptions): Promise<void>;
   _w5PersistRing(): Promise<void> | null;
   _w9FlushOnClose(): void;
@@ -137,7 +139,9 @@ export interface WsHost {
  */
 export async function bindShellSocket(self: WsHost, ws: WebSocket): Promise<boolean> {
   if (ws.readyState !== WS_READY_STATE_OPEN) return false;
-  if (self.shell == null || self.terminal == null || self.kernel == null) {
+  // Not built, or being built: the frame waits for the session's one build
+  // and its shell's start (init.ts initSession), each frame after the last.
+  if (self.shell == null || self.terminal == null || self.kernel == null || self.building != null) {
     if (!self._wakeRebuild) {
       self._wakeRebuild = self.initSession(ws, { resume: 'wake' })
         .finally(() => { self._wakeRebuild = null; });
