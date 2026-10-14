@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `node`'s `fs.readFileSync` returns a file that opens with a UTF-8
+  byte order mark with the mark, as Node does, wherever the launch staged
+  it from: a working-tree file, a required module or JSON file, an
+  installed package's `package.json`. The staged copy used to drop it, so
+  `EF BB BF 68 69` read back as two bytes synchronously and five from
+  `fs.promises.readFile`. `require()` of a JSON file and a package's
+  resolution through its `package.json` still skip the mark, as Node's do.
 - Fixed: two sessions served by one isolate decode their background
   processes' terminal output each on its own. Their processes are numbered
   alike, and one isolate-wide decoder per process number let a character

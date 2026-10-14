@@ -13486,7 +13486,8 @@ function __stagedOwnerVersion(owner, fromDir) {
   if (parts.length <= depth || parts[depth - 1] === "") return { version: null, manifest: null };
   const manifest = "/" + dir.slice(0, at) + "node_modules/" + parts.slice(0, depth).join("/") + "/package.json";
   let found = null;
-  try { found = JSON.parse(builtins.fs.readFileSync(manifest, "utf8")); } catch {}
+  // Read as Node's package.json reader reads it: a byte order mark skipped.
+  try { const text = builtins.fs.readFileSync(manifest, "utf8"); found = JSON.parse(text.charCodeAt(0) === 0xFEFF ? text.slice(1) : text); } catch {}
   if (!found || found.name !== owner || typeof found.version !== "string") return { version: null, manifest: null };
   return { version: found.version, manifest };
 }

@@ -75,7 +75,7 @@ import {
 import { typeScriptStripOptions, type NodeLaunch } from '@nimbus-sh/core/runtime/node-cli.js';
 import type { NodeTypeScript } from '@nimbus-sh/core/runtime/typescript-strip.js';
 import { findStaticFsReferences, type StaticFsRefs } from '@nimbus-sh/core/runtime/static-fs-refs.js';
-import { packageScopeType } from '@nimbus-sh/core/runtime/require-resolution.js';
+import { fileCell, packageScopeType } from '@nimbus-sh/core/runtime/require-resolution.js';
 import type { ModuleScope, PackageType } from '@nimbus-sh/core/runtime/module-format.js';
 import { isManifestKey, linkTargetOf, packageRootOf, planFacetData } from './data-plan.js';
 import {
@@ -2503,15 +2503,10 @@ interface FacetVfsBundleSource {
 }
 
 /**
- * hardening-r5: read a file from the VFS and decide whether to keep it
- * as a string (valid UTF-8 text — the hot path for source code,
- * package.json, configs) or as Uint8Array bytes (binary — wasm
- * modules, images, sqlite blobs, etc.).
- *
- * Strategy: read bytes, attempt a fatal UTF-8 decode. If decode
- * succeeds the file IS valid UTF-8 and the string round-trips
- * losslessly through JSON; return string. If decode throws (any
- * invalid byte sequence) return Uint8Array.
+ * hardening-r5: read a file from the VFS as a cell (fileCell): a string when
+ * it is valid UTF-8 (source code, package.json, configs), every byte kept, a
+ * leading byte order mark too, so the string round-trips losslessly; else
+ * its Uint8Array bytes (wasm modules, images, sqlite blobs).
  *
  * Throws on read errors (caller wraps in try/catch — matches the
  * pre-fix readFileString contract).
@@ -2522,11 +2517,7 @@ async function _readBundleCell(
 ): Promise<string | Uint8Array> {
   const bytes = await filesOf(vfs).readBytes(path);
   if (bytes === null) throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT', path });
-  try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-  } catch {
-    return bytes;
-  }
+  return fileCell(bytes);
 }
 
 /**
@@ -6638,8 +6629,6 @@ export class FacetManager {
       return held.json;
     }
     const vfs = this.filesystem.bind({ pid: entry.pid, cred });
-    // The text is the file's bytes, a byte order mark included.
-    const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
     const files: Record<string, [contentKey: string, text: string]> = {};
     let bytes = 0;
     for (let after: string | null = null; ;) {
@@ -6651,8 +6640,9 @@ export class FacetManager {
         if (listed.size === 0 || listed.size > CHUNK_SIZE || bytes + listed.size > MANIFEST_COPIES_MAX_BYTES) continue;
         const read = await filesOf(vfs).readBytes(k).catch(() => null);
         if (read === null || await sha256Hex(read) !== listed.contentKey) continue;
-        let text: string;
-        try { text = decoder.decode(read); } catch { continue; }
+        // The text is the file's bytes, a byte order mark included.
+        const text = fileCell(read);
+        if (typeof text !== 'string') continue;
         files[k] = [listed.contentKey, text];
         bytes += read.byteLength;
         await pacer.spend(read.byteLength);

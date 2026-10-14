@@ -1,7 +1,7 @@
 // The filesystem prefetchForRequire reads, as a fixed map of path → text:
-// every parent of a file is a directory, a missing file throws, and stat
-// answers a file's size. For the resolver tests, which pin what the resolver
-// reads, not what the session's store does.
+// every parent of a file is a directory, a missing file throws (its bytes
+// are null), and stat answers a file's size. For the resolver tests, which
+// pin what the resolver reads, not what the session's store does.
 
 export class FakeVfs {
   constructor(files = {}) {
@@ -24,6 +24,10 @@ export class FakeVfs {
   readFileString(path) {
     if (!this.files.has(path)) throw new Error(`missing file: ${path}`);
     return this.files.get(path);
+  }
+
+  readBytes(path) {
+    return this.files.has(path) ? new TextEncoder().encode(this.files.get(path)) : null;
   }
 
   stat(path) {

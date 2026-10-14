@@ -6,7 +6,7 @@
  */
 import type { Awaitable, RuntimeFsBridge, RuntimeVfsStat } from './os-contracts.js';
 import {
-  createNodePackageMapPolicy, DEFAULT_CJS_CONDITIONS, packageSelfReferenceSubpath, selectPackageMap,
+  createNodePackageMapPolicy, DEFAULT_CJS_CONDITIONS, packageJsonText, packageSelfReferenceSubpath, selectPackageMap,
   resolvePackageEntry, type PackageMapPolicy, type PackageMapSteps, type ResolvablePackageJson, type SelfReferencingPackageJson,
 } from '../_shared/exports-resolver.js';
 import { TYPESCRIPT_INDEX_CANDIDATES, typescriptFallbackCandidates } from '../_shared/typescript-specifiers.js';
@@ -23,7 +23,16 @@ export interface RequireFs {
   /** Hosts with links must supply this; immutable link-free maps may omit it. */
   realpath?(path: string): Awaitable<string>;
 }
-export interface BridgeRequireFs extends RequireFs {
+/**
+ * The filesystem a module map is staged from: its cells copy each file's
+ * bytes (fileCell), which readFileString, the text a resolver parses, does
+ * not.
+ */
+export interface StagingRequireFs extends RequireFs {
+  /** A file's bytes, or null when it does not exist. */
+  readBytes(path: string): Awaitable<Uint8Array | null>;
+}
+export interface BridgeRequireFs extends StagingRequireFs {
   stat(path: string): Promise<RuntimeVfsStat | null>;
   lstat(path: string): Promise<RuntimeVfsStat | null>;
   readBytes(path: string): Promise<Uint8Array | null>;
@@ -152,7 +161,7 @@ export function createRequireResolver(host: RequireResolverHost, options: Requir
     const text = yield* ask.text(path);
     if (text === null) { state.configs.set(path, null); return null; }
     let pkg: unknown;
-    try { pkg = JSON.parse(text); }
+    try { pkg = JSON.parse(packageJsonText(text)); }
     catch { throw error('ERR_INVALID_PACKAGE_CONFIG', 'Invalid package config ' + path + '.'); }
     const config: PackageConfig = pkg !== null && typeof pkg === 'object' ? pkg as PackageConfig : {};
     state.configs.set(path, config);
@@ -386,22 +395,36 @@ export function createRequireResolver(host: RequireResolverHost, options: Requir
   };
 }
 
+/** A file's bytes as RequireFs.readFileString answers them: text to parse. */
 const fileTextDecoder = new TextDecoder();
 
-/** A file's bytes as RequireFs.readFileString answers them. */
-function fileText(bytes: Uint8Array): string {
-  return fileTextDecoder.decode(bytes);
+// A copy keeps a leading byte order mark, which TextDecoder's default drops:
+// Node's readFileSync returns it, and its parsers (a JSON require, the
+// package.json reader) are what skip it.
+const cellDecoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+const cellTextDecoder = new TextDecoder('utf-8', { ignoreBOM: true });
+
+/**
+ * A file's bytes as a module map's cell carries them: its text when the
+ * bytes are UTF-8, every byte kept, else the bytes.
+ */
+export function fileCell(bytes: Uint8Array): string | Uint8Array {
+  try {
+    return cellDecoder.decode(bytes);
+  } catch {
+    return bytes;
+  }
 }
 
 /**
- * The text RequireFs.readFileString answers for a file whose content is
- * `cell`, a cell a module map already holds: a text cell is that text; a
- * byte cell (a file that is not valid UTF-8, facets/manager.ts
- * _readBundleCell) is decoded as readFileString decodes it. A walk reuses
- * and compares a held cell through this, in the one representation it reads.
+ * The text a module walk reads a cell as, or a file's bytes it stages: a
+ * text cell is that text; bytes are decoded as a copy of the file, which is
+ * the cell's text when the file is UTF-8 (fileCell), and as Node decodes
+ * source otherwise. A walk stages, reuses and compares cells through this,
+ * in the one representation it reads.
  */
 export function heldCellText(cell: string | Uint8Array): string {
-  return typeof cell === 'string' ? cell : fileText(cell);
+  return typeof cell === 'string' ? cell : cellTextDecoder.decode(cell);
 }
 
 export function requireFsOverBridge(bridge: RuntimeFsBridge): BridgeRequireFs {
@@ -421,7 +444,7 @@ export function requireFsOverBridge(bridge: RuntimeFsBridge): BridgeRequireFs {
     readFileString: async (path) => {
       const bytes = await readBytes(path);
       if (bytes === null) throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
-      return fileText(bytes);
+      return fileTextDecoder.decode(bytes);
     },
     stat,
     realpath: (path) => bridge.realpath(path),
