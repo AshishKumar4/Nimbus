@@ -5,7 +5,6 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
-<<<<<<< HEAD
 - Fixed: `test` and `[` run by name (`command test`, `find -exec test`)
   evaluate as the shell's builtin does. `command test 1 -eq 2` returned 0,
   and `command [ 1 -eq 1` ran without its closing `]`.
@@ -36,7 +35,6 @@ published independently in the `@nimbus-sh` npm scope.
   `accountWork` and `holdWork` (the shell counts and holds its work in that
   table), and `createKillCommand(host)`, `createPsCommand(processes)` and
   `createTopCommand(processes)` read it.
-=======
 - Fixed (security): guests could call methods of the platform's RPC classes
   that were meant only for the platform's own use. Workers RPC exposes every
   string-named method of a WorkerEntrypoint, RpcTarget or Durable Object to
@@ -72,7 +70,6 @@ published independently in the `@nimbus-sh` npm scope.
 - Fixed: `nimbus wrangler dev`'s assets binding read a project's assets as
   the session's user. It now reads them as the process that started the
   server, as it reads the project's config, bundle and stores.
->>>>>>> origin/main
 - Fixed (Node `fs`): `fs.promises.realpath` and callback `fs.realpath`
   resolve symlinks and refuse a missing path with `ENOENT`, giving
   `realpathSync`'s answer; they returned the path as written. A link the
