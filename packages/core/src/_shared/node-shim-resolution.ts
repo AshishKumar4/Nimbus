@@ -10,6 +10,7 @@
 export {
   DEFAULT_CJS_CONDITIONS,
   DEFAULT_ESM_CONDITIONS,
+  packageJsonText,
   packageSelfReferenceSubpath,
   resolveExports,
   resolvePackageEntry,

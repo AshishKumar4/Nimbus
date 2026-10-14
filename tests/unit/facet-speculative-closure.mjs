@@ -121,8 +121,8 @@ async function walk(world, root, held = {}, allowance = 10000, files = 100, prog
 // Denied reads of resolved children cannot publish a supposedly closed root.
 {
   const world=launchFs(base);
-  const fs=requireFsOverBridge(world.fs), read=fs.readFileString;
-  fs.readFileString=path=>{if(path===P+'/source/child.cjs')throw Object.assign(new Error('denied'),{code:'EACCES'});return read(path);};
+  const fs=requireFsOverBridge(world.fs), read=fs.readBytes;
+  fs.readBytes=path=>{if(path===P+'/source/child.cjs')throw Object.assign(new Error('denied'),{code:'EACCES'});return read(path);};
   const result=await prefetchForRequire(fs,'',P+'/source',P+'/source/index.cjs',10000,undefined,
     {purpose:'dependency-closure',held:{},maxAdditionalBytes:10000,maxAdditionalFiles:100});
   assert.deepEqual(result,{kind:'dependency-closure-declined',path:P+'/source/child.cjs',reason:'unreadable'});
