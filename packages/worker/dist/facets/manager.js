@@ -811,6 +811,12 @@ ${PENDING_IO_SOURCE}
     };
     let __rpcWriteChain = Promise.resolve();
     let __rpcWriteCount = 0;
+    // The output's own ledger, beside the registry (PENDING_IO_SOURCE): its
+    // batches go in order, so the chain's tail is answered once every batch
+    // before it is. A drain waits for the tail while one is outstanding.
+    let __rpcWritesOutstanding = 0;
+    const __rpcWriteSettled = () => { __rpcWritesOutstanding--; };
+    const __outputPending = () => (__rpcWritesOutstanding === 0 ? null : __rpcWriteChain);
     // The batch writes still join: queued, its turn in the chain not yet come.
     let __rpcOpenBatch = null;
     const __RPC_BATCH_BYTES = 64 * 1024;
@@ -827,7 +833,7 @@ ${PENDING_IO_SOURCE}
     // them, not one round trip a line. The batch is sealed when its turn
     // comes, and sent from its first chunk's offset once its last write's
     // gate is released (gates release in order). Each write is answered as
-    // its batch is, so its callback, drain and __pendingIO mean what they did.
+    // its batch is, so its callback, drain and the drains' wait mean what they did.
     const __queueRpcWrite = (method, bytes) => {
       const __chunk = __nimbusStopReplay.write(method, bytes);
       if (__chunk === null) return;
@@ -861,8 +867,8 @@ ${PENDING_IO_SOURCE}
           if (e && e.code === "EPIPE") throw e;
         });
       __batch.task = __task;
-      __rpcWriteChain = __task.then(() => {}, () => {});
-      __pendingIO.push(__task);
+      __rpcWritesOutstanding++;
+      __rpcWriteChain = __task.then(__rpcWriteSettled, __rpcWriteSettled);
       return __task;
     };
     const __rpcBatchBytes = (batch) => {
@@ -902,8 +908,8 @@ ${RESIDENCY_MISS_REPORT}
       // At the output gate, as all of the process's output is.
       const __gate = __nimbusOutputGate();
       const __task = __rpcWriteChain.then(() => __gate).then(() => __supervisor.stderr(__bytes)).catch((e) => __onRpcDrop(__bytes.byteLength, e));
-      __rpcWriteChain = __task.then(() => {}, () => {});
-      __pendingIO.push(__task);
+      __rpcWritesOutstanding++;
+      __rpcWriteChain = __task.then(__rpcWriteSettled, __rpcWriteSettled);
     };
 
     try { globalThis.console = __consoleMod; } catch {}
@@ -1074,9 +1080,10 @@ ${nodeProgramRuntime(sources, entry.esModule)}
     async function __drainPendingIO(maxPasses = 12) {
       for (let __pass = 0; __pass < maxPasses; __pass++) {
         await new Promise(r => globalThis.__nimbusRawSetTimeout(r, 0));
-        // It is empty once nothing is outstanding (PENDING_IO_SOURCE).
-        if (__pendingIO.length === 0) break;
-        await Promise.allSettled([...__pendingIO]);
+        const __output = __outputPending();
+        // The registry is empty once nothing in it is outstanding (PENDING_IO_SOURCE).
+        if (__pendingIO.length === 0 && __output === null) break;
+        await Promise.allSettled([...__pendingIO, __output]);
       }
     }
 
@@ -1330,9 +1337,10 @@ async function __nimbusFlushRuntime() {
       const turn = Promise.withResolvers();
       __nimbusPlatformSetTimeout(turn.resolve, 0);
       await turn.promise;
-      // It is empty once nothing is outstanding (PENDING_IO_SOURCE).
-      if (rt.pendingIO.length === 0) break;
-      await Promise.allSettled([...rt.pendingIO]);
+      const output = rt.outputPending();
+      // The registry is empty once nothing in it is outstanding (PENDING_IO_SOURCE).
+      if (rt.pendingIO.length === 0 && output === null) break;
+      await Promise.allSettled([...rt.pendingIO, output]);
     }
     // After the drain, so the program's writes are durable whatever happens
     // to the report; unacknowledged entries are sent again by the next flush.
@@ -1527,6 +1535,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
     __nimbusRuntime = {
       supervisor: __supervisor,
       pendingIO: __pendingIO,
+      outputPending: __outputPending,
       vfsWrites: __vfsWrites,
       flushVfsWrite: __nimbusFlushVfsWrite,
       drainVfsMutations: __nimbusDrainVfsMutations,
