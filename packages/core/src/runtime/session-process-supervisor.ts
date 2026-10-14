@@ -348,16 +348,16 @@ export class SessionProcessSupervisor implements ProcessOutput {
    */
   holdWork(pid: number, stop?: (reason?: SignalAbortReason) => void, signal?: AbortSignal): HeldProcessWork & { readonly signal: AbortSignal } {
     const owner = new AbortController();
-    const abort = () => owner.abort(signal?.reason);
+    // Each of the two ways the work is stopped ends what observes it: no listener of its own for that.
+    const stopObserving = () => work.observation?.release();
+    const abort = () => { owner.abort(signal?.reason); stopObserving(); };
     signal?.addEventListener('abort', abort, { once: true });
-    if (signal?.aborted) abort();
+    if (signal?.aborted) owner.abort(signal.reason);
     const work = {
-      stop: (reason?: SignalAbortReason) => { owner.abort(reason); stop?.(reason); },
+      stop: (reason?: SignalAbortReason) => { owner.abort(reason); stopObserving(); stop?.(reason); },
       stopped: false, signal: owner.signal,
       observation: owner.signal.aborted ? undefined : this.observeWork?.(pid),
     };
-    const stopObserving = () => work.observation?.release();
-    owner.signal.addEventListener('abort', stopObserving, { once: true });
     let pieces = this.held.get(pid);
     if (!pieces) this.held.set(pid, pieces = new Set());
     pieces.add(work);
@@ -366,7 +366,6 @@ export class SessionProcessSupervisor implements ProcessOutput {
       if (done) return;
       done = true;
       signal?.removeEventListener('abort', abort);
-      owner.signal.removeEventListener('abort', stopObserving);
       stopObserving();
       const now = this.held.get(pid);
       now?.delete(work);
