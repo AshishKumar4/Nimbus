@@ -5,6 +5,24 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed (Node `fs`): a write keeps the bytes it was given. `writeFileSync`,
+  `appendFileSync`, `fs.promises.writeFile` and a descriptor's `write` used
+  the program's own buffer as the file's bytes, so changing or reusing the
+  buffer afterwards changed what `readFileSync` read and what the session
+  stored, and growing such a file through a descriptor could write past the
+  end of the buffer it came from, into memory the program used for other
+  data. Each write now takes a copy, as Node does.
+- Fixed: in an isolate that runs several Node programs one after another
+  (a warm facet's one-shots and children), each program's setup wrapped
+  `Buffer`, `crypto`, `zlib`, `events` and `URL` again around the last
+  program's wrappers. Every call into them grew one layer deeper per
+  program run, `new URL()` accepted a string that is not a URL, and a
+  program that replaced `zlib.crc32` broke the file writes of the programs
+  after it. Each builtin is now wrapped once, around the platform's own,
+  and the runtime's checksums use the platform's builtins.
+- Changed: a Node program's file writes cost less CPU in a warm isolate:
+  about 6 ms less for a run that writes one file, and about 0.1 ms less for
+  each further file.
 - Fixed (Node `fs`): `fs.promises.realpath` and callback `fs.realpath`
   resolve symlinks and refuse a missing path with `ENOENT`, giving
   `realpathSync`'s answer; they returned the path as written. A link the
