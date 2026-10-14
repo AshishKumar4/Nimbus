@@ -90,6 +90,8 @@ export function execIdField(entry: ProcessEntry | undefined): { execId?: string 
 }
 
 function immutableCred(cred: VfsCred): VfsCred {
+  // A parent's (credOf) is frozen whole already: a child's is the same one.
+  if (Object.isFrozen(cred) && Object.isFrozen(cred.groups)) return cred;
   return Object.freeze({
     uid: cred.uid,
     gid: cred.gid,
