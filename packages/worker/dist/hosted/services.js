@@ -181,7 +181,15 @@ export function _ensureChildProcessManager(self) {
     }
     return workspace.children;
 }
-export async function ensureNpmInstaller(self, runtimeContext, onProgress) {
+/**
+ * The session's one NpmInstaller: every install in the session goes through
+ * it, so what each is staging (its staging directories in /tmp, its copies
+ * beside a mounted package) is known to every other's sweep. Each install
+ * passes its own progress and npm log sinks.
+ */
+export async function ensureNpmInstaller(self, runtimeContext) {
+    if (self.npmInstaller)
+        return self.npmInstaller;
     self.ensureSqliteFs();
     if (!self.esbuildService) {
         if (!self.sqliteFs)
@@ -192,12 +200,14 @@ export async function ensureNpmInstaller(self, runtimeContext, onProgress) {
     // subgraph) on first npm use so it stays out of the cold script-eval
     // graph. The install command paths that call this are already async.
     const { NpmInstaller } = await import('../npm/installer.js');
+    // An install that asked while this one loaded it may have made it.
+    if (self.npmInstaller)
+        return self.npmInstaller;
     self.npmInstaller = new NpmInstaller(self.getFilesystemAuthority(), runtimeContext.ctx.storage.sql, {
         esbuild: self.esbuildService,
         bundlePool: self.ensureBundlePool(),
         ctx: runtimeContext.ctx,
         env: runtimeContext.env,
-        onProgress,
         network: runtimeContext.network(),
     });
     return self.npmInstaller;

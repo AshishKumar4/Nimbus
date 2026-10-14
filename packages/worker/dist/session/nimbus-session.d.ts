@@ -781,7 +781,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
      */
     _cpRegistry: CommandRegistry | null;
     _setCpRegistry(r: CommandRegistry): void;
-    ensureNpmInstaller(onProgress?: (msg: string) => void): Promise<NpmInstaller>;
+    ensureNpmInstaller(): Promise<NpmInstaller>;
     initSession(ws: WebSocket | null, options?: InitSessionOptions): Promise<void>;
     /**
      * The rebuild in flight for a shell socket that woke this instance from

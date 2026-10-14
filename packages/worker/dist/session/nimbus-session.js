@@ -1099,7 +1099,7 @@ export class NimbusSession extends CloudflareDurableObject {
      */
     _cpRegistry = null;
     _setCpRegistry(r) { this._cpRegistry = r; }
-    async ensureNpmInstaller(onProgress) { return this.#runtimeServices.ensureNpmInstaller(onProgress); }
+    async ensureNpmInstaller() { return this.#runtimeServices.ensureNpmInstaller(); }
     // ── Session initialization ────────────────────────────────────────────
     // ── Session initialization ────────────────────────────────────────────
     //

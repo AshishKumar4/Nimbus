@@ -95,6 +95,21 @@ export interface PackageJsonDocument {
 export declare function packageJsonDocument(value: unknown): PackageJsonDocument | null;
 /** package.json's text, read; null where it is not JSON, or not an object. */
 export declare function readPackageJson(text: string): PackageJsonDocument | null;
+/**
+ * package.json's text as npm's PackageJson saves it: in the indent and line
+ * ending of `existing`, the text it replaces (json-parse-even-better-errors:
+ * none for one written on one line), else two spaces and \n.
+ */
+export declare function packageJsonText(json: Readonly<Record<string, unknown>>, existing: string | null): string;
+/**
+ * package.json (`json`, as parsed) declaring none of `names`, as npm's
+ * uninstall saves it: each name out of every dependency field and
+ * bundleDependencies, whether or not it is installed (add-rm-pkg-deps rm);
+ * then each dependency field as @npmcli/package-json writes it: sorted, a
+ * name in optionalDependencies not repeated in dependencies, and an empty
+ * one removed. peerDependenciesMeta, which npm does not save, is as it was.
+ */
+export declare function withoutDeclared(json: Readonly<Record<string, unknown>>, names: readonly string[]): Record<string, unknown>;
 /** A root of the tree: an edge from the project. */
 export interface TreeRoot {
     readonly name: string;

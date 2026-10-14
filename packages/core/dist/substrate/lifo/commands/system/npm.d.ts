@@ -75,6 +75,12 @@ export interface NpmInstallPort {
 }
 export interface NpmCommandDeps {
     installer?: NpmInstallPort;
+    /**
+     * The host's, before the command replaces a file of the project
+     * (package.json): one an earlier release of the host wrote as root is
+     * handed to its directory's owner, so the command, as its process, can.
+     */
+    beforeWrite?: (ctx: CommandContext, path: string) => Promise<void>;
 }
 /**
  * The registry origin an install uses: the command's `NPM_REGISTRY`, else
