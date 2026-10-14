@@ -196,6 +196,7 @@ await runScenarios(import.meta.path, {
         },
         async wait() { return { done: true, exitCode: 0, signal: null }; },
         stdinEnd() {},
+        parentOf: (pid) => auth.host.processes.get(pid)?.parentPid,
       }),
     });
     const { made } = await callsDuring(log, async () => {

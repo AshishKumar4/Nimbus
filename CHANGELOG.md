@@ -9,6 +9,11 @@ published independently in the `@nimbus-sh` npm scope.
   started it (a background job) leaves the process table a minute after it
   ended, at the next exec, as in a hosted session. It stayed, with its
   logs, until the workspace closed.
+- Fixed: a Node program's `child_process` handle stays its own while the
+  child's output and exit are still to be read, though the process table
+  forgot the ended child's row. A parent that paused for a minute between
+  reads got ESRCH and lost the rest of the child's output and its exit
+  status. A `kill()` of such a child returns false, as in Node.
 - Fixed: `test` and `[` run as programs (`xargs test`, `find -exec test`)
   evaluate as the shell's builtin does. `test 1 -eq 2` run so returned 0,
   and `[ 1 -eq 1` ran without its closing `]`.
