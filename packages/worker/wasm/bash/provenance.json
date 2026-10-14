@@ -10,7 +10,7 @@
       "inputs.mjs": "b8f5f6ff4874a9873834b4b7f47169516c09fcaac715882756968eb95eecd321",
       "nimbus-proc.c": "0e12961c2f89e2649097a1123c333d83dcab80d6a3f47895ad51d44c06da43d4",
       "nimbus-proc.h": "69583a295ee76bdefe8bc2d9c6198d4ebd8387a0acfeb40d3576c0b472a872f0",
-      "patches/procenv.patch": "e520402c028fa8271f5d4f94871e7bedc09e9d18df56c53b73153d7e265c04af"
+      "patches/procenv.patch": "381a3918e5981fef1bcbf3df2f7f9396630a32a38268113b2a62a983ac4d28bd"
     }
   },
   "outputs": {
