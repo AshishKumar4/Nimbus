@@ -47,8 +47,13 @@ export interface StaticFsRefs {
   patterns: { dir: string; prefix: string; suffix: string }[];
   /** Paths relative to the process's working directory, read at a call site. */
   cwdRelative: PathRef[];
-  /** `require.resolve(spec)` / `createRequire(..).resolve(spec)` from `from`. */
+  /** `require.resolve(spec)` / `createRequire(..).resolve(spec)` from `from`: what Node's require resolves. */
   resolves: { from: string; spec: string }[];
+  /**
+   * Package subpaths spelled as data (BARE_SUBPATH: "astro/runtime/client/x.js"
+   * in a bundler's include list) from `from`: read by whatever resolves them.
+   */
+  subpaths: { from: string; spec: string }[];
   /**
    * Absolute paths spelled as string literals anywhere (ABSOLUTE_LITERAL),
    * named by no call this analysis follows: a guess at a file the module
@@ -128,7 +133,7 @@ function isNode(value: unknown): value is AstNode {
  */
 export function findStaticFsReferences(source: string, filename: string): StaticFsRefs {
   if (source.length > STATIC_AST_MAX_SOURCE) return scanStaticFsTokens(source, filename);
-  const refs: StaticFsRefs = { exact: [], listed: [], patterns: [], cwdRelative: [], resolves: [], literals: [] };
+  const refs: StaticFsRefs = { exact: [], listed: [], patterns: [], cwdRelative: [], resolves: [], subpaths: [], literals: [] };
   const ast = parseAny(source);
   if (ast === null) return refs;
   const file = normalize(filename);
@@ -300,7 +305,7 @@ export function findStaticFsReferences(source: string, filename: string): Static
       // A package subpath spelled as data ("astro/runtime/client/x.js" in a
       // bundler's include list) is read by whatever resolves it.
       if (typeof node.value === 'string' && BARE_SUBPATH.test(node.value)) {
-        refs.resolves.push({ from: dir, spec: node.value });
+        refs.subpaths.push({ from: dir, spec: node.value });
       }
       if (typeof node.value === 'string' && ABSOLUTE_LITERAL.test(node.value)) refs.literals.push(normalize(node.value));
       return;
@@ -370,8 +375,12 @@ export function findStaticFsReferences(source: string, filename: string): Static
     refs.patterns.push({ dir: base, prefix: prefix.slice(slash + 1), suffix });
   }
 
-  const seen = new Set<string>();
-  refs.resolves = refs.resolves.filter((r) => !seen.has(r.spec) && seen.add(r.spec) !== undefined);
+  const once = (list: { from: string; spec: string }[]) => {
+    const seen = new Set<string>();
+    return list.filter((r) => !seen.has(r.spec) && seen.add(r.spec) !== undefined);
+  };
+  refs.resolves = once(refs.resolves);
+  refs.subpaths = once(refs.subpaths);
   const patternKeys = new Set<string>();
   refs.patterns = refs.patterns.filter((q) => {
     const key = q.dir + '\0' + q.prefix + '\0' + q.suffix;
@@ -403,7 +412,7 @@ export const STATIC_AST_MAX_SOURCE = 1024 * 1024;
  * through bindings would add is not found here.
  */
 export function scanStaticFsTokens(source: string, filename: string): StaticFsRefs {
-  const refs: StaticFsRefs = { exact: [], listed: [], patterns: [], cwdRelative: [], resolves: [], literals: [] };
+  const refs: StaticFsRefs = { exact: [], listed: [], patterns: [], cwdRelative: [], resolves: [], subpaths: [], literals: [] };
   const file = normalize(filename);
   const dir = dirnameOf(file);
   const recent: { type: string; value: unknown }[] = [];
@@ -436,7 +445,7 @@ export function scanStaticFsTokens(source: string, filename: string): StaticFsRe
       recent.push({ type, value });
       if (recent.length > 64) recent.splice(0, recent.length - 32);
       if (type === 'string' && typeof value === 'string' && BARE_SUBPATH.test(value)) {
-        refs.resolves.push({ from: dir, spec: value });
+        refs.subpaths.push({ from: dir, spec: value });
       }
       if (type === 'string' && typeof value === 'string' && ABSOLUTE_LITERAL.test(value)) refs.literals.push(normalize(value));
       // A template with no substitution closes right after its one text.

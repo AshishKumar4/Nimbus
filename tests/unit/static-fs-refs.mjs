@@ -80,14 +80,16 @@ assert.deepEqual(
   ['/p/node_modules/pkg/lib/cows'],
 );
 
-// Resolution requests: require.resolve, createRequire(...).resolve, and a
-// package subpath spelled as data (a bundler's include list).
-assert.deepEqual(
-  refs(`const r = createRequire(import.meta.url); r.resolve('other/data.json'); x = ['astro/runtime/client/entry.js'];`, ESM).resolves
-    .map((r) => r.spec),
-  ['other/data.json', 'astro/runtime/client/entry.js'],
-);
+// Resolution requests: require.resolve and createRequire(...).resolve, which
+// Node's require answers, apart from a package subpath spelled as data (a
+// bundler's include list), which any resolver might.
+{
+  const r = refs(`const r = createRequire(import.meta.url); r.resolve('other/data.json'); x = ['astro/runtime/client/entry.js'];`, ESM);
+  assert.deepEqual(r.resolves.map((x) => x.spec), ['other/data.json']);
+  assert.deepEqual(r.subpaths.map((x) => x.spec), ['other/data.json', 'astro/runtime/client/entry.js']);
+}
 assert.deepEqual(refs(`require.resolve('other/lib/x')`, FILE).resolves, [{ from: '/p/node_modules/pkg/lib', spec: 'other/lib/x' }]);
+assert.deepEqual(refs(`require.resolve('./own.json')`, FILE).resolves, [{ from: '/p/node_modules/pkg/lib', spec: './own.json' }]);
 
 // A relative path at a read site is relative to the working directory.
 assert.deepEqual(refs(`fs.readFileSync('config/app.json', 'utf8')`, FILE).cwdRelative, [{ path: 'config/app.json', sync: true }]);
@@ -152,7 +154,7 @@ assert.deepEqual(refs('this is not javascript {{{', FILE).exact, []);
   assert.ok(paths(big.exact).includes('/p/node_modules/pkg/data/x.json'), JSON.stringify(big.exact));
   assert.ok(paths(big.exact).includes('/p/node_modules/pkg/runtime/entry.js'), JSON.stringify(big.exact));
   assert.deepEqual(big.listed, ['/etc/app/templates']);
-  assert.deepEqual(big.resolves.map((r) => r.spec), ['astro/runtime/client/entry.js']);
+  assert.deepEqual(big.subpaths.map((r) => r.spec), ['astro/runtime/client/entry.js']);
   // A join of __dirname is a synchronous read as readFileSync's first argument, plainly or as SWC calls it.
   assert.deepEqual(syncPaths(big.exact).sort(),
     ['/opt/data/big.dat', '/opt/data/ro.bin', '/opt/data/text.dat', '/p/node_modules/pkg/data/x.json', '/p/node_modules/pkg/lib/.digest']);

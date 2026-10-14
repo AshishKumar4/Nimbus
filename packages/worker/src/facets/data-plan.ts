@@ -20,7 +20,8 @@
  *                  (static-fs-refs.ts), resolved against the namespace:
  *                  under 256 KiB, or any size when the code reads it with
  *                  readFileSync (or a read-only openSync) by that path,
- *                  through any symlinks on it
+ *                  through any symlinks on it; and the file a specifier its
+ *                  code resolves names, as its readers resolve it
  *   entries        the entry files the working dir's dependencies, and
  *                  their own dependencies, name (exports under every
  *                  condition, module, main, browser), under 256 KiB: a dev
@@ -35,7 +36,9 @@
  * module is an emit and that the map does not carry (`codeOnly`: an ES module
  * staged only to run) is planned as any other file is.
  */
+import { parseResolvablePackageJson, resolvePackageEntry } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { resolveFile, type RequireFs } from '@nimbus-sh/core/runtime/require-resolution.js';
+import { resolveDeferredImport } from '@nimbus-sh/core/runtime/require-resolver.js';
 import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { StaticFsRefs } from '@nimbus-sh/core/runtime/static-fs-refs.js';
 
@@ -66,6 +69,8 @@ export interface DataPlanInput {
   refs: readonly StaticFsRefs[];
   /** Paths learned from earlier misses (absolute or keys). */
   learned?: Iterable<string>;
+  /** The program's own conditions (`node --conditions`), which its resolutions use beside Node's. */
+  conditions?: readonly string[];
   /** Called with the bytes of each listed page, to pace a long walk. */
   spend?: (units: number) => Promise<void>;
 }
@@ -138,21 +143,6 @@ function joinKey(base: string, rel: string): string {
   return out.join('/');
 }
 
-/** One `exports` target: a string, or the first usable branch of a conditions object. */
-function exportTarget(value: unknown): string | null {
-  if (typeof value === 'string') return value;
-  if (Array.isArray(value)) {
-    for (const v of value) { const t = exportTarget(v); if (t) return t; }
-    return null;
-  }
-  if (value && typeof value === 'object') {
-    for (const cond of ['node', 'import', 'module', 'default', 'require']) {
-      if (cond in value) { const t = exportTarget((value as Record<string, unknown>)[cond]); if (t) return t; }
-    }
-  }
-  return null;
-}
-
 /**
  * Every file a package.json names as an entry, relative to its package:
  * each subpath's `exports` targets under every condition (a dev server
@@ -175,29 +165,6 @@ function entryTargets(manifest: Record<string, unknown>): string[] {
   return [...out];
 }
 
-/** Map `./sub` through a package.json `exports` field; null when it does not export it. */
-function mapExports(exportsField: unknown, sub: string): string | null {
-  if (typeof exportsField !== 'object' || exportsField === null || Array.isArray(exportsField)) {
-    return sub === '.' ? exportTarget(exportsField) : null;
-  }
-  const table = exportsField as Record<string, unknown>;
-  if (!Object.keys(table).some((k) => k.startsWith('.'))) return sub === '.' ? exportTarget(table) : null;
-  if (sub in table) return exportTarget(table[sub]);
-  let best: { prefix: string; suffix: string; target: unknown } | null = null;
-  for (const [pattern, target] of Object.entries(table)) {
-    const star = pattern.indexOf('*');
-    if (star < 0) continue;
-    const prefix = pattern.slice(0, star);
-    const suffix = pattern.slice(star + 1);
-    if (!sub.startsWith(prefix) || !sub.endsWith(suffix) || sub.length < prefix.length + suffix.length) continue;
-    if (!best || prefix.length > best.prefix.length) best = { prefix, suffix, target };
-  }
-  if (!best) return null;
-  const t = exportTarget(best.target);
-  if (!t) return null;
-  return t.replaceAll('*', sub.slice(best.prefix.length, sub.length - best.suffix.length));
-}
-
 /** A directory's package.json, parsed once per plan; null when absent or not JSON. */
 async function readManifest(
   source: DataPlanSource,
@@ -213,45 +180,37 @@ async function readManifest(
   return manifest;
 }
 
-async function resolveSpecifier(
-  source: DataPlanSource,
-  fromDir: string,
-  spec: string,
-  manifests: Map<string, Record<string, unknown> | null>,
-): Promise<string | null> {
-  const parts = spec.split('/');
-  const nameLen = spec.startsWith('@') ? 2 : 1;
-  if (parts.length < nameLen) return null;
-  const name = parts.slice(0, nameLen).join('/');
-  const sub = parts.slice(nameLen).join('/');
-  for (let dir = fromDir; ; dir = parentOf(dir)) {
-    if (baseOf(dir) !== 'node_modules') {
-      const pkgDir = joinKey(dir, 'node_modules/' + name);
-      const manifest = await readManifest(source, pkgDir, manifests);
-      if (manifest) {
-        const mapped = manifest.exports !== undefined ? mapExports(manifest.exports, sub ? './' + sub : '.') : null;
-        if (mapped) return joinKey(pkgDir, mapped);
-        return sub ? joinKey(pkgDir, sub) : null;
-      }
-    }
-    if (dir === '') return null;
-  }
-}
-
-/** The resolver's filesystem (require-resolution.ts) over the plan's source. */
+/**
+ * The resolvers' filesystem (require-resolution.ts) over the plan's source,
+ * each answer asked once per plan: a resolved file is the one the lookup
+ * reaches through every symlink on its path, or, past MAX_LINK_HOPS, the
+ * path itself, which then names nothing a stat finds.
+ */
 function resolutionFs(source: DataPlanSource): RequireFs {
+  const stats = new Map<string, Promise<{ kind: string; size: number } | null>>();
+  const texts = new Map<string, Promise<string | null>>();
+  const stat = (path: string) => {
+    const k = key(path);
+    let found = stats.get(k);
+    if (found === undefined) stats.set(k, found = source.stat(k));
+    return found;
+  };
   return {
-    exists: async (path) => (await source.stat(path)) !== null,
-    isDirectory: async (path) => (await source.stat(path))?.kind === 'directory',
+    exists: async (path) => (await stat(path)) !== null,
+    isDirectory: async (path) => (await stat(path))?.kind === 'directory',
     readFileString: async (path) => {
-      const text = await source.readText(path);
-      if (text === null) throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
-      return text;
+      const k = key(path);
+      let text = texts.get(k);
+      if (text === undefined) texts.set(k, text = source.readText(k));
+      const found = await text;
+      if (found === null) throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
+      return found;
     },
     stat: async (path) => {
-      const found = await source.stat(path);
+      const found = await stat(path);
       return found === null ? null : { size: found.size };
     },
+    realpath: async (path) => (await throughLinks(source, key(path))) ?? key(path),
   };
 }
 
@@ -514,23 +473,56 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
     if (!closure.has(target)) take(entry, 'static');
   }
 
-  // Specifiers resolve through package.json files, so only those whose
-  // package exists are looked up.
+  const files = resolutionFs(source);
+  const conditions = input.conditions ?? [];
+  const projectManifest = await readManifest(source, cwd, manifests);
+  /** Where Node finds package \`name\` from \`from\`: its own node_modules, then each ancestor's. */
+  const installedFrom = (from: string, name: string): string | null => {
+    for (let d = from; ; d = parentOf(d)) {
+      if (baseOf(d) !== 'node_modules' && packageRoots.has(joinKey(d, 'node_modules/' + name))) return joinKey(d, 'node_modules/' + name);
+      if (d === '') return null;
+    }
+  };
+
+  // What the closure's code resolves, as its readers resolve it
+  // (require-resolution.ts, esm-resolver.ts, exports-resolver.ts): a
+  // require.resolve names the file Node's require resolves, under the
+  // program's conditions; a package subpath spelled as data names what any
+  // of its readers would, Node's import and require and a bundler's
+  // (import, module, browser). A bare specifier is looked up only where its
+  // package is installed on its lookup path, or is the project's own.
+  const lookedUp = (from: string, spec: string): boolean => {
+    if (/^(?:\.\.?(?:\/|$)|\/|#)/.test(spec)) return true;
+    const name = spec.split('/').slice(0, spec.startsWith('@') ? 2 : 1).join('/');
+    return name === projectManifest?.name || installedFrom(from, name) !== null;
+  };
+  const bundled = async (from: string, spec: string): Promise<string | null> => {
+    const at = spec.indexOf('/', spec.startsWith('@') ? spec.indexOf('/') + 1 : 0);
+    const pkgDir = installedFrom(from, at < 0 ? spec : spec.slice(0, at));
+    const text = pkgDir === null ? null : await source.readText(pkgDir + '/package.json');
+    const pkg = text === null ? null : parseResolvablePackageJson(text);
+    const target = pkg === null ? null : resolvePackageEntry(pkg, at < 0 ? '.' : '.' + spec.slice(at));
+    return pkgDir === null || target === null ? null : joinKey(pkgDir, target);
+  };
+  const hold = async (k: string | null) => {
+    if (k === null || planned.has(k)) return;
+    const found = await source.stat(k);
+    if (found === null || found.kind !== 'file') return;
+    const entry = { path: k, kind: 'file', size: found.size };
+    if (staticWorthy(entry)) take(entry, 'static');
+  };
   for (const refs of input.refs) {
     for (const r of refs.resolves) {
-      const name = r.spec.split('/').slice(0, r.spec.startsWith('@') ? 2 : 1).join('/');
-      let exists = false;
-      for (let d = key(r.from); !exists; d = parentOf(d)) {
-        if (packageRoots.has(joinKey(d, 'node_modules/' + name))) exists = true;
-        if (d === '') break;
-      }
-      if (!exists) continue;
-      const resolved = await resolveSpecifier(source, key(r.from), r.spec, manifests);
-      if (resolved === null || planned.has(resolved)) continue;
-      const found = await source.stat(resolved);
-      if (found === null || found.kind !== 'file') continue;
-      const entry = { path: resolved, kind: 'file', size: found.size };
-      if (staticWorthy(entry)) take(entry, 'static');
+      const from = key(r.from);
+      if (!lookedUp(from, r.spec)) continue;
+      await hold(await resolveDeferredImport(files, { specifier: r.spec, fromDir: from, alternatives: 1, require: true }, undefined, conditions));
+    }
+    for (const r of refs.subpaths) {
+      const from = key(r.from);
+      if (!lookedUp(from, r.spec)) continue;
+      await hold(await resolveDeferredImport(files, { specifier: r.spec, fromDir: from, alternatives: 1, require: true }, undefined, conditions));
+      await hold(await resolveDeferredImport(files, { specifier: r.spec, fromDir: from, alternatives: 1 }, undefined, conditions));
+      await hold(await bundled(from, r.spec));
     }
   }
 
@@ -545,15 +537,6 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
   // html-escaper; their entries were held only when an earlier session's
   // miss had been learned for them, so a fresh or concurrent launch's
   // optimizer read them synchronously and failed.
-  const files = resolutionFs(source);
-  const projectManifest = await readManifest(source, cwd, manifests);
-  /** Where Node finds package \`name\` from \`from\`: its own node_modules, then each ancestor's. */
-  const installedFrom = (from: string, name: string): string | null => {
-    for (let d = from; ; d = parentOf(d)) {
-      if (baseOf(d) !== 'node_modules' && packageRoots.has(joinKey(d, 'node_modules/' + name))) return joinKey(d, 'node_modules/' + name);
-      if (d === '') return null;
-    }
-  };
   const declared = (manifest: Record<string, unknown> | null, fields: readonly string[]): string[] => {
     const names: string[] = [];
     for (const field of fields) {
@@ -580,8 +563,7 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
     const manifest = await readManifest(source, pkgDir, manifests);
     if (manifest === null) continue;
     for (const rel of entryTargets(manifest)) {
-      const resolved = await resolveFile(files, joinKey(pkgDir, rel));
-      const k = resolved === null ? null : await throughLinks(source, resolved);
+      const k = await resolveFile(files, joinKey(pkgDir, rel));
       if (k === null) continue;
       const found = await source.stat(k);
       if (found === null || found.kind !== 'file') continue;

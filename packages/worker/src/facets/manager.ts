@@ -6151,6 +6151,8 @@ export class FacetManager {
     pacer: TurnBudget,
     /** The program's path, which its listing walks mounts for (nameLaunch). */
     program?: string,
+    /** The program's own conditions, which its code's resolutions use. */
+    conditions: readonly string[] = [],
   ): Promise<{ paths: string[]; storageBytes: number; lazyReads: Record<string, string[]> }> {
     if (!this.vfs || !this.filesystem) return { paths: [], storageBytes: 0, lazyReads: {} };
     const vfs = this.filesystem.bind({ pid: entry.pid, cred: entry.cred });
@@ -6209,6 +6211,7 @@ export class FacetManager {
       codeOnly: vfsState.codeOnly,
       refs,
       learned,
+      conditions,
       spend: (units) => pacer.spend(units),
     });
     trace(`planned ${plan.paths.length}`);
@@ -6411,7 +6414,7 @@ export class FacetManager {
       if (!/\.(?:c|m)?js$/.test(path)) continue;
       const refs = await this._staticRefsOf(vfs, cred, path, pacer);
       if (refs === null) continue;
-      if (refs.exact.length + refs.listed.length + refs.patterns.length + refs.cwdRelative.length + refs.resolves.length > 0) {
+      if (refs.exact.length + refs.listed.length + refs.patterns.length + refs.cwdRelative.length + refs.resolves.length + refs.subpaths.length > 0) {
         out.push(refs);
         each?.(path, refs);
       }
@@ -8918,7 +8921,7 @@ export class FacetManager {
           + `transforms ${JSON.stringify(vfsState.transforms ?? null)}, ES modules ${JSON.stringify(vfsState.esmSize ?? null)} (${pacer.chunks} turns so far)\n`);
       }
       const planStart = Date.now();
-      const planned = await this._planResidentData(entry, vfsState, cwd, opts.env?.HOME, pacer, opts.filename);
+      const planned = await this._planResidentData(entry, vfsState, cwd, opts.env?.HOME, pacer, opts.filename, opts.node?.conditions);
       if (this.debugEnabled) {
         this.processes.appendOutput(entry.pid, 'stderr',
           `[nimbus-debug] data plan: ${planned.paths.length} paths in ${Date.now() - planStart} ms (${pacer.chunks} turns so far)\n`);

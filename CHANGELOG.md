@@ -5,6 +5,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a long-running `node` process holds from its start the file a
+  package specifier its code resolves names as Node resolves it. A
+  `createRequire(...).resolve('pkg/data')` of a package whose `exports`
+  lists `require` and `import` targets read the `require` one, as Node's
+  require does, but the process held the `import` one, so the synchronous
+  read failed. Its program's `--conditions` count too.
 - Fixed: `node` stages what its code reads by a path it spells out even
   after a URL string on the same line. `node -e 'const u =
   "http://example.com"; fs.readFileSync("/home/user/data/x.txt")'` raised
