@@ -20,9 +20,11 @@ published independently in the `@nimbus-sh` npm scope.
   were), one its range does not take is `invalid`, and a package nothing
   depends on is `extraneous`; a missing or invalid one fails the command
   (`ELSPROBLEMS`). `npm ls -g` lists the global prefix, not the project.
-  For embedders: `createNpmCommand` takes `beforeWrite`, called before the
-  command replaces the project's package.json, and an `NpmInstallPort` may
-  have `unlinkBins`, called with the packages an uninstall removed.
+  An install and an uninstall into one tree at once run one after the
+  other. For embedders: `createNpmCommand` takes `beforeWrite`, called
+  before the command replaces the project's package.json, and an
+  `NpmInstallPort` may have `unlinkBins`, called with the packages an
+  uninstall removed, and `hold`, the hold its installs take on a tree.
 - Fixed: two npm installs at once in a session no longer remove each
   other's staged packages. Each install built its own installer, so one
   starting could sweep the staging directory of another installing into a
