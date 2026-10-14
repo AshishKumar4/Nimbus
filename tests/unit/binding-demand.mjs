@@ -95,4 +95,24 @@ const packages = {
   );
 }
 
+// ── an open range takes the dist-tag, not the highest published ──
+{
+  const tagged = structuredClone(packages);
+  // A 0.6.0 published but not tagged latest: compiler-rs `latest` installs 0.5.2.
+  tagged.astro.versions['7.3.8'].dependencies['@astrojs/compiler-rs'] = 'latest';
+  tagged['@astrojs/compiler-rs'].versions['0.6.0'] = { dependencies: { '@astrojs/compiler-binding': '0.6.0' } };
+  tagged['@astrojs/compiler-binding'].versions['0.6.0'] = {};
+  const report = await missingBindings({ specs: SPECS, demand: DEMAND, packument: registry(tagged) });
+  assert.deepEqual(report.missing, [], JSON.stringify(report.missing));
+}
+
+// ── an optional dependency of the same name is the one installed ──
+{
+  const optional = structuredClone(packages);
+  optional['@astrojs/compiler-rs'].versions['0.5.2'].optionalDependencies = { '@astrojs/compiler-binding': '0.5.3' };
+  optional['@astrojs/compiler-binding'].versions['0.5.3'] = {};
+  const report = await missingBindings({ specs: SPECS, demand: DEMAND, packument: registry(optional) });
+  assert.deepEqual(report.missing.map((m) => m.key), ['astro-compiler@0.5.3']);
+}
+
 console.log('binding-demand: ok');
