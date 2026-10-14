@@ -26,7 +26,7 @@ const run = async (script) => {
   const r = await ws.exec(script, { timeout: 20_000 });
   return { code: r.exitCode, stdout: r.stdout, stderr: r.stderr };
 };
-const read = (path) => ws.fs.readFile(path, 'utf8');
+const read = async (path) => new TextDecoder().decode(await ws.fs.readFile(path));
 
 // The producer writes a line, waits until the writer has written it, moves
 // the file aside, puts a new file in its place, and writes a second line.
