@@ -11,8 +11,10 @@ import assert from 'node:assert/strict';
 import { createSupervisorOpHandler } from '../../packages/core/src/workspace/supervisor-op.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { NimbusSession } from '../../packages/worker/src/session/nimbus-session.ts';
+import { importWorkerBundle } from './lib/worker-bundle.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+
+const { NimbusSession } = await importWorkerBundle({ 'packages/worker/src/session/nimbus-session.ts': ['NimbusSession'] });
 
 const harness = createSqliteVfsTestHarness();
 const vfs = new SqliteVFS(harness.sql, harness.ctx);
