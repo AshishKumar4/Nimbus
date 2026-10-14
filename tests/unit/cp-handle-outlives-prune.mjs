@@ -131,7 +131,7 @@ try {
     const rest = await session._rpcCpReadOutput(grandchild, 1, first.maxSeq, 1000, undefined, parent.pid);
     assert.deepEqual({ text: text(rest), closed: rest.closed }, { text: 'two\n', closed: true }, 'the grandparent reads the rest');
     const waited = await session._rpcCpWait(grandchild, 1000, undefined, parent.pid);
-    assert.deepEqual({ done: waited.done, exitCode: waited.exitCode }, { done: true, exitCode: 0 });
+    assert.deepEqual({ done: waited.done, exitCode: waited.exitCode, signal: waited.signal }, { done: true, exitCode: 0, signal: null }, 'the grandparent reads the exit');
     await assert.rejects(session._rpcCpReadOutput(grandchild, 1, 0, 0, undefined, sibling.pid), (error) => error.code === 'ESRCH', 'another process may not');
     console.log('  ✓ a grandparent\'s handle outlives its child\'s and grandchild\'s rows');
   }
