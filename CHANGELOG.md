@@ -23,6 +23,17 @@ published independently in the `@nimbus-sh` npm scope.
 - Changed: a Node program's file writes cost less CPU in a warm isolate:
   about 6 ms less for a run that writes one file, and about 0.1 ms less for
   each further file.
+- Fixed: a copy makes its files as any creation there makes them. A
+  program's `copyFile` (or the editor's and SDK's copy) between a mount and
+  the session's own files keeps the source's mode less the umask, as `cp`
+  does; it wrote 0644 for a 0755 script or a 0600 key. Off a mount that
+  answers asynchronously, `copyFile` of a symlink copies the file it names
+  rather than the link, and a tree copied off one answers how many entries
+  it made (it answered 0). `cp -r` and a recursive copy into a setgid
+  directory take its group, and their directories are setgid; under a
+  directory with a default ACL the ACL replaces the umask and each new
+  directory inherits it, as `mkdir` and `writeFile` there do (the copy took
+  the copier's group, the umask, and the source's default ACL).
 - Fixed (security): guests could call methods of the platform's RPC classes
   that were meant only for the platform's own use. Workers RPC exposes every
   string-named method of a WorkerEntrypoint, RpcTarget or Durable Object to

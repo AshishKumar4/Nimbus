@@ -34,7 +34,7 @@ import { sqliteFiles } from '../vfs/sqlite-files.js';
 import { isVfsError, syscallError, toVfsError, VfsError } from '../vfs/vfs-error.js';
 import { normalizeVfsPath } from '../vfs/path.js';
 import { abandon, andThen, readDeclaredSource, readRangeOrWhole, readText, type Awaitable } from '../vfs/vfs.js';
-import type { VFS, VfsDirent, VfsRemoval, VfsRemovalFailure, VfsStat } from '../vfs/vfs.js';
+import type { VFS, VfsCopyOptions, VfsDirent, VfsRemoval, VfsRemovalFailure, VfsStat } from '../vfs/vfs.js';
 import { formatProcMounts } from '../shell/mount-commands.js';
 import {
   CRED_KERNEL,
@@ -211,7 +211,7 @@ class GuardedProcessBridge implements RuntimeFsBridge {
   realpath(path: RuntimeFsPath): string { this.guard(); return this.target.realpath(path); }
   remove(path: RuntimeFsPath, options?: { recursive?: boolean; force?: boolean; report?: boolean; keepVanishedAncestors?: boolean }): void | VfsRemoval { this.guard(); return this.target.remove(path, options); }
   copyFile(from: RuntimeFsPath, to: RuntimeFsPath): void { this.guard(); return this.target.copyFile(from, to); }
-  copyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: { preserve?: boolean }): number | Promise<number> {
+  copyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: { preserve?: boolean; follow?: boolean }): number | Promise<number> {
     this.guard(); return this.target.copyTree(from, to, options);
   }
   fstat(handleId: number): RuntimeVfsStat { this.guard(); return this.target.fstat(handleId); }
@@ -1065,13 +1065,10 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
     });
   }
   copyFile(from: RuntimeFsPath, to: RuntimeFsPath) {
-    return this.either<void | number>([from, to], () => this.bridge.copyFile(from, to), async () => this.namespace.copy((await this.path(from)), (await this.path(to)), { recursive: false }));
+    return this.either<void | number>([from, to], () => this.bridge.copyFile(from, to), async () => this.namespace.copy((await this.path(from)), (await this.path(to)), { follow: true }));
   }
-  copyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: { preserve?: boolean }) {
-    return this.either([from, to], () => this.bridge.copyTree(from, to, options), async () => {
-      await this.namespace.copy((await this.path(from)), (await this.path(to)), { recursive: true, preserve: options?.preserve });
-      return 0;
-    });
+  copyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: { preserve?: boolean; follow?: boolean }) {
+    return this.either([from, to], () => this.bridge.copyTree(from, to, options), async () => this.namespace.copy((await this.path(from)), (await this.path(to)), { recursive: true, preserve: options?.preserve, follow: options?.follow }));
   }
 
   // ── descriptors on an asynchronous mount ─────────────────────────────
@@ -1412,10 +1409,10 @@ export class ProcessView implements VFS {
   async utimes(path: string, atimeMs: number | null | undefined, mtimeMs: number | null | undefined, options?: { follow?: boolean }): Promise<void> {
     await this.call(options?.follow === false ? 'lutime' : 'utime', path, () => this.fs.utimes(path, atimeMs, mtimeMs, { followSymlinks: options?.follow !== false }));
   }
-  /** cp: a file, or with `recursive` a tree, onto a name that is not there. */
-  async copy(from: string, to: string, options?: { recursive?: boolean; preserve?: boolean }): Promise<number> {
+  /** cp: a file (a link named as the source followed), or with `recursive` a tree, onto a name that is not there. */
+  async copy(from: string, to: string, options?: VfsCopyOptions): Promise<number> {
     return await this.call(options?.recursive ? 'cp' : 'copyfile', from, async () => {
-      if (options?.recursive) return await this.fs.copyTree(from, to, { preserve: options.preserve });
+      if (options?.recursive) return await this.fs.copyTree(from, to, { preserve: options.preserve, follow: options.follow });
       await this.fs.copyFile(from, to);
       return 1;
     }, to);

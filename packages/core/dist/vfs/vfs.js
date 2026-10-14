@@ -116,6 +116,16 @@ export const S_IFREG = 0o100000;
 export const S_IFDIR = 0o040000;
 export const S_IFCHR = 0o020000;
 export const S_IFLNK = 0o120000;
+/**
+ * The permission bits a copy without preserve asks to make an entry with:
+ * the source's, never its set-user-ID or set-group-ID (cp makes a new file,
+ * not the source's owner's); a directory keeps its sticky bit. The
+ * filesystem it lands on applies its creation policy (umask, a default ACL,
+ * a setgid parent's group) as to any entry made there.
+ */
+export function copiedPermissions(mode, directory) {
+    return mode & (directory ? 0o1777 : 0o777);
+}
 /** True for a character device such as `/dev/zero`, which streams rather than stores. */
 export function isCharacterDevice(mode) {
     return mode !== undefined && (mode & S_IFMT) === S_IFCHR;

@@ -645,20 +645,19 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       if (source === null) throw callError('ELOOP', call);
       const target = this.locateMutation(to, true, call);
       if (!source.mount && !target.mount) { this.vfs.copyFile(source.path, target.path); return; }
-      const bytes = source.mount ? source.mount.readFile(source.path) : this.vfs.readFile(source.path);
-      if (target.mount) target.mount.writeFile(target.path, bytes);
-      else this.vfs.writeFile(target.path, bytes);
+      // Across filesystems, the namespace's copy, from the file the source leads to (a backend that resolves its own paths follows it there).
+      this.mounted!.copy(source.mount ? source.path : '/' + source.path, target.mount ? target.path : '/' + target.path, { follow: true });
     });
   }
 
-  copyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: { preserve?: boolean }): Promise<number> {
+  copyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: { preserve?: boolean; follow?: boolean }): Promise<number> {
     const call: FsCall = { syscall: 'cp', path: from, dest: to };
     return called(call, () => {
-      const source = this.locate(from, false);
+      const source = this.locate(from, options?.follow === true);
       if (source === null) throw callError('ELOOP', call);
       const target = this.locateMutation(to, false, call);
       if (source.mount || target.mount) throw callError('EXDEV', call);
-      return this.vfs.copyTreeAsync(source.path, target.path, options);
+      return this.vfs.copyTreeAsync(source.path, target.path, { preserve: options?.preserve });
     }).catch((error: unknown) => { throw failure(error, call); });
   }
 

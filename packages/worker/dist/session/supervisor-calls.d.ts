@@ -225,6 +225,7 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
     fsCopyFile(from: RuntimeFsPath, to: RuntimeFsPath): Promise<Awaited<ReturnType<RuntimeFsBridge["copyFile"]>>>;
     fsCopyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: {
         preserve?: boolean;
+        follow?: boolean;
     } | undefined): Promise<Awaited<ReturnType<RuntimeFsBridge["copyTree"]>>>;
     fsAcquireExclusiveMutation(path: RuntimeFsPath, options?: import("@nimbus-sh/core/runtime/os-contracts.js").ExclusiveMutationRequest | undefined): Promise<Awaited<ReturnType<RuntimeFsBridge["acquireExclusiveMutation"]>>>;
     fsReleaseExclusiveMutation(owner: string): Promise<Awaited<ReturnType<RuntimeFsBridge["releaseExclusiveMutation"]>>>;

@@ -21,7 +21,7 @@ import { Delegations, type DelegationRevoked } from './delegations.js';
 import type { OutputGate } from './output-gate.js';
 import { CompositeVFS } from '../vfs/composite.js';
 import { ProcVFS } from '../vfs/proc-vfs.js';
-import type { VFS, VfsDirent, VfsRemoval, VfsStat } from '../vfs/vfs.js';
+import type { VFS, VfsCopyOptions, VfsDirent, VfsRemoval, VfsStat } from '../vfs/vfs.js';
 import { type NimbusFilesystemAuthority, type NimbusFilesystemBinding, type NimbusHostFilesystemLease, type NimbusMountEntry, type RuntimeFsBridge, type RuntimeSynchronousFs, type RuntimeVfsDirEntry, type RuntimeVfsStat, type VfsCred } from './os-contracts.js';
 /** The session's namespace and the processes bound to it. */
 export declare class ProcessFiles implements NimbusFilesystemAuthority {
@@ -269,11 +269,8 @@ export declare class ProcessView implements VFS {
     utimes(path: string, atimeMs: number | null | undefined, mtimeMs: number | null | undefined, options?: {
         follow?: boolean;
     }): Promise<void>;
-    /** cp: a file, or with `recursive` a tree, onto a name that is not there. */
-    copy(from: string, to: string, options?: {
-        recursive?: boolean;
-        preserve?: boolean;
-    }): Promise<number>;
+    /** cp: a file (a link named as the source followed), or with `recursive` a tree, onto a name that is not there. */
+    copy(from: string, to: string, options?: VfsCopyOptions): Promise<number>;
     /** Create the file if absent, and set its times to now (touch). */
     touch(path: string): Promise<void>;
     /** The file's bytes read around the session's content cache, re-checked for a change mid-read. */
