@@ -139,9 +139,10 @@ export interface WsHost {
  */
 export async function bindShellSocket(self: WsHost, ws: WebSocket): Promise<boolean> {
   if (ws.readyState !== WS_READY_STATE_OPEN) return false;
-  // Not built, or being built: the frame waits for the session's one build
-  // and its shell's start (init.ts initSession), each frame after the last.
-  if (self.shell == null || self.terminal == null || self.kernel == null || self.building != null) {
+  // Not built, being built, or a wake still waiting for its shell's start:
+  // the frame waits for the session's one build and its shell's start
+  // (init.ts initSession), each frame after the last.
+  if (self.shell == null || self.terminal == null || self.kernel == null || self.building != null || self._wakeRebuild != null) {
     if (!self._wakeRebuild) {
       self._wakeRebuild = self.initSession(ws, { resume: 'wake' })
         .finally(() => { self._wakeRebuild = null; });

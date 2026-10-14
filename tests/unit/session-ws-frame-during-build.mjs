@@ -35,4 +35,26 @@ assert.equal(joined, 1, 'and joins the build through initSession');
 release();
 await bound;
 assert.equal(delivered, true, 'then it is delivered');
+// After the build, while the wake that joined it still waits for the login
+// files (a headless build does not wait for them), a later frame waits on
+// that wake, behind the first frame.
+{
+  let releaseWake;
+  const wake = new Promise((resolve) => { releaseWake = resolve; });
+  const self = {
+    shell: {},
+    kernel: {},
+    terminal: { ws, attach() { throw new Error('attached during the wake'); } },
+    building: null,
+    _wakeRebuild: wake,
+    initSession() { throw new Error('a second join'); },
+  };
+  let later = false;
+  const bound = bindShellSocket(self, ws).then((ok) => { later = ok; });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(later, false, 'a later frame waits for the pending wake');
+  releaseWake();
+  await bound;
+  assert.equal(later, true, 'then it is delivered');
+}
 console.log('session-ws-frame-during-build: ok');
