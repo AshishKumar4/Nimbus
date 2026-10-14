@@ -11,7 +11,8 @@
 // The boundaries still wait for what is outstanding: output whose answer the
 // session holds back is delivered before the one-shot ends, and before the
 // resident answers a request. A call the session refuses is let go as one it
-// answers is.
+// answers is, and its failure is still reported: unhandled, as it was when
+// nothing watched it, to the platform (here this test's own process).
 //
 // Runs the real generated bodies of both lifetimes, each in its own child.
 
@@ -25,6 +26,11 @@ import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.
 import { nodeFacetSources } from './lib/node-facet-sources.mjs';
 import { generatedModuleSet, writeModuleSet } from './lib/module-map-bundle.mjs';
 import { CRED, createAuthority, facetSupervisor, launchResident, runScenarios, sleep, until } from './lib/resident-body.mjs';
+
+// This test's process, before a program replaces the global: what the
+// platform reports unhandled reaches it.
+const reported = [];
+globalThis.process.on('unhandledRejection', (reason) => { reported.push(reason); });
 
 /** Lines each burst writes, alternating streams so that each is a batch, and a task, of its own. */
 const LINES = 4000;
@@ -104,6 +110,9 @@ async function assertBounded(probe, session, lifetime) {
   const again = await umasksAndCount(probe, session);
   assert.ok(again - umasked < SLACK,
     `the ${lifetime} held ${again - umasked} more promises after ${UMASKS} more answered umask calls, half refused (at most ${SLACK})`);
+  assert.equal(reported.length, UMASKS, `the ${lifetime} reported ${reported.length} of the ${UMASKS} refusals`);
+  assert.ok(reported.every((reason) => reason?.code === 'EPERM'), `each report is a refusal: ${reported.slice(0, 3).map(String)}`);
+  reported.length = 0;
 }
 
 await runScenarios(import.meta.filename, {
