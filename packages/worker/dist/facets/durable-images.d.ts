@@ -19,7 +19,9 @@
  * when the launch set them, `vfsTextModules`, `mainModule` and `startArgs`.
  * A text module is its text there, and an inline wasm module `{ wasm }` its
  * bytes in base64, restored as an ArrayBuffer: JSON writes an ArrayBuffer as
- * `{}`, and a re-drive booted a module that could not compile.
+ * `{}`, and a re-drive booted a module that could not compile. An image
+ * written that way has lost those bytes, unless its by-path maps supply the
+ * same module, which the loader takes in place of the inline one.
  * The digests in the journal's `recipe.image` are sha256 hashes of those two
  * payloads, and a self-owned spawn mints them at spawn time; an
  * embedder-owned spawn is given them by its own bookkeeping instead.
