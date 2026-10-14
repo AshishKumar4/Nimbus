@@ -124,11 +124,10 @@ export async function runNodeProgram(program, host) {
         dns: host.dns,
         stdin: host.stdin,
     };
-    // Each module has its own process and console object, as the main script has.
-    const scope = () => ({ process: createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdout: ctx.stdout, stderr: ctx.stderr }), console: createConsole(ctx.stdout, ctx.stderr) });
-    const loader = createCjsLoader(nodeCtx, scope);
+    // One process and console, every module's, as in Node.
+    const main = { process: createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdout: ctx.stdout, stderr: ctx.stderr }), console: createConsole(ctx.stdout, ctx.stderr) };
+    const loader = createCjsLoader(nodeCtx, main);
     // Execute main script
-    const main = scope();
     const module = { exports: {} };
     const cleanMainSource = stripShebang(source);
     const isEsm = filename === '[eval]' ? isEsModuleInput(cleanMainSource, undefined) : isEsModuleFile(filename, cleanMainSource, () => mainType);
@@ -159,7 +158,7 @@ export async function runNodeProgram(program, host) {
             await native.importMain();
         else if (filename === '[eval]') {
             const fn = new Function(`return ${moduleWrapper(cleanMainSource, pathToFileURL(`${program.cwd}/[eval]`).href)}`)();
-            fn(...loader.wrapperArguments(filename, module, main));
+            fn(...loader.wrapperArguments(filename, module));
         }
         else
             loader.load(filename, { source: cleanMainSource, esm: false });

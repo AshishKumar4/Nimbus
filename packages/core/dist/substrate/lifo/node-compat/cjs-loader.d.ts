@@ -42,12 +42,11 @@ export interface CjsLoader {
     /** The arguments a module's wrapper is called with, `require` its own. */
     wrapperArguments(filename: string, module: {
         exports: unknown;
-    }, scope: ModuleScope): unknown[];
+    }): unknown[];
 }
 /**
- * A loader over `context`'s filesystem. `scope` gives each module its
- * console and process (each module has its own, as the node command's
- * modules always have had).
+ * A loader over `context`'s filesystem. `scope` is the program's console and
+ * process, every module's, as Node has one process; require('process') is it.
  */
-export declare function createCjsLoader(context: NodeContext, scope: (filename: string) => ModuleScope, options?: RequireResolverOptions): CjsLoader;
+export declare function createCjsLoader(context: NodeContext, scope: ModuleScope, options?: RequireResolverOptions): CjsLoader;
 //# sourceMappingURL=cjs-loader.d.ts.map

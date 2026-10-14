@@ -6941,7 +6941,6 @@ error: the Oxc transform crashed (${reason})`);
       if (u2 > i || !e) {
         for (; u2 > i; ) i *= 2;
         a = new ArrayBuffer(i), s(f, new Uint16Array(a, 16, 108)), e = (function(e2, a2, r2) {
-          ;
           var i2 = new e2.Int8Array(r2), s2 = new e2.Int16Array(r2), f2 = new e2.Int32Array(r2), c2 = new e2.Uint8Array(r2), t2 = new e2.Uint16Array(r2), n2 = 1040;
           function b2() {
             var e3 = 0, a3 = 0, r3 = 0, c3 = 0, t3 = 0, b3 = 0, k4 = 0, o3 = 0, h3 = 0;
