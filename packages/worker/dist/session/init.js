@@ -20,12 +20,41 @@ import { takeLegacyResetNotice } from './legacy-reset.js';
 import { ensureSessionStateSchema, loadShellState, stampHydratedAt, countSessionStateKeys, loadScrollback } from './state-store.js';
 import { recordRecoveryEvent } from '@nimbus-sh/platform/oom-discriminator.js';
 import { sessionAiEnv } from './ai.js';
-import { setPhase } from './init-phases.js';
+import { joinExistingSession, setPhase } from './init-phases.js';
 import { shellTerminalTee } from './ws.js';
 import { editorViews, serveEditorFs } from './editor-fs.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 import { noteClientActivity } from './hibernation.js';
-export async function initSession(self, ws, options = {}) {
+/**
+ * The session's one build. Whatever needs the session while it is being
+ * built (an SDK call, a cold upgrade, the frame of a socket that woke this
+ * instance) waits on that build, and then has its socket joined to it,
+ * rather than starting a second build that replaces the first's terminal,
+ * workspace and shell process under it.
+ */
+export function initSession(self, ws, options = {}) {
+    const running = self.building;
+    if (running !== null)
+        return running.then(() => joinBuilt(self, ws, options));
+    const building = buildSession(self, ws, options).finally(() => {
+        if (self.building === building)
+            self.building = null;
+    });
+    self.building = building;
+    return building;
+}
+/** A socket that waited on another caller's build, given its terminal as a warm rejoin gives it. */
+function joinBuilt(self, ws, options) {
+    const { shell, terminal } = self;
+    if (ws === null || shell === null || terminal === null || terminal.ws === ws)
+        return;
+    if (options.resume === 'wake') {
+        terminal.attach(ws, shellTerminalTee(self));
+        return;
+    }
+    joinExistingSession(self, shell, terminal, ws, shellTerminalTee(self), loadScrollback);
+}
+async function buildSession(self, ws, options) {
     const replayScrollback = options.resume !== 'wake';
     self.ensureSqliteFs();
     const kernelFs = self.sqliteFs.as(CRED_KERNEL);
@@ -73,17 +102,12 @@ export async function initSession(self, ws, options = {}) {
     // On cold start (no row) loadScrollback returns '' so this is a
     // no-op and the MOTD/Phase O block below runs normally.
     //
-    // The replay itself goes through terminal.write → flush → tee,
-    // so the replayed bytes also re-append to scrollback. That's the
-    // correct semantics: a user who reconnects twice should see the
-    // same scrollback both times. The cap eviction keeps total bytes
-    // bounded.
+    // The replay is shown, not recorded again (terminal.replay): a user
+    // who reconnects twice sees the same scrollback both times.
     if (persisted.hasPersistedState) {
         if (replayScrollback) {
             try {
-                const replay = loadScrollback(self.ctx);
-                if (replay.length > 0)
-                    self.terminal.write(replay);
+                self.terminal.replay(loadScrollback(self.ctx));
             }
             catch (e) {
                 try {

@@ -26,6 +26,13 @@ type InitHost = SessionInternal & {
 export interface InitSessionOptions {
     resume?: 'reconnect' | 'wake';
 }
+/**
+ * The session's one build. Whatever needs the session while it is being
+ * built (an SDK call, a cold upgrade, the frame of a socket that woke this
+ * instance) waits on that build, and then has its socket joined to it,
+ * rather than starting a second build that replaces the first's terminal,
+ * workspace and shell process under it.
+ */
 export declare function initSession(self: InitHost, ws: WebSocket | null, options?: InitSessionOptions): Promise<void>;
 export {};
 //# sourceMappingURL=init.d.ts.map
