@@ -13,6 +13,11 @@
  * old output is cleared.
  */
 type ViteHost = any;
+/**
+ * End the Cirrus server running now with its process (`vite stop`, or a
+ * server that replaces it): its port is released, and its record with it.
+ */
+export declare function stopViteShim(self: ViteHost): boolean;
 export declare function createViteCommand(self: ViteHost): (ctx: any) => Promise<number>;
 export {};
 //# sourceMappingURL=vite-command.d.ts.map

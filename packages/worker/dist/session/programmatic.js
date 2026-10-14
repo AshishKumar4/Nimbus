@@ -16,7 +16,7 @@ import { PortRegistry, createPortCapability } from '@nimbus-sh/core/runtime/port
 import { CRED_KERNEL, CRED_SESSION_USER, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { endProcessInput, resizeProcess, signalProcess, writeProcessInput } from '@nimbus-sh/core/runtime/process-input-routing.js';
 import { SessionProcessLogsOptionsSchema, } from '@nimbus-sh/core/runtime/session-protocol.js';
-import { SESSION_DESTROYED_KEY, SHELL_STATE_KEY_PREFIX, VITE_CONFIG_KEY } from './keys.js';
+import { SESSION_DESTROYED_KEY, SHELL_STATE_KEY_PREFIX } from './keys.js';
 import { clearPortCapability, persistPortCapability, portRecordKey, readPortReservation, readPortReservationByName, readPortReservationByOwner, reservePort, rotatePortCapability } from './port-capability.js';
 import { bindPublicPortCapability, unbindPublicPortCapability } from '../router/public-directory.js';
 import { isPreviewHostName, isPreviewHostSafeSid, previewHostUrl, readPreviewHostSuffix } from '../_shared/preview-host.js';
@@ -480,10 +480,6 @@ export async function rpcKillProcess(self, pid) {
             if (self.viteDevServer?.isRunning) {
                 self.viteDevServer.stop();
                 self.viteDevServer = null;
-                try {
-                    await self.ctx.storage.delete(VITE_CONFIG_KEY);
-                }
-                catch { }
             }
         }
         catch { }
@@ -1042,10 +1038,6 @@ async function destroySession(self, options) {
                 if (self.viteDevServer?.isRunning)
                     self.viteDevServer.stop();
                 self.viteDevServer = null;
-                try {
-                    await self.ctx.storage.delete(VITE_CONFIG_KEY);
-                }
-                catch { }
                 self._viteShimPid = null;
                 self._viteShimPort = null;
             }

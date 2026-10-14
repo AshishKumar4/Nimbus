@@ -29,7 +29,7 @@ import { listInstalledRuntimes } from '@nimbus-sh/core/runtime/installed-runtime
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { stripAnsi } from '@nimbus-sh/core/runtime/process-logs.js';
 import { DEFAULT_HOME, NODE_VERSION } from '@nimbus-sh/core/constants.js';
-import { VITE_CONFIG_KEY } from '../session/keys.js';
+import { devServerProcess, recordDevServer, spawnOf } from '../session/dev-servers.js';
 import { isJsonObject } from '../npm/package-lock.js';
 import { HeadlessTerminal } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { makeNimbusVerbHandler } from '@nimbus-sh/core/runtime/nimbus-command.js';
@@ -88,7 +88,6 @@ export async function registerHostedCommands(self, workspace) {
                     if (self.viteDevServer?.isRunning) {
                         self.viteDevServer.stop();
                         self.viteDevServer = null;
-                        await self.ctx.storage.delete(VITE_CONFIG_KEY);
                     }
                 }
                 catch (error) {
@@ -632,6 +631,17 @@ export async function registerHostedCommands(self, workspace) {
     //   layer, not real wrangler)
     // - silently strip wrangler-specific flags (--ip, --port, etc.) that
     //   have no meaning inside a DO.
+    // The Worker dev server runs as a process of its own (devServerProcess), and
+    // ends with it: `wrangler stop`, a `wrangler dev` that replaces it, a kill.
+    let wranglerPid = null;
+    const stopWranglerServer = () => {
+        const pid = wranglerPid;
+        wranglerPid = null;
+        // A start still under way stops too.
+        self.nimbusWrangler?.stop();
+        if (pid !== null)
+            self.processes.exit(pid, 0);
+    };
     const wranglerHandler = (invokedAs) => async (ctx) => {
         const rawArgs = ctx.args || [];
         // Filter wrangler-only flags early (works for both invocation paths;
@@ -655,7 +665,7 @@ export async function registerHostedCommands(self, workspace) {
         }
         if (args[0] === 'stop') {
             if (self.nimbusWrangler?.isRunning) {
-                self.nimbusWrangler.stop();
+                stopWranglerServer();
                 ctx.stdout.write('\x1b[33mWorker dev server stopped.\x1b[0m\n');
             }
             else {
@@ -704,8 +714,9 @@ export async function registerHostedCommands(self, workspace) {
         }
         // The dev server before this one stops, a start still under way included:
         // left to finish, it would serve, watch and rebuild beside this one.
-        self.nimbusWrangler?.stop();
+        stopWranglerServer();
         let starting = true;
+        let serverPid = null;
         // Pre-flight: read the wrangler config ourselves and call out any
         // binding fields nimbus-wrangler can't provide. NimbusWrangler will
         // still try to bundle + load, but user sees up-front why their
@@ -753,6 +764,8 @@ export async function registerHostedCommands(self, workspace) {
                     ctx.stderr.write(msg);
                     return;
                 }
+                if (serverPid !== null)
+                    self.processes.appendOutput(serverPid, 'stderr', msg);
                 if (terminal) {
                     try {
                         terminal.write(msg);
@@ -777,6 +790,21 @@ export async function registerHostedCommands(self, workspace) {
                 : '  \x1b[31mFailed to start Worker dev server.\x1b[0m\n');
             return 1;
         }
+        // The server's process: what `ps` lists, a kill ends, and a new
+        // incarnation of the session runs again (dev-servers.ts).
+        const { entry, adopted } = devServerProcess(self.processes, invokedAs, ctx);
+        serverPid = wranglerPid = entry.pid;
+        self.processes.subscribeTerminal(entry.pid, () => {
+            if (wranglerPid === entry.pid)
+                wranglerPid = null;
+            server.stop();
+            if (self.nimbusWrangler === server)
+                self.nimbusWrangler = null;
+        });
+        await recordDevServer(self, entry.pid, { ...spawnOf(entry), env: ctx.env, root: vfsRoot });
+        if (!adopted) {
+            notifyTerminalEvent(terminal, { type: 'spawn', pid: entry.pid, command: entry.command, longRunning: true, attachedTty: false });
+        }
         const cfg = server.stats;
         // runtime primitive support (P5): banner advertises the canonical
         // `/__nimbus/worker/` route. The legacy `/worker/` URL is still
@@ -788,7 +816,7 @@ export async function registerHostedCommands(self, workspace) {
         ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Entry:    ' + cfg.main + '\n');
         ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Root:     ' + cfg.root + '\n');
         ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Reload:   on file change\n\n');
-        ctx.stdout.write('  \x1b[2mRun \x1b[0m' + invokedAs + ' stop\x1b[2m to stop.\x1b[0m\n\n');
+        ctx.stdout.write('  \x1b[2mRun \x1b[0m' + invokedAs + ' stop\x1b[2m, or \x1b[0mkill ' + entry.pid + '\x1b[2m, to stop.\x1b[0m\n\n');
         return 0;
     };
     registry.register('nimbus-wrangler', wranglerHandler('nimbus-wrangler'));

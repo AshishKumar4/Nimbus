@@ -52,6 +52,7 @@ import { type SupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-
 import type { HostedHttpRequest, PeerHost } from '@nimbus-sh/fabric/peer-host.js';
 import type { FanoutShardOptions } from '@nimbus-sh/fabric/fanout.js';
 import { WebSocketRelay } from './ws-relay.js';
+import type { DevServerRestoreFailure } from './helpers.js';
 import * as _portCapability from './port-capability.js';
 import { ServedReads } from '../facets/read-profile.js';
 export { filterWranglerFlags, detectBundlerBin, checkNodeModulesGuard, detectUnsupportedWranglerConfig, renderNoDevServerHtml, BUNDLER_BIN_PREFIXES, NIMBUS_UNSUPPORTED_BINS, WRANGLER_IGNORED_FLAGS, WRANGLER_IGNORED_FLAGS_WITH_VALUE, WRANGLER_UNSUPPORTED_CONFIG_FIELDS, } from './helpers.js';
@@ -684,8 +685,10 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
     }>;
     /** Capability-authenticated port route, for an embedder holding the token. */
     _rpcRouteCapabilityPort(port: number, capability: string, request: Request, innerPath: string): Promise<Response>;
-    /** The port route's dev-server restore, delegated — lives in routes.ts where the other session routes do. */
-    restorePersistedDevServer(onlyPort?: number): Promise<void>;
+    /** What restoring the dev servers reads of this session, one view per instance (its restore is the view's). */
+    private devServerHost;
+    /** The dev servers a previous incarnation ran, started again once (dev-servers.ts): what every route to one waits on. */
+    restoreDevServers(): Promise<readonly DevServerRestoreFailure[]>;
     /** The port route's in-DO HMR accept, delegated — same reason. */
     acceptCirrusHmrWs(request: Request): Response;
     /**

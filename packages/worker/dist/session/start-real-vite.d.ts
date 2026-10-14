@@ -1,21 +1,11 @@
 /**
- * start-real-vite.ts — the one place a cirrus-real (real `vite`) dev server is
- * booted.
- *
- * Two callers share it: the `vite` shell builtin (opt-in via NIMBUS_REAL_VITE=1
- * or `nimbusDevServer: 'real'`) and the hibernation-restore path in
- * session/routes.ts. Booting is heavy — it pre-bundles the user's vite.config
- * against the VFS, allocates the facet payload, and launches the server as one
- * of the session's resident processes — so it must not be duplicated: a woken
- * session has to rebuild the server exactly as the command did, or the two
- * disagree on what real-vite looks like.
- *
- * It also persists what restore needs into the SAME `vite-config` key the
- * Cirrus shim writes, tagged `devServer: 'real'` so restore rebuilds real-vite
- * rather than the shim. Before this, cirrus-real wrote nothing at all and every
- * such session was unrecoverable after eviction.
+ * start-real-vite.ts — how the `vite` builtin boots a cirrus-real (real
+ * `vite`) dev server (opt-in via NIMBUS_REAL_VITE=1 or `nimbusDevServer:
+ * 'real'`). Booting is heavy: it pre-bundles the user's vite.config against
+ * the VFS, allocates the facet payload, and launches the server as one of the
+ * session's resident processes. A new incarnation of the session boots it
+ * again by running the `vite` command again (dev-servers.ts).
  */
-import { type ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { CirrusReal } from '../facets/cirrus-real.js';
 export interface StartRealViteOptions {
@@ -26,22 +16,19 @@ export interface StartRealViteOptions {
     /** Mount base baked into the facet's vite `base` config. */
     basePath: string;
     /** Directory the user's vite.config.{ts,js,mjs} is searched in (the shell
-     *  cwd at start). Persisted so restore can re-bundle it. */
+     *  cwd at start). */
     configDir: string;
     /**
      * The process-table cwd+argv the dev server's pid is given — what the app
-     * verbs derive its identity from — and who it runs as. The `vite` builtin
-     * passes the wrapper pid's own (or the argv it was invoked with, under the
-     * command's credential); restore passes what was persisted, so the
-     * restored server is the same application, run by the same principal.
-     * `execId` is the exec id the pid carries: the `vite` command's, or what
-     * restore persisted.
+     * verbs derive its identity from — and who it runs as: the wrapper pid's
+     * own, or the command's line, under its credential (devServerSpawn).
+     * `execId` is the exec id the pid carries.
      */
     identity: DevServerIdentity;
     /** Optional abort signal threaded into the heavy-alloc gate. */
     signal?: AbortSignal;
     /** Called with a human message if vite.config pre-bundling fails (so the
-     *  `vite` builtin can surface it on stderr). Restore passes nothing. */
+     *  `vite` builtin can surface it on stderr). */
     onConfigError?: (message: string) => void;
 }
 /** Who a dev server's pid is: the cwd+argv its identity derives from, its credential, and its exec id when it has one. */
@@ -51,14 +38,6 @@ export interface DevServerIdentity {
     cred: VfsCred;
     execId?: string;
 }
-/** What a dev server's pid is persisted as, and given back on restore. */
-export declare function devServerIdentity(entry: ProcessEntry): DevServerIdentity;
-/**
- * A persisted dev-server identity, read back; undefined for a config written
- * before it recorded who the server ran as, which is not restored: it would
- * read the project as someone else.
- */
-export declare function persistedIdentity(value: unknown): DevServerIdentity | undefined;
 export interface StartRealViteResult {
     cirrusReal: CirrusReal;
     /** The bundled vite.config source, or null when there was none / it failed. */
@@ -68,8 +47,8 @@ export interface StartRealViteResult {
 }
 /**
  * Boot a cirrus-real dev server on `self` as a resident process serving its
- * port, and persist the config restore needs. One already running is ended
- * first. `self` is the session host (RoutesHost/InitHost = any).
+ * port. One already running is ended first. `self` is the session host
+ * (InitHost = any).
  */
 export declare function startRealVite(self: any, opts: StartRealViteOptions): Promise<StartRealViteResult>;
 //# sourceMappingURL=start-real-vite.d.ts.map

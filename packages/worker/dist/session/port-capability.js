@@ -26,6 +26,7 @@ import { z } from 'zod/v4';
 import { PUBLIC_BEARER_HEADER, renderSessionStatusPage } from '../_shared/session-router.js';
 import { isPreviewHostName } from '../_shared/preview-host.js';
 import { PORT_CAPABILITY_KEY_PREFIX } from './keys.js';
+import { devServerRestoreFailedResponse } from './helpers.js';
 /** The shape `createPortCapability` mints: 12 random bytes, hex. */
 const PortCapabilitySchema = z.string().regex(/^[a-f0-9]{24}$/);
 /** 'scoped' is the default: capability-checked but never the public bearer. */
@@ -351,7 +352,7 @@ export async function routeToSessionPort(self, port, request, innerPath, mountBa
             return new Response('Not found', { status: 404 });
         }
     }
-    await self.restorePersistedDevServer?.(port);
+    const restoreFailures = await self.restoreDevServers?.() ?? [];
     // The durable seam: a request on a port nothing is serving may be a
     // durable application a reset left dead — the alarm pump would re-drive
     // it eventually, but a URL in someone's hands cannot wait for eventually.
@@ -406,6 +407,8 @@ export async function routeToSessionPort(self, port, request, innerPath, mountBa
         : await self.portRegistry.routeCapabilityRequest(port, capability, request, innerPath);
     if (proxied)
         return proxied;
+    if (restoreFailures.length > 0)
+        return devServerRestoreFailedResponse(restoreFailures);
     const ended = self.portRegistry.ended(port);
     return new Response(`No process listening on port ${port}${ended === undefined ? '' : `: ${ended}`}`, { status: 502 });
 }
