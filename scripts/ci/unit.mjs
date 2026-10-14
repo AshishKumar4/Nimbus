@@ -106,6 +106,14 @@ function failure({ stdout, stderr, reason }) {
 function task() {
   const part = JSON.parse(args[0] ?? usage('a part'));
   const out = option('--out');
+  // Each case's memory cap is a cgroup under the task's own, which armada names
+  // (ARMADA_CGROUP: `armada/task` alone, `armada/task-<slot>` when packed). A
+  // task without one would run its cases uncapped: not a verdict.
+  const taskGroup = process.env.ARMADA_CGROUP;
+  if (!taskGroup) {
+    console.error('unit.mjs: armada gave this task no cgroup (ARMADA_CGROUP), so its cases cannot be capped: not a test verdict');
+    return 2;
+  }
   const scratch = mkdtempSync(join(tmpdir(), 'armada-part-'));
   try {
     const timings = join(scratch, 'timings.json');
@@ -116,7 +124,7 @@ function task() {
     // limit is 1024, the workstation's 1048576.
     const ran = spawnSync('/bin/sh', ['-c', 'ulimit -n "$(ulimit -Hn)" && exec "$@"', 'run-all',
       process.execPath, RUN_ALL, '--jobs', String(JOBS), '--timeout', String(FILE_TIMEOUT_MS), '--timings', timings, '--json', reportPath], {
-      stdio: 'inherit', env: { ...process.env, NIMBUS_UNIT_ONLY: part.rows.map((row) => row.name).join(',') },
+      stdio: 'inherit', env: { ...process.env, NIMBUS_TEST_CGROUP: taskGroup, NIMBUS_UNIT_ONLY: part.rows.map((row) => row.name).join(',') },
     });
     const cpu1 = vmCpu();
     console.log(`unit.mjs: VM busy ${(cpu1.busy - cpu0.busy).toFixed(1)} s, steal ${(cpu1.steal - cpu0.steal).toFixed(1)} s`);
