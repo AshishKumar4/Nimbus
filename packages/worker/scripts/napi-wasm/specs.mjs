@@ -117,6 +117,40 @@ export const SPECS = {
     output: 'astro_napi.wasm',
     npm: { owner: '@astrojs/compiler-binding', requiredAs: ['@astrojs/compiler-binding-wasm32-wasi'] },
   },
+  // From 0.5.2 upstream commits a Cargo.lock, so the build is upstream's
+  // lockfile with the same napi-build seam made in it as in Cargo.toml.
+  'astro-compiler@0.5.2': {
+    name: 'astro-compiler',
+    version: '0.5.2',
+    source: {
+      url: 'https://github.com/withastro/compiler-rs/archive/refs/tags/v0.5.2.tar.gz',
+      sha256: '607ceb747b3b879bca3dd35975f94ed9b541e8cb0eebe5ec23fa870dbff23af3',
+      dir: 'compiler-rs-0.5.2',
+    },
+    toolchain: '1.96.1',
+    build: { mode: 'workspace', package: 'astro_napi', lockfile: 'upstream' },
+    rustflags: ['-C', 'target-feature=+simd128'],
+    seams: [
+      {
+        file: 'Cargo.toml',
+        from: 'napi-build = "=2.3.1"',
+        to: 'napi-build = "=2.5.0"',
+        reason: 'As at 0.5.1: napi-build 2.3.1 only knows wasm32-wasip1-threads; 2.5.0 links the non-threaded '
+          + 'emnapi-basic-napi-rs for wasm32-wasip1. napi-build only writes the link line.',
+      },
+      {
+        file: 'Cargo.lock',
+        from: 'name = "napi-build"\nversion = "2.3.1"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\n'
+          + 'checksum = "d376940fd5b723c6893cd1ee3f33abbfd86acb1cd1ec079f3ab04a2a3bc4d3b1"',
+        to: 'name = "napi-build"\nversion = "2.5.0"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\n'
+          + 'checksum = "0941983559cd62bfa7f04646a16428967a847365adeef27711e4e3927046bbed"',
+        reason: 'The Cargo.toml seam\'s pin in upstream\'s lockfile, so the build stays --locked: napi-build has no '
+          + 'dependencies, and 2.5.0\'s checksum is the one the 0.5.1 pin and rolldown\'s lockfile record.',
+      },
+    ],
+    output: 'astro_napi.wasm',
+    npm: { owner: '@astrojs/compiler-binding', requiredAs: ['@astrojs/compiler-binding-wasm32-wasi'] },
+  },
 };
 
 /** npm tarballs the loader bundles and the build links, by lockfile integrity. */

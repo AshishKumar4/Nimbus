@@ -9,17 +9,7 @@
  * instead of being mistaken for "no listener".
  */
 import { type Kernel } from '../../kernel/index.js';
-/** Outcomes of one workspace-local hop, for callers that report failure. */
-export type WorkspaceRequestResult = {
-    kind: 'response';
-    response: Response;
-} | {
-    kind: 'refused';
-} | {
-    kind: 'aborted';
-} | {
-    kind: 'timeout';
-};
+import { type WorkspaceRequestResult } from '../../kernel/local-serve.js';
 /**
  * The loopback port a URL asks for, or null when it is not loopback. A name
  * is resolved through the kernel's /etc/hosts; a caller that holds no
@@ -27,7 +17,6 @@ export type WorkspaceRequestResult = {
  */
 export declare function workspaceRequestPort(kernel: Partial<Pick<Kernel, 'dns'>>, url: URL): number | null;
 /** HTTP reason phrase — virtual responses carry no status text. */
-export declare function statusText(status: number): string;
 /**
  * Serve `request` through the kernel's port registry, else its host's
  * loopback router. The handler's virtual response is adapted to a real

@@ -42,6 +42,13 @@
 // of a relative path is. Red before: lifo's path resolved from /, dropped a
 // trailing separator, and had no toNamespacedPath or matchesGlob; its url
 // had no domainToASCII, urlToHttpOptions or legacy format options.
+//
+// The rest of the engine's context-free builtins (X3e): assert, querystring,
+// timers, perf_hooks, v8 and the ones lifo had none of (async_hooks,
+// diagnostics_channel, punycode, timers/promises, util/types, ...).
+// Red before: lifo's assert compared JSON (two different Maps were equal) and
+// threw plain Errors, its querystring dropped repeated keys, its v8
+// serialized nothing, and the rest were not found.
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -199,6 +206,33 @@ const programs = {
     "console.log(url.pathToFileURL('C:\\\\tmp\\\\f', { windows: true }).href, url.pathToFileURL('\\\\\\\\server\\\\share\\\\f', { windows: true }).href, url.pathToFileURL('rel\\\\f', { windows: true }).href.endsWith('/rel/f'), url.pathToFileURL('C:tmp\\\\f', { windows: true }).href.replace(process.cwd(), '<cwd>'), url.pathToFileURL('d\\\\', { windows: true }).href.endsWith('/d/'), url.pathToFileURL('/a/../b/').href);",
     "url.fileURLToPath('http://x/');",
     "url.fileURLToPath('file:///a%2fb');",
+  ]),
+  // The rest of Node's context-free builtins (X3e). Bun deprecates punycode
+  // and sys as Node does not always: their warnings are set aside.
+  'rest.js': probes([
+    "const assert = require('assert');",
+    "const qs = require('querystring');",
+  ], [
+    'assert.deepStrictEqual({ a: [1, 2] }, { a: [1, 3] });',
+    'assert.deepStrictEqual(new Map([[1, 2]]), new Map([[1, 3]]));',
+    "assert.strictEqual(1, '1');",
+    "assert.equal(1, 2, 'custom');",
+    "assert.ok(0, 'zero');",
+    "assert.match('abc', /x/);",
+    "assert.throws(() => { throw new TypeError('x'); }, TypeError); assert.equal(NaN, NaN); assert.notEqual(1, 2); console.log('throws ok', typeof assert.rejects, require('assert/strict') === assert.strict, new assert.AssertionError({ message: 'm' }).code);",
+    "console.log(JSON.stringify(qs.parse('a=1&a=2&b=%20&c')), qs.stringify({ a: [1, 2], b: 'x y', c: '' }), qs.escape('a b&'), qs.unescape('%7E'));",
+    "const t = require('timers'); console.log(typeof t.setImmediate, t.promises === require('timers/promises'), typeof require('timers/promises').scheduler);",
+    "const p = require('perf_hooks'); console.log(typeof p.performance.now, typeof p.createHistogram, typeof p.monitorEventLoopDelay, p.performance === performance);",
+    "const ah = require('async_hooks'); const als = new ah.AsyncLocalStorage(); console.log(als.run(7, () => als.getStore()), typeof ah.executionAsyncId, typeof ah.AsyncResource, typeof ah.createHook);",
+    "const dc = require('diagnostics_channel'); const ch = dc.channel('x'); ch.subscribe((m) => console.log('dc', m)); ch.publish(1); console.log(typeof dc.tracingChannel);",
+    "process.noDeprecation = true; const pc = require('punycode'); process.noDeprecation = false; console.log(pc.toASCII('ma\u00f1ana.com'));",
+    "console.log(require('util/types').isPromise(Promise.resolve()), require('util/types') === require('util').types);",
+    "const pp = require('path/posix'); console.log(pp === require('path').posix, require('path/win32') === require('path').win32, pp.resolve('q') === process.cwd() + '/q');",
+    "const v8 = require('v8'); console.log(JSON.stringify([...v8.deserialize(v8.serialize({ a: [1, new Map([[1, 2]])] })).a[1]]), typeof v8.getHeapStatistics().heap_size_limit, v8.getHeapStatistics().heap_size_limit > 0);",
+    "process.noDeprecation = true; const sys = require('sys'); process.noDeprecation = false; console.log(sys === require('util'));",
+    "console.log(require('console') === console, typeof require('console').Console);",
+    "const m = require('module'); console.log(m.isBuiltin('node:async_hooks'), m.builtinModules.includes('diagnostics_channel'), m.Module.isBuiltin('async_hooks'), m.Module.builtinModules.includes('timers/promises'), m.Module.builtinModules === m.builtinModules);",
+    "require('timers/promises').setTimeout(5, 'v').then((v) => console.log('tp', v));",
   ]),
 };
 /** Node writes its pid in a warning: `(node:<pid>)`. */

@@ -67,7 +67,7 @@ export declare function createModuleShim(moduleMap: Record<string, () => unknown
         createRequire: (filename: string | URL) => RequireFunction;
         _cache: Record<string, unknown>;
         builtinModules: string[];
-        isBuiltin: typeof isBuiltin;
+        isBuiltin: (specifier: string) => boolean;
         _resolveFilename(request: string): string;
     };
     builtinModules: string[];
@@ -87,7 +87,7 @@ export declare function createModuleShim(moduleMap: Record<string, () => unknown
         createRequire: (filename: string | URL) => RequireFunction;
         _cache: Record<string, unknown>;
         builtinModules: string[];
-        isBuiltin: typeof isBuiltin;
+        isBuiltin: (specifier: string) => boolean;
         _resolveFilename(request: string): string;
     };
 };

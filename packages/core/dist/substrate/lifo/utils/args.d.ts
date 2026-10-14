@@ -50,16 +50,25 @@ export type ScanEvent = {
     readonly value: string;
 };
 /**
- * `args` scanned as GNU getopt_long scans them, permuting: options and
- * operands may interleave, `--` ends the options, `-` is an operand. A
- * cluster (`-cz`) is its letters; a letter that takes an argument takes the
- * rest of its word or the next word (`-k2`, `-k 2`). A long option is its
- * name, or with `abbreviations` an unambiguous prefix of one (`--coun`); its
- * argument follows `=` or, when required, is the next word.
+ * How a scan reads its words: with `abbreviations`, a long option may be an
+ * unambiguous prefix of its name; with `stopAtOperand`, the first operand
+ * ends the options, as an optstring that begins with `+` makes GNU's (env's,
+ * whose command takes the options after it).
  */
-export declare function scanOptions(args: readonly string[], spec: GetoptSpec, { abbreviations }?: {
-    abbreviations?: boolean;
-}): Generator<ScanEvent>;
+export interface ScanOptions {
+    readonly abbreviations?: boolean;
+    readonly stopAtOperand?: boolean;
+}
+/**
+ * `args` scanned as GNU getopt_long scans them, permuting unless
+ * `stopAtOperand`: options and operands may interleave, `--` ends the
+ * options, `-` is an operand. A cluster (`-cz`) is its letters; a letter that
+ * takes an argument takes the rest of its word or the next word (`-k2`,
+ * `-k 2`). A long option is its name, or with `abbreviations` an unambiguous
+ * prefix of one (`--coun`); its argument follows `=` or, when required, is
+ * the next word.
+ */
+export declare function scanOptions(args: readonly string[], spec: GetoptSpec, { abbreviations, stopAtOperand }?: ScanOptions): Generator<ScanEvent>;
 /** An option or an operand, or the diagnostic GNU getopt prints for a bad option. */
 export type GetoptEvent = {
     readonly kind: 'option';
@@ -73,11 +82,14 @@ export type GetoptEvent = {
     readonly message: string;
 };
 /**
- * `args` as GNU getopt_long reads them (scanOptions with abbreviations): the
- * scan ends at the first option it cannot take, with getopt's own
- * diagnostic, which the command prefixes with its name.
+ * `args` as GNU getopt_long reads them (scanOptions with abbreviations, and
+ * `stopAtOperand` as given): the scan ends at the first option it cannot
+ * take, with getopt's own diagnostic, which the command prefixes with its
+ * name.
  */
-export declare function getopt(args: readonly string[], spec: GetoptSpec): Generator<GetoptEvent>;
+export declare function getopt(args: readonly string[], spec: GetoptSpec, { stopAtOperand }?: {
+    stopAtOperand?: boolean;
+}): Generator<GetoptEvent>;
 export interface ArgSpec {
     [key: string]: {
         type: 'boolean' | 'string';
