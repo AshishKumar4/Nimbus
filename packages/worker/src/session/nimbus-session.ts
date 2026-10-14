@@ -1265,7 +1265,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   _cpRegistry: CommandRegistry | null = null;
   _setCpRegistry(r: CommandRegistry) { this._cpRegistry = r; }
 
-  async ensureNpmInstaller(onProgress?: (msg: string) => void): Promise<NpmInstaller> { return this.#runtimeServices.ensureNpmInstaller( onProgress); }
+  async ensureNpmInstaller(): Promise<NpmInstaller> { return this.#runtimeServices.ensureNpmInstaller(); }
 
   // ── Session initialization ────────────────────────────────────────────
 

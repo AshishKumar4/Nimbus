@@ -41,7 +41,7 @@ import { makeNimbusVerbHandler } from '@nimbus-sh/core/runtime/nimbus-command.js
 
 /** Internal runtime services; callers use composeHostedRuntime, not this recipe. */
 export type RuntimeCommandHost = Pick<SessionInternal,
-  '_emitShellExecDone' | '_setCpRegistry' | '_viteShimPid' | '_viteShimPort' | 'cirrusReal' | 'ensureFacetManager' | 'facetManager' | 'ensureNpmInstaller' | 'ensureSqliteFs' | 'esbuildService' | 'nimbusWrangler' | 'npmInstaller' | 'portRegistry' | 'processes' | 'sessionBasePath' | 'terminal' | 'viteBasePath' | 'viteDevServer' | 'wranglerAliasBannerShown'
+  '_emitShellExecDone' | '_setCpRegistry' | '_viteShimPid' | '_viteShimPort' | 'cirrusReal' | 'ensureFacetManager' | 'facetManager' | 'ensureNpmInstaller' | 'ensureSqliteFs' | 'esbuildService' | 'nimbusWrangler' | 'portRegistry' | 'processes' | 'sessionBasePath' | 'terminal' | 'viteBasePath' | 'viteDevServer' | 'wranglerAliasBannerShown'
 > & {
   readonly ctx: DurableObjectState;
   readonly env: RuntimeCatalogEnv;
@@ -891,12 +891,11 @@ registry.register('npm-fast', async (ctx: any) => {
 
   ctx.stdout.write('\x1b[36mNimbus npm v2 (batched writes)\x1b[0m\n');
 
-  await self.ensureNpmInstaller((msg: string) => {
-    ctx.stdout.write('[npm] ' + msg + '\n');
+  const installer = await self.ensureNpmInstaller();
+  const result = await installer.install(cwd, {
+    packages, pid: ctx.pid, cred: requireVfsCred(ctx.cred, 'npm-fast'), registry: ctx.env?.NPM_REGISTRY, signal: ctx.signal,
+    onProgress: (msg: string) => ctx.stdout.write('[npm] ' + msg + '\n'),
   });
-  const installer = self.npmInstaller;
-  if (!installer) throw new Error('npm installer is not initialized');
-  const result = await installer.install(cwd, { packages, pid: ctx.pid, cred: requireVfsCred(ctx.cred, 'npm-fast'), registry: ctx.env?.NPM_REGISTRY, signal: ctx.signal });
 
   const summary = installSummary({
     installed: result.installed.length, failed: result.failed, elapsedMs: result.elapsed,
@@ -1309,9 +1308,8 @@ registry.register('npx', async (ctx: any) => {
 
   // Nimbus-native npx install + run path. Routes package installation
   // through NpmInstaller's full-packument resolver.
-  await self.ensureNpmInstaller((msg: string) => ctx.stdout.write('[npm] ' + msg + '\n'));
+  const installer = await self.ensureNpmInstaller();
   self.ensureSqliteFs();
-  const installer = self.npmInstaller!;
   const resolveResult = await resolveNpxBinary(
     installer,
     projectFs(ctx.vfs),

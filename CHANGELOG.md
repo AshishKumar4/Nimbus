@@ -19,6 +19,12 @@ published independently in the `@nimbus-sh` npm scope.
   (`ELSPROBLEMS`). `npm ls -g` lists the global prefix, not the project.
   For embedders: `createNpmCommand` takes `beforeWrite`, called before the
   command replaces the project's package.json.
+- Fixed: two npm installs at once in a session no longer remove each
+  other's staged packages. Each install built its own installer, so one
+  starting could sweep the staging directory of another installing into a
+  mounted project, which then reported packages installed that it never
+  put there. The session has one installer; each install's progress and
+  npm log are still its own.
 - Fixed: two sessions served by one isolate decode their background
   processes' terminal output each on its own. Their processes are numbered
   alike, and one isolate-wide decoder per process number let a character
