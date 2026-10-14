@@ -26,6 +26,7 @@ import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { runColdStart } from '../../packages/fabric/src/generation.ts';
+import { residentLoaderConfig } from '../../packages/fabric/src/process-fabric.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 
@@ -119,6 +120,28 @@ assert.deepEqual(await (await reboot.instance.handleHttpRequest()).json(), { sum
     (error) => error.message.includes(`application image ${sha256(lossy)} cannot be restored`) && error.message.includes('add.wasm'),
     'an image that lost its wasm bytes is refused by name',
   );
+
+  // Unless its by-path maps supply the module: the loader takes those in
+  // place of an inline module of the same name, so such an image restarted
+  // before and still does.
+  kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
+  kernel.writeFile('home/user/add.wasm', ADD_WASM);
+  const overridden = JSON.stringify({ modules: { 'add.wasm': { wasm: {} } }, env: null, vfsWasmModules: { 'add.wasm': '/home/user/add.wasm' } });
+  kernel.writeFile(`${DURABLE_IMAGE_DIR}/${sha256(overridden)}`, overridden);
+  const resolved = await resolveDurableWorkerImage(vfs, { image: { runner: text.runner, application: sha256(overridden) } });
+  assert.equal(Object.hasOwn(resolved.modules, 'add.wasm'), false, 'the lost inline bytes are not handed on');
+  const config = await residentLoaderConfig({
+    compatibilityDate: '2026-04-01', compatibilityFlags: [], mainModule: resolved.mainModule,
+    modules: resolved.modules, vfsWasmModules: resolved.vfsWasmModules,
+  }, { readFile: (path) => kernel.readFile(path.replace(/^\/+/, '')) });
+  const add = new WebAssembly.Instance(new WebAssembly.Module(config.modules['add.wasm'].wasm)).exports.add;
+  assert.equal(add(40, 2), 42, 'the by-path module is the one the restarted program calls into');
+
+  const textOverride = JSON.stringify({ modules: { 'lib.js': { wasm: {} } }, env: null, vfsWasmModules: null, vfsTextModules: { 'lib.js': '/home/user/lib.js' } });
+  kernel.writeFile(`${DURABLE_IMAGE_DIR}/${sha256(textOverride)}`, textOverride);
+  const textResolved = await resolveDurableWorkerImage(vfs, { image: { runner: text.runner, application: sha256(textOverride) } });
+  assert.equal(Object.hasOwn(textResolved.modules, 'lib.js'), false, 'nor where a text module of its name stands in');
+  assert.deepEqual(textResolved.vfsTextModules, { 'lib.js': '/home/user/lib.js' });
 }
 
 console.log('ok - durable inline wasm survives a re-drive from the image store');
