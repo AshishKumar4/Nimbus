@@ -4,7 +4,8 @@
 // coreutils 9.7 env and findutils 4.10.0 xargs print and end with for the
 // same line under bash on armada (reference runs nimbus-20261014104215-5e06b3e1,
 // nimbus-20261014105046-02add956, nimbus-20261014122746-b68b5480,
-// nimbus-20261014123725-f2839fb8 and nimbus-20261014123932-9f785e09). The commands env runs are ones a core
+// nimbus-20261014123725-f2839fb8, nimbus-20261014123932-9f785e09 and
+// nimbus-20261014132917-b48dd611). The commands env runs are ones a core
 // workspace has: `sh` is the hosted session's.
 import assert from 'node:assert/strict';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
@@ -46,6 +47,9 @@ const CASES = [
   [`env -u '' true; echo "rc=$?"`, 'rc=125\n', "env: cannot unset '': Invalid argument\n"],
   [`env -i -u 'A=B' env; echo "rc=$?"`, 'rc=0\n', ''],
   [`env --unset; echo "rc=$?"`, 'rc=125\n', "env: option '--unset' requires an argument\nTry 'env --help' for more information.\n"],
+  // An option is one env has, not a name every object has.
+  [`env --constructor; echo "rc=$?"`, 'rc=125\n', "env: unrecognized option '--constructor'\nTry 'env --help' for more information.\n"],
+  [`env --__proto__; echo "rc=$?"`, 'rc=125\n', "env: unrecognized option '--__proto__'\nTry 'env --help' for more information.\n"],
   // A lone `-` after the options, `--` included, is -i; what follows it is the command's.
   [`env - -i; echo "rc=$?"`, 'rc=127\n', "env: '-i': No such file or directory\n"],
   [`env -- -`, '', ''],
@@ -81,6 +85,14 @@ const CASES = [
   [`printf 'a\\nb\\nc\\n' | xargs --replace -n2 echo '[{}]'`, '[{}] a b\n[{}] c\n', 'xargs: warning: options --replace and --max-args/-n are mutually exclusive, ignoring previous --replace value\n'],
   [`printf 'a\\nb\\nc\\n' | xargs -n2 -I{} echo '[{}]'`, '[a]\n[b]\n[c]\n', 'xargs: warning: options --max-args and --replace/-I/-i are mutually exclusive, ignoring previous --max-args value\n'],
   [`printf 'a\\nb\\n' | xargs -I{} -n1 echo '[{}]'`, '[a]\n[b]\n', ''],
+  [`printf 'x\\n' | xargs -I{} -n1 -I% echo '[%]'`, '[x]\n', ''],
+  // At the end of input, what decodes to nothing is no item, an open quote included.
+  [`printf '""' | xargs -I{} echo '[{}]'; echo "rc=$?"`, 'rc=0\n', ''],
+  [`printf '"' | xargs -I{} echo '[{}]'; echo "rc=$?"`, 'rc=0\n', ''],
+  [`printf '\\\\' | xargs -I{} echo '[{}]'; echo "rc=$?"`, 'rc=0\n', ''],
+  [`printf 'x\\n"' | xargs -I{} echo '[{}]'; echo "rc=$?"`, '[x]\nrc=0\n', ''],
+  [`printf 'x ""' | xargs -n1 echo '['; echo "rc=$?"`, '[ x\nrc=0\n', ''],
+  [`printf '"a' | xargs -I{} echo '[{}]'; echo "rc=$?"`, 'rc=1\n', 'xargs: unmatched double quote; by default quotes are special to xargs unless you use the -0 option\n'],
 ];
 
 const failures = [];
