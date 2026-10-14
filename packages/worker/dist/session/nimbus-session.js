@@ -872,7 +872,7 @@ export class NimbusSession extends CloudflareDurableObject {
         return _rpc._rpcCancelHostProcess(this, workerKey);
     }
     // W8 child_process RPC
-    async _rpcCpSpawn(req) { return _rpc._rpcCpSpawn(this, req); }
+    async _rpcCpSpawn(req, parentPid) { return _rpc._rpcCpSpawn(this, req, parentPid); }
     async _rpcCpStdinWrite(childPid, data) { return _rpc._rpcCpStdinWrite(this, childPid, data); }
     async _rpcCpStdinEnd(childPid) { return _rpc._rpcCpStdinEnd(this, childPid); }
     async _rpcCpReadStdin(childPid, waitMs, acquire, pid, writerId, maxBytes) { return _rpc._rpcCpReadStdin(this, childPid, waitMs, acquire, pid, writerId, maxBytes); }

@@ -110,6 +110,10 @@ export declare class HmrBridge {
     /** Drop all clients (facet restart, session close). */
     closeAll(): void;
 }
+type CirrusHmrProps = {
+    doId?: string;
+    route?: HostRoute;
+};
 /**
  * WorkerEntrypoint the facet talks to via `env.CIRRUS_HMR`.
  *
@@ -124,11 +128,7 @@ export declare class HmrBridge {
  *   doId — the supervisor DO's id, used to find the right stub +
  *          HmrBridge.
  */
-export declare class CirrusHmrRPC extends WorkerEntrypoint<object, {
-    doId?: string;
-    route?: HostRoute;
-}> {
-    private _stub;
+export declare class CirrusHmrRPC extends WorkerEntrypoint<object, CirrusHmrProps> {
     hmrSend(clientId: string | null, msg: string): Promise<void>;
     hmrNextEvent(timeoutMs?: number): Promise<HmrEvent[]>;
 }

@@ -128,12 +128,12 @@ function waveBenchSink(session) {
             return this.session.writeStream(new Response(bytes).body);
         }
         async drain(stream) {
-            return this.read(stream, false);
+            return this.#read(stream, false);
         }
         async drainWriting(stream) {
-            return this.read(stream, true);
+            return this.#read(stream, true);
         }
-        async read(stream, writing) {
+        async #read(stream, writing) {
             const reader = stream.getReader({ mode: 'byob' });
             let reads = 0;
             let bytes = 0;
