@@ -39,6 +39,10 @@ declare module 'node:process' {
   interface RealmProcess {
     on(event: 'unhandledRejection' | 'uncaughtException', listener: (reason: unknown) => void): RealmProcess;
     on(event: 'exit', listener: (code: number) => void): RealmProcess;
+    on(event: 'warning', listener: (warning: Error) => void): RealmProcess;
+    removeAllListeners(event: 'warning'): RealmProcess;
+    /** The realm's own warnings (a native builtin's): node.ts makes them the program's. */
+    emitWarning(warning: string | Error, type?: string | { type?: string; code?: string; detail?: string }, code?: string): void;
     exit(code: number): never;
     /** The engine running this process: a process realm's guest runs under the same. */
     readonly execPath: string;

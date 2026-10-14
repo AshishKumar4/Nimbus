@@ -13,7 +13,10 @@ published independently in the `@nimbus-sh` npm scope.
   its name, decoded a hex or base64 `StringDecoder` as UTF-8, and encoded
   `Buffer.from(s, 'latin1')` as UTF-8. Its `fs.watch` refuses an encoding
   Node does not know when called, and keeps a copy of its options, as
-  Node's does.
+  Node's does. A warning, the program's own `process.emitWarning` or a
+  builtin's (`util.deprecate`), reaches the program's `'warning'` listeners
+  and is written on its stderr as Node writes it; it was written as
+  `Warning: <message>` and told no listener.
 
 ## 2026-10-14: platform 0.10.0, core 0.20.0, fabric 0.15.0, worker 0.18.0, sdk 0.15.0, loom 0.3.1, react 0.3.3, cli 0.2.7, create-nimbus-app 0.2.4 (config 0.3.1 unchanged)
 

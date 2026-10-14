@@ -10,6 +10,13 @@
 // refused, util.inspect(new Map) wrote {}, a class instance lost its name, a
 // hex StringDecoder decoded UTF-8, Buffer.from(s, 'latin1') went through
 // UTF-8, and a digest was not a Buffer to Buffer.isBuffer.
+//
+// A warning is the program's, as Node delivers it to the process that raised
+// it: a native builtin's (util.deprecate) and the program's own
+// process.emitWarning reach its process's 'warning' listeners and are written
+// on its stderr as Node writes them. Red before: under Node a native
+// builtin's went to the realm's own process, the host's stderr, and lifo's
+// emitWarning wrote "Warning: <message>" and told no listener.
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -73,7 +80,20 @@ const programs = {
     "console.log(inspect(new Map([['m', 1]])), util.format('%i', '7px'));",
     "console.log(new StringDecoder('hex').write(Buffer.from([1, 255])), Buffer.from('é', 'latin1').length);",
   ]),
+  'warnings.js': probes([
+    "const util = require('util');",
+    'console.log(process.listenerCount(\'warning\'));',
+    "process.on('warning', (w) => console.log('heard', w.name, w.code, w.message, w instanceof Error));",
+  ], [
+    "const old = util.deprecate(() => 1, 'old thing', 'DEP_NIMBUS'); old(); old();",
+    "process.emitWarning('custom one', 'CustomWarning');",
+    "process.emitWarning('with detail', { type: 'X', code: 'C1', detail: 'more' });",
+    "process.emitWarning(new Error('as error'));",
+    'process.emitWarning(5);',
+  ]),
 };
+/** Node writes its pid in a warning: `(node:<pid>)`. */
+const samePid = (text) => text.replace(/\(node:\d+\)/g, '(node:PID)');
 
 const { sql, transactions } = await hostSqlite();
 const ws = await NimbusWorkspace.create({ sql, transactions, generation: 1 });
@@ -83,12 +103,13 @@ try {
   for (const [name, source] of Object.entries(programs)) {
     await ws.fs.writeFile(`/home/user/${name}`, source);
     writeFileSync(join(host, name), source);
-    const node = spawnSync('node', [name], { cwd: host, encoding: 'utf8', timeout: 60_000 });
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== 'NODE_NO_WARNINGS' && key !== 'NODE_OPTIONS'));
+    const node = spawnSync('node', [name], { cwd: host, env, encoding: 'utf8', timeout: 60_000 });
     assert.equal(node.status, 0, `real node runs ${name}: ${node.stderr}`);
     const lifo = await ws.exec(`node ${name}`, { cwd: '/home/user' });
-    if (lifo.exitCode !== 0 || lifo.stdout !== node.stdout || lifo.stderr !== node.stderr) {
-      const want = `${node.stdout}${node.stderr}`.split('\n');
-      const got = `${lifo.stdout}${lifo.stderr}`.split('\n');
+    if (lifo.exitCode !== 0 || lifo.stdout !== node.stdout || samePid(lifo.stderr) !== samePid(node.stderr)) {
+      const want = `${node.stdout}${samePid(node.stderr)}`.split('\n');
+      const got = `${lifo.stdout}${samePid(lifo.stderr)}`.split('\n');
       const lines = want.flatMap((line, i) => (line === got[i] ? [] : [`  node: ${line}\n  lifo: ${got[i]}`]));
       failed.push(`${name} (exit ${lifo.exitCode}):\n${lines.join('\n')}`);
     }
@@ -97,13 +118,15 @@ try {
   await ws.close();
   rmSync(host, { recursive: true, force: true });
 }
-assert.deepEqual(failed, [], `${underBun ? 'bun' : 'node'}: lifo's node writes what real node writes:\n${failed.join('\n')}`);
 
 if (underBun) {
+  // Under node whatever Bun answered, so a red run shows both.
   const node = spawnSync('node', ['--no-warnings', fileURLToPath(import.meta.url)], { encoding: 'utf8', timeout: 120_000 });
+  assert.deepEqual(failed, [], `bun: lifo's node writes what real node writes:\n${failed.join('\n')}\n\nunder node (exit ${node.status}):\n${node.stdout}${node.stderr}`);
   assert.equal(node.status, 0, `under node:\n${node.stdout}${node.stderr}`);
   assert.match(node.stdout, /^ok - under node/m, node.stdout);
   console.log('ok - lifo-node-native-builtins (crypto, string_decoder, util, buffer, console as node writes them; under Bun and Node)');
 } else {
+  assert.deepEqual(failed, [], `node: lifo's node writes what real node writes:\n${failed.join('\n')}`);
   console.log('ok - under node');
 }
