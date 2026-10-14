@@ -5805,6 +5805,8 @@ export class FacetManager {
    * memory only grows.
    */
   private esbuild: EsbuildService | null = null;
+  /** The store `_transformStore` opened over the current VFS and esbuild service; their setters drop it. */
+  private transformStore: TransformStore | undefined;
 
   /**
    * Prefetch-bundle cache. buildPrefetchBundle does a full VFS reachable-set
@@ -6248,7 +6250,7 @@ export class FacetManager {
   /** The authority is the caller's: a session composes exactly one, and the
    *  manager credentials its processes through that one rather than a second
    *  authority over the same disk. */
-  setVfs(vfs: SqliteVFS, filesystem: NimbusFilesystemAuthority) { this.vfs = vfs; this.filesystem = filesystem; }
+  setVfs(vfs: SqliteVFS, filesystem: NimbusFilesystemAuthority) { this.vfs = vfs; this.filesystem = filesystem; this.transformStore = undefined; }
 
   /**
    * Send what a released resident's write log still holds (it was killed,
@@ -6350,7 +6352,7 @@ export class FacetManager {
   }
 
   /** Give the bundle's module pass the host's esbuild, as composeFacetManager does. */
-  setEsbuildService(esbuild: EsbuildService) { this.esbuild = esbuild; }
+  setEsbuildService(esbuild: EsbuildService) { this.esbuild = esbuild; this.transformStore = undefined; }
 
   /**
    * The entry script as the facet compiles it: each dynamic `import()` routed
@@ -6371,13 +6373,14 @@ export class FacetManager {
    * session's database, admitted through its storage ledger, bound to the
    * esbuild service's transform host. None when the host has no identity (a
    * result could not be told apart from another host's) or there is no
-   * filesystem to admit against.
+   * filesystem to admit against. One store serves every launch and module
+   * until either changes: it opens its schema once, not per transform.
    */
   private _transformStore(): TransformStore | undefined {
     const hostId = this.esbuild?.transformHostId;
     const sql = this.ctx.storage.sql;
     if (!hostId || !sql || !this.vfs) return undefined;
-    return new TransformStore(sql, this.ctx.storage, this.vfs.ledger, hostId);
+    return this.transformStore ??= new TransformStore(sql, this.ctx.storage, this.vfs.ledger, hostId);
   }
 
   /**
