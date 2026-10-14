@@ -5,6 +5,16 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `env` runs its command, as GNU env does. `env NODE_ENV=production
+  node build.js` printed the environment and ran nothing. It takes `-i`,
+  `-u NAME`, `-0` and `--`, then `NAME=VALUE` assignments, and ends with the
+  command's status, 127 for a command it cannot find, 126 for one it may not
+  run, or 125 for a bad option.
+- Fixed: `xargs` takes each of GNU's spellings of its replace string:
+  `-I{}` joined, `-i[R]` and `--replace[=R]`, which ran a command named
+  after the option. With one, each input line is an item, its leading
+  blanks dropped, so `printf 'a b\n' | xargs -I{} echo [{}]` prints
+  `[a b]`.
 - Fixed: `test` and `[` run as programs (`xargs test`, `find -exec test`)
   evaluate as the shell's builtin does. `test 1 -eq 2` run so returned 0,
   and `[ 1 -eq 1` ran without its closing `]`.
