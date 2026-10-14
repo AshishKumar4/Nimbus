@@ -5,7 +5,7 @@ import { readImmutableModuleSource } from '../../packages/core/src/_shared/stage
 import { facetImageDigest, facetImagePath, residentLoaderConfig } from '../../packages/fabric/src/process-fabric.ts';
 import { fetchNodeFacetSources } from '../../packages/worker/src/runtime/node-shims-artifact.ts';
 import { generateLongRunningNodeCode } from '../../packages/worker/src/facets/manager.ts';
-import { RUNTIME_NODE_LIB_MODULE, RUNTIME_NODE_LIB_REST_MODULE, RUNTIME_NODE_DNS_MODULE } from '../../packages/core/src/_shared/commonjs-cell.ts';
+import { RUNTIME_NODE_LIB_MODULE, RUNTIME_NODE_LIB_REST_MODULE, RUNTIME_NODE_DNS_MODULE, RUNTIME_NODE_CP_MODULE } from '../../packages/core/src/_shared/commonjs-cell.ts';
 import { stagedAssets } from './lib/staged-assets.mjs';
 
 const text = 'const shared = "' + 'library'.repeat(10_000) + '";';
@@ -43,6 +43,7 @@ for (const name of ['shims', 'ledger', 'residentStore', 'registry']) {
 assert.equal(generated.codeModules[RUNTIME_NODE_LIB_MODULE], undefined);
 assert.equal(generated.codeModules[RUNTIME_NODE_LIB_REST_MODULE], undefined);
 assert.equal(generated.codeModules[RUNTIME_NODE_DNS_MODULE], undefined);
+assert.equal(generated.codeModules[RUNTIME_NODE_CP_MODULE], undefined);
 const registry = new Map();
 const loaded = [];
 const requireModule = (name) => {
@@ -63,4 +64,7 @@ assert.deepEqual(loaded, [RUNTIME_NODE_LIB_MODULE, RUNTIME_NODE_LIB_REST_MODULE]
 assert.equal(typeof lib.sources.dns, 'function');
 assert.equal(typeof lib.sources['internal/dns/promises'], 'function');
 assert.deepEqual(loaded, [RUNTIME_NODE_LIB_MODULE, RUNTIME_NODE_LIB_REST_MODULE, RUNTIME_NODE_DNS_MODULE], 'DNS loads one shared module on its first require');
-console.log('immutable-runtime-modules: recipes, integrity, shared loading, the formatting closure and lazy DNS are intact');
+assert.equal(typeof lib.sources['internal/fs/cp/cp-sync'], 'function');
+assert.equal(typeof lib.sources['internal/fs/cp/cp'], 'function');
+assert.deepEqual(loaded, [RUNTIME_NODE_LIB_MODULE, RUNTIME_NODE_LIB_REST_MODULE, RUNTIME_NODE_DNS_MODULE, RUNTIME_NODE_CP_MODULE], 'cp loads one shared module on its first require');
+console.log('immutable-runtime-modules: recipes, integrity, shared loading, the formatting closure, lazy DNS and lazy cp are intact');
