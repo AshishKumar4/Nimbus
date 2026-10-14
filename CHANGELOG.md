@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: the library's built-in `node` gives a program the engine's own
+  `crypto`, `util`, `string_decoder` and `buffer`, and its console formats
+  with the engine's `util`, so a program writes what `node` writes. Its
+  handwritten modules refused every hash but sha1 and sha256 (md5, sha512,
+  HMAC, pbkdf2), printed a Map or Set as `{}` and a class instance without
+  its name, decoded a hex or base64 `StringDecoder` as UTF-8, and encoded
+  `Buffer.from(s, 'latin1')` as UTF-8.
 - Fixed: a copy makes its files as any creation there makes them. A
   program's `copyFile` (or the editor's and SDK's copy) between a mount and
   the session's own files keeps the source's mode less the umask, as `cp`

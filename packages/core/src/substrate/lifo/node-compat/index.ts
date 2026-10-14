@@ -1,3 +1,5 @@
+import { Buffer } from 'node:buffer';
+import realm from 'node:process';
 import type { NodeFilesystem } from './filesystem.js';
 import type { CommandOutputStream } from '../commands/types.js';
 import { createFs } from './fs.js';
@@ -5,8 +7,6 @@ import pathModule from './path.js';
 import { createOs } from './os.js';
 import { createProcess } from './process.js';
 import { EventEmitter } from './events.js';
-import { Buffer } from './buffer.js';
-import * as utilModule from './util.js';
 import { createHttp } from './http.js';
 import type { LoopbackRouter, VirtualRequestHandler } from '../kernel/index.js';
 import type { DNSResolver } from '../kernel/dns-resolver.js';
@@ -14,9 +14,7 @@ import { createChildProcess } from './child_process.js';
 import * as streamModule from './stream.js';
 import * as urlModule from './url.js';
 import * as timersModule from './timers.js';
-import * as cryptoModule from './crypto.js';
 import * as zlibModule from './zlib.js';
-import * as stringDecoderModule from './string_decoder.js';
 import * as ttyModule from './tty.js';
 import { createDns } from './dns.js';
 import { createModuleShim } from './module.js';
@@ -94,8 +92,11 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
       mod.default = EventEmitter;
       return mod;
     },
-    buffer: () => ({ Buffer }),
-    util: () => utilModule,
+    // The engine's own, as its require gives them (X-3), loaded when first
+    // required. `realm` is the host's process: the program's globalThis.process
+    // is lifo's.
+    buffer: () => realm.getBuiltinModule('node:buffer'),
+    util: () => realm.getBuiltinModule('node:util'),
     http: () => createHttp(ctx.portRegistry, 'http:', ctx.routeLoopback),
     https: () => createHttp(ctx.portRegistry, 'https:', ctx.routeLoopback),
     child_process: () => createChildProcess(ctx.executeCapture),
@@ -120,9 +121,9 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
     },
     url: () => urlModule,
     timers: () => timersModule,
-    crypto: () => cryptoModule,
+    crypto: () => realm.getBuiltinModule('node:crypto'),
     zlib: () => zlibModule,
-    string_decoder: () => stringDecoderModule,
+    string_decoder: () => realm.getBuiltinModule('node:string_decoder'),
     tty: () => ttyModule,
     dns: () => createDns(ctx.dns),
     'dns/promises': () => createDns(ctx.dns).promises,

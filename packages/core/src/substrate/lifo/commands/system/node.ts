@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer';
 import type { NodeFilesystem } from '../../node-compat/filesystem.js';
 import type { ProcessView } from '../../../../runtime/process-files.js';
 import type { Command } from '../types.js';
@@ -9,7 +10,6 @@ import { packageScopeType } from '../../../../runtime/require-resolution.js';
 import type { NodeContext } from '../../node-compat/index.js';
 import { createProcess } from '../../node-compat/process.js';
 import { createConsole } from '../../node-compat/console.js';
-import { Buffer } from '../../node-compat/buffer.js';
 import { pathToFileURL } from '../../node-compat/url.js';
 import { createNativeEsmLoader } from '../../node-compat/native-esm-loader.js';
 import type { VirtualRequestHandler, Kernel, LoopbackRouter } from '../../kernel/index.js';

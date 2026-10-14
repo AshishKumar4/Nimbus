@@ -1,5 +1,5 @@
+import { Buffer } from 'node:buffer';
 import { invalidArgType, nodeError } from '../../../_shared/node-error.js';
-import { Buffer } from './buffer.js';
 
 type ZlibCallback = (err: Error | null, result?: Buffer) => void;
 

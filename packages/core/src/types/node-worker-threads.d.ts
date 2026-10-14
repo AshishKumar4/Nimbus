@@ -32,6 +32,10 @@ declare module 'node:worker_threads' {
 }
 
 declare module 'node:process' {
+  import type * as NodeBuffer from 'node:buffer';
+  import type * as NodeCrypto from 'node:crypto';
+  import type * as NodeStringDecoder from 'node:string_decoder';
+  import type * as NodeUtil from 'node:util';
   interface RealmProcess {
     on(event: 'unhandledRejection' | 'uncaughtException', listener: (reason: unknown) => void): RealmProcess;
     on(event: 'exit', listener: (code: number) => void): RealmProcess;
@@ -43,6 +47,11 @@ declare module 'node:process' {
     readonly argv: readonly string[];
     /** A negative pid: its process group. */
     kill(pid: number, signal: 'SIGKILL'): boolean;
+    /** The engine's own builtin, as `require` gives it (node-compat/index.ts's module map). */
+    getBuiltinModule(id: 'node:buffer'): typeof NodeBuffer;
+    getBuiltinModule(id: 'node:crypto'): typeof NodeCrypto;
+    getBuiltinModule(id: 'node:string_decoder'): typeof NodeStringDecoder;
+    getBuiltinModule(id: 'node:util'): typeof NodeUtil;
   }
   const process: RealmProcess;
   export default process;

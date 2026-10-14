@@ -15,9 +15,9 @@
  * module (.mjs, a .js under "type": "module", or ESM syntax) goes to the
  * realm's native ES module loader, not the CommonJS wrapper.
  */
+import { Buffer } from 'node:buffer';
 import { createModuleMap, ProcessExitError, type NodeContext } from './index.js';
 import { createModuleShim, type RequireFunction } from './module.js';
-import { Buffer } from './buffer.js';
 import { escapedIdentifierNames, rewriteDynamicImports } from '../../../runtime/dynamic-import-rewrite.js';
 import { isEsModuleFile, type PackageType } from '../../../runtime/module-format.js';
 import { fileURLToPath, pathToFileURL } from './url.js';

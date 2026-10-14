@@ -1,0 +1,36 @@
+// The `node:buffer`, `node:util` and `node:string_decoder` surface core uses:
+// lifo's node gives a program the engine's own builtins, and its console
+// formats with the engine's util (substrate/lifo/node-compat). Bun and Node
+// provide them; workerd under nodejs_compat.
+declare module 'node:buffer' {
+  type BufferEncoding = 'utf8' | 'utf-8' | 'utf16le' | 'ucs2' | 'latin1' | 'binary' | 'ascii' | 'base64' | 'base64url' | 'hex';
+  export class Buffer extends Uint8Array {
+    static from(value: string | ArrayBuffer | ArrayLike<number> | Iterable<number>, encodingOrMapFn?: BufferEncoding | ((v: number, k: number) => number)): Buffer;
+    static alloc(size: number): Buffer;
+    static concat(list: readonly Uint8Array[], totalLength?: number): Buffer;
+    toString(encoding?: BufferEncoding, start?: number, end?: number): string;
+  }
+}
+
+declare module 'node:util' {
+  export interface InspectOptions {
+    depth?: number | null;
+    customInspect?: boolean;
+    showHidden?: boolean;
+    colors?: boolean;
+  }
+  export function format(...args: unknown[]): string;
+  export function inspect(value: unknown, options?: InspectOptions): string;
+  const util: { format: typeof format; inspect: typeof inspect };
+  export default util;
+}
+
+declare module 'node:string_decoder' {
+  export class StringDecoder {
+    constructor(encoding?: string);
+    write(buffer: string | ArrayBufferView): string;
+    end(buffer?: string | ArrayBufferView): string;
+  }
+  const stringDecoder: { StringDecoder: typeof StringDecoder };
+  export default stringDecoder;
+}
