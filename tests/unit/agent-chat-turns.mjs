@@ -2,7 +2,9 @@
 // agent-chat-turns — POST /api/agent/messages contract: cancelling the
 // NDJSON stream aborts the model turn and persists the partial assistant
 // message; { retry: true } re-runs the last user turn without duplicating
-// history. The Workers AI provider is mocked at the fetch seam (SSE).
+// history; turns write their own messages into one conversation, which a
+// clear empties for good. The Workers AI provider is mocked at the fetch
+// seam (SSE).
 
 import assert from 'node:assert/strict';
 import { handleAgentRequest } from '../../packages/worker/src/session/agent.ts';
@@ -17,7 +19,8 @@ function makeHost(initialStore = new Map()) {
     host: {
       ctx: {
         storage: {
-          async get(key) { return store.get(key); },
+          // As Durable Object storage answers: a copy, never the stored value itself.
+          async get(key) { const value = store.get(key); return value === undefined ? undefined : structuredClone(value); },
           async put(key, value) {
             const snapshot = structuredClone(value);
             writes.push({ key, value: snapshot });
@@ -554,6 +557,151 @@ function assistantWrites(writes) {
     globalThis.fetch = realFetch;
   }
   console.log(`ok - a turn runs ${40} tool rounds to the model's own answer`);
+}
+
+// ── Two turns at once: each writes its own message into the one conversation ──
+// SES-4. Red before: each turn checkpointed its own copy of the whole
+// conversation, so turn A's next checkpoint put back the conversation as A
+// saw it, without B's question and answer.
+{
+  const { host, store } = makeHost();
+  const providerA = controlledProviderFetch();
+  globalThis.fetch = providerA.fetch;
+  try {
+    const responseA = await postChat(host, { message: 'question A', stream: true });
+    const streamA = collectEvents(responseA);
+    await providerA.ready;
+    providerA.emitText('answer A begins');
+    await waitFor(() => store.get(MESSAGES_KEY)?.some((m) => m.role === 'assistant' && m.status === 'streaming'), 'A checkpoints');
+
+    globalThis.fetch = mockProviderFetch('complete');
+    const responseB = await postChat(host, { message: 'question B', stream: true });
+    await readEventsUntil(responseB, (list) => list.some((event) => event.type === 'done'));
+
+    providerA.emitText(' and goes on' + 'x'.repeat(1024));
+    providerA.finish();
+    await streamA.done;
+
+    const stored = store.get(MESSAGES_KEY);
+    const texts = stored.map((m) => `${m.role}:${m.role === 'assistant' ? m.content.slice(0, 15) : m.content}`);
+    assert.deepEqual(texts, ['user:question A', 'assistant:answer A begins', 'user:question B', 'assistant:Hello world'],
+      `both turns' messages stay, each written in place: ${JSON.stringify(texts)}`);
+    assert.equal(stored[1].status, 'complete');
+    assert.equal(stored[3].status, 'complete');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log('ok - two concurrent turns each write their own messages into one conversation');
+}
+
+// ── Clear while a turn streams: the turn writes nothing after it ──────
+// SES-4. Red before: the streaming turn's next checkpoint wrote back the
+// conversation the clear had deleted.
+{
+  const { host, store } = makeHost();
+  const provider = controlledProviderFetch();
+  globalThis.fetch = provider.fetch;
+  try {
+    const response = await postChat(host, { message: 'before the clear', stream: true });
+    const stream = collectEvents(response);
+    await provider.ready;
+    provider.emitText('partial');
+    await waitFor(() => store.get(MESSAGES_KEY)?.some((m) => m.role === 'assistant'), 'the turn checkpoints');
+
+    const cleared = await handleAgentRequest(host, new Request(CHAT_URL, { method: 'DELETE' }), new URL(CHAT_URL));
+    assert.deepEqual((await cleared.json()).messages, []);
+
+    provider.emitText('x'.repeat(1024));
+    provider.finish();
+    await stream.done;
+    const after = await handleAgentRequest(host, new Request(CHAT_URL), new URL(CHAT_URL));
+    assert.deepEqual((await after.json()).messages, [], 'the cleared conversation stays cleared');
+    assert.equal(store.get(MESSAGES_KEY) ?? null, null);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log('ok - a turn that outlives a clear writes nothing back');
+}
+
+// ── A message after a restart: the orphaned turn is settled first ────
+// Red before: a POST read the stored history raw, so an answer orphaned by a
+// restart mid-tool-call kept its running tool, and the model was sent a tool
+// call with no result (the turn failed before reaching it).
+{
+  const orphaned = [
+    { id: 'u-1', role: 'user', content: 'list processes', createdAt: 1 },
+    {
+      id: 'a-1', role: 'assistant', content: '', createdAt: 2, status: 'streaming',
+      parts: [{ type: 'tool', toolCallId: 'call-1', toolName: 'list_processes', input: {}, status: 'running', startedAt: 2 }],
+    },
+  ];
+  const { host, store } = makeHost(new Map([[MESSAGES_KEY, structuredClone(orphaned)]]));
+  globalThis.fetch = mockProviderFetch('complete');
+  try {
+    const response = await postChat(host, { message: 'after the restart', stream: true });
+    const [events] = await readEventsUntil(response, (list) => list.some((event) => event.type === 'done' || event.type === 'error'));
+    const end = events.find((event) => event.type === 'done' || event.type === 'error');
+    assert.equal(end.type, 'done', `the new turn reaches the model: ${JSON.stringify(end).slice(0, 300)}`);
+    const stored = store.get(MESSAGES_KEY);
+    assert.equal(stored[1].status, 'interrupted', 'the orphaned answer is settled');
+    assert.equal(stored[1].parts[0].status, 'error', 'its running tool too');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log('ok - a message after a restart settles the orphaned turn before the model reads history');
+}
+
+// ── Retry while the turn is still answering is refused ───────────────
+// Red before: the retry dropped the live answer's row and streamed a second
+// one; the first then wrote its row back beside it.
+{
+  const { host } = makeHost();
+  const provider = controlledProviderFetch();
+  globalThis.fetch = provider.fetch;
+  try {
+    const response = await postChat(host, { message: 'slow question', stream: true });
+    const stream = collectEvents(response);
+    await provider.ready;
+    provider.emitText('working');
+    const retried = await postChat(host, { retry: true, stream: true });
+    assert.equal(retried.status, 409, 'a retry of a running turn is refused');
+    assert.equal((await retried.json()).code, 'E_AGENT_TURN_RUNNING');
+    provider.finish();
+    await stream.done;
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log('ok - a retry of a turn still answering is refused');
+}
+
+// ── A turn whose question was trimmed away writes nothing back ───────
+// Red before: its answer was added at the end of the conversation, after
+// newer turns, with no question, pushing a newer row off.
+{
+  const { host, store } = makeHost();
+  const provider = controlledProviderFetch();
+  globalThis.fetch = provider.fetch;
+  try {
+    const response = await postChat(host, { message: 'the oldest question', stream: true });
+    const stream = collectEvents(response);
+    await provider.ready;
+    globalThis.fetch = mockProviderFetch('complete');
+    for (let i = 0; i < 40; i++) {
+      const later = await postChat(host, { message: `later ${i}`, stream: true });
+      await readEventsUntil(later, (list) => list.some((event) => event.type === 'done'));
+    }
+    const before = store.get(MESSAGES_KEY);
+    assert.ok(!before.some((m) => m.content === 'the oldest question'), 'the oldest question is trimmed off');
+    provider.emitText('the oldest answer' + 'x'.repeat(1024));
+    provider.finish();
+    await stream.done;
+    const after = store.get(MESSAGES_KEY);
+    assert.ok(!after.some((m) => m.role === 'assistant' && m.content.startsWith('the oldest answer')), 'its answer is not written back');
+    assert.deepEqual(after.map((m) => m.id), before.map((m) => m.id), 'the newer history is kept as it was');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log('ok - a turn whose question was trimmed off writes nothing back');
 }
 
 console.log('agent-chat-turns: all assertions passed');
