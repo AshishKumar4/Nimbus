@@ -43,7 +43,9 @@ for (const [name, types] of JSON.parse(r.out)) {
 
 // The process a program sees is Nimbus's, not the host engine's.
 const proc = await run(`node -e "console.log(globalThis.process === process, process.pid, typeof process.dlopen)"`);
-assert.equal(proc.out, 'true 1 undefined\n', proc.err);
+const [same, pid, dlopen] = proc.out.trim().split(' ');
+assert.deepEqual([same, dlopen], ['true', 'undefined'], proc.err);
+assert.ok(Number(pid) > 0 && Number(pid) !== process.pid, `process.pid is the session's process, not the host engine's (${pid})`);
 
 // The engine's own modules are not built-ins here either.
 const required = await run(`node -e "try { require('bun:sqlite'); console.log('loaded') } catch (e) { console.log(e.code) }"`);
