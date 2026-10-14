@@ -3848,8 +3848,11 @@ const __fsMod = (() => {
     const partial = _parkedPartial.get(srcK);
     const whole = content !== undefined && _denialCode(content) === null && (partial === undefined || partial !== __vfsWriteGenerations[srcK]);
     const dated = whole && typeof __resident !== "undefined" ? __resident.cells.provenance(srcK) : undefined;
-    // A parked write to the copy's name is logged ahead of it.
+    // A parked write to the copy's name is logged ahead of it. What the
+    // view holds of the name as the copy is asked, the copy supersedes; a
+    // write or attribute after it is the program's later word.
     _flushParkedWrite(destAbs, _supervisor());
+    const asked = { generation: __vfsWriteGenerations[destK], mode: _localModes.get(destK), times: _localTimes.get(destK), written: _ownWriteTimes[destK] };
     const ticket = _beginFill(destK);
     let receipt;
     try {
@@ -3857,10 +3860,15 @@ const __fsMod = (() => {
       // Landed elsewhere (a link the view followed has moved): nothing the
       // view holds is the copy's, and a barrier tells it where it went.
       if (receipt !== undefined && receipt.landed !== undefined && receipt.landed !== destK) return;
-      // What the view held under the copy's key stands for nothing now.
+      // A write to the name since: it is logged after the copy, and is the file now.
+      if (__vfsWrites && Object.prototype.hasOwnProperty.call(__vfsWrites, destK) && __vfsWriteGenerations[destK] !== asked.generation) return;
+      // What the view held under the copy's key, and the attributes set before it, stand for nothing now.
       if (__vfsBundle) delete __vfsBundle[destK];
       delete __vfsBundleRevisions[destK];
       if (__vfsWrites) delete __vfsWrites[destK];
+      if (asked.mode !== undefined && _localModes.get(destK) === asked.mode) _localModes.delete(destK);
+      if (asked.times !== undefined && _localTimes.get(destK) === asked.times) _localTimes.delete(destK);
+      if (_ownWriteTimes[destK] === asked.written) delete _ownWriteTimes[destK];
       if (receipt !== undefined) {
         _noteLearnedStat(destAbs, _receiptStat(receipt), ticket, receipt.revision);
         const from = receipt.from;
