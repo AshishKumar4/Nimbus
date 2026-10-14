@@ -1738,11 +1738,13 @@ function mkXargs() {
         const maxArgs = async (n) => {
             if (!(Number.isFinite(n) && n > 0))
                 return;
-            if (replaceTok !== null && n !== 1) {
+            if (replaceTok !== null) {
+                if (n === 1)
+                    return; // ignored: it is what a replace string means
                 (await ctx.stderr.write('xargs: warning: options --replace and --max-args/-n are mutually exclusive, ignoring previous --replace value\n'));
                 replaceTok = null;
             }
-            batchSize = replaceTok !== null ? 1 : n;
+            batchSize = n;
             maxArgsGiven = true;
         };
         const replace = async (token) => {
@@ -1856,8 +1858,10 @@ const XARGS_SPACE = /[ \t\n\v\f\r]/;
  * space is skipped; white space ends it, or with `lines` (a replace string)
  * a newline alone does; `"…"` and `'…'` quote, and are removed (an empty pair
  * is an empty item); a backslash takes the next character as it is, newline
- * included. A quote still open at a newline or the end is GNU's error: the
- * items before it, and which quote.
+ * included. A quote still open at a newline is GNU's error, the items
+ * before it and which quote; at the end of input it is too, unless what was
+ * read since the last item decodes to nothing, which is no item (GNU's
+ * read_line meets the end before it looks at the quote).
  */
 function xargsItems(input, lines) {
     const items = [];
@@ -1897,10 +1901,11 @@ function xargsItems(input, lines) {
             item += c;
         }
     }
+    if (item === '')
+        return { items, unmatched: null };
     if (quote !== null)
         return { items, unmatched: quote === '"' ? 'double' : 'single' };
-    if (started)
-        items.push(item);
+    items.push(item);
     return { items, unmatched: null };
 }
 /**
