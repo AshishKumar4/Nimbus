@@ -2,7 +2,7 @@
   "artifact": "napi-wasm",
   "source": {
     "inputs": {
-      "packages/core/src/runtime/wasi/filesystem.ts": "a5467ffba88e5fa06e102fc5a2047a77cf10a71a809ad8764280a1abd4dead04",
+      "packages/core/src/runtime/wasi/filesystem.ts": "c49a28d10abef6fdc6c228b90869277613b0ce52c66f6c311cc208bd9007b9a1",
       "packages/core/src/vfs/dirent-type.ts": "f22395b71aab1211b5f55eded1f996c0719d05c1b838025fc3651ba61e253185",
       "packages/core/src/vfs/vfs-error.ts": "0470e3d0a43c1b5c6f8b5daebeea895f6858307203a72f984fde4d6e01041008",
       "packages/core/src/vfs/vfs.ts": "f74c679dfd4aeb5a96d8cf4a43881deb71d48b592a0df016d368d9a9e8579d08",
@@ -10,7 +10,7 @@
       "packages/worker/scripts/artifact-inputs.mjs": "b0c9307e6f6f13bae05ccf99ab22cf7a715553b8c6f46dbbddfef0181a2f7115",
       "packages/worker/scripts/napi-wasm/build.mjs": "45b17dfa68a17b6582d61eab755aff6b4d6c1e734d180e0aa8eff73ef1697387",
       "packages/worker/scripts/napi-wasm/inputs.mjs": "5bac3fae82b6bc1bf7f23fc75ff8cb81098d53cbd4325ae0ccb495362348dbd6",
-      "packages/worker/scripts/napi-wasm/loader/napi-wasm-loader.ts": "6a81b3032356867dcaece39d6dc450aebfb11581691952a96b69b8b976f763c7",
+      "packages/worker/scripts/napi-wasm/loader/napi-wasm-loader.ts": "be1f648fadb9ad0fef6f0317d37dd616076a10e4ffc0e186609ee23361fe2918",
       "packages/worker/scripts/napi-wasm/loader/wasi-trampoline.mjs": "cb857b5989626e502f2a1d86198ba32cec763f360e09bab108bacde3746bbd62",
       "packages/worker/scripts/napi-wasm/specs.mjs": "98589599adbff293b45810e688e6216546cd427eff740d288b9248f7a3dc9d10",
       "packages/worker/scripts/stage-asset.mjs": "2187cb40e0491884adea0ae5deb543205f431e995a4e1e3a726d93d4e1173929",
@@ -164,8 +164,8 @@
   ],
   "outputs": {
     "napi-wasm-loader.mjs": {
-      "bytes": 208555,
-      "sha256": "e0f4e817306ce0ae97fa53d58a9bedb475c50193ba30c8d493f755a51ae03b38"
+      "bytes": 212704,
+      "sha256": "aa19196d1c109822735a1150d25d9136729b2f035b381f86cd538371f2dfd38e"
     },
     "wasi-trampoline.wasm": {
       "bytes": 1961,

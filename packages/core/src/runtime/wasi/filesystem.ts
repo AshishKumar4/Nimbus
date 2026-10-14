@@ -1,7 +1,7 @@
-import type { Awaitable, RuntimeFileHandle, RuntimeFsBridge, RuntimeFsPath, RuntimeSynchronousFs, RuntimeVfsStat } from '../os-contracts.js';
+import type { Awaitable, RuntimeFileHandle, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenedFile, RuntimeOpenFlags, RuntimeSynchronousFs, RuntimeVfsStat } from '../os-contracts.js';
 import type { SyscallResult, Errno, NimbusFsImports, WasiImports } from './types.js';
 import { DIRENT_TYPES, direntTypeOfStat } from '../../vfs/dirent-type.js';
-import type { PinnedContent } from './resident-filesystem.js';
+import type { PinnedContent, ResidentFilesystem } from './resident-filesystem.js';
 import type { VfsErrorCode } from '../../vfs/vfs-error.js';
 
 /** WASI encoding only. Paths, permissions, inode identity and storage belong to fs. */
@@ -16,19 +16,67 @@ export interface AuthorityFd {
 /**
  * A read-only open of a regular file, answered from this isolate: the bytes
  * are the file's content at its stat revision, so every read, seek and stat on
- * the descriptor is local. Nothing on the authority side is held for it.
+ * the descriptor is local.
  */
 export interface ResidentFd {
   kind: 'resident';
+  /** The file's stat at its open. */
   stat: RuntimeVfsStat;
   bytes: Uint8Array;
-  /** Given back when the descriptor goes, when the filesystem pinned the bytes for it (pinContent). */
-  release?: () => void;
+  hold: ResidentHold;
+  /**
+   * Descriptors on this open: dup(2), dup2(2) and a fork's copy share it,
+   * and with it its offset (shareResident, closeResident).
+   */
+  opens: number;
   position: number;
   rights: bigint;
   rightsInheriting: bigint;
   fdflags: number;
+  /** The session's hold of its file, once one of its processes took the name it was read at away (holdCopiesBefore). */
+  kept?: KeptFile;
 }
+/**
+ * A file resident copies are of, held at the session by an O_PATH descriptor
+ * (RuntimeOpenFlags.path) before one of their processes took its name away,
+ * as Linux's open file outlives its name; its last copy lets it go. Null
+ * when it could not be held.
+ */
+export interface KeptFile {
+  readonly held: Awaitable<{ readonly handle: number; readonly fs: RuntimeFsBridge | RuntimeSynchronousFs } | null>;
+  copies: number;
+}
+/**
+ * How a resident copy's file is opened again (an open of /dev/fd/N): by the
+ * session descriptor the copy was read through (a reopen's), held while the
+ * copy lives; else by the name it was read at while that name has it, and
+ * once its process took that name away, by the file it keeps (KeptFile).
+ * A filesystem's pin on its bytes (pinContent) is given back with it.
+ */
+export type ResidentHold =
+  | { readonly handle: number }
+  | { readonly name: RuntimeFsPath; readonly follow: boolean; readonly pin?: PinnedContent };
+
+/** Another descriptor on a resident open, as dup(2) makes one: the same offset, the same hold. */
+export function shareResident(open: ResidentFd): ResidentFd {
+  open.opens++;
+  return open;
+}
+
+/**
+ * One descriptor on a resident open closed. The last gives back its hold:
+ * the session descriptor it was read through, closed without waiting on it,
+ * as nothing of the guest's depends on it; else its pin, and its share of
+ * the file it keeps.
+ */
+export function closeResident(open: ResidentFd, fs: RuntimeFsBridge | RuntimeSynchronousFs): void {
+  if (--open.opens > 0) return;
+  if ('handle' in open.hold) { closeUnawaited(fs, open.hold.handle); return; }
+  open.hold.pin?.release();
+  const kept = open.kept;
+  if (kept !== undefined && --kept.copies === 0) after(kept.held, (held) => { if (held !== null) closeUnawaited(held.fs, held.handle); });
+}
+
 export interface AuthorityPreopen {
   kind: 'preopen';
   vfsPath: string;
@@ -128,6 +176,95 @@ export function after<T, R>(value: Awaitable<T>, next: (value: T) => Awaitable<R
   return value instanceof Promise ? value.then(next) : next(value);
 }
 function fail(code: string): never { throw Object.assign(new Error(code), { code }); }
+
+/** Whether `fs` holds file bytes itself, and pins them for a descriptor (wasi/resident-filesystem.ts). */
+function pinsContent(fs: RuntimeFsBridge | RuntimeSynchronousFs): fs is ResidentFilesystem {
+  return typeof Reflect.get(fs, 'pinContent') === 'function';
+}
+
+/**
+ * Before a change takes the names `paths` away on `fs` (an unlink's, a
+ * rename's from and to), keeps the files that resident copies in `tables`
+ * are of there (KeptFile); for a directory among them (a rename's), every
+ * copied file, as its names may be beneath it. Settles once each hold is
+ * answered, so the change cannot reach the session before it; at once, and
+ * asking the session nothing, when no copy lacks one.
+ */
+export function keepCopiesBefore(fs: RuntimeFsBridge | RuntimeSynchronousFs, paths: readonly RuntimeFsPath[], tables: Iterable<ReadonlyMap<number, FilesystemFd>>): Awaitable<void> {
+  // A copy is one open however many descriptors (dup's, a fork's) name it.
+  const unkept = new Set<ResidentFd>();
+  for (const table of tables) for (const e of table.values()) if (e.kind === 'resident' && e.kept === undefined && !('handle' in e.hold)) unkept.add(e);
+  if (unkept.size === 0) return;
+  const steps = paths.map((name) => {
+    let st: Awaitable<RuntimeVfsStat | null>;
+    try { st = fs.stat(name, { followSymlinks: false }); } catch { return; }
+    const keepAt = (found: RuntimeVfsStat | null): Awaitable<void> => {
+      if (found === null) return;
+      // One hold per file, every copy of it sharing it; a copy closed while the stat was asked is gone.
+      const files = new Map<string, { name: RuntimeFsPath; follow: boolean; copies: ResidentFd[] }>();
+      for (const e of unkept) {
+        if (e.opens === 0 || e.kept !== undefined || !('name' in e.hold)) continue;
+        const file = found.type === 'directory' || (found.dev === e.stat.dev && found.ino === e.stat.ino);
+        if (!file) continue;
+        const key = `${e.stat.dev}:${e.stat.ino}`;
+        const group = files.get(key);
+        if (group !== undefined) group.copies.push(e);
+        // Beneath a directory, by the name the copy was read at, followed as it was then; else the name taken away, which is the file itself.
+        else if (found.type === 'directory') files.set(key, { name: e.hold.name, follow: e.hold.follow, copies: [e] });
+        else files.set(key, { name, follow: false, copies: [e] });
+      }
+      const holding: Awaitable<unknown>[] = [];
+      for (const { name: at, follow, copies } of files.values()) {
+        const kept: KeptFile = { held: holdFile(fs, at, follow, copies[0].stat), copies: copies.length };
+        for (const e of copies) e.kept = kept;
+        holding.push(kept.held);
+      }
+      return holding.some((step) => step instanceof Promise) ? Promise.all(holding).then(() => {}) : undefined;
+    };
+    return st instanceof Promise ? st.then(keepAt, () => {}) : keepAt(st);
+  });
+  return steps.some((step) => step instanceof Promise) ? Promise.all(steps).then(() => {}) : undefined;
+}
+
+/** An O_PATH open of `name` (`follow`: its last link followed), kept when it is the file `stat` describes. */
+function holdFile(fs: RuntimeFsBridge | RuntimeSynchronousFs, name: RuntimeFsPath, follow: boolean, stat: RuntimeVfsStat): Awaitable<{ readonly handle: number; readonly fs: RuntimeFsBridge | RuntimeSynchronousFs } | null> {
+  const kept = (opened: RuntimeOpenedFile) => {
+    if (opened.stat.dev === stat.dev && opened.stat.ino === stat.ino) return { handle: opened.id, fs };
+    closeUnawaited(fs, opened.id);
+    return null;
+  };
+  try {
+    const opened = fs.open(name, { path: true, followSymlinks: follow });
+    return opened instanceof Promise ? opened.then(kept, () => null) : kept(opened);
+  } catch { return null; }
+}
+
+/** A session descriptor nothing of the guest's waits to see closed: closed, a refusal of it dropped. */
+export function closeUnawaited(fs: RuntimeFsBridge | RuntimeSynchronousFs, handle: number): void {
+  try {
+    const closing = fs.close(handle);
+    if (closing instanceof Promise) closing.catch(() => {});
+  } catch { /* the descriptor is the guest's no longer either way */ }
+}
+
+/**
+ * Opens `name` as the file `identity` (dev, ino) is, where the process holds
+ * no descriptor of it to reopen by (an open of /dev/fd/N on a copy): ENOENT
+ * once the name has another file, or none. `follow`: as the name was first
+ * looked up. Never creates one, and empties it only once it is known to be
+ * that file.
+ */
+export function openIdentified(fs: RuntimeFsBridge | RuntimeSynchronousFs, name: RuntimeFsPath, follow: boolean, flags: RuntimeOpenFlags, identity: { dev: number; ino: number }): Awaitable<RuntimeOpenedFile> {
+  if (flags.create && flags.exclusive) fail('EEXIST');
+  return after(fs.open(name, { ...flags, create: false, exclusive: false, truncate: false, followSymlinks: follow }), (handle) => {
+    if (handle.stat.dev !== identity.dev || handle.stat.ino !== identity.ino) {
+      closeUnawaited(fs, handle.id);
+      fail('ENOENT');
+    }
+    if (!flags.truncate) return handle;
+    return after(fs.ftruncate(handle.id, 0), (): RuntimeOpenedFile => ({ ...handle, stat: { ...handle.stat, size: 0 } }));
+  });
+}
 /** WASI's filetype for a stat's or a dirent's type; WASI has no FIFO, which wasmtime also calls unknown. */
 const FILETYPES: Readonly<Record<string, number>> = {
   unknown: 0, block: 1, character: 2, directory: 3, file: 4, socket: 6, symlink: 7, fifo: 0,
@@ -157,12 +294,18 @@ export interface AuthorityFilesystemOptions {
   /**
    * Largest regular file a read-only open answers from a resident copy. A
    * guest that reopens the same file for every module (CPython's zipimport,
-   * a shell's scripts) then pays one stat per open and one read per revision,
+   * a shell's scripts) then pays one open per open and one read per revision,
    * rather than a round trip per descriptor call. Content is keyed by inode
    * and validated against the stat revision, so a file rewritten by anyone
    * is fetched again on its next open. Zero keeps every open on the authority.
    */
   residentBytes?: number;
+  /**
+   * Every descriptor table whose resident copies an unlink or a rename here
+   * keeps the file of (keepCopiesBefore): bash's processes', which share
+   * their files; this one's alone when absent.
+   */
+  residentTables?: () => Iterable<ReadonlyMap<number, FilesystemFd>>;
   /**
    * Whether a resident copy outlives its descriptor (default true). A guest
    * whose host process already holds the filesystem's content (a node
@@ -182,6 +325,52 @@ export interface AuthorityFilesystemOptions {
    * descriptor goes to what the table held.
    */
   extension?: Partial<NimbusFsImports>;
+  /**
+   * A new descriptor, at the next free number, on what the host's own
+   * descriptor `fd` holds (a standard stream, a pipe end), as dup(2) makes
+   * one; null when that kind cannot be shared (a socket). A path naming a
+   * descriptor (descriptorNamed) opens a stream the host holds through this;
+   * without it, those paths are the filesystem's.
+   */
+  duplicate?(fd: number): number | null;
+}
+
+const STANDARD_STREAMS: Readonly<Record<string, number>> = { '/dev/stdin': 0, '/dev/stdout': 1, '/dev/stderr': 2 };
+
+/**
+ * The descriptor `path` names, as Linux's /dev/fd/N, /proc/self/fd/N and
+ * /dev/std{in,out,err} do; null for any other path. No filesystem holds what
+ * these name: each is the process's own descriptor. A relative `path` is
+ * relative to descriptor `fd` of `fds` (a preopen, or a directory the codec
+ * holds), or to `cwd` for AT_FDCWD (-1). Every call that takes a path asks
+ * this one question: path_open, path_filestat_get, the extension's path_stat
+ * and bash's stat_metadata.
+ *
+ * Linux's answer to what such a path opens: the file or directory itself
+ * is opened again, with the new open's flags (a new description, its own
+ * offset, O_TRUNC and O_APPEND honored), even one renamed or unlinked
+ * since; a stream or a pipe end is shared. Stat'd, it is that descriptor's
+ * stat.
+ */
+export function descriptorNamed(fds: ReadonlyMap<number, FilesystemFd>, fd: number, path: string, cwd?: string): number | null {
+  let absolute = path;
+  if (!path.startsWith('/')) {
+    const base = fds.get(fd);
+    const directory = fd === -1 ? cwd
+      : base?.kind === 'preopen' ? base.wasiPath
+      : base?.kind === 'authority' && base.type === 'directory' ? '/' + base.handle.path
+      : undefined;
+    if (directory === undefined) return null;
+    absolute = directory + '/' + path;
+  }
+  // Every path but these is turned away before any normalizing: an `fd` segment
+  // is followed by a separator, a standard stream's name starts `std`.
+  if (!absolute.includes('fd/') && !absolute.includes('std')) return null;
+  const normal = '/' + absolute.split('/').filter((segment) => segment !== '' && segment !== '.').join('/');
+  const stream = Object.hasOwn(STANDARD_STREAMS, normal) ? STANDARD_STREAMS[normal] : undefined;
+  if (stream !== undefined) return stream;
+  const numbered = /^\/(?:dev\/fd|proc\/self\/fd)\/(\d{1,9})$/.exec(normal);
+  return numbered === null ? null : Number(numbered[1]);
 }
 
 /**
@@ -209,6 +398,7 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
   // maximum), where the constructor takes any offset within the buffer.
   const guestBytes = (ptr: number, length: number) => new Uint8Array(options.memory().buffer, ptr, length);
   const view = () => new DataView(options.memory().buffer);
+  const residentTables = options.residentTables ?? (() => [fds]);
   const u32 = (ptr: number, value: number) => view().setUint32(ptr, value, true);
   const u64 = (ptr: number, value: bigint | number) => view().setBigUint64(ptr, BigInt(value), true);
   const path = (ptr: number, length: number): string => {
@@ -241,16 +431,22 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
   // Content by inode, valid while the stat revision matches the one it was read at.
   const resident = options.resident ?? new Map<string, { revision: number; bytes: Uint8Array }>();
   const residentBytes = options.residentBytes ?? 0;
-  const residentContent = (fs: Fs, target: RuntimeFsPath, st: RuntimeVfsStat): Awaitable<Uint8Array> => {
-    if (options.retainResident === false) return after(fs.readFile(target), bytes => bytes ?? fail('ENOENT'));
+  /** The bytes of the file `st` describes: `read`'s, unless the copy at its revision is kept. */
+  const residentContent = (st: RuntimeVfsStat, read: () => Awaitable<Uint8Array>): Awaitable<Uint8Array> => {
+    // An unlinked file's stat revision is the namespace's, which its own writes do not move: its copy is read each time.
+    if (options.retainResident === false || st.nlink === 0) return read();
     const key = `${st.dev}:${st.ino}`;
     const cached = resident.get(key);
     if (cached && cached.revision === st.revision) return cached.bytes;
-    return after(fs.readFile(target), bytes => {
-      if (bytes === null) fail('ENOENT');
+    return after(read(), bytes => {
       resident.set(key, { revision: st.revision, bytes });
       return bytes;
     });
+  };
+  /** Whether a read-only open of the file `st` describes is answered from a copy: a small regular file (a device, /dev/zero's S_IFCHR, streams; a mode with no type bits is a file's). */
+  const residentable = (st: RuntimeVfsStat): boolean => {
+    const format = (st.mode ?? 0) & S_IFMT;
+    return residentBytes > 0 && st.type === 'file' && st.size <= residentBytes && (format === 0 || format === S_IFREG);
   };
   const preopen = (fd: number): AuthorityPreopen | null => {
     const e = fds.get(fd);
@@ -258,17 +454,28 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
   };
   // wasi-libc resolves a path against its longest matching preopen and passes
   // only the remainder, so deciding whether the guest named a socket means
-  // rebuilding the absolute path exactly as the host's path_open does.
+  // rebuilding the absolute path exactly as the host's path_open does. A
+  // path this codec cannot decode is its own to reject, with the errno its
+  // body would have produced.
   const socketPath = (fd: number, ptr: number, length: number): boolean => {
     let guest: string;
-    // A path this codec cannot decode is its own to reject, with the errno its
-    // body would have produced.
     try { guest = path(ptr, length); } catch { return false; }
     const base = fds.get(fd);
     if (!guest.startsWith('/') && base?.kind === 'preopen') {
       guest = base.wasiPath.endsWith('/') ? base.wasiPath + guest : base.wasiPath + '/' + guest;
     }
     return socketPathPrefixes.some(prefix => guest.startsWith(prefix));
+  };
+  /**
+   * The descriptor a path beneath `fd` names (descriptorNamed), when the host
+   * takes part (duplicate); ENOENT for one the process does not hold, as
+   * Linux answers for /dev/fd/N.
+   */
+  const named = (fd: number, name: string): number | null => {
+    if (options.duplicate === undefined) return null;
+    const descriptor = descriptorNamed(fds, fd, name);
+    if (descriptor !== null && !fds.has(descriptor)) fail('ENOENT');
+    return descriptor;
   };
   const at = (fd: number, p: string): RuntimeFsPath => {
     if (p.startsWith('/')) fail('ENOTCAPABLE');
@@ -382,66 +589,132 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     for (const v of vectors.result) { data.set(guestBytes(v.ptr, v.length), used); used += v.length; }
     return after(fs.write(e.handle.id, offset, data), n => { u32(written, n); return 0; });
   };
+  // What one path_open asked, for the steps below that answer it: one record
+  // an open, where per-open closures for each step cost more than the step.
+  interface PathOpen {
+    readonly fs: Fs;
+    readonly target: RuntimeFsPath;
+    readonly follow: boolean;
+    readonly oflags: number;
+    readonly requested: bigint;
+    readonly childRights: bigint;
+    readonly status: number;
+    readonly readOnly: boolean;
+    readonly out: number;
+  }
+  const flagsOf = (o: PathOpen): RuntimeOpenFlags => ({ read: !!(o.requested & 2n), write: !!(o.requested & 64n), append: !!(o.status & 1),
+    create: !!(o.oflags & 1), directory: !!(o.oflags & 2), exclusive: !!(o.oflags & 4), truncate: !!(o.oflags & 8), followSymlinks: o.follow,
+    ...creationMode(0o666) });
+  const opened = (o: PathOpen, handle: RuntimeOpenedFile): Errno => {
+    const id = options.allocateFd();
+    fds.set(id, { kind: 'authority', handle, type: handle.stat.type, rights: o.requested, rightsInheriting: o.childRights, fdflags: o.status });
+    u32(o.out, id); return 0;
+  };
+  const copy = (o: PathOpen, stat: RuntimeVfsStat, bytes: Uint8Array, hold: ResidentHold): Errno => {
+    const id = options.allocateFd();
+    fds.set(id, { kind: 'resident', stat, bytes, hold, opens: 1, position: 0, rights: o.requested, rightsInheriting: o.childRights, fdflags: o.status });
+    u32(o.out, id); return 0;
+  };
+  // An open's copy is read by the name it opened, as any read of that name
+  // is (a host that stages content answers that read).
+  const byName = (o: PathOpen): Awaitable<Uint8Array> => after(o.fs.readFile(o.target), bytes => bytes ?? fail('ENOENT'));
+  /** A copy of the file `stat` describes, its bytes `content`'s, holding the session's descriptor `held`, which is closed if that fails. */
+  const heldCopy = (o: PathOpen, stat: RuntimeVfsStat, held: number, content: () => Awaitable<Uint8Array>): SyscallResult => {
+    let bytes: Awaitable<Uint8Array>;
+    try { bytes = residentContent(stat, content); } catch (error) { closeUnawaited(o.fs, held); throw error; }
+    if (!(bytes instanceof Promise)) return copy(o, stat, bytes, { handle: held });
+    return bytes.then(read => copy(o, stat, read, { handle: held }), (error: unknown) => { closeUnawaited(o.fs, held); throw error; });
+  };
+  // A reopen's copy is read through its new descriptor, as its file may have no name.
+  const reopenedAs = (o: PathOpen, handle: RuntimeOpenedFile): SyscallResult => (o.readOnly && residentable(handle.stat)
+    ? heldCopy(o, handle.stat, handle.id, () => o.fs.read(handle.id, 0, handle.stat.size))
+    : opened(o, handle));
+  // The filesystem's pin on the bytes at `st`'s revision, as the copy; `otherwise` where it pins none (they changed, the budget is spent, the mode refuses the read).
+  const pinned = (o: PathOpen, name: RuntimeFsPath, st: RuntimeVfsStat, otherwise: () => SyscallResult): SyscallResult => {
+    const fs = o.fs;
+    return pinsContent(fs) ? after(fs.pinContent(name, st), pin => (pin === null ? otherwise() : copy(o, st, pin.bytes, { name: pin.name, follow: false, pin }))) : otherwise();
+  };
+  const openAuthority = (o: PathOpen): SyscallResult => after(o.fs.open(o.target, flagsOf(o)), handle => opened(o, handle));
+  // A file a descriptor holds is opened again as itself, never by a name a
+  // rename or an unlink may have given to another (RuntimeFsBridge.reopen),
+  // under the access asked as the file is now.
+  const openAgain = (o: PathOpen, reopened: AuthorityFd | ResidentFd): SyscallResult => {
+    const fs = o.fs;
+    if (reopened.kind === 'authority') return after(fs.reopen({ handle: reopened.handle.id }, flagsOf(o)), handle => reopenedAs(o, handle));
+    const { hold, stat: was } = reopened;
+    if ('handle' in hold) return after(fs.reopen({ handle: hold.handle }, flagsOf(o)), handle => reopenedAs(o, handle));
+    // A copy that holds no descriptor: its file is opened by the name it was read at, while that name has it.
+    const again = (): SyscallResult => after(openIdentified(fs, hold.name, hold.follow, flagsOf(o), was), handle => reopenedAs(o, handle));
+    // Where the name no longer has it, the file it keeps, held before its process took the name away.
+    const byHold = (error: unknown): SyscallResult => {
+      const held = error instanceof Error && 'code' in error && error.code === 'ENOENT' ? reopened.kept?.held ?? null : null;
+      if (held === null) throw error;
+      return after(held, (taken) => {
+        if (taken === null) throw error;
+        return after(taken.fs.reopen({ handle: taken.handle }, flagsOf(o)), handle => reopenedAs(o, handle));
+      });
+    };
+    const byName = (): SyscallResult => {
+      if (!o.readOnly || hold.pin === undefined) return again();
+      // A pinned one's copy is the filesystem's pin at the file's revision now.
+      return after(fs.stat(hold.name, { followSymlinks: hold.follow }), st => {
+        if (st === null || st.dev !== was.dev || st.ino !== was.ino) fail('ENOENT');
+        return pinned(o, hold.name, st, again);
+      });
+    };
+    try {
+      const opened = byName();
+      return opened instanceof Promise ? opened.catch(byHold) : opened;
+    } catch (error) { return byHold(error); }
+  };
   imports.path_open = guard(imports.path_open, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, lookup: number, p: number, n: number, flags: number, rights: bigint, inherit: bigint, status: number, out: number) => {
     if (status & ~5) fail('ENOTSUP');
     pathRight(fd, 13);
+    const name = path(p, n);
+    const descriptor = named(fd, name);
+    const reopened = descriptor === null ? undefined : fds.get(descriptor);
+    if (descriptor !== null && reopened?.kind !== 'authority' && reopened?.kind !== 'resident' && reopened?.kind !== 'preopen') {
+      u32(out, options.duplicate?.(descriptor) ?? fail('ENXIO')); return 0;
+    }
     if (flags & 1) pathRight(fd, 10);
     if (flags & 8) pathRight(fd, 19);
-    const target = at(fd, path(p, n));
+    // A preopen named by a descriptor path is its root, by name, as everything beneath it is.
+    const target = reopened?.kind === 'preopen' ? reopened.vfsPath : at(fd, name);
     const parent = preopen(fd) ?? entry(fd);
     const requested = BigInt(rights), childRights = BigInt(inherit);
     const allowed = parent.rightsInheriting;
     if (allowed !== undefined && ((requested | childRights) & ~allowed)) fail('ENOTCAPABLE');
-    const followSymlinks = !!(lookup & 1);
+    const follow = !!(lookup & 1);
     // Rights that change the file keep the open on the authority: fd_write,
     // fd_allocate, fd_filestat_set_size. wasi-libc asks for sync and status
     // rights on every open, and a resident copy answers those itself.
     const readOnly = !(requested & ((1n << 6n) | (1n << 8n) | (1n << 22n))) && !(flags & 15) && !(status & 1);
-    // An open that may make or empty a file names a file: a directory
-    // refuses it (EISDIR) and a symlink is followed or refused (ELOOP), so
-    // the descriptor's type is known without asking for its stat. (A
-    // directory opened only to write is not refused: the write is.)
-    const writes = !(flags & 2) && !!(flags & (1 | 8));
-    const open = (): SyscallResult => after(fs.open(target, { read: !!(requested & 2n), write: !!(requested & 64n), append: !!(status & 1),
-      create: !!(flags & 1), directory: !!(flags & 2), exclusive: !!(flags & 4), truncate: !!(flags & 8), followSymlinks,
-      ...creationMode(0o666) }), handle =>
-      after(writes ? { type: 'file' as const } : fs.fstat(handle.id), st => {
-        const id = options.allocateFd();
-        fds.set(id, { kind: 'authority', handle, type: st.type, rights: requested, rightsInheriting: childRights, fdflags: status });
-        u32(out, id); return 0;
-      }));
-    if (!readOnly || residentBytes === 0) return open();
-    return after(fs.stat(target, { followSymlinks }), st => {
+    const o: PathOpen = { fs, target, follow, oflags: flags, requested, childRights, status, readOnly, out };
+    if (reopened?.kind === 'authority' || reopened?.kind === 'resident') return openAgain(o, reopened);
+    if (!readOnly || residentBytes === 0) return openAuthority(o);
+    return after(fs.stat(target, { followSymlinks: follow }), st => {
       if (st === null) fail('ENOENT');
-      // Only a regular file has bytes to copy: a device (/dev/zero, its
-      // mode's type bits S_IFCHR) streams. A mode with no type bits is a file's.
-      const format = (st.mode ?? 0) & S_IFMT;
-      if (st.type !== 'file' || st.size > residentBytes || (format !== 0 && format !== S_IFREG)) return open();
-      // A hit needs no permission check of its own: the copy was read under
-      // this credential, and a chmod or chown since would have moved the
-      // revision along with any rewrite.
+      if (!residentable(st)) return openAuthority(o);
       // A filesystem that holds file bytes itself (wasi/resident-filesystem.ts)
       // is the copy: it pins them for the descriptor under its own budget, and
       // past that budget the descriptor is the session's.
-      const pinContent: unknown = Reflect.get(fs, 'pinContent');
-      if (typeof pinContent === 'function') {
-        return after(Reflect.apply(pinContent, fs, [target, st]) as Awaitable<PinnedContent | null>, (pinned) => {
-          if (pinned === null) return open();
-          const id = options.allocateFd();
-          fds.set(id, { kind: 'resident', stat: st, bytes: pinned.bytes, release: pinned.release, position: 0, rights: requested, rightsInheriting: childRights, fdflags: status });
-          u32(out, id); return 0;
-        });
-      }
-      return after(residentContent(fs, target, st), bytes => {
-        const id = options.allocateFd();
-        fds.set(id, { kind: 'resident', stat: st, bytes, position: 0, rights: requested, rightsInheriting: childRights, fdflags: status });
-        u32(out, id); return 0;
-      });
+      if (pinsContent(fs)) return pinned(o, target, st, () => openAuthority(o));
+      // A hit needs no permission check of its own: the copy was read under
+      // this credential, and a chmod or chown since would have moved the
+      // revision along with any rewrite.
+      return after(residentContent(st, () => byName(o)), bytes => copy(o, st, bytes, { name: target, follow }));
     });
   }, args => !socketPath(args[0], args[2], args[3]));
-  imports.path_filestat_get = guard(imports.path_filestat_get, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, flags: number, p: number, n: number, out: number) =>
-    { pathRight(fd, 18); return after(fs.stat(at(fd, path(p, n)), { followSymlinks: !!(flags & 1) }), st => writeStat(out, st ?? fail('ENOENT'))); });
   imports.fd_filestat_get = guard(imports.fd_filestat_get, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, out: number) => { pathRight(fd, 21); return after(stat(fs, fd), st => writeStat(out, st)); }, owns);
+  // A path naming a descriptor is that descriptor's stat, whoever answers it.
+  const descriptorStat = imports.fd_filestat_get;
+  imports.path_filestat_get = guard(imports.path_filestat_get, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, flags: number, p: number, n: number, out: number) => {
+    pathRight(fd, 18);
+    const name = path(p, n);
+    const descriptor = named(fd, name);
+    if (descriptor !== null) return descriptorStat(descriptor, out);
+    return after(fs.stat(at(fd, name), { followSymlinks: !!(flags & 1) }), st => writeStat(out, st ?? fail('ENOENT')));
+  });
   imports.fd_read = guard(imports.fd_read, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, p: number, n: number, out: number) => read(fs, fd, p, n, null, out), owns);
   imports.fd_pread = guard(imports.fd_pread, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, p: number, n: number, off: bigint, out: number) => read(fs, fd, p, n, num(off), out), owns);
   imports.fd_write = guard(imports.fd_write, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, p: number, n: number, out: number) => write(fs, fd, p, n, null, out), owns);
@@ -451,7 +724,11 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     // the guest nothing to open, so it survives the close, as in the host body.
     if (preopen(fd)) return 0;
     const e = entry(fd);
-    if (e.kind === 'resident') { e.release?.(); fds.delete(fd); return 0; }
+    if (e.kind === 'resident') {
+      fds.delete(fd);
+      closeResident(e, fs);
+      return 0;
+    }
     return after(fs.close(e.handle.id), () => { fds.delete(fd); return 0; });
   }, owns);
   imports.fd_renumber = guard(imports.fd_renumber, (fs: RuntimeFsBridge | RuntimeSynchronousFs, from: number, to: number) => {
@@ -462,7 +739,7 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     if (target?.kind === 'preopen') fail('ENOTCAPABLE');
     // dup2 closes what it lands on, and only the owner of that fd knows how:
     // a socket's stream and a pipe's writer count are the host's to release.
-    if (target?.kind === 'resident') target.release?.();
+    if (target?.kind === 'resident') closeResident(target, fs);
     const released = !target || target.kind === 'resident' ? undefined
       : target.kind === 'authority' ? fs.close(target.handle.id)
       : hostClose?.(to);
@@ -542,8 +819,17 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
   }, owns);
   imports.path_create_directory = guard(imports.path_create_directory, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, p: number, n: number) => { pathRight(fd, 9); return after(fs.mkdir(at(fd, path(p, n)), { recursive: false, ...creationMode(0o777) }), () => 0); });
   imports.path_remove_directory = guard(imports.path_remove_directory, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, p: number, n: number) => { pathRight(fd, 25); return after(fs.rmdir(at(fd, path(p, n))), () => 0); });
-  imports.path_unlink_file = guard(imports.path_unlink_file, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, p: number, n: number) => { pathRight(fd, 26); return after(fs.unlink(at(fd, path(p, n))), () => 0); });
-  imports.path_rename = guard(imports.path_rename, (fs: RuntimeFsBridge | RuntimeSynchronousFs, from: number, p: number, n: number, to: number, q: number, m: number) => { pathRight(from, 16); pathRight(to, 17); return after(fs.rename(at(from, path(p, n)), at(to, path(q, m))), () => 0); });
+  // A name these processes take away first keeps the file of their copies there (keepCopiesBefore).
+  imports.path_unlink_file = guard(imports.path_unlink_file, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, p: number, n: number) => {
+    pathRight(fd, 26);
+    const name = at(fd, path(p, n));
+    return after(keepCopiesBefore(fs, [name], residentTables()), () => after(fs.unlink(name), () => 0));
+  });
+  imports.path_rename = guard(imports.path_rename, (fs: RuntimeFsBridge | RuntimeSynchronousFs, from: number, p: number, n: number, to: number, q: number, m: number) => {
+    pathRight(from, 16); pathRight(to, 17);
+    const source = at(from, path(p, n)), target = at(to, path(q, m));
+    return after(keepCopiesBefore(fs, [source, target], residentTables()), () => after(fs.rename(source, target), () => 0));
+  });
   imports.path_symlink = guard(imports.path_symlink, (fs: RuntimeFsBridge | RuntimeSynchronousFs, p: number, n: number, fd: number, q: number, m: number) => { pathRight(fd, 24); return after(fs.symlink(path(p, n), at(fd, path(q, m))), () => 0); });
   imports.path_readlink = guard(imports.path_readlink, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, p: number, n: number, buf: number, cap: number, used: number) => { pathRight(fd, 15); return after(fs.readlink(at(fd, path(p, n))), value => {
     if (value === null) fail('EINVAL'); const data = encoder.encode(value), count = Math.min(cap, data.length);
@@ -572,9 +858,15 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     after(fs.futimes(handle(fd).handle.id, ...times(st, a, m, flags)), () => 0)); }, owns);
   const ext = options.extension;
   if (ext) {
-    ext.path_stat = guard(ext.path_stat, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, flags: number, p: number, n: number, out: number) =>
-      { pathRight(fd, 18); return after(fs.stat(at(fd, path(p, n)), { followSymlinks: !!(flags & 1) }), st => writeNimbusStat(out, st ?? fail('ENOENT'))); });
     ext.fd_stat = guard(ext.fd_stat, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, out: number) => { pathRight(fd, 21); return after(stat(fs, fd), st => writeNimbusStat(out, st)); }, owns);
+    const descriptorNimbusStat = ext.fd_stat;
+    ext.path_stat = guard(ext.path_stat, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, flags: number, p: number, n: number, out: number) => {
+      pathRight(fd, 18);
+      const name = path(p, n);
+      const descriptor = named(fd, name);
+      if (descriptor !== null) return descriptorNimbusStat(descriptor, out);
+      return after(fs.stat(at(fd, name), { followSymlinks: !!(flags & 1) }), st => writeNimbusStat(out, st ?? fail('ENOENT')));
+    });
     ext.path_chmod = guard(ext.path_chmod, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, flags: number, p: number, n: number, mode: number) => {
       pathRight(fd, 20);
       if (!(flags & 1)) fail('ENOTSUP');

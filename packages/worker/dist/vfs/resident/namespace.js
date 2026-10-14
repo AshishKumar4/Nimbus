@@ -232,37 +232,75 @@ export function createNamespace(coherence, admission) {
         unlisted.delete(k);
     };
     /**
-     * Look `k` up through the symlinks the namespace holds: { path, row } for
-     * the name it denotes (row undefined when nothing is there), or "ELOOP".
-     * The leaf is followed only when `followLeaf`. Walks component by component
-     * only when a symlink sits on the path; otherwise it is one lookup.
+     * Walk `k` through the symlinks the namespace holds, with the process's own
+     * effects (`own`) applied at each name it reaches, ahead of the table: a
+     * name it removed ends the walk, its links and renames redirect it, and
+     * beneath a directory it made only its own names are there. The leaf is
+     * followed only when `followLeaf`. Without links or own effects it is one
+     * lookup. A link's target is joined to the name it was reached by.
      */
-    const lookup = (k, followLeaf) => {
+    const lookup = (k, followLeaf, own) => {
         const t = coherence.require();
+        if (own === undefined && links.size === 0)
+            return { path: k, table: k, row: nsRowAt(t, k) };
         let path = k;
-        for (let hops = 0; hops <= NS_MAX_HOPS; hops++) {
-            let redirected = false;
-            if (links.size > 0) {
-                const segs = path.split('/');
-                for (let i = 1; i <= segs.length; i++) {
-                    const prefix = segs.slice(0, i).join('/');
-                    if (!links.has(prefix))
-                        continue;
-                    if (i === segs.length && !followLeaf)
-                        break;
-                    const row = nsRowAt(t, prefix);
-                    if (!row || row.kind !== NS_LINK)
-                        break;
-                    const rest = segs.slice(i).join('/');
-                    const target = joinTarget(prefix, row.target);
-                    path = rest ? (target ? target + '/' + rest : rest) : target;
-                    redirected = true;
-                    break;
+        walk: for (let hops = 0; hops <= NS_MAX_HOPS; hops++) {
+            const segs = path === '' ? [] : path.split('/');
+            let table = '';
+            for (let i = 1; i <= segs.length; i++) {
+                const prefix = segs.slice(0, i).join('/');
+                const leaf = i === segs.length;
+                const step = table === null ? null : table ? table + '/' + segs[i - 1] : segs[i - 1];
+                const word = own?.(prefix);
+                let target;
+                if (word !== undefined && 'absent' in word) {
+                    return { path, table: null, row: undefined, own: word };
                 }
+                else if (word !== undefined && 'target' in word) {
+                    if (leaf && !followLeaf)
+                        return { path, table: null, row: undefined, own: word };
+                    target = word.target;
+                }
+                else if (word !== undefined && 'from' in word) {
+                    if (word.link !== undefined && leaf && !followLeaf) {
+                        const at = nsRowAt(t, word.link) !== undefined ? word.link : prefix;
+                        return { path, table: at, row: nsRowAt(t, at), own: word };
+                    }
+                    if (word.from === undefined)
+                        return { path, table: null, row: undefined, own: { absent: true } };
+                    if (word.link !== undefined)
+                        target = '/' + word.from;
+                    else {
+                        table = word.from;
+                        if (leaf)
+                            return { path, table, row: nsRowAt(t, table), own: word };
+                        continue;
+                    }
+                }
+                else if (word !== undefined) {
+                    // Its own entry is where the table will hold it.
+                    table = word.hide ? null : prefix;
+                    if (leaf)
+                        return { path, table: prefix, row: nsRowAt(t, prefix), own: word };
+                    continue;
+                }
+                else {
+                    if (step === null)
+                        return { path, table: null, row: undefined };
+                    table = step;
+                    if (!links.has(step) || (leaf && !followLeaf))
+                        continue;
+                    const row = nsRowAt(t, step);
+                    if (!row || row.kind !== NS_LINK)
+                        continue;
+                    target = row.target;
+                }
+                const rest = segs.slice(i).join('/');
+                const joined = joinTarget(prefix, target);
+                path = rest ? (joined ? joined + '/' + rest : rest) : joined;
+                continue walk;
             }
-            if (redirected)
-                continue;
-            return { path, row: nsRowAt(t, path) };
+            return { path, table, row: table === null ? undefined : nsRowAt(t, table) };
         }
         return 'ELOOP';
     };
@@ -317,24 +355,26 @@ export function createNamespace(coherence, admission) {
         forget,
         lookup,
         /** `lookup`, with null when nothing is there. */
-        resolve(k, followLeaf) {
-            const found = lookup(k, followLeaf);
-            return found === 'ELOOP' || found.row !== undefined ? found : null;
+        resolve(k, followLeaf, own) {
+            const found = lookup(k, followLeaf, own);
+            if (found === 'ELOOP')
+                return found;
+            return found.row !== undefined && found.table !== null ? { path: found.table, row: found.row } : null;
         },
         /**
          * The mount point when the namespace cannot say what `k` is: its lookup
          * misses at or under a directory the listing did not name (or, with
          * `listing`, lands on or under one). Null when it knows.
          */
-        unknown(k, followLeaf, listing) {
+        unknown(k, followLeaf, listing, own) {
             if (unlisted.size === 0)
                 return null;
-            const found = lookup(k, followLeaf);
-            if (found === 'ELOOP')
+            const found = lookup(k, followLeaf, own);
+            if (found === 'ELOOP' || found.own !== undefined || found.table === null)
                 return null;
             if (found.row === undefined)
-                return unlistedOver(found.path, false);
-            return listing ? unlistedOver(found.path, true) : null;
+                return unlistedOver(found.table, false);
+            return listing ? unlistedOver(found.table, true) : null;
         },
         /** The entries directly under directory `k` (already resolved); the mode says what a file kind is. */
         children,
@@ -443,13 +483,17 @@ export function createNamespace(coherence, admission) {
             if (held !== undefined && held.rev >= rev)
                 return;
             const now = Date.now();
+            // A file the process created: its umask's mode, on the device of the
+            // directory it is in, with one link, until the delta reports the
+            // authority's own stat for it. A file it rewrote keeps its identity.
+            const slash = k.lastIndexOf('/');
+            const parent = held === undefined ? nsRowAt(t, slash < 0 ? '' : k.slice(0, slash)) : undefined;
             tryPut(t, k, {
-                // A file the process created: its umask's mode, until the delta reports
-                // the authority's own stat for it.
                 type: 'file', size, mode: held ? held.mode : 0o100666 & ~Number(cred?.umask ?? 0o022),
                 uid: held ? held.uid : Number(cred?.uid ?? 0),
                 gid: held ? held.gid : Number(cred?.gid ?? 0),
                 atime: now, mtime: now, ctime: now, ino: held ? held.ino : 0,
+                dev: held ? held.dev : parent?.dev, nlink: held ? held.nlink : 1,
             }, rev, null);
         },
         /**

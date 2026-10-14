@@ -69,6 +69,10 @@ export declare const FILESYSTEM_METHODS: {
         readonly rpc: "fsOpen";
         readonly answer: "value";
     };
+    readonly reopen: {
+        readonly rpc: "fsReopen";
+        readonly answer: "value";
+    };
     readonly read: {
         readonly rpc: "fsRead";
         readonly answer: "bytes";

@@ -359,6 +359,8 @@ export interface VfsOpenDescription {
   readonly ino: number;
   path(): string;
   stat(): VfsStat;
+  /** What revision() of the name it is held by answers now, without a lookup; the clock once it has no name. */
+  revision(): number;
   read(offset: number, length: number): Uint8Array;
   write(offset: number, bytes: Uint8Array): number;
   truncate(size: number): void;
@@ -2490,6 +2492,95 @@ export class SqliteVFS {
   }
 
   /**
+   * The file `path` names, held as an O_PATH open holds it: no access asked
+   * of it but the walk's. Its stat and revision, and a reopen (it is one of
+   * openNodes, which reopenInode finds), an unlinked file included, until it
+   * is closed; anything else answers EBADF. One object, where a description
+   * builds each of its calls.
+   */
+  holdInode(path: string, cred: VfsCred, principal?: Principal, holds?: () => ReadonlySet<string>): VfsOpenDescription {
+    const origin: Principal = principal ?? this.activeOrigin ?? Object.freeze({ cred });
+    const priorHolds = this.activeHolds;
+    if (holds !== undefined) this.activeHolds = holds();
+    let resolved: { path: string; inode: INode | undefined };
+    try {
+      resolved = this.checkAccess(path, 0, cred);
+    } finally {
+      this.activeHolds = priorHolds;
+    }
+    if (!resolved.inode) throw vfsKeyError('ENOENT', path);
+    const opened: OpenedNode = { inode: resolved.inode, path: resolved.path, closed: false };
+    this.openNodes.add(opened);
+    return new SqliteVFS.HeldInode(this, opened, path, cred, origin, holds);
+  }
+
+  /** holdInode's answer: describe()'s stat, revision, path and close, on its prototype. */
+  private static readonly HeldInode = class HeldInode implements VfsOpenDescription {
+    constructor(
+      private readonly vfs: SqliteVFS,
+      private readonly opened: OpenedNode,
+      private readonly name: string,
+      private readonly cred: VfsCred,
+      private readonly origin: Principal,
+      private readonly holds: (() => ReadonlySet<string>) | undefined,
+    ) {}
+
+    /** The inode, unless it was closed (or opened in a transaction that rolled back). */
+    private live(): INode {
+      if (this.opened.closed) throw vfsKeyError('EBADF', this.name);
+      return this.opened.inode;
+    }
+
+    /** As describe's published: a file held for publication is recalled for its other openers. */
+    private published(): void {
+      const vfs = this.vfs;
+      if (vfs.heldPipelines.size === 0) return;
+      const key = this.opened.inode.path;
+      const holds = this.holds;
+      vfs.asOrigin(this.origin, () => (holds === undefined ? vfs.recallHeld(key) : vfs.withHolds(holds(), () => vfs.recallHeld(key))));
+    }
+
+    get ino(): number { return this.live().ino; }
+
+    path(): string {
+      this.live();
+      this.published();
+      const name = this.opened.path === null ? null : this.vfs.logicalPath(this.opened.path, this.cred);
+      if (name === null) throw vfsKeyError('ENOENT', this.name);
+      return name;
+    }
+
+    stat(): VfsStat {
+      this.published();
+      this.vfs.settleAppend(this.live().ino);
+      const stat = this.vfs.statOf(this.opened.inode);
+      if (this.opened.path === null) stat.nlink = 0;
+      return stat;
+    }
+
+    revision(): number {
+      this.vfs.settleAppends();
+      return this.opened.path === null ? this.vfs._revision : this.vfs.pathRevision(this.opened.path, this.live());
+    }
+
+    read(): Uint8Array { throw vfsKeyError('EBADF', this.name); }
+    write(): number { throw vfsKeyError('EBADF', this.name); }
+    truncate(): void { throw vfsKeyError('EBADF', this.name); }
+    readdir(): { name: string; type: VfsDirentType }[] { throw vfsKeyError('EBADF', this.name); }
+    chmod(): void { throw vfsKeyError('EBADF', this.name); }
+    chown(): void { throw vfsKeyError('EBADF', this.name); }
+    utimes(): void { throw vfsKeyError('EBADF', this.name); }
+
+    close(): void {
+      if (this.opened.closed) return;
+      this.opened.closed = true;
+      this.vfs.openNodes.delete(this.opened);
+      // An unlinked file's content is collectable once nothing holds it.
+      if (this.opened.path === null) this.vfs.maintenancePending = true;
+    }
+  };
+
+  /**
    * A description of the file `ino` numbers, its access decided already: by
    * the open that made it (creat(2) of a mode without write still writes),
    * or by an open a process's wave made and the session kept
@@ -2507,12 +2598,40 @@ export class SqliteVFS {
     holds?: () => ReadonlySet<string>,
   ): VfsOpenDescription | null {
     const origin: Principal = principal ?? this.activeOrigin ?? Object.freeze({ cred });
+    const found = this.inodeNumbered(ino);
+    return found === null ? null : this.describe(found.inode, found.key, path, cred, rights, origin, holds);
+  }
+
+  /**
+   * A new description of the file `ino` numbers, as an open of
+   * /proc/self/fd/N makes one: describeInode's file (an unlinked file a
+   * description holds included), `rights` checked against it as it is now.
+   * ENOENT once no description holds it and no name has it.
+   */
+  reopenInode(
+    ino: number,
+    path: string,
+    cred: VfsCred,
+    rights: { read: boolean; write: boolean; sync?: boolean },
+    principal?: Principal,
+    holds?: () => ReadonlySet<string>,
+    mutationOwner?: string,
+  ): VfsOpenDescription {
+    const found = this.inodeNumbered(ino);
+    if (found === null) throw vfsKeyError('ENOENT', path);
+    if (!this.accessInode(found.inode, (rights.read ? 0o4 : 0) | (rights.write ? 0o2 : 0), cred)) throw vfsKeyError('EACCES', path);
+    const origin: Principal = principal ?? this.activeOrigin ?? Object.freeze({ cred });
+    return this.describe(found.inode, found.key, path, cred, rights, origin, holds, mutationOwner);
+  }
+
+  /** The inode `ino` numbers: the one an open description holds, else the one a name has; null when neither does. */
+  private inodeNumbered(ino: number): { inode: INode; key: string | null } | null {
     for (const opened of this.openNodes) {
-      if (opened.inode.ino === ino) return this.describe(opened.inode, opened.path, path, cred, rights, origin, holds);
+      if (opened.inode.ino === ino) return { inode: opened.inode, key: opened.path };
     }
     const row = [...this.sql.exec('SELECT path FROM vfs_inodes WHERE ino = ? LIMIT 1', ino)][0];
     const inode = row === undefined ? undefined : this.inodes.get(String(row.path));
-    return inode === undefined ? null : this.describe(inode, inode.path, path, cred, rights, origin, holds);
+    return inode === undefined ? null : { inode, key: inode.path };
   }
 
   private describe(
@@ -2572,6 +2691,10 @@ export class SqliteVFS {
     };
     const description: VfsOpenDescription = {
       get ino(): number { return live().ino; },
+      revision: () => {
+        this.settleAppends();
+        return opened.path === null ? this._revision : this.pathRevision(opened.path, live());
+      },
       // The opener's name for the file, which descriptor-relative lookups
       // resolve beneath: the key would put them in a different view.
       path: () => {

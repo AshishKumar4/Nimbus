@@ -51,6 +51,8 @@ import {
   type RecallKind,
   type RuntimeOpenFlags,
   type RuntimeReadOptions,
+  type RuntimeOpenedFile,
+  type RuntimeReopenTarget,
   type RuntimeSynchronousFs,
   type RuntimeVfsDirEntry,
   type RuntimeVfsStat,
@@ -65,7 +67,7 @@ import {
 } from './os-contracts.js';
 import { fsError, modeAllows, SqliteRuntimeFsBridge, walkBeneath } from './sqlite-runtime-fs-bridge.js';
 import { closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost, settleHeldAt, type DescriptorScope } from './descriptors.js';
-import { BUFFERED_WRITE_BYTES, flagsRefusal, openFollows, openMounted } from '../vfs/mounted-description.js';
+import { BUFFERED_WRITE_BYTES, flagsRefusal, openFollows, openMounted, reopenMounted } from '../vfs/mounted-description.js';
 import { registerDirectoryReadBridge, directoryReadHandleClosed } from './read-directory-batch.js';
 import { readLeaseCovers, SESSION_KERNEL_ROOTS } from '../_shared/read-lease-cover.js';
 
@@ -169,7 +171,8 @@ class GuardedProcessBridge implements RuntimeFsBridge {
   chown(path: RuntimeFsPath, uid: number, gid: number, options?: { followSymlinks?: boolean }): VfsMutationReceipt {
     this.guard(); return this.target.chown(path, uid, gid, options);
   }
-  open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner): RuntimeFileHandle { this.guard(); return this.target.open(path, flags, options); }
+  open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner): RuntimeOpenedFile { this.guard(); return this.target.open(path, flags, options); }
+  reopen(target: RuntimeReopenTarget, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner): RuntimeOpenedFile { this.guard(); return this.target.reopen(target, flags, options); }
   read(handleId: number, offset: number | null, length: number): Uint8Array { this.guard(); return this.reading(() => this.target.read(handleId, offset, length)); }
   write(handleId: number, offset: number | null, bytes: Uint8Array): number { this.guard(); return this.target.write(handleId, offset, bytes); }
   close(handleId: number): void { return this.target.close(handleId); }
@@ -1095,7 +1098,33 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
         abandon(node);
         throw error;
       }
-      return this.descriptors.issue(node, opened);
+      return this.descriptors.open(node, opened);
+    });
+  }
+
+  reopen(target: RuntimeReopenTarget, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner) {
+    if (!this.awaits(target.handle)) return this.bridge.reopen(target, flags, options);
+    // A file on a mount that answers by awaiting: reopened there, by the name it is held by.
+    this.live();
+    const held = this.descriptors.description(target.handle);
+    if (!held.mounted) return this.bridge.reopen(target, flags, options);
+    const opened = openFlags(flags);
+    const name = held.path();
+    const flagged = flagsRefusal(opened) ?? (opened.create && opened.exclusive ? 'EEXIST' : null);
+    if (flagged !== null) throw syscallError(flagged, 'open', name);
+    const files = this.owned(opened.write || opened.truncate || opened.append ? options : undefined);
+    return andThen(reopenMounted(held, {
+      flags: opened, mode: flags.mode, refuse: (code, syscall) => syscallError(code, syscall, name), scope: this.scope,
+      pin: (file, follow) => files.pin(file, { follow, sync: false }),
+      sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes ?? BUFFERED_WRITE_BYTES,
+    }), (node) => {
+      try {
+        this.live();
+      } catch (error) {
+        abandon(node);
+        throw error;
+      }
+      return this.descriptors.open(node, opened);
     });
   }
 

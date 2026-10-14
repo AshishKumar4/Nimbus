@@ -124,6 +124,7 @@ const INPUTS = {
   wsSend: [id, text, bytes],
   wsClose: [id, code, reason],
   fsOpen: [handlePath, { read: true, write: true }],
+  fsReopen: () => [{ handle: fileHandle.id }, { read: true }],
   fsFstat: () => [fileHandle.id],
   fsDup: () => [fileHandle.id],
   fsSeek: () => [fileHandle.id, seekTo, 'set'],
@@ -374,6 +375,11 @@ const nativeAssert = {
     fileHandle = r;
     assert.equal(r.path, 'home/user/owned/handle', 'fsOpen names the file it opened');
     assert.deepEqual([r.flags.read, r.flags.write, r.closed], [true, true, false], 'fsOpen honoured the flags');
+  },
+  fsReopen: (r) => {
+    assert.notEqual(r.id, fileHandle.id, 'fsReopen opens a new description');
+    assert.equal(r.path, fileHandle.path, 'of the file the descriptor is on');
+    assert.deepEqual([r.flags.read, r.flags.write, r.position], [true, false, 0], 'with its own flags and offset');
   },
   fsFstat: (r) => {
     assert.equal(r.type, 'file', 'fsFstat');

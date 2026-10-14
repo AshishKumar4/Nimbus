@@ -1,5 +1,6 @@
-import type { Awaitable, RuntimeFileHandle, RuntimeFsBridge, RuntimeVfsStat } from '../os-contracts.js';
+import type { Awaitable, RuntimeFileHandle, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenedFile, RuntimeOpenFlags, RuntimeSynchronousFs, RuntimeVfsStat } from '../os-contracts.js';
 import type { Errno, NimbusFsImports, WasiImports } from './types.js';
+import type { PinnedContent } from './resident-filesystem.js';
 /** WASI encoding only. Paths, permissions, inode identity and storage belong to fs. */
 export interface AuthorityFd {
     kind: 'authority';
@@ -12,19 +13,62 @@ export interface AuthorityFd {
 /**
  * A read-only open of a regular file, answered from this isolate: the bytes
  * are the file's content at its stat revision, so every read, seek and stat on
- * the descriptor is local. Nothing on the authority side is held for it.
+ * the descriptor is local.
  */
 export interface ResidentFd {
     kind: 'resident';
+    /** The file's stat at its open. */
     stat: RuntimeVfsStat;
     bytes: Uint8Array;
-    /** Given back when the descriptor goes, when the filesystem pinned the bytes for it (pinContent). */
-    release?: () => void;
+    hold: ResidentHold;
+    /**
+     * Descriptors on this open: dup(2), dup2(2) and a fork's copy share it,
+     * and with it its offset (shareResident, closeResident).
+     */
+    opens: number;
     position: number;
     rights: bigint;
     rightsInheriting: bigint;
     fdflags: number;
+    /** The session's hold of its file, once one of its processes took the name it was read at away (holdCopiesBefore). */
+    kept?: KeptFile;
 }
+/**
+ * A file resident copies are of, held at the session by an O_PATH descriptor
+ * (RuntimeOpenFlags.path) before one of their processes took its name away,
+ * as Linux's open file outlives its name; its last copy lets it go. Null
+ * when it could not be held.
+ */
+export interface KeptFile {
+    readonly held: Awaitable<{
+        readonly handle: number;
+        readonly fs: RuntimeFsBridge | RuntimeSynchronousFs;
+    } | null>;
+    copies: number;
+}
+/**
+ * How a resident copy's file is opened again (an open of /dev/fd/N): by the
+ * session descriptor the copy was read through (a reopen's), held while the
+ * copy lives; else by the name it was read at while that name has it, and
+ * once its process took that name away, by the file it keeps (KeptFile).
+ * A filesystem's pin on its bytes (pinContent) is given back with it.
+ */
+export type ResidentHold = {
+    readonly handle: number;
+} | {
+    readonly name: RuntimeFsPath;
+    readonly follow: boolean;
+    readonly pin?: PinnedContent;
+};
+/** Another descriptor on a resident open, as dup(2) makes one: the same offset, the same hold. */
+export declare function shareResident(open: ResidentFd): ResidentFd;
+/**
+ * One descriptor on a resident open closed. The last gives back its hold:
+ * the session descriptor it was read through, closed without waiting on it,
+ * as nothing of the guest's depends on it; else its pin, and its share of
+ * the file it keeps.
+ */
+export declare function closeResident(open: ResidentFd, fs: RuntimeFsBridge | RuntimeSynchronousFs): void;
 export interface AuthorityPreopen {
     kind: 'preopen';
     vfsPath: string;
@@ -69,6 +113,28 @@ export declare function refusalErrno(error: unknown, gone?: (refusal: string) =>
 /** How a run whose session no longer holds its process ends. */
 export declare function processGoneMessage(refusal: string): string;
 export declare function after<T, R>(value: Awaitable<T>, next: (value: T) => Awaitable<R>): Awaitable<R>;
+/**
+ * Before a change takes the names `paths` away on `fs` (an unlink's, a
+ * rename's from and to), keeps the files that resident copies in `tables`
+ * are of there (KeptFile); for a directory among them (a rename's), every
+ * copied file, as its names may be beneath it. Settles once each hold is
+ * answered, so the change cannot reach the session before it; at once, and
+ * asking the session nothing, when no copy lacks one.
+ */
+export declare function keepCopiesBefore(fs: RuntimeFsBridge | RuntimeSynchronousFs, paths: readonly RuntimeFsPath[], tables: Iterable<ReadonlyMap<number, FilesystemFd>>): Awaitable<void>;
+/** A session descriptor nothing of the guest's waits to see closed: closed, a refusal of it dropped. */
+export declare function closeUnawaited(fs: RuntimeFsBridge | RuntimeSynchronousFs, handle: number): void;
+/**
+ * Opens `name` as the file `identity` (dev, ino) is, where the process holds
+ * no descriptor of it to reopen by (an open of /dev/fd/N on a copy): ENOENT
+ * once the name has another file, or none. `follow`: as the name was first
+ * looked up. Never creates one, and empties it only once it is known to be
+ * that file.
+ */
+export declare function openIdentified(fs: RuntimeFsBridge | RuntimeSynchronousFs, name: RuntimeFsPath, follow: boolean, flags: RuntimeOpenFlags, identity: {
+    dev: number;
+    ino: number;
+}): Awaitable<RuntimeOpenedFile>;
 export interface AuthorityFilesystemOptions {
     fs(): RuntimeFsBridge | null;
     memory(): WebAssembly.Memory;
@@ -87,12 +153,18 @@ export interface AuthorityFilesystemOptions {
     /**
      * Largest regular file a read-only open answers from a resident copy. A
      * guest that reopens the same file for every module (CPython's zipimport,
-     * a shell's scripts) then pays one stat per open and one read per revision,
+     * a shell's scripts) then pays one open per open and one read per revision,
      * rather than a round trip per descriptor call. Content is keyed by inode
      * and validated against the stat revision, so a file rewritten by anyone
      * is fetched again on its next open. Zero keeps every open on the authority.
      */
     residentBytes?: number;
+    /**
+     * Every descriptor table whose resident copies an unlink or a rename here
+     * keeps the file of (keepCopiesBefore): bash's processes', which share
+     * their files; this one's alone when absent.
+     */
+    residentTables?: () => Iterable<ReadonlyMap<number, FilesystemFd>>;
     /**
      * Whether a resident copy outlives its descriptor (default true). A guest
      * whose host process already holds the filesystem's content (a node
@@ -115,7 +187,31 @@ export interface AuthorityFilesystemOptions {
      * descriptor goes to what the table held.
      */
     extension?: Partial<NimbusFsImports>;
+    /**
+     * A new descriptor, at the next free number, on what the host's own
+     * descriptor `fd` holds (a standard stream, a pipe end), as dup(2) makes
+     * one; null when that kind cannot be shared (a socket). A path naming a
+     * descriptor (descriptorNamed) opens a stream the host holds through this;
+     * without it, those paths are the filesystem's.
+     */
+    duplicate?(fd: number): number | null;
 }
+/**
+ * The descriptor `path` names, as Linux's /dev/fd/N, /proc/self/fd/N and
+ * /dev/std{in,out,err} do; null for any other path. No filesystem holds what
+ * these name: each is the process's own descriptor. A relative `path` is
+ * relative to descriptor `fd` of `fds` (a preopen, or a directory the codec
+ * holds), or to `cwd` for AT_FDCWD (-1). Every call that takes a path asks
+ * this one question: path_open, path_filestat_get, the extension's path_stat
+ * and bash's stat_metadata.
+ *
+ * Linux's answer to what such a path opens: the file or directory itself
+ * is opened again, with the new open's flags (a new description, its own
+ * offset, O_TRUNC and O_APPEND honored), even one renamed or unlinked
+ * since; a stream or a pipe end is shared. Stat'd, it is that descriptor's
+ * stat.
+ */
+export declare function descriptorNamed(fds: ReadonlyMap<number, FilesystemFd>, fd: number, path: string, cwd?: string): number | null;
 /**
  * st_mode of a stat: its type's format bits, and its permission bits, or
  * Node's defaults (0755 for a directory, 0644 otherwise) where the backend
