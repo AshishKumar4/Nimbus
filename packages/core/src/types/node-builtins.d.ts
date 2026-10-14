@@ -1,6 +1,7 @@
 // The `node:buffer`, `node:util` and `node:string_decoder` surface core uses:
 // lifo's node gives a program the engine's own builtins, and its console
-// formats with the engine's util (substrate/lifo/node-compat). Bun and Node
+// formats with the engine's util (substrate/lifo/node-compat); lifo's
+// commands know whose code is running by `node:async_hooks`. Bun and Node
 // provide them; workerd under nodejs_compat.
 declare module 'node:buffer' {
   export class Buffer extends Uint8Array {
@@ -10,6 +11,13 @@ declare module 'node:buffer' {
     static isEncoding(encoding: string): boolean;
     /** An encoding the engine does not know throws, as in Node. */
     toString(encoding?: string, start?: number, end?: number): string;
+  }
+}
+
+declare module 'node:async_hooks' {
+  export class AsyncLocalStorage<T> {
+    getStore(): T | undefined;
+    run<R>(store: T, callback: () => R): R;
   }
 }
 

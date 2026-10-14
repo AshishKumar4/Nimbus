@@ -18,7 +18,10 @@
 // builtin's went to the realm's own process, the host's stderr, and lifo's
 // emitWarning wrote "Warning: <message>" and told no listener. One process:
 // a module's `process` is globalThis.process and require('process'), which
-// were each a process of their own.
+// were each a process of their own. A builtin's warning goes through the
+// program's emitWarning as it is when the warning is raised (a program may
+// replace it), and an Error warning whose toString is not callable is written
+// as Error.prototype.toString writes it.
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -94,6 +97,14 @@ const programs = {
     "process.emitWarning('with detail', { type: 'X', code: 'C1', detail: 'more' });",
     "process.emitWarning(new Error('as error'));",
     'process.emitWarning(5);',
+  ]),
+  'intercept.js': probes([
+    "const util = require('util');",
+    'const original = process.emitWarning;',
+  ], [
+    "process.emitWarning = (...args) => console.log('intercepted', args[0], args[1], args[2]); util.deprecate(() => 1, 'old api', 'DEP_X')(); process.emitWarning = original;",
+    "const w = new Error('plain'); w.toString = undefined; process.emitWarning(w);",
+    "const v = new Error('custom'); v.toString = () => 'CustomText'; process.emitWarning(v);",
   ]),
 };
 /** Node writes its pid in a warning: `(node:<pid>)`. */
