@@ -69,16 +69,23 @@ try {
   for (const [name, sql] of Object.entries(MIGRATIONS)) await write(`/home/user/d1-app/migrations/${name}`, sql);
   await terminal.run('cd /home/user/d1-app', 10_000);
 
-  /** `wrangler dev` until it has built and its migrations have had time to run; then stopped. Answers what it wrote. */
+  /**
+   * `wrangler dev` until its build has ended and its migrations have had
+   * time to run; then stopped. Answers what it wrote. (The Worker itself
+   * does not start yet: a D1 binding cannot cross into its env, SES-M1's
+   * guest half; its migrations run either way.)
+   */
   const devOnce = async () => {
     terminal.reset();
     terminal.cmd('wrangler dev');
-    await terminal.waitFor((b) => /Worker built|\x1b\[31m/.test(b), 120_000, 'wrangler dev build');
+    await terminal.waitFor((b) => /Worker built|Failed to start/.test(stripAnsi(b)), 120_000, 'wrangler dev build');
     // The migrations run beside the build; their lines come after it.
     await new Promise((resolve) => setTimeout(resolve, 5_000));
     const out = stripAnsi(terminal.buf);
-    terminal.send('\x03');
-    await terminal.waitForPrompt(30_000);
+    if (!/Failed to start/.test(out)) {
+      terminal.send('\x03');
+      await terminal.waitForPrompt(30_000);
+    }
     return out;
   };
 
