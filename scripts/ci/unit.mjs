@@ -3,7 +3,7 @@
 // `armada run <commit>` reads the commit's .armada.json, starts containers
 // from the environment scripts/ci/recipe/setup.sh and install.sh prepare, runs
 // `plan` once, then `task` once for each part the plan prints. Each
-// standard-4 container pulls part after part from one queue, longest first.
+// container pulls part after part from one queue, longest first.
 //
 //   unit.mjs plan --target S --timings FILE [--tier fast|slow|all] [--only a.mjs,b.mjs]
 //     Prints the matrix: run-all's selection (`armada run <commit> -- --tier
@@ -29,17 +29,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { costMs, expectedCosts, partition } from '../../tests/unit/lib/partition.mjs';
+import { unitJobs } from './lib/cpus.mjs';
 
 const RUN_ALL = fileURLToPath(new URL('../../tests/unit/run-all.mjs', import.meta.url));
-/** Files at a time: a standard-4 container's vCPUs. */
-const JOBS = 4;
+/** The plan and each task use the CPUs the container actually grants them. */
+const JOBS = unitJobs();
 /** Parts while nothing is measured: as many as the first full runs measured well with (16). */
 const FIRST_PARTS = 16;
 /**
  * A file's limit: three times run-all's local five minutes. A container's
  * vCPU is about 1.5x slower than a workstation core (the same files alone:
  * 55.6 s against 37.1 s, 34.7 s against 21.6 s), and a threaded file gets
- * 4 of them, not 24: interpreter-test262 took 315-641 s alone on one.
+ * only the container's CPUs: interpreter-test262 took 315-641 s alone on one.
  */
 const FILE_TIMEOUT_MS = 900_000;
 
@@ -83,6 +84,7 @@ function plan() {
   const totalMs = names.reduce((sum, name) => sum + expectedMs(name) / (runsAlone(name) ? 1 : JOBS), 0);
   const count = names.some((name) => known[name]) ? Math.ceil(totalMs / (target * 1000)) : FIRST_PARTS;
   const parts = partition(names, Math.max(1, Math.min(names.length, count)), { expectedMs, runsAlone, jobs: JOBS });
+  console.error(`unit.mjs: ${names.length} files, ${JOBS} workers, target ${target} s, ${parts.length} parts`);
   console.log(JSON.stringify({
     include: parts.filter((part) => part.names.length > 0).map((part, index) => ({
       name: `part-${index + 1}`,
@@ -116,6 +118,7 @@ function task() {
   }
   const scratch = mkdtempSync(join(tmpdir(), 'armada-part-'));
   try {
+    console.log(`unit.mjs: ${JOBS} workers from task CPU affinity and quota`);
     const timings = join(scratch, 'timings.json');
     const reportPath = join(scratch, 'report.json');
     writeFileSync(timings, JSON.stringify({ files: measured(option('--timings')) }));
