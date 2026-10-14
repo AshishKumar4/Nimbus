@@ -1,3 +1,4 @@
+import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 /** How many bytes a stored body is read in at a time. */
 const READ_PIECE_BYTES = 1024 * 1024;
 export function ensureBindingDir(vfs, path) {
@@ -65,8 +66,11 @@ export async function writeBody(vfs, path, body, limit, tooLarge, onPiece = () =
 }
 /**
  * The `length` bytes of the file at `path` from `start`, read a piece at a
- * time as they are asked for. The file changed under it (replaced, or
- * removed) errors the stream rather than mix two bodies.
+ * time as they are asked for, which may be after the call that made it has
+ * answered: a piece that meets another holder's delegation waits for its
+ * recall and is read again, as a call the session serves is. The file
+ * changed under it (replaced, removed, or by the recall) errors the stream
+ * rather than mix two bodies.
  */
 export function fileStream(vfs, path, start, length) {
     const revision = vfs.revision(path);
@@ -74,14 +78,16 @@ export function fileStream(vfs, path, start, length) {
     const end = start + length;
     return new ReadableStream({
         type: 'bytes',
-        pull(controller) {
+        async pull(controller) {
             if (at >= end) {
                 controller.close();
                 return;
             }
-            if (vfs.revision(path) !== revision)
-                throw new Error('the object changed while its body was read');
-            const piece = vfs.readRange(path, at, Math.min(READ_PIECE_BYTES, end - at));
+            const piece = await withRecall(() => {
+                if (vfs.revision(path) !== revision)
+                    throw new Error('the object changed while its body was read');
+                return vfs.readRange(path, at, Math.min(READ_PIECE_BYTES, end - at));
+            });
             at += piece.byteLength;
             // A byte stream refuses an empty chunk, and takes the buffer it is given: the read may share the filesystem's.
             if (piece.byteLength === 0)

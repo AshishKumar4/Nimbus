@@ -13,8 +13,11 @@ export declare function ensureBindingDir(vfs: Pick<CredentialedVfs, 'exists' | '
 export declare function writeBody(vfs: Pick<CredentialedVfs, 'writeFile' | 'writeFileFrom'>, path: string, body: BindingBody, limit: number, tooLarge: (received: number) => Error, onPiece?: (piece: Uint8Array) => void): Promise<number>;
 /**
  * The `length` bytes of the file at `path` from `start`, read a piece at a
- * time as they are asked for. The file changed under it (replaced, or
- * removed) errors the stream rather than mix two bodies.
+ * time as they are asked for, which may be after the call that made it has
+ * answered: a piece that meets another holder's delegation waits for its
+ * recall and is read again, as a call the session serves is. The file
+ * changed under it (replaced, removed, or by the recall) errors the stream
+ * rather than mix two bodies.
  */
 export declare function fileStream(vfs: Pick<CredentialedVfs, 'readRange' | 'revision'>, path: string, start: number, length: number): ReadableStream<Uint8Array>;
 //# sourceMappingURL=body.d.ts.map

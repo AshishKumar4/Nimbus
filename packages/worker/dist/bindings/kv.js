@@ -22,6 +22,7 @@
  * for TTL probes. Production reads Date.now() / 1000.
  */
 import { z } from 'zod/v4';
+import { jsgInt } from '@nimbus-sh/fabric/inner-storage-env.js';
 import { ensureBindingDir, fileStream, writeBody } from './body.js';
 import { cursorAfter, cursorKey, listObjectFiles, objectFileName, objectStoreDir, removeObjectFiles, uploadFileName, utf8Order } from './object-store.js';
 /** A key's sidecar, as the store wrote it. */
@@ -49,21 +50,11 @@ function validateKeyName(method, key) {
     if (bytes > MAX_KEY_BYTES)
         throw failed(method, 414, `UTF-8 encoded length of ${bytes} exceeds key length limit of ${MAX_KEY_BYTES}.`);
 }
-/** An option workerd takes as an int: a number in int32's range, or a TypeError. */
-function int32(value) {
-    if (value === undefined)
-        return undefined;
-    const number = Number(value);
-    if (!Number.isFinite(number) || number < -2147483648 || number > 2147483647) {
-        throw new TypeError('Value out of range. Must be between -2147483648 and 2147483647 (inclusive).');
-    }
-    return Math.trunc(number);
-}
 /** A get's options, a type string or an object, as the client reads them. */
 function getOptions(options) {
     if (typeof options === 'string')
         return { type: options, cacheTtl: undefined };
-    return { type: options?.type === undefined ? undefined : String(options.type), cacheTtl: int32(options?.cacheTtl) };
+    return { type: options?.type === undefined ? undefined : String(options.type), cacheTtl: jsgInt(options?.cacheTtl) };
 }
 function checkCacheTtl(method, cacheTtl) {
     if (cacheTtl !== undefined && cacheTtl < MIN_CACHE_TTL) {
@@ -95,8 +86,8 @@ export class KvEmulator {
     async put(key, value, options) {
         const name = String(key);
         validateKeyName('PUT', name);
-        const expiration = int32(options?.expiration);
-        const expirationTtl = int32(options?.expirationTtl);
+        const expiration = jsgInt(options?.expiration);
+        const expirationTtl = jsgInt(options?.expirationTtl);
         const metadata = options?.metadata ?? undefined;
         // A string, or the three kinds of object it takes; any other value is its string.
         const isObject = value !== null && (typeof value === 'object' || typeof value === 'function');
@@ -147,7 +138,7 @@ export class KvEmulator {
     }
     async list(options) {
         // workerd's client sends a limit only when it is positive; the store refuses a larger one as the GET it is.
-        const given = int32(options?.limit);
+        const given = jsgInt(options?.limit);
         const limit = given === undefined || given <= 0 ? MAX_LIST_KEYS : given;
         if (limit > MAX_LIST_KEYS)
             throw failed('GET', 400, `Invalid key_count_limit of ${limit}. Please specify an integer less than ${MAX_LIST_KEYS}.`);

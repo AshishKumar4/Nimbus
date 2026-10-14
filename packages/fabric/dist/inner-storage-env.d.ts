@@ -228,4 +228,10 @@ export interface R2BucketRemote {
  * local object over it.
  */
 export declare function innerStorageAdapter(names: InnerStorageNames, env: object): void;
+/**
+ * An option workerd takes as an `int` (jsg's int wrapper): the number it
+ * converts to (ToNumber), 0 for one that is not finite, truncated; out of
+ * int32's range, the TypeError workerd throws.
+ */
+export declare function jsgInt(value: number | string | undefined): number | undefined;
 //# sourceMappingURL=inner-storage-env.d.ts.map

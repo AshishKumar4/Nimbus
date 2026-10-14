@@ -42,6 +42,22 @@ export function innerStorageAdapter(names, env) {
             Reflect.set(env, name, new R2Bucket(remote));
     }
 }
+/**
+ * An option workerd takes as an `int` (jsg's int wrapper): the number it
+ * converts to (ToNumber), 0 for one that is not finite, truncated; out of
+ * int32's range, the TypeError workerd throws.
+ */
+export function jsgInt(value) {
+    if (value === undefined)
+        return undefined;
+    const number = Number(value);
+    if (!Number.isFinite(number))
+        return 0;
+    if (number < -2147483648 || number > 2147483647) {
+        throw new TypeError('Value out of range. Must be between -2147483648 and 2147483647 (inclusive).');
+    }
+    return Math.trunc(number);
+}
 /** Whether `value` is the binding the loader passes, with each of `methods` (an RPC stub's methods are its properties). */
 function isRemote(value, methods) {
     return value !== null && (typeof value === 'object' || typeof value === 'function')
@@ -557,7 +573,10 @@ class R2Bucket {
         return this.#remote.delete(Array.isArray(keys) ? keys.map(String) : String(keys));
     }
     async list(options) {
-        const { include: given, ...rest } = options ?? {};
+        const { include: given, limit: givenLimit, ...others } = options ?? {};
+        // ListOptions.limit is an int to workerd.
+        const limit = jsgInt(givenLimit);
+        const rest = limit === undefined ? others : { ...others, limit };
         const include = [];
         for (const field of given ?? []) {
             if (field !== 'httpMetadata' && field !== 'customMetadata')
