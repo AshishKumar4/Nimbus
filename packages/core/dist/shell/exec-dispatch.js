@@ -119,9 +119,11 @@ function isDenied(error) {
  * as the caller: each directory in turn, a directory entry of that name
  * passed over, and a file the caller may not execute (or reach) remembered
  * and passed over. A file is executable when the caller's access(X_OK)
- * allows it, the check a path-shaped invocation makes before it runs.
+ * allows it, the check a path-shaped invocation makes before it runs, or
+ * when `runs` says the shell runs it by its path (a runtime's launcher,
+ * runtime-store.ts, which the registry knows by its path).
  */
-export async function searchPath(name, from) {
+export async function searchPath(name, from, runs) {
     let notExecutable = null;
     for (const directory of pathDirectories(from)) {
         const candidate = directory === '/' ? `/${name}` : `${directory}/${name}`;
@@ -129,6 +131,8 @@ export async function searchPath(name, from) {
             const stat = await from.view.stat(candidate);
             if (stat === null || stat.type === 'directory')
                 continue;
+            if (runs?.(candidate))
+                return { kind: 'program', path: candidate };
             await from.view.access(candidate, X_OK);
             return { kind: 'program', path: candidate };
         }

@@ -22,7 +22,7 @@
  */
 import type { ProcessView as CredentialedVfs } from './process-files.js';
 import { type MinShellRegistry, type RunnerFactory, type RuntimeSummary } from './installed-runtimes.js';
-import type { RuntimeManifest } from './runtime-manifest.js';
+import { type RuntimeManifest } from './runtime-manifest.js';
 import { type RuntimeAvailability, type RuntimePackage, type RuntimeSource, type SeededRuntime } from './runtime-package.js';
 export interface RuntimeManagerOptions {
     vfs: CredentialedVfs;

@@ -264,15 +264,13 @@ async function _pathExecutable(name, from) {
 async function _knownCommandPath(registry, name, from) {
     let hit = null;
     try {
-        hit = await searchPath(name, from);
+        hit = await searchPath(name, from, (path) => registry.has?.(path) === true);
     }
     catch (error) {
         if (!isVfsError(error))
             throw error;
     }
-    if (hit?.kind === 'program' || (hit !== null && registry.has?.(hit.path) === true))
-        return hit.path;
-    return _CANONICAL_BIN_PATHS[name] ?? null;
+    return hit?.kind === 'program' ? hit.path : _CANONICAL_BIN_PATHS[name] ?? null;
 }
 /**
  * What `which` knows of a name, from one search of PATH: the executable file

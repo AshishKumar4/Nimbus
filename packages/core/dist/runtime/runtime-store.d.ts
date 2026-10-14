@@ -44,11 +44,13 @@ export declare function rootsOwn(entry: {
 /** The directories from `/` to the store: each must be root's own (rootsOwn) for the store to be read or written. */
 export declare const RUNTIME_STORE_DIRS: readonly string[];
 /**
- * Make the store ready to write: each directory from `/usr` down made by
- * root if it is missing, and refused unless it is root's own real directory
- * that no one else may write.
+ * Make the store ready to write `<name>/<version>` into: each directory from
+ * `/usr` down to the runtime's own made by root if it is missing, and
+ * refused unless it is root's own real directory that no one else may write.
+ * Below a version directory that is root's only root has written, so the
+ * runtime's files are not reached through anything a user made.
  */
-export declare function prepareRuntimeStore(fs: RuntimeStoreFs): Promise<void>;
+export declare function prepareRuntimeStore(fs: RuntimeStoreFs, name: string, version: string): Promise<void>;
 /** A runtime command's launcher in `/usr/bin`. */
 export interface RuntimeLauncher {
     /** The command it launches, as its entrypoint names it. */

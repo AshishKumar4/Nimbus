@@ -72,9 +72,11 @@ export type PathSearchResult = {
  * as the caller: each directory in turn, a directory entry of that name
  * passed over, and a file the caller may not execute (or reach) remembered
  * and passed over. A file is executable when the caller's access(X_OK)
- * allows it, the check a path-shaped invocation makes before it runs.
+ * allows it, the check a path-shaped invocation makes before it runs, or
+ * when `runs` says the shell runs it by its path (a runtime's launcher,
+ * runtime-store.ts, which the registry knows by its path).
  */
-export declare function searchPath(name: string, from: ResolveContext): Promise<PathSearchResult>;
+export declare function searchPath(name: string, from: ResolveContext, runs?: (path: string) => boolean): Promise<PathSearchResult>;
 /**
  * What a command this resolver gave stands for, as `type`, `command -v` and
  * `which` report it: the file a search of PATH found (executable or not, as
