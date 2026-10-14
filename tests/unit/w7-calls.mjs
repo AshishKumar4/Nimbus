@@ -57,6 +57,7 @@ function oneByOne(user, calls) {
         case 'unlink': user.unlink(call.path); break;
         case 'rmdir': user.rmdir(call.path); break;
         case 'symlink': user.symlink(call.target, call.path); break;
+        case 'copyFile': user.copyFile(call.from, call.path); break;
       }
     } catch (error) {
       return { refusedAt: index, errno: error.code };
@@ -140,6 +141,13 @@ await differential('unlink, rmdir and symlink', [
   { call: 'symlink', path: 'home/user/l2', target: 'kept' },
 ]);
 await differential('rmdir of a file is ENOTDIR', [{ call: 'rmdir', path: 'home/user/kept' }]);
+await differential('copyFile makes a copy, and replaces a file there', [
+  { call: 'copyFile', path: 'home/user/copied', from: 'home/user/kept' },
+  { call: 'copyFile', path: 'home/user/target', from: 'home/user/kept' },
+]);
+await differential('copyFile follows a link at either name', [{ call: 'copyFile', path: 'home/user/link', from: 'home/user/link' }]);
+await differential('copyFile of a name not there is ENOENT', [{ call: 'copyFile', path: 'home/user/c', from: 'home/user/nope' }]);
+await differential('copyFile of a directory is EISDIR', [{ call: 'copyFile', path: 'home/user/c', from: 'home/user/d' }]);
 
 // ── A refusal in the middle: the prefix committed, nothing after it ─────
 {
@@ -172,6 +180,7 @@ await differential('rmdir of a file is ENOTDIR', [{ call: 'rmdir', path: 'home/u
     { call: 'mkdir', path: 'a/d', mode: 0o700 },
     { call: 'symlink', path: 'a/l', target: '../x' },
     { call: 'unlink', path: 'a/l' },
+    { call: 'copyFile', path: 'a/g', from: 'a/f' },
   ];
   const decoded = await decodeWriteBatchStream(encodeWriteBatchStream({ inodes: [], chunks: [], ops: calls.map((call) => ({ type: 'call', call })) }));
   const seen = [];
@@ -185,6 +194,7 @@ await differential('rmdir of a file is ENOTDIR', [{ call: 'rmdir', path: 'home/u
     ['call', { call: 'mkdir', path: 'a/d', mode: 0o700 }],
     ['call', { call: 'symlink', path: 'a/l', target: '../x' }],
     ['call', { call: 'unlink', path: 'a/l' }],
+    ['call', { call: 'copyFile', path: 'a/g', from: 'a/f' }],
   ]);
   await assert.rejects(async () => {
     const bad = encodeWriteBatchStream({ inodes: [], chunks: [], ops: [{ type: 'call', call: { call: 'mkdir', path: 'a/d', mode: 0o700, target: 'x' } }] });
@@ -219,6 +229,25 @@ await differential('rmdir of a file is ENOTDIR', [{ call: 'rmdir', path: 'home/u
   assert.equal(new TextDecoder().decode(user.readFile('home/user/beside')), 'on sqlite');
   assert.equal(shared.stat('/never'), null, 'a call after the refusal was made');
   assert.equal(user.exists('shared/a'), false, 'a mounted call wrote SQLite under the mount point');
+}
+
+// ── A copy across filesystems is the namespace's copy ──────────────────
+{
+  const { raw, user } = engine();
+  const files = new ProcessFiles(raw);
+  const shared = new MemoryVFS();
+  files.vfs.mount('/shared', shared);
+  shared.writeFile('/m', enc.encode('on the mount'));
+  const calls = [
+    { call: 'copyFile', path: 'home/user/from-mount', from: 'shared/m' },
+    { call: 'copyFile', path: 'shared/from-sqlite', from: 'home/user/kept' },
+    { call: 'copyFile', path: 'shared/m', from: 'home/user/kept' },
+  ];
+  const result = await files.waves.writeStream(user, encodeWriteBatchStream({ inodes: [], chunks: [], ops: calls.map((call) => ({ type: 'call', call })) }));
+  assert.equal(result.ok, true, result.error?.message);
+  assert.equal(new TextDecoder().decode(user.readFile('home/user/from-mount')), 'on the mount');
+  assert.equal(new TextDecoder().decode(shared.readFile('/from-sqlite')), 'old');
+  assert.equal(new TextDecoder().decode(shared.readFile('/m')), 'old', 'a file on the mount replaced');
 }
 
 console.log('w7-calls: ok');
