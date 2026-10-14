@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "d244aae412a870d22b41a268532fd5dd057bcdc28318f95cfe40c34e1a88a201",
+  "fingerprint": "0922ddcc7685b341c04e0d5ca08499d65a4462407e6c1bceb151032270a9e2e8",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2175,8 +2175,8 @@
     "packages/worker/dist/bindings/object-store.d.ts.map": "44669c28cad13ea791b60879fd197ef6d69dc7457d87bee2be30f313cdd9198f",
     "packages/worker/dist/bindings/object-store.js": "44fdb12eb89883a4049316f917a7c5bc10bda06c2abcbe20eb9d96d6c4654f5f",
     "packages/worker/dist/bindings/r2.d.ts": "8d818cb97fe610b6274b297af2488142364f10652243c14c4d1627dbe3db757a",
-    "packages/worker/dist/bindings/r2.d.ts.map": "56bc47897dfa8546e03766d4c8449cb3ddab9902ac962078efae705f6df0bc56",
-    "packages/worker/dist/bindings/r2.js": "68941d6ffae8b669aebf8a4be98f90ccc3d25991e8415ca94c0cc313c0daf590",
+    "packages/worker/dist/bindings/r2.d.ts.map": "b0accd3a578b751147727c848dbc387d02607e48b9e8394d2c43dc736b664369",
+    "packages/worker/dist/bindings/r2.js": "a3243c28b4c6a8d430b13d9c2bd784e2d9ee008fbfe559a85195b177e9d4c0fa",
     "packages/worker/dist/cirrus-npm-cjs.generated.d.ts": "d98a735f7b70c27ef3c7f034d0d6a92f819216775afffd6f13a7b36699da768e",
     "packages/worker/dist/cirrus-npm-cjs.generated.d.ts.map": "8930028352fa50c0f2e7055c301594d48bdebe7289ad3098932f2982d368fc4c",
     "packages/worker/dist/cirrus-npm-cjs.generated.js": "98865829f976b9632707338b07a6e1407f739cde64bc868ee7a9903a6d39b62b",
@@ -3062,7 +3062,7 @@
     "packages/worker/src/bindings/d1.ts": "661ffae757827797ab99415f3e65690cd72e18e423358efd3535e8e2b494a4a1",
     "packages/worker/src/bindings/kv.ts": "65f5ddae47b93d0f6d967b55736b785e3d4de495c0ae64a7337908013e326896",
     "packages/worker/src/bindings/object-store.ts": "ee3e80a60811a513313a906350b2307946960443ccb5b7988d6aad918cd172b5",
-    "packages/worker/src/bindings/r2.ts": "8d0e3fcc1f894bf40404426b88c3d4d1013c4caf7d1d3847da15c53a4103fcf8",
+    "packages/worker/src/bindings/r2.ts": "467006a8f2ab2332dd66e2ece5af090c29ca76e650f49c25b491ff01817eb66b",
     "packages/worker/src/cirrus-npm-cjs.generated.ts": "11fbee4bb06f07b161bcec8d76eddc02517f49c8f967ba5bb9d4ed3caf623981",
     "packages/worker/src/cirrus-plugin-react.generated.ts": "1d68ba0bad0299c7b9f9a7e9284670db138414791b53e9ef8bea64617584be87",
     "packages/worker/src/esbuild-cli-artifact.generated.ts": "562fd9b0f54fbf6a953bcb710f1b10e0f5901dfee320bd243252e76e7b6a9691",

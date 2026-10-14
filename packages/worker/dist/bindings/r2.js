@@ -58,6 +58,7 @@ const HASHES = [
     { name: 'sha384', label: 'SHA-384' },
     { name: 'sha512', label: 'SHA-512' },
 ];
+const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 /** An error of R2's, as workerd's R2 client throws it: the action, the message, R2's code. */
 function r2Error(action, message, code) {
     return new Error(`${action}: ${message} (${code})`);
@@ -173,12 +174,12 @@ export class R2Emulator {
     }
     async put(key, value, options) {
         const body = await coerceBindingBody(value);
-        const checksums = { md5: createHash('md5').update(body).digest('hex') };
+        const checksums = { md5: hex(createHash('md5').update(body).digest()) };
         for (const { name, label } of HASHES) {
             const provided = options.checksums?.[name];
             if (provided === undefined)
                 continue;
-            const computed = createHash(name).update(body).digest('hex');
+            const computed = hex(createHash(name).update(body).digest());
             if (provided !== computed) {
                 throw r2Error('put', [
                     `The ${label} checksum you specified did not match what we received.`,
@@ -194,7 +195,7 @@ export class R2Emulator {
             return null;
         const side = {
             etag: checksums.md5 ?? '',
-            version: Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join(''),
+            version: hex(crypto.getRandomValues(new Uint8Array(16))),
             size: body.byteLength,
             uploaded: Date.now(),
             checksums,
