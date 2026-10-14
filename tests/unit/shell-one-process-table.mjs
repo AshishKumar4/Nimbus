@@ -37,8 +37,7 @@ try {
     const r = await run(`${HOLD}; hold & p=$!; kill $p; wait $p; echo "status=$?"; echo "p=$p"`);
     assert.match(r.stdout, /^status=143\n/);
     const pid = Number(/p=(\d+)/.exec(r.stdout)[1]);
-    assert.equal(ws.processes.get(pid)?.state, 'killed');
-    assert.equal(ws.processes.get(pid)?.exitCode, 143);
+    assert.equal(ws.processes.get(pid), undefined, 'ended, it left the table with the exec that waited for it');
   });
 
   await check('wait $! answers the job\'s own status', async () => {

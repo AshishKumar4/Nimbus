@@ -19,21 +19,24 @@ try {
     { execute: (command, options) => box.shell.execute(command, options) },
   );
 
-  const commandContext = { pid: 41, cred: CRED_KERNEL };
+  const processes = box.workspace.processes;
+  const pid = processes.spawn('host', ['host'], '/', { cred: CRED_KERNEL }).pid;
+  const commandContext = { pid, cred: CRED_KERNEL };
+  // A background job is a process of its own, a child of the one the line runs as, with its credential.
   const cases = [
-    ['direct command', 'credprobe'],
-    ['pipeline stage', 'credprobe | cat'],
-    ['subshell', '(credprobe)'],
-    ['background job', 'credprobe & wait'],
-    ['nested shell', "sh -c 'credprobe'"],
+    ['direct command', 'credprobe', (seen) => seen === pid],
+    ['pipeline stage', 'credprobe | cat', (seen) => seen === pid],
+    ['subshell', '(credprobe)', (seen) => seen === pid],
+    ['background job', 'credprobe & wait', (seen) => seen !== pid && processes.get(seen)?.parentPid === pid],
+    ['nested shell', "sh -c 'credprobe'", (seen) => seen === pid],
   ];
 
-  for (const [name, command] of cases) {
+  for (const [name, command, runsAs] of cases) {
     observed.length = 0;
     const result = await box.shell.execute(command, { commandContext });
     assert.equal(result.exitCode, 0, `${name}: exit code`);
     assert.equal(observed.length, 1, `${name}: command invoked once`);
-    assert.equal(observed[0].pid, 41, `${name}: pid is preserved`);
+    assert.ok(runsAs(observed[0].pid), `${name}: runs as pid ${observed[0].pid}`);
     assert.deepEqual(observed[0].cred, CRED_KERNEL, `${name}: credential is preserved`);
   }
 } finally {

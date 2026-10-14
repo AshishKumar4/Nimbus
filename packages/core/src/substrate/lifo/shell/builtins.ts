@@ -413,7 +413,7 @@ async function builtinWait({ args, stderr, state }: BuiltinCall): Promise<number
       last = 1;
       continue;
     }
-    const job = byJob ? state.jobTable.waitTarget(arg) : state.jobTable.byPid(Number(arg));
+    const job = state.jobTable.waitTarget(arg);
     if (job === 'ambiguous') {
       await stderr.write(`wait: ${arg.slice(1)}: ambiguous job spec\n`);
       last = 127;

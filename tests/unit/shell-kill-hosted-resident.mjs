@@ -172,7 +172,7 @@ try {
   // ── 7. a shell's job is a process of the table ─────────────────────────
   const jobPid = Number((await sh('sleep 30 & echo $!')).out.trim());
   assert.equal(running(jobPid), true, `the job's pid (${jobPid}) runs in the session table`);
-  assert.deepEqual(await sh(`ps | awk '$1 == ${jobPid} { print "listed" }'`), { code: 0, out: 'listed\n', err: '' }, 'ps lists the job');
+  assert.deepEqual(await sh(`ps | grep -q '^ *${jobPid} ' && echo listed`), { code: 0, out: 'listed\n', err: '' }, 'ps lists the job');
   assert.deepEqual(await sh(`kill ${jobPid}; echo rc=$?`), { code: 0, out: 'rc=0\n', err: '' }, 'another exec ends it by pid');
   assert.equal(running(jobPid), false, 'the job ended');
   assert.equal(processes.get(jobPid)?.exitCode, 143, 'by SIGTERM');
