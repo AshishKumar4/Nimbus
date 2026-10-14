@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "1514cbdfcd177b06e6179f40356d39abf1b1e185378ee09798b7578422a79ff7",
+  "fingerprint": "479400b5648e44a2ef381c0e195cbb4f0927e30249578d29a8dc79154b7e2501",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1789,8 +1789,8 @@
     "packages/fabric/dist/bindings.d.ts.map": "f2d3fa1439b6fba723b090a1c52c6f1ca5836fdfe6e9a2ef45cae1b50d20a58a",
     "packages/fabric/dist/bindings.js": "982cf55b9c08bb4780691e4c855df814c695a555902ac654161885c5d5738f18",
     "packages/fabric/dist/budgets.d.ts": "f2e2bafcfc5ddea03d1c290c7ae34ea273e53cf9c6028bcc215942d26cb59f0c",
-    "packages/fabric/dist/budgets.d.ts.map": "aa4283ee7d68fb93319a1ce435a93c3fd7a765dd35f75ca6b59fae723a984816",
-    "packages/fabric/dist/budgets.js": "90a9e0aa0d003d36340e46e7251eb7154f461c01fa0cc12e9f647f250c6b0b8f",
+    "packages/fabric/dist/budgets.d.ts.map": "edae02005c2b3e37bb2dd1eb5678f6343f74de1d03928f9c7324e7a76864e5cb",
+    "packages/fabric/dist/budgets.js": "214f56ef033bebc87604d162fac09f7a343f1b5f7080377ab8051a1f8ab5528e",
     "packages/fabric/dist/compiled-bodies.generated.d.ts": "0dc094745876d99cbf16e339727e86840eed1dfef9b78d5f6cba4190662e6d33",
     "packages/fabric/dist/compiled-bodies.generated.d.ts.map": "8a927732fa02b101a43179029f9e8daa9d8b36bb28689fb7553f389c0eb09a75",
     "packages/fabric/dist/compiled-bodies.generated.js": "4f17b7946d7d97c8231860972d968a0aa9f9775f383b5dc9e4c824aa95efd7c1",
@@ -1897,7 +1897,7 @@
     "packages/fabric/examples/connections-types.ts": "052d271692ad69876a15631b08bec84fd49deab5e46ddb3c34c6a52cab86511c",
     "packages/fabric/package.json": "fc73912f2db5998e2dc940846d5efb38b4da1adac0f95bfb79c294ed6cbc7918",
     "packages/fabric/src/bindings.ts": "428782c7bbf14b37c894a8ca3d53dbfff90195536deb010db9f0421b3e5c82fa",
-    "packages/fabric/src/budgets.ts": "09d1a6e76a3bd319e922cf682e13b8299e0cc9749379acd9c4f978d1c66265c3",
+    "packages/fabric/src/budgets.ts": "5003740947ce49b4d1b4bd56c983ddec0f96701c156f4beef414dbdd3b08b50a",
     "packages/fabric/src/compiled-bodies.generated.ts": "4f80c3d3159821470dea1aab0139fccb7d92d389e6c1ab44d8aff4ed17ee0458",
     "packages/fabric/src/composition.ts": "40216ae69e283b72d9e562a9b06d1c6ae608c99e433612203de743e06de9db2e",
     "packages/fabric/src/connections.ts": "5c6bad5ec658b6874af1d19962e56d98cd29669a829f96d37631f1f34c7960f5",
