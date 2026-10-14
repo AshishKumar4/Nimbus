@@ -15,7 +15,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
-  chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync,
+  chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1300,6 +1300,76 @@ try {
       assert.equal(user.exists(`${repo.virtual}/.git/refs/heads/side`), false, `${label}: no ref is made`);
       assert.equal(user.exists(`${vfsIndex}.lock`), false, `${label}: no lock is left`);
       assert.equal(user.readFileString(`${repo.virtual}/b.txt`), 'b changed\n', `${label}: the worktree is as it was`);
+      checks++;
+    }
+  }
+
+  // ── An index past its open: each later step of do_read_index (read-cache.c)
+  // that fails is git's to report in its own words, the command stopped
+  // before any effect. A directory at .git/index opens and is checked by the
+  // size its stat gives; a file too small to hold a header is; verify_hdr
+  // reports a bad signature, version or checksum, then git dies "index file
+  // corrupt". A null trailer (index.skipHash) is no checksum to check. ──
+  {
+    const repo = scenario(({ put, git }) => {
+      put('a.txt', 'a\n'); put('b.txt', 'b\n');
+      git('add', '.'); git('commit', '-q', '-m', 'one');
+      put('a.txt', 'a changed\n'); git('add', 'a.txt');
+    });
+    const diskIndex = join(repo.disk, '.git/index');
+    const vfsIndex = `${repo.virtual}/.git/index`;
+    const good = user.readFile(vfsIndex);
+    const refs = () => realGit(repo.disk, ['for-each-ref', '--format=%(refname) %(objectname)']).stdout.toString();
+    const refsBefore = refs();
+    const withBytes = (edit) => { const bytes = new Uint8Array(good); edit(bytes, new DataView(bytes.buffer)); return bytes; };
+    const DAMAGE = {
+      directory: null,
+      small: good.subarray(0, 10),
+      signature: withBytes((b) => b.set(new TextEncoder().encode('NOPE'), 0)),
+      version: withBytes((_, v) => v.setUint32(4, 9)),
+      checksum: withBytes((b) => { b[b.length - 21] ^= 0xff; }),
+    };
+    const put = (bytes) => {
+      if (bytes === null) {
+        rmSync(diskIndex); mkdirSync(diskIndex);
+        user.unlink(vfsIndex); user.mkdir(vfsIndex);
+      } else {
+        writeFileSync(diskIndex, bytes);
+        user.writeFile(vfsIndex, bytes);
+      }
+    };
+    const restore = () => {
+      if (statSync(diskIndex).isDirectory()) rmSync(diskIndex, { recursive: true });
+      if (user.isDirectory(vfsIndex)) user.rmdir(vfsIndex);
+      writeFileSync(diskIndex, good);
+      user.writeFile(vfsIndex, good);
+    };
+    for (const [kind, bytes] of Object.entries(DAMAGE)) {
+      for (const words of [['status', '--porcelain'], ['diff', '--cached'], ['add', 'b.txt'], ['commit', '-q', '-am', 'two']]) {
+        const label = `index ${kind}: git ${words.join(' ')}`;
+        put(bytes);
+        const expected = realGit(repo.disk, words);
+        const actual = await nimbusGit(repo.virtual, words);
+        assert.equal(actual.code, expected.code, `${label}: exit code (git: ${expected.stderr}; nimbus: ${actual.stderr})`);
+        assert.equal(actual.stderr, expected.stderr, `${label}: stderr`);
+        if (bytes === null) assert.ok(user.isDirectory(vfsIndex), `${label}: the directory is as it was`);
+        else assert.deepEqual(user.readFile(vfsIndex), bytes, `${label}: the index is as it was`);
+        assert.equal(refs(), refsBefore, `${label}: git made no ref`);
+        assert.equal(user.exists(`${vfsIndex}.lock`), false, `${label}: no lock is left`);
+        restore();
+        checks++;
+      }
+    }
+    // A null trailer: read, its entries as git reads them.
+    const unhashed = withBytes((b) => b.fill(0, b.length - 20));
+    for (const words of [['status', '--porcelain'], ['ls-files', '-s'], ['diff', '--cached', '--stat']]) {
+      put(unhashed);
+      const expected = realGit(repo.disk, words);
+      const actual = await nimbusGit(repo.virtual, words);
+      assert.equal(actual.code, expected.code, `null trailer: git ${words.join(' ')}: exit code (git: ${expected.stderr}; nimbus: ${actual.stderr})`);
+      assert.equal(actual.stdout.toString(), expected.stdout.toString(), `null trailer: git ${words.join(' ')}: stdout`);
+      assert.equal(actual.stderr, expected.stderr, `null trailer: git ${words.join(' ')}: stderr`);
+      restore();
       checks++;
     }
   }
