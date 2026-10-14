@@ -2,8 +2,8 @@
 // env runs its command, and xargs takes each of GNU's spellings of its
 // replace string, in the session's shell. Each expectation is what GNU
 // coreutils 9.7 env and findutils 4.10.0 xargs print and end with for the
-// same line under bash on armada (reference runs nimbus-20261014104215-5e06b3e1
-// and nimbus-20261014105046-02add956). The commands env runs are ones a core
+// same line under bash on armada (reference runs nimbus-20261014104215-5e06b3e1,
+// nimbus-20261014105046-02add956 and nimbus-20261014122746-b68b5480). The commands env runs are ones a core
 // workspace has: `sh` is the hosted session's.
 import assert from 'node:assert/strict';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
@@ -33,6 +33,17 @@ const CASES = [
   [`env --bogus; echo "rc=$?"`, 'rc=125\n', "env: unrecognized option '--bogus'\nTry 'env --help' for more information.\n"],
   [`env -u; echo "rc=$?"`, 'rc=125\n', "env: option requires an argument -- 'u'\nTry 'env --help' for more information.\n"],
   [`env -0 echo x; echo "rc=$?"`, 'rc=125\n', "env: cannot specify --null (-0) with command\nTry 'env --help' for more information.\n"],
+  // GNU's getopt: clusters, prefixes, and the first operand ends the options.
+  [`env -i0 A=1 | tr '\\0' ';'`, 'A=1;', ''],
+  [`env -iuHOME A=1 env`, 'A=1\n', ''],
+  [`env - A=1 env`, 'A=1\n', ''],
+  [`env -u HOME -i A=1 env`, 'A=1\n', ''],
+  [`env --ign A=1 env; echo "rc=$?"`, 'rc=125\n', "env: option '--ign' is ambiguous; possibilities: '--ignore-environment' '--ignore-signal'\nTry 'env --help' for more information.\n"],
+  [`env A=1 -i env; echo "rc=$?"`, 'rc=127\n', "env: '-i': No such file or directory\n"],
+  // -u NAME follows unsetenv's rule for a name, which -i makes moot.
+  [`env -u 'A=B' true; echo "rc=$?"`, 'rc=125\n', "env: cannot unset 'A=B': Invalid argument\n"],
+  [`env -u '' true; echo "rc=$?"`, 'rc=125\n', "env: cannot unset '': Invalid argument\n"],
+  [`env -i -u 'A=B' env; echo "rc=$?"`, 'rc=0\n', ''],
   // xargs's replace string: -I R, -IR, -i, --replace=R; an item is a line, its leading blanks dropped.
   [`printf 'a b\\nc\\n' | xargs -I{} echo '[{}]'`, '[a b]\n[c]\n', ''],
   [`printf 'a\\nb\\n' | xargs -I {} echo '[{}]'`, '[a]\n[b]\n', ''],
@@ -42,6 +53,9 @@ const CASES = [
   [`printf 'a\\nb\\n' | xargs -i echo '[{}]'`, '[a]\n[b]\n', ''],
   [`printf 'a\\n' | xargs --replace=@ echo '[@]'`, '[a]\n', ''],
   [`printf 'a\\n' | xargs -I{} echo {} {}x 'y{}z'`, 'a ax yaz\n', ''],
+  [`printf '\\r\\nx\\n' | xargs -I {} echo '[{}]'`, '[x]\n', ''],
+  [`printf '\\v\\f x\\n' | xargs -I {} echo '[{}]'`, '[x]\n', ''],
+  [`printf 'a\\r\\n' | xargs -I {} echo '[{}]' | tr '\\r' R`, '[aR]\n', ''],
 ];
 
 const failures = [];
