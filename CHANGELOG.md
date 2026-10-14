@@ -5,6 +5,11 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a shell blocked in `wait` (or `fg`) on a background job counts as
+  waiting on that job, so the Dynamic Worker ledger can refuse a launch in a
+  family stuck behind it instead of hanging. While the shell has another
+  job running that could free it (a job that kills the awaited one), the
+  ledger refuses nothing.
 - Fixed: the library's built-in `node` gives a program the engine's own
   `path` and `url`, against the program's working directory: `path.resolve`
   and `path.relative` start from it, as does `url.pathToFileURL` of a
