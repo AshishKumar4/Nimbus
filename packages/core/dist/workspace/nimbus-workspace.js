@@ -41,7 +41,7 @@ import { PID_GEN_STRIDE } from '../runtime/process-table.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import { ChildProcessManager } from '../runtime/child-process-manager.js';
 import { resolveWorkspaceChild } from './child-process-runner.js';
-import { exitCodeForSignal, signalAbortReason, signalAbortReasonOf, signalDisposition } from '../substrate/lifo/shell/signals.js';
+import { exitCodeForSignal, signalAbortReason, signalAbortReasonOf, signalDisposition, signalOfStatus } from '../substrate/lifo/shell/signals.js';
 import { runtimeEntrypoints } from '../runtime/installed-runtimes.js';
 import { RuntimeManager } from '../runtime/runtime-manager.js';
 import { makeNimbusVerbHandler } from '../runtime/nimbus-command.js';
@@ -616,12 +616,19 @@ function workspaceShellIdentity(processes, shellProcess, getShell) {
                 signal: stopped.signal,
                 runAs: runAsProcess,
             });
-            // A kill ended it: its status and signal are the kill's, whatever its
-            // program returned on its way out (its parent tells a signal apart).
-            const killedBy = ran.signal === null ? signalAbortReasonOf(stopped.signal) : null;
-            const ended = killedBy === null ? ran : { status: killedBy.exitCode, signal: killedBy.signal };
-            exitCode = ended.status;
-            return ended;
+            exitCode = ran.status;
+            // A kill of it is its end, as the table holds it, whatever its program
+            // returned on its way out (a closed pipe its cancellation met). Not
+            // killed, a signal that stopped its work (its parent's) ends a program
+            // that returned a plain status; its own signal stands.
+            const entry = processes.get(child.pid);
+            if (entry?.state === 'killed' && entry.exitCode !== null)
+                return { status: entry.exitCode, signal: signalOfStatus(entry.exitCode) };
+            const stoppedBy = ran.signal === null ? signalAbortReasonOf(stopped.signal) : null;
+            if (stoppedBy === null)
+                return ran;
+            exitCode = stoppedBy.exitCode;
+            return { status: stoppedBy.exitCode, signal: stoppedBy.signal };
         }
         finally {
             endWork();
