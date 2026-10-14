@@ -60,6 +60,9 @@ async function boot() {
   };
 }
 
+/** What the session holds at `path`, read as a peer reads it (recalling the process's subtree). */
+const peerRead = async (authority, path) => new TextDecoder().decode(await authority.peer.readFile(path));
+
 /** Whether `work` settles while the session answers nothing. */
 const answeredAtOnce = (work) => Promise.race([work.then(() => 'answered'), new Promise((resolve) => setTimeout(() => resolve('waiting'), 50))]);
 
@@ -73,7 +76,7 @@ await runScenarios(import.meta.path, {
     assert.equal(fs.statSync(`${OUT}/warm0`).mtimeMs, 1000);
     assert.equal(await answeredAtOnce(fs.promises.chown(`${OUT}/warm0`, 1000, 1000)), 'answered', 'chown');
     await release();
-    const stat = authority.kfs.stat('home/user/app/out/warm0');
+    const stat = await authority.peer.stat('home/user/app/out/warm0');
     assert.equal(stat.mode & 0o7777, 0o600);
     assert.equal(stat.mtimeMs, 1000);
     // What the session would refuse is refused as the sync form refuses it.
@@ -87,7 +90,7 @@ await runScenarios(import.meta.path, {
     assert.equal(await answeredAtOnce(chmod), 'waiting');
     await release();
     await chmod;
-    assert.equal(authority.kfs.stat('home/user/elsewhere/x.txt').mode & 0o7777, 0o600);
+    assert.equal((await authority.peer.stat('home/user/elsewhere/x.txt')).mode & 0o7777, 0o600);
   },
 
   async 'a copy of the program\'s own unanswered write, both names held, is answered once logged'() {
@@ -106,10 +109,10 @@ await runScenarios(import.meta.path, {
     assert.equal(fs.readFileSync(`${OUT}/warm2`, 'utf8'), 'AGAIN');
     assert.equal(fs.statSync(`${OUT}/warm2`).mode & 0o7777, 0o640);
     await release();
-    assert.equal(authority.read('home/user/app/out/dst.txt'), 'SOURCE');
-    assert.equal(authority.kfs.stat('home/user/app/out/dst.txt').mode & 0o7777, 0o640);
-    assert.equal(authority.read('home/user/app/out/warm2'), 'AGAIN');
     assert.equal(fs.readFileSync(`${OUT}/dst.txt`, 'utf8'), 'SOURCE');
+    assert.equal(await peerRead(authority, 'home/user/app/out/dst.txt'), 'SOURCE');
+    assert.equal((await authority.peer.stat('home/user/app/out/dst.txt')).mode & 0o7777, 0o640);
+    assert.equal(await peerRead(authority, 'home/user/app/out/warm2'), 'AGAIN');
   },
 
   async 'a copy of what the session holds, or of a set-id file, is the session\'s to answer'() {
@@ -123,7 +126,7 @@ await runScenarios(import.meta.path, {
     assert.equal(await answeredAtOnce(setuid), 'waiting', 'a set-id source');
     await release();
     await Promise.all([seeded, setuid]);
-    assert.equal(authority.read('home/user/app/out/from-seeded.txt'), 'seeded');
-    assert.equal(authority.read('home/user/app/out/tool-copy'), 'TOOL');
+    assert.equal(await peerRead(authority, 'home/user/app/out/from-seeded.txt'), 'seeded');
+    assert.equal(await peerRead(authority, 'home/user/app/out/tool-copy'), 'TOOL');
   },
 });
