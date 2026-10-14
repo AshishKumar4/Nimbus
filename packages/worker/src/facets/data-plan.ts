@@ -183,10 +183,10 @@ async function readManifest(
 /**
  * The resolvers' filesystem (require-resolution.ts) over the plan's source,
  * each answer asked once per plan: a resolved file is the one the lookup
- * reaches through every symlink on its path, or, past MAX_LINK_HOPS, the
- * path itself, which then names nothing a stat finds.
+ * reaches through every symlink on its path (`links`), or, past
+ * MAX_LINK_HOPS, the path itself, which then names nothing a stat finds.
  */
-function resolutionFs(source: DataPlanSource): RequireFs {
+function resolutionFs(source: DataPlanSource, links: Pick<DataPlanSource, 'linkTarget'>): RequireFs {
   const stats = new Map<string, Promise<{ kind: string; size: number } | null>>();
   const texts = new Map<string, Promise<string | null>>();
   const stat = (path: string) => {
@@ -210,7 +210,7 @@ function resolutionFs(source: DataPlanSource): RequireFs {
       const found = await stat(path);
       return found === null ? null : { size: found.size };
     },
-    realpath: async (path) => (await throughLinks(source, key(path))) ?? key(path),
+    realpath: async (path) => (await throughLinks(links, key(path))) ?? key(path),
   };
 }
 
@@ -236,7 +236,7 @@ const MAX_LINK_HOPS = 40;
  * resolves it, asking the source one component at a time; null past
  * MAX_LINK_HOPS (ELOOP).
  */
-async function throughLinks(source: DataPlanSource, k: string): Promise<string | null> {
+async function throughLinks(source: Pick<DataPlanSource, 'linkTarget'>, k: string): Promise<string | null> {
   let path = k;
   for (let hops = 0; hops <= MAX_LINK_HOPS; hops++) {
     const segs = path.split('/');
@@ -272,6 +272,15 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
     closureRoots.add(root);
     if (typescriptRoot === null && root.endsWith('node_modules/typescript')) typescriptRoot = root;
   }
+  // Each link question once per plan: the paths it resolves share prefixes.
+  const linkAnswers = new Map<string, Promise<string | null>>();
+  const links = {
+    linkTarget: (path: string) => {
+      let answer = linkAnswers.get(path);
+      if (answer === undefined) linkAnswers.set(path, answer = source.linkTarget(path));
+      return answer;
+    },
+  };
   const conventionDirs = new Set<string>([joinKey(cwd, 'node_modules')]);
   for (let d = cwd; ; d = parentOf(d)) { conventionDirs.add(d); if (d === '') break; }
   // What the map holds as the file itself: its paths but the code-only ones.
@@ -392,6 +401,8 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
       }
       const segs = k.split('/');
       if (entry.kind === 'symlink') {
+        // A package linked into node_modules (pnpm's, a workspace's) is installed there.
+        if (packageRootOf(k + '/x') === k) packageRoots.add(k);
         if (raw.linkTarget === undefined) continue;
         const inProject = (cwdPrefix === '' || k.startsWith(cwdPrefix))
           && !(cwdPrefix === '' ? segs : k.slice(cwdPrefix.length).split('/')).slice(0, -1).some((x) => PROJECT_EXCLUDED.has(x));
@@ -465,7 +476,7 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
   // namespace's links are never collected.
   for (const [k, sync] of exact) {
     if (!sync || planned.has(k) || seenFiles.has(k)) continue;
-    const target = await throughLinks(source, k);
+    const target = await throughLinks(links, k);
     if (target === null || target === k || planned.has(target)) continue;
     const found = await source.stat(target);
     if (found === null || found.kind !== 'file') continue;
@@ -473,7 +484,7 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
     if (!closure.has(target)) take(entry, 'static');
   }
 
-  const files = resolutionFs(source);
+  const files = resolutionFs(source, links);
   const conditions = input.conditions ?? [];
   const projectManifest = await readManifest(source, cwd, manifests);
   /** Where Node finds package \`name\` from \`from\`: its own node_modules, then each ancestor's. */
@@ -502,7 +513,7 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
     const text = pkgDir === null ? null : await source.readText(pkgDir + '/package.json');
     const pkg = text === null ? null : parseResolvablePackageJson(text);
     const target = pkg === null ? null : resolvePackageEntry(pkg, at < 0 ? '.' : '.' + spec.slice(at));
-    return pkgDir === null || target === null ? null : joinKey(pkgDir, target);
+    return pkgDir === null || target === null ? null : await throughLinks(links, joinKey(pkgDir, target));
   };
   const hold = async (k: string | null) => {
     if (k === null || planned.has(k)) return;
