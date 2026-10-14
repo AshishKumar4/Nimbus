@@ -86,8 +86,9 @@ export declare function listInstalledManifests(vfs: SqliteVFS): Promise<Array<{
 }>>;
 /**
  * The runtimes in the store that are the system's: what the store, each
- * name's and each version's directory are root's own (rootsOwn, looked at
- * without following them), and a manifest.json root wrote. Anything else
+ * name's and each version's directory, and each directory its files are in,
+ * are root's own (rootsOwn, looked at without following them), and a
+ * manifest.json root wrote. Anything else
  * (a tree a user made in a store an earlier release left theirs, a link)
  * is not listed, so nothing binds, links or removes it as the kernel; a
  * store that is not root's lists nothing.

@@ -24,14 +24,43 @@ export function rootsOwn(entry) {
 /** The directories from `/` to the store: each must be root's own (rootsOwn) for the store to be read or written. */
 export const RUNTIME_STORE_DIRS = STORE_DIRS;
 /**
- * Make the store ready to write `<name>/<version>` into: each directory from
- * `/usr` down to the runtime's own made by root if it is missing, and
- * refused unless it is root's own real directory that no one else may write.
- * Below a version directory that is root's only root has written, so the
- * runtime's files are not reached through anything a user made.
+ * The directories of `manifest`'s tree at `root` its files are in, with every
+ * directory between them and `root`, parents first: what each file is
+ * reached through.
  */
-export async function prepareRuntimeStore(fs, name, version) {
-    for (const dir of [...STORE_DIRS, `${RUNTIME_STORE}/${name}`, `${RUNTIME_STORE}/${name}/${version}`]) {
+function treeDirectories(root, manifest) {
+    const dirs = new Set();
+    for (const file of manifest.files) {
+        const names = file.path.split('/').slice(0, -1);
+        for (let i = 1; i <= names.length; i++)
+            dirs.add(`${root}/${names.slice(0, i).join('/')}`);
+    }
+    return [...dirs].sort((a, b) => a.split('/').length - b.split('/').length);
+}
+/**
+ * Whether every directory `manifest`'s files at `root` are reached through
+ * that is there is root's own (rootsOwn): a tree whose files nobody else
+ * could have put there, or can change. One that is missing is no file's.
+ */
+export async function runtimeTreeOwn(fs, root, manifest) {
+    for (const dir of treeDirectories(root, manifest)) {
+        const entry = await fs.stat(dir, { follow: false });
+        if (entry !== null && !rootsOwn(entry))
+            return false;
+    }
+    return true;
+}
+/**
+ * Make the store ready to write `manifest`'s tree into: each directory from
+ * `/usr` down to the runtime's own, and each its files are in, made by root
+ * if it is missing, and refused unless it is root's own real directory that
+ * no one else may write. Nothing of the tree is then reached through
+ * anything a user made or can change: not a store an earlier release left
+ * the user's, nor a home configured inside a tree.
+ */
+export async function prepareRuntimeStore(fs, manifest) {
+    const root = `${RUNTIME_STORE}/${manifest.name}/${manifest.version}`;
+    for (const dir of [...STORE_DIRS, `${RUNTIME_STORE}/${manifest.name}`, root, ...treeDirectories(root, manifest)]) {
         let entry = await fs.stat(dir, { follow: false });
         if (entry === null) {
             await fs.mkdir(dir, { mode: 0o755 });

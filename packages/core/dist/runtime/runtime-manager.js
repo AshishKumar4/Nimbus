@@ -203,9 +203,8 @@ export class RuntimeManager {
         const entrypoints = runtimeEntrypoints(manifest);
         const totalBytes = manifest.files.reduce((a, f) => a + f.size, 0);
         options?.onProgress?.(`[${name}] manifest: ${manifest.files.length} files, ${(totalBytes / 1024 / 1024).toFixed(1)} MiB`);
-        // A name and version that are one path name each, before either names a directory.
-        const { name: storeName, version } = parseRuntimeManifest(manifest);
-        await prepareRuntimeStore(this.vfs, storeName, version);
+        // A name, version and file paths that stay in the store, before any names a directory.
+        await prepareRuntimeStore(this.vfs, parseRuntimeManifest(manifest));
         const seeded = await seedRuntimePackage(this.vfs, runtimePackage, {
             force: options?.force,
             onProgress: options?.onProgress,

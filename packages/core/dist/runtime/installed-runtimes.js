@@ -20,7 +20,7 @@
 import { sha256Incremental } from '../_shared/crypto.js';
 import { BASH_RUNNER, CRED_KERNEL, NIMBUS_ABI_TARGET, NIMBUS_RUNTIME_ABIS, NATIVE_UNSUPPORTED_ABI, } from './os-contracts.js';
 import { parseRuntimeManifest, } from './runtime-manifest.js';
-import { RUNTIME_STORE, RUNTIME_STORE_DIRS, rootsOwn } from './runtime-store.js';
+import { RUNTIME_STORE, RUNTIME_STORE_DIRS, rootsOwn, runtimeTreeOwn } from './runtime-store.js';
 export function runtimeAbiForManifest(manifest) {
     const byName = NIMBUS_RUNTIME_ABIS[manifest.name];
     if (byName)
@@ -92,8 +92,9 @@ export async function listInstalledManifests(vfs) {
 }
 /**
  * The runtimes in the store that are the system's: what the store, each
- * name's and each version's directory are root's own (rootsOwn, looked at
- * without following them), and a manifest.json root wrote. Anything else
+ * name's and each version's directory, and each directory its files are in,
+ * are root's own (rootsOwn, looked at without following them), and a
+ * manifest.json root wrote. Anything else
  * (a tree a user made in a store an earlier release left theirs, a link)
  * is not listed, so nothing binds, links or removes it as the kernel; a
  * store that is not root's lists nothing.
@@ -119,14 +120,18 @@ export async function listInstalledManifestsView(fs) {
             const marker = await fs.stat(manifestPath, { follow: false });
             if (marker?.type !== 'file' || marker.uid !== 0)
                 continue;
+            let manifest;
             try {
-                const manifest = parseRuntimeManifest(JSON.parse(await fs.readFileString(manifestPath)));
-                out.push({ root: verDir, manifest });
+                manifest = parseRuntimeManifest(JSON.parse(await fs.readFileString(manifestPath)));
             }
             catch {
                 // Malformed manifest — skip silently. Surfacing via stderr
                 // would require a ctx we don't have at boot-time rehydration.
+                continue;
             }
+            // Its files are reached through root's own directories only.
+            if (await runtimeTreeOwn(fs, verDir, manifest))
+                out.push({ root: verDir, manifest });
         }
     }
     return out;

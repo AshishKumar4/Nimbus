@@ -44,13 +44,20 @@ export declare function rootsOwn(entry: {
 /** The directories from `/` to the store: each must be root's own (rootsOwn) for the store to be read or written. */
 export declare const RUNTIME_STORE_DIRS: readonly string[];
 /**
- * Make the store ready to write `<name>/<version>` into: each directory from
- * `/usr` down to the runtime's own made by root if it is missing, and
- * refused unless it is root's own real directory that no one else may write.
- * Below a version directory that is root's only root has written, so the
- * runtime's files are not reached through anything a user made.
+ * Whether every directory `manifest`'s files at `root` are reached through
+ * that is there is root's own (rootsOwn): a tree whose files nobody else
+ * could have put there, or can change. One that is missing is no file's.
  */
-export declare function prepareRuntimeStore(fs: RuntimeStoreFs, name: string, version: string): Promise<void>;
+export declare function runtimeTreeOwn(fs: Pick<RuntimeStoreFs, 'stat'>, root: string, manifest: RuntimeManifest): Promise<boolean>;
+/**
+ * Make the store ready to write `manifest`'s tree into: each directory from
+ * `/usr` down to the runtime's own, and each its files are in, made by root
+ * if it is missing, and refused unless it is root's own real directory that
+ * no one else may write. Nothing of the tree is then reached through
+ * anything a user made or can change: not a store an earlier release left
+ * the user's, nor a home configured inside a tree.
+ */
+export declare function prepareRuntimeStore(fs: RuntimeStoreFs, manifest: RuntimeManifest): Promise<void>;
 /** A runtime command's launcher in `/usr/bin`. */
 export interface RuntimeLauncher {
     /** The command it launches, as its entrypoint names it. */
