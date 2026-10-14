@@ -65,7 +65,7 @@ try {
     const connected = once(sockets, 'connection');
     await client.connect();
     const [replacement] = await connected;
-    joinExistingSession({ shell: box.shell, terminal, ctx: {}, _b4Phase: null, _b4WarmJoinCount: 0 }, replacement, () => {}, () => 'prior output\nuser@nimbus:~$ ');
+    joinExistingSession({ ctx: {}, _b4Phase: null, _b4WarmJoinCount: 0 }, box.shell, terminal, replacement, () => {}, () => 'prior output\nuser@nimbus:~$ ');
     await client.waitForPrompt(1000);
     assert.equal(client.protocol.at(-1).event, 'prompt');
     assert.equal(client.submission, null, 'the old command end was not replayed');

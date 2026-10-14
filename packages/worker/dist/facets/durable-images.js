@@ -17,16 +17,34 @@
  * Two blobs per launch: `runner` is the main module's source text,
  * `application` is a JSON payload of `{ modules, env, vfsWasmModules }` plus,
  * when the launch set them, `vfsTextModules`, `mainModule` and `startArgs`.
+ * A text module is its text there, and an inline wasm module `{ wasm }` its
+ * bytes in base64, restored as an ArrayBuffer: JSON writes an ArrayBuffer as
+ * `{}`, and a re-drive booted a module that could not compile. An image
+ * written that way has lost those bytes, unless its by-path maps supply the
+ * same module, which the loader takes in place of the inline one.
  * The digests in the journal's `recipe.image` are sha256 hashes of those two
  * payloads, and a self-owned spawn mints them at spawn time; an
  * embedder-owned spawn is given them by its own bookkeeping instead.
  */
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { base64, base64Decode } from '@nimbus-sh/core/_shared/crypto.js';
 import { storeContentBlob } from '@nimbus-sh/fabric/image-store.js';
-import { readContentBlob } from '@nimbus-sh/fabric/process-fabric.js';
+import { readContentBlob, ResidentCodeSpecSchema } from '@nimbus-sh/fabric/process-fabric.js';
+import { z } from 'zod/v4';
 /** The directory every durable application's image blobs live under. */
 export const DURABLE_IMAGE_DIR = '.nimbus/images';
 const imagePath = (digest) => `${DURABLE_IMAGE_DIR}/${digest}`;
+/** `{ wasm: {} }` is an ArrayBuffer an earlier release wrote as JSON. */
+const StoredModuleSchema = z.union([z.string(), z.object({ wasm: z.union([z.base64(), z.strictObject({})]) })]);
+/** The application blob, as persistDurableWorkerImage writes it. */
+const ApplicationImageSchema = z.object({
+    modules: z.record(z.string(), StoredModuleSchema).default({}),
+    env: ResidentCodeSpecSchema.shape.env.nullable().default(null),
+    vfsWasmModules: z.record(z.string(), z.string()).nullable().optional(),
+    vfsTextModules: z.record(z.string(), z.string()).optional(),
+    mainModule: z.string().optional(),
+    startArgs: z.json().optional(),
+});
 /** Remove only the owner's blobs that no other retained recipe references. */
 export function purgeDurableWorkerImages(vfs, owned, retained) {
     const keep = new Set([...retained].flatMap((image) => [image.runner, image.application]));
@@ -56,8 +74,9 @@ export async function persistDurableWorkerImage(blobs, workerCode, payload) {
     const runner = await storeContentBlob(blobs, workerCode, imagePath);
     // Optional members are omitted rather than written null so an unchanged
     // launch keeps the digest it had before the member existed.
+    const modules = Object.fromEntries(Object.entries(payload.modules).map(([name, member]) => [name, typeof member === 'string' ? member : { wasm: base64(new Uint8Array(member.wasm)) }]));
     const applicationPayload = JSON.stringify({
-        modules: payload.modules,
+        modules,
         env: payload.env ?? null,
         vfsWasmModules: payload.vfsWasmModules ?? null,
         ...(payload.vfsTextModules !== undefined ? { vfsTextModules: payload.vfsTextModules } : {}),
@@ -83,12 +102,29 @@ export async function resolveDurableWorkerImage(vfs, recipe) {
     const runnerBytes = await readContentBlob(disk, imagePath(runnerDigest), runnerDigest);
     const applicationBytes = await readContentBlob(disk, imagePath(applicationDigest), applicationDigest);
     const runner = new TextDecoder().decode(runnerBytes);
-    const { modules = {}, env = null, vfsWasmModules = undefined, vfsTextModules, mainModule, startArgs, } = JSON.parse(new TextDecoder().decode(applicationBytes));
+    const parsed = ApplicationImageSchema.safeParse(JSON.parse(new TextDecoder().decode(applicationBytes)));
+    if (!parsed.success) {
+        throw new Error(`Nimbus: the application image ${applicationDigest} cannot be restored: ${z.prettifyError(parsed.error)}`);
+    }
+    const { env, vfsWasmModules, vfsTextModules, mainModule, startArgs } = parsed.data;
+    const modules = {};
+    for (const [name, member] of Object.entries(parsed.data.modules)) {
+        if (typeof member === 'string')
+            modules[name] = member;
+        else if (typeof member.wasm === 'string')
+            modules[name] = { wasm: base64Decode(member.wasm).buffer };
+        // The loader takes a by-path module in place of an inline one of its name
+        // (process-fabric.ts residentLoaderConfig), so its lost bytes cost nothing.
+        else if (!Object.hasOwn(vfsWasmModules ?? {}, name) && !Object.hasOwn(vfsTextModules ?? {}, name)) {
+            throw new Error(`Nimbus: the application image ${applicationDigest} cannot be restored: an earlier release wrote its `
+                + `inline wasm module '${name}' without its bytes; spawn the application again`);
+        }
+    }
     // The recipe's own record of the main module wins when the blob predates
     // the member; both say the same thing for any launch written since.
     const main = mainModule ?? recipe.mainModule ?? 'worker.js';
     return {
-        env: env ?? null,
+        env,
         globalOutbound: undefined,
         modules: { ...modules, [main]: runner },
         mainModule: main,

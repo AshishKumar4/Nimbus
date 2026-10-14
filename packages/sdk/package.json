@@ -82,12 +82,12 @@
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
-    "@nimbus-sh/core": "^0.20.0",
-    "@nimbus-sh/worker": "^0.18.0"
+    "@nimbus-sh/core": "^0.21.0",
+    "@nimbus-sh/worker": "^0.19.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260928.1",
-    "@nimbus-sh/worker": "^0.18.0",
+    "@nimbus-sh/worker": "^0.19.0",
     "typescript": "^5.7.0"
   },
   "publishConfig": {
@@ -97,6 +97,6 @@
     "@nimbus-sh/config": "^0.3.1",
     "@nimbus-sh/platform": "^0.10.0",
     "zod": "^4.4.3",
-    "@nimbus-sh/core": "^0.20.0"
+    "@nimbus-sh/core": "^0.21.0"
   }
 }

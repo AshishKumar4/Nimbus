@@ -57,13 +57,14 @@ import type { FacetRegistryEvent } from './resolve-facet.js';
 import type { PackumentReadOptions } from './r2-cache.js';
 import { registryRecord, resolvedFromRecord, type RegistryCacheEntry } from './registry-record.js';
 import type { PackageStagedArtifactEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
-import type { compareSemver, isSemverRange, ParsedSemver, parseSemver, pickPackumentVersion, resolveVersion } from '@nimbus-sh/core/_shared/npm-semver.js';
+import type { compareSemver, isSemverRange, ParsedSemver, parseSemver, pickInstalledVersion, resolveVersion, stagedBindingVersion as stagedBindingVersionOf } from '@nimbus-sh/core/_shared/npm-semver.js';
 import type { parseRegistryRequest } from '@nimbus-sh/core/_shared/npm-spec.js';
 
 declare const RESOLVE_VERSION: typeof resolveVersion;
 declare const PARSE_REGISTRY_REQUEST: typeof parseRegistryRequest;
 declare const IS_SEMVER_RANGE: typeof isSemverRange;
-declare const PICK_VERSION: typeof pickPackumentVersion;
+declare const PICK_INSTALLED_VERSION: typeof pickInstalledVersion;
+declare const STAGED_BINDING_VERSION: typeof stagedBindingVersionOf;
 declare const PARSE_SEMVER: typeof parseSemver;
 declare const COMPARE_SEMVER: typeof compareSemver;
 
@@ -335,13 +336,13 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   // not the newest the registry has: vite 8.3.4's rolldown ~1.2.12 installs
   // the staged 1.2.13 after 1.2.14 is published, and ~1.2.9 a staged 1.2.11
   // when nothing newer is staged. A range that admits none keeps its own
-  // pick, and the install says why it will not load.
-  const stagedBindingVersion = (): string | null => {
+  // pick, and the install says why it will not load (core npm-semver.ts
+  // stagedBindingVersion; the release gate resolves with it too).
+  const stagedVersions: readonly string[] = (() => {
     const staged = STAGED_ARTIFACT(request.registryName);
-    if (staged?.kind !== 'binding' || staged.versions.length === 0) return null;
-    const open = !request.range || ['latest', '*', 'x', 'X'].includes(String(request.range).trim());
-    return open ? staged.versions[staged.versions.length - 1] ?? null : RESOLVE_VERSION([...staged.versions], request.range);
-  };
+    return staged?.kind === 'binding' ? staged.versions : [];
+  })();
+  const stagedBindingVersion = (): string | null => STAGED_BINDING_VERSION(stagedVersions, request.range);
 
   // 2. cachedHit fast-path. The pick over the cached versions is the same
   //    RESOLVE_VERSION the packument path uses — a range is never reduced
@@ -472,10 +473,6 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   //    semver range nothing satisfies. That is npm's ETARGET, and falling
   //    back installed a version outside the range asked for (a swap target
   //    that lacks the range's versions handed back its own latest).
-  // The version the request installs, by the rule every npm here picks with
-  // (core _shared/npm-semver.ts pickPackumentVersion, from the preamble).
-  const pickVersion = (packument: Packument): string | null =>
-    PICK_VERSION(packument.versions, packument['dist-tags'], request.range);
 
   // A `since` swap is decided on the package itself: resolve its own
   // packument and version first, and consult the target only when that
@@ -499,9 +496,9 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     }
   };
   const stagedVersion = stagedBindingVersion();
-  const choose = (data: Packument) => (stagedVersion !== null && readProperty(data.versions, stagedVersion) !== undefined
-    ? stagedVersion
-    : pickVersion(data));
+  // The version the request installs, by the rule every npm here picks with
+  // (core _shared/npm-semver.ts pickInstalledVersion, from the preamble).
+  const choose = (data: Packument) => PICK_INSTALLED_VERSION(data.versions, data['dist-tags'], request.range, stagedVersions);
   let packument: Loaded = await loadPackument(effName);
   if ('failed' in packument) return packument.failed;
   // One pick; a cached packument asked again only where it answered nothing (or not the staged version).

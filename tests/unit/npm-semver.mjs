@@ -23,7 +23,7 @@ import { realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 
-import { compareSemver, isSemverRange, parseSemver, pickPackumentVersion, resolveVersion, satisfiesRange } from '../../packages/core/src/_shared/npm-semver.ts';
+import { compareSemver, isSemverRange, parseSemver, pickInstalledVersion, pickPackumentVersion, resolveVersion, satisfiesRange, stagedBindingVersion } from '../../packages/core/src/_shared/npm-semver.ts';
 import { NPM_RESOLVE_PREAMBLE } from '../../packages/worker/src/loaders/npm-resolve-preamble.ts';
 import { NPM_RESOLVE_NODE_IMPORTS, NPM_RESOLVE_SRC } from '../../packages/worker/src/npm/resolve-libs.generated.ts';
 import { parseRegistryRequest, splitPackageSpec } from '../../packages/core/src/_shared/npm-spec.ts';
@@ -35,7 +35,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 
-const embedded = await importResolvePreamble(['PARSE_SEMVER', 'COMPARE_SEMVER', 'SATISFIES_RANGE', 'RESOLVE_VERSION', 'IS_SEMVER_RANGE', 'PICK_VERSION', 'PARSE_REGISTRY_REQUEST']);
+const embedded = await importResolvePreamble(['PARSE_SEMVER', 'COMPARE_SEMVER', 'SATISFIES_RANGE', 'RESOLVE_VERSION', 'IS_SEMVER_RANGE', 'PICK_INSTALLED_VERSION', 'STAGED_BINDING_VERSION', 'PARSE_REGISTRY_REQUEST']);
 
 // ── parse + compare: prerelease identifiers are part of the order ───────────
 {
@@ -149,10 +149,15 @@ const embedded = await importResolvePreamble(['PARSE_SEMVER', 'COMPARE_SEMVER', 
 {
   const versions = { '1.0.0': {}, '1.1.0': {}, '2.0.0-beta.1': {}, '2.0.0': {} };
   const tags = { latest: '1.1.0', next: '2.0.0-beta.1' };
-  for (const range of [undefined, '', 'latest', '^1.0.0', '^2.0.0', 'next', 'nosuchtag', '^9', 'github:a/b', '2.0.0-beta.1', 'constructor']) {
-    assert.equal(embedded.PICK_VERSION(versions, tags, range), pickPackumentVersion(versions, tags, range), String(range));
+  for (const staged of [[], ['1.0.0'], ['1.0.0', '2.0.0'], ['3.0.0']]) {
+    for (const range of [undefined, '', 'latest', '^1.0.0', '^2.0.0', 'next', 'nosuchtag', '^9', 'github:a/b', '2.0.0-beta.1', 'constructor']) {
+      assert.equal(embedded.PICK_INSTALLED_VERSION(versions, tags, range, staged), pickInstalledVersion(versions, tags, range, staged), `${range} over ${staged}`);
+      assert.equal(embedded.STAGED_BINDING_VERSION(staged, range), stagedBindingVersion(staged, range), `${range} over ${staged}`);
+    }
   }
-  console.log('  parity: embedded PICK_VERSION matches pickPackumentVersion');
+  // Without staged versions, the pick is pickPackumentVersion's.
+  for (const range of [undefined, 'latest', '^1.0.0', 'next', '^9']) assert.equal(pickInstalledVersion(versions, tags, range), pickPackumentVersion(versions, tags, range), String(range));
+  console.log('  parity: embedded PICK_INSTALLED_VERSION and STAGED_BINDING_VERSION match pickInstalledVersion and stagedBindingVersion');
 }
 
 // ── npm's own libraries under the adapters ─────────────────────────────────
