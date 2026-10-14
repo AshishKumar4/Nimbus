@@ -5,6 +5,20 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a session's `npm uninstall` and `npm ls` do what npm 10 does.
+  `npm uninstall -g p` removes the global p and its bins; it removed the
+  project's p and its declaration instead. `npm uninstall p` removes p's
+  bins with it, and every declaration of p, installed or not (each
+  dependency field and `bundleDependencies`); package.json keeps its own
+  indent, its dependency fields sorted and empty ones dropped, and
+  `--no-save` leaves it as it is. It reports `removed N packages` or `up to
+  date`. `npm ls` lists what the project declares as npm does: one that is
+  not installed is an `UNMET DEPENDENCY` (not its range, as though it
+  were), one its range does not take is `invalid`, and a package nothing
+  depends on is `extraneous`; a missing or invalid one fails the command
+  (`ELSPROBLEMS`). `npm ls -g` lists the global prefix, not the project.
+  For embedders: `createNpmCommand` takes `beforeWrite`, called before the
+  command replaces the project's package.json.
 - Fixed: two sessions served by one isolate decode their background
   processes' terminal output each on its own. Their processes are numbered
   alike, and one isolate-wide decoder per process number let a character
