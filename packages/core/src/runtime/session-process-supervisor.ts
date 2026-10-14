@@ -81,6 +81,8 @@ export interface ProcessTerminalDescriptor {
   rows: number;
 }
 
+const ONCE = { once: true };
+
 export class SessionProcessSupervisor implements ProcessOutput {
   private readonly table = new ProcessTable();
   /** Why no process is admitted any more (closeAdmission); null while they are. */
@@ -348,15 +350,16 @@ export class SessionProcessSupervisor implements ProcessOutput {
    */
   holdWork(pid: number, stop?: (reason?: SignalAbortReason) => void, signal?: AbortSignal): HeldProcessWork & { readonly signal: AbortSignal } {
     const owner = new AbortController();
+    const ownSignal = owner.signal;
     // Each of the two ways the work is stopped ends what observes it: no listener of its own for that.
     const stopObserving = () => work.observation?.release();
     const abort = () => { owner.abort(signal?.reason); stopObserving(); };
-    signal?.addEventListener('abort', abort, { once: true });
+    signal?.addEventListener('abort', abort, ONCE);
     if (signal?.aborted) owner.abort(signal.reason);
     const work = {
       stop: (reason?: SignalAbortReason) => { owner.abort(reason); stopObserving(); stop?.(reason); },
-      stopped: false, signal: owner.signal,
-      observation: owner.signal.aborted ? undefined : this.observeWork?.(pid),
+      stopped: false, signal: ownSignal,
+      observation: ownSignal.aborted ? undefined : this.observeWork?.(pid),
     };
     let pieces = this.held.get(pid);
     if (!pieces) this.held.set(pid, pieces = new Set());
@@ -372,7 +375,7 @@ export class SessionProcessSupervisor implements ProcessOutput {
       if (now?.size === 0) this.held.delete(pid);
       this.releaseEnded(pid);
     };
-    return Object.assign(release, { signal: owner.signal });
+    return Object.assign(release, { signal: ownSignal });
   }
 
   /** Whether `pid` runs, on work this session holds for it (holdWork, setTerminator): what a kill of it stops. */
