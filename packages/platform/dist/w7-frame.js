@@ -372,7 +372,7 @@ v3) {
                         throw new Error(`w7-frame: unknown record tag ${envelope.tag}`);
                     summary.pathCount++;
                     summary.opCount++;
-                    const value = parseObject(payload, 'call', ['call', 'path'], ['mode', 'target', 'ino', 'size', 'existing', 'recursive', 'force', 'uid', 'gid', 'atime', 'mtime', 'umask', 'read', 'create', 'truncate', 'exclusive', 'nofollow', 'description']);
+                    const value = parseObject(payload, 'call', ['call', 'path'], ['mode', 'target', 'from', 'ino', 'size', 'existing', 'recursive', 'force', 'uid', 'gid', 'atime', 'mtime', 'umask', 'read', 'create', 'truncate', 'exclusive', 'nofollow', 'description']);
                     yield { type: 'call', call: parsePathCall(value, (path, label) => ownedPaths.claim(canonicalPath(path, label))) };
                     break;
                 }
@@ -819,6 +819,10 @@ function parsePathCall(value, path) {
                 call: 'symlink', path: path(value.path, 'symlink path'), target: boundedString(value.target, 'symlink target', MAX_PATH_BYTES),
                 ...(value.ino === undefined ? {} : { ino: inodeNumber(value.ino, 'symlink ino') }),
             };
+        case 'copyFile':
+            if (keys !== 'call,from,path')
+                break;
+            return { call: 'copyFile', path: path(value.path, 'copyFile path'), from: path(value.from, 'copyFile from') };
         case 'ftruncate':
             if (keys.replace(',description', '').replace(',ino', '') !== 'call,path,size')
                 break;
