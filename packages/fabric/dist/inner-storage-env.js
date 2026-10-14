@@ -71,21 +71,25 @@ function kvGetOptions(options) {
         out.cacheTtl = cacheTtl;
     return out;
 }
-/** env.KV: the namespace's calls, their options converted as workerd's client converts them. */
+/**
+ * env.KV: the namespace's calls, their options converted as workerd's
+ * client converts them. A conversion that fails rejects the call's promise,
+ * as an argument workerd cannot convert does for a method that answers one.
+ */
 class KVNamespace {
     #remote;
     constructor(remote) {
         this.#remote = remote;
     }
-    get(key, options) {
-        return this.#remote.get(key, kvGetOptions(options));
+    async get(key, options) {
+        return await this.#remote.get(key, kvGetOptions(options));
     }
-    getWithMetadata(key, options) {
-        return this.#remote.getWithMetadata(key, kvGetOptions(options));
+    async getWithMetadata(key, options) {
+        return await this.#remote.getWithMetadata(key, kvGetOptions(options));
     }
-    put(key, value, options) {
+    async put(key, value, options) {
         if (options === undefined)
-            return this.#remote.put(key, value);
+            return await this.#remote.put(key, value);
         const out = {};
         const expiration = jsgInt(options.expiration);
         if (expiration !== undefined)
@@ -95,14 +99,14 @@ class KVNamespace {
             out.expirationTtl = expirationTtl;
         if (options.metadata !== undefined)
             out.metadata = options.metadata;
-        return this.#remote.put(key, value, out);
+        return await this.#remote.put(key, value, out);
     }
-    delete(key) {
-        return this.#remote.delete(key);
+    async delete(key) {
+        return await this.#remote.delete(key);
     }
-    list(options) {
+    async list(options) {
         if (options === undefined)
-            return this.#remote.list();
+            return await this.#remote.list();
         const out = {};
         const limit = jsgInt(options.limit);
         if (limit !== undefined)
@@ -111,7 +115,7 @@ class KVNamespace {
             out.prefix = String(options.prefix);
         if (options.cursor !== undefined && options.cursor !== null)
             out.cursor = String(options.cursor);
-        return this.#remote.list(out);
+        return await this.#remote.list(out);
     }
 }
 named(KVNamespace, 'KvNamespace');
