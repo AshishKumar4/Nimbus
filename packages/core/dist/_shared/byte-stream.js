@@ -46,6 +46,17 @@ export class SinkWriter {
         }
         this.written += bytes.length;
     }
+    /**
+     * Text, in order with the bytes: for a textual sink, after any character
+     * the bytes before it left unfinished (a replacement character, as decoding
+     * those bytes and the text's as one stream gives). Not counted in
+     * {@link bytesWritten}, which is what was written as bytes.
+     */
+    async writeText(text) {
+        const unfinished = this.decoder ? this.decoder.decode() : '';
+        if (unfinished || text)
+            await this.sink.write(unfinished + text);
+    }
     async end() {
         if (!this.decoder)
             return;
