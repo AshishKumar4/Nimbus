@@ -56,6 +56,11 @@ export type NodeCall = {
     readonly op: 'watch';
     readonly id: number;
     readonly path: string | null;
+}
+/** umask(2): the process's mask in the session. */
+ | {
+    readonly op: 'umask';
+    readonly mask: number;
 };
 /** A response to a request that stayed on the box, as data, either way across. */
 export interface RealmResponse {
@@ -129,6 +134,8 @@ export interface RealmServices {
     unlisten(port: number): void;
     /** Watch `path` as watch `id`, or stop it (null). */
     watch(id: number, path: string | null): void;
+    /** umask(2): the process's mask in the session. */
+    setUmask(mask: number): void;
 }
 /**
  * The answer to `call`, whatever the guest sent: the value of one of the calls

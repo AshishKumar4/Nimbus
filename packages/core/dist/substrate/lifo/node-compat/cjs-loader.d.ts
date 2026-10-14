@@ -11,10 +11,12 @@ export declare function stripShebang(src: string): string;
  * including a Unicode-escaped spelling.
  */
 export declare function moduleWrapper(source: string, parentUrl: string): string;
-/** What one module's wrapper receives as console and process. */
+/** What one module's wrapper receives as console, process and global. */
 export interface ModuleScope {
     readonly console: unknown;
     readonly process: unknown;
+    /** Every module's `global`: a program's realm's globalThis, as Node's is. */
+    readonly global: unknown;
 }
 /** The native loader installed for this CommonJS loader's module graph. */
 export interface NativeModuleLoader {

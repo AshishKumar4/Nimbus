@@ -209,7 +209,7 @@ export function createCjsLoader(context, scope, options = {}) {
             scope.console, scope.process, Buffer,
             globalThis.setTimeout, globalThis.setInterval,
             globalThis.clearTimeout, globalThis.clearInterval,
-            { process: scope.process, Buffer, console: scope.console },
+            scope.global,
             importDynamic,
         ];
     }

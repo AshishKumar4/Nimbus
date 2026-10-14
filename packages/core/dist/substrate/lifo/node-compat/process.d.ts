@@ -17,12 +17,24 @@ export declare class LifoProcess extends EventEmitter {
     get stdout(): Writable;
     get stderr(): Writable;
 }
+/** Who a program's process is: its pid and credential in the session. */
+export interface ProcessIdentity {
+    readonly pid: number;
+    readonly uid: number;
+    readonly gid: number;
+    readonly groups: readonly number[];
+    /** Its mask as it started. */
+    readonly umask: number;
+    /** umask(2): the process's mask in the session. */
+    setUmask(mask: number): void;
+}
 export interface ProcessOptions {
     argv: string[];
     env: Record<string, string>;
     cwd: string;
     stdout: CommandOutputStream;
     stderr: CommandOutputStream;
+    identity: ProcessIdentity;
 }
 export declare function createProcess(opts: ProcessOptions): LifoProcess & {
     noDeprecation?: boolean;
@@ -52,7 +64,8 @@ export declare function createProcess(opts: ProcessOptions): LifoProcess & {
     version: string;
     versions: {
         node: string;
-        lifo: string;
+        v8: string;
+        modules: string;
     };
     pid: number;
     ppid: number;
@@ -75,11 +88,13 @@ export declare function createProcess(opts: ProcessOptions): LifoProcess & {
     };
     config: {};
     emitWarning: (warning: string | Error, type?: string | WarningOptions | WarningConstructor, code?: string | WarningConstructor, ctor?: WarningConstructor) => void;
-    getuid: () => 1000;
-    getgid: () => 1000;
-    geteuid: () => 1000;
-    getegid: () => 1000;
-    umask: (mask?: number) => number;
+    getuid: () => number;
+    getgid: () => number;
+    geteuid: () => number;
+    getegid: () => number;
+    getgroups: () => number[];
+    /** Its live mask; a new one (a number or an octal string) is the process's in the session, and the one before is answered. */
+    umask: (next?: number | string) => number;
     binding: (name: string) => {
         errname: (code: number) => string;
         UV_EOF: number;

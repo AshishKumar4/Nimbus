@@ -119,6 +119,7 @@ async function executeEsmCommand(source, ctx, lifo) {
 async function executeCjsCommand(entryPath, source, ctx, lifo) {
     const nodeCtx = {
         filesystem: synchronousFilesystem(ctx.vfs),
+        identity: { pid: ctx.pid, uid: ctx.cred.uid, gid: ctx.cred.gid, groups: ctx.cred.groups, umask: ctx.cred.umask, setUmask: (mask) => ctx.setUmask(mask) },
         cwd: ctx.cwd,
         env: ctx.env,
         stdout: ctx.stdout,
@@ -129,10 +130,11 @@ async function executeCjsCommand(entryPath, source, ctx, lifo) {
         signal: ctx.signal,
         reachStreams: leaveStandardStreamsOpen,
     };
-    const scope = {
-        process: createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdout: ctx.stdout, stderr: ctx.stderr }),
-        console: createConsole(ctx.stdout, ctx.stderr),
-    };
+    const process = createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdout: ctx.stdout, stderr: ctx.stderr, identity: nodeCtx.identity });
+    const console = createConsole(ctx.stdout, ctx.stderr);
+    // A command runs in the shell's realm, whose globalThis is the shell's: its
+    // modules share a global of their own instead.
+    const scope = { process, console, global: { process, Buffer, console } };
     const loader = createCjsLoader(nodeCtx, scope);
     return commandsRunning().run(scope.process, () => runCjsCommand(entryPath, source, ctx, lifo, nodeCtx, loader));
 }
