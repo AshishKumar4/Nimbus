@@ -5,6 +5,11 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a lifo ES module command sends only its real bare imports to the
+  CDN. A string or a comment that read like an import was rewritten too,
+  so `ctx.stdout.write("from 'foo'")` printed a CDN URL, and `node:`
+  builtins and URL imports were sent to the CDN. A computed `import()` of
+  a bare name now goes to the CDN as well.
 - Fixed: `cp -p` and `cp -a` keep each entry's owner on every path, as
   GNU cp does: a single file, an overwritten one and a copy into an
   existing directory used to be owned by whoever ran cp. A symbolic link

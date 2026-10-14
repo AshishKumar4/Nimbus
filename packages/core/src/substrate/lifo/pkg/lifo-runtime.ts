@@ -22,7 +22,8 @@ import { ProcessExitError } from '../node-compat/index.js';
 import { createCjsLoader } from '../node-compat/cjs-loader.js';
 import { createNativeEsmLoader } from '../node-compat/native-esm-loader.js';
 import { leaveStandardStreamsOpen } from '../node-compat/standard-streams.js';
-import { containsModuleSyntax } from '../../../runtime/javascript-ast.js';
+import { applySourceEdits, containsModuleSyntax } from '../../../runtime/javascript-ast.js';
+import { readModuleImportSites } from '../../../runtime/dynamic-import-rewrite.js';
 import type { NodeContext } from '../node-compat/index.js';
 
 
@@ -103,25 +104,31 @@ function createLifoAPI(ctx: CommandContext): LifoAPI {
 
 // ─── ESM rewriting ───
 
+/** The helper a rewritten import() calls: a function declaration, so the module's own code reaches it wherever it is. */
+const CDN_IMPORT = '__lifoCdnImport';
+
+/** A bare specifier: neither relative nor absolute, and not a URL (`node:`, `https:`, `data:`). */
+const BARE_SPECIFIER = /^(?![./]|[A-Za-z][A-Za-z0-9+.-]*:)/;
+
 /**
- * Rewrite bare specifier imports/exports to CDN URLs so the module
- * can be loaded via blob URL + import().
+ * The module with its bare module requests sent to the CDN, as the language
+ * reads them (readModuleImportSites): each static specifier, and every
+ * import() through one helper that maps its specifier when it is bare, so a
+ * computed one is mapped too. A string or a comment is the program's text.
  *
  *   import { X } from 'foo'  →  import { X } from 'https://esm.sh/foo'
- *   import('foo')             →  import('https://esm.sh/foo')
+ *   import('foo')             →  __lifoCdnImport('foo')
  */
 function rewriteImportsToCdn(source: string, cdn: string): string {
-  // Static imports/re-exports: from 'specifier' or from "specifier"
-  let result = source.replace(
-    /(from\s+)(["'])([^"'./][^"']*)\2/g,
-    (_, prefix, quote, spec) => `${prefix}${quote}${cdn}/${spec}${quote}`,
-  );
-  // Dynamic import(): import('specifier') or import("specifier")
-  result = result.replace(
-    /(import\s*\(\s*)(["'])([^"'./][^"']*)\2(\s*\))/g,
-    (_, prefix, quote, spec, suffix) => `${prefix}${quote}${cdn}/${spec}${quote}${suffix}`,
-  );
-  return result;
+  const sites = readModuleImportSites(source);
+  const edits = [
+    ...sites.statics.filter((site) => BARE_SPECIFIER.test(site.specifier))
+      .map((site) => ({ start: site.start, end: site.end, text: JSON.stringify(`${cdn}/${site.specifier}`) })),
+    ...sites.calls.map((site) => ({ start: site.start, end: site.open + 1, text: `${CDN_IMPORT}(` })),
+  ];
+  if (edits.length === 0) return source;
+  const helper = sites.calls.length === 0 ? '' : `\nfunction ${CDN_IMPORT}(specifier, options) { return import(typeof specifier === 'string' && ${BARE_SPECIFIER}.test(specifier) ? ${JSON.stringify(`${cdn}/`)} + specifier : specifier, options); }\n`;
+  return applySourceEdits(source, edits) + helper;
 }
 
 /**
@@ -154,12 +161,9 @@ async function executeEsmCommand(
   ctx: CommandContext,
   lifo: LifoAPI,
 ): Promise<number> {
-  const cdn = getCdn(ctx.env);
-  const rewritten = rewriteImportsToCdn(source, cdn);
-  const encoded = Buffer.from(rewritten, 'utf-8').toString('base64');
-  const url = `data:text/javascript;base64,${encoded}`;
-
   try {
+    const rewritten = rewriteImportsToCdn(source, getCdn(ctx.env));
+    const url = `data:text/javascript;base64,${Buffer.from(rewritten, 'utf-8').toString('base64')}`;
     const mod = await import(/* @vite-ignore */ url);
     const handler = mod.default;
 
