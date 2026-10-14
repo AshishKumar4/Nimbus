@@ -83,7 +83,7 @@ try {
   for (const [name, source] of Object.entries(programs)) {
     await ws.fs.writeFile(`/home/user/${name}`, source);
     writeFileSync(join(host, name), source);
-    const node = spawnSync('node', [name], { cwd: host, encoding: 'utf8' });
+    const node = spawnSync('node', [name], { cwd: host, encoding: 'utf8', timeout: 60_000 });
     assert.equal(node.status, 0, `real node runs ${name}: ${node.stderr}`);
     const lifo = await ws.exec(`node ${name}`, { cwd: '/home/user' });
     if (lifo.exitCode !== 0 || lifo.stdout !== node.stdout || lifo.stderr !== node.stderr) {
