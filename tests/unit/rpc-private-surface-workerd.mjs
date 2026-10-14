@@ -29,7 +29,7 @@ import assert from 'node:assert/strict';
 import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { build } from 'esbuild';
@@ -70,7 +70,7 @@ const config :Workerd.Config = (
       modules = [(name = "main.js", esModule = embed "main.js")],
       compatibilityDate = "2026-09-26",
       compatibilityFlags = ["enable_request_signal"],
-      durableObjectStorage = (inMemory = void),
+      durableObjectStorage = (localDisk = "store"),
       durableObjectNamespaces = [
         (className = "Session", uniqueKey = "rpc-private-surface", enableSql = true),
         (className = "NimbusFsJournalReader", uniqueKey = "rpc-private-surface-reader", enableSql = true),
@@ -81,9 +81,11 @@ const config :Workerd.Config = (
         (name = "LOADER", workerLoader = ()),
       ],
     )),
+    (name = "store", disk = (path = ${JSON.stringify(join(dir, 'store'))}, writable = true)),
   ],
   sockets = [(name = "http", address = "127.0.0.1:${port}", http = (), service = "main")],
 );`);
+mkdirSync(join(dir, 'store'));
 const child = spawn(workerd, ['serve', 'config.capnp', '--experimental'], { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'] });
 let logs = '';
 child.stdout.on('data', (d) => { logs += d; });

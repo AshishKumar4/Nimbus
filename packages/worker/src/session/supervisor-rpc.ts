@@ -7,7 +7,12 @@ import { idempotent } from '@nimbus-sh/fabric/do-calls.js';
 import type { SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { type RecordedResponse, type RecordedBody } from '../runtime/stop-replay-contracts.js';
 import { ReplayBodyRecord, recordFailure, failureOf } from '../runtime/stop-replay-body.js';
-import { supervisorCalls, TRANSPORT, CALL, NETWORK, OP, PID, RUN_ID, type Resend, type SupervisorTransport } from './supervisor-calls.js';
+// Every symbol the mixin's methods are keyed by is imported, though not all
+// are used here: the class's declaration names them.
+import {
+  supervisorCalls, TRANSPORT, OP, CALLER, FS_OP, FS_READ, FS_MUTATION, RESENT, MUTATION_OWNER, HOST_INCARNATION, REPORTING_PID, CALL, CACHE_READ, INFRASTRUCTURE_CACHE, NETWORK, PID, RUN_ID,
+  type Resend, type SupervisorTransport,
+} from './supervisor-calls.js';
 
 /**
  * Runs whose network the session no longer records: each did something
