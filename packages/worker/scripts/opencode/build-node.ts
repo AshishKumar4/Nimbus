@@ -80,13 +80,11 @@ const nimbusParserWorkerRegistry = {
 // The parser installs its message handler only off the main thread
 // (`if (!isMainThread)`), and in the facet it shares the client's thread, where
 // the platform's worker_threads says main. Its own worker_threads says worker
-// (stubs/parser-worker-threads.ts); the stub's re-export is the platform's.
+// (stubs/parser-worker-threads.ts).
 const nimbusParserWorkerThreads = {
   name: "nimbus-parser-worker-threads",
   setup(build: any) {
-    const stub = path.join(dir, "parser-worker-threads.ts")
-    build.onResolve({ filter: /^(node:)?worker_threads$/ }, (args: any) =>
-      args.importer === stub ? { path: "node:worker_threads", external: true } : { path: stub })
+    build.onResolve({ filter: /^(node:)?worker_threads$/ }, () => ({ path: path.join(dir, "parser-worker-threads.ts") }))
   },
 }
 

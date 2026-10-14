@@ -63,7 +63,8 @@ const xz = spawnSync('xz', ['-d'], { input: Buffer.from(encoded.trim(), 'base64'
 if (xz.status !== 0) throw new Error(`xz -d failed: ${xz.stderr}`);
 const result = JSON.parse(xz.stdout.toString('utf8'));
 const saved = join(tmpdir(), `remote-opencode-${sha.slice(0, 12)}.patch`);
-writeFileSync(saved, result.patch);
+// rebuild-opencode.mjs trims its git diff; a patch ends with its last line's newline.
+writeFileSync(saved, `${result.patch}\n`);
 console.log(`source ${result.sourceCommit}; ${result.assets.length} assets`);
 if (result.patch.trim() === '') {
   console.log(`remote-opencode: the build reproduces ${sha.slice(0, 12)}'s staged assets byte for byte`);
