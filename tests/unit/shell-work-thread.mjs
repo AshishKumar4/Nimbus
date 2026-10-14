@@ -152,8 +152,9 @@ for (const [line, status] of [['step a; prog', 137], ['prog && true', 137], ['pr
 }
 
 // ── a shell that only `wait`s on its job is told as such ──────────────────
-// (`wait` is a builtin: the shell's work, which is awaiting the job.)
-for (const line of ['prog & wait $!', 'prog & wait %1']) {
+// (`wait` is a builtin: the shell's work, which is awaiting the job. `%+`
+// is the job just started: an earlier case's ended job is still %1.)
+for (const line of ['prog & wait $!', 'prog & wait %+']) {
   processes.setOnWaitChange(null);
   const done = shell.execute(line);
   await settle();
