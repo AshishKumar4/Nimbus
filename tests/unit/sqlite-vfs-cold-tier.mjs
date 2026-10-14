@@ -131,6 +131,24 @@ const PATHS = ['small', 'large', 'kept', 'gone', 'dir/deep'];
   assert.deepEqual(raw.at('s').readFile('f'), bytes, 'and the snapshot reads without a prepare');
 }
 
+// ── A tree copy from a snapshot, its source a link it follows ───────────
+// The tree the link leads to is judged, not the link's own: a cold chunk
+// there refuses the copy as it refuses one named directly, and no live row
+// is left naming it.
+{
+  const store = memoryStore();
+  const { harness, raw, vfs } = open(store);
+  vfs.mkdir('tree');
+  vfs.writeFile('tree/a', random(40_000, 21));
+  vfs.symlink('tree', 'link');
+  raw.snapshot('s');
+  vfs.unlink('tree/a');
+  assert.ok((await tierAll(raw)).tiered >= 1);
+  assert.throws(() => vfs.copyTree('link', 'out', { at: 's', follow: true }), /ENODATA/);
+  assert.equal(liveColdReferences(harness), 0, 'no live row names a cold chunk');
+  assert.equal(vfs.exists('out'), false);
+}
+
 // ── Dropping the snapshot deletes the cold objects ───────────────────────
 {
   const store = memoryStore();

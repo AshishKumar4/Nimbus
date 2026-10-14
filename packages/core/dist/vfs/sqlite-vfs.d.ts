@@ -272,6 +272,7 @@ export interface CredentialedVfs {
     copyTree(src: string, dest: string, options?: {
         preserve?: boolean;
         at?: string;
+        follow?: boolean;
     }): number;
     /**
      * copyTree in slices of JOB_SLICE_PAGES transactions with a yield between,
@@ -288,6 +289,7 @@ export interface CredentialedVfs {
     copyTreeAsync(src: string, dest: string, options?: {
         preserve?: boolean;
         at?: string;
+        follow?: boolean;
         mutationOwner?: string;
     }): Promise<number>;
     writeBatch(payload: BatchWritePayload): {
@@ -888,8 +890,14 @@ export declare class SqliteVFS {
      *   its base entries, no umask, and a new directory inherits the ACL;
      * - a setgid parent gives its group, and a new directory is setgid too
      *   (Linux; Kinu N26). Otherwise the caller's umask and primary group.
+     * Beneath a registered shared directory only its group's members make
+     * entries (sharedAdmission), and they are made its group's.
      */
     private creationAttrs;
+    /** EPERM for a caller outside the group of the registered shared directory `key` is beneath. */
+    private sharedAdmission;
+    /** creationAttrs past its admission: for a caller admitted already (a copy's planned job). */
+    private createdAttrs;
     private isConfined;
     /** Drop a confinement. A principal's `/tmp` dies with it; its home does not. */
     releasePrincipal(uid: number): void;
@@ -1702,7 +1710,8 @@ export declare class SqliteVFS {
      *
      * `at` copies from a snapshot instead of the live tree: lock-free, since
      * the snapshot's rows never change while writers keep writing the source,
-     * and a snapshot a job reads from cannot be dropped.
+     * and a snapshot a job reads from cannot be dropped. `follow` copies what
+     * a link named as the source leads to; otherwise the link is copied.
      */
     private planCopyTree;
     private copyTreeInSlices;
@@ -1716,6 +1725,17 @@ export declare class SqliteVFS {
      * the transaction that copies the page. `id` resumes a recorded job.
      */
     private runCopyTree;
+    /**
+     * What a copy makes its entries with, for one slice: SQL over each source
+     * row's kind and mode, for the modes of the page at hand. Without
+     * preserve, what a creation there makes (creationAttrs) of the source's
+     * permissions (copiedPermissions): the root's beneath the destination's
+     * parent, every other's beneath the copied root, as each directory the
+     * copy makes is made alike (its group and default ACL are the root's).
+     * With it, the source's, and its group when root copies. A registered
+     * shared directory's rule holds for both. A link keeps its mode.
+     */
+    private copyPolicy;
     /**
      * Continue every job a reset interrupted, from its cursor: one slice now,
      * at open, and the rest in slices with a yield between, so a job of any

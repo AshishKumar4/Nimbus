@@ -5,6 +5,17 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a copy makes its files as any creation there makes them. A
+  program's `copyFile` (or the editor's and SDK's copy) between a mount and
+  the session's own files keeps the source's mode less the umask, as `cp`
+  does; it wrote 0644 for a 0755 script or a 0600 key. Off a mount that
+  answers asynchronously, `copyFile` of a symlink copies the file it names
+  rather than the link, and a tree copied off one answers how many entries
+  it made (it answered 0). `cp -r` and a recursive copy into a setgid
+  directory take its group, and their directories are setgid; under a
+  directory with a default ACL the ACL replaces the umask and each new
+  directory inherits it, as `mkdir` and `writeFile` there do (the copy took
+  the copier's group, the umask, and the source's default ACL).
 - Fixed (security): guests could call methods of the platform's RPC classes
   that were meant only for the platform's own use. Workers RPC exposes every
   string-named method of a WorkerEntrypoint, RpcTarget or Durable Object to
@@ -21,7 +32,6 @@ published independently in the `@nimbus-sh` npm scope.
   - The Worker Loader shim's entrypoint answered the props it was minted with
     (its egress among them) and the raw loaded entrypoint.
   - A scoped `HostedSession` answered the unscoped runtime it serves.
-
   These helpers are no longer on any class's RPC surface, and the KV, R2
   and D1 emulators that wrangler dev hands its Worker keep theirs out of
   reach too. The session also takes a spawned child's parent from the pid

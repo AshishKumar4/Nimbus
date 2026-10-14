@@ -20,7 +20,7 @@
  * removeRecursive, which is walked. Nothing is emulated where the emulation
  * would change what the operation means.
  */
-import type { Awaitable, Principal, SyncVFS, VFS, VfsCasResult, VfsCred, VfsDirent, VfsMountDescription, VfsRemoval, VfsRevision, VfsStat, VfsUsage, VfsViewOptions, VfsWriteObserver, VfsWriteWants } from './vfs.js';
+import type { Awaitable, Principal, SyncVFS, VFS, VfsCasResult, VfsCopyOptions, VfsCred, VfsDirent, VfsMountDescription, VfsRemoval, VfsRevision, VfsStat, VfsUsage, VfsViewOptions, VfsWriteObserver, VfsWriteWants } from './vfs.js';
 import type { RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
 import { type VfsEvent } from './events.js';
 import { type VfsErrorCode } from './vfs-error.js';
@@ -88,11 +88,12 @@ export declare function comparePaths(a: string, b: string): number;
  */
 export declare function runtimeStatOf(stat: VfsStat): RuntimeVfsStat;
 export type { Principal } from './vfs.js';
-/** The namespace always offers recursive removal, walking a backend that does not. */
+/** The namespace always offers recursive removal, walking a backend that does not, and copies across filesystems. */
 export interface CompositeSyncVFS extends SyncVFS {
     removeRecursive(path: string, options?: {
         keepVanishedAncestors?: boolean;
     }): VfsRemoval;
+    copy(from: string, to: string, options?: VfsCopyOptions): number;
 }
 /** A backend, or a function giving the backend for a principal at this instant (null: absent). */
 export type VfsSource = VFS | ((principal: Principal) => VFS | null);
@@ -973,10 +974,7 @@ export declare class CompositeVFS implements VFS {
     chown(path: string, uid: number, gid: number): Promise<void>;
     utimes(path: string, atimeMs: number, mtimeMs: number): Promise<void>;
     writeFileIfRevision(path: string, data: Uint8Array, expected: VfsRevision): Promise<VfsCasResult>;
-    copy(from: string, to: string, options?: {
-        recursive?: boolean;
-        preserve?: boolean;
-    }): Promise<number>;
+    copy(from: string, to: string, options?: VfsCopyOptions): Promise<number>;
     readFileAtRevision(path: string, revision: VfsRevision, range?: {
         offset: number;
         length: number;

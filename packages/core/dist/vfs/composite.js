@@ -6,7 +6,7 @@ import { posixAccess } from './posix-access.js';
 import { recallOf, withRecall } from './recall.js';
 import { DIRENT_TYPES } from './dirent-type.js';
 import { walkRemoval } from './removal-walk.js';
-import { S_IFMT, abandon, andThen, isCharacterDevice, isPromise, readRangeOrWhole, syncValue } from './vfs.js';
+import { S_IFMT, abandon, andThen, copiedPermissions, isCharacterDevice, isPromise, readRangeOrWhole, syncValue } from './vfs.js';
 /** Path order as SQLite's index keeps it: by UTF-8 bytes, which is code point order. */
 export function comparePaths(a, b) {
     const n = Math.min(a.length, b.length);
@@ -2714,7 +2714,7 @@ export class CompositeVFS {
      * is cp's job too. (FormalModelsLane `Vfs/Composite`, copy_stays_in_target.)
      */
     copyAt(fromInput, toInput, options, sync) {
-        return andThen(this.resolve(fromInput, false, sync), (from) => {
+        return andThen(this.resolve(fromInput, options?.follow === true, sync), (from) => {
             this.present(from);
             return andThen(this.resolve(toInput, false, sync), (to) => {
                 this.present(to);
@@ -2729,7 +2729,8 @@ export class CompositeVFS {
                 if (target.mount.options.readOnly)
                     throw new Refusal('EROFS', to, `${target.mount.point} is mounted read-only`);
                 const sourceOps = this.ops(source, sync);
-                return andThen(this.statAt(from, false, sync), (stat) => {
+                // Followed, a link a backend resolves itself is followed there too.
+                return andThen(this.statAt(from, options?.follow === true, sync), (stat) => {
                     if (stat === null)
                         throw new Refusal('ENOENT', from);
                     const dir = stat.type === 'directory';
@@ -2755,7 +2756,7 @@ export class CompositeVFS {
                         // Each entry the copy makes is told as it lands, the ones before a failure too.
                         return this.reportWrite({ path: at, route, ops: targetOps, follow, kind: 'write', told: null }, () => {
                             this.guardMutation([toInput]);
-                            return this.copyBytes(sourceOps, source.rel, stat, targetOps, route.rel, at, { ops: targetOps, rel: route.rel, mount: route.mount, told });
+                            return this.copyBytes(sourceOps, source.rel, stat, targetOps, route.rel, at, { ops: targetOps, rel: route.rel, mount: route.mount, told, preserve: options?.preserve === true });
                         }, sync);
                     };
                     // The target's parent is a directory, unless its backend resolves its own paths and answers for it (it may make it).
@@ -2806,7 +2807,8 @@ export class CompositeVFS {
      * the copy began.
      */
     copyBytes(from, fromRel, stat, to, toRel, toAt, made) {
-        const mode = stat.mode === undefined ? undefined : stat.mode & 0o7777;
+        const mode = stat.mode === undefined ? undefined
+            : made.preserve ? stat.mode & 0o7777 : copiedPermissions(stat.mode, stat.type === 'directory');
         const told = toRel === made.rel ? made.told : stat.type === 'directory' ? 'addDir' : 'add';
         const landed = (result) => {
             if (isPromise(result))
