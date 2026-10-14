@@ -13,6 +13,10 @@ published independently in the `@nimbus-sh` npm scope.
   deployed, so `fs.promises.cp` (a copy, then a chmod, per file) took about
   twice as long as before it became Node's own. An async `chown` now refuses
   `EPERM` itself, as `chownSync` does.
+- Fixed: a file `fs.promises.copyFile` or `fs.promises.cp` made in a
+  directory the program had just made was missing to `existsSync`,
+  `statSync` and `readdirSync` until later, although it could be read.
+  It is now there as soon as the copy resolves.
 - Changed: `fs.promises.copyFile` of a file the program just wrote, which the
   session has not answered yet, resolves once logged when both names are in
   a tree the process holds. The copy reads as those bytes, with the source's
