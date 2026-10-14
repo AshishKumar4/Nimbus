@@ -6,6 +6,7 @@
 // the workspace runs is reached by number.
 import assert from 'node:assert/strict';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();
@@ -70,10 +71,40 @@ try {
     }
   });
 
-  await check('the workspace\'s own shell is not killed by number', async () => {
+  await check('the workspace\'s idle shell answers kill -0, and refuses a kill', async () => {
+    assert.deepEqual(await run(`kill -0 ${ws.shellProcessPid}; echo "status=$?"`), { code: 0, stdout: 'status=0\n', stderr: '' });
     const r = await run(`kill ${ws.shellProcessPid}; echo "status=$?"`);
-    assert.equal(r.stdout, 'status=1\n');
+    assert.deepEqual(r, { code: 0, stdout: 'status=1\n', stderr: `kill: (${ws.shellProcessPid}) - Operation not permitted\n` });
     assert.equal(ws.processes.get(ws.shellProcessPid)?.state, 'running');
+  });
+
+  await check('a process of another uid is not the session user\'s to kill (kill(2))', async () => {
+    const root = ws.processes.spawn('rootjob', ['rootjob'], '/', { cred: CRED_KERNEL });
+    const held = ws.processes.holdWork(root.pid);
+    try {
+      assert.deepEqual(await run(`kill ${root.pid}; echo "status=$?"`), { code: 0, stdout: 'status=1\n', stderr: `kill: (${root.pid}) - Operation not permitted\n` });
+      assert.equal(ws.processes.get(root.pid)?.state, 'running');
+    } finally {
+      held();
+      ws.processes.exit(root.pid, 0);
+    }
+  });
+
+  await check('a default-ignored signal from a program reaches a job and leaves it running', async () => {
+    const r = await run(`${HOLD}; hold & p=$!; echo $p | xargs kill -s WINCH; echo "rc=$?"; kill -0 $p; echo "live=$?"; touch /tmp/go; wait`);
+    assert.deepEqual(r, { code: 0, stdout: 'rc=0\nlive=0\n', stderr: '' });
+  });
+
+  await check('a background job in an rc file starts, and the rest of the file runs', async () => {
+    const rcHarness = createSqliteVfsTestHarness();
+    const rcWs = await NimbusWorkspace.create({ sql: rcHarness.sql, transactions: rcHarness.ctx });
+    try {
+      await rcWs.fs.writeFile('/home/user/.liforc', ': & export READY=yes\n');
+      await rcWs.shell.start();
+      assert.equal(rcWs.shell.getEnv().READY, 'yes');
+    } finally {
+      await rcWs.close();
+    }
   });
 } finally {
   await ws.close();

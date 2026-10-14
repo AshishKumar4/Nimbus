@@ -29,7 +29,7 @@ try {
     '[1]-  Running                    sleep 30 &',
     '[2]+  Running                    sleep 31 &',
     'kill: %2: no such job',
-    'external=1',
+    'external=123',
     'wait2=143',
     'end',
     '',
