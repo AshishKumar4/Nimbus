@@ -45,6 +45,7 @@ import { exitCodeForSignal } from '../substrate/lifo/shell/signals.js';
 import { runtimeEntrypoints } from '../runtime/installed-runtimes.js';
 import { RuntimeManager } from '../runtime/runtime-manager.js';
 import { moveHomeRuntimes, RUNTIME_STORE } from '../runtime/runtime-store.js';
+import { normalizeVfsPath } from '../vfs/path.js';
 import { makeNimbusVerbHandler } from '../runtime/nimbus-command.js';
 import { composeRuntimeSources, suppliedRuntimeSource, } from '../runtime/runtime-package.js';
 import { registerUnixCommands } from '../shell/unix-commands.js';
@@ -150,6 +151,15 @@ export class NimbusWorkspace {
         const home = options.env?.HOME ?? DEFAULT_HOME;
         if (!home.startsWith('/'))
             throw new Error(`HOME must be an absolute path, got ${JSON.stringify(home)}`);
+        // Root makes a home and hands it to the user: inside the system's own
+        // stores, the runtimes' (runtime-store.ts) or the kernel's, that would
+        // hand the user a directory the kernel writes, unpacks into and clears.
+        const homeKey = normalizeVfsPath(home);
+        for (const store of [RUNTIME_STORE, '.nimbus']) {
+            if (homeKey === store || homeKey.startsWith(`${store}/`)) {
+                throw new Error(`HOME must not be inside /${store}, the system's own store, got ${JSON.stringify(home)}`);
+            }
+        }
         // The namespace (SQLite at `/`, /proc, /dev, and an embedder's mounts)
         // and what binds processes to it. The base is seeded through it, so a
         // mount over /home or /etc gets what a program writing there would.
