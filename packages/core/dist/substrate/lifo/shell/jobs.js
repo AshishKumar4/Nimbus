@@ -82,13 +82,16 @@ export class JobTable {
     }
     /**
      * Deliver `signal` (a parsed name, never `0`) to `job`, one of this
-     * table's: a terminating one ends its process, which stops its work; a
-     * stop or continue sets or clears its stop mark.
+     * table's, from `caller`: a terminating one ends its process, which stops
+     * its work; a stop or continue sets or clears its stop mark. False when
+     * kill(2)'s rule refuses `caller` (SessionProcessSupervisor.maySignal).
      */
-    signal(job, signal) {
+    signal(job, signal, caller) {
         const record = this.jobs.get(job.id);
         if (record !== job || job.status === 'done')
-            return;
+            return true;
+        if (!this.processes.maySignal(caller, job.pid))
+            return false;
         const disposition = signalDisposition(signal);
         if (disposition === 'stop')
             record.stopped = true;
@@ -96,6 +99,7 @@ export class JobTable {
             record.stopped = false;
         else if (disposition === 'terminate')
             this.processes.kill(job.pid, exitCodeForSignal(signal), signalAbortReason(signal));
+        return true;
     }
     fork() {
         const child = new JobTable(this.processes);

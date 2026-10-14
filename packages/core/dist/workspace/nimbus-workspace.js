@@ -41,7 +41,7 @@ import { PID_GEN_STRIDE } from '../runtime/process-table.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import { ChildProcessManager } from '../runtime/child-process-manager.js';
 import { resolveWorkspaceChild } from './child-process-runner.js';
-import { exitCodeForSignal, signalAbortReason, signalDisposition } from '../substrate/lifo/shell/signals.js';
+import { exitCodeForSignal, signalAbortReason, signalAbortReasonOf, signalDisposition } from '../substrate/lifo/shell/signals.js';
 import { runtimeEntrypoints } from '../runtime/installed-runtimes.js';
 import { RuntimeManager } from '../runtime/runtime-manager.js';
 import { makeNimbusVerbHandler } from '../runtime/nimbus-command.js';
@@ -227,11 +227,15 @@ export class NimbusWorkspace {
         // own shell, which outlives every line it runs. A host that runs
         // processes of its own replaces this (Shell.setHostProcessSignals).
         const processSignals = {
-            isLive: (pid) => processes.runsWork(pid),
-            async signal(pid, signal) {
-                if (pid === shellProcessPid)
+            isLive: (pid) => pid === shellProcessPid || processes.runsWork(pid),
+            async signal(pid, signal, _stderr, caller) {
+                if (pid === shellProcessPid || !processes.maySignal(caller, pid))
                     return 'not-permitted';
-                if (signalDisposition(signal) !== 'terminate')
+                const disposition = signalDisposition(signal);
+                // A default-ignored signal (CHLD, URG, WINCH) is delivered and does nothing, as on Linux.
+                if (disposition === 'ignore')
+                    return 'delivered';
+                if (disposition !== 'terminate')
                     return 'unsupported';
                 return processes.kill(pid, exitCodeForSignal(signal), signalAbortReason(signal)) ? 'delivered' : 'no-such-process';
             },
@@ -595,7 +599,7 @@ function workspaceShellIdentity(processes, shellProcess, getShell) {
         try {
             stopped.signal.throwIfAborted();
             // The child inherits its parent's descriptors, environment and directory.
-            const ended = await getShell().runProgram(argv, {
+            const ran = await getShell().runProgram(argv, {
                 identity: commandIdentityFor(child.pid),
                 cwd: parent.cwd,
                 env: parent.env,
@@ -608,6 +612,10 @@ function workspaceShellIdentity(processes, shellProcess, getShell) {
                 signal: stopped.signal,
                 runAs: runAsProcess,
             });
+            // A kill ended it: its status and signal are the kill's, whatever its
+            // program returned on its way out (its parent tells a signal apart).
+            const killedBy = ran.signal === null ? signalAbortReasonOf(stopped.signal) : null;
+            const ended = killedBy === null ? ran : { status: killedBy.exitCode, signal: killedBy.signal };
             exitCode = ended.status;
             return ended;
         }

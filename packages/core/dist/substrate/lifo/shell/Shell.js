@@ -1109,13 +1109,26 @@ export class Shell {
         if (eof >= 0)
             stdin.close();
     }
+    /** Run the rc file at `path`, as a line of this shell's process; a missing one is skipped. */
     async sourceFile(path) {
+        let content;
         try {
-            const content = (await this.vfs.readFileString(path));
-            await this.interpreter.executeLine(content);
+            content = await this.vfs.readFileString(path);
         }
         catch {
-            // Silently ignore missing config files
+            return;
+        }
+        const identity = this.resolveCommandIdentity(undefined);
+        const abort = new AbortController();
+        const stopped = this.processes.holdWork(identity.pid, (reason) => abort.abort(reason), abort.signal);
+        try {
+            await this.interpreter.executeLine(content, undefined, { commandIdentity: identity, runAs: this.commandIdentity.runAs, signal: stopped.signal });
+        }
+        catch {
+            // An rc file that fails leaves the shell to start.
+        }
+        finally {
+            stopped();
         }
     }
     writeToTerminal(text) {

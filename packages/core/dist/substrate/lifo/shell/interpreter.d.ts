@@ -49,6 +49,8 @@ export interface BuiltinExecutionContext {
     /** The state of the shell running the builtin: a child shell's own, after a fork. */
     shell: ShellState;
     getLastExitCode(): number;
+    /** The credential of the process the builtin runs as: a kill's caller. */
+    cred(): VfsCred;
 }
 export interface InlineExecutionOptions {
     positionals?: string[];

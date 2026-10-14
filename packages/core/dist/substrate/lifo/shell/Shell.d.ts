@@ -212,6 +212,7 @@ export declare class Shell {
     private acceptLine;
     executeLine(line: string, submission?: ShellInputSubmission | undefined): Promise<void>;
     private consumeQueuedStdin;
+    /** Run the rc file at `path`, as a line of this shell's process; a missing one is skipped. */
     sourceFile(path: string): Promise<void>;
     private writeToTerminal;
 }

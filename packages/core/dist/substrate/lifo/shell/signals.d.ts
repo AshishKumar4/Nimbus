@@ -21,4 +21,6 @@ export declare function signalAbortReason(signal?: string): SignalAbortReason;
  */
 export declare const SESSION_DESTROYED: SignalAbortReason;
 export declare function exitCodeForAbortSignal(signal: AbortSignal, fallback?: number): number;
+/** The signal `signal` was aborted by, when a signal ended its work; null otherwise. */
+export declare function signalAbortReasonOf(signal: AbortSignal): SignalAbortReason | null;
 //# sourceMappingURL=signals.d.ts.map

@@ -1,4 +1,5 @@
 import type { Command, CommandContext, CommandOutputStream } from '../types.js';
+import type { VfsCred } from '../../../../runtime/os-contracts.js';
 import { type JobTable } from '../../shell/jobs.js';
 /** What a host did with a signal `kill` handed it: `not-permitted` for a process no shell may signal (the session's own shell). */
 export type HostSignalResult = 'delivered' | 'no-such-process' | 'unsupported' | 'not-permitted';
@@ -13,17 +14,18 @@ export interface HostProcessSignals {
     /** Whether `pid` is a live process of this host. `kill -0` asks only this. */
     isLive(pid: number): boolean;
     /**
-     * Deliver `signal` (a parsed name, never `0`) to a live pid of this host.
-     * A teardown step that failed without keeping the process alive is
-     * reported on `stderr`.
+     * Deliver `signal` (a parsed name, never `0`) to a live pid of this host,
+     * from `caller`, whom kill(2)'s rule may refuse (`not-permitted`). A
+     * teardown step that failed without keeping the process alive is reported
+     * on `stderr`.
      */
-    signal(pid: number, signal: string, stderr: CommandOutputStream): Promise<HostSignalResult>;
+    signal(pid: number, signal: string, stderr: CommandOutputStream, caller: Readonly<VfsCred>): Promise<HostSignalResult>;
 }
 /**
- * `kill`, by the shell's builtin with its `jobs`, or as a program, which has
- * no jobs and finds a jobspec names none (procps kill).
+ * `kill` from `caller`, by the shell's builtin with its `jobs`, or as a
+ * program, which has no jobs and finds a jobspec names none (procps kill).
  */
-export declare function runKill(ctx: Pick<CommandContext, 'args' | 'stdout' | 'stderr'>, jobs: Pick<JobTable, 'list' | 'byPid' | 'signal'> | null, host?: HostProcessSignals): Promise<number>;
+export declare function runKill(ctx: Pick<CommandContext, 'args' | 'stdout' | 'stderr'>, caller: Readonly<VfsCred>, jobs: Pick<JobTable, 'list' | 'byPid' | 'signal'> | null, host?: HostProcessSignals): Promise<number>;
 /** `kill` as a program (`xargs kill`, `sudo kill`): it reaches the processes `host` does. */
 export declare function createKillCommand(host?: HostProcessSignals): Command;
 //# sourceMappingURL=kill.d.ts.map

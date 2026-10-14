@@ -2,10 +2,10 @@ import { resolveJobSpec } from '../../shell/jobs.js';
 import { formatSignalList, parseSignalName, signalOperand } from '../../shell/signals.js';
 const USAGE = 'kill: usage: kill [-s sigspec | -n signum | -sigspec] pid | jobspec ... or kill -l [sigspec]\n';
 /**
- * `kill`, by the shell's builtin with its `jobs`, or as a program, which has
- * no jobs and finds a jobspec names none (procps kill).
+ * `kill` from `caller`, by the shell's builtin with its `jobs`, or as a
+ * program, which has no jobs and finds a jobspec names none (procps kill).
  */
-export async function runKill(ctx, jobs, host) {
+export async function runKill(ctx, caller, jobs, host) {
     const args = ctx.args;
     if (args[0] === '-l' || args[0] === '-L' || args[0] === '--list') {
         if (args.length === 1) {
@@ -62,8 +62,10 @@ export async function runKill(ctx, jobs, host) {
                 status = 1;
                 continue;
             }
-            if (signal !== '0')
-                jobs?.signal(job, signal);
+            if (signal !== '0' && jobs?.signal(job, signal, caller) === false) {
+                await ctx.stderr.write(`kill: (${job.pid}) - Operation not permitted\n`);
+                status = 1;
+            }
             continue;
         }
         if (!/^\d+$/.test(target)) {
@@ -74,14 +76,16 @@ export async function runKill(ctx, jobs, host) {
         const pid = Number(target);
         const job = jobs?.byPid(pid);
         if (job && job.status !== 'done') {
-            if (signal !== '0')
-                jobs?.signal(job, signal);
+            if (signal !== '0' && jobs?.signal(job, signal, caller) === false) {
+                await ctx.stderr.write(`kill: (${pid}) - Operation not permitted\n`);
+                status = 1;
+            }
             continue;
         }
         if (host?.isLive(pid) === true) {
             if (signal === '0')
                 continue;
-            const result = await host.signal(pid, signal, ctx.stderr);
+            const result = await host.signal(pid, signal, ctx.stderr, caller);
             if (result === 'delivered')
                 continue;
             await ctx.stderr.write(result === 'unsupported'
@@ -97,5 +101,5 @@ export async function runKill(ctx, jobs, host) {
 }
 /** `kill` as a program (`xargs kill`, `sudo kill`): it reaches the processes `host` does. */
 export function createKillCommand(host) {
-    return async (ctx) => await runKill(ctx, null, host);
+    return async (ctx) => await runKill(ctx, ctx.cred, null, host);
 }

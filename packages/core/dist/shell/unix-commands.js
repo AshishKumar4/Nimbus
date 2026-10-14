@@ -1703,9 +1703,10 @@ const XARGS_CHILD_STDIN = {
  * Each batch of arguments is a child process (`runAs`, as find's -exec):
  * any program the shell runs (a registry command, sh, a runtime), with
  * xargs's stdout and stderr and what the shell knows of them, and
- * /dev/null for stdin. A program that cannot be run ends xargs with 127
- * (126 when it may not run), and one a signal ends, with 125, after GNU's
- * message; otherwise its last nonzero status is xargs's.
+ * /dev/null for stdin. GNU's statuses: a program that cannot be run ends
+ * xargs with 127 (126 when it may not run), one a signal ends with 125 and
+ * one that exits 255 with 124, each after GNU's message; any other failure
+ * makes xargs's status 123 once every batch has run.
  *
  * Supported flags:
  *   -n NUM        run command with at most NUM args per invocation
@@ -1808,8 +1809,12 @@ function mkXargs() {
                 (await ctx.stderr.write(`xargs: ${cmdName}: terminated by signal ${ended.status - 128}\n`));
                 return 125;
             }
+            if (ended.status === 255) {
+                (await ctx.stderr.write(`xargs: ${cmdName}: exited with status 255; aborting\n`));
+                return 124;
+            }
             if (ended.status !== 0)
-                exit = ended.status;
+                exit = 123;
         }
         return exit;
     };

@@ -30,7 +30,7 @@ const BUILTINS = {
     readonly: builtinReadonly,
     read: builtinRead,
     wait: builtinWait,
-    kill: ({ args, stdout, stderr, state, host }) => runKill({ args, stdout, stderr }, state.jobTable, host.hostProcessSignals()),
+    kill: ({ args, stdout, stderr, state, host, context }) => runKill({ args, stdout, stderr }, context.cred(), state.jobTable, host.hostProcessSignals()),
     unset: builtinUnset,
     local: (call) => builtinDeclare('local', call),
     declare: (call) => builtinDeclare('declare', call),
@@ -593,7 +593,7 @@ async function builtinFg({ args, stdout, stderr, state, context }) {
         return 1;
     }
     await stdout.write(`${job.command}\n`);
-    state.jobTable.signal(job, 'CONT');
+    state.jobTable.signal(job, 'CONT', context.cred());
     const exitCode = await job.promise;
     state.jobTable.reap(job);
     return exitCode;
@@ -614,7 +614,7 @@ async function builtinBg({ args, stdout, stderr, state, context }) {
         await stderr.write(`bg: ${spec}: ${job === 'ambiguous' ? 'ambiguous job spec' : 'no such job'}\n`);
         return 1;
     }
-    state.jobTable.signal(job, 'CONT');
+    state.jobTable.signal(job, 'CONT', context.cred());
     await stdout.write(`[${job.id}]+ ${job.command} &\n`);
     return 0;
 }

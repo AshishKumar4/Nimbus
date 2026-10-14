@@ -637,8 +637,13 @@ export class Interpreter {
         const replacesShell = name === 'exec' && args.length > 0 && !(args.length === 1 && args[0] === '--');
         if (replacesShell)
             [name, ...args] = args[0] === '--' ? args.slice(1) : args;
+        // `command name [args]` runs name as a builtin or a program, never as a
+        // function or an alias (bash); `command -v`/`-V` describe, by the registry's.
+        const viaCommand = name === 'command' && args.length > 0 && (args[0] === '--' ? args.length > 1 : !args[0].startsWith('-'));
+        if (viaCommand)
+            [name, ...args] = args[0] === '--' ? args.slice(1) : args;
         // Check alias expansion
-        const aliases = replacesShell ? undefined : this.config.aliases;
+        const aliases = replacesShell || viaCommand ? undefined : this.config.aliases;
         if (aliases) {
             const aliasValue = aliases.get(name);
             if (aliasValue !== undefined) {
@@ -704,7 +709,7 @@ export class Interpreter {
             }
             else {
                 // Check functions
-                const funcBody = replacesShell ? undefined : this.functions.get(name);
+                const funcBody = replacesShell || viaCommand ? undefined : this.functions.get(name);
                 if (funcBody) {
                     exitCode = await this.executeFunction(funcBody, args, this.createIoFromFds(io, fds));
                 }
@@ -739,6 +744,11 @@ export class Interpreter {
                                 shell: this.config,
                                 interactive: io.interactive,
                                 getLastExitCode: () => this.lastExitCode,
+                                cred: () => {
+                                    if (!io.commandIdentity)
+                                        throw new Error('shell command identity is unavailable');
+                                    return io.commandIdentity.cred;
+                                },
                             });
                         }
                         catch (error) {
@@ -819,8 +829,10 @@ export class Interpreter {
         }
         if (writeFailed && exitCode === 0)
             exitCode = 1;
+        // `command` takes a special builtin's failure from fatal to an ordinary status (POSIX).
         const fatalSpecialBuiltin = io.scriptMode === true
             && exitCode !== 0
+            && !viaCommand
             && isFatalSpecialBuiltin(name);
         this.lastExitCode = exitCode;
         if (fatalSpecialBuiltin)

@@ -63,6 +63,10 @@ export const SESSION_DESTROYED = Object.freeze(signalAbortReason('KILL'));
 export function exitCodeForAbortSignal(signal, fallback = 130) {
     return isSignalAbortReason(signal.reason) ? signal.reason.exitCode : fallback;
 }
+/** The signal `signal` was aborted by, when a signal ended its work; null otherwise. */
+export function signalAbortReasonOf(signal) {
+    return signal.aborted && isSignalAbortReason(signal.reason) ? signal.reason : null;
+}
 function isSignalAbortReason(value) {
     if (!value || typeof value !== 'object')
         return false;
