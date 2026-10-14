@@ -101,17 +101,18 @@ export class ProcessTable {
         this.processes.set(pid, entry);
         return entry;
     }
+    /** `pid`'s credential, as its entry keeps it: frozen, replaced (never changed) by setUmask. */
     credOf(pid) {
         const entry = this.processes.get(pid);
         if (!entry)
             throw noSuchProcess(pid);
-        return immutableCred(entry.cred);
+        return entry.cred;
     }
     liveCred(pid) {
         const entry = this.processes.get(pid);
         if (!entry || entry.state !== 'running')
             throw noSuchProcess(pid);
-        return immutableCred(entry.cred);
+        return entry.cred;
     }
     cred(pid) {
         return this.credOf(pid);
