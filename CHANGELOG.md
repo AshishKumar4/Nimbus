@@ -21,7 +21,9 @@ published independently in the `@nimbus-sh` npm scope.
   and `#!/usr/bin/python3` run it as `python3` does in Nimbus's shell.
   Front-ends with no entry of their own (`pip`, `gem`, `bundle`) run by
   name only, and a launcher is not a program GNU Bash (`bash -c`) can run.
-  A runtime's name and version must each be one path name. A
+  A runtime's name and version must each be one path name, and a
+  configured `env.HOME` may not be inside `/usr/lib/nimbus` or `/.nimbus`,
+  the system's own stores. A
   configured `env.HOME` no longer chooses where runtimes go. The `root` a
   runtime list or install reports, and the paths `nimbus install` prints,
   are the new ones. Runtimes an earlier release installed below
