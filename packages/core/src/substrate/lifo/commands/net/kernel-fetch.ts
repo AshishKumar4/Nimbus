@@ -79,16 +79,17 @@ export function workspaceRequestPort(kernel: Partial<Pick<Kernel, 'dns'>>, url: 
 }
 
 /** HTTP reason phrase — virtual responses carry no status text. */
+const STATUS_TEXT: Readonly<Record<number, string>> = {
+  200: 'OK', 201: 'Created', 202: 'Accepted', 204: 'No Content',
+  301: 'Moved Permanently', 302: 'Found', 303: 'See Other',
+  304: 'Not Modified', 307: 'Temporary Redirect', 308: 'Permanent Redirect',
+  400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden',
+  404: 'Not Found', 405: 'Method Not Allowed', 500: 'Internal Server Error',
+  502: 'Bad Gateway', 503: 'Service Unavailable',
+};
+
 export function statusText(status: number): string {
-  const map: Record<number, string> = {
-    200: 'OK', 201: 'Created', 202: 'Accepted', 204: 'No Content',
-    301: 'Moved Permanently', 302: 'Found', 303: 'See Other',
-    304: 'Not Modified', 307: 'Temporary Redirect', 308: 'Permanent Redirect',
-    400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden',
-    404: 'Not Found', 405: 'Method Not Allowed', 500: 'Internal Server Error',
-    502: 'Bad Gateway', 503: 'Service Unavailable',
-  };
-  return map[status] ?? '';
+  return STATUS_TEXT[status] ?? '';
 }
 
 /**
