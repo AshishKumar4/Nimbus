@@ -101,7 +101,7 @@ function createNodeImpl(kernelOrPortRegistry) {
  * A pipe into the program's stdout or stderr leaves it open, as Node's pipe
  * leaves process.stdout and process.stderr; the engine's knows the realm's own
  * streams (the worker's, which its plumbing needs), not the program's. Set
- * when the program first reaches one, which it does before it pipes into it.
+ * when the program first reaches the engine's streams, before it can pipe.
  */
 function leaveOpenOnPipe(standardStreams) {
     const { Readable } = realm.getBuiltinModule('node:stream');
@@ -139,11 +139,17 @@ export async function runNodeProgram(program, host) {
     };
     // One process and console, every module's, as in Node.
     const standardStreams = new Set();
+    let streamsReached = false;
+    nodeCtx.reachStreams = () => {
+        if (streamsReached)
+            return;
+        streamsReached = true;
+        leaveOpenOnPipe(standardStreams);
+    };
     const main = {
         process: createProcess({
             argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdout: ctx.stdout, stderr: ctx.stderr,
-            standardStream: (stream) => { if (standardStreams.add(stream).size === 1)
-                leaveOpenOnPipe(standardStreams); },
+            standardStream: (stream) => { standardStreams.add(stream); nodeCtx.reachStreams?.(); },
         }),
         console: createConsole(ctx.stdout, ctx.stderr),
     };

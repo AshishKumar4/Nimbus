@@ -104,7 +104,7 @@ const STDIN_PATHS = { '/dev/stdin': true, '/dev/fd/0': true, '/proc/self/fd/0': 
  * read of it does in Node; what it returned is all fd 0 holds, so a second
  * read finds it at its end.
  */
-export function createFs(vfs, cwd, stdin) {
+export function createFs(vfs, cwd, stdin, reachStreams) {
     let stdinRead = false;
     const readStdin = () => {
         if (stdinRead)
@@ -445,11 +445,13 @@ export function createFs(vfs, cwd, stdin) {
     const streamOptions = (options) => ({ fs: streamFs, ...(typeof options === 'string' ? { encoding: options } : options) });
     class ReadStream extends engineFs.ReadStream {
         constructor(path, options) {
+            reachStreams?.();
             super(streamPath(path), streamOptions(options));
         }
     }
     class WriteStream extends engineFs.WriteStream {
         constructor(path, options) {
+            reachStreams?.();
             super(streamPath(path), streamOptions(options));
         }
     }
