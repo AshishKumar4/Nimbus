@@ -269,8 +269,8 @@ console.log('  a home is not configured inside the system\'s own stores');
 // Root makes the home and hands it to the user: through a link the user made
 // (into the runtime store, the kernel's /.nimbus, or anywhere), that would
 // hand the user the directory it leads to. Such a HOME is refused, and
-// nothing is made or handed over.
-for (const [target, under] of [['/usr/lib/nimbus', 'clang/x/share/clang/sysroot'], ['/.nimbus', 'facet-images'], ['/etc', 'skel']]) {
+// nothing is made or handed over. (A home already there is left as it is.)
+for (const [target, under] of [['/usr/lib/nimbus', 'clang/x/share/clang/sysroot'], ['/.nimbus', 'x/home'], ['/etc', 'skel']]) {
   const db = new Database(':memory:');
   const first = await open(db);
   first.vfs.as(CRED_SESSION_USER).symlink(target, 'home/user/alias');
