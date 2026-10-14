@@ -5,6 +5,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed: `kill -STOP` (and `-TSTP`, `-TTIN`, `-TTOU`) of a shell job is
+  refused with "Operation not supported" and status 1, as it is for a
+  hosted resident: nothing can pause a job's work. It used to answer 0 and
+  list the job as Stopped while the job ran on. `kill -CONT` of a job
+  succeeds and does nothing, `jobs -s` lists nothing, and `bg` of a job
+  says "bg: job N already in background", as bash does of a running one.
 - Fixed: the library's built-in `node` gives a program the engine's own
   `path` and `url`, against the program's working directory: `path.resolve`
   and `path.relative` start from it, as does `url.pathToFileURL` of a

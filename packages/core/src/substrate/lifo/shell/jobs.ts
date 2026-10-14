@@ -2,6 +2,7 @@ import type { SessionProcessSupervisor } from '../../../runtime/session-process-
 import type { VfsCred } from '../../../runtime/os-contracts.js';
 import type { CommandIdentity } from './interpreter.js';
 import { exitCodeForSignal, signalAbortReason, signalDisposition } from './signals.js';
+import type { HostSignalResult } from '../commands/system/kill.js';
 
 /**
  * The session's process table as a shell uses it: its jobs are processes
@@ -21,8 +22,8 @@ export interface Job {
   /** Its status, once its process has ended, however it ended. */
   readonly promise: Promise<number>;
   readonly pid: number;
-  /** Running, stopped by a stop signal, or done once its process has ended. */
-  readonly status: 'running' | 'done' | 'stopped';
+  /** Running, or done once its process has ended: nothing stops a job (JobTable.signal). */
+  readonly status: 'running' | 'done';
   /** How it ended; null while it runs. */
   readonly exitCode: number | null;
 }
@@ -31,14 +32,6 @@ export interface Job {
 export interface JobProcess {
   readonly identity: CommandIdentity & { beginWork(): () => void };
   readonly signal: AbortSignal;
-}
-
-/**
- * A stop signal only marks the job: nothing pauses its work, and a continue
- * clears the mark.
- */
-interface JobRecord extends Job {
-  stopped: boolean;
 }
 
 export function resolveJobSpec<T extends { id: number; command: string }>(spec: string, jobs: readonly T[]): T | 'ambiguous' | undefined {
@@ -70,7 +63,7 @@ export function resolveJobSpec<T extends { id: number; command: string }>(spec: 
  * the job's, wherever it is signalled from, and how it ended is set once.
  */
 export class JobTable {
-  private jobs = new Map<number, JobRecord>();
+  private jobs = new Map<number, Job>();
   private waited = new Map<number, Job>();
 
   constructor(private readonly processes: ShellProcesses) {}
@@ -91,14 +84,13 @@ export class JobTable {
     let exitCode: number | null = null;
     const promise = processes.whenEnded(pid);
     void promise.then((code) => { exitCode = code; });
-    const record: JobRecord = {
+    const record: Job = {
       id,
       command: options.command,
       promise,
       pid,
-      stopped: false,
       get exitCode() { return exitCode; },
-      get status() { return exitCode !== null ? 'done' : record.stopped ? 'stopped' : 'running'; },
+      get status() { return exitCode !== null ? 'done' : 'running'; },
     };
     this.jobs.set(id, record);
     const identity: JobProcess['identity'] = {
@@ -119,19 +111,20 @@ export class JobTable {
 
   /**
    * Deliver `signal` (a parsed name; `0` delivers nothing) to `job`, one of
-   * this table's, from `caller`: a terminating one ends its process, which
-   * stops its work; a stop or continue sets or clears its stop mark. False
-   * when kill(2)'s rule refuses `caller` (SessionProcessSupervisor.maySignal).
+   * this table's, from `caller`, as kill reports it: a terminating one ends
+   * its process, which stops its work; a continue or an ignored one does
+   * nothing to a job that runs. A stop is `unsupported`: nothing can pause a
+   * job's work (a command is not preempted), as nothing can pause a hosted
+   * process's. `not-permitted` when kill(2)'s rule refuses `caller`
+   * (SessionProcessSupervisor.maySignal).
    */
-  signal(job: Job, signal: string, caller: Readonly<VfsCred>): boolean {
-    const record = this.jobs.get(job.id);
-    if (record !== job || job.status === 'done') return true;
-    if (!this.processes.maySignal(caller, job.pid)) return false;
+  signal(job: Job, signal: string, caller: Readonly<VfsCred>): HostSignalResult {
+    if (this.jobs.get(job.id) !== job || job.status === 'done') return 'delivered';
+    if (!this.processes.maySignal(caller, job.pid)) return 'not-permitted';
     const disposition = signalDisposition(signal);
-    if (disposition === 'stop') record.stopped = true;
-    else if (disposition === 'continue') record.stopped = false;
-    else if (disposition === 'terminate') this.processes.kill(job.pid, exitCodeForSignal(signal), signalAbortReason(signal));
-    return true;
+    if (disposition === 'stop') return 'unsupported';
+    if (disposition === 'terminate') this.processes.kill(job.pid, exitCodeForSignal(signal), signalAbortReason(signal));
+    return 'delivered';
   }
 
   fork(): JobTable {
