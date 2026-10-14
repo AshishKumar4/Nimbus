@@ -9,62 +9,17 @@
  * instead of being mistaken for "no listener".
  */
 
+import { isLoopbackHost, type Kernel } from '../../kernel/index.js';
 import {
-  isLoopbackHost,
-  type Kernel,
-  type VirtualRequest,
-  type VirtualRequestHandler,
-  type VirtualResponse,
-} from '../../kernel/index.js';
-import { waitForSignalOrTimeout } from '../signal.js';
+  awaitServedEnd,
+  routeToLoopback,
+  serveFromPort,
+  servedBody,
+  statusText,
+  type WorkspaceRequestResult,
+} from '../../kernel/local-serve.js';
 import { ISOLATE_NETWORK } from '../../../../_shared/workspace-network.js';
 import { applyRedirectPolicy, isRedirectStatus } from '../../../../runtime/http-redirect-policy.js';
-
-/** Outcomes of one workspace-local hop, for callers that report failure. */
-export type WorkspaceRequestResult =
-  | { kind: 'response'; response: Response }
-  | { kind: 'refused' }
-  | { kind: 'aborted' }
-  | { kind: 'timeout' };
-
-/**
- * How a server of a port registry took a request: its response, with the end
- * still to wait for when its handler returned before ending it (the
- * _donePromise a ServerResponse attaches while the response is open); or a
- * refusal, when the handler threw.
- */
-export type Served =
-  | { kind: 'served'; response: VirtualResponse; end: Promise<void> | null }
-  | { kind: 'refused' };
-
-/** `request` handed to `handler`, a server of a port registry, synchronously, as a server takes a request. */
-export function serveFromPort(handler: VirtualRequestHandler, request: VirtualRequest): Served {
-  const response: VirtualResponse & { _donePromise?: Promise<void> } = { statusCode: 200, headers: {}, body: '' };
-  try {
-    handler(request, response);
-  } catch {
-    return { kind: 'refused' };
-  }
-  return { kind: 'served', response, end: response._donePromise ?? null };
-}
-
-/**
- * The wait for a served response's `end`, however late its handler ends it,
- * unless `signal` aborts first or 30 s pass: `ended`, or how the wait stopped.
- */
-export async function awaitServedEnd(end: Promise<void>, signal: AbortSignal): Promise<'ended' | 'refused' | 'aborted' | 'timeout'> {
-  try {
-    const result = await waitForSignalOrTimeout(end, signal, 30_000);
-    return result.type === 'aborted' ? 'aborted' : result.type === 'timeout' ? 'timeout' : 'ended';
-  } catch {
-    return 'refused';
-  }
-}
-
-/** A served response's body as HTTP carries it: none for 204 and 304. */
-export function servedBody(response: VirtualResponse): string | null {
-  return response.statusCode === 204 || response.statusCode === 304 ? null : response.body;
-}
 
 /**
  * The loopback port a URL asks for, or null when it is not loopback. A name
@@ -79,19 +34,6 @@ export function workspaceRequestPort(kernel: Partial<Pick<Kernel, 'dns'>>, url: 
 }
 
 /** HTTP reason phrase — virtual responses carry no status text. */
-const STATUS_TEXT: Readonly<Record<number, string>> = {
-  200: 'OK', 201: 'Created', 202: 'Accepted', 204: 'No Content',
-  301: 'Moved Permanently', 302: 'Found', 303: 'See Other',
-  304: 'Not Modified', 307: 'Temporary Redirect', 308: 'Permanent Redirect',
-  400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden',
-  404: 'Not Found', 405: 'Method Not Allowed', 500: 'Internal Server Error',
-  502: 'Bad Gateway', 503: 'Service Unavailable',
-};
-
-export function statusText(status: number): string {
-  return STATUS_TEXT[status] ?? '';
-}
-
 /**
  * Serve `request` through the kernel's port registry, else its host's
  * loopback router. The handler's virtual response is adapted to a real
@@ -127,18 +69,7 @@ export async function dispatchWorkspaceRequest(
     };
   }
 
-  if (kernel.routeLoopback) {
-    const routed = await waitForSignalOrTimeout(
-      kernel.routeLoopback(port, request),
-      request.signal,
-      30_000,
-    );
-    if (routed.type === 'aborted') return { kind: 'aborted' };
-    if (routed.type === 'timeout') return { kind: 'timeout' };
-    if (routed.value) return { kind: 'response', response: routed.value };
-  }
-
-  return { kind: 'refused' };
+  return kernel.routeLoopback ? await routeToLoopback(kernel.routeLoopback, port, request) : { kind: 'refused' };
 }
 
 /** How many redirects a walk follows before it gives up: curl's and wget's default. */
