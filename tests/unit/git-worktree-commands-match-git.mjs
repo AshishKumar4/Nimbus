@@ -1260,6 +1260,50 @@ try {
   await same('rev-parse outside any repository', nowhere, ['rev-parse', '--show-toplevel'], { stderr: true });
   await same('ls-files outside any repository', nowhere, ['ls-files'], { stderr: true });
 
+  // ── An index there that cannot be read (mode 0200, not root): git's
+  // do_read_index dies of anything but ENOENT before it acts, its words and
+  // exit, and leaves the index, the refs and the worktree as they were. Read
+  // as empty, a staging command wrote an index of only what it staged and
+  // dropped every other entry (GIT-M1). ──
+  {
+    assert.notEqual(process.getuid?.(), 0, 'an unreadable index needs a runner that is not root');
+    const repo = scenario(({ put, git }) => {
+      put('a.txt', 'a\n'); put('b.txt', 'b\n'); put('dir/c.txt', 'c\n');
+      git('add', '.'); git('commit', '-q', '-m', 'one');
+      put('a.txt', 'a changed\n'); put('d.txt', 'd\n'); git('add', 'a.txt', 'd.txt');
+      put('b.txt', 'b changed\n');
+    });
+    const index = '.git/index';
+    const diskIndex = join(repo.disk, index);
+    const vfsIndex = `${repo.virtual}/${index}`;
+    const indexBytes = user.readFile(vfsIndex);
+    const refs = () => realGit(repo.disk, ['for-each-ref', '--format=%(refname) %(objectname)']).stdout.toString();
+    const refsBefore = refs();
+    for (const [words, sub] of [
+      [['status', '--porcelain'], ''], [['diff'], ''], [['diff', '--cached'], ''], [['ls-files', '-s'], ''],
+      [['add', 'b.txt'], ''], [['add', '-A'], ''], [['commit', '-q', '-am', 'two'], ''], [['rm', '-q', '--cached', 'b.txt'], ''],
+      [['reset', '-q', '--hard', 'HEAD'], ''], [['reset', '-q', 'HEAD', 'a.txt'], ''], [['checkout', '-q', 'HEAD', '--', 'b.txt'], ''],
+      [['checkout', '-q', '-b', 'side'], ''], [['status', '--porcelain'], 'dir'], [['add', 'c.txt'], 'dir'],
+    ]) {
+      const label = `unreadable index: git ${words.join(' ')}${sub ? ` (in ${sub})` : ''}`;
+      chmodSync(diskIndex, 0o200);
+      user.chmod(vfsIndex, 0o200);
+      const expected = realGit(sub ? join(repo.disk, sub) : repo.disk, words);
+      const actual = await nimbusGit(sub ? `${repo.virtual}/${sub}` : repo.virtual, words);
+      chmodSync(diskIndex, 0o644);
+      user.chmod(vfsIndex, 0o644);
+      assert.equal(actual.code, expected.code, `${label}: exit code (git: ${expected.stderr}; nimbus: ${actual.stderr})`);
+      assert.equal(actual.stderr, expected.stderr, `${label}: stderr`);
+      assert.deepEqual(user.readFile(vfsIndex), indexBytes, `${label}: the index is as it was`);
+      assert.deepEqual(new Uint8Array(readFileSync(diskIndex)), indexBytes, `${label}: git left its index as it was too`);
+      assert.equal(refs(), refsBefore, `${label}: git made no ref`);
+      assert.equal(user.exists(`${repo.virtual}/.git/refs/heads/side`), false, `${label}: no ref is made`);
+      assert.equal(user.exists(`${vfsIndex}.lock`), false, `${label}: no lock is left`);
+      assert.equal(user.readFileString(`${repo.virtual}/b.txt`), 'b changed\n', `${label}: the worktree is as it was`);
+      checks++;
+    }
+  }
+
   // ── A reader that goes away (`git diff | head -1`): git dies of SIGPIPE, 141, silently ──
   let stderr = '';
   const code = await runGitCommand({
