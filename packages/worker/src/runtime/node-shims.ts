@@ -11886,14 +11886,27 @@ function __nimbusNodeShaped(e) {
   return reshapeAsNodeError(e, Base, e.code);
 }
 // \`fn\`, its errors Node's; \`callbacks\`: a last function argument is a
-// callback, whose first argument is the error.
+// callback, whose first argument is the error. A call given a callback is
+// work the engine runs off the program's turn (zlib's and crypto's
+// threadpool), live until its callback, as Node's active requests keep its
+// event loop: a one-shot program that waits on nothing else is not ended
+// before it.
 function __nimbusNodeErrorsOf(fn, callbacks) {
   fn = __nimbusFrontBase(fn);
   const shaped = function (...args) {
     const last = args.length - 1;
+    let settle = null;
     if (callbacks && last >= 0 && typeof args[last] === "function") {
       const callback = args[last];
+      globalThis.__nimbusPendingOps++;
+      settle = () => {
+        if (settle === null) return;
+        settle = null;
+        globalThis.__nimbusPendingOps--;
+        globalThis.__nimbusHandleReleased?.();
+      };
       args[last] = function (...results) {
+        settle?.();
         if (results.length > 0) __nimbusNodeShaped(results[0]);
         return __nimbusReflectApply(callback, this, results);
       };
@@ -11902,6 +11915,8 @@ function __nimbusNodeErrorsOf(fn, callbacks) {
     try {
       result = __nimbusReflectApply(fn, this, args);
     } catch (e) {
+      // Refused before it started: no work is live.
+      settle?.();
       throw __nimbusNodeShaped(e);
     }
     return result instanceof Promise ? result.then(undefined, (e) => { throw __nimbusNodeShaped(e); }) : result;

@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a Node program whose only remaining work was a `zlib` or `crypto`
+  call with a callback (`zlib.deflate`, `crypto.pbkdf2`, `scrypt`,
+  `randomBytes`, ...) could end with exit 0 and none of the output its
+  callback writes: the runtime counted fetches, timers and its own calls as
+  live work, not the engine's. Such a call is live until its callback, as
+  Node's active requests keep its event loop. Small calls finished in time
+  unless the machine was busy.
 - Fixed: the library's built-in `node` gives a program the engine's own
   `path` and `url`, against the program's working directory: `path.resolve`
   and `path.relative` start from it, as does `url.pathToFileURL` of a
