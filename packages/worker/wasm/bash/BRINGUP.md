@@ -123,3 +123,23 @@ source using `build-bash.sh`; `NIMBUS_BUILD_JOBS` defaults to 1. Do not edit
 the wasm binary. Publish the runtime before the matching core; preserve
 existing runtime-2 catalog objects and do not change the catalog default
 until all consuming deployments bind the new contract.
+
+## Build 4: exact setjmp lifetimes
+
+bash copies `procenv_t` (jmp_buf) values by value: `COPY_PROCENV` around
+functions, traps and sourced files, `unwind_protect_jmp_buf` around eval
+and source, `expr.c`'s `evalbuf` copies, the `read -t` timer's buffer and
+readline's callback copies. It later restores a copy and longjmps through
+it. `patches/procenv.patch`, applied by `build-bash.sh` to the fresh source
+tree, routes every such copy through `nimbus_procenv_copy` and every end of a
+saved copy through `nimbus_procenv_drop` (`nimbus-proc.c`), imports of their
+own module, `nimbus_procenv`, off Asyncify's list. The link also exports
+`__data_end` and `__heap_base`, the shadow stack's bounds.
+
+The runner (`packages/core/src/runtime/bash/capture-store.ts`) keeps each
+capture exactly as long as a registered buffer names it; a buffer on the
+stack ends when its frame does (below the stack pointer). This changes the
+import table and the required exports: runner key `bash-runner@4`, runtime
+`5.2.37-4`, built only by `build-in-bwrap.sh` (`scripts/ci/remote-bash-build.mjs`).
+Publish it with `--keep-default` before the matching core, as for build 3.
+

@@ -17,7 +17,8 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
 import { catalogKey } from '../../packages/worker/src/runtime/runtime-catalog.ts';
 import { syncRuntimes } from '../../packages/cli/src/commands/runtime-sync.ts';
 import { stageDeploymentProject } from './lib/deployment-project.mjs';
@@ -32,15 +33,15 @@ const savedPath = process.env.PATH;
 const savedAccount = process.env.CLOUDFLARE_ACCOUNT_ID;
 try {
   const scripts = join(root, 'packages/worker/scripts');
-  mkdirSync(scripts, { recursive: true });
-  for (const script of ['bundle-runtime.mjs', 'runtime-specs.mjs']) cpSync(join(WORKER, 'scripts', script), join(scripts, script));
+  // The publisher and the helpers it imports, as the repository has them.
+  cpSync(join(WORKER, 'scripts'), scripts, { recursive: true });
   cpSync(join(WORKER, 'runtime-contracts'), join(root, 'packages/worker/runtime-contracts'), { recursive: true });
-  for (const file of ['bash.async.wasm', 'coreutils/busybox.wasm', 'coreutils/busybox.applets']) {
-    mkdirSync(join(root, 'packages/worker/wasm/bash/coreutils'), { recursive: true });
-    cpSync(join(WORKER, 'wasm/bash', file), join(root, 'packages/worker/wasm/bash', file));
-  }
+  // The module, busybox, and the recipe and provenance the publisher checks them against (wasm/bash/inputs.mjs).
+  cpSync(join(WORKER, 'wasm/bash'), join(root, 'packages/worker/wasm/bash'), { recursive: true });
   mkdirSync(join(root, 'node_modules/@nimbus-sh'), { recursive: true });
   symlinkSync(CORE, join(root, 'node_modules/@nimbus-sh/core'));
+  // The recipe check's parser, as the worker's scripts resolve it.
+  symlinkSync(dirname(createRequire(join(WORKER, 'scripts/artifact-inputs.mjs')).resolve('jsonc-parser/package.json')), join(root, 'node_modules/jsonc-parser'));
   stageDeploymentProject(root, OLD);
 
   // Stub wrangler over a bucket directory: object put/get (--file or --pipe) and bucket info.
@@ -75,7 +76,7 @@ process.exit(1);
     const write = process.stdout.write.bind(process.stdout);
     process.stdout.write = (chunk, ...rest) => { out.push(String(chunk)); return write(chunk, ...rest); };
     try {
-      const code = await syncRuntimes(['--bucket', bucket, 'bash@5.2.37-3'], { scriptPath: join(scripts, 'bundle-runtime.mjs') });
+      const code = await syncRuntimes(['--bucket', bucket, 'bash@5.2.37-5'], { scriptPath: join(scripts, 'bundle-runtime.mjs') });
       return { code, report: out.map((l) => l.trim()).filter((l) => l.startsWith('{')).map((l) => JSON.parse(l)).at(-1) };
     } finally {
       process.stdout.write = write;

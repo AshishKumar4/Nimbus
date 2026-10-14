@@ -1,0 +1,19 @@
+{
+  "artifact": "bash",
+  "source": {
+    "inputs": {
+      "../../scripts/artifact-inputs.mjs": "b0c9307e6f6f13bae05ccf99ab22cf7a715553b8c6f46dbbddfef0181a2f7115",
+      "build-bash.sh": "df02884a023be271a95d42274e8405deff8c18f42170414a1c50b200b35ac434",
+      "build-in-bwrap.sh": "9ec80a0befc8bb87371427e91ef2ccc49ad55eabc2e579450b362fb38068411a",
+      "cross.cache": "94c70967b023de4687815ec71d3ffdd8394491ed97f3fe52a2a37bd4935325a3",
+      "include/termios.h": "64b72d467d29829d60ac3c69af7846a0ba6ec1de3d7e137b3ca275c7c0928ae4",
+      "inputs.mjs": "b8f5f6ff4874a9873834b4b7f47169516c09fcaac715882756968eb95eecd321",
+      "nimbus-proc.c": "0e12961c2f89e2649097a1123c333d83dcab80d6a3f47895ad51d44c06da43d4",
+      "nimbus-proc.h": "69583a295ee76bdefe8bc2d9c6198d4ebd8387a0acfeb40d3576c0b472a872f0",
+      "patches/procenv.patch": "381a3918e5981fef1bcbf3df2f7f9396630a32a38268113b2a62a983ac4d28bd"
+    }
+  },
+  "outputs": {
+    "bash.async.wasm": "8ac4bf873ffdd375131b21ab023c7a900ce158c449bcf973e8e030291f9f7d71"
+  }
+}

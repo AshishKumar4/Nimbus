@@ -1,5 +1,5 @@
 // What a remote artifact build (remote-napi-binding, remote-napi-loader,
-// remote-python-build) hands back, and how it reaches the worktree. The
+// remote-python-build, remote-bash-build) hands back, and how it reaches the worktree. The
 // task's {out} is its log, then FILES_MARK and its files: a base64 xz tar of
 // repository-relative paths. The archive is kept under
 // ~/.local/state/nimbus/<tool>/, and its files are written into the worktree

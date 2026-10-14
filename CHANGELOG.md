@@ -68,6 +68,14 @@ published independently in the `@nimbus-sh` npm scope.
 - Fixed: `nimbus wrangler dev`'s assets binding read a project's assets as
   the session's user. It now reads them as the process that started the
   server, as it reads the project's config, bundle and stores.
+- Fixed: in the installed GNU bash, an `exit` or `return` inside `eval`, a
+  sourced file, a function or an EXIT trap now ends with the status bash
+  chose. Before, a jump through one of bash's saved copies of its jump
+  buffers could land in another capture: `eval 'exit 7'` exited 0, an EXIT
+  trap's exit was lost, and code after a `return` ran. This needs the bash
+  runtime 5.2.37-5 (runner `bash-runner@5`); a session with 5.2.37-3 is told
+  to install it. The bash module is now built by a reproducible recipe
+  (`scripts/ci/remote-bash-build.mjs`) and carries its provenance.
 - Fixed (Node `fs`): `fs.promises.realpath` and callback `fs.realpath`
   resolve symlinks and refuse a missing path with `ENOENT`, giving
   `realpathSync`'s answer; they returned the path as written. A link the
@@ -116,7 +124,7 @@ published independently in the `@nimbus-sh` npm scope.
   `return` inside `eval`, a sourced file, or an EXIT trap) now fails with
   "bash-runner: pid N returned from _start mid-rewind, its longjmp or resume
   target lost". It used to report exit status 0. The jump itself is fixed
-  with the next bash runtime build (bash-runner@4).
+  with the next bash runtime build (bash-runner@5).
 - Fixed: on Cloudflare, piping into the installed GNU bash (`printf x | bash
   -c 'read -r y'`) failed with "The RPC receiver does not implement the
   method "call"". bash now reads its piped stdin.

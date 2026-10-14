@@ -27,6 +27,12 @@ __attribute__((returns_twice)) int  sigsetjmp(sigjmp_buf, int);
 _Noreturn void longjmp(jmp_buf, int);
 _Noreturn void _longjmp(jmp_buf, int);
 _Noreturn void siglongjmp(sigjmp_buf, int);
+/* Every copy bash makes of a jmp_buf, and every end of a saved one, so the
+ * runner knows which buffers can still be jumped through (bash-runner@5:
+ * recorded in the module's memory; patches/procenv.patch routes bash's
+ * copies here). */
+void nimbus_procenv_copy(void *dst, const void *src);
+void nimbus_procenv_drop(void *at);
 
 /* ---- process control (unistd gaps) ---- */
 pid_t fork(void);
