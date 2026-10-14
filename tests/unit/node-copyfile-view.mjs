@@ -84,8 +84,8 @@ await runScenarios(import.meta.path, {
       writeBatchStream: async (...args) => {
         if (hold) {
           hold = false;
-          box.authority.kfs.unlink('home/user/app/d');
-          box.authority.kfs.symlink('B', 'home/user/app/d');
+          await box.authority.peer.unlink('home/user/app/d');
+          await box.authority.peer.symlink('B', 'home/user/app/d');
         }
         return forward('writeBatchStream', args);
       },
