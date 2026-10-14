@@ -3826,11 +3826,15 @@ const __fsMod = (() => {
 
   /**
    * The session's copy of \`src\` to \`dest\`, each as named, and what the view
-   * holds of it once answered. The answer names the file it copied and that
-   * file's revision: the source's whole cell the view held when the copy was
-   * asked, dated that late or later, is the copy's, in a buffer of its own;
-   * else the copy is read back where the view held the source, its stat
-   * learned where it never did.
+   * holds of it once answered. The answer names the key it wrote (its
+   * destination's links followed as the session followed them) and the
+   * file it copied with that file's revision. Only where the session wrote
+   * the key this view follows the destination to is anything of it taken
+   * here: the source's whole cell the view held when the copy was asked,
+   * dated that late or later, is the copy's, in a buffer of its own; else
+   * the copy is read back where the view held the source, its stat learned
+   * where it never did. Where the session wrote elsewhere (a link the view
+   * followed has moved), nothing is taken here.
    */
   async function _copyLogged(src, dest) {
     const srcAbs = _resolveFollow(src, "copyfile");
@@ -3854,7 +3858,8 @@ const __fsMod = (() => {
     let receipt;
     try {
       await _queueStructuralMutation(destAbs, "copyfile", src, () => _vfsCall(call).then((answer) => { receipt = answer?.receipt; return answer; }), dest);
-      if (receipt !== undefined) {
+      if (receipt !== undefined && receipt.landed !== undefined && receipt.landed !== destK) receipt = null;
+      if (receipt) {
         _noteLearnedStat(destAbs, _receiptStat(receipt), ticket, receipt.revision);
         const from = receipt.from;
         if (from !== undefined && from.path === srcK && typeof dated === "number" && dated >= from.revision) {
@@ -3866,6 +3871,8 @@ const __fsMod = (() => {
     } finally {
       _endFill(ticket);
     }
+    // Landed elsewhere: what the view held under its key was dropped above, and a barrier tells it the rest.
+    if (receipt === null) return;
     if (whole) await _readFileAsync(dest);
     else if (receipt === undefined) await _learnLive(destAbs, _supervisor());
   }

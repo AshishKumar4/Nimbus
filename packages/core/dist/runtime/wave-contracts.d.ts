@@ -101,6 +101,8 @@ export interface WriteStreamReceipt {
         path: string;
         revision: number;
     };
+    /** A copyFile's: the key it wrote, its destination's links followed as the session followed them. */
+    landed?: string;
 }
 /**
  * A wave's consecutive calls that commit together, in one transaction (the

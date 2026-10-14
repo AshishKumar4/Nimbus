@@ -271,6 +271,7 @@ export interface CredentialedVfs {
             path: string;
             revision: number;
         };
+        landed: string;
     };
     /**
      * Copy a tree to a new path by reference (`cp -r`; `preserve` is `-p`).
@@ -1705,8 +1706,9 @@ export declare class SqliteVFS {
      * source's permission bits less the copier's umask, as cp(1) makes it; a
      * file there keeps its own mode. With \`keepMode\` (copyfile), the copy has
      * copyfileMode's bits, a file there too, set in this one write as chmod
-     * judges it (modeChange). Answers the copy's stat, and the file copied:
-     * its key and the revision of the version this write read (its row's
+     * judges it (modeChange). Answers the copy's stat, the key it wrote
+     * (\`landed\`, the destination's links followed), and the file copied: its
+     * key and the revision of the version this write read (its row's
      * generation then), which nothing after the read moves.
      */
     private copyFile;
