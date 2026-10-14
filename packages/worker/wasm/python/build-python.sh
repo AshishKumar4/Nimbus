@@ -251,9 +251,9 @@ stage_nimbus() {
 	done
 	# The shared libc of Nimbus's images (git's too): a file's mode under the
 	# live umask, and the session's credential, over the nimbus_fs and
-	# nimbus_proc imports. Its open(2) asks wasi-libc's own (__real_open):
-	# CPython's open is it, by --wrap=open (nimbus-wasi-compat.c).
-	"$CC" $TARGET_CFLAGS -std=c11 -D_GNU_SOURCE=1 -Wall -Wextra -Werror -Dopen=__real_open \
+	# nimbus_proc imports. The compat header maps open onto it; inside it the
+	# libc names are libc's own.
+	"$CC" $TARGET_CFLAGS -std=c11 -D_GNU_SOURCE=1 -Wall -Wextra -Werror \
 	  -c "$NIMBUS_LIBC/nimbus-fs.c" -o "$WORK/nimbus/nimbus-fs.o"
 	"$AR" rcs "$DEPS/lib/libnimbuswasi.a" "$WORK/nimbus"/*.o
 }
@@ -297,7 +297,7 @@ stage_wasi() {
 	  # --wrap lets nimbus-net own accept and close without colliding with the
 	  # wasi-libc definitions that are still in the archive.
 	  export LDFLAGS="--target=wasm32-wasi -L$DEPS/lib \
-	    -Wl,--wrap=close -Wl,--wrap=accept -Wl,--wrap=accept4 -Wl,--wrap=open"
+	    -Wl,--wrap=close -Wl,--wrap=accept -Wl,--wrap=accept4"
 	  export LIBS="-lnimbuswasi -lwasi-emulated-signal -lwasi-emulated-process-clocks \
 	    -lwasi-emulated-mman -lwasi-emulated-getpid"
 	  mkdir -p Modules && cp "$HERE/Setup.local" Modules/Setup.local

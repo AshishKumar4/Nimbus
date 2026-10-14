@@ -18,9 +18,7 @@
  * silently comes out without _ssl and _hashlib. Weak means condvar.o wins
  * wherever it is present and this definition is used only when it is not. */
 
-#include <fcntl.h>
 #include <pthread.h>
-#include <stdarg.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -72,16 +70,3 @@ mode_t umask(mode_t mask)
 	return nimbus_umask(mask & 0777);
 }
 
-/* open(2), linked with --wrap=open: nimbus-libc's, which creates a file with
- * the mode asked for under the live umask; preview1 carries no mode. */
-int __wrap_open(const char *path, int flags, ...)
-{
-	if (!(flags & O_CREAT)) {
-		return nimbus_open(path, flags);
-	}
-	va_list ap;
-	va_start(ap, flags);
-	mode_t mode = (mode_t)va_arg(ap, int);
-	va_end(ap);
-	return nimbus_open(path, flags, mode);
-}
