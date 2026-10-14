@@ -84,9 +84,11 @@ export function classifyWsUpgrade(self: {
   shell: unknown;
   terminal: unknown;
   kernel: unknown;
+  building?: Promise<void> | null;
   ctx?: AutoResponseHost;
 }, sockets: readonly WebSocket[], now: number = Date.now()): WsUpgradeDecision {
-  if (self.shell == null || self.terminal == null || self.kernel == null) return 'cold';
+  // A session being built is joined once it is (init.ts initSession), never mid-build.
+  if (self.shell == null || self.terminal == null || self.kernel == null || self.building != null) return 'cold';
   return hasLiveShellOwner(self.ctx, sockets, now) ? 'conflict' : 'warm-join';
 }
 
@@ -106,11 +108,11 @@ export function classifyWsUpgrade(self: {
 export function joinExistingSession(
   self: {
     ctx: any;
-    shell: { announcePrompt(): void };
-    terminal: { attach(ws: WebSocket, onFlush?: (data: string) => void): void; write(s: string): void };
     _b4Phase: SessionState | null;
     _b4WarmJoinCount: number;
   },
+  shell: { announcePrompt(): void },
+  terminal: { attach(ws: WebSocket, onFlush?: (data: string) => void): void; replay(s: string): void },
   ws: WebSocket,
   tee: (frame: string) => void,
   loadScrollback: (ctx: any) => string,
@@ -125,17 +127,16 @@ export function joinExistingSession(
   // the same WebSocketTerminal instance is preserved (we mutate
   // its internal ws ref via attach()).
   setPhase(self as any, 'wire', 'warm-rejoin');
-  self.terminal.attach(ws, tee);
+  terminal.attach(ws, tee);
   // Replay scrollback to the new ws so the user sees the prior
   // session's terminal contents. Same shape as cold-init's replay
   // when persisted state exists.
   try {
-    const replay = loadScrollback(self.ctx);
-    if (replay.length > 0) self.terminal.write(replay);
+    terminal.replay(loadScrollback(self.ctx));
   } catch (e: any) {
     try { console.warn("[B'.3] scrollback replay failed:", e?.message || e); } catch {}
   }
-  self.shell.announcePrompt();
+  shell.announcePrompt();
 
   // Phase O is SKIPPED on warm rejoin (just like warm path of
   // initSession). The original cold-start banner is in the replay.

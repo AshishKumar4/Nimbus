@@ -5,6 +5,16 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a terminal that reconnects is shown its session's history without
+  storing it again. Each reconnect wrote the replayed history back into the
+  scrollback, so the next reconnect showed it twice, then four times, until
+  the size cap evicted real history to keep the copies.
+- Fixed: a session has one build. An SDK call, a shell connection and the
+  frame of a socket that woke a hibernated session, arriving while the
+  session was being built, each started a build of their own, replacing the
+  first's terminal, workspace and shell process under it; and an SDK call
+  could proceed before the session's own commands were registered. They
+  now wait for the one build, and a socket among them is attached to it.
 - Fixed: a Node program's `http.get` or `http.request` to a server of the
   same program waits for the server's `res.end()`, as Node does. It
   answered at once, so a handler that ended from a timer or after an
