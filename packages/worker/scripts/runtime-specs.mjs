@@ -195,8 +195,8 @@ export const SPECS = {
     npm: {
       name: '@nimbus-sh/runtime-git',
       summary: 'Git 2.53.0, cross-compiled to wasm32-wasi',
-      // The first core that registers GIT_RUNNER (core 0.17.0 does not).
-      core: '>=0.18.0',
+      // The first core that registers GIT_RUNNER (core 0.19.0 does not).
+      core: '>=0.20.0',
     },
     files: [
       { src: 'git.wasm', vfs: 'share/git/git.wasm' },
