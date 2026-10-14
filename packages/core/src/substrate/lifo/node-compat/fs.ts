@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events';
 import { Buffer } from 'node:buffer';
 import type { NodeFilesystem as VFS, NodeWatch } from './filesystem.js';
 
@@ -6,7 +7,6 @@ import type { VfsEvent } from '../../../vfs/events.js';
 import { resolve, basename } from '../utils/path.js';
 import { encode, decode } from '../utils/encoding.js';
 import { Readable, Writable } from './stream.js';
-import { EventEmitter } from './events.js';
 import { errnoCodeOf, fsError, isVfsError, type FsError } from '../../../vfs/vfs-error.js';
 import { DIRENT_TYPES, direntTypeOfStat } from '../../../vfs/dirent-type.js';
 import { S_IFMT } from '../../../vfs/vfs.js';

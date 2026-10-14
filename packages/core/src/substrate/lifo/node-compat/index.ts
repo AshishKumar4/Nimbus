@@ -6,7 +6,7 @@ import { createFs } from './fs.js';
 import pathModule from './path.js';
 import { createOs } from './os.js';
 import { createProcess } from './process.js';
-import { EventEmitter } from './events.js';
+import { EventEmitter } from 'node:events';
 import { createHttp } from './http.js';
 import type { LoopbackRouter, VirtualRequestHandler } from '../kernel/index.js';
 import type { DNSResolver } from '../kernel/dns-resolver.js';
@@ -85,13 +85,7 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
       stdout: ctx.stdout,
       stderr: ctx.stderr,
     }),
-    events: () => {
-      // Node.js CJS: require('events') returns the EventEmitter constructor itself
-      const mod = EventEmitter as typeof EventEmitter & { EventEmitter: typeof EventEmitter; default: typeof EventEmitter };
-      mod.EventEmitter = EventEmitter;
-      mod.default = EventEmitter;
-      return mod;
-    },
+    events: () => realm.getBuiltinModule('node:events'),
     // The engine's own, as its require gives them (X-3), loaded when first
     // required. `realm` is the host's process: the program's globalThis.process
     // is lifo's.
@@ -100,24 +94,17 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
     http: () => createHttp(ctx.portRegistry, 'http:', ctx.routeLoopback),
     https: () => createHttp(ctx.portRegistry, 'https:', ctx.routeLoopback),
     child_process: () => createChildProcess(ctx.executeCapture),
+    // Node.js CJS: require('stream') is the legacy Stream, an emitter class,
+    // with .Readable, .Writable, .Duplex, .PassThrough and .Stream on it.
     stream: () => {
-      // Node.js CJS: require('stream') returns the Stream base class with
-      // .Readable, .Writable, .Duplex, .PassThrough, .Stream attached
-      const Stream = EventEmitter as unknown as (typeof EventEmitter & {
-        Stream: typeof EventEmitter;
-        Readable: typeof streamModule.Readable;
-        Writable: typeof streamModule.Writable;
-        Duplex: typeof streamModule.Duplex;
-        PassThrough: typeof streamModule.PassThrough;
-        default: typeof EventEmitter;
+      const Stream = class Stream extends EventEmitter {};
+      return Object.assign(Stream, {
+        Stream,
+        Readable: streamModule.Readable,
+        Writable: streamModule.Writable,
+        Duplex: streamModule.Duplex,
+        PassThrough: streamModule.PassThrough,
       });
-      Stream.Stream = Stream;
-      Stream.Readable = streamModule.Readable;
-      Stream.Writable = streamModule.Writable;
-      Stream.Duplex = streamModule.Duplex;
-      Stream.PassThrough = streamModule.PassThrough;
-      Stream.default = Stream;
-      return Stream;
     },
     url: () => urlModule,
     timers: () => timersModule,

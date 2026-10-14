@@ -1,4 +1,4 @@
-import { EventEmitter } from './events.js';
+import { EventEmitter } from 'node:events';
 
 export class Readable extends EventEmitter {
   private _buffer: string[] = [];

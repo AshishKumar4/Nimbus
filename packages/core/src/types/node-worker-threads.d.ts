@@ -34,6 +34,7 @@ declare module 'node:worker_threads' {
 declare module 'node:process' {
   import type * as NodeBuffer from 'node:buffer';
   import type * as NodeCrypto from 'node:crypto';
+  import type { EventEmitter } from 'node:events';
   import type * as NodeStringDecoder from 'node:string_decoder';
   import type * as NodeUtil from 'node:util';
   interface RealmProcess {
@@ -54,6 +55,7 @@ declare module 'node:process' {
     /** The engine's own builtin, as `require` gives it (node-compat/index.ts's module map). */
     getBuiltinModule(id: 'node:buffer'): typeof NodeBuffer;
     getBuiltinModule(id: 'node:crypto'): typeof NodeCrypto;
+    getBuiltinModule(id: 'node:events'): typeof EventEmitter;
     getBuiltinModule(id: 'node:string_decoder'): typeof NodeStringDecoder;
     getBuiltinModule(id: 'node:util'): typeof NodeUtil;
   }

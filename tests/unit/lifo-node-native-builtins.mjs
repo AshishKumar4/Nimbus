@@ -19,6 +19,12 @@
 // emitWarning wrote "Warning: <message>" and told no listener. One process:
 // a module's `process` is globalThis.process and require('process'), which
 // were each a process of their own.
+//
+// The engine's own events (X3b): an emitter, the program's or lifo's
+// (streams, watchers, requests, readline, the process itself), is the
+// engine's EventEmitter, with errorMonitor, captureRejections, once() and an
+// unheard 'error' thrown. Red before: lifo's EventEmitter had none of them,
+// swallowed an unheard 'error', and the process was no emitter at all.
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -94,6 +100,27 @@ const programs = {
     "process.emitWarning('with detail', { type: 'X', code: 'C1', detail: 'more' });",
     "process.emitWarning(new Error('as error'));",
     'process.emitWarning(5);',
+  ]),
+  'events.js': probes([
+    "const EventEmitter = require('events');",
+    "const { once, on, errorMonitor, getEventListeners } = require('events');",
+  ], [
+    "console.log(typeof once, typeof on, typeof errorMonitor, EventEmitter.EventEmitter === EventEmitter, EventEmitter.defaultMaxListeners, typeof EventEmitter.captureRejectionSymbol);",
+    "const e = new EventEmitter(); e.on(errorMonitor, (err) => console.log('monitor', err.message)); e.emit('error', new Error('boom'));",
+    "new EventEmitter().emit('error', 'not an error');",
+    "const f = new EventEmitter(); f.once('x', () => {}); console.log(f.listeners('x').length, typeof f.rawListeners('x')[0].listener);",
+    "const f = new EventEmitter(); f.on('newListener', (n) => console.log('new', String(n))); f.on('y', () => {}); f.prependOnceListener('y', () => {}); console.log(f.listenerCount('y'), f.eventNames());",
+    "const g = new EventEmitter({ captureRejections: true }); g.on('error', (err) => console.log('captured', err.message)); g.on('z', async () => { throw new Error('async'); }); g.emit('z');",
+    "once(new EventEmitter(), 'never', { signal: AbortSignal.abort() }).catch((err) => console.log('aborted', err.name));",
+    "const h = new EventEmitter(); setTimeout(() => h.emit('ready', 1, 2)); once(h, 'ready').then((v) => console.log('once', v));",
+    "const m = new EventEmitter(); for (let i = 0; i < 11; i++) m.on('many', () => {}); console.log(getEventListeners(m, 'many').length, EventEmitter.listenerCount(m, 'many'));",
+    "class Mine extends EventEmitter {} const x = new Mine(); x.setMaxListeners(1); x.on('a', () => {}); x.on('a', () => {}); console.log(x.getMaxListeners());",
+    "const s = require('stream'); console.log(new s.Readable() instanceof EventEmitter, new s.PassThrough() instanceof EventEmitter, s.Stream.prototype instanceof EventEmitter, s === s.Stream);",
+    "const w = require('fs').watch('.', () => {}); console.log(w instanceof EventEmitter); w.close();",
+    "console.log(require('http').request('http://127.0.0.1:1/').on('error', () => {}) instanceof EventEmitter);",
+    "console.log(require('readline').createInterface({ input: new (require('stream').PassThrough)() }) instanceof EventEmitter);",
+    "console.log(process instanceof EventEmitter, typeof process.prependOnceListener, process.getMaxListeners());",
+    "require('child_process').exec('true'); console.log('exec without a callback');",
   ]),
 };
 /** Node writes its pid in a warning: `(node:<pid>)`. */

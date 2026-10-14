@@ -6,6 +6,14 @@ published independently in the `@nimbus-sh` npm scope.
 ## Unreleased
 
 - Fixed: the library's built-in `node` gives a program the engine's own
+  `events`, and every emitter it hands one (a stream, a watcher, a request,
+  a readline interface, `process` itself) is the engine's `EventEmitter`.
+  lifo's had no `once()`, `on()`, `errorMonitor`, `captureRejections`,
+  `rawListeners` or `prependOnceListener`, silently dropped an `'error'`
+  nothing listened for (Node throws it), and `process` was no emitter.
+  `require('stream')` is an emitter class of its own rather than
+  `EventEmitter` itself with streams attached to it.
+- Fixed: the library's built-in `node` gives a program the engine's own
   `crypto`, `util`, `string_decoder` and `buffer`, and its console formats
   with the engine's `util`, so a program writes what `node` writes. Its
   handwritten modules refused every hash but sha1 and sha256 (md5, sha512,

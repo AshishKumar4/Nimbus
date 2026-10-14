@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events';
 import type { CommandOutputStream } from '../commands/types.js';
 import { captureStack, invalidArgType } from '../../../_shared/node-error.js';
 
@@ -39,11 +40,11 @@ export interface ProcessOptions {
 
 export function createProcess(opts: ProcessOptions) {
   const startTime = Date.now();
-  const listeners: Record<string, Array<(...args: unknown[]) => void>> = {};
   // Unset until the program sets them, as in a Node run without their options.
   const unflagged: WarningFlags = {};
 
-  const proc = {
+  // An emitter, as Node's process is.
+  const proc = Object.assign(new EventEmitter(), {
     argv: ['/usr/bin/node', ...opts.argv],
     argv0: 'node',
     env: { ...opts.env },
@@ -148,59 +149,11 @@ export function createProcess(opts: ProcessOptions) {
       if (name === 'constants') return { os: {}, fs: {}, crypto: {} };
       return {};
     },
-    // EventEmitter-like methods (many packages check for process.on('exit'))
-    on: (event: string, fn: (...args: unknown[]) => void) => {
-      if (!listeners[event]) listeners[event] = [];
-      listeners[event].push(fn);
-      return proc;
-    },
-    addListener: (event: string, fn: (...args: unknown[]) => void) => {
-      return proc.on(event, fn);
-    },
-    once: (event: string, fn: (...args: unknown[]) => void) => {
-      const wrapped = (...args: unknown[]) => {
-        proc.removeListener(event, wrapped);
-        fn(...args);
-      };
-      return proc.on(event, wrapped);
-    },
-    off: (event: string, fn: (...args: unknown[]) => void) => {
-      if (listeners[event]) {
-        listeners[event] = listeners[event].filter((f) => f !== fn);
-      }
-      return proc;
-    },
-    removeListener: (event: string, fn: (...args: unknown[]) => void) => proc.off(event, fn),
-    removeAllListeners: (event?: string) => {
-      if (event) {
-        delete listeners[event];
-      } else {
-        for (const k of Object.keys(listeners)) delete listeners[k];
-      }
-      return proc;
-    },
-    listeners: (event: string) => listeners[event] ? [...listeners[event]] : [],
-    emit: (event: string, ...args: unknown[]) => {
-      const fns = listeners[event];
-      if (!fns || fns.length === 0) return false;
-      for (const fn of [...fns]) fn(...args);
-      return true;
-    },
-    listenerCount: (event: string) => listeners[event]?.length ?? 0,
-    setMaxListeners: () => proc,
-    getMaxListeners: () => 10,
-    prependListener: (event: string, fn: (...args: unknown[]) => void) => {
-      if (!listeners[event]) listeners[event] = [];
-      listeners[event].unshift(fn);
-      return proc;
-    },
-    rawListeners: (event: string) => listeners[event] ? [...listeners[event]] : [],
-    eventNames: () => Object.keys(listeners),
     // Feature detection flags
     allowedNodeEnvironmentFlags: new Set<string>(),
     features: { inspector: false, debug: false, uv: false, tls_alpn: false, tls_sni: false, tls_ocsp: false, tls: false },
     ...unflagged,
-  };
+  });
 
   /** Node's process.emitWarning (lib/internal/process/warning.js): the warning is told to 'warning' listeners on the next tick. */
   function emitWarning(warning: string | Error, type?: string | WarningOptions | WarningConstructor, code?: string | WarningConstructor, ctor?: WarningConstructor): void {
