@@ -114,6 +114,7 @@ export declare const RUNTIME_PARSER_MODULE = "nimbus/parser.js";
 export declare const RUNTIME_NODE_LIB_MODULE = "nimbus/node-lib.js";
 export declare const RUNTIME_NODE_LIB_REST_MODULE = "nimbus/node-lib-rest.js";
 export declare const RUNTIME_NODE_DNS_MODULE = "nimbus/node-dns.js";
+export declare const RUNTIME_NODE_CP_MODULE = "nimbus/node-cp.js";
 /**
  * The late ES module graph's link and the names Node's loader finds in a
  * CommonJS module (core runtime/esm-late-link.ts), compiled when an

@@ -48,6 +48,10 @@ export declare const NODE_LIB_REST_SHA256: string;
 export declare const NODE_DNS_ENTRY: string;
 export declare const NODE_DNS_BUILD_ID: string;
 export declare const NODE_DNS_SHA256: string;
+/** dist/runtime/node-lib-module.js generateNodeCpModule() */
+export declare const NODE_CP_ENTRY: string;
+export declare const NODE_CP_BUILD_ID: string;
+export declare const NODE_CP_SHA256: string;
 /** @nimbus-sh/core src/runtime/esm-late-link.ts, bundled by scripts/interpreter-bundle.mjs */
 export declare const ESM_LATE_ENTRY: string;
 export declare const ESM_LATE_BUILD_ID: string;

@@ -51,6 +51,8 @@ const LIB = {
   'internal/dns/callback_resolver': 'c409809e7df56cf2c820b7272714b60e3c31ac9b2f9e4b127d238352003573b7',
   'internal/dns/promises': 'f724175f7c423dcff27eb5c89e2ddee4edd0cb9818d90a68adb2b5291dd7c7d0',
   'internal/net': 'edbf1a195b68a7840be4fb11f8967cc4c4ca52ac2e1b1d368fd887491ba7918e',
+  'internal/fs/cp/cp': '3954e823e339181dd1ca3c8ca27ea4207681daf40ec2b752e5dff2a0ce281510',
+  'internal/fs/cp/cp-sync': '7ed29fe024143277a0458edc0dcecc698ac750bfa4677d059cf3e9b8ad99a0c8',
 };
 const SOURCES = {
   primordials: {

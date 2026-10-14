@@ -163,6 +163,18 @@ export type W7Call =
     ino?: number;
 }
 /**
+ * copyfile as the session copies a file: the file \`from\` names (a link
+ * followed) to \`path\` (a link there followed, a file there replaced),
+ * by reference within one filesystem and by its bytes across, no byte of
+ * it in the wave. The copy's mode is a copy's there: a new file the
+ * source's less the umask, a file there its own.
+ */
+ | {
+    call: 'copyFile';
+    path: string;
+    from: string;
+}
+/**
  * rm(1) as fs.rm makes it: a file or link unlinked, a directory with all
  * it holds when `recursive` (else EISDIR's refusal, as unlink's), and a
  * name not there no refusal when `force`.

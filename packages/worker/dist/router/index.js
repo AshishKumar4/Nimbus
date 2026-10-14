@@ -11,7 +11,6 @@
  *     // Optional embedder hooks (all default no-op):
  *     hooks: {
  *       onSessionStart: async (ctx) => { … },
- *       onSessionEnd:   async (ctx) => { … },
  *     },
  *     // Optional embedder routes that run BEFORE the Nimbus router.
  *     // Return null to fall through to Nimbus's handling.
@@ -54,9 +53,8 @@ const publicTenantCache = new Map();
  * The tenant segment a public capability URL forwards under. The directory
  * is consulted first; a deployment without the binding falls back to the
  * legacy-public DO name, which is where legacy-mode sessions already live.
- * The directory row also carries the port and name the capability was
- * bound with, which is what the `<cap>--<name>--<sid>` form resolves and
- * verifies against.
+ * The directory row also carries the sid, port and name the capability was
+ * bound with, which every host form is verified against.
  */
 async function resolvePublicCapability(capability, env, uncached = false) {
     const cached = publicTenantCache.get(capability);
@@ -64,7 +62,7 @@ async function resolvePublicCapability(capability, env, uncached = false) {
         return cached;
     const stub = publicDirectoryStub(env);
     if (stub === null)
-        return { tenantSegment: LEGACY_PUBLIC_DO_SEGMENT, port: null, name: null };
+        return { tenantSegment: LEGACY_PUBLIC_DO_SEGMENT, sid: null, port: null, name: null };
     const entry = await stub.resolve(capability).catch(() => null);
     if (entry === null) {
         // An unresolvable capability 404s: no session DO is named for it.
@@ -73,6 +71,7 @@ async function resolvePublicCapability(capability, env, uncached = false) {
     }
     const resolved = {
         tenantSegment: entry.tenantSegment,
+        sid: entry.sid,
         port: entry.port,
         name: entry.name ?? null,
     };
@@ -239,9 +238,14 @@ export function createNimbusHandler(options = {}) {
                 // isolate, a miss 404s, and a deployment without the binding
                 // falls back to the legacy-public DO name.
                 let resolved = await resolvePublicCapability(preview.capability, env);
-                const matchesHost = (entry) => entry !== null && (preview.name !== undefined
-                    ? entry.name === preview.name && entry.port !== null
-                    : entry.port === null || entry.port === preview.port);
+                // The host's sid must be the session the capability was bound by:
+                // presented under another sid, the capability would wake (or create)
+                // that sid's DO only for it to refuse the capability.
+                const matchesHost = (entry) => entry !== null
+                    && (entry.sid === null || entry.sid === preview.sid)
+                    && (preview.name !== undefined
+                        ? entry.name === preview.name && entry.port !== null
+                        : entry.port === null || entry.port === preview.port);
                 // Rename/rebinding can leave a positive isolate cache entry behind.
                 // Verify BOTH host forms, and read through once before refusing.
                 if (resolved !== null && !matchesHost(resolved)) {
