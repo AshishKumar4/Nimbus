@@ -15,7 +15,8 @@
  *   - SATISFIES_RANGE(version, range) → boolean
  *   - RESOLVE_VERSION(versions, range) → string | null
  *   - IS_SEMVER_RANGE(range)    → boolean
- *   - PICK_VERSION(versions, distTags, range) → string | null
+ *   - PICK_INSTALLED_VERSION(versions, distTags, range, staged) → string | null
+ *   - STAGED_BINDING_VERSION(staged, range) → string | null
  *   - PARSE_REGISTRY_REQUEST(name, range) → { installName, registryName, range, alias }
  *
  * The package-ABI policy block is GENERATED at supervisor module-load
@@ -94,7 +95,8 @@ function COMPARE_SEMVER(a, b) { return __nimbusNpmResolve.compareSemver(a, b); }
 function SATISFIES_RANGE(version, range) { return __nimbusNpmResolve.satisfiesRange(version, range); }
 function RESOLVE_VERSION(versions, range) { return __nimbusNpmResolve.resolveVersion(versions, range); }
 function IS_SEMVER_RANGE(range) { return __nimbusNpmResolve.isSemverRange(range); }
-function PICK_VERSION(versions, distTags, range) { return __nimbusNpmResolve.pickPackumentVersion(versions, distTags, range); }
+function PICK_INSTALLED_VERSION(versions, distTags, range, staged) { return __nimbusNpmResolve.pickInstalledVersion(versions, distTags, range, staged); }
+function STAGED_BINDING_VERSION(staged, range) { return __nimbusNpmResolve.stagedBindingVersion(staged, range); }
 function PARSE_REGISTRY_REQUEST(name, range) { return __nimbusNpmResolve.parseRegistryRequest(name, range); }
 // ── end npm-resolve preamble ────────────────────────────────────────────
 `;

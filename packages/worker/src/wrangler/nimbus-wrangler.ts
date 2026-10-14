@@ -26,7 +26,7 @@ import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { registerInnerDoClass, clearInnerDoClasses, abortInnerDoFacets } from '@nimbus-sh/fabric/inner-do-registry.js';
 import { innerWorkerModules } from '@nimbus-sh/fabric/inner-do-env.js';
 import { KvEmulator } from '../bindings/kv.js';
-import { D1Emulator } from '../bindings/d1.js';
+import { D1Emulator, d1DatabaseFacetName } from '../bindings/d1.js';
 import { R2Emulator } from '../bindings/r2.js';
 import { hostRoute } from '@nimbus-sh/fabric/composition.js';
 import { parseWranglerJsonc, type WranglerConfig } from './wrangler-config.js';
@@ -699,24 +699,27 @@ export class NimbusWrangler {
 
     // ── d1_databases ── (W10)
     // Inner worker: env[binding].prepare(query) / batch / exec.
-    // Implementation: D1Emulator backed by the supervisor's SqlStorage
-    // with per-binding table-prefix isolation. See plan §14.1 — a
-    // child-DO-facet-per-binding upgrade is the W10.5 candidate.
+    // Each database is a Durable Object facet of the session with its own
+    // SQLite (bindings/d1-database.ts), named by the project and the
+    // database, so the session's own tables are out of every statement's
+    // reach.
     //
     // migrations_dir is honored: applyMigrations() walks the directory
-    // alphabetically and replays each .sql file once (idempotent via
-    // a per-binding ledger table).
+    // alphabetically and applies each .sql file once, whole or not at all
+    // (wrangler's d1_migrations ledger, in the database).
     if (this.config?.d1_databases?.length) {
-      const sqlStorage = this.supervisorCtx?.storage?.sql;
-      if (!sqlStorage) {
+      const facets = this.supervisorCtx?.facets;
+      const databaseClass = this.supervisorCtx?.exports?.NimbusD1Database;
+      if (!facets || !databaseClass) {
         for (const d1 of this.config.d1_databases) {
-          this.onLog(`  \x1b[33mwarning: ctx.storage.sql unavailable; env.${d1.binding} will not work\x1b[0m\n`);
+          this.onLog(`  \x1b[33mwarning: ctx.exports.NimbusD1Database unavailable; env.${d1.binding} will not work\x1b[0m\n`);
         }
       } else {
         for (const d1 of this.config.d1_databases) {
           if (!d1.binding) continue;
+          const facetName = d1DatabaseFacetName(this.root, d1.database_id || d1.database_name || d1.binding);
           const emu = new D1Emulator({
-            sqlStorage,
+            database: () => facets.get(facetName, async () => ({ class: databaseClass })),
             binding: d1.binding,
             vfs: this.vfs,
             root: this.root,

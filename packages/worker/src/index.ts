@@ -10,8 +10,10 @@
  *      (the Durable Object) and SupervisorRPC + the inner-Worker
  *      binding shims (NimbusAssetsRPC, NimbusLoaderRPC,
  *      NimbusLoadedWorker, NimbusLoadedEntrypoint,
- *      NimbusDurableObjectNamespace, NimbusDOStub) all need to be
- *      reachable as exports of the entrypoint module.
+ *      NimbusDurableObjectNamespace, NimbusDOStub) and the class each
+ *      `wrangler dev` D1 binding's database is a facet of
+ *      (NimbusD1Database) all need to be reachable as exports of the
+ *      entrypoint module.
  *
  *   2. Route HTTP/WS requests to the right session via the session
  *      ID embedded in /s/<id>/* paths. URL → DO mapping is a stable
@@ -35,6 +37,7 @@ import {
 import { NimbusPublicDirectory } from './router/public-directory-do.js';
 import { SupervisorRPC } from './session/supervisor-rpc.js';
 import { CirrusHmrRPC } from './facets/real-vite-hmr.js';
+import { NimbusD1Database } from './bindings/d1-database.js';
 import { createNimbusHandler } from './router/index.js';
 import { composeFabric, getCtxExports as _getCtxExports } from '@nimbus-sh/fabric/composition.js';
 import { adoptTracing } from '@nimbus-sh/platform/tracing.js';
@@ -137,6 +140,7 @@ export {
   NimbusDurableObjectNamespace,
   NimbusDOStub,
   CirrusHmrRPC,
+  NimbusD1Database,
 };
 
 /**
