@@ -79,7 +79,7 @@ export async function registerHostedCommands(self: RuntimeCommandHost, workspace
     isLive: (pid) => self._viteShimPid === pid || self.processes.get(pid)?.state === 'running',
     async signal(pid, signal, stderr) {
       // The terminal's shell outlives every line it runs.
-      if (pid === self.shellProcessPid) return 'not-permitted';
+      if (pid === workspace.shellProcessPid) return 'not-permitted';
       // Ending one is the only thing a resident's teardown can do: it has no
       // stop, continue or handler delivery behind it.
       if (signalDisposition(signal) !== 'terminate') return 'unsupported';
