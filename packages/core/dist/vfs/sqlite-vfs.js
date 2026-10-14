@@ -5664,8 +5664,9 @@ export class SqliteVFS {
      * source's permission bits less the copier's umask, as cp(1) makes it; a
      * file there keeps its own mode. With \`keepMode\` (copyfile), the copy has
      * copyfileMode's bits, a file there too, set in this one write as chmod
-     * judges it (modeChange). Answers the copy's stat, and the file copied
-     * (its key): the copy is that file's version as this write found it.
+     * judges it (modeChange). Answers the copy's stat, and the file copied:
+     * its key and the revision of the version this write read (its row's
+     * generation then), which nothing after the read moves.
      */
     copyFile(src, dest, cred, options) {
         const source = this.checkAccess(src, 0o4, cred);
@@ -5712,7 +5713,7 @@ export class SqliteVFS {
         });
         this._writeBatchOnce({ plan: builder.build(), deletedInodes: [] }, { source: 'strict-batch', limitMode: 'bounded' });
         this.runContentMaintenanceSafely(1);
-        return { ...this.stat(dest, cred, true), from: source.path };
+        return { ...this.stat(dest, cred, true), from: { path: source.path, revision: inode.gen } };
     }
     /**
      * Copy the tree at `src` to a new path `dst` by reference (`cp -r`): one

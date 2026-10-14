@@ -502,6 +502,21 @@ export class WaveIngest {
             progress.sequence = { cursor: seq };
             applying = null;
         };
+        /** Where `named` leads now, its leaf followed, as a key here; null when the lookup waits on a mount or lands on one. */
+        const followedHere = (named) => {
+            let answer;
+            try {
+                answer = scope.asWriter(() => router.resolveDirectory('/' + named, cred, signal));
+            }
+            catch {
+                return named;
+            }
+            if (typeof answer !== 'string') {
+                answer.catch(() => { });
+                return null;
+            }
+            return router.placement(answer) === null ? answer.slice(1) : null;
+        };
         const pendingCalls = [];
         let pendingCallBytes = 0;
         const flushCalls = () => {
@@ -515,8 +530,24 @@ export class WaveIngest {
             phase = 'publish';
             options.admit?.();
             const writer = sequence?.spec.writer ?? null;
-            let applied = scope.commitCalls(calls, writer);
-            let refused = null;
+            // A copy commits on what its names lead to now, in this turn, as the
+            // namespace follows them; the engine would follow its own rows. One
+            // that now leads off this filesystem was routed on a view gone stale.
+            let stale = null;
+            for (let at = 0; at < calls.length && router !== null; at++) {
+                const op = calls[at].op;
+                if (op.type !== 'call' || op.call.call !== 'copyFile')
+                    continue;
+                const bound = { path: followedHere(op.call.path), from: followedHere(op.call.from) };
+                if (bound.path === null || bound.from === null) {
+                    stale = { at, error: vfsError('ESTALE', op.call.path, 'a name the copy was placed by now leads elsewhere') };
+                    break;
+                }
+                calls[at] = { ...calls[at], op: { type: 'call', call: { call: 'copyFile', path: bound.path, from: bound.from } } };
+            }
+            let applied = stale === null ? scope.commitCalls(calls, writer)
+                : stale.at === 0 ? { befores: [], results: [], after: 0 } : scope.commitCalls(calls.slice(0, stale.at), writer);
+            let refused = stale === null ? null : { call: calls[stale.at], error: stale.error };
             if ('error' in applied) {
                 // Rolled back whole: the calls before the one refused commit
                 // together again (they did, before it), and its refusal is its answer.
@@ -539,13 +570,13 @@ export class WaveIngest {
                 if (call.receipt && result) {
                     // The revision its file was published at, as its path reports it.
                     const handle = Reflect.get(result, 'handle');
-                    // A copy's source, as published with it: the copy commits last in its group (alone), so the version it copied.
+                    // A copy's source and the version it read, as the engine read it (nothing after moves it).
                     const from = Reflect.get(result, 'from');
                     progress.receipts.push({
                         path: call.path, ino: result.ino, mode: result.mode, size: result.size, mtimeMs: result.mtime, ctimeMs: result.ctime,
                         uid: result.uid, gid: result.gid, dev: scope.deviceId, revision: scope.pathRevision(call.path),
                         ...(typeof handle === 'number' ? { handle } : {}),
-                        ...(typeof from === 'string' ? { from: { path: from, revision: scope.pathRevision(from) } } : {}),
+                        ...(from !== undefined ? { from: from } : {}),
                     });
                 }
                 if (call.seq !== null)

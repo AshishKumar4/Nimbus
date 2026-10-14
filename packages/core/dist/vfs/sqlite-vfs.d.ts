@@ -267,7 +267,10 @@ export interface CredentialedVfs {
     copyFile(src: string, dest: string, options?: {
         keepMode?: boolean;
     }): VfsStat & {
-        from: string;
+        from: {
+            path: string;
+            revision: number;
+        };
     };
     /**
      * Copy a tree to a new path by reference (`cp -r`; `preserve` is `-p`).
@@ -1702,8 +1705,9 @@ export declare class SqliteVFS {
      * source's permission bits less the copier's umask, as cp(1) makes it; a
      * file there keeps its own mode. With \`keepMode\` (copyfile), the copy has
      * copyfileMode's bits, a file there too, set in this one write as chmod
-     * judges it (modeChange). Answers the copy's stat, and the file copied
-     * (its key): the copy is that file's version as this write found it.
+     * judges it (modeChange). Answers the copy's stat, and the file copied:
+     * its key and the revision of the version this write read (its row's
+     * generation then), which nothing after the read moves.
      */
     private copyFile;
     /**
