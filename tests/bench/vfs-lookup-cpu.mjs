@@ -128,8 +128,15 @@ try {
     const pairs = [];
     for (let pair = 0; pair < PAIRS; pair++) {
       const samples = {};
-      const order = pair % 3 === 0 ? ['A1', 'B', 'A2'] : pair % 3 === 1 ? ['B', 'A2', 'A1'] : ['A2', 'A1', 'B'];
-      for (const label of order) samples[label] = await cpu(arms[label === 'B' ? 1 : 0], kind);
+      // A1 and A2 run one copy of the code twice a pair, so B's runs twice
+      // too (W, untimed): a copy that ran half as often would sit at a colder
+      // JIT tier, and that bias is larger than many deltas.
+      const order = ['A1', 'B', 'A2', 'W'];
+      for (let k = 0; k < pair % 4; k++) order.push(order.shift());
+      for (const label of order) {
+        const used = await cpu(arms[label === 'B' || label === 'W' ? 1 : 0], kind);
+        if (label !== 'W') samples[label] = used;
+      }
       pairs.push({ ...samples, delta: samples.B - (samples.A1 + samples.A2) / 2 });
     }
     const deltas = pairs.map((pair) => pair.delta);
