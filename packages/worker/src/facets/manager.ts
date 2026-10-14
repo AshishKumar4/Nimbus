@@ -5641,8 +5641,8 @@ export interface ResolvedWorkerLaunch {
   /** Null is the absent answer — the same JSON the image blob carries. */
   env: ResidentCodeSpec['env'] | null;
   globalOutbound: ResidentCodeSpec['globalOutbound'];
-  /** Module name → source text, including the main module under its name. */
-  modules: Record<string, string>;
+  /** Module name → source text or inline wasm (`{ wasm }`), including the main module, text, under its name. */
+  modules: Record<string, string | { wasm: ArrayBuffer }>;
   /** Module name → VFS path of a wasm image, restored with the launch. */
   vfsWasmModules?: Record<string, string>;
   /** Module name → VFS path of a content-addressed module source, restored with the launch. */
@@ -8969,7 +8969,7 @@ export class FacetManager {
         if (resolved === null) return undefined;
         const mainModule = resolved.mainModule ?? recipe.mainModule ?? DEFAULT_WORKER_MAIN_MODULE;
         const { [mainModule]: workerCode, ...modules } = resolved.modules;
-        if (workerCode === undefined) throw new Error(`resolved worker launch carries no ${mainModule} main module`);
+        if (typeof workerCode !== 'string') throw new Error(`resolved worker launch carries no ${mainModule} main module source`);
         return this._spawnWorker(workerCode, record.command, recipe.cwd, {
           port: recipe.resident ? record.port : recipe.port > 0 ? recipe.port : undefined, modules, compatibilityDate: recipe.compatibilityDate,
           compatibilityFlags: recipe.compatibilityFlags, startArgs: resolved.startArgs ?? recipe.startArgs,

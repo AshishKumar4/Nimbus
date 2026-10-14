@@ -17,6 +17,9 @@
  * Two blobs per launch: `runner` is the main module's source text,
  * `application` is a JSON payload of `{ modules, env, vfsWasmModules }` plus,
  * when the launch set them, `vfsTextModules`, `mainModule` and `startArgs`.
+ * A text module is its text there, and an inline wasm module `{ wasm }` its
+ * bytes in base64, restored as an ArrayBuffer: JSON writes an ArrayBuffer as
+ * `{}`, and a re-drive booted a module that could not compile.
  * The digests in the journal's `recipe.image` are sha256 hashes of those two
  * payloads, and a self-owned spawn mints them at spawn time; an
  * embedder-owned spawn is given them by its own bookkeeping instead.
@@ -24,14 +27,30 @@
 
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { base64, base64Decode } from '@nimbus-sh/core/_shared/crypto.js';
 import { storeContentBlob, type ImageBlobStore } from '@nimbus-sh/fabric/image-store.js';
-import { readContentBlob, type ResidentCodeSpec } from '@nimbus-sh/fabric/process-fabric.js';
+import { readContentBlob, ResidentCodeSpecSchema, type ResidentCodeSpec } from '@nimbus-sh/fabric/process-fabric.js';
+import { z } from 'zod/v4';
 import type { ResolvedWorkerLaunch, WorkerRecipe } from './manager.js';
 
 /** The directory every durable application's image blobs live under. */
 export const DURABLE_IMAGE_DIR = '.nimbus/images';
 
 const imagePath = (digest: string) => `${DURABLE_IMAGE_DIR}/${digest}`;
+
+/** An inline module as the launch has it, and as its application blob holds it. */
+type InlineModule = string | { wasm: ArrayBuffer };
+const StoredModuleSchema = z.union([z.string(), z.object({ wasm: z.base64() })]);
+
+/** The application blob, as persistDurableWorkerImage writes it. */
+const ApplicationImageSchema = z.object({
+  modules: z.record(z.string(), StoredModuleSchema).default({}),
+  env: ResidentCodeSpecSchema.shape.env.nullable().default(null),
+  vfsWasmModules: z.record(z.string(), z.string()).nullable().optional(),
+  vfsTextModules: z.record(z.string(), z.string()).optional(),
+  mainModule: z.string().optional(),
+  startArgs: z.json().optional(),
+});
 
 /** Remove only the owner's blobs that no other retained recipe references. */
 export function purgeDurableWorkerImages(
@@ -64,7 +83,7 @@ export async function persistDurableWorkerImage(
   blobs: ImageBlobStore,
   workerCode: string,
   payload: {
-    modules: Record<string, string | { wasm: ArrayBuffer }>;
+    modules: Record<string, InlineModule>;
     env?: ResidentCodeSpec['env'];
     vfsWasmModules?: Record<string, string>;
     vfsTextModules?: Record<string, string>;
@@ -77,8 +96,10 @@ export async function persistDurableWorkerImage(
   const runner = await storeContentBlob(blobs, workerCode, imagePath);
   // Optional members are omitted rather than written null so an unchanged
   // launch keeps the digest it had before the member existed.
+  const modules = Object.fromEntries(Object.entries(payload.modules).map(([name, member]) =>
+    [name, typeof member === 'string' ? member : { wasm: base64(new Uint8Array(member.wasm)) }]));
   const applicationPayload = JSON.stringify({
-    modules: payload.modules,
+    modules,
     env: payload.env ?? null,
     vfsWasmModules: payload.vfsWasmModules ?? null,
     ...(payload.vfsTextModules !== undefined ? { vfsTextModules: payload.vfsTextModules } : {}),
@@ -107,21 +128,19 @@ export async function resolveDurableWorkerImage(
   const runnerBytes = await readContentBlob(disk, imagePath(runnerDigest), runnerDigest);
   const applicationBytes = await readContentBlob(disk, imagePath(applicationDigest), applicationDigest);
   const runner = new TextDecoder().decode(runnerBytes);
-  const {
-    modules = {}, env = null, vfsWasmModules = undefined, vfsTextModules, mainModule, startArgs,
-  } = JSON.parse(new TextDecoder().decode(applicationBytes)) as {
-    modules?: Record<string, string>;
-    env?: ResidentCodeSpec['env'] | null;
-    vfsWasmModules?: Record<string, string> | null;
-    vfsTextModules?: Record<string, string>;
-    mainModule?: string;
-    startArgs?: unknown;
-  };
+  const parsed = ApplicationImageSchema.safeParse(JSON.parse(new TextDecoder().decode(applicationBytes)));
+  // An image written before wasm modules were kept holds `{}` for each.
+  if (!parsed.success) {
+    throw new Error(`Nimbus: the application image ${applicationDigest} cannot be restored: ${z.prettifyError(parsed.error)}`);
+  }
+  const { env, vfsWasmModules, vfsTextModules, mainModule, startArgs } = parsed.data;
+  const modules = Object.fromEntries(Object.entries(parsed.data.modules).map(([name, member]): [string, InlineModule] =>
+    [name, typeof member === 'string' ? member : { wasm: base64Decode(member.wasm).buffer }]));
   // The recipe's own record of the main module wins when the blob predates
   // the member; both say the same thing for any launch written since.
   const main = mainModule ?? recipe.mainModule ?? 'worker.js';
   return {
-    env: env ?? null,
+    env,
     globalOutbound: undefined,
     modules: { ...modules, [main]: runner },
     mainModule: main,
