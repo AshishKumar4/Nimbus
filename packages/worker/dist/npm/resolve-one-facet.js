@@ -180,14 +180,13 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     // not the newest the registry has: vite 8.3.4's rolldown ~1.2.12 installs
     // the staged 1.2.13 after 1.2.14 is published, and ~1.2.9 a staged 1.2.11
     // when nothing newer is staged. A range that admits none keeps its own
-    // pick, and the install says why it will not load.
-    const stagedBindingVersion = () => {
+    // pick, and the install says why it will not load (core npm-semver.ts
+    // stagedBindingVersion; the release gate resolves with it too).
+    const stagedVersions = (() => {
         const staged = STAGED_ARTIFACT(request.registryName);
-        if (staged?.kind !== 'binding' || staged.versions.length === 0)
-            return null;
-        const open = !request.range || ['latest', '*', 'x', 'X'].includes(String(request.range).trim());
-        return open ? staged.versions[staged.versions.length - 1] ?? null : RESOLVE_VERSION([...staged.versions], request.range);
-    };
+        return staged?.kind === 'binding' ? staged.versions : [];
+    })();
+    const stagedBindingVersion = () => STAGED_BINDING_VERSION(stagedVersions, request.range);
     // 2. cachedHit fast-path. The pick over the cached versions is the same
     //    RESOLVE_VERSION the packument path uses — a range is never reduced
     //    to its base version. It used to be: `^3.0.0` was stripped to `3.0.0`
@@ -307,9 +306,6 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     //    semver range nothing satisfies. That is npm's ETARGET, and falling
     //    back installed a version outside the range asked for (a swap target
     //    that lacks the range's versions handed back its own latest).
-    // The version the request installs, by the rule every npm here picks with
-    // (core _shared/npm-semver.ts pickPackumentVersion, from the preamble).
-    const pickVersion = (packument) => PICK_VERSION(packument.versions, packument['dist-tags'], request.range);
     // A `since` swap is decided on the package itself: resolve its own
     // packument and version first, and consult the target only when that
     // version is one the swap covers. A registry that serves rollup but not
@@ -333,9 +329,9 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         }
     };
     const stagedVersion = stagedBindingVersion();
-    const choose = (data) => (stagedVersion !== null && readProperty(data.versions, stagedVersion) !== undefined
-        ? stagedVersion
-        : pickVersion(data));
+    // The version the request installs, by the rule every npm here picks with
+    // (core _shared/npm-semver.ts pickInstalledVersion, from the preamble).
+    const choose = (data) => PICK_INSTALLED_VERSION(data.versions, data['dist-tags'], request.range, stagedVersions);
     let packument = await loadPackument(effName);
     if ('failed' in packument)
         return packument.failed;

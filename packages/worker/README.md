@@ -37,6 +37,7 @@ import {
   NimbusDurableObjectNamespace,
   NimbusDOStub,
   CirrusHmrRPC,
+  NimbusD1Database,
   createNimbusHandler,
 } from '@nimbus-sh/sdk/worker';
 import { defineNimbusConfig } from '@nimbus-sh/config';
@@ -53,6 +54,7 @@ export {
   NimbusDurableObjectNamespace,
   NimbusDOStub,
   CirrusHmrRPC,
+  NimbusD1Database,
 };
 
 const nimbusConfig = defineNimbusConfig({

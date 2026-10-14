@@ -10,8 +10,10 @@
  *      (the Durable Object) and SupervisorRPC + the inner-Worker
  *      binding shims (NimbusAssetsRPC, NimbusLoaderRPC,
  *      NimbusLoadedWorker, NimbusLoadedEntrypoint,
- *      NimbusDurableObjectNamespace, NimbusDOStub) all need to be
- *      reachable as exports of the entrypoint module.
+ *      NimbusDurableObjectNamespace, NimbusDOStub) and the class each
+ *      `wrangler dev` D1 binding's database is a facet of
+ *      (NimbusD1Database) all need to be reachable as exports of the
+ *      entrypoint module.
  *
  *   2. Route HTTP/WS requests to the right session via the session
  *      ID embedded in /s/<id>/* paths. URL → DO mapping is a stable
@@ -26,6 +28,7 @@ import { NimbusSession, NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, Ni
 import { NimbusPublicDirectory } from './router/public-directory-do.js';
 import { SupervisorRPC } from './session/supervisor-rpc.js';
 import { CirrusHmrRPC } from './facets/real-vite-hmr.js';
+import { NimbusD1Database } from './bindings/d1-database.js';
 import { createNimbusHandler } from './router/index.js';
 import { composeFabric, getCtxExports as _getCtxExports } from '@nimbus-sh/fabric/composition.js';
 import { adoptTracing } from '@nimbus-sh/platform/tracing.js';
@@ -76,7 +79,7 @@ setRegistryEventSink((e) => {
 // Re-export inner-Worker binding shims so wrangler bundles them AND
 // ctx.exports auto-populates Service Bindings for them (via
 // enable_ctx_exports; default at compat date 2026-04-01+).
-export { NimbusSession, NimbusPublicDirectory, SupervisorRPC, NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusDOStub, CirrusHmrRPC, };
+export { NimbusSession, NimbusPublicDirectory, SupervisorRPC, NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusDOStub, CirrusHmrRPC, NimbusD1Database, };
 /**
  * Module-level reference to ctx.exports from the fetch handler.
  * Used by NimbusSession to create loopback bindings for facets.
