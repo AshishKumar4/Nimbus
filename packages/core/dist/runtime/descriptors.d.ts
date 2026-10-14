@@ -73,8 +73,12 @@ export interface DescriptorScope {
     /** The process's open descriptions its waves name (W7Call description), by the id it chose: descriptors of its own. */
     waveDescriptions: Map<string, number>;
     closed: boolean;
-    /** Aborted when the scope closes; cancels in-flight stream commits. */
-    abort: AbortController;
+    /**
+     * Aborted when the scope closes; cancels in-flight stream commits. Made by
+     * the first that asks for it (scopeSignal): a scope nothing streamed on
+     * makes none, and its close aborts nothing.
+     */
+    abort: AbortController | null;
     subscriptions: Set<() => void>;
     /** The exclusive leases the process took itself (not delegations), by owner: each one's release, among the subscriptions. */
     leases: Map<string, () => void>;
@@ -84,6 +88,10 @@ export declare function openFlags(flags: RuntimeOpenFlags): RuntimeFileHandle['f
 /** A description on an asynchronous mount, asked of a caller that cannot wait: its mount's refusal (isAsyncMountRefusal). */
 export declare function awaitsRefusal(path: string): Error;
 export declare function createDescriptorScope(): DescriptorScope;
+/** The signal `scope`'s close aborts, made on first ask: already aborted once it has closed. */
+export declare function scopeSignal(scope: DescriptorScope): AbortSignal;
+/** `scope` closes: what asked for its signal hears of it. */
+export declare function closeScopeSignal(scope: DescriptorScope): void;
 /**
  * This process's held writes on the file `key` names, written, in open
  * order: before the process cuts that file (a truncate, an O_TRUNC open, a

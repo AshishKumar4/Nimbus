@@ -81,6 +81,8 @@ export interface ProcessTerminalDescriptor {
   rows: number;
 }
 
+const ONCE = { once: true };
+
 export class SessionProcessSupervisor implements ProcessOutput {
   private readonly table = new ProcessTable();
   /** Why no process is admitted any more (closeAdmission); null while they are. */
@@ -348,16 +350,17 @@ export class SessionProcessSupervisor implements ProcessOutput {
    */
   holdWork(pid: number, stop?: (reason?: SignalAbortReason) => void, signal?: AbortSignal): HeldProcessWork & { readonly signal: AbortSignal } {
     const owner = new AbortController();
-    const abort = () => owner.abort(signal?.reason);
-    signal?.addEventListener('abort', abort, { once: true });
-    if (signal?.aborted) abort();
-    const work = {
-      stop: (reason?: SignalAbortReason) => { owner.abort(reason); stop?.(reason); },
-      stopped: false, signal: owner.signal,
-      observation: owner.signal.aborted ? undefined : this.observeWork?.(pid),
-    };
+    const ownSignal = owner.signal;
+    // Each of the two ways the work is stopped ends what observes it: no listener of its own for that.
     const stopObserving = () => work.observation?.release();
-    owner.signal.addEventListener('abort', stopObserving, { once: true });
+    const abort = () => { owner.abort(signal?.reason); stopObserving(); };
+    signal?.addEventListener('abort', abort, ONCE);
+    if (signal?.aborted) owner.abort(signal.reason);
+    const work = {
+      stop: (reason?: SignalAbortReason) => { owner.abort(reason); stopObserving(); stop?.(reason); },
+      stopped: false, signal: ownSignal,
+      observation: ownSignal.aborted ? undefined : this.observeWork?.(pid),
+    };
     let pieces = this.held.get(pid);
     if (!pieces) this.held.set(pid, pieces = new Set());
     pieces.add(work);
@@ -366,14 +369,18 @@ export class SessionProcessSupervisor implements ProcessOutput {
       if (done) return;
       done = true;
       signal?.removeEventListener('abort', abort);
-      owner.signal.removeEventListener('abort', stopObserving);
       stopObserving();
       const now = this.held.get(pid);
       now?.delete(work);
       if (now?.size === 0) this.held.delete(pid);
       this.releaseEnded(pid);
     };
-    return Object.assign(release, { signal: owner.signal });
+    return Object.assign(release, { signal: ownSignal });
+  }
+
+  /** Whether `pid` runs, on work this session holds for it (holdWork, setTerminator): what a kill of it stops. */
+  runsWork(pid: number): boolean {
+    return this.table.get(pid)?.state === 'running' && (this.held.has(pid) || this.terminators.has(pid));
   }
 
   /** Stop the work behind `pid`: its terminator, and every piece held for it, once each, for `reason`. */
@@ -659,12 +666,14 @@ export class SessionProcessSupervisor implements ProcessOutput {
     entries: readonly ProcessEntry[],
   ): Promise<{ reaped: number; failures: { pid: number; error: unknown }[] }> {
     const failures: { pid: number; error: unknown }[] = [];
-    for (const entry of entries) {
-      const failed = await this.releaseOf(entry.pid);
+    // Each release began at its process's end: they are waited for together.
+    const released = await Promise.all(entries.map((entry) => this.releaseOf(entry.pid)));
+    entries.forEach((entry, i) => {
+      const failed = released[i];
       if (failed !== null) failures.push({ pid: entry.pid, error: failed.error });
       this.releases.delete(entry.pid);
       this.table.forget(entry.pid);
-    }
+    });
     if (entries.length > 0) this.logRetention?.();
     return { reaped: entries.length, failures };
   }

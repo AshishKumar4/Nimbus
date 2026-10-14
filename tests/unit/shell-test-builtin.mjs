@@ -22,7 +22,7 @@ root.chown('/w', user.uid, user.gid);
 const box = await testBox();
 registerUnixCommands(box.commands.registry, raw);
 const shell = new Shell(new HeadlessTerminal(), authority, box.commands.registry,
-  { HOME: '/w', PATH: '/bin', USER: 'user' }, box.shell.getProcessRegistry(),
+  { HOME: '/w', PATH: '/bin', USER: 'user' }, box.workspace.processes,
   { pid: 78, cred: user, setUmask() {}, runAs: async () => ({ status: 126, signal: null }) });
 
 async function status(command) {

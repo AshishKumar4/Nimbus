@@ -18,7 +18,6 @@ import { ExitSignal, type BuiltinExecutionContext, type BuiltinFn } from './inte
 import { lex } from './lexer.js';
 import { TokenKind } from './types.js';
 import { resolveJobSpec } from './jobs.js';
-import type { ProcessRegistry } from './ProcessRegistry.js';
 import { evaluateTest } from './test-builtin.js';
 import { isVfsError, strerror } from '../../../vfs/vfs-error.js';
 import { statOrThrow } from '../../../vfs/vfs.js';
@@ -30,7 +29,6 @@ export interface BuiltinHost {
   /** The interactive shell's view of the filesystem, as its identity has it now. */
   vfs(): ProcessView;
   readonly registry: CommandRegistry;
-  readonly processRegistry: ProcessRegistry;
   /** The host's processes, which `kill` reaches by pid (Shell.setHostProcessSignals). */
   hostProcessSignals(): HostProcessSignals | undefined;
   clearTerminal(): void;
@@ -66,8 +64,8 @@ const BUILTINS: Record<string, (call: BuiltinCall) => Promise<number>> = {
   readonly: builtinReadonly,
   read: builtinRead,
   wait: builtinWait,
-  kill: ({ args, stdout, stderr, state, host }) =>
-    runKill({ args, stdout, stderr }, host.processRegistry, state.jobTable.list(), host.hostProcessSignals()),
+  kill: ({ args, stdout, stderr, state, host, context }) =>
+    runKill({ args, stdout, stderr }, context.cred(), state.jobTable, host.hostProcessSignals()),
   unset: builtinUnset,
   local: (call) => builtinDeclare('local', call),
   declare: (call) => builtinDeclare('declare', call),
@@ -398,7 +396,7 @@ async function builtinRead({ args, stdin, stderr, state, context }: BuiltinCall)
   return 0;
 }
 
-async function builtinWait({ args, stderr, state, host }: BuiltinCall): Promise<number> {
+async function builtinWait({ args, stderr, state }: BuiltinCall): Promise<number> {
   if (args[0] === '--') args = args.slice(1);
   if (args.length === 0) {
     const jobs = state.jobTable.list();
@@ -415,24 +413,19 @@ async function builtinWait({ args, stderr, state, host }: BuiltinCall): Promise<
       last = 1;
       continue;
     }
-    const job = byJob ? state.jobTable.waitTarget(arg) : state.jobTable.byPid(Number(arg));
+    const job = state.jobTable.waitTarget(arg);
     if (job === 'ambiguous') {
       await stderr.write(`wait: ${arg.slice(1)}: ambiguous job spec\n`);
       last = 127;
       continue;
     }
-    const promise = job?.promise ?? (byJob ? undefined : host.processRegistry.get(Number(arg))?.promise);
-    if (!promise) {
+    if (!job) {
       await stderr.write(byJob ? `wait: ${arg}: no such job\n` : `wait: pid ${arg} is not a child of this shell\n`);
       last = 127;
       continue;
     }
-    try {
-      last = await promise;
-    } catch {
-      last = 1;
-    }
-    if (job) state.jobTable.reap(job);
+    last = await job.promise;
+    state.jobTable.reap(job);
   }
   return last;
 }
@@ -625,7 +618,7 @@ async function builtinJobs({ args, stdout, stderr, state }: BuiltinCall): Promis
   return status;
 }
 
-async function builtinFg({ args, stdout, stderr, state, host, context }: BuiltinCall): Promise<number> {
+async function builtinFg({ args, stdout, stderr, state, context }: BuiltinCall): Promise<number> {
   if (!context.interactive) { await stderr.write('fg: no job control\n'); return 1; }
   const jobs = state.jobTable.list();
   if (jobs.length === 0) { await stderr.write('fg: no current job\n'); return 1; }
@@ -636,13 +629,13 @@ async function builtinFg({ args, stdout, stderr, state, host, context }: Builtin
     return 1;
   }
   await stdout.write(`${job.command}\n`);
-  if (host.processRegistry.get(job.pid)?.status === 'stopped') host.processRegistry.kill(job.pid, 'CONT');
+  state.jobTable.signal(job, 'CONT', context.cred());
   const exitCode = await job.promise;
   state.jobTable.reap(job);
   return exitCode;
 }
 
-async function builtinBg({ args, stdout, stderr, state, host, context }: BuiltinCall): Promise<number> {
+async function builtinBg({ args, stdout, stderr, state, context }: BuiltinCall): Promise<number> {
   if (!context.interactive) { await stderr.write('bg: no job control\n'); return 1; }
   const jobs = state.jobTable.list();
   if (jobs.length === 0) { await stderr.write('bg: no current job\n'); return 1; }
@@ -652,7 +645,7 @@ async function builtinBg({ args, stdout, stderr, state, host, context }: Builtin
     await stderr.write(`bg: ${spec}: ${job === 'ambiguous' ? 'ambiguous job spec' : 'no such job'}\n`);
     return 1;
   }
-  host.processRegistry.kill(job.pid, 'CONT');
+  state.jobTable.signal(job, 'CONT', context.cred());
   await stdout.write(`[${job.id}]+ ${job.command} &\n`);
   return 0;
 }

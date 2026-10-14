@@ -4,7 +4,8 @@ import { resolve } from '../utils/path.js';
 import { S_IFCHR, S_IFMT } from '../../../vfs/vfs.js';
 import { lstatOrThrow, statOrThrow } from '../../../vfs/vfs.js';
 /**
- * Implementation of the `test` / `[` shell builtin (POSIX `test`).
+ * Implementation of the `test` / `[` shell builtin (POSIX `test`), and of
+ * `test` and `[` run by name (`command test`, `env [`, xargs).
  * `bracket` is true for `[`, whose last argument must be `]`.
  */
 export async function evaluateTest(args, vfs, stderr, context, bracket = false) {
@@ -226,7 +227,7 @@ async function evaluateUnary(op, operand, vfs, context) {
         case '-n':
             return operand.length > 0;
         case '-t':
-            return context?.isFdTerminal(toInt(operand)) ?? false;
+            return context?.isFdTerminal?.(toInt(operand)) ?? false;
         default:
             return await evaluateFileTest(op[1], operand, vfs, context?.cwd);
     }

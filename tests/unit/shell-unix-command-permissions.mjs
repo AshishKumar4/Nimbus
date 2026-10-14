@@ -63,14 +63,15 @@ assert.deepEqual(xargsCat, {
   stderr: '',
 }, 'xargs preserves caller credentials when dispatching cat');
 
+// A command xargs ran failed: GNU xargs's 123.
 const deniedXargsCat = await run('xargs', ['cat'], USER, filesystemFor(USER), 'no-access\n');
-assert.equal(deniedXargsCat.exitCode, 1);
+assert.equal(deniedXargsCat.exitCode, 123);
 assert.equal(deniedXargsCat.stdout, '');
 assert.match(deniedXargsCat.stderr, /Permission denied/);
 assert.doesNotMatch(deniedXargsCat.stderr, /TypeError|undefined is not an object/);
 
 const deniedXargsRm = await run('xargs', ['rm'], USER, filesystemFor(USER), 'locked/keep\n');
-assert.equal(deniedXargsRm.exitCode, 1);
+assert.equal(deniedXargsRm.exitCode, 123);
 assert.match(deniedXargsRm.stderr, /Permission denied/);
 assert.doesNotMatch(deniedXargsRm.stderr, /TypeError|undefined is not an object/);
 assert.equal(root.readFileString('home/user/locked/keep'), 'keep', 'xargs denied rm preserves the file');

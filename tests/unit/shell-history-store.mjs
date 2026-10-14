@@ -10,7 +10,7 @@
 // heredoc alone, and nothing from before a restart.
 import assert from 'node:assert/strict';
 import { Shell } from '../../packages/core/src/substrate/lifo/shell/Shell.ts';
-import { ProcessRegistry } from '../../packages/core/src/substrate/lifo/shell/ProcessRegistry.ts';
+import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { createDefaultRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
 import { HeredocHandler } from '../../packages/core/src/shell/features.ts';
 import { memoryFiles } from './lib/test-box.mjs';
@@ -23,7 +23,7 @@ async function startShell() {
   const ran = [];
   registry.register('mark', async (ctx) => { ran.push(ctx.args.join(' ')); return 0; });
   const terminal = { write() {}, writeln() {}, onData() {}, cols: 80, rows: 24, focus() {}, clear() {} };
-  const shell = new Shell(terminal, vfs, registry, { HOME: '/home/user', USER: 'user', HOSTNAME: 'nimbus' }, new ProcessRegistry());
+  const shell = new Shell(terminal, vfs, registry, { HOME: '/home/user', USER: 'user', HOSTNAME: 'nimbus' }, new SessionProcessSupervisor());
   HeredocHandler.install(shell, terminal);
   await shell.start();
   return { shell, ran };

@@ -14,10 +14,9 @@ export { createLifoPkgCommand, rehydrateGlobalPackages } from './commands/system
 export { NPM_VERSION, createNpmCommand, createNpxCommand } from './commands/system/npm.js';
 export { Shell } from './shell/Shell.js';
 export { JobTable } from './shell/jobs.js';
-export { ProcessRegistry } from './shell/ProcessRegistry.js';
+export type { Job, ShellProcesses } from './shell/jobs.js';
 export { lex } from './shell/lexer.js';
 export { parse, ParseError } from './shell/parser.js';
-export type { Process, SpawnOptions } from './shell/ProcessRegistry.js';
 export type { ASTNode, CaseNode, CompoundCommandNode, ForNode, FunctionDefNode, GroupNode, IfNode, ListNode, PipelineNode, RedirectionNode, ScriptNode, SimpleCommandNode, Token, WhileNode, WordPart, } from './shell/types.js';
 export { TokenKind } from './shell/types.js';
 export type { ITerminal } from './terminal/ITerminal.js';

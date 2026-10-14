@@ -20,6 +20,8 @@ export function execIdField(entry) {
     return entry?.execId === undefined ? {} : { execId: entry.execId };
 }
 function immutableCred(cred) {
+    if (Object.isFrozen(cred) && Object.isFrozen(cred.groups))
+        return cred;
     return Object.freeze({
         uid: cred.uid,
         gid: cred.gid,
@@ -93,25 +95,29 @@ export class ProcessTable {
             exitCode: null,
             startTime: Date.now(),
             endTime: null,
-            cred: immutableCred(options.cred ?? inheritedCred),
+            // A parent's, frozen whole already, is the child's as it is.
+            cred: options.cred === undefined || options.cred === inheritedCred ? inheritedCred : immutableCred(options.cred),
             parentPid: options.parentPid,
-            ...(execId === undefined ? {} : { execId }),
-            ...(options.restartedFrom === undefined ? {} : { restartedFrom: { ...options.restartedFrom } }),
         };
+        if (execId !== undefined)
+            entry.execId = execId;
+        if (options.restartedFrom !== undefined)
+            entry.restartedFrom = { ...options.restartedFrom };
         this.processes.set(pid, entry);
         return entry;
     }
+    /** `pid`'s credential, as its entry keeps it: frozen, replaced (never changed) by setUmask. */
     credOf(pid) {
         const entry = this.processes.get(pid);
         if (!entry)
             throw noSuchProcess(pid);
-        return immutableCred(entry.cred);
+        return entry.cred;
     }
     liveCred(pid) {
         const entry = this.processes.get(pid);
         if (!entry || entry.state !== 'running')
             throw noSuchProcess(pid);
-        return immutableCred(entry.cred);
+        return entry.cred;
     }
     cred(pid) {
         return this.credOf(pid);
@@ -197,7 +203,8 @@ export class ProcessTable {
     descendantsOf(pid) {
         const found = [];
         const frontier = new Set([pid]);
-        for (const entry of [...this.processes.values()].sort((a, b) => a.startTime - b.startTime)) {
+        // The map holds entries in spawn order: oldest first, each after its parent.
+        for (const entry of this.processes.values()) {
             if (entry.parentPid !== undefined && frontier.has(entry.parentPid)) {
                 frontier.add(entry.pid);
                 found.push(entry);

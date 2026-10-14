@@ -8,14 +8,12 @@
 import type { ProcessView } from '../../../runtime/process-files.js';
 import { type CommandRegistry } from '../commands/registry.js';
 import { type BuiltinFn } from './interpreter.js';
-import type { ProcessRegistry } from './ProcessRegistry.js';
 import { type HostProcessSignals } from '../commands/system/kill.js';
 /** What a builtin reaches beyond the state of the shell running it: the interactive shell's own. */
 export interface BuiltinHost {
     /** The interactive shell's view of the filesystem, as its identity has it now. */
     vfs(): ProcessView;
     readonly registry: CommandRegistry;
-    readonly processRegistry: ProcessRegistry;
     /** The host's processes, which `kill` reaches by pid (Shell.setHostProcessSignals). */
     hostProcessSignals(): HostProcessSignals | undefined;
     clearTerminal(): void;

@@ -233,7 +233,6 @@ export async function initSession(
 
     const kernel = workspace.kernel;
     const registry = workspace.registry;
-    const processRegistry = kernel.processRegistry;
     const env = workspace.env;
     const sqliteFs = self.sqliteFs!;
     const facetMgr = self.facetManager!;
