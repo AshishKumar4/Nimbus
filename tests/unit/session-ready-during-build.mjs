@@ -19,6 +19,7 @@ const within = (promise, ms) => Promise.race([promise.then(() => 'answered'), ne
 {
   let builds = 0;
   const self = {
+    destroying: null,
     shell: {},
     building: new Promise(() => {}),
     usable: Promise.resolve(),
@@ -28,12 +29,12 @@ const within = (promise, ms) => Promise.race([promise.then(() => 'answered'), ne
   assert.equal(builds, 0, 'and starts no build');
 }
 {
-  const self = { shell: {}, building: new Promise(() => {}), usable: new Promise(() => {}), initSession() { return this.building; } };
+  const self = { destroying: null, shell: {}, building: new Promise(() => {}), usable: new Promise(() => {}), initSession() { return this.building; } };
   assert.equal(await within(ensureRuntimeReady.call(self), 200), 'still waiting', 'a call before the session is usable waits');
 }
 {
   let builds = 0;
-  const self = { shell: null, building: null, usable: null, _b4Phase: null, initSession() { builds++; return Promise.resolve(); } };
+  const self = { destroying: null, shell: null, building: null, usable: null, _b4Phase: null, initSession() { builds++; return Promise.resolve(); } };
   await ensureRuntimeReady.call(self);
   assert.equal(builds, 1, 'no build in flight: one is started and waited on');
   assert.equal(self._b4Phase, 'drained');
