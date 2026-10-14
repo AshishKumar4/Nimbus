@@ -103,10 +103,12 @@ export function parsePreviewHost(host, suffix) {
     return isPreviewHostName(target) ? { name: target, sid, ...bearer } : null;
 }
 /**
- * A name label: a DNS label that is neither a port (all digits) nor a
- * capability (24 lowercase hex), and contains no `--` host-label separator.
- * The same rule the session applies when it stores a
- * name on a reservation, so every name it accepts is a host it can parse.
+ * A name label, the one rule for an application's name alias: it stands
+ * where the port stands in a preview host (`<name>--<sid>`), so it is one
+ * DNS label, never all digits (a numeric middle label IS a port), never 24
+ * lowercase hex (parsing would take it for a capability, the bearer), and
+ * holds no `--` host-label separator. The session stores no other name on
+ * a reservation, so every name it accepts is a host it can parse.
  */
 export function isPreviewHostName(label) {
     return DNS_LABEL_RE.test(label)
