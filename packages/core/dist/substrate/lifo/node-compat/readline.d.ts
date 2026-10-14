@@ -4,7 +4,7 @@
  * Provides Interface (createInterface), clearLine, clearScreenDown,
  * cursorTo, moveCursor, and the promises API.
  */
-import { EventEmitter } from './events.js';
+import { EventEmitter } from 'node:events';
 export interface InterfaceOptions {
     input?: {
         on?: (event: string, cb: (...args: unknown[]) => void) => void;

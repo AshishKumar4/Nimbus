@@ -1,4 +1,4 @@
-import { EventEmitter } from './events.js';
+import { EventEmitter } from 'node:events';
 export declare class Readable extends EventEmitter {
     private _buffer;
     protected _ended: boolean;

@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events';
 import type { CommandOutputStream } from '../commands/types.js';
 export declare class ProcessExitError extends Error {
     exitCode: number;
@@ -19,7 +20,7 @@ export interface ProcessOptions {
     stdout: CommandOutputStream;
     stderr: CommandOutputStream;
 }
-export declare function createProcess(opts: ProcessOptions): {
+export declare function createProcess(opts: ProcessOptions): EventEmitter & {
     noDeprecation?: boolean;
     throwDeprecation?: boolean;
     traceDeprecation?: boolean;
@@ -33,7 +34,7 @@ export declare function createProcess(opts: ProcessOptions): {
     chdir: (_dir: string) => never;
     exit: (code?: number) => never;
     stdout: {
-        write: (data: string) => boolean;
+        write: (data: string) => true;
         isTTY: boolean;
         fd: number;
         bytesWritten: number;
@@ -42,7 +43,7 @@ export declare function createProcess(opts: ProcessOptions): {
         once: () => void;
     };
     stderr: {
-        write: (data: string) => boolean;
+        write: (data: string) => true;
         isTTY: boolean;
         fd: number;
         bytesWritten: number;
@@ -88,10 +89,10 @@ export declare function createProcess(opts: ProcessOptions): {
     };
     config: {};
     emitWarning: (warning: string | Error, type?: string | WarningOptions | WarningConstructor, code?: string | WarningConstructor, ctor?: WarningConstructor) => void;
-    getuid: () => number;
-    getgid: () => number;
-    geteuid: () => number;
-    getegid: () => number;
+    getuid: () => 1000;
+    getgid: () => 1000;
+    geteuid: () => 1000;
+    getegid: () => 1000;
     umask: (mask?: number) => number;
     binding: (name: string) => {
         errname: (code: number) => string;
@@ -112,20 +113,6 @@ export declare function createProcess(opts: ProcessOptions): {
         errname?: undefined;
         UV_EOF?: undefined;
     };
-    on: (event: string, fn: (...args: unknown[]) => void) => /*elided*/ any;
-    addListener: (event: string, fn: (...args: unknown[]) => void) => /*elided*/ any;
-    once: (event: string, fn: (...args: unknown[]) => void) => /*elided*/ any;
-    off: (event: string, fn: (...args: unknown[]) => void) => /*elided*/ any;
-    removeListener: (event: string, fn: (...args: unknown[]) => void) => /*elided*/ any;
-    removeAllListeners: (event?: string) => /*elided*/ any;
-    listeners: (event: string) => ((...args: unknown[]) => void)[];
-    emit: (event: string, ...args: unknown[]) => boolean;
-    listenerCount: (event: string) => number;
-    setMaxListeners: () => /*elided*/ any;
-    getMaxListeners: () => number;
-    prependListener: (event: string, fn: (...args: unknown[]) => void) => /*elided*/ any;
-    rawListeners: (event: string) => ((...args: unknown[]) => void)[];
-    eventNames: () => string[];
     allowedNodeEnvironmentFlags: Set<string>;
     features: {
         inspector: boolean;
