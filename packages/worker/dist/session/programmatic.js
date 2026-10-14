@@ -17,9 +17,9 @@ import { CRED_KERNEL, CRED_SESSION_USER, requireVfsCred } from '@nimbus-sh/core/
 import { endProcessInput, resizeProcess, signalProcess, writeProcessInput } from '@nimbus-sh/core/runtime/process-input-routing.js';
 import { SessionProcessLogsOptionsSchema, } from '@nimbus-sh/core/runtime/session-protocol.js';
 import { SESSION_DESTROYED_KEY, SHELL_STATE_KEY_PREFIX, VITE_CONFIG_KEY } from './keys.js';
-import { clearPortCapability, isValidAppName, persistPortCapability, portRecordKey, readPortReservation, readPortReservationByName, readPortReservationByOwner, reservePort, rotatePortCapability } from './port-capability.js';
+import { clearPortCapability, persistPortCapability, portRecordKey, readPortReservation, readPortReservationByName, readPortReservationByOwner, reservePort, rotatePortCapability } from './port-capability.js';
 import { bindPublicPortCapability, unbindPublicPortCapability } from '../router/public-directory.js';
-import { isPreviewHostSafeSid, previewHostUrl, readPreviewHostSuffix } from '../_shared/preview-host.js';
+import { isPreviewHostName, isPreviewHostSafeSid, previewHostUrl, readPreviewHostSuffix } from '../_shared/preview-host.js';
 import { RESTART_POLICY_ENV } from '../facets/manager.js';
 import { adoptGeneration, generation, raiseGeneration, releaseGeneration } from '@nimbus-sh/fabric/generation.js';
 import { timers } from '@nimbus-sh/fabric/timers.js';
@@ -644,7 +644,7 @@ export async function rpcExposeApp(self, target, options = {}) {
  * always did.
  */
 async function applyExposure(self, port, owner, options) {
-    if (options.name !== undefined && !isValidAppName(options.name)) {
+    if (options.name !== undefined && !isPreviewHostName(options.name)) {
         throw new Error(`'${options.name}' is not a valid app name: one DNS label, not all digits, not 24 hex`);
     }
     const entry = self.portRegistry.get(port);

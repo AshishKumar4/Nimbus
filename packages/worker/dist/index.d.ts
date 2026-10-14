@@ -10,10 +10,10 @@
  *      (the Durable Object) and SupervisorRPC + the inner-Worker
  *      binding shims (NimbusAssetsRPC, NimbusLoaderRPC,
  *      NimbusLoadedWorker, NimbusLoadedEntrypoint,
- *      NimbusDurableObjectNamespace, NimbusDOStub) and the class each
- *      `wrangler dev` D1 binding's database is a facet of
- *      (NimbusD1Database) all need to be reachable as exports of the
- *      entrypoint module.
+ *      NimbusDurableObjectNamespace, NimbusDOStub, NimbusKVNamespace,
+ *      NimbusD1Binding, NimbusR2Bucket) and the class each `wrangler dev`
+ *      D1 binding's database is a facet of (NimbusD1Database) all need to
+ *      be reachable as exports of the entrypoint module.
  *
  *   2. Route HTTP/WS requests to the right session via the session
  *      ID embedded in /s/<id>/* paths. URL → DO mapping is a stable
@@ -23,7 +23,7 @@
  * `@nimbus-sh/sdk/worker`. This implementation package keeps the
  * runtime and generated assets in one place.
  */
-import { NimbusSession, NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusDOStub } from './session/nimbus-session.js';
+import { NimbusSession, NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusDOStub, NimbusKVNamespace, NimbusD1Binding, NimbusR2Bucket } from './session/nimbus-session.js';
 import { NimbusPublicDirectory } from './router/public-directory-do.js';
 import { SupervisorRPC } from './session/supervisor-rpc.js';
 import { CirrusHmrRPC } from './facets/real-vite-hmr.js';
@@ -37,7 +37,7 @@ export { NimbusWorkspace } from '@nimbus-sh/core/workspace/nimbus-workspace.js';
 export type { NimbusWorkspaceOptions } from '@nimbus-sh/core/workspace/nimbus-workspace.js';
 export type { SqlDatabase, SqlTransactions, SqlRow, SqlValue, TransactionHost, } from '@nimbus-sh/core/runtime/os-contracts.js';
 export type { NimbusAuthEnv, NimbusTokenClaims, VerifiedNimbusToken, } from './auth/index.js';
-export { NimbusSession, NimbusPublicDirectory, SupervisorRPC, NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusDOStub, CirrusHmrRPC, NimbusD1Database, };
+export { NimbusSession, NimbusPublicDirectory, SupervisorRPC, NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusDOStub, CirrusHmrRPC, NimbusD1Database, NimbusKVNamespace, NimbusD1Binding, NimbusR2Bucket, };
 /**
  * Module-level reference to ctx.exports from the fetch handler.
  * Used by NimbusSession to create loopback bindings for facets.

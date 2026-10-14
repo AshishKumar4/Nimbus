@@ -8,10 +8,16 @@ import { CirrusHmrRPC } from '../../../packages/worker/src/facets/real-vite-hmr.
 import { SupervisorRPC } from '../../../packages/worker/src/session/supervisor-rpc.ts';
 import { ProcessSupervisor } from '../../../packages/worker/src/session/process-supervisor.ts';
 import { HostedSession } from '../../../packages/worker/src/hosted/session.ts';
-import { NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusAssetsRPC, NimbusDurableObjectNamespace, NimbusDOStub } from '../../../packages/fabric/src/bindings.ts';
+import {
+  NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusAssetsRPC, NimbusDurableObjectNamespace, NimbusDOStub,
+  NimbusKVNamespace, NimbusD1Binding, NimbusR2Bucket,
+} from '../../../packages/fabric/src/bindings.ts';
 import { NimbusFsJournalReader } from '../../../packages/core/src/_shared/process-fs-journal-reader.ts';
 
-export { CirrusHmrRPC, SupervisorRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusAssetsRPC, NimbusDurableObjectNamespace, NimbusDOStub, NimbusFsJournalReader };
+export {
+  CirrusHmrRPC, SupervisorRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusAssetsRPC, NimbusDurableObjectNamespace, NimbusDOStub,
+  NimbusKVNamespace, NimbusD1Binding, NimbusR2Bucket, NimbusFsJournalReader,
+};
 
 /** The credential a run-as process acts as. */
 export const RUN_AS = { uid: 1001, gid: 1001, groups: [1001], umask: 0o022 };
@@ -23,6 +29,8 @@ export class Session extends DurableObject {
   async supervisorOp(envelope: { op?: string }): Promise<unknown> {
     this.envelopes.push(envelope);
     if (envelope.op === 'readFileBytes') return new TextEncoder().encode('<h1>asset</h1>');
+    if (envelope.op === 'kvCall') return 'kv answer';
+    if (envelope.op === 'd1Query') return { success: true, results: { queryResults: [] } };
     return envelope.op === 'hmrNextEvent' ? [] : null;
   }
 
@@ -128,6 +136,13 @@ async function held(kind: string, id: DurableObjectId, env: Env, exports: Export
       return exports.NimbusDurableObjectNamespace({ props: { bindingName: 'COUNTER', supervisorDoId: id.toString() } });
     case 'NimbusDOStub':
       return exports.NimbusDOStub({ props: { bindingName: 'COUNTER', supervisorDoId: id.toString(), id: 'room' } });
+    // A wrangler-dev guest's KV, D1 and R2 bindings, each minted for one store (nimbus-wrangler.ts).
+    case 'NimbusKVNamespace':
+      return exports.NimbusKVNamespace({ props: { doId: id.toString(), root: 'home/run-as/app', store: 'KV', cred: RUN_AS } });
+    case 'NimbusD1Binding':
+      return exports.NimbusD1Binding({ props: { doId: id.toString(), root: 'home/run-as/app', store: 'db' } });
+    case 'NimbusR2Bucket':
+      return exports.NimbusR2Bucket({ props: { doId: id.toString(), root: 'home/run-as/app', store: 'BUCKET', cred: RUN_AS } });
     // A hosted runtime's scoped session, held by an embedder's client.
     case 'HostedSession': {
       const session = env.NIMBUS_SESSION.get(id);

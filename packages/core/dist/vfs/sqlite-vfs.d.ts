@@ -190,11 +190,13 @@ export interface CredentialedVfs {
     }): void;
     /**
      * writeFile of a file whose `size` bytes arrive over time from `source`,
-     * published whole once they have (see SqliteVFS.writeFileFrom). Answers
-     * the revision the publication produced.
+     * published whole once they have (see SqliteVFS.writeFileFrom). With
+     * `atMost`, `size` is the most `source` may yield, and the file is what
+     * it yields. Answers the revision the publication produced.
      */
     writeFileFrom(path: string, size: number, source: AsyncIterable<Uint8Array>, options?: {
         mode?: number;
+        atMost?: boolean;
     }): Promise<number>;
     symlink(target: string, path: string): void;
     readlink(path: string): string;
@@ -2150,7 +2152,10 @@ export declare class SqliteVFS {
      * transactions, and the file published whole by the last one, as
      * replaceFileWithStagedContent does for a file too large for one
      * transaction. `size` is what `source` must yield; a source that ends
-     * short, runs long or throws publishes nothing.
+     * short, runs long or throws publishes nothing. With `atMost`, `size` is
+     * the most it may yield (its length is not known ahead): what it yields up
+     * to a chunk is held, and written as writeFile writes a file that small,
+     * and a source past the bound publishes nothing.
      *
      * Appending the same bytes a piece at a time (writeRange) re-cuts the
      * file's tail on every piece, and a piece past half a transaction's blob

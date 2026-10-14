@@ -11,6 +11,8 @@
  * directory is never an enumeration surface.
  */
 
+import { isPreviewHostName } from '../_shared/preview-host.js';
+
 const BINDING_NAME = 'NIMBUS_PUBLIC_DIRECTORY';
 const DIRECTORY_NAME = 'public-directory';
 const ROW_PREFIX = 'public-capability:';
@@ -48,8 +50,8 @@ export class PublicDirectoryStore {
       || !Number.isInteger(entry.port) || entry.port < 1 || entry.port > 65535) {
       throw new Error('NimbusPublicDirectory.bind: entry needs tenantSegment, sid, and a real port');
     }
-    if (entry.name !== undefined && !/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(entry.name)) {
-      throw new Error('NimbusPublicDirectory.bind: name must be one DNS label');
+    if (entry.name !== undefined && !isPreviewHostName(entry.name)) {
+      throw new Error('NimbusPublicDirectory.bind: name must be an app name, a preview host\'s name label');
     }
     await this.ctx.storage.put(rowKey(capability), {
       tenantSegment: entry.tenantSegment,

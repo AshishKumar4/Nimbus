@@ -38,6 +38,12 @@ export interface StoredMessage {
    * Missing status is valid for history written before lifecycle tracking.
    */
   status?: StoredMessageStatus;
+  /**
+   * On an answer, the id of the user message it answers: turns may run at
+   * once, so an answer need not follow its question. Missing on answers
+   * written before answers named it.
+   */
+  replyTo?: string;
   /** Present only when an interrupted turn was stopped by the client. */
   aborted?: true;
   /** Present only when an interrupted turn ended in a provider/stream error. */
