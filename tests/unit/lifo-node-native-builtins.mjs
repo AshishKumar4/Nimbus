@@ -187,7 +187,8 @@ const programs = {
     "console.log(JSON.stringify(path.parse('/a/b.c.d')), path.format({ dir: 'x', name: 'y', ext: '.z' }), path.format({ root: '/', base: 'f' }), path.toNamespacedPath('/p'), typeof path.matchesGlob);",
     "console.log(path.posix === path, path.sep, path.delimiter, path.win32.sep, path.win32.join('a', 'b'), path.posix.resolve('/q', 'r'));",
     "console.log(here(url.fileURLToPath(url.pathToFileURL('rel dir/f#x?.js'))), url.pathToFileURL('rel dir/f#x?.js').href.endsWith('/rel%20dir/f%23x%3F.js'), url.pathToFileURL('/abs/').href, url.pathToFileURL('d/').href.endsWith('/d/'));",
-    "console.log(url.fileURLToPath('file:///a%20b'), url.format(new URL('http://u:p@h:1/p?q#f'), { auth: false }), url.parse('http://a.com:80/p?q=1').port, url.resolve('http://a/b/c', '../d'), url.URL === URL, typeof url.domainToASCII, typeof url.urlToHttpOptions);",
+    // Bun's url.parse is deprecated whatever it parses (Node's only for some): its warning is Bun's, not the question.
+    "process.noDeprecation = true; const port = url.parse('http://a.com:80/p?q=1').port; process.noDeprecation = false; console.log(url.fileURLToPath('file:///a%20b'), url.format(new URL('http://u:p@h:1/p?q#f'), { auth: false }), port, url.resolve('http://a/b/c', '../d'), url.URL === URL, typeof url.domainToASCII, typeof url.urlToHttpOptions);",
     "url.fileURLToPath('http://x/');",
     "url.fileURLToPath('file:///a%2fb');",
   ]),
