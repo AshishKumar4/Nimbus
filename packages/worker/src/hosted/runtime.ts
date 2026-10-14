@@ -304,7 +304,7 @@ class RuntimeOwner {
     await this.ensureRuntimeReady();
     if (this.terminal.ws === ws) return;
     this.terminal.attach(ws);
-    if (resume === 'reconnect') this.terminal.write(loadScrollback(this.ctx));
+    if (resume === 'reconnect') this.terminal.replay(loadScrollback(this.ctx));
     if (this.recoveryNotice) {
       this.terminal.write('\r\n[Runtime resumed; files and shell settings restored. Previous interpreter state was not retained.]\r\n');
       this.recoveryNotice = false;

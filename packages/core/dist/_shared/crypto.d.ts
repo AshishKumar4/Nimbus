@@ -22,7 +22,7 @@ export declare function decodeJsonBase64Url<T>(value: string): T;
 /** Standard base64 (with padding) of `bytes`, in chunks so a large array never overflows the call stack. */
 export declare function base64(bytes: Uint8Array): string;
 /** The bytes standard base64 `value` encodes; throws what `atob` throws. */
-export declare function base64Decode(value: string): Uint8Array;
+export declare function base64Decode(value: string): Uint8Array<ArrayBuffer>;
 /** base64url, unpadded (RFC 4648 §5, as JWTs and PKCE carry it). */
 export declare function base64Url(bytes: Uint8Array): string;
 /** The bytes canonical unpadded base64url `value` encodes. */

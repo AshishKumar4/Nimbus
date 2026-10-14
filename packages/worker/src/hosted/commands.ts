@@ -121,8 +121,8 @@ export async function registerHostedCommands(self: RuntimeCommandHost, workspace
 self._setCpRegistry(registry);
 
 registry.register('chsh', makeChshCommand({
-  isBashInstalled: async (home) =>
-    (await listInstalledRuntimes(sqliteFs, home)).some((runtime) => runtime.name === 'bash'),
+  isBashInstalled: async () =>
+    (await listInstalledRuntimes(sqliteFs)).some((runtime) => runtime.name === 'bash'),
 }));
 
 // ── Git integration (isomorphic-git) ──

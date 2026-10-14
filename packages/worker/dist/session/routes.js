@@ -486,11 +486,12 @@ async function routeFetch(self, request) {
         const [client, server] = Object.values(pair);
         self.ctx.acceptWebSocket(server);
         tagShellSocket(server);
-        if (wsUpgrade === 'warm-join') {
+        const { shell, terminal } = self;
+        if (wsUpgrade === 'warm-join' && shell !== null && terminal !== null) {
             // Warm rejoin path. The existing Shell is alive; we just
             // swap the WebSocketTerminal's ws ref + replay scrollback.
             try {
-                joinExistingSession(self, server, shellTerminalTee(self), loadScrollback);
+                joinExistingSession(self, shell, terminal, server, shellTerminalTee(self), loadScrollback);
             }
             catch (err) {
                 console.error('warm-rejoin error:', err?.message, err?.stack);

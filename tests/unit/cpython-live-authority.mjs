@@ -32,7 +32,7 @@ let P;
 try { P = await import(pathToFileURL(preamblePath).href); } finally { rmSync(preamblePath, { force: true }); }
 
 const user = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
-const home = 'home/user/.nimbus/runtimes/cpython/3.13.14';
+const home = 'usr/lib/nimbus/cpython/3.13.14';
 
 function seed(root) {
   for (const dir of ['home/user', 'tmp', `${home}/lib/python3.13/lib-dynload`]) root.mkdir(dir, { recursive: true, mode: 0o755 });

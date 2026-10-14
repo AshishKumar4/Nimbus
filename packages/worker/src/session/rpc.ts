@@ -388,6 +388,13 @@ export async function _rpcWriteFile(self: RpcHost, path: string, content: string
  * Deliberately absent from the remote HTTP RPC dispatcher, so only an
  * embedder holding the DO stub may write it.
  *
+ * It follows no link: the guest may own every directory on the way, and a
+ * link there would have the kernel make another directory sticky and
+ * world-writable. Each directory from `/` to the root must be a directory
+ * itself, or the call is refused; a link at the file's own name is replaced
+ * by the file. One synchronous turn, so nothing changes between a look and
+ * the write.
+ *
  * It guards against accidents, not against the session's code: the session's
  * user has passwordless root (`sudo`, `su`), and a program that runs `sudo`
  * can replace or remove this file. Do not rely on it to keep a value from code
@@ -406,9 +413,14 @@ export async function _rpcWriteProtectedRootFile(
     throw new Error('protected file must be a direct child of the declared session root');
   }
   const fs = self.sqliteFs!.as(CRED_KERNEL);
-  if (!fs.exists(root) || !fs.isDirectory(root)) {
-    throw new Error('protected file session root does not exist');
+  const parts = root.split('/');
+  for (let i = 1; i <= parts.length; i++) {
+    const dir = parts.slice(0, i).join('/');
+    const type = fs.statIfPresent(dir, false)?.type;
+    if (type === 'symlink') throw new Error(`protected file session root passes through a link at /${dir}`);
+    if (type !== 'directory') throw new Error('protected file session root does not exist');
   }
+  if (fs.statIfPresent(protectedPath, false)?.type === 'symlink') fs.unlink(protectedPath);
   fs.chown(root, CRED_KERNEL.uid, CRED_KERNEL.gid);
   fs.chmod(root, 0o1777);
   fs.writeFile(protectedPath, content);
@@ -1072,13 +1084,35 @@ export const PRIOR_GENERATION_EXIT_REASON = 'process lost: instance reset';
  * A process's output arrives as bytes: the relay from the facet carries
  * Uint8Array so a binary protocol or an image survives it. The two text
  * consumers here decode at their own edge — the log ring inside
- * `appendOutputBytes`, and the terminal tee through these per-(pid, stream)
- * streaming decoders, dropped when the process reports its exit.
+ * `appendOutputBytes`, and the terminal tee through its session's
+ * per-(pid, stream) streaming decoders. They are the session's (its process
+ * table's): two sessions in one isolate number their processes alike. A
+ * process's are flushed to the terminal when it reports its exit, and
+ * dropped however else it ends.
  */
-const _terminalTeeDecoders = new StreamTextDecoders<string>();
+const terminalTeeDecoders = new WeakMap<ProcessRpcHost['processes'], StreamTextDecoders<string>>();
 
-function decodeForTerminal(pid: number, stream: 'stdout' | 'stderr', data: Uint8Array): string {
-  return _terminalTeeDecoders.decode(`${pid}:${stream}`, data);
+function decodeForTerminal(self: ProcessRpcHost, pid: number, stream: 'stdout' | 'stderr', data: Uint8Array): string {
+  let decoders = terminalTeeDecoders.get(self.processes);
+  if (decoders === undefined) terminalTeeDecoders.set(self.processes, decoders = new StreamTextDecoders());
+  const key = `${pid}:${stream}`;
+  const first = !decoders.has(key);
+  const text = decoders.decode(key, data);
+  if (first) {
+    // Forgotten once the output before the process's end is delivered (the
+    // end is published after it), so output held behind the end still
+    // decodes with what came before it.
+    const session = decoders;
+    const retire = (): void => { void self.processes.releaseOutput(pid, () => { session.drop(key); }); };
+    if (self.processes.get(pid)?.state === 'running') self.processes.subscribeTerminal(pid, retire);
+    else retire();
+  }
+  return text;
+}
+
+/** What `pid`'s terminal tee still holds of `stream`, flushed; the decoder forgotten. */
+function dropTerminalTee(self: ProcessRpcHost, pid: number, stream: 'stdout' | 'stderr'): string {
+  return terminalTeeDecoders.get(self.processes)?.drop(`${pid}:${stream}`) ?? '';
 }
 
 export async function _rpcStdout(self: RpcHost, pid: number, data: Uint8Array, at?: number, run?: number): Promise<void> {
@@ -1099,7 +1133,7 @@ export async function _rpcStdout(self: RpcHost, pid: number, data: Uint8Array, a
     try {
       if (pid > 0) await self.processes.appendOutputBytes(pid, 'stdout', data);
       if (self.terminal && shouldMirrorProcessOutputToShell(self, pid)) {
-        const text = decodeForTerminal(pid, 'stdout', data);
+        const text = decodeForTerminal(self, pid, 'stdout', data);
         if (text.length > 0) self.terminal.write(normalizeTerminalNewlines(text));
       }
     } catch (e: any) {
@@ -1125,7 +1159,7 @@ export async function _rpcStderr(self: RpcHost, pid: number, data: Uint8Array, a
       // Terminal gets red wrapping; the ring buffer keeps it raw so the
       // stream tag can drive color decisions at replay time.
       if (self.terminal && shouldMirrorProcessOutputToShell(self, pid)) {
-        const text = decodeForTerminal(pid, 'stderr', data);
+        const text = decodeForTerminal(self, pid, 'stderr', data);
         if (text.length > 0) self.terminal.write(`\x1b[31m${normalizeTerminalNewlines(text)}\x1b[0m`);
       }
     } catch (e: any) {
@@ -1214,7 +1248,7 @@ function reportExit(
     const normalForeground = code === 0
       && (entry?.foreground === true || entry?.attachedTty === true || entry?.longRunning !== true);
     for (const stream of ['stdout', 'stderr'] as const) {
-      const rest = _terminalTeeDecoders.drop(`${pid}:${stream}`);
+      const rest = dropTerminalTee(self, pid, stream);
       if (rest.length > 0 && self.terminal && shouldMirrorProcessOutputToShell(self, pid)) {
         self.terminal.write(normalizeTerminalNewlines(rest));
       }

@@ -181,7 +181,7 @@ until the program has sent it (and from then on the program writes as it
 goes), a write waits until the program has sent it and given the subtree
 up. Your calls on the workspace's asynchronous face, the session's routes,
 and every other program's calls wait the same way; they never fail for it.
-The session's own stores (`/.nimbus`, `/var/lib/nimbus`) are never held.
+The session's own stores (`/.nimbus`) are never held.
 
 Two limits follow from a program deciding by itself:
 
@@ -304,8 +304,14 @@ Everything Nimbus keeps per user follows it:
 - the home directory itself, made for the user, with `~/.config` and `~/.nimbusrc`
 - the user's entry in `/etc/passwd`
 - `PATH` (`~/.local/bin`, `~/.gem/bin`), `XDG_CONFIG_HOME` and `XDG_DATA_HOME`
-- installed runtimes (`~/.nimbus/runtimes`), gems (`~/.gem`) and pip packages
-  (`~/.nimbus-python/site-packages`)
+- gems (`~/.gem`) and pip packages (`~/.nimbus-python/site-packages`)
+
+Installed runtimes are the system's, not the user's, and do not follow
+HOME: as apt installs a package, `nimbus install` puts a runtime's tree in
+`/usr/lib/nimbus/<name>/<version>`, and a launcher in `/usr/bin` for each
+command its tree has a `bin/` entry for (`pip`, `gem` and `bundle` have
+none, and run by name only). `/usr`, `/usr/bin`, `/usr/lib` and `/usr/share` are root's;
+`/usr/local` is the user's, and is npm's global prefix.
 
 ```ts
 const ws = await NimbusWorkspace.create({ sql, transactions, generation: 1, env: { HOME: '/home/main' } });
@@ -314,6 +320,8 @@ const ws = await NimbusWorkspace.create({ sql, transactions, generation: 1, env:
 HOME must be an absolute path. A workspace first seeded under another home
 keeps its files there. Nimbus moves `/etc/passwd` and `/etc/profile` to the
 new home only while they are still exactly what it seeded for `/home/user`.
+Both are root's, 0644, as on Linux: the user's own settings go in
+`~/.profile`.
 
 ## Real runtimes, off Cloudflare
 

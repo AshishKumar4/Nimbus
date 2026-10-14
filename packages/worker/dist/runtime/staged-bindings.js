@@ -39,7 +39,7 @@ export const STAGED_BINDINGS = STAGED_BINDING_ARTIFACTS.map((artifact) => ({
     ...artifact,
     key: `${artifact.name}@${artifact.version}`,
     moduleName: `nimbus-staged-${artifact.name}-${artifact.version}.wasm`,
-    vfsPath: `/var/lib/nimbus/staged/${artifact.name}/${artifact.version}/${artifact.name}.wasm`,
+    vfsPath: `/.nimbus/staged/${artifact.name}/${artifact.version}/${artifact.name}.wasm`,
     specifier: new RegExp(`["'](?:${artifact.requiredAs.map(quoted).join('|')})["']`),
 }));
 /** The staged build `key` (`<name>@<version>`); a key no build produced is a programming error. */

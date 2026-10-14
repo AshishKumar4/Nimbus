@@ -3,7 +3,8 @@
  * commands they answer.
  *
  * `nimbus install <name>` unpacks a runtime into
- * `~/.nimbus/runtimes/<name>/<version>/` and this is what reads it back: the
+ * `/usr/lib/nimbus/<name>/<version>/` (runtime-store.ts) and this is what
+ * reads it back: the
  * manifests on disk, the runner each entrypoint names, and the registration
  * that turns the pair into an invokable command. It runs at install time and
  * again at every boot, because a Durable Object that was evicted comes back
@@ -20,7 +21,7 @@ import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { RuntimePackageFs as CredentialedVfs } from './runtime-package.js';
 import type { Command } from '../substrate/lifo/commands/types.js';
 import type { ResolveContext } from '../substrate/lifo/commands/registry.js';
-import { type RuntimePackageAbi } from './os-contracts.js';
+import { type Awaitable, type RuntimePackageAbi } from './os-contracts.js';
 import { type ManifestEntrypoint, type RuntimeManifest } from './runtime-manifest.js';
 /** Minimal shell-registry shape we depend on. */
 export interface MinShellRegistry {
@@ -65,16 +66,34 @@ export declare function runtimeAbiForManifest(manifest: RuntimeManifest): Runtim
  */
 export declare const RUNTIME_EXTRA_ENTRYPOINTS: Readonly<Record<string, readonly ManifestEntrypoint[]>>;
 export declare function runtimeEntrypoints(manifest: RuntimeManifest): RuntimeManifest['entrypoints'];
-/** Compute the per-user install root for (name, version). Uses
- *  `process.env.HOME` if present; falls back to `/home/user`. */
-export declare function installRoot(homeDir: string, name: string, version: string): string;
+/** Where (name, version) is installed, as a key: `usr/lib/nimbus/<name>/<version>`. */
+export declare function installRoot(name: string, version: string): string;
+/** What the store is listed through: a view that can look at a name without following it. */
+export type InstalledRuntimesFs = Pick<CredentialedVfs, 'exists' | 'readdir' | 'readFileString'> & {
+    stat(path: string, options?: {
+        follow?: boolean;
+    }): Awaitable<{
+        type: string;
+        uid?: number;
+        mode?: number;
+    } | null>;
+};
 /** Read all installed manifests off SqliteFS. Used by both `--list`
  *  and boot-time rehydration. */
-export declare function listInstalledManifests(vfs: SqliteVFS, homeDir: string): Promise<Array<{
+export declare function listInstalledManifests(vfs: SqliteVFS): Promise<Array<{
     root: string;
     manifest: RuntimeManifest;
 }>>;
-export declare function listInstalledManifestsView(fs: CredentialedVfs, homeDir: string): Promise<Array<{
+/**
+ * The runtimes in the store that are the system's: what the store, each
+ * name's and each version's directory, and each directory its files are in,
+ * are root's own (rootsOwn, looked at without following them), and a
+ * manifest.json root wrote. Anything else
+ * (a tree a user made in a store an earlier release left theirs, a link)
+ * is not listed, so nothing binds, links or removes it as the kernel; a
+ * store that is not root's lists nothing.
+ */
+export declare function listInstalledManifestsView(fs: InstalledRuntimesFs): Promise<Array<{
     root: string;
     manifest: RuntimeManifest;
 }>>;
@@ -102,9 +121,11 @@ export declare function runtimePayloadIntact(fs: CredentialedVfs, root: string, 
  * legacy manifest-first install interrupted mid-write or a corruption, and
  * the manager's install path repairs it on demand rather than running it.
  */
-export declare function rehydrateInstalledRuntimesView(vfs: CredentialedVfs, registry: MinShellRegistry, homeDir: string, runnerFor: RunnerLookup): Promise<{
+export declare function rehydrateInstalledRuntimesView(vfs: CredentialedVfs & InstalledRuntimesFs, registry: MinShellRegistry, runnerFor: RunnerLookup, 
+/** Each verified runtime, once its commands are registered: their handlers, by name (its launchers are linked). */
+bound?: (root: string, manifest: RuntimeManifest, handlers: ReadonlyMap<string, Command>) => Promise<void>): Promise<{
     count: number;
     bins: string[];
 }>;
-export declare function listInstalledRuntimes(vfs: SqliteVFS, homeDir: string): Promise<RuntimeSummary[]>;
+export declare function listInstalledRuntimes(vfs: SqliteVFS): Promise<RuntimeSummary[]>;
 //# sourceMappingURL=installed-runtimes.d.ts.map

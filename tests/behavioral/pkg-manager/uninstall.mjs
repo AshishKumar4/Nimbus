@@ -30,7 +30,7 @@ await t.run('nimbus install clang', 120_000);
 // the directory itself should no longer exist (covered by next check
 // too), but if it does exist we'd see the file listing.
 {
-  const { output } = await t.run('ls ~/.nimbus/runtimes/clang/binji-2020/bin/', 10_000);
+  const { output } = await t.run('ls /usr/lib/nimbus/clang/binji-2020/bin/', 10_000);
   const stripped = stripAnsi(output);
   const lines = stripped.split(/\r?\n/).map((l) => l.trim());
   // After uninstall, the directory shouldn't exist; ls prints an
@@ -43,7 +43,7 @@ await t.run('nimbus install clang', 120_000);
 
 // Install dir removed.
 {
-  const { output } = await t.run('ls ~/.nimbus/runtimes/clang', 10_000);
+  const { output } = await t.run('ls /usr/lib/nimbus/clang', 10_000);
   const stripped = stripAnsi(output);
   const removed = /ENOENT|No such|cannot access|not found/i.test(stripped)
     || !/binji-2020/.test(stripped);
