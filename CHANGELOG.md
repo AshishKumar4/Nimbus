@@ -5,6 +5,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: in the installed GNU bash, an ERR or RETURN trap no longer breaks
+  what the shell parses after it. After the first such trap ran, every later
+  `eval`, command substitution and trap failed with "conditional binary
+  operator expected": `trap ':' ERR; false; eval 'echo x'` printed nothing,
+  an ERR trap ran only the first time a command failed, and under `set -E`
+  it ran in the function but not again at its caller. The bash module's
+  signal sets were one byte wide, and adding SIGCHLD to one wrote past it
+  on the stack. This needs the bash runtime 5.2.37-6.
 ## 2026-10-14: platform 0.10.0, core 0.20.0, fabric 0.15.0, worker 0.18.0, sdk 0.15.0, loom 0.3.1, react 0.3.3, cli 0.2.7, create-nimbus-app 0.2.4 (config 0.3.1 unchanged)
 
 The 2026-10-13 versions reached production but were never published to npm; these carry their changes too.
