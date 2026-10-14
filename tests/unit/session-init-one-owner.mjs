@@ -10,7 +10,9 @@
 // held at seedFilesystem and then fails (the rest of a build needs a Durable
 // Object). Red before: each caller started its own build.
 import assert from 'node:assert/strict';
-import { initSession } from '../../packages/worker/src/session/init.ts';
+import { importWorkerBundle } from './lib/worker-bundle.mjs';
+
+const { initSession } = await importWorkerBundle({ 'packages/worker/src/session/init.ts': ['initSession'] });
 
 function gate() {
   let release;
