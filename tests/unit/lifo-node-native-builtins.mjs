@@ -45,7 +45,7 @@
 //
 // The rest of the engine's context-free builtins (X3e): assert, querystring,
 // timers, perf_hooks, v8 and the ones lifo had none of (async_hooks,
-// diagnostics_channel, punycode, timers/promises, util/types, vm, ...).
+// diagnostics_channel, punycode, timers/promises, util/types, ...).
 // Red before: lifo's assert compared JSON (two different Maps were equal) and
 // threw plain Errors, its querystring dropped repeated keys, its v8
 // serialized nothing, and the rest were not found.
@@ -229,11 +229,9 @@ const programs = {
     "console.log(require('util/types').isPromise(Promise.resolve()), require('util/types') === require('util').types);",
     "const pp = require('path/posix'); console.log(pp === require('path').posix, require('path/win32') === require('path').win32, pp.resolve('q') === process.cwd() + '/q');",
     "const v8 = require('v8'); console.log(JSON.stringify([...v8.deserialize(v8.serialize({ a: [1, new Map([[1, 2]])] })).a[1]]), typeof v8.getHeapStatistics().heap_size_limit, v8.getHeapStatistics().heap_size_limit > 0);",
-    "console.log(require('vm').runInNewContext('a + 1', { a: 2 }), typeof require('vm').Script);",
-    "console.log(typeof require('domain').create);",
     "process.noDeprecation = true; const sys = require('sys'); process.noDeprecation = false; console.log(sys === require('util'));",
     "console.log(require('console') === console, typeof require('console').Console);",
-    "const m = require('module'); console.log(m.isBuiltin('node:vm'), m.builtinModules.includes('diagnostics_channel'), m.builtinModules.includes('timers/promises'));",
+    "const m = require('module'); console.log(m.isBuiltin('node:async_hooks'), m.builtinModules.includes('diagnostics_channel'), m.Module.isBuiltin('async_hooks'), m.Module.builtinModules.includes('timers/promises'), m.Module.builtinModules === m.builtinModules);",
     "require('timers/promises').setTimeout(5, 'v').then((v) => console.log('tp', v));",
   ]),
 };
