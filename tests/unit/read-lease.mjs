@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @tier quiet-cpu — direct recall acknowledgements must precede the real 550 ms lease expiry across 300-record waves; alone on CI: 6.665 s wall, 1.644 s CPU, 0.10 GiB peak (20261014025937-e565858b).
 /**
  * read-lease — a process's read lease (fsAcquire with `lease`): the session's
  * promise that nothing changes without the process being recalled first.
@@ -320,6 +321,12 @@ for (const pathRevisionBytes of [undefined, 0]) {
 
 // ── A held wave whose promotion fails after its first group is not published: its writer is failed, and every reader starts again from what the store holds ──
 {
+  // Acknowledge only after all 300 records are held and the later revision
+  // has passed them: an earlier acknowledgement would publish before the
+  // promotion fault below, testing ingestion instead. Unlike a real holder
+  // (ProcessFsClient.answerReadRecalls), this deliberately delays its direct
+  // acknowledgement. Foreign CPU work can spend the 500 + 50 ms product
+  // lease first, so this file runs alone, without changing that deadline.
   const s = session();
   const reader = s.files.bind({ pid: 7, cred: USER });
   const writer = s.files.bind({ pid: 8, cred: USER });
