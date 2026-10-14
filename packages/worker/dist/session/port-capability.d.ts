@@ -55,15 +55,6 @@ declare const PortVisibilitySchema: z.ZodEnum<{
     public: "public";
 }>;
 export type PortVisibility = z.infer<typeof PortVisibilitySchema>;
-/**
- * The optional name alias a reservation may carry: one DNS label, so it can
- * stand where the port stands in a preview host (`<name>--<sid>`). Never
- * purely numeric — a numeric middle label IS a port. No `--`: that is the
- * host-label separator. No 24 lowercase hex: that is ambiguous with a
- * capability label, so parsing could mistake a name for a bearer.
- */
-export declare const APP_NAME_RE: RegExp;
-export declare function isValidAppName(name: string): boolean;
 export declare const PortRecordSchema: z.ZodObject<{
     kind: z.ZodDefault<z.ZodEnum<{
         explicit: "explicit";
