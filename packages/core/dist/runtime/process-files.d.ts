@@ -22,7 +22,7 @@ import type { OutputGate } from './output-gate.js';
 import { CompositeVFS } from '../vfs/composite.js';
 import { ProcVFS } from '../vfs/proc-vfs.js';
 import type { VFS, VfsCopyOptions, VfsDirent, VfsRemoval, VfsStat } from '../vfs/vfs.js';
-import { type NimbusFilesystemAuthority, type NimbusFilesystemBinding, type NimbusHostFilesystemLease, type NimbusMountEntry, type RuntimeFsBridge, type RuntimeSynchronousFs, type RuntimeVfsDirEntry, type RuntimeVfsStat, type VfsCred } from './os-contracts.js';
+import { type NimbusFilesystemAuthority, type NimbusFilesystemBinding, type NimbusHostFilesystemLease, type NimbusMountEntry, type RuntimeFsBridge, type RuntimeOpenFlags, type RuntimeSynchronousFs, type RuntimeVfsDirEntry, type RuntimeVfsStat, type VfsCred } from './os-contracts.js';
 /** The session's namespace and the processes bound to it. */
 export declare class ProcessFiles implements NimbusFilesystemAuthority {
     readonly engine: SqliteVFS;
@@ -201,6 +201,15 @@ export declare const F_OK = 0;
 export declare const X_OK = 1;
 export declare const W_OK = 2;
 export declare const R_OK = 4;
+/**
+ * A process's namespace as a `VFS` over its bound bridge, plus the process
+ * syscalls a `VFS` has no word for (access, realpath, append). Absent is
+ * null from `stat`; every failure is a `VfsError`.
+ */
+/** A bridge's calls as a view that can wait makes them (ProcessView): each a promise, made again after a recall. */
+type RecallingBridge = {
+    [K in keyof RuntimeFsBridge]: RuntimeFsBridge[K] extends (...args: infer A) => infer R ? (...args: A) => Promise<Awaited<R>> : never;
+};
 export declare class ProcessView implements VFS {
     /** The bridge itself: what a runtime hands a guest as its syscall surface. */
     readonly process: RuntimeFsBridge;
@@ -301,7 +310,31 @@ export declare class ProcessView implements VFS {
     access(path: string, mode: number): Promise<void>;
     realpath(path: string): Promise<string>;
     /** Append through an O_APPEND descriptor, so concurrent appenders never overwrite each other. */
+    /**
+     * An open file description of this process on `path` (open(2)): its reads
+     * and writes are the file the open found, whatever the name names after,
+     * at its own position, until it is closed.
+     */
+    open(path: string, flags: RuntimeOpenFlags): Promise<ProcessFile>;
     appendFile(path: string, content: Uint8Array | string): Promise<void>;
+}
+/** A process's open file description (ProcessView.open), by its descriptor; every failure is a `VfsError`. */
+export declare class ProcessFile {
+    private readonly fs;
+    readonly path: string;
+    private readonly handle;
+    /** Its file as the open found it. */
+    readonly stat: ProcessStat;
+    constructor(fs: RecallingBridge, path: string, handle: number, 
+    /** Its file as the open found it. */
+    stat: ProcessStat);
+    /** Up to `length` bytes at `offset`, or (null) at its position, which then moves: fewer only at the end. */
+    read(length: number, offset?: number | null): Promise<Uint8Array>;
+    /** All of `bytes`, at `offset` or (null) at its position (its end, opened to append), which then moves. */
+    write(bytes: Uint8Array, offset?: number | null): Promise<void>;
+    /** What the filesystem still holds for its file, written (fsync): a write it could not make fails here. */
+    sync(): Promise<void>;
+    close(): Promise<void>;
 }
 /** A process's stat: everything stat(2) answers, which the bridge always has. */
 export interface ProcessStat extends VfsStat {
@@ -365,4 +398,5 @@ export declare class NamespaceFs {
     };
     releaseExclusiveMutation(owner: string): void;
 }
+export {};
 //# sourceMappingURL=process-files.d.ts.map

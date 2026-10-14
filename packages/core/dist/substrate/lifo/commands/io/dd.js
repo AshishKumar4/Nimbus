@@ -2,7 +2,7 @@ import { resolve } from '../../utils/path.js';
 import { encode } from '../../utils/encoding.js';
 import { SinkWriter } from '../../../../_shared/byte-stream.js';
 import { isVfsError } from '../../../../vfs/vfs-error.js';
-import { isCharacterDevice, statOrThrow } from '../../../../vfs/vfs.js';
+import { isCharacterDevice } from '../../../../vfs/vfs.js';
 import { parseSuffixedCount } from '../../utils/size-units.js';
 const command = async (ctx) => {
     const parsed = parseOptions(ctx.args);
@@ -13,7 +13,7 @@ const command = async (ctx) => {
     const options = parsed.options;
     try {
         const copied = options.input && options.input !== '-' && options.input !== '/dev/stdin'
-            ? await copyFromFile(ctx, options)
+            ? await copyFromFile(ctx, options, options.input)
             : await copyFromStdin(ctx, options);
         if (options.status !== 'none')
             await writeStatus(ctx, options, copied);
@@ -24,24 +24,34 @@ const command = async (ctx) => {
         return 1;
     }
 };
-async function copyFromFile(ctx, options) {
-    const path = resolve(ctx.cwd, options.input);
-    const limit = await inputLimit(ctx, options, path);
-    const sink = await openOutput(ctx, options);
-    const start = options.skip * options.inputBlockSize;
-    let copied = 0;
-    while (copied < limit) {
-        if (ctx.signal.aborted)
-            break;
-        const want = Math.min(options.inputBlockSize, limit - copied);
-        const block = await readInput(ctx, path, start + copied, want, options.input);
-        if (block.length === 0)
-            break;
-        await sink.write(block);
-        copied += block.length;
+async function copyFromFile(ctx, options, input) {
+    // The input is opened once, as dd's if= is: its blocks are the file the open found.
+    const file = await labelled(input, () => ctx.vfs.open(resolve(ctx.cwd, input), { read: true }));
+    try {
+        const limit = inputLimit(options, input, file.stat);
+        const sink = await openOutput(ctx, options);
+        const start = options.skip * options.inputBlockSize;
+        let copied = 0;
+        try {
+            while (copied < limit) {
+                if (ctx.signal.aborted)
+                    break;
+                const want = Math.min(options.inputBlockSize, limit - copied);
+                const block = await labelled(input, () => file.read(want, start + copied));
+                if (block.length === 0)
+                    break;
+                await sink.write(block);
+                copied += block.length;
+            }
+        }
+        finally {
+            await sink.end();
+        }
+        return copied;
     }
-    await sink.end();
-    return copied;
+    finally {
+        await file.close();
+    }
 }
 async function copyFromStdin(ctx, options) {
     const stdin = options.input === '/dev/tty' ? ctx.terminalStdin : ctx.stdin;
@@ -82,18 +92,18 @@ async function readStdinChunk(stdin, want) {
  * unbounded copy from one cannot be satisfied and is rejected rather than
  * silently producing whatever a single read returned.
  */
-async function inputLimit(ctx, options, path) {
+function inputLimit(options, input, stat) {
     if (options.count !== undefined)
         return options.count * options.inputBlockSize;
-    const stat = await statOrThrow(ctx.vfs, path);
     if (isCharacterDevice(stat.mode)) {
-        throw new Error(`${options.input}: character device has no end — pass count= to bound the copy`);
+        throw new Error(`${input}: character device has no end — pass count= to bound the copy`);
     }
     return Math.max(0, stat.size - options.skip * options.inputBlockSize);
 }
-async function readInput(ctx, path, offset, length, label) {
+/** `run`'s VFS failure as dd reports one: the operand's name, then the error. */
+async function labelled(label, run) {
     try {
-        return await ctx.vfs.readRange(path, offset, length);
+        return await run();
     }
     catch (error) {
         if (isVfsError(error))
@@ -109,21 +119,26 @@ async function openOutput(ctx, options) {
         return streamSink(ctx.stderr);
     const path = resolve(ctx.cwd, target);
     const start = options.seek * options.outputBlockSize;
-    // dd truncates its output file unless conv=notrunc; seeking still keeps
-    // whatever precedes the seek point.
-    if (!options.notrunc) {
-        if (await ctx.vfs.exists(path))
-            await ctx.vfs.truncate(path, start);
-        else
-            await ctx.vfs.writeFile(path, new Uint8Array(start));
-    }
+    // The output is opened once, as dd's of= is, and written at its own offset.
+    // dd truncates it unless conv=notrunc; seeking still keeps whatever
+    // precedes the seek point.
+    const file = await labelled(target, () => ctx.vfs.open(path, { write: true, create: true }));
+    if (!options.notrunc)
+        await labelled(target, () => ctx.vfs.truncate(path, start));
     let offset = start;
     return {
         write: async (bytes) => {
-            await ctx.vfs.writeRange(path, offset, bytes);
+            await labelled(target, () => file.write(bytes, offset));
             offset += bytes.length;
         },
-        end: () => { },
+        end: async () => {
+            try {
+                await labelled(target, () => file.sync());
+            }
+            finally {
+                await file.close();
+            }
+        },
     };
 }
 function streamSink(stream) {
