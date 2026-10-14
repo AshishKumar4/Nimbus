@@ -34,6 +34,7 @@ declare module 'node:worker_threads' {
 declare module 'node:process' {
   import type * as NodeAsyncHooks from 'node:async_hooks';
   import type * as NodeBuffer from 'node:buffer';
+  import type * as NodeConsole from 'node:console';
   import type * as NodeCrypto from 'node:crypto';
   import type * as NodeFs from 'node:fs';
   import type * as NodePath from 'node:path';
@@ -65,6 +66,7 @@ declare module 'node:process' {
     /** The engine's own builtin, as `require` gives it (node-compat/index.ts's module map). */
     getBuiltinModule(id: 'node:async_hooks'): typeof NodeAsyncHooks;
     getBuiltinModule(id: 'node:buffer'): typeof NodeBuffer;
+    getBuiltinModule(id: 'node:console'): typeof NodeConsole;
     getBuiltinModule(id: 'node:crypto'): typeof NodeCrypto;
     getBuiltinModule(id: 'node:events'): typeof EventEmitter;
     getBuiltinModule(id: 'node:fs'): typeof NodeFs;
@@ -73,6 +75,8 @@ declare module 'node:process' {
     getBuiltinModule(id: 'node:stream'): typeof NodeStream;
     getBuiltinModule(id: 'node:stream/promises' | 'node:stream/consumers' | 'node:stream/web'): object;
     getBuiltinModule(id: 'node:string_decoder'): typeof NodeStringDecoder;
+    getBuiltinModule(id: 'node:assert' | 'node:assert/strict' | 'node:diagnostics_channel' | 'node:domain' | 'node:perf_hooks' | 'node:punycode'
+      | 'node:querystring' | 'node:sys' | 'node:timers' | 'node:timers/promises' | 'node:util/types' | 'node:v8' | 'node:vm'): object;
     getBuiltinModule(id: 'node:util'): typeof NodeUtil;
   }
   const process: RealmProcess;

@@ -123,6 +123,8 @@ export function createModuleShim(moduleMap, createRequire = makeCreateRequire(mo
     class LoaderModule extends Module {
         static createRequire = createRequire;
         static _cache = {};
+        static builtinModules = names;
+        static isBuiltin = isMapBuiltin;
     }
     return {
         Module: LoaderModule,

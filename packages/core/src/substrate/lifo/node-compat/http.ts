@@ -5,11 +5,8 @@ import {
   type VirtualRequestHandler,
   type VirtualResponse,
 } from '../kernel/index.js';
+import { awaitServedEnd, routeToLoopback, serveFromPort, servedBody, statusText } from '../kernel/local-serve.js';
 
-/** Extended VirtualResponse with a done promise for async middleware */
-export interface VirtualResponseWithDone extends VirtualResponse {
-  _donePromise?: Promise<void>;
-}
 
 interface RequestOptions {
   hostname?: string;
@@ -83,6 +80,8 @@ class ClientRequest extends EventEmitter {
   private options: RequestOptions;
   private body = '';
   private aborted = false;
+  /** What abort() ends: the wait for a local server's answer among it. Made when a wait needs it. */
+  private abortController: AbortController | null = null;
   private portRegistry?: Map<number, VirtualRequestHandler>;
   private routeLoopback?: LoopbackRouter;
   private protocol: 'http:' | 'https:';
@@ -115,6 +114,16 @@ class ClientRequest extends EventEmitter {
 
   abort(): void {
     this.aborted = true;
+    this.abortController?.abort();
+  }
+
+  /** This request's signal, which abort() aborts. */
+  private signal(): AbortSignal {
+    if (this.abortController === null) {
+      this.abortController = new AbortController();
+      if (this.aborted) this.abortController.abort();
+    }
+    return this.abortController.signal;
   }
 
   private async execute(): Promise<void> {
@@ -125,68 +134,56 @@ class ClientRequest extends EventEmitter {
     const path = this.options.path || '/';
     const loopback = isLoopbackHost(host);
 
-    // Check if target is a virtual server
-    if (this.portRegistry && loopback) {
-      const handler = this.portRegistry.get(port);
-      if (handler) {
-        const vReq = {
-          method: this.options.method || 'GET',
-          url: path,
-          headers: this.options.headers || {},
-          body: this.body,
-        };
-        const vRes = {
-          statusCode: 200,
-          headers: {} as Record<string, string>,
-          body: '',
-        };
-
-        try {
-          handler(vReq, vRes);
-
-          const msg = new IncomingMessage(vRes.statusCode, 'OK', vRes.headers);
-          this.emit('response', msg);
-
-          queueMicrotask(() => {
-            msg.emit('data', vRes.body);
-            msg.emit('end');
-          });
-        } catch (e) {
-          this.emit('error', e);
-        }
-        return;
-      }
-    }
-
+    // A loopback request is served as the workspace serves its own: a server
+    // of this program's (once its handler has ended the response), else the
+    // host's loopback router.
     if (loopback) {
-      if (this.routeLoopback) {
-        try {
-          const method = this.options.method || 'GET';
-          const hasBody = method !== 'GET' && method !== 'HEAD' && this.body.length > 0;
-          const response = await this.routeLoopback(port, new Request(
-            `${this.protocol}//${host}:${port}${path}`,
-            {
-              method,
-              headers: this.options.headers,
-              body: hasBody ? this.body : undefined,
-            },
-          ));
-          if (response) {
-            const headers: Record<string, string> = {};
-            response.headers.forEach((value, key) => { headers[key] = value; });
-            const msg = new IncomingMessage(response.status, response.statusText, headers);
-            this.emit('response', msg);
-            const text = await response.text();
-            msg.emit('data', text);
-            msg.emit('end');
+      const method = this.options.method || 'GET';
+      const hasBody = method !== 'GET' && method !== 'HEAD' && this.body.length > 0;
+      const handler = this.portRegistry?.get(port);
+      try {
+        if (handler) {
+          // As Node gives them to a server: header names lower-cased.
+          const headers: Record<string, string> = {};
+          const given = this.options.headers;
+          if (given) for (const name of Object.keys(given)) headers[name.toLowerCase()] = String(given[name]);
+          // Node's HTTP carries a GET's body too: only a Fetch Request (below) may not.
+          const served = serveFromPort(handler, { method, url: path, headers, body: this.body });
+          if (served === null) {
+            this.failed('refused', host, port);
             return;
           }
-        } catch (error) {
-          this.emit('error', error);
+          // Aborted while its server answered (its handler can reach it): nothing more is said.
+          if (this.aborted) return;
+          const ended = served._donePromise === undefined ? 'ended' : await awaitServedEnd(served._donePromise, this.signal());
+          if (ended !== 'ended') {
+            this.failed(ended, host, port);
+            return;
+          }
+          // The server's answer, as this request's: its status and reason, its headers, then its body and end.
+          const msg = new IncomingMessage(served.statusCode, statusText(served.statusCode), served.headers);
+          this.emit('response', msg);
+          queueMicrotask(() => {
+            msg.emit('data', servedBody(served) ?? '');
+            msg.emit('end');
+          });
           return;
         }
+        if (!this.routeLoopback) {
+          this.failed('refused', host, port);
+          return;
+        }
+        const result = await routeToLoopback(this.routeLoopback, port, new Request(`${this.protocol}//${host}:${port}${path}`, {
+          method,
+          headers: this.options.headers,
+          body: hasBody ? this.body : undefined,
+          signal: this.signal(),
+        }));
+        if (result.kind === 'response') await this.answer(result.response);
+        else this.failed(result.kind, host, port);
+      } catch (error) {
+        this.emit('error', error);
       }
-      this.emit('error', new Error(`connect ECONNREFUSED ${host}:${port}`));
       return;
     }
 
@@ -196,24 +193,31 @@ class ClientRequest extends EventEmitter {
     const url = `${proto}://${host}${portStr}${path}`;
 
     try {
-      const resp = await fetch(url, {
+      await this.answer(await fetch(url, {
         method: this.options.method || 'GET',
         headers: this.options.headers,
         body: this.options.method !== 'GET' && this.body ? this.body : undefined,
-      });
-
-      const headers: Record<string, string> = {};
-      resp.headers.forEach((v, k) => { headers[k] = v; });
-
-      const msg = new IncomingMessage(resp.status, resp.statusText, headers);
-      this.emit('response', msg);
-
-      const text = await resp.text();
-      msg.emit('data', text);
-      msg.emit('end');
+      }));
     } catch (e) {
       this.emit('error', e);
     }
+  }
+
+  /** A local hop that got no response: nothing for an abort; the connection's error otherwise. */
+  private failed(kind: 'refused' | 'aborted' | 'timeout', host: string, port: number): void {
+    if (kind === 'refused') this.emit('error', new Error(`connect ECONNREFUSED ${host}:${port}`));
+    else if (kind === 'timeout') this.emit('error', new Error(`connect ETIMEDOUT ${host}:${port}`));
+  }
+
+  /** `response` as this request's: its status, reason and headers, then its body and end. */
+  private async answer(response: Response): Promise<void> {
+    const headers: Record<string, string> = {};
+    response.headers.forEach((value, key) => { headers[key] = value; });
+    const msg = new IncomingMessage(response.status, response.statusText, headers);
+    this.emit('response', msg);
+    const text = await response.text();
+    msg.emit('data', text);
+    msg.emit('end');
   }
 
   setTimeout(_ms: number, cb?: () => void): this {
@@ -406,9 +410,10 @@ class Server extends EventEmitter {
       req.url = vReq.url;
 
       const res = new ServerResponse(vRes);
-      // Attach the done promise to vRes so consumers (tunnel, curl) can await async middleware
-      (vRes as VirtualResponseWithDone)._donePromise = res._donePromise;
       this.emit('request', req, res);
+      // A handler that has not ended the response yet (a timer, an await, async
+      // middleware) is waited for: whoever serves the request awaits this.
+      if (!res.finished) vRes._donePromise = res._donePromise;
 
       // Emit body data + end so middleware that reads the request body works
       queueMicrotask(() => {

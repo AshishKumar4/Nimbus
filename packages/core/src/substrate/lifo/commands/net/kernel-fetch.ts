@@ -9,22 +9,17 @@
  * instead of being mistaken for "no listener".
  */
 
+import { isLoopbackHost, type Kernel } from '../../kernel/index.js';
 import {
-  isLoopbackHost,
-  type Kernel,
-  type VirtualRequest,
-  type VirtualResponse,
-} from '../../kernel/index.js';
-import { waitForSignalOrTimeout } from '../signal.js';
+  awaitServedEnd,
+  routeToLoopback,
+  serveFromPort,
+  servedBody,
+  statusText,
+  type WorkspaceRequestResult,
+} from '../../kernel/local-serve.js';
 import { ISOLATE_NETWORK } from '../../../../_shared/workspace-network.js';
 import { applyRedirectPolicy, isRedirectStatus } from '../../../../runtime/http-redirect-policy.js';
-
-/** Outcomes of one workspace-local hop, for callers that report failure. */
-export type WorkspaceRequestResult =
-  | { kind: 'response'; response: Response }
-  | { kind: 'refused' }
-  | { kind: 'aborted' }
-  | { kind: 'timeout' };
 
 /**
  * The loopback port a URL asks for, or null when it is not loopback. A name
@@ -39,18 +34,6 @@ export function workspaceRequestPort(kernel: Partial<Pick<Kernel, 'dns'>>, url: 
 }
 
 /** HTTP reason phrase — virtual responses carry no status text. */
-export function statusText(status: number): string {
-  const map: Record<number, string> = {
-    200: 'OK', 201: 'Created', 202: 'Accepted', 204: 'No Content',
-    301: 'Moved Permanently', 302: 'Found', 303: 'See Other',
-    304: 'Not Modified', 307: 'Temporary Redirect', 308: 'Permanent Redirect',
-    400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden',
-    404: 'Not Found', 405: 'Method Not Allowed', 500: 'Internal Server Error',
-    502: 'Bad Gateway', 503: 'Service Unavailable',
-  };
-  return map[status] ?? '';
-}
-
 /**
  * Serve `request` through the kernel's port registry, else its host's
  * loopback router. The handler's virtual response is adapted to a real
@@ -65,51 +48,30 @@ export async function dispatchWorkspaceRequest(
 ): Promise<WorkspaceRequestResult> {
   const handler = kernel.portRegistry.get(port);
   if (handler) {
-    const vReq: VirtualRequest = {
+    const url = new URL(request.url);
+    const served = serveFromPort(handler, {
       method: request.method,
-      url: new URL(request.url).pathname + new URL(request.url).search,
+      url: url.pathname + url.search,
       headers: Object.fromEntries(request.headers.entries()),
       body: request.body ? await request.text() : '',
-    };
-    const vRes: VirtualResponse & { _donePromise?: Promise<void> } = {
-      statusCode: 200,
-      headers: {},
-      body: '',
-    };
-    try {
-      handler(vReq, vRes);
-      if (vRes._donePromise) {
-        const result = await waitForSignalOrTimeout(vRes._donePromise, request.signal, 30_000);
-        if (result.type === 'aborted') return { kind: 'aborted' };
-        if (result.type === 'timeout') return { kind: 'timeout' };
-      }
-    } catch {
-      return { kind: 'refused' };
-    }
-    const status = vRes.statusCode;
-    const body = (status === 204 || status === 304) ? null : vRes.body;
+    });
+    if (served === null) return { kind: 'refused' };
+    // An aborted request is aborted, though its handler has already ended the response.
+    if (request.signal.aborted) return { kind: 'aborted' };
+    const ended = served._donePromise === undefined ? 'ended' : await awaitServedEnd(served._donePromise, request.signal);
+    if (ended !== 'ended') return { kind: ended };
+    const status = served.statusCode;
     return {
       kind: 'response',
-      response: new Response(body, {
+      response: new Response(servedBody(served), {
         status,
         statusText: statusText(status),
-        headers: vRes.headers,
+        headers: served.headers,
       }),
     };
   }
 
-  if (kernel.routeLoopback) {
-    const routed = await waitForSignalOrTimeout(
-      kernel.routeLoopback(port, request),
-      request.signal,
-      30_000,
-    );
-    if (routed.type === 'aborted') return { kind: 'aborted' };
-    if (routed.type === 'timeout') return { kind: 'timeout' };
-    if (routed.value) return { kind: 'response', response: routed.value };
-  }
-
-  return { kind: 'refused' };
+  return kernel.routeLoopback ? await routeToLoopback(kernel.routeLoopback, port, request) : { kind: 'refused' };
 }
 
 /** How many redirects a walk follows before it gives up: curl's and wget's default. */
