@@ -8,12 +8,12 @@
       "cross.cache": "94c70967b023de4687815ec71d3ffdd8394491ed97f3fe52a2a37bd4935325a3",
       "include/termios.h": "64b72d467d29829d60ac3c69af7846a0ba6ec1de3d7e137b3ca275c7c0928ae4",
       "inputs.mjs": "b8f5f6ff4874a9873834b4b7f47169516c09fcaac715882756968eb95eecd321",
-      "nimbus-proc.c": "0e12961c2f89e2649097a1123c333d83dcab80d6a3f47895ad51d44c06da43d4",
-      "nimbus-proc.h": "69583a295ee76bdefe8bc2d9c6198d4ebd8387a0acfeb40d3576c0b472a872f0",
+      "nimbus-proc.c": "93cbc9c2e8862f9ac3340e22b8f9ddc583cf0936c5ef61641b99d55152105591",
+      "nimbus-proc.h": "0ccc6f2a82b0e0777558f0cef5477261d1a8a3e9485ef1e2236095c9691901b3",
       "patches/procenv.patch": "381a3918e5981fef1bcbf3df2f7f9396630a32a38268113b2a62a983ac4d28bd"
     }
   },
   "outputs": {
-    "bash.async.wasm": "8ac4bf873ffdd375131b21ab023c7a900ce158c449bcf973e8e030291f9f7d71"
+    "bash.async.wasm": "bcf5e75d03f43ba0419487191b07065fb806bb06f4a7409249923fa603022733"
   }
 }

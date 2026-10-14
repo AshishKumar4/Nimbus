@@ -43,6 +43,14 @@ published independently in the `@nimbus-sh` npm scope.
   `Warning: <message>` and told no listener. A program has one `process`,
   as in Node: each of its modules had one of its own, none of them
   `globalThis.process` or `require('process')`.
+- Fixed: in the installed GNU bash, an ERR or RETURN trap no longer breaks
+  what the shell parses after it. After the first such trap ran, every later
+  `eval`, command substitution and trap failed with "conditional binary
+  operator expected": `trap ':' ERR; false; eval 'echo x'` printed nothing,
+  an ERR trap ran only the first time a command failed, and under `set -E`
+  it ran in the function but not again at its caller. The bash module's
+  signal sets were one byte wide, and adding SIGCHLD to one wrote past it
+  on the stack. This needs the bash runtime 5.2.37-6.
 - Fixed: `test` and `[` run as programs (`xargs test`, `find -exec test`)
   evaluate as the shell's builtin does. `test 1 -eq 2` run so returned 0,
   and `[ 1 -eq 1` ran without its closing `]`.
