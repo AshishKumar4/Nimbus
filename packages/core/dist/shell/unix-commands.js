@@ -127,7 +127,7 @@ async function readSymlinkTarget(vfs, path) {
  * SHELL-FOLLOWUPS-1 (2026-05-11): POSIX-conformant `which`.
  *
  * Pre-fix: `which clang` printed `clang: nimbus built-in`. Real POSIX
- * which prints the resolved absolute path (`/usr/local/bin/clang`)
+ * which prints the resolved absolute path (`/usr/bin/clang`)
  * or exits 1 silently. Scripts using `which` output to feed into
  * `dirname`, `$()`, etc. all broke:
  *   PATH_PREFIX=$(dirname $(which clang))   # expected /usr/local/bin
