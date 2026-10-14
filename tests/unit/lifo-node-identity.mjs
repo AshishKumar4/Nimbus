@@ -34,7 +34,7 @@ try {
   for (const [who, prefix, uid] of [['the user', '', 1000], ['root', 'sudo ', 0]]) {
     const seen = JSON.parse(await run(`${prefix}node -e "${IDENTITY}"`));
     const entry = processes.get(seen.pid);
-    assert.ok(entry !== undefined && /\bnode\b/.test(entry.command), `${who}: process.pid ${seen.pid} is the node process the table has`);
+    assert.ok(entry !== undefined && /\bnode\b/.test(entry.command), `${who}: process.pid ${seen.pid} is the node process the table has: ${JSON.stringify(entry)} ${JSON.stringify([...Array(12).keys()].map((pid) => processes.get(pid)).filter(Boolean).map((e) => [e.pid, e.command, e.state, e.cred?.uid, e.parentPid]))}`);
     assert.deepEqual(seen, {
       version: NODE_VERSION, node: NODE_VERSION.slice(1), pid: seen.pid,
       uid, euid: uid, gid: entry.cred.gid, egid: entry.cred.gid, groups: [...entry.cred.groups],
