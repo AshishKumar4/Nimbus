@@ -183,8 +183,13 @@ export class CaptureStore {
     }
     /**
      * The hooks' log in `memory`, applied in the order it was made, and
-     * emptied: a copy's dst names what its src named, if dst still holds its
-     * words, and a drop's buffer ends. Also nimbus_procenv.full's answer.
+     * emptied: a copy's dst names what its src named, and a drop's buffer
+     * ends. The log is history: each copy took the whole buffer as it was
+     * then, so a copy is replayed as made, and only once the log is done is a
+     * buffer it named checked against memory as it is now (a stack slot
+     * reused since holds other words). So a chain a→b→c leaves c naming the
+     * capture though b was written over before the log was applied. Also
+     * nimbus_procenv.full's answer.
      */
     applyLog(memory) {
         const view = this.#viewOf(memory);
@@ -192,6 +197,7 @@ export class CaptureStore {
         if (logged === 0)
             return;
         view.setUint32(at0, 0, true);
+        const named = new Set();
         for (let i = 0, record = at0 + 4; i < logged; i++, record += 8) {
             const at = view.getUint32(record, true), src = view.getUint32(record + 4, true);
             if (this.#names.has(at))
@@ -199,12 +205,18 @@ export class CaptureStore {
             if (src === DROPPED)
                 continue;
             const id = this.#names.get(src);
-            if (id === undefined || !this.#holds(view, at, id))
+            if (id === undefined)
                 continue;
             this.#name(at, id);
+            named.add(at);
             const capture = this.#captures.get(id);
             if (capture !== undefined)
                 capture.refs++;
+        }
+        for (const at of named) {
+            const id = this.#names.get(at);
+            if (id !== undefined && !this.#holds(view, at, id))
+                this.#unname(at);
         }
     }
     /**

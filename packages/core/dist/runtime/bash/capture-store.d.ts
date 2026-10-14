@@ -96,8 +96,13 @@ export declare class CaptureStore {
     take(memory: WebAssembly.Memory, env: number, sp: number, stats: CaptureStats, pid: number): number;
     /**
      * The hooks' log in `memory`, applied in the order it was made, and
-     * emptied: a copy's dst names what its src named, if dst still holds its
-     * words, and a drop's buffer ends. Also nimbus_procenv.full's answer.
+     * emptied: a copy's dst names what its src named, and a drop's buffer
+     * ends. The log is history: each copy took the whole buffer as it was
+     * then, so a copy is replayed as made, and only once the log is done is a
+     * buffer it named checked against memory as it is now (a stack slot
+     * reused since holds other words). So a chain a→b→c leaves c naming the
+     * capture though b was written over before the log was applied. Also
+     * nimbus_procenv.full's answer.
      */
     applyLog(memory: WebAssembly.Memory): void;
     /**
