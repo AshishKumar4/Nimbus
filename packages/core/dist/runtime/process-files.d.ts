@@ -309,13 +309,13 @@ export declare class ProcessView implements VFS {
     /** access(2): `mode` is F_OK or any of R_OK, W_OK, X_OK. */
     access(path: string, mode: number): Promise<void>;
     realpath(path: string): Promise<string>;
-    /** Append through an O_APPEND descriptor, so concurrent appenders never overwrite each other. */
     /**
      * An open file description of this process on `path` (open(2)): its reads
      * and writes are the file the open found, whatever the name names after,
      * at its own position, until it is closed.
      */
     open(path: string, flags: RuntimeOpenFlags): Promise<ProcessFile>;
+    /** Append through an O_APPEND descriptor, so concurrent appenders never overwrite each other. */
     appendFile(path: string, content: Uint8Array | string): Promise<void>;
 }
 /** A process's open file description (ProcessView.open), by its descriptor; every failure is a `VfsError`. */
