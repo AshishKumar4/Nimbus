@@ -1,13 +1,12 @@
 import { Buffer } from 'node:buffer';
 import realm from 'node:process';
 import { createFs } from './fs.js';
-import { createPath } from './path.js';
+import { createPath, createUrl } from './cwd-relative.js';
 import { createOs } from './os.js';
 import { createProcess } from './process.js';
 import { EventEmitter } from 'node:events';
 import { createHttp } from './http.js';
 import { createChildProcess } from './child_process.js';
-import { createUrl } from './url.js';
 import * as timersModule from './timers.js';
 import * as zlibModule from './zlib.js';
 import * as ttyModule from './tty.js';
