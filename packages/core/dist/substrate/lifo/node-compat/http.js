@@ -108,15 +108,22 @@ class ClientRequest extends EventEmitter {
                         for (const name of Object.keys(given))
                             headers[name.toLowerCase()] = String(given[name]);
                     const served = serveFromPort(handler, { method, url: path, headers, body: hasBody ? this.body : '' });
-                    if (served.kind === 'refused') {
+                    if (served === null) {
                         this.failed('refused', host, port);
                         return;
                     }
-                    const ended = served.end === null ? 'ended' : await awaitServedEnd(served.end, this.signal());
-                    if (ended === 'ended')
-                        this.answerServed(served.response);
-                    else
+                    const ended = served._donePromise === undefined ? 'ended' : await awaitServedEnd(served._donePromise, this.signal());
+                    if (ended !== 'ended') {
                         this.failed(ended, host, port);
+                        return;
+                    }
+                    // The server's answer, as this request's: its status and reason, its headers, then its body and end.
+                    const msg = new IncomingMessage(served.statusCode, statusText(served.statusCode), served.headers);
+                    this.emit('response', msg);
+                    queueMicrotask(() => {
+                        msg.emit('data', servedBody(served) ?? '');
+                        msg.emit('end');
+                    });
                     return;
                 }
                 if (!this.routeLoopback) {
@@ -160,15 +167,6 @@ class ClientRequest extends EventEmitter {
             this.emit('error', new Error(`connect ECONNREFUSED ${host}:${port}`));
         else if (kind === 'timeout')
             this.emit('error', new Error(`connect ETIMEDOUT ${host}:${port}`));
-    }
-    /** A server of this program's answer, as this request's: its status and reason, its headers, then its body and end. */
-    answerServed(response) {
-        const msg = new IncomingMessage(response.statusCode, statusText(response.statusCode), response.headers);
-        this.emit('response', msg);
-        queueMicrotask(() => {
-            msg.emit('data', servedBody(response) ?? '');
-            msg.emit('end');
-        });
     }
     /** `response` as this request's: its status, reason and headers, then its body and end. */
     async answer(response) {

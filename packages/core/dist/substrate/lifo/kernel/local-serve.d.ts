@@ -18,20 +18,12 @@ export type WorkspaceRequestResult = {
     kind: 'timeout';
 };
 /**
- * How a server of a port registry took a request: its response, with the end
- * still to wait for when its handler returned before ending it (the
- * _donePromise a ServerResponse attaches while the response is open); or a
- * refusal, when the handler threw.
+ * `request` handed to `handler`, a server of a port registry, synchronously,
+ * as a server takes a request: its response, with `_donePromise` still to
+ * wait for when the handler returned before ending it; null when the handler
+ * threw, which refuses the request.
  */
-export type Served = {
-    kind: 'served';
-    response: VirtualResponse;
-    end: Promise<void> | null;
-} | {
-    kind: 'refused';
-};
-/** `request` handed to `handler`, a server of a port registry, synchronously, as a server takes a request. */
-export declare function serveFromPort(handler: VirtualRequestHandler, request: VirtualRequest): Served;
+export declare function serveFromPort(handler: VirtualRequestHandler, request: VirtualRequest): VirtualResponse | null;
 /**
  * The wait for a served response's `end`, however late its handler ends it,
  * unless `signal` aborts first or the hop's time passes: `ended`, or how the

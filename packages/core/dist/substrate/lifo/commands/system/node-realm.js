@@ -251,7 +251,7 @@ export async function runNodeInRealm(program, ctx, kernel) {
                 resolve();
             });
         });
-        Object.assign(response, { _donePromise: done });
+        response._donePromise = done;
         if (!post({ type: 'serve', id, port, request })) {
             pending.get(id)?.(null);
             pending.delete(id);

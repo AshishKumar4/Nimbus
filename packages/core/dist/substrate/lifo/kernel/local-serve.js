@@ -1,16 +1,21 @@
 import { waitForSignalOrTimeout } from '../commands/signal.js';
 /** How long a local hop waits for a server that has not answered: a handler's end, or the router's response. */
 const LOCAL_HOP_TIMEOUT_MS = 30_000;
-/** `request` handed to `handler`, a server of a port registry, synchronously, as a server takes a request. */
+/**
+ * `request` handed to `handler`, a server of a port registry, synchronously,
+ * as a server takes a request: its response, with `_donePromise` still to
+ * wait for when the handler returned before ending it; null when the handler
+ * threw, which refuses the request.
+ */
 export function serveFromPort(handler, request) {
     const response = { statusCode: 200, headers: {}, body: '' };
     try {
         handler(request, response);
     }
     catch {
-        return { kind: 'refused' };
+        return null;
     }
-    return { kind: 'served', response, end: response._donePromise ?? null };
+    return response;
 }
 /**
  * The wait for a served response's `end`, however late its handler ends it,

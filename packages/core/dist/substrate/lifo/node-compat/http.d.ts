@@ -1,9 +1,5 @@
 import { EventEmitter } from './events.js';
-import { type LoopbackRouter, type VirtualRequestHandler, type VirtualResponse } from '../kernel/index.js';
-/** Extended VirtualResponse with a done promise for async middleware */
-export interface VirtualResponseWithDone extends VirtualResponse {
-    _donePromise?: Promise<void>;
-}
+import { type LoopbackRouter, type VirtualRequestHandler } from '../kernel/index.js';
 interface RequestOptions {
     hostname?: string;
     host?: string;
@@ -59,8 +55,6 @@ declare class ClientRequest extends EventEmitter {
     private execute;
     /** A local hop that got no response: nothing for an abort; the connection's error otherwise. */
     private failed;
-    /** A server of this program's answer, as this request's: its status and reason, its headers, then its body and end. */
-    private answerServed;
     /** `response` as this request's: its status, reason and headers, then its body and end. */
     private answer;
     setTimeout(_ms: number, cb?: () => void): this;

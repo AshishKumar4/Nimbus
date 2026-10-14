@@ -43,18 +43,18 @@ export async function dispatchWorkspaceRequest(kernel, port, request) {
             headers: Object.fromEntries(request.headers.entries()),
             body: request.body ? await request.text() : '',
         });
-        if (served.kind === 'refused')
-            return served;
-        const ended = served.end === null ? 'ended' : await awaitServedEnd(served.end, request.signal);
+        if (served === null)
+            return { kind: 'refused' };
+        const ended = served._donePromise === undefined ? 'ended' : await awaitServedEnd(served._donePromise, request.signal);
         if (ended !== 'ended')
             return { kind: ended };
-        const status = served.response.statusCode;
+        const status = served.statusCode;
         return {
             kind: 'response',
-            response: new Response(servedBody(served.response), {
+            response: new Response(servedBody(served), {
                 status,
                 statusText: statusText(status),
-                headers: served.response.headers,
+                headers: served.headers,
             }),
         };
     }
