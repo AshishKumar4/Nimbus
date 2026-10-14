@@ -1710,7 +1710,9 @@ const XARGS_CHILD_STDIN = {
  *
  * Supported flags:
  *   -n NUM        run command with at most NUM args per invocation
- *   -I REPL       replace REPL in command with the input item
+ *   -I REPL, -IREPL, -i[REPL], --replace[=REPL]
+ *                 replace REPL (default {}) in command with each input line,
+ *                 its leading blanks dropped
  *   -0            null-byte separator (rare; bash xargs -0 idiom)
  *   default args  use args.split(/\s+/) from stdin
  *
@@ -1741,9 +1743,14 @@ function mkXargs() {
                 if (Number.isFinite(n) && n > 0)
                     batchSize = n;
             }
-            else if (a === '-I') {
-                replaceTok = args.shift() || '{}';
+            else if (a.startsWith('-I')) {
+                replaceTok = a === '-I' ? args.shift() || '{}' : a.slice(2);
                 batchSize = 1; // -I implies one-arg-per-invocation
+            }
+            else if (a.startsWith('-i') || a === '--replace' || a.startsWith('--replace=')) {
+                // GNU's older spellings of -I, whose R defaults to {}.
+                replaceTok = a.startsWith('--replace=') ? a.slice('--replace='.length) : a.length > 2 && a.startsWith('-i') ? a.slice(2) : '{}';
+                batchSize = 1;
             }
             else if (a === '-0' || a === '--null') {
                 nullSep = true;
@@ -1760,10 +1767,13 @@ function mkXargs() {
         // Remaining args: cmd + initial-args. Default: echo.
         const cmdName = args.shift() || 'echo';
         const cmdArgsInitial = args;
-        // Split stdin into items
+        // Split stdin into items. With a replace string an item is a line, its
+        // leading blanks dropped, as GNU's -I reads one: blanks inside it stay.
         const items = nullSep
             ? input.split('\u0000').filter(Boolean)
-            : input.split(/\s+/).filter(Boolean);
+            : replaceTok !== null
+                ? input.split('\n').map((line) => line.replace(/^[ \t]+/, '')).filter(Boolean)
+                : input.split(/\s+/).filter(Boolean);
         // The parent each child is started from: xargs itself, but for its stdin.
         const parent = {
             pid: ctx.pid,
