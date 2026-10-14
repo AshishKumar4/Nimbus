@@ -107,6 +107,44 @@ await runScenarios(import.meta.path, {
     assert.equal(await fs.promises.readFile(`${A}/B`, 'utf8'), 'S', 'the copy landed where the link pointed when it was made');
   },
 
+  async 'a write to the copy\'s name while the copy is on its way is the later one'() {
+    // The copy's wave is held; the program writes the copy's name meanwhile, logged after the copy.
+    let hold = false;
+    const held = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    const box = await boot((forward) => ({
+      writeBatchStream: async (...args) => {
+        if (hold) { hold = false; held.resolve(); await release.promise; }
+        return forward('writeBatchStream', args);
+      },
+    }));
+    const { fs } = box.probe;
+    fs.writeFileSync(`${A}/s1`, 'S');
+    await fs.promises.readFile(`${A}/s1`, 'utf8');
+    hold = true;
+    const copied = fs.promises.copyFile(`${A}/s1`, `${A}/d1`);
+    await held.promise;
+    fs.writeFileSync(`${A}/d1`, 'new');
+    release.resolve();
+    await copied;
+    assert.equal(fs.readFileSync(`${A}/d1`, 'utf8'), 'new', 'the view keeps the later write');
+    assert.equal(await fs.promises.readFile(`${A}/d1`, 'utf8'), 'new', 'and so does the session');
+  },
+
+  async 'a chmod and utimes of the copy\'s name before the copy are superseded by it'() {
+    const box = await boot();
+    const { fs } = box.probe;
+    fs.writeFileSync(`${A}/s2`, 'S', { mode: 0o644 });
+    fs.writeFileSync(`${A}/d2`, 'old');
+    fs.chmodSync(`${A}/d2`, 0o600);
+    fs.utimesSync(`${A}/d2`, 1, 1);
+    await fs.promises.copyFile(`${A}/s2`, `${A}/d2`);
+    const local = fs.statSync(`${A}/d2`);
+    const session = await fs.promises.stat(`${A}/d2`);
+    assert.deepEqual([local.mode & 0o777, local.mtimeMs === 1000], [0o644, false], 'the copy\'s mode and times, not the overlays before it');
+    assert.deepEqual([local.mode, local.mtimeMs], [session.mode, session.mtimeMs], 'statSync answers as the session does');
+  },
+
   async 'a copy and its source are each their own: appends to both keep each'() {
     const box = await boot();
     const { fs } = box.probe;
