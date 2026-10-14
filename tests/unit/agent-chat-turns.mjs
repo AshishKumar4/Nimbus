@@ -19,7 +19,8 @@ function makeHost(initialStore = new Map()) {
     host: {
       ctx: {
         storage: {
-          async get(key) { return store.get(key); },
+          // As Durable Object storage answers: a copy, never the stored value itself.
+          async get(key) { const value = store.get(key); return value === undefined ? undefined : structuredClone(value); },
           async put(key, value) {
             const snapshot = structuredClone(value);
             writes.push({ key, value: snapshot });
