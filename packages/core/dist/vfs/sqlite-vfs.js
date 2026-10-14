@@ -5794,10 +5794,8 @@ export class SqliteVFS {
             // entry it removed (a watch of any path in the tree hears its own):
             // nothing stood at any path it copies to (planCopyTree refuses an
             // existing target).
-            const observed = this.writeObservers.size > 0;
-            this.emitMutations(made.map(({ type, path }) => ({
-                type, path, ...(observed ? { change: { before: null, after: this.inodes.get(path) ?? null } } : {}),
-            })));
+            this.emitMutations(this.writeObservers.size === 0 ? made
+                : made.map(({ type, path }) => ({ type, path, change: { before: null, after: this.inodes.get(path) ?? null } })));
             if (cursor === null) {
                 cursor = job.src === '' ? '' : `${job.src}/`;
                 if (Number(page[0]?.kind) !== INODE_KIND_DIRECTORY) {
