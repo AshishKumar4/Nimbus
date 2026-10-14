@@ -338,9 +338,14 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
     // Built and not being built again: a shell exists from the middle of a
     // build on (before the session's own commands are registered).
     if (this.shell !== null && this.building === null) return;
-    const started = this.building === null;
+    if (this.building !== null) {
+      // Usable once its commands are registered: the build's own login files
+      // may call here, and must not wait on the build that runs them.
+      await this.usable;
+      return;
+    }
     await this.initSession(null);
-    if (started) this._b4Phase = 'drained';
+    this._b4Phase = 'drained';
   }
 
   /** The session's filesystem (SessionFilesystem): opened on first use, closed whole by a destroy. */
@@ -1291,6 +1296,10 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
 
   /** The session's one build in flight (session/init.ts initSession). */
   building: Promise<void> | null = null;
+  /** The latest build's session usable: its own commands registered. */
+  usable: Promise<void> | null = null;
+  /** The latest build's shell started: its login files run. */
+  shellStarted: Promise<void> | null = null;
 
 
   // ── Filesystem seeding ────────────────────────────────────────────────

@@ -87,9 +87,11 @@ export function classifyWsUpgrade(self: {
   building?: Promise<void> | null;
   ctx?: AutoResponseHost;
 }, sockets: readonly WebSocket[], now: number = Date.now()): WsUpgradeDecision {
+  if (self.shell == null || self.terminal == null || self.kernel == null) return 'cold';
+  // Another browser's live terminal holds it, built or being built.
+  if (hasLiveShellOwner(self.ctx, sockets, now)) return 'conflict';
   // A session being built is joined once it is (init.ts initSession), never mid-build.
-  if (self.shell == null || self.terminal == null || self.kernel == null || self.building != null) return 'cold';
-  return hasLiveShellOwner(self.ctx, sockets, now) ? 'conflict' : 'warm-join';
+  return self.building != null ? 'cold' : 'warm-join';
 }
 
 /**

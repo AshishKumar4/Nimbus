@@ -37,6 +37,16 @@ function classify(self, sockets) {
 }
 
 {
+  // Being built: a live owner still refuses a second tab (its shell is the
+  // build's, already attached); an unattended one is joined once built.
+  const sockets = [socket({ seenAt: NOW - 3_000 })];
+  const building = { ...makeSession(ctxFor(sockets)), building: new Promise(() => {}) };
+  assert.equal(classify(building, sockets), 'conflict');
+  const unattended = { ...makeSession(ctxFor([])), building: new Promise(() => {}) };
+  assert.equal(classify(unattended, []), 'cold');
+  console.log('  [2b] a session being built refuses a second live tab, and joins an unattended one to its build');
+}
+{
   const half = makeSession(ctxFor([]));
   half.terminal = null;
   assert.equal(classify(half, []), 'cold');

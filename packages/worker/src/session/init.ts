@@ -62,6 +62,11 @@ export interface InitSessionOptions {
  * instance) waits on that build, and then has its socket joined to it,
  * rather than starting a second build that replaces the first's terminal,
  * workspace and shell process under it.
+ *
+ * `self.usable` settles first: once the session's own commands are
+ * registered, before the user's login files run, so a command those files
+ * run that needs the session (`nimbus app list`) finds it usable rather
+ * than waiting on the build that runs it.
  */
 export function initSession(
   self: InitHost,
@@ -70,28 +75,43 @@ export function initSession(
 ): Promise<void> {
   const running = self.building;
   if (running !== null) return running.then(() => joinBuilt(self, ws, options));
-  const building: Promise<void> = buildSession(self, ws, options).finally(() => {
+  const usable = Promise.withResolvers<void>();
+  // Waited on by the callers that need it; a build that fails says so through `building` too.
+  usable.promise.catch(() => {});
+  self.usable = usable.promise;
+  const building: Promise<void> = buildSession(self, ws, options, usable.resolve).then(undefined, (error: unknown) => {
+    usable.reject(error);
+    throw error;
+  }).finally(() => {
     if (self.building === building) self.building = null;
   });
   self.building = building;
   return building;
 }
 
-/** A socket that waited on another caller's build, given its terminal as a warm rejoin gives it. */
-function joinBuilt(self: InitHost, ws: WebSocket | null, options: InitSessionOptions): void {
+/**
+ * A socket that waited on another caller's build, given its terminal as a
+ * warm rejoin gives it, and told the session is ready as a cold start tells
+ * its socket. A wake's frame is delivered when this returns, so the shell's
+ * login files have run first, as a wake's own build has them.
+ */
+async function joinBuilt(self: InitHost, ws: WebSocket | null, options: InitSessionOptions): Promise<void> {
   const { shell, terminal } = self;
   if (ws === null || shell === null || terminal === null || terminal.ws === ws) return;
   if (options.resume === 'wake') {
     terminal.attach(ws, shellTerminalTee(self));
-    return;
+    await self.shellStarted;
+  } else {
+    joinExistingSession(self, shell, terminal, ws, shellTerminalTee(self), loadScrollback);
   }
-  joinExistingSession(self, shell, terminal, ws, shellTerminalTee(self), loadScrollback);
+  ws.send(JSON.stringify({ type: 'ready' }));
 }
 
 async function buildSession(
   self: InitHost,
   ws: WebSocket | null,
   options: InitSessionOptions,
+  markUsable: () => void,
 ): Promise<void> {
     const replayScrollback = options.resume !== 'wake';
     self.ensureSqliteFs();
@@ -303,6 +323,7 @@ if (persisted.cwd) {
     }
 
     await registerHostedCommands(self, workspace);
+    markUsable();
 
     // ── Phase O: one-shot online output [B'.1] ─────────────────────────
     //
@@ -432,6 +453,7 @@ if (persisted.cwd) {
     const started = workspace.start().catch((e: unknown) => {
       console.warn('[nimbus] shell start failed:', errorText(e));
     });
+    self.shellStarted = started;
     if (options.resume === 'wake') await started;
 
     ws?.send(JSON.stringify({ type: 'ready' }));

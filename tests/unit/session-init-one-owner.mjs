@@ -61,4 +61,32 @@ const socket = () => ({ readyState: 1, send() {}, close() {} });
   await next;
 }
 
+// A socket that woke the instance and comes during another caller's build
+// (an SDK call's, which does not wait for the login files) is answered once
+// the shell's login files have run, as a wake's own build answers it: its
+// frame is delivered when initSession returns.
+{
+  const build = gate();
+  const shellStart = gate();
+  const sent = [];
+  const ws = { readyState: 1, send: (frame) => sent.push(JSON.parse(frame).type), close() {} };
+  const host = {
+    building: build.promise,
+    shellStarted: shellStart.promise,
+    shell: { announcePrompt() {} },
+    terminal: { ws: null, attach(socket) { this.ws = socket; }, replay() {} },
+    ctx: {},
+  };
+  let answered = false;
+  const woke = initSession(host, ws, { resume: 'wake' }).then(() => { answered = true; });
+  build.release();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(answered, false, 'a wake joining a build waits for the shell\'s login files');
+  assert.deepEqual(sent, [], 'and is not told ready before them');
+  shellStart.release();
+  await woke;
+  assert.equal(host.terminal.ws, ws, 'the woken socket has the terminal');
+  assert.deepEqual(sent, ['ready'], 'it is told ready once the shell has started');
+}
+
 console.log('session-init-one-owner: ok');
