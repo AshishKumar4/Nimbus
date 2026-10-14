@@ -709,35 +709,12 @@ export class Interpreter {
       const stdout = redirIo.stdout ?? this.terminalSink(redirIo);
       const stderr = redirIo.stderr ?? this.terminalSink(redirIo);
       const fds = this.createCommandFds(stdout, stderr, redirIo.stdin, redirIo);
-      const builtinIo = this.createIoFromFds(redirIo, fds);
       const exitCode = await this.withFdFlush(fds, async () => (await evaluateDoubleBracketWords(
         node.words,
         this.createExpandContext(redirIo),
         redirIo.vfs ?? this.config.vfs,
         stderr,
-        {
-          vfs: builtinIo.vfs ?? this.config.vfs,
-          cwd: this.config.getCwd(),
-          stdin: builtinIo.stdin,
-          stdout,
-          stderr,
-          terminalStdin: redirIo.terminalStdin,
-          terminalFds: {
-            stdin: fds.terminalInputFds.has(0),
-            stdout: fds.terminalOutputFds.has(1),
-            stderr: fds.terminalOutputFds.has(2),
-          },
-          scriptMode: redirIo.scriptMode,
-          isFdTerminal: (fd) => this.isFdTerminal(fds, fd),
-          getPositionals: () => this.readPositionals(builtinIo),
-          setPositionals: (nextArgs) => this.writePositionals(builtinIo, nextArgs),
-          executeInline: async (input, options) => (await this.executeInline(input, builtinIo, options)),
-          declareLocal: (name) => this.declareLocal(name),
-          unsetFunction: (name) => this.functions.delete(name),
-          shell: this.config,
-          interactive: redirIo.interactive,
-          getLastExitCode: () => this.lastExitCode,
-        },
+        { cwd: this.config.getCwd(), isFdTerminal: (fd) => this.isFdTerminal(fds, fd) },
       )));
       this.lastExitCode = exitCode;
       return exitCode;
