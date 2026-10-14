@@ -17033,25 +17033,27 @@ function __nimbusNodeShaped(e) {
   return reshapeAsNodeError(e, Base, e.code);
 }
 // `fn`, its errors Node's; `callbacks`: a last function argument is a
-// callback, whose first argument is the error. A call given a callback is
-// work the engine runs off the program's turn (zlib's and crypto's
-// threadpool), live until its callback, as Node's active requests keep its
-// event loop: a one-shot program that waits on nothing else is not ended
-// before it.
-function __nimbusNodeErrorsOf(fn, callbacks) {
+// callback, whose first argument is the error. With `held` (one of
+// __nimbusCallbackWork's), a call given a callback is work the engine runs
+// off the program's turn (zlib's and crypto's threadpool), live until its
+// callback, as Node's active requests keep its event loop: a one-shot
+// program that waits on nothing else is not ended before it.
+function __nimbusNodeErrorsOf(fn, callbacks, held = false) {
   fn = __nimbusFrontBase(fn);
   const shaped = function (...args) {
     const last = args.length - 1;
     let settle = null;
     if (callbacks && last >= 0 && typeof args[last] === "function") {
       const callback = args[last];
-      globalThis.__nimbusPendingOps++;
-      settle = () => {
-        if (settle === null) return;
-        settle = null;
-        globalThis.__nimbusPendingOps--;
-        globalThis.__nimbusHandleReleased?.();
-      };
+      if (held) {
+        globalThis.__nimbusPendingOps++;
+        settle = () => {
+          if (settle === null) return;
+          settle = null;
+          globalThis.__nimbusPendingOps--;
+          globalThis.__nimbusHandleReleased?.();
+        };
+      }
       args[last] = function (...results) {
         settle?.();
         if (results.length > 0) __nimbusNodeShaped(results[0]);
@@ -17096,7 +17098,7 @@ function __nimbusNodeErrorsOfClass(C, prototypes) {
 // A module's functions and classes with their errors Node's: a copy of it,
 // or with `inPlace` (a class that is the module) its own functions
 // replaced. A global (URL, Blob, Buffer) stays itself.
-function __nimbusNodeErrorsAt(mod, { callbacks = false, prototypes = false, inPlace = false } = {}) {
+function __nimbusNodeErrorsAt(mod, { callbacks = false, prototypes = false, inPlace = false, held = [] } = {}) {
   if (mod === null || (typeof mod !== "object" && typeof mod !== "function")) return mod;
   const target = inPlace ? mod : Object.create(Object.getPrototypeOf(mod));
   for (const key of Reflect.ownKeys(mod)) {
@@ -17110,15 +17112,24 @@ function __nimbusNodeErrorsAt(mod, { callbacks = false, prototypes = false, inPl
       const isClass = /^[A-Z]/.test(key) && typeof v.prototype === "object" && v.prototype !== null;
       if (isClass && inPlace) continue;
       if (inPlace && !d.configurable && !d.writable) continue;
-      Object.defineProperty(target, key, { ...d, value: isClass ? __nimbusNodeErrorsOfClass(v, prototypes) : __nimbusNodeErrorsOf(v, callbacks) });
+      Object.defineProperty(target, key, { ...d, value: isClass ? __nimbusNodeErrorsOfClass(v, prototypes) : __nimbusNodeErrorsOf(v, callbacks, held.includes(key)) });
     } else if (!inPlace) {
       Object.defineProperty(target, key, d);
     }
   }
   return target;
 }
+// The functions whose callback form is work the engine runs off the
+// program's turn, until it calls back (Node 22's lib/zlib.js convenience
+// methods; lib/crypto.js's asynchronous forms). A function not named here
+// that is given a function argument holds nothing: Node's ignore one
+// (crypto.getHashes(() => {}) returns, and never calls it).
+const __nimbusCallbackWork = {
+  zlib: ["deflate", "deflateRaw", "gzip", "gunzip", "inflate", "inflateRaw", "unzip", "brotliCompress", "brotliDecompress", "zstdCompress", "zstdDecompress"],
+  crypto: ["randomBytes", "randomFill", "randomInt", "pbkdf2", "scrypt", "hkdf", "generateKeyPair", "generateKey", "generatePrime", "checkPrime", "sign", "verify"],
+};
 // Those whose functions throw workerd's NodeError (node-builtin-errors-match-node-workerd).
-for (const name of ["zlib", "crypto"]) builtins[name] = __nimbusNodeErrorsAt(builtins[name], { callbacks: true, prototypes: true });
+for (const name of ["zlib", "crypto"]) builtins[name] = __nimbusNodeErrorsAt(builtins[name], { callbacks: true, prototypes: true, held: __nimbusCallbackWork[name] });
 builtins.string_decoder = __nimbusNodeErrorsAt(builtins.string_decoder, { prototypes: true });
 for (const name of ["url", "path", "vm"]) builtins[name] = __nimbusNodeErrorsAt(builtins[name]);
 __nimbusNodeErrorsAt(builtins.events, { inPlace: true });
