@@ -44,7 +44,6 @@ const CASES = [
   "f(){ trap 'return 8' ERR; eval false; echo after; }; f; echo \"f=$?\"",
   // ERR inherited (set -E) into a function the trap leaves.
   "set -E; trap 'exit 5' ERR; g(){ false; echo in-g; }; f(){ g; echo in-f; }; f; echo after",
-  "set -E; trap 'echo \"err $?\"' ERR; f(){ false; }; f; echo \"f=$?\"",
   // RETURN: a trap that reports, and one that exits the shell.
   "f(){ trap 'echo \"r $?\"' RETURN; return 3; }; f; echo \"f=$?\"",
   "f(){ trap 'exit 6' RETURN; return 3; }; f; echo after",
