@@ -16,13 +16,34 @@ import { beginNimbusCloudflareOAuth, exchangeNimbusCloudflareOAuthCode, createNi
 import { clearSessionAiCredential, createSessionAiModel, describeSessionAiConnection, readSessionAiConfig, resolveSessionAiCredential, sessionAiAccountIsAvailable, setSessionAiAccount, storeSessionAiCredential, } from './ai.js';
 import { ensureProgrammaticReady, rpcExec, rpcEnsureRuntimes, rpcInstallRuntime, rpcExposeApp, rpcKillProcess, rpcListApps, rpcListPorts, rpcListProcesses, rpcProcessLogs, rpcStartProcess, } from './programmatic.js';
 import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
-import { appendTextPart, interruptRunningTools, textFromParts, upsertStoredMessage, upsertToolPart, AGENT_OAUTH_RESULT_CHANNEL, } from './agent-contract.js';
+import { appendTextPart, interruptRunningTools, isInterruptedMessage, textFromParts, upsertStoredMessage, upsertToolPart, AGENT_OAUTH_RESULT_CHANNEL, } from './agent-contract.js';
 import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 const MESSAGES_KEY = 'nimbus:agent:messages';
 /** How many times the conversation was cleared: a turn writes only into the conversation it started in. */
 const GENERATION_KEY = 'nimbus:agent:generation';
+/** A message id a client may choose: what `crypto.randomUUID()` answers. */
+const MESSAGE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/**
+ * A UTF-16 code unit no pair completes: what makes a string not well-formed
+ * (`String.prototype.isWellFormed`, past this lib). A digest encodes text as
+ * UTF-8, where each such unit becomes U+FFFD, so two such texts would share it.
+ */
+const LONE_SURROGATE_RE = /\p{Surrogate}/u;
+/**
+ * The sends this conversation took under their clients' ids, oldest first:
+ * each id with its text's SHA-256. They outlive the stored rows, which keep
+ * only the last MAX_STORED_MESSAGES, and are cleared with the conversation.
+ */
+const RECEIPTS_KEY = 'nimbus:agent:receipts';
+/**
+ * How many receipts are kept. A browser sends again only its one send whose
+ * answer never came back, when its user asks: 512 sends is over six times
+ * what the stored rows can hold (80), and the list, an id and a digest
+ * each, stays one storage value of about 45 KiB.
+ */
+const MAX_RECEIPTS = 512;
 const STATE_COOKIE = '__Host-nimbus_agent_oauth_state';
 const STATE_COOKIE_PURPOSE = 'nimbus-agent-oauth-state';
 const MAX_STORED_MESSAGES = 80;
@@ -30,7 +51,10 @@ const MAX_TOOL_RESULT_CHARS = 8000;
 const STREAMING_TEXT_FLUSH_MS = 500;
 const STREAMING_TEXT_FLUSH_BYTES = 1024;
 const activeAssistantMessages = new WeakMap();
-/** The user messages whose turns are running in this isolate. */
+/**
+ * The turns running in this isolate, each by its conversation's generation
+ * and user message: the producer that answers it, the one that ends it.
+ */
 const activeTurns = new WeakMap();
 const SYSTEM_PROMPT = [
     'You are Nimbus Agent, an autonomous software builder inside a persistent Nimbus cloud dev sandbox.',
@@ -248,6 +272,15 @@ async function agentChat(self, request, url) {
     const text = String(body?.message || '').trim();
     if (!retry && !text)
         return json({ error: 'message is required' }, 400);
+    if (!retry && LONE_SURROGATE_RE.test(text)) {
+        return json({ error: 'message must be well-formed text: no lone surrogate', code: 'E_AGENT_BAD_MESSAGE_TEXT' }, 400);
+    }
+    // The client's id for the message it sends: a send repeated under it (the
+    // first's answer lost on its way back) is that message, never a second one.
+    const id = retry || body?.id === undefined ? undefined : String(body.id);
+    if (id !== undefined && !MESSAGE_ID_RE.test(id)) {
+        return json({ error: 'id must be a lowercase UUID', code: 'E_AGENT_BAD_MESSAGE_ID' }, 400);
+    }
     const resolution = await resolveSessionAiCredential(self);
     if (!resolution.ok) {
         return json({
@@ -255,31 +288,72 @@ async function agentChat(self, request, url) {
             code: 'E_AGENT_AI_NOT_CONFIGURED',
         }, 409);
     }
+    // Its receipt: the id, and the text's digest that tells a repeat from
+    // another message under the same id.
+    const send = id === undefined ? undefined : {
+        id,
+        digest: base64Url(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)))),
+    };
     const turn = await changeConversation(self, async (messages, generation) => {
         recoverOrphanedTurns(self, messages);
+        const receipts = new Map(send === undefined ? [] : await self.ctx.storage.get(RECEIPTS_KEY) ?? []);
+        const running = activeTurns.get(self) ?? new Map();
+        const receipt = send === undefined ? undefined : receipts.get(send.id);
+        // An id is one message's: a send's whose receipt holds another text, a
+        // stored message's, or an answer's announced before its first checkpoint.
+        if (send !== undefined && (receipt === undefined
+            ? messages.some((message) => message.id === send.id) || activeAssistantMessages.get(self)?.has(send.id) === true
+            : receipt !== send.digest)) {
+            return json({ error: 'the message id is taken by another message', code: 'E_AGENT_MESSAGE_ID_TAKEN' }, 409);
+        }
         let userMessage;
-        if (retry) {
-            // Re-run the last user turn: drop the trailing assistant answer (if
-            // any) and stream a fresh one. No duplicate user message is stored.
-            const answer = messages[messages.length - 1]?.role === 'assistant' ? messages[messages.length - 1] : null;
-            const last = messages[messages.length - (answer === null ? 1 : 2)];
-            if (!last || last.role !== 'user')
+        let receipted;
+        if (retry || receipt !== undefined) {
+            // Re-run the last user turn, or the repeated one: drop its own answer
+            // (if any) and stream a fresh one. No duplicate user message is stored.
+            let asked = messages.length - 1;
+            while (asked >= 0 && messages[asked].role !== 'user')
+                asked -= 1;
+            // The last question, while the conversation ends at its turn: nothing
+            // after it but answers.
+            const last = asked >= 0 && messages.slice(asked + 1).every((message) => message.role === 'assistant')
+                ? messages[asked]
+                : undefined;
+            const targetId = send?.id ?? last?.id;
+            if (targetId === undefined)
                 return json({ error: 'nothing to retry', code: 'E_AGENT_NOTHING_TO_RETRY' }, 400);
             // Its answer is still being written: a second would stand beside it.
-            if (activeTurns.get(self)?.has(last.id))
+            if (running.has(turnKey(generation, targetId)))
                 return json({ error: 'the turn is still running', code: 'E_AGENT_TURN_RUNNING' }, 409);
-            if (answer !== null)
-                messages.pop();
+            const answer = answerIndex(messages, targetId);
+            // A repeated send is answered again only while it is the last turn
+            // and its own answer is missing or interrupted; otherwise (trimmed off
+            // the conversation, too) it is answered with the conversation, as it is.
+            if (last === undefined || last.id !== targetId
+                || (receipt !== undefined && answer >= 0 && !isInterruptedMessage(messages[answer]))) {
+                return conversationResponse(messages, body?.stream !== false);
+            }
+            if (answer >= 0)
+                messages.splice(answer, 1);
             userMessage = last;
         }
         else {
-            userMessage = makeMessage('user', text);
+            // A turn still running under this id, its receipt since dropped,
+            // would find its question again and write its answer back.
+            if (send !== undefined && running.has(turnKey(generation, send.id))) {
+                return json({ error: 'the turn is still running', code: 'E_AGENT_TURN_RUNNING' }, 409);
+            }
+            userMessage = makeMessage('user', text, send?.id);
             messages.push(userMessage);
+            if (send !== undefined) {
+                receipts.set(send.id, send.digest);
+                receipted = [...receipts].slice(-MAX_RECEIPTS);
+            }
         }
-        await saveMessages(self, messages);
-        const running = activeTurns.get(self) ?? new Set();
-        activeTurns.set(self, running.add(userMessage.id));
-        return { generation, messages: structuredClone(messages), userMessage };
+        await saveMessages(self, messages, receipted);
+        const started = { generation, messages: structuredClone(messages), userMessage };
+        activeTurns.set(self, running.set(turnKey(generation, userMessage.id), started));
+        return started;
     });
     if (turn instanceof Response)
         return turn;
@@ -288,6 +362,17 @@ async function agentChat(self, request, url) {
     }
     return agentChatStream(self, turn);
 }
+/** The answer to a send that runs no turn: the conversation, as a turn's stream starts with it. */
+function conversationResponse(messages, stream) {
+    const conversation = trimMessagesForClient(messages);
+    if (!stream)
+        return json({ ok: true, messages: conversation });
+    const start = { type: 'start', messages: conversation };
+    return new Response(JSON.stringify(start) + '\n', {
+        status: 200,
+        headers: { 'Cache-Control': 'no-store', 'Content-Type': 'application/x-ndjson; charset=utf-8' },
+    });
+}
 async function agentChatJson(self, turn) {
     const { messages } = turn;
     try {
@@ -295,6 +380,7 @@ async function agentChatJson(self, turn) {
         const assistantMessage = makeMessage('assistant', result.text || 'Done.');
         assistantMessage.parts = result.parts;
         assistantMessage.status = 'complete';
+        assistantMessage.replyTo = turn.userMessage.id;
         const conversation = await checkpointTurn(self, turn, assistantMessage);
         return json({
             ok: true,
@@ -354,6 +440,7 @@ function agentChatStream(self, turn) {
                 createdAt: assistantCreatedAt,
                 parts: structuredClone(parts),
                 status,
+                replyTo: userMessage.id,
                 ...reason,
             });
             const enqueueStreamingPersistence = () => {
@@ -461,6 +548,7 @@ function agentChatStream(self, turn) {
                     createdAt: assistantCreatedAt,
                     parts: structuredClone(parts),
                     status: 'complete',
+                    replyTo: userMessage.id,
                 };
                 const conversation = await checkpointTurn(self, turn, assistantMessage);
                 emit({
@@ -943,12 +1031,32 @@ function recoverOrphanedTurns(self, messages) {
     }
     return recovered;
 }
-/** `turn` no longer running. */
+/** Where `activeTurns` holds the turn answering `userMessageId` in the conversation of `generation`. */
+function turnKey(generation, userMessageId) {
+    return `${generation}:${userMessageId}`;
+}
+/** `turn` no longer running: its own record released, never another producer's. */
 function endTurn(self, turn) {
     const running = activeTurns.get(self);
-    running?.delete(turn.userMessage.id);
+    const key = turnKey(turn.generation, turn.userMessage.id);
+    if (running?.get(key) === turn)
+        running.delete(key);
     if (running?.size === 0)
         activeTurns.delete(self);
+}
+/**
+ * Where `messages` holds the answer to the user message `id`: the assistant
+ * message that names it or, when none does, the first answer stored before
+ * answers named their question that comes after it with no other question
+ * between. -1 for none.
+ */
+function answerIndex(messages, id) {
+    const named = messages.findIndex((message) => message.role === 'assistant' && message.replyTo === id);
+    if (named >= 0)
+        return named;
+    const asked = messages.findIndex((message) => message.id === id);
+    return asked < 0 ? -1 : messages.findIndex((message, index) => index > asked && message.role === 'assistant'
+        && message.replyTo === undefined && messages.slice(asked + 1, index).every((between) => between.role !== 'user'));
 }
 /**
  * The conversation's changes, one at a time per session: each reads the
@@ -986,22 +1094,30 @@ function checkpointTurn(self, turn, message) {
 function clearConversation(self) {
     return changeConversation(self, async (_messages, generation) => {
         await self.ctx.storage.delete(MESSAGES_KEY);
+        await self.ctx.storage.delete(RECEIPTS_KEY);
         await self.ctx.storage.put(GENERATION_KEY, generation + 1);
     });
 }
-async function saveMessages(self, messages) {
-    await self.ctx.storage.put(MESSAGES_KEY, trimMessagesForClient(messages));
+/**
+ * The conversation's messages stored and, given them, its receipts, in the
+ * same put: a put refused (a value past the limit) stores neither, so no
+ * receipt stands for a message the session does not hold.
+ */
+async function saveMessages(self, messages, receipts) {
+    const stored = trimMessagesForClient(messages);
+    await (receipts === undefined
+        ? self.ctx.storage.put(MESSAGES_KEY, stored)
+        : self.ctx.storage.put({ [MESSAGES_KEY]: stored, [RECEIPTS_KEY]: receipts }));
 }
 function trimMessagesForClient(messages) {
     return messages.slice(-MAX_STORED_MESSAGES);
 }
-function makeMessage(role, content, name) {
+function makeMessage(role, content, id = crypto.randomUUID()) {
     return {
-        id: crypto.randomUUID(),
+        id,
         role,
         content,
         createdAt: Date.now(),
-        ...(name ? { name } : {}),
     };
 }
 function stringProp(description) {

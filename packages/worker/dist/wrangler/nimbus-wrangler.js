@@ -19,10 +19,8 @@ import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { registerInnerDoClass, clearInnerDoClasses, abortInnerDoFacets } from '@nimbus-sh/fabric/inner-do-registry.js';
-import { innerWorkerModules } from '@nimbus-sh/fabric/inner-do-env.js';
-import { KvEmulator } from '../bindings/kv.js';
-import { D1Emulator, d1DatabaseFacetName } from '../bindings/d1.js';
-import { R2Emulator } from '../bindings/r2.js';
+import { innerWorkerModules } from '@nimbus-sh/fabric/inner-env.js';
+import { applyD1Migrations, d1Database } from '../bindings/d1.js';
 import { hostRoute } from '@nimbus-sh/fabric/composition.js';
 import { parseWranglerJsonc } from './wrangler-config.js';
 // ── Proxy helpers ──────────────────────────────────────────────────────
@@ -404,10 +402,16 @@ export class NimbusWrangler {
                 }
             }
             // One load, with the full env. A Durable Object binding is a local
-            // namespace in the inner isolate, over the binding the loader passes
-            // (inner-do-env.ts): the bundle's first import replaces it in the env
-            // every handler, entrypoint and object of the isolate sees.
-            const { mainModule, modules, classesEntrypoint } = innerWorkerModules(bundledCode, doBindings.map((b) => b.name));
+            // namespace in the inner isolate, and a KV, D1 or R2 binding the
+            // platform's API, over the binding the loader passes (inner-env.ts):
+            // the bundle's first import replaces it in the env every handler,
+            // entrypoint and object of the isolate sees.
+            const { mainModule, modules, classesEntrypoint } = innerWorkerModules(bundledCode, {
+                durableObjects: doBindings.map((b) => b.name),
+                kv: (this.config.kv_namespaces ?? []).flatMap((kv) => (kv.binding ? [kv.binding] : [])),
+                d1: (this.config.d1_databases ?? []).flatMap((d1) => (d1.binding ? [d1.binding] : [])),
+                r2: (this.config.r2_buckets ?? []).flatMap((r2) => (r2.binding ? [r2.binding] : [])),
+            });
             const worker = this.loaderEnv.LOADER.load(applyFacetLimits('worker', {
                 compatibilityDate: wrangCompatDate,
                 compatibilityFlags: wrangCompatFlags,
@@ -626,90 +630,73 @@ export class NimbusWrangler {
                 }
             }
         }
-        // ── kv_namespaces ── (W10)
-        // Inner worker: env[binding].get(key) / put / delete / list /
-        // getWithMetadata. Implementation is a plain JS class (KvEmulator)
-        // backed by SqliteVFS file blobs at <root>/.nimbus/kv/<binding>/.
-        // No ctx.exports loopback needed: KV is pure data, no callbacks
-        // back into the supervisor's fetch handlers. Each emulator instance
-        // is bound to one (binding, root) pair.
-        if (this.config?.kv_namespaces?.length) {
-            for (const kv of this.config.kv_namespaces) {
-                if (!kv.binding)
-                    continue;
-                claim('kv_namespaces', kv.binding, new KvEmulator({
+        // ── kv_namespaces, d1_databases, r2_buckets ──
+        // Inner worker: env[binding] is the store's API. Each binding is a
+        // WorkerEntrypoint (NimbusKVNamespace, NimbusD1Binding, NimbusR2Bucket)
+        // minted here for one store of this project, which its props name; a
+        // call is a supervisor op the session serves for that store and no
+        // other. A KV namespace and an R2 bucket are files under the project's
+        // .nimbus/{kv,r2}/<binding>, read and written as the process that
+        // started the server; a D1 database is a facet of the session with its
+        // own SQLite (bindings/d1-database.ts), so the session's tables are out
+        // of every statement's reach. The KV, D1 and R2 APIs are made in the
+        // inner isolate over the binding (inner-storage-env.ts, inner-env.ts).
+        const supervisorDoId = this.supervisorCtx?.id?.toString?.() || '';
+        const storageExports = this.supervisorCtx?.exports;
+        const store = (name, cred) => ({
+            doId: supervisorDoId,
+            route: hostRoute() ?? undefined,
+            root: this.root,
+            store: name,
+            ...(cred === undefined ? {} : { cred }),
+        });
+        for (const kv of this.config?.kv_namespaces ?? []) {
+            if (!kv.binding)
+                continue;
+            if (!storageExports?.NimbusKVNamespace || !supervisorDoId) {
+                this.onLog(`  \x1b[33mwarning: ctx.exports.NimbusKVNamespace unavailable; env.${kv.binding} will not work\x1b[0m\n`);
+                continue;
+            }
+            claim('kv_namespaces', kv.binding, storageExports.NimbusKVNamespace({ props: store(kv.binding, this.vfs.cred) }));
+        }
+        // migrations_dir is honored: each .sql file in it applies once, in name
+        // order, whole or not at all (wrangler's d1_migrations ledger, in the
+        // database), in the background; they are idempotent, so racing rebuilds
+        // is safe.
+        for (const d1 of this.config?.d1_databases ?? []) {
+            if (!d1.binding)
+                continue;
+            if (!storageExports?.NimbusD1Binding || !storageExports?.NimbusD1Database || !supervisorDoId) {
+                this.onLog(`  \x1b[33mwarning: ctx.exports.NimbusD1Binding or NimbusD1Database unavailable; env.${d1.binding} will not work\x1b[0m\n`);
+                continue;
+            }
+            const database = d1.database_id || d1.database_name || d1.binding;
+            claim('d1_databases', d1.binding, storageExports.NimbusD1Binding({ props: store(database) }));
+            if (d1.migrations_dir) {
+                applyD1Migrations({
+                    database: d1Database(this.supervisorCtx, this.root, database),
+                    binding: d1.binding,
                     vfs: this.vfs,
                     root: this.root,
-                    binding: kv.binding,
+                    migrationsDir: d1.migrations_dir,
                     onLog: this.onLog,
-                }));
+                }).then((applied) => {
+                    if (applied > 0)
+                        this.onLog(`  \x1b[2mD1 ${d1.binding}: applied ${applied} migrations\x1b[0m\n`);
+                }).catch((e) => {
+                    this.onLog(`  \x1b[33mwarning: D1 ${d1.binding} migrations failed: ${errorText(e)}\x1b[0m\n`);
+                });
             }
         }
-        // ── d1_databases ── (W10)
-        // Inner worker: env[binding].prepare(query) / batch / exec.
-        // Each database is a Durable Object facet of the session with its own
-        // SQLite (bindings/d1-database.ts), named by the project and the
-        // database, so the session's own tables are out of every statement's
-        // reach.
-        //
-        // migrations_dir is honored: applyMigrations() walks the directory
-        // alphabetically and applies each .sql file once, whole or not at all
-        // (wrangler's d1_migrations ledger, in the database).
-        if (this.config?.d1_databases?.length) {
-            const facets = this.supervisorCtx?.facets;
-            const databaseClass = this.supervisorCtx?.exports?.NimbusD1Database;
-            if (!facets || !databaseClass) {
-                for (const d1 of this.config.d1_databases) {
-                    this.onLog(`  \x1b[33mwarning: ctx.exports.NimbusD1Database unavailable; env.${d1.binding} will not work\x1b[0m\n`);
-                }
+        // Multipart uploads throw a clear "not supported" error.
+        for (const r2 of this.config?.r2_buckets ?? []) {
+            if (!r2.binding)
+                continue;
+            if (!storageExports?.NimbusR2Bucket || !supervisorDoId) {
+                this.onLog(`  \x1b[33mwarning: ctx.exports.NimbusR2Bucket unavailable; env.${r2.binding} will not work\x1b[0m\n`);
+                continue;
             }
-            else {
-                for (const d1 of this.config.d1_databases) {
-                    if (!d1.binding)
-                        continue;
-                    const facetName = d1DatabaseFacetName(this.root, d1.database_id || d1.database_name || d1.binding);
-                    const emu = new D1Emulator({
-                        database: () => facets.get(facetName, async () => ({ class: databaseClass })),
-                        binding: d1.binding,
-                        vfs: this.vfs,
-                        root: this.root,
-                        migrationsDir: d1.migrations_dir,
-                        onLog: this.onLog,
-                    });
-                    claim('d1_databases', d1.binding, emu);
-                    // Fire migrations in the background. They're idempotent so
-                    // racing rebuilds is safe.
-                    if (d1.migrations_dir) {
-                        emu.applyMigrations().then((r) => {
-                            if (r.applied > 0) {
-                                this.onLog(`  \x1b[2mD1 ${d1.binding}: applied ${r.applied} migrations\x1b[0m\n`);
-                            }
-                        }).catch((e) => {
-                            this.onLog(`  \x1b[33mwarning: D1 ${d1.binding} migrations failed: ${e?.message || e}\x1b[0m\n`);
-                        });
-                    }
-                }
-            }
-        }
-        // ── r2_buckets ── (W10)
-        // Inner worker: env[binding].get(key) / put / head / list / delete.
-        // Implementation: R2Emulator backed by SqliteVFS file blobs at
-        // <root>/.nimbus/r2/<binding>/. Etag is sha256(body); conditionals
-        // (etagMatches/etagDoesNotMatch/uploaded*) are honored.
-        //
-        // Multipart upload methods throw a clear "not supported" error
-        // (W10.5 candidate; see plan §13 review B4).
-        if (this.config?.r2_buckets?.length) {
-            for (const r2 of this.config.r2_buckets) {
-                if (!r2.binding)
-                    continue;
-                claim('r2_buckets', r2.binding, new R2Emulator({
-                    vfs: this.vfs,
-                    root: this.root,
-                    binding: r2.binding,
-                    onLog: this.onLog,
-                }));
-            }
+            claim('r2_buckets', r2.binding, storageExports.NimbusR2Bucket({ props: store(r2.binding, this.vfs.cred) }));
         }
         return env;
     }

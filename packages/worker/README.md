@@ -38,6 +38,9 @@ import {
   NimbusDOStub,
   CirrusHmrRPC,
   NimbusD1Database,
+  NimbusKVNamespace,
+  NimbusD1Binding,
+  NimbusR2Bucket,
   createNimbusHandler,
 } from '@nimbus-sh/sdk/worker';
 import { defineNimbusConfig } from '@nimbus-sh/config';
@@ -55,6 +58,9 @@ export {
   NimbusDOStub,
   CirrusHmrRPC,
   NimbusD1Database,
+  NimbusKVNamespace,
+  NimbusD1Binding,
+  NimbusR2Bucket,
 };
 
 const nimbusConfig = defineNimbusConfig({
@@ -161,7 +167,6 @@ The handler owns the router, auth, and the session protocol. Its options:
   auth?: { mode?: 'auto' | 'enforce' | 'legacy'; legacyPublic?: boolean };
   hooks?: {
     onSessionStart?: (ctx) => void | Promise<void>;
-    onSessionEnd?:   (ctx) => void | Promise<void>;  // reserved v0.2
   };
   routes?: (request, env, ctx) => Response | null | Promise<Response | null>;
   sdk?: {
