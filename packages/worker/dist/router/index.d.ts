@@ -11,7 +11,6 @@
  *     // Optional embedder hooks (all default no-op):
  *     hooks: {
  *       onSessionStart: async (ctx) => { … },
- *       onSessionEnd:   async (ctx) => { … },
  *     },
  *     // Optional embedder routes that run BEFORE the Nimbus router.
  *     // Return null to fall through to Nimbus's handling.
@@ -52,8 +51,7 @@ export interface NimbusHookContext {
  * NOT short-circuit the request.
  *
  * `onSessionStart` fires on the first WebSocket upgrade for a session
- * (not on every HTTP API call). `onSessionEnd` is reserved for future
- * session lifecycle events.
+ * (not on every HTTP API call).
  */
 export interface NimbusHooks {
     /**
@@ -64,11 +62,6 @@ export interface NimbusHooks {
      * @param ctx Lifecycle context.
      */
     onSessionStart?(ctx: NimbusHookContext): void | Promise<void>;
-    /**
-     * Reserved for v0.2. Will fire when a session is destroyed (TTL
-     * elapsed, explicit destroy, or DO eviction).
-     */
-    onSessionEnd?(ctx: NimbusHookContext): void | Promise<void>;
 }
 /**
  * Auth-mode selector for {@link createNimbusHandler}.
