@@ -20,6 +20,9 @@ export function execIdField(entry) {
     return entry?.execId === undefined ? {} : { execId: entry.execId };
 }
 function immutableCred(cred) {
+    // A parent's (credOf) is frozen whole already: a child's is the same one.
+    if (Object.isFrozen(cred) && Object.isFrozen(cred.groups))
+        return cred;
     return Object.freeze({
         uid: cred.uid,
         gid: cred.gid,

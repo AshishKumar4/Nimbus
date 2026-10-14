@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "f86ff80fdf7b8df7615f63a1164aaff3100a277e01b9ab6d430585833fc11f21",
+  "fingerprint": "e18cc2d4e502ffe085efb38b147e467de3a4cdc0e3a742f95d322246f17fa583",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -566,8 +566,8 @@
     "packages/core/dist/runtime/process-logs.d.ts.map": "28ad47c9bc2ea8281c09a599c547a5169e11492f1ef84a94a58a2b312d3d5ed7",
     "packages/core/dist/runtime/process-logs.js": "b9d3eb6dcdde753fc6211166f3e2754464b8a2f9a3f67370b63a6ff99840f923",
     "packages/core/dist/runtime/process-table.d.ts": "3cb1e7ed1fa415760a40f973c1adc4209b29ca132685367cbe5799d589ac1871",
-    "packages/core/dist/runtime/process-table.d.ts.map": "8b47312f770457c4ac091b46cedb8c00034f3eb7d2001640443e600f485518e3",
-    "packages/core/dist/runtime/process-table.js": "420ac594ec93f2d33596cb7b7f1c877eae7158de72705dd5e4d414c0c4da2ef5",
+    "packages/core/dist/runtime/process-table.d.ts.map": "a9fd163063d7b5dcabd5173540e8e6eeef121aec1e22cc6b20fc3bdc8a15ca6f",
+    "packages/core/dist/runtime/process-table.js": "63c0890716c83856ccf6b836deb0b2e00c1448c83c8d37b151aba903c2dabcf3",
     "packages/core/dist/runtime/project-detect.d.ts": "5cb430ea49ba6a7d3d573597bf7ccf66cb650abf7a7591f221f674c0f80aab44",
     "packages/core/dist/runtime/project-detect.d.ts.map": "b4117452522f25813fe978e39f4ee3e4de039cc53ab3fa985fb84c32030cb5e7",
     "packages/core/dist/runtime/project-detect.js": "6fc996b5aa099fe0ae1cfb15ab8c6e7603cc953e0a43e439ec1b189c7932597d",
@@ -1497,7 +1497,7 @@
     "packages/core/src/runtime/process-io-protocol.ts": "29dceff8de177b9c8186832ba36c67a8ffd616676b32424bbd21f9d5ba1dd62d",
     "packages/core/src/runtime/process-log-retention.ts": "f2df6ff2f014bd1eb294a9b18021d290a0b58fd7af21667051c9b75691809302",
     "packages/core/src/runtime/process-logs.ts": "07caf6ddbddc8490c51b58510d71c9c5145549b1ed7549c6a0fe9cb57e3ba5a3",
-    "packages/core/src/runtime/process-table.ts": "d130007eb53ea65d964b2e9da1c290b73af93fd1abb17a1da941bcb9d28eb466",
+    "packages/core/src/runtime/process-table.ts": "64c41c335b7cbc0f9162e5b98400a14fbe6269db41aff1f54488646b2a83417e",
     "packages/core/src/runtime/project-detect.ts": "96f64e8736668f738c08b0e61b24726e2a41ccf02049a476a7c4090e460063df",
     "packages/core/src/runtime/provided-packages.ts": "33edf8c2adcde267ccefef8147e7bc6b1d262e8569fe8535b0dcbe39d8420cad",
     "packages/core/src/runtime/python-pip.ts": "a96cc60c2fdf51c79a5e0178dee7bd19467be610899d00e1d3fd9e824e5ea611",
