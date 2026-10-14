@@ -715,7 +715,30 @@ export const NODE_LIB_HOST_SOURCE = String.raw`function createNodeLib(platform) 
         }
         return path;
       },
+      // lib/internal/fs/utils.js validateCpOptions, over its defaultCpOptions and getValidMode's copyFile range.
+      validateCpOptions: hideStackFrames((options) => {
+        const defaults = { dereference: false, errorOnExist: false, filter: undefined, force: true, preserveTimestamps: false, recursive: false, verbatimSymlinks: false };
+        if (options === undefined) return { ...defaults };
+        const { validateBoolean, validateFunction, validateInteger, validateObject } = require("internal/validators");
+        validateObject(options, "options");
+        options = { ...defaults, ...options };
+        validateBoolean(options.dereference, "options.dereference");
+        validateBoolean(options.errorOnExist, "options.errorOnExist");
+        validateBoolean(options.force, "options.force");
+        validateBoolean(options.preserveTimestamps, "options.preserveTimestamps");
+        validateBoolean(options.recursive, "options.recursive");
+        validateBoolean(options.verbatimSymlinks, "options.verbatimSymlinks");
+        if (options.mode == null) options.mode = options.mode || 0;
+        else validateInteger.withoutStackTrace(options.mode, "mode", 0, 7);
+        if (options.dereference === true && options.verbatimSymlinks === true) {
+          throw new nodeErrorCodes.ERR_INCOMPATIBLE_OPTION_PAIR.HideStackFramesError("dereference", "verbatimSymlinks");
+        }
+        if (options.filter !== undefined) validateFunction(options.filter, "options.filter");
+        return options;
+      }),
     },
+    path: platform.path,
+    "util/types": types,
     diagnostics_channel: platform.diagnosticsChannel,
     "internal/constants": { CHAR_LOWERCASE_B: 98, CHAR_LOWERCASE_E: 101, CHAR_LOWERCASE_N: 110 },
     "internal/abort_controller": abortController,
@@ -733,15 +756,189 @@ export const NODE_LIB_HOST_SOURCE = String.raw`function createNodeLib(platform) 
     "internal/tty": { getColorDepth: () => platform.colorDepth() },
     buffer: { Buffer: platform.Buffer },
   };
+  /**
+   * src/node_file.cc's cp bindings, which lib/internal/fs/cp/cp-sync.js
+   * calls: CpSyncCheckPaths, CpSyncOverrideFile and CpSyncCopyDir, over the
+   * platform's fs, with the C++'s own choices (its status and symlink_status
+   * as it calls them under dereference, the modes std::filesystem makes
+   * with, a nested link made absolute and canonical) and its errors: Node's
+   * coded Errors, libuv's (UVException) and std::error_code's
+   * (ErrnoException, its message strerror's).
+   */
+  function cpBinding() {
+    const fs = () => platform.fs();
+    const pathMod = platform.path;
+    const strerror = {
+      EACCES: "Permission denied", EBUSY: "Device or resource busy", EEXIST: "File exists", EINVAL: "Invalid argument",
+      EIO: "Input/output error", EISDIR: "Is a directory", ELOOP: "Too many levels of symbolic links",
+      ENAMETOOLONG: "File name too long", ENOENT: "No such file or directory", ENOSPC: "No space left on device",
+      ENOTDIR: "Not a directory", ENOTEMPTY: "Directory not empty", EPERM: "Operation not permitted",
+      EROFS: "Read-only file system", EXDEV: "Invalid cross-device link",
+    };
+    const coded = (code, message) => Object.assign(new Error(message), { code });
+    // src/api/exceptions.cc UVException.
+    const uvException = (code, syscall, path, dest) => {
+      const errno = -(platform.errno[code] ?? 0);
+      let message = code + ": " + (uvErrors().get(errno)?.[1] ?? "unknown error") + ", " + syscall;
+      if (path !== undefined) message += " '" + path + "'";
+      if (dest !== undefined) message += " -> '" + dest + "'";
+      const error = Object.assign(new Error(message), { errno, code, syscall });
+      if (path !== undefined) error.path = path;
+      if (dest !== undefined) error.dest = dest;
+      return error;
+    };
+    // src/api/exceptions.cc ErrnoException, as Environment::ThrowStdErrException makes it.
+    const errnoException = (code, syscall, path) => {
+      const errno = platform.errno[code] ?? 0;
+      const error = new Error(code + ", " + (strerror[code] ?? "Unknown error " + errno) + " '" + path + "'");
+      return Object.assign(error, { errno, code, path, syscall });
+    };
+    const status = (path, follow) => {
+      try { return { stat: follow ? fs().statSync(path) : fs().lstatSync(path) }; } catch (error) { return { error }; }
+    };
+    const equivalent = (a, b) => {
+      const one = status(a, true);
+      const two = status(b, true);
+      if (one.error || two.error) return { error: one.error ?? two.error };
+      return { same: one.stat.dev === two.stat.dev && one.stat.ino === two.stat.ino };
+    };
+    // std::filesystem::path's parent_path and has_parent_path, on a POSIX path string.
+    const parentPath = (path) => {
+      const trimmed = path.replace(/\/+$/, "");
+      if (trimmed === "") return path.startsWith("/") ? "/" : "";
+      const at = trimmed.lastIndexOf("/");
+      return at < 0 ? "" : at === 0 ? "/" : trimmed.slice(0, at).replace(/\/+$/, "") || "/";
+    };
+    // A file's copy (std::filesystem::copy_file, libuv's copyfile): its bytes, then its mode.
+    const copyFile = (src, dest, mode) => {
+      fs().copyFileSync(src, dest, mode);
+      fs().chmodSync(dest, fs().statSync(src).mode & 0o7777);
+    };
+    // CopyUtimes: the source's times, followed, on the copy.
+    const copyUtimes = (src, dest) => {
+      let stat;
+      try { stat = fs().statSync(src); } catch (error) { throw uvException(error.code, "stat", src); }
+      try { fs().utimesSync(dest, stat.atime, stat.mtime); } catch (error) { throw uvException(error.code, "utime", dest); }
+    };
+    // std::filesystem::weakly_canonical: the longest existing prefix resolved, the rest normalised.
+    const weaklyCanonical = (path) => {
+      const parts = pathMod.normalize(path).split("/").filter(Boolean);
+      for (let n = parts.length; n >= 0; n--) {
+        const head = "/" + parts.slice(0, n).join("/");
+        let real;
+        try { real = fs().realpathSync(head); } catch { continue; }
+        return pathMod.join(real, ...parts.slice(n));
+      }
+      return pathMod.normalize(path);
+    };
+    // isInsideDir: \`dest\` is \`src\` or beneath it, part by part.
+    const isInsideDir = (src, dest) => {
+      const a = pathMod.resolve(src).split("/").filter(Boolean);
+      const b = pathMod.resolve(dest).split("/").filter(Boolean);
+      return a.length <= b.length && a.every((part, i) => part === b[i]);
+    };
+    const isDirectory = (path) => status(path, true).stat?.isDirectory() === true;
+    return {
+      cpSyncCheckPaths(src, dest, dereference, recursive) {
+        // Upstream's status and symlink_status, as it swaps them under dereference.
+        const source = status(src, !dereference);
+        if (source.error) throw uvException(source.error.code, dereference ? "stat" : "lstat", src);
+        const target = status(dest, dereference);
+        const srcIsDir = source.stat.isDirectory() || (dereference && source.stat.isSymbolicLink());
+        let srcPathStr = String(src);
+        if (!target.error) {
+          const same = equivalent(src, dest);
+          if (same.same) throw coded("ERR_FS_CP_EINVAL", "src and dest cannot be the same " + dest);
+          const destIsDir = target.stat.isDirectory();
+          if (srcIsDir && !destIsDir) throw coded("ERR_FS_CP_DIR_TO_NON_DIR", "Cannot overwrite non-directory " + dest + " with directory " + src);
+          if (!srcIsDir && destIsDir) throw coded("ERR_FS_CP_NON_DIR_TO_DIR", "Cannot overwrite directory " + dest + " with non-directory " + src);
+        }
+        if (!srcPathStr.endsWith("/")) srcPathStr += "/";
+        if (srcIsDir && String(dest).startsWith(srcPathStr)) {
+          throw coded("ERR_FS_CP_EINVAL", "Cannot copy " + srcPathStr + " to a subdirectory of self " + dest);
+        }
+        // Upstream compares src with dest's parent each time round.
+        let destParent = parentPath(dest);
+        while (parentPath(src) !== destParent && destParent !== "" && parentPath(destParent) !== destParent) {
+          const same = equivalent(src, parentPath(dest));
+          if (same.same) throw coded("ERR_FS_CP_EINVAL", "Cannot copy " + srcPathStr + " to a subdirectory of self " + dest);
+          if (same.error) break;
+          destParent = parentPath(destParent);
+        }
+        if (srcIsDir && !recursive) throw coded("ERR_FS_EISDIR", "Recursive option not enabled, cannot copy a directory: " + srcPathStr);
+        if (source.stat.isSocket()) throw coded("ERR_FS_CP_SOCKET", "Cannot copy a socket file: " + dest);
+        if (source.stat.isFIFO()) throw coded("ERR_FS_CP_FIFO_PIPE", "Cannot copy a FIFO pipe: " + dest);
+        if (target.error || status(parentPath(dest), true).error) {
+          try { fs().mkdirSync(parentPath(dest) || ".", { recursive: true }); } catch {}
+        }
+      },
+      cpSyncOverrideFile(src, dest, mode, preserveTimestamps) {
+        try {
+          if (status(dest, false).stat?.isDirectory()) fs().rmdirSync(dest);
+          else fs().unlinkSync(dest);
+        } catch (error) {
+          throw errnoException(error.code, "unlink", dest);
+        }
+        try { copyFile(src, dest, mode); } catch (error) {
+          throw mode === 0 ? errnoException(error.code, "cp", dest) : uvException(error.code, "cp", src, dest);
+        }
+        if (preserveTimestamps) copyUtimes(src, dest);
+      },
+      cpSyncCopyDir(src, dest, force, dereference, errorOnExist, verbatimSymlinks, preserveTimestamps) {
+        try { fs().mkdirSync(dest, { recursive: true }); } catch (error) { throw errnoException(error.code, "cp", dest); }
+        const copyDirContents = (src, dest) => {
+          for (const entry of fs().readdirSync(src, { withFileTypes: true })) {
+            const entryPath = pathMod.join(src, entry.name);
+            const destFilePath = pathMod.join(dest, entry.name);
+            if (entry.isSymbolicLink()) {
+              let target;
+              try { target = fs().readlinkSync(entryPath); } catch (error) { throw errnoException(error.code, "cp", dest); }
+              if (verbatimSymlinks) {
+                try { fs().symlinkSync(target, destFilePath); } catch (error) { throw errnoException(error.code, "cp", dest); }
+                continue;
+              }
+              if (status(destFilePath, true).stat) {
+                if (status(destFilePath, false).stat.isSymbolicLink()) {
+                  let current;
+                  try { current = fs().readlinkSync(destFilePath); } catch (error) { throw errnoException(error.code, "cp", dest); }
+                  if (!dereference && isDirectory(target) && isInsideDir(target, current)) {
+                    throw coded("ERR_FS_CP_EINVAL", "Cannot copy " + target + " to a subdirectory of self " + current);
+                  }
+                  if (isDirectory(destFilePath) && isInsideDir(current, target)) {
+                    throw coded("ERR_FS_CP_SYMLINK_TO_SUBDIRECTORY", "cannot overwrite " + current + " with " + target);
+                  }
+                  try { fs().unlinkSync(destFilePath); } catch (error) { throw errnoException(error.code, "cp", dest); }
+                } else if (status(destFilePath, true).stat.isFile()) {
+                  if (!dereference || (!force && errorOnExist)) throw errnoException("EEXIST", "cp", destFilePath);
+                }
+              }
+              try { fs().symlinkSync(weaklyCanonical(pathMod.resolve(src, target)), destFilePath); } catch (error) { throw errnoException(error.code, "cp", dest); }
+            } else if (isDirectory(entryPath)) {
+              try { fs().mkdirSync(destFilePath); } catch (error) { if (!isDirectory(destFilePath)) throw errnoException(error.code, "cp", dest); }
+              copyDirContents(entryPath, destFilePath);
+            } else if (status(entryPath, true).stat?.isFile()) {
+              if (status(destFilePath, true).stat) {
+                if (!force && !errorOnExist) continue;
+                if (!force) throw coded("ERR_FS_CP_EEXIST", "[ERR_FS_CP_EEXIST]: Target already exists: cp returned EEXIST (" + destFilePath + " already exists)");
+              }
+              try { copyFile(entryPath, destFilePath, 0); } catch (error) { throw errnoException(error.code, "cp", dest); }
+              if (preserveTimestamps) copyUtimes(entryPath, destFilePath);
+            }
+          }
+        };
+        copyDirContents(src, dest);
+      },
+    };
+  }
   const bindings = {
     util: utilBinding,
     config: { hasIntl: true },
     icu: icuBinding,
-    constants: { os: { signals: platform.signals } },
+    constants: { os: { signals: platform.signals, errno: platform.errno } },
     buffer: { compare: (a, b) => platform.Buffer.compare(a, b) },
     errors: { getErrorSourcePositions: (error) => platform.errorSourcePositions(error), exitCodes: { kNoFailure: 0, kGenericUserError: 1 } },
     process_methods: platform.processMethods,
-    fs: {},
+    fs: cpBinding(),
     // src/node_options.h's enums, as getCLIOptionsInfo's entries use them.
     options: {
       envSettings: { kAllowedInEnvvar: 0, kDisallowedInEnvvar: 1 },
@@ -767,7 +964,13 @@ export const NODE_LIB_HOST_SOURCE = String.raw`function createNodeLib(platform) 
   // reads what it has exported so far), as Node's BuiltinModule does.
   const loaded = new Map();
   // Node's modules ported here, each made the first time it is required.
-  const ported = { "timers/promises": timersPromises, "internal/timers/legacy": legacyTimers };
+  const ported = {
+    "timers/promises": timersPromises,
+    "internal/timers/legacy": legacyTimers,
+    // The platform's own fs, which Node's modules (lib/internal/fs/cp) copy through.
+    fs: () => platform.fs(),
+    "fs/promises": () => platform.fs().promises,
+  };
   function require(id) {
     if (Object.prototype.hasOwnProperty.call(hosted, id)) return hosted[id];
     if (Object.prototype.hasOwnProperty.call(ported, id)) {
