@@ -33,10 +33,16 @@ const RUNTIMES = [
   { runtime: 'cpython', version: '3.13.14-1', command: 'python -c "print(6*7)"' },
 ];
 
-/** An embedder that installs the runtime package `name` alone and runs `command` through it. */
+/**
+ * An embedder that installs the runtime package `name` alone and runs
+ * `command` through it, by the embedder API every core since 0.4.0 offers:
+ * a release before the network port (ISOLATE_NETWORK) takes
+ * `localFacetHost()` with no argument, so the port is read off the module.
+ */
 const floorEmbedder = (name, command) => `import { DatabaseSync } from 'node:sqlite';
-import { ISOLATE_NETWORK, NimbusWorkspace, localFacetHost } from '@nimbus-sh/core';
+import * as core from '@nimbus-sh/core';
 import runtime from '${name}';
+const { NimbusWorkspace, localFacetHost } = core;
 
 const db = new DatabaseSync(':memory:');
 const sql = { exec: (query, ...bindings) => db.prepare(query).all(...bindings) };
@@ -44,7 +50,7 @@ const transactions = { storage: { transactionSync(callback) {
   db.exec('BEGIN');
   try { const result = callback(); db.exec('COMMIT'); return result; } catch (error) { db.exec('ROLLBACK'); throw error; }
 } } };
-const workspace = await NimbusWorkspace.create({ sql, transactions, generation: 1, cwd: '/home/user', facets: localFacetHost(ISOLATE_NETWORK), runtimes: [runtime] });
+const workspace = await NimbusWorkspace.create({ sql, transactions, generation: 1, cwd: '/home/user', facets: localFacetHost(core.ISOLATE_NETWORK), runtimes: [runtime] });
 const result = await workspace.exec(${JSON.stringify(command)});
 if (result.exitCode !== 0) throw new Error(${JSON.stringify(command)} + ' exited ' + result.exitCode + ': ' + result.stderr);
 console.log('FLOOR OK');
