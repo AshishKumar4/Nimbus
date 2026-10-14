@@ -120,6 +120,7 @@ try {
     const response = await fetch(`${probe.base}/s/${sid}/worker/?step=${step}`, { headers: requestHeaders() });
     const body = await response.text();
     assert.equal(response.status, 200, body.slice(0, 1500));
+    assert.match(response.headers.get('content-type') ?? '', /^application\/json/, `step ${step} answered ${response.headers.get('content-type')}: ${body.slice(0, 1500)}\n${stripAnsi(terminal.buf).slice(-1500)}`);
     const answer = JSON.parse(body);
     assert.deepEqual(answer, nimbusAnswer(expectedAnswer(step)), `Nimbus answers step ${step} as Cloudflare does\n${body}`);
   }
