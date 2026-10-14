@@ -3,11 +3,10 @@
  * bytes: a byte that is not valid UTF-8 passes through unchanged. Decoding
  * with TextDecoder would turn it into U+FFFD, three different bytes.
  */
-import type { ProcessFile, ProcessView } from '../../../runtime/process-files.js';
+import type { ProcessView } from '../../../runtime/process-files.js';
 import type { CommandInputStream } from '../commands/types.js';
 import { resolve } from './path.js';
 import { direntTypeOfStat } from '../../../vfs/dirent-type.js';
-import { isVfsError } from '../../../vfs/vfs-error.js';
 
 export interface ByteInputContext {
   cwd: string;
@@ -65,34 +64,46 @@ export async function* inputChunks(
     for (let text = await stdin.read(); text !== null; text = await stdin.read()) yield encodeLossless(text);
     return;
   }
-  // The operand is opened once: its bytes are the file it named at the open,
-  // whatever the name names after, and it is closed however the reader stops.
   const path = resolve(ctx.cwd, operand);
-  let file: ProcessFile;
-  try {
-    file = await ctx.vfs.open(path, { read: true });
-  } catch (error) {
-    if (isVfsError(error, 'ENOENT')) throw Object.assign(new Error(`${operand}: No such file or directory`), { code: 'ENOENT' });
-    if (isVfsError(error, 'EISDIR')) throw Object.assign(new Error(`${operand}: Is a directory`), { code: 'EISDIR' });
-    throw error;
+  const stat = await ctx.vfs.stat(path);
+  if (stat === null) throw Object.assign(new Error(`${operand}: No such file or directory`), { code: 'ENOENT' });
+  if (stat.type === 'directory') throw Object.assign(new Error(`${operand}: Is a directory`), { code: 'EISDIR' });
+  const characterDevice = direntTypeOfStat(stat) === 'character';
+  if (stat.size === 0 && (!characterDevice || !slice)) {
+    // Empty, a file whose size says nothing (a synthesized /proc entry), or a
+    // device read to its end: read whole.
+    const bytes = await ctx.vfs.readFile(path);
+    if (bytes.length > 0) yield bytes;
+    return;
   }
-  try {
-    const stat = file.stat;
-    if (stat.type === 'directory') throw Object.assign(new Error(`${operand}: Is a directory`), { code: 'EISDIR' });
-    const characterDevice = direntTypeOfStat(stat) === 'character';
-    if (stat.size === 0 && (!characterDevice || !slice)) {
-      // Empty, a file whose size says nothing (a synthesized /proc entry), or a
-      // device read to its end: read whole.
-      const bytes = await ctx.vfs.readFile(path);
-      if (bytes.length > 0) yield bytes;
-      return;
+  if (characterDevice) {
+    // A device (/dev/zero) for as long as its slice reader keeps asking, which is why this is a generator.
+    for (let offset = 0; ; ) {
+      const chunk = await ctx.vfs.readRange(path, offset, fileReadSize);
+      if (chunk.length === 0) return;
+      yield chunk;
+      offset += chunk.length;
     }
-    // A device (/dev/zero) for as long as its slice reader keeps asking, which
-    // is why this is a generator; a regular file to its end, a short read being it.
+  }
+  // The bytes are one file's, whatever its name names after. A file one read
+  // takes whole is read in that one read; a larger one through one open
+  // description, to a short read (its end), closed however the reader stops.
+  let offset = 0;
+  if (stat.size < fileReadSize) {
+    const chunk = await ctx.vfs.readRange(path, 0, fileReadSize);
+    if (chunk.length > 0) yield chunk;
+    if (chunk.length < fileReadSize) return;
+    offset = chunk.length;
+  }
+  const file = await ctx.vfs.open(path, { read: true });
+  try {
+    // Grown past one read since its stat: the rest is that file's, if the name still names it.
+    if (offset > 0 && (file.stat.ino !== stat.ino || file.stat.dev !== stat.dev)) return;
     for (;;) {
-      const chunk = await file.read(fileReadSize);
+      const chunk = await file.read(fileReadSize, offset);
       if (chunk.length > 0) yield chunk;
-      if (chunk.length === 0 || (!characterDevice && chunk.length < fileReadSize)) return;
+      if (chunk.length < fileReadSize) return;
+      offset += chunk.length;
     }
   } finally {
     await file.close();
