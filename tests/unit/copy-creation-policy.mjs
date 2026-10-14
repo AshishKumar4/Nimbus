@@ -22,6 +22,7 @@
 import assert from 'node:assert/strict';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
+import { SqliteFiles } from '../../packages/core/src/vfs/sqlite-files.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SQLITE_MAX_STATEMENT_BYTES } from '../../packages/platform/src/limits.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
@@ -162,6 +163,30 @@ await check('a default ACL on the parent replaces the umask, and each new direct
   assert.deepEqual(made(kernel, 'pub/copy/a.txt'), ['600', 2000, null], 'a 0666 file is made 0600');
   ada.mkdir('pub/copy/new', { mode: 0o777 });
   assert.deepEqual(made(kernel, 'pub/copy/new'), made(kernel, 'pub/copy/sub'), 'as mkdir makes one in the copy');
+});
+
+// A tree copied by a backend's own copy (SQLite's rows) inside a mount that
+// resolves its own paths: a link named as the source is followed when the
+// copy follows, as the namespace's stat of it was, answered at once or
+// awaited; otherwise the link itself is copied.
+await check('a backend\'s own tree copy follows a source link when the copy follows', async () => {
+  const harness = createSqliteVfsTestHarness();
+  const engine = new SqliteVFS(harness.sql, harness.ctx);
+  const kernel = engine.as(CRED_KERNEL);
+  kernel.mkdir('tree/sub', { recursive: true });
+  kernel.writeFile('tree/sub/f', 'f');
+  kernel.symlink('tree', 'link');
+  const box = await testBox({ mounts: {} });
+  box.files.vfs.mount('/pn', new SqliteFiles(engine, kernel), { resolvesPaths: true });
+  const ns = box.files.vfs;
+  const outcome = [];
+  ns.sync.copy('/pn/link', '/pn/a', { recursive: true, follow: true });
+  await ns.copy('/pn/link', '/pn/b', { recursive: true, follow: true });
+  await ns.copy('/pn/link', '/pn/c', { recursive: true });
+  for (const name of ['a', 'b', 'c']) outcome.push(kernel.lstat(name).type);
+  assert.deepEqual(outcome, ['directory', 'directory', 'symlink']);
+  assert.equal(kernel.readFileString('a/sub/f'), 'f');
+  box.destroy();
 });
 
 // A tree of every mode, files and directories: the copy's SQL stays within the
