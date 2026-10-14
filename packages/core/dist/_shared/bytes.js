@@ -41,6 +41,10 @@ export class StreamTextDecoders {
         }
         return decoder.decode(bytes, { stream: true });
     }
+    /** Whether `key` has a decoder (it has decoded and not been dropped). */
+    has(key) {
+        return this.decoders.has(key);
+    }
     /** Flush what a truncated final character left behind, then forget the key. */
     drop(key) {
         const decoder = this.decoders.get(key);
