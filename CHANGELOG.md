@@ -13,6 +13,24 @@ published independently in the `@nimbus-sh` npm scope.
   runtime 5.2.37-5 (runner `bash-runner@5`); a session with 5.2.37-3 is told
   to install it. The bash module is now built by a reproducible recipe
   (`scripts/ci/remote-bash-build.mjs`) and carries its provenance.
+- Fixed (Node `fs`): `fs.promises.realpath` and callback `fs.realpath`
+  resolve symlinks and refuse a missing path with `ENOENT`, giving
+  `realpathSync`'s answer; they returned the path as written. A link the
+  program makes is seen at once by both, and by `stat`, `lstat`, `readdir`
+  and writes through it, as are its rename and removal; before, the sync
+  calls saw it only after the session reported it. A link another program
+  makes is seen, as other changes it makes are, once the session reports it
+  to this one. `readdirSync` of a directory the program made lists a file it
+  wrote there from then on; after an `await` it could omit it until the
+  session reported the file.
+  `fs.promises.watch` yields a file's changes, not one every 500 ms for a
+  large unchanged file, and ends when its `signal` aborts (an `AbortError`)
+  or the loop stops. It starts watching on its first `next()`, so one that is
+  never read keeps nothing running, and once ended it yields nothing more.
+  A program's own `chmod` and `utimes` no longer outlive
+  the file: `stat` shows another user's later change, and a file removed and
+  made again has a new file's mode and times. `stat` answers the file's real
+  device and link count (`dev`, `nlink`) instead of one made-up device.
 - Fixed: in a WASI program (an uploaded program, CPython), a filesystem call
   the session took more than 10 s to answer failed with EAGAIN, which no
   filesystem call returns on Linux: `os.makedirs` raised `BlockingIOError`
