@@ -132,9 +132,9 @@ await runScenarios(import.meta.path, {
   },
 
   async 'a chmod and utimes of the copy\'s name before the copy are superseded by it'() {
-    const box = await boot();
+    // A source the program never read: the copy is the session's alone, nothing read back after it.
+    const box = await boot({}, (authority) => authority.kfs.writeFile('home/user/app/s2', 'S', { mode: 0o644 }));
     const { fs } = box.probe;
-    fs.writeFileSync(`${A}/s2`, 'S', { mode: 0o644 });
     fs.writeFileSync(`${A}/d2`, 'old');
     fs.chmodSync(`${A}/d2`, 0o600);
     fs.utimesSync(`${A}/d2`, 1, 1);
