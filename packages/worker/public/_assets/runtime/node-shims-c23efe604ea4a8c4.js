@@ -30,7 +30,7 @@ class __ProcessExit extends Error {
 // preambles below and the code they load make them by name, and the cell
 // runtime and generated code reach them as __nimbusNodeError and
 // __nimbusNodeSystemError.
-var { determineSpecificType, hideStackFrames, invalidArgType, isErrorStackTraceLimitWritable, nodeError, nodeErrorCodes, nodeSystemError, reshapeAsNodeError, useNodeErrorInspect } = (() => {
+var { captureStack, determineSpecificType, hideStackFrames, invalidArgType, isErrorStackTraceLimitWritable, nodeError, nodeErrorCodes, nodeSystemError, reshapeAsNodeError, useNodeErrorInspect } = (() => {
 var nodeErrorClasses =   new Map();
 var classCodes =   new WeakMap();
 function nodeError(Base, code, message, props, above = nodeError) {
@@ -323,7 +323,7 @@ function captureStack(error, above) {
   const capture = Reflect.get(Error, "captureStackTrace");
   if (typeof capture === "function") Reflect.apply(capture, Error, [error, above]);
 }
-return { determineSpecificType, hideStackFrames, invalidArgType, isErrorStackTraceLimitWritable, nodeError, nodeErrorCodes, nodeSystemError, reshapeAsNodeError, useNodeErrorInspect };
+return { captureStack, determineSpecificType, hideStackFrames, invalidArgType, isErrorStackTraceLimitWritable, nodeError, nodeErrorCodes, nodeSystemError, reshapeAsNodeError, useNodeErrorInspect };
 })();
 
 Object.defineProperties(globalThis, {

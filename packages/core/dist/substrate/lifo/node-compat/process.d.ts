@@ -20,6 +20,10 @@ export interface ProcessOptions {
     stderr: CommandOutputStream;
 }
 export declare function createProcess(opts: ProcessOptions): {
+    noDeprecation?: boolean;
+    throwDeprecation?: boolean;
+    traceDeprecation?: boolean;
+    traceProcessWarnings?: boolean;
     argv: string[];
     argv0: string;
     env: {

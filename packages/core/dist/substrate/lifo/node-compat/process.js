@@ -1,4 +1,4 @@
-import { invalidArgType } from '../../../_shared/node-error.js';
+import { captureStack, invalidArgType } from '../../../_shared/node-error.js';
 export class ProcessExitError extends Error {
     exitCode;
     constructor(code) {
@@ -10,6 +10,8 @@ export class ProcessExitError extends Error {
 export function createProcess(opts) {
     const startTime = Date.now();
     const listeners = {};
+    // Unset until the program sets them, as in a Node run without their options.
+    const unflagged = {};
     const proc = {
         argv: ['/usr/bin/node', ...opts.argv],
         argv0: 'node',
@@ -174,11 +176,11 @@ export function createProcess(opts) {
         // Feature detection flags
         allowedNodeEnvironmentFlags: new Set(),
         features: { inspector: false, debug: false, uv: false, tls_alpn: false, tls_sni: false, tls_ocsp: false, tls: false },
+        ...unflagged,
     };
-    const flags = proc;
     /** Node's process.emitWarning (lib/internal/process/warning.js): the warning is told to 'warning' listeners on the next tick. */
     function emitWarning(warning, type, code, ctor) {
-        if (flags.noDeprecation && type === 'DeprecationWarning')
+        if (proc.noDeprecation && type === 'DeprecationWarning')
             return;
         let name = type;
         let detail;
@@ -206,7 +208,7 @@ export function createProcess(opts) {
         let told;
         if (typeof warning === 'string') {
             told = Object.assign(new Error(warning), { name: String(name || 'Warning') }, code === undefined ? {} : { code }, detail === undefined ? {} : { detail });
-            Error.captureStackTrace(told, ctor ?? proc.emitWarning);
+            captureStack(told, ctor ?? proc.emitWarning);
         }
         else if (warning instanceof Error) {
             told = warning;
@@ -215,9 +217,9 @@ export function createProcess(opts) {
             throw invalidArgType('warning', ['Error', 'string'], warning);
         }
         if (told.name === 'DeprecationWarning') {
-            if (flags.noDeprecation)
+            if (proc.noDeprecation)
                 return;
-            if (flags.throwDeprecation) {
+            if (proc.throwDeprecation) {
                 proc.nextTick(() => { throw told; });
                 return;
             }
@@ -231,9 +233,9 @@ export function createProcess(opts) {
         if (!(warning instanceof Error))
             return;
         const isDeprecation = warning.name === 'DeprecationWarning';
-        if (isDeprecation && flags.noDeprecation)
+        if (isDeprecation && proc.noDeprecation)
             return;
-        const trace = flags.traceProcessWarnings || (isDeprecation && flags.traceDeprecation);
+        const trace = proc.traceProcessWarnings || (isDeprecation && proc.traceDeprecation);
         let message = `(${proc.release.name}:${proc.pid}) `;
         if ('code' in warning && warning.code)
             message += `[${String(warning.code)}] `;
