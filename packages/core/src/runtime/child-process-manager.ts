@@ -29,6 +29,11 @@ interface ChildEntry {
   pid: number;
   /** The process that spawned it: whom its output, start and exit are news for. */
   parentPid: number;
+  /**
+   * Whose handle it is: the process that spawned it and every process above
+   * that one, as they were at the spawn. A prune of their rows changes nothing.
+   */
+  holders: readonly number[];
   /** The descriptors its parent reads: output to an ignored one reaches nobody. */
   stdio: Array<'pipe' | 'ignore' | 'inherit'>;
   command: string;
@@ -384,6 +389,7 @@ export class ChildProcessManager {
     const child: ChildEntry = {
       pid,
       parentPid: req.parentPid,
+      holders: Object.freeze(this.deps.processes.lineage(req.parentPid)),
       stdio: normalizeStdio(req.stdio),
       command: req.command,
       args: req.args || [],
@@ -532,6 +538,14 @@ export class ChildProcessManager {
 
   /** Whether this pid's descriptors belong to a child managed by this broker. */
   isChild(pid: number): boolean { return this.children.has(pid); }
+
+  /**
+   * Whether child `pid`'s handle is `caller`'s: `caller` spawned it, or is
+   * above the process that did, as the spawn found them. It holds as long as
+   * the broker holds the child's output and exit, whatever rows the process
+   * table has forgotten since. False for a pid this broker did not spawn.
+   */
+  isHeldBy(pid: number, caller: number): boolean { return this.children.get(pid)?.holders.includes(caller) === true; }
 
   /** Whether this pid is a child of this broker that has not ended. */
   isRunning(pid: number): boolean { return this.children.get(pid)?.exitCode === null; }
