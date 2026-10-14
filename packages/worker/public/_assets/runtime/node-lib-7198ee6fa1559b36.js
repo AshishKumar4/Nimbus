@@ -790,8 +790,11 @@ module.exports = {
       return a.length <= b.length && a.every((part, i) => part === b[i]);
     };
     const isDirectory = (path) => status(path, true).stat?.isDirectory() === true;
+    // A path the binding is given as Node's native code takes it: a string, or bytes decoded (BufferValue).
+    const pathText = (path) => (typeof path === "string" ? path : path instanceof Uint8Array ? new TextDecoder().decode(path) : String(path));
     return {
       cpSyncCheckPaths(src, dest, dereference, recursive) {
+        [src, dest] = [pathText(src), pathText(dest)];
         // Upstream's status and symlink_status, as it swaps them under dereference.
         const source = status(src, !dereference);
         if (source.error) throw uvException(source.error.code, dereference ? "stat" : "lstat", src);
@@ -825,6 +828,7 @@ module.exports = {
         }
       },
       cpSyncOverrideFile(src, dest, mode, preserveTimestamps) {
+        [src, dest] = [pathText(src), pathText(dest)];
         try {
           if (status(dest, false).stat?.isDirectory()) fs().rmdirSync(dest);
           else fs().unlinkSync(dest);
@@ -837,12 +841,11 @@ module.exports = {
         if (preserveTimestamps) copyUtimes(src, dest);
       },
       cpSyncCopyDir(src, dest, force, dereference, errorOnExist, verbatimSymlinks, preserveTimestamps) {
-        const existed = status(dest, true).stat !== undefined;
+        [src, dest] = [pathText(src), pathText(dest)];
         try { fs().mkdirSync(dest, { recursive: true }); } catch (error) { throw errnoException(error.code, "cp", dest); }
-        // \`fresh\`: \`dest\` was made by this copy, so nothing is in it to look for.
         // An entry's kind is its dirent's: a link is one, and what is not a
         // link is what it is (upstream's is_directory and is_regular_file follow only links).
-        const copyDirContents = (src, dest, fresh) => {
+        const copyDirContents = (src, dest) => {
           for (const entry of fs().readdirSync(src, { withFileTypes: true })) {
             const entryPath = pathMod.join(src, entry.name);
             const destFilePath = pathMod.join(dest, entry.name);
@@ -853,7 +856,7 @@ module.exports = {
                 try { fs().symlinkSync(target, destFilePath); } catch (error) { throw errnoException(error.code, "cp", dest); }
                 continue;
               }
-              if (!fresh && status(destFilePath, true).stat) {
+              if (status(destFilePath, true).stat) {
                 if (status(destFilePath, false).stat.isSymbolicLink()) {
                   let current;
                   try { current = fs().readlinkSync(destFilePath); } catch (error) { throw errnoException(error.code, "cp", dest); }
@@ -870,14 +873,10 @@ module.exports = {
               }
               try { fs().symlinkSync(weaklyCanonical(pathMod.resolve(src, target)), destFilePath); } catch (error) { throw errnoException(error.code, "cp", dest); }
             } else if (entry.isDirectory()) {
-              let made = true;
-              try { fs().mkdirSync(destFilePath); } catch (error) {
-                if (fresh || !isDirectory(destFilePath)) throw errnoException(error.code, "cp", dest);
-                made = false;
-              }
-              copyDirContents(entryPath, destFilePath, made);
+              try { fs().mkdirSync(destFilePath); } catch (error) { if (!isDirectory(destFilePath)) throw errnoException(error.code, "cp", dest); }
+              copyDirContents(entryPath, destFilePath);
             } else if (entry.isFile()) {
-              if (!fresh && status(destFilePath, true).stat) {
+              if (status(destFilePath, true).stat) {
                 if (!force && !errorOnExist) continue;
                 if (!force) throw coded("ERR_FS_CP_EEXIST", "[ERR_FS_CP_EEXIST]: Target already exists: cp returned EEXIST (" + destFilePath + " already exists)");
               }
@@ -886,7 +885,7 @@ module.exports = {
             }
           }
         };
-        copyDirContents(src, dest, !existed);
+        copyDirContents(src, dest);
       },
     };
   }

@@ -5420,22 +5420,6 @@ const __fsMod = (() => {
     else work.then(undefined, () => undefined);
   }
 
-  /**
-   * A stat in a subtree the process holds (the ledger's __nimbusHeldHere),
-   * the name and, followed, where it leads: what statSync or lstatSync
-   * answers, the session asked nothing. Undefined where the session answers
-   * (not held, or not judged here: EAGAIN).
-   */
-  function _heldStat(syscall, p, absPath) {
-    if (typeof __nimbusHeldHere !== "function" || !__nimbusHeldHere(absPath)) return undefined;
-    if (syscall === "stat") {
-      const landing = _nsActive() ? _nsLandingKey(_strip(absPath)) : null;
-      if (landing !== null && landing !== _strip(absPath) && !__nimbusHeldHere("/" + landing)) return undefined;
-    }
-    try { return syscall === "stat" ? statSync(p) : lstatSync(p); }
-    catch (error) { if (error?.code === "EAGAIN") return undefined; throw error; }
-  }
-
   /** Whether an async change at `absPath` of `bytes` is decided here (the ledger's __nimbusDecidedHere). */
   function _decidedHere(absPath, bytes = 0) {
     return typeof __nimbusDecidedHere === "function" && __nimbusDecidedHere(absPath, bytes);
@@ -5996,8 +5980,6 @@ const __fsMod = (() => {
     const absPath = _resolve(p);
     const supervisor = _supervisor();
     if (supervisor && typeof supervisor[syscall] === "function") {
-      const local = _heldStat(syscall, p, absPath);
-      if (local !== undefined) return local;
       await _flushLocalPathToSupervisor(absPath, supervisor, syscall === "stat");
       const rpc = (promise) => _fsRpc(promise, syscall, p, (result) => result);
       let meta;
@@ -6073,47 +6055,30 @@ const __fsMod = (() => {
 
   /**
    * The session's copy of `src` to `dest`, each as named, and what the view
-   * holds of it. Where the process holds the source's subtree, no one else
-   * can have changed it: its whole cell is the copy's at once, claimed by the
-   * copy (_logParked), with the source's mode, and the copy is answered once
-   * logged where it is decided here. Elsewhere the copy's answer names the
-   * file it copied and that file's revision: the source's cell, dated that
-   * late or later, is the copy's; one older is read back; a source the view
-   * never held leaves the copy unread, its stat the answer's.
+   * holds of it once answered. The answer names the file it copied and that
+   * file's revision: the source's whole cell the view held when the copy was
+   * asked, dated that late or later, is the copy's, in a buffer of its own;
+   * else the copy is read back where the view held the source, its stat
+   * learned where it never did.
    */
   async function _copyLogged(src, dest) {
     const srcAbs = _resolveFollow(src, "copyfile");
     const destAbs = _resolveFollow(dest, "copyfile");
-    const absent = _ensureWritable(destAbs, "copyfile", src, true, dest);
+    _ensureWritable(destAbs, "copyfile", src, true, dest);
     const destK = _strip(destAbs);
     const srcK = _strip(srcAbs);
     const call = { call: "copyFile", path: _strip(_resolve(dest)), from: _strip(_resolve(src)) };
+    // The source as the view holds it now, and how late its bytes are.
     const content = _bundleLookup(srcAbs, false);
-    const whole = content !== undefined && _denialCode(content) === null && _parkedPartial.get(srcK) !== __vfsWriteGenerations[srcK];
-    const sourceMode = whole ? _statLadder(srcAbs)?.mode : undefined;
-    if (sourceMode !== undefined && typeof __nimbusHeldHere === "function" && __nimbusHeldHere(srcAbs)) {
-      const mode = Number(sourceMode) & 0o7777;
-      _parkWrite(destK, content, mode, absent);
-      const local = _setLocalAttr(_localModes, destK, mode, false);
-      const decided = _decidedHere(destAbs);
-      const logged = _logParked(destAbs, { type: "call", call }, { acknowledged: decided });
-      logged.claimed.then(() => _settleLocalAttr(local), () => _settleLocalAttr(local));
-      if (decided) {
-        _detachStructuralMutation(__nimbusDecided(logged.claimed), "copyfile", dest);
-        return;
-      }
-      await _fsRpc(logged.answer, "copyfile", src, (result) => result, dest);
-      await logged.claimed;
-      _markVfsStale();
-      return;
-    }
+    const partial = _parkedPartial.get(srcK);
+    const whole = content !== undefined && _denialCode(content) === null && (partial === undefined || partial !== __vfsWriteGenerations[srcK]);
+    const dated = whole && typeof __resident !== "undefined" ? __resident.cells.provenance(srcK) : undefined;
     // What the view held under the copy's name stands for nothing once the
     // copy lands (a parked write there is logged ahead of it).
     _flushParkedWrite(destAbs, _supervisor());
     if (__vfsBundle) delete __vfsBundle[destK];
     delete __vfsBundleRevisions[destK];
     if (__vfsWrites) delete __vfsWrites[destK];
-    _forgetSyncPath(destK);
     const ticket = _beginFill(destK);
     let receipt;
     try {
@@ -6121,10 +6086,9 @@ const __fsMod = (() => {
       if (receipt !== undefined) {
         _noteLearnedStat(destAbs, _receiptStat(receipt), ticket, receipt.revision);
         const from = receipt.from;
-        const provenance = whole && typeof __resident !== "undefined" ? __resident.cells.provenance(srcK) : undefined;
-        if (from !== undefined && from.path === srcK && typeof provenance === "number" && provenance >= from.revision) {
+        if (from !== undefined && from.path === srcK && typeof dated === "number" && dated >= from.revision) {
           ticket.rev = receipt.revision;
-          _installResident(destAbs, content, ticket);
+          _installResident(destAbs, content instanceof Uint8Array ? content.slice() : content, ticket);
           return;
         }
       }
@@ -7276,10 +7240,16 @@ const __fsMod = (() => {
     if (mount !== null) throw _nsUnlistedErr(mount, "readlink", p, "fs.promises.readlink");
     const found = _nsWalk(_strip(absPath), false);
     if (found === "ELOOP") throw _fsErr("ELOOP", "readlink", p);
+    // Its own link, or the session's link row the walk reached (a renamed one's too); a file or directory it made is no link.
     const own = found.own;
-    if (own?.absent || (own === undefined && found.row === undefined)) throw _fsErr("ENOENT", "readlink", p);
-    const target = own?.target ?? (own === undefined && Number(found.row.kind) === 2 ? String(found.row.target) : undefined);
-    if (target === undefined) throw _fsErr("EINVAL", "readlink", p);
+    if (own?.absent) throw _fsErr("ENOENT", "readlink", p);
+    let target = own?.target;
+    if (target === undefined) {
+      if (own?.made !== undefined) throw _fsErr("EINVAL", "readlink", p);
+      if (found.row === undefined) throw _fsErr("ENOENT", "readlink", p);
+      if (Number(found.row.kind) !== __nimbusResidentModule.NS_LINK) throw _fsErr("EINVAL", "readlink", p);
+      target = String(found.row.target);
+    }
     return (typeof opts === "string" ? opts : opts?.encoding) === "buffer" ? __BufferMod.from(target) : target;
   }
 

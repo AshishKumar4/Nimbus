@@ -2377,16 +2377,6 @@ function __nimbusDecidedHere(path, bytes = 0) {
   return __nimbusProcessFs().holder(__nimbusVfsPathKey(path)) !== undefined;
 }
 
-/**
- * Whether `path` is in a subtree the process holds (not shares): nothing
- * changes there that it has not done, so what it knows of it is the
- * session's, and a read there is answered from it. Counts nothing.
- */
-function __nimbusHeldHere(path) {
-  if (typeof __supervisor === "undefined" || __supervisor === null) return false;
-  return __nimbusProcessFs().held(__nimbusVfsPathKey(path)) !== undefined;
-}
-
 /** Changes decided here (__nimbusDecidedHere) the session has not answered: their count and bytes. */
 let __nimbusDecidedOps = 0;
 let __nimbusDecidedBytes = 0;
