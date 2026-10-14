@@ -189,6 +189,24 @@ await check('a backend\'s own tree copy follows a source link when the copy foll
   box.destroy();
 });
 
+// The same through a process's view, the workspace's files and a bound
+// process's filesystem: a tree copy follows a source link when asked to.
+await check('a process\'s tree copy follows a source link when asked to', async () => {
+  const box = await testBox({ mounts: {} });
+  box.root.mkdir('home/user/tree/sub', { recursive: true });
+  box.root.writeFile('home/user/tree/sub/f', 'f');
+  box.root.symlink('tree', 'home/user/link');
+  const fs = box.workspace.filesystem.bind({ pid: 91, cred: CRED_KERNEL });
+  const copied = [
+    await box.fs.copy('/home/user/link', '/home/user/a', { recursive: true, follow: true }),
+    await fs.copyTree('/home/user/link', '/home/user/b', { follow: true }),
+    await box.fs.copy('/home/user/link', '/home/user/c', { recursive: true }),
+  ];
+  assert.deepEqual(['a', 'b', 'c'].map((name) => box.root.lstat(`home/user/${name}`).type), ['directory', 'directory', 'symlink']);
+  assert.deepEqual(copied, [3, 3, 1]);
+  box.destroy();
+});
+
 // A tree of every mode, files and directories: the copy's SQL stays within the
 // platform's statement size (workerd refuses a longer one).
 await check('a tree holding every mode is copied within the statement size', async () => {
