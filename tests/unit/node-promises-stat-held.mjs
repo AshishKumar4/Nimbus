@@ -42,7 +42,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 fs.mkdirSync('/home/user/p');
 for (let i = 0; i < 10; i++) fs.writeFileSync(`/home/user/p/f${i}`, String(i));
 await client().flush();
-for (let i = 0; i < 200 && client().held('home/user/p/x') === undefined; i++) await sleep(10);
+for (let i = 0; i < 200 && client().holder('home/user/p/x') === undefined; i++) await sleep(10);
 assert.notEqual(client().held('home/user/p/x'), undefined, `the process did not take the subtree it wrote: ${JSON.stringify(client().stats())}`);
 
 fs.writeFileSync('/home/user/p/data.txt', 'hello', { mode: 0o600 });
