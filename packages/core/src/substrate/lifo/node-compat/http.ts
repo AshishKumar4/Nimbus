@@ -5,7 +5,7 @@ import {
   type VirtualRequestHandler,
   type VirtualResponse,
 } from '../kernel/index.js';
-import { dispatchWorkspaceRequest } from '../commands/net/kernel-fetch.js';
+import { dispatchWorkspaceRequest, serveFromPort, servedBody, statusText } from '../commands/net/kernel-fetch.js';
 
 /** The ports of an http module made without a registry: none listens. */
 const NO_PORTS: Map<number, VirtualRequestHandler> = new Map();
@@ -138,9 +138,19 @@ class ClientRequest extends EventEmitter {
     if (loopback) {
       const method = this.options.method || 'GET';
       const hasBody = method !== 'GET' && method !== 'HEAD' && this.body.length > 0;
+      const handler = this.portRegistry?.get(port);
       try {
+        if (handler) {
+          // As Node gives them to a server: header names lower-cased.
+          const headers: Record<string, string> = {};
+          for (const [name, value] of Object.entries(this.options.headers ?? {})) headers[name.toLowerCase()] = String(value);
+          const served = await serveFromPort(handler, { method, url: path, headers, body: hasBody ? this.body : '' }, this.abortController.signal);
+          if (served.kind === 'served') this.answerServed(served.response);
+          else this.failed(served.kind, host, port);
+          return;
+        }
         const result = await dispatchWorkspaceRequest(
-          { portRegistry: this.portRegistry ?? NO_PORTS, routeLoopback: this.routeLoopback },
+          { portRegistry: NO_PORTS, routeLoopback: this.routeLoopback },
           port,
           new Request(`${this.protocol}//${host}:${port}${path}`, {
             method,
@@ -149,10 +159,8 @@ class ClientRequest extends EventEmitter {
             signal: this.abortController.signal,
           }),
         );
-        if (result.kind === 'aborted') return;
-        if (result.kind === 'refused') this.emit('error', new Error(`connect ECONNREFUSED ${host}:${port}`));
-        else if (result.kind === 'timeout') this.emit('error', new Error(`connect ETIMEDOUT ${host}:${port}`));
-        else await this.answer(result.response);
+        if (result.kind === 'response') await this.answer(result.response);
+        else this.failed(result.kind, host, port);
       } catch (error) {
         this.emit('error', error);
       }
@@ -173,6 +181,22 @@ class ClientRequest extends EventEmitter {
     } catch (e) {
       this.emit('error', e);
     }
+  }
+
+  /** A local hop that got no response: nothing for an abort; the connection's error otherwise. */
+  private failed(kind: 'refused' | 'aborted' | 'timeout', host: string, port: number): void {
+    if (kind === 'refused') this.emit('error', new Error(`connect ECONNREFUSED ${host}:${port}`));
+    else if (kind === 'timeout') this.emit('error', new Error(`connect ETIMEDOUT ${host}:${port}`));
+  }
+
+  /** A server of this program's answer, as this request's: its status and reason, its headers, then its body and end. */
+  private answerServed(response: VirtualResponse): void {
+    const msg = new IncomingMessage(response.statusCode, statusText(response.statusCode), response.headers);
+    this.emit('response', msg);
+    queueMicrotask(() => {
+      msg.emit('data', servedBody(response) ?? '');
+      msg.emit('end');
+    });
   }
 
   /** `response` as this request's: its status, reason and headers, then its body and end. */
