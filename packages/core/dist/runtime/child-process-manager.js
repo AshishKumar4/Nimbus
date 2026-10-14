@@ -184,6 +184,7 @@ export class ChildProcessManager {
         const child = {
             pid,
             parentPid: req.parentPid,
+            holders: Object.freeze(this.deps.processes.lineage(req.parentPid)),
             stdio: normalizeStdio(req.stdio),
             command: req.command,
             args: req.args || [],
@@ -334,6 +335,13 @@ export class ChildProcessManager {
     }
     /** Whether this pid's descriptors belong to a child managed by this broker. */
     isChild(pid) { return this.children.has(pid); }
+    /**
+     * Whether child `pid`'s handle is `caller`'s: `caller` spawned it, or is
+     * above the process that did, as the spawn found them. It holds as long as
+     * the broker holds the child's output and exit, whatever rows the process
+     * table has forgotten since. False for a pid this broker did not spawn.
+     */
+    isHeldBy(pid, caller) { return this.children.get(pid)?.holders.includes(caller) === true; }
     /** Whether this pid is a child of this broker that has not ended. */
     isRunning(pid) { return this.children.get(pid)?.exitCode === null; }
     /** Runtime stdout/stderr for a broker-owned pid goes to its parent, not the shell. */

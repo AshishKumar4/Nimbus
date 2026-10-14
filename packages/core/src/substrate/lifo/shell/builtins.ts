@@ -607,11 +607,12 @@ async function builtinJobs({ args, stdout, stderr, state }: BuiltinCall): Promis
       status = 1;
       continue;
     }
-    if (filter === 'r' && job.status !== 'running' || filter === 's' && job.status !== 'stopped') continue;
+    // `-s` lists stopped jobs, and nothing stops a job (JobTable.signal).
+    if (filter === 'r' && job.status !== 'running' || filter === 's') continue;
     if (format === 'p') await stdout.write(`${job.pid}\n`);
     else {
       const marker = job === current ? '+' : job === previous ? '-' : ' ';
-      const state = job.status === 'running' ? 'Running' : job.status === 'stopped' ? 'Stopped'
+      const state = job.status === 'running' ? 'Running'
         : job.exitCode === 0 ? 'Done' : job.exitCode === 143 ? 'Terminated' : job.exitCode === 137 ? 'Killed' : `Exit ${job.exitCode}`;
       await stdout.write(`[${job.id}]${marker} ${format === 'l' ? `${job.pid} ` : ' '}${state.padEnd(27)}${job.command}${job.status === 'running' ? ' &' : ''}\n`);
     }
@@ -631,13 +632,12 @@ async function builtinFg({ args, stdout, stderr, state, context }: BuiltinCall):
     return 1;
   }
   await stdout.write(`${job.command}\n`);
-  state.jobTable.signal(job, 'CONT', context.identity().cred);
   const exitCode = await state.jobTable.awaitEnd(job, context.identity().pid);
   state.jobTable.reap(job);
   return exitCode;
 }
 
-async function builtinBg({ args, stdout, stderr, state, context }: BuiltinCall): Promise<number> {
+async function builtinBg({ args, stderr, state, context }: BuiltinCall): Promise<number> {
   if (!context.interactive) { await stderr.write('bg: no job control\n'); return 1; }
   const jobs = state.jobTable.list();
   if (jobs.length === 0) { await stderr.write('bg: no current job\n'); return 1; }
@@ -647,8 +647,8 @@ async function builtinBg({ args, stdout, stderr, state, context }: BuiltinCall):
     await stderr.write(`bg: ${spec}: ${job === 'ambiguous' ? 'ambiguous job spec' : 'no such job'}\n`);
     return 1;
   }
-  state.jobTable.signal(job, 'CONT', context.identity().cred);
-  await stdout.write(`[${job.id}]+ ${job.command} &\n`);
+  // Nothing stops a job: it is already in the background, as bash says of a running one.
+  await stderr.write(`bg: job ${job.id} already in background\n`);
   return 0;
 }
 

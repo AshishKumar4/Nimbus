@@ -29,6 +29,8 @@ export declare function toArrayBuffer(bytes: Uint8Array): ArrayBuffer;
 export declare class StreamTextDecoders<K> {
     private readonly decoders;
     decode(key: K, bytes: Uint8Array): string;
+    /** Whether `key` has a decoder (it has decoded and not been dropped). */
+    has(key: K): boolean;
     /** Flush what a truncated final character left behind, then forget the key. */
     drop(key: K): string;
 }

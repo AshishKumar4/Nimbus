@@ -108,6 +108,7 @@ export async function _rpcStdinPrepared(self: RpcHost, pid?: number, run?: strin
 }
 
 type ProcessRpcHost = Pick<NimbusSession, 'processes'>;
+type CpRpcHost = ProcessRpcHost & Pick<NimbusSession, '_ensureChildProcessManager'>;
 type ReportRpcHost = ProcessRpcHost & Pick<NimbusSession, 'facetManager'>;
 type ExitRpcHost = ReportRpcHost & Pick<NimbusSession,
   'terminal' | 'shell' | 'webSocketRelay' | 'supervisorDeliveries' | 'servedReads' | '_emitExitDump' | 'nimbusDebug' | 'childProcessManager'
@@ -1084,13 +1085,35 @@ export const PRIOR_GENERATION_EXIT_REASON = 'process lost: instance reset';
  * A process's output arrives as bytes: the relay from the facet carries
  * Uint8Array so a binary protocol or an image survives it. The two text
  * consumers here decode at their own edge — the log ring inside
- * `appendOutputBytes`, and the terminal tee through these per-(pid, stream)
- * streaming decoders, dropped when the process reports its exit.
+ * `appendOutputBytes`, and the terminal tee through its session's
+ * per-(pid, stream) streaming decoders. They are the session's (its process
+ * table's): two sessions in one isolate number their processes alike. A
+ * process's are flushed to the terminal when it reports its exit, and
+ * dropped however else it ends.
  */
-const _terminalTeeDecoders = new StreamTextDecoders<string>();
+const terminalTeeDecoders = new WeakMap<ProcessRpcHost['processes'], StreamTextDecoders<string>>();
 
-function decodeForTerminal(pid: number, stream: 'stdout' | 'stderr', data: Uint8Array): string {
-  return _terminalTeeDecoders.decode(`${pid}:${stream}`, data);
+function decodeForTerminal(self: ProcessRpcHost, pid: number, stream: 'stdout' | 'stderr', data: Uint8Array): string {
+  let decoders = terminalTeeDecoders.get(self.processes);
+  if (decoders === undefined) terminalTeeDecoders.set(self.processes, decoders = new StreamTextDecoders());
+  const key = `${pid}:${stream}`;
+  const first = !decoders.has(key);
+  const text = decoders.decode(key, data);
+  if (first) {
+    // Forgotten once the output before the process's end is delivered (the
+    // end is published after it), so output held behind the end still
+    // decodes with what came before it.
+    const session = decoders;
+    const retire = (): void => { void self.processes.releaseOutput(pid, () => { session.drop(key); }); };
+    if (self.processes.get(pid)?.state === 'running') self.processes.subscribeTerminal(pid, retire);
+    else retire();
+  }
+  return text;
+}
+
+/** What `pid`'s terminal tee still holds of `stream`, flushed; the decoder forgotten. */
+function dropTerminalTee(self: ProcessRpcHost, pid: number, stream: 'stdout' | 'stderr'): string {
+  return terminalTeeDecoders.get(self.processes)?.drop(`${pid}:${stream}`) ?? '';
 }
 
 export async function _rpcStdout(self: RpcHost, pid: number, data: Uint8Array, at?: number, run?: number): Promise<void> {
@@ -1111,7 +1134,7 @@ export async function _rpcStdout(self: RpcHost, pid: number, data: Uint8Array, a
     try {
       if (pid > 0) await self.processes.appendOutputBytes(pid, 'stdout', data);
       if (self.terminal && shouldMirrorProcessOutputToShell(self, pid)) {
-        const text = decodeForTerminal(pid, 'stdout', data);
+        const text = decodeForTerminal(self, pid, 'stdout', data);
         if (text.length > 0) self.terminal.write(normalizeTerminalNewlines(text));
       }
     } catch (e: any) {
@@ -1137,7 +1160,7 @@ export async function _rpcStderr(self: RpcHost, pid: number, data: Uint8Array, a
       // Terminal gets red wrapping; the ring buffer keeps it raw so the
       // stream tag can drive color decisions at replay time.
       if (self.terminal && shouldMirrorProcessOutputToShell(self, pid)) {
-        const text = decodeForTerminal(pid, 'stderr', data);
+        const text = decodeForTerminal(self, pid, 'stderr', data);
         if (text.length > 0) self.terminal.write(`\x1b[31m${normalizeTerminalNewlines(text)}\x1b[0m`);
       }
     } catch (e: any) {
@@ -1226,7 +1249,7 @@ function reportExit(
     const normalForeground = code === 0
       && (entry?.foreground === true || entry?.attachedTty === true || entry?.longRunning !== true);
     for (const stream of ['stdout', 'stderr'] as const) {
-      const rest = _terminalTeeDecoders.drop(`${pid}:${stream}`);
+      const rest = dropTerminalTee(self, pid, stream);
       if (rest.length > 0 && self.terminal && shouldMirrorProcessOutputToShell(self, pid)) {
         self.terminal.write(normalizeTerminalNewlines(rest));
       }
@@ -1467,11 +1490,14 @@ export async function _rpcCpStdinEnd(self: RpcHost, childPid: number, pid?: numb
  * its parent's, or an ancestor's: `caller`, the pid its binding stamped,
  * must have spawned `childPid`, directly or not. Another gets ESRCH, as
  * waitpid answers for a pid that is not its child. A call with no caller is
- * the session's own.
+ * the session's own. Who holds the handle is the broker's, taken at the
+ * spawn, which lasts as the handle does (its output and exit not yet read):
+ * the table may forget the rows of the child and of those above it first (a
+ * prune).
  */
-function childOf(self: ProcessRpcHost, childPid: number, caller: number | undefined): void {
+function childOf(self: CpRpcHost, childPid: number, caller: number | undefined): void {
     if (caller === undefined) return;
-    if (childPid === caller || !self.processes.isWithin(childPid, caller)) {
+    if (!self._ensureChildProcessManager().isHeldBy(childPid, caller)) {
         throw Object.assign(new Error(`ESRCH: no such child process ${childPid}`), { code: 'ESRCH', errno: -3 });
     }
 }
@@ -1562,7 +1588,8 @@ export async function _rpcCpCloseOutput(self: RpcHost, childPid: number, fd: 1 |
 /** A child's kill: its parent's, and as Linux's kill(2) allows (SessionProcessSupervisor.maySignal). */
 export async function _rpcCpKill(self: RpcHost, childPid: number, signal: string, pid?: number): Promise<boolean> {
     childOf(self, childPid, pid);
-    if (pid !== undefined && !self.processes.maySignal(self.processes.liveCred(pid), childPid)) {
+    // kill(2)'s rule, for a child the table still holds: one it forgot has ended, and its kill is moot (false).
+    if (pid !== undefined && self.processes.get(childPid) !== undefined && !self.processes.maySignal(self.processes.liveCred(pid), childPid)) {
         throw Object.assign(new Error(`EPERM: operation not permitted, kill ${childPid}`), { code: 'EPERM', errno: -1 });
     }
     const fpm = self._ensureChildProcessManager();

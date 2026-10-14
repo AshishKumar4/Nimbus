@@ -61,9 +61,8 @@ export class JobTable {
             command: options.command,
             promise,
             pid,
-            stopped: false,
             get exitCode() { return exitCode; },
-            get status() { return exitCode !== null ? 'done' : record.stopped ? 'stopped' : 'running'; },
+            get status() { return exitCode !== null ? 'done' : 'running'; },
         };
         this.jobs.set(id, record);
         const identity = {
@@ -97,24 +96,24 @@ export class JobTable {
     }
     /**
      * Deliver `signal` (a parsed name; `0` delivers nothing) to `job`, one of
-     * this table's, from `caller`: a terminating one ends its process, which
-     * stops its work; a stop or continue sets or clears its stop mark. False
-     * when kill(2)'s rule refuses `caller` (SessionProcessSupervisor.maySignal).
+     * this table's, from `caller`, as kill reports it: a terminating one ends
+     * its process, which stops its work; a continue or an ignored one does
+     * nothing to a job that runs. A stop is `unsupported`: nothing can pause a
+     * job's work (a command is not preempted), as nothing can pause a hosted
+     * process's. `not-permitted` when kill(2)'s rule refuses `caller`
+     * (SessionProcessSupervisor.maySignal).
      */
     signal(job, signal, caller) {
-        const record = this.jobs.get(job.id);
-        if (record !== job || job.status === 'done')
-            return true;
+        if (this.jobs.get(job.id) !== job || job.status === 'done')
+            return 'delivered';
         if (!this.processes.maySignal(caller, job.pid))
-            return false;
+            return 'not-permitted';
         const disposition = signalDisposition(signal);
         if (disposition === 'stop')
-            record.stopped = true;
-        else if (disposition === 'continue')
-            record.stopped = false;
-        else if (disposition === 'terminate')
+            return 'unsupported';
+        if (disposition === 'terminate')
             this.processes.kill(job.pid, exitCodeForSignal(signal), signalAbortReason(signal));
-        return true;
+        return 'delivered';
     }
     fork() {
         const child = new JobTable(this.processes);
