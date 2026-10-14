@@ -1264,7 +1264,7 @@ try {
   // do_read_index dies of anything but ENOENT before it acts, its words and
   // exit, and leaves the index, the refs and the worktree as they were. Read
   // as empty, a staging command wrote an index of only what it staged and
-  // dropped every other entry (GIT-M1). ──
+  // dropped every other entry (GIT-M1). (git rm is not the built-in's.) ──
   {
     assert.notEqual(process.getuid?.(), 0, 'an unreadable index needs a runner that is not root');
     const repo = scenario(({ put, git }) => {
@@ -1281,7 +1281,7 @@ try {
     const refsBefore = refs();
     for (const [words, sub] of [
       [['status', '--porcelain'], ''], [['diff'], ''], [['diff', '--cached'], ''], [['ls-files', '-s'], ''],
-      [['add', 'b.txt'], ''], [['add', '-A'], ''], [['commit', '-q', '-am', 'two'], ''], [['rm', '-q', '--cached', 'b.txt'], ''],
+      [['add', 'b.txt'], ''], [['add', '-A'], ''], [['commit', '-q', '-am', 'two'], ''],
       [['reset', '-q', '--hard', 'HEAD'], ''], [['reset', '-q', 'HEAD', 'a.txt'], ''], [['checkout', '-q', 'HEAD', '--', 'b.txt'], ''],
       [['checkout', '-q', '-b', 'side'], ''], [['status', '--porcelain'], 'dir'], [['add', 'c.txt'], 'dir'],
     ]) {
