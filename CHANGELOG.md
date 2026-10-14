@@ -11,6 +11,17 @@ published independently in the `@nimbus-sh` npm scope.
   list the job as Stopped while the job ran on. `kill -CONT` of a job
   succeeds and does nothing, `jobs -s` lists nothing, and `bg` of a job
   says "bg: job N already in background", as bash does of a running one.
+- Fixed: two sessions served by one isolate decode their background
+  processes' terminal output each on its own. Their processes are numbered
+  alike, and one isolate-wide decoder per process number let a character
+  one session's process split across two writes take in the other's text
+  (a replacement character on its terminal); one session's process ending
+  dropped the other's pending bytes. A process that is killed leaves no
+  decoder behind.
+- Fixed: the agent's conversation is one record that turns change, not a
+  copy each turn writes back whole. A second message sent while a turn was
+  still answering was overwritten by that turn's next save, and clearing
+  the conversation during a turn was undone by it.
 - Breaking: `/usr` is laid out as on Linux. `/usr`, `/usr/bin`, `/usr/lib`
   and `/usr/share`, and the global module folders `/usr/lib/node_modules`
   and `/usr/share/pkg/node_modules`, are root's 0755, so writing into them

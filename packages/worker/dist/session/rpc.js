@@ -861,12 +861,36 @@ export const PRIOR_GENERATION_EXIT_REASON = 'process lost: instance reset';
  * A process's output arrives as bytes: the relay from the facet carries
  * Uint8Array so a binary protocol or an image survives it. The two text
  * consumers here decode at their own edge — the log ring inside
- * `appendOutputBytes`, and the terminal tee through these per-(pid, stream)
- * streaming decoders, dropped when the process reports its exit.
+ * `appendOutputBytes`, and the terminal tee through its session's
+ * per-(pid, stream) streaming decoders. They are the session's (its process
+ * table's): two sessions in one isolate number their processes alike. A
+ * process's are flushed to the terminal when it reports its exit, and
+ * dropped however else it ends.
  */
-const _terminalTeeDecoders = new StreamTextDecoders();
-function decodeForTerminal(pid, stream, data) {
-    return _terminalTeeDecoders.decode(`${pid}:${stream}`, data);
+const terminalTeeDecoders = new WeakMap();
+function decodeForTerminal(self, pid, stream, data) {
+    let decoders = terminalTeeDecoders.get(self.processes);
+    if (decoders === undefined)
+        terminalTeeDecoders.set(self.processes, decoders = new StreamTextDecoders());
+    const key = `${pid}:${stream}`;
+    const first = !decoders.has(key);
+    const text = decoders.decode(key, data);
+    if (first) {
+        // Forgotten once the output before the process's end is delivered (the
+        // end is published after it), so output held behind the end still
+        // decodes with what came before it.
+        const session = decoders;
+        const retire = () => { void self.processes.releaseOutput(pid, () => { session.drop(key); }); };
+        if (self.processes.get(pid)?.state === 'running')
+            self.processes.subscribeTerminal(pid, retire);
+        else
+            retire();
+    }
+    return text;
+}
+/** What `pid`'s terminal tee still holds of `stream`, flushed; the decoder forgotten. */
+function dropTerminalTee(self, pid, stream) {
+    return terminalTeeDecoders.get(self.processes)?.drop(`${pid}:${stream}`) ?? '';
 }
 export async function _rpcStdout(self, pid, data, at, run) {
     // Prior-generation straggler (facet outlived a DO instance reset): drop —
@@ -893,7 +917,7 @@ export async function _rpcStdout(self, pid, data, at, run) {
         if (pid > 0)
             await self.processes.appendOutputBytes(pid, 'stdout', data);
         if (self.terminal && shouldMirrorProcessOutputToShell(self, pid)) {
-            const text = decodeForTerminal(pid, 'stdout', data);
+            const text = decodeForTerminal(self, pid, 'stdout', data);
             if (text.length > 0)
                 self.terminal.write(normalizeTerminalNewlines(text));
         }
@@ -933,7 +957,7 @@ export async function _rpcStderr(self, pid, data, at, run) {
         // Terminal gets red wrapping; the ring buffer keeps it raw so the
         // stream tag can drive color decisions at replay time.
         if (self.terminal && shouldMirrorProcessOutputToShell(self, pid)) {
-            const text = decodeForTerminal(pid, 'stderr', data);
+            const text = decodeForTerminal(self, pid, 'stderr', data);
             if (text.length > 0)
                 self.terminal.write(`\x1b[31m${normalizeTerminalNewlines(text)}\x1b[0m`);
         }
@@ -1029,7 +1053,7 @@ function reportExit(self, pid, code, tail, dataReads, profileUnread, runtimeCode
     const normalForeground = code === 0
         && (entry?.foreground === true || entry?.attachedTty === true || entry?.longRunning !== true);
     for (const stream of ['stdout', 'stderr']) {
-        const rest = _terminalTeeDecoders.drop(`${pid}:${stream}`);
+        const rest = dropTerminalTee(self, pid, stream);
         if (rest.length > 0 && self.terminal && shouldMirrorProcessOutputToShell(self, pid)) {
             self.terminal.write(normalizeTerminalNewlines(rest));
         }
