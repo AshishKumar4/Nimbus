@@ -929,6 +929,14 @@ export declare function toolConfigRoots(vfs: LaunchFs, cwd: string, scriptPath: 
  */
 export declare function buildPrefetchBundle(vfs: LaunchFs, options: PrefetchBundleOptions): Promise<FacetVfsState>;
 /**
+ * The files a launch stages, carried as they are, for a program that only
+ * reads them: opencode's snapshot (_stageOpencodeFacet), whose code is its
+ * own artifact. The same selection and bound as a Node launch's
+ * (gatherLaunchFiles, boundLaunchFiles), without the module pass: nothing is
+ * compiled, and the bound charges what is carried.
+ */
+export declare function gatherDataBundle(vfs: LaunchFs, cwd: string): Promise<FacetVfsState>;
+/**
  * The evicted JavaScript modules whose text names a synchronous call: the
  * ones the data plan reads (static-fs-refs.ts, from the VFS as written).
  * Most of what a bound evicts is data or declarations (Astro's 575 shiki
@@ -1220,8 +1228,10 @@ export interface ResolvedWorkerLaunch {
     /** Null is the absent answer — the same JSON the image blob carries. */
     env: ResidentCodeSpec['env'] | null;
     globalOutbound: ResidentCodeSpec['globalOutbound'];
-    /** Module name → source text, including the main module under its name. */
-    modules: Record<string, string>;
+    /** Module name → source text or inline wasm (`{ wasm }`), including the main module, text, under its name. */
+    modules: Record<string, string | {
+        wasm: ArrayBuffer;
+    }>;
     /** Module name → VFS path of a wasm image, restored with the launch. */
     vfsWasmModules?: Record<string, string>;
     /** Module name → VFS path of a content-addressed module source, restored with the launch. */
