@@ -7,7 +7,7 @@
  * the `latest` build. A runtime joins the npm set by gaining an `npm` entry.
  */
 
-import { BASH_RUNNER, GIT_RUNNER } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { BASH_RUNNER, CPYTHON_RUNNER, GIT_RUNNER } from '@nimbus-sh/core/runtime/os-contracts.js';
 
 /**
  * Static per-runtime spec. Each entry says where to fetch the upstream
@@ -265,8 +265,8 @@ export const SPECS = {
       // at this. Mozilla's bundle, as published by curl.se.
       { src: 'cacert.pem',     vfs: 'etc/ssl/cert.pem' },
       { src: 'STDLIB_MARKER', vfs: 'lib/python3.13/os.py' },
-      { src: 'BIN_MARKER', vfs: 'bin/python',  mode: 'exec', runner: 'cpython-runner', binName: 'python' },
-      { src: 'BIN_MARKER', vfs: 'bin/python3', mode: 'exec', runner: 'cpython-runner', binName: 'python3' },
+      { src: 'BIN_MARKER', vfs: 'bin/python',  mode: 'exec', runner: CPYTHON_RUNNER, binName: 'python' },
+      { src: 'BIN_MARKER', vfs: 'bin/python3', mode: 'exec', runner: CPYTHON_RUNNER, binName: 'python3' },
     ],
     license_text: PSF_LICENSE_NOTICE(),
     /** Source 'BIN_MARKER' is synthesised, not fetched. */

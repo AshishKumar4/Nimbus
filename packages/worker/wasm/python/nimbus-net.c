@@ -510,12 +510,13 @@ ssize_t sendto(int fd, const void *buf, size_t len, int flags, const struct sock
 ssize_t recvfrom(int fd, void *__restrict buf, size_t len, int flags,
                  struct sockaddr *__restrict addr, socklen_t *__restrict addrlen)
 {
-	/* The sender's address is known before anything is read, so a name the
-	 * table cannot hold fails the call with the data still unread. */
+	/* A connected socket's sender is known before anything is read, so a
+	 * name the table cannot hold fails the call with the data still unread.
+	 * One with no peer has no name to take: its recv answers why. */
 	uint32_t ip = INADDR_LOOPBACK;
 	uint16_t port = 0;
 	struct nimbus_sock *s = addr != NULL && addrlen != NULL ? sock_find(fd) : NULL;
-	if (s != NULL) {
+	if (s != NULL && s->state == NIMBUS_SOCK_CONNECTED) {
 		port = s->peer_port;
 		if (parse_ipv4(s->peer_host, &ip) != 0 && name_intern(s->peer_host, &ip) != 0) {
 			errno = ENOBUFS;

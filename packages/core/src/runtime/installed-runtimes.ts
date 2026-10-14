@@ -25,6 +25,7 @@ import type { Command } from '../substrate/lifo/commands/types.js';
 import type { ResolveContext } from '../substrate/lifo/commands/registry.js';
 import {
   BASH_RUNNER,
+  CPYTHON_RUNNER,
   CRED_KERNEL,
   NIMBUS_ABI_TARGET,
   NIMBUS_RUNTIME_ABIS,
@@ -107,8 +108,8 @@ export const RUNTIME_EXTRA_ENTRYPOINTS: Readonly<Record<string, readonly Manifes
   // may claim it. The python row went with python-runner: Pyodide's manifest
   // still names that runner, so it could not serve pip even if it were listed.
   cpython: [
-    { binName: 'pip', runner: 'cpython-runner', kind: 'pip', args: [] },
-    { binName: 'pip3', runner: 'cpython-runner', kind: 'pip', args: [] },
+    { binName: 'pip', runner: CPYTHON_RUNNER, kind: 'pip', args: [] },
+    { binName: 'pip3', runner: CPYTHON_RUNNER, kind: 'pip', args: [] },
   ],
   ruby: [
     { binName: 'gem', runner: 'ruby-runner', kind: 'gem', args: [] },

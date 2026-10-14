@@ -53,7 +53,7 @@ import { hasLeadingCliFlag } from './cli-flags.js';
 import { CPYTHON_PREAMBLE_TAIL } from './cpython-preamble.js';
 import { PYTHON_SERVER_ADAPTER } from './python-server-adapter.js';
 import type { FacetHost } from './facet-host.js';
-import { gateSyncLaunch, requireVfsCred } from './os-contracts.js';
+import { CPYTHON_RUNNER, gateSyncLaunch, requireVfsCred } from './os-contracts.js';
 import {
   buildPipInvocation,
   type PipInvocation,
@@ -423,7 +423,7 @@ export function makeCPythonRunnerFactory(deps: {
         // Two variants differ by megabytes so they would not collide today, but
         // a warm slot serving the wrong interpreter is not a failure worth
         // leaving to a size coincidence.
-        tag: wantsSci ? 'cpython-runner:sci' : 'cpython-runner',
+        tag: wantsSci ? `${CPYTHON_RUNNER}:sci` : CPYTHON_RUNNER,
         concurrency: 1,
         // Never absent. Without the capability the facet reads its seed and can
         // never write anything back — the program appears to run and its output
