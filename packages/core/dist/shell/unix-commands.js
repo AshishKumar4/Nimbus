@@ -1768,11 +1768,13 @@ function mkXargs() {
         const cmdName = args.shift() || 'echo';
         const cmdArgsInitial = args;
         // Split stdin into items. With a replace string an item is a line, its
-        // leading blanks dropped, as GNU's -I reads one: blanks inside it stay.
+        // leading white space (GNU's ISSPACE: CR, VT and FF too) dropped, as GNU's
+        // -I reads one: what is inside it and after it stays, and a line of white
+        // space alone is no item.
         const items = nullSep
             ? input.split('\u0000').filter(Boolean)
             : replaceTok !== null
-                ? input.split('\n').map((line) => line.replace(/^[ \t]+/, '')).filter(Boolean)
+                ? input.split('\n').map((line) => line.replace(/^[ \t\v\f\r]+/, '')).filter(Boolean)
                 : input.split(/\s+/).filter(Boolean);
         // The parent each child is started from: xargs itself, but for its stdin.
         const parent = {
