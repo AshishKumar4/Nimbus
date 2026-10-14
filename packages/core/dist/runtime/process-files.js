@@ -1432,7 +1432,7 @@ export class ProcessView {
      */
     async open(path, flags) {
         const opened = await this.call('open', path, () => this.fs.open(path, flags));
-        return new ProcessFile(this.fs, path, opened.id, vfsStatOf(opened.stat));
+        return new ProcessFile(this.fs, path, opened.id, vfsStatOf(opened.stat), flags.write === true || flags.append === true);
     }
     /** Append through an O_APPEND descriptor, so concurrent appenders never overwrite each other. */
     async appendFile(path, content) {
@@ -1460,15 +1460,20 @@ export class ProcessFile {
     path;
     handle;
     stat;
+    writes;
+    #closed = false;
     constructor(fs, path, handle, 
     /** Its file as the open found it. */
-    stat) {
+    stat, 
+    /** Opened to write: what it wrote is synced before it closes (withOpenFiles). */
+    writes) {
         this.fs = fs;
         this.path = path;
         this.handle = handle;
         this.stat = stat;
+        this.writes = writes;
     }
-    /** Up to `length` bytes at `offset`, or (null) at its position, which then moves: fewer only at the end. */
+    /** Up to `length` bytes at `offset`, or (null) at its position, which then moves: none only at the end (readToEnd). */
     async read(length, offset = null) {
         try {
             return await this.fs.read(this.handle, offset, length);
@@ -1491,6 +1496,15 @@ export class ProcessFile {
             throw toVfsError(error, 'write', this.path);
         }
     }
+    /** ftruncate(2): the file this description holds, whatever its name names now. */
+    async truncate(size) {
+        try {
+            await this.fs.ftruncate(this.handle, size);
+        }
+        catch (error) {
+            throw toVfsError(error, 'ftruncate', this.path);
+        }
+    }
     /** What the filesystem still holds for its file, written (fsync): a write it could not make fails here. */
     async sync() {
         try {
@@ -1500,12 +1514,63 @@ export class ProcessFile {
             throw toVfsError(error, 'fsync', this.path);
         }
     }
+    /** Closed once, whoever closes it first: a later close does nothing. */
     async close() {
+        if (this.#closed)
+            return;
+        this.#closed = true;
         try {
             await this.fs.close(this.handle);
         }
         catch (error) {
             throw toVfsError(error, 'close', this.path);
+        }
+    }
+}
+/**
+ * `file`'s bytes from `from`, `size` at a time, to a read that answers none
+ * (its end: a read may answer fewer bytes than it asks and the file go on),
+ * or until `limit` bytes.
+ */
+export async function* readToEnd(file, size, { from = 0, limit = Number.POSITIVE_INFINITY } = {}) {
+    for (let done = 0; done < limit;) {
+        const chunk = await file.read(Math.min(size, limit - done), from + done);
+        if (chunk.length === 0)
+            return;
+        yield chunk;
+        done += chunk.length;
+    }
+}
+/**
+ * `use`, with every description it opens through `open` closed when it ends,
+ * however it ends: one opened to write synced first, then closed whether the
+ * sync succeeded or not. What a sync or a close fails with is told to
+ * `failed`, and the rest are closed all the same, also when `failed` throws.
+ */
+export async function withOpenFiles(view, use, failed) {
+    const opened = [];
+    try {
+        return await use(async (path, flags) => {
+            const file = await view.open(path, flags);
+            opened.push(file);
+            return file;
+        });
+    }
+    finally {
+        for (const file of opened) {
+            try {
+                try {
+                    if (file.writes)
+                        await file.sync();
+                }
+                finally {
+                    await file.close();
+                }
+            }
+            catch (error) {
+                // A report that cannot be made leaves no other description open.
+                await failed(file, error).catch(() => undefined);
+            }
         }
     }
 }

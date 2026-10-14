@@ -320,22 +320,48 @@ export declare class ProcessView implements VFS {
 }
 /** A process's open file description (ProcessView.open), by its descriptor; every failure is a `VfsError`. */
 export declare class ProcessFile {
+    #private;
     private readonly fs;
     readonly path: string;
     private readonly handle;
     /** Its file as the open found it. */
     readonly stat: ProcessStat;
+    /** Opened to write: what it wrote is synced before it closes (withOpenFiles). */
+    readonly writes: boolean;
     constructor(fs: RecallingBridge, path: string, handle: number, 
     /** Its file as the open found it. */
-    stat: ProcessStat);
-    /** Up to `length` bytes at `offset`, or (null) at its position, which then moves: fewer only at the end. */
+    stat: ProcessStat, 
+    /** Opened to write: what it wrote is synced before it closes (withOpenFiles). */
+    writes: boolean);
+    /** Up to `length` bytes at `offset`, or (null) at its position, which then moves: none only at the end (readToEnd). */
     read(length: number, offset?: number | null): Promise<Uint8Array>;
     /** All of `bytes`, at `offset` or (null) at its position (its end, opened to append), which then moves. */
     write(bytes: Uint8Array, offset?: number | null): Promise<void>;
+    /** ftruncate(2): the file this description holds, whatever its name names now. */
+    truncate(size: number): Promise<void>;
     /** What the filesystem still holds for its file, written (fsync): a write it could not make fails here. */
     sync(): Promise<void>;
+    /** Closed once, whoever closes it first: a later close does nothing. */
     close(): Promise<void>;
 }
+/**
+ * `file`'s bytes from `from`, `size` at a time, to a read that answers none
+ * (its end: a read may answer fewer bytes than it asks and the file go on),
+ * or until `limit` bytes.
+ */
+export declare function readToEnd(file: ProcessFile, size: number, { from, limit }?: {
+    from?: number;
+    limit?: number;
+}): AsyncGenerator<Uint8Array>;
+/** How withOpenFiles' `use` opens a description it holds. */
+export type OpenFile = (path: string, flags: RuntimeOpenFlags) => Promise<ProcessFile>;
+/**
+ * `use`, with every description it opens through `open` closed when it ends,
+ * however it ends: one opened to write synced first, then closed whether the
+ * sync succeeded or not. What a sync or a close fails with is told to
+ * `failed`, and the rest are closed all the same, also when `failed` throws.
+ */
+export declare function withOpenFiles<T>(view: ProcessView, use: (open: OpenFile) => Promise<T>, failed: (file: ProcessFile, error: unknown) => Promise<void>): Promise<T>;
 /** A process's stat: everything stat(2) answers, which the bridge always has. */
 export interface ProcessStat extends VfsStat {
     mode: number;
