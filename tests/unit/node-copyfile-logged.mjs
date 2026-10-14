@@ -26,10 +26,13 @@ const authority = createAuthority();
 const kernel = authority.rawVfs.as(CRED_KERNEL);
 authority.kfs.mkdir('home/user', { recursive: true });
 kernel.chown('home/user', 1000, 1000);
-// A file the program has not read, larger than one chunk.
+// A file the program has not read, larger than one chunk, outside the
+// directory its launch reads ahead.
 const big = new Uint8Array(200_000).map((_, i) => i % 251);
-authority.rawVfs.as(cred).writeFile('home/user/unread.bin', big);
-authority.rawVfs.as(cred).chmod('home/user/unread.bin', 0o666);
+authority.kfs.mkdir('srv/data', { recursive: true });
+kernel.chown('srv/data', 1000, 1000);
+authority.rawVfs.as(cred).writeFile('srv/data/unread.bin', big);
+authority.rawVfs.as(cred).chmod('srv/data/unread.bin', 0o666);
 
 const program = `
 const fs = require('fs');
@@ -41,7 +44,7 @@ const fs = require('fs');
   await fs.promises.copyFile('/home/user/a.txt', '/home/user/b.txt');
   seen.syncRead = fs.readFileSync('/home/user/b.txt', 'utf8');
   // A file it never read, copied whole.
-  await fs.promises.copyFile('/home/user/unread.bin', '/home/user/copy.bin');
+  await fs.promises.copyFile('/srv/data/unread.bin', '/home/user/copy.bin');
   seen.copyMode = (await fs.promises.stat('/home/user/copy.bin')).mode & 0o777;
   // Over a file that is there, and refused with COPYFILE_EXCL.
   fs.writeFileSync('/home/user/c.txt', 'old');
@@ -63,7 +66,7 @@ const supervisor = new Proxy(process.supervisor, {
     return (...args) => {
       const op = key === 'answer' && args[0] === 'fsAcquired' ? args[1]?.[1] : key === 'answer' ? args[0] : key;
       const paths = key === 'answer' ? JSON.stringify(args[1] ?? []) : '';
-      if (/read/i.test(String(op)) && /unread\.bin|a\.txt/.test(paths)) reads.push(op);
+      if (/read/i.test(String(op)) && /unread\.bin|a\.txt/.test(paths)) reads.push(`${op} ${paths}`);
       return Reflect.apply(value, target, args);
     };
   },
@@ -89,7 +92,7 @@ check('a file it never read is copied whole', () => assert.deepEqual(kernel.read
 check('with the source\'s mode exactly, past the umask', () => assert.deepEqual([seen.copyMode, kernel.stat('home/user/copy.bin').mode & 0o777], [0o666, 0o666]));
 check('over a file that is there', () => assert.equal(text('home/user/c.txt'), 'second'));
 check('COPYFILE_EXCL refuses a name that is there', () => assert.equal(seen.excl, 'EEXIST copyfile'));
-check('no byte of a source is read by the process', () => assert.deepEqual(reads, []));
+check('no byte of a source is read by the process', () => assert.deepEqual(reads, [], JSON.stringify(reads).slice(0, 600)));
 for (const r of results) realProcess.stderr.write(r.join('  ') + '\n');
 if (results.some((r) => r[0] === 'FAIL')) realProcess.exit(1);
 realProcess.stdout.write('node-copyfile-logged: ok\n');
