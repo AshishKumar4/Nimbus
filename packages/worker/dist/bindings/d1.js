@@ -9,6 +9,13 @@
  * Bind parameter forms: '?' positional only. Named parameters (':name')
  * are NOT supported (D1 itself doesn't support them).
  */
+/**
+ * The facet a project's database is: `d1:` and the project root and the
+ * database, each whole (a name made of either cannot be another's).
+ */
+export function d1DatabaseFacetName(root, database) {
+    return 'd1:' + JSON.stringify([root, database]);
+}
 // ── D1 prepared statement ────────────────────────────────────────────────
 /** What a batch sends of a statement: off the statement's own surface. */
 let statementOf;

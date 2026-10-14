@@ -35,7 +35,7 @@ export class NimbusD1Database extends DurableObject {
         for (const statement of splitStatements(query)) {
             if (!statement.trim())
                 continue;
-            this.ctx.storage.sql.exec(statement);
+            runWhole(this.ctx.storage.sql, statement);
             count++;
         }
         return { count, duration: Date.now() - t0 };
@@ -56,7 +56,7 @@ export class NimbusD1Database extends DurableObject {
                 this.ctx.storage.transactionSync(() => {
                     for (const statement of splitStatements(migration.sql)) {
                         if (statement.trim())
-                            sql.exec(statement);
+                            runWhole(sql, statement);
                     }
                     sql.exec(`INSERT INTO ${LEDGER} (name) VALUES (?)`, migration.name);
                 });
@@ -79,6 +79,13 @@ export class NimbusD1Database extends DurableObject {
             return { success: false, error: error instanceof Error ? error.message : String(error), meta: meta(0, 0, t0) };
         }
     }
+}
+/**
+ * `statement` run to its last row: SQLite evaluates a statement's rows as
+ * they are read, so one whose later row fails has not failed until it is read.
+ */
+function runWhole(sql, statement) {
+    sql.exec(statement).toArray();
 }
 function meta(rowsRead, rowsWritten, t0) {
     return {
