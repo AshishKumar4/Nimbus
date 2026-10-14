@@ -67,7 +67,8 @@ const stand = `async function __nimbusPyBoot(args) {
   globalThis.__testWrite = (stream, bytes) => __nimbusPyOutput[stream+'Bytes'](bytes);
   return { run: async (code) => globalThis.__standInRun(code), flush: async () => {} };
 }`;
-Object.assign(globalThis,{ __wasiSupervisorOutput: wasiOutputRelay, __wasiOutputControl: outputControlReader });
+// With the boot stood in for, the run's settle (wasi/preamble.ts __wasiSettled) has nothing to send.
+Object.assign(globalThis,{ __wasiSupervisorOutput: wasiOutputRelay, __wasiOutputControl: outputControlReader, __wasiSettled: async (result) => result });
 new Function('globalThis', `${CPYTHON_PREAMBLE_TAIL}\n${stand}`)(globalThis);
 globalThis.__wasiAdoptSupervisor = () => {};
 

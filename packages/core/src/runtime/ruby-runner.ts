@@ -1240,7 +1240,14 @@ globalThis.__nimbusRubyDriveBoot = async function __nimbusRubyDriveBoot() {
 
 globalThis.__rubyRun = async function __rubyRun(args) {
   __nimbusRubyBindOutput(args);
-  const result = await __rubyRunOnce(args);
+  let result;
+  try {
+    result = await __rubyRunOnce(args);
+  } catch (e) {
+    result = { exitCode: 1, stdout: '', stderr: '', error: (e && e.message) || String(e) };
+  }
+  // What the run wrote is in the session before its result says it ran, however it ended.
+  result = await globalThis.__wasiSettled(result);
   await __nimbusRubyOutput.drain();
   const stdoutControl = __nimbusRubyStdoutControl;
   const stderrControl = __nimbusRubyStderrControl;

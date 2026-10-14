@@ -41,6 +41,7 @@ import { VFS_CURSOR_SEED_SOURCE } from '@nimbus-sh/core/_shared/facet-vfs-cursor
 import { SUPERVISOR_ANSWERING_SRC } from '@nimbus-sh/core/runtime/supervisor-answering.generated.js';
 import { createNodeFacetRuntime, nodeFacetSource, type NodeFacetSources } from './node-shims-artifact.js';
 import { NODE_SHIMS_IMPORTS } from './node-shims-imports.js';
+import { PENDING_IO_SOURCE } from './pending-io.js';
 import { moduleSource, type ModuleSource, type ImmutableModuleSource } from '@nimbus-sh/platform/module-source.js';
 import { ONE_SHOT_STORE_MEMORY_BYTES } from '../vfs/facet-resident-limits.js';
 import {
@@ -730,22 +731,8 @@ ${VFS_CURSOR_SEED_SOURCE}
 ${nodeFacetSource(opts.sources, 'ledger')}
 const __vfsDirs = {};
 const __nimbusDeferProcessExitReport = true;
-// Ledger of in-flight facet I/O the teardown drain must await. The shims push
-// here on every fs/sqlite/child-process op, so over a resident TUI's lifetime a
-// plain append-only array would grow without bound. Keep it a real Array (a
-// shim guard checks Array.isArray) but self-prune: each pushed promise removes
-// itself once settled, so length tracks only outstanding I/O.
-const __pendingIO = [];
-const __pendingIOAppend = __pendingIO.push.bind(__pendingIO);
-__pendingIO.push = (p) => {
-  const __wrapped = Promise.resolve(p);
-  __pendingIOAppend(__wrapped);
-  __wrapped.finally(() => {
-    const __i = __pendingIO.indexOf(__wrapped);
-    if (__i >= 0) __pendingIO.splice(__i, 1);
-  });
-  return __pendingIO.length;
-};
+// The in-flight facet I/O the teardown drain awaits (runtime/pending-io.ts).
+${PENDING_IO_SOURCE}
 
 ${nodeFacetSource(opts.sources, 'shims')}
 
@@ -957,8 +944,9 @@ ${OPENTUI_RESIZE_BRIDGE_SRC}
 async function __drainPendingIO(maxPasses = 12) {
   for (let __pass = 0; __pass < maxPasses; __pass++) {
     await new Promise((r) => setTimeout(r, 0));
-    // Both ledgers self-prune settled entries, so a snapshot holds only what is
-    // still outstanding; await it and loop until both drain (or the pass cap).
+    // Both ledgers shed settled entries and are empty once nothing is
+    // outstanding: await what they hold and loop until both drain (or the
+    // pass cap).
     const __live = [...__pendingWrites];
     if (__pendingIO.length === 0 && __live.length === 0) break;
     await Promise.allSettled([...__pendingIO, ...__live]);
