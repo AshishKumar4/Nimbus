@@ -17,12 +17,19 @@ export function createPath(cwd) {
     Object.assign(win32, { posix, win32 });
     return posix;
 }
-/** The engine's url, whose pathToFileURL of a relative path starts from `cwd`. */
+/**
+ * The engine's url, whose pathToFileURL of a relative path starts from `cwd`,
+ * in the path platform the call asks for (Windows mode: drive and UNC paths
+ * are absolute).
+ */
 export function createUrl(cwd) {
     const engine = realm.getBuiltinModule('node:url');
-    const { posix } = realm.getBuiltinModule('node:path');
+    const { posix, win32 } = realm.getBuiltinModule('node:path');
     return {
         ...engine,
-        pathToFileURL: (path, options) => engine.pathToFileURL(posix.isAbsolute(path) ? path : posix.join(cwd, path), options),
+        pathToFileURL: (path, options) => {
+            const platform = options?.windows ? win32 : posix;
+            return engine.pathToFileURL(platform.isAbsolute(path) ? path : platform.join(cwd, path), options);
+        },
     };
 }

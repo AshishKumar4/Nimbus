@@ -1,7 +1,11 @@
 import type { PlatformPath } from 'node:path';
 /** The engine's path, whose resolve and relative (posix and win32) start from `cwd`. */
 export declare function createPath(cwd: string): PlatformPath;
-/** The engine's url, whose pathToFileURL of a relative path starts from `cwd`. */
+/**
+ * The engine's url, whose pathToFileURL of a relative path starts from `cwd`,
+ * in the path platform the call asks for (Windows mode: drive and UNC paths
+ * are absolute).
+ */
 export declare function createUrl(cwd: string): {
     pathToFileURL: (path: string, options?: {
         windows?: boolean;
