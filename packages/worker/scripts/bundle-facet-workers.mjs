@@ -806,6 +806,17 @@ async function main() {
     }
   }
 
+  // 3b. Node's process warnings (emitWarning and the listener it installs),
+  //     which the node shims' process has, as lifo's node's has: one module.
+  const nodeWarnings = await bundleAsPreamble(
+    join(coreRoot, 'src', '_shared', 'node-warning.ts'),
+    'node-warning',
+    { shared: ['node-error'] },
+  );
+  if (!/^function createProcessWarnings\(/m.test(nodeWarnings)) {
+    throw new Error('[bundle-facet-workers/node-warning] the bundle no longer declares function createProcessWarnings');
+  }
+
   // 4. Node's ESM resolver, which the node shims embed as source (their
   //    process's import() loader). One compile of it, here, so the shims'
   //    copy is the same text whatever toolchain later evaluates the shims.
@@ -908,6 +919,9 @@ async function main() {
     ' * first, for themselves and the preambles below, which use them by name.',
     ' */',
     `export const NODE_ERROR_PREAMBLE: string = ${JSON.stringify(nodeErrors)};`,
+    '',
+    '/** Declares `function createProcessWarnings(process, write)`; the node shims call it. */',
+    `export const NODE_WARNING_PREAMBLE: string = ${JSON.stringify(nodeWarnings)};`,
     '',
     '/** Declares `function createEsmResolver(host)`; the node shims call it. */',
     `export const ESM_RESOLVER_PREAMBLE: string = ${JSON.stringify(esmResolver)};`,

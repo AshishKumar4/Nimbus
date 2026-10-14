@@ -1,14 +1,15 @@
-import { EventEmitter } from './events.js';
+import { EventEmitter } from 'node:events';
 export function createChildProcess(executeCapture) {
     function exec(cmd, optionsOrCb, cb) {
         const callback = typeof optionsOrCb === 'function' ? optionsOrCb : cb;
         const child = new EventEmitter();
         if (!executeCapture) {
+            // exec's own 'error' listener answers the callback, as Node's execFile
+            // adds one: an exec whose child cannot start never throws.
+            child.on('error', (err) => { if (callback)
+                callback(err instanceof Error ? err : new Error(String(err)), '', ''); });
             queueMicrotask(() => {
-                const err = new Error('child_process.exec() requires shell interpreter');
-                if (callback)
-                    callback(err, '', '');
-                child.emit('error', err);
+                child.emit('error', new Error('child_process.exec() requires shell interpreter'));
             });
             return child;
         }

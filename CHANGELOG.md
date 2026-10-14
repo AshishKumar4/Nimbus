@@ -34,6 +34,52 @@ published independently in the `@nimbus-sh` npm scope.
 - Fixed: a process's recursive copy beneath a WASI preopen on a mount that
   answers asynchronously followed a link named as the source even when the
   copy did not ask to follow it.
+- Fixed: the library's built-in `node` gives a program the engine's own
+  `path` and `url`, against the program's working directory: `path.resolve`
+  and `path.relative` start from it, as does `url.pathToFileURL` of a
+  relative path. lifo's `path` resolved from `/`, dropped a trailing
+  separator (`path.normalize('/a/b/')`), and had no `toNamespacedPath` or
+  `matchesGlob`; its `url` had no `domainToASCII` or `urlToHttpOptions`, and
+  `url.parse` lost an explicit port.
+- Fixed: the library's built-in `node` gives a program the engine's own
+  `stream` (with `stream/promises`, `stream/consumers` and `stream/web`),
+  and `fs.createReadStream` and `fs.createWriteStream` are the engine's
+  `ReadStream` and `WriteStream` over the program's files. lifo's streams
+  pushed a whole file as one string (no Buffers, no `start`/`end` ranges in
+  pieces, no `setEncoding`), had no `pipeline`, `Readable.from`,
+  `Transform` or async iteration, and ended the program's stdout on a pipe
+  into it. `process.stdout` and `process.stderr` are Writables, and `fs.read`
+  and the new `fs.write` call back with what Node's do.
+- Fixed: the library's built-in `node` gives a program the engine's own
+  `events`, and every emitter it hands one (a stream, a watcher, a request,
+  a readline interface, `process` itself) is the engine's `EventEmitter`.
+  lifo's had no `once()`, `on()`, `errorMonitor`, `captureRejections`,
+  `rawListeners` or `prependOnceListener`, silently dropped an `'error'`
+  nothing listened for (Node throws it), and `process` was no emitter.
+  `require('stream')` is an emitter class of its own rather than
+  `EventEmitter` itself with streams attached to it.
+- Fixed: the library's built-in `node` gives a program the engine's own
+  `crypto`, `util`, `string_decoder` and `buffer`, and its console formats
+  with the engine's `util`, so a program writes what `node` writes. Its
+  handwritten modules refused every hash but sha1 and sha256 (md5, sha512,
+  HMAC, pbkdf2), printed a Map or Set as `{}` and a class instance without
+  its name, decoded a hex or base64 `StringDecoder` as UTF-8, and encoded
+  `Buffer.from(s, 'latin1')` as UTF-8. Its `fs.watch` refuses an encoding
+  Node does not know when called, and keeps a copy of its options, as
+  Node's does. A warning, the program's own `process.emitWarning` or a
+  builtin's (`util.deprecate`), reaches the program's `'warning'` listeners
+  and is written on its stderr as Node writes it; it was written as
+  `Warning: <message>` and told no listener. A program has one `process`,
+  as in Node: each of its modules had one of its own, none of them
+  `globalThis.process` or `require('process')`.
+- Fixed: in the installed GNU bash, an ERR or RETURN trap no longer breaks
+  what the shell parses after it. After the first such trap ran, every later
+  `eval`, command substitution and trap failed with "conditional binary
+  operator expected": `trap ':' ERR; false; eval 'echo x'` printed nothing,
+  an ERR trap ran only the first time a command failed, and under `set -E`
+  it ran in the function but not again at its caller. The bash module's
+  signal sets were one byte wide, and adding SIGCHLD to one wrote past it
+  on the stack. This needs the bash runtime 5.2.37-6.
 - Fixed: `test` and `[` run as programs (`xargs test`, `find -exec test`)
   evaluate as the shell's builtin does. `test 1 -eq 2` run so returned 0,
   and `[ 1 -eq 1` ran without its closing `]`.

@@ -419,7 +419,7 @@ function headStack(error, name, above) {
         Object.defineProperty(error, 'name', own);
 }
 /** V8's Error.captureStackTrace (core's types are the language's, which have none). */
-function captureStack(error, above) {
+export function captureStack(error, above) {
     const capture = Reflect.get(Error, 'captureStackTrace');
     if (typeof capture === 'function')
         Reflect.apply(capture, Error, [error, above]);

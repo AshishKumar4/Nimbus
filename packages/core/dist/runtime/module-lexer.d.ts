@@ -7,8 +7,11 @@
  * own buffer, so a caller that drops a lexer releases what its sources grew.
  *
  * Between the markers is the upstream file verbatim but for `export` removed
- * from `export function parse`; tests/unit/module-lexer-vendor.mjs checks it
- * against the installed package. MIT License, Copyright (C) 2018-2022 Guy
+ * from `export function parse` and its "use asm" directive: V8 refuses it as
+ * asm.js ("Invalid asm.js: Invalid return type") and runs it as JavaScript
+ * anyway, and its refusal was a warning in the process that loaded the lexer,
+ * a node program's own. tests/unit/module-lexer-vendor.mjs checks it against
+ * the installed package. MIT License, Copyright (C) 2018-2022 Guy
  * Bedford (see NOTICE.md).
  */
 /** An import the lexer found: `t` 2 is an import() call, 3 is import.meta. */

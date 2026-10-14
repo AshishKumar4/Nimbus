@@ -237,6 +237,29 @@ await check('other filename encodings use the UTF-8 filename bytes', async () =>
   }
 });
 
+await check('an encoding Node does not know is refused at the call, as Node refuses it, not at a change', async () => {
+  for (const options of ['bogus', { encoding: 'utf-9' }]) {
+    const encoding = typeof options === 'string' ? options : options.encoding;
+    assert.throws(() => fs.watch('/w', options, () => {}), {
+      name: 'TypeError', code: 'ERR_INVALID_ARG_VALUE', message: `The argument 'encoding' is invalid encoding. Received '${encoding}'`,
+    });
+    // Before the path is looked at, as Node checks its options first.
+    assert.throws(() => fs.watch('/missing', options), { code: 'ERR_INVALID_ARG_VALUE' });
+  }
+  kernel.writeFile('w/after-refusal.txt', 'x');
+  await settled();
+});
+
+await check('a watch keeps the options it was given, whatever the caller does to them after, as Node copies them', async () => {
+  const options = { encoding: 'hex' };
+  const { heard, watcher } = hearing('/w/watched.txt', options);
+  options.encoding = 'bogus';
+  kernel.writeFile('w/watched.txt', 'kept');
+  await settled();
+  watcher.close();
+  assert.deepEqual(heard, [`change ${Buffer.from('watched.txt').toString('hex')}`]);
+});
+
 await check('the realm accepts only complete filesystem change events', () => {
   const changed = (event, id = 1) => ({ type: 'changed', id, event });
   for (const type of ['add', 'change', 'unlink', 'addDir', 'unlinkDir', 'rename']) {

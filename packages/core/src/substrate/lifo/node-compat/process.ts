@@ -1,4 +1,8 @@
+import { EventEmitter } from 'node:events';
+import type { Writable } from 'node:stream';
 import type { CommandOutputStream } from '../commands/types.js';
+import { createProcessWarnings, type WarningConstructor, type WarningOptions } from '../../../_shared/node-warning.js';
+import { standardStream } from './standard-streams.js';
 
 export class ProcessExitError extends Error {
   exitCode: number;
@@ -6,6 +10,40 @@ export class ProcessExitError extends Error {
     super(`process.exit(${code})`);
     this.name = 'ProcessExitError';
     this.exitCode = code;
+  }
+}
+
+/** The flags Node's warnings read off the process, which a program sets. */
+interface WarningFlags {
+  noDeprecation?: boolean;
+  throwDeprecation?: boolean;
+  traceDeprecation?: boolean;
+  traceProcessWarnings?: boolean;
+}
+
+/**
+ * A program's process: an emitter, as Node's is. Its stdout and stderr are
+ * made when the program first reaches them: a Writable costs the engine's
+ * stream module, which a program that only logs never loads.
+ */
+export class LifoProcess extends EventEmitter {
+  readonly #output: CommandOutputStream;
+  readonly #errorOutput: CommandOutputStream;
+  #stdout: Writable | undefined;
+  #stderr: Writable | undefined;
+
+  constructor(output: CommandOutputStream, errorOutput: CommandOutputStream) {
+    super();
+    this.#output = output;
+    this.#errorOutput = errorOutput;
+  }
+
+  get stdout(): Writable {
+    return this.#stdout ??= standardStream(this.#output, 1);
+  }
+
+  get stderr(): Writable {
+    return this.#stderr ??= standardStream(this.#errorOutput, 2);
   }
 }
 
@@ -19,9 +57,12 @@ export interface ProcessOptions {
 
 export function createProcess(opts: ProcessOptions) {
   const startTime = Date.now();
-  const listeners: Record<string, Array<(...args: unknown[]) => void>> = {};
+  // Unset until the program sets them, as in a Node run without their options.
+  const unflagged: WarningFlags = {};
+  // Node's warnings, written on the program's stderr.
+  const warnings = createProcessWarnings(() => proc, (text) => { opts.stderr.write(`${text}\n`); });
 
-  const proc = {
+  const proc = Object.assign(new LifoProcess(opts.stdout, opts.stderr), {
     argv: ['/usr/bin/node', ...opts.argv],
     argv0: 'node',
     env: { ...opts.env },
@@ -32,24 +73,6 @@ export function createProcess(opts: ProcessOptions) {
         opts.stderr.write(`[process.exit] code=${code}\n`);
       }
       throw new ProcessExitError(code);
-    },
-    stdout: {
-      write: (data: string) => { opts.stdout.write(data); return true; },
-      isTTY: false,
-      fd: 1,
-      bytesWritten: 0,
-      columns: 80,
-      on: () => {},
-      once: () => {},
-    },
-    stderr: {
-      write: (data: string) => { opts.stderr.write(data); return true; },
-      isTTY: false,
-      fd: 2,
-      bytesWritten: 0,
-      columns: 80,
-      on: () => {},
-      once: () => {},
     },
     stdin: {
       isTTY: false,
@@ -105,7 +128,9 @@ export function createProcess(opts: ProcessOptions) {
     uptime: () => (Date.now() - startTime) / 1000,
     release: { name: 'node' },
     config: {},
-    emitWarning: (msg: string) => { opts.stderr.write(`Warning: ${msg}\n`); },
+    emitWarning: (warning: string | Error, type?: string | WarningOptions | WarningConstructor, code?: string | WarningConstructor, ctor?: WarningConstructor): void => {
+      warnings.emitWarning(warning, type, code, ctor);
+    },
     // POSIX identity stubs (needed by many npm packages)
     getuid: () => 1000,
     getgid: () => 1000,
@@ -124,58 +149,14 @@ export function createProcess(opts: ProcessOptions) {
       if (name === 'constants') return { os: {}, fs: {}, crypto: {} };
       return {};
     },
-    // EventEmitter-like methods (many packages check for process.on('exit'))
-    on: (event: string, fn: (...args: unknown[]) => void) => {
-      if (!listeners[event]) listeners[event] = [];
-      listeners[event].push(fn);
-      return proc;
-    },
-    addListener: (event: string, fn: (...args: unknown[]) => void) => {
-      return proc.on(event, fn);
-    },
-    once: (event: string, fn: (...args: unknown[]) => void) => {
-      const wrapped = (...args: unknown[]) => {
-        proc.removeListener(event, wrapped);
-        fn(...args);
-      };
-      return proc.on(event, wrapped);
-    },
-    off: (event: string, fn: (...args: unknown[]) => void) => {
-      if (listeners[event]) {
-        listeners[event] = listeners[event].filter((f) => f !== fn);
-      }
-      return proc;
-    },
-    removeListener: (event: string, fn: (...args: unknown[]) => void) => proc.off(event, fn),
-    removeAllListeners: (event?: string) => {
-      if (event) {
-        delete listeners[event];
-      } else {
-        for (const k of Object.keys(listeners)) delete listeners[k];
-      }
-      return proc;
-    },
-    listeners: (event: string) => listeners[event] ? [...listeners[event]] : [],
-    emit: (event: string, ...args: unknown[]) => {
-      const fns = listeners[event];
-      if (!fns || fns.length === 0) return false;
-      for (const fn of [...fns]) fn(...args);
-      return true;
-    },
-    listenerCount: (event: string) => listeners[event]?.length ?? 0,
-    setMaxListeners: () => proc,
-    getMaxListeners: () => 10,
-    prependListener: (event: string, fn: (...args: unknown[]) => void) => {
-      if (!listeners[event]) listeners[event] = [];
-      listeners[event].unshift(fn);
-      return proc;
-    },
-    rawListeners: (event: string) => listeners[event] ? [...listeners[event]] : [],
-    eventNames: () => Object.keys(listeners),
     // Feature detection flags
     allowedNodeEnvironmentFlags: new Set<string>(),
     features: { inspector: false, debug: false, uv: false, tls_alpn: false, tls_sni: false, tls_ocsp: false, tls: false },
-  };
+    ...unflagged,
+  });
+
+  // Node's own 'warning' listener, unless warnings are off.
+  if (warnings.installs) proc.on('warning', warnings.onWarning);
 
   return proc;
 }

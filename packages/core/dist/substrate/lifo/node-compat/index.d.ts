@@ -19,6 +19,8 @@ export interface NodeContext {
     routeLoopback?: LoopbackRouter;
     /** The kernel's resolver, which dns.lookup answers from as curl and wget do. */
     dns?: DNSResolver;
+    /** Told when the program first reaches the engine's stream classes (a stream module, an fs or tty stream, process.stdout). */
+    reachStreams?: () => void;
 }
 export declare function createModuleMap(ctx: NodeContext): Record<string, () => unknown>;
 export { ProcessExitError } from './process.js';

@@ -30,7 +30,7 @@ class __ProcessExit extends Error {
 // preambles below and the code they load make them by name, and the cell
 // runtime and generated code reach them as __nimbusNodeError and
 // __nimbusNodeSystemError.
-var { determineSpecificType, hideStackFrames, invalidArgType, isErrorStackTraceLimitWritable, nodeError, nodeErrorCodes, nodeSystemError, reshapeAsNodeError, useNodeErrorInspect } = (() => {
+var { captureStack, determineSpecificType, hideStackFrames, invalidArgType, isErrorStackTraceLimitWritable, nodeError, nodeErrorCodes, nodeSystemError, reshapeAsNodeError, useNodeErrorInspect } = (() => {
 var nodeErrorClasses =   new Map();
 var classCodes =   new WeakMap();
 function nodeError(Base, code, message, props, above = nodeError) {
@@ -345,7 +345,93 @@ function captureStack(error, above) {
   const capture = Reflect.get(Error, "captureStackTrace");
   if (typeof capture === "function") Reflect.apply(capture, Error, [error, above]);
 }
-return { determineSpecificType, hideStackFrames, invalidArgType, isErrorStackTraceLimitWritable, nodeError, nodeErrorCodes, nodeSystemError, reshapeAsNodeError, useNodeErrorInspect };
+return { captureStack, determineSpecificType, hideStackFrames, invalidArgType, isErrorStackTraceLimitWritable, nodeError, nodeErrorCodes, nodeSystemError, reshapeAsNodeError, useNodeErrorInspect };
+})();
+
+var { createProcessWarnings } = (() => {
+function createProcessWarnings(process, write) {
+  let traceHintWritten = false;
+  return {
+    emitWarning(warning, type, code, ctor) {
+      const proc = process();
+      if (proc.noDeprecation && type === "DeprecationWarning") return;
+      let name = type;
+      let detail;
+      if (typeof type === "object" && type !== null && !Array.isArray(type)) {
+        ctor = type.ctor;
+        code = type.code;
+        if (typeof type.detail === "string") detail = type.detail;
+        name = type.type || "Warning";
+      } else if (typeof type === "function") {
+        ctor = type;
+        code = void 0;
+        name = "Warning";
+      }
+      if (name !== void 0 && typeof name !== "string") throw invalidArgType("type", "string", name);
+      if (typeof code === "function") {
+        ctor = code;
+        code = void 0;
+      } else if (code !== void 0 && typeof code !== "string") {
+        throw invalidArgType("code", "string", code);
+      }
+      let told;
+      if (typeof warning === "string") {
+        const limit = Reflect.get(Error, "stackTraceLimit");
+        const writable = isErrorStackTraceLimitWritable();
+        if (writable) Reflect.set(Error, "stackTraceLimit", 0);
+        told = new Error(warning);
+        if (writable) Reflect.set(Error, "stackTraceLimit", limit);
+        told.name = String(name || "Warning");
+        if (code !== void 0) Object.assign(told, { code });
+        if (detail !== void 0) Object.assign(told, { detail });
+        captureStack(told, ctor ?? proc.emitWarning);
+      } else if (warning instanceof Error) {
+        told = warning;
+      } else {
+        throw invalidArgType("warning", ["Error", "string"], warning);
+      }
+      if (told.name === "DeprecationWarning") {
+        if (proc.noDeprecation) return;
+        if (proc.throwDeprecation) {
+          proc.nextTick(() => {
+            throw told;
+          });
+          return;
+        }
+      }
+      proc.nextTick(() => {
+        proc.emit("warning", told);
+      });
+    },
+    onWarning(warning) {
+      if (!(warning instanceof Error)) return;
+      const proc = process();
+      const isDeprecation = warning.name === "DeprecationWarning";
+      if (isDeprecation && proc.noDeprecation) return;
+      const trace = proc.traceProcessWarnings || isDeprecation && proc.traceDeprecation;
+      let text = `(${proc.release.name}:${proc.pid}) `;
+      if ("code" in warning && warning.code) text += `[${String(warning.code)}] `;
+      if (trace && warning.stack) text += warning.stack;
+      else text += typeof warning.toString === "function" ? `${warning.toString()}` : Error.prototype.toString.call(warning);
+      if ("detail" in warning && typeof warning.detail === "string") text += `
+${warning.detail}`;
+      if (!trace && !traceHintWritten) {
+        const program = String(proc.argv0 || "node");
+        const base = program.slice(program.lastIndexOf("/") + 1);
+        const argv0 = base.endsWith(".exe") && base !== ".exe" ? base.slice(0, -4) : base;
+        text += `
+(Use \`${argv0} ${isDeprecation ? "--trace-deprecation" : "--trace-warnings"} ...\` to show where the warning was created)`;
+        traceHintWritten = true;
+      }
+      write(text);
+    },
+    get installs() {
+      const env = process().env;
+      return env.NODE_NO_WARNINGS !== "1" && !String(env.NODE_OPTIONS || "").split(/\s+/).includes("--no-warnings");
+    }
+  };
+}
+return { createProcessWarnings };
 })();
 
 Object.defineProperties(globalThis, {
@@ -14147,68 +14233,10 @@ function __nimbusSignalSelf(signal) {
 }
 
 // Node's process.emitWarning and the 'warning' listener it installs unless
-// told not to (lib/internal/process/warning.js, lib/internal/process/
-// pre_execution.js setupWarningHandler, v22.22.3): the warning is an Error
-// named for its type, emitted on the next tick; the listener prints
-// "(node:<pid>) <Type>: <message>" to stderr, the first time with how to
-// trace it. --disable-warning and --redirect-warnings are not read.
-let __nimbusTraceWarningHelperShown = false;
-function __nimbusOnWarning(warning) {
-  if (!(warning instanceof Error)) return;
-  const isDeprecation = warning.name === "DeprecationWarning";
-  if (isDeprecation && __processMod.noDeprecation) return;
-  const trace = __processMod.traceProcessWarnings || (isDeprecation && __processMod.traceDeprecation);
-  let msg = "(node:" + __processMod.pid + ") ";
-  if (warning.code) msg += "[" + warning.code + "] ";
-  if (trace && warning.stack) msg += warning.stack;
-  else msg += typeof warning.toString === "function" ? String(warning.toString()) : Error.prototype.toString.call(warning);
-  if (typeof warning.detail === "string") msg += "\n" + warning.detail;
-  if (!trace && !__nimbusTraceWarningHelperShown) {
-    const flag = isDeprecation ? "--trace-deprecation" : "--trace-warnings";
-    const argv0 = __pathMod.basename(__processMod.argv0 || "node", ".exe");
-    msg += "\n(Use `" + argv0 + " " + flag + " ...` to show where the warning was created)";
-    __nimbusTraceWarningHelperShown = true;
-  }
-  __consoleMod.error(msg);
-}
-function __nimbusProcessEmitWarning(warning, type, code, ctor) {
-  if (__processMod.noDeprecation && type === "DeprecationWarning") return;
-  let detail;
-  if (type !== null && typeof type === "object" && !Array.isArray(type)) {
-    ctor = type.ctor;
-    code = type.code;
-    if (typeof type.detail === "string") detail = type.detail;
-    type = type.type || "Warning";
-  } else if (typeof type === "function") {
-    ctor = type;
-    code = undefined;
-    type = "Warning";
-  }
-  if (type !== undefined && typeof type !== "string") throw invalidArgType("type", "string", type);
-  if (typeof code === "function") {
-    ctor = code;
-    code = undefined;
-  } else if (code !== undefined && typeof code !== "string") {
-    throw invalidArgType("code", "string", code);
-  }
-  if (typeof warning === "string") {
-    const limit = Error.stackTraceLimit;
-    Error.stackTraceLimit = 0;
-    warning = new Error(warning);
-    Error.stackTraceLimit = limit;
-    warning.name = String(type || "Warning");
-    if (code !== undefined) warning.code = code;
-    if (detail !== undefined) warning.detail = detail;
-    Error.captureStackTrace(warning, ctor || __processMod.emitWarning);
-  } else if (!(warning instanceof Error)) {
-    throw invalidArgType("warning", ["string", "Error"], warning);
-  }
-  if (warning.name === "DeprecationWarning") {
-    if (__processMod.noDeprecation) return;
-    if (__processMod.throwDeprecation) return __processMod.nextTick(() => { throw warning; });
-  }
-  __processMod.nextTick(() => __processMod.emit("warning", warning));
-}
+// told not to (core _shared/node-warning.ts, lifo's node's too): the warning
+// is an Error named for its type, emitted on the next tick; the listener
+// prints it to stderr, the first time with how to trace it.
+const __nimbusWarnings = createProcessWarnings(() => __processMod, (text) => __consoleMod.error(text));
 let __processUmask = Number(cred.umask) & 0o777;
 // What the process's filesystem client stamps on each create it logs (W7Call umask): the ledger's, in this scope, not a global.
 if (typeof __nimbusProcessUmaskOf !== "undefined") __nimbusProcessUmaskOf = () => __processUmask;
@@ -14293,7 +14321,7 @@ const __processMod = Object.setPrototypeOf({
   stderr: __makeProcessOutputStream("stderr"),
   stdin: __makeProcessStdin(),
   nextTick: (fn, ...a) => queueMicrotask(() => fn(...a)),
-  emitWarning: __nimbusProcessEmitWarning,
+  emitWarning: __nimbusWarnings.emitWarning,
   // Seconds since the process started.
   uptime: () => (performance.now() - __nimbusStartedAt) / 1000,
   // The signal syscall process.kill makes (Node's binding): 0, or the errno.
@@ -14417,9 +14445,7 @@ Object.defineProperty(__processMod, "allowedNodeEnvironmentFlags", {
   enumerable: true, configurable: true,
 });
 // The 'warning' listener Node installs (setupWarningHandler), unless warnings are off.
-if (__processMod.env.NODE_NO_WARNINGS !== "1" && !String(__processMod.env.NODE_OPTIONS || "").split(/\s+/).includes("--no-warnings")) {
-  __processMod.on("warning", __nimbusOnWarning);
-}
+if (__nimbusWarnings.installs) __processMod.on("warning", __nimbusWarnings.onWarning);
 // Node's process reads as one: Object.prototype.toString gives "[object
 // process]", which axios (utils.kindOf) and others test to pick their Node
 // paths (axios: its http adapter rather than its fetch one). As Node defines

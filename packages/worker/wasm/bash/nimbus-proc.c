@@ -242,7 +242,8 @@ pid_t tcgetsid(int fd) { (void)fd; return getpgrp(); }
 /* ---- sigaction layer ----
  * Handlers stored per-signal; sigaction is the install point the supervisor's
  * pending-signal delivery (nimbus_proc.kill) will invoke at syscall boundaries.
- * sigset ops operate on musl's sigset_t (array of unsigned long bit words). */
+ * sigset ops operate on musl's sigset_t (array of unsigned long bit words),
+ * which nimbus-proc.h puts in place of wasi-libc's one-byte placeholder. */
 #ifndef NSIG
 #define NSIG 65
 #endif

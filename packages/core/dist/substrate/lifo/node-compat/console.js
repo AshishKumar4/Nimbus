@@ -1,24 +1,26 @@
-import { format } from './util.js';
+import realm from 'node:process';
+/** A line as Node's console writes it: the engine's own util.format. */
+const format = (...args) => realm.getBuiltinModule('node:util').format(...args);
 export function createConsole(stdout, stderr) {
     const timers = new Map();
     return {
         log: (...args) => {
-            stdout.write(format(args[0], ...args.slice(1)) + '\n');
+            stdout.write(format(...args) + '\n');
         },
         info: (...args) => {
-            stdout.write(format(args[0], ...args.slice(1)) + '\n');
+            stdout.write(format(...args) + '\n');
         },
         warn: (...args) => {
-            stderr.write(format(args[0], ...args.slice(1)) + '\n');
+            stderr.write(format(...args) + '\n');
         },
         error: (...args) => {
-            stderr.write(format(args[0], ...args.slice(1)) + '\n');
+            stderr.write(format(...args) + '\n');
         },
         debug: (...args) => {
-            stdout.write(format(args[0], ...args.slice(1)) + '\n');
+            stdout.write(format(...args) + '\n');
         },
-        dir: (obj) => {
-            stdout.write(format('%o', obj) + '\n');
+        dir: (obj, options) => {
+            stdout.write(realm.getBuiltinModule('node:util').inspect(obj, { customInspect: false, ...options }) + '\n');
         },
         time: (label = 'default') => {
             timers.set(label, performance.now());
@@ -38,15 +40,15 @@ export function createConsole(stdout, stderr) {
             const start = timers.get(label);
             if (start !== undefined) {
                 const elapsed = performance.now() - start;
-                stdout.write(`${label}: ${elapsed.toFixed(3)}ms ${args.map((a) => format('%o', a)).join(' ')}\n`);
+                stdout.write(format('%s: %s', label, `${elapsed.toFixed(3)}ms`, ...args) + '\n');
             }
         },
         trace: (...args) => {
-            stderr.write('Trace: ' + format(args[0], ...args.slice(1)) + '\n');
+            stderr.write('Trace: ' + format(...args) + '\n');
         },
         assert: (condition, ...args) => {
             if (!condition) {
-                stderr.write('Assertion failed: ' + (args.length > 0 ? format(args[0], ...args.slice(1)) : '') + '\n');
+                stderr.write('Assertion failed: ' + (args.length > 0 ? format(...args) : '') + '\n');
             }
         },
         clear: () => { },
@@ -62,7 +64,7 @@ export function createConsole(stdout, stderr) {
         group: () => { },
         groupEnd: () => { },
         table: (data) => {
-            stdout.write(format('%o', data) + '\n');
+            stdout.write(format(data) + '\n');
         },
     };
 }

@@ -107,7 +107,7 @@ export const SPECS = {
   // every rebuild, and the entrypoint names the runner contract the build
   // was made for (BASH_RUNNER), so a deployment whose preamble predates it
   // never binds it. 5.2.37 is build 1, published under `bash-runner`.
-  'bash/5.2.37-5': {
+  'bash/5.2.37-6': {
     license: 'GPL-3.0-or-later AND GPL-2.0-only',
     wasi_namespace: 'wasi_snapshot_preview1',
     local_base: '../wasm/bash',

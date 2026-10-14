@@ -190,7 +190,7 @@ try {
     const sync = createRequireResolver(host, { conditions });
     const async_ = createRequireResolver(Object.fromEntries(Object.entries(host).map(([key, value]) =>
       [key, key === 'isBuiltin' ? value : async (...args) => value(...args)])), { conditions });
-    const lifo = createCjsLoader(context, () => ({ console, process }), { conditions, policy: NODE_REQUIRE_POLICY });
+    const lifo = createCjsLoader(context, { console, process }, { conditions, policy: NODE_REQUIRE_POLICY });
     declareNamespace({ metadata: Object.fromEntries(Object.entries(LINKS).map(([path, target]) =>
       [path, { type: 'symlink', target, mode: 0o120777, uid: 1000, gid: 1000 }])) });
     const guest = factory(FILES, {}, {}, null, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
@@ -244,7 +244,7 @@ try {
   assert.equal(normalize(source.resolveSync('./tsmain', disk(W)).path), W + '/tsmain/source.ts');
   assert.equal(normalize(source.resolveSync('./pick', disk(W)).path), W + '/pick.js');
   assert.throws(() => source.resolveSync('dual/no-extension', disk(W)), (e) => e.code === 'MODULE_NOT_FOUND');
-  const product = createCjsLoader(context, () => ({ console, process }));
+  const product = createCjsLoader(context, { console, process });
   assert.equal(product.requireFrom('/' + W).resolve('./typescript'), '/' + W + '/typescript.ts');
   // Intentional divergence: existing lifo product folders are not NODE_PATH.
   assert.equal(strict.resolveSync('nimbus-product-global', disk(W)), null);
@@ -253,7 +253,7 @@ try {
   // Classification is delivered by resolution, so lifo needn't rediscover it.
   let reads = 0;
   const counting = { ...virtualFs, readFileString(path) { if (path.endsWith('/package.json')) reads++; return virtualFs.readFileString(path); } };
-  const classified = createCjsLoader({ ...context, filesystem: () => counting }, () => ({ console, process }), { policy: NODE_REQUIRE_POLICY });
+  const classified = createCjsLoader({ ...context, filesystem: () => counting }, { console, process }, { policy: NODE_REQUIRE_POLICY });
   for (const id of ['./index.js', './nearer/plain.js']) {
     const filename = classified.requireFrom('/' + W).resolve(id);
     const before = reads;
