@@ -8,9 +8,11 @@ published independently in the `@nimbus-sh` npm scope.
 - Fixed: two Durable Objects of a `wrangler dev` Worker could run as one
   (one instance, one storage): an object's facet was named by its binding
   and its id joined with `-`, so binding `A-B`'s object `c` and binding
-  `A`'s object `B-c` were the same. Each pair now names its own facet. An
+  `A`'s object `B-c` were the same. Each pair now names its own facet, of
+  a bounded length (a long object id named one over workerd's limit). An
   object's local storage under `wrangler dev` starts empty once, under its
-  new name.
+  new name; so does a D1 database's, whose facet name is bounded the same
+  way (a long project path named one over the limit).
 - Fixed: two sessions served by one isolate decode their background
   processes' terminal output each on its own. Their processes are numbered
   alike, and one isolate-wide decoder per process number let a character

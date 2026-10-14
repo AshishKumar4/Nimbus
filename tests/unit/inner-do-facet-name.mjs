@@ -7,7 +7,8 @@
 //
 // Through the real _rpcInnerDoCall, on a session whose facets record the
 // names they are asked for. Red before: both objects named facet
-// 'innerDO-A-B-c'.
+// 'innerDO-A-B-c'; then, its pair as JSON, a long or quote-heavy id named
+// a facet over workerd's 256 bytes.
 import assert from 'node:assert/strict';
 import { _rpcInnerDoCall } from '../../packages/worker/src/session/rpc.ts';
 import { registerInnerDoClass } from '../../packages/fabric/src/inner-do-registry.ts';
@@ -19,11 +20,15 @@ const self = {
   ctx: {
     id: { toString: () => doId },
     facets: {
+      // As workerd answers: a name over 256 bytes is refused (actor-state.c++).
       get(name) {
+        if (new TextEncoder().encode(name).length > 256) throw new TypeError(`facet name too long: ${name.length}`);
         asked.push(name);
         return { ping: () => name };
       },
-      abort() {},
+      abort(name) {
+        if (new TextEncoder().encode(name).length > 256) throw new TypeError(`facet name too long: ${name.length}`);
+      },
     },
   },
 };
@@ -31,7 +36,8 @@ const cls = {};
 registerInnerDoClass(doId, 'A-B', cls);
 registerInnerDoClass(doId, 'A', cls);
 
-const pairs = [['A-B', 'c'], ['A', 'B-c'], ['A', 'B'], ['A-B', 'c"']];
+// The last two are as long as idFromString takes, and longer once escaped.
+const pairs = [['A-B', 'c'], ['A', 'B-c'], ['A', 'B'], ['A-B', 'c"'], ['A', 'x'.repeat(241)], ['A', '"'.repeat(200)]];
 for (const [bindingName, id] of pairs) await _rpcInnerDoCall(self, { bindingName, id, path: ['ping'], args: [] });
 assert.equal(new Set(asked).size, pairs.length, `each object its own facet: ${JSON.stringify(asked)}`);
 for (const name of asked) {
