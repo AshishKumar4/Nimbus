@@ -21,7 +21,7 @@
  * would change what the operation means.
  */
 import type {
-  Awaitable, Principal, SyncVFS, VFS, VfsCasResult, VfsChanges, VfsContentRef, VfsCred, VfsDirent, VfsMountDescription, VfsOpenFile, VfsRemoval,
+  Awaitable, Principal, SyncVFS, VFS, VfsCasResult, VfsChanges, VfsContentRef, VfsCopyOptions, VfsCred, VfsDirent, VfsMountDescription, VfsOpenFile, VfsRemoval,
   VfsRevision, VfsStat, VfsUsage, VfsViewOptions, VfsWriteEvent, VfsWriteObserver, VfsWriteWants,
 } from './vfs.js';
 import type { RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
@@ -155,13 +155,10 @@ export function runtimeStatOf(stat: VfsStat): RuntimeVfsStat {
 
 export type { Principal } from './vfs.js';
 
-/** The namespace's copy: a tree with `recursive`; `follow` copies what a link named as the source leads to, as copyfile does. */
-export interface NamespaceCopyOptions { recursive?: boolean; preserve?: boolean; follow?: boolean }
-
 /** The namespace always offers recursive removal, walking a backend that does not, and copies across filesystems. */
 export interface CompositeSyncVFS extends SyncVFS {
   removeRecursive(path: string, options?: { keepVanishedAncestors?: boolean }): VfsRemoval;
-  copy(from: string, to: string, options?: NamespaceCopyOptions): number;
+  copy(from: string, to: string, options?: VfsCopyOptions): number;
 }
 
 /** A backend, or a function giving the backend for a principal at this instant (null: absent). */
@@ -3087,7 +3084,7 @@ export class CompositeVFS implements VFS {
    * A directory onto an existing path is EEXIST: merging into a directory
    * is cp's job too. (FormalModelsLane `Vfs/Composite`, copy_stays_in_target.)
    */
-  private copyAt(fromInput: string, toInput: string, options: NamespaceCopyOptions | undefined, sync: boolean): Awaitable<number> {
+  private copyAt(fromInput: string, toInput: string, options: VfsCopyOptions | undefined, sync: boolean): Awaitable<number> {
     return andThen(this.resolve(fromInput, options?.follow === true, sync), (from) => { this.present(from); return andThen(this.resolve(toInput, false, sync), (to) => {
       this.present(to);
       const fromMount = this.table.mounts.get(from);
@@ -3430,7 +3427,7 @@ export class CompositeVFS implements VFS {
       this.onCapability(path, false, 'writeFileIfRevision', true, (fn, rel) => fn(rel, data, expected), { written: data, creates: createsIfAbsent(expected) }));
   }
 
-  async copy(from: string, to: string, options?: NamespaceCopyOptions): Promise<number> {
+  async copy(from: string, to: string, options?: VfsCopyOptions): Promise<number> {
     return awaited({ syscall: options?.recursive ? 'cp' : 'copyfile', path: from, dest: to }, () => this.copyAt(from, to, options, false));
   }
 

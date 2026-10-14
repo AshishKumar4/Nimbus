@@ -237,7 +237,7 @@ export interface VFS {
   chown?(path: string, uid: number, gid: number): Awaitable<void>;
   utimes?(path: string, atimeMs: number, mtimeMs: number): Awaitable<void>;
   /** Copy within this backend (SQLite copies rows, not bytes). Returns entries copied. */
-  copy?(from: string, to: string, options?: { recursive?: boolean; preserve?: boolean }): Awaitable<number>;
+  copy?(from: string, to: string, options?: VfsCopyOptions): Awaitable<number>;
   /** Compare-and-write. Never emulated with read, compare, write. */
   writeFileIfRevision?(path: string, data: Uint8Array, expected: VfsRevision): Awaitable<VfsCasResult>;
   /** Exactly that version, or a refusal; never the current file in its place. */
@@ -324,7 +324,7 @@ export interface SyncVFS {
   chmod?(path: string, mode: number): void;
   chown?(path: string, uid: number, gid: number): void;
   utimes?(path: string, atimeMs: number, mtimeMs: number): void;
-  copy?(from: string, to: string, options?: { recursive?: boolean; preserve?: boolean }): number;
+  copy?(from: string, to: string, options?: VfsCopyOptions): number;
   writeFileIfRevision?(path: string, data: Uint8Array, expected: VfsRevision): VfsCasResult;
   readFileAtRevision?(path: string, revision: VfsRevision, range?: VfsRange): Uint8Array;
 }
@@ -415,6 +415,13 @@ export const S_IFREG = 0o100000;
 export const S_IFDIR = 0o040000;
 export const S_IFCHR = 0o020000;
 export const S_IFLNK = 0o120000;
+
+/**
+ * A copy: a tree with \`recursive\` (\`preserve\` is cp -p); \`follow\`
+ * copies what a link named as the source leads to, as copyfile does, where
+ * a tree copy otherwise copies the link.
+ */
+export interface VfsCopyOptions { recursive?: boolean; preserve?: boolean; follow?: boolean }
 
 /**
  * The permission bits a copy without preserve asks to make an entry with:

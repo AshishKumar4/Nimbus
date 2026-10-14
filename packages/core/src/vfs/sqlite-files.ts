@@ -10,7 +10,7 @@
  * code.
  */
 import { ROOT_DIRECTORY_MODE, ROOT_INODE, type CredentialedVfs, type SqliteVFS, type VfsStat as SqliteStat } from './sqlite-vfs.js';
-import type { SyncVFS, VFS, VfsCasResult, VfsChanges, VfsCred, VfsDirent, VfsOpenFile, VfsRemoval, VfsRevision, VfsStat, VfsViewOptions, VfsWriteObserver } from './vfs.js';
+import type { SyncVFS, VFS, VfsCasResult, VfsChanges, VfsCopyOptions, VfsCred, VfsDirent, VfsOpenFile, VfsRemoval, VfsRevision, VfsStat, VfsViewOptions, VfsWriteObserver } from './vfs.js';
 import { syscallError, toVfsError, VfsError, VFS_ERRNO, type VfsErrorCode } from './vfs-error.js';
 import { projectChange, type VfsEvent } from './events.js';
 import { normalizeVfsPath } from './path.js';
@@ -256,13 +256,13 @@ export class SqliteFiles implements VFS {
   }
 
   /** Copy inside the database: rows, not bytes. */
-  copy(from: string, to: string, options?: { recursive?: boolean; preserve?: boolean }): number {
+  copy(from: string, to: string, options?: VfsCopyOptions): number {
     return this.run(options?.recursive ? 'cp' : 'copyfile', from, () => {
       if (!options?.recursive) {
         this.view.copyFile(from, to);
         return 1;
       }
-      return this.view.copyTree(from, to, { preserve: options.preserve });
+      return this.view.copyTree(from, to, { preserve: options.preserve, follow: options.follow });
     }, to);
   }
 
