@@ -78,11 +78,13 @@ export async function missingBindings({ specs = SPECS, demand = DEMAND, packumen
       via.push(`${request.registryName}@${version}`);
       from = request.registryName;
     }
-    const owner = chain.at(-1);
+    if (!owners.has(chain.at(-1))) throw new Error(`binding demand: DEMAND ends at ${chain.at(-1)}, which no staged binding owns`);
+    // What installs is the package the walk resolved: an alias to another
+    // package installs that one, under which no staged binding loads.
+    const owner = from;
     const name = owners.get(owner);
-    if (name === undefined) throw new Error(`binding demand: DEMAND ends at ${owner}, which no staged binding owns`);
-    const key = `${name}@${version}`;
-    if (!demanded.has(key)) demanded.set(key, { key, owner, version, via, built: key in specs });
+    const key = name === undefined ? `${owner}@${version}` : `${name}@${version}`;
+    if (!demanded.has(key)) demanded.set(key, { key, owner, version, via, built: name !== undefined && key in specs });
   }
   const all = [...demanded.values()];
   return { demanded: all, missing: all.filter((d) => !d.built) };
