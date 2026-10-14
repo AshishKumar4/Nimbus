@@ -34,7 +34,6 @@ export declare class JobTable {
     start(options: {
         command: string;
         cwd: string;
-        env: Record<string, string>;
         promise: Promise<number>;
         abortController: AbortController;
     }): {

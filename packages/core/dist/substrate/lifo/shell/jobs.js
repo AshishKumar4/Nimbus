@@ -48,7 +48,6 @@ export class JobTable {
             command: options.command.split(' ')[0] || 'unknown',
             args: options.command.split(' '),
             cwd: options.cwd,
-            env: options.env,
             isForeground: false,
             promise: options.promise,
             abortController: options.abortController,

@@ -9,11 +9,10 @@ export class ProcessRegistry {
     resolvers = new Map();
     nextPid = 2; // PID 1 reserved for shell
     shellAbortController = null;
-    registerShell(cwd, env) {
+    registerShell(cwd) {
         const existing = this.processes.get(1);
         if (existing) {
             existing.cwd = cwd;
-            existing.env = { ...env };
             return existing.pid;
         }
         this.shellAbortController = new AbortController();
@@ -23,7 +22,6 @@ export class ProcessRegistry {
             command: 'shell',
             args: ['shell'],
             cwd,
-            env: { ...env },
             startTime: Date.now(),
             status: 'running',
             isForeground: true,
@@ -49,7 +47,6 @@ export class ProcessRegistry {
             command: opts.command,
             args: opts.args,
             cwd: opts.cwd,
-            env: opts.env,
             startTime: Date.now(),
             status: 'running',
             isForeground: opts.isForeground,

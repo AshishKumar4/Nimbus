@@ -13,8 +13,6 @@ export interface Process {
     args: string[];
     /** Working directory when process started */
     cwd: string;
-    /** Environment variables */
-    env: Record<string, string>;
     /** Process start time (milliseconds since epoch) */
     startTime: number;
     /** Current process status */
@@ -40,8 +38,6 @@ export interface SpawnOptions {
     args: string[];
     /** Working directory */
     cwd: string;
-    /** Environment variables */
-    env: Record<string, string>;
     /** Whether this is a foreground process */
     isForeground: boolean;
     /** Promise that resolves with exit code */
@@ -63,7 +59,7 @@ export declare class ProcessRegistry {
     private resolvers;
     private nextPid;
     private shellAbortController;
-    registerShell(cwd: string, env: Record<string, string>): number;
+    registerShell(cwd: string): number;
     /**
      * Spawn a new process and register it in the process table.
      * Returns the assigned PID.

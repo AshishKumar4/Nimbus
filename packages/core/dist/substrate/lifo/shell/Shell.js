@@ -116,7 +116,7 @@ export class Shell {
         if (!shellEnv['0'])
             shellEnv['0'] = 'nimbus-sh';
         if (!shellEnv['$'])
-            shellEnv['$'] = String(processRegistry.registerShell(this.state.getCwd(), shellEnv));
+            shellEnv['$'] = String(processRegistry.registerShell(this.state.getCwd()));
         let defaultCred = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
         this.commandIdentity = commandIdentity ?? {
             pid: Number(shellEnv['$']),
@@ -435,7 +435,7 @@ export class Shell {
     async start() {
         // Register this shell instance as a process
         // First shell gets PID 1, subsequent shells get PID 2, 3, etc.
-        const pid = this.processRegistry.registerShell(this.state.getCwd(), this.state.env);
+        const pid = this.processRegistry.registerShell(this.state.getCwd());
         this.state.env['$'] = String(pid);
         this.bindTerminalInput();
         // The saved history, so Up recalls the last session's commands, as bash's does.
