@@ -26,7 +26,7 @@ import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { registerInnerDoClass, clearInnerDoClasses, abortInnerDoFacets } from '@nimbus-sh/fabric/inner-do-registry.js';
 import { innerWorkerModules } from '@nimbus-sh/fabric/inner-do-env.js';
 import { KvEmulator } from '../bindings/kv.js';
-import { D1Emulator } from '../bindings/d1.js';
+import { D1Emulator, d1DatabaseFacetName } from '../bindings/d1.js';
 import { R2Emulator } from '../bindings/r2.js';
 import { hostRoute } from '@nimbus-sh/fabric/composition.js';
 import { parseWranglerJsonc, type WranglerConfig } from './wrangler-config.js';
@@ -717,7 +717,7 @@ export class NimbusWrangler {
       } else {
         for (const d1 of this.config.d1_databases) {
           if (!d1.binding) continue;
-          const facetName = `d1:${this.root}:${d1.database_id || d1.database_name || d1.binding}`;
+          const facetName = d1DatabaseFacetName(this.root, d1.database_id || d1.database_name || d1.binding);
           const emu = new D1Emulator({
             database: () => facets.get(facetName, async () => ({ class: databaseClass })),
             binding: d1.binding,

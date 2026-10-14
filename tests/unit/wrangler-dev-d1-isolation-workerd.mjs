@@ -31,12 +31,20 @@ const CONFIG = {
   name: 'd1-isolation',
   main: 'src/index.js',
   compatibility_date: '2026-09-26',
-  d1_databases: [{ binding: 'DB', database_name: 'app', database_id: 'local-app', migrations_dir: 'migrations' }],
+  d1_databases: [
+    { binding: 'DB', database_name: 'app', database_id: 'local-app', migrations_dir: 'migrations' },
+    { binding: 'DB2', database_name: 'lazy', database_id: 'local-lazy', migrations_dir: 'migrations-lazy' },
+  ],
 };
 const MIGRATIONS = {
   '0001_notes.sql': 'CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT);\n',
   // A table of its own first, then the session's: the migration is one whole.
   '0002_reach.sql': 'CREATE TABLE partial (x INTEGER);\nDELETE FROM nimbus_terminal_scrollback;\nDELETE FROM nimbus_storage_ledger;\n',
+};
+// A statement that fails only at its second row has failed: SQLite
+// evaluates rows as they are read, so the migration runs each to its end.
+const LAZY_MIGRATIONS = {
+  '0001_lazy.sql': "CREATE TABLE partial (x INTEGER);\nSELECT json(column1) FROM (VALUES ('{}'), ('bad'));\n",
 };
 
 console.log('wrangler-dev-d1-isolation-workerd: starting local workerd');
@@ -55,7 +63,7 @@ try {
   const marker = `history-${Date.now().toString(36)}`;
   // The line as the command prints it, not as it is typed (a quote splits the typed one).
   await terminal.run(`echo ${marker.slice(0, 8)}''${marker.slice(8)}`, 10_000);
-  await terminal.run('mkdir -p /home/user/d1-app/src /home/user/d1-app/migrations', 10_000);
+  await terminal.run('mkdir -p /home/user/d1-app/src /home/user/d1-app/migrations /home/user/d1-app/migrations-lazy', 10_000);
   const write = async (path, content) => {
     const response = await fetch(`${probe.base}/s/${sid}/api/write-file`, {
       method: 'POST',
@@ -67,20 +75,24 @@ try {
   await write('/home/user/d1-app/wrangler.jsonc', JSON.stringify(CONFIG));
   await write('/home/user/d1-app/src/index.js', WORKER);
   for (const [name, sql] of Object.entries(MIGRATIONS)) await write(`/home/user/d1-app/migrations/${name}`, sql);
+  for (const [name, sql] of Object.entries(LAZY_MIGRATIONS)) await write(`/home/user/d1-app/migrations-lazy/${name}`, sql);
   await terminal.run('cd /home/user/d1-app', 10_000);
 
   /**
-   * `wrangler dev` until its build has ended and its migrations have had
-   * time to run; then stopped. Answers what it wrote. (The Worker itself
-   * does not start yet: a D1 binding cannot cross into its env, SES-M1's
-   * guest half; its migrations run either way.)
+   * `wrangler dev` until its build has ended and its migrations have told
+   * how they ended (a failure, or how many applied; a run that applies none
+   * and fails none says nothing, and is told by the wait running out); then
+   * stopped. Answers what it wrote. (The Worker itself does not start yet:
+   * a D1 binding cannot cross into its env, SES-M1's guest half; its
+   * migrations run either way.)
    */
   const devOnce = async () => {
     terminal.reset();
     terminal.cmd('wrangler dev');
     await terminal.waitFor((b) => /Worker built|Failed to start/.test(stripAnsi(b)), 120_000, 'wrangler dev build');
-    // The migrations run beside the build; their lines come after it.
-    await new Promise((resolve) => setTimeout(resolve, 5_000));
+    const told = (b, binding) => new RegExp(`D1 ${binding}: (migration \\S+ failed|applied \\d+ migrations)|env\\.${binding} will not work`).test(stripAnsi(b));
+    await terminal.waitFor((b) => told(b, 'DB') && told(b, 'DB2'), 30_000, 'the migrations\' outcome')
+      .catch((error) => check(false, 'the migrations tell how they ended', error.message.slice(0, 300)));
     const out = stripAnsi(terminal.buf);
     if (!/Failed to start/.test(out)) {
       terminal.send('\x03');
@@ -98,6 +110,9 @@ try {
   const second = await devOnce();
   check(!/applied \d+ migrations/.test(second), 'what was applied is recorded, and nothing else is applied', tail(second));
   check(/migration 0002_reach\.sql failed and was rolled back: no such table: nimbus_terminal_scrollback/.test(second), 'the failed migration is tried again, whole', tail(second));
+  for (const [run, out] of [['first', first], ['second', second]]) {
+    check(/D1 DB2: migration 0001_lazy\.sql failed and was rolled back: malformed JSON/.test(out), `${run} run: a statement whose second row fails fails its migration`, tail(out));
+  }
 
   // The session's scrollback is the session's: a terminal that reconnects is shown its history.
   await terminal.close();

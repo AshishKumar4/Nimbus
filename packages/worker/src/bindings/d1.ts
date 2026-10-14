@@ -45,6 +45,14 @@ export interface D1Database {
   applyMigrations(migrations: readonly D1Migration[]): Promise<D1MigrationOutcome>;
 }
 
+/**
+ * The facet a project's database is: `d1:` and the project root and the
+ * database, each whole (a name made of either cannot be another's).
+ */
+export function d1DatabaseFacetName(root: string, database: string): string {
+  return 'd1:' + JSON.stringify([root, database]);
+}
+
 export interface D1EmulatorOptions {
   /**
    * The binding's database. Called for each use: a facet's stub belongs to
