@@ -16,6 +16,12 @@ export interface VirtualResponse {
 	statusCode: number;
 	headers: Record<string, string>;
 	body: string;
+	/**
+	 * Set by a handler that returned before ending the response (a timer, an
+	 * await, async middleware): settles when it ends, and whoever serves the
+	 * request waits for it (kernel/local-serve.ts).
+	 */
+	_donePromise?: Promise<void>;
 }
 
 export type VirtualRequestHandler = (req: VirtualRequest, res: VirtualResponse) => void;

@@ -38,6 +38,59 @@ published independently in the `@nimbus-sh` npm scope.
 - Fixed: a process's recursive copy beneath a WASI preopen on a mount that
   answers asynchronously followed a link named as the source even when the
   copy did not ask to follow it.
+## 2026-10-14: platform 0.10.0, core 0.21.0, fabric 0.16.0, worker 0.19.0, sdk 0.15.0, loom 0.3.1, react 0.3.3, cli 0.2.7, create-nimbus-app 0.2.4 (config 0.3.1 unchanged)
+
+The 2026-10-13 versions, and core 0.20.0, fabric 0.15.0 and worker 0.18.0 of this date, reached production but were never published to npm; these carry their changes too.
+
+- Fixed: a Node program's `http.get` or `http.request` to a server of the
+  same program waits for the server's `res.end()`, as Node does. It
+  answered at once, so a handler that ended from a timer or after an
+  `await` sent the client a 200 with an empty body. The client now also
+  sees the status's reason (`Not Found`, not always `OK`), and the server
+  sees the request's header names lower-cased. Such a request is served as
+  `curl`'s is, and `req.abort()` ends its wait.
+- Fixed: the library's built-in `node` gives a program the engine's own
+  `assert` (and `assert/strict`), `querystring`, `timers` (and
+  `timers/promises`), `perf_hooks` and `v8`, and the context-free builtins
+  it did not have: `async_hooks`, `diagnostics_channel`, `punycode`, `sys`,
+  `util/types`, `path/posix` and `path/win32`. `require('console')` is the
+  program's console, and `module.Module`'s builtin list is the module's. lifo's `assert` compared
+  values as JSON (two different Maps were equal) and threw plain Errors;
+  its `querystring` kept one of repeated keys and stringified arrays with
+  commas; its `v8.serialize` returned no bytes. `v8`'s functions that would
+  reach the host's files or the engine's flags (`writeHeapSnapshot`,
+  `setFlagsFromString`, coverage) refuse as unavailable, as do `vm`,
+  `domain`, `trace_events` and `wasi` whole: they would import past the
+  program's modules, set the engine's own process, or reach the host's files.
+- Fixed: `env` runs its command, as GNU env does. `env NODE_ENV=production
+  node build.js` printed the environment and ran nothing. It reads its
+  options as GNU's getopt does (`-i`, `-u NAME`, `-0`, clusters such as
+  `-iu NAME`, and the first operand ends them), then `NAME=VALUE`
+  assignments, and ends with the command's status, 127 for a command it
+  cannot find, 126 for one it may not run, or 125 for a bad option or a
+  name `-u` cannot unset. Any operand with an `=` is an assignment, and any
+  name a name (`__proto__` too).
+- Fixed: `xargs` takes each of GNU's spellings of its replace string:
+  `-I{}` joined, `-i[R]` and `--replace[=R]`, which ran a command named
+  after the option. With one, each input line is an item, its leading
+  white space dropped, so `printf 'a b\n' | xargs -I{} echo [{}]` prints
+  `[a b]`. A replace string and `-n` exclude each other as in GNU, the
+  later one winning with GNU's warning.
+- Changed: `xargs` reads its input as GNU xargs does, in every mode but
+  `-0`: quotes and backslashes are decoded (`"a b"` is one item, `a\ b`
+  too), and a quote left open ends xargs with status 1 and GNU's "unmatched
+  quote" message, after the items read before it have run. Before, quotes
+  and backslashes reached the command as they were.
+- Fixed: a shell blocked in `wait` (or `fg`) on a background job counts as
+  waiting on that job, so the Dynamic Worker ledger can refuse a launch in a
+  family stuck behind it instead of hanging. While the shell has another
+  job running that could free it (a job that kills the awaited one), the
+  ledger refuses nothing.
+- Fixed: Astro projects run again. `@astrojs/compiler-binding` 0.5.2,
+  published 2026-10-14, is what `npm create astro` now installs, and Nimbus
+  had a build only of 0.5.1, so `astro dev` and `astro build` failed with
+  "Cannot find native binding". Nimbus now stages a build of 0.5.2 as well
+  as 0.5.1.
 - Fixed: the library's built-in `node` gives a program the engine's own
   `path` and `url`, against the program's working directory: `path.resolve`
   and `path.relative` start from it, as does `url.pathToFileURL` of a
@@ -125,11 +178,6 @@ published independently in the `@nimbus-sh` npm scope.
   `accountWork` and `holdWork` (the shell counts and holds its work in that
   table), and `createKillCommand(host)`, `createPsCommand(processes)` and
   `createTopCommand(processes)` read it.
-
-## 2026-10-14: platform 0.10.0, core 0.20.0, fabric 0.15.0, worker 0.18.0, sdk 0.15.0, loom 0.3.1, react 0.3.3, cli 0.2.7, create-nimbus-app 0.2.4 (config 0.3.1 unchanged)
-
-The 2026-10-13 versions reached production but were never published to npm; these carry their changes too.
-
 - Fixed (Node `fs`): a write keeps the bytes it was given. `writeFileSync`,
   `appendFileSync`, `fs.promises.writeFile` and a descriptor's `write` used
   the program's own buffer as the file's bytes, so changing or reusing the

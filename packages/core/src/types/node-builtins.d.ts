@@ -136,6 +136,23 @@ declare module 'node:url' {
   export default url;
 }
 
+declare module 'node:console' {
+  /** Node's Console class: a console over the streams it is given. */
+  export class Console {
+    constructor(stdout: object, stderr?: object);
+    log(...data: unknown[]): void;
+  }
+}
+
+declare module 'node:timers' {
+  export const setTimeout: typeof globalThis.setTimeout;
+  export const clearTimeout: typeof globalThis.clearTimeout;
+  export const setInterval: typeof globalThis.setInterval;
+  export const clearInterval: typeof globalThis.clearInterval;
+  const timers: { setTimeout: typeof setTimeout; clearTimeout: typeof clearTimeout; setInterval: typeof setInterval; clearInterval: typeof clearInterval };
+  export default timers;
+}
+
 declare module 'node:async_hooks' {
   export class AsyncLocalStorage<T> {
     getStore(): T | undefined;

@@ -270,11 +270,13 @@ function decide(entry) {
  *     its running children is queued here or stuck;
  *   - a process holding no worker (a shell line running in the session) is
  *     stuck when every unit of its own work is awaiting a child it started
- *     (the graph's `awaits`), and each of those is queued or stuck;
+ *     (the graph's `awaits`), and each of those, and each other child it
+ *     has running (which may free it: a job that kills the one a `wait` is
+ *     on), is queued or stuck;
  *   - a process holding no worker in a wait outside the ledger (for the
  *     supervisor's credit, on another launch's build: waitOutsideLedger) is
- *     stuck when each process that wait is on is queued or stuck: the
- *     credit's holders, the build's leader;
+ *     stuck when each process that wait is on, and each child it has
+ *     running, is queued or stuck: the credit's holders, the build's leader;
  *   - anything else (a builtin running, a process that never reports, a
  *     hold no process owns) is taken to end on its own.
  *
@@ -304,7 +306,7 @@ function deadlocked(entry) {
         if (entry.processHolds.has(pid))
             on = currentNews(entry, pid) ? graph.children(pid) : null;
         else
-            on = entry.outside.get(pid)?.() ?? graph.awaits(pid);
+            on = withRunningChildren(entry.outside.get(pid)?.() ?? graph.awaits(pid), graph.children(pid));
         if (!on || on.length === 0)
             return;
         waitsOn.set(pid, on);
@@ -340,6 +342,18 @@ function deadlocked(entry) {
         }
     }
     return undefined;
+}
+/**
+ * What a process holding no worker waits on, `on` (what it awaits, or its
+ * wait outside the ledger), with every other child it has running: any of
+ * them may end what it waits on. Null or empty `on` stays as it is: no wait
+ * the ledger can tell.
+ */
+function withRunningChildren(on, children) {
+    if (!on || on.length === 0)
+        return on;
+    const extra = children.filter((child) => !on.includes(child));
+    return extra.length === 0 ? on : [...on, ...extra];
 }
 /**
  * `pid`, holding no worker, waits outside the ledger until the returned end:

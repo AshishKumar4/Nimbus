@@ -66,5 +66,9 @@ export function createConsole(stdout, stderr) {
         table: (data) => {
             stdout.write(format(data) + '\n');
         },
+        /** The engine's Console class, as Node's console has it (loaded when first reached). */
+        get Console() {
+            return realm.getBuiltinModule('node:console').Console;
+        },
     };
 }

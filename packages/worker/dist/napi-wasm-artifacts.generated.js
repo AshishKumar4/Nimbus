@@ -67,6 +67,20 @@ export const STAGED_BINDING_ARTIFACTS = [
             "sha256": "9c68c5e8b97530c46f7b9d4998a26c3b7d68567755250a9118b0d14bcdcb680a",
             "bytes": 6585355
         }
+    },
+    {
+        "name": "astro-compiler",
+        "version": "0.5.2",
+        "owner": "@astrojs/compiler-binding",
+        "requiredAs": [
+            "@astrojs/compiler-binding-wasm32-wasi"
+        ],
+        "memoryPages": 68,
+        "wasm": {
+            "path": "/_assets/napi-wasm/astro-compiler/0.5.2/astro-compiler.wasm",
+            "sha256": "8d5bb39f31cc53eacb7943517a33c6a1d408549d4420186df4bdf460b0325f77",
+            "bytes": 6574305
+        }
     }
 ];
 /** The rolldown Nimbus itself depends on, whose build the build facet runs. */

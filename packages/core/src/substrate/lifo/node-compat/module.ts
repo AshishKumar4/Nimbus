@@ -148,6 +148,8 @@ export function createModuleShim(
   class LoaderModule extends Module {
     static createRequire = createRequire;
     static _cache: Record<string, unknown> = {};
+    static builtinModules = names;
+    static isBuiltin = isMapBuiltin;
   }
 
   return {
