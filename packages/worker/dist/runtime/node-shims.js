@@ -11877,20 +11877,35 @@ function __nimbusNodeShaped(e) {
 // else is not ended before it. An argument the API ignores holds nothing.
 function __nimbusNodeErrorsOf(fn, callbacks, held = null) {
   fn = __nimbusFrontBase(fn);
-  const shaped = function (...args) {
-    const slot = held !== null ? held(args) : callbacks ? args.length - 1 : -1;
+  // Decided here, once: a function that holds nothing pays nothing per call.
+  const shaped = held === null ? function (...args) {
+    const last = args.length - 1;
+    if (callbacks && last >= 0 && typeof args[last] === "function") {
+      const callback = args[last];
+      args[last] = function (...results) {
+        if (results.length > 0) __nimbusNodeShaped(results[0]);
+        return __nimbusReflectApply(callback, this, results);
+      };
+    }
+    let result;
+    try {
+      result = __nimbusReflectApply(fn, this, args);
+    } catch (e) {
+      throw __nimbusNodeShaped(e);
+    }
+    return result instanceof Promise ? result.then(undefined, (e) => { throw __nimbusNodeShaped(e); }) : result;
+  } : function (...args) {
+    const slot = held(args);
     let settle = null;
     if (slot >= 0 && typeof args[slot] === "function") {
       const callback = args[slot];
-      if (held !== null) {
-        globalThis.__nimbusPendingOps++;
-        settle = () => {
-          if (settle === null) return;
-          settle = null;
-          globalThis.__nimbusPendingOps--;
-          globalThis.__nimbusHandleReleased?.();
-        };
-      }
+      globalThis.__nimbusPendingOps++;
+      settle = () => {
+        if (settle === null) return;
+        settle = null;
+        globalThis.__nimbusPendingOps--;
+        globalThis.__nimbusHandleReleased?.();
+      };
       args[slot] = function (...results) {
         settle?.();
         if (results.length > 0) __nimbusNodeShaped(results[0]);
