@@ -3848,18 +3848,20 @@ const __fsMod = (() => {
     const partial = _parkedPartial.get(srcK);
     const whole = content !== undefined && _denialCode(content) === null && (partial === undefined || partial !== __vfsWriteGenerations[srcK]);
     const dated = whole && typeof __resident !== "undefined" ? __resident.cells.provenance(srcK) : undefined;
-    // What the view held under the copy's name stands for nothing once the
-    // copy lands (a parked write there is logged ahead of it).
+    // A parked write to the copy's name is logged ahead of it.
     _flushParkedWrite(destAbs, _supervisor());
-    if (__vfsBundle) delete __vfsBundle[destK];
-    delete __vfsBundleRevisions[destK];
-    if (__vfsWrites) delete __vfsWrites[destK];
     const ticket = _beginFill(destK);
     let receipt;
     try {
       await _queueStructuralMutation(destAbs, "copyfile", src, () => _vfsCall(call).then((answer) => { receipt = answer?.receipt; return answer; }), dest);
-      if (receipt !== undefined && receipt.landed !== undefined && receipt.landed !== destK) receipt = null;
-      if (receipt) {
+      // Landed elsewhere (a link the view followed has moved): nothing the
+      // view holds is the copy's, and a barrier tells it where it went.
+      if (receipt !== undefined && receipt.landed !== undefined && receipt.landed !== destK) return;
+      // What the view held under the copy's key stands for nothing now.
+      if (__vfsBundle) delete __vfsBundle[destK];
+      delete __vfsBundleRevisions[destK];
+      if (__vfsWrites) delete __vfsWrites[destK];
+      if (receipt !== undefined) {
         _noteLearnedStat(destAbs, _receiptStat(receipt), ticket, receipt.revision);
         const from = receipt.from;
         if (from !== undefined && from.path === srcK && typeof dated === "number" && dated >= from.revision) {
@@ -3871,8 +3873,6 @@ const __fsMod = (() => {
     } finally {
       _endFill(ticket);
     }
-    // Landed elsewhere: what the view held under its key was dropped above, and a barrier tells it the rest.
-    if (receipt === null) return;
     if (whole) await _readFileAsync(dest);
     else if (receipt === undefined) await _learnLive(destAbs, _supervisor());
   }
