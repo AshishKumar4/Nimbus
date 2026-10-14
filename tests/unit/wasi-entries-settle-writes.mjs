@@ -48,6 +48,18 @@ async function program(guest, { restart }) {
 
 const readKept = (guest) => guest.kernel.readFileString(KEPT);
 
+const failed = [];
+/** Each case runs, and each failure is named; the file fails at the end if any did. */
+const check = async (name, source, fn) => {
+  try {
+    await withGuest(source, fn);
+    console.log(`  ✓ ${name}`);
+  } catch (error) {
+    failed.push(name);
+    console.log(`  ✗ ${name}: ${error?.message ?? error}`);
+  }
+};
+
 // ── The threaded entry ────────────────────────────────────────────────────
 // A module whose _start returns at once: the program's calls are the test's, made before it runs.
 const EMPTY_START = new WebAssembly.Module(new Uint8Array([
@@ -61,19 +73,18 @@ const threaded = async (guest) => {
   const sched = globalThis.__wasiThreadsCreate({ memory: guest.memory, startThread: () => { throw new Error('this program starts no threads'); } });
   return await globalThis.__wasiRunStartThreads(new WebAssembly.Instance(EMPTY_START), sched);
 };
-await withGuest('', async (guest) => {
+await check('threaded: what the program wrote is in the session when the run returns', '', async (guest) => {
   await program(guest, { restart: false });
   const run = await threaded(guest);
   assert.deepEqual(run, { exitCode: 0 });
   assert.equal(readKept(guest), 'kept by the settle', 'what the program wrote is in the session when the run returns');
 });
-await withGuest('', async (guest) => {
+await check('threaded: a run whose session restarted under it fails, saying why', '', async (guest) => {
   await program(guest, { restart: true });
   const run = await threaded(guest);
   assert.equal(run.exitCode, 1, 'a threaded run whose session restarted under it fails');
   assert.match(run.error ?? '', RESTARTED, 'and says why');
 });
-console.log('  ok  the threaded entry settles: its writes land, and a restarted session fails the run');
 
 // ── Ruby's entry ──────────────────────────────────────────────────────────
 /** __rubyRun over `guest`, its VM's init running `program` then trapping. */
@@ -93,18 +104,17 @@ async function ruby(guest, options) {
     cred: USER, supervisorPid: guest.pid, userCode: '', rbArgv: ['ruby'], progName: 'ruby', binName: 'ruby', cwd: '/home/user', userEnv: {},
   });
 }
-await withGuest(RUBY_RUNNER_PREAMBLE_TAIL, async (guest) => {
+await check('ruby: what the program wrote before a trap is in the session when the run returns', RUBY_RUNNER_PREAMBLE_TAIL, async (guest) => {
   const run = await ruby(guest, { restart: false });
   assert.equal(run.exitCode, 1);
   assert.match(run.error ?? '', /the VM trapped/);
   assert.equal(readKept(guest), 'kept by the settle', 'what the program wrote before the trap is in the session when the run returns');
 });
-await withGuest(RUBY_RUNNER_PREAMBLE_TAIL, async (guest) => {
+await check('ruby: a trapped run whose session restarted names the trap and the restart', RUBY_RUNNER_PREAMBLE_TAIL, async (guest) => {
   const run = await ruby(guest, { restart: true });
   assert.equal(run.exitCode, 1);
   assert.match(run.error ?? '', /the VM trapped/, 'the trap is still the run\'s error');
   assert.match(run.error ?? '', RESTARTED, 'and the restart is named with it');
 });
-console.log('  ok  Ruby\'s entry settles, however its run ended: its writes land, and a restarted session is named');
-
+assert.deepEqual(failed, [], 'every entry settles its run');
 console.log('wasi-entries-settle-writes: ok');
