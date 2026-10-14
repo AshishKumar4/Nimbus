@@ -16,7 +16,7 @@ await t.waitForPrompt(60_000);
 
 // Probe 1: `command -v clang` matches `which clang`
 const r1 = await t.run('command -v clang', 5_000);
-a.check('command -v clang → /usr/local/bin/clang', termBody(r1.output) === '/usr/local/bin/clang', `body=${JSON.stringify(termBody(r1.output))}`);
+a.check('command -v clang → /usr/bin/clang', termBody(r1.output) === '/usr/bin/clang', `body=${JSON.stringify(termBody(r1.output))}`);
 
 // Probe 2: `command -v echo` (registered builtin) → "echo" (name)
 const r2 = await t.run('command -v echo', 5_000);
@@ -33,7 +33,7 @@ a.check('install-script idiom: `command -v X >/dev/null && Y || Z`', termBody(r4
 
 // Probe 5: `command -V` verbose
 const r5 = await t.run('command -V clang', 5_000);
-a.check('command -V clang → "clang is /usr/local/bin/clang"', termBody(r5.output) === 'clang is /usr/local/bin/clang', `body=${JSON.stringify(termBody(r5.output))}`);
+a.check('command -V clang → "clang is /usr/bin/clang"', termBody(r5.output) === 'clang is /usr/bin/clang', `body=${JSON.stringify(termBody(r5.output))}`);
 
 await t.close();
 const sum = a.summary();

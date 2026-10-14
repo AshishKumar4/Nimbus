@@ -26,8 +26,10 @@ const USER = CRED_SESSION_USER.uid;
   // The OS the workspace boots on: /usr is the user's, /etc root's.
   seedBaseFilesystem(vfs);
   kernel.writeFile('etc/secret.json', JSON.stringify({ name: 'leaky', bin: { 'leaked-name': 'cli.js' } }), { mode: 0o600 });
+  // Packages the user put in the global folder (root's, as on Linux) through sudo.
   for (const name of ['leaky', 'fine']) {
-    user.mkdir(`usr/lib/node_modules/${name}`);
+    kernel.mkdir(`usr/lib/node_modules/${name}`, { mode: 0o755 });
+    kernel.chown(`usr/lib/node_modules/${name}`, USER, USER);
     user.writeFile(`usr/lib/node_modules/${name}/cli.js`, 'console.log(1)\n');
   }
   user.symlink('/etc/secret.json', 'usr/lib/node_modules/leaky/package.json');

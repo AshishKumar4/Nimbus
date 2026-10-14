@@ -1187,7 +1187,12 @@ export class NpmInstaller {
     }
     /** Staging directories in `tmp` no install in this session is using: an install cut short left them. */
     sweepStaging(tmp) {
-        // As the kernel: another user's staging directory in the sticky /tmp is still this installer's.
+        // Each as the user who owns it: another user's staging directory in the
+        // sticky /tmp is still this installer's to clear, but what its owner
+        // could not remove is not (a directory moved to a stage's name, holding
+        // root's files, is not the kernel's to empty). As that user with no
+        // group: a stage's group is no proof its owner is in it (a setgid
+        // directory gives its own), and the owner's own files need none.
         const kernel = this.store.as(CRED_KERNEL);
         let entries;
         try {
@@ -1201,7 +1206,8 @@ export class NpmInstaller {
             if (entry.type !== 'directory' || !entry.name.startsWith(STAGE_PREFIX) || this.placing.has(path))
                 continue;
             try {
-                kernel.removeRecursive(path);
+                const { uid } = kernel.lstat(path);
+                this.store.as({ uid, gid: NO_GROUP, groups: [], umask: 0o022 }).removeRecursive(path);
             }
             catch { /* tried again next time */ }
         }
@@ -1928,6 +1934,13 @@ export class NpmInstaller {
 // NpmInstaller._estimateSupervisorHeapMiB.
 /** What staging directories in /tmp and copies beside a mounted package are named. */
 const STAGE_PREFIX = '.npm-stage-';
+/**
+ * The group a stage's sweep acts with: none. NaN equals no number, so it is
+ * no inode's group, however that inode got its gid, and grants nothing (no
+ * gid is reserved for that: nogroup is a group like any other). The sweep
+ * only removes, so nothing is made with it.
+ */
+const NO_GROUP = Number.NaN;
 const COPY_PREFIX = '.nimbus-copy-';
 /**
  * `src`'s tree on the engine written into `dst` through `to`; with

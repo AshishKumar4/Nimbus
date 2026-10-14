@@ -19,6 +19,7 @@ import { type ResolveContext } from '../substrate/lifo/commands/registry.js';
 type UnixCommandRegistry = {
     register(name: string, handler: Command): void;
     resolve(name: string, from?: ResolveContext): unknown;
+    has?(name: string): boolean;
 };
 export declare function registerUnixCommands(registry: UnixCommandRegistry, sqliteVfs: SqliteVFS): void;
 export {};

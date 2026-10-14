@@ -40,7 +40,7 @@ const r3 = await t.run('which clang', 5_000);
 const r3ex = await t.run('echo "ex=$?"', 5_000);
 a.check(
   'which clang (canonical-bin) → path, exit 0',
-  termBody(r3.output) === '/usr/local/bin/clang' && termBody(r3ex.output) === 'ex=0',
+  termBody(r3.output) === '/usr/bin/clang' && termBody(r3ex.output) === 'ex=0',
   `out=${JSON.stringify(termBody(r3.output))} ex=${JSON.stringify(termBody(r3ex.output))}`,
 );
 

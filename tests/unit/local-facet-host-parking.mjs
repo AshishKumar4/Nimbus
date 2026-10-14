@@ -64,7 +64,7 @@ const harness = createSqliteVfsTestHarness(db);
 const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, generation: 1, cwd: '/home/user', facets: host });
 {
   const fs = ws.vfs.as(KERNEL);
-  const root = 'home/user/.nimbus/runtimes/bash/5.2.37-6';
+  const root = 'usr/lib/nimbus/bash/5.2.37-6';
   const manifest = [];
   const applets = readFileSync(`${WASM_DIR}bash/coreutils/busybox.applets`, 'utf8').split('\n').filter(Boolean);
   const all = [...files, ...applets.map((name) => [`bin/${name}`, null])];

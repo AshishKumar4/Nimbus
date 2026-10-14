@@ -25,10 +25,10 @@ await t.connect();
 await t.waitForPrompt(60_000);
 
 // 1. Install + discover the installed version. The success line is:
-//   "[clang] installed at home/user/.nimbus/runtimes/clang/<version> (X MiB)"
+//   "[clang] installed at usr/lib/nimbus/clang/<version> (X MiB)"
 const { output: installOut } = await t.run('nimbus install clang', 180_000);
 const installStripped = stripAnsi(installOut);
-const verMatch = installStripped.match(/installed at\s+(?:\/)?home\/user\/\.nimbus\/runtimes\/clang\/([\w.-]+)/);
+const verMatch = installStripped.match(/installed at\s+(?:\/)?usr\/lib\/nimbus\/clang\/([\w.-]+)/);
 const version = verMatch ? verMatch[1] : null;
 a.check('install banner reports a version path', version !== null,
   version ? `version=${version}` : `tail=${JSON.stringify(installStripped.slice(-300))}`);
@@ -38,11 +38,11 @@ if (version === null) {
   const sum = a.summary();
   process.exit(sum.fail > 0 ? 1 : 0);
 }
-const RUNTIME_DIR = `~/.nimbus/runtimes/clang/${version}`;
+const RUNTIME_DIR = `/usr/lib/nimbus/clang/${version}`;
 
 const { output: lsOutBefore } = await t.run(`ls ${RUNTIME_DIR}/bin/clang 2>&1`, 10_000);
 const lsStrippedBefore = stripAnsi(lsOutBefore);
-const beforePresent = lsStrippedBefore.includes(`/.nimbus/runtimes/clang/${version}/bin/clang`)
+const beforePresent = lsStrippedBefore.includes(`/usr/lib/nimbus/clang/${version}/bin/clang`)
   && !/ENOENT|No such/i.test(lsStrippedBefore);
 a.check('bin/clang exists before restart', beforePresent,
   beforePresent ? '' : `output=${JSON.stringify(lsStrippedBefore.slice(-200))}`);
@@ -64,7 +64,7 @@ await t.waitForPrompt(30_000);
 {
   const { output } = await t.run(`ls ${RUNTIME_DIR}/bin/clang 2>&1`, 10_000);
   const stripped = stripAnsi(output);
-  const present = stripped.includes(`/.nimbus/runtimes/clang/${version}/bin/clang`)
+  const present = stripped.includes(`/usr/lib/nimbus/clang/${version}/bin/clang`)
     && !/ENOENT|No such/i.test(stripped);
   a.check('bin/clang still exists after WS reconnect', present,
     present ? '' : `output=${JSON.stringify(stripped.slice(-200))}`);
