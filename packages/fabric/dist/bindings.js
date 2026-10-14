@@ -126,7 +126,9 @@ export class NimbusAssetsRPC extends WorkerEntrypoint {
         try {
             for (const candidate of candidates) {
                 try {
-                    const response = await useRpcResource(dispatch({ op: 'readFileBytes', args: [candidate] }), (bytes) => {
+                    const response = await useRpcResource(
+                    // As the process the host named; a binding minted with none reads as the session's user.
+                    dispatch({ op: 'readFileBytes', args: [candidate], ...(props.cred === undefined ? {} : { cred: props.cred }) }), (bytes) => {
                         if (bytes === null)
                             return null;
                         const body = bytes instanceof ArrayBuffer ? bytes

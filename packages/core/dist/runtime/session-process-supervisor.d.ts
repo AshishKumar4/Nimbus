@@ -203,6 +203,16 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
     /** Stop the work behind `pid`: its terminator, and every piece held for it, once each, for `reason`. */
     private terminate;
     cred(pid: number): VfsCred;
+    /**
+     * Whether `caller` may signal `pid`, by Linux's rule (kill(2)): root may
+     * signal any process, any other caller only a process of its own uid. The
+     * one rule every kill path a process or user takes asks.
+     */
+    maySignal(caller: Readonly<VfsCred>, pid: number): boolean;
+    /** {@link kill}, as `caller`: refused with EPERM where {@link maySignal} refuses it. */
+    killAs(caller: Readonly<VfsCred>, pid: number, exitCode?: number, reason?: SignalAbortReason): boolean;
+    /** Whether `pid` is `ancestor` or one of the processes spawned under it, transitively. */
+    isWithin(pid: number, ancestor: number): boolean;
     liveCred(pid: number): VfsCred;
     setUmask(pid: number, umask: number): number;
     /**

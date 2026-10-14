@@ -28,6 +28,7 @@ import type { HostRoute } from './composition.js';
 import { type FacetCodePolicy } from './facet-limits.js';
 import { type SupervisorBindingProps } from './supervisor-props.js';
 import type { WorkspaceEgress } from '@nimbus-sh/core/_shared/workspace-network.js';
+import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WorkerCode, EntrypointOptions } from './vendor/types.js';
 /**
  * A dynamic worker's entrypoint, as hop 3 relays to it. `fetch` is the
@@ -73,6 +74,8 @@ interface NimbusAssetsProps {
     doId?: string;
     /** The way back to that DO, minted with the binding. */
     route?: HostRoute;
+    /** The credential the assets are read as: the process that serves them, as the host minted it. */
+    cred?: VfsCred;
 }
 /**
  * Assets binding shim. The inner Worker calls `env.ASSETS.fetch(request)`

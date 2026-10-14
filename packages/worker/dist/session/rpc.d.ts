@@ -415,11 +415,11 @@ export declare function _rpcCpSpawn(self: RpcHost, req: any, parentPid?: number)
  * the store used to take text, decoded here, which turned a byte that is not
  * UTF-8 into U+FFFD.
  */
-export declare function _rpcCpStdinWrite(self: RpcHost, childPid: number, data: Uint8Array): Promise<{
+export declare function _rpcCpStdinWrite(self: RpcHost, childPid: number, data: Uint8Array, pid?: number): Promise<{
     ok: boolean;
     full?: boolean;
 }>;
-export declare function _rpcCpStdinEnd(self: RpcHost, childPid: number): Promise<void>;
+export declare function _rpcCpStdinEnd(self: RpcHost, childPid: number, pid?: number): Promise<void>;
 export declare function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs: number, acquire?: unknown, pid?: number, writerId?: string, maxBytes?: number): Promise<{
     data: Uint8Array;
     ended: boolean;
@@ -433,9 +433,10 @@ export declare function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs:
     ended: boolean;
 }>;
 export declare function _rpcCpReadOutput(self: RpcHost, childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number, acquire?: unknown, pid?: number): Promise<any>;
-export declare function _rpcCpDrainOutput(self: RpcHost, childPid: number): Promise<any>;
-export declare function _rpcCpCloseOutput(self: RpcHost, childPid: number, fd: 1 | 2): Promise<void>;
-export declare function _rpcCpKill(self: RpcHost, childPid: number, signal: string): Promise<boolean>;
+export declare function _rpcCpDrainOutput(self: RpcHost, childPid: number, pid?: number): Promise<any>;
+export declare function _rpcCpCloseOutput(self: RpcHost, childPid: number, fd: 1 | 2, pid?: number): Promise<void>;
+/** A child's kill: its parent's, and as Linux's kill(2) allows (SessionProcessSupervisor.maySignal). */
+export declare function _rpcCpKill(self: RpcHost, childPid: number, signal: string, pid?: number): Promise<boolean>;
 /**
  * Process `pid` says whether its only remaining work is waiting on its
  * children, and how far it has applied its news (fabric setProcessBlocked).

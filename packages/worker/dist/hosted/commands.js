@@ -729,6 +729,7 @@ export async function registerHostedCommands(self, workspace) {
             network: workspace.network.forProcess(ctx.pid),
             vfs: sqliteFs.as(cred),
             bundleFs: workspace.filesystem.namespaceFs(cred),
+            cred,
             namespace: workspace.filesystem.vfs,
             esbuild: self.esbuildService,
             env: self.env,

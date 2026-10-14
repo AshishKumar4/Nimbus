@@ -137,6 +137,7 @@ export class NimbusWrangler {
     network;
     vfs;
     bundleFs;
+    cred;
     namespace;
     esbuild;
     loaderEnv;
@@ -164,6 +165,7 @@ export class NimbusWrangler {
     constructor(opts) {
         this.vfs = opts.vfs;
         this.bundleFs = opts.bundleFs;
+        this.cred = opts.cred;
         this.namespace = opts.namespace;
         this.esbuild = opts.esbuild;
         this.loaderEnv = opts.env;
@@ -556,6 +558,8 @@ export class NimbusWrangler {
                         vfsRoot: this.root,
                         assetsDir,
                         doId,
+                        // Assets are read as the process that started the server.
+                        cred: this.cred,
                         route: hostRoute() ?? undefined,
                     },
                 }));

@@ -1245,11 +1245,27 @@ export async function _rpcCpSpawn(self, req, parentPid) {
  * the store used to take text, decoded here, which turned a byte that is not
  * UTF-8 into U+FFFD.
  */
-export async function _rpcCpStdinWrite(self, childPid, data) {
+export async function _rpcCpStdinWrite(self, childPid, data, pid) {
+    childOf(self, childPid, pid);
     return self.processes.writeInputBytesWait(childPid, data);
 }
-export async function _rpcCpStdinEnd(self, childPid) {
+export async function _rpcCpStdinEnd(self, childPid, pid) {
+    childOf(self, childPid, pid);
     await self.processes.endInputAfterWrites(childPid);
+}
+/**
+ * A child process's handle (its stdin, its output, its wait, its kill) is
+ * its parent's, or an ancestor's: `caller`, the pid its binding stamped,
+ * must have spawned `childPid`, directly or not. Another gets ESRCH, as
+ * waitpid answers for a pid that is not its child. A call with no caller is
+ * the session's own.
+ */
+function childOf(self, childPid, caller) {
+    if (caller === undefined)
+        return;
+    if (childPid === caller || !self.processes.isWithin(childPid, caller)) {
+        throw Object.assign(new Error(`ESRCH: no such child process ${childPid}`), { code: 'ESRCH', errno: -3 });
+    }
 }
 /**
  * `reply`, carrying the ACQUIRE for the caller (`_acquireOnDelivery`) when it
@@ -1262,6 +1278,11 @@ async function withDeliveredAcquire(self, reply, delivers, acquire, pid) {
     return acquired ? { ...reply, acquired } : reply;
 }
 export async function _rpcCpReadStdin(self, childPid, waitMs, acquire, pid, writerId, maxBytes) {
+    // A stdin channel is read by its own process, or by one spawned under it
+    // that inherited it as fd 0: no other process drains it.
+    if (pid !== undefined && !self.processes.isWithin(pid, childPid)) {
+        throw Object.assign(new Error(`EPERM: process ${pid} may not read the stdin of process ${childPid}`), { code: 'EPERM', errno: -1 });
+    }
     // Prior-generation straggler: its ProcessInputStore died with the old
     // instance. Deliver a kill so the facet's stdin pump unwinds immediately
     // with explicit semantics (__ProcessExit(137) → reportExit → the honest
@@ -1295,18 +1316,26 @@ export async function _rpcCpReadStdin(self, childPid, waitMs, acquire, pid, writ
     return withDeliveredAcquire(self, packet, delivers, acquire, pid);
 }
 export async function _rpcCpReadOutput(self, childPid, fd, sinceSeq, waitMs, acquire, pid) {
+    childOf(self, childPid, pid);
     const fpm = self._ensureChildProcessManager();
     const output = await fpm.readOutput(childPid, fd, sinceSeq, waitMs);
     return withDeliveredAcquire(self, output, output.chunks.length > 0 || output.closed, acquire, pid);
 }
-export async function _rpcCpDrainOutput(self, childPid) {
+export async function _rpcCpDrainOutput(self, childPid, pid) {
+    childOf(self, childPid, pid);
     const fpm = self._ensureChildProcessManager();
     return fpm.drainOutput(childPid);
 }
-export async function _rpcCpCloseOutput(self, childPid, fd) {
+export async function _rpcCpCloseOutput(self, childPid, fd, pid) {
+    childOf(self, childPid, pid);
     self._ensureChildProcessManager().closeOutput(childPid, fd);
 }
-export async function _rpcCpKill(self, childPid, signal) {
+/** A child's kill: its parent's, and as Linux's kill(2) allows (SessionProcessSupervisor.maySignal). */
+export async function _rpcCpKill(self, childPid, signal, pid) {
+    childOf(self, childPid, pid);
+    if (pid !== undefined && !self.processes.maySignal(self.processes.liveCred(pid), childPid)) {
+        throw Object.assign(new Error(`EPERM: operation not permitted, kill ${childPid}`), { code: 'EPERM', errno: -1 });
+    }
     const fpm = self._ensureChildProcessManager();
     return fpm.kill(childPid, signal);
 }
@@ -1330,6 +1359,7 @@ export async function _rpcCpBlocked(self, pid, report) {
     });
 }
 export async function _rpcCpWait(self, childPid, waitMs, acquire, pid, knownStarted) {
+    childOf(self, childPid, pid);
     const fpm = self._ensureChildProcessManager();
     const status = await fpm.wait(childPid, waitMs, knownStarted !== false);
     return withDeliveredAcquire(self, status, status.done, acquire, pid);
