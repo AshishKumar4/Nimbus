@@ -1,5 +1,6 @@
 import { Buffer } from 'node:buffer';
 import realm from 'node:process';
+import type { PipeOptions, Readable, Writable } from 'node:stream';
 import type { NodeFilesystem } from '../../node-compat/filesystem.js';
 import type { ProcessView } from '../../../../runtime/process-files.js';
 import type { Command } from '../types.js';
@@ -194,12 +195,15 @@ export async function runNodeProgram(program: NodeProgram, host: NodeProgramHost
 		realm.emitWarning = (...warning) => { main.process.emitWarning(...warning); };
 		realm.removeAllListeners('warning');
 		realm.on('warning', (warning) => { main.process.emit('warning', warning); });
-		// And its standard streams: the engine's own stream code knows them as
-		// process.stdout and process.stderr (a pipe into one leaves it open).
-		Object.defineProperties(realm, {
-			stdout: { value: main.process.stdout, configurable: true, enumerable: true, writable: true },
-			stderr: { value: main.process.stderr, configurable: true, enumerable: true, writable: true },
-		});
+		// A pipe into its stdout or stderr leaves it open, as Node's pipe leaves
+		// process.stdout and process.stderr; the engine's knows the realm's own
+		// streams (the worker's, which its plumbing needs), not the program's.
+		const { Readable } = realm.getBuiltinModule('node:stream');
+		const pipe = Readable.prototype.pipe;
+		Readable.prototype.pipe = function <T extends Writable>(this: Readable, destination: T, options?: PipeOptions): T {
+			const standard = destination === main.process.stdout || destination === main.process.stderr;
+			return pipe.call(this, destination, standard ? { ...options, end: false } : options);
+		};
 		ga.Buffer = Buffer;
 		ga.console = main.console;
 		ga.global = globalThis;

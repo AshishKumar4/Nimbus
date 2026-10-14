@@ -49,8 +49,12 @@ declare module 'node:stream' {
     write?(this: Writable, chunk: Uint8Array | string, encoding: string, callback: Callback): void;
   }
   export class Stream extends EventEmitter {}
+  export interface PipeOptions {
+    end?: boolean;
+  }
   export class Readable extends Stream {
     constructor(options?: ReadableOptions);
+    pipe<T extends Writable>(destination: T, options?: PipeOptions): T;
     readonly readable: boolean;
     push(chunk: Uint8Array | string | null, encoding?: string): boolean;
     setEncoding(encoding: string): this;
