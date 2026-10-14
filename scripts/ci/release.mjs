@@ -92,7 +92,8 @@ assertInstalled(repo, 'release');
   try {
     report = await missingBindings();
   } catch (error) {
-    notGraded(`the staged bindings' demand could not be read: ${error.message}`);
+    // The registry unreadable, or a chain that no longer maps to a staged build (its message names what to update).
+    notGraded(`the staged bindings' demand could not be judged: ${error.message}`);
   }
   if (report.missing.length > 0) {
     for (const m of report.missing) console.log(`release: no staged build of ${m.key}, which ${m.via.join(' > ')} installs`);
