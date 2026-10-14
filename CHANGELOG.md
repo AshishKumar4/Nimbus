@@ -11,12 +11,19 @@ published independently in the `@nimbus-sh` npm scope.
   `-iu NAME`, and the first operand ends them), then `NAME=VALUE`
   assignments, and ends with the command's status, 127 for a command it
   cannot find, 126 for one it may not run, or 125 for a bad option or a
-  name `-u` cannot unset.
+  name `-u` cannot unset. Any operand with an `=` is an assignment, and any
+  name a name (`__proto__` too).
 - Fixed: `xargs` takes each of GNU's spellings of its replace string:
   `-I{}` joined, `-i[R]` and `--replace[=R]`, which ran a command named
   after the option. With one, each input line is an item, its leading
   white space dropped, so `printf 'a b\n' | xargs -I{} echo [{}]` prints
-  `[a b]`.
+  `[a b]`. A replace string and `-n` exclude each other as in GNU, the
+  later one winning with GNU's warning.
+- Changed: `xargs` reads its input as GNU xargs does, in every mode but
+  `-0`: quotes and backslashes are decoded (`"a b"` is one item, `a\ b`
+  too), and a quote left open ends xargs with status 1 and GNU's "unmatched
+  quote" message, after the items read before it have run. Before, quotes
+  and backslashes reached the command as they were.
 - Fixed: the library's built-in `node` gives a program the engine's own
   `path` and `url`, against the program's working directory: `path.resolve`
   and `path.relative` start from it, as does `url.pathToFileURL` of a

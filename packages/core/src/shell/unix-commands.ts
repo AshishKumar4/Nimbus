@@ -1612,10 +1612,11 @@ const XARGS_CHILD_STDIN: CommandInputStream = {
  * Supported flags:
  *   -n NUM        run command with at most NUM args per invocation
  *   -I REPL, -IREPL, -i[REPL], --replace[=REPL]
- *                 replace REPL (default {}) in command with each input line,
- *                 its leading blanks dropped
+ *                 replace REPL (default {}) in command with each input line;
+ *                 it and -n exclude each other, the later winning
  *   -0            null-byte separator (rare; bash xargs -0 idiom)
- *   default args  use args.split(/\s+/) from stdin
+ *   default args  items read from stdin as GNU's (white space between them,
+ *                 quotes and backslashes decoded: xargsItems)
  *
  * Unsupported (document as gap): -P (parallel), -L (per-line), -p (prompt).
  */
@@ -1631,22 +1632,38 @@ function mkXargs(): CmdFn {
     const args = [...ctx.args];
     let batchSize = Infinity;
     let replaceTok: string | null = null;
+    let maxArgsGiven = false;
     let nullSep = false;
+    // -n and a replace string exclude each other, the later winning, as GNU's:
+    // but for -n1 after one, which is what a replace string means anyway.
+    const maxArgs = async (n: number) => {
+      if (!(Number.isFinite(n) && n > 0)) return;
+      if (replaceTok !== null && n !== 1) {
+        (await ctx.stderr.write('xargs: warning: options --replace and --max-args/-n are mutually exclusive, ignoring previous --replace value\n'));
+        replaceTok = null;
+      }
+      batchSize = replaceTok !== null ? 1 : n;
+      maxArgsGiven = true;
+    };
+    const replace = async (token: string) => {
+      if (maxArgsGiven) {
+        (await ctx.stderr.write('xargs: warning: options --max-args and --replace/-I/-i are mutually exclusive, ignoring previous --max-args value\n'));
+        maxArgsGiven = false;
+      }
+      replaceTok = token;
+      batchSize = 1; // -I implies one-arg-per-invocation
+    };
     while (args.length > 0 && args[0].startsWith('-')) {
-      const a = args.shift()!;
+      const a = args.shift() ?? '';
       if (a === '-n') {
-        const n = parseInt(args.shift() || '', 10);
-        if (Number.isFinite(n) && n > 0) batchSize = n;
+        await maxArgs(parseInt(args.shift() || '', 10));
       } else if (a.startsWith('-n')) {
-        const n = parseInt(a.slice(2), 10);
-        if (Number.isFinite(n) && n > 0) batchSize = n;
+        await maxArgs(parseInt(a.slice(2), 10));
       } else if (a.startsWith('-I')) {
-        replaceTok = a === '-I' ? args.shift() || '{}' : a.slice(2);
-        batchSize = 1; // -I implies one-arg-per-invocation
+        await replace(a === '-I' ? args.shift() || '{}' : a.slice(2));
       } else if (a.startsWith('-i') || a === '--replace' || a.startsWith('--replace=')) {
         // GNU's older spellings of -I, whose R defaults to {}.
-        replaceTok = a.startsWith('--replace=') ? a.slice('--replace='.length) : a.length > 2 && a.startsWith('-i') ? a.slice(2) : '{}';
-        batchSize = 1;
+        await replace(a.startsWith('--replace=') ? a.slice('--replace='.length) : a.length > 2 && a.startsWith('-i') ? a.slice(2) : '{}');
       } else if (a === '-0' || a === '--null') {
         nullSep = true;
       } else if (a === '--') {
@@ -1662,15 +1679,10 @@ function mkXargs(): CmdFn {
     const cmdName = args.shift() || 'echo';
     const cmdArgsInitial = args;
 
-    // Split stdin into items. With a replace string an item is a line, its
-    // leading white space (GNU's ISSPACE: CR, VT and FF too) dropped, as GNU's
-    // -I reads one: what is inside it and after it stays, and a line of white
-    // space alone is no item.
-    const items = nullSep
-      ? input.split('\u0000').filter(Boolean)
-      : replaceTok !== null
-        ? input.split('\n').map((line) => line.replace(/^[ \t\v\f\r]+/, '')).filter(Boolean)
-        : input.split(/\s+/).filter(Boolean);
+    // Split stdin into items: -0's are literal; otherwise GNU's reading, a
+    // line each with a replace string (see xargsItems).
+    const read = nullSep ? { items: input.split('\u0000').filter(Boolean), unmatched: null } : xargsItems(input, replaceTok !== null);
+    const items = read.items;
 
     // The parent each child is started from: xargs itself, but for its stdin.
     const parent: CommandContext = {
@@ -1721,8 +1733,59 @@ function mkXargs(): CmdFn {
       }
       if (ended.status !== 0) exit = 123;
     }
+    // What was read before an open quote has run, as GNU's; then its error.
+    if (read.unmatched !== null) {
+      (await ctx.stderr.write(`xargs: unmatched ${read.unmatched} quote; by default quotes are special to xargs unless you use the -0 option\n`));
+      return 1;
+    }
     return exit;
   };
+}
+
+/** GNU xargs's white space (C's isspace in the C locale). */
+const XARGS_SPACE = /[ \t\n\v\f\r]/;
+
+/**
+ * `input` read as GNU xargs reads it (read_line): an item's leading white
+ * space is skipped; white space ends it, or with `lines` (a replace string)
+ * a newline alone does; `"…"` and `'…'` quote, and are removed (an empty pair
+ * is an empty item); a backslash takes the next character as it is, newline
+ * included. A quote still open at a newline or the end is GNU's error: the
+ * items before it, and which quote.
+ */
+function xargsItems(input: string, lines: boolean): { items: string[]; unmatched: 'single' | 'double' | null } {
+  const items: string[] = [];
+  let item = '';
+  let started = false;
+  let quote: string | null = null;
+  for (let i = 0; i < input.length; i++) {
+    const c = input[i];
+    if (quote !== null) {
+      if (c === '\n') return { items, unmatched: quote === '"' ? 'double' : 'single' };
+      if (c === quote) quote = null;
+      else item += c;
+      continue;
+    }
+    if (!started) {
+      if (XARGS_SPACE.test(c)) continue;
+      started = true;
+    }
+    if (c === '\n' || (!lines && XARGS_SPACE.test(c))) {
+      items.push(item);
+      item = '';
+      started = false;
+    } else if (c === '"' || c === "'") {
+      quote = c;
+    } else if (c === '\\') {
+      i++;
+      if (i < input.length) item += input[i];
+    } else {
+      item += c;
+    }
+  }
+  if (quote !== null) return { items, unmatched: quote === '"' ? 'double' : 'single' };
+  if (started) items.push(item);
+  return { items, unmatched: null };
 }
 
 /**

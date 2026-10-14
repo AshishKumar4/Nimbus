@@ -63,30 +63,32 @@ const command: Command = async (ctx) => {
     operands.shift();
   }
 
-  // As GNU applies them: -i, else each -u (unsetenv's rule for a name), then the assignments.
-  const env: Record<string, string> = ignore ? {} : { ...ctx.env };
+  // As GNU applies them: -i, else each -u (unsetenv's rule for a name), then
+  // each operand with an `=` in it, as putenv takes one (`=x` too). A Map, as
+  // any name is a name (`__proto__`), in the order environ keeps.
+  const env = new Map<string, string>(ignore ? [] : Object.entries(ctx.env));
   if (!ignore) {
     for (const name of unset) {
       if (name === '' || name.includes('=')) return await fail(`cannot unset '${name}': Invalid argument`, false);
-      delete env[name];
+      env.delete(name);
     }
   }
-  while (operands.length > 0 && operands[0].indexOf('=') > 0) {
+  while (operands.length > 0 && operands[0].includes('=')) {
     const assignment = operands.shift() ?? '';
     const at = assignment.indexOf('=');
-    env[assignment.slice(0, at)] = assignment.slice(at + 1);
+    env.set(assignment.slice(0, at), assignment.slice(at + 1));
   }
 
   if (operands.length === 0) {
     const end = nul ? '\0' : '\n';
-    for (const [key, value] of Object.entries(env)) await ctx.stdout.write(`${key}=${value}${end}`);
+    for (const [key, value] of env) await ctx.stdout.write(`${key}=${value}${end}`);
     return 0;
   }
   if (nul) return await fail('cannot specify --null (-0) with command', true);
 
   let ended: ChildExit;
   try {
-    ended = await ctx.runAs(ctx.cred, operands, { parent: { ...ctx, env } });
+    ended = await ctx.runAs(ctx.cred, operands, { parent: { ...ctx, env: Object.fromEntries(env) } });
   } catch (error) {
     if (!isVfsError(error) || error.syscall !== 'execvp') throw error;
     await ctx.stderr.write(`env: '${operands[0]}': ${VFS_STRERROR[error.code]}\n`);
