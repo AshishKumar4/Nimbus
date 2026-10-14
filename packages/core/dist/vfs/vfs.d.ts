@@ -375,6 +375,15 @@ export interface VfsCopyOptions {
  * a setgid parent's group) as to any entry made there.
  */
 export declare function copiedPermissions(mode: number, directory: boolean): number;
+/**
+ * The mode copyfile leaves its copy with (keepMode; libuv's fchmod to the
+ * source's mode, then the data written): the source's permission bits
+ * exactly, but the write of a non-empty copy by a non-root copier clears
+ * set-user-ID, and set-group-ID where group-execute is set, as Linux clears
+ * them on a write without CAP_FSETID. Whether the copier may set it is
+ * chmod's question, asked where the copy lands.
+ */
+export declare function copyfileMode(mode: number, size: number, uid: number): number;
 /** True for a character device such as `/dev/zero`, which streams rather than stores. */
 export declare function isCharacterDevice(mode: number | undefined): boolean;
 /** The `ls -l` type character for a mode, falling back to the entry's type. */

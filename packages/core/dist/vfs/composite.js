@@ -6,7 +6,7 @@ import { posixAccess } from './posix-access.js';
 import { recallOf, withRecall } from './recall.js';
 import { DIRENT_TYPES } from './dirent-type.js';
 import { walkRemoval } from './removal-walk.js';
-import { S_IFMT, abandon, andThen, copiedPermissions, isCharacterDevice, isPromise, readRangeOrWhole, syncValue } from './vfs.js';
+import { S_IFMT, abandon, andThen, copiedPermissions, copyfileMode, isCharacterDevice, isPromise, readRangeOrWhole, syncValue } from './vfs.js';
 /** Path order as SQLite's index keeps it: by UTF-8 bytes, which is code point order. */
 export function comparePaths(a, b) {
     const n = Math.min(a.length, b.length);
@@ -2808,7 +2808,8 @@ export class CompositeVFS {
      */
     copyBytes(from, fromRel, stat, to, toRel, toAt, made) {
         const mode = stat.mode === undefined ? undefined
-            : made.preserve || made.keepMode ? stat.mode & 0o7777 : copiedPermissions(stat.mode, stat.type === 'directory');
+            : made.keepMode ? copyfileMode(stat.mode, stat.size ?? 1, this.viewer.cred?.uid ?? 0)
+                : made.preserve ? stat.mode & 0o7777 : copiedPermissions(stat.mode, stat.type === 'directory');
         const told = toRel === made.rel ? made.told : stat.type === 'directory' ? 'addDir' : 'add';
         const landed = (result) => {
             if (isPromise(result))
@@ -2829,9 +2830,14 @@ export class CompositeVFS {
         if (stat.type === 'file') {
             return andThen(from.readFile(fromRel), (bytes) => {
                 this.guardMutation([toAt]);
-                // copyfile's mode is the copy's whether it made the file or wrote one there (keepMode).
-                const there = made.keepMode && !made.made && mode !== undefined && typeof to.chmod === 'function';
-                return andThen(landed(to.writeFile(toRel, bytes, mode === undefined ? undefined : { mode })), () => (there ? andThen(to.chmod(toRel, mode), () => 1) : 1));
+                // copyfile's mode (keepMode), as the landing filesystem's chmod judges
+                // it: before the bytes go into a file there, after a new one is made
+                // (its creation mode is the umask's). Two changes there, not one.
+                const exact = made.keepMode && mode !== undefined && typeof to.chmod === 'function';
+                const write = () => landed(to.writeFile(toRel, bytes, mode === undefined ? undefined : { mode }));
+                if (exact && !made.made)
+                    return andThen(to.chmod(toRel, mode), () => andThen(write(), () => 1));
+                return andThen(write(), () => (exact ? andThen(to.chmod(toRel, mode), () => 1) : 1));
             });
         }
         this.guardMutation([toAt]);

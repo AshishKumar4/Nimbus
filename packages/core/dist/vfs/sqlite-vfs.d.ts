@@ -267,10 +267,7 @@ export interface CredentialedVfs {
     copyFile(src: string, dest: string, options?: {
         keepMode?: boolean;
     }): VfsStat & {
-        from: {
-            path: string;
-            revision: number;
-        };
+        from: string;
     };
     /**
      * Copy a tree to a new path by reference (`cp -r`; `preserve` is `-p`).
@@ -1584,6 +1581,13 @@ export declare class SqliteVFS {
      */
     private chmod;
     private chmodInode;
+    /**
+     * chmod's judgement of setting `inode`'s mode to `mode`, and what it
+     * leaves: EPERM unless the caller owns it (or is root), the shared
+     * directory's admission, its delegated group bits and mode rule, and the
+     * confined rule. Every mode change asks it (chmod, copyfile's keepMode).
+     */
+    private modeChange;
     private setDefaultAcl;
     private getDefaultAcl;
     private chown;
@@ -1696,12 +1700,10 @@ export declare class SqliteVFS {
      * manifest. No byte is read or written; a later write to either side
      * copies on write (rewriteFile's sharing probes). A new file has the
      * source's permission bits less the copier's umask, as cp(1) makes it; a
-     * file there keeps its own mode. With \`keepMode\` (copyfile, as libuv's
-     * fchmod leaves it), the copy has the source's permission bits exactly, a
-     * file there too, set in this one write; a file there not the caller's
-     * is EPERM, as fchmod is. Answers the copy's stat, and the file copied
-     * (its key) with its revision: bytes held of that file at that revision
-     * or later are the copy's.
+     * file there keeps its own mode. With \`keepMode\` (copyfile), the copy has
+     * copyfileMode's bits, a file there too, set in this one write as chmod
+     * judges it (modeChange). Answers the copy's stat, and the file copied
+     * (its key): the copy is that file's version as this write found it.
      */
     private copyFile;
     /**

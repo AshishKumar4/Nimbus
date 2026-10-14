@@ -44,7 +44,7 @@ import { posixAccess } from './posix-access.js';
 import { RecallRequired, recallOf, withRecall } from './recall.js';
 import { SESSION_KERNEL_ROOTS, readLeaseCovers } from '../_shared/read-lease-cover.js';
 export { RecallRequired, recallOf, withRecall } from './recall.js';
-import { copiedPermissions, readDeclaredSource, syncValue } from './vfs.js';
+import { copiedPermissions, copyfileMode, readDeclaredSource, syncValue } from './vfs.js';
 import { errnoCodeOf, toVfsError, vfsError } from './vfs-error.js';
 import { walkRemoval } from './removal-walk.js';
 import { inodeKind, linkedSignal, untilAborted, validateFileChunks, validateInodeShape, withUmask, } from '../runtime/wave-contracts.js';
@@ -4806,6 +4806,22 @@ export class SqliteVFS {
         this.chmodInode(inode, mode, cred, resolved.path);
     }
     chmodInode(inode, mode, cred, path) {
+        const planned = this.modeChange(inode, mode, cred, path);
+        if (path === null) {
+            inode.mode = planned.mode;
+            inode.ctime = this.now();
+            return;
+        }
+        this.assertMutationsAllowed([path]);
+        this.publishMetadata(inode, planned);
+    }
+    /**
+     * chmod's judgement of setting `inode`'s mode to `mode`, and what it
+     * leaves: EPERM unless the caller owns it (or is root), the shared
+     * directory's admission, its delegated group bits and mode rule, and the
+     * confined rule. Every mode change asks it (chmod, copyfile's keepMode).
+     */
+    modeChange(inode, mode, cred, path) {
         if (cred.uid !== 0 && cred.uid !== inode.uid)
             throw vfsKeyError('EPERM', path ?? 'detached inode');
         if (path !== null)
@@ -4820,14 +4836,7 @@ export class SqliteVFS {
         }
         else
             this.assertConfinedModeChange(inode, mode, cred, path ?? 'detached inode');
-        mode = inodeTypeBits(inode.kind) | (mode & 0o7777);
-        if (path === null) {
-            inode.mode = mode;
-            inode.ctime = this.now();
-            return;
-        }
-        this.assertMutationsAllowed([path]);
-        this.publishMetadata(inode, { mode, gid });
+        return { mode: inodeTypeBits(inode.kind) | (mode & 0o7777), gid };
     }
     setDefaultAcl(path, perms, cred) {
         const resolved = this.checkAccess(path, 0, cred);
@@ -5653,12 +5662,10 @@ export class SqliteVFS {
      * manifest. No byte is read or written; a later write to either side
      * copies on write (rewriteFile's sharing probes). A new file has the
      * source's permission bits less the copier's umask, as cp(1) makes it; a
-     * file there keeps its own mode. With \`keepMode\` (copyfile, as libuv's
-     * fchmod leaves it), the copy has the source's permission bits exactly, a
-     * file there too, set in this one write; a file there not the caller's
-     * is EPERM, as fchmod is. Answers the copy's stat, and the file copied
-     * (its key) with its revision: bytes held of that file at that revision
-     * or later are the copy's.
+     * file there keeps its own mode. With \`keepMode\` (copyfile), the copy has
+     * copyfileMode's bits, a file there too, set in this one write as chmod
+     * judges it (modeChange). Answers the copy's stat, and the file copied
+     * (its key): the copy is that file's version as this write found it.
      */
     copyFile(src, dest, cred, options) {
         const source = this.checkAccess(src, 0o4, cred);
@@ -5683,13 +5690,11 @@ export class SqliteVFS {
         const now = this.now();
         const made = prior ? undefined : this.creationAttrs(target.path, copiedPermissions(inode.mode, false), cred, false);
         let mode = prior ? prior.mode : made.mode;
+        let gid = prior?.gid ?? made.gid;
         if (options?.keepMode) {
-            if (prior && cred.uid !== 0 && cred.uid !== prior.uid)
-                throw vfsKeyError('EPERM', target.path);
-            const exact = inode.mode & 0o7777;
-            this.assertConfinedModeChange(prior ?? { mode }, exact, cred, target.path);
-            const shared = this.sharedDirectory(target.path);
-            mode = inodeTypeBits('file') | (shared ? this.sharedMode(exact, false) : exact);
+            // libuv's fchmod of what open left: the file there, or the one made.
+            const opened = prior ?? { mode, uid: cred.uid, gid, isDir: false, kind: 'file' };
+            ({ mode, gid } = this.modeChange(opened, copyfileMode(inode.mode, inode.size, cred.uid), cred, target.path));
         }
         const builder = this.newPlan();
         builder.addInode({
@@ -5702,12 +5707,12 @@ export class SqliteVFS {
             mtime: now,
             mode,
             uid: prior?.uid ?? cred.uid,
-            gid: prior?.gid ?? made.gid,
+            gid,
             content: { type: 'ref', chunkId: inode.chunkId, contentId: inode.contentId },
         });
         this._writeBatchOnce({ plan: builder.build(), deletedInodes: [] }, { source: 'strict-batch', limitMode: 'bounded' });
         this.runContentMaintenanceSafely(1);
-        return { ...this.stat(dest, cred, true), from: { path: source.path, revision: this.pathRevision(source.path, inode) } };
+        return { ...this.stat(dest, cred, true), from: source.path };
     }
     /**
      * Copy the tree at `src` to a new path `dst` by reference (`cp -r`): one
