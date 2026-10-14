@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "d20c40dfd30e231457d68cbea9565a06477e624d2b69c75c14c1c29ce47d7051",
+  "fingerprint": "1c30f7321b8627963f31a5127cd808df9f291c179a93b41173d2d09d77baf375",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1046,8 +1046,8 @@
     "packages/core/dist/substrate/lifo/kernel/index.d.ts.map": "b729f5ef2d500af08d7bf065189a2ce0d33ac6f3372066c7e3ec99f6bd0dacfe",
     "packages/core/dist/substrate/lifo/kernel/index.js": "01a978b3bfe1eba56baec6ee075e0a6730473c836d6b75b6d551283be04a51d1",
     "packages/core/dist/substrate/lifo/kernel/local-serve.d.ts": "ae310a8b3c467c5dd3990a1764ca9ff79d865a884ec8b11b31b1c31f99ab444c",
-    "packages/core/dist/substrate/lifo/kernel/local-serve.d.ts.map": "344eab65f15cc2d5ca94c28ea9049ed613afbce219c38e1a29f3ae65c76ea7e0",
-    "packages/core/dist/substrate/lifo/kernel/local-serve.js": "30fd19a7842d00e9f3925f53d29196b493a61901830b8f0b7bc2a4e9213c4fcd",
+    "packages/core/dist/substrate/lifo/kernel/local-serve.d.ts.map": "88a8d16c1efb35a1f515cf038e7d2522aaba015da5582ed04c48e37fcee22195",
+    "packages/core/dist/substrate/lifo/kernel/local-serve.js": "7b08aea5ec1c6059d88dda50ea4acbef159886d65ce03bdeb682c2e8bc89bed8",
     "packages/core/dist/substrate/lifo/node-compat/buffer.d.ts": "aefa43c2d01f4c0cb30ef059d7ed88802698434feda5e605a9e6b7a41939c556",
     "packages/core/dist/substrate/lifo/node-compat/buffer.d.ts.map": "d707a84218d38777768964c509c625e515d76d9682cda21c122cbe33bec52398",
     "packages/core/dist/substrate/lifo/node-compat/buffer.js": "6f301175198a2fdca8f6dd965b9a26a3e38c9516859a80232712252d23856b23",
@@ -1661,7 +1661,7 @@
     "packages/core/src/substrate/lifo/index.ts": "91f06944f955a748b13ae5a378b96616b03cebd876a241b34b7c7540b0f6f591",
     "packages/core/src/substrate/lifo/kernel/dns-resolver.ts": "7496429f6f1070fa8057d5044fcac6401047256529168bad9698500104900752",
     "packages/core/src/substrate/lifo/kernel/index.ts": "5417524b25c7286d2d669c47c4ff8360bbbd7016632e2d5114aac460d875e77f",
-    "packages/core/src/substrate/lifo/kernel/local-serve.ts": "008548f4473fcafd433cb62cd4f654caf7bfb7674181fc0148a5878d85dc0479",
+    "packages/core/src/substrate/lifo/kernel/local-serve.ts": "44f2cae5bcf401e3d944c69f38440c4e9785000b3454d295f0665808cc3b0ba8",
     "packages/core/src/substrate/lifo/node-compat/buffer.ts": "dfaa7161a9a67dd20cf486cde746a92fc913f9ccfd2855137b197087139c8a78",
     "packages/core/src/substrate/lifo/node-compat/child_process.ts": "057d5fc5f9ff4f944dd10bf0ca998140b784e3f86c848e97e72d50b5d982e453",
     "packages/core/src/substrate/lifo/node-compat/cjs-loader.ts": "ff0122f66404f6174312e952f2085828fe4bc61d9d33f34107f10e0de011a841",
