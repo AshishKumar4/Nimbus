@@ -12,6 +12,7 @@
  * a workspace moves them here once, as it opens (moveHomeRuntimes).
  */
 import type { CredentialedVfs as EngineVfs } from '../vfs/sqlite-vfs.js';
+import type { Awaitable } from './os-contracts.js';
 import type { RuntimeManifest } from './runtime-manifest.js';
 /** Where installed runtimes live: `<store>/<name>/<version>`. */
 export declare const RUNTIME_STORE = "usr/lib/nimbus";
@@ -48,7 +49,15 @@ export declare const RUNTIME_STORE_DIRS: readonly string[];
  * that is there is root's own (rootsOwn): a tree whose files nobody else
  * could have put there, or can change. One that is missing is no file's.
  */
-export declare function runtimeTreeOwn(fs: Pick<RuntimeStoreFs, 'stat'>, root: string, manifest: RuntimeManifest): Promise<boolean>;
+export declare function runtimeTreeOwn(fs: {
+    stat(path: string, options?: {
+        follow?: boolean;
+    }): Awaitable<{
+        type: string;
+        uid?: number;
+        mode?: number;
+    } | null>;
+}, root: string, manifest: RuntimeManifest): Promise<boolean>;
 /**
  * Make the store ready to write `manifest`'s tree into: each directory from
  * `/usr` down to the runtime's own, and each its files are in, made by root

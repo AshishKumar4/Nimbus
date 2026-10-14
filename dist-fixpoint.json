@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "6ed0c004cf7b2148cbaca40c7b4df6be3892ea7004a6c40fe8bff3218716b0ac",
+  "fingerprint": "1a00551145bf1b80c430712a2421e09b7ab5da227596314f75c32ad7098204bf",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -646,8 +646,8 @@
     "packages/core/dist/runtime/runtime-stdio.d.ts": "99fa7ed7a3a8e9fa63fdd490f004fafc4edef2c9ee99206f868ad026a56682a9",
     "packages/core/dist/runtime/runtime-stdio.d.ts.map": "72a553b55874beaca659e2be30aff6c6dc4fe0ee9aee21ec96b9f624fee55270",
     "packages/core/dist/runtime/runtime-stdio.js": "4b307afe4fe034631238631fb7e14158776a5f66d533d37ab5738c07b6f7eca8",
-    "packages/core/dist/runtime/runtime-store.d.ts": "16bc2b3d40b5d113dddf2254f2a437e62aa377bdd43c0672fd00375476fd4b4e",
-    "packages/core/dist/runtime/runtime-store.d.ts.map": "81b3137a24b630e9cb11972d2966cc1db0743fc1fcf0a4a960ff7c282f4f9644",
+    "packages/core/dist/runtime/runtime-store.d.ts": "cafcb8ea8ae0517cc63a132bfc9d0bd0d99f998fe5e3213c74ae18bf3026bc78",
+    "packages/core/dist/runtime/runtime-store.d.ts.map": "11969d9f8218903f8e59f7f7cbd62991dca45ddfc105c2f25621c2941523579f",
     "packages/core/dist/runtime/runtime-store.js": "5586f92b81927dec0a6dd4cc990d3790631fc212a9e83890d0d5a4cea31e40f1",
     "packages/core/dist/runtime/server-launch.d.ts": "3fa83b552a65645ee950979cc8c3f4b7ca6dc8bd8796548f587ffb808e10d612",
     "packages/core/dist/runtime/server-launch.d.ts.map": "6675002aa11b8edecddbf293b1948c134c513bb964ad62c544ff29313efc1309",
@@ -1527,7 +1527,7 @@
     "packages/core/src/runtime/runtime-package.ts": "53d7d4a75a6a35a7f30683ee9298cc0ba0990932991c8a17ea2b10ca6d893609",
     "packages/core/src/runtime/runtime-registry.ts": "9163d807876df01cd3fd5c0b5d246655b665577add01bc7049a36cd3e8d4c987",
     "packages/core/src/runtime/runtime-stdio.ts": "762a27aec181c3c707e9896bf233d7f4809eae20fe1ebcdcf133164a11d49401",
-    "packages/core/src/runtime/runtime-store.ts": "d3d5e270efd1e01f7cc2d66b32e61cefa866aaea28773e3613b312dd3988025a",
+    "packages/core/src/runtime/runtime-store.ts": "68ca3bf030a2955d50340002d7b02bad72e4b6b7d0dd54b44a57a67c73eb1b5c",
     "packages/core/src/runtime/server-launch.ts": "31edd6192c133c1cbdf21f5570f9e9ffe40ee5e38e35f9e892998495e0375017",
     "packages/core/src/runtime/session-process-supervisor.ts": "22a16786202874c789d2a142e1ad2fc96f634982f76d8f08110d49f4af31c0c4",
     "packages/core/src/runtime/session-protocol.ts": "319de11958eabde4afc23b9a8491b5072bdeb40a5ce1f0d8c425a619f24a1763",
