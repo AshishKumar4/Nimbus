@@ -24,7 +24,7 @@ export function createPath(cwd: string): PlatformPath {
 /**
  * The engine's url, whose pathToFileURL of a relative path starts from `cwd`,
  * in the path platform the call asks for (Windows mode: drive and UNC paths
- * are absolute).
+ * are absolute, a drive-relative one is its drive's).
  */
 export function createUrl(cwd: string) {
   const engine = realm.getBuiltinModule('node:url');
@@ -32,8 +32,13 @@ export function createUrl(cwd: string) {
   return {
     ...engine,
     pathToFileURL: (path: string, options?: { windows?: boolean }) => {
+      if (typeof path !== 'string') return engine.pathToFileURL(path, options);
+      // Resolved as Node resolves it, from the program's cwd (a drive-relative
+      // Windows path by its drive); a trailing separator kept, as Node keeps it.
       const platform = options?.windows ? win32 : posix;
-      return engine.pathToFileURL(platform.isAbsolute(path) ? path : platform.join(cwd, path), options);
+      const resolved = platform.resolve(cwd, path);
+      const trailing = path.endsWith('/') || (platform === win32 && path.endsWith('\\'));
+      return engine.pathToFileURL(trailing && !resolved.endsWith(platform.sep) ? resolved + platform.sep : resolved, options);
     },
   };
 }

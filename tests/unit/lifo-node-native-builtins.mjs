@@ -196,7 +196,7 @@ const programs = {
     // Bun's url.parse is deprecated whatever it parses (Node's only for some): its warning is Bun's, not the question.
     "process.noDeprecation = true; const port = url.parse('http://a.com:80/p?q=1').port; process.noDeprecation = false; console.log(url.fileURLToPath('file:///a%20b'), url.format(new URL('http://u:p@h:1/p?q#f'), { auth: false }), port, url.resolve('http://a/b/c', '../d'), url.URL === URL, typeof url.domainToASCII, typeof url.urlToHttpOptions);",
     // Windows mode: a drive or UNC path is absolute as it is; a relative one starts from the program's cwd.
-    "console.log(url.pathToFileURL('C:\\\\tmp\\\\f', { windows: true }).href, url.pathToFileURL('\\\\\\\\server\\\\share\\\\f', { windows: true }).href, url.pathToFileURL('rel\\\\f', { windows: true }).href.endsWith('/rel/f'));",
+    "console.log(url.pathToFileURL('C:\\\\tmp\\\\f', { windows: true }).href, url.pathToFileURL('\\\\\\\\server\\\\share\\\\f', { windows: true }).href, url.pathToFileURL('rel\\\\f', { windows: true }).href.endsWith('/rel/f'), url.pathToFileURL('C:tmp\\\\f', { windows: true }).href, url.pathToFileURL('d\\\\', { windows: true }).href.endsWith('/d/'), url.pathToFileURL('/a/../b/').href);",
     "url.fileURLToPath('http://x/');",
     "url.fileURLToPath('file:///a%2fb');",
   ]),
