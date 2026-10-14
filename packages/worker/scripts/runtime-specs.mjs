@@ -238,7 +238,7 @@ export const SPECS = {
       name: '@nimbus-sh/runtime-cpython',
       summary: 'CPython 3.13.14, cross-compiled to wasm32-wasi, with its stdlib',
       // The first core whose cpython-runner gives the module nimbus_fs and nimbus_proc.
-      core: '>=0.22.0',
+      core: '>=0.21.0',
     },
     files: [
       { src: 'python.wasm',   vfs: 'share/cpython/python.wasm' },

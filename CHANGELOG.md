@@ -10,7 +10,7 @@ published independently in the `@nimbus-sh` npm scope.
   `os.getuid()`/`os.getgid()` are the session user's, not 0. Before, the
   umask was the interpreter's own variable, which nothing read, and every
   file was made 0644. This needs the CPython runtime 3.13.14-2 and core
-  0.22.0 or later.
+  0.21.0 or later.
 - Fixed: a Python program that resolves more than 64 distinct hostnames gets
   `socket.gaierror` (EAI_MEMORY) for the 65th, instead of an address that
   stood for another name, which a connect would have dialed.
