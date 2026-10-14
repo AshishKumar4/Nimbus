@@ -420,6 +420,13 @@ export declare function _rpcCpStdinWrite(self: RpcHost, childPid: number, data: 
     full?: boolean;
 }>;
 export declare function _rpcCpStdinEnd(self: RpcHost, childPid: number, pid?: number): Promise<void>;
+/**
+ * A process's read of its stdin. It reads its own, the pid its binding
+ * stamped, whatever channel it names: a stdin it inherited as fd 0 is its
+ * own channel's alias (SessionProcessSupervisor.inheritInput), and no other
+ * process's is reachable by naming it. A call with no caller is the
+ * session's own, and reads the channel it names.
+ */
 export declare function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs: number, acquire?: unknown, pid?: number, writerId?: string, maxBytes?: number): Promise<{
     data: Uint8Array;
     ended: boolean;

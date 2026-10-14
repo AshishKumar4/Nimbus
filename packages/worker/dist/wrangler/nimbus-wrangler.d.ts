@@ -15,7 +15,6 @@
  */
 import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { EsbuildReadFs, EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import type { CompositeVFS } from '@nimbus-sh/core/vfs/composite.js';
 export interface NimbusWranglerOptions {
@@ -25,8 +24,6 @@ export interface NimbusWranglerOptions {
     vfs: CredentialedVfs;
     /** The namespace, as the same process: what the Worker's bundle reads. */
     bundleFs: EsbuildReadFs;
-    /** The credential of that process: its assets binding reads as it. */
-    cred: Readonly<VfsCred>;
     /** The session's namespace, whose changes rebuild the worker (CompositeVFS.watchChanges). */
     namespace: Pick<CompositeVFS, 'watchChanges'>;
     esbuild: EsbuildService;
@@ -66,7 +63,6 @@ export declare class NimbusWrangler {
     private readonly network;
     private vfs;
     private bundleFs;
-    private cred;
     private namespace;
     private esbuild;
     private loaderEnv;

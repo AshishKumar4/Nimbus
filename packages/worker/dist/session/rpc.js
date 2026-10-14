@@ -1277,35 +1277,38 @@ async function withDeliveredAcquire(self, reply, delivers, acquire, pid) {
     const acquired = await _acquireOnDelivery(self, acquire, pid);
     return acquired ? { ...reply, acquired } : reply;
 }
+/**
+ * A process's read of its stdin. It reads its own, the pid its binding
+ * stamped, whatever channel it names: a stdin it inherited as fd 0 is its
+ * own channel's alias (SessionProcessSupervisor.inheritInput), and no other
+ * process's is reachable by naming it. A call with no caller is the
+ * session's own, and reads the channel it names.
+ */
 export async function _rpcCpReadStdin(self, childPid, waitMs, acquire, pid, writerId, maxBytes) {
-    // A stdin channel is read by its own process, or by one spawned under it
-    // that inherited it as fd 0: no other process drains it.
-    if (pid !== undefined && !self.processes.isWithin(pid, childPid)) {
-        throw Object.assign(new Error(`EPERM: process ${pid} may not read the stdin of process ${childPid}`), { code: 'EPERM', errno: -1 });
-    }
+    const reader = pid ?? childPid;
     // Prior-generation straggler: its ProcessInputStore died with the old
     // instance. Deliver a kill so the facet's stdin pump unwinds immediately
     // with explicit semantics (__ProcessExit(137) → reportExit → the honest
     // prior-generation exit mark above) instead of polling a void.
-    if (isPriorGenerationPid(self, childPid)) {
+    if (isPriorGenerationPid(self, reader)) {
         return { signal: 'SIGKILL', ended: true };
     }
     // A process that can stop at a read of stdin: only its current run takes
     // from the channel, and the session keeps what that run took
     // (worker runtime/stop-replay.ts StdinTaken).
-    const taken = self.facetManager?.stdinTakenBy?.(childPid);
+    const taken = self.facetManager?.stdinTakenBy?.(reader);
     if (taken && !taken.admits(writerId))
         return { data: new Uint8Array(0), ended: false };
     let packet;
     // Every child and terminal descriptor is a reference onto the same store.
-    const input = await self.processes.readInput(childPid, waitMs, maxBytes);
+    const input = await self.processes.readInput(reader, waitMs, maxBytes);
     packet = { ...input, data: typeof input.data === 'string' ? enc.encode(input.data) : input.data };
     if (taken) {
         // The run stopped while this read waited: what it would have taken goes
         // back in front of the channel for the run after it.
         if (!taken.admits(writerId)) {
             if (packet.data.byteLength > 0) {
-                self.processes.unreadInput(childPid, [{ data: packet.data, ended: false }]);
+                self.processes.unreadInput(reader, [{ data: packet.data, ended: false }]);
             }
             return { data: new Uint8Array(0), ended: false };
         }
