@@ -9,12 +9,13 @@
  * through its binding (fabric bindings.ts NimbusD1Binding, session/rpc.ts
  * _rpcD1Query); the project's migrations are applied when its server builds.
  */
+import { facetName } from '@nimbus-sh/core/_shared/facet-name.js';
 /**
- * The facet a project's database is: `d1:` and the project root and the
- * database, each whole (a name made of either cannot be another's).
+ * The facet a project's database is: its project root and database, each
+ * whole, so no two projects' databases are one, whatever the root's length.
  */
 export function d1DatabaseFacetName(root, database) {
-    return 'd1:' + JSON.stringify([root, database]);
+    return facetName('d1', [root, database]);
 }
 /**
  * The database `database` of the project at `root`: its facet, got in the

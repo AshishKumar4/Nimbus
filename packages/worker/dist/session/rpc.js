@@ -26,10 +26,7 @@ import { isBrokenPipe } from '@nimbus-sh/core/substrate/lifo/utils/bytes-io.js';
 import { STDIN_FILE_READ_PIECE_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { normalizeTerminalNewlines } from '@nimbus-sh/core/_shared/terminal.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { getInnerDoClass, noteInnerDoFacetOpened } from '@nimbus-sh/fabric/inner-do-registry.js';
-import { KvEmulator, serveKvCall } from '../bindings/kv.js';
-import { R2Emulator, serveR2Call } from '../bindings/r2.js';
-import { d1Database } from '../bindings/d1.js';
+import { getInnerDoClass, innerDoFacetName, noteInnerDoFacetOpened } from '@nimbus-sh/fabric/inner-do-registry.js';
 import { failureOf as errorFromCacheFailure } from '../runtime/stop-replay-body.js';
 import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
@@ -258,7 +255,7 @@ function innerDoFacet(self, bindingName, id) {
     const cls = getInnerDoClass(self.ctx.id.toString(), bindingName);
     if (!cls)
         return null;
-    const facetName = 'innerDO-' + bindingName + '-' + id;
+    const facetName = innerDoFacetName(bindingName, id);
     const ctx = self.ctx;
     if (noteInnerDoFacetOpened(ctx, bindingName, facetName)) {
         // Each build of the inner worker is a new class; get() with it on a facet still running an older one resets this object.
@@ -295,42 +292,6 @@ export async function _rpcInnerDoCall(self, req) {
     if (typeof member !== 'function')
         throw new TypeError(`Nimbus: inner DO member '${req.path.join('.')}' is not callable`);
     return await Reflect.apply(member, holder, req.args);
-}
-/**
- * The store a storage binding's props name (fabric bindings.ts
- * NimbusKVNamespace, NimbusD1Binding, NimbusR2Bucket): the project, and its
- * KV namespace's or R2 bucket's binding name, or its D1 database.
- */
-const StorageTargetSchema = z.object({ root: z.string(), store: z.string().min(1) });
-/** A Worker's D1 queries, as D1's binding contract carries them: a blob is its bytes. */
-const D1QueriesSchema = z.array(z.object({
-    sql: z.string(),
-    params: z.array(z.union([z.string(), z.number(), z.null(), z.array(z.number())])).optional(),
-}));
-/** A project's KV or R2 files, as the binding's credential (the process that started the server). */
-function storeFs(self, cred, op) {
-    self.ensureSqliteFs();
-    if (!self.sqliteFs)
-        throw new Error(`${op}: the session filesystem is not open`);
-    return self.sqliteFs.as(cred === undefined ? CRED_SESSION_USER : requireVfsCred(cred, op));
-}
-/** A call of a `wrangler dev` Worker's KV binding, on the namespace its props name. */
-export async function _rpcKvCall(self, target, call, cred) {
-    const { root, store } = StorageTargetSchema.parse(target);
-    return await serveKvCall(new KvEmulator({ vfs: storeFs(self, cred, 'kvCall'), root, binding: store }), call);
-}
-/** A call of a `wrangler dev` Worker's R2 binding, on the bucket its props name. */
-export async function _rpcR2Call(self, target, call, cred) {
-    const { root, store } = StorageTargetSchema.parse(target);
-    return await serveR2Call(new R2Emulator({ vfs: storeFs(self, cred, 'r2Call'), root, binding: store }), call);
-}
-/**
- * A `wrangler dev` Worker's D1 queries, in the database its props name: the
- * project's facet, got in this request.
- */
-export async function _rpcD1Query(self, target, queries) {
-    const { root, store } = StorageTargetSchema.parse(target);
-    return await d1Database(self.ctx, root, store).query(D1QueriesSchema.parse(queries));
 }
 export async function _rpcWriteFile(self, path, content, pid, cred) {
     // binary-fs wave: the bridge's writeFile already accepts

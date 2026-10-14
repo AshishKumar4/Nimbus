@@ -28,7 +28,7 @@ import { STDIN_FILE_READ_PIECE_BYTES } from '@nimbus-sh/core/runtime/stdin-read.
 import { normalizeTerminalNewlines } from '@nimbus-sh/core/_shared/terminal.js';
 import type { ProcessExitNotice, ProcessExitNoticeSource } from '@nimbus-sh/core/runtime/process-exit-notices.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { getInnerDoClass, noteInnerDoFacetOpened } from '@nimbus-sh/fabric/inner-do-registry.js';
+import { getInnerDoClass, innerDoFacetName, noteInnerDoFacetOpened } from '@nimbus-sh/fabric/inner-do-registry.js';
 import type { InnerDoFetchAnswer } from '@nimbus-sh/fabric/bindings.js';
 import type { D1QueryResponse, D1QuerySql, KvCall, R2Call } from '@nimbus-sh/fabric/inner-storage-env.js';
 import { KvEmulator, serveKvCall } from '../bindings/kv.js';
@@ -331,7 +331,7 @@ export async function _rpcInnerDoFetch(self: RpcHost, req: {
 function innerDoFacet(self: RpcHost, bindingName: string, id: string): Fetcher | null {
   const cls = getInnerDoClass(self.ctx.id.toString(), bindingName);
   if (!cls) return null;
-  const facetName = 'innerDO-' + bindingName + '-' + id;
+  const facetName = innerDoFacetName(bindingName, id);
   const ctx: DurableObjectState = self.ctx;
   if (noteInnerDoFacetOpened(ctx, bindingName, facetName)) {
     // Each build of the inner worker is a new class; get() with it on a facet still running an older one resets this object.

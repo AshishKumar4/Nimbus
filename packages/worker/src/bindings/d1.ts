@@ -10,15 +10,16 @@
  * _rpcD1Query); the project's migrations are applied when its server builds.
  */
 
+import { facetName } from '@nimbus-sh/core/_shared/facet-name.js';
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { NimbusD1Database } from './d1-database.js';
 
 /**
- * The facet a project's database is: `d1:` and the project root and the
- * database, each whole (a name made of either cannot be another's).
+ * The facet a project's database is: its project root and database, each
+ * whole, so no two projects' databases are one, whatever the root's length.
  */
 export function d1DatabaseFacetName(root: string, database: string): string {
-  return 'd1:' + JSON.stringify([root, database]);
+  return facetName('d1', [root, database]);
 }
 
 /**
