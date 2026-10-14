@@ -30,7 +30,7 @@ function facetManager(boot) {
 
 const args = {
   command: 'python3 server.py', cwd: '/home/user', argv: ['python3', 'server.py'], invokerPid: 7,
-  wasmVfsPath: 'home/user/.nimbus/runtimes/cpython/3.13.14/share/cpython/python.wasm',
+  wasmVfsPath: 'usr/lib/nimbus/cpython/3.13.14/share/cpython/python.wasm',
   startArgs: { userEnv: {} },
 };
 
