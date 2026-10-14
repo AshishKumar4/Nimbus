@@ -51,6 +51,7 @@ import {
   type ExclusiveMutationRequest,
   type RecallKind,
   type RuntimeOpenFlags,
+  type RuntimeReadFileOptions,
   type RuntimeReadOptions,
   type RuntimeOpenedFile,
   type RuntimeReopenTarget,
@@ -66,7 +67,7 @@ import {
   type VfsMutationReceipt,
   type RuntimeMutationOwner,
 } from './os-contracts.js';
-import { fsError, modeAllows, SqliteRuntimeFsBridge, walkBeneath } from './sqlite-runtime-fs-bridge.js';
+import { fitsWholeRead, fsError, modeAllows, SqliteRuntimeFsBridge, walkBeneath } from './sqlite-runtime-fs-bridge.js';
 import { closeDescriptions, closeScopeSignal, createDescriptorScope, Descriptors, openFlags, processView, reportLost, scopeSignal, settleHeldAt, type DescriptorScope } from './descriptors.js';
 import { BUFFERED_WRITE_BYTES, flagsRefusal, openFollows, openMounted, reopenMounted } from '../vfs/mounted-description.js';
 import { registerDirectoryReadBridge, directoryReadHandleClosed } from './read-directory-batch.js';
@@ -141,7 +142,7 @@ class GuardedProcessBridge implements RuntimeFsBridge {
   }
 
   stat(path: RuntimeFsPath, options?: { followSymlinks?: boolean }): RuntimeVfsStat | null { this.guard(); return this.target.stat(path, options); }
-  readFile(path: RuntimeFsPath, options?: { followSymlinks?: boolean; cached?: boolean }): Uint8Array | null { this.guard(); return this.reading(() => this.target.readFile(path, options)); }
+  readFile(path: RuntimeFsPath, options?: RuntimeReadFileOptions): Uint8Array | null { this.guard(); return this.reading(() => this.target.readFile(path, options)); }
   writeFile(path: RuntimeFsPath, bytes: string | Uint8Array, options?: { createParents?: boolean; expectedRevision?: number }): number {
     this.guard(); return this.target.writeFile(path, bytes, options);
   }
@@ -946,10 +947,14 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
       return view ? { ...runtimeStatOf(stat), size: view.byteLength } : runtimeStatOf(stat);
     });
   }
-  readFile(path: RuntimeFsPath, options?: { followSymlinks?: boolean; cached?: boolean }) {
+  readFile(path: RuntimeFsPath, options?: RuntimeReadFileOptions) {
     return this.either([path], () => this.bridge.readFile(path, options), () => this.absent(async () => {
       const follow = options?.followSymlinks !== false;
       const name = await this.path(path, follow);
+      if (options?.maxBytes !== undefined) {
+        const stat = await this.namespace.stat(name, { follow });
+        if (stat !== null && !fitsWholeRead(stat, options.maxBytes)) throw syscallError('EFBIG', 'read', path);
+      }
       return (await this.viewed(name, follow)) ?? this.namespace.readFile(name);
     }));
   }
@@ -1335,8 +1340,9 @@ export class ProcessView implements VFS {
   async isSymlink(path: string): Promise<boolean> { return (await this.probe(path, false))?.type === 'symlink'; }
   /** The file's bytes as UTF-8 text. */
   async readFileString(path: string): Promise<string> { return await readText(this, path); }
-  async readFile(path: string): Promise<Uint8Array> {
-    const bytes = await this.call('open', path, () => this.fs.readFile(path));
+  /** `maxBytes`: only a regular file of at most that many bytes, read whole; a larger one or a device is EFBIG, unread (RuntimeReadFileOptions). */
+  async readFile(path: string, options?: { maxBytes?: number }): Promise<Uint8Array> {
+    const bytes = await this.call('open', path, () => this.fs.readFile(path, options));
     if (bytes === null) throw syscallError('ENOENT', 'open', path);
     return bytes;
   }
