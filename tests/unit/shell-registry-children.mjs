@@ -13,6 +13,14 @@ const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harnes
 // Programs that exit 255 (GNU xargs's signal to stop) and 126 (a status, not a refused exec).
 ws.registry.register('exit255', async () => 255);
 ws.registry.register('exit126', async () => 126);
+// A program that ignores its stop until the test lets it go, then meets a closed pipe.
+let releaseLate;
+const lateRelease = new Promise((resolve) => { releaseLate = resolve; });
+ws.registry.register('late-after-abort', async (ctx) => {
+  await new Promise((resolve) => ctx.signal.addEventListener('abort', resolve, { once: true }));
+  await lateRelease;
+  throw Object.assign(new Error('EPIPE: broken pipe, write'), { code: 'EPIPE' });
+});
 // A program whose cancellation meets a closed pipe: aborted, it throws EPIPE.
 ws.registry.register('pipe-on-abort', async (ctx) => {
   await new Promise((resolve) => ctx.signal.addEventListener('abort', resolve, { once: true }));
@@ -90,6 +98,24 @@ try {
     assert.deepEqual(await run(`kill ${child.pid}`), { code: 0, stdout: '', stderr: '' });
     const r = await pending;
     assert.deepEqual({ code: r.exitCode, stderr: r.stderr }, { code: 125, stderr: 'xargs: pipe-on-abort: terminated by signal 15\n' });
+  });
+
+  await check('a killed child its session has pruned before its program returns still ends as the kill', async () => {
+    const pending = ws.exec('echo 1 | xargs late-after-abort');
+    let child;
+    for (let i = 0; i < 200 && !child; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      child = ws.processes.getRunning().find((entry) => entry.argv.join(' ') === 'late-after-abort 1');
+    }
+    assert.ok(child, 'the child runs as a process of the table');
+    assert.deepEqual(await run(`kill ${child.pid}`), { code: 0, stdout: '', stderr: '' });
+    // Its work ignores the stop past the bound on it; a prune then forgets its entry.
+    await new Promise((resolve) => setTimeout(resolve, 6_000));
+    await ws.processes.reap(0);
+    assert.equal(ws.processes.get(child.pid), undefined, 'the entry was pruned before the program returned');
+    releaseLate();
+    const r = await pending;
+    assert.deepEqual({ code: r.exitCode, stderr: r.stderr }, { code: 125, stderr: 'xargs: late-after-abort: terminated by signal 15\n' });
   });
 
   await check('command NAME runs the builtin: command kill %1 ends the shell\'s job', async () => {
