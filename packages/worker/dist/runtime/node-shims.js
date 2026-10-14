@@ -3846,7 +3846,7 @@ const __fsMod = (() => {
       catch (error) { if (error?.code !== "ENOENT") throw error; }
       const left = _copyLeaves(there, from);
       if (there !== undefined && !there.isDirectory() && left !== (there.mode & 0o7777)) await _chmodAsync(dest, left);
-      await _copyLogged(src, dest, from, there === undefined);
+      await _copyLogged(src, dest, from, there !== undefined);
       if (left !== from) await _chmodAsync(dest, from);
     } catch (error) { throw _asCallError(error, "copyfile", src, dest); }
   }
@@ -3860,9 +3860,11 @@ const __fsMod = (() => {
    * never held leaves the copy as unread, its stat learned. Decided here, it
    * is answered once logged.
    */
-  async function _copyLogged(src, dest, mode, absent) {
+  async function _copyLogged(src, dest, mode, there) {
     const srcAbs = _resolveFollow(src, "copyfile");
     const destAbs = _resolveFollow(dest, "copyfile");
+    // The copy's name is judged as any write's is, where the view can.
+    const absent = _ensureWritable(destAbs, "copyfile", src, true, dest) ?? !there;
     const destK = _strip(destAbs);
     const call = { call: "copyFile", path: _strip(_resolve(dest)), from: _strip(_resolve(src)) };
     const content = _bundleLookup(srcAbs, false);
