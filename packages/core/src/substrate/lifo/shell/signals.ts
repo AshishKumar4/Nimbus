@@ -86,6 +86,11 @@ export function signalAbortReasonOf(signal: AbortSignal): SignalAbortReason | nu
   return signal.aborted && isSignalAbortReason(signal.reason) ? signal.reason : null;
 }
 
+/** The signal a 128+N status names, as a shell reads one; null for any other status. */
+export function signalOfStatus(status: number): string | null {
+  return status > 128 ? SIGNAL_NAMES.get(status - 128) ?? null : null;
+}
+
 function isSignalAbortReason(value: unknown): value is SignalAbortReason {
   if (!value || typeof value !== 'object') return false;
   const kind = Object.getOwnPropertyDescriptor(value, 'kind')?.value;
