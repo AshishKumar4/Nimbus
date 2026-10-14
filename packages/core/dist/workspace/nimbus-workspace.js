@@ -795,11 +795,28 @@ function* baseSeed(home) {
         yield { op: 'chown', as: 'kernel', path: 'usr/local', uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid };
     }
     // The home is made the way useradd -m makes it: by root, wherever it is,
-    // then handed to the user. Its parents stay root's.
+    // then handed to the user. Its parents stay root's. A home already there
+    // is left as it is. One to make is made through no link: each name from /
+    // to it is looked at without following it, and a link or a file on the way
+    // refuses the home, so root never makes, or hands the user, a directory a
+    // link the user made leads to (the runtime store, the kernel's /.nimbus,
+    // /etc).
     const homeDir = home.replace(/^\/+/, '').replace(/\/+$/, '');
     if (homeDir !== '' && !(yield* exists('kernel', homeDir))) {
-        yield { op: 'mkdir', as: 'kernel', path: homeDir, recursive: true, mode: 0o755 };
-        yield { op: 'chown', as: 'kernel', path: homeDir, uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid };
+        const names = homeDir.split('/');
+        for (let i = 1; i <= names.length; i++) {
+            const path = names.slice(0, i).join('/');
+            const entry = yield* lstat(path);
+            if (entry === null) {
+                yield { op: 'mkdir', as: 'kernel', path, mode: 0o755 };
+                if (i === names.length)
+                    yield { op: 'chown', as: 'kernel', path, uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid };
+                continue;
+            }
+            if (entry.type !== 'directory') {
+                throw new Error(`HOME ${home} passes through ${entry.type === 'symlink' ? 'a link' : `a ${entry.type}`} at /${path}: a home is made through directories only`);
+            }
+        }
     }
     // HOME=/ is root's directory, not one Nimbus populates for the user.
     const homeChildren = homeDir === '' ? [] : [`${homeDir}/.config`, `${homeDir}/projects`];
