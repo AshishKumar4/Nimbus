@@ -11,7 +11,7 @@
  * meets a read lease is held until the lease is recalled, never refused
  * (SqliteVFS.readRecallAt).
  */
-export const SESSION_KERNEL_ROOTS: readonly string[] = ['.nimbus', 'var/lib/nimbus'];
+export const SESSION_KERNEL_ROOTS: readonly string[] = ['.nimbus'];
 
 /**
  * Whether `key`, its entry or with `listing` its names, is clear of every

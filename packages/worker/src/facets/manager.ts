@@ -894,8 +894,17 @@ function bundleUsesNodeSqlite(
  */
 const MANIFEST_COPIES_MAX_BYTES = 4 * 1024 * 1024;
 
+/**
+ * The directory the kernel keeps its stores below (facet images, inline wasm,
+ * staged bindings, durable images). `/` is root's 0755, so no user can make,
+ * rename or remove a name in it: below a `/.nimbus` that is the kernel's own
+ * real directory, which no one else may write, no directory on the way to a
+ * store is one a user could replace with a link (_kernelStoreFor).
+ */
+const KERNEL_STORE_ROOT = '/.nimbus';
+
 /** Where inlined wasm images are staged, one kernel-owned file per content key. */
-const INLINE_WASM_DIR = '/var/lib/nimbus/inline-wasm';
+const INLINE_WASM_DIR = `${KERNEL_STORE_ROOT}/inline-wasm`;
 
 /**
  * A base64 string literal whose first bytes are wasm's `\0asm` magic
@@ -6283,7 +6292,7 @@ export class FacetManager {
 
   /**
    * The image store's disk for process `pid`'s images: this session's VFS,
-   * as the kernel writing on its behalf (_kernelFor) — the store is written
+   * as the kernel writing on its behalf (_kernelStoreFor) — the store is written
    * by the kernel and read by processes through supervisor bindings that
    * enforce their own credential. Mode 0644 at creation (0666 under the
    * kernel's umask), as POSIX has it, is what makes the read succeed for any
@@ -6295,7 +6304,7 @@ export class FacetManager {
         'Nimbus: a resident process needs a session filesystem to materialize its boot image',
       );
     }
-    const fs = this._kernelFor(pid);
+    const fs = this._kernelStoreFor(pid);
     const at = (path: string) => `/${stripLeadingSlashes(path)}`;
     return {
       mkdirp: (dir) => fs.mkdir(at(dir), { recursive: true, mode: 0o755 }),
@@ -6315,6 +6324,29 @@ export class FacetManager {
    */
   private _kernelFor(pid: number): RuntimeSynchronousFs {
     return this.filesystem!.bind({ pid, cred: CRED_KERNEL }).synchronous!;
+  }
+
+  /**
+   * _kernelFor, for the kernel's own stores (KERNEL_STORE_ROOT). That root is
+   * checked, not assumed, each time: made if absent, and refused unless it is
+   * the kernel's own real directory that no one else may write (only root,
+   * through sudo, could have made it anything else). The stores releases
+   * through worker 0.19.0 kept below `/var/lib/nimbus` are left: a durable
+   * worker one made may still boot from a path there, and a root-owned
+   * directory at that name, below the user's `/var`, is no proof the kernel
+   * made it.
+   */
+  private _kernelStoreFor(pid: number): RuntimeSynchronousFs {
+    const fs = this._kernelFor(pid);
+    let root = fs.stat(KERNEL_STORE_ROOT, { followSymlinks: false });
+    if (root === null) {
+      fs.mkdir(KERNEL_STORE_ROOT, { mode: 0o755 });
+      root = fs.stat(KERNEL_STORE_ROOT, { followSymlinks: false });
+    }
+    if (root?.type !== 'directory' || root.uid !== 0 || (root.mode & 0o022) !== 0) {
+      throw new Error(`Nimbus: ${KERNEL_STORE_ROOT} is not the kernel's own directory (a ${root?.type ?? 'missing entry'} owned by uid ${root?.uid}, mode ${((root?.mode ?? 0) & 0o7777).toString(8)}); its stores are not written through it`);
+    }
+    return fs;
   }
 
   /** Give the bundle's module pass the host's esbuild, as composeFacetManager does. */
@@ -6457,7 +6489,7 @@ export class FacetManager {
    */
   private _stageWasmImageBytes(images: readonly Uint8Array[], pid: number): WasmImageRecord[] {
     if (images.length === 0 || !this.filesystem) return [];
-    const fs = this._kernelFor(pid);
+    const fs = this._kernelStoreFor(pid);
     fs.mkdir(INLINE_WASM_DIR, { recursive: true, mode: 0o755 });
     return images.map((bytes) => {
       const digest = wasmImageDigest(bytes);
@@ -6491,7 +6523,7 @@ export class FacetManager {
   ): Promise<ResidentStagedBindings | null> {
     if (names.length === 0) return null;
     if (!this.filesystem) throw new Error('Nimbus: a resident process needs a session filesystem to boot');
-    const fs = this._kernelFor(pid);
+    const fs = this._kernelStoreFor(pid);
     const bindingPaths: Record<string, string> = {};
     for (const name of names) {
       const binding = stagedBinding(name);
@@ -8683,7 +8715,9 @@ export class FacetManager {
     const kernel = vfs.as(CRED_KERNEL);
     return {
       readFile: (path) => withRecall(() => fs.readFileUncached(path)),
-      readImage: (path) => kernel.readFileUncached(path),
+      // A durable worker an earlier release made may name one below /var,
+      // which a process may hold: that read waits for it, as readFile's does.
+      readImage: (path) => withRecall(() => kernel.readFileUncached(path)),
     };
   }
 

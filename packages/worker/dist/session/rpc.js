@@ -312,6 +312,13 @@ export async function _rpcWriteFile(self, path, content, pid, cred) {
  * Deliberately absent from the remote HTTP RPC dispatcher, so only an
  * embedder holding the DO stub may write it.
  *
+ * It follows no link: the guest may own every directory on the way, and a
+ * link there would have the kernel make another directory sticky and
+ * world-writable. Each directory from `/` to the root must be a directory
+ * itself, or the call is refused; a link at the file's own name is replaced
+ * by the file. One synchronous turn, so nothing changes between a look and
+ * the write.
+ *
  * It guards against accidents, not against the session's code: the session's
  * user has passwordless root (`sudo`, `su`), and a program that runs `sudo`
  * can replace or remove this file. Do not rely on it to keep a value from code
@@ -325,9 +332,17 @@ export async function _rpcWriteProtectedRootFile(self, rootPath, path, content) 
         throw new Error('protected file must be a direct child of the declared session root');
     }
     const fs = self.sqliteFs.as(CRED_KERNEL);
-    if (!fs.exists(root) || !fs.isDirectory(root)) {
-        throw new Error('protected file session root does not exist');
+    const parts = root.split('/');
+    for (let i = 1; i <= parts.length; i++) {
+        const dir = parts.slice(0, i).join('/');
+        const type = fs.statIfPresent(dir, false)?.type;
+        if (type === 'symlink')
+            throw new Error(`protected file session root passes through a link at /${dir}`);
+        if (type !== 'directory')
+            throw new Error('protected file session root does not exist');
     }
+    if (fs.statIfPresent(protectedPath, false)?.type === 'symlink')
+        fs.unlink(protectedPath);
     fs.chown(root, CRED_KERNEL.uid, CRED_KERNEL.gid);
     fs.chmod(root, 0o1777);
     fs.writeFile(protectedPath, content);

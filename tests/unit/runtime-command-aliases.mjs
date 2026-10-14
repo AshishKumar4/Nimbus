@@ -229,6 +229,13 @@ class FakeVfs {
   }
   unlink(path) { this.files.delete(path); }
   rmdir(path) { this.dirs.delete(path); }
+  // The store's checks (runtime-store.ts): every directory root's own, no links.
+  async stat(path) {
+    if (this.dirs.has(path)) return { type: 'directory', uid: 0, mode: 0o40755 };
+    return this.files.has(path) ? { type: 'file', uid: 0, mode: 0o100644 } : null;
+  }
+  async symlink(target, path) { this.files.set(path, `link:${target}`); }
+  async readlink(path) { return this.files.get(path).slice('link:'.length); }
 }
 
 {
@@ -240,7 +247,6 @@ class FakeVfs {
   const runtimes = new RuntimeManager({
     vfs,
     registry,
-    getHome: () => '/home/user',
     source: runtimeCatalogSource(fakeEnv),
   });
   runtimes.registerRunner('cpython-runner', (_manifest, _root, binName) => async () => {
@@ -251,8 +257,8 @@ class FakeVfs {
 
   const result = await installRuntimeProgrammatic(deps, 'pip');
   assert.equal(result.exitCode, 0, `install failed: ${result.stderr}`);
-  assert.match(result.stdout, /\[cpython\] installed at home\/user\/\.nimbus\/runtimes\/cpython\/3\.13\.14/);
-  assert.ok(vfs.exists('home/user/.nimbus/runtimes/cpython/3.13.14/manifest.json'));
+  assert.match(result.stdout, /\[cpython\] installed at usr\/lib\/nimbus\/cpython\/3\.13\.14/);
+  assert.ok(vfs.exists('usr/lib/nimbus/cpython/3.13.14/manifest.json'));
   for (const bin of ['python', 'python3', 'pip', 'pip3']) {
     assert.ok(registered.includes(bin), `expected '${bin}' to be registered`);
   }
