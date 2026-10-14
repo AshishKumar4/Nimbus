@@ -197,7 +197,7 @@ const STDIN_PATHS: Record<string, true> = { '/dev/stdin': true, '/dev/fd/0': tru
  * read of it does in Node; what it returned is all fd 0 holds, so a second
  * read finds it at its end.
  */
-export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array) {
+export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array, reachStreams?: () => void) {
   let stdinRead = false;
   const readStdin = (): Uint8Array => {
     if (stdinRead) return new Uint8Array(0);
@@ -585,11 +585,13 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array) {
   const streamOptions = (options: string | StreamOptions | undefined): StreamOptions => ({ fs: streamFs, ...(typeof options === 'string' ? { encoding: options } : options) });
   class ReadStream extends engineFs.ReadStream {
     constructor(path: string | URL | null | undefined, options?: string | StreamOptions) {
+      reachStreams?.();
       super(streamPath(path), streamOptions(options));
     }
   }
   class WriteStream extends engineFs.WriteStream {
     constructor(path: string | URL | null | undefined, options?: string | StreamOptions) {
+      reachStreams?.();
       super(streamPath(path), streamOptions(options));
     }
   }

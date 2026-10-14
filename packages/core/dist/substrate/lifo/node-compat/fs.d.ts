@@ -73,7 +73,7 @@ interface StreamOptions {
  * read of it does in Node; what it returned is all fd 0 holds, so a second
  * read finds it at its end.
  */
-export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array): {
+export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array, reachStreams?: () => void): {
     readFileSync: (path: string | URL | number, options?: string | {
         encoding?: string;
         flag?: string;

@@ -13,7 +13,7 @@ import type { DNSResolver } from '../kernel/dns-resolver.js';
 import { createChildProcess } from './child_process.js';
 import * as timersModule from './timers.js';
 import * as zlibModule from './zlib.js';
-import * as ttyModule from './tty.js';
+import { createTty } from './tty.js';
 import { createDns } from './dns.js';
 import { createModuleShim } from './module.js';
 import * as readlineModule from './readline.js';
@@ -39,6 +39,8 @@ export interface NodeContext {
   routeLoopback?: LoopbackRouter;
   /** The kernel's resolver, which dns.lookup answers from as curl and wget do. */
   dns?: DNSResolver;
+  /** Told when the program first reaches the engine's stream classes (a stream module, an fs or tty stream, process.stdout). */
+  reachStreams?: () => void;
 }
 
 /**
@@ -72,8 +74,8 @@ class StubServer extends EventEmitter {
 
 export function createModuleMap(ctx: NodeContext): Record<string, () => unknown> {
   const map: Record<string, () => unknown> = {
-    fs: () => createFs(ctx.filesystem(), ctx.cwd, ctx.stdin),
-    'fs/promises': () => createFs(ctx.filesystem(), ctx.cwd, ctx.stdin).promises,
+    fs: () => createFs(ctx.filesystem(), ctx.cwd, ctx.stdin, ctx.reachStreams),
+    'fs/promises': () => createFs(ctx.filesystem(), ctx.cwd, ctx.stdin, ctx.reachStreams).promises,
     path: () => createPath(ctx.cwd),
     os: () => createOs(ctx.env),
     process: () => createProcess({
@@ -92,16 +94,16 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
     http: () => createHttp(ctx.portRegistry, 'http:', ctx.routeLoopback),
     https: () => createHttp(ctx.portRegistry, 'https:', ctx.routeLoopback),
     child_process: () => createChildProcess(ctx.executeCapture),
-    stream: () => realm.getBuiltinModule('node:stream'),
-    'stream/promises': () => realm.getBuiltinModule('node:stream/promises'),
-    'stream/consumers': () => realm.getBuiltinModule('node:stream/consumers'),
-    'stream/web': () => realm.getBuiltinModule('node:stream/web'),
+    stream: () => (ctx.reachStreams?.(), realm.getBuiltinModule('node:stream')),
+    'stream/promises': () => (ctx.reachStreams?.(), realm.getBuiltinModule('node:stream/promises')),
+    'stream/consumers': () => (ctx.reachStreams?.(), realm.getBuiltinModule('node:stream/consumers')),
+    'stream/web': () => (ctx.reachStreams?.(), realm.getBuiltinModule('node:stream/web')),
     url: () => createUrl(ctx.cwd),
     timers: () => timersModule,
     crypto: () => realm.getBuiltinModule('node:crypto'),
     zlib: () => zlibModule,
     string_decoder: () => realm.getBuiltinModule('node:string_decoder'),
-    tty: () => ttyModule,
+    tty: () => (ctx.reachStreams?.(), createTty()),
     dns: () => createDns(ctx.dns),
     'dns/promises': () => createDns(ctx.dns).promises,
     readline: () => readlineModule,
@@ -195,13 +197,13 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
     }),
     // http2 — Node's exports; opening HTTP/2 refuses (core/_shared/http2-module.ts,
     // which the node shims embed too)
-    http2: () => createHttp2Module({
+    http2: () => (ctx.reachStreams?.(), createHttp2Module({
       EventEmitter,
       Readable: realm.getBuiltinModule('node:stream').Readable,
       Stream: realm.getBuiltinModule('node:stream'),
       Buffer,
       emitWarning: (message) => { ctx.stderr.write(`Warning: ${message}\n`); },
-    }),
+    })),
     // inspector — stub (vite only uses it in --profile mode)
     inspector: () => ({
       Session: class Session extends EventEmitter {

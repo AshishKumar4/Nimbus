@@ -141,6 +141,20 @@ export interface NodeProgramEnd {
 }
 
 /**
+ * A pipe into the program's stdout or stderr leaves it open, as Node's pipe
+ * leaves process.stdout and process.stderr; the engine's knows the realm's own
+ * streams (the worker's, which its plumbing needs), not the program's. Set
+ * when the program first reaches the engine's streams, before it can pipe.
+ */
+function leaveOpenOnPipe(standardStreams: ReadonlySet<Writable>): void {
+	const { Readable } = realm.getBuiltinModule('node:stream');
+	const pipe = Readable.prototype.pipe;
+	Readable.prototype.pipe = function (this: Readable, destination: Writable, options?: PipeOptions): Writable {
+		return pipe.call(this, destination, standardStreams.has(destination) ? { ...options, end: false } : options);
+	};
+}
+
+/**
  * Run `program` in the current realm, which is the program's own: its globals
  * (process, Buffer, console) are installed on
  * globalThis for good. Resolves once the main script has run (an ES module's
@@ -169,7 +183,20 @@ export async function runNodeProgram(program: NodeProgram, host: NodeProgramHost
 		};
 
 		// One process and console, every module's, as in Node.
-		const main = { process: createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdout: ctx.stdout, stderr: ctx.stderr }), console: createConsole(ctx.stdout, ctx.stderr) };
+		const standardStreams = new Set<Writable>();
+		let streamsReached = false;
+		nodeCtx.reachStreams = () => {
+			if (streamsReached) return;
+			streamsReached = true;
+			leaveOpenOnPipe(standardStreams);
+		};
+		const main = {
+			process: createProcess({
+				argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdout: ctx.stdout, stderr: ctx.stderr,
+				standardStream: (stream) => { standardStreams.add(stream); nodeCtx.reachStreams?.(); },
+			}),
+			console: createConsole(ctx.stdout, ctx.stderr),
+		};
 		const loader = createCjsLoader(nodeCtx, main);
 
 		// Execute main script
@@ -195,15 +222,6 @@ export async function runNodeProgram(program: NodeProgram, host: NodeProgramHost
 		realm.emitWarning = (...warning) => { main.process.emitWarning(...warning); };
 		realm.removeAllListeners('warning');
 		realm.on('warning', (warning) => { main.process.emit('warning', warning); });
-		// A pipe into its stdout or stderr leaves it open, as Node's pipe leaves
-		// process.stdout and process.stderr; the engine's knows the realm's own
-		// streams (the worker's, which its plumbing needs), not the program's.
-		const { Readable } = realm.getBuiltinModule('node:stream');
-		const pipe = Readable.prototype.pipe;
-		Readable.prototype.pipe = function (this: Readable, destination: Writable, options?: PipeOptions): Writable {
-			const standard = destination === main.process.stdout || destination === main.process.stderr;
-			return pipe.call(this, destination, standard ? { ...options, end: false } : options);
-		};
 		ga.Buffer = Buffer;
 		ga.console = main.console;
 		ga.global = globalThis;

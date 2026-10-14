@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
-import { Writable } from 'node:stream';
+import realm from 'node:process';
+import type { Writable } from 'node:stream';
 import type { CommandOutputStream } from '../commands/types.js';
 import { createProcessWarnings, type WarningConstructor, type WarningOptions } from '../../../_shared/node-warning.js';
 
@@ -25,8 +26,9 @@ interface WarningFlags {
  * Node's is a stream. Each write reaches the output as it is made, so it
  * keeps its place among the console's.
  */
-function outputStream(output: CommandOutputStream, fd: number) {
+function outputStream(output: CommandOutputStream, fd: number): Writable {
   const decoder = new TextDecoder();
+  const { Writable } = realm.getBuiltinModule('node:stream');
   return Object.assign(new Writable({
     decodeStrings: false,
     write(chunk, _encoding, callback) {
@@ -44,6 +46,8 @@ export interface ProcessOptions {
   cwd: string;
   stdout: CommandOutputStream;
   stderr: CommandOutputStream;
+  /** Told process.stdout and process.stderr, each when the program first reaches it. */
+  standardStream?: (stream: Writable) => void;
 }
 
 export function createProcess(opts: ProcessOptions) {
@@ -66,8 +70,6 @@ export function createProcess(opts: ProcessOptions) {
       }
       throw new ProcessExitError(code);
     },
-    stdout: outputStream(opts.stdout, 1),
-    stderr: outputStream(opts.stderr, 2),
     stdin: {
       isTTY: false,
       fd: 0,
@@ -148,6 +150,24 @@ export function createProcess(opts: ProcessOptions) {
     features: { inspector: false, debug: false, uv: false, tls_alpn: false, tls_sni: false, tls_ocsp: false, tls: false },
     ...unflagged,
   });
+
+  // stdout and stderr, made when the program first reaches them: a Writable
+  // costs the engine's stream module, which a program that only logs never loads.
+  const standard = (output: CommandOutputStream, fd: number): PropertyDescriptor => {
+    let stream: Writable | undefined;
+    return {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        if (stream === undefined) {
+          stream = outputStream(output, fd);
+          opts.standardStream?.(stream);
+        }
+        return stream;
+      },
+    };
+  };
+  Object.defineProperties(proc, { stdout: standard(opts.stdout, 1), stderr: standard(opts.stderr, 2) });
 
   // Node's own 'warning' listener, unless warnings are off.
   if (warnings.installs) proc.on('warning', warnings.onWarning);

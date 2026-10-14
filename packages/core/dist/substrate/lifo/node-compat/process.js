@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { Writable } from 'node:stream';
+import realm from 'node:process';
 import { createProcessWarnings } from '../../../_shared/node-warning.js';
 export class ProcessExitError extends Error {
     exitCode;
@@ -16,6 +16,7 @@ export class ProcessExitError extends Error {
  */
 function outputStream(output, fd) {
     const decoder = new TextDecoder();
+    const { Writable } = realm.getBuiltinModule('node:stream');
     return Object.assign(new Writable({
         decodeStrings: false,
         write(chunk, _encoding, callback) {
@@ -48,8 +49,6 @@ export function createProcess(opts) {
             }
             throw new ProcessExitError(code);
         },
-        stdout: outputStream(opts.stdout, 1),
-        stderr: outputStream(opts.stderr, 2),
         stdin: {
             isTTY: false,
             fd: 0,
@@ -132,6 +131,23 @@ export function createProcess(opts) {
         features: { inspector: false, debug: false, uv: false, tls_alpn: false, tls_sni: false, tls_ocsp: false, tls: false },
         ...unflagged,
     });
+    // stdout and stderr, made when the program first reaches them: a Writable
+    // costs the engine's stream module, which a program that only logs never loads.
+    const standard = (output, fd) => {
+        let stream;
+        return {
+            configurable: true,
+            enumerable: true,
+            get: () => {
+                if (stream === undefined) {
+                    stream = outputStream(output, fd);
+                    opts.standardStream?.(stream);
+                }
+                return stream;
+            },
+        };
+    };
+    Object.defineProperties(proc, { stdout: standard(opts.stdout, 1), stderr: standard(opts.stderr, 2) });
     // Node's own 'warning' listener, unless warnings are off.
     if (warnings.installs)
         proc.on('warning', warnings.onWarning);
