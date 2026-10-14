@@ -219,7 +219,8 @@ import {
 } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import type { ResizableCreditLease } from '@nimbus-sh/platform/weighted-credit-pool.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
-import { streamedWasmImageDigest, wasmImageDigest, type WasmImageRecord } from './wasm-image-digest.js';
+import { streamedWasmImageDigest, type WasmImageRecord } from './wasm-image-digest.js';
+import { wasmImageDigest } from './wasm-image-key.js';
 import {
   prefetchBundleStart,
   prefetchBundleEnd,
