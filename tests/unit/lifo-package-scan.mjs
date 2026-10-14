@@ -27,7 +27,9 @@ try {
     await ws.fs.writeFile(`${dir}/package.json`, JSON.stringify(json));
     for (const [file, body] of Object.entries(files)) await ws.fs.writeFile(`${dir}/${file}`, body);
   };
+  // The global folder is root's, as on Linux: here handed to the user, as root may.
   const G = '/usr/lib/node_modules';
+  ws.vfs.as({ uid: 0, gid: 0, groups: [0], umask: 0o022 }).chown(G.slice(1), 1000, 1000);
   await pkg(`${G}/plain`, { name: 'plain', version: '1.0.0', bin: { plainbin: 'cli.js' } }, { 'cli.js': 'x' });
   await pkg(`${G}/@sc/tool`, { name: '@sc/tool', version: '2.0.0', bin: { scbin: 'b.js' } }, { 'b.js': 'x' });
   await pkg(`${G}/lifo-pkg-demo`, { name: 'lifo-pkg-demo', version: '0.1.0', bin: { shadowed: 'n.js' }, lifo: { commands: { demo: 'd.js', gone: 'missing.js' } } }, { 'd.js': 'x', 'n.js': 'x' });

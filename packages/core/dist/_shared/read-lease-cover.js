@@ -10,7 +10,7 @@
  * meets a read lease is held until the lease is recalled, never refused
  * (SqliteVFS.readRecallAt).
  */
-export const SESSION_KERNEL_ROOTS = ['.nimbus', 'var/lib/nimbus'];
+export const SESSION_KERNEL_ROOTS = ['.nimbus'];
 /**
  * Whether `key`, its entry or with `listing` its names, is clear of every
  * root in `roots`: nothing at or under one is, nor the names of a directory

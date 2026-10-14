@@ -14,6 +14,97 @@ published independently in the `@nimbus-sh` npm scope.
 - Fixed: a Python program that resolves more than 64 distinct hostnames gets
   `socket.gaierror` (EAI_MEMORY) for the 65th, instead of an address that
   stood for another name, which a connect would have dialed.
+- Breaking: `/usr` is laid out as on Linux. `/usr`, `/usr/bin`, `/usr/lib`
+  and `/usr/share`, and the global module folders `/usr/lib/node_modules`
+  and `/usr/share/pkg/node_modules`, are root's 0755, so writing into them
+  needs `sudo`; `/usr/local` stays the session user's, and `npm i -g`
+  installs there without it. `/etc/profile`, `/etc/hostname` and
+  `/etc/os-release` are root's 0644; put your own settings in
+  `~/.profile`. A session an earlier release made is moved over once, as
+  it opens: those directories become root's, without what was put in
+  them, and files keep what they hold.
+- Breaking: `nimbus install` puts a runtime where apt would: its tree in
+  `/usr/lib/nimbus/<name>/<version>`, owned by root, and a launcher in
+  `/usr/bin` (a link into the tree) for each command the tree has a
+  `bin/` entry for (`python3`, `ruby`, `clang`, …), so `/usr/bin/python3`
+  and `#!/usr/bin/python3` run it as `python3` does in Nimbus's shell.
+  Front-ends with no entry of their own (`pip`, `gem`, `bundle`) run by
+  name only, and a launcher is not a program GNU Bash (`bash -c`) can run.
+  A runtime's name and version must each be one path name, and a
+  configured `env.HOME` may not be inside `/usr/lib/nimbus` or `/.nimbus`,
+  the system's own stores, nor be made through a link (a home already
+  there is left as it is). A
+  configured `env.HOME` no longer chooses where runtimes go. The `root` a
+  runtime list or install reports, and the paths `nimbus install` prints,
+  are the new ones. Runtimes an earlier release installed below
+  `~/.nimbus/runtimes` are moved into place once, and a link is left
+  there. For embedders: `seedRuntimePackage`, `installRoot`,
+  `listInstalledManifests(View)`, `listInstalledRuntimes` and
+  `rehydrateInstalledRuntimesView` no longer take a home, and
+  `RuntimeManager` no longer takes `getHome`. `which clang` (and `cc`,
+  `clang++`, `wasm-ld`, `lld`) says `/usr/bin`, where its launcher is.
+- Fixed (security): the kernel kept the images resident processes boot
+  from, its copies of inline wasm and of staged native bindings below
+  `/var/lib/nimbus`, and `/var` is the session user's. A user who moved
+  `/var/lib` aside and put a link where a store was had the kernel write
+  those files into any directory, and the image sweep remove, as root,
+  every file there it did not recognise. The stores are now below
+  `/.nimbus`, in root's `/`, where no user can make, move or remove a
+  name; the kernel checks that `/.nimbus` is its own directory, which no
+  one else may write, before each use. `/var` is now the user's alone: a
+  process may hold a delegation of it. The old stores are left below
+  `/var/lib/nimbus`, since a durable worker an earlier release made may
+  still boot from them; once none does, `sudo rm -r /var/lib/nimbus`
+  frees their space.
+- Fixed (security): `writeProtectedRootFile` followed links the session's
+  user had made. A link at the file's name had the kernel overwrite the
+  file it led to and make it root's, read-only; a link at the declared
+  root or above it had the kernel make the directory it led to sticky and
+  world-writable. A link at the file's name is now replaced by the file,
+  and a root reached through a link is refused.
+- Fixed: `npm install` cleared what an earlier install cut short left in
+  `/tmp` as root, whatever was inside: a directory the session's user
+  moved to a staging name had root's files in it removed too. Each
+  staging directory is now cleared as the user who owns it, so another
+  user's stale one still goes, and what that user could not remove stays.
+
+- Fixed: a Ruby program and a threaded WASI program end as other WASI
+  programs do: what they wrote is in the workspace before their result
+  returns, and a run whose session restarted under it, or whose writes the
+  session refused, fails and says why. Before, such a run could report
+  success, and a file it wrote could be missing when the command returned.
+- Fixed: a Node process holds only the output it has not delivered yet. A
+  server that logged with no HTTP traffic, or a long one-shot run, kept a
+  record of every write it made until its next request or its end.
+- Fixed: a durable `spawnWorker` launch with an inline wasm module
+  (`modules: { 'x.wasm': { wasm } }`) boots again after the session
+  restarts. Its stored image wrote the module's bytes as `{}`, so the
+  restarted program could not compile it. An image stored before this fix
+  has lost those bytes: unless the launch's `vfsWasmModules` or
+  `vfsTextModules` supplies the same module, its restart fails, naming the
+  image, and the application has to be spawned again.
+- Fixed: `opencode` reads the files of its working tree and installed
+  packages as they are. Its snapshot was prepared as a Node program's
+  module map: an installed module came back as Nimbus's rendering of it,
+  and every module and TypeScript file went through the compiler for code
+  opencode never runs.
+- Fixed: a terminal that reconnects is shown its session's history without
+  storing it again. Each reconnect wrote the replayed history back into the
+  scrollback, so the next reconnect showed it twice, then four times, until
+  the size cap evicted real history to keep the copies.
+- Fixed: a session has one build. An SDK call, a shell connection and the
+  frame of a socket that woke a hibernated session, arriving while the
+  session was being built, each started a build of their own, replacing the
+  first's terminal, workspace and shell process under it; and an SDK call
+  could proceed before the session's own commands were registered. They
+  now wait for the one build, and a socket among them is attached to it.
+- Fixed: a Node program whose only remaining work was a `zlib` or `crypto`
+  call with a callback (`zlib.deflate`, `crypto.pbkdf2`, `scrypt`,
+  `randomBytes`, ...) could end with exit 0 and none of the output its
+  callback writes: the runtime counted fetches, timers and its own calls as
+  live work, not the engine's. Such a call is live until its callback, as
+  Node's active requests keep its event loop. Small calls finished in time
+  unless the machine was busy.
 - Security: a D1 binding under `wrangler dev` is a database of its own (a
   Durable Object facet of the session, its own SQLite), as on Cloudflare.
   It ran its statements in the session's own database, and a table name it

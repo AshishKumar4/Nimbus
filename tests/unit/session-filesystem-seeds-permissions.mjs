@@ -63,10 +63,11 @@ const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000])
     { uid: 1000, gid: 1000 },
     'other system trees retain user ownership',
   );
+  // /usr is root's, as on Linux (usr-layout.mjs); /usr/local, below, the user's.
   assert.deepEqual(
     { uid: rootVfs.stat('usr').uid, gid: rootVfs.stat('usr').gid },
-    { uid: 1000, gid: 1000 },
-    'only /etc is special-cased',
+    { uid: 0, gid: 0 },
+    '/usr is root\'s, as /etc is',
   );
   // npm's global prefix chain must exist and be user-writable: batch
   // installs authorize each write group against existing parents, so a

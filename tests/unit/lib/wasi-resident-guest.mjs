@@ -9,6 +9,8 @@
  * another process of an earlier guest's session, in a WASI body of its own;
  * `after` runs it as the next process in an earlier guest's WASI body (a warm
  * facet, FacetSpec.warm), which that guest ended. `cred` is who it runs as.
+ * `source` is more preamble text, after the WASI body, in the same module, as
+ * a facet composes a runtime's tail with it (its entries are on globalThis).
  *
  * Directory note: under tests/unit/lib/ so the suite does not run it as a test.
  */
@@ -37,12 +39,12 @@ const enc = new TextEncoder();
 /** Whether this engine can park a guest: without JSPI a guest answers from the session, and these tests have nothing to test. */
 export const canPark = typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function';
 
-/** @param {{ refuse?: (path: string) => boolean, of?: object, after?: object, cred?: typeof USER }} [options] */
-export async function residentGuest({ refuse = () => false, of, after, cred = USER } = {}) {
+/** @param {{ refuse?: (path: string) => boolean, of?: object, after?: object, cred?: typeof USER, source?: string }} [options] */
+export async function residentGuest({ refuse = () => false, of, after, cred = USER, source = '' } = {}) {
   let P = after?.P;
   if (P === undefined) {
     const modulePath = path.join(os.tmpdir(), `wasi-resident-guest-${process.pid}-${Math.random().toString(16).slice(2)}.mjs`);
-    writeFileSync(modulePath, `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, __wasiFsStats, __wasiSettleWrites, __wasiRunStartAsync, __wasiPrepareFilesystem };`);
+    writeFileSync(modulePath, `${WASI_INSTANCE_PREAMBLE_SRC}\n${source}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, __wasiFsStats, __wasiSettleWrites, __wasiRunStartAsync, __wasiPrepareFilesystem };`);
     try { P = await import(pathToFileURL(modulePath).href); } finally { rmSync(modulePath, { force: true }); }
   }
 
@@ -127,7 +129,7 @@ export async function residentGuest({ refuse = () => false, of, after, cred = US
   const RIGHTS_ALL = 0x1fffffffn;
 
   const guest = {
-    P, kernel, raw, session, pid, wasiImport, fsImport, memory, batches, stats: () => P.__wasiFsStats(),
+    P, kernel, raw, session, pid, supervisor, wasiImport, fsImport, memory, batches, stats: () => P.__wasiFsStats(),
     /**
      * The session's isolate is replaced under the running guest: its calls
      * reach a fresh process table, of the next generation, that never held it.

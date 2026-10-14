@@ -103,7 +103,7 @@ const must = async (command) => {
 };
 
 const kernel = { uid: 0, gid: 0, groups: [0], umask: 0o022 };
-const installed = workspace.vfs.as(kernel).readdir('home/user/.nimbus/runtimes');
+const installed = workspace.vfs.as(kernel).readdir('usr/lib/nimbus');
 console.log('installed: ' + installed.map((entry) => entry.name).sort().join(', '));
 
 console.log('bash: ' + await must('bash -c "echo hi"'));

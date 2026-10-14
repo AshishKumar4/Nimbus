@@ -183,8 +183,10 @@ export function residentBootSpecSchema(stageSchema) {
  * credential. Mode 0644 is what makes the read succeed for any process by
  * construction rather than by a privilege carve-out in the permission layer,
  * and leaves the bytes beyond reach of the user whose program they encode.
+ * Below `/.nimbus`, the kernel's own directory in root's `/`: no user can
+ * replace a directory on the way to it (KERNEL_STORE_ROOT, manager.ts).
  */
-export const FACET_IMAGE_DIR = 'var/lib/nimbus/facet-images';
+export const FACET_IMAGE_DIR = '.nimbus/facet-images';
 /**
  * An image is named by the SHA-256 of its own bytes, so its name IS its
  * integrity check and a stale image is not something to invalidate but

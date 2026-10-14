@@ -186,8 +186,8 @@ assert.deepEqual(await run(main, 'PATH=/custom/bin command -v tool'), ['/custom/
 
   const report = async (name) => await run(main, `which ${name}; command -v ${name}; command -V ${name}; type ${name}`);
   const at = (name, path) => [`${path}\n${path}\n${name} is ${path}\n${name} is ${path}\n`, '', 0];
-  assert.deepEqual(await report('clang'), at('clang', '/usr/local/bin/clang'), 'a runtime the workspace would install');
-  assert.deepEqual(await report('clang++'), at('clang++', '/usr/local/bin/clang++'), 'an installed runtime');
+  assert.deepEqual(await report('clang'), at('clang', '/usr/bin/clang'), 'a runtime the workspace would install');
+  assert.deepEqual(await report('clang++'), at('clang++', '/usr/bin/clang++'), 'an installed runtime');
   assert.deepEqual(await report('rackup'), at('rackup', '/home/main/.gem/bin/rackup'), 'a gem\'s bin');
   assert.deepEqual(await run(main, 'command -v clang >/dev/null && echo "clang installed" || echo "clang missing"'), ['clang installed\n', '', 0]);
   assert.deepEqual(await run(main, 'command -v echo; command -V echo; type echo'), ['echo\necho is a shell builtin\necho is a shell builtin\n', '', 0]);

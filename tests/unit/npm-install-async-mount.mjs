@@ -228,4 +228,53 @@ for (const [when, landed] of [['after', true], ['partial', false]]) {
   assert.equal(await view.exists('/m/nested/node_modules/a'), false, 'nothing of a is on the mount');
 }
 
+// ── the sweep removes each stage as the user who owns it ──────────────────
+// Another user's stage in the sticky /tmp still goes. What its owner could
+// not remove stays: a directory moved to a stage's name with root's files
+// in it (a home holding the runtime store) is not the kernel's to empty.
+{
+  const OTHER = { uid: 1001, gid: 1001, groups: [1001], umask: 0o022 };
+  vfs.as(OTHER).mkdir('tmp/.npm-stage-2-other/node_modules/x', { recursive: true });
+  vfs.as(CRED_SESSION_USER).mkdir('tmp/.npm-stage-3-moved', { recursive: true });
+  root.mkdir('tmp/.npm-stage-3-moved/.nimbus', { mode: 0o755 });
+  root.writeFile('tmp/.npm-stage-3-moved/.nimbus/runtime.wasm', 'root', { mode: 0o644 });
+  vfs.as(CRED_SESSION_USER).writeFile('tmp/.npm-stage-3-moved/mine', 'mine');
+  await view.mkdir('/m/t', { recursive: true });
+  await view.writeFile('/m/t/package.json', pkgJson);
+  await install('/m/t');
+  assert.equal(root.exists('tmp/.npm-stage-2-other'), false, "another user's stage is swept");
+  assert.equal(root.exists('tmp/.npm-stage-3-moved/.nimbus/runtime.wasm'), true, "root's file in a stage is left");
+  assert.equal(root.exists('tmp/.npm-stage-3-moved/mine'), false, 'what its owner may remove goes');
+  root.removeRecursive('tmp/.npm-stage-3-moved');
+  // A stage's group is no proof its owner is in it (a setgid /tmp gives
+  // each the directory's): the owner is acted as with no group's authority.
+  vfs.as(OTHER).mkdir('tmp/.npm-stage-4-setgid', { recursive: true });
+  root.chown('tmp/.npm-stage-4-setgid', OTHER.uid, 0);
+  root.mkdir('tmp/.npm-stage-4-setgid/g', { mode: 0o770 });
+  root.chmod('tmp/.npm-stage-4-setgid/g', 0o770);
+  root.writeFile('tmp/.npm-stage-4-setgid/g/root-group', 'root', { mode: 0o660 });
+  await install('/m/t');
+  assert.equal(root.exists('tmp/.npm-stage-4-setgid/g/root-group'), true, "a file only root's group may remove is left");
+  root.removeRecursive('tmp/.npm-stage-4-setgid');
+  // Nor is any other group's: nogroup (65534) is a group like any other.
+  vfs.as(OTHER).mkdir('tmp/.npm-stage-5-nogroup', { recursive: true });
+  root.mkdir('tmp/.npm-stage-5-nogroup/g', { mode: 0o770 });
+  root.chown('tmp/.npm-stage-5-nogroup/g', 0, 65534);
+  root.chmod('tmp/.npm-stage-5-nogroup/g', 0o770);
+  root.writeFile('tmp/.npm-stage-5-nogroup/g/nogroup', 'root', { mode: 0o660 });
+  await install('/m/t');
+  assert.equal(root.exists('tmp/.npm-stage-5-nogroup/g/nogroup'), true, "a file only nogroup may remove is left");
+  root.removeRecursive('tmp/.npm-stage-5-nogroup');
+  // Nor of any gid at all, however its inode came to have it: here one made
+  // by a credential whose gid is past any chown's.
+  vfs.as(OTHER).mkdir('tmp/.npm-stage-6-any', { recursive: true });
+  const odd = { ...CRED_KERNEL, gid: Number.MAX_SAFE_INTEGER + 1, groups: [], umask: 0 };
+  vfs.as(odd).mkdir('tmp/.npm-stage-6-any/g', { mode: 0o770 });
+  vfs.as(odd).writeFile('tmp/.npm-stage-6-any/g/any', 'root', { mode: 0o660 });
+  await install('/m/t');
+  assert.equal(root.exists('tmp/.npm-stage-6-any/g/any'), true, 'a file only its group may remove is left, whatever the group');
+  root.removeRecursive('tmp/.npm-stage-6-any');
+  console.log('  the sweep removes each stage as the user who owns it');
+}
+
 console.log('npm-install-async-mount: ok');

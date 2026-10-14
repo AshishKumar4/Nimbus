@@ -20,7 +20,7 @@
  * Architecture: the interpreter runs in a FACET (runtime/facet-host.ts), and
  * ruby+stdlib.wasm reaches it as a `wasmModules` entry the HOST compiles —
  * because on workerd nothing else may. Per-user-VFS path:
- * ~/.nimbus/runtimes/ruby/3.3.4/share/ruby/.
+ * /usr/lib/nimbus/ruby/3.3.4/share/ruby/.
  *
  * Two things follow from that being a port rather than a Durable Object, and
  * they are the whole of what is host-specific here:
@@ -1240,7 +1240,14 @@ globalThis.__nimbusRubyDriveBoot = async function __nimbusRubyDriveBoot() {
 
 globalThis.__rubyRun = async function __rubyRun(args) {
   __nimbusRubyBindOutput(args);
-  const result = await __rubyRunOnce(args);
+  let result;
+  try {
+    result = await __rubyRunOnce(args);
+  } catch (e) {
+    result = { exitCode: 1, stdout: '', stderr: '', error: (e && e.message) || String(e) };
+  }
+  // What the run wrote is in the session before its result says it ran, however it ended.
+  result = await globalThis.__wasiSettled(result);
   await __nimbusRubyOutput.drain();
   const stdoutControl = __nimbusRubyStdoutControl;
   const stderrControl = __nimbusRubyStderrControl;

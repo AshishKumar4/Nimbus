@@ -898,6 +898,13 @@ export interface PrefetchBundleOptions {
     entryEsModule?: string;
     /** A module's static filesystem references, as the data plan reads them (collectClosureWasmImages). */
     staticRefs?: (path: string) => Promise<StaticFsRefs | null>;
+    /**
+     * The files as they are, for a program that runs its own code and only
+     * reads them (opencode's snapshot, _stageOpencodeFacet): the same files
+     * and bound, without the module pass. Nothing is compiled, and the bound
+     * charges what is carried.
+     */
+    dataOnly?: boolean;
 }
 /**
  * The working dir's config files of the tool a launch runs. The tool
@@ -1220,8 +1227,10 @@ export interface ResolvedWorkerLaunch {
     /** Null is the absent answer — the same JSON the image blob carries. */
     env: ResidentCodeSpec['env'] | null;
     globalOutbound: ResidentCodeSpec['globalOutbound'];
-    /** Module name → source text, including the main module under its name. */
-    modules: Record<string, string>;
+    /** Module name → source text or inline wasm (`{ wasm }`), including the main module, text, under its name. */
+    modules: Record<string, string | {
+        wasm: ArrayBuffer;
+    }>;
     /** Module name → VFS path of a wasm image, restored with the launch. */
     vfsWasmModules?: Record<string, string>;
     /** Module name → VFS path of a content-addressed module source, restored with the launch. */
@@ -1491,7 +1500,7 @@ export declare class FacetManager {
     };
     /**
      * The image store's disk for process `pid`'s images: this session's VFS,
-     * as the kernel writing on its behalf (_kernelFor) — the store is written
+     * as the kernel writing on its behalf (_kernelStoreFor) — the store is written
      * by the kernel and read by processes through supervisor bindings that
      * enforce their own credential. Mode 0644 at creation (0666 under the
      * kernel's umask), as POSIX has it, is what makes the read succeed for any
@@ -1505,6 +1514,17 @@ export declare class FacetManager {
      * (SqliteVFS.readRecallAt) is its to read before it is published.
      */
     private _kernelFor;
+    /**
+     * _kernelFor, for the kernel's own stores (KERNEL_STORE_ROOT). That root is
+     * checked, not assumed, each time: made if absent, and refused unless it is
+     * the kernel's own real directory that no one else may write (only root,
+     * through sudo, could have made it anything else). The stores releases
+     * through worker 0.19.0 kept below `/var/lib/nimbus` are left: a durable
+     * worker one made may still boot from a path there, and a root-owned
+     * directory at that name, below the user's `/var`, is no proof the kernel
+     * made it.
+     */
+    private _kernelStoreFor;
     /** Give the bundle's module pass the host's esbuild, as composeFacetManager does. */
     setEsbuildService(esbuild: EsbuildService): void;
     /**

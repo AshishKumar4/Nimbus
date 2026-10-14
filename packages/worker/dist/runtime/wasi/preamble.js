@@ -2223,7 +2223,12 @@ export async function __wasiRunStartAsync(instance, ctx) {
         return await __wasiSettled({ exitCode: 1, error: (e && e.message) ? e.message : String(e) });
     }
 }
-/** A run's result once what it wrote is in the session: a write the session refused fails the run. */
+/**
+ * A run's result once what it wrote is in the session: a write the session
+ * refused fails the run, named, with the rest of its result as it was. Every
+ * entry that runs a WASI guest ends its run here, whatever ended it (this
+ * one-shot entry, wasi-threads', ruby-runner's, cpython-preamble's).
+ */
 async function __wasiSettled(result) {
     let failed;
     try {
@@ -2234,14 +2239,14 @@ async function __wasiSettled(result) {
     }
     if (failed === null)
         return result;
-    return { exitCode: result.exitCode || 1, error: result.error ? `${result.error}; ${failed}` : failed };
+    return { ...result, exitCode: result.exitCode || 1, error: result.error ? `${result.error}; ${failed}` : failed };
 }
 // A serialized facet body is evaluated in this module's scope, but runners
 // reach helpers through globalThis (the convention __rubyRun and __clangRun
 // already follow) because a direct reference to a preamble-only symbol will
 // not typecheck in the supervisor bundle the body is authored in.
 globalThis.__wasiAdoptSupervisor = __wasiAdoptSupervisor;
-globalThis.__wasiSettleWrites = __wasiSettleWrites;
+globalThis.__wasiSettled = __wasiSettled;
 globalThis.__wasiSupervisorOutput = __wasiSupervisorOutput;
 globalThis.__wasiOutputControl = outputControlReader;
 // ── END: wasi-instance preamble ─────────────────────────────────────────

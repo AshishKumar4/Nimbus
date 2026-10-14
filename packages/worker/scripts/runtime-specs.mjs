@@ -31,7 +31,7 @@ export const SPECS = {
       // npm demands semver and this runtime's Nimbus version is a channel
       // name, so the compiler's own version is what the package carries. The
       // two namespaces stay separate: the manifest still says `binji-2020`,
-      // and that is what the install root under ~/.nimbus/runtimes is named.
+      // and that is what the install root under /usr/lib/nimbus is named.
       version: '8.0.1',
     },
     files: [

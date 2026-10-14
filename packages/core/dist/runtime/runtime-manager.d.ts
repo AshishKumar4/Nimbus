@@ -3,8 +3,9 @@
  *
  * Where the runtimes come from is the injected `RuntimeSource` (npm packages
  * the embedder imported, an R2 catalog adapter, or a composition of both);
- * where they land is always `~/.nimbus/runtimes/<name>/<version>/` through
- * `seedRuntimePackage`; what makes them invokable is the runner factory map
+ * where they land is always `/usr/lib/nimbus/<name>/<version>/` through
+ * `seedRuntimePackage`, with a launcher per command in `/usr/bin`
+ * (runtime-store.ts); what makes them invokable is the runner factory map
  * this instance owns. All three are per-instance because a second workspace
  * in the same process must not inherit the first one's runners or touch its
  * registry — the module-global table this replaces did both.
@@ -21,12 +22,11 @@
  */
 import type { ProcessView as CredentialedVfs } from './process-files.js';
 import { type MinShellRegistry, type RunnerFactory, type RuntimeSummary } from './installed-runtimes.js';
-import type { RuntimeManifest } from './runtime-manifest.js';
+import { type RuntimeManifest } from './runtime-manifest.js';
 import { type RuntimeAvailability, type RuntimePackage, type RuntimeSource, type SeededRuntime } from './runtime-package.js';
 export interface RuntimeManagerOptions {
     vfs: CredentialedVfs;
     registry: MinShellRegistry;
-    getHome(): string;
     source: RuntimeSource;
 }
 type InstalledBins = SeededRuntime & {
@@ -35,12 +35,11 @@ type InstalledBins = SeededRuntime & {
 export declare class RuntimeManager {
     private readonly vfs;
     private readonly registry;
-    private readonly getHome;
     private readonly source;
     private readonly runnerFactories;
     /**
-     * The newest queued op per target, keyed `${home}/${name}/${version}` for
-     * installs and `${home}/${name}` for an uninstall's removal marker. Entries
+     * The newest queued op per target, keyed `${name}/${version}` for
+     * installs and `${name}` for an uninstall's removal marker. Entries
      * live only while their `done` promise is unsettled.
      */
     private readonly inflight;
@@ -51,6 +50,14 @@ export declare class RuntimeManager {
      * not hold a removal open, but a resolution in flight must.
      */
     private readonly resolving;
+    /**
+     * What decides which tree a command runs from, one at a time: registering
+     * a runtime's commands, linking their launchers, and their removal. Two
+     * versions that provide one command, installed at once, would otherwise
+     * each register it and race for its launcher, and the name and the path
+     * could run different trees. Fetching and writing a tree stay concurrent.
+     */
+    private publishing;
     constructor(options: RuntimeManagerOptions);
     /** The factory a manifest entrypoint's `runner` key resolves to. A later
      *  registration replaces an earlier one — a hosted compositor re-binds the
@@ -63,6 +70,17 @@ export declare class RuntimeManager {
         count: number;
         bins: string[];
     }>;
+    private rehydrateNow;
+    /** `run`, once what was published before it has been: see `publishing`. */
+    private publish;
+    /**
+     * Link the launchers of the commands `handlers` bound (none for one no
+     * runner here runs), and register each linked launcher's path as its
+     * command: a run of `/usr/bin/<command>`, or a `#!/usr/bin/<command>`
+     * line, is the command a run by name is. A path whose launcher is not
+     * ours is left to what is there.
+     */
+    private linkCommands;
     /**
      * Install `spec` and register its bins. Throws when the spec resolves to
      * nothing, or when the package's entrypoints name a runner this workspace
@@ -108,6 +126,7 @@ export declare class RuntimeManager {
      *  commands — and cannot resurrect a corrupt one. */
     uninstall(spec: string): Promise<void>;
     private remove;
+    private removeNow;
     /**
      * Register `bin` as a stub that runs `install(bin)` on first use and then
      * re-resolves its own name against the registry — the on-demand install

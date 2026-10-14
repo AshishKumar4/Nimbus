@@ -3,7 +3,8 @@
  * commands they answer.
  *
  * `nimbus install <name>` unpacks a runtime into
- * `~/.nimbus/runtimes/<name>/<version>/` and this is what reads it back: the
+ * `/usr/lib/nimbus/<name>/<version>/` (runtime-store.ts) and this is what
+ * reads it back: the
  * manifests on disk, the runner each entrypoint names, and the registration
  * that turns the pair into an invokable command. It runs at install time and
  * again at every boot, because a Durable Object that was evicted comes back
@@ -20,7 +21,6 @@
 import { sha256Incremental } from '../_shared/crypto.js';
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { RuntimePackageFs as CredentialedVfs } from './runtime-package.js';
-import { isVfsError } from '../vfs/vfs-error.js';
 import type { Command } from '../substrate/lifo/commands/types.js';
 import type { ResolveContext } from '../substrate/lifo/commands/registry.js';
 import {
@@ -29,6 +29,7 @@ import {
   NIMBUS_ABI_TARGET,
   NIMBUS_RUNTIME_ABIS,
   NATIVE_UNSUPPORTED_ABI,
+  type Awaitable,
   type RuntimePackageAbi,
 } from './os-contracts.js';
 import {
@@ -36,6 +37,7 @@ import {
   type ManifestEntrypoint,
   type RuntimeManifest,
 } from './runtime-manifest.js';
+import { RUNTIME_STORE, RUNTIME_STORE_DIRS, rootsOwn, runtimeTreeOwn } from './runtime-store.js';
 
 /** Minimal shell-registry shape we depend on. */
 export interface MinShellRegistry {
@@ -126,58 +128,64 @@ export function runtimeEntrypoints(manifest: RuntimeManifest): RuntimeManifest['
   return out;
 }
 
-/** Compute the per-user install root for (name, version). Uses
- *  `process.env.HOME` if present; falls back to `/home/user`. */
-export function installRoot(homeDir: string, name: string, version: string): string {
-  // Strip leading slash so SqliteFS sees a relative-looking VFS path,
-  // matching the convention used elsewhere in src/session/init.ts.
-  const home = homeDir.replace(/^\/+/, '').replace(/\/+$/, '');
-  return `${home}/.nimbus/runtimes/${name}/${version}`;
+/** Where (name, version) is installed, as a key: `usr/lib/nimbus/<name>/<version>`. */
+export function installRoot(name: string, version: string): string {
+  return `${RUNTIME_STORE}/${name}/${version}`;
 }
+
+/** What the store is listed through: a view that can look at a name without following it. */
+export type InstalledRuntimesFs = Pick<CredentialedVfs, 'exists' | 'readdir' | 'readFileString'> & {
+  stat(path: string, options?: { follow?: boolean }): Awaitable<{ type: string; uid?: number; mode?: number } | null>;
+};
 
 /** Read all installed manifests off SqliteFS. Used by both `--list`
  *  and boot-time rehydration. */
-export async function listInstalledManifests(
-  vfs: SqliteVFS,
-  homeDir: string,
-): Promise<Array<{ root: string; manifest: RuntimeManifest }>> {
-  return (await listInstalledManifestsView(vfs.as(CRED_KERNEL), homeDir));
+export async function listInstalledManifests(vfs: SqliteVFS): Promise<Array<{ root: string; manifest: RuntimeManifest }>> {
+  const kernel = vfs.as(CRED_KERNEL);
+  return await listInstalledManifestsView({
+    exists: (path) => kernel.exists(path),
+    readdir: (path) => kernel.readdir(path),
+    readFileString: (path) => kernel.readFileString(path),
+    stat: (path, options) => kernel.statIfPresent(path, options?.follow !== false),
+  });
 }
 
-export async function listInstalledManifestsView(
-  fs: CredentialedVfs,
-  homeDir: string,
-): Promise<Array<{ root: string; manifest: RuntimeManifest }>> {
-  const home = homeDir.replace(/^\/+/, '').replace(/\/+$/, '');
-  const runtimesRoot = `${home}/.nimbus/runtimes`;
+/**
+ * The runtimes in the store that are the system's: what the store, each
+ * name's and each version's directory, and each directory its files are in,
+ * are root's own (rootsOwn, looked at without following them), and a
+ * manifest.json root wrote. Anything else
+ * (a tree a user made in a store an earlier release left theirs, a link)
+ * is not listed, so nothing binds, links or removes it as the kernel; a
+ * store that is not root's lists nothing.
+ */
+export async function listInstalledManifestsView(fs: InstalledRuntimesFs): Promise<Array<{ root: string; manifest: RuntimeManifest }>> {
   const out: Array<{ root: string; manifest: RuntimeManifest }> = [];
-  if (!await fs.exists(runtimesRoot)) return out;
-  // Each entry under runtimesRoot is a <name>; each entry under that
-  // is a <version>; each <version> dir has a manifest.json. This fs has no
-  // stat, so an entry its listing cannot type is opened as a directory: a
-  // file fails that listing (ENOTDIR), or has no manifest.json under it.
-  for (const nameEntry of await fs.readdir(runtimesRoot)) {
-    if (nameEntry.type !== 'directory' && nameEntry.type !== 'unknown') continue;
-    const nameDir = `${runtimesRoot}/${nameEntry.name}`;
-    let versions: Awaited<ReturnType<CredentialedVfs['readdir']>>;
-    try {
-      versions = await fs.readdir(nameDir);
-    } catch (error) {
-      if (nameEntry.type === 'unknown' && isVfsError(error, 'ENOTDIR')) continue;
-      throw error;
-    }
-    for (const verEntry of versions) {
-      if (verEntry.type !== 'directory' && verEntry.type !== 'unknown') continue;
+  const own = async (path: string) => rootsOwn(await fs.stat(path, { follow: false }));
+  for (const dir of RUNTIME_STORE_DIRS) {
+    if (!(await own(dir))) return out;
+  }
+  // Each entry in the store is a <name>; each entry under that is a
+  // <version>; each <version> dir has a manifest.json.
+  for (const nameEntry of await fs.readdir(RUNTIME_STORE)) {
+    const nameDir = `${RUNTIME_STORE}/${nameEntry.name}`;
+    if (!(await own(nameDir))) continue;
+    for (const verEntry of await fs.readdir(nameDir)) {
       const verDir = `${nameDir}/${verEntry.name}`;
       const manifestPath = `${verDir}/manifest.json`;
-      if (!await fs.exists(manifestPath)) continue;
+      if (!(await own(verDir))) continue;
+      const marker = await fs.stat(manifestPath, { follow: false });
+      if (marker?.type !== 'file' || marker.uid !== 0) continue;
+      let manifest: RuntimeManifest;
       try {
-        const manifest = parseRuntimeManifest(JSON.parse(await fs.readFileString(manifestPath)));
-        out.push({ root: verDir, manifest });
+        manifest = parseRuntimeManifest(JSON.parse(await fs.readFileString(manifestPath)));
       } catch {
         // Malformed manifest — skip silently. Surfacing via stderr
         // would require a ctx we don't have at boot-time rehydration.
+        continue;
       }
+      // Its files are reached through root's own directories only.
+      if (await runtimeTreeOwn(fs, verDir, manifest)) out.push({ root: verDir, manifest });
     }
   }
   return out;
@@ -231,30 +239,31 @@ export async function runtimePayloadIntact(
  * the manager's install path repairs it on demand rather than running it.
  */
 export async function rehydrateInstalledRuntimesView(
-  vfs: CredentialedVfs,
+  vfs: CredentialedVfs & InstalledRuntimesFs,
   registry: MinShellRegistry,
-  homeDir: string,
   runnerFor: RunnerLookup,
+  /** Each verified runtime, once its commands are registered: their handlers, by name (its launchers are linked). */
+  bound?: (root: string, manifest: RuntimeManifest, handlers: ReadonlyMap<string, Command>) => Promise<void>,
 ): Promise<{ count: number; bins: string[] }> {
   const bins: string[] = [];
-  for (const { root, manifest } of await listInstalledManifestsView(vfs, homeDir)) {
+  for (const { root, manifest } of await listInstalledManifestsView(vfs)) {
     if (!await runtimePayloadIntact(vfs, root, manifest)) continue;
+    const handlers = new Map<string, Command>();
     for (const ep of runtimeEntrypoints(manifest)) {
       const factory = runnerFor(ep.runner);
       if (!factory) continue; // runner not registered yet — skip
       const handler = await factory(manifest, root, ep.binName, ep.kind);
       registry.register(ep.binName, handler);
+      handlers.set(ep.binName, handler);
       bins.push(ep.binName);
     }
+    await bound?.(root, manifest, handlers);
   }
   return { count: bins.length, bins };
 }
 
-export async function listInstalledRuntimes(
-  vfs: SqliteVFS,
-  homeDir: string,
-): Promise<RuntimeSummary[]> {
-  return (await listInstalledManifests(vfs, homeDir)).map(({ root, manifest }) => ({
+export async function listInstalledRuntimes(vfs: SqliteVFS): Promise<RuntimeSummary[]> {
+  return (await listInstalledManifests(vfs)).map(({ root, manifest }) => ({
     name: manifest.name,
     version: manifest.version,
     root,

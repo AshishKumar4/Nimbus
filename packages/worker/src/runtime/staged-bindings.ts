@@ -70,7 +70,7 @@ export const STAGED_BINDINGS: readonly StagedBinding[] = STAGED_BINDING_ARTIFACT
   ...artifact,
   key: `${artifact.name}@${artifact.version}`,
   moduleName: `nimbus-staged-${artifact.name}-${artifact.version}.wasm`,
-  vfsPath: `/var/lib/nimbus/staged/${artifact.name}/${artifact.version}/${artifact.name}.wasm`,
+  vfsPath: `/.nimbus/staged/${artifact.name}/${artifact.version}/${artifact.name}.wasm`,
   specifier: new RegExp(`["'](?:${artifact.requiredAs.map(quoted).join('|')})["']`),
 }));
 
