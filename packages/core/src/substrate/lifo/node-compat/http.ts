@@ -5,6 +5,10 @@ import {
   type VirtualRequestHandler,
   type VirtualResponse,
 } from '../kernel/index.js';
+import { dispatchWorkspaceRequest } from '../commands/net/kernel-fetch.js';
+
+/** The ports of an http module made without a registry: none listens. */
+const NO_PORTS: Map<number, VirtualRequestHandler> = new Map();
 
 /** Extended VirtualResponse with a done promise for async middleware */
 export interface VirtualResponseWithDone extends VirtualResponse {
@@ -83,6 +87,8 @@ class ClientRequest extends EventEmitter {
   private options: RequestOptions;
   private body = '';
   private aborted = false;
+  /** What abort() ends: the wait for a local server's answer among it. */
+  private readonly abortController = new AbortController();
   private portRegistry?: Map<number, VirtualRequestHandler>;
   private routeLoopback?: LoopbackRouter;
   private protocol: 'http:' | 'https:';
@@ -115,6 +121,7 @@ class ClientRequest extends EventEmitter {
 
   abort(): void {
     this.aborted = true;
+    this.abortController.abort();
   }
 
   private async execute(): Promise<void> {
@@ -125,68 +132,30 @@ class ClientRequest extends EventEmitter {
     const path = this.options.path || '/';
     const loopback = isLoopbackHost(host);
 
-    // Check if target is a virtual server
-    if (this.portRegistry && loopback) {
-      const handler = this.portRegistry.get(port);
-      if (handler) {
-        const vReq = {
-          method: this.options.method || 'GET',
-          url: path,
-          headers: this.options.headers || {},
-          body: this.body,
-        };
-        const vRes = {
-          statusCode: 200,
-          headers: {} as Record<string, string>,
-          body: '',
-        };
-
-        try {
-          handler(vReq, vRes);
-
-          const msg = new IncomingMessage(vRes.statusCode, 'OK', vRes.headers);
-          this.emit('response', msg);
-
-          queueMicrotask(() => {
-            msg.emit('data', vRes.body);
-            msg.emit('end');
-          });
-        } catch (e) {
-          this.emit('error', e);
-        }
-        return;
-      }
-    }
-
+    // A loopback request is served as the workspace serves its own: a server
+    // of this program's (once its handler has ended the response), else the
+    // host's loopback router.
     if (loopback) {
-      if (this.routeLoopback) {
-        try {
-          const method = this.options.method || 'GET';
-          const hasBody = method !== 'GET' && method !== 'HEAD' && this.body.length > 0;
-          const response = await this.routeLoopback(port, new Request(
-            `${this.protocol}//${host}:${port}${path}`,
-            {
-              method,
-              headers: this.options.headers,
-              body: hasBody ? this.body : undefined,
-            },
-          ));
-          if (response) {
-            const headers: Record<string, string> = {};
-            response.headers.forEach((value, key) => { headers[key] = value; });
-            const msg = new IncomingMessage(response.status, response.statusText, headers);
-            this.emit('response', msg);
-            const text = await response.text();
-            msg.emit('data', text);
-            msg.emit('end');
-            return;
-          }
-        } catch (error) {
-          this.emit('error', error);
-          return;
-        }
+      const method = this.options.method || 'GET';
+      const hasBody = method !== 'GET' && method !== 'HEAD' && this.body.length > 0;
+      try {
+        const result = await dispatchWorkspaceRequest(
+          { portRegistry: this.portRegistry ?? NO_PORTS, routeLoopback: this.routeLoopback },
+          port,
+          new Request(`${this.protocol}//${host}:${port}${path}`, {
+            method,
+            headers: this.options.headers,
+            body: hasBody ? this.body : undefined,
+            signal: this.abortController.signal,
+          }),
+        );
+        if (result.kind === 'aborted') return;
+        if (result.kind === 'refused') this.emit('error', new Error(`connect ECONNREFUSED ${host}:${port}`));
+        else if (result.kind === 'timeout') this.emit('error', new Error(`connect ETIMEDOUT ${host}:${port}`));
+        else await this.answer(result.response);
+      } catch (error) {
+        this.emit('error', error);
       }
-      this.emit('error', new Error(`connect ECONNREFUSED ${host}:${port}`));
       return;
     }
 
@@ -196,24 +165,25 @@ class ClientRequest extends EventEmitter {
     const url = `${proto}://${host}${portStr}${path}`;
 
     try {
-      const resp = await fetch(url, {
+      await this.answer(await fetch(url, {
         method: this.options.method || 'GET',
         headers: this.options.headers,
         body: this.options.method !== 'GET' && this.body ? this.body : undefined,
-      });
-
-      const headers: Record<string, string> = {};
-      resp.headers.forEach((v, k) => { headers[k] = v; });
-
-      const msg = new IncomingMessage(resp.status, resp.statusText, headers);
-      this.emit('response', msg);
-
-      const text = await resp.text();
-      msg.emit('data', text);
-      msg.emit('end');
+      }));
     } catch (e) {
       this.emit('error', e);
     }
+  }
+
+  /** `response` as this request's: its status, reason and headers, then its body and end. */
+  private async answer(response: Response): Promise<void> {
+    const headers: Record<string, string> = {};
+    response.headers.forEach((value, key) => { headers[key] = value; });
+    const msg = new IncomingMessage(response.status, response.statusText, headers);
+    this.emit('response', msg);
+    const text = await response.text();
+    msg.emit('data', text);
+    msg.emit('end');
   }
 
   setTimeout(_ms: number, cb?: () => void): this {

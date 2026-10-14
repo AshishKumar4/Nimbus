@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a Node program's `http.get` or `http.request` to a server of the
+  same program waits for the server's `res.end()`, as Node does. It
+  answered at once, so a handler that ended from a timer or after an
+  `await` sent the client a 200 with an empty body. The client now also
+  sees the status's reason (`Not Found`, not always `OK`), and the server
+  sees the request's header names lower-cased. Such a request goes through
+  the same local dispatcher as `curl`, and `req.abort()` ends its wait.
 - Fixed: `test` and `[` run as programs (`xargs test`, `find -exec test`)
   evaluate as the shell's builtin does. `test 1 -eq 2` run so returned 0,
   and `[ 1 -eq 1` ran without its closing `]`.
