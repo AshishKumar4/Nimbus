@@ -1060,9 +1060,10 @@ const __fsMod = (() => {
   }
 
   // ── VFS bundle lookup (fast path — in-memory) ──
-  function _bundleLookup(absPath) {
+  /** \`observe\`: a read of the file (the residency predictor learns from it); a copy's look at its bytes is not. */
+  function _bundleLookup(absPath, observe = true) {
     const k = _strip(absPath);
-    if (typeof __resident !== "undefined" && __resident.observeRead !== null) __resident.observeRead(k);
+    if (observe && typeof __resident !== "undefined" && __resident.observeRead !== null) __resident.observeRead(k);
     // The parked write first, as _writtenCell reads: it is this process's own,
     // newer than anything the store holds, and it is the live cell (a store
     // read reassembles a copy, which a write loop would pay for per write).
@@ -1148,7 +1149,7 @@ const __fsMod = (() => {
    * directory, whose entries are not known. Null when the namespace knows.
    */
   function _nsUnlisted(absPath, follow, listing) {
-    return _nsActive() ? __resident.namespace.unknown(_strip(absPath), follow !== false, !!listing, _nsOwn.size === 0 ? undefined : _nsWord) : null;
+    return _nsActive() ? __resident.namespace.unknown(_strip(absPath), follow !== false, !!listing, _ownEntries === 0 ? undefined : _nsWord) : null;
   }
   /**
    * What a synchronous call answers on a mounted path its launch did not
@@ -1168,55 +1169,91 @@ const __fsMod = (() => {
     const mount = _nsUnlisted(absPath, follow, false);
     return mount === null ? _fsErr("ENOENT", syscall, displayPath) : _nsUnlistedErr(mount, syscall, displayPath, asyncForm);
   }
-  const _nsOwn = new Map();
+  // This process's own effects, one record per path, and nowhere else:
+  //   entry: what it made, removed, linked or renamed there (the walk's word,
+  //     _nsWordOf), with what that answers for itself until a barrier
+  //     reports it: a made entry's mode, the stat a receipt gave it, and
+  //     when it last wrote its content;
+  //   mode, times: its own chmod and utimes ({ value, settled }), answered
+  //     ahead of the namespace's until reported back; a mode is \`pending\`
+  //     until delivered (once: re-sending on every flush made each read of
+  //     the path a chmod, which bumped its revision and evicted the
+  //     process's own cell, create-astro EAGAIN).
+  // Each field is settled by the mutation that placed it and retired at a
+  // barrier begun after (_nsRetire); a rename moves a record whole (every
+  // field placed anew, owned by the rename), a removal drops it. Content and
+  // delivery (parked cells, generations, announced directories) are kept
+  // apart: they are the ledger's.
+  const _own = new Map();
+  // Records with an entry: the walk takes this process's words only when there are any.
+  let _ownEntries = 0;
   let _nsFresh = [];
   let _barrierBegins = 0;
-  // This process's own mode and times per path: overlay entries ({ value,
-  // settled }), retired as the overlay's are, dropped and moved with the path.
-  const _localModes = new Map();
-  const _localTimes = new Map();
-  // Modes set locally that the authority has not received yet. Delivered once:
-  // re-sending on every flush made each read of the path a chmod, which bumped
-  // its revision and evicted the process's own cell (create-astro EAGAIN).
-  const _pendingModes = new Set();
   // _nsDeviceAbove's answers per directory, until the next barrier.
   const _nsDevices = new Map();
-  /** \`fresh\`: the next queued mutation settles it; else its caller does (_settleLocalAttr). */
-  function _setLocalAttr(attrs, k, value, fresh) {
-    const entry = { value, settled: null };
-    attrs.set(k, entry);
-    if (fresh) _nsFresh.push(entry);
-    return entry;
+  function _ownRecord(k) {
+    let rec = _own.get(k);
+    if (rec === undefined) {
+      rec = { entry: null, mode: null, times: null };
+      _own.set(k, rec);
+    }
+    return rec;
   }
-  function _settleLocalAttr(entry) {
-    if (entry.settled === null) entry.settled = _barrierBegins;
+  function _ownCompact(k, rec) {
+    if (rec.entry === null && rec.mode === null && rec.times === null) _own.delete(k);
   }
-  /** \`tree\`: and those beneath it. */
+  /** An own chmod or utimes value (\`field\` "mode" or "times"); \`fresh\`: the next queued mutation settles it, else its caller does (_settleLocalAttr). */
+  function _setLocalAttr(field, k, value, fresh, pending = false) {
+    const attr = { value, settled: null, pending };
+    _ownRecord(k)[field] = attr;
+    if (fresh) _nsFresh.push(attr);
+    return attr;
+  }
+  function _settleLocalAttr(attr) {
+    if (attr.settled === null) attr.settled = _barrierBegins;
+  }
+  function _localAttr(field, k) {
+    return _own.get(k)?.[field] ?? null;
+  }
+  /** Drop own chmod and utimes at \`k\` (\`tree\`: and beneath it). */
   function _forgetLocalAttrs(k, tree) {
     const prefix = k + "/";
-    for (const attrs of [_localModes, _localTimes]) {
-      attrs.delete(k);
-      if (tree) for (const key of [...attrs.keys()]) if (key.startsWith(prefix)) attrs.delete(key);
+    for (const [key, rec] of tree ? [..._own] : [[k, _own.get(k)]]) {
+      if (rec === undefined || (key !== k && !key.startsWith(prefix))) continue;
+      rec.mode = null;
+      rec.times = null;
+      _ownCompact(key, rec);
     }
-    _pendingModes.delete(k);
-    if (tree) for (const key of [..._pendingModes]) if (key.startsWith(prefix)) _pendingModes.delete(key);
   }
-
-  /** A rename's: placed anew under the new names, owned by the rename until it is acknowledged. */
-  function _moveLocalAttrs(oldK, newK) {
-    const prefix = oldK + "/";
-    for (const attrs of [_localModes, _localTimes]) {
-      for (const [key, entry] of [...attrs]) {
-        if (key !== oldK && !key.startsWith(prefix)) continue;
-        attrs.delete(key);
-        _setLocalAttr(attrs, newK + key.slice(oldK.length), entry.value, true);
+  /**
+   * A rename's move of the records at and beneath \`oldK\` to \`newK\`: each
+   * own chmod and utimes placed anew under the new name, and each entry the
+   * move carries (\`carry(key, entry)\`: at the old name, only what this
+   * process made or linked there), owned by the rename until it is
+   * acknowledged. An entry moves whole, every field it holds with it. What
+   * the new name held is replaced.
+   */
+  function _ownMove(oldK, newK, carry) {
+    const oldPrefix = oldK + "/";
+    const moved = [];
+    for (const [key, rec] of [..._own]) {
+      if (key !== oldK && !key.startsWith(oldPrefix)) continue;
+      moved.push([newK + key.slice(oldK.length), rec.entry !== null && carry(key, rec.entry) ? rec.entry : null, rec.mode, rec.times]);
+      rec.mode = null;
+      rec.times = null;
+      _ownCompact(key, rec);
+    }
+    _forgetLocalAttrs(newK, true);
+    return () => {
+      const replaced = _own.get(newK)?.entry;
+      if (replaced) _nsOwnDrop(newK);
+      _nsOwnDropBeneath(newK);
+      for (const [key, entry, mode, times] of moved) {
+        if (entry !== null) _nsOwnPlace(key, { ...entry, settled: null }, false);
+        if (mode !== null) _setLocalAttr("mode", key, mode.value, true, mode.pending);
+        if (times !== null) _setLocalAttr("times", key, times.value, true);
       }
-    }
-    for (const key of [..._pendingModes]) {
-      if (key !== oldK && !key.startsWith(prefix)) continue;
-      _pendingModes.delete(key);
-      _pendingModes.add(newK + key.slice(oldK.length));
-    }
+    };
   }
   /**
    * Who settles the entry: \`extra.settled\`, answered already; \`extra.landing\`,
@@ -1225,13 +1262,18 @@ const __fsMod = (() => {
    * places until its own acknowledgement. "absentTree" drops the entries beneath.
    */
   function _nsOwnSet(k, state, extra) {
-    const before = _nsOwn.get(k);
     const entry = {
       state, from: extra?.from, link: extra?.link, target: extra?.target, hide: !!extra?.hide, mode: extra?.mode,
+      stat: undefined, written: undefined,
       settled: extra?.settled ? _barrierBegins : null,
       word: null,
     };
+    _nsOwnPlace(k, entry, !!extra?.settled || !!extra?.landing);
+  }
+  /** The one place an entry is put under \`k\` (made, or moved whole); \`settledBy\`: its own answer settles it, not the next mutation. */
+  function _nsOwnPlace(k, entry, settledBy) {
     entry.word = _nsWordOf(entry);
+    const before = _own.get(k)?.entry ?? null;
     try { __resident.namespace.overlayDelta(_nsOwnCost(k, entry) - (before ? _nsOwnCost(k, before) : 0)); }
     catch (error) {
       // The view is sealed by the store. Let the already-projected structural
@@ -1240,17 +1282,25 @@ const __fsMod = (() => {
       if (__resident.admission.inHeap && error?.code === "ENOSPC") return;
       throw error;
     }
-    _nsOwn.set(k, entry);
-    if (state === "absentTree") _nsOwnDropBeneath(k);
-    if (!extra?.settled && !extra?.landing) _nsFresh.push(entry);
+    if (before === null) _ownEntries++;
+    _ownRecord(k).entry = entry;
+    if (entry.state === "absentTree") _nsOwnDropBeneath(k);
+    if (!settledBy) _nsFresh.push(entry);
   }
-  function _nsOwnDrop(k, entry) {
-    _nsOwn.delete(k);
-    __resident.namespace.overlayDelta(-_nsOwnCost(k, entry));
+  function _nsOwnGet(k) {
+    return _own.get(k)?.entry ?? undefined;
+  }
+  function _nsOwnDrop(k) {
+    const rec = _own.get(k);
+    if (rec?.entry == null) return;
+    __resident.namespace.overlayDelta(-_nsOwnCost(k, rec.entry));
+    rec.entry = null;
+    _ownEntries--;
+    _ownCompact(k, rec);
   }
   function _nsOwnDropBeneath(k) {
     const prefix = k + "/";
-    for (const [below, entry] of [..._nsOwn]) if (below.startsWith(prefix)) _nsOwnDrop(below, entry);
+    for (const [below, rec] of [..._own]) if (rec.entry !== null && below.startsWith(prefix)) _nsOwnDrop(below);
   }
   // An entry as the namespace's walk takes it (OwnWord).
   const _NS_ABSENT = { absent: true };
@@ -1260,13 +1310,13 @@ const __fsMod = (() => {
       case "link": return { target: entry.target };
       case "alias": return { from: entry.from, link: entry.link };
       case "dir": return { made: "directory", hide: entry.hide, mode: entry.mode };
-      default: return { made: "file", mode: entry.mode };
+      default: return { made: "file", mode: entry.mode, stat: entry.stat };
     }
   }
-  function _nsWord(k) { return _nsOwn.get(k)?.word; }
+  function _nsWord(k) { return _own.get(k)?.entry?.word; }
   /** A chmod of a file or directory this process made: its own entry's mode with it, for as long as the entry answers. */
   function _nsOwnMode(k, mode) {
-    const entry = typeof __resident === "undefined" ? undefined : _nsOwn.get(k);
+    const entry = typeof __resident === "undefined" ? undefined : _nsOwnGet(k);
     if (entry === undefined || (entry.state !== "file" && entry.state !== "dir")) return;
     entry.mode = mode;
     entry.word = _nsWordOf(entry);
@@ -1279,11 +1329,12 @@ const __fsMod = (() => {
     return () => { for (const entry of mine) if (entry.settled === null) entry.settled = _barrierBegins; };
   }
   function _nsRetire(begin) {
-    for (const [k, entry] of _nsOwn) {
-      if (entry.settled !== null && entry.settled < begin) _nsOwnDrop(k, entry);
-    }
-    for (const attrs of [_localModes, _localTimes]) {
-      for (const [k, entry] of attrs) if (entry.settled !== null && entry.settled < begin) attrs.delete(k);
+    const done = (part) => part !== null && part.settled !== null && part.settled < begin;
+    for (const [k, rec] of [..._own]) {
+      if (done(rec.entry)) _nsOwnDrop(k);
+      if (done(rec.mode)) rec.mode = null;
+      if (done(rec.times)) rec.times = null;
+      _ownCompact(k, rec);
     }
     _nsDevices.clear();
   }
@@ -1294,11 +1345,11 @@ const __fsMod = (() => {
    * question of the sync view goes through.
    */
   function _nsWalk(k, follow) {
-    return __resident.namespace.lookup(k, follow, _nsOwn.size === 0 ? undefined : _nsWord);
+    return __resident.namespace.lookup(k, follow, _ownEntries === 0 ? undefined : _nsWord);
   }
   /** The table's row \`k\` resolves to (its key), "ELOOP", or null. */
   function _nsResolve(k, follow) {
-    return __resident.namespace.resolve(k, follow, _nsOwn.size === 0 ? undefined : _nsWord);
+    return __resident.namespace.resolve(k, follow, _ownEntries === 0 ? undefined : _nsWord);
   }
 
   /** Whether this process holds bytes for \`k\` the session has not taken yet. */
@@ -1398,8 +1449,11 @@ const __fsMod = (() => {
       meta = { type: "directory", size: 0, mode: 0o40000 | ((own.mode ?? 0o777) & ~__processUmask), uid: cred.uid, gid: cred.gid, own: true };
     } else if (own?.made === "file") {
       // A file this process made: its owner and the mode it asked for (or
-      // chmod set since), until a barrier reports the session's own stat.
-      meta = { type: "file", size: Number(found.row?.size ?? 0), mode: 0o100000 | ((own.mode ?? 0o666) & ~__processUmask), uid: cred.uid, gid: cred.gid, own: true };
+      // chmod set since), until a barrier reports the session's own stat;
+      // or the stat a receipt gave it (a copy over it), \`own.stat\`.
+      meta = own.stat !== undefined
+        ? { type: "file", size: own.stat.size, mode: own.stat.mode, uid: own.stat.uid, gid: own.stat.gid, own: true }
+        : { type: "file", size: Number(found.row?.size ?? 0), mode: 0o100000 | ((own.mode ?? 0o666) & ~__processUmask), uid: cred.uid, gid: cred.gid, own: true };
     } else if (found.row !== undefined) {
       meta = _nsRowMeta(found.row);
     } else {
@@ -1430,8 +1484,8 @@ const __fsMod = (() => {
         if (rest) names.set(slash < 0 ? rest : rest.slice(0, slash), slash < 0 ? "file" : "directory");
       }
     }
-    for (const [ok, entry] of _nsOwn) {
-      if (!ok.startsWith(prefix) || ok.slice(prefix.length).includes("/")) continue;
+    for (const [ok, { entry }] of _own) {
+      if (entry === null || !ok.startsWith(prefix) || ok.slice(prefix.length).includes("/")) continue;
       const name = ok.slice(prefix.length);
       if (entry.state === "absent" || entry.state === "absentTree") { if (!(__vfsWrites && ok in __vfsWrites)) names.delete(name); }
       else if (entry.state === "dir") names.set(name, "directory");
@@ -1458,7 +1512,6 @@ const __fsMod = (() => {
   // overlay of this process's own effects says it is gone until a barrier's
   // delta does.
   function _forgetSyncPath(k) {
-    delete _ownWriteTimes[k];
     _forgetLocalAttrs(k, false);
     _announcedDirs.delete(k);
     _nsOwnSet(k, "absent");
@@ -1471,7 +1524,7 @@ const __fsMod = (() => {
    */
   function _parkWrite(k, cell, mode = 0o666, absent) {
     _noteCreation(k, mode, absent);
-    _ownWriteTimes[k] = Date.now();
+    _ownWritten(k);
     __vfsWrites[k] = cell;
     if (__vfsBundle) __vfsBundle[k] = cell;
     delete __vfsBundleRevisions[k];
@@ -1492,7 +1545,7 @@ const __fsMod = (() => {
   function _noteCreation(k, mode = 0o666, absent) {
     if (typeof __resident === "undefined") return;
     // A file it made is still that file, and a new write to it is not yet the session's.
-    const made = _nsOwn.get(k);
+    const made = _nsOwnGet(k);
     if (made?.state === "file") { made.settled = null; return; }
     const absPath = "/" + k;
     // Known absent: the namespace names everything this credential can see,
@@ -1862,10 +1915,10 @@ const __fsMod = (() => {
     const k = _strip(absPath);
     __resident.namespace.noteLiveStat(k, stat, written);
     // Not beneath a directory it made just now, whose names are its own.
-    const made = _nsOwn.get(k);
+    const made = _nsOwnGet(k);
     if (stat !== null && made?.state === "file" && !_nsParked(k)) {
       const held = __resident.namespace.lookup(k, false, (at) => (at === k ? undefined : _nsWord(at)));
-      if (held !== "ELOOP" && held.table === k && held.row !== undefined) _nsOwnDrop(k, made);
+      if (held !== "ELOOP" && held.table === k && held.row !== undefined) _nsOwnDrop(k);
     }
     return true;
   }
@@ -1949,11 +2002,16 @@ const __fsMod = (() => {
     return _fsRpc(promise, syscall, p, use);
   }
 
-  // When this process last changed each path's content: the mtime its own
-  // writes carry until the namespace describes them. Reading the clock at
-  // each stat instead gave a file a new mtime on every stat, which a
-  // watcher polling mtimeMs reads as an edit.
-  const _ownWriteTimes = Object.create(null);
+  // When this process last changed a path's content: the mtime its own
+  // entry answers until the namespace describes it (only an entry answers
+  // for itself, so only an entry keeps it). Reading the clock at each stat
+  // instead gave a file a new mtime on every stat, which a watcher polling
+  // mtimeMs reads as an edit.
+  function _ownWritten(k, at = Date.now()) {
+    const entry = _nsOwnGet(k);
+    if (entry !== undefined) entry.written = at;
+    return at;
+  }
 
   function _coerceMode(value, syscall, p) {
     const n = typeof value === "string" ? parseInt(value, 8) : Number(value);
@@ -1980,7 +2038,7 @@ const __fsMod = (() => {
     };
     // The sync view answers these times ahead of the namespace's (_statObject)
     // until the utimes is reported back, as a write's own bytes are.
-    return _setLocalAttr(_localTimes, k, time, fresh);
+    return _setLocalAttr("times", k, time, fresh);
   }
 
   // lib/internal/fs/utils.js StatsBase, Stats and BigIntStats: what every
@@ -2057,7 +2115,7 @@ const __fsMod = (() => {
   }
   // A path's mode: its stored bits, its type's where they name none, and this process's own chmod over them.
   function _statMode(k, isDir, isSymlink, mode) {
-    const localMode = _localModes.get(k)?.value;
+    const localMode = _localAttr("mode", k)?.value;
     const typeMode = isDir ? 0o040000 : isSymlink ? 0o120000 : 0o100000;
     if (localMode !== undefined) return typeMode | localMode;
     const storedMode = Number(mode);
@@ -2071,10 +2129,11 @@ const __fsMod = (() => {
   // from its metadata (_statObject), which records nothing: one record per
   // stat grew a map entry for every file a program ever stats.
   function _localStatObject(k, isDir, isSymlink, size, mode, uid, gid) {
-    const time = _localTimes.get(k)?.value;
+    const time = _localAttr("times", k)?.value;
+    const written = _nsOwnGet(k)?.written;
     const mtimeMs = Number.isFinite(time?.mtimeMs) ? time.mtimeMs
-      : Number.isFinite(_ownWriteTimes[k]) ? _ownWriteTimes[k]
-      : (_ownWriteTimes[k] = Date.now());
+      : Number.isFinite(written) ? written
+      : _ownWritten(k);
     const atimeMs = Number.isFinite(time?.atimeMs) ? time.atimeMs : mtimeMs;
     return _newStats(_statMode(k, isDir, isSymlink, mode), uid, gid, undefined, size, atimeMs, mtimeMs, mtimeMs, 1, _nsDeviceAbove(k));
   }
@@ -3091,7 +3150,7 @@ const __fsMod = (() => {
     if (pending.length === 0) return;
     const deepest = "/" + pending[pending.length - 1];
     // Each one, shallowest first, as mkdir -p makes them.
-    const made = pending.map((dir) => _vfsCall({ call: "mkdir", path: dir, mode: _localModes.get(dir)?.value ?? 0o777, existing: "ok" }));
+    const made = pending.map((dir) => _vfsCall({ call: "mkdir", path: dir, mode: _localAttr("mode", dir)?.value ?? 0o777, existing: "ok" }));
     await _fsRpc(Promise.all(made), "mkdir", deepest, () => undefined);
     for (const dir of pending) _announcedDirs.add(dir);
     _markVfsStale();
@@ -3255,16 +3314,16 @@ const __fsMod = (() => {
       _markVfsStale();
     }
     // A pending sync chmod rides along with the next flush of the same path.
-    if (_pendingModes.has(k)) {
-      _pendingModes.delete(k);
-      const entry = _localModes.get(k);
+    const entry = _localAttr("mode", k);
+    if (entry?.pending) {
+      entry.pending = false;
       try {
         await _ownMutation(
           absPath,
           () => _fsRpc(_vfsOp({ type: "setattr", path: k, attrs: { mode: entry.value } }), "chmod", absPath, _receiptOf),
         );
       } catch (error) {
-        _pendingModes.add(k);
+        entry.pending = true;
         throw error;
       }
       _settleLocalAttr(entry);
@@ -3278,7 +3337,7 @@ const __fsMod = (() => {
     const k = _strip(absPath);
     const cell = _writtenCell(absPath);
     if (cell === undefined) return;
-    _ownWriteTimes[k] = Date.now();
+    _ownWritten(k);
     const buf = _asBytes(cell);
     let next;
     if (size <= buf.byteLength) {
@@ -3342,7 +3401,7 @@ const __fsMod = (() => {
     const k = _strip(absPath);
     const cell = _writtenCell(absPath);
     if (cell === undefined) return;
-    _ownWriteTimes[k] = Date.now();
+    _ownWritten(k);
     const next = _spliceCell(_asBytes(cell), pos, bytes);
     if (__vfsWrites && k in __vfsWrites) __nimbusReplaceParkedCell(k, next);
     if (__vfsBundle && k in __vfsBundle) __vfsBundle[k] = next;
@@ -3355,7 +3414,7 @@ const __fsMod = (() => {
     const now = Date.now();
     // This process's own utimes, until it is reported back, ahead of the
     // namespace's (_recordLocalTimes).
-    const own = key === undefined ? undefined : _localTimes.get(key)?.value;
+    const own = key === undefined ? undefined : _localAttr("times", key)?.value;
     const mtimeMs = Number.isFinite(own?.mtimeMs) ? own.mtimeMs : Number(meta?.mtime ?? now);
     const atimeMs = Number.isFinite(own?.atimeMs) ? own.atimeMs : Number(meta?.atime ?? meta?.mtime ?? now);
     const ctimeMs = Number(meta?.ctime ?? meta?.mtime ?? now);
@@ -3662,7 +3721,7 @@ const __fsMod = (() => {
     const k = String(key).replace(/^\\/+/, "");
     _acceptedHere.add(k);
     // A file it made is the session's once a barrier begun after this reports it.
-    const made = typeof __resident === "undefined" ? undefined : _nsOwn.get(k);
+    const made = typeof __resident === "undefined" ? undefined : _nsOwnGet(k);
     if (made?.state === "file" && !_nsParked(k)) made.settled = _barrierBegins;
   };
 
@@ -3670,8 +3729,8 @@ const __fsMod = (() => {
   // be that write's, so it is forgotten and the next access asks the authority.
   globalThis.__nimbusVfsWriteRefused = (key) => {
     const k = String(key).replace(/^\\/+/, "");
-    const made = typeof __resident === "undefined" ? undefined : _nsOwn.get(k);
-    if (made?.state === "file") _nsOwnDrop(k, made);
+    const made = typeof __resident === "undefined" ? undefined : _nsOwnGet(k);
+    if (made?.state === "file") _nsOwnDrop(k);
     _acceptedHere.delete(k);
   };
 
@@ -3827,26 +3886,89 @@ const __fsMod = (() => {
     return readdirSync(p, opts);
   }
 
-  // fs.promises.copyFile, and fs.promises.cp of a file: the source read as
-  // fs.promises.readFile reads it, the copy written as writeFile writes it.
-  // \`fresh\`: \`dest\` is in a directory this copy just made, so nothing is there.
-  async function _copyFileAsync(src, dest, mode, fresh = false) {
+  // fs.promises.copyFile: one copy the session makes (the W7 copyFile call),
+  // logged in program order, so it copies what the program wrote to the
+  // source before it, left as copyfile leaves it (the source's mode exactly,
+  // a file there too, set in the copy itself), and no byte of the file is
+  // read or sent.
+  async function _copyFileAsync(src, dest, mode) {
     if ((Number(mode) & __fsConstants.COPYFILE_EXCL) !== 0 && await _existsAsync(dest)) {
       throw _fsErr("EEXIST", "copyfile", src, dest);
     }
+    if (!_supervisor()) return copyFileSync(src, dest, mode);
+    try { await _copyLogged(src, dest); } catch (error) { throw _asCallError(error, "copyfile", src, dest); }
+  }
+
+  /**
+   * The session's copy of \`src\` to \`dest\`, each as named, and what the view
+   * holds of it once answered. The answer names the key it wrote (its
+   * destination's links followed as the session followed them) and the
+   * file it copied with that file's revision. Only where the session wrote
+   * the key this view follows the destination to is anything of it taken
+   * here: the source's whole cell the view held when the copy was asked,
+   * dated that late or later, is the copy's, in a buffer of its own; else
+   * the copy is read back where the view held the source, its stat learned
+   * where it never did. Where the session wrote elsewhere (a link the view
+   * followed has moved), nothing is taken here.
+   */
+  async function _copyLogged(src, dest) {
+    const srcAbs = _resolveFollow(src, "copyfile");
+    const destAbs = _resolveFollow(dest, "copyfile");
+    _ensureWritable(destAbs, "copyfile", src, true, dest);
+    const destK = _strip(destAbs);
+    const srcK = _strip(srcAbs);
+    const call = { call: "copyFile", path: _strip(_resolve(dest)), from: _strip(_resolve(src)) };
+    // The source as the view holds it now, and how late its bytes are.
+    const content = _bundleLookup(srcAbs, false);
+    const partial = _parkedPartial.get(srcK);
+    const whole = content !== undefined && _denialCode(content) === null && (partial === undefined || partial !== __vfsWriteGenerations[srcK]);
+    const dated = whole && typeof __resident !== "undefined" ? __resident.cells.provenance(srcK) : undefined;
+    // A parked write to the copy's name is logged ahead of it. What the
+    // view holds of the name as the copy is asked, the copy supersedes; a
+    // write or attribute after it is the program's later word.
+    _flushParkedWrite(destAbs, _supervisor());
+    const asked = { generation: __vfsWriteGenerations[destK], mode: _localAttr("mode", destK), times: _localAttr("times", destK), made: _nsOwnGet(destK) };
+    const ticket = _beginFill(destK);
+    let receipt;
     try {
-      const data = await _readFileAsync(src);
-      const from = (await _statAsync(src)).mode & 0o7777;
-      let there;
-      if (!fresh) {
-        try { there = await _statAsync(dest); }
-        catch (error) { if (error?.code !== "ENOENT") throw error; }
+      await _queueStructuralMutation(destAbs, "copyfile", src, () => _vfsCall(call).then((answer) => { receipt = answer?.receipt; return answer; }), dest);
+      // Landed elsewhere (a link the view followed has moved): nothing the
+      // view holds is the copy's, and a barrier tells it where it went.
+      if (receipt !== undefined && receipt.landed !== undefined && receipt.landed !== destK) return;
+      // A write to the name since: it is logged after the copy, and is the file now.
+      if (__vfsWrites && Object.prototype.hasOwnProperty.call(__vfsWrites, destK) && __vfsWriteGenerations[destK] !== asked.generation) return;
+      // What the view held under the copy's key, and the attributes set before it, stand for nothing now.
+      if (__vfsBundle) delete __vfsBundle[destK];
+      delete __vfsBundleRevisions[destK];
+      if (__vfsWrites) delete __vfsWrites[destK];
+      const rec = _own.get(destK);
+      if (rec !== undefined) {
+        if (asked.mode !== null && rec.mode === asked.mode) rec.mode = null;
+        if (asked.times !== null && rec.times === asked.times) rec.times = null;
+        _ownCompact(destK, rec);
       }
-      const left = _copyLeaves(there, from);
-      if (there !== undefined && !there.isDirectory() && left !== (there.mode & 0o7777)) await _chmodAsync(dest, left);
-      await _writeFileAsync(dest, data, { mode: from });
-      if (left !== from) await _chmodAsync(dest, from);
-    } catch (error) { throw _asCallError(error, "copyfile", src, dest); }
+      if (receipt !== undefined) {
+        _noteLearnedStat(destAbs, _receiptStat(receipt), ticket, receipt.revision);
+        // A file this process made, still answering for itself (beneath a
+        // directory it made just now): the receipt's stat is its stat.
+        const made = _nsOwnGet(destK);
+        if (made !== undefined && made === asked.made && made.state === "file") {
+          made.stat = { size: Number(receipt.size), mode: Number(receipt.mode), uid: Number(receipt.uid), gid: Number(receipt.gid) };
+          if (Number.isFinite(receipt.mtimeMs)) made.written = receipt.mtimeMs;
+          made.word = _nsWordOf(made);
+        }
+        const from = receipt.from;
+        if (from !== undefined && from.path === srcK && typeof dated === "number" && dated >= from.revision) {
+          ticket.rev = receipt.revision;
+          _installResident(destAbs, content instanceof Uint8Array ? content.slice() : content, ticket);
+          return;
+        }
+      }
+    } finally {
+      _endFill(ticket);
+    }
+    if (whole) await _readFileAsync(dest);
+    else if (receipt === undefined) await _learnLive(destAbs, _supervisor());
   }
 
   async function _existsAsync(p) {
@@ -3941,19 +4063,7 @@ const __fsMod = (() => {
     throw _fsErr("EINVAL", "readlink", p);
   }
 
-  async function _symlinkAsync(target, path) {
-    const supervisor = _supervisor();
-    if (supervisor) {
-      const absPath = _resolve(path);
-      await _awaitStructuralOrder(absPath);
-      // Node names the target, then the link: "symlink 'target' -> 'link'".
-      await _fsRpc(_vfsCall({ call: "symlink", path: _strip(absPath), target: String(target) }), "symlink", String(target), () => undefined, path);
-      if (typeof __resident !== "undefined") _nsOwnSet(_nsEntryName(absPath), "link", { target: String(target), settled: true });
-      _markVfsStale();
-      return;
-    }
-    throw _fsErr("ENOSYS", "symlink", String(target), path);
-  }
+  async function _symlinkAsync(target, path) { await _structuralAsync(() => _symlinkQueued(target, path, true), "symlink", path); }
 
   async function _writeFileAsync(p, data, opts) {
     const mode = _createMode(opts, "open", p);
@@ -4171,7 +4281,7 @@ const __fsMod = (() => {
   // of the path to carry, it was never sent when none came.
   function _chmodQueued(absPath, mode, syscall, p) {
     const k = _strip(absPath);
-    _setLocalAttr(_localModes, k, mode, true);
+    _setLocalAttr("mode", k, mode, true);
     _nsOwnMode(k, mode);
     return _queueStructuralMutation(absPath, syscall, p, () => _vfsOp({ type: "setattr", path: k, attrs: { mode } }));
   }
@@ -4186,9 +4296,9 @@ const __fsMod = (() => {
     }
     const m = _coerceMode(mode, "chmod", p);
     if (localExists) _ensureModeOwner(absPath, "chmod", p);
-    _setLocalAttr(_localModes, _strip(absPath), m, false);
+    // Delivered with the path's next flush (_flushHeld), once.
+    _setLocalAttr("mode", _strip(absPath), m, false, true);
     _nsOwnMode(_strip(absPath), m);
-    _pendingModes.add(_strip(absPath));
     if (supervisor) {
       await _flushLocalPathToSupervisor(absPath, supervisor);
       _markVfsStale();
@@ -4748,21 +4858,17 @@ const __fsMod = (() => {
     } else if (source !== undefined && target !== undefined && target.isDirectory()) {
       throw _fsErr("EISDIR", "rename", oldP, newP);
     }
-    _forgetLocalAttrs(newN, true);
-    _moveLocalAttrs(oldN, newN);
+    // This process's own records at and beneath the old name move with it,
+    // whole: what it made or linked there travels with the name (its entry
+    // and all it answers for itself); what it did not stays the authority's.
+    const placeMoved = _ownMove(oldN, newN, (key, entry) => key !== oldN || entry.state === "dir" || entry.state === "link" || entry.state === "file");
     // The table still holds the old name until the rename is reported, so the
     // new name reads through to it and the old one reads as gone. rename(2)
     // moves a symlink itself, so a moved link keeps its own entry for lstat.
     const nsFrom = _nsRealKey(oldN);
     const nsEntry = _nsEntryKey(oldN);
     const movedLink = nsEntry !== null && Number(__resident.namespace.rowAt(nsEntry).kind) === __nimbusResidentModule.NS_LINK ? nsEntry : undefined;
-    // Own entries at and beneath the old name (what this process made there
-    // travels with the name; what it did not stays the authority's), taken
-    // before its removal drops them.
     const oldPrefix = oldN + "/";
-    const ownMoved = [..._nsOwn]
-      .filter(([key, entry]) => key === oldN ? entry.state === "dir" || entry.state === "link" || entry.state === "file" : key.startsWith(oldPrefix))
-      .map(([key, entry]) => [newN + key.slice(oldN.length), entry]);
     const content = __vfsBundle?.[oldN] ?? __vfsWrites?.[oldN];
     // The file's own cell moves with its name (retired once the move is
     // answered, below); one that is only an append's bytes cannot stand for
@@ -4814,7 +4920,6 @@ const __fsMod = (() => {
       if (!k.startsWith(oldPrefix)) continue;
       const moved = newN + k.slice(oldN.length);
       const content = __vfsWrites[k];
-      const writtenAt = _ownWriteTimes[k];
       const append = !!supervisor && _parkedPartial.get(k) === __vfsWriteGenerations[k];
       const landed = supervisor ? _flushParkedWrite("/" + k, supervisor) : null;
       if (__vfsBundle) delete __vfsBundle[k];
@@ -4825,18 +4930,12 @@ const __fsMod = (() => {
         continue;
       }
       _parkWrite(moved, content);
-      if (writtenAt !== undefined) _ownWriteTimes[moved] = writtenAt;
       if (landed) movedWrites.push([moved, landed, __vfsWriteGenerations[moved]]);
     }
-    // What the new name held is replaced.
-    const replaced = _nsOwn.get(newN);
-    if (replaced) _nsOwnDrop(newN, replaced);
-    _nsOwnDropBeneath(newN);
-    // Placed anew, the rename's own: what an earlier mutation settles is the old placement.
-    for (const [key, entry] of ownMoved) {
-      _nsOwnSet(key, entry.state, { from: entry.from, link: entry.link, target: entry.target, hide: entry.hide, mode: entry.mode });
-    }
-    if ((nsFrom !== null || movedLink !== undefined) && !_nsOwn.has(newN)) _nsOwnSet(newN, "alias", { from: nsFrom ?? undefined, link: movedLink });
+    // What the new name held is replaced, and the moved records placed anew,
+    // the rename's own: what an earlier mutation settles is the old placement.
+    placeMoved();
+    if ((nsFrom !== null || movedLink !== undefined) && _nsOwnGet(newN) === undefined) _nsOwnSet(newN, "alias", { from: nsFrom ?? undefined, link: movedLink });
     _nsOwnSet(oldN, "absentTree");
     const queued = _queueStructuralMutation(
       oldAbs, "rename", oldP,
@@ -4942,7 +5041,7 @@ const __fsMod = (() => {
       if (sync && !o.force) throw _fsErr("ENOENT", "rm", p);
     }
     if (st !== undefined && st.isDirectory() && !o.recursive) {
-      throw nodeSystemError("ERR_FS_EISDIR", "Path is a directory", { code: "EISDIR", message: "is a directory", path: String(p), syscall: "rm", errno: Number(__constantsMod.EISDIR) });
+      throw new nodeErrorCodes.ERR_FS_EISDIR({ code: "EISDIR", message: "is a directory", path: String(p), syscall: "rm", errno: Number(__constantsMod.EISDIR) });
     }
     const n = _nsEntryName(absPath);
     const prefix = n + "/";
@@ -4977,42 +5076,59 @@ const __fsMod = (() => {
   function rmSync(p, opts) { _detachStructuralMutation(_rmQueued(p, opts, true), "rm", p); }
   async function _rmAsync(p, opts) { await _rmQueued(p, opts, false); }
 
-  // ── cpSync ──
-  // A walk of the resident view; every file copy is a parked sync write that
-  // the existing write-back drains, and every directory a queued mkdir.
+  // ── symlinkSync, readlinkSync ──
+  // A link is made as mkdir makes a directory: in this view at once, its
+  // mutation queued; Node names the target, then the link ("symlink
+  // 'target' -> 'link'"). \`live\`: the async form, which the authority
+  // answers for a name the namespace cannot judge.
+  function _symlinkQueued(target, path, live) {
+    const absPath = _resolve(path);
+    const text = String(target);
+    _nsRequire("symlink", text, "fs.promises.symlink");
+    if (_statLadder(absPath, true) !== undefined) throw _fsErr("EEXIST", "symlink", text, path);
+    _ensureWritable(absPath, "symlink", text, live, path);
+    const k = _strip(absPath);
+    _nsOwnSet(_nsEntryName(absPath), "link", { target: text });
+    return _queueStructuralMutation(absPath, "symlink", text, () => _vfsCall({ call: "symlink", path: k, target: text }), path);
+  }
+  function symlinkSync(target, path) { _detachStructuralMutation(_symlinkQueued(target, path), "symlink", path); }
+  /** A link's target, as this view holds it: its own, or the namespace's. */
+  function readlinkSync(p, opts) {
+    const absPath = _resolve(p);
+    _nsRequire("readlink", p, "fs.promises.readlink");
+    _ensureAncestorsTraversable(absPath, "readlink", p);
+    const mount = _nsUnlisted(absPath, false, false);
+    if (mount !== null) throw _nsUnlistedErr(mount, "readlink", p, "fs.promises.readlink");
+    const found = _nsWalk(_strip(absPath), false);
+    if (found === "ELOOP") throw _fsErr("ELOOP", "readlink", p);
+    // Its own link, or the session's link row the walk reached (a renamed one's too); a file or directory it made is no link.
+    const own = found.own;
+    if (own?.absent) throw _fsErr("ENOENT", "readlink", p);
+    let target = own?.target;
+    if (target === undefined) {
+      if (own?.made !== undefined) throw _fsErr("EINVAL", "readlink", p);
+      if (found.row === undefined) throw _fsErr("ENOENT", "readlink", p);
+      if (Number(found.row.kind) !== __nimbusResidentModule.NS_LINK) throw _fsErr("EINVAL", "readlink", p);
+      target = String(found.row.target);
+    }
+    return (typeof opts === "string" ? opts : opts?.encoding) === "buffer" ? __BufferMod.from(target) : target;
+  }
+
+  // ── cpSync, fs.promises.cp, fs.cp ──
+  // Node's own (lib/internal/fs/cp, vendored), over this fs: its options
+  // checked as lib/fs.js checks them.
+  function _cpArgs(src, dest, opts) {
+    const { getValidatedPath, validateCpOptions } = __nimbusNodeLib().require("internal/fs/utils");
+    const options = validateCpOptions(opts);
+    return [getValidatedPath(src, "src"), getValidatedPath(dest, "dest"), options];
+  }
   function cpSync(src, dest, opts) {
-    const o = opts || {};
-    const st = statSync(src, { throwIfNoEntry: false });
-    if (st === undefined) throw _fsErr("ENOENT", "cp", src);
-    if (typeof o.filter === "function" && !o.filter(String(src), String(dest))) return;
-    if (!st.isDirectory()) {
-      const destSt = statSync(dest, { throwIfNoEntry: false });
-      if (destSt !== undefined) {
-        if (destSt.isDirectory()) throw _fsErr("EISDIR", "cp", dest);
-        if (o.errorOnExist) {
-          throw nodeSystemError("ERR_FS_CP_EEXIST", "Target already exists", { message: String(dest) + " already exists", path: String(dest), syscall: "cp", errno: Number(__constantsMod.EEXIST), code: "EEXIST" });
-        }
-        if (o.force === false) return;
-      }
-      copyFileSync(src, dest);
-      return;
-    }
-    // Node's cpSync refuses this in C++: a plain Error with the code.
-    if (!o.recursive) {
-      const named = String(src).endsWith("/") ? String(src) : String(src) + "/";
-      throw Object.assign(new Error("Recursive option not enabled, cannot copy a directory: " + named), { code: "ERR_FS_EISDIR" });
-    }
-    // A directory it makes is its owner's alone until its entries are in, as
-    // GNU cp makes it, then takes the source's mode, as Node's cp leaves it.
-    const made = statSync(dest, { throwIfNoEntry: false }) === undefined;
-    if (made) {
-      mkdirSync(__pathMod.dirname(String(dest)), { recursive: true });
-      mkdirSync(dest, { mode: 0o700 });
-    }
-    for (const ent of readdirSync(src, { withFileTypes: true })) {
-      cpSync(__pathMod.join(String(src), ent.name), __pathMod.join(String(dest), ent.name), o);
-    }
-    if (made && (st.mode & 0o7777) !== (0o700 & ~__processUmask)) chmodSync(dest, st.mode & 0o7777);
+    const args = _cpArgs(src, dest, opts);
+    __nimbusNodeLib().require("internal/fs/cp/cp-sync").cpSyncFn(...args);
+  }
+  async function _cpAsync(src, dest, opts) {
+    const args = _cpArgs(src, dest, opts);
+    return __nimbusNodeLib().require("internal/fs/cp/cp").cpFn(...args);
   }
 
   // ── mkdtemp ──
@@ -5912,7 +6028,9 @@ const __fsMod = (() => {
   }
   function cp(src, dest, opts, cb) {
     if (typeof opts === "function") { cb = opts; opts = undefined; }
-    promises.cp(src, dest, opts).then(() => cb(null)).catch((e) => cb(e));
+    __nimbusNodeLib().require("internal/validators").validateFunction(cb, "cb");
+    const args = _cpArgs(src, dest, opts);
+    __nimbusNodeLib().require("util").callbackify(__nimbusNodeLib().require("internal/fs/cp/cp").cpFn)(...args, cb);
   }
   function truncate(p, len, cb) {
     if (typeof len === "function") { cb = len; len = 0; }
@@ -6508,60 +6626,7 @@ const __fsMod = (() => {
     lstat: (p, opts) => new Promise((res, rej) => lstat(p, opts, (e, s) => e ? rej(e) : res(s))),
     // The same local retraction and queued authority removal rmSync does.
     rm: async (p, opts) => { await _rmAsync(p, opts); },
-    cp: async (src, dest, opts) => {
-      const o = opts || {};
-      const srcAbs = _resolve(src);
-      const srcK = _strip(srcAbs);
-      const destK = _strip(_resolve(dest));
-      // A file is copied as copyFile copies it: read through the read that
-      // judges it (the session's, or readFileSync's), never from the cell
-      // held under its name, which may be a write-only file's bytes or the
-      // session's denial of the read.
-      if (_bundleLookup(srcAbs) !== undefined) { await _copyFileAsync(src, dest); return; }
-      if (!o.recursive) {
-        const err = new Error("EISDIR: cp without recursive on directory: " + src);
-        err.code = "EISDIR"; throw err;
-      }
-      // Recursive: walk the source tree (merging the local sync view with
-      // the live VFS listing so files only present in SQLite — e.g. a
-      // just-extracted template tarball — are included) and persist every
-      // file through the async bridge. Writing through _writeFileAsync —
-      // not just the local cache — is required so a subsequent async fs op
-      // (e.g. fs.promises.rename of a copied file, as create-cloudflare
-      // does for __dot__gitignore) sees the copy in the VFS instead of
-      // ENOENT. Each directory is made as mkdir makes it, so the namespace's
-      // overlay lists it for the writes beneath it.
-      // Each file is copied as copyFile copies it; a directory made here is
-      // its owner's alone until its entries are in, as GNU cp makes it, then
-      // takes the source's mode, as Node's cp leaves it. In a directory this
-      // copy made nothing is there, and nothing is looked for.
-      const made = [];
-      const makeDir = async (rel, fresh) => {
-        const at = rel ? "/" + destK + "/" + rel : "/" + destK;
-        if (!fresh && await _existsAsync(at)) return false;
-        if (!rel) await _mkdirAsync(__pathMod.dirname(at), { recursive: true });
-        await _mkdirAsync(at, { mode: 0o700 });
-        made.push([at, rel ? srcAbs + "/" + rel : srcAbs]);
-        return true;
-      };
-      const walk = async (relDir, fresh) => {
-        const absDir = relDir ? srcAbs + "/" + relDir : srcAbs;
-        const ents = await _readdirAsync(absDir, { withFileTypes: true });
-        for (const ent of ents) {
-          const rel = relDir ? relDir + "/" + ent.name : ent.name;
-          if (ent.isDirectory && ent.isDirectory()) {
-            await walk(rel, await makeDir(rel, fresh));
-          } else {
-            await _copyFileAsync(srcAbs + "/" + rel, "/" + destK + "/" + rel, undefined, fresh);
-          }
-        }
-      };
-      await walk("", await makeDir("", false));
-      for (const [at, from] of made.reverse()) {
-        const mode = (await _statAsync(from)).mode & 0o7777;
-        if (mode !== (0o700 & ~__processUmask)) await _chmodAsync(at, mode);
-      }
-    },
+    cp: (src, dest, opts) => _cpAsync(src, dest, opts),
     copyFile: (src, dest, mode) => _copyFileAsync(src, dest, mode),
     rename: async (oldP, newP) => { await _renameAsync(oldP, newP); },
     rmdir: async (p) => { await _rmdirAsync(p); },
@@ -6777,7 +6842,7 @@ const __fsMod = (() => {
     readFileSync, writeFileSync, appendFileSync, existsSync, statSync, lstatSync,
     readdirSync, mkdirSync, unlinkSync, rmdirSync, renameSync, copyFileSync,
     realpathSync, utimesSync, lutimesSync, chmodSync, chownSync, lchownSync, accessSync,
-    rmSync, cpSync, mkdtempSync, truncateSync, linkSync, opendirSync, statfsSync,
+    rmSync, cpSync, mkdtempSync, truncateSync, linkSync, opendirSync, statfsSync, symlinkSync, readlinkSync,
     openSync, closeSync, readSync, writeSync, fstatSync, ftruncateSync, fsyncSync, fdatasyncSync,
     futimesSync, fchmodSync, fchownSync, readvSync, writevSync,
     open, close, read, write, fstat, ftruncate, fsync, fdatasync, fchmod, futimes, readv, writev,
@@ -7322,7 +7387,7 @@ const __constantsMod = {
 let __nimbusNice = 0;
 // lib/os.js's ERR_SYSTEM_ERROR for a priority call libuv refused.
 function __nimbusPriorityError(syscall, code) {
-  return nodeSystemError("ERR_SYSTEM_ERROR", "A system error occurred", {
+  return new nodeErrorCodes.ERR_SYSTEM_ERROR({
     errno: -__errnoConstants[code], code, message: __nimbusErrnoDescription[code], syscall,
   });
 }
@@ -7535,6 +7600,10 @@ function __nimbusNodeLib() {
     timers: builtins.timers,
     fetch: globalThis.fetch.bind(globalThis),
     createCaresBinding: lib.createCaresBinding,
+    // Node's modules that copy (lib/internal/fs/cp) do it through this fs.
+    fs: () => builtins.fs,
+    path: __pathMod,
+    errno: __osMod.constants.errno,
     primordials,
     sources: lib.sources,
   });

@@ -419,9 +419,12 @@ export const S_IFLNK = 0o120000;
 /**
  * A copy: a tree with \`recursive\` (\`preserve\` is cp -p); \`follow\`
  * copies what a link named as the source leads to, as copyfile does, where
- * a tree copy otherwise copies the link.
+ * a tree copy otherwise copies the link. \`keepMode\`, a file's copy as
+ * copyfile makes it (libuv's fchmod): the source's permission bits exactly,
+ * a file there too, where cp's are the umask's for a new file and a file
+ * there keeps its own.
  */
-export interface VfsCopyOptions { recursive?: boolean; preserve?: boolean; follow?: boolean }
+export interface VfsCopyOptions { recursive?: boolean; preserve?: boolean; follow?: boolean; keepMode?: boolean }
 
 /**
  * The permission bits a copy without preserve asks to make an entry with:
@@ -432,6 +435,20 @@ export interface VfsCopyOptions { recursive?: boolean; preserve?: boolean; follo
  */
 export function copiedPermissions(mode: number, directory: boolean): number {
   return mode & (directory ? 0o1777 : 0o777);
+}
+
+/**
+ * The mode copyfile leaves its copy with (keepMode; libuv's fchmod to the
+ * source's mode, then the data written): the source's permission bits
+ * exactly, but the write of a non-empty copy by a non-root copier clears
+ * set-user-ID, and set-group-ID where group-execute is set, as Linux clears
+ * them on a write without CAP_FSETID. Whether the copier may set it is
+ * chmod's question, asked where the copy lands.
+ */
+export function copyfileMode(mode: number, size: number, uid: number): number {
+  const bits = mode & 0o7777;
+  if (uid === 0 || size === 0) return bits;
+  return bits & ~(0o4000 | (bits & 0o010 ? 0o2000 : 0));
 }
 
 /** True for a character device such as `/dev/zero`, which streams rather than stores. */

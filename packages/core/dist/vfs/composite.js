@@ -6,7 +6,7 @@ import { posixAccess } from './posix-access.js';
 import { recallOf, withRecall } from './recall.js';
 import { DIRENT_TYPES } from './dirent-type.js';
 import { walkRemoval } from './removal-walk.js';
-import { S_IFMT, abandon, andThen, copiedPermissions, isCharacterDevice, isPromise, readRangeOrWhole, syncValue } from './vfs.js';
+import { S_IFMT, abandon, andThen, copiedPermissions, copyfileMode, isCharacterDevice, isPromise, readRangeOrWhole, syncValue } from './vfs.js';
 /** Path order as SQLite's index keeps it: by UTF-8 bytes, which is code point order. */
 export function comparePaths(a, b) {
     const n = Math.min(a.length, b.length);
@@ -2738,7 +2738,7 @@ export class CompositeVFS {
                         throw new Refusal('EISDIR', from, 'a tree needs recursive');
                     // The copy itself, at `at` (its namespace path): guarded right before
                     // the backend is called, there and at the name given.
-                    const write = (at, made) => {
+                    const write = (at, made, there) => {
                         const route = this.locate(at);
                         if (route.mount.options.readOnly)
                             throw new Refusal('EROFS', at, `${route.mount.point} is mounted read-only`);
@@ -2756,7 +2756,7 @@ export class CompositeVFS {
                         // Each entry the copy makes is told as it lands, the ones before a failure too.
                         return this.reportWrite({ path: at, route, ops: targetOps, follow, kind: 'write', told: null }, () => {
                             this.guardMutation([toInput]);
-                            return this.copyBytes(sourceOps, source.rel, stat, targetOps, route.rel, at, { ops: targetOps, rel: route.rel, mount: route.mount, told, preserve: options?.preserve === true });
+                            return this.copyBytes(sourceOps, source.rel, stat, targetOps, route.rel, at, { ops: targetOps, rel: route.rel, mount: route.mount, told, preserve: options?.preserve === true, keepMode: options?.keepMode === true, made, there: there ?? null });
                         }, sync);
                     };
                     // The target's parent is a directory, unless its backend resolves its own paths and answers for it (it may make it).
@@ -2776,7 +2776,7 @@ export class CompositeVFS {
                                     throw new Refusal('EISDIR', to);
                             }
                             if (stat.type !== 'file' || existing?.type !== 'symlink')
-                                return write(to, existing === null);
+                                return write(to, existing === null, existing);
                             // A file is written through a link at the destination, as cp
                             // opens it: where that write lands, the link followed, is what is
                             // checked and written. (A link or a tree is made at the name.)
@@ -2787,7 +2787,7 @@ export class CompositeVFS {
                                 return andThen(this.statAt(through, false, sync), (landing) => {
                                     if (landing?.type === 'directory')
                                         throw new Refusal('EISDIR', to);
-                                    return write(through, landing === null);
+                                    return write(through, landing === null, landing);
                                 });
                             });
                         });
@@ -2808,7 +2808,8 @@ export class CompositeVFS {
      */
     copyBytes(from, fromRel, stat, to, toRel, toAt, made) {
         const mode = stat.mode === undefined ? undefined
-            : made.preserve ? stat.mode & 0o7777 : copiedPermissions(stat.mode, stat.type === 'directory');
+            : made.keepMode ? copyfileMode(stat.mode, stat.size ?? 1, this.viewer.cred?.uid ?? 0)
+                : made.preserve ? stat.mode & 0o7777 : copiedPermissions(stat.mode, stat.type === 'directory');
         const told = toRel === made.rel ? made.told : stat.type === 'directory' ? 'addDir' : 'add';
         const landed = (result) => {
             if (isPromise(result))
@@ -2829,7 +2830,24 @@ export class CompositeVFS {
         if (stat.type === 'file') {
             return andThen(from.readFile(fromRel), (bytes) => {
                 this.guardMutation([toAt]);
-                return andThen(landed(to.writeFile(toRel, bytes, mode === undefined ? undefined : { mode })), () => 1);
+                // copyfile's mode (keepMode), as libuv leaves it: the file there is
+                // opened for write under its own mode, given the copy's (fchmod: its
+                // owner's to set), then written. Here by path, each step its
+                // backend's to judge: a chmod that narrows it for others (its
+                // owner's bits kept, so the write stays the one its own mode
+                // allowed; a chmod another may not make refuses here, before the
+                // bytes), the write, then the copy's mode. A new file is written,
+                // then given the copy's mode (its creation mode is the umask's).
+                // Changes there, not one step.
+                const exact = made.keepMode && mode !== undefined && typeof to.chmod === 'function';
+                const write = () => landed(to.writeFile(toRel, bytes, mode === undefined ? undefined : { mode }));
+                const there = made.there;
+                if (!exact || made.made || there === null || there === undefined || there.mode === undefined) {
+                    return andThen(write(), () => (exact ? andThen(to.chmod(toRel, mode), () => 1) : 1));
+                }
+                const own = there.mode & 0o7777;
+                const narrowed = (own & ~0o077) | (own & mode & 0o077);
+                return andThen(to.chmod(toRel, narrowed), () => andThen(write(), () => (mode === narrowed ? 1 : andThen(to.chmod(toRel, mode), () => 1))));
             });
         }
         this.guardMutation([toAt]);

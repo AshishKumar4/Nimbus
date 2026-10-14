@@ -40,6 +40,7 @@ import {
   NODE_LIB_ENTRY,
   NODE_LIB_REST_ENTRY,
   NODE_DNS_ENTRY,
+  NODE_CP_ENTRY,
   ESM_LATE_ENTRY,
   NODE_REGISTRY_ENTRY,
   NODE_SHIMS_ENTRY,
@@ -212,6 +213,7 @@ try {
     ['node-lib', NODE_LIB_ENTRY, 'nodeLib'],
     ['node-lib-rest', NODE_LIB_REST_ENTRY, 'nodeLibRest'],
     ['node-dns', NODE_DNS_ENTRY, 'nodeDns'],
+    ['node-cp', NODE_CP_ENTRY, 'nodeCp'],
     ['esm-late', ESM_LATE_ENTRY, 'esmLate'],
     ['node-registry', NODE_REGISTRY_ENTRY, 'registry'],
   ];

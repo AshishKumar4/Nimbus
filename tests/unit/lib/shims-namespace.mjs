@@ -28,8 +28,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RESIDENT_STORE_ENTRY } from '../../../packages/worker/src/node-shims-artifact.generated.ts';
-import { RUNTIME_NODE_DNS_MODULE, RUNTIME_NODE_LIB_MODULE, RUNTIME_NODE_LIB_REST_MODULE, declaresWrapperBinding, wrapCommonJsCell } from '../../../packages/core/src/_shared/commonjs-cell.ts';
-import { generateNodeDnsModule, generateNodeLibModule, generateNodeLibRestModule } from '../../../packages/worker/src/runtime/node-lib-module.ts';
+import { RUNTIME_NODE_CP_MODULE, RUNTIME_NODE_DNS_MODULE, RUNTIME_NODE_LIB_MODULE, RUNTIME_NODE_LIB_REST_MODULE, declaresWrapperBinding, wrapCommonJsCell } from '../../../packages/core/src/_shared/commonjs-cell.ts';
+import { generateNodeCpModule, generateNodeDnsModule, generateNodeLibModule, generateNodeLibRestModule } from '../../../packages/worker/src/runtime/node-lib-module.ts';
 import { moduleImporterUrl } from '../../../packages/core/src/_shared/module-importer.ts';
 
 const PUBLIC = fileURLToPath(new URL('../../../packages/worker/public', import.meta.url));
@@ -160,6 +160,7 @@ const NODE_LIB_MODULES = {
   [RUNTIME_NODE_LIB_MODULE]: generateNodeLibModule,
   [RUNTIME_NODE_LIB_REST_MODULE]: generateNodeLibRestModule,
   [RUNTIME_NODE_DNS_MODULE]: generateNodeDnsModule,
+  [RUNTIME_NODE_CP_MODULE]: generateNodeCpModule,
 };
 globalThis.__nimbusTestNodeLib = (loaded, name) => {
   if (!Object.hasOwn(NODE_LIB_MODULES, name)) throw new Error("a standalone shims factory's map has no " + name);

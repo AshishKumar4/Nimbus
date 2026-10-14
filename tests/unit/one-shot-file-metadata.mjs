@@ -5,10 +5,14 @@
 //   their forms), less the process's umask; a file already there keeps its own;
 // - mkdir's `mode`, less the umask; mkdtemp's 0700 (at once, as the next stat
 //   sees it, and as the session holds it);
-// - copyFile and cp: the source's mode exactly, over a file already there too,
-//   and while it is made another principal can read no more of it than the
-//   source lets it: a directory made is its owner's alone until it is filled,
-//   a file there is narrowed before the bytes go in;
+// - copyFile: the source's mode exactly, over a file already there too, and
+//   while it is made another principal can read no more of it than the
+//   source lets it: a file there is narrowed before the bytes go in;
+// - cpSync and fs.promises.cp, as Node 22.22.3 copies a tree (its oracle run
+//   over these trees, verify/consolidation/copy-authority-shim/
+//   oracle-metadata): each file the source's mode; each directory cpSync
+//   makes 0777 less the umask, and one fs.promises.cp makes the source's
+//   once its entries are in; a copy that fails leaves what it made so;
 // - chmod and fchmod: the mode set, with nothing after it to carry it;
 // - utimes, lutimes and futimes: the times set, at once in the program's own
 //   stat and at the session, with nothing after them to carry them.
@@ -45,9 +49,10 @@ authority.kfs.writeFile('home/user/private/key', 'k');
 own('home/user/private/key', 0o600);
 authority.kfs.writeFile('home/user/private/notes', 'n');
 own('home/user/private/notes', 0o644);
-// A tree another principal owns and shares with the copier's group alone: its
-// copy ends with the same modes, its directories closed even to their owner,
-// so each is given its final mode only once everything beneath it has its own.
+// A tree another principal owns and shares with the copier's group alone:
+// fs.promises.cp's copy ends with the same modes, its directories closed even
+// to their owner, each given its final mode only once everything beneath it
+// has its own; cpSync's leaves its directories as it made them.
 kernel.mkdir('home/user/team/sub', { recursive: true });
 kernel.writeFile('home/user/team/top', 't');
 kernel.writeFile('home/user/team/sub/file', 'f');
@@ -81,7 +86,7 @@ const expected = {
   'copy-new.txt': 0o600,
   'copy-over.txt': 0o600,
   'promise-copy.txt': 0o600,
-  'copied-dir': 0o700,
+  'copied-dir': 0o755,
   'copied-dir/key': 0o600,
   'promise-copied-dir': 0o700,
   'promise-copied-dir/key': 0o600,
@@ -89,11 +94,14 @@ const expected = {
   'promise-copied-dir/notes': 0o644,
   'chmod-sync.txt': 0o600,
   'fchmod-sync.txt': 0o600,
-  'team-copy': 0o050,
+  'team-copy': 0o755,
   'promise-team-copy': 0o050,
 };
 // Beneath a directory closed to its owner, only the kernel can look.
-const teamBelow = { 'sub': 0o050, 'sub/file': 0o040, 'top': 0o040 };
+const teamBelow = {
+  'team-copy': { 'sub': 0o755, 'sub/file': 0o040, 'top': 0o040 },
+  'promise-team-copy': { 'sub': 0o050, 'sub/file': 0o040, 'top': 0o040 },
+};
 const program = `
 const fs = require('fs');
 (async () => {
@@ -150,18 +158,13 @@ const generated = await generateEntrypointCode(program, { bundle: {} }, false, n
 const file = writeModuleSet(join(dir, 'entry'), generatedModuleSet(generated, 'runner.mjs'), 'runner.mjs');
 const mod = await import(file);
 
-// Another principal, after every change the session commits while the copies
-// are made: each private thing in them it tries to read is refused.
+// Another principal, after every change the session commits while the copy
+// over a file is made: the secret it holds, it is refused.
 const other = authority.rawVfs.as({ uid: 2000, gid: 2000, groups: [2000], umask: 0o022 });
 const exposures = [];
 const present = (path) => { try { kernel.stat(path); return true; } catch { return false; } };
 const readAs = (path) => { try { other.readFile(path); return 'read'; } catch (error) { return error.code; } };
 const stopWatching = kernel.subscribe('home/user', () => {
-  for (const path of ['home/user/copied-dir/notes', 'home/user/promise-copied-dir/notes', 'home/user/broken-copy/a-notes', 'home/user/promise-broken-copy/a-notes']) {
-    if (!present(path)) continue;
-    const answer = readAs(path);
-    if (answer !== 'EACCES') exposures.push(`${path}: ${answer}`);
-  }
   if (present('home/user/copy-over.txt') && new TextDecoder().decode(kernel.readFile('home/user/copy-over.txt')) === 'secret') {
     const answer = readAs('home/user/copy-over.txt');
     if (answer !== 'EACCES') exposures.push(`copy-over.txt holding the secret: ${answer}`);
@@ -199,16 +202,16 @@ assert.deepEqual({
   lutimes: kernel.lstat('home/user/lutimes-link').mtime,
   futimes: kernel.stat('home/user/futimes-sync.txt').mtime,
 }, setTimes, 'the session holds each path with the time it set');
-for (const copy of ['team-copy', 'promise-team-copy']) {
-  const below = Object.keys(teamBelow).map((name) => [name, kernel.stat(`home/user/${copy}/${name}`).mode & 0o777]);
-  assert.deepEqual(Object.fromEntries(below), teamBelow, `the session holds ${copy}'s entries with their source's modes`);
+for (const [copy, modes] of Object.entries(teamBelow)) {
+  const below = Object.keys(modes).map((name) => [name, kernel.stat(`home/user/${copy}/${name}`).mode & 0o777]);
+  assert.deepEqual(Object.fromEntries(below), modes, `the session holds ${copy}'s entries with Node's modes`);
 }
-assert.deepEqual(exposures, [], 'another principal was refused every private copy while it was made');
-// A copy that failed partway leaves what it made its owner's alone.
+assert.deepEqual(exposures, [], 'another principal was refused the secret while the copy over a file was made');
+// A copy that failed partway leaves what it made as Node leaves it.
 assert.deepEqual(seen.failed, ['EACCES', 'EACCES'], 'both copies of the tree with an unreadable entry fail');
-for (const path of ['home/user/broken-copy/a-notes', 'home/user/promise-broken-copy/a-notes']) {
-  assert.ok(present(path), `${path} was copied before the failure`);
-  assert.throws(() => other.readFile(path), { code: 'EACCES' }, `after the failed copy another principal still cannot read ${path}`);
+for (const copy of ['broken-copy', 'promise-broken-copy']) {
+  assert.ok(present(`home/user/${copy}/a-notes`), `${copy}/a-notes was copied before the failure`);
+  assert.deepEqual([kernel.stat(`home/user/${copy}`).mode & 0o777, kernel.stat(`home/user/${copy}/a-notes`).mode & 0o777], [0o755, 0o644], `${copy} is left as Node leaves it`);
 }
 realProcess.stdout.write('one-shot-file-metadata: PASS\n');
 realProcess.exit(0);

@@ -92,6 +92,15 @@ async function replay(supervisor, stream) {
           else if (call.call === 'lutimes') noted(await supervisor.utimes(abs(call.path), call.atime, call.mtime));
           // A write description's open (a WASI process's): no test that drives this supervisor makes one.
           else if (call.call === 'open' || call.call === 'close') throw new Error(`wave-supervisor: ${call.call} calls are not modeled`);
+          // A copy is the session's: its own copy where the mock has one, else its read of the source and write of the copy.
+          else if (call.call === 'copyFile') {
+            if (typeof supervisor.fsCopyFile === 'function') await supervisor.fsCopyFile(abs(call.from), abs(call.path));
+            else {
+              const bytes = typeof supervisor.readFileBytes === 'function' ? await supervisor.readFileBytes(abs(call.from)) : await supervisor.readFile(abs(call.from));
+              if (bytes === null || bytes === undefined) throw Object.assign(new Error(`ENOENT: no such file or directory, copyfile '${abs(call.from)}'`), { code: 'ENOENT' });
+              await supervisor.writeFile(abs(call.path), typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes);
+            }
+          }
           else await supervisor.symlink(call.target, abs(call.path));
           break;
         }
