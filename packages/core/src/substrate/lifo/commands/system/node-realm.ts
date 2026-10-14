@@ -301,7 +301,7 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
   };
   const write = (stream: CommandOutputStream, data: string | Uint8Array) => {
     written = written.then(async () => {
-      if (typeof data === 'string') await stream.write(data);
+      if (typeof data === 'string') await writerOf(stream).writeText(data);
       else await writerOf(stream).write(data);
     }).catch(() => {});
   };

@@ -14,7 +14,8 @@ export declare function leaveStandardStreamsOpen(): void;
  * `_isStdio`. Its bytes reach the output as each write is made, decoded
  * across writes for an output that takes text, so they keep their place
  * among the console's, which writes the output directly; an output's
- * failure is the stream's error.
+ * failure is the stream's error, and the stream finishes once every write
+ * handed to the output is done.
  */
 export declare function standardStream(output: CommandOutputStream, fd: 1 | 2): Writable;
 //# sourceMappingURL=standard-streams.d.ts.map

@@ -236,7 +236,7 @@ export async function runNodeInRealm(program, ctx, kernel) {
     const write = (stream, data) => {
         written = written.then(async () => {
             if (typeof data === 'string')
-                await stream.write(data);
+                await writerOf(stream).writeText(data);
             else
                 await writerOf(stream).write(data);
         }).catch(() => { });
