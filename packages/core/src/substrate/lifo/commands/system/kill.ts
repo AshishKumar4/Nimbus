@@ -73,35 +73,33 @@ export async function runKill(
         status = 1;
         continue;
       }
-      if (jobs?.signal(job, signal, caller) === false) {
-        await ctx.stderr.write(`kill: (${job.pid}) - Operation not permitted\n`);
-        status = 1;
-      }
+      if (jobs && !(await reported(ctx.stderr, job.pid, signal, jobs.signal(job, signal, caller)))) status = 1;
       continue;
     }
     if (!/^\d+$/.test(target)) { await ctx.stderr.write(`kill: \`${target}': not a pid or valid job spec\n`); status = 1; continue; }
     const pid = Number(target);
     const job = jobs?.byPid(pid);
-    if (job && job.status !== 'done') {
-      if (jobs?.signal(job, signal, caller) === false) {
-        await ctx.stderr.write(`kill: (${pid}) - Operation not permitted\n`);
-        status = 1;
-      }
+    if (jobs && job && job.status !== 'done') {
+      if (!(await reported(ctx.stderr, pid, signal, jobs.signal(job, signal, caller)))) status = 1;
       continue;
     }
     if (host?.isLive(pid) === true) {
-      const result = await host.signal(pid, signal, ctx.stderr, caller);
-      if (result === 'delivered') continue;
-      await ctx.stderr.write(result === 'unsupported'
-        ? `kill: (${pid}) - Operation not supported (SIG${signal} cannot be delivered to a hosted process)\n`
-        : result === 'not-permitted' ? `kill: (${pid}) - Operation not permitted\n` : `kill: (${pid}) - No such process\n`);
-      status = 1;
+      if (!(await reported(ctx.stderr, pid, signal, await host.signal(pid, signal, ctx.stderr, caller)))) status = 1;
       continue;
     }
     await ctx.stderr.write(`kill: (${pid}) - No such process\n`);
     status = 1;
   }
   return status;
+}
+
+/** Whether `signal` reached `pid`; what kill says when it did not. */
+async function reported(stderr: CommandOutputStream, pid: number, signal: string, result: HostSignalResult): Promise<boolean> {
+  if (result === 'delivered') return true;
+  await stderr.write(result === 'unsupported'
+    ? `kill: (${pid}) - Operation not supported (SIG${signal} cannot be delivered to a hosted process)\n`
+    : result === 'not-permitted' ? `kill: (${pid}) - Operation not permitted\n` : `kill: (${pid}) - No such process\n`);
+  return false;
 }
 
 /** `kill` as a program (`xargs kill`, `sudo kill`): it reaches the processes `host` does. */

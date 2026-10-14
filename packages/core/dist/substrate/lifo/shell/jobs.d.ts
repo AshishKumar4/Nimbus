@@ -1,6 +1,7 @@
 import type { SessionProcessSupervisor } from '../../../runtime/session-process-supervisor.js';
 import type { VfsCred } from '../../../runtime/os-contracts.js';
 import type { CommandIdentity } from './interpreter.js';
+import type { HostSignalResult } from '../commands/system/kill.js';
 /**
  * The session's process table as a shell uses it: its jobs are processes
  * there, under the process that started them, and the work of its lines is
@@ -17,8 +18,8 @@ export interface Job {
     /** Its status, once its process has ended, however it ended. */
     readonly promise: Promise<number>;
     readonly pid: number;
-    /** Running, stopped by a stop signal, or done once its process has ended. */
-    readonly status: 'running' | 'done' | 'stopped';
+    /** Running, or done once its process has ended: nothing stops a job (JobTable.signal). */
+    readonly status: 'running' | 'done';
     /** How it ended; null while it runs. */
     readonly exitCode: number | null;
 }
@@ -65,11 +66,14 @@ export declare class JobTable {
     awaitEnd(job: Job, waiter: number): Promise<number>;
     /**
      * Deliver `signal` (a parsed name; `0` delivers nothing) to `job`, one of
-     * this table's, from `caller`: a terminating one ends its process, which
-     * stops its work; a stop or continue sets or clears its stop mark. False
-     * when kill(2)'s rule refuses `caller` (SessionProcessSupervisor.maySignal).
+     * this table's, from `caller`, as kill reports it: a terminating one ends
+     * its process, which stops its work; a continue or an ignored one does
+     * nothing to a job that runs. A stop is `unsupported`: nothing can pause a
+     * job's work (a command is not preempted), as nothing can pause a hosted
+     * process's. `not-permitted` when kill(2)'s rule refuses `caller`
+     * (SessionProcessSupervisor.maySignal).
      */
-    signal(job: Job, signal: string, caller: Readonly<VfsCred>): boolean;
+    signal(job: Job, signal: string, caller: Readonly<VfsCred>): HostSignalResult;
     fork(): JobTable;
     byPid(pid: number): Job | undefined;
     get(id: number): Job | undefined;
