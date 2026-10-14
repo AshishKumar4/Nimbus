@@ -55,4 +55,29 @@ const euro = new TextEncoder().encode('€');
   assert.equal(a.writes.join(''), '', 'nothing of a killed process reaches the terminal after it ends');
 }
 
+{
+  // Killed while its output is held: the output held before its end is
+  // published before the end, and decodes with the bytes before it. The
+  // gate holds the continuation, then everything after it (the published
+  // end), each until let go.
+  const a = session();
+  const pid = a.host.processes.spawn('server', [], '/home/user', { longRunning: true }).pid;
+  const gate = (() => { let release; const promise = new Promise((resolve) => { release = resolve; }); return { promise, release }; });
+  const continuationGate = gate();
+  const endGate = gate();
+  let holding = null;
+  a.host.processes.setOutputGate({ before: (p) => (p === pid ? holding : null) });
+  await _rpcStdout(a.host, pid, euro.subarray(0, 1));
+  holding = continuationGate.promise;
+  const continuation = _rpcStdout(a.host, pid, euro.subarray(1));
+  holding = endGate.promise;
+  a.host.processes.kill(pid);
+  continuationGate.release();
+  await continuation;
+  assert.equal(a.writes.join(''), '€', `the held continuation decodes with its first byte: ${JSON.stringify(a.writes)}`);
+  holding = null;
+  endGate.release();
+  for (let i = 0; i < 5; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 console.log('terminal-tee-decoders-per-session: ok');

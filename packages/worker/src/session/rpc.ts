@@ -1084,12 +1084,18 @@ function decodeForTerminal(self: ProcessRpcHost, pid: number, stream: 'stdout' |
   let decoders = terminalTeeDecoders.get(self.processes);
   if (decoders === undefined) terminalTeeDecoders.set(self.processes, decoders = new StreamTextDecoders());
   const key = `${pid}:${stream}`;
-  if (!decoders.has(key)) {
-    // Only a running process is mirrored (shouldMirrorProcessOutputToShell), so it has an end to come.
+  const first = !decoders.has(key);
+  const text = decoders.decode(key, data);
+  if (first) {
+    // Forgotten once the output before the process's end is delivered (the
+    // end is published after it), so output held behind the end still
+    // decodes with what came before it.
     const session = decoders;
-    self.processes.subscribeTerminal(pid, () => { session.drop(key); });
+    const retire = (): void => { void self.processes.releaseOutput(pid, () => { session.drop(key); }); };
+    if (self.processes.get(pid)?.state === 'running') self.processes.subscribeTerminal(pid, retire);
+    else retire();
   }
-  return decoders.decode(key, data);
+  return text;
 }
 
 /** What `pid`'s terminal tee still holds of `stream`, flushed; the decoder forgotten. */
