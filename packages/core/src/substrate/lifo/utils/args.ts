@@ -36,17 +36,29 @@ export type ScanEvent =
   | { readonly kind: 'unwanted'; readonly key: string; readonly option: string; readonly value: string };
 
 /**
- * `args` scanned as GNU getopt_long scans them, permuting: options and
- * operands may interleave, `--` ends the options, `-` is an operand. A
- * cluster (`-cz`) is its letters; a letter that takes an argument takes the
- * rest of its word or the next word (`-k2`, `-k 2`). A long option is its
- * name, or with `abbreviations` an unambiguous prefix of one (`--coun`); its
- * argument follows `=` or, when required, is the next word.
+ * How a scan reads its words: with `abbreviations`, a long option may be an
+ * unambiguous prefix of its name; with `stopAtOperand`, the first operand
+ * ends the options, as an optstring that begins with `+` makes GNU's (env's,
+ * whose command takes the options after it).
+ */
+export interface ScanOptions {
+  readonly abbreviations?: boolean;
+  readonly stopAtOperand?: boolean;
+}
+
+/**
+ * `args` scanned as GNU getopt_long scans them, permuting unless
+ * `stopAtOperand`: options and operands may interleave, `--` ends the
+ * options, `-` is an operand. A cluster (`-cz`) is its letters; a letter that
+ * takes an argument takes the rest of its word or the next word (`-k2`,
+ * `-k 2`). A long option is its name, or with `abbreviations` an unambiguous
+ * prefix of one (`--coun`); its argument follows `=` or, when required, is
+ * the next word.
  */
 export function* scanOptions(
   args: readonly string[],
   spec: GetoptSpec,
-  { abbreviations = true }: { abbreviations?: boolean } = {},
+  { abbreviations = true, stopAtOperand = false }: ScanOptions = {},
 ): Generator<ScanEvent> {
   const takesArgument = (letter: string) => spec.short[spec.short.indexOf(letter) + 1] === ':';
   for (let i = 0; i < args.length; i++) {
@@ -55,7 +67,11 @@ export function* scanOptions(
       for (const rest of args.slice(i + 1)) yield { kind: 'operand', value: rest };
       return;
     }
-    if (!arg.startsWith('-') || arg === '-') { yield { kind: 'operand', value: arg }; continue; }
+    if (!arg.startsWith('-') || arg === '-') {
+      if (!stopAtOperand) { yield { kind: 'operand', value: arg }; continue; }
+      for (const rest of args.slice(i)) yield { kind: 'operand', value: rest };
+      return;
+    }
 
     if (arg.startsWith('--')) {
       const eq = arg.indexOf('=');
@@ -98,12 +114,13 @@ export type GetoptEvent =
   | { readonly kind: 'error'; readonly message: string };
 
 /**
- * `args` as GNU getopt_long reads them (scanOptions with abbreviations): the
- * scan ends at the first option it cannot take, with getopt's own
- * diagnostic, which the command prefixes with its name.
+ * `args` as GNU getopt_long reads them (scanOptions with abbreviations, and
+ * `stopAtOperand` as given): the scan ends at the first option it cannot
+ * take, with getopt's own diagnostic, which the command prefixes with its
+ * name.
  */
-export function* getopt(args: readonly string[], spec: GetoptSpec): Generator<GetoptEvent> {
-  for (const event of scanOptions(args, spec)) {
+export function* getopt(args: readonly string[], spec: GetoptSpec, { stopAtOperand = false }: { stopAtOperand?: boolean } = {}): Generator<GetoptEvent> {
+  for (const event of scanOptions(args, spec, { stopAtOperand })) {
     switch (event.kind) {
       case 'option':
       case 'operand':
