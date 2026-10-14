@@ -265,6 +265,27 @@ for (const HOME of ['/usr/lib/nimbus/clang/x/share/clang/sysroot', '/usr/lib/nim
 }
 console.log('  a home is not configured inside the system\'s own stores');
 
+// ── a home is not made through a link ─────────────────────────────────────
+// Root makes the home and hands it to the user: through a link the user made
+// (into the runtime store, the kernel's /.nimbus, or anywhere), that would
+// hand the user the directory it leads to. Such a HOME is refused, and
+// nothing is made or handed over.
+for (const [target, under] of [['/usr/lib/nimbus', 'clang/x/share/clang/sysroot'], ['/.nimbus', 'facet-images'], ['/etc', 'skel']]) {
+  const db = new Database(':memory:');
+  const first = await open(db);
+  first.vfs.as(CRED_SESSION_USER).symlink(target, 'home/user/alias');
+  const kernel = first.vfs.as(CRED_KERNEL);
+  if (target === '/.nimbus' && kernel.statIfPresent('.nimbus', false) === null) kernel.mkdir('.nimbus', { mode: 0o755 });
+  const HOME = `/home/user/alias/${under}`;
+  await assert.rejects(open(db, { env: { HOME } }), /HOME.*link/, `HOME=${HOME} through a link to ${target} is refused`);
+  const reached = target.slice(1) + '/' + under;
+  const made = kernel.statIfPresent(reached, false);
+  assert.ok(made === null || made.uid === 0, `nothing below ${target} is made the user's: ${JSON.stringify(made)}`);
+  assert.equal(kernel.lstat(target.slice(1)).uid, 0, `${target} stays root's`);
+  db.close();
+}
+console.log('  a home is not made through a link');
+
 // ── an install is not written through a directory in its tree a user owns ──
 {
   // As one handed to a user earlier (only root could have): a home there.
