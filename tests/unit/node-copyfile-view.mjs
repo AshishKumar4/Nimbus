@@ -76,6 +76,33 @@ await runScenarios(import.meta.path, {
     assert.equal(fs.readFileSync(`${A}/dst`, 'utf8'), 'B');
   },
 
+  async 'a destination link retargeted while the copy is on its way: the old target keeps its bytes'() {
+    // The session follows the destination's link when it copies: a peer has pointed it elsewhere by then.
+    let hold = false;
+    let box;
+    box = await boot((forward) => ({
+      writeBatchStream: async (...args) => {
+        if (hold) {
+          hold = false;
+          box.authority.kfs.unlink('home/user/app/d');
+          box.authority.kfs.symlink('B', 'home/user/app/d');
+        }
+        return forward('writeBatchStream', args);
+      },
+    }), (authority) => {
+      authority.kfs.writeFile('home/user/app/src', 'S');
+      authority.kfs.writeFile('home/user/app/A', 'A-orig');
+      authority.kfs.writeFile('home/user/app/B', 'B-orig');
+      authority.kfs.symlink('A', 'home/user/app/d');
+    });
+    const { fs } = box.probe;
+    assert.deepEqual([fs.readFileSync(`${A}/src`, 'utf8'), fs.readFileSync(`${A}/A`, 'utf8')], ['S', 'A-orig']);
+    hold = true;
+    await fs.promises.copyFile(`${A}/src`, `${A}/d`);
+    assert.equal(fs.readFileSync(`${A}/A`, 'utf8'), 'A-orig', 'the old target is untouched');
+    assert.equal(await fs.promises.readFile(`${A}/B`, 'utf8'), 'S', 'the copy landed where the link pointed when it was made');
+  },
+
   async 'a copy and its source are each their own: appends to both keep each'() {
     const box = await boot();
     const { fs } = box.probe;
