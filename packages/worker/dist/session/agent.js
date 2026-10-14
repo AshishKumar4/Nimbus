@@ -25,6 +25,19 @@ const MESSAGES_KEY = 'nimbus:agent:messages';
 const GENERATION_KEY = 'nimbus:agent:generation';
 /** A message id a client may choose: what `crypto.randomUUID()` answers. */
 const MESSAGE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/**
+ * The sends this conversation took under their clients' ids, oldest first:
+ * each id with its text's SHA-256. They outlive the stored rows, which keep
+ * only the last MAX_STORED_MESSAGES, and are cleared with the conversation.
+ */
+const RECEIPTS_KEY = 'nimbus:agent:receipts';
+/**
+ * How many receipts are kept. A browser sends again only its one send whose
+ * answer never came back, when its user asks: 512 sends is over six times
+ * what the stored rows can hold (80), and the list, an id and a digest
+ * each, stays one storage value of about 45 KiB.
+ */
+const MAX_RECEIPTS = 512;
 const STATE_COOKIE = '__Host-nimbus_agent_oauth_state';
 const STATE_COOKIE_PURPOSE = 'nimbus-agent-oauth-state';
 const MAX_STORED_MESSAGES = 80;
@@ -32,7 +45,10 @@ const MAX_TOOL_RESULT_CHARS = 8000;
 const STREAMING_TEXT_FLUSH_MS = 500;
 const STREAMING_TEXT_FLUSH_BYTES = 1024;
 const activeAssistantMessages = new WeakMap();
-/** The user messages whose turns are running in this isolate. */
+/**
+ * The turns running in this isolate, each by its conversation's generation
+ * and user message: the producer that answers it, the one that ends it.
+ */
 const activeTurns = new WeakMap();
 const SYSTEM_PROMPT = [
     'You are Nimbus Agent, an autonomous software builder inside a persistent Nimbus cloud dev sandbox.',
@@ -263,43 +279,73 @@ async function agentChat(self, request, url) {
             code: 'E_AGENT_AI_NOT_CONFIGURED',
         }, 409);
     }
+    // Its receipt: the id, and the text's digest that tells a repeat from
+    // another message under the same id.
+    const send = id === undefined ? undefined : {
+        id,
+        digest: base64Url(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)))),
+    };
     const turn = await changeConversation(self, async (messages, generation) => {
         recoverOrphanedTurns(self, messages);
-        const sent = id === undefined ? undefined : messages.find((message) => message.id === id);
-        if (sent !== undefined && (sent.role !== 'user' || sent.content !== text)) {
+        const receipts = new Map(send === undefined ? [] : await self.ctx.storage.get(RECEIPTS_KEY) ?? []);
+        const running = activeTurns.get(self) ?? new Map();
+        const receipt = send === undefined ? undefined : receipts.get(send.id);
+        // An id is one message's: a send's whose receipt holds another text, a
+        // stored message's, or an answer's announced before its first checkpoint.
+        if (send !== undefined && (receipt === undefined
+            ? messages.some((message) => message.id === send.id) || activeAssistantMessages.get(self)?.has(send.id) === true
+            : receipt !== send.digest)) {
             return json({ error: 'the message id is taken by another message', code: 'E_AGENT_MESSAGE_ID_TAKEN' }, 409);
         }
         let userMessage;
-        if (retry || sent !== undefined) {
-            // Re-run the last user turn, or the repeated one: drop the trailing
-            // assistant answer (if any) and stream a fresh one. No duplicate user
-            // message is stored.
-            const answer = messages[messages.length - 1]?.role === 'assistant' ? messages[messages.length - 1] : null;
-            const last = messages[messages.length - (answer === null ? 1 : 2)];
-            const target = sent ?? last;
-            if (!target || target.role !== 'user')
+        let receipted = null;
+        if (retry || receipt !== undefined) {
+            // Re-run the last user turn, or the repeated one: drop its own answer
+            // (if any) and stream a fresh one. No duplicate user message is stored.
+            let asked = messages.length - 1;
+            while (asked >= 0 && messages[asked].role !== 'user')
+                asked -= 1;
+            // The last question, while the conversation ends at its turn: nothing
+            // after it but answers.
+            const last = asked >= 0 && messages.slice(asked + 1).every((message) => message.role === 'assistant')
+                ? messages[asked]
+                : undefined;
+            const targetId = send?.id ?? last?.id;
+            if (targetId === undefined)
                 return json({ error: 'nothing to retry', code: 'E_AGENT_NOTHING_TO_RETRY' }, 400);
             // Its answer is still being written: a second would stand beside it.
-            if (activeTurns.get(self)?.has(target.id))
+            if (running.has(turnKey(generation, targetId)))
                 return json({ error: 'the turn is still running', code: 'E_AGENT_TURN_RUNNING' }, 409);
+            const answer = answerIndex(messages, targetId);
             // A repeated send is answered again only while it is the last turn
-            // and its answer is missing or interrupted; otherwise it is answered
-            // with the conversation, as it is.
-            if (target !== last || (sent !== undefined && answer !== null && !isInterruptedMessage(answer))) {
+            // and its own answer is missing or interrupted; otherwise (trimmed off
+            // the conversation, too) it is answered with the conversation, as it is.
+            if (last === undefined || last.id !== targetId
+                || (receipt !== undefined && answer >= 0 && !isInterruptedMessage(messages[answer]))) {
                 return conversationResponse(messages, body?.stream !== false);
             }
-            if (answer !== null)
-                messages.pop();
-            userMessage = target;
+            if (answer >= 0)
+                messages.splice(answer, 1);
+            userMessage = last;
         }
         else {
-            userMessage = makeMessage('user', text, id);
+            // A turn still running under this id, its receipt since dropped,
+            // would find its question again and write its answer back.
+            if (send !== undefined && running.has(turnKey(generation, send.id))) {
+                return json({ error: 'the turn is still running', code: 'E_AGENT_TURN_RUNNING' }, 409);
+            }
+            userMessage = makeMessage('user', text, send?.id);
             messages.push(userMessage);
+            if (send !== undefined) {
+                receipts.set(send.id, send.digest);
+                receipted = self.ctx.storage.put(RECEIPTS_KEY, [...receipts].slice(-MAX_RECEIPTS));
+            }
         }
-        await saveMessages(self, messages);
-        const running = activeTurns.get(self) ?? new Set();
-        activeTurns.set(self, running.add(userMessage.id));
-        return { generation, messages: structuredClone(messages), userMessage };
+        // No await between the receipt's put and the message's: one write.
+        await Promise.all([receipted, saveMessages(self, messages)]);
+        const started = { generation, messages: structuredClone(messages), userMessage };
+        activeTurns.set(self, running.set(turnKey(generation, userMessage.id), started));
+        return started;
     });
     if (turn instanceof Response)
         return turn;
@@ -326,6 +372,7 @@ async function agentChatJson(self, turn) {
         const assistantMessage = makeMessage('assistant', result.text || 'Done.');
         assistantMessage.parts = result.parts;
         assistantMessage.status = 'complete';
+        assistantMessage.replyTo = turn.userMessage.id;
         const conversation = await checkpointTurn(self, turn, assistantMessage);
         return json({
             ok: true,
@@ -385,6 +432,7 @@ function agentChatStream(self, turn) {
                 createdAt: assistantCreatedAt,
                 parts: structuredClone(parts),
                 status,
+                replyTo: userMessage.id,
                 ...reason,
             });
             const enqueueStreamingPersistence = () => {
@@ -492,6 +540,7 @@ function agentChatStream(self, turn) {
                     createdAt: assistantCreatedAt,
                     parts: structuredClone(parts),
                     status: 'complete',
+                    replyTo: userMessage.id,
                 };
                 const conversation = await checkpointTurn(self, turn, assistantMessage);
                 emit({
@@ -974,12 +1023,29 @@ function recoverOrphanedTurns(self, messages) {
     }
     return recovered;
 }
-/** `turn` no longer running. */
+/** Where `activeTurns` holds the turn answering `userMessageId` in the conversation of `generation`. */
+function turnKey(generation, userMessageId) {
+    return `${generation}:${userMessageId}`;
+}
+/** `turn` no longer running: its own record released, never another producer's. */
 function endTurn(self, turn) {
     const running = activeTurns.get(self);
-    running?.delete(turn.userMessage.id);
+    const key = turnKey(turn.generation, turn.userMessage.id);
+    if (running?.get(key) === turn)
+        running.delete(key);
     if (running?.size === 0)
         activeTurns.delete(self);
+}
+/**
+ * Where `messages` holds the answer to the user message `id`: the assistant
+ * message that names it or, stored before answers named their question,
+ * the first one after it with no other question between. -1 for none.
+ */
+function answerIndex(messages, id) {
+    const asked = messages.findIndex((message) => message.id === id);
+    return messages.findIndex((message, index) => message.role === 'assistant' && (message.replyTo === undefined
+        ? asked >= 0 && index > asked && messages.slice(asked + 1, index).every((between) => between.role !== 'user')
+        : message.replyTo === id));
 }
 /**
  * The conversation's changes, one at a time per session: each reads the
@@ -1017,6 +1083,7 @@ function checkpointTurn(self, turn, message) {
 function clearConversation(self) {
     return changeConversation(self, async (_messages, generation) => {
         await self.ctx.storage.delete(MESSAGES_KEY);
+        await self.ctx.storage.delete(RECEIPTS_KEY);
         await self.ctx.storage.put(GENERATION_KEY, generation + 1);
     });
 }
