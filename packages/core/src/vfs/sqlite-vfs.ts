@@ -2897,8 +2897,13 @@ export class SqliteVFS {
 
   private now(): number { return Date.now(); }
 
+  /**
+   * A BLOB as a plain Uint8Array over the port's bytes: a subclass (a Node
+   * Buffer, which a better-sqlite3-style port answers) slices to a view, not
+   * a copy, so a read's bytes would be the cache's.
+   */
   private blobToUint8Array(blob: unknown): Uint8Array {
-    if (blob instanceof Uint8Array) return blob;
+    if (blob instanceof Uint8Array) return blob.constructor === Uint8Array ? blob : new Uint8Array(blob.buffer, blob.byteOffset, blob.byteLength);
     if (blob instanceof ArrayBuffer) return new Uint8Array(blob);
     if (ArrayBuffer.isView(blob)) return new Uint8Array(blob.buffer, blob.byteOffset, blob.byteLength);
     return new Uint8Array(0);

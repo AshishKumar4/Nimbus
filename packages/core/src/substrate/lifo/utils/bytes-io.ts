@@ -3,7 +3,8 @@
  * bytes: a byte that is not valid UTF-8 passes through unchanged. Decoding
  * with TextDecoder would turn it into U+FFFD, three different bytes.
  */
-import type { ProcessView } from '../../../runtime/process-files.js';
+import { readToEnd, type ProcessView } from '../../../runtime/process-files.js';
+import { syscallError } from '../../../vfs/vfs-error.js';
 import type { CommandInputStream } from '../commands/types.js';
 import { resolve } from './path.js';
 import { direntTypeOfStat } from '../../../vfs/dirent-type.js';
@@ -64,47 +65,22 @@ export async function* inputChunks(
     for (let text = await stdin.read(); text !== null; text = await stdin.read()) yield encodeLossless(text);
     return;
   }
+  // One description of the operand from the first byte to a read that
+  // answers none (its end), closed however the reader stops: the bytes are
+  // one file's, the one the open found, whatever its name names after.
   const path = resolve(ctx.cwd, operand);
-  const stat = await ctx.vfs.stat(path);
-  if (stat === null) throw Object.assign(new Error(`${operand}: No such file or directory`), { code: 'ENOENT' });
-  if (stat.type === 'directory') throw Object.assign(new Error(`${operand}: Is a directory`), { code: 'EISDIR' });
-  const characterDevice = direntTypeOfStat(stat) === 'character';
-  if (stat.size === 0 && (!characterDevice || !slice)) {
-    // Empty, a file whose size says nothing (a synthesized /proc entry), or a
-    // device read to its end: read whole.
-    const bytes = await ctx.vfs.readFile(path);
-    if (bytes.length > 0) yield bytes;
-    return;
-  }
-  if (characterDevice) {
-    // A device (/dev/zero) for as long as its slice reader keeps asking, which is why this is a generator.
-    for (let offset = 0; ; ) {
-      const chunk = await ctx.vfs.readRange(path, offset, fileReadSize);
-      if (chunk.length === 0) return;
-      yield chunk;
-      offset += chunk.length;
-    }
-  }
-  // The bytes are one file's, whatever its name names after. A file one read
-  // takes whole is read in that one read; a larger one through one open
-  // description, to a short read (its end), closed however the reader stops.
-  let offset = 0;
-  if (stat.size < fileReadSize) {
-    const chunk = await ctx.vfs.readRange(path, 0, fileReadSize);
-    if (chunk.length > 0) yield chunk;
-    if (chunk.length < fileReadSize) return;
-    offset = chunk.length;
-  }
   const file = await ctx.vfs.open(path, { read: true });
   try {
-    // Grown past one read since its stat: the rest is that file's, if the name still names it.
-    if (offset > 0 && (file.stat.ino !== stat.ino || file.stat.dev !== stat.dev)) return;
-    for (;;) {
-      const chunk = await file.read(fileReadSize, offset);
-      if (chunk.length > 0) yield chunk;
-      if (chunk.length < fileReadSize) return;
-      offset += chunk.length;
+    if (file.stat.type === 'directory') throw syscallError('EISDIR', 'read', path);
+    if (direntTypeOfStat(file.stat) === 'character' && !slice) {
+      // A reader that wants the operand to its end asks the device for all of
+      // it, which the device answers: /dev/null is empty, and an endless
+      // device (/dev/zero) refuses.
+      const bytes = await ctx.vfs.readFile(path);
+      if (bytes.length > 0) yield bytes;
+      return;
     }
+    yield* readToEnd(file, fileReadSize);
   } finally {
     await file.close();
   }

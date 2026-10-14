@@ -1493,7 +1493,7 @@ export class ProcessView implements VFS {
    */
   async open(path: string, flags: RuntimeOpenFlags): Promise<ProcessFile> {
     const opened = await this.call('open', path, () => this.fs.open(path, flags));
-    return new ProcessFile(this.fs, path, opened.id, vfsStatOf(opened.stat));
+    return new ProcessFile(this.fs, path, opened.id, vfsStatOf(opened.stat), flags.write === true || flags.append === true);
   }
 
   /** Append through an O_APPEND descriptor, so concurrent appenders never overwrite each other. */
@@ -1517,15 +1517,19 @@ export class ProcessView implements VFS {
 
 /** A process's open file description (ProcessView.open), by its descriptor; every failure is a `VfsError`. */
 export class ProcessFile {
+  #closed = false;
+
   constructor(
     private readonly fs: RecallingBridge,
     readonly path: string,
     private readonly handle: number,
     /** Its file as the open found it. */
     readonly stat: ProcessStat,
+    /** Opened to write: what it wrote is synced before it closes (withOpenFiles). */
+    readonly writes: boolean,
   ) {}
 
-  /** Up to `length` bytes at `offset`, or (null) at its position, which then moves: fewer only at the end. */
+  /** Up to `length` bytes at `offset`, or (null) at its position, which then moves: none only at the end (readToEnd). */
   async read(length: number, offset: number | null = null): Promise<Uint8Array> {
     try { return await this.fs.read(this.handle, offset, length); }
     catch (error) { throw toVfsError(error, 'read', this.path); }
@@ -1542,15 +1546,75 @@ export class ProcessFile {
     } catch (error) { throw toVfsError(error, 'write', this.path); }
   }
 
+  /** ftruncate(2): the file this description holds, whatever its name names now. */
+  async truncate(size: number): Promise<void> {
+    try { await this.fs.ftruncate(this.handle, size); }
+    catch (error) { throw toVfsError(error, 'ftruncate', this.path); }
+  }
+
   /** What the filesystem still holds for its file, written (fsync): a write it could not make fails here. */
   async sync(): Promise<void> {
     try { await this.fs.fsync(this.handle); }
     catch (error) { throw toVfsError(error, 'fsync', this.path); }
   }
 
+  /** Closed once, whoever closes it first: a later close does nothing. */
   async close(): Promise<void> {
+    if (this.#closed) return;
+    this.#closed = true;
     try { await this.fs.close(this.handle); }
     catch (error) { throw toVfsError(error, 'close', this.path); }
+  }
+}
+
+/**
+ * `file`'s bytes from `from`, `size` at a time, to a read that answers none
+ * (its end: a read may answer fewer bytes than it asks and the file go on),
+ * or until `limit` bytes.
+ */
+export async function* readToEnd(file: ProcessFile, size: number, { from = 0, limit = Number.POSITIVE_INFINITY }: { from?: number; limit?: number } = {}): AsyncGenerator<Uint8Array> {
+  for (let done = 0; done < limit;) {
+    const chunk = await file.read(Math.min(size, limit - done), from + done);
+    if (chunk.length === 0) return;
+    yield chunk;
+    done += chunk.length;
+  }
+}
+
+/** How withOpenFiles' `use` opens a description it holds. */
+export type OpenFile = (path: string, flags: RuntimeOpenFlags) => Promise<ProcessFile>;
+
+/**
+ * `use`, with every description it opens through `open` closed when it ends,
+ * however it ends: one opened to write synced first, then closed whether the
+ * sync succeeded or not. What a sync or a close fails with is told to
+ * `failed`, and the rest are closed all the same, also when `failed` throws.
+ */
+export async function withOpenFiles<T>(
+  view: ProcessView,
+  use: (open: OpenFile) => Promise<T>,
+  failed: (file: ProcessFile, error: unknown) => Promise<void>,
+): Promise<T> {
+  const opened: ProcessFile[] = [];
+  try {
+    return await use(async (path, flags) => {
+      const file = await view.open(path, flags);
+      opened.push(file);
+      return file;
+    });
+  } finally {
+    for (const file of opened) {
+      try {
+        try {
+          if (file.writes) await file.sync();
+        } finally {
+          await file.close();
+        }
+      } catch (error) {
+        // A report that cannot be made leaves no other description open.
+        await failed(file, error).catch(() => undefined);
+      }
+    }
   }
 }
 

@@ -9,7 +9,11 @@ published independently in the `@nimbus-sh` npm scope.
   `grep` and the rest) open each file once, as their GNU tools do. If
   another command moved the file aside and a new file took its name while
   they ran, the rest of the input went to, or came from, the new file.
-  `tee` now reports a file it cannot write once, and writes it no more.
+  They read a file to its end even where a mount answers a read with less
+  than it asked, and `dd` truncates the file it opened. `tee` now reports a
+  file it cannot write once, and writes it no more; `tee` and `dd` close
+  every file they open, also when a write, a sync or their own error
+  report fails.
 - Fixed (Node `fs`): `fs.cpSync`, `fs.promises.cp` and `fs.cp` are Node's
   own `cp`, run over Nimbus's `fs`, so they answer as Node 22 does. The async
   forms took a file the program had not read for a directory (EISDIR), and
