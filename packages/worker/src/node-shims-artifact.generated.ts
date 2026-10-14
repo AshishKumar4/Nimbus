@@ -10,9 +10,9 @@
  */
 
 /** dist/runtime/node-shims.js generateShimsCode() */
-export const NODE_SHIMS_ENTRY: string = "/_assets/runtime/node-shims-55aa6d4a542fff82.js";
-export const NODE_SHIMS_BUILD_ID: string = "55aa6d4a542fff82";
-export const NODE_SHIMS_SHA256: string = "55aa6d4a542fff8269cae76171ae2e867f898002892f48fa5d90959b2bb49914";
+export const NODE_SHIMS_ENTRY: string = "/_assets/runtime/node-shims-f963c6471e698842.js";
+export const NODE_SHIMS_BUILD_ID: string = "f963c6471e698842";
+export const NODE_SHIMS_SHA256: string = "f963c6471e698842c8b22fbba7876a7a36055e320679215165152f55c516dc06";
 
 /** @nimbus-sh/core dist/_shared/vfs-write-ledger.js VFS_WRITE_LEDGER_SOURCE */
 export const VFS_WRITE_LEDGER_ENTRY: string = "/_assets/runtime/vfs-write-ledger-546d1e91e06e032a.js";
@@ -45,14 +45,14 @@ export const JS_PARSER_BUILD_ID: string = "c8d022179f0f679e";
 export const JS_PARSER_SHA256: string = "c8d022179f0f679e691a2a5e721f967bf9b9711f8bbf82c2d2371cde49258907";
 
 /** dist/runtime/node-lib-module.js generateNodeLibModule() */
-export const NODE_LIB_ENTRY: string = "/_assets/runtime/node-lib-a60c3bc402bed8e6.js";
-export const NODE_LIB_BUILD_ID: string = "a60c3bc402bed8e6";
-export const NODE_LIB_SHA256: string = "a60c3bc402bed8e6df1cc1387d7699f4c1bf26ddd4425ebe8d68d94beb016b52";
+export const NODE_LIB_ENTRY: string = "/_assets/runtime/node-lib-598ec490970c75cf.js";
+export const NODE_LIB_BUILD_ID: string = "598ec490970c75cf";
+export const NODE_LIB_SHA256: string = "598ec490970c75cfc6b2b194f10ba593da9d8c53fc3c617bc578c3c383de32fa";
 
 /** dist/runtime/node-lib-module.js generateNodeLibRestModule() */
-export const NODE_LIB_REST_ENTRY: string = "/_assets/runtime/node-lib-rest-f11f64906eddd5c3.js";
-export const NODE_LIB_REST_BUILD_ID: string = "f11f64906eddd5c3";
-export const NODE_LIB_REST_SHA256: string = "f11f64906eddd5c3b42a6b1e9dd04327ef04b5e2344e3f6f2bc1534321b3eacf";
+export const NODE_LIB_REST_ENTRY: string = "/_assets/runtime/node-lib-rest-b8206cd473cf8aa6.js";
+export const NODE_LIB_REST_BUILD_ID: string = "b8206cd473cf8aa6";
+export const NODE_LIB_REST_SHA256: string = "b8206cd473cf8aa61b4f76ca740db673786e49dfbab3e35bf000e82749d45bef";
 
 /** dist/runtime/node-lib-module.js generateNodeDnsModule() */
 export const NODE_DNS_ENTRY: string = "/_assets/runtime/node-dns-cb7f3315fd57bcc8.js";

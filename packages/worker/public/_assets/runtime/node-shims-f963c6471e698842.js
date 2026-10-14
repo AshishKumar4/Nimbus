@@ -191,6 +191,7 @@ var nodeErrorMessages = {
     return message === void 0 ? suffix : `${message}
 ${suffix}`;
   }, Error],
+  ERR_INCOMPATIBLE_OPTION_PAIR: ['Option "%s" cannot be used in combination with option "%s"', TypeError],
   ERR_INVALID_IP_ADDRESS: ["Invalid IP address: %s", TypeError],
   ERR_INVALID_ARG_TYPE: [invalidArgTypeMessage, TypeError],
   ERR_DNS_SET_SERVERS_FAILED: [(error, servers) => `c-ares failed to set servers: "${error}" [${inspectValue(servers, {})}]`, Error],
@@ -231,6 +232,18 @@ ${suffix}`;
   ERR_UNKNOWN_SIGNAL: ["Unknown signal: %s", TypeError],
   ERR_WORKER_UNSUPPORTED_OPERATION: ["%s is not supported in workers", TypeError]
 };
+var nodeSystemErrorPrefixes = {
+  ERR_FS_CP_DIR_TO_NON_DIR: "Cannot overwrite non-directory with directory",
+  ERR_FS_CP_EEXIST: "Target already exists",
+  ERR_FS_CP_EINVAL: "Invalid src or dest",
+  ERR_FS_CP_FIFO_PIPE: "Cannot copy a FIFO pipe",
+  ERR_FS_CP_NON_DIR_TO_DIR: "Cannot overwrite directory with non-directory",
+  ERR_FS_CP_SOCKET: "Cannot copy a socket file",
+  ERR_FS_CP_SYMLINK_TO_SUBDIRECTORY: "Cannot overwrite symlink in subdirectory of self",
+  ERR_FS_CP_UNKNOWN: "Cannot copy an unknown file type",
+  ERR_FS_EISDIR: "Path is a directory",
+  ERR_SYSTEM_ERROR: "A system error occurred"
+};
 function nodeErrorCodeConstructor(code, message, Base) {
   const make = function(...args) {
     if (typeof message === "string") return made(Base, code, formatNodeMessage(message, args), void 0, make);
@@ -241,16 +254,25 @@ function nodeErrorCodeConstructor(code, message, Base) {
   Object.defineProperty(make, "name", { value: "NodeError" });
   return make;
 }
-var nodeErrorCodes = Object.fromEntries(Object.entries(nodeErrorMessages).map(([code, [message, Base, ...others]]) => {
-  const constructor = nodeErrorCodeConstructor(code, message, Base);
-  constructor.HideStackFramesError = constructor;
-  for (const Other of others) {
-    const other = nodeErrorCodeConstructor(code, message, Other);
-    other.HideStackFramesError = other;
-    constructor[Other.name] = other;
-  }
-  return [code, constructor];
-}));
+var nodeErrorCodes = Object.fromEntries([
+  ...Object.entries(nodeErrorMessages).map(([code, [message, Base, ...others]]) => {
+    const constructor = nodeErrorCodeConstructor(code, message, Base);
+    constructor.HideStackFramesError = constructor;
+    for (const Other of others) {
+      const other = nodeErrorCodeConstructor(code, message, Other);
+      other.HideStackFramesError = other;
+      constructor[Other.name] = other;
+    }
+    return [code, constructor];
+  }),
+  ...Object.entries(nodeSystemErrorPrefixes).map(([code, prefix]) => {
+    const constructor = function(context) {
+      return nodeSystemError(code, prefix, context);
+    };
+    constructor.HideStackFramesError = constructor;
+    return [code, constructor];
+  })
+]);
 function hideStackFrames(fn) {
   const wrapped = function(...args) {
     try {
@@ -5931,10 +5953,9 @@ const __fsMod = (() => {
     return readdirSync(p, opts);
   }
 
-  // fs.promises.copyFile, and fs.promises.cp of a file: the source read as
-  // fs.promises.readFile reads it, the copy written as writeFile writes it.
-  // `fresh`: `dest` is in a directory this copy just made, so nothing is there.
-  async function _copyFileAsync(src, dest, mode, fresh = false) {
+  // fs.promises.copyFile: the source read as fs.promises.readFile reads it,
+  // the copy written as writeFile writes it.
+  async function _copyFileAsync(src, dest, mode) {
     if ((Number(mode) & __fsConstants.COPYFILE_EXCL) !== 0 && await _existsAsync(dest)) {
       throw _fsErr("EEXIST", "copyfile", src, dest);
     }
@@ -5942,10 +5963,8 @@ const __fsMod = (() => {
       const data = await _readFileAsync(src);
       const from = (await _statAsync(src)).mode & 0o7777;
       let there;
-      if (!fresh) {
-        try { there = await _statAsync(dest); }
-        catch (error) { if (error?.code !== "ENOENT") throw error; }
-      }
+      try { there = await _statAsync(dest); }
+      catch (error) { if (error?.code !== "ENOENT") throw error; }
       const left = _copyLeaves(there, from);
       if (there !== undefined && !there.isDirectory() && left !== (there.mode & 0o7777)) await _chmodAsync(dest, left);
       await _writeFileAsync(dest, data, { mode: from });
@@ -6045,19 +6064,7 @@ const __fsMod = (() => {
     throw _fsErr("EINVAL", "readlink", p);
   }
 
-  async function _symlinkAsync(target, path) {
-    const supervisor = _supervisor();
-    if (supervisor) {
-      const absPath = _resolve(path);
-      await _awaitStructuralOrder(absPath);
-      // Node names the target, then the link: "symlink 'target' -> 'link'".
-      await _fsRpc(_vfsCall({ call: "symlink", path: _strip(absPath), target: String(target) }), "symlink", String(target), () => undefined, path);
-      if (typeof __resident !== "undefined") _nsOwnSet(_nsEntryName(absPath), "link", { target: String(target), settled: true });
-      _markVfsStale();
-      return;
-    }
-    throw _fsErr("ENOSYS", "symlink", String(target), path);
-  }
+  async function _symlinkAsync(target, path) { await _structuralAsync(() => _symlinkQueued(target, path, true), "symlink", path); }
 
   async function _writeFileAsync(p, data, opts) {
     const mode = _createMode(opts, "open", p);
@@ -7046,7 +7053,7 @@ const __fsMod = (() => {
       if (sync && !o.force) throw _fsErr("ENOENT", "rm", p);
     }
     if (st !== undefined && st.isDirectory() && !o.recursive) {
-      throw nodeSystemError("ERR_FS_EISDIR", "Path is a directory", { code: "EISDIR", message: "is a directory", path: String(p), syscall: "rm", errno: Number(__constantsMod.EISDIR) });
+      throw new nodeErrorCodes.ERR_FS_EISDIR({ code: "EISDIR", message: "is a directory", path: String(p), syscall: "rm", errno: Number(__constantsMod.EISDIR) });
     }
     const n = _nsEntryName(absPath);
     const prefix = n + "/";
@@ -7081,42 +7088,53 @@ const __fsMod = (() => {
   function rmSync(p, opts) { _detachStructuralMutation(_rmQueued(p, opts, true), "rm", p); }
   async function _rmAsync(p, opts) { await _rmQueued(p, opts, false); }
 
-  // ── cpSync ──
-  // A walk of the resident view; every file copy is a parked sync write that
-  // the existing write-back drains, and every directory a queued mkdir.
+  // ── symlinkSync, readlinkSync ──
+  // A link is made as mkdir makes a directory: in this view at once, its
+  // mutation queued; Node names the target, then the link ("symlink
+  // 'target' -> 'link'"). `live`: the async form, which the authority
+  // answers for a name the namespace cannot judge.
+  function _symlinkQueued(target, path, live) {
+    const absPath = _resolve(path);
+    const text = String(target);
+    _nsRequire("symlink", text, "fs.promises.symlink");
+    if (_statLadder(absPath, true) !== undefined) throw _fsErr("EEXIST", "symlink", text, path);
+    _ensureWritable(absPath, "symlink", text, live, path);
+    const k = _strip(absPath);
+    _nsOwnSet(_nsEntryName(absPath), "link", { target: text });
+    return _queueStructuralMutation(absPath, "symlink", text, () => _vfsCall({ call: "symlink", path: k, target: text }), path);
+  }
+  function symlinkSync(target, path) { _detachStructuralMutation(_symlinkQueued(target, path), "symlink", path); }
+  /** A link's target, as this view holds it: its own, or the namespace's. */
+  function readlinkSync(p, opts) {
+    const absPath = _resolve(p);
+    _nsRequire("readlink", p, "fs.promises.readlink");
+    _ensureAncestorsTraversable(absPath, "readlink", p);
+    const mount = _nsUnlisted(absPath, false, false);
+    if (mount !== null) throw _nsUnlistedErr(mount, "readlink", p, "fs.promises.readlink");
+    const found = _nsWalk(_strip(absPath), false);
+    if (found === "ELOOP") throw _fsErr("ELOOP", "readlink", p);
+    const own = found.own;
+    if (own?.absent || (own === undefined && found.row === undefined)) throw _fsErr("ENOENT", "readlink", p);
+    const target = own?.target ?? (own === undefined && Number(found.row.kind) === 2 ? String(found.row.target) : undefined);
+    if (target === undefined) throw _fsErr("EINVAL", "readlink", p);
+    return (typeof opts === "string" ? opts : opts?.encoding) === "buffer" ? __BufferMod.from(target) : target;
+  }
+
+  // ── cpSync, fs.promises.cp, fs.cp ──
+  // Node's own (lib/internal/fs/cp, vendored), over this fs: its options
+  // checked as lib/fs.js checks them.
+  function _cpArgs(src, dest, opts) {
+    const { getValidatedPath, validateCpOptions } = __nimbusNodeLib().require("internal/fs/utils");
+    const options = validateCpOptions(opts);
+    return [getValidatedPath(src, "src"), getValidatedPath(dest, "dest"), options];
+  }
   function cpSync(src, dest, opts) {
-    const o = opts || {};
-    const st = statSync(src, { throwIfNoEntry: false });
-    if (st === undefined) throw _fsErr("ENOENT", "cp", src);
-    if (typeof o.filter === "function" && !o.filter(String(src), String(dest))) return;
-    if (!st.isDirectory()) {
-      const destSt = statSync(dest, { throwIfNoEntry: false });
-      if (destSt !== undefined) {
-        if (destSt.isDirectory()) throw _fsErr("EISDIR", "cp", dest);
-        if (o.errorOnExist) {
-          throw nodeSystemError("ERR_FS_CP_EEXIST", "Target already exists", { message: String(dest) + " already exists", path: String(dest), syscall: "cp", errno: Number(__constantsMod.EEXIST), code: "EEXIST" });
-        }
-        if (o.force === false) return;
-      }
-      copyFileSync(src, dest);
-      return;
-    }
-    // Node's cpSync refuses this in C++: a plain Error with the code.
-    if (!o.recursive) {
-      const named = String(src).endsWith("/") ? String(src) : String(src) + "/";
-      throw Object.assign(new Error("Recursive option not enabled, cannot copy a directory: " + named), { code: "ERR_FS_EISDIR" });
-    }
-    // A directory it makes is its owner's alone until its entries are in, as
-    // GNU cp makes it, then takes the source's mode, as Node's cp leaves it.
-    const made = statSync(dest, { throwIfNoEntry: false }) === undefined;
-    if (made) {
-      mkdirSync(__pathMod.dirname(String(dest)), { recursive: true });
-      mkdirSync(dest, { mode: 0o700 });
-    }
-    for (const ent of readdirSync(src, { withFileTypes: true })) {
-      cpSync(__pathMod.join(String(src), ent.name), __pathMod.join(String(dest), ent.name), o);
-    }
-    if (made && (st.mode & 0o7777) !== (0o700 & ~__processUmask)) chmodSync(dest, st.mode & 0o7777);
+    const args = _cpArgs(src, dest, opts);
+    __nimbusNodeLib().require("internal/fs/cp/cp-sync").cpSyncFn(...args);
+  }
+  async function _cpAsync(src, dest, opts) {
+    const args = _cpArgs(src, dest, opts);
+    return __nimbusNodeLib().require("internal/fs/cp/cp").cpFn(...args);
   }
 
   // ── mkdtemp ──
@@ -8016,7 +8034,9 @@ const __fsMod = (() => {
   }
   function cp(src, dest, opts, cb) {
     if (typeof opts === "function") { cb = opts; opts = undefined; }
-    promises.cp(src, dest, opts).then(() => cb(null)).catch((e) => cb(e));
+    __nimbusNodeLib().require("internal/validators").validateFunction(cb, "cb");
+    const args = _cpArgs(src, dest, opts);
+    __nimbusNodeLib().require("util").callbackify(__nimbusNodeLib().require("internal/fs/cp/cp").cpFn)(...args, cb);
   }
   function truncate(p, len, cb) {
     if (typeof len === "function") { cb = len; len = 0; }
@@ -8612,60 +8632,7 @@ const __fsMod = (() => {
     lstat: (p, opts) => new Promise((res, rej) => lstat(p, opts, (e, s) => e ? rej(e) : res(s))),
     // The same local retraction and queued authority removal rmSync does.
     rm: async (p, opts) => { await _rmAsync(p, opts); },
-    cp: async (src, dest, opts) => {
-      const o = opts || {};
-      const srcAbs = _resolve(src);
-      const srcK = _strip(srcAbs);
-      const destK = _strip(_resolve(dest));
-      // A file is copied as copyFile copies it: read through the read that
-      // judges it (the session's, or readFileSync's), never from the cell
-      // held under its name, which may be a write-only file's bytes or the
-      // session's denial of the read.
-      if (_bundleLookup(srcAbs) !== undefined) { await _copyFileAsync(src, dest); return; }
-      if (!o.recursive) {
-        const err = new Error("EISDIR: cp without recursive on directory: " + src);
-        err.code = "EISDIR"; throw err;
-      }
-      // Recursive: walk the source tree (merging the local sync view with
-      // the live VFS listing so files only present in SQLite — e.g. a
-      // just-extracted template tarball — are included) and persist every
-      // file through the async bridge. Writing through _writeFileAsync —
-      // not just the local cache — is required so a subsequent async fs op
-      // (e.g. fs.promises.rename of a copied file, as create-cloudflare
-      // does for __dot__gitignore) sees the copy in the VFS instead of
-      // ENOENT. Each directory is made as mkdir makes it, so the namespace's
-      // overlay lists it for the writes beneath it.
-      // Each file is copied as copyFile copies it; a directory made here is
-      // its owner's alone until its entries are in, as GNU cp makes it, then
-      // takes the source's mode, as Node's cp leaves it. In a directory this
-      // copy made nothing is there, and nothing is looked for.
-      const made = [];
-      const makeDir = async (rel, fresh) => {
-        const at = rel ? "/" + destK + "/" + rel : "/" + destK;
-        if (!fresh && await _existsAsync(at)) return false;
-        if (!rel) await _mkdirAsync(__pathMod.dirname(at), { recursive: true });
-        await _mkdirAsync(at, { mode: 0o700 });
-        made.push([at, rel ? srcAbs + "/" + rel : srcAbs]);
-        return true;
-      };
-      const walk = async (relDir, fresh) => {
-        const absDir = relDir ? srcAbs + "/" + relDir : srcAbs;
-        const ents = await _readdirAsync(absDir, { withFileTypes: true });
-        for (const ent of ents) {
-          const rel = relDir ? relDir + "/" + ent.name : ent.name;
-          if (ent.isDirectory && ent.isDirectory()) {
-            await walk(rel, await makeDir(rel, fresh));
-          } else {
-            await _copyFileAsync(srcAbs + "/" + rel, "/" + destK + "/" + rel, undefined, fresh);
-          }
-        }
-      };
-      await walk("", await makeDir("", false));
-      for (const [at, from] of made.reverse()) {
-        const mode = (await _statAsync(from)).mode & 0o7777;
-        if (mode !== (0o700 & ~__processUmask)) await _chmodAsync(at, mode);
-      }
-    },
+    cp: (src, dest, opts) => _cpAsync(src, dest, opts),
     copyFile: (src, dest, mode) => _copyFileAsync(src, dest, mode),
     rename: async (oldP, newP) => { await _renameAsync(oldP, newP); },
     rmdir: async (p) => { await _rmdirAsync(p); },
@@ -8881,7 +8848,7 @@ const __fsMod = (() => {
     readFileSync, writeFileSync, appendFileSync, existsSync, statSync, lstatSync,
     readdirSync, mkdirSync, unlinkSync, rmdirSync, renameSync, copyFileSync,
     realpathSync, utimesSync, lutimesSync, chmodSync, chownSync, lchownSync, accessSync,
-    rmSync, cpSync, mkdtempSync, truncateSync, linkSync, opendirSync, statfsSync,
+    rmSync, cpSync, mkdtempSync, truncateSync, linkSync, opendirSync, statfsSync, symlinkSync, readlinkSync,
     openSync, closeSync, readSync, writeSync, fstatSync, ftruncateSync, fsyncSync, fdatasyncSync,
     futimesSync, fchmodSync, fchownSync, readvSync, writevSync,
     open, close, read, write, fstat, ftruncate, fsync, fdatasync, fchmod, futimes, readv, writev,
@@ -9426,7 +9393,7 @@ const __constantsMod = {
 let __nimbusNice = 0;
 // lib/os.js's ERR_SYSTEM_ERROR for a priority call libuv refused.
 function __nimbusPriorityError(syscall, code) {
-  return nodeSystemError("ERR_SYSTEM_ERROR", "A system error occurred", {
+  return new nodeErrorCodes.ERR_SYSTEM_ERROR({
     errno: -__errnoConstants[code], code, message: __nimbusErrnoDescription[code], syscall,
   });
 }
@@ -10551,6 +10518,10 @@ function __nimbusNodeLib() {
     timers: builtins.timers,
     fetch: globalThis.fetch.bind(globalThis),
     createCaresBinding: lib.createCaresBinding,
+    // Node's modules that copy (lib/internal/fs/cp) do it through this fs.
+    fs: () => builtins.fs,
+    path: __pathMod,
+    errno: __osMod.constants.errno,
     primordials,
     sources: lib.sources,
   });
