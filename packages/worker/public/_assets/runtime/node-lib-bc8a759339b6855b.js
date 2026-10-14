@@ -744,11 +744,15 @@ module.exports = {
     const status = (path, follow) => {
       try { return { stat: follow ? fs().statSync(path) : fs().lstatSync(path) }; } catch (error) { return { error }; }
     };
+    // std::filesystem::equivalent: one file, by its device and inode where
+    // both have one (a file this process made has none yet), else by where
+    // each resolves to.
     const equivalent = (a, b) => {
       const one = status(a, true);
       const two = status(b, true);
       if (one.error || two.error) return { error: one.error ?? two.error };
-      return { same: one.stat.dev === two.stat.dev && one.stat.ino === two.stat.ino };
+      if (one.stat.ino && two.stat.ino) return { same: one.stat.dev === two.stat.dev && one.stat.ino === two.stat.ino };
+      return { same: fs().realpathSync(a) === fs().realpathSync(b) };
     };
     // std::filesystem::path's parent_path and has_parent_path, on a POSIX path string.
     const parentPath = (path) => {
