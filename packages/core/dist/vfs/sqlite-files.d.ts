@@ -10,7 +10,7 @@
  * code.
  */
 import { type CredentialedVfs, type SqliteVFS } from './sqlite-vfs.js';
-import type { SyncVFS, VFS, VfsCasResult, VfsChanges, VfsCred, VfsDirent, VfsOpenFile, VfsRemoval, VfsRevision, VfsStat, VfsViewOptions, VfsWriteObserver } from './vfs.js';
+import type { SyncVFS, VFS, VfsCasResult, VfsChanges, VfsCopyOptions, VfsCred, VfsDirent, VfsOpenFile, VfsRemoval, VfsRevision, VfsStat, VfsViewOptions, VfsWriteObserver } from './vfs.js';
 import { type VfsEvent } from './events.js';
 export declare class SqliteFiles implements VFS {
     private readonly engine;
@@ -74,10 +74,7 @@ export declare class SqliteFiles implements VFS {
     chown(path: string, uid: number, gid: number): void;
     utimes(path: string, atimeMs: number, mtimeMs: number): void;
     /** Copy inside the database: rows, not bytes. */
-    copy(from: string, to: string, options?: {
-        recursive?: boolean;
-        preserve?: boolean;
-    }): number;
+    copy(from: string, to: string, options?: VfsCopyOptions): number;
     /**
      * Compare-and-write against the row's revision, in one synchronous step:
      * nothing can commit between the check and the write, because both run in

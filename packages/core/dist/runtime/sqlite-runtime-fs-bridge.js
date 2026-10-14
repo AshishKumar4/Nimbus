@@ -662,23 +662,20 @@ export class SqliteRuntimeFsBridge {
                 this.vfs.copyFile(source.path, target.path);
                 return;
             }
-            const bytes = source.mount ? source.mount.readFile(source.path) : this.vfs.readFile(source.path);
-            if (target.mount)
-                target.mount.writeFile(target.path, bytes);
-            else
-                this.vfs.writeFile(target.path, bytes);
+            // Across filesystems, the namespace's copy, from the file the source leads to (a backend that resolves its own paths follows it there).
+            this.mounted.copy(source.mount ? source.path : '/' + source.path, target.mount ? target.path : '/' + target.path, { follow: true });
         });
     }
     copyTree(from, to, options) {
         const call = { syscall: 'cp', path: from, dest: to };
         return called(call, () => {
-            const source = this.locate(from, false);
+            const source = this.locate(from, options?.follow === true);
             if (source === null)
                 throw callError('ELOOP', call);
             const target = this.locateMutation(to, false, call);
             if (source.mount || target.mount)
                 throw callError('EXDEV', call);
-            return this.vfs.copyTreeAsync(source.path, target.path, options);
+            return this.vfs.copyTreeAsync(source.path, target.path, { preserve: options?.preserve });
         }).catch((error) => { throw failure(error, call); });
     }
     /** Where the namespace places it: atomic on SQLite, a routed wave when a record lands on a mount. */

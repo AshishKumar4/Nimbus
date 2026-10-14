@@ -1041,13 +1041,10 @@ class AwaitingProcessBridge {
         });
     }
     copyFile(from, to) {
-        return this.either([from, to], () => this.bridge.copyFile(from, to), async () => this.namespace.copy((await this.path(from)), (await this.path(to)), { recursive: false }));
+        return this.either([from, to], () => this.bridge.copyFile(from, to), async () => this.namespace.copy((await this.path(from)), (await this.path(to)), { follow: true }));
     }
     copyTree(from, to, options) {
-        return this.either([from, to], () => this.bridge.copyTree(from, to, options), async () => {
-            await this.namespace.copy((await this.path(from)), (await this.path(to)), { recursive: true, preserve: options?.preserve });
-            return 0;
-        });
+        return this.either([from, to], () => this.bridge.copyTree(from, to, options), async () => this.namespace.copy((await this.path(from)), (await this.path(to)), { recursive: true, preserve: options?.preserve, follow: options?.follow }));
     }
     // ── descriptors on an asynchronous mount ─────────────────────────────
     // The scope's own descriptors (Descriptors), whose descriptions answer by
@@ -1369,11 +1366,11 @@ export class ProcessView {
     async utimes(path, atimeMs, mtimeMs, options) {
         await this.call(options?.follow === false ? 'lutime' : 'utime', path, () => this.fs.utimes(path, atimeMs, mtimeMs, { followSymlinks: options?.follow !== false }));
     }
-    /** cp: a file, or with `recursive` a tree, onto a name that is not there. */
+    /** cp: a file (a link named as the source followed), or with `recursive` a tree, onto a name that is not there. */
     async copy(from, to, options) {
         return await this.call(options?.recursive ? 'cp' : 'copyfile', from, async () => {
             if (options?.recursive)
-                return await this.fs.copyTree(from, to, { preserve: options.preserve });
+                return await this.fs.copyTree(from, to, { preserve: options.preserve, follow: options.follow });
             await this.fs.copyFile(from, to);
             return 1;
         }, to);

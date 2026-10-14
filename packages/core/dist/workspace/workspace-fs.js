@@ -108,7 +108,7 @@ export class WorkspaceFs {
     async utimes(path, atimeMs, mtimeMs, options) {
         return await this.view.utimes(this.resolve(path), atimeMs, mtimeMs, options);
     }
-    /** cp: a file, or with `recursive` a tree, onto a name that is not there. */
+    /** cp: a file (a link named as the source followed), or with `recursive` a tree, onto a name that is not there. */
     async copy(from, to, options) {
         return await this.view.copy(this.resolve(from), this.resolve(to), options);
     }

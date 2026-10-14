@@ -15,7 +15,7 @@
  * that would read it from the root.
  */
 import { type MoveOptions } from '../vfs/move.js';
-import type { VFS, VfsDirent, VfsRemoval } from '../vfs/vfs.js';
+import type { VFS, VfsCopyOptions, VfsDirent, VfsRemoval } from '../vfs/vfs.js';
 import type { ProcessStat, ProcessView } from '../runtime/process-files.js';
 export declare class WorkspaceFs implements VFS {
     private readonly view;
@@ -91,11 +91,8 @@ export declare class WorkspaceFs implements VFS {
     utimes(path: string, atimeMs: number | null | undefined, mtimeMs: number | null | undefined, options?: {
         follow?: boolean;
     }): Promise<void>;
-    /** cp: a file, or with `recursive` a tree, onto a name that is not there. */
-    copy(from: string, to: string, options?: {
-        recursive?: boolean;
-        preserve?: boolean;
-    }): Promise<number>;
+    /** cp: a file (a link named as the source followed), or with `recursive` a tree, onto a name that is not there. */
+    copy(from: string, to: string, options?: VfsCopyOptions): Promise<number>;
     /** Create the file if absent, and set its times to now (touch). */
     touch(path: string): Promise<void>;
     readFileUncached(path: string): Promise<Uint8Array>;
