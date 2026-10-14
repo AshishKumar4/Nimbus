@@ -898,6 +898,13 @@ export interface PrefetchBundleOptions {
     entryEsModule?: string;
     /** A module's static filesystem references, as the data plan reads them (collectClosureWasmImages). */
     staticRefs?: (path: string) => Promise<StaticFsRefs | null>;
+    /**
+     * The files as they are, for a program that runs its own code and only
+     * reads them (opencode's snapshot, _stageOpencodeFacet): the same files
+     * and bound, without the module pass. Nothing is compiled, and the bound
+     * charges what is carried.
+     */
+    dataOnly?: boolean;
 }
 /**
  * The working dir's config files of the tool a launch runs. The tool
@@ -928,14 +935,6 @@ export declare function toolConfigRoots(vfs: LaunchFs, cwd: string, scriptPath: 
  *
  */
 export declare function buildPrefetchBundle(vfs: LaunchFs, options: PrefetchBundleOptions): Promise<FacetVfsState>;
-/**
- * The files a launch stages, carried as they are, for a program that only
- * reads them: opencode's snapshot (_stageOpencodeFacet), whose code is its
- * own artifact. The same selection and bound as a Node launch's
- * (gatherLaunchFiles, boundLaunchFiles), without the module pass: nothing is
- * compiled, and the bound charges what is carried.
- */
-export declare function gatherDataBundle(vfs: LaunchFs, cwd: string): Promise<FacetVfsState>;
 /**
  * The evicted JavaScript modules whose text names a synchronous call: the
  * ones the data plan reads (static-fs-refs.ts, from the VFS as written).
