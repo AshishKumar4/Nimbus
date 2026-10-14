@@ -31,10 +31,6 @@ published independently in the `@nimbus-sh` npm scope.
   shares the source's stored content. The copy still has the source's mode
   exactly, and the program can read it at once if it held the source's
   bytes.
-- Changed (Node `fs`): `fs.promises.stat` and `fs.promises.lstat` answer
-  from the process's own view, without asking the session, in a directory
-  tree the process holds for its own writes, where no other process can
-  change anything.
 - Fixed: a process's recursive copy beneath a WASI preopen on a mount that
   answers asynchronously followed a link named as the source even when the
   copy did not ask to follow it.
