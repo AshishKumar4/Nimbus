@@ -14,7 +14,7 @@
  */
 import type { Errno, SyscallResult, WasiSupervisorStub } from '../wasi/types.js';
 import type { RuntimeFsBridge, VfsCred } from '../os-contracts.js';
-import type { AuthorityFd, AuthorityPreopen } from '../wasi/filesystem.js';
+import type { AuthorityFd, AuthorityPreopen, ResidentFd } from '../wasi/filesystem.js';
 
 /**
  * The errno set this scheduler answers with — the same one every Nimbus syscall
@@ -79,6 +79,8 @@ export type BashFdEntry =
   | { kind: 'stdin' | 'stdout' | 'stderr' }
   | AuthorityPreopen
   | AuthorityFd
+  // A read-only open the codec answers from a copy of the file (WASI_RESIDENT_FILE_CAP_BYTES).
+  | ResidentFd
   | { kind: 'pipe'; pipeId: number; end: 'r' | 'w' };
 
 /** A byte source that hands out at most what it holds: a pipe or the session stdin. */

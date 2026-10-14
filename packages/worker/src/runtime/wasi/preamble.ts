@@ -464,7 +464,7 @@ export function __wasiInitFS(opts: WasiInitOptions): void {
   __wasiPreopens = [];
   // A descriptor the last process left open gives its pinned bytes back to
   // the store (a warm facet's store outlives the process).
-  for (const entry of fdTable.values()) if (entry.kind === 'resident') entry.release?.();
+  for (const entry of fdTable.values()) if (entry.kind === 'resident' && 'name' in entry.hold) entry.hold.pin?.release();
   fdTable.clear();
   fdTable.set(0, { kind: 'stdin' });
   fdTable.set(1, { kind: 'stdout' });
@@ -732,11 +732,21 @@ function __wasiAllocateFd(): number { while (fdTable.has(nextFd)) nextFd++; retu
 // park therefore wedges the process forever with nothing raised anywhere,
 // which is strictly worse than failing: nothing to log, nothing to retry.
 //
-// Every import that parks on a HOST promise therefore parks against a deadline
-// set with margin below the measured floor, and on expiry resolves to EAGAIN —
-// an errno the guest's own retry logic already handles — instead of hanging.
-// That is the `parkable` list below, and it is exactly the set of imports that
-// are also Suspending-wrapped, minus one.
+// Re-measured 2026-10-13 (throwaway tw-parkceil1): a filesystem call the
+// session answered 25 s and 60 s late resumed with its answer, in a
+// foreground run (the session's startProcess in flight) and in a background
+// process past the request that started it alike. The ceiling above no
+// longer holds for a call whose answer comes.
+//
+// A call that waits on outside input parks against a deadline, and on expiry
+// resolves to EAGAIN — an errno the guest's own retry logic already handles —
+// so a peer that never answers cannot wedge it: only a socket's, a
+// listener's and a poll's, the calls POSIX lets end so (__wasiMayTimeOut).
+// Every other import in the `parkable` list (exactly the Suspending-wrapped
+// set, minus one) waits for its answer: a filesystem call has no EAGAIN
+// (mkdir(2), read(2) of a file), and the session may take longer than the
+// deadline to give one, as a first change's grant took 11 s on fe0b2ea1f and
+// CPython's os.makedirs raised BlockingIOError.
 //
 // sched_yield is the exception, and deliberately so: it is Suspending-wrapped
 // in a threads build but is NOT in `parkable`, because it does not wait on the
@@ -796,8 +806,13 @@ interface WasiParkCall { current: boolean }
 /** The call of the guard now invoking a body; null outside one (a body nothing guards answers when it can). */
 let __wasiParkCall: WasiParkCall | null = null;
 
-function withParkDeadline(fn: WasiSyscallFn): WasiSyscallFn {
+function withParkDeadline(fn: WasiSyscallFn, mayTimeOut: (args: readonly unknown[]) => boolean): WasiSyscallFn {
   return function parkGuarded(this: unknown, ...args: never[]) {
+    // Asked before the body runs: a close takes its descriptor away.
+    if (!mayTimeOut(args)) {
+      const answered = fn.apply(this, args);
+      return typeof answered === 'number' ? answered : __wasiThreadPark(answered.then(undefined, () => __WASI_EIO));
+    }
     const call: WasiParkCall = { current: true };
     const outer = __wasiParkCall;
     __wasiParkCall = call;
@@ -828,6 +843,21 @@ function withParkDeadline(fn: WasiSyscallFn): WasiSyscallFn {
     return __wasiThreadPark(guarded);
   };
 }
+
+/** Whether `fd` is a socket's or a listener's: the descriptors whose blocking calls POSIX lets end in EAGAIN. */
+function __wasiOnSocket(fd: unknown): boolean {
+  const kind = typeof fd === 'number' ? fdTable.get(fd)?.kind : undefined;
+  return kind === 'socket' || kind === 'listener';
+}
+
+/** Which parkable calls the park deadline may answer EAGAIN; any other waits for its answer (see the watchdog above). */
+const __wasiMayTimeOut: Readonly<Partial<Record<ParkableImport, (args: readonly unknown[]) => boolean>>> = {
+  sock_send: () => true, sock_recv: () => true, sock_shutdown: () => true, sock_accept: () => true, poll_oneoff: () => true,
+  fd_read: (args) => __wasiOnSocket(args[0]), fd_write: (args) => __wasiOnSocket(args[0]),
+  fd_close: (args) => __wasiOnSocket(args[0]), fd_fdstat_set_flags: (args) => __wasiOnSocket(args[0]),
+  fd_renumber: (args) => __wasiOnSocket(args[0]) || __wasiOnSocket(args[1]),
+};
+const __wasiNeverTimesOut = (): boolean => false;
 
 /**
  * A real park is also the moment a threaded process must let a peer run: the
@@ -943,7 +973,14 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
   const procParks = opts.parking !== 'none' && typeof WebAssembly !== 'undefined' && typeof WebAssembly.Suspending === 'function';
   const proc = processHost({
     fds: fdTable,
-    input: opts.stdinRead,
+    // The guest's stdin is its process's input channel, read through the
+    // supervisor it adopted; a guest with neither (a pure computation) is at
+    // its end. Every runtime on this layer gets it: CPython's, ruby's and
+    // clang's never passed a reader of their own, and read nothing.
+    input: (maxBytes) => {
+      const sup = __wasiSup, pid = __wasiFS.pid;
+      return sup?.cpReadStdin && pid ? sup.cpReadStdin(pid, 8000, undefined, maxBytes) : { data: new Uint8Array(0), ended: true };
+    },
     allocateFd: __wasiAllocateFd,
     memory: opts.getMemory,
     supervisor: () => __wasiSup,
@@ -1892,6 +1929,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     residentBytes: __wasiFS.residentFileCap,
     extension: fsImport,
     processGone: (refusal) => { __wasiProcessGone ??= refusal; },
+    duplicate: (fd) => proc.duplicate(fd),
   });
   // fd_filestat_get as answered, before the guest's table is made Suspending:
   // a Suspending function called from JS is not a wasm call, and traps.
@@ -1933,7 +1971,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
   ];
   // Applied before Suspending wraps them.
   for (const name of parkable) {
-    if (typeof imports[name] === 'function') (imports as WasiParkableTable)[name] = withParkDeadline(imports[name]);
+    if (typeof imports[name] === 'function') (imports as WasiParkableTable)[name] = withParkDeadline(imports[name], __wasiMayTimeOut[name] ?? __wasiNeverTimesOut);
   }
 
   // Where input from outside enters the guest: a socket's bytes, an accepted
@@ -1988,9 +2026,9 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     } as WasiSyscallFn;
   }
   const procImport: Record<string, (...args: number[]) => SyscallResult> = { ...proc.imports };
-  // The extension's calls park as the filesystem's do, under the same watchdog.
+  // The extension's calls park as the filesystem's do, waiting for their answers.
   const fsTable = fsImport as Record<string, WasiSyscallFn>;
-  for (const name of Object.keys(fsTable)) fsTable[name] = withParkDeadline(fsTable[name]);
+  for (const name of Object.keys(fsTable)) fsTable[name] = withParkDeadline(fsTable[name], __wasiNeverTimesOut);
   if (opts.parking !== 'none' && typeof WebAssembly !== 'undefined' && typeof WebAssembly.Suspending === 'function') {
     for (const name of Object.keys(fsTable)) fsTable[name] = new WebAssembly.Suspending(fsTable[name]) as unknown as WasiSyscallFn;
   }

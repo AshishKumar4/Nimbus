@@ -147,19 +147,21 @@ function session() {
   return { sup, control };
 }
 
-async function guest({ stdinRead } = {}) {
+/** A guest; `stdin` answers its process's input channel, as the session's cpReadStdin does. */
+async function guest({ stdin } = {}) {
   const modulePath = path.join(os.tmpdir(), `wasi-processes-${process.pid}-${Math.random().toString(16).slice(2)}.mjs`);
   writeFileSync(modulePath, `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, __wasiSupervisorOutput, fdTable };`);
   let P;
   try { P = await import(pathToFileURL(modulePath).href); } finally { rmSync(modulePath, { force: true }); }
   const { sup, control } = session();
+  // The layer reads fd 0 through the supervisor it adopted, for the pid it was given.
+  if (stdin) sup.cpReadStdin = (pid, _waitMs, _acquire, maxBytes) => { assert.equal(pid, GUEST_PID, 'the guest reads its own channel'); return stdin(maxBytes); };
   const memory = new WebAssembly.Memory({ initial: 4 });
   const stdout = [];
   P.__wasiInitFS({ root: '', preopens: [{ wasiPath: '/', vfsPath: '' }], pid: GUEST_PID });
   P.__wasiAdoptSupervisor(sup);
   const bundle = makeParkingImports(P, {
     argv: ['guest'], env: {}, getMemory: () => memory,
-    stdinRead,
     stdoutBytes: (bytes) => stdout.push(dec.decode(bytes)), stderrBytes: () => {},
   });
   const wasi = bundle.wasiImport;
@@ -246,6 +248,21 @@ async function guest({ stdinRead } = {}) {
       assert.equal(await bundle.fsImport.fd_stat(fd, at), E.SUCCESS);
       return view().getUint32(at + 64, true);
     },
+    /** A stat of `name` beneath the root preopen (fd 3), through the extension and through preview1: { errno, mode, filetype }. */
+    async pathStat(name) {
+      const at = scratch();
+      const b = enc.encode(name);
+      bytesAt().set(b, at + 2048);
+      const errno = await bundle.fsImport.path_stat(3, 1, at + 2048, b.length, at);
+      const filestat = await wasi.path_filestat_get(3, 1, at + 2048, b.length, at + 1024);
+      return { errno, mode: errno === E.SUCCESS ? view().getUint32(at + 64, true) : null, filestat, filetype: filestat === E.SUCCESS ? view().getUint8(at + 1024 + 16) : null };
+    },
+    /** preview1's fstat of `fd`: its filetype. */
+    async fdFiletype(fd) {
+      const at = scratch();
+      assert.equal(await wasi.fd_filestat_get(fd, at), E.SUCCESS);
+      return view().getUint8(at + 16);
+    },
     /** The guest exited: its host stops following its children. */
     dispose: () => bundle.procDispose(),
     /** poll_oneoff on one descriptor: { errno, events: [{ error, nbytes, hangup }] }. */
@@ -275,7 +292,7 @@ let checks = 0;
   let queued = Uint8Array.of(0, 255, 195, 169, 65);
   const requested = [];
   let closed = false;
-  const g = await guest({ stdinRead: async (maxBytes) => {
+  const g = await guest({ stdin: async (maxBytes) => {
     requested.push(maxBytes);
     const data = queued.slice(0, maxBytes);
     queued = queued.slice(maxBytes);
@@ -365,6 +382,9 @@ let checks = 0;
   assert.deepEqual((await g.poll(r)).events, [{ error: 0, nbytes: 0, hangup: true }], 'and a poll sees the hangup');
 
   assert.equal(await g.fdStatMode(r), 0o010600, 'fstat of a pipe: a FIFO');
+  // A path naming the pipe's descriptor is its stat, through either table.
+  assert.deepEqual(await g.pathStat(`dev/fd/${r}`), { errno: E.SUCCESS, mode: 0o010600, filestat: E.SUCCESS, filetype: await g.fdFiletype(r) }, '/dev/fd/N of a pipe: its fstat');
+  assert.deepEqual(await g.pathStat('dev/fd/99'), { errno: E.NOENT, mode: null, filestat: E.NOENT, filetype: null }, '/dev/fd/N of no descriptor: ENOENT');
   const [r3, w3] = g.pipe();
   await g.close(r3);
   assert.equal(await g.write(w3, 'x'), E.PIPE, 'EPIPE once every reader is gone');
@@ -586,7 +606,7 @@ let checks = 0;
 // its packet before touching RpcProperty fields, and retain output pressure.
 {
   const packet = { data: Uint8Array.of(255), ended: false };
-  const g = await guest({ stdinRead: () => ({ then(resolve) { resolve(packet); } }) });
+  const g = await guest({ stdin: () => ({ then(resolve) { resolve(packet); } }) });
   assert.deepEqual(await g.read(0,1,true), { errno:E.SUCCESS,bytes:[255] });
   let release;
   const gate = new Promise(resolve=>{release=resolve;});

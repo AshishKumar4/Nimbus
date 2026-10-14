@@ -145,6 +145,21 @@ export function openMounted(options: MountedDescriptionOptions): Awaitable<Mount
     andThen(name.hold({ read: options.flags.read, write: options.flags.write }, stat.ino ?? 0), (file) => describeMounted(options, file, stat.ino ?? 0)))));
 }
 
+/**
+ * A new description of the file `description` is on (Linux's open of
+ * /proc/self/fd/N), on its mount: the file at the name it is held by, so
+ * long as that name still holds it (ESTALE once it holds another, as a
+ * description held by its name refuses), with `options.flags`' access and an
+ * offset of its own. O_TRUNC cuts it only once it is known to be that file.
+ */
+export function reopenMounted(description: MountedFileDescription, options: Omit<MountedDescriptionOptions, 'name'>): Awaitable<MountedFileDescription> {
+  const flags = Object.freeze({ ...options.flags, create: false, exclusive: false, truncate: false });
+  return andThen(openMounted({ ...options, name: description.path(), flags }), (reopened) => {
+    if (reopened.ino !== description.ino) return andThen(reopened.close(), () => { throw options.refuse('ESTALE', 'open'); });
+    return options.flags.truncate ? andThen(reopened.truncate(0), () => reopened) : reopened;
+  });
+}
+
 /** The description of `file`, opened already (openOnMount), its number `ino`: what its descriptors share. */
 export function describeMounted(context: MountedDescriptionContext, file: HeldFile, ino: number): MountedFileDescription {
   return new MountedDescription(context, file, ino);

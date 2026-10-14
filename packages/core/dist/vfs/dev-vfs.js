@@ -9,8 +9,9 @@
  * (`head -c N`, `dd count=N`, redirections) use `readRange`.
  *
  * /dev/stdin, stdout, stderr and tty exist so `test -e` and `ls` see them;
- * the shell resolves them to the process's own descriptors before any read.
- * /dev/tcp is the WASI socket prefix, not a node here.
+ * the shell, and a WASI host (wasi/filesystem.ts namedDescriptor), resolve
+ * them to the process's own descriptors before any read. /dev/tcp is the
+ * WASI socket prefix, not a node here.
  */
 import { S_IFCHR } from './vfs.js';
 import { syscallError } from './vfs-error.js';

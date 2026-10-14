@@ -574,6 +574,26 @@ export function delegationHolder(options) {
             handles.set(id, handle);
             return { id, path: handle.path };
         },
+        reopen: (handleId, flags) => {
+            const handle = handleOf(handleId);
+            if (handle.file.through !== undefined || flags.append)
+                return undefined;
+            const entry = handle.file.detached ?? decided.get(handle.file.key) ?? store.entry(handle.file.key);
+            if (!entry)
+                throw fsError('EBADF', 'open', handle.path);
+            if (flags.create && flags.exclusive)
+                throw fsError('EEXIST', 'open', handle.path);
+            if (!modeAllows(entry, (flags.read ? 4 : 0) | (flags.write || flags.truncate ? 2 : 0), store.cred))
+                throw fsError('EACCES', 'open', handle.path);
+            const id = nextHandle--;
+            handles.set(id, { file: handle.file, readable: !!flags.read, writable: !!flags.write, append: false, position: 0, path: handle.path });
+            if (flags.truncate)
+                holder.ftruncate(id, 0);
+            return {
+                id, path: handle.path, position: 0, closed: false,
+                flags: { read: !!flags.read, write: !!flags.write, append: false, create: !!flags.create, exclusive: !!flags.exclusive, directory: false, truncate: !!flags.truncate, followSymlinks: true },
+            };
+        },
         mkdir: (key, path, mode, mask) => {
             if ((mode & 0o7000) !== 0)
                 return false;

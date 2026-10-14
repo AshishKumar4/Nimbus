@@ -59,7 +59,7 @@ export const REPLAY_OPERATION_POLICY = {
     // reservation and every other reply field remain observable and checked.
     fsStorageGrant: { kind: 'observation', args: (a) => a.slice(1), answer: (value) => omit(value, ['available']) },
     wsOpen: effect, wsPoll: read, wsSend: effect, wsClose: effect,
-    fsOpen: { kind: 'open' }, fsRead: read, fsWrite: effect, fsClose: read,
+    fsOpen: { kind: 'open' }, fsReopen: { kind: 'open' }, fsRead: read, fsWrite: effect, fsClose: read,
     // Directory prefetch owns descriptions and a lease tied to the original
     // ask. Re-running a stopped program must not replay it as a fresh read.
     fsReadDirectories: effect,
