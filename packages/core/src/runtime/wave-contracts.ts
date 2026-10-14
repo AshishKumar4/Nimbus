@@ -112,6 +112,8 @@ export interface WriteStreamReceipt {
   revision?: number;
   /** A copyFile's: the file it copied (its key) and that file's revision then; bytes held of it at that revision or later are the copy's. */
   from?: { path: string; revision: number };
+  /** A copyFile's: the key it wrote, its destination's links followed as the session followed them. */
+  landed?: string;
 }
 
 /**

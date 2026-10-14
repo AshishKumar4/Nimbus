@@ -643,11 +643,13 @@ export class WaveIngest {
           const handle: unknown = Reflect.get(result, 'handle');
           // A copy's source and the version it read, as the engine read it (nothing after moves it).
           const from: unknown = Reflect.get(result, 'from');
+          const landed: unknown = Reflect.get(result, 'landed');
           progress.receipts.push({
             path: call.path, ino: result.ino, mode: result.mode, size: result.size, mtimeMs: result.mtime, ctimeMs: result.ctime,
             uid: result.uid, gid: result.gid, dev: scope.deviceId, revision: scope.pathRevision(call.path),
             ...(typeof handle === 'number' ? { handle } : {}),
             ...(from !== undefined ? { from: from as { path: string; revision: number } } : {}),
+            ...(typeof landed === 'string' ? { landed } : {}),
           });
         }
         if (call.seq !== null) advanced(call.seq);
