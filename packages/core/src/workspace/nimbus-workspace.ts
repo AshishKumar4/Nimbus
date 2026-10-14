@@ -841,12 +841,12 @@ function workspaceShellIdentity(
         runAs: runAsProcess,
       });
       exitCode = ran.status;
-      // A kill of it is its end, as the table holds it, whatever its program
-      // returned on its way out (a closed pipe its cancellation met). Not
-      // killed, a signal that stopped its work (its parent's) ends a program
-      // that returned a plain status; its own signal stands.
-      const entry = processes.get(child.pid);
-      if (entry?.state === 'killed' && entry.exitCode !== null) return { status: entry.exitCode, signal: signalOfStatus(entry.exitCode) };
+      // A kill of it is its end, as its entry holds it (the one spawn gave,
+      // kept even once a prune forgets it), whatever its program returned on
+      // its way out (a closed pipe its cancellation met). Not killed, a signal
+      // that stopped its work (its parent's) ends a program that returned a
+      // plain status; its own signal stands.
+      if (child.state === 'killed' && child.exitCode !== null) return { status: child.exitCode, signal: signalOfStatus(child.exitCode) };
       const stoppedBy = ran.signal === null ? signalAbortReasonOf(stopped.signal) : null;
       if (stoppedBy === null) return ran;
       exitCode = stoppedBy.exitCode;
