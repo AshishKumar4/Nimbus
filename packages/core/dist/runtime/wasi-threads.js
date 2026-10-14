@@ -584,7 +584,8 @@ function __wasiRunStartThreads(instance, sched) {
       error: 'wasi-threads requires JSPI (WebAssembly.promising / Suspending), which this runtime does not provide',
     });
   }
-  return sched.runMain(WebAssembly.promising(start));
+  // Settled as every WASI run is: what it wrote is in the session before its result (__wasiSettled).
+  return sched.runMain(WebAssembly.promising(start)).then((result) => globalThis.__wasiSettled(result));
 }
 
 globalThis.__wasiThreadsCreate  = __wasiThreadsCreate;

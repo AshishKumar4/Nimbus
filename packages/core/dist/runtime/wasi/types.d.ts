@@ -364,8 +364,8 @@ declare global {
     }
     var __nimbusWasiLastSocketError: string;
     var __wasiAdoptSupervisor: ((sup: WasiSupervisorStub | null) => void) | undefined;
-    /** Send the process's held writes to the session at the end of a run: null, or what to report (wasi/preamble.ts). */
-    var __wasiSettleWrites: (() => Promise<string | null>) | undefined;
+    /** A run's result once what the process wrote is in the session: a refusal fails it, named (wasi/preamble.ts). */
+    var __wasiSettled: (<R extends WasiRunResult>(result: R) => Promise<R>) | undefined;
     var __wasiSupervisorOutput: typeof import('./stdio.js').wasiOutputRelay;
     var __wasiOutputControl: typeof import('./output-control.js').outputControlReader;
     var __nimbusVirtualSockets: VirtualSocketKernel | undefined;
