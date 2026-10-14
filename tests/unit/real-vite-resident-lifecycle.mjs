@@ -17,7 +17,9 @@
 //      server is never evaluated a second time under the same pid;
 // and each end releases the record a new incarnation of the session would
 // run the server again from, which is kept while the server runs.
-//   7. the runtime's close ends it.
+//   7. a new incarnation of the session runs it again: real Vite serves its
+//      port from a process that restarts the one it ran before;
+//   8. the runtime's close ends it.
 
 import assert from 'node:assert/strict';
 
@@ -183,13 +185,40 @@ try {
   assert.equal(await recordOf(fifth.pid), undefined, 'nothing runs it again');
   console.log('  [6] a lost facet ends it 137, its port answering with the cause');
 
-  // ── 7. the runtime's close ──────────────────────────────────────────────
+  // ── 7. a new incarnation runs it again ──────────────────────────────────
+  {
+    assert.equal((await vite()).code, 0);
+    const before = server();
+    // As a reset leaves the object: its storage, and a new process table and workspace over the same files.
+    const againCtx = { ...ctx, ...createFacetCtx(world, 'real-vite-do', facetCtx.storage.rows), exports: ctx.exports, getWebSockets: () => [] };
+    againCtx.storage = { ...againCtx.storage, sql: harness.sql, transactionSync: harness.ctx.storage.transactionSync };
+    const againProcesses = new bundle.SessionProcessSupervisor();
+    againProcesses.setPidBase(2 * bundle.PID_GEN_STRIDE);
+    const againPorts = new bundle.PortRegistry();
+    const againWorkspace = await bundle.NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, vfs, processes: againProcesses, generation: 2 });
+    const again = await bundle.composeHostedRuntime({ workspace: againWorkspace, ctx: againCtx, env, ports: againPorts, lifecycle: hostedLifecycle(againCtx, () => again) });
+    try {
+      for (let i = 0; i < 400 && againProcesses.get(againPorts.get(PORT)?.pid)?.state !== 'running'; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+      const serving = againProcesses.get(againPorts.get(PORT)?.pid);
+      assert.equal(serving?.state, 'running', 'real Vite serves its port again');
+      assert.deepEqual(serving.restartedFrom, { pid: before.pid, cause: 'session-restart' }, 'from a process that restarts the one it ran before');
+      assert.deepEqual(serving.argv, ['vite', '--port', String(PORT), '--no-install-check']);
+      assert.equal(serving.execId, 'dev-1');
+      assert.equal(world.boots.at(-1).instance.starts, 1, 'booted once');
+    } finally {
+      await again.close();
+      await againWorkspace.close();
+    }
+    console.log('  [7] a new incarnation runs it again, as a process that restarts the one it ran before');
+  }
+
+  // ── 8. the runtime's close ──────────────────────────────────────────────
   assert.equal((await vite()).code, 0);
   const sixth = server();
   await runtime.close();
   assert.equal(running(sixth.pid), false, 'close ended it');
   assert.equal(world.liveFacets().includes(sixth.facet), false, 'and released its facet');
-  console.log('  [7] the runtime\'s close ends it');
+  console.log('  [8] the runtime\'s close ends it');
 } finally {
   await runtime.close().catch(() => {});
 }

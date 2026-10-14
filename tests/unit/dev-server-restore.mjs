@@ -13,7 +13,11 @@
 //   - `vite stop` ends it, and the next incarnation runs nothing;
 //   - a command that fails again (its node_modules gone) is not retried: its
 //     process exits with the command's status and its log says why;
-//   - a restore an incarnation did not finish is reported, not run again.
+//   - a restore an incarnation did not finish is reported, not run again;
+//   - a `vite` the user runs while the restore runs comes after it, and is
+//     what serves;
+//   - a server whose process ends (its job's line failing after it) stops,
+//     its port free and its record gone.
 // Red before: nothing recorded a dev server's process, so a hosted runtime's
 // next incarnation ran nothing.
 
@@ -62,7 +66,7 @@ const recordKeys = () => [...rows.keys()].filter((key) => key.startsWith('dev-se
 /** An incarnation of the object: a new process table above the last one's pids, over the same workspace and rows. */
 let generation = 0;
 let current = null;
-async function incarnation() {
+async function incarnation({ restored = true } = {}) {
   if (current !== null) {
     // The reset: what the last one did not sync is gone, and nothing of it runs teardown.
     current.ctx.storage.crash();
@@ -83,9 +87,9 @@ async function incarnation() {
   const runtime = await bundle.composeHostedRuntime({
     workspace, ctx, env, ports, lifecycle: hostedLifecycle(ctx, () => runtime),
   });
-  // Its restore has run once no record a previous incarnation left is still there.
-  await settle(() => recordKeys().every((key) => Number(key.slice('dev-server:'.length)) > processes.pidBase), 'the restore');
   current = { ctx, processes, ports, workspace, runtime };
+  // Its restore has run once no record a previous incarnation left is still there.
+  if (restored) await settle(() => recordKeys().every((key) => Number(key.slice('dev-server:'.length)) > processes.pidBase), 'the restore');
   return current;
 }
 const restarted = (processes) => processes.getAll().filter((entry) => entry.restartedFrom !== undefined);
@@ -163,6 +167,29 @@ try {
   next = await incarnation();
   assert.equal(restarted(next.processes).length, 0, 'a restore that began and never finished is not run again');
   assert.deepEqual(recordKeys(), [], 'and its record is released');
+
+  // ── a server the user starts while the restore runs comes after it ──────
+  user.mkdir('home/user/other/node_modules', { recursive: true });
+  user.writeFile('home/user/other/index.html', '<!doctype html><title>other</title>');
+  const before = await next.runtime.exec('vite --port 5173 --no-install-check', { cwd: '/home/user/app' });
+  assert.equal(before.exitCode, 0, before.stderr);
+  next = await incarnation({ restored: false });
+  const mine = await next.runtime.exec('vite --port 5173 --no-install-check', { cwd: '/home/user/other' });
+  assert.equal(mine.exitCode, 0, mine.stderr);
+  const serving = next.processes.get(next.ports.get(5173)?.pid);
+  assert.equal(serving?.cwd, '/home/user/other', 'the server the user started serves, not the one restored under it');
+  assert.equal(restarted(next.processes).length, 1, 'the restore ran first');
+  assert.equal(restarted(next.processes)[0].state, 'exited', 'and what it started was replaced');
+  assert.deepEqual(recordKeys(), [`dev-server:${serving.pid}`], 'only the user\'s is recorded');
+  await next.runtime.exec('vite stop', { cwd: '/home/user/other' });
+  await settle(() => recordKeys().length === 0, 'the record to be released');
+
+  // ── a server ends with its process ──────────────────────────────────────
+  const job = await next.runtime.startProcess('vite --port 5174 --no-install-check; false', { cwd: '/home/user/app' });
+  await settle(() => next.processes.get(job.pid)?.state !== 'running', 'the job to end');
+  assert.equal(next.processes.get(job.pid).exitCode, 1, 'its line failed after the server started');
+  assert.equal(next.ports.get(5174), undefined, 'the server stopped with its process: its port is free');
+  await settle(() => recordKeys().length === 0, 'the record to be released');
 } finally {
   await current?.runtime.close();
 }

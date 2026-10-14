@@ -76,6 +76,8 @@ interface ProgrammaticViteServer {
 export interface ProgrammaticHost extends TimerHost {
   readonly runtimeManager: RuntimeManager;
   ensureRuntimeReady(): Promise<void>;
+  /** A destroy ends the restore of the dev servers the previous incarnation ran (dev-servers.ts): it runs nothing in the session made again. */
+  endDevServerRestore(): void;
   /** The destroy running (rpcDestroy), until it is answered. */
   destroying?: Promise<SessionDestroyResult> | null;
   _w1SessionDestroyed: boolean;
@@ -594,6 +596,7 @@ function finishBackgroundJob(
   // dead pid on a live port, and the app verbs identify a server by the pid
   // serving its port.
   const stillServing = self.facetManager?.hasResidentProcess(pid) === true
+    || self.processes.runsWork(pid)
     || self.portRegistry.getAll().some((live) => live.pid === pid);
   if (exitCode === 0 && stillServing) return;
   self.processes.exit(pid, exitCode);
@@ -662,18 +665,7 @@ export async function rpcKillProcess(self: ProgrammaticHost, pid: number) {
   await ensureProgrammaticReady(self);
   const n = Number(pid);
   let ok = false;
-  if (self._viteShimPid === n) {
-    try {
-      if (self.viteDevServer?.isRunning) {
-        self.viteDevServer.stop();
-        self.viteDevServer = null;
-      }
-    } catch {}
-    try { self.portRegistry.unregisterByPid(n); } catch {}
-    ok = self.processes.kill(n);
-    self._viteShimPid = null;
-    self._viteShimPort = null;
-  } else if (self.facetManager) {
+  if (self.facetManager) {
     ok = self.facetManager.kill(n);
   } else {
     ok = self.processes.kill(n);
@@ -1250,6 +1242,7 @@ async function destroySession(
   // admits no process, and a request that would ready the session waits for
   // the one it makes again (rpcDestroy, ensureRuntimeReady).
   self.processes.closeAdmission(Object.assign(new Error('ESHUTDOWN: the session is being destroyed'), { code: 'ESHUTDOWN' }));
+  self.endDevServerRestore();
   hostActivity(self.ctx).close();
   endResidentKeepalive(self);
   const reason = typeof options.reason === 'string' && options.reason.trim()
@@ -1266,12 +1259,7 @@ async function destroySession(
   for (const entry of running) {
     const pid = Number(entry.pid);
     try {
-      if (self._viteShimPid === pid) {
-        if (self.viteDevServer?.isRunning) self.viteDevServer.stop();
-        self.viteDevServer = null;
-        self._viteShimPid = null;
-        self._viteShimPort = null;
-      } else if (self.facetManager?.kill?.(pid, undefined, SESSION_DESTROYED)) {
+      if (self.facetManager?.kill?.(pid, undefined, SESSION_DESTROYED)) {
         // facetManager.kill already marks process state and unregisters ports.
       } else {
         try { self.processes.kill(pid, undefined, SESSION_DESTROYED); } catch {}

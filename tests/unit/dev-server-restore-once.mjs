@@ -2,7 +2,8 @@
 // A new incarnation runs each recorded dev server again once, whoever asks:
 // the requests that reach the session while the restore runs (a woken page
 // fetches several URLs at once) wait on that one run, and a request after it
-// gets its answer without running anything. Through a real workspace shell
+// gets its answer without running anything. A destroy ends it: what it has
+// not run yet it never runs. Through a real workspace shell
 // and process table, with a command that serves as the dev servers do: its
 // process adopted or spawned (devServerProcess) and recorded (recordDevServer).
 
@@ -13,7 +14,7 @@ import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
 const bundle = await importWorkerBundle({
-  'packages/worker/src/session/dev-servers.ts': ['devServerProcess', 'recordDevServer', 'restoreDevServers', 'spawnOf'],
+  'packages/worker/src/session/dev-servers.ts': ['devServerProcess', 'endDevServerRestore', 'recordDevServer', 'restoreDevServers', 'spawnOf'],
   'packages/core/src/workspace/nimbus-workspace.ts': ['NimbusWorkspace'],
   'packages/core/src/runtime/session-process-supervisor.ts': ['SessionProcessSupervisor'],
   'packages/core/src/runtime/port-registry.ts': ['PortRegistry'],
@@ -42,7 +43,7 @@ async function incarnation(generation) {
   // A dev server: it serves until it is stopped, from its own process, recorded while it runs.
   workspace.registry.register('serve', async (ctx) => {
     runs += 1;
-    const { entry } = bundle.devServerProcess(processes, 'serve', ctx);
+    const { entry } = bundle.devServerProcess(processes, 'serve', ctx, () => {});
     await new Promise((resolve) => { release = resolve; });
     await bundle.recordDevServer(host, entry.pid, { ...bundle.spawnOf(entry), env: ctx.env, root: ctx.cwd });
     return 0;
@@ -69,5 +70,24 @@ assert.ok(answers.every((answer) => answer === answers[0]), 'each gets the one a
 assert.deepEqual(answers[0], [], 'that it started again');
 assert.equal(await bundle.restoreDevServers(next.host), answers[0], 'a later request gets it without a run');
 assert.equal(runs, 2);
+
+// A second server, then a destroy while the restore runs the first.
+const second = next.workspace.exec('serve');
+await new Promise((resolve) => setTimeout(resolve, 0));
+release();
+assert.equal((await second).exitCode, 0);
+assert.equal(runs, 3);
 await next.workspace.close();
+const destroyed = await incarnation(3);
+const restoring = bundle.restoreDevServers(destroyed.host);
+for (let i = 0; i < 50 && runs < 4; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+assert.equal(runs, 4, 'the restore runs the first');
+bundle.endDevServerRestore(destroyed.host);
+for (const entry of destroyed.host.processes.getAll()) if (entry.state === 'running') destroyed.host.processes.kill(entry.pid);
+release();
+await restoring;
+assert.equal(runs, 4, 'and, the session destroyed, never the second');
+const base = destroyed.host.processes.pidBase;
+assert.deepEqual([...rows.keys()].filter((key) => Number(key.slice('dev-server:'.length)) > base), [], 'nor records one of its own');
+await destroyed.workspace.close();
 console.log('dev-server-restore-once: ok');

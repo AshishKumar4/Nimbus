@@ -50,8 +50,8 @@ import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { notifyTerminalEvent, wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
 import { makeLongRunningPortStub } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import { documentPolicyOf } from '@nimbus-sh/core/runtime/document-policy.js';
-import { recordDevServer, spawnOf } from './dev-servers.js';
-import { stopViteShim } from './vite-command.js';
+import { bindDevServer, recordDevServer, spawnOf } from './dev-servers.js';
+import { stopViteServers, viteShimTeardown, type ViteShim } from './vite-command.js';
 import { withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
 import { getLoadedCodesStats } from '@nimbus-sh/fabric/bindings.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
@@ -480,20 +480,8 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
         const isViteShim = self._viteShimPid === pid;
         const isDevServer = isViteShim || (self.cirrusReal?.isRunning === true && self.cirrusReal.pid === pid);
         try {
-          if (isViteShim) {
-            // Same teardown the `kill` shell handler does. Centralised
-            // here so the UI doesn't need to reimplement it.
-            try {
-              if (self.viteDevServer?.isRunning) {
-                self.viteDevServer.stop();
-                self.viteDevServer = null;
-              }
-            } catch { /* keep going to teardown process + port state */ }
-            try { self.portRegistry.unregisterByPid(pid); } catch {}
-            try { self.processes.kill(pid); } catch {}
-            self._viteShimPid = null;
-            self._viteShimPort = null;
-          } else if (self.facetManager) {
+          // A dev server ends with its process (bindDevServer), whatever kills it.
+          if (self.facetManager) {
             const ok = self.facetManager.kill(pid);
             if (!ok) return json(404, { error: 'facetManager.kill returned false', pid });
           } else {
@@ -1115,8 +1103,9 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
         const body = await parseJsonBody(request, StartViteBodySchema);
         const root = (body.root || 'home/user').replace(/^\/+/, '');
 
-        // Stop existing server
-        stopViteShim(self);
+        // After the servers the session ran before it restarted are back, so this one replaces them, not they it.
+        await self.restoreDevServers();
+        stopViteServers(self);
 
         // Start in-process ViteDevServer
         if (!self.esbuildService) {
@@ -1138,7 +1127,9 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
           apiViteArgv.join(' '), apiViteArgv, '/' + root,
           { longRunning: true, cred: CRED_SESSION_USER },
         );
-        self.viteDevServer = new ViteDevServer({
+        const shim: ViteShim = { server: null, pid: apiViteEntry.pid };
+        bindDevServer(self.processes, apiViteEntry.pid, viteShimTeardown(self, shim));
+        self.viteDevServer = shim.server = new ViteDevServer({
           vfs: self.sqliteFs!, cred: apiViteEntry.cred, namespace: self.getFilesystemAuthority().vfs, esbuild: self.esbuildService!, root,
           aliases: body.aliases, define: body.define,
           onHmrMessage: () => {},
@@ -1166,7 +1157,8 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
           self._viteShimPort = apiVitePort;
         } catch {}
 
-        await recordDevServer(self, apiViteEntry.pid, { ...spawnOf(apiViteEntry), env: {}, root });
+        // Its environment is the session shell's now: what a command run in it would be given.
+        await recordDevServer(self, apiViteEntry.pid, { ...spawnOf(apiViteEntry), env: { ...self.shell?.getEnv() }, root });
 
         return Response.json({ ok: true, root, running: true });
       } catch (e: any) {

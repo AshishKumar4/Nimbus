@@ -99,15 +99,51 @@ export function devServerSpawn(processes: SessionProcessSupervisor, name: string
   return { spawn: { command: argv.map(shellEscape).join(' '), argv, cwd: ctx.cwd, cred: ctx.cred, ...execIdField(processes.get(ctx.pid)) }, handed };
 }
 
-/** The dev server's process (devServerSpawn): the one handed it, now long-running, or a new child of the command. */
-export function devServerProcess(processes: SessionProcessSupervisor, name: string, ctx: DevServerCommandContext): { entry: ProcessEntry; adopted: boolean } {
+/**
+ * A dev server lives as long as its process `pid`: the process's end, however
+ * it comes, runs `stop`, and until then the session holds the server as the
+ * process's work (a kill reaches it, and a caller that handed the process to
+ * the command sees it still served).
+ */
+export function bindDevServer(processes: SessionProcessSupervisor, pid: number, stop: () => void): void {
+  processes.setTerminator(pid, stop);
+  processes.subscribeTerminal(pid, stop);
+}
+
+/**
+ * The dev server's process (devServerSpawn), bound to it (bindDevServer): the
+ * one handed it, now long-running, or a new child of the command; null when
+ * the one handed it has already ended.
+ */
+export function devServerProcess(
+  processes: SessionProcessSupervisor, name: string, ctx: DevServerCommandContext, stop: () => void,
+): { entry: ProcessEntry; adopted: boolean } | null {
   const { spawn, handed } = devServerSpawn(processes, name, ctx);
-  if (handed !== undefined) {
-    processes.setLongRunning(handed.pid);
-    return { entry: handed, adopted: true };
+  if (handed !== undefined && handed.state !== 'running') return null;
+  if (handed !== undefined) processes.setLongRunning(handed.pid);
+  const entry = handed ?? processes.spawn(spawn.command, spawn.argv, spawn.cwd, { longRunning: true, parentPid: ctx.pid, cred: spawn.cred, ...execIdField(spawn) });
+  bindDevServer(processes, entry.pid, stop);
+  return { entry, adopted: handed !== undefined };
+}
+
+/** Whether `pid` runs inside a restore: it, or a process above it, restarts one the session lost. */
+function inRestore(processes: SessionProcessSupervisor, pid: number | undefined): boolean {
+  for (let at = pid === undefined ? undefined : processes.get(pid); at !== undefined; at = at.parentPid === undefined ? undefined : processes.get(at.parentPid)) {
+    if (at.restartedFrom?.cause === 'session-restart') return true;
   }
-  const entry = processes.spawn(spawn.command, spawn.argv, spawn.cwd, { longRunning: true, parentPid: ctx.pid, cred: spawn.cred, ...execIdField(spawn) });
-  return { entry, adopted: false };
+  return false;
+}
+
+/**
+ * Wait for the restore of the previous incarnation's dev servers before a
+ * command starts or stops one, so the user's action comes after it rather
+ * than being undone by it. A command the restore itself runs does not wait.
+ */
+export async function afterDevServerRestore(
+  host: { restoreDevServers(): Promise<readonly DevServerRestoreFailure[]> }, processes: SessionProcessSupervisor, ctx: DevServerCommandContext,
+): Promise<void> {
+  if (inRestore(processes, ctx.pid) || inRestore(processes, ctx.__nimbusBinSpawn?.callerPid)) return;
+  await host.restoreDevServers();
 }
 
 async function release(host: Pick<DevServerHost, 'ctx'>, key: string): Promise<void> {
@@ -145,8 +181,8 @@ export interface DevServerRestoreHost extends DevServerHost {
   ensureRuntimeReady(): Promise<void>;
 }
 
-/** Each host's restore, once: the requests and the start that meet it wait on it. */
-const restores = new WeakMap<object, Promise<readonly DevServerRestoreFailure[]>>();
+/** Each host's restore, once: the requests and the commands that meet it wait on it; a destroy ends it. */
+const restores = new WeakMap<object, { readonly done: Promise<readonly DevServerRestoreFailure[]>; readonly ended: AbortController }>();
 
 /**
  * Run again, once, each dev server a previous incarnation of the session
@@ -157,30 +193,38 @@ const restores = new WeakMap<object, Promise<readonly DevServerRestoreFailure[]>
 export function restoreDevServers(host: DevServerRestoreHost): Promise<readonly DevServerRestoreFailure[]> {
   let restore = restores.get(host);
   if (restore === undefined) {
-    restore = restoreAll(host);
+    const ended = new AbortController();
+    restore = { done: restoreAll(host, ended.signal), ended };
     restores.set(host, restore);
     // One that could not read the records is tried again by the next caller.
-    restore.catch(() => { if (restores.get(host) === restore) restores.delete(host); });
+    const tried = restore;
+    tried.done.catch(() => { if (restores.get(host) === tried) restores.delete(host); });
   }
-  return restore;
+  return restore.done;
 }
 
-async function restoreAll(host: DevServerRestoreHost): Promise<readonly DevServerRestoreFailure[]> {
+/** The session is destroyed: its restore runs nothing more, and writes nothing but the release of a record. */
+export function endDevServerRestore(host: DevServerRestoreHost): void {
+  restores.get(host)?.ended.abort();
+}
+
+async function restoreAll(host: DevServerRestoreHost, ended: AbortSignal): Promise<readonly DevServerRestoreFailure[]> {
   const base = host.processes.pidBase;
   const rows = await host.ctx.storage.list({ prefix: DEV_SERVER_KEY_PREFIX });
   const failures: DevServerRestoreFailure[] = [];
   for (const [key, value] of rows) {
+    if (ended.aborted) break;
     const pid = Number(key.slice(DEV_SERVER_KEY_PREFIX.length));
     // This incarnation's own: running, or released by its end.
     if (pid > base) continue;
-    const failure = await restoreOne(host, key, pid, DevServerRecordSchema.safeParse(value));
+    const failure = await restoreOne(host, ended, key, pid, DevServerRecordSchema.safeParse(value));
     if (failure !== null) failures.push(failure);
   }
   return failures;
 }
 
 async function restoreOne(
-  host: DevServerRestoreHost, key: string, from: number, parsed: ReturnType<typeof DevServerRecordSchema.safeParse>,
+  host: DevServerRestoreHost, ended: AbortSignal, key: string, from: number, parsed: ReturnType<typeof DevServerRecordSchema.safeParse>,
 ): Promise<DevServerRestoreFailure | null> {
   if (!parsed.success) {
     await release(host, key);
@@ -191,6 +235,7 @@ async function restoreOne(
     await release(host, key);
     return { command: record.command, cwd: record.cwd, pid: null, reason: 'its start after an earlier restart of the session did not finish' };
   }
+  if (ended.aborted) return null;
   await host.ctx.storage.put(key, { ...record, restoring: true });
   await host.ctx.storage.sync();
   // The links handed out for its ports: a registration that is not a restore retires them.
@@ -199,17 +244,18 @@ async function restoreOne(
     const capability = await readPortCapability(host, port);
     if (capability !== null) capabilities.set(port, capability);
   }
-  let failure: DevServerRestoreFailure | null;
+  let failure: DevServerRestoreFailure | null = null;
   try {
     await host.ensureRuntimeReady();
-    failure = await runAgain(host, record, from);
+    // A destroy that came meanwhile made the session again: nothing of this one runs in it.
+    if (!ended.aborted) failure = await runAgain(host, record, from);
   } catch (error) {
     failure = { command: record.command, cwd: record.cwd, pid: null, reason: errorText(error) };
   } finally {
     await release(host, key);
   }
   for (const [port, capability] of capabilities) {
-    if (host.portRegistry.has(port)) await readoptCapability(host, port, capability);
+    if (!ended.aborted && host.portRegistry.has(port)) await readoptCapability(host, port, capability);
   }
   return failure;
 }
@@ -229,7 +275,7 @@ async function runAgain(host: DevServerRestoreHost, record: DevServerRecord, fro
   });
   const pid = entry.pid;
   processes.appendOutput(pid, 'stderr', `[nimbus] the session restarted: running \`${record.command}\` again in ${record.cwd}\n`);
-  const shell = workspace.shellFor(pid, { cwd: record.cwd, env: record.env });
+  const shell = workspace.shellFor(pid, { cwd: record.cwd, env: record.env, inheritEnv: false });
   let stderr = '';
   const keep = textSink((text) => { stderr = (stderr + text).slice(-2000); });
   const stop = new AbortController();
@@ -264,7 +310,8 @@ async function runAgain(host: DevServerRestoreHost, record: DevServerRecord, fro
     }
   }
   if (exitCode === 0) {
-    if (!await recorded(host, pid)) processes.exit(pid, 0);
+    // Not adopted: its server runs as a process of its own (real Vite's), or it served nothing.
+    if (!processes.runsWork(pid)) processes.exit(pid, 0);
     return null;
   }
   processes.appendOutput(pid, 'stderr', `[nimbus] \`${record.command}\` did not start again (exit ${exitCode}); run it again in ${record.cwd} to start the server\n`);
@@ -272,6 +319,3 @@ async function runAgain(host: DevServerRestoreHost, record: DevServerRecord, fro
   return { command: record.command, cwd: record.cwd, pid, reason: reason ? `exit ${exitCode}: ${reason}` : `exit ${exitCode}` };
 }
 
-async function recorded(host: DevServerHost, pid: number): Promise<boolean> {
-  return (await host.ctx.storage.get(recordKey(pid))) !== undefined;
-}

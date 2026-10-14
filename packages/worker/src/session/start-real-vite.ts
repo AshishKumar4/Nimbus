@@ -9,6 +9,7 @@
 
 import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { ProcessRestart } from '@nimbus-sh/core/runtime/process-table.js';
 import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { rewriteCirrusViteConfigBundle } from '@nimbus-sh/core/runtime/cirrus-vite-config-rewriter.js';
 import { CirrusReal } from '../facets/cirrus-real.js';
@@ -39,12 +40,13 @@ export interface StartRealViteOptions {
   onConfigError?: (message: string) => void;
 }
 
-/** Who a dev server's pid is: the cwd+argv its identity derives from, its credential, and its exec id when it has one. */
+/** Who a dev server's pid is: the cwd+argv its identity derives from, its credential, its exec id when it has one, and the process it restarts when it is a restore's. */
 export interface DevServerIdentity {
   cwd: string;
   argv: string[];
   cred: VfsCred;
   execId?: string;
+  restartedFrom?: ProcessRestart;
 }
 
 

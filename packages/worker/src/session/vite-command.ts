@@ -37,27 +37,52 @@ import {
 } from './helpers.js';
 import { startRealVite } from './start-real-vite.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
-import { devServerProcess, devServerSpawn, recordDevServer, spawnOf } from './dev-servers.js';
+import { afterDevServerRestore, devServerProcess, devServerSpawn, recordDevServer, spawnOf } from './dev-servers.js';
 import { registerServingPort } from './serving-port.js';
 
 type ViteHost = any;
 
+/** An in-session Vite server and its process, once each is made. */
+export interface ViteShim {
+  server: ViteDevServer | null;
+  pid: number | null;
+}
+
 /**
- * End the Cirrus server running now with its process (`vite stop`, or a
- * server that replaces it): its port is released, and its record with it.
+ * What ends `shim` when its process ends (bindDevServer): the server stops,
+ * and its port and the session's hold on it go.
  */
-export function stopViteShim(self: ViteHost): boolean {
-  const running = self.viteDevServer?.isRunning === true;
-  if (running) self.viteDevServer.stop();
-  self.viteDevServer = null;
+export function viteShimTeardown(self: ViteHost, shim: ViteShim): () => void {
+  return () => {
+    shim.server?.stop();
+    if (self.viteDevServer === shim.server) self.viteDevServer = null;
+    if (shim.pid === null) return;
+    try { self.portRegistry.unregisterByPid(shim.pid); } catch {}
+    if (self._viteShimPid === shim.pid) {
+      self._viteShimPid = null;
+      self._viteShimPort = null;
+    }
+  };
+}
+
+/**
+ * End whichever Vite server runs now, in the session or real Vite, with its
+ * process (`vite stop`, or a server that replaces it): its port is released,
+ * and its record with it.
+ */
+export function stopViteServers(self: ViteHost): boolean {
+  let stopped = false;
+  if (self.cirrusReal?.isRunning) {
+    self.facetManager.finishProcess(self.cirrusReal.pid, 0);
+    stopped = true;
+  }
   const pid: number | null = self._viteShimPid;
-  if (pid == null) return running;
-  self._viteShimPid = null;
-  self._viteShimPort = null;
-  try { self.portRegistry.unregisterByPid(pid); } catch {}
-  self.processes.exit(pid, 0);
-  notifyTerminalEvent(self.terminal, { type: 'exit', pid, code: 0, command: 'vite' });
-  return true;
+  if (pid != null) {
+    self.processes.exit(pid, 0);
+    notifyTerminalEvent(self.terminal, { type: 'exit', pid, code: 0, command: 'vite' });
+    stopped = true;
+  }
+  return stopped;
 }
 
 export function createViteCommand(self: ViteHost) {
@@ -323,6 +348,9 @@ export function createViteCommand(self: ViteHost) {
       }
     }
 
+    // A start or stop comes after the restore of the servers the session ran before it restarted.
+    await afterDevServerRestore(self, self.processes, ctx);
+
     // ── vite preview ──
     if (args[0] === 'preview') {
       // Vite parity: preview serves the resolved outDir wherever it
@@ -342,15 +370,22 @@ export function createViteCommand(self: ViteHost) {
       }
       // Start vite on the dist directory
       if (!self.esbuildService) self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER));
-      stopViteShim(self);
+      stopViteServers(self);
       const previewBasePath = self.viteBasePath;
       // process metadata support: same long-running treatment as the
       // dev path, just on the dist/ directory.
       const previewPort = viteConfig.port || 4173; // vite preview default
       // The server's process, under the command's credential: it reads the
       // build as the principal who ran it.
-      const { entry: previewProcEntry } = devServerProcess(self.processes, 'vite', ctx);
-      self.viteDevServer = new ViteDevServer({
+      const preview: ViteShim = { server: null, pid: null };
+      const started = devServerProcess(self.processes, 'vite', ctx, viteShimTeardown(self, preview));
+      if (started === null) {
+        ctx.stderr.write('vite: the process that ran it has ended\n');
+        return 1;
+      }
+      const previewProcEntry = started.entry;
+      preview.pid = previewProcEntry.pid;
+      self.viteDevServer = preview.server = new ViteDevServer({
         vfs: self.sqliteFs, cred: previewProcEntry.cred, namespace: self.getFilesystemAuthority().vfs, esbuild: self.esbuildService, root: servedDist,
         onHmrMessage: () => {},
         sql: self.ctx.storage.sql,
@@ -377,13 +412,7 @@ export function createViteCommand(self: ViteHost) {
 
     // ── vite stop ──
     if (args[0] === 'stop') {
-      let stopped = false;
-      if (self.cirrusReal?.isRunning) {
-        self.facetManager.finishProcess(self.cirrusReal.pid, 0);
-        stopped = true;
-      }
-      if (stopViteShim(self)) stopped = true;
-      if (stopped) {
+      if (stopViteServers(self)) {
         ctx.stdout.write('\x1b[33mDev server stopped.\x1b[0m\n');
       } else {
         ctx.stdout.write('No dev server running.\n');
@@ -439,7 +468,7 @@ export function createViteCommand(self: ViteHost) {
       }
     }
 
-    stopViteShim(self);
+    stopViteServers(self);
 
     // ── Real-vite mode (Phase 0 spike, opt-in) ─────────────────────────
     // NIMBUS_REAL_VITE=1 or `nimbusDevServer: 'real'` in vite.config.ts
@@ -459,7 +488,7 @@ export function createViteCommand(self: ViteHost) {
     // One identity either way: the process table's cwd+argv for that pid is
     // what the app verbs derive the dev server's owner from, and its spawn
     // is what a restore spawns again (dev-servers.ts).
-    const { spawn } = devServerSpawn(self.processes, 'vite', ctx);
+    const { spawn, handed } = devServerSpawn(self.processes, 'vite', ctx);
     if (useReal) {
       const vitePort = resolvedPort;
       const previewBasePath = self.viteBasePath;
@@ -473,7 +502,8 @@ export function createViteCommand(self: ViteHost) {
         port: vitePort,
         basePath: previewBasePath,
         configDir: cwd,
-        identity: spawn,
+        // A restore's process is handed it: the server that runs instead restarts the one it ran before.
+        identity: handed?.restartedFrom === undefined ? spawn : { ...spawn, restartedFrom: handed.restartedFrom },
         signal: ctx.signal,
         onConfigError: (msg) => {
           ctx.stderr.write('\x1b[33m!\x1b[0m vite.config bundling failed: ' + msg + '\n');
@@ -543,13 +573,20 @@ export function createViteCommand(self: ViteHost) {
     //
     // The adopted wrapper pid stays `running` in /api/processes with this
     // port; a fresh spawn is a child of the command.
-    const { entry: viteProcEntry, adopted: handedOff } = devServerProcess(self.processes, 'vite', ctx);
+    const shim: ViteShim = { server: null, pid: null };
+    const started = devServerProcess(self.processes, 'vite', ctx, viteShimTeardown(self, shim));
+    if (started === null) {
+      ctx.stderr.write('vite: the process that ran it has ended\n');
+      return 1;
+    }
+    const { entry: viteProcEntry, adopted: handedOff } = started;
+    shim.pid = viteProcEntry.pid;
 
     // The directory the config was read from, at its engine key (a mount has
     // none: the server then never reads it again).
     const configDir = await engineKey(ctx.vfs, self.sqliteFs, '/' + cwd);
     const viteEsbuild = viteEsbuildSettings(configFile.path ? viteConfig : null);
-    self.viteDevServer = new ViteDevServer({
+    self.viteDevServer = shim.server = new ViteDevServer({
       vfs: self.sqliteFs!,
       // The server reads and writes as the principal who ran the command.
       cred: viteProcEntry.cred,
