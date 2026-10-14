@@ -3,8 +3,9 @@
 // and write what Node's do (the sequences below are Node 22.22's readline): they were a
 // second copy of readline's four functions.
 import assert from 'node:assert/strict';
-import { WriteStream } from '../../packages/core/src/substrate/lifo/node-compat/tty.ts';
+import { createTty } from '../../packages/core/src/substrate/lifo/node-compat/tty.ts';
 import * as readline from '../../packages/core/src/substrate/lifo/node-compat/readline.ts';
+const { WriteStream } = createTty();
 
 const calls = [
   [(s) => s.clearLine(-1), '\x1b[1K'], [(s) => s.clearLine(1), '\x1b[0K'], [(s) => s.clearLine(0), '\x1b[2K'],

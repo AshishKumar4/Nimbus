@@ -1,4 +1,4 @@
-import { Readable, Writable } from 'node:stream';
+import realm from 'node:process';
 import { clearLine, clearScreenDown, cursorTo, moveCursor } from './readline.js';
 
 /**
@@ -8,65 +8,72 @@ import { clearLine, clearScreenDown, cursorTo, moveCursor } from './readline.js'
  * plain streams with the TTY-specific properties stubbed to sensible defaults.
  */
 
-// The engine's own stream classes. Neither is joined to a descriptor yet: a
-// ReadStream gives nothing, and what a WriteStream is given goes nowhere, as
-// lifo's own streams did.
-export class ReadStream extends Readable {
-  constructor() {
-    super({ read() {} });
+/**
+ * The tty module, its streams the engine's own stream classes, made when a
+ * program requires it (the engine's stream module is loaded then). Neither
+ * stream is joined to a descriptor yet: a ReadStream gives nothing, and what
+ * a WriteStream is given goes nowhere, as lifo's own streams did.
+ */
+export function createTty() {
+  const { Readable, Writable } = realm.getBuiltinModule('node:stream');
+
+  class ReadStream extends Readable {
+    constructor() {
+      super({ read() {} });
+    }
+
+    readonly isTTY = true;
+    readonly isRaw = false;
+
+    setRawMode(_mode: boolean): this {
+      // no-op – raw mode is not applicable in the browser
+      return this;
+    }
   }
 
-  readonly isTTY = true;
-  readonly isRaw = false;
+  class WriteStream extends Writable {
+    constructor() {
+      super({ write(_chunk, _encoding, callback) { callback(); } });
+    }
 
-  setRawMode(_mode: boolean): this {
-    // no-op – raw mode is not applicable in the browser
-    return this;
+    readonly isTTY = true;
+    columns = 80;
+    rows = 24;
+
+    // As Node's tty.WriteStream: each cursor method is readline's, on this stream.
+    clearLine(dir: number, cb?: () => void): boolean {
+      return clearLine(this, dir, cb);
+    }
+
+    clearScreenDown(cb?: () => void): boolean {
+      return clearScreenDown(this, cb);
+    }
+
+    cursorTo(x: number, y?: number | (() => void), cb?: () => void): boolean {
+      return cursorTo(this, x, y, cb);
+    }
+
+    moveCursor(dx: number, dy: number, cb?: () => void): boolean {
+      return moveCursor(this, dx, dy, cb);
+    }
+
+    getColorDepth(): number {
+      return 8; // 256 colours – reasonable default for a virtual terminal
+    }
+
+    hasColors(count?: number): boolean {
+      if (count === undefined) return true;
+      return count <= 256;
+    }
+
+    getWindowSize(): [number, number] {
+      return [this.columns, this.rows];
+    }
   }
+
+  return { ReadStream, WriteStream, isatty };
 }
 
-export class WriteStream extends Writable {
-  constructor() {
-    super({ write(_chunk, _encoding, callback) { callback(); } });
-  }
-
-  readonly isTTY = true;
-  columns = 80;
-  rows = 24;
-
-  // As Node's tty.WriteStream: each cursor method is readline's, on this stream.
-  clearLine(dir: number, cb?: () => void): boolean {
-    return clearLine(this, dir, cb);
-  }
-
-  clearScreenDown(cb?: () => void): boolean {
-    return clearScreenDown(this, cb);
-  }
-
-  cursorTo(x: number, y?: number | (() => void), cb?: () => void): boolean {
-    return cursorTo(this, x, y, cb);
-  }
-
-  moveCursor(dx: number, dy: number, cb?: () => void): boolean {
-    return moveCursor(this, dx, dy, cb);
-  }
-
-  getColorDepth(): number {
-    return 8; // 256 colours – reasonable default for a virtual terminal
-  }
-
-  hasColors(count?: number): boolean {
-    if (count === undefined) return true;
-    return count <= 256;
-  }
-
-  getWindowSize(): [number, number] {
-    return [this.columns, this.rows];
-  }
-}
-
-export function isatty(_fd: number): boolean {
+function isatty(_fd: number): boolean {
   return false;
 }
-
-export default { ReadStream, WriteStream, isatty };
