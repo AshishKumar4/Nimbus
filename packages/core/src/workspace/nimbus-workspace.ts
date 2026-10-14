@@ -1014,7 +1014,21 @@ type SeedStep =
   | { op: 'stat'; as: 'kernel'; path: string }
   | { op: 'lstat'; as: 'kernel'; path: string }
   | { op: 'readText'; as: 'kernel'; path: string }
-  | { op: 'mkdir'; as: 'kernel' | 'user'; path: string; recursive?: boolean; mode?: number }
+  | {
+    op: 'mkdir'; as: 'kernel' | 'user'; path: string; recursive?: boolean; mode?: number;
+    /**
+     * Who the made directory is handed to, in the same step: a lone mkdir,
+     * then a chown of the name it made, not followed. On the session's
+     * engine one synchronous turn, so nothing comes between them.
+     */
+    handTo?: { uid: number; gid: number };
+    /**
+     * Made below a directory its user may change: handed over only where
+     * the step is one turn (the engine). On a mount, where another writer
+     * could replace the name between the two calls, it is refused.
+     */
+    atomicOnly?: boolean;
+  }
   | { op: 'chown'; as: 'kernel'; path: string; uid: number; gid: number }
   | { op: 'chmod'; as: 'kernel'; path: string; mode: number }
   | { op: 'writeFile'; as: 'kernel' | 'user'; path: string; content: string; mode?: number };
@@ -1103,29 +1117,32 @@ function* baseSeed(home: string): Generator<SeedStep, void, unknown> {
   // makes the home's directories only below directories only root may
   // change, where no name can be replaced between its mkdir and its chown;
   // below one the user may write, the user makes the rest itself, and owns
-  // it from the start. Below one the user has made unwritable to itself, the
-  // home is not made, as a login whose home is missing starts without one.
+  // it from the start. Below one the user may change but has made
+  // unwritable to itself, root makes it and hands it over in one step,
+  // which only the session's own filesystem makes indivisible: on a mount,
+  // such a home is refused.
   const homeDir = home.replace(/^\/+/, '').replace(/\/+$/, '');
-  let homeMade = homeDir === '' || (yield* exists('kernel', homeDir));
-  if (!homeMade) {
+  if (homeDir !== '' && !(yield* exists('kernel', homeDir))) {
     const names = homeDir.split('/');
+    const user = { uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid };
     let rootsOnly = true;
     let parent: SeedEntry = { type: 'directory', uid: 0, gid: 0, mode: 0o755 };
-    homeMade = true;
     for (let i = 1; i <= names.length; i++) {
       const path = names.slice(0, i).join('/');
+      const leaf = i === names.length;
       const entry = yield* lstat(path);
       if (entry === null) {
         if (rootsOnly) {
-          yield { op: 'mkdir', as: 'kernel', path, mode: 0o755 };
-          if (i === names.length) yield { op: 'chown', as: 'kernel', path, uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid };
+          // Its parents stay root's; the home itself is the user's.
+          yield { op: 'mkdir', as: 'kernel', path, mode: 0o755, ...(leaf ? { handTo: user } : {}) };
+          parent = { type: 'directory', ...(leaf ? user : { uid: 0, gid: 0 }), mode: 0o755 };
         } else if (userMayWrite(parent)) {
           yield { op: 'mkdir', as: 'user', path, mode: 0o755 };
+          parent = { type: 'directory', ...user, mode: 0o755 };
         } else {
-          homeMade = false;
-          break;
+          yield { op: 'mkdir', as: 'kernel', path, mode: 0o755, handTo: user, atomicOnly: true };
+          parent = { type: 'directory', ...user, mode: 0o755 };
         }
-        parent = { type: 'directory', uid: rootsOnly && i < names.length ? 0 : CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid, mode: 0o755 };
         continue;
       }
       if (entry.type !== 'directory') {
@@ -1135,9 +1152,8 @@ function* baseSeed(home: string): Generator<SeedStep, void, unknown> {
       parent = entry;
     }
   }
-  // HOME=/ is root's directory, not one Nimbus populates for the user; a
-  // home that was not made has nothing to populate.
-  const homeChildren = homeDir === '' || !homeMade ? [] : [`${homeDir}/.config`, `${homeDir}/projects`];
+  // HOME=/ is root's directory, not one Nimbus populates for the user.
+  const homeChildren = homeDir === '' ? [] : [`${homeDir}/.config`, `${homeDir}/projects`];
   for (const dir of [
     ...homeChildren,
     'tmp', 'var/log',
@@ -1269,7 +1285,14 @@ async function seedOnNamespace(steps: Generator<SeedStep, void, unknown>, filesy
           break;
         }
         case 'readText': answer = new TextDecoder().decode(await view.readFile(path)); break;
-        case 'mkdir': await view.mkdir(path, { ...(call.recursive ? { recursive: true } : {}), ...(call.mode === undefined ? {} : { mode: call.mode }) }); break;
+        case 'mkdir':
+          if (call.atomicOnly) {
+            throw new Error(`seed: ${path} is below a directory its user may change, on a mount, where it cannot be made and handed over in one step`);
+          }
+          await view.mkdir(path, { ...(call.recursive ? { recursive: true } : {}), ...(call.mode === undefined ? {} : { mode: call.mode }) });
+          // Below directories only root may change: no one can replace the name in between.
+          if (call.handTo) await unlessUnsupported(view.chown(path, call.handTo.uid, call.handTo.gid));
+          break;
         // A mount that keeps no owners or modes (ENOTSUP) has none to hand over.
         case 'chown': await unlessUnsupported(view.chown(path, call.uid, call.gid)); break;
         case 'chmod': await unlessUnsupported(view.chmod(path, call.mode)); break;
@@ -1290,7 +1313,11 @@ function engineStep(view: ReturnType<SqliteVFS['as']>, call: SeedStep): unknown 
       return found === null ? null : { type: found.type, uid: found.uid, gid: found.gid, mode: found.mode };
     }
     case 'readText': return view.readFileString(call.path);
-    case 'mkdir': view.mkdir(call.path, { ...(call.recursive ? { recursive: true } : {}), ...(call.mode === undefined ? {} : { mode: call.mode }) }); return undefined;
+    case 'mkdir':
+      view.mkdir(call.path, { ...(call.recursive ? { recursive: true } : {}), ...(call.mode === undefined ? {} : { mode: call.mode }) });
+      // In the same synchronous turn, and not through a link: the name it just made.
+      if (call.handTo) view.chown(call.path, call.handTo.uid, call.handTo.gid, { followSymlinks: false });
+      return undefined;
     case 'chown': view.chown(call.path, call.uid, call.gid); return undefined;
     case 'chmod': view.chmod(call.path, call.mode); return undefined;
     case 'writeFile': view.writeFile(call.path, call.content, call.mode === undefined ? undefined : { mode: call.mode }); return undefined;
