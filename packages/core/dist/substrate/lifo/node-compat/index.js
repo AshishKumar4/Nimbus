@@ -10,7 +10,7 @@ import { createChildProcess } from './child_process.js';
 import * as urlModule from './url.js';
 import * as timersModule from './timers.js';
 import * as zlibModule from './zlib.js';
-import * as ttyModule from './tty.js';
+import { createTty } from './tty.js';
 import { createDns } from './dns.js';
 import { createModuleShim } from './module.js';
 import * as readlineModule from './readline.js';
@@ -75,7 +75,7 @@ export function createModuleMap(ctx) {
         crypto: () => realm.getBuiltinModule('node:crypto'),
         zlib: () => zlibModule,
         string_decoder: () => realm.getBuiltinModule('node:string_decoder'),
-        tty: () => ttyModule,
+        tty: () => createTty(),
         dns: () => createDns(ctx.dns),
         'dns/promises': () => createDns(ctx.dns).promises,
         readline: () => readlineModule,
