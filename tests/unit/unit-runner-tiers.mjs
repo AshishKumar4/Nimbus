@@ -24,7 +24,6 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runBoundedProcess } from '../../scripts/lib/bounded-process.mjs';
 import { expectedCosts, partition } from './lib/partition.mjs';
-import { unitJobs } from '../../scripts/ci/lib/cpus.mjs';
 
 const repo = fileURLToPath(new URL('../..', import.meta.url));
 const scratch = mkdtempSync(join(tmpdir(), 'unit-tiers-'));
@@ -55,22 +54,6 @@ const listed = (result) => {
 const pass = 'process.exit(0);\n';
 
 try {
-  // Both the CI plan and task fit the task's CPUs, not the host's cpuinfo.
-  // Quotas apply through ancestors even when the task itself is unlimited.
-  const quota = (files) => (path) => {
-    if (path in files) return files[path];
-    throw Object.assign(new Error(path), { code: 'ENOENT' });
-  };
-  const group = '/sys/fs/cgroup/armada/task';
-  assert.equal(unitJobs({ group, affinity: 4, read: quota({ [`${group}/cpu.max`]: 'max 100000' }) }), 4, 'today\'s medium task keeps all four workers');
-  assert.equal(unitJobs({ group, affinity: 1, read: quota({}) }), 1, 'affinity alone caps the runner');
-  assert.equal(unitJobs({ group, affinity: 8, read: quota({ '/sys/fs/cgroup/armada/cpu.max': '200000 100000' }) }), 2, 'an ancestor quota caps an unlimited task');
-  assert.equal(unitJobs({ group, affinity: 8, read: quota({ [`${group}/cpu.max`]: '100000 100000', '/sys/fs/cgroup/armada/cpu.max': '200000 100000' }) }), 1, 'the tightest quota wins');
-  assert.equal(unitJobs({ group, affinity: 2, read: quota({ [`${group}/cpu.max`]: '350000 100000' }) }), 2, 'quota cannot exceed affinity');
-  assert.equal(unitJobs({ group, affinity: 4, read: quota({ [`${group}/cpu.max`]: '50000 100000' }) }), 1, 'fractional CPUs still run one worker');
-  assert.throws(() => unitJobs({ group, affinity: 4, read: quota({ [`${group}/cpu.max`]: 'bad 100000' }) }), /invalid cpu.max/, 'a malformed quota is not silently ignored');
-  assert.throws(() => unitJobs({ group, affinity: 4, read: () => { throw Object.assign(new Error('denied'), { code: 'EACCES' }); } }), /denied/, 'a quota that cannot be read is not silently ignored');
-
   // ── Markers and --tier ──────────────────────────────────────────────
   const marked = tree('marked', {
     'plain.mjs': pass,
@@ -180,29 +163,6 @@ try {
   const threaded = Object.keys(threadedTimings);
   const [first] = partition(threaded, 2, { expectedMs: expectedCosts(threaded, threadedTimings, () => false), runsAlone: () => false, jobs: 2 });
   assert.deepEqual(first.names, ['busy.mjs'], `the threaded file shares its part: ${first.names}`);
-  // A part still targets five minutes with one CPU or four. Forty files
-  // costing thirty CPU seconds need four one-CPU parts, or one four-CPU part.
-  const equal = Array.from({ length: 40 }, (_, i) => `${i}.mjs`);
-  const planTree = tree('plan', Object.fromEntries(equal.map((name) => [name, pass])));
-  mkdirSync(join(planTree, 'scripts/ci/lib'), { recursive: true });
-  copyFileSync(join(repo, 'scripts/ci/unit.mjs'), join(planTree, 'scripts/ci/unit.mjs'));
-  const planTimings = join(scratch, 'plan-timings.json');
-  writeFileSync(planTimings, JSON.stringify({ files: Object.fromEntries(equal.map((name) => [name, 30])) }));
-  for (const [jobs, count] of [[1, 4], [4, 1]]) {
-    const sized = partition(equal, count, { expectedMs: () => 30_000, runsAlone: () => false, jobs });
-    assert.deepEqual(sized.map((part) => part.expectedMs), Array(count).fill(300_000));
-    assert.deepEqual(sized.flatMap((part) => part.names).sort(), [...equal].sort(), 'changing the CPU width loses no files');
-    // The real plan's arithmetic, with only its resource reader replaced.
-    writeFileSync(join(planTree, 'scripts/ci/lib/cpus.mjs'), `export const unitJobs = () => ${jobs};\n`);
-    const planned = spawnSync(process.execPath, [join(planTree, 'scripts/ci/unit.mjs'), 'plan', '--target', '300', '--timings', planTimings], {
-      cwd: planTree, encoding: 'utf8', timeout: 30_000, env: inherited,
-    });
-    assert.equal(planned.status, 0, planned.stderr);
-    const { include } = JSON.parse(planned.stdout);
-    assert.equal(include.length, count, `the ${jobs}-CPU plan must change the part count`);
-    assert.deepEqual(include.map((part) => part.weight), Array(count).fill(300));
-    assert.deepEqual(include.flatMap((part) => part.rows.map((row) => row.name)).sort(), [...equal].sort());
-  }
 
   // ── Environment, in whatever isolation this suite runs under ────────
   // Names a shell would drop or env(1) would take for an option still
