@@ -1,32 +1,121 @@
-import { Readable, Writable } from './stream.js';
 /**
- * Node.js `tty` module shim for Lifo.
- *
- * In the browser there is no real TTY, so ReadStream/WriteStream behave like
- * plain streams with the TTY-specific properties stubbed to sensible defaults.
+ * Node.js `tty` module shim for Lifo, as lifo's public module: the streams
+ * tty-streams.ts makes, which a program's module map makes when it requires
+ * tty (this module loads the engine's stream module as it loads).
  */
-export declare class ReadStream extends Readable {
-    readonly isTTY = true;
-    readonly isRaw = false;
-    setRawMode(_mode: boolean): this;
-}
-export declare class WriteStream extends Writable {
-    readonly isTTY = true;
-    columns: number;
-    rows: number;
-    clearLine(dir: number, cb?: () => void): boolean;
-    clearScreenDown(cb?: () => void): boolean;
-    cursorTo(x: number, y?: number | (() => void), cb?: () => void): boolean;
-    moveCursor(dx: number, dy: number, cb?: () => void): boolean;
-    getColorDepth(): number;
-    hasColors(count?: number): boolean;
-    getWindowSize(): [number, number];
-}
-export declare function isatty(_fd: number): boolean;
-declare const _default: {
-    ReadStream: typeof ReadStream;
-    WriteStream: typeof WriteStream;
-    isatty: typeof isatty;
+declare const tty: {
+    ReadStream: {
+        new (): {
+            readonly isTTY: true;
+            readonly isRaw: false;
+            setRawMode(_mode: boolean): /*elided*/ any;
+            pipe(destination: import("node:stream").Writable, options?: import("node:stream").PipeOptions): import("node:stream").Writable;
+            readonly readable: boolean;
+            push(chunk: Uint8Array | string | null, encoding?: string): boolean;
+            setEncoding(encoding: string): /*elided*/ any;
+            destroy(error?: Error): /*elided*/ any;
+            on(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+            addListener(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+            once(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+            prependListener(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+            off(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+            removeListener(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+            removeAllListeners(event?: string | symbol): /*elided*/ any;
+            emit(event: string | symbol, ...args: unknown[]): boolean;
+            listenerCount(event: string | symbol): number;
+            listeners(event: string | symbol): import("node:events").Listener[];
+            eventNames(): (string | symbol)[];
+            setMaxListeners(n: number): /*elided*/ any;
+            getMaxListeners(): number;
+        };
+    };
+    WriteStream: {
+        new (): {
+            readonly isTTY: true;
+            columns: number;
+            rows: number;
+            clearLine(dir: number, cb?: () => void): boolean;
+            clearScreenDown(cb?: () => void): boolean;
+            cursorTo(x: number, y?: number | (() => void), cb?: () => void): boolean;
+            moveCursor(dx: number, dy: number, cb?: () => void): boolean;
+            getColorDepth(): number;
+            hasColors(count?: number): boolean;
+            getWindowSize(): [number, number];
+            readonly writable: boolean;
+            write(chunk: Uint8Array | string, callback?: (error?: Error | null) => void): boolean;
+            end(callback?: () => void): /*elided*/ any;
+            destroy(error?: Error): /*elided*/ any;
+            on(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+            addListener(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+            once(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+            prependListener(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+            off(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+            removeListener(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+            removeAllListeners(event?: string | symbol): /*elided*/ any;
+            emit(event: string | symbol, ...args: unknown[]): boolean;
+            listenerCount(event: string | symbol): number;
+            listeners(event: string | symbol): import("node:events").Listener[];
+            eventNames(): (string | symbol)[];
+            setMaxListeners(n: number): /*elided*/ any;
+            getMaxListeners(): number;
+        };
+    };
+    isatty: (_fd: number) => boolean;
 };
-export default _default;
+export declare const ReadStream: {
+    new (): {
+        readonly isTTY: true;
+        readonly isRaw: false;
+        setRawMode(_mode: boolean): /*elided*/ any;
+        pipe(destination: import("node:stream").Writable, options?: import("node:stream").PipeOptions): import("node:stream").Writable;
+        readonly readable: boolean;
+        push(chunk: Uint8Array | string | null, encoding?: string): boolean;
+        setEncoding(encoding: string): /*elided*/ any;
+        destroy(error?: Error): /*elided*/ any;
+        on(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+        addListener(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+        once(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+        prependListener(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+        off(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+        removeListener(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+        removeAllListeners(event?: string | symbol): /*elided*/ any;
+        emit(event: string | symbol, ...args: unknown[]): boolean;
+        listenerCount(event: string | symbol): number;
+        listeners(event: string | symbol): import("node:events").Listener[];
+        eventNames(): (string | symbol)[];
+        setMaxListeners(n: number): /*elided*/ any;
+        getMaxListeners(): number;
+    };
+}, WriteStream: {
+    new (): {
+        readonly isTTY: true;
+        columns: number;
+        rows: number;
+        clearLine(dir: number, cb?: () => void): boolean;
+        clearScreenDown(cb?: () => void): boolean;
+        cursorTo(x: number, y?: number | (() => void), cb?: () => void): boolean;
+        moveCursor(dx: number, dy: number, cb?: () => void): boolean;
+        getColorDepth(): number;
+        hasColors(count?: number): boolean;
+        getWindowSize(): [number, number];
+        readonly writable: boolean;
+        write(chunk: Uint8Array | string, callback?: (error?: Error | null) => void): boolean;
+        end(callback?: () => void): /*elided*/ any;
+        destroy(error?: Error): /*elided*/ any;
+        on(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+        addListener(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+        once(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+        prependListener(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+        off(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+        removeListener(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+        removeAllListeners(event?: string | symbol): /*elided*/ any;
+        emit(event: string | symbol, ...args: unknown[]): boolean;
+        listenerCount(event: string | symbol): number;
+        listeners(event: string | symbol): import("node:events").Listener[];
+        eventNames(): (string | symbol)[];
+        setMaxListeners(n: number): /*elided*/ any;
+        getMaxListeners(): number;
+    };
+}, isatty: (_fd: number) => boolean;
+export default tty;
 //# sourceMappingURL=tty.d.ts.map

@@ -43,6 +43,13 @@ export declare class SinkWriter {
     constructor(sink: ByteSink);
     get bytesWritten(): number;
     write(bytes: Uint8Array): Promise<void>;
+    /**
+     * Text, in order with the bytes: for a textual sink, after any character
+     * the bytes before it left unfinished (a replacement character, as decoding
+     * those bytes and the text's as one stream gives). Not counted in
+     * {@link bytesWritten}, which is what was written as bytes.
+     */
+    writeText(text: string): Promise<void>;
     end(): Promise<void>;
 }
 /**

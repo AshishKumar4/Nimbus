@@ -1,3 +1,5 @@
+import { Buffer } from 'node:buffer';
+import realm from 'node:process';
 import type { NodeFilesystem } from '../../node-compat/filesystem.js';
 import type { ProcessView } from '../../../../runtime/process-files.js';
 import type { Command } from '../types.js';
@@ -9,9 +11,9 @@ import { packageScopeType } from '../../../../runtime/require-resolution.js';
 import type { NodeContext } from '../../node-compat/index.js';
 import { createProcess } from '../../node-compat/process.js';
 import { createConsole } from '../../node-compat/console.js';
-import { Buffer } from '../../node-compat/buffer.js';
-import { pathToFileURL } from '../../node-compat/url.js';
 import { createNativeEsmLoader } from '../../node-compat/native-esm-loader.js';
+import { pathToFileURL } from '../../node-compat/file-url.js';
+import { leaveStandardStreamsOpen } from '../../node-compat/standard-streams.js';
 import type { VirtualRequestHandler, Kernel, LoopbackRouter } from '../../kernel/index.js';
 import type { DNSResolver } from '../../kernel/dns-resolver.js';
 import type { CommandOutputStream } from '../types.js';
@@ -164,14 +166,14 @@ export async function runNodeProgram(program: NodeProgram, host: NodeProgramHost
 			routeLoopback: host.routeLoopback,
 			dns: host.dns,
 			stdin: host.stdin,
+			reachStreams: leaveStandardStreamsOpen,
 		};
 
-		// Each module has its own process and console object, as the main script has.
-		const scope = () => ({ process: createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdout: ctx.stdout, stderr: ctx.stderr }), console: createConsole(ctx.stdout, ctx.stderr) });
-		const loader = createCjsLoader(nodeCtx, scope);
+		// One process and console, every module's, as in Node.
+		const main = { process: createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdout: ctx.stdout, stderr: ctx.stderr }), console: createConsole(ctx.stdout, ctx.stderr) };
+		const loader = createCjsLoader(nodeCtx, main);
 
 		// Execute main script
-		const main = scope();
 		const module = { exports: {} as Record<string, unknown> };
 		const cleanMainSource = stripShebang(source);
 		const isEsm = filename === '[eval]' ? isEsModuleInput(cleanMainSource, undefined) : isEsModuleFile(filename, cleanMainSource, () => mainType);
@@ -188,6 +190,12 @@ export async function runNodeProgram(program: NodeProgram, host: NodeProgramHost
 		// (not a CommonJS wrapper parameter) finds the program's.
 		const ga = globalThis as Record<string, unknown>;
 		ga.process = main.process;
+		// So are the realm's own warnings, a native builtin's (util.deprecate,
+		// Buffer(), events): Node delivers a warning to the process that raised
+		// it, through whatever its emitWarning is when the warning is raised.
+		realm.emitWarning = (...warning) => { main.process.emitWarning(...warning); };
+		realm.removeAllListeners('warning');
+		realm.on('warning', (warning) => { main.process.emit('warning', warning); });
 		ga.Buffer = Buffer;
 		ga.console = main.console;
 		ga.global = globalThis;
@@ -196,7 +204,7 @@ export async function runNodeProgram(program: NodeProgram, host: NodeProgramHost
 			if (isEsm) await native.importMain();
 			else if (filename === '[eval]') {
 				const fn = new Function(`return ${moduleWrapper(cleanMainSource, pathToFileURL(`${program.cwd}/[eval]`).href)}`)();
-				fn(...loader.wrapperArguments(filename, module, main));
+				fn(...loader.wrapperArguments(filename, module));
 			} else loader.load(filename, { source: cleanMainSource, esm: false });
 
 			return { code: 0, ended: false };

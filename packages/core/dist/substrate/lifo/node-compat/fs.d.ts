@@ -1,7 +1,6 @@
+import { EventEmitter } from 'node:events';
+import { Buffer } from 'node:buffer';
 import type { NodeFilesystem as VFS } from './filesystem.js';
-import { Readable, Writable } from './stream.js';
-import { EventEmitter } from './events.js';
-import { Buffer } from './buffer.js';
 import { type FsError } from '../../../vfs/vfs-error.js';
 export interface FSWatcher extends EventEmitter {
     close(): void;
@@ -54,12 +53,29 @@ interface NodeStat {
 }
 type NodeError = FsError;
 type Callback<T> = (err: NodeError | null, result?: T) => void;
+type ReadCallback = (err: NodeError | null, bytesRead?: number, buffer?: Uint8Array) => void;
+type WriteCallback = (err: NodeError | null, written?: number, data?: Uint8Array | string) => void;
+/** What Node's ReadStream and WriteStream take; `fs` is the filesystem they open, read, write and close through. */
+interface StreamOptions {
+    fs?: object;
+    flags?: string;
+    encoding?: string;
+    fd?: number;
+    mode?: number;
+    start?: number;
+    end?: number;
+    highWaterMark?: number;
+    autoClose?: boolean;
+    emitClose?: boolean;
+    /** A WriteStream's: fsync before it closes. */
+    flush?: boolean;
+}
 /**
  * `stdin` reads fd 0 to its end, blocking until it ends, as a synchronous
  * read of it does in Node; what it returned is all fd 0 holds, so a second
  * read finds it at its end.
  */
-export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array): {
+export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array, reachStreams?: () => void): {
     readFileSync: (path: string | URL | number, options?: string | {
         encoding?: string;
         flag?: string;
@@ -124,21 +140,95 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
     exists: (path: string | URL, cb: (exists: boolean) => void) => void;
     open: (path: string | URL, flagsOrCb: string | number | Callback<number>, modeOrCb?: number | Callback<number>, cb?: Callback<number>) => void;
     close: (fd: number, cb: Callback<void>) => void;
-    read: (fd: number, buffer: Uint8Array, offset: number, length: number, position: number | null, cb: Callback<number>) => void;
+    read: (fd: number, buffer: Uint8Array, offset: number, length: number, position: number | null, cb: ReadCallback) => void;
+    write: (fd: number, data: Uint8Array | string, ...rest: (number | string | null | undefined | WriteCallback)[]) => void;
+    fsync: (fd: number, cb: Callback<void>) => void;
     fstat: (fd: number, cb: Callback<NodeStat>) => void;
     realpath: ((path: string | URL, optOrCb: unknown, cb?: Callback<string>) => void) & {
         native: (path: string | URL, optOrCb: unknown, cb?: Callback<string>) => void;
     };
-    createReadStream: (path: string | URL, options?: {
-        encoding?: string;
-        start?: number;
-        end?: number;
-        highWaterMark?: number;
-    }) => Readable;
-    createWriteStream: (path: string | URL, options?: {
-        flags?: string;
-        encoding?: string;
-    }) => Writable;
+    ReadStream: {
+        new (path: string | URL | null | undefined, options?: string | StreamOptions): {
+            pipe(destination: import("node:stream").Writable, options?: import("node:stream").PipeOptions): import("node:stream").Writable;
+            readonly readable: boolean;
+            push(chunk: Uint8Array | string | null, encoding?: string): boolean;
+            setEncoding(encoding: string): /*elided*/ any;
+            destroy(error?: Error): /*elided*/ any;
+            on(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+            addListener(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+            once(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+            prependListener(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+            off(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+            removeListener(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+            removeAllListeners(event?: string | symbol): /*elided*/ any;
+            emit(event: string | symbol, ...args: unknown[]): boolean;
+            listenerCount(event: string | symbol): number;
+            listeners(event: string | symbol): import("node:events").Listener[];
+            eventNames(): (string | symbol)[];
+            setMaxListeners(n: number): /*elided*/ any;
+            getMaxListeners(): number;
+        };
+    };
+    WriteStream: {
+        new (path: string | URL | null | undefined, options?: string | StreamOptions): {
+            readonly writable: boolean;
+            write(chunk: Uint8Array | string, callback?: (error?: Error | null) => void): boolean;
+            end(callback?: () => void): /*elided*/ any;
+            destroy(error?: Error): /*elided*/ any;
+            on(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+            addListener(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+            once(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+            prependListener(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+            off(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+            removeListener(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+            removeAllListeners(event?: string | symbol): /*elided*/ any;
+            emit(event: string | symbol, ...args: unknown[]): boolean;
+            listenerCount(event: string | symbol): number;
+            listeners(event: string | symbol): import("node:events").Listener[];
+            eventNames(): (string | symbol)[];
+            setMaxListeners(n: number): /*elided*/ any;
+            getMaxListeners(): number;
+        };
+    };
+    createReadStream: (path: string | URL, options?: string | StreamOptions) => {
+        pipe(destination: import("node:stream").Writable, options?: import("node:stream").PipeOptions): import("node:stream").Writable;
+        readonly readable: boolean;
+        push(chunk: Uint8Array | string | null, encoding?: string): boolean;
+        setEncoding(encoding: string): /*elided*/ any;
+        destroy(error?: Error): /*elided*/ any;
+        on(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+        addListener(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+        once(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+        prependListener(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+        off(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+        removeListener(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+        removeAllListeners(event?: string | symbol): /*elided*/ any;
+        emit(event: string | symbol, ...args: unknown[]): boolean;
+        listenerCount(event: string | symbol): number;
+        listeners(event: string | symbol): import("node:events").Listener[];
+        eventNames(): (string | symbol)[];
+        setMaxListeners(n: number): /*elided*/ any;
+        getMaxListeners(): number;
+    };
+    createWriteStream: (path: string | URL, options?: string | StreamOptions) => {
+        readonly writable: boolean;
+        write(chunk: Uint8Array | string, callback?: (error?: Error | null) => void): boolean;
+        end(callback?: () => void): /*elided*/ any;
+        destroy(error?: Error): /*elided*/ any;
+        on(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+        addListener(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+        once(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+        prependListener(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+        off(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+        removeListener(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
+        removeAllListeners(event?: string | symbol): /*elided*/ any;
+        emit(event: string | symbol, ...args: unknown[]): boolean;
+        listenerCount(event: string | symbol): number;
+        listeners(event: string | symbol): import("node:events").Listener[];
+        eventNames(): (string | symbol)[];
+        setMaxListeners(n: number): /*elided*/ any;
+        getMaxListeners(): number;
+    };
     watch: (filename: string | URL, optionsOrListener?: WatchOptions | string | WatchListener, listener?: WatchListener) => FSWatcher;
     promises: {
         readFile: (path: string | URL, options?: string | {

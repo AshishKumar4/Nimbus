@@ -15,12 +15,13 @@
  * module (.mjs, a .js under "type": "module", or ESM syntax) goes to the
  * realm's native ES module loader, not the CommonJS wrapper.
  */
+import { Buffer } from 'node:buffer';
+import { fileURLToPath } from 'node:url';
 import { createModuleMap, ProcessExitError, type NodeContext } from './index.js';
 import { createModuleShim, type RequireFunction } from './module.js';
-import { Buffer } from './buffer.js';
+import { pathToFileURL } from './file-url.js';
 import { escapedIdentifierNames, rewriteDynamicImports } from '../../../runtime/dynamic-import-rewrite.js';
 import { isEsModuleFile, type PackageType } from '../../../runtime/module-format.js';
-import { fileURLToPath, pathToFileURL } from './url.js';
 import { resolve, dirname } from '../utils/path.js';
 import { invalidArgType } from '../../../_shared/node-error.js';
 import { createRequireResolver, NIMBUS_TYPESCRIPT_REQUIRE_POLICY, requireNodeModulePaths, type RequireResolverOptions, type RequireResolveOptions } from '../../../runtime/require-resolution.js';
@@ -94,7 +95,7 @@ export interface CjsLoader {
 	 */
 	load(filename: string, preread?: { readonly source: string; readonly esm: boolean }): unknown;
 	/** The arguments a module's wrapper is called with, `require` its own. */
-	wrapperArguments(filename: string, module: { exports: unknown }, scope: ModuleScope): unknown[];
+	wrapperArguments(filename: string, module: { exports: unknown }): unknown[];
 }
 
 // @rollup/rollup-* are platform-specific NAPI addons, which no realm here can
@@ -118,13 +119,13 @@ const rollupNativeStub = {
 };
 
 /**
- * A loader over `context`'s filesystem. `scope` gives each module its
- * console and process (each module has its own, as the node command's
- * modules always have had).
+ * A loader over `context`'s filesystem. `scope` is the program's console and
+ * process, every module's, as Node has one process; require('process') is it.
  */
-export function createCjsLoader(context: NodeContext, scope: (filename: string) => ModuleScope, options: RequireResolverOptions = {}): CjsLoader {
+export function createCjsLoader(context: NodeContext, scope: ModuleScope, options: RequireResolverOptions = {}): CjsLoader {
 	const filesystem = context.filesystem;
 	const moduleMap = createModuleMap(context);
+	moduleMap.process = () => scope.process;
 	const builtins = new Map<string, unknown>();
 	let native: NativeModuleLoader | undefined;
 	const cache: Record<string, unknown> = Object.create(null);
@@ -217,7 +218,7 @@ export function createCjsLoader(context: NodeContext, scope: (filename: string) 
 		return found.path;
 	}
 
-	function wrapperArguments(filename: string, module: { exports: unknown }, moduleScope: ModuleScope): unknown[] {
+	function wrapperArguments(filename: string, module: { exports: unknown }): unknown[] {
 		const dir = filename === '[eval]' ? context.cwd : dirname(filename);
 		const require = requireFrom(dir, filename);
 		// Resolution failures reject import()'s promise; none are thrown by the call itself.
@@ -227,10 +228,10 @@ export function createCjsLoader(context: NodeContext, scope: (filename: string) 
 		});
 		return [
 			module.exports, require, module, filename, dir,
-			moduleScope.console, moduleScope.process, Buffer,
+			scope.console, scope.process, Buffer,
 			globalThis.setTimeout, globalThis.setInterval,
 			globalThis.clearTimeout, globalThis.clearInterval,
-			{ process: moduleScope.process, Buffer, console: moduleScope.console },
+			{ process: scope.process, Buffer, console: scope.console },
 			importDynamic,
 		];
 	}
@@ -266,7 +267,7 @@ export function createCjsLoader(context: NodeContext, scope: (filename: string) 
 			throw err;
 		}
 		try {
-			fn(...wrapperArguments(filename, module, scope(filename)));
+			fn(...wrapperArguments(filename, module));
 		} catch (e) {
 			delete cache[filename];
 			if (e instanceof ProcessExitError) throw e;

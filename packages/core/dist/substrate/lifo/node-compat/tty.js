@@ -1,49 +1,9 @@
-import { clearLine, clearScreenDown, cursorTo, moveCursor } from './readline.js';
-import { Readable, Writable } from './stream.js';
+import { createTty } from './tty-streams.js';
 /**
- * Node.js `tty` module shim for Lifo.
- *
- * In the browser there is no real TTY, so ReadStream/WriteStream behave like
- * plain streams with the TTY-specific properties stubbed to sensible defaults.
+ * Node.js `tty` module shim for Lifo, as lifo's public module: the streams
+ * tty-streams.ts makes, which a program's module map makes when it requires
+ * tty (this module loads the engine's stream module as it loads).
  */
-export class ReadStream extends Readable {
-    isTTY = true;
-    isRaw = false;
-    setRawMode(_mode) {
-        // no-op – raw mode is not applicable in the browser
-        return this;
-    }
-}
-export class WriteStream extends Writable {
-    isTTY = true;
-    columns = 80;
-    rows = 24;
-    // As Node's tty.WriteStream: each cursor method is readline's, on this stream.
-    clearLine(dir, cb) {
-        return clearLine(this, dir, cb);
-    }
-    clearScreenDown(cb) {
-        return clearScreenDown(this, cb);
-    }
-    cursorTo(x, y, cb) {
-        return cursorTo(this, x, y, cb);
-    }
-    moveCursor(dx, dy, cb) {
-        return moveCursor(this, dx, dy, cb);
-    }
-    getColorDepth() {
-        return 8; // 256 colours – reasonable default for a virtual terminal
-    }
-    hasColors(count) {
-        if (count === undefined)
-            return true;
-        return count <= 256;
-    }
-    getWindowSize() {
-        return [this.columns, this.rows];
-    }
-}
-export function isatty(_fd) {
-    return false;
-}
-export default { ReadStream, WriteStream, isatty };
+const tty = createTty();
+export const { ReadStream, WriteStream, isatty } = tty;
+export default tty;

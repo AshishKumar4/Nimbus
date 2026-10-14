@@ -1,7 +1,21 @@
+import { EventEmitter } from 'node:events';
+import type { Writable } from 'node:stream';
 import type { CommandOutputStream } from '../commands/types.js';
+import { type WarningConstructor, type WarningOptions } from '../../../_shared/node-warning.js';
 export declare class ProcessExitError extends Error {
     exitCode: number;
     constructor(code: number);
+}
+/**
+ * A program's process: an emitter, as Node's is. Its stdout and stderr are
+ * made when the program first reaches them: a Writable costs the engine's
+ * stream module, which a program that only logs never loads.
+ */
+export declare class LifoProcess extends EventEmitter {
+    #private;
+    constructor(output: CommandOutputStream, errorOutput: CommandOutputStream);
+    get stdout(): Writable;
+    get stderr(): Writable;
 }
 export interface ProcessOptions {
     argv: string[];
@@ -10,7 +24,11 @@ export interface ProcessOptions {
     stdout: CommandOutputStream;
     stderr: CommandOutputStream;
 }
-export declare function createProcess(opts: ProcessOptions): {
+export declare function createProcess(opts: ProcessOptions): LifoProcess & {
+    noDeprecation?: boolean;
+    throwDeprecation?: boolean;
+    traceDeprecation?: boolean;
+    traceProcessWarnings?: boolean;
     argv: string[];
     argv0: string;
     env: {
@@ -19,24 +37,6 @@ export declare function createProcess(opts: ProcessOptions): {
     cwd: () => string;
     chdir: (_dir: string) => never;
     exit: (code?: number) => never;
-    stdout: {
-        write: (data: string) => boolean;
-        isTTY: boolean;
-        fd: number;
-        bytesWritten: number;
-        columns: number;
-        on: () => void;
-        once: () => void;
-    };
-    stderr: {
-        write: (data: string) => boolean;
-        isTTY: boolean;
-        fd: number;
-        bytesWritten: number;
-        columns: number;
-        on: () => void;
-        once: () => void;
-    };
     stdin: {
         isTTY: boolean;
         fd: number;
@@ -74,11 +74,11 @@ export declare function createProcess(opts: ProcessOptions): {
         name: string;
     };
     config: {};
-    emitWarning: (msg: string) => void;
-    getuid: () => number;
-    getgid: () => number;
-    geteuid: () => number;
-    getegid: () => number;
+    emitWarning: (warning: string | Error, type?: string | WarningOptions | WarningConstructor, code?: string | WarningConstructor, ctor?: WarningConstructor) => void;
+    getuid: () => 1000;
+    getgid: () => 1000;
+    geteuid: () => 1000;
+    getegid: () => 1000;
     umask: (mask?: number) => number;
     binding: (name: string) => {
         errname: (code: number) => string;
@@ -99,20 +99,6 @@ export declare function createProcess(opts: ProcessOptions): {
         errname?: undefined;
         UV_EOF?: undefined;
     };
-    on: (event: string, fn: (...args: unknown[]) => void) => /*elided*/ any;
-    addListener: (event: string, fn: (...args: unknown[]) => void) => /*elided*/ any;
-    once: (event: string, fn: (...args: unknown[]) => void) => /*elided*/ any;
-    off: (event: string, fn: (...args: unknown[]) => void) => /*elided*/ any;
-    removeListener: (event: string, fn: (...args: unknown[]) => void) => /*elided*/ any;
-    removeAllListeners: (event?: string) => /*elided*/ any;
-    listeners: (event: string) => ((...args: unknown[]) => void)[];
-    emit: (event: string, ...args: unknown[]) => boolean;
-    listenerCount: (event: string) => number;
-    setMaxListeners: () => /*elided*/ any;
-    getMaxListeners: () => number;
-    prependListener: (event: string, fn: (...args: unknown[]) => void) => /*elided*/ any;
-    rawListeners: (event: string) => ((...args: unknown[]) => void)[];
-    eventNames: () => string[];
     allowedNodeEnvironmentFlags: Set<string>;
     features: {
         inspector: boolean;

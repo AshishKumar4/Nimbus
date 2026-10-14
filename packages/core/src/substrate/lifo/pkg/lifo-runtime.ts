@@ -1,3 +1,6 @@
+import type { AsyncLocalStorage } from 'node:async_hooks';
+import { Buffer } from 'node:buffer';
+import realm from 'node:process';
 import { synchronousFilesystem } from '../node-compat/filesystem.js';
 /**
  * Lifo Runtime -- enhanced execution context for lifo-native packages.
@@ -15,10 +18,10 @@ import type { ProcessView as VFS } from '../../../runtime/process-files.js';
 import { resolve, dirname, join } from '../utils/path.js';
 import { createProcess } from '../node-compat/process.js';
 import { createConsole } from '../node-compat/console.js';
-import { Buffer } from '../node-compat/buffer.js';
 import { ProcessExitError } from '../node-compat/index.js';
 import { createCjsLoader } from '../node-compat/cjs-loader.js';
 import { createNativeEsmLoader } from '../node-compat/native-esm-loader.js';
+import { leaveStandardStreamsOpen } from '../node-compat/standard-streams.js';
 import { containsModuleSyntax } from '../../../runtime/javascript-ast.js';
 import type { NodeContext } from '../node-compat/index.js';
 
@@ -201,12 +204,49 @@ async function executeCjsCommand(
     filename: entryPath,
     dirname: dirname(entryPath),
     signal: ctx.signal,
+    reachStreams: leaveStandardStreamsOpen,
   };
-  const loader = createCjsLoader(nodeCtx, () => ({
+  const scope = {
     process: createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdout: ctx.stdout, stderr: ctx.stderr }),
     console: createConsole(ctx.stdout, ctx.stderr),
-  }));
+  };
+  const loader = createCjsLoader(nodeCtx, scope);
+  return commandsRunning().run(scope.process, () => runCjsCommand(entryPath, source, ctx, lifo, nodeCtx, loader));
+}
 
+/**
+ * The CommonJS command whose code is running. The commands run in the
+ * shell's realm, whose process is the host's, so a warning the engine's own
+ * builtins raise for one (util.deprecate, Buffer()) is raised on the host's
+ * process; its emitWarning, wrapped once, gives it to the command's process,
+ * as Node delivers a warning to the process that raised it, and to the
+ * host's own outside the commands.
+ */
+let running: AsyncLocalStorage<CommandProcess> | undefined;
+type CommandProcess = ReturnType<typeof createProcess>;
+
+function commandsRunning(): AsyncLocalStorage<CommandProcess> {
+  if (running !== undefined) return running;
+  const { AsyncLocalStorage } = realm.getBuiltinModule('node:async_hooks');
+  const commands = new AsyncLocalStorage<CommandProcess>();
+  const hostEmitWarning = realm.emitWarning;
+  realm.emitWarning = (...warning) => {
+    const command = commands.getStore();
+    if (command === undefined) hostEmitWarning.call(realm, ...warning);
+    else command.emitWarning(...warning);
+  };
+  running = commands;
+  return commands;
+}
+
+async function runCjsCommand(
+  entryPath: string,
+  source: string,
+  ctx: CommandContext,
+  lifo: LifoAPI,
+  nodeCtx: NodeContext,
+  loader: ReturnType<typeof createCjsLoader>,
+): Promise<number> {
   let native: Awaited<ReturnType<typeof createNativeEsmLoader>> | undefined;
   try {
     native = await createNativeEsmLoader(nodeCtx, loader);
