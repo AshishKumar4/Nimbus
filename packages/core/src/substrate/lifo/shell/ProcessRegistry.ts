@@ -20,9 +20,6 @@ export interface Process {
   /** Working directory when process started */
   cwd: string;
 
-  /** Environment variables */
-  env: Record<string, string>;
-
   /** Process start time (milliseconds since epoch) */
   startTime: number;
 
@@ -58,9 +55,6 @@ export interface SpawnOptions {
   /** Working directory */
   cwd: string;
 
-  /** Environment variables */
-  env: Record<string, string>;
-
   /** Whether this is a foreground process */
   isForeground: boolean;
 
@@ -88,11 +82,10 @@ export class ProcessRegistry {
   private nextPid = 2; // PID 1 reserved for shell
   private shellAbortController: AbortController | null = null;
 
-  registerShell(cwd: string, env: Record<string, string>): number {
+  registerShell(cwd: string): number {
     const existing = this.processes.get(1);
     if (existing) {
       existing.cwd = cwd;
-      existing.env = { ...env };
       return existing.pid;
     }
 
@@ -103,7 +96,6 @@ export class ProcessRegistry {
       command: 'shell',
       args: ['shell'],
       cwd,
-      env: { ...env },
       startTime: Date.now(),
       status: 'running',
       isForeground: true,
@@ -131,7 +123,6 @@ export class ProcessRegistry {
       command: opts.command,
       args: opts.args,
       cwd: opts.cwd,
-      env: opts.env,
       startTime: Date.now(),
       status: 'running',
       isForeground: opts.isForeground,

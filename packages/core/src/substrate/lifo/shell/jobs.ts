@@ -52,7 +52,7 @@ export class JobTable {
   constructor(private readonly processes: ProcessRegistry) {}
 
   /** Run `promise` as a background job: a process in the table, numbered as bash numbers jobs. Its pid and number. */
-  start(options: { command: string; cwd: string; env: Record<string, string>; promise: Promise<number>; abortController: AbortController }): { pid: number; id: number } {
+  start(options: { command: string; cwd: string; promise: Promise<number>; abortController: AbortController }): { pid: number; id: number } {
     // bash: one more than the highest job still in the table.
     const id = Math.max(0, ...this.jobs.keys()) + 1;
     this.waited.delete(id);
@@ -60,7 +60,6 @@ export class JobTable {
       command: options.command.split(' ')[0] || 'unknown',
       args: options.command.split(' '),
       cwd: options.cwd,
-      env: options.env,
       isForeground: false,
       promise: options.promise,
       abortController: options.abortController,

@@ -483,7 +483,6 @@ export class Interpreter {
       const { pid, id: jobId } = this.config.jobTable.start({
         command: commandText,
         cwd: this.config.getCwd(),
-        env: { ...this.config.env },
         promise,
         abortController,
       });
@@ -1174,7 +1173,6 @@ export class Interpreter {
         command: name,
         args: [name, ...args],
         cwd: spec.cwd,
-        env: { ...spec.env },
         isForeground: true,
         promise: registeredPromise,
         abortController,
