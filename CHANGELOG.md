@@ -23,7 +23,8 @@ published independently in the `@nimbus-sh` npm scope.
   name only, and a launcher is not a program GNU Bash (`bash -c`) can run.
   A runtime's name and version must each be one path name, and a
   configured `env.HOME` may not be inside `/usr/lib/nimbus` or `/.nimbus`,
-  the system's own stores. A
+  the system's own stores, nor be made through a link (a home already
+  there is left as it is). A
   configured `env.HOME` no longer chooses where runtimes go. The `root` a
   runtime list or install reports, and the paths `nimbus install` prints,
   are the new ones. Runtimes an earlier release installed below
