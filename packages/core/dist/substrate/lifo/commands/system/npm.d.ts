@@ -84,6 +84,18 @@ export interface NpmInstallPort {
         pid: number;
         packages: readonly string[];
     }): Promise<void>;
+    /**
+     * The hold the host's installs take on the tree at `modulesDir` (core
+     * npm-tree.ts holdTree), for a command that changes it otherwise (`npm
+     * uninstall`): one change to a tree at a time. Answers its release; one
+     * that `signal` stops while it waits never holds it. A host with none
+     * shares the shell's own installs' hold.
+     */
+    hold?(spec: {
+        modulesDir: string;
+        pid: number;
+        signal: AbortSignal;
+    }): Promise<() => void>;
 }
 export interface NpmCommandDeps {
     installer?: NpmInstallPort;

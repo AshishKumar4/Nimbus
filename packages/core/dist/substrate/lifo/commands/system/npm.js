@@ -491,9 +491,7 @@ function shellInstallPort(ctx, registry, kernel) {
             };
             // The project's package.json is read and written under the tree's
             // hold, so two installs at once add to it one after the other.
-            const canonical = await canonicalTreePath((path) => vfs.realpath(path), targetBase);
-            const held = holdTree(kernel ?? NO_KERNEL, canonical, signal);
-            const release = typeof held === 'function' ? held : await held;
+            const release = await holdShellTree(vfs, kernel, targetBase, signal);
             try {
                 if (globalBinDir) {
                     for (const dir of [targetBase, globalBinDir])
@@ -523,6 +521,11 @@ function shellInstallPort(ctx, registry, kernel) {
             }
         },
     };
+}
+/** The tree at `modulesDir` held for one change (holdTree), by its canonical path, in the shell's namespace: its kernel's. */
+async function holdShellTree(vfs, kernel, modulesDir, signal) {
+    const held = holdTree(kernel ?? NO_KERNEL, await canonicalTreePath((path) => vfs.realpath(path), modulesDir), signal);
+    return typeof held === 'function' ? held : await held;
 }
 /** npm's prefix resolution: --prefix wins, then npm_config_prefix, then
  *  /usr/local; a relative value resolves against cwd. Absolute result. */
@@ -555,13 +558,16 @@ async function npmInvocation(ctx) {
  * whether it was installed or not (add-rm-pkg-deps rm). `-g`: from the
  * global prefix, its bins from the prefix's bin directory; `--no-save`
  * leaves package.json as it is. The host's records of the bins go too (its
- * port's unlinkBins). package.json is read first: one it cannot read fails
- * the command before anything changes, one it cannot write fails it; one
- * that is not a JSON object is left as it is. A package it cannot reach or
- * remove fails the command, and the others go on. Unlike npm's reify, what
- * only a removed package depended on stays installed.
+ * port's unlinkBins). All of it happens under the hold an install into the
+ * tree takes (its port's hold), so an install and an uninstall at once each
+ * see the tree, its bins and package.json whole. package.json is read
+ * first: one it cannot read fails the command before anything changes, one
+ * it cannot write fails it; one that is not a JSON object is left as it
+ * is. A package it cannot reach or remove fails the command, and the others
+ * go on. Unlike npm's reify, what only a removed package depended on stays
+ * installed.
  */
-async function npmUninstall(ctx, deps) {
+async function npmUninstall(ctx, kernel, deps) {
     const startedAt = Date.now();
     const { names, prefix, save } = await npmInvocation(ctx);
     if (names.length === 0) {
@@ -569,70 +575,80 @@ async function npmUninstall(ctx, deps) {
         return 1;
     }
     const modulesDir = prefix === null ? join(ctx.cwd, 'node_modules') : `${prefix}/lib/node_modules`;
-    const binDir = prefix === null ? join(modulesDir, '.bin') : `${prefix}/bin`;
-    const pkgPath = join(ctx.cwd, 'package.json');
-    let project = null;
-    if (prefix === null && save) {
-        try {
-            const text = await ctx.vfs.readFileString(pkgPath);
-            const read = readPackageJson(text);
-            if (read !== null)
-                project = { text, json: read.json };
-        }
-        catch (error) {
-            if (!isVfsError(error, 'ENOENT')) {
-                await ctx.stderr.write(`npm ERR! could not update package.json: ${describeError(error)}\n`);
-                return 1;
-            }
-        }
-    }
-    // A package it cannot reach or remove fails the command, and the rest go on.
-    const removed = [];
-    let failed = false;
-    for (const name of names) {
-        const dir = join(modulesDir, name);
-        try {
-            if ((await ctx.vfs.stat(dir, { follow: false })) === null)
-                continue;
-            const manifest = (await packageJsonIn(ctx.vfs, dir))?.json;
-            const own = manifest?.name;
-            await ctx.vfs.remove(dir, { recursive: true, force: true });
-            for (const bin of npmBinMap(typeof own === 'string' ? own : name, manifest?.bin).keys())
-                await ctx.vfs.remove(join(binDir, bin), { force: true });
-            removed.push(name);
-        }
-        catch (error) {
-            await ctx.stderr.write(`npm ERR! could not remove ${name}: ${describeError(error)}\n`);
-            failed = true;
-        }
-    }
-    const unlinkBins = deps?.installer?.unlinkBins;
-    if (removed.length > 0 && unlinkBins !== undefined) {
-        try {
-            await unlinkBins({ modulesDir, globalBinDir: prefix === null ? undefined : binDir, pid: ctx.pid, packages: removed });
-        }
-        catch (error) {
-            await ctx.stderr.write(`npm ERR! could not remove the bins of ${removed.join(', ')}: ${describeError(error)}\n`);
-            failed = true;
-        }
-    }
-    if (project !== null) {
-        const text = packageJsonText(withoutDeclared(project.json, names), project.text);
-        if (text.trim() !== project.text.trim()) {
+    // The tree, its bins and package.json change under the hold installs into the tree take.
+    const hold = deps?.installer?.hold;
+    const release = hold === undefined
+        ? await holdShellTree(ctx.vfs, kernel, modulesDir, ctx.signal)
+        : await hold({ modulesDir, pid: ctx.pid, signal: ctx.signal });
+    try {
+        const binDir = prefix === null ? join(modulesDir, '.bin') : `${prefix}/bin`;
+        const pkgPath = join(ctx.cwd, 'package.json');
+        let project = null;
+        if (prefix === null && save) {
             try {
-                await deps?.beforeWrite?.(ctx, pkgPath);
-                await ctx.vfs.writeFile(pkgPath, text);
+                const text = await ctx.vfs.readFileString(pkgPath);
+                const read = readPackageJson(text);
+                if (read !== null)
+                    project = { text, json: read.json };
             }
             catch (error) {
-                await ctx.stderr.write(`npm ERR! could not update package.json: ${describeError(error)}\n`);
-                return 1;
+                if (!isVfsError(error, 'ENOENT')) {
+                    await ctx.stderr.write(`npm ERR! could not update package.json: ${describeError(error)}\n`);
+                    return 1;
+                }
             }
         }
+        // A package it cannot reach or remove fails the command, and the rest go on.
+        const removed = [];
+        let failed = false;
+        for (const name of names) {
+            const dir = join(modulesDir, name);
+            try {
+                if ((await ctx.vfs.stat(dir, { follow: false })) === null)
+                    continue;
+                const manifest = (await packageJsonIn(ctx.vfs, dir))?.json;
+                const own = manifest?.name;
+                await ctx.vfs.remove(dir, { recursive: true, force: true });
+                for (const bin of npmBinMap(typeof own === 'string' ? own : name, manifest?.bin).keys())
+                    await ctx.vfs.remove(join(binDir, bin), { force: true });
+                removed.push(name);
+            }
+            catch (error) {
+                await ctx.stderr.write(`npm ERR! could not remove ${name}: ${describeError(error)}\n`);
+                failed = true;
+            }
+        }
+        const unlinkBins = deps?.installer?.unlinkBins;
+        if (removed.length > 0 && unlinkBins !== undefined) {
+            try {
+                await unlinkBins({ modulesDir, globalBinDir: prefix === null ? undefined : binDir, pid: ctx.pid, packages: removed });
+            }
+            catch (error) {
+                await ctx.stderr.write(`npm ERR! could not remove the bins of ${removed.join(', ')}: ${describeError(error)}\n`);
+                failed = true;
+            }
+        }
+        if (project !== null) {
+            const text = packageJsonText(withoutDeclared(project.json, names), project.text);
+            if (text.trim() !== project.text.trim()) {
+                try {
+                    await deps?.beforeWrite?.(ctx, pkgPath);
+                    await ctx.vfs.writeFile(pkgPath, text);
+                }
+                catch (error) {
+                    await ctx.stderr.write(`npm ERR! could not update package.json: ${describeError(error)}\n`);
+                    return 1;
+                }
+            }
+        }
+        if (failed)
+            return 1;
+        await ctx.stdout.write(`\n${npmRemovedLine(removed.length, Date.now() - startedAt)}\n`);
+        return 0;
     }
-    if (failed)
-        return 1;
-    await ctx.stdout.write(`\n${npmRemovedLine(removed.length, Date.now() - startedAt)}\n`);
-    return 0;
+    finally {
+        release();
+    }
 }
 const byPkgid = new Intl.Collator('en');
 /**
@@ -941,7 +957,7 @@ export function createNpmCommand(registry, shellExecute, kernel, deps) {
             case 'remove':
             case 'rm':
             case 'un':
-                return (await npmUninstall(ctx, deps));
+                return (await npmUninstall(ctx, kernel, deps));
             case 'list':
             case 'ls':
                 return (await npmList(ctx));
