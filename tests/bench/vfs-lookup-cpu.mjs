@@ -87,17 +87,19 @@ try {
     };
     return { engine, root, store, namespace, process, paths, packagePaths, chainPaths, removal, seedRemoval };
   };
-  // Made in a random order, and run in one each pair: where an arm's heap and
-  // database landed moves it by as much as many deltas, which is then noise
-  // across runs rather than a bias of every run.
-  const sources = [baseline, source];
-  const arms = [];
-  for (const at of Math.random() < 0.5 ? [0, 1] : [1, 0]) arms[at] = await make(...await load(sources[at]));
   const shuffled = (items) => {
     const out = [...items];
     for (let i = out.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [out[i], out[j]] = [out[j], out[i]]; }
     return out;
   };
+  // A, the baseline; null, a second copy of the baseline, the A/A reference
+  // the branch's delta is judged against; real, the branch. Made in a random
+  // order and run in one each pair: where an arm's heap and database landed
+  // moves it by as much as many deltas, which is then noise across runs
+  // rather than a bias of every run.
+  const sources = { A: baseline, null: baseline, real: source };
+  const arms = {};
+  for (const name of shuffled(Object.keys(sources))) arms[name] = await make(...await load(sources[name]));
   const run = async ({ store, namespace, process, paths, packagePaths, chainPaths, removal }, kind) => {
     if (kind === 'walked-removal') {
       const report = removal.removeRecursive('/home/user/tree');
@@ -127,33 +129,34 @@ try {
     return (used.user + used.system) / 1000;
   };
   for (const kind of ['store', 'namespace', 'namespace-walk', 'store-linked', 'store-pnpm-chain', 'store-dot', 'store-link-parent', 'store-dot-lease', 'process-view', 'process-linked', 'walked-removal']) {
-    const leases = kind === 'store-dot-lease' ? arms.map((arm) => arm.engine.acquireExclusiveMutation('lease')) : [];
-    for (let warm = 0; warm < (kind === 'walked-removal' ? 2 : 12); warm++) for (const arm of arms) {
+    const leases = kind === 'store-dot-lease' ? Object.values(arms).map((arm) => [arm, arm.engine.acquireExclusiveMutation('lease')]) : [];
+    for (let warm = 0; warm < (kind === 'walked-removal' ? 2 : 12); warm++) for (const arm of Object.values(arms)) {
       if (kind === 'walked-removal') arm.seedRemoval();
       await run(arm, kind);
     }
     const pairs = [];
     for (let pair = 0; pair < PAIRS; pair++) {
       const samples = {};
-      // A1 and A2 run one copy of the code twice a pair, so B's runs twice
-      // too (W, untimed): a copy that ran half as often would sit at a colder
-      // JIT tier, and that bias is larger than many deltas.
-      for (const label of shuffled(['A1', 'B', 'A2', 'W'])) {
-        const used = await cpu(arms[label === 'B' || label === 'W' ? 1 : 0], kind);
-        if (label !== 'W') samples[label] = used;
+      // A1 and A2 run A's copy of the code twice a pair, so null's and real's
+      // run twice too (W, untimed): a copy that ran half as often would sit
+      // at a colder JIT tier, and that bias is larger than many deltas.
+      for (const label of shuffled(['A1', 'A2', 'null', 'Wnull', 'real', 'Wreal'])) {
+        const used = await cpu(arms[label.startsWith('A') ? 'A' : label.replace(/^W/, '')], kind);
+        if (!label.startsWith('W')) samples[label] = used;
       }
-      pairs.push({ ...samples, delta: samples.B - (samples.A1 + samples.A2) / 2 });
+      const A = (samples.A1 + samples.A2) / 2;
+      pairs.push({ ...samples, delta: samples.real - A, nullDelta: samples.null - A });
     }
     const result = {
       kind, iterations: kind === 'walked-removal' ? 2000 : ITERATIONS, pairs: PAIRS,
-      medianA: median(pairs.map(({ A1, A2 }) => (A1 + A2) / 2)), medianB: median(pairs.map(({ B }) => B)),
-      medianDelta: median(pairs.map((pair) => pair.delta)), medianAA: median(pairs.map((pair) => pair.A2 - pair.A1)), samples: pairs,
+      medianA: median(pairs.map(({ A1, A2 }) => (A1 + A2) / 2)), medianB: median(pairs.map(({ real }) => real)),
+      medianDelta: median(pairs.map((pair) => pair.delta)), medianNullDelta: median(pairs.map((pair) => pair.nullDelta)), samples: pairs,
     };
     results.push(result);
     writeFileSync(output, `${JSON.stringify(results, null, 2)}\n`);
     const { samples, ...summary } = result;
     console.log(JSON.stringify(summary));
-    for (let i = 0; i < leases.length; i++) arms[i].engine.releaseExclusiveMutation(leases[i].owner);
+    for (const [arm, lease] of leases) arm.engine.releaseExclusiveMutation(lease.owner);
   }
   assert.ok(checksum > 0);
 } finally {

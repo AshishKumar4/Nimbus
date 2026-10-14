@@ -33,13 +33,14 @@ const median = (values) => {
   return (sorted[Math.floor((sorted.length - 1) / 2)] + sorted[Math.floor(sorted.length / 2)]) / 2;
 };
 const quantile = (values, fraction) => [...values].sort((a, b) => a - b)[Math.floor(fraction * (values.length - 1))];
-// Each kind over the runs: the median of the runs' paired deltas, its
-// bootstrap interval, and the spread of the runs' A/A medians.
+// Each kind over the runs: the median of the runs' branch delta less their
+// null delta (a second copy of the baseline, paired with the same A), its
+// bootstrap interval, and the spread of the runs' null deltas, the A/A.
 const runs = run.outputs.filter((output) => output !== null).map((output) => JSON.parse(output));
 const verdicts = (runs[0] ?? []).map(({ kind }) => {
   const of = runs.map((results) => results.find((result) => result.kind === kind));
-  const deltas = of.map((result) => result.medianDelta);
-  const aa = of.map((result) => result.medianAA);
+  const deltas = of.map((result) => result.medianDelta - result.medianNullDelta);
+  const aa = of.map((result) => result.medianNullDelta);
   const boot = [];
   let state = 0x51_53;
   for (let sample = 0; sample < 3000; sample++) {
