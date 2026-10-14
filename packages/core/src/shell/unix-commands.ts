@@ -1681,7 +1681,9 @@ function mkXargs(): CmdFn {
 
     // Split stdin into items: -0's are literal; otherwise GNU's reading, a
     // line each with a replace string (see xargsItems).
-    const read = nullSep ? { items: input.split('\u0000').filter(Boolean), unmatched: null } : xargsItems(input, replaceTok !== null);
+    // The options' outcome: the replace string, if one stands.
+    const token: string | null = replaceTok;
+    const read = nullSep ? { items: input.split('\u0000').filter(Boolean), unmatched: null } : xargsItems(input, token !== null);
     const items = read.items;
 
     // The parent each child is started from: xargs itself, but for its stdin.
@@ -1702,9 +1704,9 @@ function mkXargs(): CmdFn {
       isFdTerminal: (fd) => fd !== 0 && (ctx.isFdTerminal?.(fd) ?? false),
       isFdPipe: (fd) => fd !== 0 && (ctx.isFdPipe?.(fd) ?? false),
     };
-    const batches = replaceTok !== null
+    const batches = token !== null
       // -I: one invocation per item, the token replaced in the initial args.
-      ? items.map((item) => cmdArgsInitial.map((a) => a.split(replaceTok).join(item)))
+      ? items.map((item) => cmdArgsInitial.map((a) => a.split(token).join(item)))
       : (() => {
         // -n N (or every item at once): items appended to the initial args.
         const step = Number.isFinite(batchSize) ? batchSize : items.length;
