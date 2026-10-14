@@ -202,10 +202,10 @@ async function executeCjsCommand(
     dirname: dirname(entryPath),
     signal: ctx.signal,
   };
-  const loader = createCjsLoader(nodeCtx, () => ({
+  const loader = createCjsLoader(nodeCtx, {
     process: createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdout: ctx.stdout, stderr: ctx.stderr }),
     console: createConsole(ctx.stdout, ctx.stderr),
-  }));
+  });
 
   let native: Awaited<ReturnType<typeof createNativeEsmLoader>> | undefined;
   try {

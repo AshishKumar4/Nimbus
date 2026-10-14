@@ -16,7 +16,9 @@
 // process.emitWarning reach its process's 'warning' listeners and are written
 // on its stderr as Node writes them. Red before: under Node a native
 // builtin's went to the realm's own process, the host's stderr, and lifo's
-// emitWarning wrote "Warning: <message>" and told no listener.
+// emitWarning wrote "Warning: <message>" and told no listener. One process:
+// a module's `process` is globalThis.process and require('process'), which
+// were each a process of their own.
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -75,14 +77,16 @@ const programs = {
     "import util, { inspect } from 'node:util';",
     "import { StringDecoder } from 'node:string_decoder';",
     "import { Buffer } from 'node:buffer';",
+    "import nodeProcess from 'node:process';",
   ], [
     "console.log(createHash('md5').update('esm').digest('hex'));",
     "console.log(inspect(new Map([['m', 1]])), util.format('%i', '7px'));",
     "console.log(new StringDecoder('hex').write(Buffer.from([1, 255])), Buffer.from('é', 'latin1').length);",
+    'console.log(nodeProcess === globalThis.process);',
   ]),
   'warnings.js': probes([
     "const util = require('util');",
-    'console.log(process.listenerCount(\'warning\'));',
+    'console.log(process.listenerCount(\'warning\'), process === globalThis.process, process === require(\'process\'), process === require(\'node:process\'));',
     "process.on('warning', (w) => console.log('heard', w.name, w.code, w.message, w instanceof Error));",
   ], [
     "const old = util.deprecate(() => 1, 'old thing', 'DEP_NIMBUS'); old(); old();",
