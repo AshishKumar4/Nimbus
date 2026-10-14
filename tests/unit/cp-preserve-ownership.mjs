@@ -47,6 +47,7 @@ try {
   kernel.writeFile('srv/s/sub/g', 'y');
   kernel.symlink('f', 'srv/s/l');
   kernel.chmod('srv/s/f', 0o640);
+  kernel.chmod('srv/s/sub/g', 0o640);
   kernel.chmod('srv/s/sub', 0o750);
   for (const path of ['srv/s', 'srv/s/f', 'srv/s/sub', 'srv/s/sub/g']) kernel.chown(path, 1001, 1002);
   kernel.chown('srv/s/l', 1003, 1004, { followSymlinks: false });
