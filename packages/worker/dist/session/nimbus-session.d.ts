@@ -791,6 +791,10 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
     _wakeRebuild: Promise<void> | null;
     /** The session's one build in flight (session/init.ts initSession). */
     building: Promise<void> | null;
+    /** The latest build's session usable: its own commands registered. */
+    usable: Promise<void> | null;
+    /** The latest build's shell started: its login files run. */
+    shellStarted: Promise<void> | null;
     ensureGlobalPrefixDirs(prefix: string, cred: Readonly<VfsCred>): void;
     /**
      * The starter content a fresh Nimbus session shows a user: the banner, the

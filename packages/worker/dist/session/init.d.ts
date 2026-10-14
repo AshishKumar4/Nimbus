@@ -32,6 +32,11 @@ export interface InitSessionOptions {
  * instance) waits on that build, and then has its socket joined to it,
  * rather than starting a second build that replaces the first's terminal,
  * workspace and shell process under it.
+ *
+ * `self.usable` settles first: once the session's own commands are
+ * registered, before the user's login files run, so a command those files
+ * run that needs the session (`nimbus app list`) finds it usable rather
+ * than waiting on the build that runs it.
  */
 export declare function initSession(self: InitHost, ws: WebSocket | null, options?: InitSessionOptions): Promise<void>;
 export {};

@@ -73,10 +73,13 @@ export function setPhase(self, toState, trigger) {
  * upgrade cannot count itself as the incumbent.
  */
 export function classifyWsUpgrade(self, sockets, now = Date.now()) {
-    // A session being built is joined once it is (init.ts initSession), never mid-build.
-    if (self.shell == null || self.terminal == null || self.kernel == null || self.building != null)
+    if (self.shell == null || self.terminal == null || self.kernel == null)
         return 'cold';
-    return hasLiveShellOwner(self.ctx, sockets, now) ? 'conflict' : 'warm-join';
+    // Another browser's live terminal holds it, built or being built.
+    if (hasLiveShellOwner(self.ctx, sockets, now))
+        return 'conflict';
+    // A session being built is joined once it is (init.ts initSession), never mid-build.
+    return self.building != null ? 'cold' : 'warm-join';
 }
 /**
  * [B'.5] Run the warm-rejoin path. Skips Phase B (kernel + shell are
