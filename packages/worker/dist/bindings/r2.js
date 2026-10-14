@@ -23,6 +23,7 @@
  * A sidecar from an older release has a sha256 etag and neither version nor
  * checksums: its etag stands for its version, and it has no checksums.
  */
+import { createHash } from 'node:crypto';
 import { z } from 'zod/v4';
 import { bodyStream, coerceBindingBody, ensureBindingDir } from './body.js';
 import { cursorAfter, cursorKey, listObjectFiles, objectFileName, objectStoreDir, removeObjectFiles, utf8Order } from './object-store.js';
@@ -49,13 +50,13 @@ const MAX_KEY_BYTES = 1024;
 const MAX_LIST_KEYS = 1000;
 /** The most objects a listing answers that includes metadata. */
 const MAX_LIST_KEYS_WITH_METADATA = 100;
-/** The digest each algorithm is, as R2 names it in a checksum error. */
+/** Each digest an object can carry, as R2 names it in a checksum error. */
 const HASHES = [
-    { name: 'md5', label: 'MD5', algorithm: 'MD5' },
-    { name: 'sha1', label: 'SHA-1', algorithm: 'SHA-1' },
-    { name: 'sha256', label: 'SHA-256', algorithm: 'SHA-256' },
-    { name: 'sha384', label: 'SHA-384', algorithm: 'SHA-384' },
-    { name: 'sha512', label: 'SHA-512', algorithm: 'SHA-512' },
+    { name: 'md5', label: 'MD5' },
+    { name: 'sha1', label: 'SHA-1' },
+    { name: 'sha256', label: 'SHA-256' },
+    { name: 'sha384', label: 'SHA-384' },
+    { name: 'sha512', label: 'SHA-512' },
 ];
 /** An error of R2's, as workerd's R2 client throws it: the action, the message, R2's code. */
 function r2Error(action, message, code) {
@@ -64,9 +65,6 @@ function r2Error(action, message, code) {
 function validateKey(action, key) {
     if (new TextEncoder().encode(key).byteLength > MAX_KEY_BYTES)
         throw r2Error(action, 'The specified object name is not valid.', 10020);
-}
-async function hexDigest(algorithm, body) {
-    return Array.from(new Uint8Array(await crypto.subtle.digest(algorithm, body)), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 function includesEtag(conditions, etag, comparison) {
     return conditions.some((c) => c.type === 'wildcard' || (c.value === etag && (c.type === 'strong' || comparison === 'weak')));
@@ -175,12 +173,12 @@ export class R2Emulator {
     }
     async put(key, value, options) {
         const body = await coerceBindingBody(value);
-        const checksums = { md5: await hexDigest('MD5', body) };
-        for (const { name, label, algorithm } of HASHES) {
+        const checksums = { md5: createHash('md5').update(body).digest('hex') };
+        for (const { name, label } of HASHES) {
             const provided = options.checksums?.[name];
             if (provided === undefined)
                 continue;
-            const computed = name === 'md5' ? checksums.md5 : await hexDigest(algorithm, body);
+            const computed = createHash(name).update(body).digest('hex');
             if (provided !== computed) {
                 throw r2Error('put', [
                     `The ${label} checksum you specified did not match what we received.`,

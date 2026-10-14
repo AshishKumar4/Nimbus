@@ -53,9 +53,9 @@ function named(type, name) {
 }
 const D1_SESSION_CONSTRAINT_FIRST_PRIMARY = 'first-primary';
 const D1_SESSION_CONSTRAINT_FIRST_UNCONSTRAINED = 'first-unconstrained';
-/** Thrown as d1-api throws: `<code>: <message>`, the bare message its cause. */
-function d1Error(code, message) {
-    return new Error(`${code}: ${message}`, { cause: new Error(message) });
+/** Thrown as d1-api throws: `<code>: <message>`, its cause the bare message unless it names another. */
+function d1Error(code, message, cause = message) {
+    return new Error(`${code}: ${message}`, { cause: new Error(cause) });
 }
 /** d1-api toArrayOfObjects: each row an object of its columns, a later column of a name winning. */
 function rowsAsObjects(answer) {
@@ -151,7 +151,7 @@ class D1PreparedStatement {
         if (column === undefined)
             return row;
         if (row[column] === undefined)
-            throw d1Error('D1_COLUMN_NOTFOUND', `Column not found (${column})`);
+            throw d1Error('D1_COLUMN_NOTFOUND', `Column not found (${column})`, 'Column not found');
         return row[column];
     }
     async run() {
@@ -533,14 +533,13 @@ class R2Bucket {
     }
     async list(options) {
         const listed = await this.#remote.list({ ...options });
-        const out = {
+        // In the order of workerd's R2Objects struct.
+        return {
             objects: listed.objects.map((object) => new HeadResult(object)),
             truncated: listed.truncated,
+            ...(listed.cursor === undefined ? {} : { cursor: listed.cursor }),
             delimitedPrefixes: listed.delimitedPrefixes,
         };
-        if (listed.cursor !== undefined)
-            out.cursor = listed.cursor;
-        return out;
     }
     async createMultipartUpload() {
         throw new Error('R2 multipart uploads are not supported under nimbus wrangler dev');
