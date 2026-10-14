@@ -87,8 +87,8 @@ class ClientRequest extends EventEmitter {
   private options: RequestOptions;
   private body = '';
   private aborted = false;
-  /** What abort() ends: the wait for a local server's answer among it. */
-  private readonly abortController = new AbortController();
+  /** What abort() ends: the wait for a local server's answer among it. Made when a wait needs it. */
+  private abortController: AbortController | null = null;
   private portRegistry?: Map<number, VirtualRequestHandler>;
   private routeLoopback?: LoopbackRouter;
   private protocol: 'http:' | 'https:';
@@ -121,7 +121,16 @@ class ClientRequest extends EventEmitter {
 
   abort(): void {
     this.aborted = true;
-    this.abortController.abort();
+    this.abortController?.abort();
+  }
+
+  /** This request's signal, which abort() aborts. */
+  private signal(): AbortSignal {
+    if (this.abortController === null) {
+      this.abortController = new AbortController();
+      if (this.aborted) this.abortController.abort();
+    }
+    return this.abortController.signal;
   }
 
   private async execute(): Promise<void> {
@@ -144,7 +153,7 @@ class ClientRequest extends EventEmitter {
           // As Node gives them to a server: header names lower-cased.
           const headers: Record<string, string> = {};
           for (const [name, value] of Object.entries(this.options.headers ?? {})) headers[name.toLowerCase()] = String(value);
-          const served = await serveFromPort(handler, { method, url: path, headers, body: hasBody ? this.body : '' }, this.abortController.signal);
+          const served = await serveFromPort(handler, { method, url: path, headers, body: hasBody ? this.body : '' }, () => this.signal());
           if (served.kind === 'served') this.answerServed(served.response);
           else this.failed(served.kind, host, port);
           return;
@@ -156,7 +165,7 @@ class ClientRequest extends EventEmitter {
             method,
             headers: this.options.headers,
             body: hasBody ? this.body : undefined,
-            signal: this.abortController.signal,
+            signal: this.signal(),
           }),
         );
         if (result.kind === 'response') await this.answer(result.response);
