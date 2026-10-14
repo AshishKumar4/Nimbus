@@ -2,9 +2,9 @@ import { type CredentialedVfs, type DelegationTerms, type SqliteVFS } from '../v
 import type { WriteStreamOptions } from './wave-contracts.js';
 import { WaveIngest } from './wave-ingest.js';
 import { type CompositeVFS } from '../vfs/composite.js';
-import { type Awaitable, type VfsRemoval } from '../vfs/vfs.js';
+import { type Awaitable, type VfsRemoval, type VfsStat } from '../vfs/vfs.js';
 export { fsError, modeAllows, walkBeneath, type BeneathLookup } from './beneath-walk.js';
-import type { RuntimeFileHandle, RuntimeOpenedFile, RuntimeFsPath, RuntimeReadOptions, RuntimeSynchronousFs, RuntimeFsBridge, RuntimeOpenFlags, RuntimeReopenTarget, RuntimeVfsDirEntry, RuntimeVfsStat, VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeMutationOwner, ExclusiveMutationGrant, ExclusiveMutationRequest } from './os-contracts.js';
+import type { RuntimeFileHandle, RuntimeOpenedFile, RuntimeFsPath, RuntimeReadFileOptions, RuntimeReadOptions, RuntimeSynchronousFs, RuntimeFsBridge, RuntimeOpenFlags, RuntimeReopenTarget, RuntimeVfsDirEntry, RuntimeVfsStat, VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeMutationOwner, ExclusiveMutationGrant, ExclusiveMutationRequest } from './os-contracts.js';
 export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     private readonly rawVfs;
     private readonly scope;
@@ -46,10 +46,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     stat(path: RuntimeFsPath, options?: {
         followSymlinks?: boolean;
     }): RuntimeVfsStat | null;
-    readFile(path: RuntimeFsPath, options?: {
-        followSymlinks?: boolean;
-        cached?: boolean;
-    }): Uint8Array | null;
+    readFile(path: RuntimeFsPath, options?: RuntimeReadFileOptions): Uint8Array | null;
     /** Before a cut of a mounted file (a truncate, a whole-file write): the writes this process holds on it, written (settleHeldAt). */
     private settleAt;
     /** A mounted file as this process sees it, its pending writes applied (processView); undefined when it holds none. */
@@ -217,4 +214,6 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     fchown(handleId: number, uid: number, gid: number): void;
     futimes(handleId: number, atime: number, mtime: number): void;
 }
+/** readFile's `maxBytes`: a regular file of at most `maxBytes` bytes is read whole; a directory answers as readFile does. */
+export declare function fitsWholeRead(stat: Pick<VfsStat, 'type' | 'size' | 'mode'>, maxBytes: number): boolean;
 //# sourceMappingURL=sqlite-runtime-fs-bridge.d.ts.map

@@ -160,6 +160,16 @@ export type RuntimeFsPath = string | {
     readonly path: string;
     readonly beneath: true;
 };
+export interface RuntimeReadFileOptions {
+    followSymlinks?: boolean;
+    cached?: boolean;
+    /**
+     * Read only a regular file of at most this many bytes, whole, as the one
+     * file the name leads to: a larger one, or one that is not a regular file
+     * (a device), answers EFBIG, unread, for its reader to open instead.
+     */
+    maxBytes?: number;
+}
 export interface RuntimeReadOptions {
     followSymlinks?: boolean;
     cached?: boolean;
@@ -280,10 +290,7 @@ export interface RuntimeFsBridge {
     stat(path: RuntimeFsPath, options?: {
         followSymlinks?: boolean;
     }): Awaitable<RuntimeVfsStat | null>;
-    readFile(path: RuntimeFsPath, options?: {
-        followSymlinks?: boolean;
-        cached?: boolean;
-    }): Awaitable<Uint8Array | null>;
+    readFile(path: RuntimeFsPath, options?: RuntimeReadFileOptions): Awaitable<Uint8Array | null>;
     /**
      * Whole-file write. Returns the revision the write produced, so a caller
      * holding the bytes it just sent can tell its own mutation apart from a

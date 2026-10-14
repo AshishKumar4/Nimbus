@@ -4,7 +4,7 @@
  * with TextDecoder would turn it into U+FFFD, three different bytes.
  */
 import { readToEnd } from '../../../runtime/process-files.js';
-import { syscallError } from '../../../vfs/vfs-error.js';
+import { isVfsError, syscallError } from '../../../vfs/vfs-error.js';
 import { resolve } from './path.js';
 import { direntTypeOfStat } from '../../../vfs/dirent-type.js';
 const enc = new TextEncoder();
@@ -30,10 +30,22 @@ export async function* inputChunks(ctx, operand, { readSize = CHUNK, fileReadSiz
             yield encodeLossless(text);
         return;
     }
-    // One description of the operand from the first byte to a read that
-    // answers none (its end), closed however the reader stops: the bytes are
-    // one file's, the one the open found, whatever its name names after.
     const path = resolve(ctx.cwd, operand);
+    // A file one read holds is read whole, in one call, as the one file the
+    // name leads to; a larger one, or a device, through one description from
+    // its first byte to a read that answers none (its end), closed however the
+    // reader stops: either way the bytes are one file's, whatever the name
+    // names after.
+    try {
+        const bytes = await ctx.vfs.readFile(path, { maxBytes: fileReadSize });
+        if (bytes.length > 0)
+            yield bytes;
+        return;
+    }
+    catch (error) {
+        if (!isVfsError(error) || error.code !== 'EFBIG')
+            throw error;
+    }
     const file = await ctx.vfs.open(path, { read: true });
     try {
         if (file.stat.type === 'directory')

@@ -233,7 +233,10 @@ export declare class ProcessView implements VFS {
     isSymlink(path: string): Promise<boolean>;
     /** The file's bytes as UTF-8 text. */
     readFileString(path: string): Promise<string>;
-    readFile(path: string): Promise<Uint8Array>;
+    /** `maxBytes`: only a regular file of at most that many bytes, read whole; a larger one or a device is EFBIG, unread (RuntimeReadFileOptions). */
+    readFile(path: string, options?: {
+        maxBytes?: number;
+    }): Promise<Uint8Array>;
     /**
      * Text is written as UTF-8, as a process's write(2) of a string would.
      * `mode` applies only if this creates the file, and at creation

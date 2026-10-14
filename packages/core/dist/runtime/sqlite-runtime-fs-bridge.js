@@ -3,7 +3,7 @@ import { BUFFERED_WRITE_BYTES, describeMounted, flagsRefusal, openAccess, openFo
 import { closeDescriptions, closeScopeSignal, createDescriptorScope, Descriptors, openFlags, processView, reportLost, settleHeldAt } from './descriptors.js';
 import { WaveIngest } from './wave-ingest.js';
 import { runtimeStatOf } from '../vfs/composite.js';
-import { abandon, andThen, isPromise, readDeclaredSource, readRangeOrWhole, syncValue } from '../vfs/vfs.js';
+import { abandon, andThen, isCharacterDevice, isPromise, readDeclaredSource, readRangeOrWhole, syncValue } from '../vfs/vfs.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
 import { fsError, MAX_LINK_HOPS, modeAllows, walkBeneath } from './beneath-walk.js';
 export { fsError, modeAllows, walkBeneath } from './beneath-walk.js';
@@ -144,6 +144,13 @@ export class SqliteRuntimeFsBridge {
             if (located === null || located.absent)
                 return null;
             try {
+                if (options.maxBytes !== undefined) {
+                    const stat = located.mount ? located.mount.stat(located.path, { follow: true }) : this.vfs.stat(located.path);
+                    if (stat === null)
+                        return null;
+                    if (!fitsWholeRead(stat, options.maxBytes))
+                        throw fsError('EFBIG', 'read', path);
+                }
                 // cached === false reads straight from SQL, neither consulting nor
                 // populating the LRU: a whole runtime image is read once for a
                 // facet's module map, never re-read from this isolate. Mount
@@ -1077,4 +1084,8 @@ function called(call, run) {
 }
 function hasErrorCode(error, code) {
     return typeof error === 'object' && error !== null && 'code' in error && error.code === code;
+}
+/** readFile's `maxBytes`: a regular file of at most `maxBytes` bytes is read whole; a directory answers as readFile does. */
+export function fitsWholeRead(stat, maxBytes) {
+    return stat.type === 'directory' || (stat.type === 'file' && !isCharacterDevice(stat.mode) && stat.size <= maxBytes);
 }

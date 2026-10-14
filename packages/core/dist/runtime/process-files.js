@@ -31,7 +31,7 @@ import { normalizeVfsPath } from '../vfs/path.js';
 import { abandon, andThen, readDeclaredSource, readRangeOrWhole, readText } from '../vfs/vfs.js';
 import { formatProcMounts } from '../shell/mount-commands.js';
 import { CRED_KERNEL, isVfsCred, requireVfsCred, } from './os-contracts.js';
-import { fsError, modeAllows, SqliteRuntimeFsBridge, walkBeneath } from './sqlite-runtime-fs-bridge.js';
+import { fitsWholeRead, fsError, modeAllows, SqliteRuntimeFsBridge, walkBeneath } from './sqlite-runtime-fs-bridge.js';
 import { closeDescriptions, closeScopeSignal, createDescriptorScope, Descriptors, openFlags, processView, reportLost, scopeSignal, settleHeldAt } from './descriptors.js';
 import { BUFFERED_WRITE_BYTES, flagsRefusal, openFollows, openMounted, reopenMounted } from '../vfs/mounted-description.js';
 import { registerDirectoryReadBridge, directoryReadHandleClosed } from './read-directory-batch.js';
@@ -901,6 +901,11 @@ class AwaitingProcessBridge {
         return this.either([path], () => this.bridge.readFile(path, options), () => this.absent(async () => {
             const follow = options?.followSymlinks !== false;
             const name = await this.path(path, follow);
+            if (options?.maxBytes !== undefined) {
+                const stat = await this.namespace.stat(name, { follow });
+                if (stat !== null && !fitsWholeRead(stat, options.maxBytes))
+                    throw syscallError('EFBIG', 'read', name);
+            }
             return (await this.viewed(name, follow)) ?? this.namespace.readFile(name);
         }));
     }
@@ -1263,8 +1268,9 @@ export class ProcessView {
     async isSymlink(path) { return (await this.probe(path, false))?.type === 'symlink'; }
     /** The file's bytes as UTF-8 text. */
     async readFileString(path) { return await readText(this, path); }
-    async readFile(path) {
-        const bytes = await this.call('open', path, () => this.fs.readFile(path));
+    /** `maxBytes`: only a regular file of at most that many bytes, read whole; a larger one or a device is EFBIG, unread (RuntimeReadFileOptions). */
+    async readFile(path, options) {
+        const bytes = await this.call('open', path, () => this.fs.readFile(path, options));
         if (bytes === null)
             throw syscallError('ENOENT', 'open', path);
         return bytes;
