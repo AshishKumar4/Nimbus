@@ -37,12 +37,13 @@ export async function coerceBindingBody(value) {
     }
     return new TextEncoder().encode(String(value));
 }
-/** A stored body as a byte stream of one chunk. */
+/** A stored body as a byte stream of one chunk, or of none when it is empty (a byte stream refuses an empty chunk). */
 export function bodyStream(body) {
     return new ReadableStream({
         type: 'bytes',
         start(controller) {
-            controller.enqueue(body);
+            if (body.byteLength > 0)
+                controller.enqueue(body);
             controller.close();
         },
     });

@@ -302,6 +302,11 @@ export async function _rpcInnerDoCall(self, req) {
  * KV namespace's or R2 bucket's binding name, or its D1 database.
  */
 const StorageTargetSchema = z.object({ root: z.string(), store: z.string().min(1) });
+/** A Worker's D1 queries, as D1's binding contract carries them: a blob is its bytes. */
+const D1QueriesSchema = z.array(z.object({
+    sql: z.string(),
+    params: z.array(z.union([z.string(), z.number(), z.null(), z.array(z.number())])).optional(),
+}));
 /** A project's KV or R2 files, as the binding's credential (the process that started the server). */
 function storeFs(self, cred, op) {
     self.ensureSqliteFs();
@@ -325,7 +330,7 @@ export async function _rpcR2Call(self, target, call, cred) {
  */
 export async function _rpcD1Query(self, target, queries) {
     const { root, store } = StorageTargetSchema.parse(target);
-    return await d1Database(self.ctx, root, store).query(queries);
+    return await d1Database(self.ctx, root, store).query(D1QueriesSchema.parse(queries));
 }
 export async function _rpcWriteFile(self, path, content, pid, cred) {
     // binary-fs wave: the bridge's writeFile already accepts
