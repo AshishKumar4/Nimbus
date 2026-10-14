@@ -126,6 +126,14 @@ export type W7Call =
   | { call: 'rmdir'; path: string }
   | { call: 'symlink'; path: string; target: string; ino?: number }
   /**
+   * copyfile as the session copies a file: the file \`from\` names (a link
+   * followed) to \`path\` (a link there followed, a file there replaced),
+   * by reference within one filesystem and by its bytes across, no byte of
+   * it in the wave. The copy's mode is a copy's there: a new file the
+   * source's less the umask, a file there its own.
+   */
+  | { call: 'copyFile'; path: string; from: string }
+  /**
    * rm(1) as fs.rm makes it: a file or link unlinked, a directory with all
    * it holds when `recursive` (else EISDIR's refusal, as unlink's), and a
    * name not there no refusal when `force`.
@@ -1112,6 +1120,9 @@ function parsePathCall(value: Record<string, unknown>, path: (value: unknown, la
         call: 'symlink', path: path(value.path, 'symlink path'), target: boundedString(value.target, 'symlink target', MAX_PATH_BYTES),
         ...(value.ino === undefined ? {} : { ino: inodeNumber(value.ino, 'symlink ino') }),
       };
+    case 'copyFile':
+      if (keys !== 'call,from,path') break;
+      return { call: 'copyFile', path: path(value.path, 'copyFile path'), from: path(value.from, 'copyFile from') };
     case 'ftruncate':
       if (keys.replace(',description', '').replace(',ino', '') !== 'call,path,size') break;
       return {

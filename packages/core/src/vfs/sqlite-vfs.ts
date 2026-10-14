@@ -9439,6 +9439,7 @@ export class SqliteVFS {
           if (!(call.force && errnoCodeOf(error) === 'ENOENT')) throw error;
         }
       }
+      else if (call.call === 'copyFile') this.copyFile(call.from, call.path, cred);
       else if (call.call === 'lchown') this.chown(call.path, call.uid, call.gid, cred, false);
       else if (call.call === 'lutimes') this.utimes(call.path, call.atime, call.mtime, cred, false);
       else if (call.call === 'open') return this.openToWrite(call, cred, described);
