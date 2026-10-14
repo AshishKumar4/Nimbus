@@ -22,7 +22,7 @@
  * for TTL probes. Production reads Date.now() / 1000.
  */
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import { type KvCall, type KvGetOptions, type KvJson, type KvListOptions, type KvPutOptions } from '@nimbus-sh/fabric/inner-storage-env.js';
+import type { KvCall, KvGetOptions, KvJson, KvListOptions, KvPutOptions } from '@nimbus-sh/fabric/inner-storage-env.js';
 export interface KvEmulatorOptions {
     vfs: CredentialedVfs;
     root: string;

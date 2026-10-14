@@ -17,20 +17,27 @@
  * flag) over the binding's `query`, which is D1's binding contract; and an
  * R2Bucket as workerd's (r2-bucket.c++), whose objects it makes from the
  * fields the binding answers. Each checks its arguments, and throws, as
- * workerd does before it sends a request. A KV binding needs no adapter:
- * its methods take and answer values that cross RPC, streams included, so
- * the binding is the Worker's env.KV as it is (bindings.ts
- * NimbusKVNamespace).
+ * workerd does before it sends a request. A KV binding's calls and answers
+ * cross RPC as they are, streams included; its env.KV converts only the
+ * options, as workerd's KV client does before it sends them: an int by
+ * ToNumber (jsg-int.ts), which an object's valueOf answers, and whose
+ * function would not cross RPC as one.
  *
  * Self-contained: compiled with its dependencies into an expression at
  * build time, which runs in the inner isolate.
  */
+import { jsgInt } from './jsg-int.js';
 /**
  * The adapter, as it runs in the inner isolate: it replaces each of `names`
  * in `env` that holds the binding the loader passes with the platform's
  * local object over it.
  */
 export function innerStorageAdapter(names, env) {
+    for (const name of names.kv) {
+        const remote = Reflect.get(env, name);
+        if (isRemote(remote, ['get', 'getWithMetadata', 'put', 'delete', 'list']))
+            Reflect.set(env, name, new KVNamespace(remote));
+    }
     for (const name of names.d1) {
         const remote = Reflect.get(env, name);
         if (isRemote(remote, ['query']))
@@ -42,22 +49,6 @@ export function innerStorageAdapter(names, env) {
             Reflect.set(env, name, new R2Bucket(remote));
     }
 }
-/**
- * An option workerd takes as an `int` (jsg's int wrapper): the number it
- * converts to (ToNumber), 0 for one that is not finite, truncated; out of
- * int32's range, the TypeError workerd throws.
- */
-export function jsgInt(value) {
-    if (value === undefined)
-        return undefined;
-    const number = Number(value);
-    if (!Number.isFinite(number))
-        return 0;
-    if (number < -2147483648 || number > 2147483647) {
-        throw new TypeError('Value out of range. Must be between -2147483648 and 2147483647 (inclusive).');
-    }
-    return Math.trunc(number);
-}
 /** Whether `value` is the binding the loader passes, with each of `methods` (an RPC stub's methods are its properties). */
 function isRemote(value, methods) {
     return value !== null && (typeof value === 'object' || typeof value === 'function')
@@ -67,6 +58,63 @@ function isRemote(value, methods) {
 function named(type, name) {
     return Object.defineProperty(type, 'name', { value: name, configurable: true });
 }
+function kvGetOptions(options) {
+    if (options === undefined)
+        return undefined;
+    if (typeof options !== 'object')
+        return String(options);
+    const out = {};
+    if (options.type !== undefined)
+        out.type = String(options.type);
+    const cacheTtl = jsgInt(options.cacheTtl);
+    if (cacheTtl !== undefined)
+        out.cacheTtl = cacheTtl;
+    return out;
+}
+/** env.KV: the namespace's calls, their options converted as workerd's client converts them. */
+class KVNamespace {
+    #remote;
+    constructor(remote) {
+        this.#remote = remote;
+    }
+    get(key, options) {
+        return this.#remote.get(key, kvGetOptions(options));
+    }
+    getWithMetadata(key, options) {
+        return this.#remote.getWithMetadata(key, kvGetOptions(options));
+    }
+    put(key, value, options) {
+        if (options === undefined)
+            return this.#remote.put(key, value);
+        const out = {};
+        const expiration = jsgInt(options.expiration);
+        if (expiration !== undefined)
+            out.expiration = expiration;
+        const expirationTtl = jsgInt(options.expirationTtl);
+        if (expirationTtl !== undefined)
+            out.expirationTtl = expirationTtl;
+        if (options.metadata !== undefined)
+            out.metadata = options.metadata;
+        return this.#remote.put(key, value, out);
+    }
+    delete(key) {
+        return this.#remote.delete(key);
+    }
+    list(options) {
+        if (options === undefined)
+            return this.#remote.list();
+        const out = {};
+        const limit = jsgInt(options.limit);
+        if (limit !== undefined)
+            out.limit = limit;
+        if (options.prefix !== undefined && options.prefix !== null)
+            out.prefix = String(options.prefix);
+        if (options.cursor !== undefined && options.cursor !== null)
+            out.cursor = String(options.cursor);
+        return this.#remote.list(out);
+    }
+}
+named(KVNamespace, 'KvNamespace');
 const D1_SESSION_CONSTRAINT_FIRST_PRIMARY = 'first-primary';
 const D1_SESSION_CONSTRAINT_FIRST_UNCONSTRAINED = 'first-unconstrained';
 /** Thrown as d1-api throws: `<code>: <message>`, its cause the bare message unless it names another. */

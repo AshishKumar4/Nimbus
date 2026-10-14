@@ -17,16 +17,18 @@
  * flag) over the binding's `query`, which is D1's binding contract; and an
  * R2Bucket as workerd's (r2-bucket.c++), whose objects it makes from the
  * fields the binding answers. Each checks its arguments, and throws, as
- * workerd does before it sends a request. A KV binding needs no adapter:
- * its methods take and answer values that cross RPC, streams included, so
- * the binding is the Worker's env.KV as it is (bindings.ts
- * NimbusKVNamespace).
+ * workerd does before it sends a request. A KV binding's calls and answers
+ * cross RPC as they are, streams included; its env.KV converts only the
+ * options, as workerd's KV client does before it sends them: an int by
+ * ToNumber (jsg-int.ts), which an object's valueOf answers, and whose
+ * function would not cross RPC as one.
  *
  * Self-contained: compiled with its dependencies into an expression at
  * build time, which runs in the inner isolate.
  */
-/** The D1 and R2 bindings an inner Worker's env holds, by name. */
+/** The KV, D1 and R2 bindings an inner Worker's env holds, by name. */
 export interface InnerStorageNames {
+    kv: readonly string[];
     d1: readonly string[];
     r2: readonly string[];
 }
@@ -65,6 +67,14 @@ export type KvCall = {
     method: 'list';
     options?: KvListOptions;
 };
+/** The binding the loader passes for a KV namespace: KV's API, its options already converted. */
+export interface KvBindingRemote {
+    get(key: string | string[], options?: string | KvGetOptions): Promise<unknown>;
+    getWithMetadata(key: string | string[], options?: string | KvGetOptions): Promise<unknown>;
+    put(key: string, value: KvPutValue, options?: KvPutOptions): Promise<void>;
+    delete(key: string): Promise<void>;
+    list(options?: KvListOptions): Promise<unknown>;
+}
 /** A value as a statement carries it: a blob is its bytes, as numbers. */
 export type D1Value = string | number | null | number[];
 export interface D1QuerySql {
@@ -228,10 +238,4 @@ export interface R2BucketRemote {
  * local object over it.
  */
 export declare function innerStorageAdapter(names: InnerStorageNames, env: object): void;
-/**
- * An option workerd takes as an `int` (jsg's int wrapper): the number it
- * converts to (ToNumber), 0 for one that is not finite, truncated; out of
- * int32's range, the TypeError workerd throws.
- */
-export declare function jsgInt(value: number | string | undefined): number | undefined;
 //# sourceMappingURL=inner-storage-env.d.ts.map

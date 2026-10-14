@@ -22,7 +22,7 @@
  * for TTL probes. Production reads Date.now() / 1000.
  */
 import { z } from 'zod/v4';
-import { jsgInt } from '@nimbus-sh/fabric/inner-storage-env.js';
+import { jsgInt } from '@nimbus-sh/fabric/jsg-int.js';
 import { ensureBindingDir, fileStream, writeBody } from './body.js';
 import { cursorAfter, cursorKey, listObjectFiles, objectFileName, objectStoreDir, removeObjectFiles, uploadFileName, utf8Order } from './object-store.js';
 /** A key's sidecar, as the store wrote it. */
