@@ -1,86 +1,10 @@
-import { normalize, isAbsolute, join, resolve, dirname, basename, extname } from '../utils/path.js';
-export declare function relative(from: string, to: string): string;
-export interface ParsedPath {
-    root: string;
-    dir: string;
-    base: string;
-    ext: string;
-    name: string;
-}
-export declare function parse(path: string): ParsedPath;
-export declare function format(pathObj: Partial<ParsedPath>): string;
-export declare const sep = "/";
-export declare const delimiter = ":";
-export declare const posix: {
-    normalize: typeof normalize;
-    isAbsolute: typeof isAbsolute;
-    join: typeof join;
-    resolve: (...args: string[]) => string;
-    dirname: typeof dirname;
-    basename: typeof basename;
-    extname: typeof extname;
-    relative: typeof relative;
-    parse: typeof parse;
-    format: typeof format;
-    sep: string;
-    delimiter: string;
-};
-export declare const win32: {
-    normalize: typeof normalize;
-    isAbsolute: typeof isAbsolute;
-    join: typeof join;
-    resolve: (...args: string[]) => string;
-    dirname: typeof dirname;
-    basename: typeof basename;
-    extname: typeof extname;
-    relative: typeof relative;
-    parse: typeof parse;
-    format: typeof format;
-    sep: string;
-    delimiter: string;
-};
-export { normalize, isAbsolute, join, resolve, dirname, basename, extname };
-declare const _default: {
-    normalize: typeof normalize;
-    isAbsolute: typeof isAbsolute;
-    join: typeof join;
-    resolve: (...args: string[]) => string;
-    dirname: typeof dirname;
-    basename: typeof basename;
-    extname: typeof extname;
-    relative: typeof relative;
-    parse: typeof parse;
-    format: typeof format;
-    sep: string;
-    delimiter: string;
-    posix: {
-        normalize: typeof normalize;
-        isAbsolute: typeof isAbsolute;
-        join: typeof join;
-        resolve: (...args: string[]) => string;
-        dirname: typeof dirname;
-        basename: typeof basename;
-        extname: typeof extname;
-        relative: typeof relative;
-        parse: typeof parse;
-        format: typeof format;
-        sep: string;
-        delimiter: string;
-    };
-    win32: {
-        normalize: typeof normalize;
-        isAbsolute: typeof isAbsolute;
-        join: typeof join;
-        resolve: (...args: string[]) => string;
-        dirname: typeof dirname;
-        basename: typeof basename;
-        extname: typeof extname;
-        relative: typeof relative;
-        parse: typeof parse;
-        format: typeof format;
-        sep: string;
-        delimiter: string;
-    };
-};
-export default _default;
+import type { PlatformPath } from 'node:path';
+export * from 'node:path';
+export { default } from 'node:path';
+/**
+ * The engine's path against the program's working directory: resolve and
+ * relative start from `cwd`, as Node's start from process.cwd(), the
+ * engine's own process's, which is not the program's.
+ */
+export declare function createPath(cwd: string): PlatformPath;
 //# sourceMappingURL=path.d.ts.map

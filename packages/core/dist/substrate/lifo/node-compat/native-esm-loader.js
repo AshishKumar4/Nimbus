@@ -5,6 +5,7 @@
  * Node's require(esm) checks file/node/data specifiers before calling a hook,
  * so a private non-file scheme cannot serve a synchronous module graph.
  */
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createEsmResolver } from '../../../_shared/esm-resolver.js';
 import { cjsModuleExportNames } from '../../../runtime/cjs-module-exports.js';
 import { NODE_BUILTIN_EXPORTS } from '../../../runtime/node-builtin-exports.js';
@@ -14,7 +15,6 @@ import { applySourceEdits, containsModuleSyntax, isAstNode, MODULE_PARSE_OPTIONS
 import { builtinFacadeModule, bunScopeNames, commonJsFacadeModule, ESM_HOST_MODULE, ESM_META_MODULE, metaModuleSource, relativeSpecifier, stageEsModule, } from '../../../runtime/native-esm.js';
 import { requiredEsModule, sourceColumn } from '../../../runtime/native-esm-runtime.js';
 import { dirname } from '../utils/path.js';
-import { fileURLToPath, pathToFileURL } from './url.js';
 const PRIVATE_PATH = '/__nimbus_lifo__/';
 const PRIVATE_ROOT = `file://${PRIVATE_PATH}`;
 const ACCESSOR = '__nimbusLifoNativeModules';

@@ -1,37 +1,20 @@
-declare const NativeURL: typeof URL;
-declare const NativeURLSearchParams: typeof URLSearchParams;
-export { NativeURL as URL, NativeURLSearchParams as URLSearchParams };
-export declare function parse(urlString: string): {
-    protocol: string | null;
-    hostname: string | null;
-    port: string | null;
-    pathname: string;
-    search: string | null;
-    hash: string | null;
-    host: string | null;
-    href: string;
-    path: string;
-    query: string | null;
+export * from 'node:url';
+export { default } from 'node:url';
+/**
+ * The engine's url against the program's working directory: pathToFileURL of
+ * a relative path starts from `cwd`, as Node's starts from process.cwd(), the
+ * engine's own process's, which is not the program's.
+ */
+export declare function createUrl(cwd: string): {
+    pathToFileURL: (path: string, options?: {
+        windows?: boolean;
+    }) => URL;
+    fileURLToPath(url: string | URL, options?: {
+        windows?: boolean;
+    }): string;
+    default: {
+        pathToFileURL: typeof import("node:url").pathToFileURL;
+        fileURLToPath: typeof import("node:url").fileURLToPath;
+    };
 };
-export declare function format(urlObj: {
-    protocol?: string;
-    hostname?: string;
-    port?: string | number;
-    pathname?: string;
-    search?: string;
-    hash?: string;
-}): string;
-export declare function resolve(from: string, to: string): string;
-export declare function fileURLToPath(url: string | URL): string;
-export declare function pathToFileURL(path: string): URL;
-declare const _default: {
-    URL: typeof URL;
-    URLSearchParams: typeof URLSearchParams;
-    parse: typeof parse;
-    format: typeof format;
-    resolve: typeof resolve;
-    fileURLToPath: typeof fileURLToPath;
-    pathToFileURL: typeof pathToFileURL;
-};
-export default _default;
 //# sourceMappingURL=url.d.ts.map

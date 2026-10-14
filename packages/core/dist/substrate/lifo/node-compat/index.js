@@ -1,13 +1,13 @@
 import { Buffer } from 'node:buffer';
 import realm from 'node:process';
 import { createFs } from './fs.js';
-import pathModule from './path.js';
+import { createPath } from './path.js';
 import { createOs } from './os.js';
 import { createProcess } from './process.js';
 import { EventEmitter } from 'node:events';
 import { createHttp } from './http.js';
 import { createChildProcess } from './child_process.js';
-import * as urlModule from './url.js';
+import { createUrl } from './url.js';
 import * as timersModule from './timers.js';
 import * as zlibModule from './zlib.js';
 import * as ttyModule from './tty.js';
@@ -48,7 +48,7 @@ export function createModuleMap(ctx) {
     const map = {
         fs: () => createFs(ctx.filesystem(), ctx.cwd, ctx.stdin),
         'fs/promises': () => createFs(ctx.filesystem(), ctx.cwd, ctx.stdin).promises,
-        path: () => pathModule,
+        path: () => createPath(ctx.cwd),
         os: () => createOs(ctx.env),
         process: () => createProcess({
             argv: ctx.argv,
@@ -70,7 +70,7 @@ export function createModuleMap(ctx) {
         'stream/promises': () => realm.getBuiltinModule('node:stream/promises'),
         'stream/consumers': () => realm.getBuiltinModule('node:stream/consumers'),
         'stream/web': () => realm.getBuiltinModule('node:stream/web'),
-        url: () => urlModule,
+        url: () => createUrl(ctx.cwd),
         timers: () => timersModule,
         crypto: () => realm.getBuiltinModule('node:crypto'),
         zlib: () => zlibModule,
