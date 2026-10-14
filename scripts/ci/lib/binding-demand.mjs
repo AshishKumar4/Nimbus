@@ -1,13 +1,15 @@
 // The staged napi bindings users' installs need, and those no build provides.
 //
 // A staged binding loads only under its owner at the version it was built
-// from (packages/worker/src/runtime/staged-bindings.ts), and the version a
-// project installs is not ours to pick: `npm create astro` installs the
-// latest astro, whose ranges npm resolves to the newest published versions.
-// So the versions in demand are those ranges resolved, along each chain
-// from a consumer to a binding's owner (DEMAND), and a release whose
-// bindings miss one breaks every new project of that consumer
-// (scripts/ci/release.mjs refuses it).
+// from (packages/worker/src/runtime/staged-bindings.ts). Nimbus's npm installs
+// an owner at the newest staged version its range admits
+// (worker/src/npm/resolve-one-facet.ts stagedBindingVersion), but a range
+// that admits none (@astrojs/compiler-rs pins compiler-binding exactly)
+// installs the newest published version, which will not load. So along each
+// chain from a consumer users install by name to a binding's owner (DEMAND),
+// from the consumer's latest release, the ranges resolve as that resolver
+// resolves them, and an owner range that admits no staged version breaks
+// every new project of that consumer (scripts/ci/release.mjs refuses it).
 
 import { SPECS } from '../../../packages/worker/scripts/napi-wasm/specs.mjs';
 
@@ -43,6 +45,11 @@ function newest(packument, range) {
   return best;
 }
 
+/** The versions staged for an owner. */
+function stagedVersions(specs, owner) {
+  return Object.values(specs).filter((spec) => spec.npm.owner === owner).map((spec) => spec.version);
+}
+
 /**
  * Each owner version DEMAND's chains resolve to (`demanded`, with its chain
  * and its build's key), and those no spec builds (`missing`, keyed as the
@@ -71,7 +78,8 @@ export async function missingBindings({ specs = SPECS, demand = DEMAND, packumen
       const manifest = (await read(from)).versions?.[version] ?? {};
       const range = manifest.dependencies?.[next] ?? manifest.optionalDependencies?.[next];
       if (range === undefined) throw new Error(`binding demand: ${from}@${version} does not depend on ${next}; update DEMAND in scripts/ci/lib/binding-demand.mjs`);
-      version = newest(await read(next), range);
+      const staged = owners.has(next) ? newest({ versions: Object.fromEntries(stagedVersions(specs, next).map((v) => [v, {}])) }, range) : null;
+      version = staged ?? newest(await read(next), range);
       if (version === null) throw new Error(`binding demand: no published ${next} satisfies ${via.at(-1)}'s ${range}`);
       via.push(`${next}@${version}`);
       from = next;
