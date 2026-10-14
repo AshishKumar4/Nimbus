@@ -6,6 +6,7 @@ import { EventEmitter } from './events.js';
 import { errnoCodeOf, fsError, isVfsError } from '../../../vfs/vfs-error.js';
 import { DIRENT_TYPES, direntTypeOfStat } from '../../../vfs/dirent-type.js';
 import { S_IFMT } from '../../../vfs/vfs.js';
+import { nodeError } from '../../../_shared/node-error.js';
 /**
  * Node's Stats for a filesystem stat: its identity, links, owner, mode and
  * times as the filesystem has them (no birth time is kept: ctime stands in),
@@ -490,6 +491,12 @@ export function createFs(vfs, cwd, stdin) {
      * any depth when recursive), or as the watched file itself.
      */
     function watch(filename, optionsOrListener, listener) {
+        const options = typeof optionsOrListener === 'string' ? { encoding: optionsOrListener }
+            : typeof optionsOrListener === 'object' && optionsOrListener !== null ? optionsOrListener : {};
+        // Node checks the encoding first, whatever the path.
+        if (options.encoding && options.encoding !== 'buffer' && !Buffer.isEncoding(options.encoding)) {
+            throw nodeError(TypeError, 'ERR_INVALID_ARG_VALUE', `The argument 'encoding' is invalid encoding. Received '${options.encoding}'`);
+        }
         const given = typeof filename === 'string' ? filename : filename.pathname;
         let abs;
         try {
@@ -504,8 +511,6 @@ export function createFs(vfs, cwd, stdin) {
         }
         const directory = vfs.isDirectory(abs);
         const base = basename(given);
-        const options = typeof optionsOrListener === 'string' ? { encoding: optionsOrListener }
-            : typeof optionsOrListener === 'object' && optionsOrListener !== null ? optionsOrListener : {};
         const cb = typeof optionsOrListener === 'function' ? optionsOrListener : listener;
         let closed = false;
         let persistent = options.persistent !== false;
