@@ -11,13 +11,16 @@ published independently in the `@nimbus-sh` npm scope.
 - Fixed: `xargs` runs each command as a child process with stdin from
   `/dev/null`, as GNU xargs does. `printf x | xargs -I {} cat /dev/zero |
   head -c1` failed, and one command's `umask` reached the next. It ends
-  with GNU's statuses: 127 for a command that cannot be found (126 when it
-  may not run), 125 at once for one a signal ends (a `kill` of it from
-  another shell included), 124 at once for one that exits 255, and 123
-  when any other command fails. It returned the last failing status.
+  with GNU's statuses: 127 for a command that cannot be found, 126 for a
+  file it may not execute, 125 at once for one a signal ends (a `kill` of
+  it from another shell included), 124 at once for one that exits 255, and
+  123 when any other command fails. It returned the last failing status.
+  `sudo` of a file it may not execute answers "command not found", as
+  sudo does.
 - Fixed: `command NAME` runs a builtin as bash does, skipping only
-  functions and aliases. `command kill %1` answered "no such job", and
-  `command cd`, `command wait` and the like ran no builtin.
+  functions and aliases (a function named `command` is still that
+  function). `command kill %1` answered "no such job", and `command cd`,
+  `command wait` and the like ran no builtin.
 - Changed: a background job is a process of the session's process table, a
   child of the shell that started it, as a fork makes one. `$!`, `jobs -l`
   and `jobs -p` give that pid, the session's `ps` lists it, and a session's
@@ -31,7 +34,7 @@ published independently in the `@nimbus-sh` npm scope.
   as procps kill has none: `%2` answers "no such job". The shell's own
   `kill %2` still ends job 2, and `kill PID` from any shell ends a job by
   its pid. A signal to a process of another uid answers "Operation not
-  permitted" unless the caller is root, as kill(2) does, and a
+  permitted" unless the caller is root, as kill(2) does (`kill -0` too), and a
   default-ignored signal (`WINCH`, `CHLD`, `URG`) to a job leaves it
   running and succeeds.
 - Changed: `wait PID` for a process that is no job of this shell answers

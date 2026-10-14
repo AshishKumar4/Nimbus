@@ -188,6 +188,17 @@ export function resolutionOf(command: object): Resolution | undefined {
 }
 
 /**
+ * The file execve(2) checks its caller may execute, for `command`, what
+ * `name` resolved to from `cwd`: a path name's file, or the one a PATH
+ * search found; null for a registered command.
+ */
+export function executablePath(name: string, cwd: string, command: object): string | null {
+  if (name.includes('/')) return '/' + resolveVfsPath(name, normalizeVfsPath(cwd));
+  const resolution = resolutions.get(command);
+  return resolution?.kind === 'program' ? resolution.path : null;
+}
+
+/**
  * A command whose resolution failed on what the namespace could not answer,
  * or would not show the caller: it fails as execve's error does.
  */

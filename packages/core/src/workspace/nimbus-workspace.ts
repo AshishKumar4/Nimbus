@@ -436,7 +436,9 @@ export class NimbusWorkspace {
     const processSignals: HostProcessSignals = {
       isLive: (pid) => pid === shellProcessPid || processes.runsWork(pid),
       async signal(pid, signal, _stderr, caller) {
-        if (pid === shellProcessPid || !processes.maySignal(caller, pid)) return 'not-permitted';
+        if (!processes.maySignal(caller, pid)) return 'not-permitted';
+        if (signal === '0') return 'delivered';
+        if (pid === shellProcessPid) return 'not-permitted';
         const disposition = signalDisposition(signal);
         // A default-ignored signal (CHLD, URG, WINCH) is delivered and does nothing, as on Linux.
         if (disposition === 'ignore') return 'delivered';
