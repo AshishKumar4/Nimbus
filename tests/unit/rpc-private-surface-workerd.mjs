@@ -145,6 +145,14 @@ try {
     assert.deepEqual(envelopes.map((e) => [e.op, e.pid, e.run]), [['exists', 7, 'run-7']], JSON.stringify(envelopes));
     console.log('  ok  SupervisorRPC: exists reaches the session as its process');
   }
+  // The concrete bypass: a child spawned as another process's (its stdin and identity).
+  {
+    const forged = await asGuest('sup-forged-parent', '_op', ['cpSpawn', [{ command: 'cat', args: [], env: {}, cwd: '/', parentPid: 1 }]], 'SupervisorRPC');
+    const envelopes = await asked('sup-forged-parent');
+    assert.deepEqual(envelopes.filter((e) => e.op === 'cpSpawn').map((e) => e.args?.[0]?.parentPid), [],
+      `no cpSpawn naming another parent reaches the session: ${JSON.stringify(envelopes)}; _op answered ${JSON.stringify(forged)}`);
+    console.log('  ok  SupervisorRPC: no cpSpawn naming another parent reaches the session');
+  }
   await nothingElse('SupervisorRPC', [
     ['_op', ['stdout', ['forged']]], ['_caller', [{ op: 'stdout' }]], ['_fsOp', ['exists', ['/x']]],
     ['_fsRead', ['exists', ['/x']]], ['_fsMutation', ['unlink', ['/x']]], ['_resent', [{ op: 'stdout' }, { kind: 'read' }]],
