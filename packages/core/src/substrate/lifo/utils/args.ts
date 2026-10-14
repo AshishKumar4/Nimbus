@@ -77,7 +77,8 @@ export function* scanOptions(
       const eq = arg.indexOf('=');
       const written = eq === -1 ? arg.slice(2) : arg.slice(2, eq);
       const inline = eq === -1 ? undefined : arg.slice(eq + 1);
-      const candidates = written in spec.long ? [written]
+      // The spec's own names: not a name every object has (`constructor`).
+      const candidates = Object.hasOwn(spec.long, written) ? [written]
         : abbreviations ? Object.keys(spec.long).filter((name) => name.startsWith(written)) : [];
       // Prefixes that name one option through several aliases are not ambiguous.
       const keys = new Set(candidates.map((name) => spec.long[name][0]));
