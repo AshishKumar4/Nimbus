@@ -265,6 +265,7 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
      * waits for a prune after it has.
      */
     reap(maxAge?: number): Promise<number>;
+    private reapExpired;
     /**
      * How an ended process lets go of what it bound in the filesystem (its
      * descriptor scope, its delegations, its watches): the `releaseProcess` of

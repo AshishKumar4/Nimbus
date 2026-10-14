@@ -33,6 +33,7 @@ import { DELEGATION_RECALL_TIMEOUT_MS } from './delegations.js';
  */
 const HELD_WORK_STOP_MS = DELEGATION_RECALL_TIMEOUT_MS;
 const ONCE = { once: true };
+const NOTHING_REAPED = Promise.resolve(0);
 export class SessionProcessSupervisor {
     table = new ProcessTable();
     /** Why no process is admitted any more (closeAdmission); null while they are. */
@@ -487,12 +488,14 @@ export class SessionProcessSupervisor {
      * prune after it is published; one whose work is still stopping (holdWork)
      * waits for a prune after it has.
      */
-    async reap(maxAge) {
+    reap(maxAge) {
         if (!this.release)
-            return 0;
+            return NOTHING_REAPED;
         const expired = this.table.expired(maxAge).filter((entry) => !this.unpublishedEnds.has(entry.pid) && !this.held.has(entry.pid));
-        if (expired.length === 0)
-            return 0;
+        // Each launch prunes: one with nothing to prune costs it a settled promise, not an async call.
+        return expired.length === 0 ? NOTHING_REAPED : this.reapExpired(expired);
+    }
+    async reapExpired(expired) {
         const { reaped, failures } = await this.forgetReleased(expired);
         for (const { pid, error } of failures)
             this.appendOutput(pid, 'stderr', `${error instanceof Error ? error.message : String(error)}\n`);
