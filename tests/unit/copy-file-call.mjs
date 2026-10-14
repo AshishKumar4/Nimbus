@@ -19,6 +19,7 @@ import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { testBox } from './lib/test-box.mjs';
+import { asyncOnly } from './lib/async-memory-vfs.mjs';
 
 const enc = new TextEncoder();
 const text = (bytes) => new TextDecoder().decode(bytes);
@@ -148,6 +149,76 @@ await check('a non-root copier\'s copy of a non-empty set-ID file clears them; r
   user.copyFile('home/user/suid', 'home/user/copied', { keepMode: true });
   kernel.copyFile('home/user/suid', 'home/user/rooted', { keepMode: true });
   assert.deepEqual([user.stat('home/user/copied').mode & 0o7777, kernel.stat('home/user/rooted').mode & 0o7777], [0o755, 0o6755]);
+});
+
+// ── the receipt names the version copied, whatever an observer of the copy does next ──
+await check('an observer that rewrites the source on the copy\'s event does not move the version the receipt names', async () => {
+  const { raw, user } = engine();
+  const files = new ProcessFiles(raw);
+  user.writeFile('home/user/src', 'B');
+  const copied = raw.revision('home/user/src');
+  const stop = raw.observeWrites((event) => { if (event.path === 'home/user/dst') { stop(); user.writeFile('home/user/src', 'C'); } });
+  const result = await wave(files, user, [{ call: 'copyFile', path: 'home/user/dst', from: 'home/user/src' }]);
+  assert.equal(result.ok, true, result.error?.message);
+  assert.equal(text(user.readFile('home/user/dst')), 'B');
+  assert.deepEqual(result.receipts.find((r) => r.path === 'home/user/dst').from, { path: 'home/user/src', revision: copied });
+});
+
+// ── a name followed through an awaiting mount, repointed while the lookup waits ──
+await check('a source repointed while its lookup awaits a mount is refused, not read from a row the mount covers', async () => {
+  const { raw, kernel, user } = engine();
+  user.writeFile('home/user/plain', 'plain');
+  kernel.mkdir('m');
+  kernel.writeFile('m/src', 'hidden');
+  const files = new ProcessFiles(raw);
+  const mounted = new MemoryVFS({ uid: USER.uid, gid: USER.gid });
+  mounted.writeFile('/src', enc.encode('mounted'));
+  mounted.symlink('/home/user/plain', '/out');
+  let pause = null;
+  const reached = Promise.withResolvers();
+  files.vfs.mount('/m', asyncOnly(mounted, { deep: true, beforeCall: async (method, args) => {
+    if (pause !== null && String(args[0]).endsWith('out')) { const gate = pause; pause = null; reached.resolve(); await gate; }
+  } }));
+  user.symlink('/m/out', 'home/user/alias');
+  const release = Promise.withResolvers();
+  pause = release.promise;
+  const pending = wave(files, user, [{ call: 'copyFile', path: 'home/user/dst', from: 'home/user/alias' }]);
+  await reached.promise;
+  user.unlink('home/user/alias');
+  user.symlink('/m/src', 'home/user/alias');
+  release.resolve();
+  const result = await pending;
+  const dst = user.stat('home/user/dst') === null ? null : text(user.readFile('home/user/dst'));
+  assert.notEqual(dst, 'hidden', 'the row the mount covers is never copied');
+  assert.equal(result.ok, false, `refused, not copied (dst ${dst})`);
+  assert.equal(result.error?.code, 'ESTALE');
+});
+
+// ── over a file there: its write is authorized by its own mode, then the copy's mode is set ──
+await check('a read-only mounted source over a writable file here: the bytes, then the source\'s mode', async () => {
+  const { raw, user } = engine();
+  const files = new ProcessFiles(raw);
+  const shared = new MemoryVFS({ uid: USER.uid, gid: USER.gid });
+  shared.writeFile('/ro', enc.encode('read-only'), { mode: 0o400 });
+  files.vfs.mount('/shared', shared);
+  user.writeFile('home/user/t', 'old');
+  user.chmod('home/user/t', 0o600);
+  const result = await wave(files, user, [{ call: 'copyFile', path: 'home/user/t', from: 'shared/ro' }]);
+  assert.equal(result.ok, true, result.error?.message);
+  assert.deepEqual([text(user.readFile('home/user/t')), user.stat('home/user/t').mode & 0o7777], ['read-only', 0o400]);
+});
+await check('a mounted source over a read-only file here: EACCES, the file as it was', async () => {
+  const { raw, user } = engine();
+  const files = new ProcessFiles(raw);
+  const shared = new MemoryVFS({ uid: USER.uid, gid: USER.gid });
+  shared.writeFile('/rw', enc.encode('new'), { mode: 0o600 });
+  files.vfs.mount('/shared', shared);
+  user.writeFile('home/user/t4', 'old');
+  user.chmod('home/user/t4', 0o400);
+  const result = await wave(files, user, [{ call: 'copyFile', path: 'home/user/t4', from: 'shared/rw' }]);
+  assert.equal(result.ok, false);
+  assert.equal(result.error?.code, 'EACCES');
+  assert.deepEqual([text(raw.as(CRED_KERNEL).readFile('home/user/t4')), user.stat('home/user/t4').mode & 0o7777], ['old', 0o400]);
 });
 
 for (const r of results) console.error(r.join('  '));
