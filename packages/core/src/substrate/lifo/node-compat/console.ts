@@ -1,3 +1,4 @@
+import type { Console as EngineConsole } from 'node:console';
 import realm from 'node:process';
 import type { InspectOptions } from 'node:util';
 import type { CommandOutputStream } from '../commands/types.js';
@@ -69,6 +70,10 @@ export function createConsole(stdout: CommandOutputStream, stderr: CommandOutput
     groupEnd: () => { /* no-op */ },
     table: (data: unknown) => {
       stdout.write(format(data) + '\n');
+    },
+    /** The engine's Console class, as Node's console has it (loaded when first reached). */
+    get Console(): typeof EngineConsole {
+      return realm.getBuiltinModule('node:console').Console;
     },
   };
 }

@@ -65,7 +65,7 @@ const BUILTINS: Record<string, (call: BuiltinCall) => Promise<number>> = {
   read: builtinRead,
   wait: builtinWait,
   kill: ({ args, stdout, stderr, state, host, context }) =>
-    runKill({ args, stdout, stderr }, context.cred(), state.jobTable, host.hostProcessSignals()),
+    runKill({ args, stdout, stderr }, context.identity().cred, state.jobTable, host.hostProcessSignals()),
   unset: builtinUnset,
   local: (call) => builtinDeclare('local', call),
   declare: (call) => builtinDeclare('declare', call),
@@ -396,11 +396,13 @@ async function builtinRead({ args, stdin, stderr, state, context }: BuiltinCall)
   return 0;
 }
 
-async function builtinWait({ args, stderr, state }: BuiltinCall): Promise<number> {
+async function builtinWait({ args, stderr, state, context }: BuiltinCall): Promise<number> {
   if (args[0] === '--') args = args.slice(1);
+  const waiter = context.identity().pid;
   if (args.length === 0) {
+    // Every job, one at a time: all must end, and the one awaited now is what the shell is blocked by.
     const jobs = state.jobTable.list();
-    await Promise.all(jobs.map((job) => job.promise.catch(() => undefined)));
+    for (const job of jobs) await state.jobTable.awaitEnd(job, waiter);
     for (const job of jobs) state.jobTable.remove(job.id);
     state.jobTable.clearWaited();
     return 0;
@@ -424,7 +426,7 @@ async function builtinWait({ args, stderr, state }: BuiltinCall): Promise<number
       last = 127;
       continue;
     }
-    last = await job.promise;
+    last = await state.jobTable.awaitEnd(job, waiter);
     state.jobTable.reap(job);
   }
   return last;
@@ -630,7 +632,7 @@ async function builtinFg({ args, stdout, stderr, state, context }: BuiltinCall):
     return 1;
   }
   await stdout.write(`${job.command}\n`);
-  const exitCode = await job.promise;
+  const exitCode = await state.jobTable.awaitEnd(job, context.identity().pid);
   state.jobTable.reap(job);
   return exitCode;
 }

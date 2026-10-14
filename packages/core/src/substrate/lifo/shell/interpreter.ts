@@ -123,8 +123,8 @@ export interface BuiltinExecutionContext {
   /** The state of the shell running the builtin: a child shell's own, after a fork. */
   shell: ShellState;
   getLastExitCode(): number;
-  /** The credential of the process the builtin runs as: a kill's caller. */
-  cred(): VfsCred;
+  /** The process the builtin runs as: a kill's caller, a wait's waiter. */
+  identity(): Pick<CommandIdentity, 'pid' | 'cred'>;
 }
 
 export interface InlineExecutionOptions {
@@ -1015,9 +1015,9 @@ export class Interpreter {
             shell: this.config,
             interactive: io.interactive,
             getLastExitCode: () => this.lastExitCode,
-            cred: () => {
+            identity: () => {
               if (!io.commandIdentity) throw new Error('shell command identity is unavailable');
-              return io.commandIdentity.cred;
+              return io.commandIdentity;
             },
               });
             } catch (error) {

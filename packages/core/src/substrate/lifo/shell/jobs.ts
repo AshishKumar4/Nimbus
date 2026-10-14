@@ -10,7 +10,7 @@ import type { HostSignalResult } from '../commands/system/kill.js';
  * counted and held there.
  */
 export type ShellProcesses = Pick<SessionProcessSupervisor,
-  'spawn' | 'exit' | 'kill' | 'maySignal' | 'whenEnded' | 'holdWork' | 'beginWork' | 'cred' | 'setUmask'>;
+  'spawn' | 'exit' | 'kill' | 'maySignal' | 'whenEnded' | 'holdWork' | 'beginWork' | 'beginAwait' | 'cred' | 'setUmask'>;
 
 /**
  * A background job: its `%N` number, its command line and its process in
@@ -107,6 +107,21 @@ export class JobTable {
 
   list(): Job[] {
     return Array.from(this.jobs.values());
+  }
+
+  /**
+   * `job`'s status once it ends, process `waiter` (the shell `wait` or `fg`
+   * runs as) awaiting it meanwhile, as the session counts an await
+   * (SessionProcessSupervisor.beginAwait): a shell doing nothing but wait on
+   * its job is told as such.
+   */
+  async awaitEnd(job: Job, waiter: number): Promise<number> {
+    const endAwait = this.processes.beginAwait(waiter, job.pid);
+    try {
+      return await job.promise;
+    } finally {
+      endAwait();
+    }
   }
 
   /**

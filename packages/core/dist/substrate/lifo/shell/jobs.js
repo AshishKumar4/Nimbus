@@ -80,6 +80,21 @@ export class JobTable {
         return Array.from(this.jobs.values());
     }
     /**
+     * `job`'s status once it ends, process `waiter` (the shell `wait` or `fg`
+     * runs as) awaiting it meanwhile, as the session counts an await
+     * (SessionProcessSupervisor.beginAwait): a shell doing nothing but wait on
+     * its job is told as such.
+     */
+    async awaitEnd(job, waiter) {
+        const endAwait = this.processes.beginAwait(waiter, job.pid);
+        try {
+            return await job.promise;
+        }
+        finally {
+            endAwait();
+        }
+    }
+    /**
      * Deliver `signal` (a parsed name; `0` delivers nothing) to `job`, one of
      * this table's, from `caller`, as kill reports it: a terminating one ends
      * its process, which stops its work; a continue or an ignored one does

@@ -7,7 +7,7 @@ import type { HostSignalResult } from '../commands/system/kill.js';
  * there, under the process that started them, and the work of its lines is
  * counted and held there.
  */
-export type ShellProcesses = Pick<SessionProcessSupervisor, 'spawn' | 'exit' | 'kill' | 'maySignal' | 'whenEnded' | 'holdWork' | 'beginWork' | 'cred' | 'setUmask'>;
+export type ShellProcesses = Pick<SessionProcessSupervisor, 'spawn' | 'exit' | 'kill' | 'maySignal' | 'whenEnded' | 'holdWork' | 'beginWork' | 'beginAwait' | 'cred' | 'setUmask'>;
 /**
  * A background job: its `%N` number, its command line and its process in
  * the session's table, which says when and how it ended.
@@ -57,6 +57,13 @@ export declare class JobTable {
         parent: Pick<CommandIdentity, 'pid' | 'cred'>;
     }, run: (job: JobProcess) => Promise<number>): Job;
     list(): Job[];
+    /**
+     * `job`'s status once it ends, process `waiter` (the shell `wait` or `fg`
+     * runs as) awaiting it meanwhile, as the session counts an await
+     * (SessionProcessSupervisor.beginAwait): a shell doing nothing but wait on
+     * its job is told as such.
+     */
+    awaitEnd(job: Job, waiter: number): Promise<number>;
     /**
      * Deliver `signal` (a parsed name; `0` delivers nothing) to `job`, one of
      * this table's, from `caller`, as kill reports it: a terminating one ends
