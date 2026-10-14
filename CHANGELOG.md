@@ -25,6 +25,25 @@ published independently in the `@nimbus-sh` npm scope.
   `setFlagsFromString`, coverage) refuse as unavailable, as do `vm`,
   `domain`, `trace_events` and `wasi` whole: they would import past the
   program's modules, set the engine's own process, or reach the host's files.
+- Fixed: `env` runs its command, as GNU env does. `env NODE_ENV=production
+  node build.js` printed the environment and ran nothing. It reads its
+  options as GNU's getopt does (`-i`, `-u NAME`, `-0`, clusters such as
+  `-iu NAME`, and the first operand ends them), then `NAME=VALUE`
+  assignments, and ends with the command's status, 127 for a command it
+  cannot find, 126 for one it may not run, or 125 for a bad option or a
+  name `-u` cannot unset. Any operand with an `=` is an assignment, and any
+  name a name (`__proto__` too).
+- Fixed: `xargs` takes each of GNU's spellings of its replace string:
+  `-I{}` joined, `-i[R]` and `--replace[=R]`, which ran a command named
+  after the option. With one, each input line is an item, its leading
+  white space dropped, so `printf 'a b\n' | xargs -I{} echo [{}]` prints
+  `[a b]`. A replace string and `-n` exclude each other as in GNU, the
+  later one winning with GNU's warning.
+- Changed: `xargs` reads its input as GNU xargs does, in every mode but
+  `-0`: quotes and backslashes are decoded (`"a b"` is one item, `a\ b`
+  too), and a quote left open ends xargs with status 1 and GNU's "unmatched
+  quote" message, after the items read before it have run. Before, quotes
+  and backslashes reached the command as they were.
 - Fixed: the library's built-in `node` gives a program the engine's own
   `path` and `url`, against the program's working directory: `path.resolve`
   and `path.relative` start from it, as does `url.pathToFileURL` of a
