@@ -35,6 +35,9 @@ const sibling = processes.spawn('node', ['sibling.js'], '/home/user', { cred: CR
 const otherUid = processes.spawn('node', ['other.js'], '/home/user', { cred: OTHER });
 const otherUidChild = processes.spawn('sudo', ['-u', 'other', 'node'], '/home/user', { parentPid: parent.pid, cred: OTHER });
 const root = processes.spawn('node', ['root.js'], '/home/user', { cred: CRED_KERNEL });
+// The child's stdin is a pipe its parent writes; the grandchild inherits its parent's.
+processes.openInput(child.pid);
+processes.openInput(parent.pid);
 
 const asked = [];
 const session = Object.create(NimbusSession.prototype);

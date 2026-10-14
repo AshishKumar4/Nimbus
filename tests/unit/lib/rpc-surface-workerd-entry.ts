@@ -46,6 +46,11 @@ export class Session extends DurableObject {
 
 type Outcome = { ok: true; value: unknown } | { ok: false; error: string };
 
+/** What a Response a method answered served: its status and body. */
+class Served {
+  constructor(readonly status: number, readonly body: string) {}
+}
+
 async function outcome(run: () => Promise<unknown>): Promise<Outcome> {
   try {
     return { ok: true, value: await run() };
@@ -63,8 +68,9 @@ async function asGuest(binding: object, method: string, args: unknown[]): Promis
     if (typeof named !== 'function') throw new TypeError(`the stub has no ${method}`);
     const value: unknown = await Reflect.apply(named, binding, args);
     // A Response is answered as its body, so a positive check sees what it served.
-    return value instanceof Response ? { status: value.status, body: await value.text() } : value;
+    return value instanceof Response ? new Served(value.status, await value.text()) : value;
   });
+  if (called.ok && called.value instanceof Served) return { ok: true, value: { status: called.value.status, body: called.value.body } };
   if (!called.ok || called.value === null || typeof called.value !== 'object') return called;
   const answered = called.value;
   // Whatever it answered, used as the guest would: a dispatch it holds, asked to act as the kernel.
