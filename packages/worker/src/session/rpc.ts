@@ -1462,8 +1462,16 @@ export async function _rpcCpStdinEnd(self: RpcHost, childPid: number, pid?: numb
  */
 function childOf(self: CpRpcHost, childPid: number, caller: number | undefined): void {
     if (caller === undefined) return;
-    const parent = self._ensureChildProcessManager().parentOf(childPid);
-    if (childPid === caller || parent === undefined || (parent !== caller && !self.processes.isWithin(parent, caller))) {
+    const broker = self._ensureChildProcessManager();
+    // Up the broker's spawn records, which a prune leaves, to the caller or
+    // the first process the broker did not spawn; above that, the table's.
+    let ancestor = broker.parentOf(childPid);
+    while (ancestor !== undefined && ancestor !== caller) {
+        const above = broker.parentOf(ancestor);
+        if (above === undefined) break;
+        ancestor = above;
+    }
+    if (childPid === caller || ancestor === undefined || (ancestor !== caller && !self.processes.isWithin(ancestor, caller))) {
         throw Object.assign(new Error(`ESRCH: no such child process ${childPid}`), { code: 'ESRCH', errno: -3 });
     }
 }
