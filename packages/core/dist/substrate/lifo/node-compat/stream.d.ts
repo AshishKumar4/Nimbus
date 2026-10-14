@@ -1,5 +1,13 @@
 import { EventEmitter } from 'node:events';
-export declare class Readable extends EventEmitter {
+/** Node's legacy Stream: an emitter, the base of every stream, and what require('stream') is. */
+export declare class Stream extends EventEmitter {
+    static Stream: typeof Stream;
+    static Readable: typeof Readable;
+    static Writable: typeof Writable;
+    static Duplex: typeof Duplex;
+    static PassThrough: typeof PassThrough;
+}
+export declare class Readable extends Stream {
     private _buffer;
     protected _ended: boolean;
     readable: boolean;
@@ -11,7 +19,7 @@ export declare class Readable extends EventEmitter {
     resume(): this;
     pause(): this;
 }
-export declare class Writable extends EventEmitter {
+export declare class Writable extends Stream {
     private _ended;
     writable: boolean;
     write(chunk: string, _encoding?: string, cb?: () => void): boolean;
@@ -26,11 +34,5 @@ export declare class Duplex extends Readable {
 }
 export declare class PassThrough extends Duplex {
 }
-declare const _default: {
-    Readable: typeof Readable;
-    Writable: typeof Writable;
-    Duplex: typeof Duplex;
-    PassThrough: typeof PassThrough;
-};
-export default _default;
+export default Stream;
 //# sourceMappingURL=stream.d.ts.map

@@ -1,5 +1,13 @@
 import { EventEmitter } from 'node:events';
-export class Readable extends EventEmitter {
+/** Node's legacy Stream: an emitter, the base of every stream, and what require('stream') is. */
+export class Stream extends EventEmitter {
+    static Stream;
+    static Readable;
+    static Writable;
+    static Duplex;
+    static PassThrough;
+}
+export class Readable extends Stream {
     _buffer = [];
     _ended = false;
     readable = true;
@@ -40,7 +48,7 @@ export class Readable extends EventEmitter {
         return this;
     }
 }
-export class Writable extends EventEmitter {
+export class Writable extends Stream {
     _ended = false;
     writable = true;
     write(chunk, _encoding, cb) {
@@ -87,4 +95,5 @@ export class Duplex extends Readable {
 }
 export class PassThrough extends Duplex {
 }
-export default { Readable, Writable, Duplex, PassThrough };
+Object.assign(Stream, { Stream, Readable, Writable, Duplex, PassThrough });
+export default Stream;

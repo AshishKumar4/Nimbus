@@ -67,19 +67,9 @@ export function createModuleMap(ctx) {
         http: () => createHttp(ctx.portRegistry, 'http:', ctx.routeLoopback),
         https: () => createHttp(ctx.portRegistry, 'https:', ctx.routeLoopback),
         child_process: () => createChildProcess(ctx.executeCapture),
-        // Node.js CJS: require('stream') is the legacy Stream, an emitter class,
-        // with .Readable, .Writable, .Duplex, .PassThrough and .Stream on it.
-        stream: () => {
-            const Stream = class Stream extends EventEmitter {
-            };
-            return Object.assign(Stream, {
-                Stream,
-                Readable: streamModule.Readable,
-                Writable: streamModule.Writable,
-                Duplex: streamModule.Duplex,
-                PassThrough: streamModule.PassThrough,
-            });
-        },
+        // Node.js CJS: require('stream') is the legacy Stream, with .Readable,
+        // .Writable, .Duplex, .PassThrough and .Stream on it.
+        stream: () => streamModule.Stream,
         url: () => urlModule,
         timers: () => timersModule,
         crypto: () => realm.getBuiltinModule('node:crypto'),
@@ -199,8 +189,7 @@ export function createModuleMap(ctx) {
         http2: () => createHttp2Module({
             EventEmitter,
             Readable: streamModule.Readable,
-            // This stream module has no legacy Stream base; its streams are EventEmitters.
-            Stream: EventEmitter,
+            Stream: streamModule.Stream,
             Buffer,
             emitWarning: (message) => { ctx.stderr.write(`Warning: ${message}\n`); },
         }),
