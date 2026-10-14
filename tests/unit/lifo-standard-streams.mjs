@@ -35,6 +35,16 @@ await check('bytes and text decode as one stream for a text output', async () =>
   assert.equal(seen.join(''), '\ufffdx\ufffd\ufffd');
 });
 
+await check('an empty write is no boundary: a character split around it decodes whole', async () => {
+  const seen = [];
+  const proc = createProcess({ argv: [], env: {}, cwd: '/', stdout: { write: (text) => { seen.push(text); } }, stderr: quiet });
+  proc.stdout.write(Buffer.from([0xe2]));
+  proc.stdout.write('');
+  proc.stdout.write(Buffer.from([0x82, 0xac]));
+  await new Promise((resolve) => proc.stdout.end(resolve));
+  assert.equal(seen.join(''), '\u20ac');
+});
+
 await check('an output that fails after end() errors the stream, which does not finish', async () => {
   const proc = createProcess({
     argv: [], env: {}, cwd: '/', stderr: quiet,

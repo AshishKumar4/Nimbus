@@ -172,6 +172,7 @@ const programs = {
     "  await step('encodings', () => { process.stdout.write('68690a', 'hex'); process.stdout.setDefaultEncoding('hex'); process.stdout.write('6f6b0a'); process.stdout.setDefaultEncoding('utf8'); process.stdout.write(Buffer.from([0xe2, 0x82])); process.stdout.write(Buffer.from([0xac, 0x0a])); });",
     "  await step('legacy', () => new Promise((resolve) => { const legacy = new stream.Stream(); legacy.readable = true; legacy.pipe(process.stdout); legacy.emit('data', 'legacy\\n'); legacy.emit('end'); setTimeout(() => { process.stdout.write('after legacy\\n'); resolve(); }, 10); }));",
     "  await step('mixed', () => new Promise((resolve) => { process.stdout.write(Buffer.from([0xe2])); console.log('x'); process.stdout.write(Buffer.from([0x82, 0xac, 0x0a]), resolve); }));",
+    "  await step('empty', () => new Promise((resolve) => { process.stdout.write(Buffer.from([0xe2])); process.stdout.write(''); process.stdout.write(Buffer.from([0x82, 0xac, 0x0a]), resolve); }));",
     '})();',
   ].join('\n'),
 };
