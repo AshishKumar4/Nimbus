@@ -78,7 +78,7 @@ await runScenarios(import.meta.path, {
     await release();
     const stat = await authority.peer.stat('home/user/app/out/warm0');
     assert.equal(stat.mode & 0o7777, 0o600);
-    assert.equal(stat.mtimeMs, 1000);
+    assert.equal(Number(stat.mtime), 1000);
     // What the session would refuse is refused as the sync form refuses it.
     await assert.rejects(fs.promises.chown(`${OUT}/warm1`, 0, 0), { code: 'EPERM' });
   },
