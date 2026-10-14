@@ -60,8 +60,9 @@ export declare const STATIC_AST_MAX_SOURCE: number;
  * literal shapes that need no bindings. `join|resolve(__dirname | import.meta.
  * dirname, 'lit', ...)` (a synchronous read when it is readFileSync's first
  * argument), `new URL('lit', import.meta.url)`, a read call on an absolute
- * literal, and package-subpath and absolute-path literals. What folding
- * through bindings would add is not found here.
+ * literal, and package-subpath and absolute-path literals, a template with
+ * no substitution being the string it spells. What folding through bindings
+ * would add is not found here.
  */
 export declare function scanStaticFsTokens(source: string, filename: string): StaticFsRefs;
 //# sourceMappingURL=static-fs-refs.d.ts.map

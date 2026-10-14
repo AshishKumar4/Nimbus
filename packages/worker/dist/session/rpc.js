@@ -1212,13 +1212,13 @@ export async function _rpcPrefetch(self, cwd, entryCode) {
     self.ensureSqliteFs();
     // Dynamic import stays: keeps the resolver out of this module's eager
     // graph (the original reason for the lazy load above).
-    const { prefetchForRequire, ClosureBoundExceededError } = await import('@nimbus-sh/core/runtime/require-resolver.js');
+    const { prefetchForRequire, ClosureBoundExceededError, fileText } = await import('@nimbus-sh/core/runtime/require-resolver.js');
     const vfs = self.sqliteFs;
-    // Its cells copy each file's bytes.
+    // Its cells copy each file's bytes; its resolvers parse each file's text, a byte order mark kept (fileText).
     const outcome = await prefetchForRequire({
         exists: (path) => vfs.exists(path),
         isDirectory: (path) => vfs.isDirectory(path),
-        readFileString: (path) => vfs.readFileString(path),
+        readFileString: (path) => fileText(vfs.readFile(path)),
         stat: (path) => vfs.stat(path),
         readBytes: (path) => (vfs.exists(path) ? vfs.readFile(path) : null),
     }, entryCode, cwd);

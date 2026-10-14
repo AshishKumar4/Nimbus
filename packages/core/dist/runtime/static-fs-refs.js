@@ -304,7 +304,8 @@ export function findStaticFsReferences(source, filename) {
         const node = raw;
         if (node.type === 'Literal') {
             // A package subpath spelled as data ("astro/runtime/client/x.js" in a
-            // bundler's include list) is read by whatever resolves it.
+            // bundler's include list) is read by whatever resolves it; so is one
+            // a template with no substitution spells, below.
             if (typeof node.value === 'string' && BARE_SUBPATH.test(node.value)) {
                 refs.subpaths.push({ from: dir, spec: node.value });
             }
@@ -314,6 +315,8 @@ export function findStaticFsReferences(source, filename) {
         }
         if (node.type === 'TemplateLiteral') {
             const text = node.expressions.length === 0 ? node.quasis[0]?.value.cooked : undefined;
+            if (typeof text === 'string' && BARE_SUBPATH.test(text))
+                refs.subpaths.push({ from: dir, spec: text });
             if (typeof text === 'string' && ABSOLUTE_LITERAL.test(text))
                 refs.literals.push(normalize(text));
             return;
@@ -419,8 +422,9 @@ export const STATIC_AST_MAX_SOURCE = 1024 * 1024;
  * literal shapes that need no bindings. `join|resolve(__dirname | import.meta.
  * dirname, 'lit', ...)` (a synchronous read when it is readFileSync's first
  * argument), `new URL('lit', import.meta.url)`, a read call on an absolute
- * literal, and package-subpath and absolute-path literals. What folding
- * through bindings would add is not found here.
+ * literal, and package-subpath and absolute-path literals, a template with
+ * no substitution being the string it spells. What folding through bindings
+ * would add is not found here.
  */
 export function scanStaticFsTokens(source, filename) {
     const refs = { exact: [], listed: [], patterns: [], cwdRelative: [], resolves: [], subpaths: [], literals: [] };
@@ -453,9 +457,17 @@ export function scanStaticFsTokens(source, filename) {
             const token = tokens.getToken();
             if (token.type === tokTypes.eof)
                 return;
-            const type = token.type.label;
+            let type = token.type.label;
             // acorn's typings omit Token.value; it is the literal's or name's value.
-            const value = token.value;
+            let value = token.value;
+            // A template with no substitution closes right after its one text: it
+            // is the string it spells, one token, as a quoted one is.
+            const quasi = at(0);
+            if (type === '`' && quasi?.type === 'template' && typeof quasi.value === 'string' && isPunct(at(1), '`')) {
+                recent.splice(recent.length - 2, 2);
+                type = 'string';
+                value = quasi.value;
+            }
             recent.push({ type, value });
             if (recent.length > 64)
                 recent.splice(0, recent.length - 32);
@@ -464,11 +476,6 @@ export function scanStaticFsTokens(source, filename) {
             }
             if (type === 'string' && typeof value === 'string' && ABSOLUTE_LITERAL.test(value))
                 refs.literals.push(normalize(value));
-            // A template with no substitution closes right after its one text.
-            const quasi = at(1);
-            if (type === '`' && quasi?.type === 'template' && isPunct(at(2), '`') && typeof quasi.value === 'string' && ABSOLUTE_LITERAL.test(quasi.value)) {
-                refs.literals.push(normalize(quasi.value));
-            }
             if (type !== ')')
                 continue;
             // new URL('lit', import.meta.url)

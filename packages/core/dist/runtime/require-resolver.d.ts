@@ -27,7 +27,7 @@
  * de-quarantines it as the primary content-bundle source.
  */
 import { type RequireFs, type StagingRequireFs, type WalkProgress } from './require-resolution.js';
-export { requireFsOverBridge, type BridgeRequireFs, type RequireFs, type StagingRequireFs } from './require-resolution.js';
+export { fileText, requireFsOverBridge, type BridgeRequireFs, type RequireFs, type StagingRequireFs } from './require-resolution.js';
 export { requireWrapperCalls } from './require-wrappers.js';
 /**
  * Result of a prefetch walk: path → content for every reachable file.

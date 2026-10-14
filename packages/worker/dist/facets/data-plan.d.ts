@@ -12,7 +12,7 @@ export interface DataPlanSource {
         entries: DataPlanEntry[];
         next: string | null;
     }>;
-    /** A file's text, or null when it cannot be read. */
+    /** A file's text, a byte order mark kept (require-resolution.ts fileText), or null when it cannot be read. */
     readText(path: string): Promise<string | null>;
     /**
      * Where the symlink at a path leads, as the namespace follows it (its

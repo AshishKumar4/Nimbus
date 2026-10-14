@@ -18445,9 +18445,8 @@ function createRequireResolver(host, options = {}) {
     packageScopeSync: (dir) => runSync(nearestPackageScope(dir, { configs:   new Map() }))
   };
 }
-var fileTextDecoder = new TextDecoder();
 var cellDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-var cellTextDecoder = new TextDecoder("utf-8", { ignoreBOM: true });
+var textDecoder = new TextDecoder("utf-8", { ignoreBOM: true });
 
 function presentedCredential(value) {
   const trimmed = value.trim();

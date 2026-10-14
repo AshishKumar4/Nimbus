@@ -44,7 +44,7 @@ import { sessionIdentity, unbindPublicPortCapability } from '../router/public-di
 import { prefetchForRequire, requireFsOverBridge, resolveDeferredImport, ClosureBoundExceededError, } from '@nimbus-sh/core/runtime/require-resolver.js';
 import { typeScriptStripOptions } from '@nimbus-sh/core/runtime/node-cli.js';
 import { findStaticFsReferences } from '@nimbus-sh/core/runtime/static-fs-refs.js';
-import { fileCell, packageScopeType } from '@nimbus-sh/core/runtime/require-resolution.js';
+import { fileCell, fileText, packageScopeType } from '@nimbus-sh/core/runtime/require-resolution.js';
 import { isManifestKey, linkTargetOf, packageRootOf, planFacetData } from './data-plan.js';
 import { principalTag, profilePrincipal, ReadProfile, verifiedEvidence, } from './read-profile.js';
 /** What the shared read profile may add to one launch: an eighth of its module map's bytes. */
@@ -64,7 +64,7 @@ import { FencedWork, FENCED_WORK_KEY_PREFIX, RESIDENT_PROVEN_MS, } from '@nimbus
 import { rewriteProvidedCommonJsModules } from '@nimbus-sh/core/runtime/provided-packages.js';
 import { bundleCompiledLoader, esbuildDiagnosticShim, isBundleModuleCandidate, looksLikeEsm, needsBundleCellTransform, transformBundleCells, transformEntryScript, } from '@nimbus-sh/core/runtime/bundle-cell-transform.js';
 import { TransformStore } from './transform-store.js';
-import { parseResolvablePackageJson, BUILD_BROWSER_PACKAGE_MAP_POLICY, } from '@nimbus-sh/core/_shared/exports-resolver.js';
+import { packageJsonText, parseResolvablePackageJson, BUILD_BROWSER_PACKAGE_MAP_POLICY, } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { requirePackageEntry } from '@nimbus-sh/core/runtime/require-resolution.js';
 import { isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
 import { LAUNCH_PROFILE_MAX_PATHS, LaunchLearningStore } from './launch-learning-store.js';
@@ -109,9 +109,8 @@ function launchEntryType(vfs, dir, entry) {
 /** The declared-dependency walk's questions (stagedBindingsDeclaredBy), on a launch's fs. */
 function declaredBindingFs(fs) {
     const files = filesOf(fs);
-    const decoder = new TextDecoder();
     return {
-        readText: async (path) => { const bytes = await files.readBytes(path); return bytes === null ? null : decoder.decode(bytes); },
+        readText: async (path) => { const bytes = await files.readBytes(path); return bytes === null ? null : fileText(bytes); },
         exists: async (path) => await files.exists(path),
         realpath: async (path) => { try {
             return await fs.realpath(path);
@@ -2798,7 +2797,7 @@ export async function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requir
 export async function speculativePackageDirs(vfs, cwdStripped, bundle) {
     const runtimeDeps = async (pkgJsonPath) => {
         try {
-            const meta = JSON.parse((await filesOf(vfs).readFileString(pkgJsonPath)));
+            const meta = JSON.parse(packageJsonText(await filesOf(vfs).readFileString(pkgJsonPath)));
             const names = new Set();
             for (const field of ['dependencies', 'optionalDependencies']) {
                 const deps = meta?.[field];
@@ -3609,7 +3608,7 @@ export async function toolConfigRoots(vfs, cwd, scriptPath) {
         return [];
     let manifest;
     try {
-        manifest = JSON.parse(await filesOf(vfs).readFileString(root + '/package.json'));
+        manifest = JSON.parse(packageJsonText(await filesOf(vfs).readFileString(root + '/package.json')));
     }
     catch {
         return [];
