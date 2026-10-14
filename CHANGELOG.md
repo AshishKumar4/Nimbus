@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: opencode's TUI gets answers from its syntax-highlight parser. The
+  parser runs as a Worker that the opencode facet hosts on its own thread,
+  where workerd's `worker_threads` reports the main thread, and the parser
+  installs its message handler only off the main thread: it never answered
+  anything the TUI sent it. Its build now gives it a `worker_threads` of its
+  own that says it is a worker. Its file reads and writes (`fs/promises`) are
+  the session's filesystem, as checked in a real facet.
 - Fixed (Node `fs`): `fs.cpSync`, `fs.promises.cp` and `fs.cp` are Node's
   own `cp`, run over Nimbus's `fs`, so they answer as Node 22 does. The async
   forms took a file the program had not read for a directory (EISDIR), and
