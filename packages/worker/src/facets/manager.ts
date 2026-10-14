@@ -1162,7 +1162,8 @@ ${PENDING_IO_SOURCE}
     // them, not one round trip a line. The batch is sealed when its turn
     // comes, and sent from its first chunk's offset once its last write's
     // gate is released (gates release in order). Each write is answered as
-    // its batch is, so its callback, drain and the drains' wait mean what they did.
+    // its batch is, so its callback, its stream's 'drain' and a drain's wait
+    // for the output ledger mean what they did.
     const __queueRpcWrite = (method, bytes) => {
       const __chunk = __nimbusStopReplay.write(method, bytes);
       if (__chunk === null) return;
