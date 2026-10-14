@@ -1,6 +1,7 @@
 import type { Command } from '../types.js';
 import { resolve } from '../../utils/path.js';
 import { inputChunks, writeBytes } from '../../utils/bytes-io.js';
+import type { ProcessFile } from '../../../../runtime/process-files.js';
 import { strerror } from '../../../../vfs/vfs-error.js';
 
 // GNU tee (coreutils 9.7) on bytes, streaming: standard input to standard
@@ -32,31 +33,44 @@ const command: Command = async (ctx) => {
     }
   }
   let status = 0;
-  // Each FILE operand is its own descriptor: without -a, one per occurrence
-  // at its own offset (so `tee f f` writes the input once); with -a each
-  // occurrence appends.
-  const outputs: { path: string; offset: number }[] = [];
+  // Each FILE operand is an open description of its own, as GNU's tee opens
+  // one per occurrence (so `tee f f` writes the input once without -a): the
+  // input goes to the file the open found, whatever the name names after.
+  const outputs: { file: string; open: ProcessFile | null }[] = [];
   for (const file of files) {
-    if (file === '-') { outputs.push({ path: '-', offset: 0 }); continue; }
-    const path = resolve(ctx.cwd, file);
+    if (file === '-') { outputs.push({ file, open: null }); continue; }
     try {
-      if (!append) await ctx.vfs.writeFile(path, new Uint8Array(0));
-      else if ((await ctx.vfs.stat(path)) === null) await ctx.vfs.writeFile(path, new Uint8Array(0));
-      outputs.push({ path, offset: 0 });
+      outputs.push({ file, open: await ctx.vfs.open(resolve(ctx.cwd, file), { write: true, create: true, append, truncate: !append }) });
     } catch (error) {
       await ctx.stderr.write(`tee: ${file}: ${strerror(error)}\n`);
       status = 1;
     }
   }
-  for await (const chunk of inputChunks(ctx, '-')) {
-    await writeBytes(ctx.stdout, chunk);
+  try {
+    for await (const chunk of inputChunks(ctx, '-')) {
+      await writeBytes(ctx.stdout, chunk);
+      for (const out of [...outputs]) {
+        try {
+          if (out.open === null) await writeBytes(ctx.stdout, chunk);
+          else await out.open.write(chunk);
+        } catch (error) {
+          // A FILE that cannot be written is reported once and written no more, as GNU's tee does.
+          await ctx.stderr.write(`tee: ${out.file}: ${strerror(error)}\n`);
+          status = 1;
+          outputs.splice(outputs.indexOf(out), 1);
+          // Its failure is told; what its close would answer adds nothing.
+          if (out.open !== null) await out.open.close().catch(() => undefined);
+        }
+      }
+    }
+  } finally {
     for (const out of outputs) {
+      if (out.open === null) continue;
       try {
-        if (out.path === '-') await writeBytes(ctx.stdout, chunk);
-        else if (append) await ctx.vfs.appendFile(out.path, chunk);
-        else { await ctx.vfs.writeRange(out.path, out.offset, chunk); out.offset += chunk.length; }
+        await out.open.sync();
+        await out.open.close();
       } catch (error) {
-        await ctx.stderr.write(`tee: ${out.path}: ${strerror(error)}\n`);
+        await ctx.stderr.write(`tee: ${out.file}: ${strerror(error)}\n`);
         status = 1;
       }
     }

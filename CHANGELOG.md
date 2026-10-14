@@ -5,6 +5,11 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `tee`, `dd` and the commands that read a file operand (`cat`, `wc`,
+  `grep` and the rest) open each file once, as their GNU tools do. If
+  another command moved the file aside and a new file took its name while
+  they ran, the rest of the input went to, or came from, the new file.
+  `tee` now reports a file it cannot write once, and writes it no more.
 - Fixed: a Ruby program and a threaded WASI program end as other WASI
   programs do: what they wrote is in the workspace before their result
   returns, and a run whose session restarted under it, or whose writes the

@@ -1487,6 +1487,16 @@ export class ProcessView implements VFS {
   async access(path: string, mode: number): Promise<void> { await this.call('access', path, () => this.fs.access(path, mode)); }
   async realpath(path: string): Promise<string> { return await this.call('realpath', path, () => this.fs.realpath(path)); }
   /** Append through an O_APPEND descriptor, so concurrent appenders never overwrite each other. */
+  /**
+   * An open file description of this process on `path` (open(2)): its reads
+   * and writes are the file the open found, whatever the name names after,
+   * at its own position, until it is closed.
+   */
+  async open(path: string, flags: RuntimeOpenFlags): Promise<ProcessFile> {
+    const opened = await this.call('open', path, () => this.fs.open(path, flags));
+    return new ProcessFile(this.fs, path, opened.id, vfsStatOf(opened.stat));
+  }
+
   async appendFile(path: string, content: Uint8Array | string): Promise<void> {
     const data = typeof content === 'string' ? new TextEncoder().encode(content) : content;
     await this.call('open', path, async () => {
@@ -1502,6 +1512,45 @@ export class ProcessView implements VFS {
         await this.fs.close(handle.id);
       }
     });
+  }
+}
+
+/** A process's open file description (ProcessView.open), by its descriptor; every failure is a `VfsError`. */
+export class ProcessFile {
+  constructor(
+    private readonly fs: RecallingBridge,
+    readonly path: string,
+    private readonly handle: number,
+    /** Its file as the open found it. */
+    readonly stat: ProcessStat,
+  ) {}
+
+  /** Up to `length` bytes at `offset`, or (null) at its position, which then moves: fewer only at the end. */
+  async read(length: number, offset: number | null = null): Promise<Uint8Array> {
+    try { return await this.fs.read(this.handle, offset, length); }
+    catch (error) { throw toVfsError(error, 'read', this.path); }
+  }
+
+  /** All of `bytes`, at `offset` or (null) at its position (its end, opened to append), which then moves. */
+  async write(bytes: Uint8Array, offset: number | null = null): Promise<void> {
+    try {
+      for (let done = 0; done < bytes.length;) {
+        const written = await this.fs.write(this.handle, offset === null ? null : offset + done, bytes.subarray(done));
+        if (written <= 0 || written > bytes.length - done) throw syscallError('EIO', 'write', this.path, { detail: 'short write' });
+        done += written;
+      }
+    } catch (error) { throw toVfsError(error, 'write', this.path); }
+  }
+
+  /** What the filesystem still holds for its file, written (fsync): a write it could not make fails here. */
+  async sync(): Promise<void> {
+    try { await this.fs.fsync(this.handle); }
+    catch (error) { throw toVfsError(error, 'fsync', this.path); }
+  }
+
+  async close(): Promise<void> {
+    try { await this.fs.close(this.handle); }
+    catch (error) { throw toVfsError(error, 'close', this.path); }
   }
 }
 
