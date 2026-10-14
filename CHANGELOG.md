@@ -11,7 +11,10 @@ published independently in the `@nimbus-sh` npm scope.
   umask was the interpreter's own variable, which nothing read, and every
   file was made 0644. This needs the CPython runtime 3.13.14-2 and core
   0.21.0 or later; 3.13.14-2 names a runner of its own, so a deployment
-  whose core predates it keeps 3.13.14-1.
+  whose core predates it keeps 3.13.14-1. This core runs both builds: it
+  installs 3.13.14-2 when the catalog's default names it or when it is
+  asked for (`nimbus install cpython@3.13.14-2`), and a session that
+  installed 3.13.14-1 keeps it.
 - Fixed: a Python program that resolves more than 64 distinct hostnames gets
   `socket.gaierror` (EAI_MEMORY) for the 65th, instead of an address that
   stood for another name, which a connect would have dialed.
