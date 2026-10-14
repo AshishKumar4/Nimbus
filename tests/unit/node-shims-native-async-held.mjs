@@ -32,8 +32,12 @@ authority.kfs.mkdir('home/user', { recursive: true });
 authority.rawVfs.as(CRED_KERNEL).chown('home/user', 1000, 1000);
 const sources = nodeFacetSources(generateShimsCode());
 
-// The program's run bounded (not its build): a program held open forever is a failure, not a hang.
-const within = (promise, ms) => Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve(null), ms))]);
+// The program's run bounded (not its build): a program held open forever is
+// a failure, not a hang. With this process's own timer: the runners run here,
+// and a timer made through the node shims' setTimeout is a program's live
+// timer, which would hold the next program open until it fired.
+const hostSetTimeout = realProcess.getBuiltinModule('node:timers').setTimeout;
+const within = (promise, ms) => Promise.race([promise, new Promise((resolve) => hostSetTimeout(() => resolve(null), ms).unref())]);
 
 async function run(code, name) {
   const generated = await generateEntrypointCode(code, { bundle: {} }, false, sources);
