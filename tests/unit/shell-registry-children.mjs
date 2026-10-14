@@ -10,6 +10,8 @@ import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx });
+// A program that exits 255, GNU xargs's signal to stop.
+ws.registry.register('exit255', async () => 255);
 const failures = [];
 const check = async (what, run) => {
   try { await run(); console.log(`  ✓ ${what}`); } catch (error) { failures.push(what); console.log(`  ✗ ${what}: ${error.message}`); }
@@ -42,7 +44,7 @@ try {
 
   await check('xargs ends with GNU\'s statuses: 123 for a failure, 124 for 255, 127 for a missing command', async () => {
     assert.deepEqual(await run('echo x | xargs false; echo $?'), { code: 0, stdout: '123\n', stderr: '' });
-    assert.deepEqual(await run('printf "a\\nb\\n" | xargs -n1 sh -c "exit 255"; echo $?'), { code: 0, stdout: '124\n', stderr: 'xargs: sh: exited with status 255; aborting\n' });
+    assert.deepEqual(await run('printf "a\\nb\\n" | xargs -n1 exit255; echo $?'), { code: 0, stdout: '124\n', stderr: 'xargs: exit255: exited with status 255; aborting\n' });
     assert.deepEqual(await run('echo x | xargs no-such-command; echo $?'), { code: 0, stdout: '127\n', stderr: 'xargs: no-such-command: No such file or directory\n' });
   });
 
