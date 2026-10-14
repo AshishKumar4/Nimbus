@@ -65,8 +65,10 @@ plugin({
 });
 
 // Captured before any launch: the body replaces globalThis.process and console,
-// and wraps setTimeout in the resumption barrier.
+// and wraps setTimeout in the resumption barrier; a one-shot opencode runner
+// replaces the realm's own process.exit.
 const realProcess = globalThis.process;
+const realExit = realProcess.exit.bind(realProcess);
 const realStdout = realProcess.stdout.write.bind(realProcess.stdout);
 const realStderr = realProcess.stderr.write.bind(realProcess.stderr);
 const rawSetTimeout = globalThis.setTimeout;
@@ -321,10 +323,10 @@ export async function runScenarios(file, scenarios, { barrierFailures = false } 
         );
       }
       realStdout(`SCENARIO-OK ${selected}\n`);
-      realProcess.exit(0);
+      realExit(0);
     } catch (error) {
       realStderr(`SCENARIO-FAILED ${selected}\n${(error && error.stack) || error}\n`);
-      realProcess.exit(1);
+      realExit(1);
     }
     return;
   }
