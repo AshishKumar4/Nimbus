@@ -182,16 +182,17 @@ export class ProcessTable {
     return entry;
   }
 
+  /** `pid`'s credential, as its entry keeps it: frozen, replaced (never changed) by setUmask. */
   credOf(pid: number): VfsCred {
     const entry = this.processes.get(pid);
     if (!entry) throw noSuchProcess(pid);
-    return immutableCred(entry.cred);
+    return entry.cred;
   }
 
   liveCred(pid: number): VfsCred {
     const entry = this.processes.get(pid);
     if (!entry || entry.state !== 'running') throw noSuchProcess(pid);
-    return immutableCred(entry.cred);
+    return entry.cred;
   }
 
   cred(pid: number): VfsCred {
