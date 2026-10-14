@@ -57,6 +57,15 @@ export function clearInnerDoClasses(supervisorDoId: string): void {
   }
 }
 
+/**
+ * The facet a `wrangler dev` Worker's Durable Object `id` of binding
+ * `bindingName` runs as: `innerDO:` and the pair, each whole, so no two
+ * objects share one (and none is a D1 database's `d1:` facet).
+ */
+export function innerDoFacetName(bindingName: string, id: string): string {
+  return 'innerDO:' + JSON.stringify([bindingName, id]);
+}
+
 /** Inner-DO facet names each incarnation has opened, by binding; keyed off ctx, so a new incarnation starts empty. */
 const openedInnerDoFacets = new WeakMap<DurableObjectState, Map<string, Set<string>>>();
 
