@@ -226,6 +226,13 @@ export declare class ChildProcessManager {
     private _appendText;
     /** Whether this pid's descriptors belong to a child managed by this broker. */
     isChild(pid: number): boolean;
+    /**
+     * The process that spawned child `pid`, whose handle it is: recorded at
+     * the spawn and kept with the child's output and exit, however long ago
+     * the process table forgot the child's row. Undefined for a pid this
+     * broker did not spawn.
+     */
+    parentOf(pid: number): number | undefined;
     /** Whether this pid is a child of this broker that has not ended. */
     isRunning(pid: number): boolean;
     /** Runtime stdout/stderr for a broker-owned pid goes to its parent, not the shell. */

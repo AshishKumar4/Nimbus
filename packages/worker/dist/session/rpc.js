@@ -1258,12 +1258,15 @@ export async function _rpcCpStdinEnd(self, childPid, pid) {
  * its parent's, or an ancestor's: `caller`, the pid its binding stamped,
  * must have spawned `childPid`, directly or not. Another gets ESRCH, as
  * waitpid answers for a pid that is not its child. A call with no caller is
- * the session's own.
+ * the session's own. Who spawned the child is the broker's record of it,
+ * which lasts as the handle does (its output and exit not yet read): the
+ * table may forget an ended child's row first (a prune).
  */
 function childOf(self, childPid, caller) {
     if (caller === undefined)
         return;
-    if (childPid === caller || !self.processes.isWithin(childPid, caller)) {
+    const parent = self._ensureChildProcessManager().parentOf(childPid);
+    if (childPid === caller || parent === undefined || (parent !== caller && !self.processes.isWithin(parent, caller))) {
         throw Object.assign(new Error(`ESRCH: no such child process ${childPid}`), { code: 'ESRCH', errno: -3 });
     }
 }
@@ -1336,7 +1339,8 @@ export async function _rpcCpCloseOutput(self, childPid, fd, pid) {
 /** A child's kill: its parent's, and as Linux's kill(2) allows (SessionProcessSupervisor.maySignal). */
 export async function _rpcCpKill(self, childPid, signal, pid) {
     childOf(self, childPid, pid);
-    if (pid !== undefined && !self.processes.maySignal(self.processes.liveCred(pid), childPid)) {
+    // kill(2)'s rule, for a child the table still holds: one it forgot has ended, and its kill is moot (false).
+    if (pid !== undefined && self.processes.get(childPid) !== undefined && !self.processes.maySignal(self.processes.liveCred(pid), childPid)) {
         throw Object.assign(new Error(`EPERM: operation not permitted, kill ${childPid}`), { code: 'EPERM', errno: -1 });
     }
     const fpm = self._ensureChildProcessManager();
