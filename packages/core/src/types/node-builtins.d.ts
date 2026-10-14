@@ -136,6 +136,14 @@ declare module 'node:url' {
   export default url;
 }
 
+declare module 'node:console' {
+  /** Node's Console class: a console over the streams it is given. */
+  export class Console {
+    constructor(stdout: object, stderr?: object);
+    log(...data: unknown[]): void;
+  }
+}
+
 declare module 'node:timers' {
   export const setTimeout: typeof globalThis.setTimeout;
   export const clearTimeout: typeof globalThis.clearTimeout;
