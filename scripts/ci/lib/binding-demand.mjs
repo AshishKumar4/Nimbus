@@ -5,12 +5,16 @@
 // an owner at the newest staged version its range admits
 // (worker/src/npm/resolve-one-facet.ts stagedBindingVersion), but a range
 // that admits none (@astrojs/compiler-rs pins compiler-binding exactly)
-// installs the newest published version, which will not load. So along each
+// installs what any other package would, which will not load. So along each
 // chain from a consumer users install by name to a binding's owner (DEMAND),
-// from the consumer's latest release, the ranges resolve as that resolver
-// resolves them, and an owner range that admits no staged version breaks
-// every new project of that consumer (scripts/ci/release.mjs refuses it).
+// from the consumer's latest release, each edge resolves by that resolver's
+// own rule (core npm-semver.ts pickInstalledVersion, npm-tree.ts
+// manifestEdges), and an owner the chain lands on unstaged breaks every new
+// project of that consumer (scripts/ci/release.mjs refuses it).
 
+import { pickInstalledVersion } from '../../../packages/core/src/_shared/npm-semver.ts';
+import { parseRegistryRequest } from '../../../packages/core/src/_shared/npm-spec.ts';
+import { manifestEdges } from '../../../packages/core/src/_shared/npm-tree.ts';
 import { SPECS } from '../../../packages/worker/scripts/napi-wasm/specs.mjs';
 
 /**
@@ -32,17 +36,6 @@ export async function npmPackument(name) {
   });
   if (!response.ok) throw new Error(`npm registry: ${name}: HTTP ${response.status}`);
   return response.json();
-}
-
-/** The newest published version satisfying `range`, prereleases only where the range names one, as npm picks it. */
-function newest(packument, range) {
-  let best = null;
-  for (const version of Object.keys(packument.versions ?? {})) {
-    if (version.includes('-') && !range.includes('-')) continue;
-    if (!Bun.semver.satisfies(version, range)) continue;
-    if (best === null || Bun.semver.order(version, best) > 0) best = version;
-  }
-  return best;
 }
 
 /** The versions staged for an owner. */
@@ -70,19 +63,20 @@ export async function missingBindings({ specs = SPECS, demand = DEMAND, packumen
   const demanded = new Map();
   for (const chain of demand) {
     const [root, ...rest] = chain;
-    let version = (await read(root))['dist-tags']?.latest;
-    if (!version) throw new Error(`binding demand: ${root} has no latest release`);
+    const consumer = await read(root);
+    let version = pickInstalledVersion(consumer.versions, consumer['dist-tags'], 'latest');
+    if (version === null) throw new Error(`binding demand: ${root} has no latest release`);
     const via = [`${root}@${version}`];
     let from = root;
     for (const next of rest) {
-      const manifest = (await read(from)).versions?.[version] ?? {};
-      const range = manifest.dependencies?.[next] ?? manifest.optionalDependencies?.[next];
-      if (range === undefined) throw new Error(`binding demand: ${from}@${version} does not depend on ${next}; update DEMAND in scripts/ci/lib/binding-demand.mjs`);
-      const staged = owners.has(next) ? newest({ versions: Object.fromEntries(stagedVersions(specs, next).map((v) => [v, {}])) }, range) : null;
-      version = staged ?? newest(await read(next), range);
-      if (version === null) throw new Error(`binding demand: no published ${next} satisfies ${via.at(-1)}'s ${range}`);
-      via.push(`${next}@${version}`);
-      from = next;
+      const edge = manifestEdges((await read(from)).versions?.[version] ?? {}).find((e) => e.name === next && e.type !== 'peer' && e.type !== 'peerOptional');
+      if (edge === undefined) throw new Error(`binding demand: ${from}@${version} does not depend on ${next}; update DEMAND in scripts/ci/lib/binding-demand.mjs`);
+      const request = parseRegistryRequest(next, edge.range);
+      const packument = await read(request.registryName);
+      version = pickInstalledVersion(packument.versions, packument['dist-tags'], request.range, owners.has(request.registryName) ? stagedVersions(specs, request.registryName) : []);
+      if (version === null) throw new Error(`binding demand: no published ${request.registryName} answers ${via.at(-1)}'s ${edge.range}`);
+      via.push(`${request.registryName}@${version}`);
+      from = request.registryName;
     }
     const owner = chain.at(-1);
     const name = owners.get(owner);
