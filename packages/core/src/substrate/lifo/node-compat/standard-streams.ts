@@ -4,15 +4,6 @@ import type { PipeOptions, Readable, Writable } from 'node:stream';
 import { SinkWriter } from '../../../_shared/byte-stream.js';
 import type { CommandOutputStream } from '../commands/types.js';
 
-/** `write`'s outcome, made now: its failure, thrown or rejected, is the promise's. */
-function settled(write: () => void | Promise<void>): Promise<void> {
-  try {
-    return Promise.resolve(write());
-  } catch (error) {
-    return Promise.reject(error);
-  }
-}
-
 /** Every program's process.stdout and process.stderr this realm has made. */
 const standardStreams = new WeakSet<Writable>();
 let pipeLeavesThemOpen = false;
@@ -40,24 +31,28 @@ export function leaveStandardStreamsOpen(): void {
  * `_isStdio`. Its bytes reach the output as each write is made, decoded
  * across writes for an output that takes text, so they keep their place
  * among the console's, which writes the output directly; an output's
- * failure is the stream's error.
+ * failure is the stream's error, and the stream finishes once every write
+ * handed to the output is done.
  */
 export function standardStream(output: CommandOutputStream, fd: 1 | 2): Writable {
   leaveStandardStreamsOpen();
   const { Writable } = realm.getBuiltinModule('node:stream');
   const writer = new SinkWriter(output);
+  // The writes handed to the output and not yet done: the stream finishes after them.
+  const pending = new Set<Promise<void>>();
   const stream: Writable = Object.assign(new Writable({
     // A UTF-8 string goes to the output as text; any other is made bytes in its encoding.
     decodeStrings: false,
     write(chunk, encoding, callback) {
       const done = typeof chunk === 'string' && (encoding === 'utf8' || encoding === 'utf-8')
-        ? settled(() => output.write(chunk))
+        ? writer.writeText(chunk)
         : writer.write(typeof chunk === 'string' ? Buffer.from(chunk, encoding) : chunk);
-      done.catch((error: Error) => stream.destroy(error));
+      pending.add(done);
+      done.then(() => { pending.delete(done); }, (error: Error) => { pending.delete(done); stream.destroy(error); });
       callback();
     },
     final(callback) {
-      writer.end().then(() => callback(), callback);
+      Promise.all(pending).then(() => writer.end()).then(() => callback(), callback);
     },
   }), { isTTY: false, fd, columns: 80, _isStdio: true });
   standardStreams.add(stream);
