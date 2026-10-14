@@ -47,6 +47,7 @@ declare module 'node:stream' {
     highWaterMark?: number;
     decodeStrings?: boolean;
     write?(this: Writable, chunk: Uint8Array | string, encoding: string, callback: Callback): void;
+    final?(this: Writable, callback: Callback): void;
   }
   export class Stream extends EventEmitter {}
   export interface PipeOptions {

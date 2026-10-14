@@ -1,0 +1,65 @@
+import { Buffer } from 'node:buffer';
+import realm from 'node:process';
+import type { PipeOptions, Readable, Writable } from 'node:stream';
+import { SinkWriter } from '../../../_shared/byte-stream.js';
+import type { CommandOutputStream } from '../commands/types.js';
+
+/** `write`'s outcome, made now: its failure, thrown or rejected, is the promise's. */
+function settled(write: () => void | Promise<void>): Promise<void> {
+  try {
+    return Promise.resolve(write());
+  } catch (error) {
+    return Promise.reject(error);
+  }
+}
+
+/** Every program's process.stdout and process.stderr this realm has made. */
+const standardStreams = new WeakSet<Writable>();
+let pipeLeavesThemOpen = false;
+
+/**
+ * A pipe into a program's stdout or stderr leaves it open, as Node's pipe
+ * leaves process.stdout and process.stderr; the engine's knows only its own
+ * process's. Set on the engine's Readable when a program first reaches the
+ * engine's streams, before it can pipe into one; a pipe into anything else
+ * is the engine's as it was.
+ */
+export function leaveStandardStreamsOpen(): void {
+  if (pipeLeavesThemOpen) return;
+  pipeLeavesThemOpen = true;
+  const { Readable } = realm.getBuiltinModule('node:stream');
+  const pipe = Readable.prototype.pipe;
+  Readable.prototype.pipe = function (this: Readable, destination: Writable, options?: PipeOptions): Writable {
+    return pipe.call(this, destination, standardStreams.has(destination) ? { ...options, end: false } : options);
+  };
+}
+
+/**
+ * A program's process.stdout (fd 1) or process.stderr (fd 2): a Writable
+ * over its output, as Node's is a stream, which Node's legacy pipe knows by
+ * `_isStdio`. Its bytes reach the output as each write is made, decoded
+ * across writes for an output that takes text, so they keep their place
+ * among the console's, which writes the output directly; an output's
+ * failure is the stream's error.
+ */
+export function standardStream(output: CommandOutputStream, fd: 1 | 2): Writable {
+  leaveStandardStreamsOpen();
+  const { Writable } = realm.getBuiltinModule('node:stream');
+  const writer = new SinkWriter(output);
+  const stream: Writable = Object.assign(new Writable({
+    // A UTF-8 string goes to the output as text; any other is made bytes in its encoding.
+    decodeStrings: false,
+    write(chunk, encoding, callback) {
+      const done = typeof chunk === 'string' && (encoding === 'utf8' || encoding === 'utf-8')
+        ? settled(() => output.write(chunk))
+        : writer.write(typeof chunk === 'string' ? Buffer.from(chunk, encoding) : chunk);
+      done.catch((error: Error) => stream.destroy(error));
+      callback();
+    },
+    final(callback) {
+      writer.end().then(() => callback(), callback);
+    },
+  }), { isTTY: false, fd, columns: 80, _isStdio: true });
+  standardStreams.add(stream);
+  return stream;
+}

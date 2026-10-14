@@ -34,6 +34,7 @@ import type { Kernel, VirtualRequest, VirtualRequestHandler, VirtualResponse } f
 import type { NodeFilesystem, NodeWatch } from '../../node-compat/filesystem.js';
 import type { VfsEvent } from '../../../../vfs/events.js';
 import { synchronousFilesystem } from '../../node-compat/filesystem.js';
+import { SinkWriter } from '../../../../_shared/byte-stream.js';
 import { VfsError } from '../../../../vfs/vfs-error.js';
 import { dispatchWorkspaceRequest } from '../net/kernel-fetch.js';
 import { isEgressGuestEvent, isEgressHostEvent, RealmEgress, type EgressGuestEvent, type EgressHostEvent } from '../../../../runtime/realm-egress.js';
@@ -289,13 +290,19 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
   if (ctx.signal.aborted) return exitCodeForAbortSignal(ctx.signal);
   const filesystem = synchronousFilesystem(ctx.vfs);
 
-  // Output in the order it was written, each write after the last.
+  // Output in the order it was written, each write after the last; bytes
+  // for an output that takes text are decoded across writes, as one stream.
   let written: Promise<void> = Promise.resolve();
+  const writers = new Map<CommandOutputStream, SinkWriter>();
+  const writerOf = (stream: CommandOutputStream): SinkWriter => {
+    let writer = writers.get(stream);
+    if (writer === undefined) writers.set(stream, writer = new SinkWriter(stream));
+    return writer;
+  };
   const write = (stream: CommandOutputStream, data: string | Uint8Array) => {
     written = written.then(async () => {
       if (typeof data === 'string') await stream.write(data);
-      else if (stream.writeBytes) await stream.writeBytes(data);
-      else await stream.write(new TextDecoder().decode(data));
+      else await writerOf(stream).write(data);
     }).catch(() => {});
   };
   // The realm, once it has started: a request for one of the guest's servers waits for none before.
@@ -397,6 +404,7 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
   egress?.close();
   for (const watch of watches.values()) watch.close();
   await written;
+  for (const writer of writers.values()) await writer.end().catch(() => {});
   if (end.terminated) return exitCodeForAbortSignal(ctx.signal);
   if (end.failure !== null) {
     await ctx.stderr.write(`${end.failure.stack ?? end.failure.message}\n`);

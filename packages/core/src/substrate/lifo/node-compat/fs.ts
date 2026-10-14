@@ -127,6 +127,8 @@ interface StreamOptions {
   highWaterMark?: number;
   autoClose?: boolean;
   emitClose?: boolean;
+  /** A WriteStream's: fsync before it closes. */
+  flush?: boolean;
 }
 
 function resolvePath(cwd: string, p: string | URL): string {
@@ -558,6 +560,10 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array, reachS
       : writeSync(fd, data, at(first), typeof second === 'number' ? second : undefined, at(third))), (err, written) => callback(err, written, data));
   }
 
+  function fsync(fd: number, cb: Callback<void>): void {
+    wrapCallback(() => fsyncSync(fd), cb);
+  }
+
   function fstat(fd: number, cb: Callback<NodeStat>): void {
     wrapCallback(() => fstatSync(fd), cb);
   }
@@ -580,9 +586,15 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array, reachS
   // The engine's own read and write streams, over this filesystem: Node's
   // ReadStream and WriteStream read and write through the `fs` they are given.
   const engineFs = realm.getBuiltinModule('node:fs');
-  const streamFs = { open, read, write, close };
+  const streamFs = { open, read, write, close, fsync };
   const streamPath = (path: string | URL | null | undefined): string | undefined => (path === null || path === undefined ? undefined : resolvePath(cwd, path));
-  const streamOptions = (options: string | StreamOptions | undefined): StreamOptions => ({ fs: streamFs, ...(typeof options === 'string' ? { encoding: options } : options) });
+  // A stream given no fs of its own (none, undefined or null, which Node's
+  // `options.fs || fs` reads as its default) goes through this filesystem,
+  // its descriptors this filesystem's: never the engine's own.
+  const streamOptions = (options: string | StreamOptions | undefined): StreamOptions => {
+    const given = typeof options === 'string' ? { encoding: options } : options ?? {};
+    return { ...given, fs: given.fs || streamFs };
+  };
   class ReadStream extends engineFs.ReadStream {
     constructor(path: string | URL | null | undefined, options?: string | StreamOptions) {
       reachStreams?.();
@@ -794,6 +806,7 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array, reachS
     close,
     read,
     write,
+    fsync,
     fstat,
     realpath,
     // Streams

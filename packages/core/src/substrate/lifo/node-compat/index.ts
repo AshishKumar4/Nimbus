@@ -13,7 +13,7 @@ import type { DNSResolver } from '../kernel/dns-resolver.js';
 import { createChildProcess } from './child_process.js';
 import * as timersModule from './timers.js';
 import * as zlibModule from './zlib.js';
-import { createTty } from './tty.js';
+import { createTty } from './tty-streams.js';
 import { createDns } from './dns.js';
 import { createModuleShim } from './module.js';
 import * as readlineModule from './readline.js';

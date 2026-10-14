@@ -1,6 +1,5 @@
 import { Buffer } from 'node:buffer';
 import realm from 'node:process';
-import type { PipeOptions, Readable, Writable } from 'node:stream';
 import type { NodeFilesystem } from '../../node-compat/filesystem.js';
 import type { ProcessView } from '../../../../runtime/process-files.js';
 import type { Command } from '../types.js';
@@ -14,6 +13,7 @@ import { createProcess } from '../../node-compat/process.js';
 import { createConsole } from '../../node-compat/console.js';
 import { createNativeEsmLoader } from '../../node-compat/native-esm-loader.js';
 import { pathToFileURL } from '../../node-compat/file-url.js';
+import { leaveStandardStreamsOpen } from '../../node-compat/standard-streams.js';
 import type { VirtualRequestHandler, Kernel, LoopbackRouter } from '../../kernel/index.js';
 import type { DNSResolver } from '../../kernel/dns-resolver.js';
 import type { CommandOutputStream } from '../types.js';
@@ -141,20 +141,6 @@ export interface NodeProgramEnd {
 }
 
 /**
- * A pipe into the program's stdout or stderr leaves it open, as Node's pipe
- * leaves process.stdout and process.stderr; the engine's knows the realm's own
- * streams (the worker's, which its plumbing needs), not the program's. Set
- * when the program first reaches the engine's streams, before it can pipe.
- */
-function leaveOpenOnPipe(standardStreams: ReadonlySet<Writable>): void {
-	const { Readable } = realm.getBuiltinModule('node:stream');
-	const pipe = Readable.prototype.pipe;
-	Readable.prototype.pipe = function (this: Readable, destination: Writable, options?: PipeOptions): Writable {
-		return pipe.call(this, destination, standardStreams.has(destination) ? { ...options, end: false } : options);
-	};
-}
-
-/**
  * Run `program` in the current realm, which is the program's own: its globals
  * (process, Buffer, console) are installed on
  * globalThis for good. Resolves once the main script has run (an ES module's
@@ -180,23 +166,11 @@ export async function runNodeProgram(program: NodeProgram, host: NodeProgramHost
 			routeLoopback: host.routeLoopback,
 			dns: host.dns,
 			stdin: host.stdin,
+			reachStreams: leaveStandardStreamsOpen,
 		};
 
 		// One process and console, every module's, as in Node.
-		const standardStreams = new Set<Writable>();
-		let streamsReached = false;
-		nodeCtx.reachStreams = () => {
-			if (streamsReached) return;
-			streamsReached = true;
-			leaveOpenOnPipe(standardStreams);
-		};
-		const main = {
-			process: createProcess({
-				argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdout: ctx.stdout, stderr: ctx.stderr,
-				standardStream: (stream) => { standardStreams.add(stream); nodeCtx.reachStreams?.(); },
-			}),
-			console: createConsole(ctx.stdout, ctx.stderr),
-		};
+		const main = { process: createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdout: ctx.stdout, stderr: ctx.stderr }), console: createConsole(ctx.stdout, ctx.stderr) };
 		const loader = createCjsLoader(nodeCtx, main);
 
 		// Execute main script

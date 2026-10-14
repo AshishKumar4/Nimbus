@@ -1,8 +1,8 @@
 import { EventEmitter } from 'node:events';
-import realm from 'node:process';
 import type { Writable } from 'node:stream';
 import type { CommandOutputStream } from '../commands/types.js';
 import { createProcessWarnings, type WarningConstructor, type WarningOptions } from '../../../_shared/node-warning.js';
+import { standardStream } from './standard-streams.js';
 
 export class ProcessExitError extends Error {
   exitCode: number;
@@ -22,22 +22,29 @@ interface WarningFlags {
 }
 
 /**
- * process.stdout or process.stderr: a Writable over the program's output, as
- * Node's is a stream. Each write reaches the output as it is made, so it
- * keeps its place among the console's.
+ * A program's process: an emitter, as Node's is. Its stdout and stderr are
+ * made when the program first reaches them: a Writable costs the engine's
+ * stream module, which a program that only logs never loads.
  */
-function outputStream(output: CommandOutputStream, fd: number): Writable {
-  const decoder = new TextDecoder();
-  const { Writable } = realm.getBuiltinModule('node:stream');
-  return Object.assign(new Writable({
-    decodeStrings: false,
-    write(chunk, _encoding, callback) {
-      if (typeof chunk === 'string') output.write(chunk);
-      else if (output.writeBytes) output.writeBytes(chunk);
-      else output.write(decoder.decode(chunk));
-      callback();
-    },
-  }), { isTTY: false, fd, columns: 80 });
+export class LifoProcess extends EventEmitter {
+  readonly #output: CommandOutputStream;
+  readonly #errorOutput: CommandOutputStream;
+  #stdout: Writable | undefined;
+  #stderr: Writable | undefined;
+
+  constructor(output: CommandOutputStream, errorOutput: CommandOutputStream) {
+    super();
+    this.#output = output;
+    this.#errorOutput = errorOutput;
+  }
+
+  get stdout(): Writable {
+    return this.#stdout ??= standardStream(this.#output, 1);
+  }
+
+  get stderr(): Writable {
+    return this.#stderr ??= standardStream(this.#errorOutput, 2);
+  }
 }
 
 export interface ProcessOptions {
@@ -46,8 +53,6 @@ export interface ProcessOptions {
   cwd: string;
   stdout: CommandOutputStream;
   stderr: CommandOutputStream;
-  /** Told process.stdout and process.stderr, each when the program first reaches it. */
-  standardStream?: (stream: Writable) => void;
 }
 
 export function createProcess(opts: ProcessOptions) {
@@ -57,8 +62,7 @@ export function createProcess(opts: ProcessOptions) {
   // Node's warnings, written on the program's stderr.
   const warnings = createProcessWarnings(() => proc, (text) => { opts.stderr.write(`${text}\n`); });
 
-  // An emitter, as Node's process is.
-  const proc = Object.assign(new EventEmitter(), {
+  const proc = Object.assign(new LifoProcess(opts.stdout, opts.stderr), {
     argv: ['/usr/bin/node', ...opts.argv],
     argv0: 'node',
     env: { ...opts.env },
@@ -150,24 +154,6 @@ export function createProcess(opts: ProcessOptions) {
     features: { inspector: false, debug: false, uv: false, tls_alpn: false, tls_sni: false, tls_ocsp: false, tls: false },
     ...unflagged,
   });
-
-  // stdout and stderr, made when the program first reaches them: a Writable
-  // costs the engine's stream module, which a program that only logs never loads.
-  const standard = (output: CommandOutputStream, fd: number): PropertyDescriptor => {
-    let stream: Writable | undefined;
-    return {
-      configurable: true,
-      enumerable: true,
-      get: () => {
-        if (stream === undefined) {
-          stream = outputStream(output, fd);
-          opts.standardStream?.(stream);
-        }
-        return stream;
-      },
-    };
-  };
-  Object.defineProperties(proc, { stdout: standard(opts.stdout, 1), stderr: standard(opts.stderr, 2) });
 
   // Node's own 'warning' listener, unless warnings are off.
   if (warnings.installs) proc.on('warning', warnings.onWarning);

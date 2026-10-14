@@ -7,6 +7,7 @@ import { createConsole } from '../node-compat/console.js';
 import { ProcessExitError } from '../node-compat/index.js';
 import { createCjsLoader } from '../node-compat/cjs-loader.js';
 import { createNativeEsmLoader } from '../node-compat/native-esm-loader.js';
+import { leaveStandardStreamsOpen } from '../node-compat/standard-streams.js';
 import { containsModuleSyntax } from '../../../runtime/javascript-ast.js';
 // ─── CDN + WASM module registry ───
 const DEFAULT_CDN = 'https://esm.sh';
@@ -126,6 +127,7 @@ async function executeCjsCommand(entryPath, source, ctx, lifo) {
         filename: entryPath,
         dirname: dirname(entryPath),
         signal: ctx.signal,
+        reachStreams: leaveStandardStreamsOpen,
     };
     const scope = {
         process: createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdout: ctx.stdout, stderr: ctx.stderr }),
