@@ -67,6 +67,8 @@ interface StreamOptions {
     highWaterMark?: number;
     autoClose?: boolean;
     emitClose?: boolean;
+    /** A WriteStream's: fsync before it closes. */
+    flush?: boolean;
 }
 /**
  * `stdin` reads fd 0 to its end, blocking until it ends, as a synchronous
@@ -140,6 +142,7 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
     close: (fd: number, cb: Callback<void>) => void;
     read: (fd: number, buffer: Uint8Array, offset: number, length: number, position: number | null, cb: ReadCallback) => void;
     write: (fd: number, data: Uint8Array | string, ...rest: (number | string | null | undefined | WriteCallback)[]) => void;
+    fsync: (fd: number, cb: Callback<void>) => void;
     fstat: (fd: number, cb: Callback<NodeStat>) => void;
     realpath: ((path: string | URL, optOrCb: unknown, cb?: Callback<string>) => void) & {
         native: (path: string | URL, optOrCb: unknown, cb?: Callback<string>) => void;

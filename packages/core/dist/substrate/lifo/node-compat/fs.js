@@ -424,6 +424,9 @@ export function createFs(vfs, cwd, stdin, reachStreams) {
             ? writeSync(fd, data, at(first), typeof second === 'string' ? second : undefined)
             : writeSync(fd, data, at(first), typeof second === 'number' ? second : undefined, at(third))), (err, written) => callback(err, written, data));
     }
+    function fsync(fd, cb) {
+        wrapCallback(() => fsyncSync(fd), cb);
+    }
     function fstat(fd, cb) {
         wrapCallback(() => fstatSync(fd), cb);
     }
@@ -440,9 +443,15 @@ export function createFs(vfs, cwd, stdin, reachStreams) {
     // The engine's own read and write streams, over this filesystem: Node's
     // ReadStream and WriteStream read and write through the `fs` they are given.
     const engineFs = realm.getBuiltinModule('node:fs');
-    const streamFs = { open, read, write, close };
+    const streamFs = { open, read, write, close, fsync };
     const streamPath = (path) => (path === null || path === undefined ? undefined : resolvePath(cwd, path));
-    const streamOptions = (options) => ({ fs: streamFs, ...(typeof options === 'string' ? { encoding: options } : options) });
+    // A stream given no fs of its own (none, undefined or null, which Node's
+    // `options.fs || fs` reads as its default) goes through this filesystem,
+    // its descriptors this filesystem's: never the engine's own.
+    const streamOptions = (options) => {
+        const given = typeof options === 'string' ? { encoding: options } : options ?? {};
+        return { ...given, fs: given.fs || streamFs };
+    };
     class ReadStream extends engineFs.ReadStream {
         constructor(path, options) {
             reachStreams?.();
@@ -666,6 +675,7 @@ export function createFs(vfs, cwd, stdin, reachStreams) {
         close,
         read,
         write,
+        fsync,
         fstat,
         realpath,
         // Streams

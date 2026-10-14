@@ -6,16 +6,25 @@ export declare class ProcessExitError extends Error {
     exitCode: number;
     constructor(code: number);
 }
+/**
+ * A program's process: an emitter, as Node's is. Its stdout and stderr are
+ * made when the program first reaches them: a Writable costs the engine's
+ * stream module, which a program that only logs never loads.
+ */
+export declare class LifoProcess extends EventEmitter {
+    #private;
+    constructor(output: CommandOutputStream, errorOutput: CommandOutputStream);
+    get stdout(): Writable;
+    get stderr(): Writable;
+}
 export interface ProcessOptions {
     argv: string[];
     env: Record<string, string>;
     cwd: string;
     stdout: CommandOutputStream;
     stderr: CommandOutputStream;
-    /** Told process.stdout and process.stderr, each when the program first reaches it. */
-    standardStream?: (stream: Writable) => void;
 }
-export declare function createProcess(opts: ProcessOptions): EventEmitter & {
+export declare function createProcess(opts: ProcessOptions): LifoProcess & {
     noDeprecation?: boolean;
     throwDeprecation?: boolean;
     traceDeprecation?: boolean;
