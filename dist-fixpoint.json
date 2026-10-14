@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "21a61ba1357c485159cc789f77bd9fe043288db36854db8e9f631ebff19a3717",
+  "fingerprint": "2ae920e74979cbc1d513b4c10046b9f8d1eedb96a1a8b7bdea0ac12bc6380a83",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2957,7 +2957,7 @@
     "packages/worker/scripts/bundle-plugin-react.mjs": "950ad771c2a436e2936bffd8036f871adb1bf3790f27d2a50b2e647f0dadaaf7",
     "packages/worker/scripts/bundle-preview-isolation.mjs": "7fb9e5e8291df975c35dbe94bab6573ba516414c7590f91a37d99f2da547f066",
     "packages/worker/scripts/bundle-real-vite.mjs": "76cd42b404904ee295526d731dd1491da3488afc47206ca1479cbb078ffc9a1e",
-    "packages/worker/scripts/bundle-runtime.mjs": "bf1dad2e69651350f1831d650220e534aa6ced5e7706dc252359eec18ce7d1ee",
+    "packages/worker/scripts/bundle-runtime.mjs": "0fa24d80134e442ff372af1741695479f456bb44f8d7d7b2f0db99810370c75e",
     "packages/worker/scripts/bundle-sqlite-wasm.mjs": "4b022a57c81375ad5e03743979dc93f23c955585a78f7f97150f1f1275c96ffd",
     "packages/worker/scripts/bundle-tailwind-play.mjs": "6fb9efce9fe8228354053163fbd5a042e7e3709a9553c251d82b4ba9f2bea1e2",
     "packages/worker/scripts/cf-git-patch.mjs": "f4539f526a13bd975e0120c92074597178dcac014f7880a9ed454a07aab98675",
@@ -3016,7 +3016,7 @@
     "packages/worker/scripts/resolve-package-dir.mjs": "c4b7f84d185c498e4b9279d1556c4ef6c922856abda8a3a3c5d632bcb2977e95",
     "packages/worker/scripts/rolldown-facet/entry.mjs": "3696ed018a524682b2eb13d0b6244ff662b209073ae2e3b9c094ca3ff4337ac6",
     "packages/worker/scripts/rolldown-facet/shims.mjs": "cc790a0a7af7360f198b301b4f2d8e42848edf1788e9ccbd62335dbd0d41de9e",
-    "packages/worker/scripts/runtime-specs.mjs": "145c917f03884f93c984f923569e5274933aabb96d65c67b8b2c4a65e52c92a0",
+    "packages/worker/scripts/runtime-specs.mjs": "5612f337e96d580000f19a63aee292776629edc0190fa40dede2bb7503ac703e",
     "packages/worker/scripts/stage-asset.mjs": "2187cb40e0491884adea0ae5deb543205f431e995a4e1e3a726d93d4e1173929",
     "packages/worker/src/_shared/preview-host.ts": "903136b3a1bfeaad3e1de9e347e79bd732e1ea88bc54178dc306095ddacec411",
     "packages/worker/src/_shared/preview-isolation.ts": "0705d54ac7e95fe006113b097067432fc938cfb2e35ad8c8c0a3a2afbbb2e091",
@@ -3299,8 +3299,8 @@
     "packages/worker/wasm/bash/cross.cache": "94c70967b023de4687815ec71d3ffdd8394491ed97f3fe52a2a37bd4935325a3",
     "packages/worker/wasm/bash/include/termios.h": "64b72d467d29829d60ac3c69af7846a0ba6ec1de3d7e137b3ca275c7c0928ae4",
     "packages/worker/wasm/bash/inputs.mjs": "b8f5f6ff4874a9873834b4b7f47169516c09fcaac715882756968eb95eecd321",
-    "packages/worker/wasm/bash/nimbus-proc.c": "0e12961c2f89e2649097a1123c333d83dcab80d6a3f47895ad51d44c06da43d4",
-    "packages/worker/wasm/bash/nimbus-proc.h": "69583a295ee76bdefe8bc2d9c6198d4ebd8387a0acfeb40d3576c0b472a872f0",
+    "packages/worker/wasm/bash/nimbus-proc.c": "93cbc9c2e8862f9ac3340e22b8f9ddc583cf0936c5ef61641b99d55152105591",
+    "packages/worker/wasm/bash/nimbus-proc.h": "0ccc6f2a82b0e0777558f0cef5477261d1a8a3e9485ef1e2236095c9691901b3",
     "packages/worker/wasm/bash/patches/procenv.patch": "381a3918e5981fef1bcbf3df2f7f9396630a32a38268113b2a62a983ac4d28bd",
     "packages/worker/wasm/bash/probe-setjmp-asyncify.c": "43e67fa84151fec6e67441e7a490836f5eb0bdcbdbe2479c07dcf9a7a5d62e56",
     "packages/worker/wasm/bash/probe-setjmp-asyncify.mjs": "a40043912f9c6eb65109d6011566ef7cca4d92559c657dee16daeb64e13b3609",
