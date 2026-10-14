@@ -3206,6 +3206,22 @@ const __fsMod = (() => {
     else work.then(undefined, () => undefined);
   }
 
+  /**
+   * A stat in a subtree the process holds (the ledger's __nimbusHeldHere),
+   * the name and, followed, where it leads: what statSync or lstatSync
+   * answers, the session asked nothing. Undefined where the session answers
+   * (not held, or not judged here: EAGAIN).
+   */
+  function _heldStat(syscall, p, absPath) {
+    if (typeof __nimbusHeldHere !== "function" || !__nimbusHeldHere(absPath)) return undefined;
+    if (syscall === "stat") {
+      const landing = _nsActive() ? _nsLandingKey(_strip(absPath)) : null;
+      if (landing !== null && landing !== _strip(absPath) && !__nimbusHeldHere("/" + landing)) return undefined;
+    }
+    try { return syscall === "stat" ? statSync(p) : lstatSync(p); }
+    catch (error) { if (error?.code === "EAGAIN") return undefined; throw error; }
+  }
+
   /** Whether an async change at \`absPath\` of \`bytes\` is decided here (the ledger's __nimbusDecidedHere). */
   function _decidedHere(absPath, bytes = 0) {
     return typeof __nimbusDecidedHere === "function" && __nimbusDecidedHere(absPath, bytes);
@@ -3766,6 +3782,8 @@ const __fsMod = (() => {
     const absPath = _resolve(p);
     const supervisor = _supervisor();
     if (supervisor && typeof supervisor[syscall] === "function") {
+      const local = _heldStat(syscall, p, absPath);
+      if (local !== undefined) return local;
       await _flushLocalPathToSupervisor(absPath, supervisor, syscall === "stat");
       const rpc = (promise) => _fsRpc(promise, syscall, p, (result) => result);
       let meta;
