@@ -1,15 +1,17 @@
 #!/usr/bin/env bun
-// A node process keeps only the output it has not delivered yet.
+// A node process keeps only the I/O it has not finished yet.
 //
-// Each output batch is a task in the process's outstanding-I/O registry: an
-// exit, or a resident's HTTP boundary, waits for what is in it. A task that
-// stayed after it settled was kept until such a boundary: a server that logs
-// with no HTTP traffic, or a long one-shot run, held every write it ever made.
-// Red before: each written line was a promise the process held to the end.
+// What a process starts telling the session (its output, a umask change, a
+// child's stdin) is outstanding until the session answers: an exit, or a
+// resident's HTTP boundary, waits for it. Each was a task kept after it
+// settled, until such a boundary: a server that logs with no HTTP traffic, or
+// a long one-shot run, held every write it ever made. Red before: each line
+// written, and each umask set, was a promise the process held to the end.
 //
 // The boundaries still wait for what is outstanding: output whose answer the
 // session holds back is delivered before the one-shot ends, and before the
-// resident answers a request.
+// resident answers a request. A call the session refuses is let go as one it
+// answers is.
 //
 // Runs the real generated bodies of both lifetimes, each in its own child.
 
@@ -26,30 +28,39 @@ import { CRED, createAuthority, facetSupervisor, launchResident, runScenarios, s
 
 /** Lines each burst writes, alternating streams so that each is a batch, and a task, of its own. */
 const LINES = 4000;
-/** What the process may still hold past the bursts: nothing per line. */
+/** umask calls each burst makes, every other one refused by the session. */
+const UMASKS = 4000;
+/** What the process may still hold past the bursts: nothing per call. */
 const SLACK = LINES / 10;
 
-// What the program hands the test: a burst of output, and its end.
+// What the program hands the test: a burst of output, one of umask calls, and its end.
 const PROGRAM = `
 const keep = setTimeout(() => {}, 600000);
 globalThis.__probe = {
   burst(n) { for (let i = 0; i < n / 2; i++) { process.stdout.write("o\\n"); process.stderr.write("e\\n"); } },
+  umasks(n) { for (let i = 0; i < n; i++) process.umask(0o022); },
   end() { clearTimeout(keep); },
 };
 `;
 const SERVER = `${PROGRAM}require("http").createServer((q, s) => s.end("up")).listen(3000);\n`;
 
-/** The session's side: its answers to output, which the test can hold back. */
+/** The session's side: its answers to output, which the test can hold back, and to umask, every other one a refusal. */
 function outputSession(authority) {
   const lines = { stdout: 0, stderr: 0 };
+  let umasks = 0;
   let held = null;
   const answer = (name) => async (bytes) => {
     lines[name] += new TextDecoder().decode(bytes).split('\n').length - 1;
     if (held !== null) await held.promise;
   };
-  const { supervisor } = facetSupervisor(authority, { stdout: answer('stdout'), stderr: answer('stderr') });
+  const setUmask = async (mask) => {
+    if (++umasks % 2 === 0) throw Object.assign(new Error('EPERM: refused'), { code: 'EPERM' });
+    return mask;
+  };
+  const { supervisor } = facetSupervisor(authority, { stdout: answer('stdout'), stderr: answer('stderr'), setUmask });
   return {
     supervisor,
+    umasks: () => umasks,
     delivered: () => lines.stdout + lines.stderr,
     hold() { held = Promise.withResolvers(); },
     release() { held?.resolve(); held = null; },
@@ -73,13 +84,26 @@ async function burstAndCount(probe, session) {
   return livePromises();
 }
 
-/** A burst's worth of lines the process keeps no trace of once they are delivered. */
+/** `umasks` of UMASKS calls answered, and the promises alive after it. */
+async function umasksAndCount(probe, session) {
+  const from = session.umasks();
+  probe.umasks(UMASKS);
+  await until(() => session.umasks() >= from + UMASKS, `${UMASKS} umask calls answered`, 30_000);
+  await sleep(50);
+  return livePromises();
+}
+
+/** A burst's worth of lines, and of umask calls, the process keeps no trace of once they are answered. */
 async function assertBounded(probe, session, lifetime) {
   // The first burst warms what the output path makes once.
   const before = await burstAndCount(probe, session);
   const after = await burstAndCount(probe, session);
   assert.ok(after - before < SLACK,
     `the ${lifetime} held ${after - before} more promises after ${LINES} more delivered lines (at most ${SLACK})`);
+  const umasked = await umasksAndCount(probe, session);
+  const again = await umasksAndCount(probe, session);
+  assert.ok(again - umasked < SLACK,
+    `the ${lifetime} held ${again - umasked} more promises after ${UMASKS} more answered umask calls, half refused (at most ${SLACK})`);
 }
 
 await runScenarios(import.meta.filename, {
