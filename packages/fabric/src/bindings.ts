@@ -34,6 +34,7 @@ import { assertModuleMapWithinCodeLimit } from './budgets.js';
 import { applyFacetLimits, facetLimits, guestFacetPolicy, effectiveFacetLimits, facetLoaderKey, FACET_LIMITS, type FacetCodePolicy, type FacetKind } from './facet-limits.js';
 import { bindingSupervisor, egressMarker, workspaceOutbound, type SupervisorBindingProps } from './supervisor-props.js';
 import type { WorkspaceEgress } from '@nimbus-sh/core/_shared/workspace-network.js';
+import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { EntrypointLoopbackFactory } from './composition.js';
 import type { WorkerCode, EntrypointOptions } from './vendor/types.js';
 
@@ -120,6 +121,8 @@ interface NimbusAssetsProps {
   doId?: string;
   /** The way back to that DO, minted with the binding. */
   route?: HostRoute;
+  /** The credential the assets are read as: the process that serves them, as the host minted it. */
+  cred?: VfsCred;
 }
 
 /**
@@ -197,7 +200,8 @@ export class NimbusAssetsRPC extends WorkerEntrypoint<object, NimbusAssetsProps>
       for (const candidate of candidates) {
         try {
           const response = await useRpcResource(
-            dispatch({ op: 'readFileBytes', args: [candidate] }),
+            // As the process the host named; a binding minted with none reads as the session's user.
+            dispatch({ op: 'readFileBytes', args: [candidate], ...(props.cred === undefined ? {} : { cred: props.cred }) }),
             (bytes) => {
               if (bytes === null) return null;
               const body = bytes instanceof ArrayBuffer ? bytes

@@ -804,6 +804,7 @@ const wranglerHandler = (invokedAs: 'wrangler' | 'nimbus-wrangler') =>
       network: workspace.network.forProcess(ctx.pid),
       vfs: sqliteFs.as(cred),
       bundleFs: workspace.filesystem.namespaceFs(cred),
+      cred,
       namespace: workspace.filesystem.vfs,
       esbuild: self.esbuildService!,
       env: self.env,

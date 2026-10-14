@@ -1003,13 +1003,13 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
 
   // W8 child_process RPC
   async _rpcCpSpawn(req: any, parentPid?: number): Promise<{ childPid: number }> { return _rpc._rpcCpSpawn(this as any, req, parentPid); }
-  async _rpcCpStdinWrite(childPid: number, data: Uint8Array): Promise<{ ok: boolean }> { return _rpc._rpcCpStdinWrite(this as any, childPid, data); }
-  async _rpcCpStdinEnd(childPid: number): Promise<void> { return _rpc._rpcCpStdinEnd(this as any, childPid); }
+  async _rpcCpStdinWrite(childPid: number, data: Uint8Array, pid?: number): Promise<{ ok: boolean }> { return _rpc._rpcCpStdinWrite(this as any, childPid, data, pid); }
+  async _rpcCpStdinEnd(childPid: number, pid?: number): Promise<void> { return _rpc._rpcCpStdinEnd(this as any, childPid, pid); }
   async _rpcCpReadStdin(childPid: number, waitMs: number, acquire?: unknown, pid?: number, writerId?: string, maxBytes?: number) { return _rpc._rpcCpReadStdin(this as any, childPid, waitMs, acquire, pid, writerId, maxBytes); }
   async _rpcCpReadOutput(childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number, acquire?: unknown, pid?: number) { return _rpc._rpcCpReadOutput(this as any, childPid, fd, sinceSeq, waitMs, acquire, pid); }
-  async _rpcCpDrainOutput(childPid: number) { return _rpc._rpcCpDrainOutput(this as any, childPid); }
-  async _rpcCpCloseOutput(childPid: number, fd: 1 | 2): Promise<void> { return _rpc._rpcCpCloseOutput(this as any, childPid, fd); }
-  async _rpcCpKill(childPid: number, signal: string): Promise<boolean> { return _rpc._rpcCpKill(this as any, childPid, signal); }
+  async _rpcCpDrainOutput(childPid: number, pid?: number) { return _rpc._rpcCpDrainOutput(this as any, childPid, pid); }
+  async _rpcCpCloseOutput(childPid: number, fd: 1 | 2, pid?: number): Promise<void> { return _rpc._rpcCpCloseOutput(this as any, childPid, fd, pid); }
+  async _rpcCpKill(childPid: number, signal: string, pid?: number): Promise<boolean> { return _rpc._rpcCpKill(this as any, childPid, signal, pid); }
   async _rpcCpWait(childPid: number, waitMs: number, acquire?: unknown, pid?: number, knownStarted?: boolean) { return _rpc._rpcCpWait(this as any, childPid, waitMs, acquire, pid, knownStarted); }
   async _rpcCpBlocked(pid: number, report: unknown) { return _rpc._rpcCpBlocked(this as any, pid, report); }
 

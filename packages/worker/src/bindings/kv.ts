@@ -88,9 +88,9 @@ export class KvEmulator {
 
   async get(key: string, options?: KvGetOptions | string): Promise<any> {
     const opts: KvGetOptions = typeof options === 'string' ? { type: options as KvGetOptions['type'] } : (options || {});
-    const r = await this._readResolved(key);
+    const r = await this.#readResolved(key);
     if (r == null) return null;
-    return this._project(r.body, opts.type);
+    return this.#project(r.body, opts.type);
   }
 
   async getWithMetadata<T = unknown>(
@@ -98,9 +98,9 @@ export class KvEmulator {
     options?: KvGetOptions | string,
   ): Promise<{ value: any; metadata: T | null; cacheStatus: string | null }> {
     const opts: KvGetOptions = typeof options === 'string' ? { type: options as KvGetOptions['type'] } : (options || {});
-    const r = await this._readResolved(key);
+    const r = await this.#readResolved(key);
     if (r == null) return { value: null, metadata: null, cacheStatus: null };
-    const value = this._project(r.body, opts.type);
+    const value = this.#project(r.body, opts.type);
     return { value, metadata: (r.meta?.meta ?? null) as T | null, cacheStatus: null };
   }
 
@@ -133,16 +133,16 @@ export class KvEmulator {
   }
 
   async delete(key: string): Promise<void> {
-    this._lazyDelete(objectFileName(key));
+    this.#lazyDelete(objectFileName(key));
   }
 
   async list(options?: KvListOptions): Promise<KvListResult> {
     const entries: { name: string; expiration?: number; metadata?: any }[] = [];
     for (const { key, fileName } of listObjectFiles(this.vfs, this.dir, options?.prefix || '')) {
-      const meta = this._readMeta(fileName);
+      const meta = this.#readMeta(fileName);
       // Skip expired
       if (meta?.exp != null && meta.exp <= _kvNow()) {
-        this._lazyDelete(fileName);
+        this.#lazyDelete(fileName);
         continue;
       }
       const out: { name: string; expiration?: number; metadata?: any } = { name: key };
@@ -165,7 +165,7 @@ export class KvEmulator {
 
 
 
-  private _project(body: Uint8Array, type: KvGetOptions['type']): any {
+  #project(body: Uint8Array, type: KvGetOptions['type']): any {
     const t = type || 'text';
     if (t === 'text') return new TextDecoder().decode(body);
     if (t === 'json') {
@@ -182,20 +182,20 @@ export class KvEmulator {
     return new TextDecoder().decode(body);
   }
 
-  private async _readResolved(key: string): Promise<{ body: Uint8Array; meta: KvMeta | null } | null> {
+  async #readResolved(key: string): Promise<{ body: Uint8Array; meta: KvMeta | null } | null> {
     const enc = objectFileName(key);
     const path = this.dir + '/' + enc;
     if (!this.vfs.exists(path)) return null;
-    const meta = this._readMeta(enc);
+    const meta = this.#readMeta(enc);
     if (meta?.exp != null && meta.exp <= _kvNow()) {
-      this._lazyDelete(enc);
+      this.#lazyDelete(enc);
       return null;
     }
     const body = this.vfs.readFile(path);
     return { body, meta };
   }
 
-  private _readMeta(encName: string): KvMeta | null {
+  #readMeta(encName: string): KvMeta | null {
     if (this.metaCache.has(encName)) return this.metaCache.get(encName)!;
     const mp = this.dir + '/' + encName + '.meta';
     if (!this.vfs.exists(mp)) return null;
@@ -210,7 +210,7 @@ export class KvEmulator {
     }
   }
 
-  private _lazyDelete(encName: string): void {
+  #lazyDelete(encName: string): void {
     removeObjectFiles(this.vfs, this.dir, encName);
     this.metaCache.delete(encName);
   }

@@ -22,9 +22,24 @@ published independently in the `@nimbus-sh` npm scope.
     (its egress among them) and the raw loaded entrypoint.
   - A scoped `HostedSession` answered the unscoped runtime it serves.
 
-  These helpers are no longer on any class's RPC surface. The session also
-  takes a spawned child's parent from the pid its binding stamped, never
-  from the request.
+  These helpers are no longer on any class's RPC surface, and the KV, R2
+  and D1 emulators that wrangler dev hands its Worker keep theirs out of
+  reach too. The session also takes a spawned child's parent from the pid
+  its binding stamped, never from the request.
+- Fixed (security): a process could act on another process through the
+  child_process operations, which acted on whatever pid they were given. It
+  could read another process's stdin, write to it or end it, read or close
+  its output, wait on it, or kill it. Each operation is now refused unless
+  the process owns the target:
+  - a child's handle belongs to its parent or an ancestor; any other
+    process gets ESRCH;
+  - a stdin channel belongs to its own process, or to a descendant that
+    inherited it as fd 0; any other process gets EPERM;
+  - a signal follows Linux's rule for kill(2): only root, or a process of
+    the target's uid, may send it; any other process gets EPERM.
+- Fixed: `nimbus wrangler dev`'s assets binding read a project's assets as
+  the session's user. It now reads them as the process that started the
+  server, as it reads the project's config, bundle and stores.
 - Fixed (Node `fs`): `fs.promises.realpath` and callback `fs.realpath`
   resolve symlinks and refuse a missing path with `ENOENT`, giving
   `realpathSync`'s answer; they returned the path as written. A link the
