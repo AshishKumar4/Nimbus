@@ -6,7 +6,8 @@
 // So a call into them costs, and shows in a stack, what it did for the first
 // program. Red before: each run fronted them again, over the last run's
 // fronts, and every call went through one more layer per program the realm
-// had run.
+// had run; the URL constructor, fronting the last run's, let \`new URL\` take
+// a string that is no URL.
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -25,12 +26,15 @@ const cred = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 const authority = createAuthority();
 authority.kfs.mkdir('home/user', { recursive: true });
 
-// How deep a refused call into each fronted builtin is (the frames of the
-// error it throws), and a callback one calls (the frames it is called in).
+// How a refused call into each fronted builtin ends (its error) and how many
+// of the runtime's frames it passes through, and as many for a callback one
+// calls. The runtime's frames are the runner's own; the program's are its
+// module's (a file: URL).
 const program = `
 Error.stackTraceLimit = 1000;
-const depth = (call) => { try { call(); return 'returned'; } catch (error) { return String(error.stack).split('\\n').length; } };
-const called = (start) => new Promise((resolve) => start(() => resolve(String(new Error().stack).split('\\n').length)));
+const fronts = (stack) => String(stack).split('\\n').filter((line) => line.includes('runner.mjs:') && !line.includes('file:')).length;
+const depth = (call) => { try { call(); return 'returned'; } catch (error) { return [String(error.message), fronts(error.stack)]; } };
+const called = (start) => new Promise((resolve) => start(() => resolve(fronts(new Error().stack))));
 const buffer = require('buffer');
 const crypto = require('crypto');
 const zlib = require('zlib');
@@ -66,7 +70,7 @@ async function run() {
   }
 }
 const first = await run();
-for (const [name, depth] of Object.entries(first)) assert.equal(typeof depth, 'number', `${name} is refused`);
+for (const [name, outcome] of Object.entries(first)) assert.notEqual(outcome, 'returned', `${name} is refused`);
 let last;
 for (let i = 0; i < 6; i++) last = await run();
 assert.deepEqual(last, first, 'the seventh program\'s calls are as deep as the first\'s');
