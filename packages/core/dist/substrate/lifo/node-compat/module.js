@@ -101,7 +101,7 @@ export class Module {
     }
     static builtinModules = builtinModules;
     static isBuiltin = isBuiltin;
-    // createRequire is attached dynamically in createModuleShim()
+    // Each `module` built-in's class has its own (createModuleShim).
     static createRequire;
     static _resolveFilename(request) {
         return request;
@@ -117,12 +117,18 @@ export class Module {
 export function createModuleShim(moduleMap, createRequire = makeCreateRequire(moduleMap)) {
     const names = Object.keys(moduleMap);
     const isMapBuiltin = (specifier) => names.includes(specifier.startsWith('node:') ? specifier.slice(5) : specifier);
-    Module.createRequire = createRequire;
+    // This built-in's own class: what its loader sets on it (createRequire,
+    // _resolveFilename, ...) is that loader's, never another loader's, as each
+    // of them loads `module` in the one realm.
+    class LoaderModule extends Module {
+        static createRequire = createRequire;
+        static _cache = {};
+    }
     return {
-        Module,
+        Module: LoaderModule,
         builtinModules: names,
         isBuiltin: isMapBuiltin,
         createRequire,
-        default: Module,
+        default: LoaderModule,
     };
 }
