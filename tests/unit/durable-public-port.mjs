@@ -133,6 +133,29 @@ const CAP = 'abcdef0123456789abcdef01';
   );
   assert.equal(unknown.status, 404, 'an unbound capability is 404, not a guess');
 
+  // SES-12. The capability belongs to the session the directory names: put
+  // under another session's sid of the same tenant, in either host form, it
+  // is 404 before any session is named. Red before: the router forwarded it
+  // to that session, whose DO woke (and reserved a generation) to refuse it.
+  const otherSid = 'brave-heron-1234';
+  const NAMED_CAP = 'feedfacefeedfacefeedface';
+  directoryRows.set(NAMED_CAP, { tenantSegment: 'acme:alice', sid, port: 3000, name: 'shop' });
+  const namedRouted = await handler.fetch(
+    new Request(`https://${buildPublicPreviewHost(sid, 'shop', NAMED_CAP, suffix)}/`), env, { waitUntil() {} });
+  assert.equal(namedRouted.status, 200, 'the name form reaches the session the capability names');
+  const namesBefore = env.NIMBUS_SESSION.names.length;
+  const requestsBefore = env.NIMBUS_SESSION.requests.length;
+  for (const host of [
+    buildPublicPreviewHost(otherSid, 3000, CAP, suffix),
+    buildPublicPreviewHost(otherSid, 'shop', NAMED_CAP, suffix),
+  ]) {
+    const swapped = await handler.fetch(new Request(`https://${host}/`), env, { waitUntil() {} });
+    assert.equal(swapped.status, 404, `${host}: a capability under another session's sid is 404`);
+  }
+  assert.deepEqual(env.NIMBUS_SESSION.names.slice(namesBefore), [],
+    'no session DO is named for a capability under another sid');
+  assert.equal(env.NIMBUS_SESSION.requests.length, requestsBefore, 'nothing is forwarded for it');
+
   // The scoped form still demands a session attach in enforce mode.
   const scoped = await handler.fetch(
     new Request(`https://${buildPreviewHost(sid, 3000, suffix)}/`),
@@ -261,4 +284,4 @@ const CAP = 'abcdef0123456789abcdef01';
 
 }
 
-console.log('ok - public durable port (host forms disjoint, router forwards unauthenticated, visibility gates, reservations mint + upgrade)');
+console.log('ok - public durable port (host forms disjoint, router forwards unauthenticated to the session the capability names, visibility gates, reservations mint + upgrade)');

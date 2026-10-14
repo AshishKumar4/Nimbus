@@ -32,9 +32,9 @@ import {
   type SessionRuntimeInstallOptions, type SessionResult,
 } from '@nimbus-sh/core/runtime/session-protocol.js';
 import { SESSION_DESTROYED_KEY, SHELL_STATE_KEY_PREFIX, VITE_CONFIG_KEY } from './keys.js';
-import { clearPortCapability, isValidAppName, persistPortCapability, portRecordKey, readPortReservation, readPortReservationByName, readPortReservationByOwner, reservePort, rotatePortCapability, type PortReservation, type PortVisibility } from './port-capability.js';
+import { clearPortCapability, persistPortCapability, portRecordKey, readPortReservation, readPortReservationByName, readPortReservationByOwner, reservePort, rotatePortCapability, type PortReservation, type PortVisibility } from './port-capability.js';
 import { bindPublicPortCapability, unbindPublicPortCapability } from '../router/public-directory.js';
-import { isPreviewHostSafeSid, previewHostUrl, readPreviewHostSuffix } from '../_shared/preview-host.js';
+import { isPreviewHostName, isPreviewHostSafeSid, previewHostUrl, readPreviewHostSuffix } from '../_shared/preview-host.js';
 import type { LongRunningWorkerSpawnOptions, ResidentAppSummary, ResidentIdentity, SpawnedWorker } from '../facets/manager.js';
 import { RESTART_POLICY_ENV } from '../facets/manager.js';
 import { adoptGeneration, generation, raiseGeneration, releaseGeneration, type GenerationContext } from '@nimbus-sh/fabric/generation.js';
@@ -860,7 +860,7 @@ async function applyExposure(
   owner: string | null,
   options: { visibility?: 'scoped' | 'public'; name?: string },
 ): Promise<{ owner: string | null; name: string | null; capability: string | null; visibility: PortVisibility }> {
-  if (options.name !== undefined && !isValidAppName(options.name)) {
+  if (options.name !== undefined && !isPreviewHostName(options.name)) {
     throw new Error(`'${options.name}' is not a valid app name: one DNS label, not all digits, not 24 hex`);
   }
   const entry = self.portRegistry.get(port);
