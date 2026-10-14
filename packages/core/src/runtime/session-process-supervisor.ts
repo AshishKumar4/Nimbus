@@ -82,6 +82,7 @@ export interface ProcessTerminalDescriptor {
 }
 
 const ONCE = { once: true };
+const NOTHING_REAPED: Promise<number> = Promise.resolve(0);
 
 export class SessionProcessSupervisor implements ProcessOutput {
   private readonly table = new ProcessTable();
@@ -420,14 +421,13 @@ export class SessionProcessSupervisor implements ProcessOutput {
     return this.kill(pid, exitCode, reason);
   }
 
-  /** Whether `pid` is `ancestor` or one of the processes spawned under it, transitively. */
-  isWithin(pid: number, ancestor: number): boolean {
-    const seen = new Set<number>();
-    for (let at: number | undefined = pid; at !== undefined && !seen.has(at); at = this.table.get(at)?.parentPid) {
-      if (at === ancestor) return true;
-      seen.add(at);
+  /** `pid` and the processes above it, nearest first, as the table has them now. */
+  lineage(pid: number): number[] {
+    const chain: number[] = [];
+    for (let entry = this.table.get(pid); entry !== undefined && !chain.includes(entry.pid); entry = entry.parentPid === undefined ? undefined : this.table.get(entry.parentPid)) {
+      chain.push(entry.pid);
     }
-    return false;
+    return chain;
   }
 
   liveCred(pid: number): VfsCred {
@@ -540,9 +540,14 @@ export class SessionProcessSupervisor implements ProcessOutput {
    * prune after it is published; one whose work is still stopping (holdWork)
    * waits for a prune after it has.
    */
-  async reap(maxAge?: number): Promise<number> {
-    if (!this.release) return 0;
+  reap(maxAge?: number): Promise<number> {
+    if (!this.release) return NOTHING_REAPED;
     const expired = this.table.expired(maxAge).filter((entry) => !this.unpublishedEnds.has(entry.pid) && !this.held.has(entry.pid));
+    // Each launch prunes: one with nothing to prune costs it a settled promise, not an async call.
+    return expired.length === 0 ? NOTHING_REAPED : this.reapExpired(expired);
+  }
+
+  private async reapExpired(expired: ProcessEntry[]): Promise<number> {
     const { reaped, failures } = await this.forgetReleased(expired);
     for (const { pid, error } of failures) this.appendOutput(pid, 'stderr', `${error instanceof Error ? error.message : String(error)}\n`);
     return reaped;

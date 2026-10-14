@@ -33,6 +33,7 @@ import { DELEGATION_RECALL_TIMEOUT_MS } from './delegations.js';
  */
 const HELD_WORK_STOP_MS = DELEGATION_RECALL_TIMEOUT_MS;
 const ONCE = { once: true };
+const NOTHING_REAPED = Promise.resolve(0);
 export class SessionProcessSupervisor {
     table = new ProcessTable();
     /** Why no process is admitted any more (closeAdmission); null while they are. */
@@ -365,15 +366,13 @@ export class SessionProcessSupervisor {
             throw Object.assign(new Error(`EPERM: operation not permitted, kill ${pid}`), { code: 'EPERM', errno: -1 });
         return this.kill(pid, exitCode, reason);
     }
-    /** Whether `pid` is `ancestor` or one of the processes spawned under it, transitively. */
-    isWithin(pid, ancestor) {
-        const seen = new Set();
-        for (let at = pid; at !== undefined && !seen.has(at); at = this.table.get(at)?.parentPid) {
-            if (at === ancestor)
-                return true;
-            seen.add(at);
+    /** `pid` and the processes above it, nearest first, as the table has them now. */
+    lineage(pid) {
+        const chain = [];
+        for (let entry = this.table.get(pid); entry !== undefined && !chain.includes(entry.pid); entry = entry.parentPid === undefined ? undefined : this.table.get(entry.parentPid)) {
+            chain.push(entry.pid);
         }
-        return false;
+        return chain;
     }
     liveCred(pid) {
         return this.table.liveCred(pid);
@@ -490,10 +489,14 @@ export class SessionProcessSupervisor {
      * prune after it is published; one whose work is still stopping (holdWork)
      * waits for a prune after it has.
      */
-    async reap(maxAge) {
+    reap(maxAge) {
         if (!this.release)
-            return 0;
+            return NOTHING_REAPED;
         const expired = this.table.expired(maxAge).filter((entry) => !this.unpublishedEnds.has(entry.pid) && !this.held.has(entry.pid));
+        // Each launch prunes: one with nothing to prune costs it a settled promise, not an async call.
+        return expired.length === 0 ? NOTHING_REAPED : this.reapExpired(expired);
+    }
+    async reapExpired(expired) {
         const { reaped, failures } = await this.forgetReleased(expired);
         for (const { pid, error } of failures)
             this.appendOutput(pid, 'stderr', `${error instanceof Error ? error.message : String(error)}\n`);
