@@ -6,8 +6,8 @@
 import assert from 'node:assert/strict';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
-const { NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, facetLimits, facetLoaderKey } = await importWorkerBundle({
-  'packages/fabric/src/bindings.ts': ['NimbusLoaderRPC', 'NimbusLoadedWorker', 'NimbusLoadedEntrypoint'],
+const { NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, resolveLoadedEntrypoint, facetLimits, facetLoaderKey } = await importWorkerBundle({
+  'packages/fabric/src/bindings.ts': ['NimbusLoaderRPC', 'NimbusLoadedWorker', 'NimbusLoadedEntrypoint', 'resolveLoadedEntrypoint'],
   'packages/fabric/src/facet-limits.ts': ['facetLimits', 'facetLoaderKey'],
 });
 
@@ -37,7 +37,7 @@ const loader = Object.assign(Object.create(NimbusLoaderRPC.prototype), { ctx: { 
 for (const keyed of [false, true]) {
   const loaded = keyed ? await loader.get('fixture', () => forged) : loader.load(forged);
   const entry = loaded.getEntrypoint('Named', { props: { user: 'kept' }, limits: { cpuMs: 12345 } });
-  await entry._resolveEntrypoint();
+  await resolveLoadedEntrypoint(entry);
   assert.deepEqual(captured.starts.at(-1).options, { props: { user: 'kept' }, limits: { cpuMs: 12345, subRequests: worker.subRequests } },
     `${keyed ? 'get' : 'load'}: a lower limit is kept, the rest is the worker ceiling`);
   const native = captured.gets.at(-1);
@@ -54,7 +54,7 @@ assert.deepEqual(captured.loads[0].limits, worker, 'the validating load is under
 {
   const plain = { compatibilityDate: '2026-09-26', mainModule: 'x.js', modules: { 'x.js': 'export default {};' }, env: { KEEP: 'value' } };
   const loaded = await loader.get('plain', () => plain);
-  await loaded.getEntrypoint()._resolveEntrypoint();
+  await resolveLoadedEntrypoint(loaded.getEntrypoint());
   const code = await captured.gets.at(-1).code;
   assert.deepEqual(code.env, { KEEP: 'value' }, 'nothing of Nimbus is added to a guest\'s env');
   assert.deepEqual(code.limits, worker);
@@ -67,10 +67,10 @@ assert.deepEqual(captured.loads[0].limits, worker, 'the validating load is under
   const other = { compatibilityDate: '2026-09-26', mainModule: 'b.js', modules: { 'b.js': 'export default { fetch() { return new Response("b"); } };' } };
   const aliasing = `get:foo:limits:worker:${worker.cpuMs}:${worker.subRequests}`.slice('get:'.length);
   const first = await loader.get('foo', () => plain);
-  await first.getEntrypoint()._resolveEntrypoint();
+  await resolveLoadedEntrypoint(first.getEntrypoint());
   const firstNative = captured.gets.at(-1);
   const second = await loader.get(aliasing, () => other);
-  await second.getEntrypoint()._resolveEntrypoint();
+  await resolveLoadedEntrypoint(second.getEntrypoint());
   const secondNative = captured.gets.at(-1);
   assert.notEqual(secondNative.key, firstNative.key, 'distinct guest ids get distinct native keys');
   assert.equal((await secondNative.code).mainModule, 'b.js', 'the second worker runs its own code');

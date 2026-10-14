@@ -3,11 +3,11 @@ import { facetTaskSource } from '../../packages/core/src/runtime/facet-task.ts';
 //
 // Regression: npm install dispatches its write facets through IsolatePool,
 // which mints the SUPERVISOR binding the facet uses for writeBatchStream. S2a's
-// SupervisorRPC._pid() now rejects pid <= 0, so the pool's historical hardcoded
+// SupervisorRPC[PID]() now rejects pid <= 0, so the pool's historical hardcoded
 // `pid: 0` broke every install ("missing or invalid process pid in props").
 // The pool must thread a caller-supplied `supervisorPid` into props.pid so the
 // supervisor derives the invoking process's write credential. Pools whose facets
-// touch only cache/registry RPCs (npm resolve, pre-bundle) never call _pid() and
+// touch only cache/registry RPCs (npm resolve, pre-bundle) never call [PID]() and
 // keep the 0 default.
 
 import assert from 'node:assert/strict';
@@ -39,7 +39,7 @@ new IsolatePool(env, ctx, { network: ISOLATE_NETWORK, supervisorPid: 42 });
 assert.deepEqual(boundProps, [{ doId: 'loader-pid-test', pid: 42, route, bindingKind: 'infrastructure' }],
   'supervisorPid must be minted into the SUPERVISOR binding props');
 
-// Default (unset) stays 0 — resolve/pre-bundle pools never call _pid().
+// Default (unset) stays 0 — resolve/pre-bundle pools never call [PID]().
 boundProps.length = 0;
 new IsolatePool(env, ctx, { network: ISOLATE_NETWORK,});
 assert.deepEqual(boundProps, [{ doId: 'loader-pid-test', pid: 0, route, bindingKind: 'infrastructure' }],

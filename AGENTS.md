@@ -366,7 +366,8 @@ again.
 
 - `remote-unit` runs `armada run` on the commit. The commit's
   `.armada.json` and `scripts/ci/unit.mjs` cut the suite into parts of
-  about 5 minutes, and 4-vCPU containers run them. `--tier` and `--only`
+  about 5 minutes from measured costs. Medium containers (4 vCPUs,
+  12 GiB) run them. `--tier` and `--only`
   narrow the run (they go to the plan after `--`); a narrowed run is not
   recorded as the commit's verdict. armada prints each part as it ends,
   then the verdict, and keeps a report in `~/.local/state/armada/runs/`.

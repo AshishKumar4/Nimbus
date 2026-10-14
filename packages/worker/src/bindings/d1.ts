@@ -75,6 +75,15 @@ export interface D1EmulatorOptions {
 // references to those known names — bare identifiers that aren't on the
 // list pass through unchanged (lets PRAGMA, sqlite_master, etc. work).
 
+/*
+ * The emulators' helpers are off any surface a caller could name: one of
+ * these classes reaches its emulator's statement runner through a symbol,
+ * and each keeps its own helpers `#private`. Every string-named method of a
+ * class that crosses RPC is callable by whoever holds it.
+ */
+export const RUN_ONE: unique symbol = Symbol('d1 run one');
+export const RUN_ONE_SYNC: unique symbol = Symbol('d1 run one, synchronously');
+
 class TablePrefixer {
   private prefix: string;
   // Tables created via this emulator (raw user-facing name → prefixed name)
@@ -366,11 +375,11 @@ export class D1PreparedStatementEmu {
   }
 
   async run<T = any>(): Promise<D1Result<T>> {
-    return this._emu._runOne(this._sql, this._params);
+    return this._emu[RUN_ONE](this._sql, this._params);
   }
 
   async all<T = any>(): Promise<D1Result<T>> {
-    return this._emu._runOne(this._sql, this._params);
+    return this._emu[RUN_ONE](this._sql, this._params);
   }
 
   async raw<T = any>(): Promise<T[]> {
@@ -422,7 +431,7 @@ export class D1Emulator {
 
     txn(() => {
       for (const s of stmts) {
-        const r = (this as any)._runOneSync(s._sql, s._params) as D1Result<T>;
+        const r = this[RUN_ONE_SYNC](s._sql, s._params) as D1Result<T>;
         if (!r.success) throw new Error(r.error || 'batch failed');
         results.push(r);
       }
@@ -437,20 +446,20 @@ export class D1Emulator {
     const parts = splitStatements(query);
     for (const p of parts) {
       if (!p.trim()) continue;
-      this._runOneSync(p, []);
+      this[RUN_ONE_SYNC](p, []);
       count++;
     }
     return { count, duration: Date.now() - t0 };
   }
 
   /** @internal */
-  _runOne(sql: string, params: any[]): D1Result<any> {
-    return this._runOneSync(sql, params);
+  [RUN_ONE](sql: string, params: any[]): D1Result<any> {
+    return this[RUN_ONE_SYNC](sql, params);
   }
 
   /** Synchronous core (workerd SqlStorage.exec is sync). */
   /** @internal */
-  _runOneSync(sql: string, params: any[]): D1Result<any> {
+  [RUN_ONE_SYNC](sql: string, params: any[]): D1Result<any> {
     const t0 = Date.now();
     let rewritten: string;
     try {
@@ -459,7 +468,7 @@ export class D1Emulator {
       return {
         success: false,
         error: 'rewrite failed: ' + (e?.message || String(e)),
-        meta: this._meta(0, 0, 0, 0, t0),
+        meta: this.#meta(0, 0, 0, 0, t0),
       };
     }
     let cursor: any;
@@ -469,7 +478,7 @@ export class D1Emulator {
       return {
         success: false,
         error: e?.message || String(e),
-        meta: this._meta(0, 0, 0, 0, t0),
+        meta: this.#meta(0, 0, 0, 0, t0),
       };
     }
     const arr = typeof cursor.toArray === 'function' ? cursor.toArray() : Array.from(cursor || []);
@@ -480,11 +489,11 @@ export class D1Emulator {
     return {
       success: true,
       results: arr,
-      meta: this._meta(rowsRead, rowsWritten, changes, lastRowId, t0),
+      meta: this.#meta(rowsRead, rowsWritten, changes, lastRowId, t0),
     };
   }
 
-  private _meta(rowsRead: number, rowsWritten: number, changes: number, lastRowId: number, t0: number): D1Meta {
+  #meta(rowsRead: number, rowsWritten: number, changes: number, lastRowId: number, t0: number): D1Meta {
     return {
       duration: Date.now() - t0,
       changes,
@@ -523,7 +532,7 @@ export class D1Emulator {
       const parts = splitStatements(sql);
       for (const p of parts) {
         if (!p.trim()) continue;
-        this._runOneSync(p, []);
+        this[RUN_ONE_SYNC](p, []);
       }
       this.sql.exec(`INSERT INTO ${ledger} (filename, applied_at) VALUES (?, ?)`, f, Date.now());
       applied++;

@@ -3,7 +3,7 @@
 // bake in the invoking process's pid.
 //
 // The supervisor derives the write credential from `props.pid`
-// (`SupervisorRPC._pid()` → `processes.cred(pid)`) and rejects the call
+// (`SupervisorRPC[PID]()` → `processes.cred(pid)`) and rejects the call
 // outright without a positive one. A runtime pool binds SUPERVISOR for exactly
 // one reason — to back the WASI filesystem with the live session VFS — so one
 // with no pid has a filesystem it can read and can never write. Every
@@ -16,7 +16,7 @@
 // on a real deployment showed it.
 //
 // Pools outside runtime/ legitimately bind SUPERVISOR with pid 0 for
-// cache/registry RPCs that never reach `_pid()`; this rule covers the runtime
+// cache/registry RPCs that never reach `[PID]()`; this rule covers the runtime
 // pools, all of which exist to run user programs against a filesystem.
 
 import assert from 'node:assert';

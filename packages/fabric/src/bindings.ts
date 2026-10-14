@@ -34,6 +34,7 @@ import { assertModuleMapWithinCodeLimit } from './budgets.js';
 import { applyFacetLimits, facetLimits, guestFacetPolicy, effectiveFacetLimits, facetLoaderKey, FACET_LIMITS, type FacetCodePolicy, type FacetKind } from './facet-limits.js';
 import { bindingSupervisor, egressMarker, workspaceOutbound, type SupervisorBindingProps } from './supervisor-props.js';
 import type { WorkspaceEgress } from '@nimbus-sh/core/_shared/workspace-network.js';
+import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { EntrypointLoopbackFactory } from './composition.js';
 import type { WorkerCode, EntrypointOptions } from './vendor/types.js';
 
@@ -120,6 +121,8 @@ interface NimbusAssetsProps {
   doId?: string;
   /** The way back to that DO, minted with the binding. */
   route?: HostRoute;
+  /** The credential the assets are read as: the process that serves them, as the host minted it. */
+  cred?: VfsCred;
 }
 
 /**
@@ -197,7 +200,8 @@ export class NimbusAssetsRPC extends WorkerEntrypoint<object, NimbusAssetsProps>
       for (const candidate of candidates) {
         try {
           const response = await useRpcResource(
-            dispatch({ op: 'readFileBytes', args: [candidate] }),
+            // As the process the host named; a binding minted with none reads as the session's user.
+            dispatch({ op: 'readFileBytes', args: [candidate], ...(props.cred === undefined ? {} : { cred: props.cred }) }),
             (bytes) => {
               if (bytes === null) return null;
               const body = bytes instanceof ArrayBuffer ? bytes
@@ -467,30 +471,30 @@ function loaderNetwork(props: NimbusLoaderDepthProps | undefined): Pick<NimbusLo
   return props?.egress === undefined ? {} : { egress: props.egress };
 }
 
+/*
+ * The classes below are what a guest holds: every string-named method of
+ * one is callable by whoever holds its stub, TypeScript's `private`
+ * notwithstanding. So each keeps only its intended methods, and what they
+ * share is functions of the module, which no stub reaches.
+ */
+
+/** Refuses a Worker Loader past the nesting the env allows (NIMBUS_INNER_LOADER_DEPTH, default 4). */
+function assertLoaderDepthOk(props: NimbusLoaderDepthProps | undefined, env: NimbusLoaderShimEnv | undefined): void {
+  const d = props?.depth;
+  const depth = typeof d === 'number' && d >= 0 ? d : 0;
+  const raw = env?.NIMBUS_INNER_LOADER_DEPTH;
+  const parsed = raw ? parseInt(String(raw), 10) : NaN;
+  const max = Number.isFinite(parsed) && parsed > 0 ? parsed : 4;
+  if (depth >= max) {
+    throw new Error(
+      `Nimbus: refusing to spawn inner Worker Loader (depth=${depth + 1}, max=${max}). ` +
+      `Set NIMBUS_INNER_LOADER_DEPTH to raise the cap or break the recursion.`,
+    );
+  }
+}
+
 /** Hop 1: env.LOADER.{load,get} forwarded to the outer loader. */
 export class NimbusLoaderRPC extends WorkerEntrypoint<NimbusLoaderShimEnv, NimbusLoaderDepthProps> {
-  private _currentDepth(): number {
-    const d = this.ctx.props?.depth;
-    return typeof d === 'number' && d >= 0 ? d : 0;
-  }
-
-  private _maxDepth(): number {
-    const raw = this.env?.NIMBUS_INNER_LOADER_DEPTH;
-    const parsed = raw ? parseInt(String(raw), 10) : NaN;
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : 4;
-  }
-
-  private _assertDepthOk(): void {
-    const depth = this._currentDepth();
-    const max = this._maxDepth();
-    if (depth >= max) {
-      throw new Error(
-        `Nimbus: refusing to spawn inner Worker Loader (depth=${depth + 1}, max=${max}). ` +
-        `Set NIMBUS_INNER_LOADER_DEPTH to raise the cap or break the recursion.`,
-      );
-    }
-  }
-
   /**
    * Inner: env.LOADER.load(code). Stashes the CODE (not a stub — stubs
    * are I/O-bound to the calling request context) and returns a
@@ -498,7 +502,7 @@ export class NimbusLoaderRPC extends WorkerEntrypoint<NimbusLoaderShimEnv, Nimbu
    * worker in its own request context via LOADER.get(key, cb).
    */
   load(code: WorkerCode): unknown {
-    this._assertDepthOk();
+    assertLoaderDepthOk(this.ctx.props, this.env);
     const outerLoader = this.env?.LOADER;
     if (!outerLoader) throw new Error('Nimbus: outer env.LOADER missing');
     // Validate by loading once in THIS context (fails fast on bad code).
@@ -524,7 +528,7 @@ export class NimbusLoaderRPC extends WorkerEntrypoint<NimbusLoaderShimEnv, Nimbu
    * never across owners. (load() keys are random, and cannot collide.)
    */
   async get(id: string, callback: () => WorkerCode | Promise<WorkerCode>): Promise<unknown> {
-    this._assertDepthOk();
+    assertLoaderDepthOk(this.ctx.props, this.env);
     const outerLoader = this.env?.LOADER;
     if (!outerLoader) throw new Error('Nimbus: outer env.LOADER missing');
     const namespace = this.ctx.props?.namespace;
@@ -593,114 +597,123 @@ export class NimbusLoadedWorker extends WorkerEntrypoint<NimbusLoaderShimEnv, Ni
   }
 }
 
-/** Hop 3: a named-or-default entrypoint. Exposes .fetch(). */
-export class NimbusLoadedEntrypoint extends WorkerEntrypoint<NimbusLoaderShimEnv, NimbusLoadedEntrypointProps> {
-  _props(): NimbusLoadedEntrypointProps {
-    return NimbusLoadedEntrypointPropsSchema.parse(this.ctx.props || {});
-  }
+/** A loaded entrypoint's props, as it was minted with them. */
+function loadedEntrypointProps(ctx: { props?: unknown }): NimbusLoadedEntrypointProps {
+  return NimbusLoadedEntrypointPropsSchema.parse(ctx.props || {});
+}
 
-  async _resolveEntrypoint(): Promise<LoadedEntrypoint> {
-    const props = this._props();
-    const outerLoader = this.env?.LOADER;
-    if (!outerLoader) throw new Error('Nimbus: outer env.LOADER missing');
-    const policy = entrypointPolicy(props);
-    let outerStub: LoadedWorker;
-    if (props.stage !== undefined) {
-      // Staged artifact: assemble the full module map lazily, ONLY on a
-      // loader miss, in THIS stateless isolate. Its SUPERVISOR is a binding
-      // minted here, in this request's context, which its host holds open
-      // for the whole run: a stub of the host's carried through this hop
-      // into the program reset the host mid-run.
-      const { stage, supervisor } = props;
-      outerStub = outerLoader.get(facetLoaderKey(policy.kind, props.key, policy.limits), async () => {
-        const assembled = await stagedBootAssembler()(this.env, stage) as WorkerCode & { modules: Record<string, unknown> };
-        assertModuleMapWithinCodeLimit(assembled.modules);
-        if (!supervisor) return applyFacetLimits(policy.kind, assembled, policy.limits);
-        const SUPERVISOR = bindingSupervisor(supervisor, ctxExportsOf(this.ctx));
-        return applyFacetLimits(policy.kind, workspaceOutbound({ ...assembled, env: { ...assembled.env, SUPERVISOR, ...egressMarker(supervisor) } }, supervisor), policy.limits);
+/**
+ * The entrypoint `entry` (a NimbusLoadedEntrypoint) stands for: its loaded
+ * worker's, re-loaded in this request's context. A function of the module,
+ * not a method, so a guest holding `entry` cannot reach the raw entrypoint.
+ */
+export async function resolveLoadedEntrypoint(
+  entry: { ctx: { props?: unknown; exports?: unknown }; env: NimbusLoaderShimEnv },
+): Promise<LoadedEntrypoint> {
+  const { ctx, env } = entry;
+  const props = loadedEntrypointProps(ctx);
+  const outerLoader = env?.LOADER;
+  if (!outerLoader) throw new Error('Nimbus: outer env.LOADER missing');
+  const policy = entrypointPolicy(props);
+  let outerStub: LoadedWorker;
+  if (props.stage !== undefined) {
+    // Staged artifact: assemble the full module map lazily, ONLY on a
+    // loader miss, in THIS stateless isolate. Its SUPERVISOR is a binding
+    // minted here, in this request's context, which its host holds open
+    // for the whole run: a stub of the host's carried through this hop
+    // into the program reset the host mid-run.
+    const { stage, supervisor } = props;
+    outerStub = outerLoader.get(facetLoaderKey(policy.kind, props.key, policy.limits), async () => {
+      const assembled = await stagedBootAssembler()(env, stage) as WorkerCode & { modules: Record<string, unknown> };
+      assertModuleMapWithinCodeLimit(assembled.modules);
+      if (!supervisor) return applyFacetLimits(policy.kind, assembled, policy.limits);
+      const SUPERVISOR = bindingSupervisor(supervisor, ctxExportsOf(ctx));
+      return applyFacetLimits(policy.kind, workspaceOutbound({ ...assembled, env: { ...assembled.env, SUPERVISOR, ...egressMarker(supervisor) } }, supervisor), policy.limits);
+    });
+  } else {
+    // No spec in props: resolve the ALREADY-LOADED worker. First the inner
+    // Worker Loader shim's code map (nimbus-in-nimbus), else the outer
+    // loader's own cache. The cache-miss callback fails loud: a spec-free
+    // stub is a handle on a worker someone else loaded — re-loading it from
+    // code would boot an empty isolate, a silent wrong answer.
+    outerStub = _resolveStubInCurrentContext(outerLoader, props.key, loaderNetwork(props), policy)
+      ?? outerLoader.get(facetLoaderKey(policy.kind, props.key, policy.limits), async () => {
+        throw new Error(`Nimbus: dynamic worker '${props.key}' is no longer loaded (evicted?)`);
       });
-    } else {
-      // No spec in props: resolve the ALREADY-LOADED worker. First the inner
-      // Worker Loader shim's code map (nimbus-in-nimbus), else the outer
-      // loader's own cache. The cache-miss callback fails loud: a spec-free
-      // stub is a handle on a worker someone else loaded — re-loading it from
-      // code would boot an empty isolate, a silent wrong answer.
-      outerStub = _resolveStubInCurrentContext(outerLoader, props.key, loaderNetwork(props), policy)
-        ?? outerLoader.get(facetLoaderKey(policy.kind, props.key, policy.limits), async () => {
-          throw new Error(`Nimbus: dynamic worker '${props.key}' is no longer loaded (evicted?)`);
-        });
-    }
-    const outer = await outerStub;
-    if (!outer) throw new Error('Nimbus: loaded worker code missing');
-    return await outer.getEntrypoint(props.name ?? undefined, startOptions(policy, props.options));
   }
+  const outer = await outerStub;
+  if (!outer) throw new Error('Nimbus: loaded worker code missing');
+  return await outer.getEntrypoint(props.name ?? undefined, startOptions(policy, props.options));
+}
 
-  /**
-   * Relay the inner entrypoint's Response to the caller with a LIVE body.
-   * The body streams through an identity pipe and the entrypoint stub is
-   * disposed only once the body finishes — materializing (arrayBuffer) here
-   * buffered every routed response to stream-end, which froze SSE/chunked
-   * bodies (an agent server's /event live-sync, `curl -N` loopback, external
-   * preview) until the facet closed the stream.
-   */
-  private _relayNestedRpcResponse(ep: unknown, response: unknown): Response {
-    if (!(response instanceof Response)) {
-      disposeRpcResource(response);
-      disposeRpcResource(ep);
-      return new Response('Nimbus: loaded worker entrypoint returned a non-Response value', { status: 502 });
-    }
-    const init = {
-      status: response.status,
-      statusText: response.statusText,
-      headers: new Headers(response.headers),
-    };
-    if (!response.body) {
-      disposeRpcResource(ep);
-      return new Response(null, init);
-    }
-    const { readable, writable } = new IdentityTransformStream();
-    this.ctx.waitUntil(
-      response.body
-        .pipeTo(writable)
-        .catch(() => {})
-        .finally(() => disposeRpcResource(ep)),
-    );
-    return new Response(readable, init);
+/**
+ * Relay the inner entrypoint's Response to the caller with a LIVE body.
+ * The body streams through an identity pipe and the entrypoint stub is
+ * disposed only once the body finishes — materializing (arrayBuffer) here
+ * buffered every routed response to stream-end, which froze SSE/chunked
+ * bodies (an agent server's /event live-sync, `curl -N` loopback, external
+ * preview) until the facet closed the stream.
+ */
+function relayNestedRpcResponse(ctx: { waitUntil(promise: Promise<unknown>): void }, ep: unknown, response: unknown): Response {
+  if (!(response instanceof Response)) {
+    disposeRpcResource(response);
+    disposeRpcResource(ep);
+    return new Response('Nimbus: loaded worker entrypoint returned a non-Response value', { status: 502 });
   }
-
-  /**
-   * Invoke the facet's HTTP handler.
-   *
-   * The call must be written as `ep.method(request)`. An RPC stub's method is a
-   * JsRpcProperty, whose every property access is a WILDCARD that extends a
-   * pipelined path (`JSG_WILDCARD_PROPERTY`, workerd api/worker-rpc.h) — so
-   * `method.call(ep, request)` does NOT reach Function.prototype.call. It builds
-   * the path `handleHttpRequest.call` and invokes it remotely with `ep` as its
-   * first ARGUMENT. Serializing `ep` — an entrypoint to a dynamically-loaded
-   * worker — is what workerd refuses:
-   *
-   *   DataCloneError: Entrypoints to dynamically-loaded workers cannot be
-   *   transferred to other Workers
-   *
-   * (server.c++ `requireAllowsTransfer` → `throwDynamicEntrypointTransferError`).
-   * The facet is never entered, because the failure is in serializing the
-   * arguments, before the call is delivered.
-   */
-  private _callHttpHandler(ep: LoadedEntrypoint, request: Request): Promise<Response> {
-    return typeof ep.handleHttpRequest === 'function'
-      ? ep.handleHttpRequest(request)
-      : ep.fetch(request);
+  const init = {
+    status: response.status,
+    statusText: response.statusText,
+    headers: new Headers(response.headers),
+  };
+  if (!response.body) {
+    disposeRpcResource(ep);
+    return new Response(null, init);
   }
+  const { readable, writable } = new IdentityTransformStream();
+  ctx.waitUntil(
+    response.body
+      .pipeTo(writable)
+      .catch(() => {})
+      .finally(() => disposeRpcResource(ep)),
+  );
+  return new Response(readable, init);
+}
 
+/**
+ * Invoke the facet's HTTP handler.
+ *
+ * The call must be written as `ep.method(request)`. An RPC stub's method is a
+ * JsRpcProperty, whose every property access is a WILDCARD that extends a
+ * pipelined path (`JSG_WILDCARD_PROPERTY`, workerd api/worker-rpc.h) — so
+ * `method.call(ep, request)` does NOT reach Function.prototype.call. It builds
+ * the path `handleHttpRequest.call` and invokes it remotely with `ep` as its
+ * first ARGUMENT. Serializing `ep` — an entrypoint to a dynamically-loaded
+ * worker — is what workerd refuses:
+ *
+ *   DataCloneError: Entrypoints to dynamically-loaded workers cannot be
+ *   transferred to other Workers
+ *
+ * (server.c++ `requireAllowsTransfer` → `throwDynamicEntrypointTransferError`).
+ * The facet is never entered, because the failure is in serializing the
+ * arguments, before the call is delivered.
+ */
+function callHttpHandler(ep: LoadedEntrypoint, request: Request): Promise<Response> {
+  return typeof ep.handleHttpRequest === 'function'
+    ? ep.handleHttpRequest(request)
+    : ep.fetch(request);
+}
+
+/** Hop 3: a named-or-default entrypoint. Exposes .fetch() and .handleHttpRequest(). */
+export class NimbusLoadedEntrypoint extends WorkerEntrypoint<NimbusLoaderShimEnv, NimbusLoadedEntrypointProps> {
   async handleHttpRequest(request: Request): Promise<Response> {
-    const ep = await this._resolveEntrypoint();
+    const ep = await resolveLoadedEntrypoint({ ctx: this.ctx, env: this.env });
     try {
       if (typeof ep.handleHttpRequest !== 'function' && typeof ep.fetch !== 'function') {
         disposeRpcResource(ep);
         return new Response('Nimbus: loaded worker entrypoint has no HTTP request handler', { status: 502 });
       }
-      const response = await this._callHttpHandler(ep, await materializeNestedRpcRequest(request));
-      return this._relayNestedRpcResponse(ep, response);
+      const response = await callHttpHandler(ep, await materializeNestedRpcRequest(request));
+      return relayNestedRpcResponse(this.ctx, ep, response);
     } catch (e) {
       disposeRpcResource(ep);
       throw e;
@@ -714,12 +727,12 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint<NimbusLoaderShimEnv
    * cross-request-I/O limitation.
    */
   async fetch(request: Request): Promise<Response> {
-    const ep = await this._resolveEntrypoint();
+    const ep = await resolveLoadedEntrypoint({ ctx: this.ctx, env: this.env });
     try {
       // Cancelled with the request it forwards (a staged run its host ended).
       const forwarded = new Request(await materializeNestedRpcRequest(request), { signal: request.signal });
       const response = await ep.fetch(forwarded);
-      return this._relayNestedRpcResponse(ep, response);
+      return relayNestedRpcResponse(this.ctx, ep, response);
     } catch (e) {
       disposeRpcResource(ep);
       throw e;

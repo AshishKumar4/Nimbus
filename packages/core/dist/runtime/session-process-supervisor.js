@@ -339,6 +339,34 @@ export class SessionProcessSupervisor {
     cred(pid) {
         return this.table.credOf(pid);
     }
+    /**
+     * Whether `caller` may signal `pid`, by Linux's rule (kill(2)): root may
+     * signal any process, any other caller only a process of its own uid. The
+     * one rule every kill path a process or user takes asks.
+     */
+    maySignal(caller, pid) {
+        if (caller.uid === 0)
+            return true;
+        if (this.table.get(pid) === undefined)
+            return false;
+        return this.table.credOf(pid).uid === caller.uid;
+    }
+    /** {@link kill}, as `caller`: refused with EPERM where {@link maySignal} refuses it. */
+    killAs(caller, pid, exitCode, reason) {
+        if (!this.maySignal(caller, pid))
+            throw Object.assign(new Error(`EPERM: operation not permitted, kill ${pid}`), { code: 'EPERM', errno: -1 });
+        return this.kill(pid, exitCode, reason);
+    }
+    /** Whether `pid` is `ancestor` or one of the processes spawned under it, transitively. */
+    isWithin(pid, ancestor) {
+        const seen = new Set();
+        for (let at = pid; at !== undefined && !seen.has(at); at = this.table.get(at)?.parentPid) {
+            if (at === ancestor)
+                return true;
+            seen.add(at);
+        }
+        return false;
+    }
     liveCred(pid) {
         return this.table.liveCred(pid);
     }

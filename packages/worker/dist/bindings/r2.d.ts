@@ -104,6 +104,7 @@ export declare class R2ObjectBody extends R2Object {
     blob(): Promise<Blob>;
 }
 export declare class R2Emulator {
+    #private;
     private vfs;
     private dir;
     private onLog;
@@ -120,13 +121,6 @@ export declare class R2Emulator {
     }>;
     createMultipartUpload(_key: string, _options?: any): Promise<never>;
     resumeMultipartUpload(_key: string, _uploadId: string): Promise<never>;
-    private _readSide;
-    private _readSideEnc;
-    private _readBody;
-    private _evalConditional;
-    private _normalizeEtag;
-    private _applyRange;
-    private _normalizeHash;
 }
 export {};
 //# sourceMappingURL=r2.d.ts.map

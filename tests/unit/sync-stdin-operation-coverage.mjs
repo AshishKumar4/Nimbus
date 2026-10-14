@@ -26,7 +26,7 @@ function checkPublic(name, method) {
   const explicit = REPLAY_PUBLIC_METHOD_POLICY[name];
   if (explicit) return;
   assert.ok(operationPolicy(name), 'unclassified public SupervisorRPC method: ' + name);
-  assert.match(String(method), /this\._(?:op|fsOp|fsRead|fsMutation|resent)\s*\(/, name + ' bypasses the session journal');
+  assert.match(String(method), /this\[(?:OP|FS_OP|FS_READ|FS_MUTATION|RESENT)\]\s*(?:<[^>]*>)?\s*\(/, name + ' bypasses the session journal');
 }
 function checkBinding(Binding) {
   for (const [name, method] of effectiveMethods(Binding)) checkPublic(name, method);

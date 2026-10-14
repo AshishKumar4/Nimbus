@@ -31,18 +31,10 @@ export interface HostedSessionOwner extends operations.ProgrammaticHost {
     noteClientActivity(): void;
 }
 export declare class HostedSession extends RpcTarget implements SessionRpc {
+    #private;
     private readonly owner;
     private readonly scope;
     constructor(owner: HostedSessionOwner, scope: HostedSessionScope);
-    /** Every call is a client's, as every `composeHostedRuntime` call is: it notes activity for the resident keep-alive. */
-    private client;
-    /**
-     * The identity a call acts as. A scoped session always names one: its own,
-     * or the session user every command runs as by default, so no verb's own
-     * default applies to it.
-     */
-    private cred;
-    private exec;
     _rpcReady(options?: SessionReadyOptions): Promise<{
         ok: true;
         preinstalled: string[];
