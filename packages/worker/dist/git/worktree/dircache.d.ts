@@ -48,10 +48,15 @@ export interface IndexFs {
     /** The file's bytes, a buffer of the caller's own, past the content cache. */
     readFileUncached(path: string): Promise<Uint8Array> | Uint8Array;
     writeFile(path: string, content: Uint8Array): Promise<void> | void;
-    lstat(path: string): Promise<{
+    /** The file a link names, as git's open and fstat find it. */
+    stat(path: string): Promise<{
         mtime: number;
+        size: number;
+        type: string;
     }> | {
         mtime: number;
+        size: number;
+        type: string;
     };
 }
 /** An index extension: its 4-byte signature and its data (gitformat-index.txt, "Extensions"). */
@@ -68,6 +73,23 @@ export declare function comparePaths(a: string, b: string): number;
 /** An object's id: SHA-1 of `<type> <size>\0` and the bytes. */
 export declare function objectId(type: string, data: Uint8Array): string;
 export declare class IndexFormatError extends Error {
+    readonly detail?: string | undefined;
+    /** What verify_hdr found (read-cache.c), which git reports as an error before it dies. */
+    constructor(message: string, detail?: string | undefined);
+}
+/**
+ * The step of git's do_read_index (read-cache.c) an index file there failed
+ * at: its open ("index file open failed", with the errno), the size its
+ * fstat gives ("index file smaller than expected"), or the mapping of its
+ * contents ("unable to map index file", with the errno). Only ENOENT is no
+ * index; anything else stops the command.
+ */
+export declare class IndexReadError extends Error {
+    readonly file: string;
+    readonly step: 'open' | 'size' | 'map';
+    /** git's words for the step. */
+    readonly words: string;
+    constructor(file: string, step: 'open' | 'size' | 'map', cause?: unknown);
 }
 /**
  * New index entries as their bytes, each encoded (encodeIndexEntry's layout)
@@ -129,7 +151,11 @@ export declare class DirCache {
     get count(): number;
     /** A repository's index before anything is added: no file yet. */
     static empty(): DirCache;
-    /** The index at `file`, empty when there is none. */
+    /**
+     * The index at `file`, empty when there is none: git's do_read_index. Its
+     * stat stands for the open and the fstat of what was opened: it fails where
+     * the open would, with the open's errno.
+     */
     static read(fs: IndexFs, file: string): Promise<DirCache>;
     /** read_index_from on bytes already read. */
     static parse(bytes: Uint8Array, timestamp: number): DirCache;

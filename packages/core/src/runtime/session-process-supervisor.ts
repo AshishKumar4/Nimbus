@@ -393,6 +393,33 @@ export class SessionProcessSupervisor implements ProcessOutput {
     return this.table.credOf(pid);
   }
 
+  /**
+   * Whether `caller` may signal `pid`, by Linux's rule (kill(2)): root may
+   * signal any process, any other caller only a process of its own uid. The
+   * one rule every kill path a process or user takes asks.
+   */
+  maySignal(caller: Readonly<VfsCred>, pid: number): boolean {
+    if (caller.uid === 0) return true;
+    if (this.table.get(pid) === undefined) return false;
+    return this.table.credOf(pid).uid === caller.uid;
+  }
+
+  /** {@link kill}, as `caller`: refused with EPERM where {@link maySignal} refuses it. */
+  killAs(caller: Readonly<VfsCred>, pid: number, exitCode?: number, reason?: SignalAbortReason): boolean {
+    if (!this.maySignal(caller, pid)) throw Object.assign(new Error(`EPERM: operation not permitted, kill ${pid}`), { code: 'EPERM', errno: -1 });
+    return this.kill(pid, exitCode, reason);
+  }
+
+  /** Whether `pid` is `ancestor` or one of the processes spawned under it, transitively. */
+  isWithin(pid: number, ancestor: number): boolean {
+    const seen = new Set<number>();
+    for (let at: number | undefined = pid; at !== undefined && !seen.has(at); at = this.table.get(at)?.parentPid) {
+      if (at === ancestor) return true;
+      seen.add(at);
+    }
+    return false;
+  }
+
   liveCred(pid: number): VfsCred {
     return this.table.liveCred(pid);
   }

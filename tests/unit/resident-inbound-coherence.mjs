@@ -184,9 +184,10 @@ await runScenarios(import.meta.path, {
     // before it prints and before it exits.
     const { log } = await boot({
       children: (auth) => ({
-        async spawn() {
+        // A child of the process that asked, as the broker records one.
+        async spawn(request) {
           await auth.peer.writeFile(F, 'CHILD');
-          return { childPid: 42 };
+          return { childPid: auth.host.processes.spawn('writer', ['writer'], '/home/user/app', { parentPid: request.parentPid }).pid };
         },
         async readOutput(_pid, fd, since) {
           return fd === 1 && since === 0

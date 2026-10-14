@@ -28,6 +28,7 @@ import type { HostRoute } from './composition.js';
 import { type FacetCodePolicy } from './facet-limits.js';
 import { type SupervisorBindingProps } from './supervisor-props.js';
 import type { WorkspaceEgress } from '@nimbus-sh/core/_shared/workspace-network.js';
+import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WorkerCode, EntrypointOptions } from './vendor/types.js';
 /**
  * A dynamic worker's entrypoint, as hop 3 relays to it. `fetch` is the
@@ -73,6 +74,8 @@ interface NimbusAssetsProps {
     doId?: string;
     /** The way back to that DO, minted with the binding. */
     route?: HostRoute;
+    /** The credential the assets are read as: the process that serves them, as the host minted it. */
+    cred?: VfsCred;
 }
 /**
  * Assets binding shim. The inner Worker calls `env.ASSETS.fetch(request)`
@@ -156,9 +159,6 @@ interface NimbusLoaderDepthProps {
 }
 /** Hop 1: env.LOADER.{load,get} forwarded to the outer loader. */
 export declare class NimbusLoaderRPC extends WorkerEntrypoint<NimbusLoaderShimEnv, NimbusLoaderDepthProps> {
-    private _currentDepth;
-    private _maxDepth;
-    private _assertDepthOk;
     /**
      * Inner: env.LOADER.load(code). Stashes the CODE (not a stub — stubs
      * are I/O-bound to the calling request context) and returns a
@@ -200,38 +200,20 @@ export declare class NimbusLoadedWorker extends WorkerEntrypoint<NimbusLoaderShi
      */
     getDurableObjectClass(name: string, options?: EntrypointOptions): DurableObjectClass;
 }
-/** Hop 3: a named-or-default entrypoint. Exposes .fetch(). */
+/**
+ * The entrypoint `entry` (a NimbusLoadedEntrypoint) stands for: its loaded
+ * worker's, re-loaded in this request's context. A function of the module,
+ * not a method, so a guest holding `entry` cannot reach the raw entrypoint.
+ */
+export declare function resolveLoadedEntrypoint(entry: {
+    ctx: {
+        props?: unknown;
+        exports?: unknown;
+    };
+    env: NimbusLoaderShimEnv;
+}): Promise<LoadedEntrypoint>;
+/** Hop 3: a named-or-default entrypoint. Exposes .fetch() and .handleHttpRequest(). */
 export declare class NimbusLoadedEntrypoint extends WorkerEntrypoint<NimbusLoaderShimEnv, NimbusLoadedEntrypointProps> {
-    _props(): NimbusLoadedEntrypointProps;
-    _resolveEntrypoint(): Promise<LoadedEntrypoint>;
-    /**
-     * Relay the inner entrypoint's Response to the caller with a LIVE body.
-     * The body streams through an identity pipe and the entrypoint stub is
-     * disposed only once the body finishes — materializing (arrayBuffer) here
-     * buffered every routed response to stream-end, which froze SSE/chunked
-     * bodies (an agent server's /event live-sync, `curl -N` loopback, external
-     * preview) until the facet closed the stream.
-     */
-    private _relayNestedRpcResponse;
-    /**
-     * Invoke the facet's HTTP handler.
-     *
-     * The call must be written as `ep.method(request)`. An RPC stub's method is a
-     * JsRpcProperty, whose every property access is a WILDCARD that extends a
-     * pipelined path (`JSG_WILDCARD_PROPERTY`, workerd api/worker-rpc.h) — so
-     * `method.call(ep, request)` does NOT reach Function.prototype.call. It builds
-     * the path `handleHttpRequest.call` and invokes it remotely with `ep` as its
-     * first ARGUMENT. Serializing `ep` — an entrypoint to a dynamically-loaded
-     * worker — is what workerd refuses:
-     *
-     *   DataCloneError: Entrypoints to dynamically-loaded workers cannot be
-     *   transferred to other Workers
-     *
-     * (server.c++ `requireAllowsTransfer` → `throwDynamicEntrypointTransferError`).
-     * The facet is never entered, because the failure is in serializing the
-     * arguments, before the call is delivered.
-     */
-    private _callHttpHandler;
     handleHttpRequest(request: Request): Promise<Response>;
     /**
      * Forward fetch() to the outer worker's entrypoint. All three outer

@@ -49,8 +49,12 @@ export class HostedSession extends RpcTarget implements SessionRpc {
     this.scope = shellId === undefined && cred === undefined ? null : Object.freeze({ shellId, cred });
   }
 
+  // The helpers below are `#private`: every string-named method of an
+  // RpcTarget is callable by whoever holds its stub, and a scoped client
+  // must reach neither the runtime it serves nor another identity.
+
   /** Every call is a client's, as every `composeHostedRuntime` call is: it notes activity for the resident keep-alive. */
-  private client(): HostedSessionOwner {
+  #client(): HostedSessionOwner {
     this.owner.noteClientActivity();
     return this.owner;
   }
@@ -60,14 +64,14 @@ export class HostedSession extends RpcTarget implements SessionRpc {
    * or the session user every command runs as by default, so no verb's own
    * default applies to it.
    */
-  private cred(asked: VfsCred | undefined): VfsCred | undefined {
+  #cred(asked: VfsCred | undefined): VfsCred | undefined {
     if (this.scope === null) return asked;
     const bound = this.scope.cred ?? CRED_SESSION_USER;
     if (asked !== undefined && !sameCred(bound, asked)) throw Object.assign(new Error('EPERM: this session is bound to another identity'), { code: 'EPERM' });
     return bound;
   }
 
-  private exec<T extends SessionExecOptions>(options: T | undefined): T {
+  #exec<T extends SessionExecOptions>(options: T | undefined): T {
     if (this.scope !== null && (this.scope.shellId === undefined || options?.shellId !== this.scope.shellId)) {
       // Named, never defaulted: a client that omits the shell also sends a cwd
       // for the session's one shell, which would pin the named shell's cwd.
@@ -77,77 +81,77 @@ export class HostedSession extends RpcTarget implements SessionRpc {
         ? 'EPERM: this session names no shell, so it runs no command'
         : `EPERM: this session runs commands only in shell '${this.scope.shellId}'; name it`);
     }
-    const cred = this.cred(options?.cred);
+    const cred = this.#cred(options?.cred);
     return { ...options, ...(cred === undefined ? {} : { cred }) } as T;
   }
 
-  _rpcReady(options?: SessionReadyOptions) { return operations.ensureProgrammaticReady(this.client(), options); }
+  _rpcReady(options?: SessionReadyOptions) { return operations.ensureProgrammaticReady(this.#client(), options); }
   async _rpcExecStream(command: string, options?: SessionExecOptions): Promise<ReadableStream<Uint8Array>> {
-    return encodeExecStream(await operations.rpcExecStream(this.client(), command, this.exec(options)));
+    return encodeExecStream(await operations.rpcExecStream(this.#client(), command, this.#exec(options)));
   }
   async _rpcStartProcess(command: string, options?: SessionExecOptions) {
-    return operations.rpcStartProcess(this.client(), command, this.exec(options));
+    return operations.rpcStartProcess(this.#client(), command, this.#exec(options));
   }
   async _rpcDetachExec(detachId: string) {
     if (this.scope !== null && this.scope.shellId === undefined) return { detached: false };
-    return operations.rpcDetachExec(this.client(), detachId, this.scope?.shellId);
+    return operations.rpcDetachExec(this.#client(), detachId, this.scope?.shellId);
   }
-  async _rpcRunCode(code: string, options?: SessionRunCodeOptions) { return operations.rpcRunCode(this.client(), code, this.exec(options)); }
+  async _rpcRunCode(code: string, options?: SessionRunCodeOptions) { return operations.rpcRunCode(this.#client(), code, this.#exec(options)); }
 
   // The file methods keep the session's wire shape: the third slot is a
   // process claim no SDK caller makes, and is not accepted here either.
   async _rpcReadFile(path: string, _pid?: undefined, cred?: VfsCred): Promise<string | null> {
-    return rpc._rpcReadFile(this.client(), path, undefined, this.cred(cred));
+    return rpc._rpcReadFile(this.#client(), path, undefined, this.#cred(cred));
   }
   async _rpcReadFileBytes(path: string, _pid?: undefined, cred?: VfsCred): Promise<Uint8Array | null> {
-    return rpc._rpcReadFileBytes(this.client(), path, undefined, this.cred(cred));
+    return rpc._rpcReadFileBytes(this.#client(), path, undefined, this.#cred(cred));
   }
   async _rpcWriteFile(path: string, content: string | Uint8Array, _pid?: undefined, cred?: VfsCred): Promise<number> {
-    return rpc._rpcWriteFile(this.client(), path, content, undefined, this.cred(cred));
+    return rpc._rpcWriteFile(this.#client(), path, content, undefined, this.#cred(cred));
   }
-  async _rpcStat(path: string, _pid?: undefined, cred?: VfsCred) { return rpc._rpcStat(this.client(), path, undefined, this.cred(cred)); }
-  async _rpcLstat(path: string, _pid?: undefined, cred?: VfsCred) { return rpc._rpcLstat(this.client(), path, undefined, this.cred(cred)); }
-  async _rpcReadlink(path: string, _pid?: undefined, cred?: VfsCred) { return rpc._rpcReadlink(this.client(), path, undefined, this.cred(cred)); }
-  async _rpcReaddir(path: string, _pid?: undefined, cred?: VfsCred) { return rpc._rpcReaddir(this.client(), path, undefined, this.cred(cred)); }
+  async _rpcStat(path: string, _pid?: undefined, cred?: VfsCred) { return rpc._rpcStat(this.#client(), path, undefined, this.#cred(cred)); }
+  async _rpcLstat(path: string, _pid?: undefined, cred?: VfsCred) { return rpc._rpcLstat(this.#client(), path, undefined, this.#cred(cred)); }
+  async _rpcReadlink(path: string, _pid?: undefined, cred?: VfsCred) { return rpc._rpcReadlink(this.#client(), path, undefined, this.#cred(cred)); }
+  async _rpcReaddir(path: string, _pid?: undefined, cred?: VfsCred) { return rpc._rpcReaddir(this.#client(), path, undefined, this.#cred(cred)); }
   async _rpcRename(from: string, to: string, _pid?: undefined, cred?: VfsCred) {
-    return rpc._rpcRename(this.client(), from, to, undefined, this.cred(cred));
+    return rpc._rpcRename(this.#client(), from, to, undefined, this.#cred(cred));
   }
   async _rpcChmod(path: string, mode: number, _pid?: undefined, cred?: VfsCred) {
-    return rpc._rpcChmod(this.client(), path, mode, undefined, this.cred(cred));
+    return rpc._rpcChmod(this.#client(), path, mode, undefined, this.#cred(cred));
   }
   async _rpcFsReadRange(path: string, offset: number, length: number, _pid?: undefined, cred?: VfsCred) {
-    return rpc._rpcFsReadRange(this.client(), path, offset, length, undefined, this.cred(cred));
+    return rpc._rpcFsReadRange(this.#client(), path, offset, length, undefined, this.#cred(cred));
   }
-  async _rpcExists(path: string, _pid?: undefined, cred?: VfsCred) { return rpc._rpcExists(this.client(), path, undefined, this.cred(cred)); }
-  async _rpcMkdir(path: string, _pid?: undefined, cred?: VfsCred) { return rpc._rpcMkdir(this.client(), path, undefined, this.cred(cred)); }
+  async _rpcExists(path: string, _pid?: undefined, cred?: VfsCred) { return rpc._rpcExists(this.#client(), path, undefined, this.#cred(cred)); }
+  async _rpcMkdir(path: string, _pid?: undefined, cred?: VfsCred) { return rpc._rpcMkdir(this.#client(), path, undefined, this.#cred(cred)); }
   async _rpcDeleteFile(path: string, options?: { recursive?: boolean }, cred?: VfsCred) {
-    return operations.rpcDeleteFile(this.client(), path, options, this.cred(cred));
+    return operations.rpcDeleteFile(this.#client(), path, options, this.#cred(cred));
   }
 
-  _rpcInstallRuntime(spec: string, options?: SessionRuntimeInstallOptions) { return operations.rpcInstallRuntime(this.client(), spec, options); }
-  _rpcEnsureRuntimes(specs: string[], options?: SessionRuntimeInstallOptions) { return operations.rpcEnsureRuntimes(this.client(), specs, options); }
-  _rpcListRuntimes() { return operations.rpcListRuntimes(this.client()); }
+  _rpcInstallRuntime(spec: string, options?: SessionRuntimeInstallOptions) { return operations.rpcInstallRuntime(this.#client(), spec, options); }
+  _rpcEnsureRuntimes(specs: string[], options?: SessionRuntimeInstallOptions) { return operations.rpcEnsureRuntimes(this.#client(), specs, options); }
+  _rpcListRuntimes() { return operations.rpcListRuntimes(this.#client()); }
 
-  _rpcListProcesses() { return operations.rpcListProcesses(this.client()); }
-  _rpcKillProcess(pid: number) { return operations.rpcKillProcess(this.client(), pid); }
-  _rpcWriteProcessInput(pid: number, data: string) { return operations.rpcWriteProcessInput(this.client(), pid, data); }
-  _rpcEndProcessInput(pid: number) { return operations.rpcEndProcessInput(this.client(), pid); }
-  _rpcResizeProcess(pid: number, size: SessionTerminalSize) { return operations.rpcResizeProcess(this.client(), pid, size); }
-  _rpcSignalProcess(pid: number, signal: string) { return operations.rpcSignalProcess(this.client(), pid, signal); }
+  _rpcListProcesses() { return operations.rpcListProcesses(this.#client()); }
+  _rpcKillProcess(pid: number) { return operations.rpcKillProcess(this.#client(), pid); }
+  _rpcWriteProcessInput(pid: number, data: string) { return operations.rpcWriteProcessInput(this.#client(), pid, data); }
+  _rpcEndProcessInput(pid: number) { return operations.rpcEndProcessInput(this.#client(), pid); }
+  _rpcResizeProcess(pid: number, size: SessionTerminalSize) { return operations.rpcResizeProcess(this.#client(), pid, size); }
+  _rpcSignalProcess(pid: number, signal: string) { return operations.rpcSignalProcess(this.#client(), pid, signal); }
   _rpcProcessLogs(pid: number, options?: SessionProcessLogsOptions) {
-    return operations.rpcProcessLogs(this.client(), pid, options);
+    return operations.rpcProcessLogs(this.#client(), pid, options);
   }
-  _rpcListPorts() { return operations.rpcListPorts(this.client()); }
-  _rpcExposePort(port: number, options?: SessionExposeOptions) { return operations.rpcExposePort(this.client(), port, options); }
-  _rpcUnexposePort(port: number) { return operations.rpcUnexposePort(this.client(), port); }
-  _rpcListApps() { return operations.rpcListApps(this.client()); }
-  _rpcExposeApp(target: SessionAppTarget, options?: SessionExposeOptions) { return operations.rpcExposeApp(this.client(), target, options); }
-  _rpcRotateLink(target: SessionAppTarget) { return operations.rpcRotateLink(this.client(), target); }
-  _rpcRemoveApp(target: SessionAppTarget) { return operations.rpcRemoveApp(this.client(), target); }
+  _rpcListPorts() { return operations.rpcListPorts(this.#client()); }
+  _rpcExposePort(port: number, options?: SessionExposeOptions) { return operations.rpcExposePort(this.#client(), port, options); }
+  _rpcUnexposePort(port: number) { return operations.rpcUnexposePort(this.#client(), port); }
+  _rpcListApps() { return operations.rpcListApps(this.#client()); }
+  _rpcExposeApp(target: SessionAppTarget, options?: SessionExposeOptions) { return operations.rpcExposeApp(this.#client(), target, options); }
+  _rpcRotateLink(target: SessionAppTarget) { return operations.rpcRotateLink(this.#client(), target); }
+  _rpcRemoveApp(target: SessionAppTarget) { return operations.rpcRemoveApp(this.#client(), target); }
   _rpcEnsureDurableApp(input: SessionDurableAppOptions) {
-    return operations.rpcEnsureDurableApp(this.client(), input);
+    return operations.rpcEnsureDurableApp(this.#client(), input);
   }
-  _rpcRemoveDurableApp(owner: string) { return operations.rpcRemoveDurableApp(this.client(), owner); }
+  _rpcRemoveDurableApp(owner: string) { return operations.rpcRemoveDurableApp(this.#client(), owner); }
 
   /** The embedder owns the workspace's life; a session it handed out cannot end it. */
   async _rpcDestroy(): Promise<never> {

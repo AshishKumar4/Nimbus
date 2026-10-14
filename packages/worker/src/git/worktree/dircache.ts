@@ -16,7 +16,7 @@ import { createHash } from 'node:crypto';
 import { oidFromHex, oidToHex } from '../pack/format.js';
 import { CacheTree } from './cachetree.js';
 import { UnsupportedGitOperation } from '../routing.js';
-import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
+import { errnoCodeOf, isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 
 export const S_IFMT = 0o170000;
 export const S_IFREG = 0o100000;
@@ -76,7 +76,8 @@ export interface IndexFs {
   /** The file's bytes, a buffer of the caller's own, past the content cache. */
   readFileUncached(path: string): Promise<Uint8Array> | Uint8Array;
   writeFile(path: string, content: Uint8Array): Promise<void> | void;
-  lstat(path: string): Promise<{ mtime: number }> | { mtime: number };
+  /** The file a link names, as git's open and fstat find it. */
+  stat(path: string): Promise<{ mtime: number; size: number; type: string }> | { mtime: number; size: number; type: string };
 }
 
 /** An index extension: its 4-byte signature and its data (gitformat-index.txt, "Extensions"). */
@@ -145,7 +146,29 @@ export function objectId(type: string, data: Uint8Array): string {
   return oidToHex(createHash('sha1').update(encoder.encode(`${type} ${data.length}\0`)).update(data).digest());
 }
 
-export class IndexFormatError extends Error {}
+export class IndexFormatError extends Error {
+  /** What verify_hdr found (read-cache.c), which git reports as an error before it dies. */
+  constructor(message: string, readonly detail?: string) {
+    super(message);
+  }
+}
+
+/**
+ * The step of git's do_read_index (read-cache.c) an index file there failed
+ * at: its open ("index file open failed", with the errno), the size its
+ * fstat gives ("index file smaller than expected"), or the mapping of its
+ * contents ("unable to map index file", with the errno). Only ENOENT is no
+ * index; anything else stops the command.
+ */
+export class IndexReadError extends Error {
+  /** git's words for the step. */
+  readonly words: string;
+  constructor(readonly file: string, readonly step: 'open' | 'size' | 'map', cause?: unknown) {
+    const words = step === 'open' ? 'index file open failed' : step === 'size' ? 'index file smaller than expected' : 'unable to map index file';
+    super(`${file}: ${words}`, { cause });
+    this.words = words;
+  }
+}
 
 /** What NewEntries allocates at a time; an entry larger than this gets a chunk of its own. */
 const CHUNK_BYTES = 64 * 1024;
@@ -336,34 +359,50 @@ export class DirCache {
     return new DirCache(new Uint8Array(0), new Uint32Array(0), 2, 0, [], null);
   }
 
-  /** The index at `file`, empty when there is none. */
+  /**
+   * The index at `file`, empty when there is none: git's do_read_index. Its
+   * stat stands for the open and the fstat of what was opened: it fails where
+   * the open would, with the open's errno.
+   */
   static async read(fs: IndexFs, file: string): Promise<DirCache> {
-    let bytes: Uint8Array;
-    let mtime: number;
+    let stat: { mtime: number; size: number; type: string };
     try {
-      mtime = (await fs.lstat(file)).mtime;
+      stat = await fs.stat(file);
+    } catch (error) {
+      if (isVfsError(error, 'ENOENT') || isVfsError(error, 'ENOTDIR')) return DirCache.empty();
+      throw new IndexReadError(file, 'open', error);
+    }
+    // A directory opens (O_RDONLY) and stats: the size it reports is checked, then it cannot be mapped (mmap(2): ENODEV).
+    if (stat.type === 'directory') {
+      if (stat.size < HEADER_BYTES + OID_BYTES) throw new IndexReadError(file, 'size');
+      throw new IndexReadError(file, 'map', Object.assign(new Error('No such device'), { code: 'ENODEV' }));
+    }
+    let bytes: Uint8Array;
+    try {
       bytes = await fs.readFileUncached(file);
     } catch (error) {
       if (isVfsError(error, 'ENOENT') || isVfsError(error, 'ENOTDIR')) return DirCache.empty();
-      throw error;
+      // Refused as an open is (no read permission, a link loop); anything else fails reading what was opened.
+      const code = errnoCodeOf(error);
+      throw new IndexReadError(file, code === 'EACCES' || code === 'EPERM' || code === 'ELOOP' ? 'open' : 'map', error);
     }
-    return DirCache.parse(bytes, Math.floor(mtime / 1000));
+    if (bytes.length < HEADER_BYTES + OID_BYTES) throw new IndexReadError(file, 'size');
+    return DirCache.parse(bytes, Math.floor(stat.mtime / 1000));
   }
 
   /** read_index_from on bytes already read. */
   static parse(bytes: Uint8Array, timestamp: number): DirCache {
-    if (bytes.length < HEADER_BYTES + OID_BYTES || decodePath(bytes.subarray(0, 4)) !== 'DIRC') {
-      throw new IndexFormatError('index file corrupt');
-    }
+    if (bytes.length < HEADER_BYTES + OID_BYTES) throw new IndexFormatError('index file corrupt');
+    // verify_hdr: its signature (printed as the bytes read on a little-endian host) and its version. Its
+    // checksum git checks only for fsck (verify_index_checksum): a command reads the index whatever it is.
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    const version = view.getUint32(4);
-    if (version < 2 || version > 4) throw new IndexFormatError(`bad index version ${version}`);
+    if (decodePath(bytes.subarray(0, 4)) !== 'DIRC') {
+      throw new IndexFormatError('index file corrupt', `bad signature 0x${view.getUint32(0, true).toString(16).padStart(8, '0')}`);
+    }
+    const version = view.getInt32(4);
+    if (version < 2 || version > 4) throw new IndexFormatError('index file corrupt', `bad index version ${version}`);
     const count = view.getUint32(8);
     const end = bytes.length - OID_BYTES;
-    const digest = createHash('sha1').update(bytes.subarray(0, end)).digest();
-    if (compareBytes(new Uint8Array(digest.buffer, digest.byteOffset, OID_BYTES), bytes.subarray(end)) !== 0) {
-      throw new IndexFormatError('index file corrupt: bad signature');
-    }
     let at = HEADER_BYTES;
     let entries: Uint8Array = bytes;
     const offsets = new Uint32Array(count);
