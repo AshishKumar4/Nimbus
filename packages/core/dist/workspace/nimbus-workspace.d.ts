@@ -295,7 +295,8 @@ export declare class NimbusWorkspace {
      * without seeing each other's. With a `shellId` it runs in that named shell
      * instead (see {@link withNamedShell}), and `cwd` and `env` hold for this
      * call only. Either way the process, and its child processes that have
-     * ended, leave the process table when the result is returned.
+     * ended, leave the process table when the result is returned; one that ends
+     * later (a background job) leaves at the first call to start a minute after.
      */
     exec(command: string, options?: WorkspaceExecOptions): Promise<CommandResult>;
     private runProcess;

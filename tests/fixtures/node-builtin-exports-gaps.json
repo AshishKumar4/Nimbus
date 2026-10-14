@@ -95,9 +95,7 @@
  "domain": "absent",
  "fs": {
   "missing": [
-   "openAsBlob",
-   "readlinkSync",
-   "symlinkSync"
+   "openAsBlob"
   ],
   "extra": [],
   "type": []

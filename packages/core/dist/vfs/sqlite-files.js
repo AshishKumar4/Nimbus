@@ -242,7 +242,7 @@ export class SqliteFiles {
     copy(from, to, options) {
         return this.run(options?.recursive ? 'cp' : 'copyfile', from, () => {
             if (!options?.recursive) {
-                this.view.copyFile(from, to);
+                this.view.copyFile(from, to, { keepMode: options?.keepMode });
                 return 1;
             }
             return this.view.copyTree(from, to, { preserve: options.preserve, follow: options.follow });

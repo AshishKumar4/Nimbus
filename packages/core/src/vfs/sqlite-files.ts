@@ -259,7 +259,7 @@ export class SqliteFiles implements VFS {
   copy(from: string, to: string, options?: VfsCopyOptions): number {
     return this.run(options?.recursive ? 'cp' : 'copyfile', from, () => {
       if (!options?.recursive) {
-        this.view.copyFile(from, to);
+        this.view.copyFile(from, to, { keepMode: options?.keepMode });
         return 1;
       }
       return this.view.copyTree(from, to, { preserve: options.preserve, follow: options.follow });

@@ -192,7 +192,7 @@ class GuardedProcessBridge {
     list(after, limit) { this.guard(); return this.target.list(after, limit); }
     realpath(path) { this.guard(); return this.target.realpath(path); }
     remove(path, options) { this.guard(); return this.target.remove(path, options); }
-    copyFile(from, to) { this.guard(); return this.target.copyFile(from, to); }
+    copyFile(from, to, options) { this.guard(); return this.target.copyFile(from, to, options); }
     copyTree(from, to, options) {
         this.guard();
         return this.target.copyTree(from, to, options);
@@ -1040,11 +1040,11 @@ class AwaitingProcessBridge {
             }
         });
     }
-    copyFile(from, to) {
-        return this.either([from, to], () => this.bridge.copyFile(from, to), async () => this.namespace.copy((await this.path(from)), (await this.path(to)), { follow: true }));
+    copyFile(from, to, options) {
+        return this.either([from, to], () => this.bridge.copyFile(from, to, options), async () => this.namespace.copy((await this.path(from)), (await this.path(to)), { follow: true, keepMode: options?.keepMode }));
     }
     copyTree(from, to, options) {
-        return this.either([from, to], () => this.bridge.copyTree(from, to, options), async () => this.namespace.copy((await this.path(from)), (await this.path(to)), { recursive: true, preserve: options?.preserve, follow: options?.follow }));
+        return this.either([from, to], () => this.bridge.copyTree(from, to, options), async () => this.namespace.copy(await this.path(from, options?.follow === true), await this.path(to), { recursive: true, preserve: options?.preserve, follow: options?.follow }));
     }
     // ── descriptors on an asynchronous mount ─────────────────────────────
     // The scope's own descriptors (Descriptors), whose descriptions answer by
@@ -1371,7 +1371,7 @@ export class ProcessView {
         return await this.call(options?.recursive ? 'cp' : 'copyfile', from, async () => {
             if (options?.recursive)
                 return await this.fs.copyTree(from, to, { preserve: options.preserve, follow: options.follow });
-            await this.fs.copyFile(from, to);
+            await this.fs.copyFile(from, to, { keepMode: options?.keepMode });
             return 1;
         }, to);
     }
