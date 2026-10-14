@@ -9,4 +9,5 @@ export {
   NimbusDurableObjectNamespace,
   NimbusDOStub,
   CirrusHmrRPC,
+  NimbusD1Database,
 } from '@nimbus-sh/worker';
