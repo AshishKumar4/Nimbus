@@ -3,7 +3,7 @@ import realm from 'node:process';
 import type { NodeFilesystem } from './filesystem.js';
 import type { CommandOutputStream } from '../commands/types.js';
 import { createFs } from './fs.js';
-import pathModule from './path.js';
+import { createPath } from './path.js';
 import { createOs } from './os.js';
 import { createProcess } from './process.js';
 import { EventEmitter } from 'node:events';
@@ -11,7 +11,7 @@ import { createHttp } from './http.js';
 import type { LoopbackRouter, VirtualRequestHandler } from '../kernel/index.js';
 import type { DNSResolver } from '../kernel/dns-resolver.js';
 import { createChildProcess } from './child_process.js';
-import * as urlModule from './url.js';
+import { createUrl } from './url.js';
 import * as timersModule from './timers.js';
 import * as zlibModule from './zlib.js';
 import * as ttyModule from './tty.js';
@@ -75,7 +75,7 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
   const map: Record<string, () => unknown> = {
     fs: () => createFs(ctx.filesystem(), ctx.cwd, ctx.stdin),
     'fs/promises': () => createFs(ctx.filesystem(), ctx.cwd, ctx.stdin).promises,
-    path: () => pathModule,
+    path: () => createPath(ctx.cwd),
     os: () => createOs(ctx.env),
     process: () => createProcess({
       argv: ctx.argv,
@@ -97,7 +97,7 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
     'stream/promises': () => realm.getBuiltinModule('node:stream/promises'),
     'stream/consumers': () => realm.getBuiltinModule('node:stream/consumers'),
     'stream/web': () => realm.getBuiltinModule('node:stream/web'),
-    url: () => urlModule,
+    url: () => createUrl(ctx.cwd),
     timers: () => timersModule,
     crypto: () => realm.getBuiltinModule('node:crypto'),
     zlib: () => zlibModule,

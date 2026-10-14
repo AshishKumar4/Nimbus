@@ -36,6 +36,8 @@ declare module 'node:process' {
   import type * as NodeBuffer from 'node:buffer';
   import type * as NodeCrypto from 'node:crypto';
   import type * as NodeFs from 'node:fs';
+  import type * as NodePath from 'node:path';
+  import type * as NodeUrl from 'node:url';
   import type NodeStream from 'node:stream';
   import type { EventEmitter } from 'node:events';
   import type * as NodeStringDecoder from 'node:string_decoder';
@@ -66,6 +68,8 @@ declare module 'node:process' {
     getBuiltinModule(id: 'node:crypto'): typeof NodeCrypto;
     getBuiltinModule(id: 'node:events'): typeof EventEmitter;
     getBuiltinModule(id: 'node:fs'): typeof NodeFs;
+    getBuiltinModule(id: 'node:path'): typeof NodePath;
+    getBuiltinModule(id: 'node:url'): typeof NodeUrl;
     getBuiltinModule(id: 'node:stream'): typeof NodeStream;
     getBuiltinModule(id: 'node:stream/promises' | 'node:stream/consumers' | 'node:stream/web'): object;
     getBuiltinModule(id: 'node:string_decoder'): typeof NodeStringDecoder;

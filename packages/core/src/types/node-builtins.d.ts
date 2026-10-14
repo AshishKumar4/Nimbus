@@ -1,5 +1,5 @@
-// The `node:buffer`, `node:events`, `node:stream`, `node:util` and `node:string_decoder` surface core uses
-// (and node:fs's stream classes):
+// The `node:buffer`, `node:events`, `node:path`, `node:stream`, `node:url`, `node:util` and
+// `node:string_decoder` surface core uses (and node:fs's stream classes):
 // lifo's node gives a program the engine's own builtins, and its console
 // formats with the engine's util (substrate/lifo/node-compat); lifo's
 // commands know whose code is running by `node:async_hooks`. Bun and Node
@@ -84,6 +84,55 @@ declare module 'node:fs' {
   export class WriteStream extends Writable {
     constructor(path: string | undefined, options?: object);
   }
+}
+
+declare module 'node:path' {
+  export interface ParsedPath {
+    root: string;
+    dir: string;
+    base: string;
+    ext: string;
+    name: string;
+  }
+  export interface PlatformPath {
+    resolve(...paths: string[]): string;
+    relative(from: string, to: string): string;
+    normalize(path: string): string;
+    join(...paths: string[]): string;
+    isAbsolute(path: string): boolean;
+    dirname(path: string): string;
+    basename(path: string, suffix?: string): string;
+    extname(path: string): string;
+    parse(path: string): ParsedPath;
+    format(path: Partial<ParsedPath>): string;
+    readonly sep: string;
+    readonly delimiter: string;
+    posix: PlatformPath;
+    win32: PlatformPath;
+  }
+  export const posix: PlatformPath;
+  export const win32: PlatformPath;
+  export const resolve: PlatformPath['resolve'];
+  export const relative: PlatformPath['relative'];
+  export const normalize: PlatformPath['normalize'];
+  export const join: PlatformPath['join'];
+  export const isAbsolute: PlatformPath['isAbsolute'];
+  export const dirname: PlatformPath['dirname'];
+  export const basename: PlatformPath['basename'];
+  export const extname: PlatformPath['extname'];
+  export const parse: PlatformPath['parse'];
+  export const format: PlatformPath['format'];
+  export const sep: string;
+  export const delimiter: string;
+  const path: PlatformPath;
+  export default path;
+}
+
+declare module 'node:url' {
+  export function pathToFileURL(path: string, options?: { windows?: boolean }): URL;
+  export function fileURLToPath(url: string | URL, options?: { windows?: boolean }): string;
+  const url: { pathToFileURL: typeof pathToFileURL; fileURLToPath: typeof fileURLToPath };
+  export default url;
 }
 
 declare module 'node:async_hooks' {

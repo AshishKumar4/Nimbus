@@ -6,6 +6,13 @@ published independently in the `@nimbus-sh` npm scope.
 ## Unreleased
 
 - Fixed: the library's built-in `node` gives a program the engine's own
+  `path` and `url`, against the program's working directory: `path.resolve`
+  and `path.relative` start from it, as does `url.pathToFileURL` of a
+  relative path. lifo's `path` resolved from `/`, dropped a trailing
+  separator (`path.normalize('/a/b/')`), and had no `toNamespacedPath` or
+  `matchesGlob`; its `url` had no `domainToASCII` or `urlToHttpOptions`, and
+  `url.parse` lost an explicit port.
+- Fixed: the library's built-in `node` gives a program the engine's own
   `stream` (with `stream/promises`, `stream/consumers` and `stream/web`),
   and `fs.createReadStream` and `fs.createWriteStream` are the engine's
   `ReadStream` and `WriteStream` over the program's files. lifo's streams

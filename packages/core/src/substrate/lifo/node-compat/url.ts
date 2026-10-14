@@ -1,86 +1,20 @@
-import { resolve as resolvePath } from '../utils/path.js';
+import realm from 'node:process';
 
-const NativeURL = URL;
-const NativeURLSearchParams = URLSearchParams;
+// The engine's own url (X-3). What does not depend on a working directory is
+// the engine's as it is; the module a program requires is createUrl's.
+export * from 'node:url';
+export { default } from 'node:url';
 
-export { NativeURL as URL, NativeURLSearchParams as URLSearchParams };
-
-export function parse(urlString: string): {
-  protocol: string | null;
-  hostname: string | null;
-  port: string | null;
-  pathname: string;
-  search: string | null;
-  hash: string | null;
-  host: string | null;
-  href: string;
-  path: string;
-  query: string | null;
-} {
-  try {
-    const u = new URL(urlString);
-    return {
-      protocol: u.protocol,
-      hostname: u.hostname,
-      port: u.port || null,
-      pathname: u.pathname,
-      search: u.search || null,
-      hash: u.hash || null,
-      host: u.host,
-      href: u.href,
-      path: u.pathname + (u.search || ''),
-      query: u.search ? u.search.slice(1) : null,
-    };
-  } catch {
-    return {
-      protocol: null,
-      hostname: null,
-      port: null,
-      pathname: urlString,
-      search: null,
-      hash: null,
-      host: null,
-      href: urlString,
-      path: urlString,
-      query: null,
-    };
-  }
+/**
+ * The engine's url against the program's working directory: pathToFileURL of
+ * a relative path starts from `cwd`, as Node's starts from process.cwd(), the
+ * engine's own process's, which is not the program's.
+ */
+export function createUrl(cwd: string) {
+  const engine = realm.getBuiltinModule('node:url');
+  const { posix } = realm.getBuiltinModule('node:path');
+  return {
+    ...engine,
+    pathToFileURL: (path: string, options?: { windows?: boolean }) => engine.pathToFileURL(posix.isAbsolute(path) ? path : posix.join(cwd, path), options),
+  };
 }
-
-export function format(urlObj: { protocol?: string; hostname?: string; port?: string | number; pathname?: string; search?: string; hash?: string }): string {
-  let result = '';
-  if (urlObj.protocol) result += urlObj.protocol + '//';
-  if (urlObj.hostname) result += urlObj.hostname;
-  if (urlObj.port) result += ':' + urlObj.port;
-  if (urlObj.pathname) result += urlObj.pathname;
-  if (urlObj.search) result += urlObj.search;
-  if (urlObj.hash) result += urlObj.hash;
-  return result;
-}
-
-export function resolve(from: string, to: string): string {
-  return new URL(to, from).href;
-}
-
-export function fileURLToPath(url: string | URL): string {
-  const parsed = typeof url === 'string' ? new NativeURL(url) : url;
-  if (parsed.protocol !== 'file:') {
-    throw Object.assign(new TypeError('The URL must be of scheme file'), { code: 'ERR_INVALID_URL_SCHEME' });
-  }
-  if (parsed.hostname !== '') {
-    throw Object.assign(new TypeError('File URL host must be "localhost" or empty on linux'), { code: 'ERR_INVALID_FILE_URL_HOST' });
-  }
-  if (/%2f/i.test(parsed.pathname)) {
-    throw Object.assign(new TypeError('File URL path must not include encoded / characters'), { code: 'ERR_INVALID_FILE_URL_PATH' });
-  }
-  return decodeURIComponent(parsed.pathname);
-}
-
-export function pathToFileURL(path: string): URL {
-  const process = Reflect.get(globalThis, 'process') as { cwd?: () => string } | undefined;
-  const absolute = resolvePath(process?.cwd?.() ?? '/', path);
-  // encodeURI leaves URL delimiters alone; in a filename they are data.
-  return new NativeURL('file://' + encodeURI(absolute).replace(/\?/g, '%3F').replace(/#/g, '%23'));
-}
-
-export default { URL, URLSearchParams, parse, format, resolve, fileURLToPath, pathToFileURL };

@@ -16,11 +16,11 @@
  * realm's native ES module loader, not the CommonJS wrapper.
  */
 import { Buffer } from 'node:buffer';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createModuleMap, ProcessExitError, type NodeContext } from './index.js';
 import { createModuleShim, type RequireFunction } from './module.js';
 import { escapedIdentifierNames, rewriteDynamicImports } from '../../../runtime/dynamic-import-rewrite.js';
 import { isEsModuleFile, type PackageType } from '../../../runtime/module-format.js';
-import { fileURLToPath, pathToFileURL } from './url.js';
 import { resolve, dirname } from '../utils/path.js';
 import { invalidArgType } from '../../../_shared/node-error.js';
 import { createRequireResolver, NIMBUS_TYPESCRIPT_REQUIRE_POLICY, requireNodeModulePaths, type RequireResolverOptions, type RequireResolveOptions } from '../../../runtime/require-resolution.js';

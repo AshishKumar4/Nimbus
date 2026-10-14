@@ -36,6 +36,12 @@
 // into and leave open. Red before: lifo's streams pushed the whole file as one
 // string, had no pipeline, from(), Transform or async iteration, and
 // process.stdout was no stream.
+//
+// The engine's own path and url (X3d), against the program's working
+// directory: path.resolve('x') is the program's cwd and x, as pathToFileURL
+// of a relative path is. Red before: lifo's path resolved from /, dropped a
+// trailing separator, and had no toNamespacedPath or matchesGlob; its url
+// had no domainToASCII, urlToHttpOptions or legacy format options.
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -169,6 +175,22 @@ const programs = {
     "  await step('stdout', () => new Promise((resolve) => { Readable.from(['to ', 'stdout\\n']).pipe(process.stdout).on('unpipe', () => { process.stdout.write('stdout still open\\n'); console.log('stdout', process.stdout instanceof Writable, process.stdout.writable); resolve(); }); }));",
     '})();',
   ].join('\n'),
+  // Paths against the program's own working directory, written relative to it
+  // (the two runs' directories differ).
+  'paths.js': probes([
+    "const path = require('path');",
+    "const url = require('url');",
+    'const here = (p) => (p.startsWith(process.cwd()) ? \'<cwd>\' + p.slice(process.cwd().length) : p);',
+  ], [
+    "console.log(path.normalize('/a/b/'), path.normalize('a//b/../c/'), path.join('a', 'b/'), path.join('', ''), path.dirname('/a/b/'), path.basename('/a/b/'), path.extname('.x'), path.isAbsolute('a'));",
+    "console.log(here(path.resolve('x')), here(path.resolve('x/', '..', 'y/')), path.resolve('/r', 'x/'), here(path.resolve()), path.relative('x', 'y/z'), path.relative('/a/b', '/a'), path.relative(process.cwd(), path.resolve('n')));",
+    "console.log(JSON.stringify(path.parse('/a/b.c.d')), path.format({ dir: 'x', name: 'y', ext: '.z' }), path.format({ root: '/', base: 'f' }), path.toNamespacedPath('/p'), typeof path.matchesGlob);",
+    "console.log(path.posix === path, path.sep, path.delimiter, path.win32.sep, path.win32.join('a', 'b'), path.posix.resolve('/q', 'r'));",
+    "console.log(here(url.fileURLToPath(url.pathToFileURL('rel dir/f#x?.js'))), url.pathToFileURL('rel dir/f#x?.js').href.endsWith('/rel%20dir/f%23x%3F.js'), url.pathToFileURL('/abs/').href, url.pathToFileURL('d/').href.endsWith('/d/'));",
+    "console.log(url.fileURLToPath('file:///a%20b'), url.format(new URL('http://u:p@h:1/p?q#f'), { auth: false }), url.parse('http://a.com:80/p?q=1').port, url.resolve('http://a/b/c', '../d'), url.URL === URL, typeof url.domainToASCII, typeof url.urlToHttpOptions);",
+    "url.fileURLToPath('http://x/');",
+    "url.fileURLToPath('file:///a%2fb');",
+  ]),
 };
 /** Node writes its pid in a warning: `(node:<pid>)`. */
 const samePid = (text) => text.replace(/\(node:\d+\)/g, '(node:PID)');

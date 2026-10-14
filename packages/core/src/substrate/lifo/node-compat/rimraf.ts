@@ -7,7 +7,7 @@
  */
 
 import type { NodeFilesystem as VFS } from './filesystem.js';
-import { resolve } from './path.js';
+import { resolve } from '../utils/path.js';
 import { isVfsError } from '../../../vfs/vfs-error.js';
 
 export interface RimrafOptions {

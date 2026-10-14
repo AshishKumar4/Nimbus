@@ -1,74 +1,27 @@
-import {
-  normalize,
-  isAbsolute,
-  join,
-  resolve,
-  dirname,
-  basename,
-  extname,
-} from '../utils/path.js';
+import realm from 'node:process';
+import type { PlatformPath } from 'node:path';
 
-export function relative(from: string, to: string): string {
-  const fromParts = normalize(from).split('/').filter(Boolean);
-  const toParts = normalize(to).split('/').filter(Boolean);
+// The engine's own path (X-3). What does not depend on a working directory is
+// the engine's as it is; the module a program requires is createPath's.
+export * from 'node:path';
+export { default } from 'node:path';
 
-  let common = 0;
-  while (
-    common < fromParts.length &&
-    common < toParts.length &&
-    fromParts[common] === toParts[common]
-  ) {
-    common++;
-  }
-
-  const ups = fromParts.length - common;
-  const rest = toParts.slice(common);
-  const parts = [...Array(ups).fill('..'), ...rest];
-  return parts.join('/') || '.';
+/**
+ * The engine's path against the program's working directory: resolve and
+ * relative start from `cwd`, as Node's start from process.cwd(), the
+ * engine's own process's, which is not the program's.
+ */
+export function createPath(cwd: string): PlatformPath {
+  const engine = realm.getBuiltinModule('node:path');
+  const against = (platform: PlatformPath): PlatformPath => ({
+    ...platform,
+    resolve: (...paths: string[]) => platform.resolve(cwd, ...paths),
+    relative: (from: string, to: string) => platform.relative(platform.resolve(cwd, from), platform.resolve(cwd, to)),
+  });
+  const posix = against(engine.posix);
+  const win32 = against(engine.win32);
+  // Each platform's posix and win32 are these, as Node's are one another.
+  Object.assign(posix, { posix, win32 });
+  Object.assign(win32, { posix, win32 });
+  return posix;
 }
-
-export interface ParsedPath {
-  root: string;
-  dir: string;
-  base: string;
-  ext: string;
-  name: string;
-}
-
-export function parse(path: string): ParsedPath {
-  const root = isAbsolute(path) ? '/' : '';
-  const dir = dirname(path);
-  const base = basename(path);
-  const ext = extname(path);
-  const name = ext ? base.slice(0, -ext.length) : base;
-  return { root, dir, base, ext, name };
-}
-
-export function format(pathObj: Partial<ParsedPath>): string {
-  const dir = pathObj.dir || pathObj.root || '';
-  const base = pathObj.base || ((pathObj.name || '') + (pathObj.ext || ''));
-  if (dir) {
-    return dir.endsWith('/') ? dir + base : dir + '/' + base;
-  }
-  return base;
-}
-
-export const sep = '/';
-export const delimiter = ':';
-export const posix = {
-  normalize, isAbsolute, join, resolve: (...args: string[]) => resolve('/', ...args),
-  dirname, basename, extname, relative, parse, format, sep, delimiter,
-};
-// Minimal win32 path — Lifo is posix-only but packages like vite reference win32.sep
-export const win32 = {
-  normalize, isAbsolute, join, resolve: (...args: string[]) => resolve('/', ...args),
-  dirname, basename, extname, relative, parse, format,
-  sep: '\\',
-  delimiter: ';',
-};
-
-export { normalize, isAbsolute, join, resolve, dirname, basename, extname };
-export default {
-  normalize, isAbsolute, join, resolve: (...args: string[]) => resolve('/', ...args),
-  dirname, basename, extname, relative, parse, format, sep, delimiter, posix, win32,
-};
