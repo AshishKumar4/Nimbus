@@ -145,6 +145,18 @@ await runScenarios(import.meta.path, {
     assert.deepEqual([local.mode, local.mtimeMs], [session.mode, session.mtimeMs], 'statSync answers as the session does');
   },
 
+  async 'a file made in a directory made just now, copied over: its stat is the copy\'s'() {
+    const box = await boot({}, (authority) => authority.kfs.writeFile('home/user/app/s3', 'S3', { mode: 0o644 }));
+    const { fs } = box.probe;
+    fs.mkdirSync(`${A}/fresh`);
+    fs.writeFileSync(`${A}/fresh/d3`, 'old', { mode: 0o600 });
+    await fs.promises.copyFile(`${A}/s3`, `${A}/fresh/d3`);
+    const local = fs.statSync(`${A}/fresh/d3`);
+    const session = await fs.promises.stat(`${A}/fresh/d3`);
+    assert.deepEqual([local.mode & 0o777, local.size], [0o644, 2], 'the copy\'s mode and size, not the made file\'s');
+    assert.deepEqual([local.mode, local.size, local.mtimeMs], [session.mode, session.size, session.mtimeMs], 'statSync answers as the session does');
+  },
+
   async 'a copy and its source are each their own: appends to both keep each'() {
     const box = await boot();
     const { fs } = box.probe;
