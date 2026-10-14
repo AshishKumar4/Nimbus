@@ -6,16 +6,13 @@
  * can read or change them; a statement naming one finds no such table, as
  * it would on a fresh D1 database.
  *
- * The D1 API a Worker is given (bindings/d1.ts) prepares statements and
- * sends them here to run.
+ * The Worker's D1 API (fabric inner-storage-env.ts) prepares statements and
+ * sends them here, through the session (session/rpc.ts _rpcD1Query), by D1's
+ * binding contract; each request runs as Cloudflare's local D1 database
+ * (Miniflare's) runs it.
  */
 import { DurableObject } from 'cloudflare:workers';
-import type { D1ExecResult, D1Result, SqlValue } from './d1.js';
-/** A prepared statement as it is sent to run: its text and its bound values. */
-export interface D1Statement {
-    sql: string;
-    params: SqlValue[];
-}
+import type { D1QueryResponse, D1QuerySql } from '@nimbus-sh/fabric/inner-storage-env.js';
 /** One migration file: its name (the ledger's key) and its statements. */
 export interface D1Migration {
     name: string;
@@ -35,13 +32,12 @@ export interface D1MigrationOutcome {
 export declare class NimbusD1Database extends DurableObject {
     #private;
     /**
-     * Run `statements` in order. With `atomic` (a batch), all of them or none:
-     * the first failure rolls the rest back and is thrown. Otherwise each
-     * answers its own result, a failure included.
+     * D1's binding contract: every query of a request, in order, in one
+     * transaction, each answered as its columns and rows; or, when one fails,
+     * none applied and the failure. A query that is only blanks and comments
+     * is dropped, and a request left with none fails.
      */
-    query(statements: readonly D1Statement[], atomic: boolean): D1Result[];
-    /** Each of `query`'s statements, in order, until one fails (it throws). */
-    exec(query: string): D1ExecResult;
+    query(queries: readonly D1QuerySql[]): D1QueryResponse;
     /**
      * Apply each of `migrations` not in the ledger, in order, as `wrangler d1
      * migrations apply` does: each one whole, and recorded, or not at all; the

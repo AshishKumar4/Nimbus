@@ -6,39 +6,33 @@
  * can read or change them; a statement naming one finds no such table, as
  * it would on a fresh D1 database.
  *
- * The D1 API a Worker is given (bindings/d1.ts) prepares statements and
- * sends them here to run.
+ * The Worker's D1 API (fabric inner-storage-env.ts) prepares statements and
+ * sends them here, through the session (session/rpc.ts _rpcD1Query), by D1's
+ * binding contract; each request runs as Cloudflare's local D1 database
+ * (Miniflare's) runs it.
  */
 import { DurableObject } from 'cloudflare:workers';
 /** wrangler's own migrations ledger, as `wrangler d1 migrations apply` keeps it. */
 const LEDGER = 'd1_migrations';
+/** Who ran a statement, in its meta. */
+const SERVED_BY = 'nimbus-d1-emu';
 export class NimbusD1Database extends DurableObject {
     /**
-     * Run `statements` in order. With `atomic` (a batch), all of them or none:
-     * the first failure rolls the rest back and is thrown. Otherwise each
-     * answers its own result, a failure included.
+     * D1's binding contract: every query of a request, in order, in one
+     * transaction, each answered as its columns and rows; or, when one fails,
+     * none applied and the failure. A query that is only blanks and comments
+     * is dropped, and a request left with none fails.
      */
-    query(statements, atomic) {
-        if (!atomic)
-            return statements.map((statement) => this.#run(statement));
-        return this.ctx.storage.transactionSync(() => statements.map((statement) => {
-            const result = this.#run(statement);
-            if (!result.success)
-                throw new Error(result.error ?? 'batch failed');
-            return result;
-        }));
-    }
-    /** Each of `query`'s statements, in order, until one fails (it throws). */
-    exec(query) {
-        const t0 = Date.now();
-        let count = 0;
-        for (const statement of splitStatements(query)) {
-            if (!statement.trim())
-                continue;
-            runWhole(this.ctx.storage.sql, statement);
-            count++;
+    query(queries) {
+        const sql = queries.filter((query) => query.sql.replace(/^\s+--.*/gm, '').trim().length > 0);
+        if (sql.length === 0)
+            return { success: false, error: { name: 'Error', message: 'No SQL statements detected.' } };
+        try {
+            return { success: true, results: { queryResults: this.ctx.storage.transactionSync(() => sql.map((query) => this.#run(query))) } };
         }
-        return { count, duration: Date.now() - t0 };
+        catch (error) {
+            return { success: false, error: { name: 'Error', message: error instanceof Error ? error.message : String(error) } };
+        }
     }
     /**
      * Apply each of `migrations` not in the ledger, in order, as `wrangler d1
@@ -68,17 +62,39 @@ export class NimbusD1Database extends DurableObject {
         }
         return { applied };
     }
-    #run({ sql, params }) {
-        const t0 = Date.now();
-        try {
-            const cursor = this.ctx.storage.sql.exec(sql, ...params);
-            const results = cursor.toArray();
-            return { success: true, results, meta: meta(cursor.rowsRead, cursor.rowsWritten, t0) };
-        }
-        catch (error) {
-            return { success: false, error: error instanceof Error ? error.message : String(error), meta: meta(0, 0, t0) };
-        }
+    /**
+     * One query run to its last row, a blob given and answered as its bytes,
+     * and its meta: the changes it made and the rowid it left, by SQLite's own
+     * counters, and the rows it read and wrote.
+     */
+    #run({ sql: query, params = [] }) {
+        const sql = this.ctx.storage.sql;
+        const t0 = performance.now();
+        const sizeBefore = sql.databaseSize;
+        const before = counters(sql);
+        const cursor = sql.exec(query, ...params.map((param) => (Array.isArray(param) ? new Uint8Array(param).buffer : param)));
+        const columns = cursor.columnNames;
+        const rows = Array.from(cursor.raw(), (row) => row.map((cell) => (cell instanceof ArrayBuffer ? Array.from(new Uint8Array(cell)) : cell)));
+        const after = counters(sql);
+        const changes = after.totalChanges - before.totalChanges;
+        return {
+            meta: {
+                served_by: SERVED_BY,
+                duration: performance.now() - t0,
+                changes,
+                last_row_id: after.lastRowId,
+                changed_db: changes !== 0 || after.lastRowId !== before.lastRowId || sql.databaseSize !== sizeBefore,
+                size_after: sql.databaseSize,
+                rows_read: cursor.rowsRead,
+                rows_written: cursor.rowsWritten,
+            },
+            data: { kind: 'raw', columns, rows },
+        };
     }
+}
+/** SQLite's count of the changes this connection has made, and the rowid it last inserted. */
+function counters(sql) {
+    return sql.exec('SELECT total_changes() AS totalChanges, last_insert_rowid() AS lastRowId').one();
 }
 /**
  * `statement` run to its last row: SQLite evaluates a statement's rows as
@@ -86,17 +102,6 @@ export class NimbusD1Database extends DurableObject {
  */
 function runWhole(sql, statement) {
     sql.exec(statement).toArray();
-}
-function meta(rowsRead, rowsWritten, t0) {
-    return {
-        duration: Date.now() - t0,
-        changes: rowsWritten,
-        last_row_id: 0,
-        rows_read: rowsRead,
-        rows_written: rowsWritten,
-        served_by: 'nimbus-d1-emu',
-        changed_db: rowsWritten > 0,
-    };
 }
 /**
  * `sql` split on `;` outside string literals, a trigger's BEGIN … END kept

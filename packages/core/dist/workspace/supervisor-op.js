@@ -178,6 +178,11 @@ export const SUPERVISOR_OP_ROUTES = {
     cpBlocked: { method: '_rpcCpBlocked', args: ['pid', 0] },
     innerDoFetch: { method: '_rpcInnerDoFetch', args: [0] },
     innerDoCall: { method: '_rpcInnerDoCall', args: [0] },
+    // A wrangler-dev Worker's storage bindings: each names its own store, and a
+    // KV or R2 store is files, read and written as the host call's credential.
+    kvCall: { method: '_rpcKvCall', args: [0, 1, 'cred'] },
+    r2Call: { method: '_rpcR2Call', args: [0, 1, 'cred'] },
+    d1Query: { method: '_rpcD1Query', args: [0, 1] },
     fanoutExecute: { method: '_rpcFanoutExecute', args: [0, 1, 2] },
     processHostProbe: { method: '_rpcProcessHostProbe', args: [] },
     hostProcess: { method: '_rpcHostProcess', args: [0, 1] },

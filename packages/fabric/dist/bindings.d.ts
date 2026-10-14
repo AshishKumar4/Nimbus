@@ -14,8 +14,9 @@
  * through that RPC stub. Co-located here for grep-ability.
  *
  * NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker,
- * NimbusLoadedEntrypoint, NimbusDurableObjectNamespace and NimbusDOStub are
- * public API of the embedder's Worker: wrangler resolves them by class name
+ * NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusDOStub,
+ * NimbusKVNamespace, NimbusD1Binding and NimbusR2Bucket are public API of
+ * the embedder's Worker: wrangler resolves them by class name
  * and ctx.exports auto-populates them by export name, so the embedder's entry
  * module re-exports them under exactly these names.
  *
@@ -25,6 +26,7 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { z } from 'zod/v4';
 import type { HostRoute } from './composition.js';
+import type { D1QueryResponse, D1QuerySql, KvGetOptions, KvListOptions, KvPutOptions, KvPutValue, R2PutBody, R2WireGetOptions, R2WireListOptions, R2WirePutOptions } from './inner-storage-env.js';
 import { type FacetCodePolicy } from './facet-limits.js';
 import { type SupervisorBindingProps } from './supervisor-props.js';
 import type { WorkspaceEgress } from '@nimbus-sh/core/_shared/workspace-network.js';
@@ -235,7 +237,7 @@ interface NimbusDoNamespaceProps {
  * session's isolate). The inner Worker does not use it as its namespace: a
  * DurableObjectNamespace's API is synchronous, and this one's answers are
  * RpcPromises, which cannot travel as arguments. The inner Worker replaces it
- * with a local namespace (inner-do-env.ts, innerWorkerModules) that makes ids
+ * with a local namespace (inner-do-env.ts, inner-env.ts) that makes ids
  * and stubs itself, and relays each member a stub's caller reaches, its
  * fetch included, to `callOn` or `getOn`.
  *
@@ -281,6 +283,42 @@ export interface InnerDoFetchAnswer {
  */
 export declare class NimbusDOStub extends WorkerEntrypoint<object, NimbusDoStubProps> {
     fetch(request: Request): Promise<Response>;
+}
+/** Props a storage binding is minted with: its store, and the way to the session that holds it. */
+interface NimbusStorageProps {
+    /** The session Durable Object whose storage holds the store. */
+    doId?: string;
+    /** The way back to that DO, minted with the binding. */
+    route?: HostRoute;
+    /** The project the binding is declared in. */
+    root?: string;
+    /** The store: a KV namespace's or R2 bucket's binding name, a D1 database's id. */
+    store?: string;
+    /** What a KV or R2 store's files are read and written as: the process that started the server. */
+    cred?: VfsCred;
+}
+/** env.KV: a KV namespace, the methods of Cloudflare's API and nothing else. */
+export declare class NimbusKVNamespace extends WorkerEntrypoint<object, NimbusStorageProps> {
+    get(key: string | string[], options?: string | KvGetOptions): Promise<unknown>;
+    getWithMetadata(key: string | string[], options?: string | KvGetOptions): Promise<unknown>;
+    put(key: string, value: KvPutValue, options?: KvPutOptions): Promise<unknown>;
+    delete(key: string): Promise<unknown>;
+    list(options?: KvListOptions): Promise<unknown>;
+}
+/** A D1 database's binding: D1's own binding contract, `query`, and nothing else. */
+export declare class NimbusD1Binding extends WorkerEntrypoint<object, NimbusStorageProps> {
+    /** All of `request`'s queries, run in one transaction. */
+    query(request: {
+        queries: D1QuerySql[];
+    }): Promise<D1QueryResponse>;
+}
+/** An R2 bucket's binding: the methods of Cloudflare's API, taking and answering the fields its objects are made of. */
+export declare class NimbusR2Bucket extends WorkerEntrypoint<object, NimbusStorageProps> {
+    head(key: string): Promise<unknown>;
+    get(key: string, options: R2WireGetOptions): Promise<unknown>;
+    put(key: string, value: R2PutBody, options: R2WirePutOptions): Promise<unknown>;
+    delete(keys: string | string[]): Promise<unknown>;
+    list(options: R2WireListOptions): Promise<unknown>;
 }
 export {};
 //# sourceMappingURL=bindings.d.ts.map

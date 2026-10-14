@@ -14,8 +14,9 @@
  * through that RPC stub. Co-located here for grep-ability.
  *
  * NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker,
- * NimbusLoadedEntrypoint, NimbusDurableObjectNamespace and NimbusDOStub are
- * public API of the embedder's Worker: wrangler resolves them by class name
+ * NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusDOStub,
+ * NimbusKVNamespace, NimbusD1Binding and NimbusR2Bucket are public API of
+ * the embedder's Worker: wrangler resolves them by class name
  * and ctx.exports auto-populates them by export name, so the embedder's entry
  * module re-exports them under exactly these names.
  *
@@ -630,7 +631,7 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint {
  * session's isolate). The inner Worker does not use it as its namespace: a
  * DurableObjectNamespace's API is synchronous, and this one's answers are
  * RpcPromises, which cannot travel as arguments. The inner Worker replaces it
- * with a local namespace (inner-do-env.ts, innerWorkerModules) that makes ids
+ * with a local namespace (inner-do-env.ts, inner-env.ts) that makes ids
  * and stubs itself, and relays each member a stub's caller reaches, its
  * fetch included, to `callOn` or `getOn`.
  *
@@ -767,5 +768,80 @@ async function innerDoMember(env, props, path, args) {
 export class NimbusDOStub extends WorkerEntrypoint {
     async fetch(request) {
         return innerDoFetch(this.env, this.ctx.props || {}, request);
+    }
+}
+/**
+ * `op` sent to the session for the binding's own store, as the props name
+ * it: the session's answer, or what it threw.
+ */
+async function storageOp(env, props, usage, { op, call }) {
+    const doId = props?.doId;
+    const root = props?.root;
+    const store = props?.store;
+    if (!doId || root === undefined || !store)
+        throw new Error(`Nimbus: this ${usage} binding was minted without its store`);
+    let stub = null;
+    try {
+        const ns = hostNamespaceBinding(env, usage, props?.route);
+        stub = ns.get(ns.idFromString(doId));
+        return await hostOpDispatch(stub, usage, props?.route)({
+            op,
+            args: [{ root, store }, call],
+            ...(props?.cred === undefined ? {} : { cred: props.cred }),
+        });
+    }
+    finally {
+        disposeRpcResource(stub);
+    }
+}
+/** env.KV: a KV namespace, the methods of Cloudflare's API and nothing else. */
+export class NimbusKVNamespace extends WorkerEntrypoint {
+    get(key, options) {
+        return storageOp(this.env, this.ctx.props, 'NimbusKVNamespace', { op: 'kvCall', call: { method: 'get', key, options } });
+    }
+    getWithMetadata(key, options) {
+        return storageOp(this.env, this.ctx.props, 'NimbusKVNamespace', { op: 'kvCall', call: { method: 'getWithMetadata', key, options } });
+    }
+    put(key, value, options) {
+        return storageOp(this.env, this.ctx.props, 'NimbusKVNamespace', { op: 'kvCall', call: { method: 'put', key, value, options } });
+    }
+    delete(key) {
+        return storageOp(this.env, this.ctx.props, 'NimbusKVNamespace', { op: 'kvCall', call: { method: 'delete', key } });
+    }
+    list(options) {
+        return storageOp(this.env, this.ctx.props, 'NimbusKVNamespace', { op: 'kvCall', call: { method: 'list', options } });
+    }
+}
+/** A D1 database's binding: D1's own binding contract, `query`, and nothing else. */
+export class NimbusD1Binding extends WorkerEntrypoint {
+    /** All of `request`'s queries, run in one transaction. */
+    async query(request) {
+        const queries = Array.isArray(request?.queries) ? request.queries : [];
+        const answer = await storageOp(this.env, this.ctx.props, 'NimbusD1Binding', { op: 'd1Query', call: queries });
+        if (!isD1QueryResponse(answer))
+            throw new Error('Nimbus: d1Query returned an invalid result');
+        return answer;
+    }
+}
+function isD1QueryResponse(value) {
+    return value !== null && typeof value === 'object' && 'success' in value
+        && (value.success === true ? 'results' in value : 'error' in value);
+}
+/** An R2 bucket's binding: the methods of Cloudflare's API, taking and answering the fields its objects are made of. */
+export class NimbusR2Bucket extends WorkerEntrypoint {
+    head(key) {
+        return storageOp(this.env, this.ctx.props, 'NimbusR2Bucket', { op: 'r2Call', call: { method: 'head', key } });
+    }
+    get(key, options) {
+        return storageOp(this.env, this.ctx.props, 'NimbusR2Bucket', { op: 'r2Call', call: { method: 'get', key, options } });
+    }
+    put(key, value, options) {
+        return storageOp(this.env, this.ctx.props, 'NimbusR2Bucket', { op: 'r2Call', call: { method: 'put', key, value, options } });
+    }
+    delete(keys) {
+        return storageOp(this.env, this.ctx.props, 'NimbusR2Bucket', { op: 'r2Call', call: { method: 'delete', keys } });
+    }
+    list(options) {
+        return storageOp(this.env, this.ctx.props, 'NimbusR2Bucket', { op: 'r2Call', call: { method: 'list', options } });
     }
 }

@@ -1,30 +1,74 @@
 /**
- * binding-kv.ts — KV namespace emulator for nimbus-wrangler.
+ * kv.ts — the KV namespace a Worker is given under `nimbus wrangler dev`
+ * (https://developers.cloudflare.com/kv/api/), as `wrangler dev` gives it:
+ * workerd's KV client (kv.c++) over Cloudflare's local store (Miniflare's
+ * KV namespace), each checking and answering as they do.
  *
- * Implements the Workers KV runtime API
- * (https://developers.cloudflare.com/kv/api/) backed by SqliteVFS file
- * blobs. The emulator is constructed inline by NimbusWrangler.buildInnerEnv()
- * and attached as `env.<binding>` on the inner Worker.
+ * The session serves it (session/rpc.ts _rpcKvCall) for the Worker's binding
+ * (fabric bindings.ts NimbusKVNamespace), backed by SqliteVFS files:
  *
- * Storage layout:
  *   <root>/.nimbus/kv/<binding>/<key>             — body (raw bytes)
  *   <root>/.nimbus/kv/<binding>/<key>.meta        — sidecar JSON:
  *      { exp?: number,           // unix seconds, absolute expiration
- *        meta?: any,              // user-supplied metadata
+ *        meta?: <JSON>,           // user-supplied metadata
  *        v: 1 }                   // schema version
- *
- * Keys are URL-encoded so that '/' / '\\' / '\0' / '#' / etc. don't break
- * the VFS path. We then add ".meta" to derive the sidecar path.
- *
- * Concurrency: KV semantics permit eventual consistency. We do not use
- * VFS writeBatch for the body+meta pair (a torn write surfaces as a meta
- * read mismatch which we treat as no-metadata; the body still resolves).
  *
  * Test seam: `_setKvNow(() => ts)` replaces the wall clock (Date.now/1000)
  * for TTL probes. Production reads Date.now() / 1000.
  */
+import { z } from 'zod/v4';
 import { bodyStream, coerceBindingBody, ensureBindingDir } from './body.js';
-import { cursorPage, listObjectFiles, objectFileName, objectStoreDir, removeObjectFiles } from './object-store.js';
+import { cursorAfter, cursorKey, listObjectFiles, objectFileName, objectStoreDir, removeObjectFiles, utf8Order } from './object-store.js';
+/** A key's sidecar, as the store wrote it. */
+const KvMetaSchema = z.object({ exp: z.number().optional(), meta: z.json().optional(), v: z.literal(1) });
+/** Cloudflare's KV limits, as its local store enforces them. */
+const MAX_KEY_BYTES = 512;
+const MIN_CACHE_TTL = 30;
+const MIN_EXPIRATION_TTL = 60;
+const MAX_LIST_KEYS = 1000;
+const MAX_VALUE_BYTES = 25 * 1024 * 1024;
+const MAX_METADATA_BYTES = 1024;
+const MAX_BULK_KEYS = 100;
+const utf8Bytes = (text) => new TextEncoder().encode(text).byteLength;
+/** A request the store refused, as workerd's KV client throws it. */
+function failed(method, status, message) {
+    return new Error(`KV ${method} failed: ${status} ${message}`);
+}
+/** workerd's validateKeyName: what the client refuses before sending. */
+function validateKeyName(method, key) {
+    if (key === '')
+        throw new TypeError('Key name cannot be empty.');
+    if (key === '.' || key === '..')
+        throw new TypeError(`"${key}" is not allowed as a key name.`);
+    const bytes = utf8Bytes(key);
+    if (bytes > MAX_KEY_BYTES)
+        throw failed(method, 414, `UTF-8 encoded length of ${bytes} exceeds key length limit of ${MAX_KEY_BYTES}.`);
+}
+/** An option workerd takes as an int: a number in int32's range, or a TypeError. */
+function int32(value) {
+    if (value === undefined)
+        return undefined;
+    const number = Number(value);
+    if (!Number.isFinite(number) || number < -2147483648 || number > 2147483647) {
+        throw new TypeError('Value out of range. Must be between -2147483648 and 2147483647 (inclusive).');
+    }
+    return Math.trunc(number);
+}
+/** A get's options, a type string or an object, as the client reads them. */
+function getOptions(options) {
+    if (typeof options === 'string')
+        return { type: options, cacheTtl: undefined };
+    return { type: options?.type === undefined ? undefined : String(options.type), cacheTtl: int32(options?.cacheTtl) };
+}
+function checkCacheTtl(method, cacheTtl) {
+    if (cacheTtl !== undefined && cacheTtl < MIN_CACHE_TTL) {
+        throw failed(method, 400, `Invalid cache_ttl of ${cacheTtl}. Cache TTL must be at least ${MIN_CACHE_TTL}.`);
+    }
+}
+/** Whether `name` is an array index, which a bulk answer's Map leaves out (workerd reads its keys SKIP_INDICES). */
+function isArrayIndex(name) {
+    return /^(0|[1-9][0-9]*)$/.test(name) && Number(name) < 4294967295;
+}
 // ── Test seam: clock ────────────────────────────────────────────────────
 let _kvNow = () => Math.floor(Date.now() / 1000);
 export function _setKvNow(fn) { _kvNow = fn; }
@@ -32,138 +76,199 @@ export function _setKvNow(fn) { _kvNow = fn; }
 export class KvEmulator {
     vfs;
     dir;
-    metaCache = new Map();
-    onLog;
     constructor(opts) {
         this.vfs = opts.vfs;
         this.dir = objectStoreDir(opts.root, 'kv', opts.binding);
-        this.onLog = opts.onLog || (() => { });
     }
     // ── public API ────────────────────────────────────────────────────────
-    async get(key, options) {
-        const opts = typeof options === 'string' ? { type: options } : (options || {});
-        const r = await this.#readResolved(key);
-        if (r == null)
-            return null;
-        return this.#project(r.body, opts.type);
+    get(key, options) {
+        return Array.isArray(key) ? this.#getBulk(key, options, false) : this.#getOne(String(key), options).then((r) => r.value);
     }
-    async getWithMetadata(key, options) {
-        const opts = typeof options === 'string' ? { type: options } : (options || {});
-        const r = await this.#readResolved(key);
-        if (r == null)
-            return { value: null, metadata: null, cacheStatus: null };
-        const value = this.#project(r.body, opts.type);
-        return { value, metadata: (r.meta?.meta ?? null), cacheStatus: null };
+    getWithMetadata(key, options) {
+        return Array.isArray(key) ? this.#getBulk(key, options, true) : this.#getOne(String(key), options);
     }
     async put(key, value, options) {
-        const enc = objectFileName(key);
-        const bodyBlob = await coerceBindingBody(value);
-        ensureBindingDir(this.vfs, this.dir);
-        this.vfs.writeFile(this.dir + '/' + enc, bodyBlob);
-        // Build sidecar
+        const name = String(key);
+        validateKeyName('PUT', name);
+        const expiration = int32(options?.expiration);
+        const expirationTtl = int32(options?.expirationTtl);
+        const metadata = options?.metadata ?? undefined;
+        // A string, or the three kinds of object it takes; any other value is its string.
+        const isObject = value !== null && (typeof value === 'object' || typeof value === 'function');
+        const supported = value instanceof ArrayBuffer || ArrayBuffer.isView(value) || value instanceof ReadableStream;
+        if (isObject && !supported) {
+            throw new TypeError('KV put() accepts only strings, ArrayBuffers, ArrayBufferViews, and ReadableStreams as values.');
+        }
+        const now = _kvNow();
         const meta = { v: 1 };
-        if (options?.expiration != null)
-            meta.exp = options.expiration;
-        else if (options?.expirationTtl != null)
-            meta.exp = _kvNow() + options.expirationTtl;
-        if (options?.metadata !== undefined)
-            meta.meta = options.metadata;
-        const metaPath = this.dir + '/' + enc + '.meta';
-        if (meta.exp != null || meta.meta !== undefined) {
-            this.vfs.writeFile(metaPath, JSON.stringify(meta));
-            this.metaCache.set(enc, meta);
+        if (expirationTtl !== undefined) {
+            if (expirationTtl <= 0)
+                throw failed('PUT', 400, `Invalid expiration_ttl of ${expirationTtl}. Please specify integer greater than 0.`);
+            if (expirationTtl < MIN_EXPIRATION_TTL)
+                throw failed('PUT', 400, `Invalid expiration_ttl of ${expirationTtl}. Expiration TTL must be at least ${MIN_EXPIRATION_TTL}.`);
+            meta.exp = now + expirationTtl;
         }
-        else {
-            // Overwrite-without-metadata clears the sidecar (per probe contract:
-            // 'overwrite WITHOUT metadata clears metadata').
-            try {
-                if (this.vfs.exists(metaPath))
-                    this.vfs.unlink(metaPath);
+        else if (expiration !== undefined) {
+            if (expiration <= now) {
+                throw failed('PUT', 400, `Invalid expiration of ${expiration}. Please specify integer greater than the current number of seconds since the UNIX epoch.`);
             }
-            catch { }
-            this.metaCache.delete(enc);
+            if (expiration < now + MIN_EXPIRATION_TTL) {
+                throw failed('PUT', 400, `Invalid expiration of ${expiration}. Expiration times must be at least ${MIN_EXPIRATION_TTL} seconds in the future.`);
+            }
+            meta.exp = expiration;
         }
+        if (metadata !== undefined) {
+            const bytes = utf8Bytes(JSON.stringify(metadata));
+            if (bytes > MAX_METADATA_BYTES)
+                throw failed('PUT', 413, `Metadata length of ${bytes} exceeds limit of ${MAX_METADATA_BYTES}.`);
+            meta.meta = metadata;
+        }
+        const body = await coerceBindingBody(isObject ? value : String(value));
+        if (body.byteLength > MAX_VALUE_BYTES)
+            throw failed('PUT', 413, `Value length of ${body.byteLength} exceeds limit of ${MAX_VALUE_BYTES}.`);
+        const enc = objectFileName(name);
+        ensureBindingDir(this.vfs, this.dir);
+        this.vfs.writeFile(this.dir + '/' + enc, body);
+        // A put replaces the entry whole: an expiry or metadata it does not give is gone.
+        const metaPath = this.dir + '/' + enc + '.meta';
+        if (meta.exp !== undefined || meta.meta !== undefined)
+            this.vfs.writeFile(metaPath, JSON.stringify(meta));
+        else if (this.vfs.exists(metaPath))
+            this.vfs.unlink(metaPath);
     }
     async delete(key) {
-        this.#lazyDelete(objectFileName(key));
+        const name = String(key);
+        validateKeyName('DELETE', name);
+        removeObjectFiles(this.vfs, this.dir, objectFileName(name));
     }
     async list(options) {
-        const entries = [];
-        for (const { key, fileName } of listObjectFiles(this.vfs, this.dir, options?.prefix || '')) {
+        const limit = int32(options?.limit) ?? MAX_LIST_KEYS;
+        // The store refuses these as the GET it is.
+        if (limit < 1)
+            throw failed('GET', 400, `Invalid key_count_limit of ${limit}. Please specify an integer greater than 0.`);
+        if (limit > MAX_LIST_KEYS)
+            throw failed('GET', 400, `Invalid key_count_limit of ${limit}. Please specify an integer less than ${MAX_LIST_KEYS}.`);
+        const prefix = options?.prefix == null ? '' : String(options.prefix);
+        const prefixBytes = utf8Bytes(prefix);
+        if (prefixBytes > MAX_KEY_BYTES)
+            throw failed('GET', 414, `UTF-8 encoded length of ${prefixBytes} exceeds key length limit of ${MAX_KEY_BYTES}.`);
+        const after = options?.cursor == null ? undefined : cursorKey(String(options.cursor));
+        const now = _kvNow();
+        const keys = [];
+        for (const { key, fileName } of listObjectFiles(this.vfs, this.dir, prefix)) {
+            if (after !== undefined && utf8Order(key, after) <= 0)
+                continue;
             const meta = this.#readMeta(fileName);
-            // Skip expired
-            if (meta?.exp != null && meta.exp <= _kvNow()) {
-                this.#lazyDelete(fileName);
+            if (meta?.exp !== undefined && meta.exp <= now) {
+                removeObjectFiles(this.vfs, this.dir, fileName);
                 continue;
             }
-            const out = { name: key };
-            if (meta?.exp != null)
-                out.expiration = meta.exp;
+            const entry = { name: key };
+            if (meta?.exp !== undefined)
+                entry.expiration = meta.exp;
             if (meta?.meta !== undefined)
-                out.metadata = meta.meta;
-            entries.push(out);
+                entry.metadata = meta.meta;
+            keys.push(entry);
+            if (keys.length > limit)
+                break;
         }
-        const { page, next } = cursorPage(entries, options?.cursor, options?.limit ?? 1000);
-        const out = {
-            keys: page,
-            list_complete: next === undefined,
-            cacheStatus: null,
-        };
-        if (next !== undefined)
-            out.cursor = next;
-        return out;
+        if (keys.length <= limit)
+            return { keys, list_complete: true, cacheStatus: null };
+        keys.length = limit;
+        return { keys, list_complete: false, cursor: cursorAfter(keys[limit - 1].name), cacheStatus: null };
     }
     // ── internals ─────────────────────────────────────────────────────────
-    #project(body, type) {
-        const t = type || 'text';
-        if (t === 'text')
-            return new TextDecoder().decode(body);
-        if (t === 'json') {
-            const txt = new TextDecoder().decode(body);
-            return JSON.parse(txt);
+    /** One key's value by its type, its metadata, and the cache status the store gives (none). */
+    async #getOne(name, options) {
+        validateKeyName('GET', name);
+        const { type, cacheTtl } = getOptions(options);
+        checkCacheTtl('GET', cacheTtl);
+        const entry = this.#read(objectFileName(name));
+        if (entry === null)
+            return { value: null, metadata: null, cacheStatus: null };
+        const metadata = entry.meta?.meta ?? null;
+        switch (type ?? 'text') {
+            case 'text': return { value: new TextDecoder().decode(entry.body), metadata, cacheStatus: null };
+            case 'json': return { value: JSON.parse(new TextDecoder().decode(entry.body)), metadata, cacheStatus: null };
+            case 'arrayBuffer': return { value: entry.body.slice().buffer, metadata, cacheStatus: null };
+            case 'stream': return { value: bodyStream(entry.body), metadata, cacheStatus: null };
+            default: throw new TypeError('Unknown response type. Possible types are "text", "arrayBuffer", "json", and "stream".');
         }
-        if (t === 'arrayBuffer') {
-            // Return a fresh ArrayBuffer (not a view into a shared buffer).
-            const ab = new ArrayBuffer(body.byteLength);
-            new Uint8Array(ab).set(body);
-            return ab;
-        }
-        if (t === 'stream')
-            return bodyStream(body);
-        return new TextDecoder().decode(body);
     }
-    async #readResolved(key) {
-        const enc = objectFileName(key);
-        const path = this.dir + '/' + enc;
+    /** Many keys' values (text or JSON), as the store's bulk get answers them. */
+    async #getBulk(names, options, withMetadata) {
+        const { type, cacheTtl } = getOptions(options);
+        if (type && type !== 'text' && type !== 'json')
+            throw failed('GET_BULK', 400, `"${type}" is not a valid type. Use "json" or "text"`);
+        if (names.length > MAX_BULK_KEYS)
+            throw failed('GET_BULK', 400, `You can request a maximum of ${MAX_BULK_KEYS} keys`);
+        if (names.length < 1)
+            throw failed('GET_BULK', 400, 'You must request a minimum of 1 key');
+        const answers = {};
+        let total = 0;
+        for (const raw of names) {
+            const name = String(raw);
+            if (name === '')
+                throw failed('GET_BULK', 400, 'Key names must not be empty');
+            if (name === '.' || name === '..')
+                throw failed('GET_BULK', 400, `Illegal key name "${name}". Please use a different name.`);
+            const bytes = utf8Bytes(name);
+            if (bytes > MAX_KEY_BYTES)
+                throw failed('GET_BULK', 414, `UTF-8 encoded length of ${bytes} exceeds key length limit of ${MAX_KEY_BYTES}.`);
+            checkCacheTtl('GET_BULK', cacheTtl);
+            const entry = this.#read(objectFileName(name));
+            if (entry === null) {
+                answers[name] = null;
+                continue;
+            }
+            const text = new TextDecoder().decode(entry.body);
+            total += text.length;
+            let value = text;
+            if (type === 'json') {
+                try {
+                    value = JSON.parse(text);
+                }
+                catch {
+                    throw failed('GET_BULK', 400, `At least one of the requested keys corresponds to a non-${type} value`);
+                }
+            }
+            answers[name] = withMetadata ? { value, metadata: entry.meta?.meta ?? null } : value;
+        }
+        if (total > MAX_VALUE_BYTES)
+            throw failed('GET_BULK', 413, `Total size of request exceeds the limit of ${MAX_VALUE_BYTES / 1024 / 1024}MB`);
+        return new Map(Object.keys(answers).filter((name) => !isArrayIndex(name)).map((name) => [name, answers[name]]));
+    }
+    /** A key's body and sidecar, or null when it is absent or expired (an expired one is removed). */
+    #read(fileName) {
+        const path = this.dir + '/' + fileName;
         if (!this.vfs.exists(path))
             return null;
-        const meta = this.#readMeta(enc);
-        if (meta?.exp != null && meta.exp <= _kvNow()) {
-            this.#lazyDelete(enc);
+        const meta = this.#readMeta(fileName);
+        if (meta?.exp !== undefined && meta.exp <= _kvNow()) {
+            removeObjectFiles(this.vfs, this.dir, fileName);
             return null;
         }
-        const body = this.vfs.readFile(path);
-        return { body, meta };
+        return { body: this.vfs.readFile(path), meta };
     }
-    #readMeta(encName) {
-        if (this.metaCache.has(encName))
-            return this.metaCache.get(encName);
-        const mp = this.dir + '/' + encName + '.meta';
-        if (!this.vfs.exists(mp))
+    #readMeta(fileName) {
+        const path = this.dir + '/' + fileName + '.meta';
+        if (!this.vfs.exists(path))
             return null;
         try {
-            const raw = this.vfs.readFileString(mp);
-            const m = JSON.parse(raw);
-            this.metaCache.set(encName, m);
-            return m;
+            return KvMetaSchema.parse(JSON.parse(this.vfs.readFileString(path)));
         }
-        catch (e) {
-            // Torn meta — treat as absent
-            return null;
+        catch {
+            return null; // a torn sidecar reads as none
         }
     }
-    #lazyDelete(encName) {
-        removeObjectFiles(this.vfs, this.dir, encName);
-        this.metaCache.delete(encName);
+}
+/** One call of the KV API (fabric bindings.ts NimbusKVNamespace), served by `kv`. */
+export function serveKvCall(kv, call) {
+    switch (call.method) {
+        case 'get': return kv.get(call.key, call.options);
+        case 'getWithMetadata': return kv.getWithMetadata(call.key, call.options);
+        case 'put': return kv.put(call.key, call.value, call.options);
+        case 'delete': return kv.delete(call.key);
+        case 'list': return kv.list(call.options);
     }
 }
