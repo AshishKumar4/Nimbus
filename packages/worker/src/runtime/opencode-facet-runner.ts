@@ -944,8 +944,9 @@ ${OPENTUI_RESIZE_BRIDGE_SRC}
 async function __drainPendingIO(maxPasses = 12) {
   for (let __pass = 0; __pass < maxPasses; __pass++) {
     await new Promise((r) => setTimeout(r, 0));
-    // Both ledgers self-prune settled entries, so a snapshot holds only what is
-    // still outstanding; await it and loop until both drain (or the pass cap).
+    // Both ledgers shed settled entries and are empty once nothing is
+    // outstanding: await what they hold and loop until both drain (or the
+    // pass cap).
     const __live = [...__pendingWrites];
     if (__pendingIO.length === 0 && __live.length === 0) break;
     await Promise.allSettled([...__pendingIO, ...__live]);
