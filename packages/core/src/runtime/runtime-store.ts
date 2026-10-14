@@ -13,6 +13,7 @@
  */
 
 import type { CredentialedVfs as EngineVfs } from '../vfs/sqlite-vfs.js';
+import type { Awaitable } from './os-contracts.js';
 import type { RuntimeManifest } from './runtime-manifest.js';
 
 /** Where installed runtimes live: `<store>/<name>/<version>`. */
@@ -61,7 +62,11 @@ function treeDirectories(root: string, manifest: RuntimeManifest): string[] {
  * that is there is root's own (rootsOwn): a tree whose files nobody else
  * could have put there, or can change. One that is missing is no file's.
  */
-export async function runtimeTreeOwn(fs: Pick<RuntimeStoreFs, 'stat'>, root: string, manifest: RuntimeManifest): Promise<boolean> {
+export async function runtimeTreeOwn(
+  fs: { stat(path: string, options?: { follow?: boolean }): Awaitable<{ type: string; uid?: number; mode?: number } | null> },
+  root: string,
+  manifest: RuntimeManifest,
+): Promise<boolean> {
   for (const dir of treeDirectories(root, manifest)) {
     const entry = await fs.stat(dir, { follow: false });
     if (entry !== null && !rootsOwn(entry)) return false;
