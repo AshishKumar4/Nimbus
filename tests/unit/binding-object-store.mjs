@@ -5,8 +5,9 @@
 // cursor naming the last key listed. Driven through each emulator's API
 // over an in-memory filesystem: keys that need encoding round-trip, a
 // listing pages in key order to its end, a delete leaves no file behind, KV
-// expiry hides a key, R2 groups keys by a delimiter, and no key or binding
-// name reaches outside its binding's directory (`..` included).
+// expiry hides a key, R2 groups keys by a delimiter, an empty body streams,
+// and no key or binding name reaches outside its binding's directory (`..`
+// included).
 
 import assert from 'node:assert/strict';
 import { KvEmulator, _setKvNow } from '../../packages/worker/src/bindings/kv.ts';
@@ -80,6 +81,8 @@ const KEYS = ['a/b c', 'a/b%d', 'b#1', 'a/ü'];
   assert.equal(await kv.get('ttl'), null, 'an expired key reads as absent');
   assert.ok(!(await kv.list()).keys.some((k) => k.name === 'ttl'), 'an expired key is not listed');
   _setKvNow(() => Math.floor(Date.now() / 1000));
+  await kv.put('empty', '');
+  assert.equal(await new Response(await kv.get('empty', { type: 'stream' })).text(), '', 'an empty value streams as no bytes');
   assert.ok([...vfs.files.keys()].every((p) => p.startsWith('home/user/app/.nimbus/kv/CACHE/')),
     'every file is under the project root\'s .nimbus/kv/<binding>/');
 }
@@ -111,6 +114,11 @@ const KEYS = ['a/b c', 'a/b%d', 'b#1', 'a/ü'];
   assert.deepEqual((await r2.list({})).objects.map((o) => o.key), ['a/b%d', 'a/ü', 'b#1']);
   assert.ok([...vfs.files.keys()].every((p) => p.startsWith('home/user/app/.nimbus/r2/BUCKET/')));
   assert.equal(vfs.files.size, 6, 'a delete removes the body and its sidecar');
+
+  // An empty body streams as no bytes (a byte stream refuses an empty chunk).
+  await r2.put('empty', null, {});
+  assert.equal(await new Response((await r2.get('empty', {})).body).text(), '');
+  await r2.delete('empty');
 
   // `.` and `..` are keys like any other, in the binding's own directory.
   await r2.put('..', 'dots', {});

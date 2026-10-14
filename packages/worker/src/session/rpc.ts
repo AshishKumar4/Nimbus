@@ -383,6 +383,12 @@ type StorageHost = Pick<NimbusSession, 'sqliteFs' | 'ensureSqliteFs'>;
 const StorageTargetSchema = z.object({ root: z.string(), store: z.string().min(1) });
 type StorageTarget = z.infer<typeof StorageTargetSchema>;
 
+/** A Worker's D1 queries, as D1's binding contract carries them: a blob is its bytes. */
+const D1QueriesSchema = z.array(z.object({
+  sql: z.string(),
+  params: z.array(z.union([z.string(), z.number(), z.null(), z.array(z.number())])).optional(),
+}));
+
 /** A project's KV or R2 files, as the binding's credential (the process that started the server). */
 function storeFs(self: StorageHost, cred: VfsCred | undefined, op: string): CredentialedVfs {
   self.ensureSqliteFs();
@@ -408,7 +414,7 @@ export async function _rpcR2Call(self: StorageHost, target: StorageTarget, call:
  */
 export async function _rpcD1Query(self: { readonly ctx: DurableObjectState }, target: StorageTarget, queries: D1QuerySql[]): Promise<D1QueryResponse> {
   const { root, store } = StorageTargetSchema.parse(target);
-  return await d1Database(self.ctx, root, store).query(queries);
+  return await d1Database(self.ctx, root, store).query(D1QueriesSchema.parse(queries));
 }
 
 export async function _rpcWriteFile(self: RpcHost, path: string, content: string | Uint8Array, pid?: number, cred?: VfsCred): Promise<number> {

@@ -32,12 +32,12 @@ export async function coerceBindingBody(value: BindingBody): Promise<Uint8Array>
   return new TextEncoder().encode(String(value));
 }
 
-/** A stored body as a byte stream of one chunk. */
+/** A stored body as a byte stream of one chunk, or of none when it is empty (a byte stream refuses an empty chunk). */
 export function bodyStream(body: Uint8Array): ReadableStream<Uint8Array> {
   return new ReadableStream({
     type: 'bytes',
     start(controller) {
-      controller.enqueue(body);
+      if (body.byteLength > 0) controller.enqueue(body);
       controller.close();
     },
   });
