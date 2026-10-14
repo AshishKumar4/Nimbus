@@ -387,6 +387,15 @@ export function heapTables(): HeapTables {
     return out;
   };
   const copy = (cell: HeapChunk): ChunkRow => ({ txt: cell.txt ?? null, bin: cell.bin ? cell.bin.slice() : null });
+  // Bytes given to the table are its own from then on, as SQLite's are once
+  // inserted: nothing that gives them changes them after (the shims' cells
+  // are copies of what a program wrote, never changed within their length;
+  // a fill's are the session's answer). A view into a larger buffer is
+  // copied, so the table holds no more memory than it counts.
+  const owned = (bin: unknown): Uint8Array => {
+    const bytes = residentBytes(bin);
+    return bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength ? bytes : bytes.slice();
+  };
   const dropChunks = (path: string): void => {
     const parts = chunks.get(path);
     if (!parts) return;
@@ -481,15 +490,15 @@ export function heapTables(): HeapTables {
       return [...parts.keys()].sort((a, b) => a - b).map((part) => copy(parts.get(part)!));
     },
     chunkAddText(path, part, txt) { addChunk(path, Number(part), { txt: String(txt), bin: null }, false); },
-    chunkAddBin(path, part, bin) { addChunk(path, Number(part), { txt: null, bin: residentBytes(bin).slice() }, false); },
-    chunkSetBin(path, part, bin) { addChunk(path, Number(part), { txt: null, bin: residentBytes(bin).slice() }, true); },
+    chunkAddBin(path, part, bin) { addChunk(path, Number(part), { txt: null, bin: owned(bin) }, false); },
+    chunkSetBin(path, part, bin) { addChunk(path, Number(part), { txt: null, bin: owned(bin) }, true); },
     chunkCopy(to, from) {
       const parts = chunks.get(from);
       if (!parts) return;
       // One statement in SQLite: a conflicting part fails the whole copy, and nothing lands.
       const held = chunks.get(to);
       if (held) for (const part of parts.keys()) if (held.has(part)) throw new Error('UNIQUE constraint failed: chunk.path, chunk.part');
-      for (const [part, cell] of [...parts]) addChunk(to, part, { txt: cell.txt, bin: cell.bin ? cell.bin.slice() : null }, false);
+      for (const [part, cell] of [...parts]) addChunk(to, part, { txt: cell.txt, bin: cell.bin }, false);
     },
     chunkDelete(path) { dropChunks(path); },
     dropOwn() {
