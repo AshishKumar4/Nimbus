@@ -498,6 +498,10 @@ var __nimbusProcessFsModule = (() => {
           target: boundedString(value.target, "symlink target", MAX_PATH_BYTES),
           ...value.ino === void 0 ? {} : { ino: inodeNumber(value.ino, "symlink ino") }
         };
+      case "copyFile":
+        if (keys !== "call,from,path")
+          break;
+        return { call: "copyFile", path: path(value.path, "copyFile path"), from: path(value.from, "copyFile from") };
       case "ftruncate":
         if (keys.replace(",description", "").replace(",ino", "") !== "call,path,size")
           break;
@@ -1316,7 +1320,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
   function pathsOf(op) {
     switch (op.type) {
       case "call":
-        return [op.call.path];
+        return op.call.call === "copyFile" ? [op.call.path, op.call.from] : [op.call.path];
       case "rename":
         return [op.from, op.to];
       case "truncate":
@@ -1604,7 +1608,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
           settled(entry);
           let answered2 = {};
           const op = ops[index];
-          const path = op.type === "call" && ("data" in op.call || op.call.call === "open") ? op.call.path : null;
+          const path = op.type === "call" && ("data" in op.call || op.call.call === "open" || op.call.call === "copyFile") ? op.call.path : null;
           const published = answer.receipts[receipt];
           if (path !== null && published?.path === path) {
             receipt++;

@@ -228,6 +228,7 @@ const nodeErrorMessages: Record<string, readonly [Message, ...ErrorClass[]]> = {
       + 'Please open an issue with this stack trace at https://github.com/nodejs/node/issues\n';
     return message === undefined ? suffix : `${message}\n${suffix}`;
   }, Error],
+  ERR_INCOMPATIBLE_OPTION_PAIR: ['Option "%s" cannot be used in combination with option "%s"', TypeError],
   ERR_INVALID_IP_ADDRESS: ['Invalid IP address: %s', TypeError],
   ERR_INVALID_ARG_TYPE: [invalidArgTypeMessage, TypeError],
   ERR_DNS_SET_SERVERS_FAILED: [(error: string, servers: readonly string[]) => `c-ares failed to set servers: "${error}" [${inspectValue(servers, {})}]`, Error],
@@ -274,6 +275,20 @@ const nodeErrorMessages: Record<string, readonly [Message, ...ErrorClass[]]> = {
   ERR_WORKER_UNSUPPORTED_OPERATION: ['%s is not supported in workers', TypeError],
 };
 
+/** lib/internal/errors.js's SystemError codes, by the prefix each message starts with. */
+const nodeSystemErrorPrefixes: Record<string, string> = {
+  ERR_FS_CP_DIR_TO_NON_DIR: 'Cannot overwrite non-directory with directory',
+  ERR_FS_CP_EEXIST: 'Target already exists',
+  ERR_FS_CP_EINVAL: 'Invalid src or dest',
+  ERR_FS_CP_FIFO_PIPE: 'Cannot copy a FIFO pipe',
+  ERR_FS_CP_NON_DIR_TO_DIR: 'Cannot overwrite directory with non-directory',
+  ERR_FS_CP_SOCKET: 'Cannot copy a socket file',
+  ERR_FS_CP_SYMLINK_TO_SUBDIRECTORY: 'Cannot overwrite symlink in subdirectory of self',
+  ERR_FS_CP_UNKNOWN: 'Cannot copy an unknown file type',
+  ERR_FS_EISDIR: 'Path is a directory',
+  ERR_SYSTEM_ERROR: 'A system error occurred',
+};
+
 /** `new codes.ERR_X(...args)`: Node's error for the code, its stack from where it was made. */
 export type NodeErrorConstructor = ((...args: never[]) => Error) & { [base: string]: NodeErrorConstructor };
 
@@ -295,16 +310,24 @@ function nodeErrorCodeConstructor(code: string, message: Message, Base: ErrorCla
  * HideStackFramesError Node's validators construct (the same error here;
  * hideStackFrames moves its stack).
  */
-export const nodeErrorCodes: Readonly<Record<string, NodeErrorConstructor>> = Object.fromEntries(Object.entries(nodeErrorMessages).map(([code, [message, Base, ...others]]) => {
-  const constructor = nodeErrorCodeConstructor(code, message, Base);
-  constructor.HideStackFramesError = constructor;
-  for (const Other of others) {
-    const other = nodeErrorCodeConstructor(code, message, Other);
-    other.HideStackFramesError = other;
-    constructor[Other.name] = other;
-  }
-  return [code, constructor];
-}));
+export const nodeErrorCodes: Readonly<Record<string, NodeErrorConstructor>> = Object.fromEntries([
+  ...Object.entries(nodeErrorMessages).map(([code, [message, Base, ...others]]) => {
+    const constructor = nodeErrorCodeConstructor(code, message, Base);
+    constructor.HideStackFramesError = constructor;
+    for (const Other of others) {
+      const other = nodeErrorCodeConstructor(code, message, Other);
+      other.HideStackFramesError = other;
+      constructor[Other.name] = other;
+    }
+    return [code, constructor];
+  }),
+  // Node's SystemError codes: `new codes.ERR_X(context)`, as lib/internal/errors.js E(code, prefix, SystemError).
+  ...Object.entries(nodeSystemErrorPrefixes).map(([code, prefix]) => {
+    const constructor = function (context: SystemErrorContext): Error { return nodeSystemError(code, prefix, context); } as unknown as NodeErrorConstructor;
+    constructor.HideStackFramesError = constructor;
+    return [code, constructor];
+  }),
+]);
 
 /**
  * lib/internal/errors.js hideStackFrames: `fn`, whose error's stack starts

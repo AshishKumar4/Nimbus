@@ -207,6 +207,24 @@ await check('a process\'s tree copy follows a source link when asked to', async 
   box.destroy();
 });
 
+// A process's tree copy beneath a root (a WASI preopen) on a mount that only
+// awaits: a link named as the source is copied as a link unless the copy
+// follows, as on every other route.
+await check('beneath a root on an awaiting mount, a tree copy follows a source link only when asked to', async () => {
+  const m = new MemoryVFS({ uid: 1000, gid: 1000 });
+  m.mkdir('/d');
+  m.mkdir('/d/tree');
+  m.writeFile('/d/tree/f', enc.encode('f'));
+  m.symlink('tree', '/d/link');
+  const box = await testBox({ mounts: { '/aw': asyncOnly(m, { deep: true }) } });
+  const fs = box.workspace.filesystem.bind({ pid: 92, cred: USER });
+  const beneath = (path) => ({ root: '/aw/d', path, beneath: true });
+  await fs.copyTree(beneath('link'), beneath('as-link'));
+  await fs.copyTree(beneath('link'), beneath('followed'), { follow: true });
+  assert.deepEqual([m.stat('/d/as-link', { follow: false })?.type, m.stat('/d/followed', { follow: false })?.type], ['symlink', 'directory']);
+  box.destroy();
+});
+
 // A tree of every mode, files and directories: the copy's SQL stays within the
 // platform's statement size (workerd refuses a longer one).
 await check('a tree holding every mode is copied within the statement size', async () => {
