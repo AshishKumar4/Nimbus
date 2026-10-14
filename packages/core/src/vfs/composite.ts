@@ -3120,7 +3120,7 @@ export class CompositeVFS implements VFS {
           // Each entry the copy makes is told as it lands, the ones before a failure too.
           return this.reportWrite({ path: at, route, ops: targetOps, follow, kind: 'write', told: null }, () => {
             this.guardMutation([toInput]);
-            return this.copyBytes(sourceOps, source.rel, stat, targetOps as SyncVFS, route.rel, at, { ops: targetOps as SyncVFS, rel: route.rel, mount: route.mount, told, preserve: options?.preserve === true });
+            return this.copyBytes(sourceOps, source.rel, stat, targetOps as SyncVFS, route.rel, at, { ops: targetOps as SyncVFS, rel: route.rel, mount: route.mount, told, preserve: options?.preserve === true, keepMode: options?.keepMode === true, made });
           }, sync);
         };
         // The target's parent is a directory, unless its backend resolves its own paths and answers for it (it may make it).
@@ -3164,10 +3164,10 @@ export class CompositeVFS implements VFS {
    */
   private copyBytes(
     from: SyncVFS, fromRel: string, stat: VfsStat, to: SyncVFS, toRel: string, toAt: string,
-    made: { readonly ops: SyncVFS; readonly rel: string; readonly mount: Mount; readonly told: VfsEventType; readonly preserve: boolean },
+    made: { readonly ops: SyncVFS; readonly rel: string; readonly mount: Mount; readonly told: VfsEventType; readonly preserve: boolean; readonly keepMode: boolean; readonly made: boolean },
   ): Awaitable<number> {
     const mode = stat.mode === undefined ? undefined
-      : made.preserve ? stat.mode & 0o7777 : copiedPermissions(stat.mode, stat.type === 'directory');
+      : made.preserve || made.keepMode ? stat.mode & 0o7777 : copiedPermissions(stat.mode, stat.type === 'directory');
     const told = toRel === made.rel ? made.told : stat.type === 'directory' ? 'addDir' : 'add';
     const landed = <R>(result: Awaitable<R>): Awaitable<R> => {
       if (isPromise(result)) result.then(() => this.tellLanded(made.mount, storeBehind(this.table, to), told, [toAt]), () => {});
@@ -3186,7 +3186,9 @@ export class CompositeVFS implements VFS {
     if (stat.type === 'file') {
       return andThen(from.readFile(fromRel), (bytes) => {
         this.guardMutation([toAt]);
-        return andThen(landed(to.writeFile(toRel, bytes, mode === undefined ? undefined : { mode })), () => 1);
+        // copyfile's mode is the copy's whether it made the file or wrote one there (keepMode).
+        const there = made.keepMode && !made.made && mode !== undefined && typeof to.chmod === 'function';
+        return andThen(landed(to.writeFile(toRel, bytes, mode === undefined ? undefined : { mode })), () => (there ? andThen(to.chmod!(toRel, mode!), () => 1) : 1));
       });
     }
     this.guardMutation([toAt]);

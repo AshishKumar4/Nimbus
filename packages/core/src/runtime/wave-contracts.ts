@@ -110,6 +110,8 @@ export interface WriteStreamReceipt {
   dev: number;
   /** The session's revision once a call's file landed: what its writeFile answers. */
   revision?: number;
+  /** A copyFile's: the file it copied (its key) and that file's revision then; bytes held of it at that revision or later are the copy's. */
+  from?: { path: string; revision: number };
 }
 
 /**

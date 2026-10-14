@@ -615,10 +615,12 @@ export class WaveIngest {
         if (call.receipt && result) {
           // The revision its file was published at, as its path reports it.
           const handle: unknown = Reflect.get(result, 'handle');
+          const from: unknown = Reflect.get(result, 'from');
           progress.receipts.push({
             path: call.path, ino: result.ino, mode: result.mode, size: result.size, mtimeMs: result.mtime, ctimeMs: result.ctime,
             uid: result.uid, gid: result.gid, dev: scope.deviceId, revision: scope.pathRevision(call.path),
             ...(typeof handle === 'number' ? { handle } : {}),
+            ...(from !== undefined ? { from: from as { path: string; revision: number } } : {}),
           });
         }
         if (call.seq !== null) advanced(call.seq);
@@ -876,7 +878,7 @@ export class WaveIngest {
               const call = record.call;
               // A mkdir commits with the calls beside it; any other may change
               // where later names resolve, and commits now.
-              queueCall(call.path, record, { alone: call.call !== 'mkdir', receipt: call.call === 'open' });
+              queueCall(call.path, record, { alone: call.call !== 'mkdir', receipt: call.call === 'open' || call.call === 'copyFile' });
               break;
             }
             case 'batch-end':
