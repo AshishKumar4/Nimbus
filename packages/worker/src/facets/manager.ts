@@ -8465,9 +8465,24 @@ export class FacetManager {
     }
 
     const command = opts.command || `opencode ${opts.argv.join(' ')}`.trim();
-    const attached = mode === 'attached';
     const entry = this.processes.spawn(command, ['opencode', ...opts.argv], opts.cwd, { parentPid: opts.invokerPid });
+    // A preparation that fails ends the process it spawned: no caller holds
+    // its pid yet to end it, and it never started.
+    try {
+      return { pid: entry.pid, stageSpec: await this._stageOpencodeSpec(entry, opts, mode) };
+    } catch (error) {
+      this._end(entry.pid, { code: 1, cause: `staging \`${command}\` failed: ${errorMessage(error)}` });
+      throw error;
+    }
+  }
+
+  private async _stageOpencodeSpec(
+    entry: ProcessEntry,
+    opts: { argv: string[]; env: Record<string, string>; cwd: string; stdin?: string },
+    mode: OpencodeRunnerMode,
+  ): Promise<OpencodeStageSpec> {
     const pid = entry.pid;
+    const attached = mode === 'attached';
     // attached TUI + headless serve are resident long-running processes; only the
     // attached TUI grabs the terminal (raw-mode stdin + live geometry).
     if (mode !== 'oneshot') this.processes.setLongRunning(pid);
@@ -8510,7 +8525,7 @@ export class FacetManager {
       return { vfsState: gathered, vfsBundle: serialized };
     }, () => this._launchEnds(entry.pid));
 
-    const stageSpec: OpencodeStageSpec = {
+    return {
       mode,
       argv: opts.argv,
       env: runnerEnv,
@@ -8520,8 +8535,6 @@ export class FacetManager {
       vfsBundle,
       vfsCursor: serializeFacetVfsCursor(vfsState.cursor),
     };
-
-    return { pid, stageSpec };
   }
 
   /**

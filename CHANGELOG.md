@@ -5,6 +5,10 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: an `opencode` launch that fails while it is prepared (a working
+  tree whose snapshot serializes past the RPC payload ceiling, say) ends
+  the process it started, exit 1, with the reason in its exit. It was left
+  running in the process table, for a program that never started.
 - Fixed: two sessions served by one isolate decode their background
   processes' terminal output each on its own. Their processes are numbered
   alike, and one isolate-wide decoder per process number let a character
