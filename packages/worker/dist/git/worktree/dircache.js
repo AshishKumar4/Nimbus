@@ -14,7 +14,7 @@ import { createHash } from 'node:crypto';
 import { oidFromHex, oidToHex } from '../pack/format.js';
 import { CacheTree } from './cachetree.js';
 import { UnsupportedGitOperation } from '../routing.js';
-import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
+import { errnoCodeOf, isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 export const S_IFMT = 0o170000;
 export const S_IFREG = 0o100000;
 export const S_IFLNK = 0o120000;
@@ -95,17 +95,31 @@ export function objectId(type, data) {
     return oidToHex(createHash('sha1').update(encoder.encode(`${type} ${data.length}\0`)).update(data).digest());
 }
 export class IndexFormatError extends Error {
+    detail;
+    /** What verify_hdr found (read-cache.c), which git reports as an error before it dies. */
+    constructor(message, detail) {
+        super(message);
+        this.detail = detail;
+    }
 }
 /**
- * An index file there that cannot be opened or stat'ed (EACCES, EIO): git's
- * do_read_index dies of it, "<file>: index file open failed: <strerror>",
- * rather than reading it as empty (only ENOENT is no index).
+ * The step of git's do_read_index (read-cache.c) an index file there failed
+ * at: its open ("index file open failed", with the errno), the size its
+ * fstat gives ("index file smaller than expected"), or the mapping of its
+ * contents ("unable to map index file", with the errno). Only ENOENT is no
+ * index; anything else stops the command.
  */
 export class IndexReadError extends Error {
     file;
-    constructor(file, cause) {
-        super(`${file}: index file open failed`, { cause });
+    step;
+    /** git's words for the step. */
+    words;
+    constructor(file, step, cause) {
+        const words = step === 'open' ? 'index file open failed' : step === 'size' ? 'index file smaller than expected' : 'unable to map index file';
+        super(`${file}: ${words}`, { cause });
         this.file = file;
+        this.step = step;
+        this.words = words;
     }
 }
 /** What NewEntries allocates at a time; an entry larger than this gets a chunk of its own. */
@@ -286,35 +300,63 @@ export class DirCache {
     static empty() {
         return new DirCache(new Uint8Array(0), new Uint32Array(0), 2, 0, [], null);
     }
-    /** The index at `file`, empty when there is none. */
+    /**
+     * The index at `file`, empty when there is none: git's do_read_index. Its
+     * stat stands for the open and the fstat of what was opened: it fails where
+     * the open would, with the open's errno.
+     */
     static async read(fs, file) {
-        let bytes;
-        let mtime;
+        let stat;
         try {
-            mtime = (await fs.lstat(file)).mtime;
+            stat = await fs.stat(file);
+        }
+        catch (error) {
+            if (isVfsError(error, 'ENOENT') || isVfsError(error, 'ENOTDIR'))
+                return DirCache.empty();
+            throw new IndexReadError(file, 'open', error);
+        }
+        // A directory opens (O_RDONLY) and stats: the size it reports is checked, then it cannot be mapped (mmap(2): ENODEV).
+        if (stat.type === 'directory') {
+            if (stat.size < HEADER_BYTES + OID_BYTES)
+                throw new IndexReadError(file, 'size');
+            throw new IndexReadError(file, 'map', Object.assign(new Error('No such device'), { code: 'ENODEV' }));
+        }
+        let bytes;
+        try {
             bytes = await fs.readFileUncached(file);
         }
         catch (error) {
             if (isVfsError(error, 'ENOENT') || isVfsError(error, 'ENOTDIR'))
                 return DirCache.empty();
-            throw new IndexReadError(file, error);
+            // Refused as an open is (no read permission, a link loop); anything else fails reading what was opened.
+            const code = errnoCodeOf(error);
+            throw new IndexReadError(file, code === 'EACCES' || code === 'EPERM' || code === 'ELOOP' ? 'open' : 'map', error);
         }
-        return DirCache.parse(bytes, Math.floor(mtime / 1000));
+        if (bytes.length < HEADER_BYTES + OID_BYTES)
+            throw new IndexReadError(file, 'size');
+        return DirCache.parse(bytes, Math.floor(stat.mtime / 1000));
     }
     /** read_index_from on bytes already read. */
     static parse(bytes, timestamp) {
-        if (bytes.length < HEADER_BYTES + OID_BYTES || decodePath(bytes.subarray(0, 4)) !== 'DIRC') {
+        if (bytes.length < HEADER_BYTES + OID_BYTES)
             throw new IndexFormatError('index file corrupt');
-        }
+        // verify_hdr: its signature (printed as the bytes read on a little-endian host), its version, and its
+        // checksum, which a null trailer (index.skipHash) leaves unchecked.
         const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-        const version = view.getUint32(4);
+        if (decodePath(bytes.subarray(0, 4)) !== 'DIRC') {
+            throw new IndexFormatError('index file corrupt', `bad signature 0x${view.getUint32(0, true).toString(16).padStart(8, '0')}`);
+        }
+        const version = view.getInt32(4);
         if (version < 2 || version > 4)
-            throw new IndexFormatError(`bad index version ${version}`);
+            throw new IndexFormatError('index file corrupt', `bad index version ${version}`);
         const count = view.getUint32(8);
         const end = bytes.length - OID_BYTES;
-        const digest = createHash('sha1').update(bytes.subarray(0, end)).digest();
-        if (compareBytes(new Uint8Array(digest.buffer, digest.byteOffset, OID_BYTES), bytes.subarray(end)) !== 0) {
-            throw new IndexFormatError('index file corrupt: bad signature');
+        const trailer = bytes.subarray(end);
+        if (trailer.some((byte) => byte !== 0)) {
+            const digest = createHash('sha1').update(bytes.subarray(0, end)).digest();
+            if (compareBytes(new Uint8Array(digest.buffer, digest.byteOffset, OID_BYTES), trailer) !== 0) {
+                throw new IndexFormatError('index file corrupt', 'bad index file sha1 signature');
+            }
         }
         let at = HEADER_BYTES;
         let entries = bytes;

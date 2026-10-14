@@ -32,7 +32,7 @@ import { DEFAULT_CONTEXT, DEFAULT_RENAME_SCORE, absentSpec, binaryPath, bytesFro
 import { CheckoutRefused, UnmergedIndex, switchTrees } from './worktree/checkout.js';
 import { parseSparseCheckoutArgs, sparseCheckout } from './sparse-checkout.js';
 import { invalidPathError, verifyPath } from './worktree/verify-path.js';
-import { DirCache, IndexReadError, NewEntries, comparePaths } from './worktree/dircache.js';
+import { DirCache, IndexFormatError, IndexReadError, NewEntries, comparePaths } from './worktree/dircache.js';
 import { isValidRefName } from './worktree/refname.js';
 import { PairList } from './worktree/pairs.js';
 import { WorktreeRepo } from './worktree/repo.js';
@@ -4349,9 +4349,14 @@ realGit) {
             await ctx.stderr.write(`fatal: unable to access '${fromTop(e.configFile)}': ${strerror(e.cause)}\n`);
             return 128;
         }
-        // The index: git's do_read_index.
+        // The index: git's do_read_index, its words for the step that failed (with the errno, but for its size).
         if (e instanceof IndexReadError) {
-            await ctx.stderr.write(`fatal: ${fromTop(e.file)}: index file open failed: ${strerror(e.cause)}\n`);
+            await ctx.stderr.write(`fatal: ${fromTop(e.file)}: ${e.words}${e.step === 'size' ? '' : `: ${strerror(e.cause)}`}\n`);
+            return 128;
+        }
+        // Its header: what verify_hdr found, then git dies.
+        if (e instanceof IndexFormatError && e.detail !== undefined) {
+            await ctx.stderr.write(`error: ${e.detail}\nfatal: ${e.message}\n`);
             return 128;
         }
         // The reader went away (`git diff | head`): git dies of SIGPIPE, silently.
