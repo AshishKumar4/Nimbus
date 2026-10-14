@@ -99,7 +99,11 @@ await runScenarios(import.meta.path, {
     assert.deepEqual([fs.readFileSync(`${A}/src`, 'utf8'), fs.readFileSync(`${A}/A`, 'utf8')], ['S', 'A-orig']);
     hold = true;
     await fs.promises.copyFile(`${A}/src`, `${A}/d`);
-    assert.equal(fs.readFileSync(`${A}/A`, 'utf8'), 'A-orig', 'the old target is untouched');
+    // The peer's change recalled the process's hold, so the view may have to fetch A again (EAGAIN), but never answers the copy's bytes for it.
+    let syncA;
+    try { syncA = fs.readFileSync(`${A}/A`, 'utf8'); } catch (error) { syncA = error.code; }
+    assert.ok(syncA === 'A-orig' || syncA === 'EAGAIN', `the view never answers the copy's bytes for the old target (${syncA})`);
+    assert.equal(await fs.promises.readFile(`${A}/A`, 'utf8'), 'A-orig', 'the old target is untouched');
     assert.equal(await fs.promises.readFile(`${A}/B`, 'utf8'), 'S', 'the copy landed where the link pointed when it was made');
   },
 
