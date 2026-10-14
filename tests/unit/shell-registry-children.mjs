@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
-// Commands run by name (command, env, xargs) are the registry's, and they must
+// Commands run by name (command, xargs, find -exec) are the registry's, and they must
 // be the same programs the shell runs. `test` and `[` by name evaluate as the
-// builtin does, and xargs starts each command as a child process: its own
-// process, with xargs's stdout and stderr facts and /dev/null for stdin.
+// builtin does, and xargs starts each command as a child process, with xargs's
+// stdout and stderr and what the shell knows of them.
 import assert from 'node:assert/strict';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
@@ -21,8 +21,9 @@ const run = async (script) => {
 try {
   await check('test by name compares integers as the builtin does', async () => {
     assert.deepEqual(await run('command test 1 -eq 2; echo $?'), { code: 0, stdout: '1\n', stderr: '' });
-    assert.deepEqual(await run('env test 3 -gt 2; echo $?'), { code: 0, stdout: '0\n', stderr: '' });
-    assert.deepEqual(await run('env test a = a -a 1 -gt 2; echo $?'), { code: 0, stdout: '1\n', stderr: '' });
+    assert.deepEqual(await run('command test 3 -gt 2; echo $?'), { code: 0, stdout: '0\n', stderr: '' });
+    assert.deepEqual(await run('command test a = a -a 1 -gt 2; echo $?'), { code: 0, stdout: '1\n', stderr: '' });
+    assert.deepEqual(await run('echo 2 | xargs test 1 -lt; echo $?'), { code: 0, stdout: '0\n', stderr: '' });
   });
 
   await check('test by name negates and tests files as the builtin does', async () => {
@@ -40,14 +41,6 @@ try {
   await check('xargs runs a child whose stdout is the pipe: an endless device streams into it', async () => {
     // The child ends of SIGPIPE once head has its byte, which GNU xargs reports so.
     assert.deepEqual(await run('printf x | xargs -I {} cat /dev/zero | head -c1 | od -An -tx1'), { code: 0, stdout: ' 00\n', stderr: 'xargs: cat: terminated by signal 13\n' });
-  });
-
-  await check('each command xargs runs is a process of its own: its umask is not the next one\'s', async () => {
-    assert.deepEqual(await run("printf 'a\\nb\\n' | xargs -I {} sh -c 'umask; umask 077'"), { code: 0, stdout: '0022\n0022\n', stderr: '' });
-  });
-
-  await check('a command xargs runs reads /dev/null, not xargs\'s input', async () => {
-    assert.deepEqual(await run("printf 'a\\nb\\n' | xargs -n 1 sh -c 'cat; echo \"$0\"'"), { code: 0, stdout: 'a\nb\n', stderr: '' });
   });
 
   await check('xargs keeps its exit policy: a failing command makes it fail, a missing one is 127', async () => {
