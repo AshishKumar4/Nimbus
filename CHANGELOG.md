@@ -37,6 +37,21 @@ published independently in the `@nimbus-sh` npm scope.
   object's local storage under `wrangler dev` starts empty once, under its
   new name; so does a D1 database's, whose facet name is bounded the same
   way (a long project path named one over the limit).
+- Fixed: the agent's "Send again", after a message whose answer never came
+  back, stored the message a second time when the first had reached the
+  session. A message is now sent under an id the browser chooses (`id`, a
+  UUID, in the `POST /api/agent/messages` body), and the session takes
+  each id once: it keeps the ids of its last 512 sends, past the 80
+  messages it stores, until the conversation is cleared. Sent again, the
+  message is answered again only if it is the conversation's last and has
+  no complete answer; otherwise the reply is the conversation as it is. A
+  repeat while its answer is still being written is refused (409
+  `E_AGENT_TURN_RUNNING`), as is an id another message or an answer holds
+  (409 `E_AGENT_MESSAGE_ID_TAKEN`). A message whose text is not
+  well-formed (a lone UTF-16 surrogate) is refused (400
+  `E_AGENT_BAD_MESSAGE_TEXT`). An answer now names the message it answers
+  (`replyTo`), so with two turns answering at once, a retry or a message
+  sent again finds its own answer, and replaces only that one.
 - Fixed (security): a public application URL is forwarded only to the
   session its capability belongs to. Put under another session's id of the
   same tenant, the capability was forwarded to that session, which woke
