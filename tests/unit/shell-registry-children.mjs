@@ -49,8 +49,9 @@ try {
     assert.deepEqual(await run('echo x | xargs no-such-command; echo $?'), { code: 0, stdout: '127\n', stderr: 'xargs: no-such-command: No such file or directory\n' });
   });
 
-  await check('a file xargs may not execute is 126, a program that exits 126 is 123', async () => {
+  await check('a file or directory xargs may not execute is 126, a program that exits 126 is 123', async () => {
     assert.deepEqual(await run('touch /tmp/noexec; chmod 644 /tmp/noexec; printf "a\\nb\\n" | xargs -n1 /tmp/noexec; echo $?'), { code: 0, stdout: '126\n', stderr: 'xargs: /tmp/noexec: Permission denied\n' });
+    assert.deepEqual(await run('printf x | xargs /tmp; echo $?'), { code: 0, stdout: '126\n', stderr: 'xargs: /tmp: Permission denied\n' });
     assert.deepEqual(await run('echo x | xargs exit126; echo $?'), { code: 0, stdout: '123\n', stderr: '' });
   });
 
