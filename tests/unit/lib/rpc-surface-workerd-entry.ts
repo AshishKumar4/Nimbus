@@ -6,11 +6,15 @@
 import { DurableObject } from 'cloudflare:workers';
 import { CirrusHmrRPC } from '../../../packages/worker/src/facets/real-vite-hmr.ts';
 import { SupervisorRPC } from '../../../packages/worker/src/session/supervisor-rpc.ts';
+import { ProcessSupervisor } from '../../../packages/worker/src/session/process-supervisor.ts';
 import { HostedSession } from '../../../packages/worker/src/hosted/session.ts';
-import { NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint } from '../../../packages/fabric/src/bindings.ts';
+import { NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusAssetsRPC, NimbusDurableObjectNamespace, NimbusDOStub } from '../../../packages/fabric/src/bindings.ts';
 import { NimbusFsJournalReader } from '../../../packages/core/src/_shared/process-fs-journal-reader.ts';
 
-export { CirrusHmrRPC, SupervisorRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusFsJournalReader };
+export { CirrusHmrRPC, SupervisorRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusAssetsRPC, NimbusDurableObjectNamespace, NimbusDOStub, NimbusFsJournalReader };
+
+/** The credential a run-as process acts as. */
+export const RUN_AS = { uid: 1001, gid: 1001, groups: [1001], umask: 0o022 };
 
 /** The session, as the platform's RPC classes reach it: each envelope it is asked to dispatch is kept. */
 export class Session extends DurableObject {
@@ -18,7 +22,14 @@ export class Session extends DurableObject {
 
   async supervisorOp(envelope: { op?: string }): Promise<unknown> {
     this.envelopes.push(envelope);
+    if (envelope.op === 'readFileBytes') return new TextEncoder().encode('<h1>asset</h1>');
     return envelope.op === 'hmrNextEvent' ? [] : null;
+  }
+
+  /** A one-shot's SUPERVISOR, as its host hands it in the call that runs it (workerd-facet-host.ts). */
+  processSupervisor(): ProcessSupervisor {
+    const props = { doId: this.ctx.id.toString(), pid: 9, bindingKind: 'process', writerId: 'run-9' };
+    return new ProcessSupervisor(props as unknown as ConstructorParameters<typeof ProcessSupervisor>[0], this.env, (envelope) => this.supervisorOp(envelope));
   }
 
   async asked(): Promise<unknown[]> {
@@ -47,8 +58,12 @@ async function outcome(run: () => Promise<unknown>): Promise<Outcome> {
 async function asGuest(binding: object, method: string, args: unknown[]): Promise<Outcome & { forged?: Outcome }> {
   const called = await outcome(async () => {
     const named: unknown = Reflect.get(binding, method);
+    // A property read (`read:<name>`): what awaiting it answers, as a caller would read a field.
+    if (method.startsWith('read:')) return await Reflect.get(binding, method.slice('read:'.length));
     if (typeof named !== 'function') throw new TypeError(`the stub has no ${method}`);
-    return await Reflect.apply(named, binding, args);
+    const value: unknown = await Reflect.apply(named, binding, args);
+    // A Response is answered as its body, so a positive check sees what it served.
+    return value instanceof Response ? { status: value.status, body: await value.text() } : value;
   });
   if (!called.ok || called.value === null || typeof called.value !== 'object') return called;
   const answered = called.value;
@@ -94,6 +109,19 @@ async function held(kind: string, id: DurableObjectId, env: Env, exports: Export
       const loaded: object = await Reflect.apply(Reflect.get(loader, 'load'), loader, [GUEST_WORKER]);
       return await Reflect.apply(Reflect.get(loaded, 'getEntrypoint'), loaded, []);
     }
+    // A one-shot's SUPERVISOR, handed by its host.
+    case 'ProcessSupervisor': {
+      const session = env.NIMBUS_SESSION.get(id);
+      return await session.processSupervisor();
+    }
+    // A wrangler-dev guest's assets binding, minted for a run-as server (nimbus-wrangler.ts).
+    case 'NimbusAssetsRPC':
+      return exports.NimbusAssetsRPC({ props: { vfsRoot: 'home/run-as/site', assetsDir: 'public', doId: id.toString(), cred: RUN_AS } });
+    // A wrangler-dev guest's Durable Object namespace binding, and a stub it hands back.
+    case 'NimbusDurableObjectNamespace':
+      return exports.NimbusDurableObjectNamespace({ props: { bindingName: 'COUNTER', supervisorDoId: id.toString() } });
+    case 'NimbusDOStub':
+      return exports.NimbusDOStub({ props: { bindingName: 'COUNTER', supervisorDoId: id.toString(), id: 'room' } });
     // A hosted runtime's scoped session, held by an embedder's client.
     case 'HostedSession': {
       const session = env.NIMBUS_SESSION.get(id);
