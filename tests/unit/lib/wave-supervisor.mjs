@@ -92,6 +92,7 @@ async function replay(supervisor, stream) {
           else if (call.call === 'lutimes') noted(await supervisor.utimes(abs(call.path), call.atime, call.mtime));
           // A write description's open (a WASI process's): no test that drives this supervisor makes one.
           else if (call.call === 'open' || call.call === 'close') throw new Error(`wave-supervisor: ${call.call} calls are not modeled`);
+          else if (call.call === 'copyFile') await supervisor.fsCopyFile(abs(call.from), abs(call.path));
           else await supervisor.symlink(call.target, abs(call.path));
           break;
         }
