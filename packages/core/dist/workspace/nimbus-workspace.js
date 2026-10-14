@@ -832,22 +832,33 @@ function* baseSeed(home) {
     // to it is looked at without following it, and a link or a file on the way
     // refuses the home, so root never makes, or hands the user, a directory a
     // link the user made leads to (the runtime store, the kernel's /.nimbus,
-    // /etc).
+    // /etc). And it is handed over where no one else can redirect it: root
+    // makes the home's directories only below directories only root may
+    // change, where no name can be replaced between its mkdir and its chown;
+    // below one the user may write, the user makes the rest itself, and owns
+    // it from the start.
     const homeDir = home.replace(/^\/+/, '').replace(/\/+$/, '');
     if (homeDir !== '' && !(yield* exists('kernel', homeDir))) {
         const names = homeDir.split('/');
+        let rootsOnly = true;
         for (let i = 1; i <= names.length; i++) {
             const path = names.slice(0, i).join('/');
             const entry = yield* lstat(path);
             if (entry === null) {
-                yield { op: 'mkdir', as: 'kernel', path, mode: 0o755 };
-                if (i === names.length)
-                    yield { op: 'chown', as: 'kernel', path, uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid };
+                if (rootsOnly) {
+                    yield { op: 'mkdir', as: 'kernel', path, mode: 0o755 };
+                    if (i === names.length)
+                        yield { op: 'chown', as: 'kernel', path, uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid };
+                }
+                else {
+                    yield { op: 'mkdir', as: 'user', path, mode: 0o755 };
+                }
                 continue;
             }
             if (entry.type !== 'directory') {
                 throw new Error(`HOME ${home} passes through ${entry.type === 'symlink' ? 'a link' : `a ${entry.type}`} at /${path}: a home is made through directories only`);
             }
+            rootsOnly &&= entry.uid === 0 && (entry.mode & 0o022) === 0;
         }
     }
     // HOME=/ is root's directory, not one Nimbus populates for the user.
