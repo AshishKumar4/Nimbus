@@ -20,25 +20,26 @@ export type WorkspaceRequestResult = {
 } | {
     kind: 'timeout';
 };
-/** How a server of the port registry answered: its response once its handler ended it, or how it failed. */
-export type ServedResult = {
+/**
+ * How a server of a port registry took a request: its response, with the end
+ * still to wait for when its handler returned before ending it (the
+ * _donePromise a ServerResponse attaches while the response is open); or a
+ * refusal, when the handler threw.
+ */
+export type Served = {
     kind: 'served';
     response: VirtualResponse;
+    end: Promise<void> | null;
 } | {
     kind: 'refused';
-} | {
-    kind: 'aborted';
-} | {
-    kind: 'timeout';
 };
+/** `request` handed to `handler`, a server of a port registry, synchronously, as a server takes a request. */
+export declare function serveFromPort(handler: VirtualRequestHandler, request: VirtualRequest): Served;
 /**
- * `request` served by `handler`, a server of a port registry: its response
- * once the handler has ended it (the _donePromise a ServerResponse attaches
- * while the response is open), however late, unless the request's signal
- * aborts first or 30 s pass. `signal` is asked for only when there is an end
- * to wait for. A handler that throws refuses the request.
+ * The wait for a served response's `end`, however late its handler ends it,
+ * unless `signal` aborts first or 30 s pass: `ended`, or how the wait stopped.
  */
-export declare function serveFromPort(handler: VirtualRequestHandler, request: VirtualRequest, signal: () => AbortSignal): Promise<ServedResult>;
+export declare function awaitServedEnd(end: Promise<void>, signal: AbortSignal): Promise<'ended' | 'refused' | 'aborted' | 'timeout'>;
 /** A served response's body as HTTP carries it: none for 204 and 304. */
 export declare function servedBody(response: VirtualResponse): string | null;
 /**

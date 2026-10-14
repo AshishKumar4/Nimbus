@@ -12,29 +12,29 @@ import { isLoopbackHost, } from '../../kernel/index.js';
 import { waitForSignalOrTimeout } from '../signal.js';
 import { ISOLATE_NETWORK } from '../../../../_shared/workspace-network.js';
 import { applyRedirectPolicy, isRedirectStatus } from '../../../../runtime/http-redirect-policy.js';
-/**
- * `request` served by `handler`, a server of a port registry: its response
- * once the handler has ended it (the _donePromise a ServerResponse attaches
- * while the response is open), however late, unless the request's signal
- * aborts first or 30 s pass. `signal` is asked for only when there is an end
- * to wait for. A handler that throws refuses the request.
- */
-export async function serveFromPort(handler, request, signal) {
+/** `request` handed to `handler`, a server of a port registry, synchronously, as a server takes a request. */
+export function serveFromPort(handler, request) {
     const response = { statusCode: 200, headers: {}, body: '' };
     try {
         handler(request, response);
-        if (response._donePromise) {
-            const result = await waitForSignalOrTimeout(response._donePromise, signal(), 30_000);
-            if (result.type === 'aborted')
-                return { kind: 'aborted' };
-            if (result.type === 'timeout')
-                return { kind: 'timeout' };
-        }
     }
     catch {
         return { kind: 'refused' };
     }
-    return { kind: 'served', response };
+    return { kind: 'served', response, end: response._donePromise ?? null };
+}
+/**
+ * The wait for a served response's `end`, however late its handler ends it,
+ * unless `signal` aborts first or 30 s pass: `ended`, or how the wait stopped.
+ */
+export async function awaitServedEnd(end, signal) {
+    try {
+        const result = await waitForSignalOrTimeout(end, signal, 30_000);
+        return result.type === 'aborted' ? 'aborted' : result.type === 'timeout' ? 'timeout' : 'ended';
+    }
+    catch {
+        return 'refused';
+    }
 }
 /** A served response's body as HTTP carries it: none for 204 and 304. */
 export function servedBody(response) {
@@ -76,14 +76,17 @@ export async function dispatchWorkspaceRequest(kernel, port, request) {
     const handler = kernel.portRegistry.get(port);
     if (handler) {
         const url = new URL(request.url);
-        const served = await serveFromPort(handler, {
+        const served = serveFromPort(handler, {
             method: request.method,
             url: url.pathname + url.search,
             headers: Object.fromEntries(request.headers.entries()),
             body: request.body ? await request.text() : '',
-        }, () => request.signal);
-        if (served.kind !== 'served')
+        });
+        if (served.kind === 'refused')
             return served;
+        const ended = served.end === null ? 'ended' : await awaitServedEnd(served.end, request.signal);
+        if (ended !== 'ended')
+            return { kind: ended };
         const status = served.response.statusCode;
         return {
             kind: 'response',
