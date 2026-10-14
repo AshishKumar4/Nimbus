@@ -71,6 +71,10 @@ crypto.pbkdf2('pw', 'salt', 300000, 16, 'sha512', () => {
   crypto.scrypt('pw', 'salt', 32, { N: 2 ** 14 }, (error, key) => console.log('scrypt', error ?? null, key.length));
 });
 `, 'scrypt null 32\n');
+// A function that ignores a function argument holds nothing: the program ends.
+await check('ignored', `
+console.log('hashes', require('crypto').getHashes(() => {}).includes('sha256'), typeof require('zlib').crc32('a', () => {}));
+`, 'hashes true number\n');
 // A call that throws before it starts holds nothing: the program still ends.
 await check('refused', `
 try { require('zlib').deflate(1, () => {}); } catch (error) { console.log('refused', error.code); }
