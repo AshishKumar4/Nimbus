@@ -21,6 +21,7 @@ import { createConsole } from '../node-compat/console.js';
 import { ProcessExitError } from '../node-compat/index.js';
 import { createCjsLoader } from '../node-compat/cjs-loader.js';
 import { createNativeEsmLoader } from '../node-compat/native-esm-loader.js';
+import { leaveStandardStreamsOpen } from '../node-compat/standard-streams.js';
 import { containsModuleSyntax } from '../../../runtime/javascript-ast.js';
 import type { NodeContext } from '../node-compat/index.js';
 
@@ -203,6 +204,7 @@ async function executeCjsCommand(
     filename: entryPath,
     dirname: dirname(entryPath),
     signal: ctx.signal,
+    reachStreams: leaveStandardStreamsOpen,
   };
   const scope = {
     process: createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdout: ctx.stdout, stderr: ctx.stderr }),

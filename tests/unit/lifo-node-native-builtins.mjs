@@ -167,6 +167,10 @@ const programs = {
     "  await step('consumers', async () => { const { text } = require('stream/consumers'); console.log('consumers', await text(Readable.from(['t', 'x']))); });",
     "  await step('tty', () => { const tty = require('tty'); console.log('tty', typeof tty.WriteStream, typeof tty.ReadStream, typeof tty.isatty); });",
     "  await step('stdout', () => new Promise((resolve) => { Readable.from(['to ', 'stdout\\n']).pipe(process.stdout).on('unpipe', () => { process.stdout.write('stdout still open\\n'); console.log('stdout', process.stdout instanceof Writable, process.stdout.writable); resolve(); }); }));",
+    "  await step('fs option', () => new Promise((resolve) => { let n = 0; fs.createReadStream('s.txt', { fs: undefined }).on('data', (c) => { n += c.length; }).on('error', (e) => { console.log('fs option', e.code); resolve(); }).on('end', () => { console.log('fs option', n); resolve(); }); }));",
+    "  await step('flush', () => new Promise((resolve) => { const w = fs.createWriteStream('f.txt', { flush: true }); w.end('flushed', () => { const v = fs.createWriteStream('g.txt', { flush: false }); v.end('kept', () => { console.log('flush', fs.readFileSync('f.txt', 'utf8'), fs.readFileSync('g.txt', 'utf8')); resolve(); }); }); }));",
+    "  await step('encodings', () => { process.stdout.write('68690a', 'hex'); process.stdout.setDefaultEncoding('hex'); process.stdout.write('6f6b0a'); process.stdout.setDefaultEncoding('utf8'); process.stdout.write(Buffer.from([0xe2, 0x82])); process.stdout.write(Buffer.from([0xac, 0x0a])); });",
+    "  await step('legacy', () => new Promise((resolve) => { const legacy = new stream.Stream(); legacy.readable = true; legacy.pipe(process.stdout); legacy.emit('data', 'legacy\\n'); legacy.emit('end'); setTimeout(() => { process.stdout.write('after legacy\\n'); resolve(); }, 10); }));",
     '})();',
   ].join('\n'),
 };
