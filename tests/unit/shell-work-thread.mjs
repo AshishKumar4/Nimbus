@@ -19,7 +19,10 @@
 //     line's steps: the job is a process of its own, whose one unit of work
 //     is the await of its program.
 //   - a shell that truly only awaits its program is still told as such, in
-//     a sequence (`step a; prog`) or an and-or list (`prog && true`).
+//     a sequence (`step a; prog`) or an and-or list (`prog && true`); and so
+//     is one that only `wait`s (or `fg`s) on its job. Before, `wait` was a
+//     builtin's unit of work with no await, so a shell blocked on a job that
+//     could never end was not told as stuck.
 //   - every unit a line took is let go when it ends.
 
 import assert from 'node:assert/strict';
@@ -148,5 +151,38 @@ for (const [line, status] of [['step a; prog', 137], ['prog && true', 137], ['pr
   assertNothingLeft(line);
 }
 
-console.log('ok - shell-work-thread (never wait-only between two steps of a line; wait-only when only awaiting its program; nothing left after)');
+// ── a shell that only `wait`s on its job is told as such ──────────────────
+// (`wait` and `fg` are builtins: the shell's work, which is awaiting the job.)
+for (const line of ['prog & wait $!', 'prog & wait %1', 'prog & fg %1 >/dev/null']) {
+  processes.setOnWaitChange(null);
+  const done = shell.execute(line);
+  await settle();
+  const job = processes.get(program)?.parentPid;
+  assert.deepEqual(processes.awaitsOnly(shellPid), [job], `${line}: awaiting its job is all the shell does`);
+  open('prog');
+  const result = await done;
+  assert.equal(result.exitCode, 137, `${line}: ${result.stderr}`);
+  await settle();
+  assertNothingLeft(line);
+}
+// A bare `wait` awaits every job, one at a time: whichever it awaits now is what it is blocked by.
+{
+  processes.setOnWaitChange(null);
+  const done = shell.execute('prog & step b & wait');
+  await settle();
+  const progJob = processes.get(program)?.parentPid;
+  assert.deepEqual(processes.awaitsOnly(shellPid), [progJob], 'wait: blocked by its first job');
+  open('prog');
+  await settle();
+  const awaited = processes.awaitsOnly(shellPid);
+  assert.equal(awaited?.length, 1, 'wait: then by its other job alone');
+  assert.notEqual(awaited?.[0], progJob);
+  open('b');
+  const result = await done;
+  assert.equal(result.exitCode, 0, result.stderr);
+  await settle();
+  assertNothingLeft('wait');
+}
+
+console.log('ok - shell-work-thread (never wait-only between two steps of a line; wait-only when only awaiting its program or its job; nothing left after)');
 process.exit(0);
