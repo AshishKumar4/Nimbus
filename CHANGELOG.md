@@ -5,6 +5,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `cp -p` and `cp -a` keep each entry's owner on every path, as
+  GNU cp does: a single file, an overwritten one and a copy into an
+  existing directory used to be owned by whoever ran cp. A symbolic link
+  keeps its own owner and modification time. A user who may not give a
+  copy another's owner keeps their own, silently; root is told when it
+  cannot (status 1). A symbolic link named on the command line is now
+  followed, as GNU cp follows it, unless `-r`, `-a`, `-P` or `-d` copies
+  the link itself.
 - Fixed (security): a public application URL is forwarded only to the
   session its capability belongs to. Put under another session's id of the
   same tenant, the capability was forwarded to that session, which woke

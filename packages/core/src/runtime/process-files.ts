@@ -1410,16 +1410,17 @@ export class ProcessView implements VFS {
   /** Where the link at `path`, reading `link`, leads in this namespace (RuntimeFsBridge.linkLeadsTo), for a caller following it itself. */
   async linkLeadsTo(path: string, link: string): Promise<string | null> { return await this.fs.linkLeadsTo(path, link); }
   async chmod(path: string, mode: number): Promise<void> { await this.call('chmod', path, () => this.fs.chmod(path, mode)); }
-  /** chown(2): a null side keeps what the file has (chown -1). */
-  async chown(path: string, uid: number | null, gid: number | null): Promise<void> {
-    await this.call('chown', path, async () => {
+  /** chown(2): a null side keeps what the file has (chown -1). `follow: false` is lchown(2), a link's own. */
+  async chown(path: string, uid: number | null, gid: number | null, options?: { follow?: boolean }): Promise<void> {
+    const followSymlinks = options?.follow !== false;
+    await this.call(followSymlinks ? 'chown' : 'lchown', path, async () => {
       if (uid === null || gid === null) {
-        const stat = await this.fs.stat(path);
-        if (stat === null) throw syscallError('ENOENT', 'chown', path);
+        const stat = await this.fs.stat(path, { followSymlinks });
+        if (stat === null) throw syscallError('ENOENT', followSymlinks ? 'chown' : 'lchown', path);
         uid ??= stat.uid;
         gid ??= stat.gid;
       }
-      await this.fs.chown(path, uid, gid);
+      await this.fs.chown(path, uid, gid, { followSymlinks });
     });
   }
   /**
