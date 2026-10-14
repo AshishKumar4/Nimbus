@@ -579,14 +579,13 @@ export class WaveIngest {
      * data call with its file's stat.
      */
     type PendingCall = { index: number; seq: number | null; path: string; paths: number; op: WaveLocalOp; receipt: boolean };
-    /** Where `named` leads now, its leaf followed, as a key here; null when the lookup waits on a mount or lands on one. */
+    /**
+     * Where `named` leads now, its leaf followed, as a key here; null when
+     * the lookup waits on a mount or lands on one. The namespace's refusal
+     * (EACCES, ENXIO, ELOOP) is the copy's: it throws.
+     */
     const followedHere = (named: string): string | null => {
-      let answer: string | Promise<string>;
-      try {
-        answer = scope.asWriter(() => router!.resolveDirectory('/' + named, cred, signal));
-      } catch {
-        return named;
-      }
+      const answer = scope.asWriter(() => router!.resolveDirectory('/' + named, cred, signal));
       if (typeof answer !== 'string') { answer.catch(() => {}); return null; }
       return router!.placement(answer) === null ? answer.slice(1) : null;
     };
@@ -609,7 +608,13 @@ export class WaveIngest {
       for (let at = 0; at < calls.length && router !== null; at++) {
         const op = calls[at]!.op;
         if (op.type !== 'call' || op.call.call !== 'copyFile') continue;
-        const bound = { path: followedHere(op.call.path), from: followedHere(op.call.from) };
+        let bound: { path: string | null; from: string | null };
+        try {
+          bound = { path: followedHere(op.call.path), from: followedHere(op.call.from) };
+        } catch (error) {
+          stale = { at, error };
+          break;
+        }
         if (bound.path === null || bound.from === null) {
           stale = { at, error: vfsError('ESTALE', op.call.path, 'a name the copy was placed by now leads elsewhere') };
           break;
