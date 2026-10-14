@@ -610,7 +610,8 @@ export class NimbusWorkspace {
    * without seeing each other's. With a `shellId` it runs in that named shell
    * instead (see {@link withNamedShell}), and `cwd` and `env` hold for this
    * call only. Either way the process, and its child processes that have
-   * ended, leave the process table when the result is returned.
+   * ended, leave the process table when the result is returned; one that ends
+   * later (a background job) leaves at the first call to start a minute after.
    */
   exec(command: string, options: WorkspaceExecOptions = {}): Promise<CommandResult> {
     const { shellId, detach, ...call } = options;
@@ -619,6 +620,9 @@ export class NimbusWorkspace {
   }
 
   private async runProcess(command: string, options: RunOptions, named: NamedShell | null): Promise<CommandResult> {
+    // The table is pruned as a launch begins, as a hosted session's is: what
+    // ended more than a minute ago, a job that outlived its exec among them.
+    await this.processes.reap();
     const cwd = options.cwd ?? named?.cwd ?? this.shell.getCwd();
     const { pid } = this.processes.spawn(command, [command], cwd, { cred: this.identity.cred });
     // A shell of the call's own already starts from its cwd and env. A named

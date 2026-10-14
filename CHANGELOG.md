@@ -5,6 +5,10 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: in a core workspace, a process that ends after the exec that
+  started it (a background job) leaves the process table a minute after it
+  ended, at the next exec, as in a hosted session. It stayed, with its
+  logs, until the workspace closed.
 - Fixed: `test` and `[` run as programs (`xargs test`, `find -exec test`)
   evaluate as the shell's builtin does. `test 1 -eq 2` run so returned 0,
   and `[ 1 -eq 1` ran without its closing `]`.
