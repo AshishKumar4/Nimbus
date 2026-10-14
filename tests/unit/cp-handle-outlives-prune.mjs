@@ -121,9 +121,11 @@ try {
     await session._rpcCpStdinEnd(grandchild, parent.pid);
     const first = await session._rpcCpReadOutput(grandchild, 1, 0, 1000, undefined, parent.pid);
     assert.equal(text(first), 'one\n');
+    // The grandchild ends first: a child_process parent's end sends its children SIGTERM.
     gates.shift()();
+    for (let i = 0; i < 100 && processes.get(grandchild)?.state === 'running'; i++) await settle();
     middleGates.shift()();
-    for (let i = 0; i < 100 && [middle, grandchild].some((pid) => processes.get(pid)?.state === 'running'); i++) await settle();
+    for (let i = 0; i < 100 && processes.get(middle)?.state === 'running'; i++) await settle();
     await settle();
     ahead += 61_000;
     await processes.reap();
