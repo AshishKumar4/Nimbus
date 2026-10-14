@@ -4,11 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { CompositeVFS } from '../../packages/core/src/vfs/composite.ts';
-import { sqliteFiles } from '../../packages/core/src/vfs/sqlite-files.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { hostSqlite } from '../unit/lib/host-sqlite.mjs';
 
 const args = process.argv.slice(2);
@@ -20,7 +16,8 @@ const option = (name) => {
 const baseline = resolve(option('--baseline'));
 const output = option('--out');
 const source = new URL('../../packages/core/src/', import.meta.url).pathname;
-const fixture = mkdtempSync(join(source, '.vfs-cpu-'));
+const MEASURED = { vfs: ['sqlite-vfs.ts', 'path.ts', 'composite.ts', 'sqlite-files.ts'], runtime: ['process-files.ts', 'sqlite-runtime-fs-bridge.ts'] };
+const fixtures = [];
 const median = (values) => {
   const sorted = [...values].sort((a, b) => a - b);
   return (sorted[Math.floor((sorted.length - 1) / 2)] + sorted[Math.floor(sorted.length / 2)]) / 2;
@@ -34,27 +31,28 @@ const results = [];
 const failures = [];
 
 try {
-  mkdirSync(join(fixture, 'vfs'));
-  mkdirSync(join(fixture, 'runtime'));
-  for (const entry of readdirSync(source)) {
-    if (entry === 'vfs' || entry === 'runtime' || entry.startsWith('.vfs-cpu-')) continue;
-    symlinkSync(join(source, entry), join(fixture, entry));
-  }
-  for (const entry of readdirSync(join(source, 'vfs'))) {
-    const target = join(fixture, 'vfs', entry);
-    if (['sqlite-vfs.ts', 'path.ts', 'composite.ts', 'sqlite-files.ts'].includes(entry)) {
-      writeFileSync(target, readFileSync(join(baseline, 'vfs', entry)));
-    } else symlinkSync(join(source, 'vfs', entry), target);
-  }
-  for (const entry of readdirSync(join(source, 'runtime'))) {
-    const target = join(fixture, 'runtime', entry);
-    if (['process-files.ts', 'sqlite-runtime-fs-bridge.ts'].includes(entry)) writeFileSync(target, readFileSync(join(baseline, 'runtime', entry)));
-    else symlinkSync(join(source, 'runtime', entry), target);
-  }
-  const { SqliteVFS: Before } = await import(pathToFileURL(join(fixture, 'vfs', 'sqlite-vfs.ts')).href);
-  const { CompositeVFS: NamespaceBefore } = await import(pathToFileURL(join(fixture, 'vfs', 'composite.ts')).href);
-  const { sqliteFiles: FilesBefore, SqliteFiles: FilesClassBefore } = await import(pathToFileURL(join(fixture, 'vfs', 'sqlite-files.ts')).href);
-  const { ProcessFiles: ProcessesBefore } = await import(pathToFileURL(join(fixture, 'runtime', 'process-files.ts')).href);
+  // Both arms load the measured files from a copy of their own, beside the
+  // same links to everything else: an arm that ran src's copies would share
+  // them with every other module that imports them, and an A/A comparison
+  // then favored it by 5-9%.
+  const load = async (from) => {
+    const fixture = mkdtempSync(join(source, '.vfs-cpu-'));
+    fixtures.push(fixture);
+    for (const entry of readdirSync(source)) {
+      if (entry.startsWith('.vfs-cpu-')) continue;
+      if (!Object.hasOwn(MEASURED, entry)) { symlinkSync(join(source, entry), join(fixture, entry)); continue; }
+      mkdirSync(join(fixture, entry));
+      for (const file of readdirSync(join(source, entry))) {
+        const target = join(fixture, entry, file);
+        if (MEASURED[entry].includes(file)) writeFileSync(target, readFileSync(join(from, entry, file)));
+        else symlinkSync(join(source, entry, file), target);
+      }
+    }
+    const at = (path) => import(pathToFileURL(join(fixture, path)).href);
+    const [{ SqliteVFS }, { CompositeVFS }, { sqliteFiles, SqliteFiles }, { ProcessFiles }] = await Promise.all(
+      ['vfs/sqlite-vfs.ts', 'vfs/composite.ts', 'vfs/sqlite-files.ts', 'runtime/process-files.ts'].map(at));
+    return [SqliteVFS, CompositeVFS, sqliteFiles, SqliteFiles, ProcessFiles];
+  };
   const make = async (Store, Namespace, files, FilesClass, Processes) => {
     const host = await hostSqlite();
     const engine = new Store(host.sql, host.transactions);
@@ -89,13 +87,12 @@ try {
     };
     return { engine, root, store, namespace, process, paths, packagePaths, chainPaths, removal, seedRemoval };
   };
-  const { SqliteFiles } = await import('../../packages/core/src/vfs/sqlite-files.ts');
   // Made in a random order, and run in one each pair: where an arm's heap and
   // database landed moves it by as much as many deltas, which is then noise
   // across runs rather than a bias of every run.
-  const makers = [() => make(Before, NamespaceBefore, FilesBefore, FilesClassBefore, ProcessesBefore), () => make(SqliteVFS, CompositeVFS, sqliteFiles, SqliteFiles, ProcessFiles)];
+  const sources = [baseline, source];
   const arms = [];
-  for (const at of Math.random() < 0.5 ? [0, 1] : [1, 0]) arms[at] = await makers[at]();
+  for (const at of Math.random() < 0.5 ? [0, 1] : [1, 0]) arms[at] = await make(...await load(sources[at]));
   const shuffled = (items) => {
     const out = [...items];
     for (let i = out.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [out[i], out[j]] = [out[j], out[i]]; }
@@ -173,7 +170,7 @@ try {
   assert.ok(checksum > 0);
   assert.deepEqual(failures, [], failures.join('\n'));
 } finally {
-  rmSync(fixture, { recursive: true, force: true });
+  for (const fixture of fixtures) rmSync(fixture, { recursive: true, force: true });
 }
 
 function lookupPath(kind, index, plain, packagePaths, chainPaths) {
