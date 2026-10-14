@@ -437,6 +437,20 @@ export function copiedPermissions(mode: number, directory: boolean): number {
   return mode & (directory ? 0o1777 : 0o777);
 }
 
+/**
+ * The mode copyfile leaves its copy with (keepMode; libuv's fchmod to the
+ * source's mode, then the data written): the source's permission bits
+ * exactly, but the write of a non-empty copy by a non-root copier clears
+ * set-user-ID, and set-group-ID where group-execute is set, as Linux clears
+ * them on a write without CAP_FSETID. Whether the copier may set it is
+ * chmod's question, asked where the copy lands.
+ */
+export function copyfileMode(mode: number, size: number, uid: number): number {
+  const bits = mode & 0o7777;
+  if (uid === 0 || size === 0) return bits;
+  return bits & ~(0o4000 | (bits & 0o010 ? 0o2000 : 0));
+}
+
 /** True for a character device such as `/dev/zero`, which streams rather than stores. */
 export function isCharacterDevice(mode: number | undefined): boolean {
   return mode !== undefined && (mode & S_IFMT) === S_IFCHR;

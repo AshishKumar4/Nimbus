@@ -615,12 +615,13 @@ export class WaveIngest {
         if (call.receipt && result) {
           // The revision its file was published at, as its path reports it.
           const handle: unknown = Reflect.get(result, 'handle');
+          // A copy's source, as published with it: the copy commits last in its group (alone), so the version it copied.
           const from: unknown = Reflect.get(result, 'from');
           progress.receipts.push({
             path: call.path, ino: result.ino, mode: result.mode, size: result.size, mtimeMs: result.mtime, ctimeMs: result.ctime,
             uid: result.uid, gid: result.gid, dev: scope.deviceId, revision: scope.pathRevision(call.path),
             ...(typeof handle === 'number' ? { handle } : {}),
-            ...(from !== undefined ? { from: from as { path: string; revision: number } } : {}),
+            ...(typeof from === 'string' ? { from: { path: from, revision: scope.pathRevision(from) } } : {}),
           });
         }
         if (call.seq !== null) advanced(call.seq);
@@ -1063,13 +1064,20 @@ export class WaveIngest {
         // A copy with either name on a mount is the namespace's copy (by its
         // bytes across filesystems); both here, this filesystem's, by reference.
         if (call.call === 'copyFile') {
-          const to = await mountOf('file', call.path);
-          const from = await mountOf('file', call.from);
-          if (to === null && from === null) return false;
+          await mountOf('file', call.path);
+          await mountOf('file', call.from);
+          // copyfile opens both names, each leaf link followed: a link here into a mount is the mount's file.
+          const followed = async (named: string): Promise<string> => {
+            const answer = scope.asWriter(() => router.resolveDirectory('/' + named, cred, scope.signal));
+            return typeof answer === 'string' ? answer : await backend(answer);
+          };
+          const to = await followed(call.path);
+          const from = await followed(call.from);
+          if (router.placement(to) === null && router.placement(from) === null) return false;
           at.setPhase('publish');
           await at.settleBefore();
           reached();
-          await backend(router.apply({ type: 'call', call: { call: 'copyFile', path: to ?? '/' + call.path, from: from ?? '/' + call.from } }, cred, at.guard, owner));
+          await backend(router.apply({ type: 'call', call: { call: 'copyFile', path: to, from } }, cred, at.guard, owner));
           at.committed(null, 0);
           return true;
         }

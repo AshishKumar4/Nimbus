@@ -460,7 +460,8 @@ export interface RuntimeFsBridge {
   subscribe?(path: string, listener: (event: VfsEvent) => void, options?: { follow?: boolean }): () => void;
   realpath(path: RuntimeFsPath): Awaitable<string>;
   remove(path: RuntimeFsPath, options?: { recursive?: boolean; force?: boolean; report?: boolean; keepVanishedAncestors?: boolean }): Awaitable<void | VfsRemoval>;
-  copyFile(from: RuntimeFsPath, to: RuntimeFsPath): Awaitable<void | number>;
+  /** copyfile, each name followed; \`keepMode\`, its mode as copyfile leaves it (VfsCopyOptions). */
+  copyFile(from: RuntimeFsPath, to: RuntimeFsPath, options?: { keepMode?: boolean }): Awaitable<void | number>;
   /**
    * Copy the tree at `from` to the new path `to` (`cp -r`; `preserve` is
    * `-p`), returning the entries copied. Within one SQLite filesystem this

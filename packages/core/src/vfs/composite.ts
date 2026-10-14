@@ -33,7 +33,7 @@ import { posixAccess } from './posix-access.js';
 import { recallOf, withRecall } from './recall.js';
 import { DIRENT_TYPES } from './dirent-type.js';
 import { walkRemoval, type RemovalSteps } from './removal-walk.js';
-import { S_IFMT, abandon, andThen, copiedPermissions, isCharacterDevice, isPromise, readRangeOrWhole, syncValue } from './vfs.js';
+import { S_IFMT, abandon, andThen, copiedPermissions, copyfileMode, isCharacterDevice, isPromise, readRangeOrWhole, syncValue } from './vfs.js';
 
 /**
  * Where a reader of a namespace's feed stands: the mount table as its
@@ -3167,7 +3167,8 @@ export class CompositeVFS implements VFS {
     made: { readonly ops: SyncVFS; readonly rel: string; readonly mount: Mount; readonly told: VfsEventType; readonly preserve: boolean; readonly keepMode: boolean; readonly made: boolean },
   ): Awaitable<number> {
     const mode = stat.mode === undefined ? undefined
-      : made.preserve || made.keepMode ? stat.mode & 0o7777 : copiedPermissions(stat.mode, stat.type === 'directory');
+      : made.keepMode ? copyfileMode(stat.mode, stat.size ?? 1, this.viewer.cred?.uid ?? 0)
+        : made.preserve ? stat.mode & 0o7777 : copiedPermissions(stat.mode, stat.type === 'directory');
     const told = toRel === made.rel ? made.told : stat.type === 'directory' ? 'addDir' : 'add';
     const landed = <R>(result: Awaitable<R>): Awaitable<R> => {
       if (isPromise(result)) result.then(() => this.tellLanded(made.mount, storeBehind(this.table, to), told, [toAt]), () => {});
@@ -3186,9 +3187,13 @@ export class CompositeVFS implements VFS {
     if (stat.type === 'file') {
       return andThen(from.readFile(fromRel), (bytes) => {
         this.guardMutation([toAt]);
-        // copyfile's mode is the copy's whether it made the file or wrote one there (keepMode).
-        const there = made.keepMode && !made.made && mode !== undefined && typeof to.chmod === 'function';
-        return andThen(landed(to.writeFile(toRel, bytes, mode === undefined ? undefined : { mode })), () => (there ? andThen(to.chmod!(toRel, mode!), () => 1) : 1));
+        // copyfile's mode (keepMode), as the landing filesystem's chmod judges
+        // it: before the bytes go into a file there, after a new one is made
+        // (its creation mode is the umask's). Two changes there, not one.
+        const exact = made.keepMode && mode !== undefined && typeof to.chmod === 'function';
+        const write = () => landed(to.writeFile(toRel, bytes, mode === undefined ? undefined : { mode }));
+        if (exact && !made.made) return andThen(to.chmod!(toRel, mode!), () => andThen(write(), () => 1));
+        return andThen(write(), () => (exact ? andThen(to.chmod!(toRel, mode!), () => 1) : 1));
       });
     }
     this.guardMutation([toAt]);
