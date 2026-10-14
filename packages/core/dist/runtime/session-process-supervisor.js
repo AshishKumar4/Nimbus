@@ -187,13 +187,16 @@ export class SessionProcessSupervisor {
     }
     /**
      * `pid` awaits its child `child`'s end, as one unit of its work, until
-     * the returned function is called or either process ends.
+     * the returned function is called or either process ends. Told as a
+     * change at once: the await may be what leaves `pid` doing nothing but
+     * wait (a shell's `wait` on a job that is already running).
      */
     beginAwait(pid, child) {
         let children = this.awaiting.get(pid);
         if (!children)
             this.awaiting.set(pid, children = new Map());
         children.set(child, (children.get(child) ?? 0) + 1);
+        this.onWaitChange?.();
         let ended = false;
         return () => {
             if (ended)

@@ -191,7 +191,7 @@ async function serve(id: number, port: number, request: VirtualRequest): Promise
     post({ type: 'served', id, response: null });
     return;
   }
-  const response: VirtualResponse & { _donePromise?: Promise<void> } = { statusCode: 200, headers: {}, body: '' };
+  const response: VirtualResponse = { statusCode: 200, headers: {}, body: '' };
   try {
     handler(request, response);
     if (response._donePromise) await response._donePromise;
