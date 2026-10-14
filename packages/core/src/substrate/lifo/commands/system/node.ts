@@ -1,7 +1,6 @@
 import { Buffer } from 'node:buffer';
 import realm from 'node:process';
 import type { PipeOptions, Readable, Writable } from 'node:stream';
-import { pathToFileURL } from 'node:url';
 import type { NodeFilesystem } from '../../node-compat/filesystem.js';
 import type { ProcessView } from '../../../../runtime/process-files.js';
 import type { Command } from '../types.js';
@@ -14,6 +13,7 @@ import type { NodeContext } from '../../node-compat/index.js';
 import { createProcess } from '../../node-compat/process.js';
 import { createConsole } from '../../node-compat/console.js';
 import { createNativeEsmLoader } from '../../node-compat/native-esm-loader.js';
+import { pathToFileURL } from '../../node-compat/file-url.js';
 import type { VirtualRequestHandler, Kernel, LoopbackRouter } from '../../kernel/index.js';
 import type { DNSResolver } from '../../kernel/dns-resolver.js';
 import type { CommandOutputStream } from '../types.js';
