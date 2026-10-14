@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer';
 import { resolve, dirname, extname } from '../../utils/path.js';
 import { ProcessExitError } from '../../node-compat/index.js';
 import { createCjsLoader, moduleWrapper, stripShebang } from '../../node-compat/cjs-loader.js';
@@ -5,7 +6,6 @@ import { isEsModuleFile, isEsModuleInput } from '../../../../runtime/module-form
 import { packageScopeType } from '../../../../runtime/require-resolution.js';
 import { createProcess } from '../../node-compat/process.js';
 import { createConsole } from '../../node-compat/console.js';
-import { Buffer } from '../../node-compat/buffer.js';
 import { pathToFileURL } from '../../node-compat/url.js';
 import { createNativeEsmLoader } from '../../node-compat/native-esm-loader.js';
 import { runNodeInRealm } from './node-realm.js';

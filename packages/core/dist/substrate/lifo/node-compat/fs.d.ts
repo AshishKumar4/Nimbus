@@ -1,7 +1,7 @@
+import { Buffer } from 'node:buffer';
 import type { NodeFilesystem as VFS } from './filesystem.js';
 import { Readable, Writable } from './stream.js';
 import { EventEmitter } from './events.js';
-import { Buffer } from './buffer.js';
 import { type FsError } from '../../../vfs/vfs-error.js';
 export interface FSWatcher extends EventEmitter {
     close(): void;

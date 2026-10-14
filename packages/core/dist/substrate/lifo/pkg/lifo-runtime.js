@@ -1,8 +1,8 @@
+import { Buffer } from 'node:buffer';
 import { synchronousFilesystem } from '../node-compat/filesystem.js';
 import { resolve, dirname, join } from '../utils/path.js';
 import { createProcess } from '../node-compat/process.js';
 import { createConsole } from '../node-compat/console.js';
-import { Buffer } from '../node-compat/buffer.js';
 import { ProcessExitError } from '../node-compat/index.js';
 import { createCjsLoader } from '../node-compat/cjs-loader.js';
 import { createNativeEsmLoader } from '../node-compat/native-esm-loader.js';

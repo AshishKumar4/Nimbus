@@ -1,20 +1,3 @@
-/**
- * The lifo node's CommonJS loader: how `require` resolves a name, runs the
- * module it names and caches it, for the node command's programs and the
- * lifo command runtime's packages alike.
- *
- * A name is a built-in (`fs`, `node:fs`), a `#` import of the nearest
- * package.json's "imports", a relative or absolute file (Node's exact, `.js`,
- * `.json`, `.node` and main/index probing), or a package: the nearest
- * node_modules up from the requiring module's directory, then the global
- * /usr/lib/node_modules and the legacy /usr/share/pkg/node_modules, its
- * entry from "exports" (by the shared resolver, _shared/exports-resolver.ts,
- * under require's conditions), else "main", then
- * index.js; a `#` name likewise from "imports". A module runs once, cached
- * by its path before it runs (so a cycle sees its partial exports); an ES
- * module (.mjs, a .js under "type": "module", or ESM syntax) goes to the
- * realm's native ES module loader, not the CommonJS wrapper.
- */
 import { type NodeContext } from './index.js';
 import { type RequireFunction } from './module.js';
 import { type RequireResolverOptions } from '../../../runtime/require-resolution.js';

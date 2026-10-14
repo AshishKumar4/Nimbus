@@ -1,3 +1,4 @@
+import type { InspectOptions } from 'node:util';
 import type { CommandOutputStream } from '../commands/types.js';
 export declare function createConsole(stdout: CommandOutputStream, stderr: CommandOutputStream): {
     log: (...args: unknown[]) => void;
@@ -5,7 +6,7 @@ export declare function createConsole(stdout: CommandOutputStream, stderr: Comma
     warn: (...args: unknown[]) => void;
     error: (...args: unknown[]) => void;
     debug: (...args: unknown[]) => void;
-    dir: (obj: unknown) => void;
+    dir: (obj: unknown, options?: InspectOptions) => void;
     time: (label?: string) => void;
     timeEnd: (label?: string) => void;
     timeLog: (label?: string, ...args: unknown[]) => void;
