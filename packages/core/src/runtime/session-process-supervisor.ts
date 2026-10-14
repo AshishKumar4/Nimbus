@@ -82,6 +82,7 @@ export interface ProcessTerminalDescriptor {
 }
 
 const ONCE = { once: true };
+const NOTHING_REAPED: Promise<number> = Promise.resolve(0);
 
 export class SessionProcessSupervisor implements ProcessOutput {
   private readonly table = new ProcessTable();
@@ -537,10 +538,14 @@ export class SessionProcessSupervisor implements ProcessOutput {
    * prune after it is published; one whose work is still stopping (holdWork)
    * waits for a prune after it has.
    */
-  async reap(maxAge?: number): Promise<number> {
-    if (!this.release) return 0;
+  reap(maxAge?: number): Promise<number> {
+    if (!this.release) return NOTHING_REAPED;
     const expired = this.table.expired(maxAge).filter((entry) => !this.unpublishedEnds.has(entry.pid) && !this.held.has(entry.pid));
-    if (expired.length === 0) return 0;
+    // Each launch prunes: one with nothing to prune costs it a settled promise, not an async call.
+    return expired.length === 0 ? NOTHING_REAPED : this.reapExpired(expired);
+  }
+
+  private async reapExpired(expired: ProcessEntry[]): Promise<number> {
     const { reaped, failures } = await this.forgetReleased(expired);
     for (const { pid, error } of failures) this.appendOutput(pid, 'stderr', `${error instanceof Error ? error.message : String(error)}\n`);
     return reaped;
