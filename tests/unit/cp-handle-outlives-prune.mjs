@@ -14,7 +14,8 @@
 //
 // Red before: each RPC asked the table whether the caller is the child's
 // ancestor; with the row gone it answered ESRCH, and the parent lost the
-// output and status the broker still held.
+// output and status the broker still held. The same held for an ancestor
+// further up, whether or not the broker spawned the process between.
 
 import assert from 'node:assert/strict';
 
@@ -136,6 +137,31 @@ try {
     assert.deepEqual({ done: waited.done, exitCode: waited.exitCode, signal: waited.signal }, { done: true, exitCode: 0, signal: null }, 'the grandparent reads the exit');
     await assert.rejects(session._rpcCpReadOutput(grandchild, 1, 0, 0, undefined, sibling.pid), (error) => error.code === 'ESRCH', 'another process may not');
     console.log('  ✓ a grandparent\'s handle outlives its child\'s and grandchild\'s rows');
+  }
+
+  // The same through a process the broker did not spawn (a shell's, a
+  // hosted launch's): G's child P is the table's alone, and P spawns C.
+  // After both have ended and been pruned, G still holds C's handle.
+  {
+    const middle = processes.spawn('node', ['middle.js'], '/home/user', { parentPid: parent.pid }).pid;
+    const grandchild = (await session._rpcCpSpawn({ command: 'two-lines', args: [], env: {}, cwd: '/home/user', stdio: ['pipe', 'pipe', 'pipe'], parentPid: middle })).childPid;
+    await session._rpcCpStdinEnd(grandchild, parent.pid);
+    const first = await session._rpcCpReadOutput(grandchild, 1, 0, 1000, undefined, parent.pid);
+    assert.equal(text(first), 'one\n');
+    gates.shift()();
+    for (let i = 0; i < 100 && processes.get(grandchild)?.state === 'running'; i++) await settle();
+    processes.exit(middle, 0);
+    await settle();
+    ahead += 61_000;
+    await processes.reap();
+    assert.deepEqual([processes.get(middle), processes.get(grandchild)], [undefined, undefined], 'the prune forgot both rows');
+    const rest = await session._rpcCpReadOutput(grandchild, 1, first.maxSeq, 1000, undefined, parent.pid);
+    assert.deepEqual({ text: text(rest), closed: rest.closed }, { text: 'two\n', closed: true }, 'the grandparent reads the rest');
+    const waited = await session._rpcCpWait(grandchild, 1000, undefined, parent.pid);
+    assert.deepEqual({ done: waited.done, exitCode: waited.exitCode, signal: waited.signal }, { done: true, exitCode: 0, signal: null }, 'the grandparent reads the exit');
+    await assert.rejects(session._rpcCpReadOutput(grandchild, 1, 0, 0, undefined, sibling.pid), (error) => error.code === 'ESRCH', 'another process may not read it');
+    await assert.rejects(session._rpcCpWait(grandchild, 0, undefined, sibling.pid), (error) => error.code === 'ESRCH', 'nor wait on it');
+    console.log('  ✓ a grandparent\'s handle outlives the rows of a child the broker did not spawn, and of its grandchild');
   }
 } finally {
   Date.now = realNow;
