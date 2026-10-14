@@ -513,8 +513,8 @@ async function* encodeFile(file, state) {
     let fileCheck = 0;
     let chunkId = 0;
     const pieces = file.source === null ? givenChunks(file.chunks) : fixedChunks(file.inode, file.source);
+    const contentBytes = TEXT_ENCODER.encode(file.contentId);
     for await (const data of pieces) {
-        const contentBytes = new TextEncoder().encode(file.contentId);
         const prefix = new Uint8Array(4 + contentBytes.length + 8);
         writeU32LE(prefix, 0, contentBytes.length);
         prefix.set(contentBytes, 4);
@@ -573,16 +573,20 @@ async function* fixedChunks(inode, source) {
     }
 }
 function encodeMetadataRecord(tag, value, state) {
-    const payload = new TextEncoder().encode(JSON.stringify(value));
+    const payload = TEXT_ENCODER.encode(JSON.stringify(value));
     if (payload.byteLength > MAX_METADATA_BYTES) {
         throw new Error(`w7-frame: metadata record exceeds ${MAX_METADATA_BYTES} bytes`);
     }
-    const header = recordHeader(tag, payload.byteLength);
+    // The header and the payload in one buffer, checked as one (crc32 composes).
+    const record = new Uint8Array(5 + payload.byteLength);
+    record[0] = tag;
+    writeU32LE(record, 1, payload.byteLength);
+    record.set(payload, 5);
     if (state && tag !== RecordTag.BatchEnd) {
-        state.batchCheck = updateRecordCheck(state.batchCheck, header, payload);
+        state.batchCheck = updateRecordCheck(state.batchCheck, record);
         state.summary.recordCount++;
     }
-    return [concatBytes(header, payload)];
+    return [record];
 }
 /**
  * The payload's operations in the order they are encoded: its `ops` as

@@ -19,9 +19,9 @@ function __nimbusNodeValidator(name) {
 // property the module fixed is left as it is.
 function __nimbusFront(target, name, make) {
   const descriptor = Object.getOwnPropertyDescriptor(target, name);
-  const real = target[name];
+  const real = __nimbusFrontBase(target[name]);
   if (typeof real !== "function" || descriptor?.configurable === false) return;
-  const fronted = make(real);
+  const fronted = __nimbusFronted(make(real), real);
   Object.defineProperty(fronted, "name", { value: name, configurable: true });
   Object.defineProperty(target, name, { value: fronted, writable: true, enumerable: descriptor?.enumerable ?? true, configurable: true });
 }
@@ -108,7 +108,7 @@ function __nimbusFrontEvents(events) {
     if (emitter instanceof EventTarget) return emitter[events.kMaxEventTargetListeners] ?? events.defaultMaxListeners;
     throw invalidArgType("emitter", ["EventEmitter", "EventTarget"], emitter);
   });
-  const RealResource = events.EventEmitterAsyncResource;
+  const RealResource = __nimbusFrontBase(events.EventEmitterAsyncResource);
   class EventEmitterAsyncResource extends RealResource {
     constructor(options) {
       if (typeof options === "string") options = { name: options };
@@ -116,7 +116,7 @@ function __nimbusFrontEvents(events) {
       super(options);
     }
   }
-  events.EventEmitterAsyncResource = EventEmitterAsyncResource;
+  events.EventEmitterAsyncResource = __nimbusFronted(EventEmitterAsyncResource, RealResource);
 }
 
 // zlib
@@ -206,7 +206,7 @@ function __nimbusFrontBuffer(buffer) {
       sourcesChecked(fileBits, options);
     }],
   ]) {
-    const Class = buffer[name];
+    const Class = __nimbusFrontBase(buffer[name]);
     if (typeof Class !== "function" || Object.getOwnPropertyDescriptor(buffer, name)?.configurable === false) continue;
     const fronted = new Proxy(Class, {
       construct(target, args, newTarget) {
@@ -215,10 +215,10 @@ function __nimbusFrontBuffer(buffer) {
       },
       getPrototypeOf: (target) => fronts.get(Object.getPrototypeOf(target)) ?? Object.getPrototypeOf(target),
     });
-    fronts.set(Class, fronted);
+    fronts.set(Class, __nimbusFronted(fronted, Class));
     Object.defineProperty(Class.prototype, "constructor", { value: fronted, writable: true, enumerable: false, configurable: true });
     Object.defineProperty(buffer, name, { value: fronted, writable: true, enumerable: true, configurable: true });
-    if (globalThis[name] === Class) globalThis[name] = fronted;
+    if (__nimbusFrontBase(globalThis[name]) === Class) globalThis[name] = fronted;
   }
   // Node's atob and btoa globals are buffer's.
   for (const name of ["atob", "btoa"]) if (typeof buffer[name] === "function") globalThis[name] = buffer[name];

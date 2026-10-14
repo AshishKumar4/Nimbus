@@ -9,26 +9,23 @@
  * Measured 2026-09-24 (5k files x 2 KiB; 64 MiB in 1 MiB buffers):
  * node:zlib's crc32 is 5-40x faster than any JavaScript loop in bun, node and
  * workerd (compat 2026-04-01, nodejs_compat), but each call costs ~0.14 us in
- * workerd, so below 128 bytes the table loop wins there. It is reached through
- * `process.getBuiltinModule`, like core's incremental SHA-256, so this module
- * imports nothing and still loads where node:zlib is absent (a browser,
- * workerd without nodejs_compat). The JavaScript path is slicing-by-8: 2-3x
- * the byte-at-a-time table loop in bun and node, and level with it in workerd.
+ * workerd, so below 128 bytes the table loop wins there. It is the realm's
+ * own (realmBuiltin), like core's incremental SHA-256's, so this module still
+ * loads where node:zlib is absent (a browser, workerd without nodejs_compat).
+ * The JavaScript path is slicing-by-8: 2-3x the byte-at-a-time table loop in
+ * bun and node, and level with it in workerd.
  */
 
+import { realmBuiltin } from './realm-builtin.js';
+
 type NodeZlib = { crc32?(data: Uint8Array, value?: number): number };
-type BuiltinModules = { process?: { getBuiltinModule?(id: 'node:zlib'): NodeZlib | undefined } };
 
 /** Below this many bytes the native call's overhead exceeds the JavaScript loop's work (workerd). */
 const CRC_NATIVE_MIN_BYTES = 128;
 
 const nativeCrc32 = (() => {
-  try {
-    const crc32 = (globalThis as BuiltinModules).process?.getBuiltinModule?.('node:zlib')?.crc32;
-    return typeof crc32 === 'function' ? crc32 : null;
-  } catch {
-    return null;
-  }
+  const crc32 = realmBuiltin<NodeZlib>('node:zlib')?.crc32;
+  return typeof crc32 === 'function' ? crc32 : null;
 })();
 
 /** Eight 256-entry tables: table k maps a byte to its CRC after k further zero bytes. */

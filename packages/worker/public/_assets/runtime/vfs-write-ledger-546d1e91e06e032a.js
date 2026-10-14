@@ -40,14 +40,21 @@ var __nimbusProcessFsModule = (() => {
     unsettledNoteOf: () => unsettledNoteOf
   });
 
+  function realmBuiltin(id) {
+    try {
+      const global = globalThis;
+      const current = global.process;
+      const own = current && global[  Symbol.for("nimbus.fronts")]?.get(current)?.own;
+      return (own ?? current)?.getBuiltinModule?.(id);
+    } catch {
+      return void 0;
+    }
+  }
+
   var CRC_NATIVE_MIN_BYTES = 128;
   var nativeCrc32 = (() => {
-    try {
-      const crc322 = globalThis.process?.getBuiltinModule?.("node:zlib")?.crc32;
-      return typeof crc322 === "function" ? crc322 : null;
-    } catch {
-      return null;
-    }
+    const crc322 = realmBuiltin("node:zlib")?.crc32;
+    return typeof crc322 === "function" ? crc322 : null;
   })();
   var crcTables = null;
   function createCrcTables() {
@@ -252,8 +259,8 @@ var __nimbusProcessFsModule = (() => {
     let fileCheck = 0;
     let chunkId = 0;
     const pieces2 = file.source === null ? givenChunks(file.chunks) : fixedChunks(file.inode, file.source);
+    const contentBytes = TEXT_ENCODER.encode(file.contentId);
     for await (const data of pieces2) {
-      const contentBytes = new TextEncoder().encode(file.contentId);
       const prefix = new Uint8Array(4 + contentBytes.length + 8);
       writeU32LE(prefix, 0, contentBytes.length);
       prefix.set(contentBytes, 4);
@@ -306,16 +313,19 @@ var __nimbusProcessFsModule = (() => {
     }
   }
   function encodeMetadataRecord(tag, value, state) {
-    const payload = new TextEncoder().encode(JSON.stringify(value));
+    const payload = TEXT_ENCODER.encode(JSON.stringify(value));
     if (payload.byteLength > MAX_METADATA_BYTES) {
       throw new Error(`w7-frame: metadata record exceeds ${MAX_METADATA_BYTES} bytes`);
     }
-    const header = recordHeader(tag, payload.byteLength);
+    const record = new Uint8Array(5 + payload.byteLength);
+    record[0] = tag;
+    writeU32LE(record, 1, payload.byteLength);
+    record.set(payload, 5);
     if (state && tag !== RecordTag.BatchEnd) {
-      state.batchCheck = updateRecordCheck(state.batchCheck, header, payload);
+      state.batchCheck = updateRecordCheck(state.batchCheck, record);
       state.summary.recordCount++;
     }
-    return [concatBytes(header, payload)];
+    return [record];
   }
   function preparePayload(payload, batchId) {
     if (!payload || !Array.isArray(payload.inodes) || !Array.isArray(payload.chunks)) {

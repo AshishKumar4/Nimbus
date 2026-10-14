@@ -11,7 +11,32 @@ published independently in the `@nimbus-sh` npm scope.
   handwritten modules refused every hash but sha1 and sha256 (md5, sha512,
   HMAC, pbkdf2), printed a Map or Set as `{}` and a class instance without
   its name, decoded a hex or base64 `StringDecoder` as UTF-8, and encoded
-  `Buffer.from(s, 'latin1')` as UTF-8.
+  `Buffer.from(s, 'latin1')` as UTF-8. Its `fs.watch` refuses an encoding
+  Node does not know when called, and keeps a copy of its options, as
+  Node's does.
+
+## 2026-10-14: platform 0.10.0, core 0.20.0, fabric 0.15.0, worker 0.18.0, sdk 0.15.0, loom 0.3.1, react 0.3.3, cli 0.2.7, create-nimbus-app 0.2.4 (config 0.3.1 unchanged)
+
+The 2026-10-13 versions reached production but were never published to npm; these carry their changes too.
+
+- Fixed (Node `fs`): a write keeps the bytes it was given. `writeFileSync`,
+  `appendFileSync`, `fs.promises.writeFile` and a descriptor's `write` used
+  the program's own buffer as the file's bytes, so changing or reusing the
+  buffer afterwards changed what `readFileSync` read and what the session
+  stored, and growing such a file through a descriptor could write past the
+  end of the buffer it came from, into memory the program used for other
+  data. Each write now takes a copy, as Node does.
+- Fixed: in an isolate that runs several Node programs one after another
+  (a warm facet's one-shots and children), each program's setup wrapped
+  `Buffer`, `crypto`, `zlib`, `events` and `URL` again around the last
+  program's wrappers. Every call into them grew one layer deeper per
+  program run, `new URL()` accepted a string that is not a URL, and a
+  program that replaced `zlib.crc32` broke the file writes of the programs
+  after it. Each builtin is now wrapped once, around the platform's own,
+  and the runtime's checksums use the platform's builtins.
+- Changed: a Node program's file writes cost less CPU in a warm isolate:
+  about 6 ms less for a run that writes one file, and about 0.1 ms less for
+  each further file.
 - Fixed: a copy makes its files as any creation there makes them. A
   program's `copyFile` (or the editor's and SDK's copy) between a mount and
   the session's own files keeps the source's mode less the umask, as `cp`
@@ -57,6 +82,14 @@ published independently in the `@nimbus-sh` npm scope.
 - Fixed: `nimbus wrangler dev`'s assets binding read a project's assets as
   the session's user. It now reads them as the process that started the
   server, as it reads the project's config, bundle and stores.
+- Fixed: in the installed GNU bash, an `exit` or `return` inside `eval`, a
+  sourced file, a function or an EXIT trap now ends with the status bash
+  chose. Before, a jump through one of bash's saved copies of its jump
+  buffers could land in another capture: `eval 'exit 7'` exited 0, an EXIT
+  trap's exit was lost, and code after a `return` ran. This needs the bash
+  runtime 5.2.37-5 (runner `bash-runner@5`); a session with 5.2.37-3 is told
+  to install it. The bash module is now built by a reproducible recipe
+  (`scripts/ci/remote-bash-build.mjs`) and carries its provenance.
 - Fixed (Node `fs`): `fs.promises.realpath` and callback `fs.realpath`
   resolve symlinks and refuse a missing path with `ENOENT`, giving
   `realpathSync`'s answer; they returned the path as written. A link the
@@ -105,7 +138,7 @@ published independently in the `@nimbus-sh` npm scope.
   `return` inside `eval`, a sourced file, or an EXIT trap) now fails with
   "bash-runner: pid N returned from _start mid-rewind, its longjmp or resume
   target lost". It used to report exit status 0. The jump itself is fixed
-  with the next bash runtime build (bash-runner@4).
+  with the next bash runtime build (bash-runner@5).
 - Fixed: on Cloudflare, piping into the installed GNU bash (`printf x | bash
   -c 'read -r y'`) failed with "The RPC receiver does not implement the
   method "call"". bash now reads its piped stdin.

@@ -22,7 +22,7 @@ const KERNEL = { uid: 0, gid: 0, groups: [0], umask: 0o022 };
 export const RUNTIMES = [
   {
     name: 'bash',
-    version: '5.2.37-3',
+    version: '5.2.37-5',
     license: 'GPL-3.0-or-later',
     entrypoints: [{ binName: 'bash', runner: BASH_RUNNER, args: [] }],
     files: [
