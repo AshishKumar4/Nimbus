@@ -1025,6 +1025,15 @@ interface SeedStat { uid: number; gid: number; mode: number }
 /** What an `lstat` step answers: the entry itself, not followed; null when there is none. */
 type SeedEntry = (SeedStat & { type: string }) | null;
 
+/** Whether the session's user may make a name in the directory `entry` is (its write bit for the user). */
+function userMayWrite(entry: SeedEntry): boolean {
+  if (entry === null) return false;
+  const { uid, gid, groups } = CRED_SESSION_USER;
+  if (entry.uid === uid) return (entry.mode & 0o200) !== 0;
+  if (entry.gid === gid || groups.includes(entry.gid)) return (entry.mode & 0o020) !== 0;
+  return (entry.mode & 0o002) !== 0;
+}
+
 /**
  * Root's own directories below `/usr`, as on Linux: made by root and kept
  * root's, parent before child (a directory is re-asserted only once its
@@ -1094,11 +1103,15 @@ function* baseSeed(home: string): Generator<SeedStep, void, unknown> {
   // makes the home's directories only below directories only root may
   // change, where no name can be replaced between its mkdir and its chown;
   // below one the user may write, the user makes the rest itself, and owns
-  // it from the start.
+  // it from the start. Below one the user has made unwritable to itself, the
+  // home is not made, as a login whose home is missing starts without one.
   const homeDir = home.replace(/^\/+/, '').replace(/\/+$/, '');
-  if (homeDir !== '' && !(yield* exists('kernel', homeDir))) {
+  let homeMade = homeDir === '' || (yield* exists('kernel', homeDir));
+  if (!homeMade) {
     const names = homeDir.split('/');
     let rootsOnly = true;
+    let parent: SeedEntry = { type: 'directory', uid: 0, gid: 0, mode: 0o755 };
+    homeMade = true;
     for (let i = 1; i <= names.length; i++) {
       const path = names.slice(0, i).join('/');
       const entry = yield* lstat(path);
@@ -1106,19 +1119,25 @@ function* baseSeed(home: string): Generator<SeedStep, void, unknown> {
         if (rootsOnly) {
           yield { op: 'mkdir', as: 'kernel', path, mode: 0o755 };
           if (i === names.length) yield { op: 'chown', as: 'kernel', path, uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid };
-        } else {
+        } else if (userMayWrite(parent)) {
           yield { op: 'mkdir', as: 'user', path, mode: 0o755 };
+        } else {
+          homeMade = false;
+          break;
         }
+        parent = { type: 'directory', uid: rootsOnly && i < names.length ? 0 : CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid, mode: 0o755 };
         continue;
       }
       if (entry.type !== 'directory') {
         throw new Error(`HOME ${home} passes through ${entry.type === 'symlink' ? 'a link' : `a ${entry.type}`} at /${path}: a home is made through directories only`);
       }
       rootsOnly &&= entry.uid === 0 && (entry.mode & 0o022) === 0;
+      parent = entry;
     }
   }
-  // HOME=/ is root's directory, not one Nimbus populates for the user.
-  const homeChildren = homeDir === '' ? [] : [`${homeDir}/.config`, `${homeDir}/projects`];
+  // HOME=/ is root's directory, not one Nimbus populates for the user; a
+  // home that was not made has nothing to populate.
+  const homeChildren = homeDir === '' || !homeMade ? [] : [`${homeDir}/.config`, `${homeDir}/projects`];
   for (const dir of [
     ...homeChildren,
     'tmp', 'var/log',
