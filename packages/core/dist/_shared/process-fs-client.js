@@ -140,7 +140,7 @@ function utf8Length(text) {
 }
 function pathsOf(op) {
     switch (op.type) {
-        case 'call': return [op.call.path];
+        case 'call': return op.call.call === 'copyFile' ? [op.call.path, op.call.from] : [op.call.path];
         case 'rename': return [op.from, op.to];
         case 'truncate':
         case 'setattr': return [op.path];
@@ -494,8 +494,8 @@ export function processFsClient(options) {
                 settled(entry);
                 let answered = {};
                 const op = ops[index];
-                // A data call's and an open's answer is the session's stat of its file.
-                const path = op.type === 'call' && ('data' in op.call || op.call.call === 'open') ? op.call.path : null;
+                // A data call's, an open's and a copy's answer is the session's stat of its file.
+                const path = op.type === 'call' && ('data' in op.call || op.call.call === 'open' || op.call.call === 'copyFile') ? op.call.path : null;
                 const published = answer.receipts[receipt];
                 if (path !== null && published?.path === path) {
                     receipt++;

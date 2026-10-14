@@ -8,11 +8,13 @@
  * punycode never compiles it. Of Node's modules it carries only what
  * formatting a value requires (util.inspect, as an uncaught error's report
  * and console.log of an object do); the others are in
- * RUNTIME_NODE_LIB_REST_MODULE and DNS's in RUNTIME_NODE_DNS_MODULE, each
- * compiled the first time a program requires one of its modules. Staged as
+ * RUNTIME_NODE_LIB_REST_MODULE, DNS's in RUNTIME_NODE_DNS_MODULE and cp's
+ * (lib/internal/fs/cp) in RUNTIME_NODE_CP_MODULE, each compiled the first
+ * time a program requires one of its modules. Staged as
  * assets beside the shims (scripts/bundle-node-shims.mjs).
  */
 export declare function generateNodeDnsModule(): string;
+export declare function generateNodeCpModule(): string;
 export declare function generateNodeLibRestModule(): string;
 export declare function generateNodeLibModule(): string;
 //# sourceMappingURL=node-lib-module.d.ts.map

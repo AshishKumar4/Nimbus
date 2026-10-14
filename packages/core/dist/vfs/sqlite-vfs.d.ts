@@ -264,7 +264,15 @@ export interface CredentialedVfs {
         keepVanishedAncestors?: boolean;
     }): VfsRemoval;
     rename(oldPath: string, newPath: string): void;
-    copyFile(src: string, dest: string): void;
+    copyFile(src: string, dest: string, options?: {
+        keepMode?: boolean;
+    }): VfsStat & {
+        from: {
+            path: string;
+            revision: number;
+        };
+        landed: string;
+    };
     /**
      * Copy a tree to a new path by reference (`cp -r`; `preserve` is `-p`).
      * Returns the entries copied. See SqliteVFS.copyTree.
@@ -1577,6 +1585,13 @@ export declare class SqliteVFS {
      */
     private chmod;
     private chmodInode;
+    /**
+     * chmod's judgement of setting `inode`'s mode to `mode`, and what it
+     * leaves: EPERM unless the caller owns it (or is root), the shared
+     * directory's admission, its delegated group bits and mode rule, and the
+     * confined rule. Every mode change asks it (chmod, copyfile's keepMode).
+     */
+    private modeChange;
     private setDefaultAcl;
     private getDefaultAcl;
     private chown;
@@ -1689,7 +1704,12 @@ export declare class SqliteVFS {
      * manifest. No byte is read or written; a later write to either side
      * copies on write (rewriteFile's sharing probes). A new file has the
      * source's permission bits less the copier's umask, as cp(1) makes it; a
-     * file there keeps its own mode.
+     * file there keeps its own mode. With \`keepMode\` (copyfile), the copy has
+     * copyfileMode's bits, a file there too, set in this one write as chmod
+     * judges it (modeChange). Answers the copy's stat, the key it wrote
+     * (\`landed\`, the destination's links followed), and the file copied: its
+     * key and the revision of the version this write read (its row's
+     * generation then), which nothing after the read moves.
      */
     private copyFile;
     /**
