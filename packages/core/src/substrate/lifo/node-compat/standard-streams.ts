@@ -4,6 +4,15 @@ import type { PipeOptions, Readable, Writable } from 'node:stream';
 import { SinkWriter } from '../../../_shared/byte-stream.js';
 import type { CommandOutputStream } from '../commands/types.js';
 
+/** `write`'s outcome, made now: its failure, thrown or rejected, is the promise's. */
+function settled(write: () => void | Promise<void>): Promise<void> {
+  try {
+    return Promise.resolve(write());
+  } catch (error) {
+    return Promise.reject(error);
+  }
+}
+
 /** Every program's process.stdout and process.stderr this realm has made. */
 const standardStreams = new WeakSet<Writable>();
 let pipeLeavesThemOpen = false;
@@ -38,8 +47,13 @@ export function standardStream(output: CommandOutputStream, fd: 1 | 2): Writable
   const { Writable } = realm.getBuiltinModule('node:stream');
   const writer = new SinkWriter(output);
   const stream: Writable = Object.assign(new Writable({
+    // A UTF-8 string goes to the output as text; any other is made bytes in its encoding.
+    decodeStrings: false,
     write(chunk, encoding, callback) {
-      writer.write(typeof chunk === 'string' ? Buffer.from(chunk, encoding) : chunk).catch((error: Error) => stream.destroy(error));
+      const done = typeof chunk === 'string' && (encoding === 'utf8' || encoding === 'utf-8')
+        ? settled(() => output.write(chunk))
+        : writer.write(typeof chunk === 'string' ? Buffer.from(chunk, encoding) : chunk);
+      done.catch((error: Error) => stream.destroy(error));
       callback();
     },
     final(callback) {
