@@ -1,5 +1,8 @@
 import { EventEmitter } from './events.js';
 import { isLoopbackHost, } from '../kernel/index.js';
+import { dispatchWorkspaceRequest } from '../commands/net/kernel-fetch.js';
+/** The ports of an http module made without a registry: none listens. */
+const NO_PORTS = new Map();
 class IncomingMessage extends EventEmitter {
     statusCode;
     statusMessage;
@@ -48,6 +51,8 @@ class ClientRequest extends EventEmitter {
     options;
     body = '';
     aborted = false;
+    /** What abort() ends: the wait for a local server's answer among it. */
+    abortController = new AbortController();
     portRegistry;
     routeLoopback;
     protocol;
@@ -71,6 +76,7 @@ class ClientRequest extends EventEmitter {
     }
     abort() {
         this.aborted = true;
+        this.abortController.abort();
     }
     async execute() {
         if (this.aborted)
@@ -79,63 +85,31 @@ class ClientRequest extends EventEmitter {
         const port = this.options.port ? Number(this.options.port) : (this.protocol === 'http:' ? 80 : 443);
         const path = this.options.path || '/';
         const loopback = isLoopbackHost(host);
-        // Check if target is a virtual server
-        if (this.portRegistry && loopback) {
-            const handler = this.portRegistry.get(port);
-            if (handler) {
-                const vReq = {
-                    method: this.options.method || 'GET',
-                    url: path,
-                    headers: this.options.headers || {},
-                    body: this.body,
-                };
-                const vRes = {
-                    statusCode: 200,
-                    headers: {},
-                    body: '',
-                };
-                try {
-                    handler(vReq, vRes);
-                    const msg = new IncomingMessage(vRes.statusCode, 'OK', vRes.headers);
-                    this.emit('response', msg);
-                    queueMicrotask(() => {
-                        msg.emit('data', vRes.body);
-                        msg.emit('end');
-                    });
-                }
-                catch (e) {
-                    this.emit('error', e);
-                }
-                return;
-            }
-        }
+        // A loopback request is served as the workspace serves its own: a server
+        // of this program's (once its handler has ended the response), else the
+        // host's loopback router.
         if (loopback) {
-            if (this.routeLoopback) {
-                try {
-                    const method = this.options.method || 'GET';
-                    const hasBody = method !== 'GET' && method !== 'HEAD' && this.body.length > 0;
-                    const response = await this.routeLoopback(port, new Request(`${this.protocol}//${host}:${port}${path}`, {
-                        method,
-                        headers: this.options.headers,
-                        body: hasBody ? this.body : undefined,
-                    }));
-                    if (response) {
-                        const headers = {};
-                        response.headers.forEach((value, key) => { headers[key] = value; });
-                        const msg = new IncomingMessage(response.status, response.statusText, headers);
-                        this.emit('response', msg);
-                        const text = await response.text();
-                        msg.emit('data', text);
-                        msg.emit('end');
-                        return;
-                    }
-                }
-                catch (error) {
-                    this.emit('error', error);
+            const method = this.options.method || 'GET';
+            const hasBody = method !== 'GET' && method !== 'HEAD' && this.body.length > 0;
+            try {
+                const result = await dispatchWorkspaceRequest({ portRegistry: this.portRegistry ?? NO_PORTS, routeLoopback: this.routeLoopback }, port, new Request(`${this.protocol}//${host}:${port}${path}`, {
+                    method,
+                    headers: this.options.headers,
+                    body: hasBody ? this.body : undefined,
+                    signal: this.abortController.signal,
+                }));
+                if (result.kind === 'aborted')
                     return;
-                }
+                if (result.kind === 'refused')
+                    this.emit('error', new Error(`connect ECONNREFUSED ${host}:${port}`));
+                else if (result.kind === 'timeout')
+                    this.emit('error', new Error(`connect ETIMEDOUT ${host}:${port}`));
+                else
+                    await this.answer(result.response);
             }
-            this.emit('error', new Error(`connect ECONNREFUSED ${host}:${port}`));
+            catch (error) {
+                this.emit('error', error);
+            }
             return;
         }
         // Fall through to real fetch
@@ -143,22 +117,25 @@ class ClientRequest extends EventEmitter {
         const portStr = this.options.port ? `:${this.options.port}` : '';
         const url = `${proto}://${host}${portStr}${path}`;
         try {
-            const resp = await fetch(url, {
+            await this.answer(await fetch(url, {
                 method: this.options.method || 'GET',
                 headers: this.options.headers,
                 body: this.options.method !== 'GET' && this.body ? this.body : undefined,
-            });
-            const headers = {};
-            resp.headers.forEach((v, k) => { headers[k] = v; });
-            const msg = new IncomingMessage(resp.status, resp.statusText, headers);
-            this.emit('response', msg);
-            const text = await resp.text();
-            msg.emit('data', text);
-            msg.emit('end');
+            }));
         }
         catch (e) {
             this.emit('error', e);
         }
+    }
+    /** `response` as this request's: its status, reason and headers, then its body and end. */
+    async answer(response) {
+        const headers = {};
+        response.headers.forEach((value, key) => { headers[key] = value; });
+        const msg = new IncomingMessage(response.status, response.statusText, headers);
+        this.emit('response', msg);
+        const text = await response.text();
+        msg.emit('data', text);
+        msg.emit('end');
     }
     setTimeout(_ms, cb) {
         if (cb)

@@ -45,6 +45,8 @@ declare class ClientRequest extends EventEmitter {
     private options;
     private body;
     private aborted;
+    /** What abort() ends: the wait for a local server's answer among it. */
+    private readonly abortController;
     private portRegistry?;
     private routeLoopback?;
     private protocol;
@@ -53,6 +55,8 @@ declare class ClientRequest extends EventEmitter {
     end(data?: string): void;
     abort(): void;
     private execute;
+    /** `response` as this request's: its status, reason and headers, then its body and end. */
+    private answer;
     setTimeout(_ms: number, cb?: () => void): this;
 }
 declare class ServerResponse extends EventEmitter {
