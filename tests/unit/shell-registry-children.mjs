@@ -10,8 +10,9 @@ import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx });
-// A program that exits 255, GNU xargs's signal to stop.
+// Programs that exit 255 (GNU xargs's signal to stop) and 126 (a status, not a refused exec).
 ws.registry.register('exit255', async () => 255);
+ws.registry.register('exit126', async () => 126);
 const failures = [];
 const check = async (what, run) => {
   try { await run(); console.log(`  ✓ ${what}`); } catch (error) { failures.push(what); console.log(`  ✗ ${what}: ${error.message}`); }
@@ -48,6 +49,15 @@ try {
     assert.deepEqual(await run('echo x | xargs no-such-command; echo $?'), { code: 0, stdout: '127\n', stderr: 'xargs: no-such-command: No such file or directory\n' });
   });
 
+  await check('a file xargs may not execute is 126, a program that exits 126 is 123', async () => {
+    assert.deepEqual(await run('touch /tmp/noexec; chmod 644 /tmp/noexec; printf "a\\nb\\n" | xargs -n1 /tmp/noexec; echo $?'), { code: 0, stdout: '126\n', stderr: 'xargs: /tmp/noexec: Permission denied\n' });
+    assert.deepEqual(await run('echo x | xargs exit126; echo $?'), { code: 0, stdout: '123\n', stderr: '' });
+  });
+
+  await check('sudo finds no file it may not execute', async () => {
+    assert.deepEqual(await run('touch /tmp/noexec; chmod 644 /tmp/noexec; sudo -u user /tmp/noexec; echo $?'), { code: 0, stdout: '1\n', stderr: 'sudo: /tmp/noexec: command not found\n' });
+  });
+
   await check('a child a kill ends ends xargs at once, with 125 and the signal', async () => {
     const started = performance.now();
     const pending = ws.exec("printf '30\\n31\\n' | xargs -n1 sleep");
@@ -70,6 +80,10 @@ try {
 
   await check('command NAME never runs a function by that name', async () => {
     assert.deepEqual(await run('echo() { printf "function\\n"; }; command echo builtin'), { code: 0, stdout: 'builtin\n', stderr: '' });
+  });
+
+  await check('a function named command is that function', async () => {
+    assert.deepEqual(await run('command() { printf "custom\\n"; }; command echo ignored'), { code: 0, stdout: 'custom\n', stderr: '' });
   });
 } finally {
   await ws.close();

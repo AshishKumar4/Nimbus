@@ -83,6 +83,7 @@ try {
     const held = ws.processes.holdWork(root.pid);
     try {
       assert.deepEqual(await run(`kill ${root.pid}; echo "status=$?"`), { code: 0, stdout: 'status=1\n', stderr: `kill: (${root.pid}) - Operation not permitted\n` });
+      assert.deepEqual(await run(`kill -0 ${root.pid}; echo "status=$?"`), { code: 0, stdout: 'status=1\n', stderr: `kill: (${root.pid}) - Operation not permitted\n` });
       assert.equal(ws.processes.get(root.pid)?.state, 'running');
     } finally {
       held();
