@@ -35,6 +35,13 @@ published independently in the `@nimbus-sh` npm scope.
   first's terminal, workspace and shell process under it; and an SDK call
   could proceed before the session's own commands were registered. They
   now wait for the one build, and a socket among them is attached to it.
+- Fixed: a Node program whose only remaining work was a `zlib` or `crypto`
+  call with a callback (`zlib.deflate`, `crypto.pbkdf2`, `scrypt`,
+  `randomBytes`, ...) could end with exit 0 and none of the output its
+  callback writes: the runtime counted fetches, timers and its own calls as
+  live work, not the engine's. Such a call is live until its callback, as
+  Node's active requests keep its event loop. Small calls finished in time
+  unless the machine was busy.
 - Security: a D1 binding under `wrangler dev` is a database of its own (a
   Durable Object facet of the session, its own SQLite), as on Cloudflare.
   It ran its statements in the session's own database, and a table name it
