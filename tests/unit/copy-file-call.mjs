@@ -194,6 +194,39 @@ await check('a source repointed while its lookup awaits a mount is refused, not 
   assert.equal(result.error?.errno, 'ESTALE', String(result.error?.message));
 });
 
+await check('a source repointed, before the commit, into a mount directory the copier may not search is refused, not read from a row the mount covers', async () => {
+  const { raw, kernel, user } = engine();
+  user.writeFile('home/user/plain', 'plain');
+  kernel.mkdir('m');
+  kernel.mkdir('s/locked', { recursive: true });
+  kernel.writeFile('s/locked/f', 'hidden');
+  const files = new ProcessFiles(raw);
+  const awaiting = new MemoryVFS({ uid: USER.uid, gid: USER.gid });
+  awaiting.symlink('/home/user/plain', '/out');
+  let pause = null;
+  const reached = Promise.withResolvers();
+  files.vfs.mount('/m', asyncOnly(awaiting, { deep: true, beforeCall: async (method, args) => {
+    if (pause !== null && String(args[0]).endsWith('out')) { const gate = pause; pause = null; reached.resolve(); await gate; }
+  } }));
+  const locked = new MemoryVFS({ uid: 0, gid: 0 });
+  locked.mkdir('/locked', { mode: 0o700 });
+  locked.writeFile('/locked/f', enc.encode('mounted'));
+  files.vfs.mount('/s', locked);
+  user.symlink('/m/out', 'home/user/alias');
+  const release = Promise.withResolvers();
+  pause = release.promise;
+  const pending = wave(files, user, [{ call: 'copyFile', path: 'home/user/dst', from: 'home/user/alias' }]);
+  await reached.promise;
+  user.unlink('home/user/alias');
+  user.symlink('/s/locked/f', 'home/user/alias');
+  release.resolve();
+  const result = await pending;
+  const dst = user.exists('home/user/dst') ? text(user.readFile('home/user/dst')) : null;
+  assert.notEqual(dst, 'hidden', 'the row the mount covers is never copied');
+  assert.equal(result.ok, false, `refused, not copied (dst ${dst})`);
+  assert.equal(result.error?.errno, 'EACCES', String(result.error?.message));
+});
+
 // ── over a file there: its write is authorized by its own mode, then the copy's mode is set ──
 await check('a read-only mounted source over a writable file here: the bytes, then the source\'s mode', async () => {
   const { raw, user } = engine();
