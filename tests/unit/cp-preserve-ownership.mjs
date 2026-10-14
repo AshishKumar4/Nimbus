@@ -68,10 +68,10 @@ try {
   console.log('  ✓ cp -p as root: a new and an overwritten file keep owner, mode and mtime');
 
   // Root, a merge into an existing tree, and a new tree.
-  kernel.mkdir('srv/t');
-  const merged = await sh('sudo cp -a /srv/s/. /srv/t/');
+  kernel.mkdir('srv/t/s', { recursive: true });
+  const merged = await sh('sudo cp -a /srv/s /srv/t');
   assert.equal(merged.code, 0, merged.err);
-  assert.deepEqual([meta('srv/t/f'), meta('srv/t/sub'), meta('srv/t/sub/g'), meta('srv/t/l')], [file, dir, file, link],
+  assert.deepEqual([meta('srv/t/s/f'), meta('srv/t/s/sub'), meta('srv/t/s/sub/g'), meta('srv/t/s/l')], [file, dir, file, link],
     'cp -a as root into an existing tree: every entry, the link too, keeps its own');
   const fresh = await sh('sudo cp -a /srv/s /srv/n');
   assert.equal(fresh.code, 0, fresh.err);
