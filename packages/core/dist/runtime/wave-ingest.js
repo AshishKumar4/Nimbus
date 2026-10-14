@@ -502,15 +502,13 @@ export class WaveIngest {
             progress.sequence = { cursor: seq };
             applying = null;
         };
-        /** Where `named` leads now, its leaf followed, as a key here; null when the lookup waits on a mount or lands on one. */
+        /**
+         * Where `named` leads now, its leaf followed, as a key here; null when
+         * the lookup waits on a mount or lands on one. The namespace's refusal
+         * (EACCES, ENXIO, ELOOP) is the copy's: it throws.
+         */
         const followedHere = (named) => {
-            let answer;
-            try {
-                answer = scope.asWriter(() => router.resolveDirectory('/' + named, cred, signal));
-            }
-            catch {
-                return named;
-            }
+            const answer = scope.asWriter(() => router.resolveDirectory('/' + named, cred, signal));
             if (typeof answer !== 'string') {
                 answer.catch(() => { });
                 return null;
@@ -538,7 +536,14 @@ export class WaveIngest {
                 const op = calls[at].op;
                 if (op.type !== 'call' || op.call.call !== 'copyFile')
                     continue;
-                const bound = { path: followedHere(op.call.path), from: followedHere(op.call.from) };
+                let bound;
+                try {
+                    bound = { path: followedHere(op.call.path), from: followedHere(op.call.from) };
+                }
+                catch (error) {
+                    stale = { at, error };
+                    break;
+                }
                 if (bound.path === null || bound.from === null) {
                     stale = { at, error: vfsError('ESTALE', op.call.path, 'a name the copy was placed by now leads elsewhere') };
                     break;
