@@ -99,7 +99,8 @@ import { residentCellCost } from '../vfs/resident/cell-cost.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES, SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES } from '@nimbus-sh/platform/limits.js';
 import { CRED_KERNEL, isNativeBinPath, launchNamedPaths, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { acquireSupervisorAllocation, acquireSupervisorCopyAllocation, readSupervisorAllocationBudget, tryAcquireSupervisorAllocation, tryAcquireSupervisorCopyAllocation, } from '@nimbus-sh/platform/heavy-alloc-coord.js';
-import { streamedWasmImageDigest, wasmImageDigest } from './wasm-image-digest.js';
+import { streamedWasmImageDigest } from './wasm-image-digest.js';
+import { wasmImageDigest } from './wasm-image-key.js';
 import { prefetchBundleStart, prefetchBundleEnd, setPrefetchCacheBytes, } from '@nimbus-sh/platform/diag-counters.js';
 const launchAdapters = new WeakMap();
 /** The exact type of `entry` in `dir` on a launch's fs, lstat'ing it where its listing could not type it. */
@@ -4823,6 +4824,8 @@ export class FacetManager {
      * memory only grows.
      */
     esbuild = null;
+    /** The store `_transformStore` opened over the current VFS and esbuild service; their setters drop it. */
+    transformStore;
     /**
      * Prefetch-bundle cache. buildPrefetchBundle does a full VFS reachable-set
      * walk + greedy oversample + the module pass on EVERY foreground
@@ -5246,7 +5249,7 @@ export class FacetManager {
     /** The authority is the caller's: a session composes exactly one, and the
      *  manager credentials its processes through that one rather than a second
      *  authority over the same disk. */
-    setVfs(vfs, filesystem) { this.vfs = vfs; this.filesystem = filesystem; }
+    setVfs(vfs, filesystem) { this.vfs = vfs; this.filesystem = filesystem; this.transformStore = undefined; }
     /**
      * Send what a released resident's write log still holds (it was killed,
      * ran out of memory or CPU, or ended before its log was answered), as the
@@ -5340,7 +5343,7 @@ export class FacetManager {
         return fs;
     }
     /** Give the bundle's module pass the host's esbuild, as composeFacetManager does. */
-    setEsbuildService(esbuild) { this.esbuild = esbuild; }
+    setEsbuildService(esbuild) { this.esbuild = esbuild; this.transformStore = undefined; }
     /**
      * The entry script as the facet compiles it: each dynamic `import()` routed
      * to the process's ESM loader, with the entry's own URL as the parent (Node
@@ -5361,14 +5364,15 @@ export class FacetManager {
      * session's database, admitted through its storage ledger, bound to the
      * esbuild service's transform host. None when the host has no identity (a
      * result could not be told apart from another host's) or there is no
-     * filesystem to admit against.
+     * filesystem to admit against. One store serves every launch and module
+     * until either changes: it opens its schema once, not per transform.
      */
     _transformStore() {
         const hostId = this.esbuild?.transformHostId;
         const sql = this.ctx.storage.sql;
         if (!hostId || !sql || !this.vfs)
             return undefined;
-        return new TransformStore(sql, this.ctx.storage, this.vfs.ledger, hostId);
+        return this.transformStore ??= new TransformStore(sql, this.ctx.storage, this.vfs.ledger, hostId);
     }
     /**
      * The pacer every launch is built under: the session's alarm-driven turn
@@ -7441,9 +7445,20 @@ export class FacetManager {
                 'deployment is missing the static-assets binding');
         }
         const command = opts.command || `opencode ${opts.argv.join(' ')}`.trim();
-        const attached = mode === 'attached';
         const entry = this.processes.spawn(command, ['opencode', ...opts.argv], opts.cwd, { parentPid: opts.invokerPid });
+        // A preparation that fails ends the process it spawned: no caller holds
+        // its pid yet to end it, and it never started.
+        try {
+            return { pid: entry.pid, stageSpec: await this._stageOpencodeSpec(entry, opts, mode) };
+        }
+        catch (error) {
+            this._end(entry.pid, { code: 1, cause: `staging \`${command}\` failed: ${errorMessage(error)}` });
+            throw error;
+        }
+    }
+    async _stageOpencodeSpec(entry, opts, mode) {
         const pid = entry.pid;
+        const attached = mode === 'attached';
         // attached TUI + headless serve are resident long-running processes; only the
         // attached TUI grabs the terminal (raw-mode stdin + live geometry).
         if (mode !== 'oneshot')
@@ -7485,7 +7500,7 @@ export class FacetManager {
             assertStagedBundleFitsRpcPayload(serialized, gathered.bundle);
             return { vfsState: gathered, vfsBundle: serialized };
         }, () => this._launchEnds(entry.pid));
-        const stageSpec = {
+        return {
             mode,
             argv: opts.argv,
             env: runnerEnv,
@@ -7495,7 +7510,6 @@ export class FacetManager {
             vfsBundle,
             vfsCursor: serializeFacetVfsCursor(vfsState.cursor),
         };
-        return { pid, stageSpec };
     }
     /**
      * Run a headless `opencode serve` as a resident, routeable server facet. The
