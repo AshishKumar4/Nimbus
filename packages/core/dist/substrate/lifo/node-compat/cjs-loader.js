@@ -86,12 +86,14 @@ const rollupNativeStub = {
 };
 /**
  * A loader over `context`'s filesystem. `scope` is the program's console and
- * process, every module's, as Node has one process; require('process') is it.
+ * process, every module's, as Node has one process; require('process') and
+ * require('console') are them.
  */
 export function createCjsLoader(context, scope, options = {}) {
     const filesystem = context.filesystem;
     const moduleMap = createModuleMap(context);
     moduleMap.process = () => scope.process;
+    moduleMap.console = () => scope.console;
     const builtins = new Map();
     let native;
     const cache = Object.create(null);
