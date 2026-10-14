@@ -18,7 +18,10 @@
 // builtin's went to the realm's own process, the host's stderr, and lifo's
 // emitWarning wrote "Warning: <message>" and told no listener. One process:
 // a module's `process` is globalThis.process and require('process'), which
-// were each a process of their own.
+// were each a process of their own. A builtin's warning goes through the
+// program's emitWarning as it is when the warning is raised (a program may
+// replace it), and an Error warning whose toString is not callable is written
+// as Error.prototype.toString writes it.
 //
 // The engine's own events (X3b): an emitter, the program's or lifo's
 // (streams, watchers, requests, readline, the process itself), is the
@@ -121,6 +124,14 @@ const programs = {
     "console.log(require('readline').createInterface({ input: new (require('stream').PassThrough)() }) instanceof EventEmitter);",
     "console.log(process instanceof EventEmitter, typeof process.prependOnceListener, process.getMaxListeners());",
     "require('child_process').exec('true'); console.log('exec without a callback');",
+  ]),
+  'intercept.js': probes([
+    "const util = require('util');",
+    'const original = process.emitWarning;',
+  ], [
+    "process.emitWarning = (...args) => console.log('intercepted', args[0], args[1], args[2]); util.deprecate(() => 1, 'old api', 'DEP_X')(); process.emitWarning = original;",
+    "const w = new Error('plain'); w.toString = undefined; process.emitWarning(w);",
+    "const v = new Error('custom'); v.toString = () => 'CustomText'; process.emitWarning(v);",
   ]),
 };
 /** Node writes its pid in a warning: `(node:<pid>)`. */

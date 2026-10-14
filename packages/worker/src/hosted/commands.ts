@@ -1,7 +1,7 @@
 import { Shell, createCurlCommand, createNpmCommand, NPM_VERSION, createTopCommand, createWatchCommand, createHelpCommand } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { createKillCommand, type HostProcessSignals } from '@nimbus-sh/core/substrate/lifo/commands/system/kill.js';
 import { installSummary } from '@nimbus-sh/core/substrate/lifo/commands/system/npm-log.js';
-import { exitCodeForSignal, signalDisposition, type SignalAbortReason } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
+import { exitCodeForSignal, signalAbortReason, signalDisposition } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import type { Command, CommandContext } from '@nimbus-sh/core/substrate/lifo/commands/types.js';
 import type { ShellCommandIdentity } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
 import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
@@ -61,7 +61,6 @@ export async function registerHostedCommands(self: RuntimeCommandHost, workspace
   const kernel = workspace.kernel;
   const shell = workspace.shell;
   const registry = workspace.registry;
-  const processRegistry = kernel.processRegistry;
   const env = workspace.env;
   const terminal = self.terminal;
   if (!terminal) throw new Error('runtime terminal is not initialized');
@@ -72,18 +71,25 @@ export async function registerHostedCommands(self: RuntimeCommandHost, workspace
     get cred() { return self.processes.cred(pid); },
     setUmask: (mask) => self.processes.setUmask(pid, mask),
     runAs: runAsProcess,
-    accountWork: (worker: number) => self.processes.beginWork(worker),
-    holdWork: (worker: number, stop: (reason?: SignalAbortReason) => void, signal?: AbortSignal) => self.processes.holdWork(worker, stop, signal),
   });
-  // `kill` is the shell's builtin; the session's own processes (resident
-  // servers, the vite shim), numbered in this table's pid space, are reached
+  // `kill` is the shell's builtin; the session's processes past its jobs
+  // (resident servers, the vite shim, another shell's jobs) are reached
   // through here, and their teardown releases what they hold.
   const hostSignals: HostProcessSignals = {
     isLive: (pid) => self._viteShimPid === pid || self.processes.get(pid)?.state === 'running',
-    async signal(pid, signal, stderr) {
+    async signal(pid, signal, stderr, caller) {
+      if (!self.processes.maySignal(caller, pid)) return 'not-permitted';
+      if (signal === '0') return 'delivered';
+      // The terminal's shell outlives every line it runs.
+      if (pid === workspace.shellProcessPid) return 'not-permitted';
+      const disposition = signalDisposition(signal);
+      // A default-ignored signal to a process of the session's own (a shell's
+      // job, an exec) does nothing, as on Linux; a resident's program may
+      // handle it, which nothing here can deliver.
+      if (disposition === 'ignore' && self._viteShimPid !== pid && !facetMgr.hasResidentProcess(pid)) return 'delivered';
       // Ending one is the only thing a resident's teardown can do: it has no
       // stop, continue or handler delivery behind it.
-      if (signalDisposition(signal) !== 'terminate') return 'unsupported';
+      if (disposition !== 'terminate') return 'unsupported';
       // runtime primitive support (P11): the vite shim PID (registered by
       // P5's long-running spawn) also tears down the in-process
       // viteDevServer — facetManager.kill only handles real Worker-Loader
@@ -107,7 +113,7 @@ export async function registerHostedCommands(self: RuntimeCommandHost, workspace
         self._viteShimPort = null;
         return 'delivered';
       }
-      return facetMgr.kill(pid, signal) ? 'delivered' : 'no-such-process';
+      return facetMgr.kill(pid, signal, signalAbortReason(signal)) ? 'delivered' : 'no-such-process';
     },
   };
   shell.setHostProcessSignals(hostSignals);
@@ -967,7 +973,7 @@ const shellEntrypointExecutor = {
         workspace.filesystem,
         registry,
         { ...env, ...(options?.env || {}) },
-        processRegistry,
+        self.processes,
         identity,
       );
       childShell.setHostProcessSignals(hostSignals);
@@ -1606,9 +1612,9 @@ registry.register('jobs', async (ctx: any) => {
   return 0;
 });
 
-registry.register('kill', createKillCommand(processRegistry, hostSignals));
+registry.register('kill', createKillCommand(hostSignals));
 
-registry.register('top', createTopCommand(processRegistry));
+registry.register('top', createTopCommand(self.processes));
 registry.register('watch', createWatchCommand(registry));
 registry.register('help', createHelpCommand(registry, () => shell.builtinNames()));
 

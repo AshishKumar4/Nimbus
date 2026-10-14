@@ -40,17 +40,17 @@ try {
   assert.equal(waited.stderr, '');
   const started = await ws.shell.execute('rm -f /tmp/signal-release; hold() { while [ ! -e /tmp/signal-release ]; do :; done; }; hold & echo $!');
   const pid = Number(started.stdout.trim());
-  const process = ws.shell.getProcessRegistry().get(pid);
+  const job = ws.shell.getJobTable().byPid(pid);
   for (const signal of ['STOP', 'TSTP', 'TTIN', 'TTOU']) {
     assert.equal((await ws.shell.execute(`kill -${signal} ${pid}`)).exitCode, 0);
-    assert.equal(process.status, 'stopped', signal);
-    assert.equal(process.abortController.signal.aborted, false, `${signal} must not terminate`);
+    assert.equal(job.status, 'stopped', signal);
+    assert.equal(ws.processes.get(pid)?.state, 'running', `${signal} must not terminate`);
     assert.equal((await ws.shell.execute(`kill -CONT ${pid}`)).exitCode, 0);
-    assert.equal(process.status, 'running');
-    assert.equal(process.abortController.signal.aborted, false);
+    assert.equal(job.status, 'running');
+    assert.equal(ws.processes.get(pid)?.state, 'running');
   }
   await ws.fs.writeFile('/tmp/signal-release', 'release');
-  assert.equal(await process.promise, 0);
+  assert.equal(await job.promise, 0);
 } finally {
   await ws.close();
 }

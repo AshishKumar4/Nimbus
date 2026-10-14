@@ -29,10 +29,9 @@ export { NPM_VERSION, createNpmCommand, createNpxCommand } from './commands/syst
 // Shell
 export { Shell } from './shell/Shell.js';
 export { JobTable } from './shell/jobs.js';
-export { ProcessRegistry } from './shell/ProcessRegistry.js';
+export type { Job, ShellProcesses } from './shell/jobs.js';
 export { lex } from './shell/lexer.js';
 export { parse, ParseError } from './shell/parser.js';
-export type { Process, SpawnOptions } from './shell/ProcessRegistry.js';
 export type {
 	ASTNode,
 	CaseNode,

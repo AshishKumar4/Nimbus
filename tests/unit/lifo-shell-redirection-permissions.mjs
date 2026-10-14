@@ -108,10 +108,12 @@ try {
     releaseProcess: (pid) => authority.releaseProcess(pid),
   };
   const asyncBox = await testBox({ harness, vfs: rawVfs });
+  // The shell's process, which its background jobs are children of.
+  const shellPid = asyncBox.workspace.processes.spawn('sh', ['sh'], '/work', { cred: USER }).pid;
   const shell = new Shell(
     new HeadlessTerminal(), remote, asyncBox.commands.registry,
-    { HOME: '/work', PATH: '/bin', USER: 'user' }, asyncBox.shell.getProcessRegistry(),
-    { pid: 91, cred: USER, setUmask() {}, runAs: async () => ({ status: 126, signal: null }) },
+    { HOME: '/work', PATH: '/bin', USER: 'user' }, asyncBox.workspace.processes,
+    { pid: shellPid, cred: USER, setUmask() {}, runAs: async () => ({ status: 126, signal: null }) },
   );
   try {
     const result = await shell.execute(
@@ -217,7 +219,7 @@ try {
     for (let turn = 0; turn < 100 && closes.length < opens.length; turn++) await new Promise((resolve) => setTimeout(resolve, 0));
     assert.deepEqual(closes.sort(), opens.sort(), 'the redirected stdout closed with the last shell holding it');
     assert.equal(root.readFileString('/work/j'), 'late\n', 'after the job wrote through it');
-    await authority.releaseProcess(91);
+    await authority.releaseProcess(shellPid);
   } finally {
     asyncBox.destroy();
   }

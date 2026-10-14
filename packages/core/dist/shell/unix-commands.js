@@ -14,6 +14,7 @@ import { NIMBUS_VERSION } from '../constants.js';
 import { resolveContext } from '../substrate/lifo/commands/registry.js';
 import { resolutionOf, searchPath } from './exec-dispatch.js';
 import { BASH_BUILTINS } from '../substrate/lifo/shell/bash-builtins.js';
+import { evaluateTest } from '../substrate/lifo/shell/test-builtin.js';
 import sedCommand from '../substrate/lifo/commands/text/sed.js';
 import grepCommand from '../substrate/lifo/commands/text/grep.js';
 import tailCommand from '../substrate/lifo/commands/text/tail.js';
@@ -1686,6 +1687,12 @@ function mkAwk(vfs) {
         return 0;
     };
 }
+/** fd 0 of a command xargs runs: /dev/null, as GNU xargs gives it without -o. */
+const XARGS_CHILD_STDIN = {
+    read: async () => null,
+    readAll: async () => '',
+    readBytes: async () => null,
+};
 /**
  * shell compatibility (2026-05-11): real xargs implementation.
  *
@@ -1693,12 +1700,13 @@ function mkAwk(vfs) {
  * returned 0. Real xargs runs the command, possibly batched (-n),
  * with arguments substituted (-I).
  *
- * We do cross-command dispatch through the shell registry, so xargs can drive
- * `echo`, `cat`, `rm`, `seq`, lazy-loaded builtins — anything in the registry. The execution
- * runs IN-SUPERVISOR (not through facet spawn) which means it
- * works for pure-builtins but NOT for facet-direct commands like
- * `node`, `git`, `npm` (the registry resolver returns those by
- * name but invoking them requires the cp/facet pipeline).
+ * Each batch of arguments is a child process (`runAs`, as find's -exec):
+ * any program the shell runs (a registry command, sh, a runtime), with
+ * xargs's stdout and stderr and what the shell knows of them, and
+ * /dev/null for stdin. GNU's statuses: a program that cannot be run ends
+ * xargs with 127 (126 when it may not run), one a signal ends with 125 and
+ * one that exits 255 with 124, each after GNU's message; any other failure
+ * makes xargs's status 123 once every batch has run.
  *
  * Supported flags:
  *   -n NUM        run command with at most NUM args per invocation
@@ -1708,7 +1716,7 @@ function mkAwk(vfs) {
  *
  * Unsupported (document as gap): -P (parallel), -L (per-line), -p (prompt).
  */
-function mkXargs(vfs, registry) {
+function mkXargs() {
     return async (ctx) => {
         // NOT trimmed: `-0` exists so a name may carry the whitespace a split
         // would eat, and trimming the stream rewrites its first and last item.
@@ -1756,68 +1764,57 @@ function mkXargs(vfs, registry) {
         const items = nullSep
             ? input.split('\u0000').filter(Boolean)
             : input.split(/\s+/).filter(Boolean);
-        // Resolve target command from registry (handles both eager + lazy maps).
-        let target;
-        try {
-            target = asResolvedCommand(await registry.resolve(cmdName, resolveContext(ctx.cwd, ctx.env, ctx.vfs)));
-        }
-        catch {
-            target = null;
-        }
-        if (!target) {
-            // Defer to write-to-stderr; mimic real xargs which would exec(2) and fail.
-            (await ctx.stderr.write(`xargs: ${cmdName}: command not found\n`));
-            return 127;
-        }
-        // Run in batches.
-        const newCtx = (newArgs) => ({
+        // The parent each child is started from: xargs itself, but for its stdin.
+        const parent = {
             pid: ctx.pid,
             cred: ctx.cred,
-            args: newArgs,
+            args: ctx.args,
             env: ctx.env,
             cwd: ctx.cwd,
             vfs: ctx.vfs,
             stdout: ctx.stdout,
             stderr: ctx.stderr,
-            stdin: '', // xargs doesn't pipe its own stdin to children
             signal: ctx.signal,
             setUmask: ctx.setUmask,
             runAs: ctx.runAs,
             execInterpreterDepth: ctx.execInterpreterDepth,
-        });
+            stdin: XARGS_CHILD_STDIN,
+            isFdTerminal: (fd) => fd !== 0 && (ctx.isFdTerminal?.(fd) ?? false),
+            isFdPipe: (fd) => fd !== 0 && (ctx.isFdPipe?.(fd) ?? false),
+        };
+        const batches = replaceTok !== null
+            // -I: one invocation per item, the token replaced in the initial args.
+            ? items.map((item) => cmdArgsInitial.map((a) => a.split(replaceTok).join(item)))
+            : (() => {
+                // -n N (or every item at once): items appended to the initial args.
+                const step = Number.isFinite(batchSize) ? batchSize : items.length;
+                const out = [];
+                for (let i = 0; i < items.length; i += step)
+                    out.push([...cmdArgsInitial, ...items.slice(i, i + step)]);
+                return out;
+            })();
         let exit = 0;
-        if (replaceTok) {
-            // -I: one invocation per item, replacing token in initial args.
-            for (const item of items) {
-                const subbed = cmdArgsInitial.map(a => a.split(replaceTok).join(item));
-                try {
-                    const code = await target(newCtx(subbed));
-                    if (typeof code === 'number' && code !== 0)
-                        exit = code;
-                }
-                catch (e) {
-                    (await ctx.stderr.write(`xargs: ${cmdName}: ${errorText(e)}\n`));
-                    exit = 1;
-                }
+        for (const batch of batches) {
+            let ended;
+            try {
+                ended = await ctx.runAs(ctx.cred, [cmdName, ...batch], { parent });
             }
-        }
-        else {
-            // -n N (or unlimited): batch items, append to initial args.
-            const step = Number.isFinite(batchSize) ? batchSize : items.length;
-            for (let i = 0; i < items.length; i += step) {
-                const batch = items.slice(i, i + step);
-                try {
-                    const code = await target(newCtx([...cmdArgsInitial, ...batch]));
-                    if (typeof code === 'number' && code !== 0)
-                        exit = code;
-                }
-                catch (e) {
-                    (await ctx.stderr.write(`xargs: ${cmdName}: ${errorText(e)}\n`));
-                    exit = 1;
-                }
-                if (!Number.isFinite(batchSize))
-                    break; // single batch when no -n
+            catch (error) {
+                if (!isVfsError(error) || error.syscall !== 'execvp')
+                    throw error;
+                (await ctx.stderr.write(`xargs: ${cmdName}: ${VFS_STRERROR[error.code]}\n`));
+                return error.code === 'EACCES' ? 126 : 127;
             }
+            if (ended.signal !== null) {
+                (await ctx.stderr.write(`xargs: ${cmdName}: terminated by signal ${ended.status - 128}\n`));
+                return 125;
+            }
+            if (ended.status === 255) {
+                (await ctx.stderr.write(`xargs: ${cmdName}: exited with status 255; aborting\n`));
+                return 124;
+            }
+            if (ended.status !== 0)
+                exit = 123;
         }
         return exit;
     };
@@ -3063,42 +3060,9 @@ function mkId(sqliteVfs) {
         return 0;
     };
 }
-function mkTest(sqliteVfs) {
-    return async (ctx) => {
-        const args = ctx.args.filter((arg) => arg !== ']');
-        if (args.length === 0)
-            return 1;
-        const vfs = ctx.vfs;
-        const path = resolvePath(ctx.cwd, args[1] ?? '');
-        try {
-            if (args[0] === '-r')
-                (await vfs.access(path, 0o4));
-            else if (args[0] === '-w')
-                (await vfs.access(path, 0o2));
-            else if (args[0] === '-x')
-                (await vfs.access(path, 0o1));
-            else if (args[0] === '-f')
-                return (await statOrThrow(vfs, path)).type === 'file' ? 0 : 1;
-            else if (args[0] === '-d')
-                return (await statOrThrow(vfs, path)).type === 'directory' ? 0 : 1;
-            else if (args[0] === '-e')
-                (await statOrThrow(vfs, path));
-            else if (args[0] === '-z')
-                return (!args[1] || args[1] === '') ? 0 : 1;
-            else if (args[0] === '-n')
-                return args[1] ? 0 : 1;
-            else if (args[1] === '=')
-                return args[0] === args[2] ? 0 : 1;
-            else if (args[1] === '!=')
-                return args[0] !== args[2] ? 0 : 1;
-            else
-                return args[0] ? 0 : 1;
-            return 0;
-        }
-        catch {
-            return 1;
-        }
-    };
+/** test and [ run by name: the builtin's evaluator, so both answer as one program does. */
+function mkTest(bracket) {
+    return (ctx) => evaluateTest(ctx.args, ctx.vfs, ctx.stderr, { cwd: ctx.cwd, isFdTerminal: ctx.isFdTerminal }, bracket);
 }
 /**
  * realpath, as GNU coreutils 9.7: -e (every component must exist), -m (none
@@ -5120,7 +5084,7 @@ export function registerUnixCommands(registry, sqliteVfs) {
     registry.register('uniq', textCommand(uniqCommand));
     registry.register('sed', textCommand(sedCommand));
     registry.register('awk', wrap(withInvocationVfs(mkAwk)));
-    registry.register('xargs', wrap(withInvocationVfs((vfs) => mkXargs(vfs, registry))));
+    registry.register('xargs', wrap(withInvocationVfs(() => mkXargs())));
     registry.register('tee', textCommand(teeCommand));
     registry.register('du', wrap(withInvocationVfs(mkDu)));
     // Registry-level echo + cat for xargs cross-command dispatch.
@@ -5185,8 +5149,8 @@ export function registerUnixCommands(registry, sqliteVfs) {
         }
         return 0;
     }));
-    registry.register('test', wrap(mkTest(sqliteVfs)));
-    registry.register('[', wrap(mkTest(sqliteVfs)));
+    registry.register('test', wrap(mkTest(false)));
+    registry.register('[', wrap(mkTest(true)));
     // read — read a line (stub, returns empty for non-interactive)
     // shell-polish (2026-05-12): `read VAR` is registered here as a
     // NO-OP fallback (matches the pre-existing stub behaviour). The

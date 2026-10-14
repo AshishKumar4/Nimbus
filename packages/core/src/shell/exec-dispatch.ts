@@ -26,7 +26,7 @@ import { resolveContext, type CommandRegistry, type ResolveContext } from '../su
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import { X_OK, type ProcessView } from '../runtime/process-files.js';
 import { normalizeVfsPath, resolveVfsPath } from '../vfs/path.js';
-import { isVfsError } from '../vfs/vfs-error.js';
+import { isVfsError, type VfsErrorCode } from '../vfs/vfs-error.js';
 
 export interface ShebangLine {
   /** Interpreter as written (e.g. "/usr/bin/env" resolved → "node"). */
@@ -178,6 +178,7 @@ export async function searchPath(name: string, from: ResolveContext): Promise<Pa
  */
 export type Resolution =
   | { readonly kind: 'program'; readonly path: string }
+  | { readonly kind: 'directory' }
   | { readonly kind: 'failed' };
 
 const resolutions = new WeakMap<object, Resolution>();
@@ -185,6 +186,27 @@ const resolutions = new WeakMap<object, Resolution>();
 /** How `command` was resolved, when this resolver gave it; undefined for a registered command. */
 export function resolutionOf(command: object): Resolution | undefined {
   return resolutions.get(command);
+}
+
+/**
+ * What execve(2) refuses `command`, what `name` resolved to from `cwd`, as
+ * `view` sees it: EACCES for a directory, the error its X_OK check meets for
+ * a path name's file or the one a PATH search found; null when it may run
+ * (a registered command by its name always may).
+ */
+export async function execRefusal(name: string, cwd: string, command: object, view: Pick<ProcessView, 'access'>): Promise<VfsErrorCode | null> {
+  const resolution = resolutions.get(command);
+  if (resolution?.kind === 'directory') return 'EACCES';
+  const path = name.includes('/') ? '/' + resolveVfsPath(name, normalizeVfsPath(cwd))
+    : resolution?.kind === 'program' ? resolution.path : null;
+  if (path === null) return null;
+  try {
+    await view.access(path, X_OK);
+    return null;
+  } catch (error) {
+    if (isVfsError(error)) return error.code;
+    throw error;
+  }
 }
 
 /**
@@ -260,10 +282,12 @@ export function installPathExecResolver(
     }
     if (inspected === null) return undefined;
     if (inspected === 'directory') {
-      return async (ctx): Promise<number> => {
+      const directory: Command = async (ctx): Promise<number> => {
         (await ctx.stderr.write(`${name}: Is a directory\n`));
         return 126;
       };
+      resolutions.set(directory, { kind: 'directory' });
+      return directory;
     }
 
     const { mode, head } = inspected;

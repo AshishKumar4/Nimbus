@@ -1,5 +1,4 @@
 import type { ITerminal } from '../terminal/ITerminal.js';
-import type { HeldProcessWork } from '../../../runtime/session-process-supervisor.js';
 import { ProcessView } from '../../../runtime/process-files.js';
 import type { CommandRegistry } from '../commands/registry.js';
 import type { CommandInputStream } from '../commands/types.js';
@@ -8,9 +7,7 @@ import { type NimbusFilesystemAuthority, type VfsCred } from '../../../runtime/o
 import type { TerminalInputStream } from '../commands/types.js';
 import { type ProgramSpec, type TerminalFdState } from './interpreter.js';
 import { type ShellOptions } from './state.js';
-import { JobTable } from './jobs.js';
-import { ProcessRegistry } from './ProcessRegistry.js';
-import { type SignalAbortReason } from './signals.js';
+import { JobTable, type ShellProcesses } from './jobs.js';
 import type { HostProcessSignals } from '../commands/system/kill.js';
 import { ShellInputSubmission, type ShellQueuedInput } from '../../../shell/input-submission.js';
 import type { ProcessExitNotice, ProcessExitNoticeSource } from '../../../runtime/process-exit-notices.js';
@@ -47,25 +44,16 @@ export interface ExecuteOptions {
     commandContext?: Record<string, unknown>;
     runAs?: CommandRunAsHost;
 }
+/**
+ * The process a shell runs its lines as, a live entry of its process table.
+ * Each line is work held for it there (SessionProcessSupervisor.holdWork), so
+ * a kill of it stops the line, and each command counts as its work.
+ */
 export interface ShellCommandIdentity {
     pid: number;
     cred: VfsCred;
     setUmask(mask: number): void;
     runAs?: CommandRunAsHost;
-    /**
-     * A unit of process `pid`'s own work, while a command runs as it
-     * (interpreter CommandIdentity.beginWork; SessionProcessSupervisor.beginWork).
-     * Session-wide: every command counts for the pid it runs as, whichever
-     * shell runs it, so no command of a process goes uncounted.
-     */
-    accountWork?(pid: number): () => void;
-    /**
-     * A line this shell runs on process `pid`'s descriptors, until the
-     * returned function is called: `stop` ends it (SessionProcessSupervisor
-     * holdWork). What the pid bound is released after the line has closed
-     * what it opened, however the process ends.
-     */
-    holdWork?(pid: number, stop: (reason?: SignalAbortReason) => void, signal?: AbortSignal): HeldProcessWork;
 }
 export declare class Shell {
     readonly filesystem: NimbusFilesystemAuthority;
@@ -87,7 +75,8 @@ export declare class Shell {
     private stdinCursorPos;
     private interpreter;
     private historyManager;
-    private processRegistry;
+    /** The session's process table: this shell's process, its jobs, and the work of its lines. */
+    private readonly processes;
     /** The host's own processes, which `kill` reaches by pid (see setHostProcessSignals). */
     private hostProcessSignals;
     private builtins;
@@ -116,7 +105,7 @@ export declare class Shell {
      * as one keystroke rather than three.
      */
     typeAhead: ShellQueuedInput[];
-    constructor(terminal: ITerminal, filesystem: NimbusFilesystemAuthority, registry: CommandRegistry, env: Record<string, string>, processRegistry: ProcessRegistry, commandIdentity?: ShellCommandIdentity);
+    constructor(terminal: ITerminal, filesystem: NimbusFilesystemAuthority, registry: CommandRegistry, env: Record<string, string>, processes: ShellProcesses, commandIdentity?: ShellCommandIdentity);
     /**
      * The command history, oldest first: the one store (HistoryManager, kept
      * in ~/.bash_history) that Up/Down, reverse search, Alt+. and the history
@@ -127,14 +116,13 @@ export declare class Shell {
     builtinNames(): string[];
     getJobTable(): JobTable;
     /**
-     * Let `kill` signal the host's processes: a numeric pid this shell's own
-     * registry does not hold is handed to `host`. Child-shell views read the
-     * shell they were forked from.
+     * Let `kill` signal the host's processes: a numeric pid that names none of
+     * this shell's jobs is handed to `host`. Child-shell views read the shell
+     * they were forked from.
      */
     setHostProcessSignals(host: HostProcessSignals): void;
     /** The host processes `kill` reaches, for a shell built alongside this one. */
     getHostProcessSignals(): HostProcessSignals | undefined;
-    getProcessRegistry(): ProcessRegistry;
     getCwd(): string;
     setCwd(cwd: string): void;
     getEnv(): Record<string, string>;
@@ -224,6 +212,7 @@ export declare class Shell {
     private acceptLine;
     executeLine(line: string, submission?: ShellInputSubmission | undefined): Promise<void>;
     private consumeQueuedStdin;
+    /** Run the rc file at `path`, as a line of this shell's process; a missing one is skipped. */
     sourceFile(path: string): Promise<void>;
     private writeToTerminal;
 }

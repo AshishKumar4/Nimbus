@@ -1,6 +1,6 @@
 import { ROOT_DIRECTORY_MODE, ROOT_INODE } from '../vfs/sqlite-vfs.js';
 import { BUFFERED_WRITE_BYTES, describeMounted, flagsRefusal, openAccess, openFollows, openMounted, reopenMounted } from '../vfs/mounted-description.js';
-import { closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost, settleHeldAt } from './descriptors.js';
+import { closeDescriptions, closeScopeSignal, createDescriptorScope, Descriptors, openFlags, processView, reportLost, settleHeldAt } from './descriptors.js';
 import { WaveIngest } from './wave-ingest.js';
 import { runtimeStatOf } from '../vfs/composite.js';
 import { abandon, andThen, isPromise, readDeclaredSource, readRangeOrWhole, syncValue } from '../vfs/vfs.js';
@@ -35,8 +35,7 @@ export class SqliteRuntimeFsBridge {
     }
     dispose() {
         const lost = closeDescriptions(this.scope);
-        this.scope.closed = true;
-        this.scope.abort.abort();
+        closeScopeSignal(this.scope);
         return andThen(lost, reportLost);
     }
     /**

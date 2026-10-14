@@ -9,9 +9,10 @@
 //     the others;
 //   - the process table and its work and await accounting:
 //     packages/core/src/runtime/session-process-supervisor.ts, driven with
-//     the calls the production paths make, in their order (a shell line, an
-//     element of a pipeline and a background job are each a WorkThread, the
-//     interpreter's, whose commands are its pid's work; FacetManager.exec
+//     the calls the production paths make, in their order (a shell line and
+//     an element of a pipeline are each a WorkThread, the interpreter's,
+//     whose commands are its pid's work; a background job is a process of its
+//     own under its shell, on a WorkThread of its pid; FacetManager.exec
 //     records an await of the program it runs for its invoker, npm's tracked
 //     script an await of its wrapper, and an exit forgets what the process
 //     waited on);
@@ -33,10 +34,11 @@
 //   f  `sh -c 'sleep 1; node x'`: a builtin first, then as s;
 //   n  `sh -c 'npm run build'` with build `node x && true`: a shell awaiting
 //      npm's script wrapper, itself a shell awaiting the program;
-//   g  `sh -c 'node x & sleep 1; wait'`: the program in the background while
-//      a builtin runs, then `wait`. Awaiting it is never the shell's only
-//      work by the session's account, so a family with g that is truly stuck
-//      waits rather than refuses: a known limit, checked for safety only.
+//   g  `sh -c 'node x & sleep 1; wait'`: the program in a background job, a
+//      process awaiting it, while a builtin runs, then `wait`. Awaiting the
+//      job is never the shell's only work by the session's account (`wait` is
+//      a builtin), so a family with g that is truly stuck waits rather than
+//      refuses: a known limit, checked for safety only.
 //   k  `sh -c 'node x | (sleep 1; kill x)'`: the program in one element of a
 //      pipeline, and in the other a builtin, then a `kill` of the program,
 //      begun in the same turn the builtin ends;
@@ -93,7 +95,6 @@ export class CommandsOnly {
   constructor(begin) { this.begin = begin; }
   beginWork() { return this.begin(); }
   fork() { return new CommandsOnly(this.begin); }
-  sibling() { return new CommandsOnly(this.begin); }
   close() {}
 }
 
@@ -105,7 +106,8 @@ const SHELL_KINDS = new Set(['s', 'f', 'n', 'g', 'k', 'K']);
 /**
  * The family's processes, as model records: `id` is a readable label (R is
  * 1; holder i is 10 * (i + 1); its j-th child holder + j + 1; a shell's
- * program its id * 10 + 1, npm's wrapper its id * 10 + 2), `pid` the pid the
+ * program its id * 10 + 1, npm's wrapper its id * 10 + 2, a background job
+ * its id * 10 + 3), `pid` the pid the
  * real process table gives it.
  */
 function build(topology) {
@@ -200,8 +202,9 @@ class Run {
   /**
    * A shell child starts its line, with the accounting the production paths
    * keep: the line is a WorkThread of its pid (Interpreter.executeLine), as
-   * is each element of a pipeline (forked from it) and a background job
-   * (beside it); each command is a unit of work under its thread; exec
+   * is each element of a pipeline (forked from it); a background job is a
+   * process of its own under the shell, on a thread of its pid; each
+   * command is a unit of work under its thread; exec
    * spawns the program under the invoker and records the invoker's await of
    * it; npm's tracked script runs on a shell of its own under its wrapper's
    * pid, and records the command's await of the wrapper.
@@ -230,8 +233,13 @@ class Run {
       return;
     }
     if (s.shell === 'g') {
-      s.job = line.sibling(); // `node x &`
-      this.runProgram(s, s.job);
+      // `node x &`: the job's process runs the program on its own line.
+      const job = { id: s.id * 10 + 3, parent: s.id, kind: 'shell', shell: 'job', phase: 'starting', program: s.program };
+      this.byId.set(job.id, job);
+      this.spawn(job);
+      job.line = this.thread(job.pid);
+      this.runProgram(job, job.line);
+      s.awaits = job.id;
       this.holdEnd(`${s.id}:sleep`, line.beginWork()); // `sleep 1`
       s.phase = 'sleeping';
       return;
@@ -380,8 +388,7 @@ class Run {
     if (parent?.kind === 'shell' && parent.awaits === p.id) {
       // Its command ends with what it awaited (`node x` with x, `npm run` with its script).
       this.runEnds(parent.id);
-      // g's background job ends with its one command, k's first element too.
-      parent.job?.close();
+      // k's first element ends with its one command.
       parent.element?.close();
       // g's background job may end while its `sleep` runs: `wait` will return at once.
       if (parent.phase === 'sleeping') parent.backgroundDone = true;

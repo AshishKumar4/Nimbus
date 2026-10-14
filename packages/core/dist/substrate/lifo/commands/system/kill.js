@@ -1,7 +1,11 @@
 import { resolveJobSpec } from '../../shell/jobs.js';
 import { formatSignalList, parseSignalName, signalOperand } from '../../shell/signals.js';
 const USAGE = 'kill: usage: kill [-s sigspec | -n signum | -sigspec] pid | jobspec ... or kill -l [sigspec]\n';
-export async function runKill(ctx, processes, jobs, host) {
+/**
+ * `kill` from `caller`, by the shell's builtin with its `jobs`, or as a
+ * program, which has no jobs and finds a jobspec names none (procps kill).
+ */
+export async function runKill(ctx, caller, jobs, host) {
     const args = ctx.args;
     if (args[0] === '-l' || args[0] === '-L' || args[0] === '--list') {
         if (args.length === 1) {
@@ -50,58 +54,50 @@ export async function runKill(ctx, processes, jobs, host) {
     }
     let status = 0;
     for (const target of args.slice(index)) {
-        let pid;
         const byJob = target.startsWith('%');
         if (byJob) {
-            const job = resolveJobSpec(target, jobs);
+            const job = resolveJobSpec(target, jobs?.list() ?? []);
             if (!job || job === 'ambiguous') {
                 await ctx.stderr.write(`kill: ${target}: ${job === 'ambiguous' ? 'ambiguous job spec' : 'no such job'}\n`);
                 status = 1;
                 continue;
             }
-            pid = job.pid;
+            if (jobs?.signal(job, signal, caller) === false) {
+                await ctx.stderr.write(`kill: (${job.pid}) - Operation not permitted\n`);
+                status = 1;
+            }
+            continue;
         }
-        else if (/^\d+$/.test(target))
-            pid = Number(target);
-        else {
+        if (!/^\d+$/.test(target)) {
             await ctx.stderr.write(`kill: \`${target}': not a pid or valid job spec\n`);
             status = 1;
             continue;
         }
-        const proc = pid === undefined ? undefined : processes.get(pid);
-        if (!proc || !byJob && proc.status === 'zombie') {
-            if (!byJob && pid !== undefined && host?.isLive(pid) === true) {
-                if (signal === '0')
-                    continue;
-                const result = await host.signal(pid, signal, ctx.stderr);
-                if (result === 'delivered')
-                    continue;
-                await ctx.stderr.write(result === 'unsupported'
-                    ? `kill: (${pid}) - Operation not supported (SIG${signal} cannot be delivered to a hosted process)\n`
-                    : `kill: (${pid}) - No such process\n`);
+        const pid = Number(target);
+        const job = jobs?.byPid(pid);
+        if (job && job.status !== 'done') {
+            if (jobs?.signal(job, signal, caller) === false) {
+                await ctx.stderr.write(`kill: (${pid}) - Operation not permitted\n`);
                 status = 1;
-                continue;
             }
-            await ctx.stderr.write(`kill: (${pid ?? target}) - No such process\n`);
+            continue;
+        }
+        if (host?.isLive(pid) === true) {
+            const result = await host.signal(pid, signal, ctx.stderr, caller);
+            if (result === 'delivered')
+                continue;
+            await ctx.stderr.write(result === 'unsupported'
+                ? `kill: (${pid}) - Operation not supported (SIG${signal} cannot be delivered to a hosted process)\n`
+                : result === 'not-permitted' ? `kill: (${pid}) - Operation not permitted\n` : `kill: (${pid}) - No such process\n`);
             status = 1;
             continue;
         }
-        if (signal === '0')
-            continue;
-        if (!processes.kill(proc.pid, signal)) {
-            await ctx.stderr.write(`kill: (${proc.pid}) - Operation not permitted (cannot kill shell)\n`);
-            status = 1;
-        }
+        await ctx.stderr.write(`kill: (${pid}) - No such process\n`);
+        status = 1;
     }
     return status;
 }
-export function createKillCommand(processes, host) {
-    return async (ctx) => {
-        const jobs = new Map();
-        for (const proc of processes.getBackgroundJobs()) {
-            if (proc.jobId !== undefined)
-                jobs.set(proc.jobId, { id: proc.jobId, command: proc.args.join(' '), pid: proc.pid });
-        }
-        return await runKill(ctx, processes, [...jobs.values()], host);
-    };
+/** `kill` as a program (`xargs kill`, `sudo kill`): it reaches the processes `host` does. */
+export function createKillCommand(host) {
+    return async (ctx) => await runKill(ctx, ctx.cred, null, host);
 }

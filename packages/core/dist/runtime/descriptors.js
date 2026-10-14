@@ -32,7 +32,21 @@ export function awaitsRefusal(path) {
     return Object.assign(fsError('EAGAIN', 'fd', path, undefined, { detail: 'a descriptor on an asynchronous mount; this caller cannot wait for it' }), { asyncMount: true });
 }
 export function createDescriptorScope() {
-    return { nextId: 1, handles: new Map(), held: new Set(), waveDescriptions: new Map(), closed: false, abort: new AbortController(), subscriptions: new Set(), leases: new Map() };
+    return { nextId: 1, handles: new Map(), held: new Set(), waveDescriptions: new Map(), closed: false, abort: null, subscriptions: new Set(), leases: new Map() };
+}
+/** The signal `scope`'s close aborts, made on first ask: already aborted once it has closed. */
+export function scopeSignal(scope) {
+    if (scope.abort === null) {
+        scope.abort = new AbortController();
+        if (scope.closed)
+            scope.abort.abort();
+    }
+    return scope.abort.signal;
+}
+/** `scope` closes: what asked for its signal hears of it. */
+export function closeScopeSignal(scope) {
+    scope.closed = true;
+    scope.abort?.abort();
 }
 /**
  * A description's last close: a buffered mount handle's flush. A flush that

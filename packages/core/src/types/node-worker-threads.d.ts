@@ -32,6 +32,7 @@ declare module 'node:worker_threads' {
 }
 
 declare module 'node:process' {
+  import type * as NodeAsyncHooks from 'node:async_hooks';
   import type * as NodeBuffer from 'node:buffer';
   import type * as NodeCrypto from 'node:crypto';
   import type { EventEmitter } from 'node:events';
@@ -43,7 +44,12 @@ declare module 'node:process' {
     on(event: 'warning', listener: (warning: Error) => void): RealmProcess;
     removeAllListeners(event: 'warning'): RealmProcess;
     /** The realm's own warnings (a native builtin's): node.ts makes them the program's. */
-    emitWarning(warning: string | Error, type?: string | { type?: string; code?: string; detail?: string }, code?: string): void;
+    emitWarning(
+      warning: string | Error,
+      type?: string | { type?: string; code?: string; detail?: string; ctor?: (...args: never[]) => unknown } | ((...args: never[]) => unknown),
+      code?: string | ((...args: never[]) => unknown),
+      ctor?: (...args: never[]) => unknown,
+    ): void;
     exit(code: number): never;
     /** The engine running this process: a process realm's guest runs under the same. */
     readonly execPath: string;
@@ -53,6 +59,7 @@ declare module 'node:process' {
     /** A negative pid: its process group. */
     kill(pid: number, signal: 'SIGKILL'): boolean;
     /** The engine's own builtin, as `require` gives it (node-compat/index.ts's module map). */
+    getBuiltinModule(id: 'node:async_hooks'): typeof NodeAsyncHooks;
     getBuiltinModule(id: 'node:buffer'): typeof NodeBuffer;
     getBuiltinModule(id: 'node:crypto'): typeof NodeCrypto;
     getBuiltinModule(id: 'node:events'): typeof EventEmitter;

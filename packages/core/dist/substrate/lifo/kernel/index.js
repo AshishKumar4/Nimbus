@@ -1,5 +1,4 @@
 import { ISOLATE_NETWORK } from '../../../_shared/workspace-network.js';
-import { ProcessRegistry } from '../shell/ProcessRegistry.js';
 import { DNSResolver } from './dns-resolver.js';
 const DEFAULT_HOSTS = `127.0.0.1       localhost
 ::1             localhost ip6-localhost ip6-loopback
@@ -13,8 +12,8 @@ export function createHostsResolver() {
 }
 /**
  * What a session's processes share besides their filesystem (which is
- * ProcessFiles'): the process table, the virtual ports and the resolver,
- * which starts from the default /etc/hosts.
+ * ProcessFiles') and their table (SessionProcessSupervisor's): the virtual
+ * ports and the resolver, which starts from the default /etc/hosts.
  */
 export class Kernel {
     portRegistry = new Map();
@@ -26,9 +25,5 @@ export class Kernel {
      */
     network = ISOLATE_NETWORK;
     routeLoopback;
-    processRegistry;
     dns = createHostsResolver();
-    constructor() {
-        this.processRegistry = new ProcessRegistry();
-    }
 }
