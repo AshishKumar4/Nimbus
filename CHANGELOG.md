@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: the shell's built-in `node` is the process the shell started.
+  `node --version`, `process.version` and `process.versions` now name one
+  release, core's (they disagreed: v20.0.0 and v22.14.0), and
+  `process.versions` no longer has a `lifo` key. `process.pid` is its pid
+  in the session, `getuid`, `getgid` and `getgroups` are its credential
+  (root under `sudo`), and `process.umask()` reads and sets its live mask.
+  `global` is the realm's `globalThis` in every module, as in Node.
 - Fixed (Node `fs`): `fs.cpSync`, `fs.promises.cp` and `fs.cp` are Node's
   own `cp`, run over Nimbus's `fs`, so they answer as Node 22 does. The async
   forms took a file the program had not read for a directory (EISDIR), and
