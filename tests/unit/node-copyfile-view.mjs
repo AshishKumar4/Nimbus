@@ -170,6 +170,48 @@ await runScenarios(import.meta.path, {
     assert.deepEqual([local.mode, local.size, local.mtimeMs], [session.mode, session.size, session.mtimeMs], 'statSync answers as the session does');
   },
 
+  async 'a copied made file renamed itself: its stat is still the copy\'s'() {
+    const box = await boot({}, (authority) => authority.kfs.writeFile('home/user/app/s5', 'S5', { mode: 0o644 }));
+    const { fs } = box.probe;
+    fs.mkdirSync(`${A}/fresh5`);
+    fs.writeFileSync(`${A}/fresh5/d5`, 'old', { mode: 0o600 });
+    await fs.promises.copyFile(`${A}/s5`, `${A}/fresh5/d5`);
+    fs.renameSync(`${A}/fresh5/d5`, `${A}/fresh5/e5`);
+    const local = fs.statSync(`${A}/fresh5/e5`);
+    const session = await fs.promises.stat(`${A}/fresh5/e5`);
+    assert.deepEqual([local.mode & 0o777, local.size], [0o644, 2]);
+    assert.deepEqual([local.mode, local.size, local.mtimeMs], [session.mode, session.size, session.mtimeMs]);
+  },
+
+  async 'a copied made file removed and made again: the new file is its own, nothing of the copy'() {
+    const box = await boot({}, (authority) => authority.kfs.writeFile('home/user/app/s6', 'S6', { mode: 0o644 }));
+    const { fs } = box.probe;
+    fs.mkdirSync(`${A}/fresh6`);
+    fs.writeFileSync(`${A}/fresh6/d6`, 'old', { mode: 0o600 });
+    await fs.promises.copyFile(`${A}/s6`, `${A}/fresh6/d6`);
+    fs.rmSync(`${A}/fresh6/d6`);
+    assert.equal(fs.existsSync(`${A}/fresh6/d6`), false);
+    fs.writeFileSync(`${A}/fresh6/d6`, 'again', { mode: 0o640 });
+    const local = fs.statSync(`${A}/fresh6/d6`);
+    const session = await fs.promises.stat(`${A}/fresh6/d6`);
+    assert.deepEqual([local.mode & 0o777, local.size], [0o640, 5]);
+    assert.deepEqual([local.mode, local.size], [session.mode, session.size]);
+  },
+
+  async 'a made file\'s chmod and utimes travel with its directory\'s rename'() {
+    const box = await boot();
+    const { fs } = box.probe;
+    fs.mkdirSync(`${A}/fresh7`);
+    fs.writeFileSync(`${A}/fresh7/d7`, 'x');
+    fs.chmodSync(`${A}/fresh7/d7`, 0o604);
+    fs.utimesSync(`${A}/fresh7/d7`, 7, 7);
+    fs.renameSync(`${A}/fresh7`, `${A}/moved7`);
+    const local = fs.statSync(`${A}/moved7/d7`);
+    const session = await fs.promises.stat(`${A}/moved7/d7`);
+    assert.deepEqual([local.mode & 0o777, local.mtimeMs], [0o604, 7000]);
+    assert.deepEqual([local.mode, local.mtimeMs], [session.mode, session.mtimeMs]);
+  },
+
   async 'a copy and its source are each their own: appends to both keep each'() {
     const box = await boot();
     const { fs } = box.probe;
