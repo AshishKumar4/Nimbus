@@ -5,6 +5,11 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a Ruby program and a threaded WASI program end as other WASI
+  programs do: what they wrote is in the workspace before their result
+  returns, and a run whose session restarted under it, or whose writes the
+  session refused, fails and says why. Before, such a run could report
+  success, and a file it wrote could be missing when the command returned.
 - Security: a D1 binding under `wrangler dev` is a database of its own (a
   Durable Object facet of the session, its own SQLite), as on Cloudflare.
   It ran its statements in the session's own database, and a table name it
