@@ -9,7 +9,7 @@ import {
 } from '../../packages/core/src/substrate/lifo/shell/default-shell.ts';
 import { createDefaultRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
 import { memoryFiles } from './lib/test-box.mjs';
-import { ProcessRegistry } from '../../packages/core/src/substrate/lifo/shell/ProcessRegistry.ts';
+import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { Shell } from '../../packages/core/src/substrate/lifo/shell/Shell.ts';
 
 function output() {
@@ -103,7 +103,7 @@ async function startShell(defaultShell) {
     vfs,
     registry,
     { HOME: '/home/user', USER: 'user', HOSTNAME: 'nimbus' },
-    new ProcessRegistry(),
+    new SessionProcessSupervisor(),
   );
   // `start()` settles once the rc files are applied and, for the built-in
   // shell, the prompt is written — a host with input waiting for the shell

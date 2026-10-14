@@ -1,3 +1,4 @@
+import { exitCodeForSignal, signalAbortReason, signalDisposition } from './signals.js';
 export function resolveJobSpec(spec, jobs) {
     const text = spec.startsWith('%') ? spec.slice(1) : spec;
     if (text === '' || text === '%' || text === '+' || text === '-') {
@@ -27,10 +28,10 @@ export function resolveJobSpec(spec, jobs) {
     return found;
 }
 /**
- * A shell's jobs, by number: a view over the process table, where each job
- * is a process. A subshell's table starts as a copy of its parent's; the
- * job records are shared, which is safe because what changes about a job
- * (its state) is its process's, and how it ended is set once.
+ * A shell's jobs, by number: each one a process of the session's table. A
+ * subshell's table starts as a copy of its parent's; the job records are
+ * shared, which is safe because what changes about a job (its stop mark) is
+ * the job's, wherever it is signalled from, and how it ended is set once.
  */
 export class JobTable {
     processes;
@@ -39,42 +40,66 @@ export class JobTable {
     constructor(processes) {
         this.processes = processes;
     }
-    /** Run `promise` as a background job: a process in the table, numbered as bash numbers jobs. Its pid and number. */
-    start(options) {
+    /**
+     * Run `run` as a background job, numbered as bash numbers jobs: a process
+     * of the table under `parent`, with its credential, as a fork makes one.
+     * Its commands run as it; a kill of it stops its work, and it ends when
+     * `run` settles.
+     */
+    start(options, run) {
         // bash: one more than the highest job still in the table.
         const id = Math.max(0, ...this.jobs.keys()) + 1;
         this.waited.delete(id);
-        const pid = this.processes.spawn({
-            command: options.command.split(' ')[0] || 'unknown',
-            args: options.command.split(' '),
-            cwd: options.cwd,
-            env: options.env,
-            isForeground: false,
-            promise: options.promise,
-            abortController: options.abortController,
-            jobId: id,
-        });
         const processes = this.processes;
+        const { pid } = processes.spawn(options.command, [options.command], options.cwd, { parentPid: options.parent.pid, cred: options.parent.cred });
+        const held = processes.holdWork(pid);
         let exitCode = null;
-        const promise = processes.get(pid)?.promise ?? options.promise;
-        promise.then((code) => { exitCode = code; }, () => { exitCode = 1; });
-        this.jobs.set(id, {
+        const promise = processes.whenEnded(pid);
+        void promise.then((code) => { exitCode = code; });
+        const record = {
             id,
             command: options.command,
             promise,
-            abortController: options.abortController,
             pid,
+            stopped: false,
             get exitCode() { return exitCode; },
-            get status() {
-                if (exitCode !== null)
-                    return 'done';
-                return processes.get(pid)?.status === 'stopped' ? 'stopped' : 'running';
-            },
-        });
-        return { pid, id };
+            get status() { return exitCode !== null ? 'done' : record.stopped ? 'stopped' : 'running'; },
+        };
+        this.jobs.set(id, record);
+        const identity = {
+            pid,
+            get cred() { return processes.cred(pid); },
+            setUmask: (mask) => { processes.setUmask(pid, mask); },
+            beginWork: () => processes.beginWork(pid),
+        };
+        void run({ identity, signal: held.signal })
+            .then((code) => processes.exit(pid, code), () => processes.exit(pid, 1))
+            .finally(held);
+        return record;
     }
     list() {
         return Array.from(this.jobs.values());
+    }
+    /**
+     * Deliver `signal` (a parsed name; `0` delivers nothing) to `job`, one of
+     * this table's, from `caller`: a terminating one ends its process, which
+     * stops its work; a stop or continue sets or clears its stop mark. False
+     * when kill(2)'s rule refuses `caller` (SessionProcessSupervisor.maySignal).
+     */
+    signal(job, signal, caller) {
+        const record = this.jobs.get(job.id);
+        if (record !== job || job.status === 'done')
+            return true;
+        if (!this.processes.maySignal(caller, job.pid))
+            return false;
+        const disposition = signalDisposition(signal);
+        if (disposition === 'stop')
+            record.stopped = true;
+        else if (disposition === 'continue')
+            record.stopped = false;
+        else if (disposition === 'terminate')
+            this.processes.kill(job.pid, exitCodeForSignal(signal), signalAbortReason(signal));
+        return true;
     }
     fork() {
         const child = new JobTable(this.processes);
@@ -90,7 +115,15 @@ export class JobTable {
     get(id) {
         return this.jobs.get(id);
     }
+    /**
+     * What `wait` names, by jobspec or by pid: a job of this table, else one
+     * it has waited for, whose status it still answers with (bash's).
+     */
     waitTarget(spec) {
+        if (!spec.startsWith('%')) {
+            const pid = Number(spec);
+            return this.byPid(pid) ?? [...this.waited.values()].find((job) => job.pid === pid);
+        }
         const live = resolveJobSpec(spec, this.list());
         if (live !== undefined)
             return live;

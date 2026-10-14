@@ -30,13 +30,16 @@ import { isVfsError, syscallError, toVfsError } from '../vfs/vfs-error.js';
 import { normalizeVfsPath } from '../vfs/path.js';
 import { abandon, andThen, readDeclaredSource, readRangeOrWhole, readText } from '../vfs/vfs.js';
 import { formatProcMounts } from '../shell/mount-commands.js';
-import { CRED_KERNEL, requireVfsCred, } from './os-contracts.js';
+import { CRED_KERNEL, isVfsCred, requireVfsCred, } from './os-contracts.js';
 import { fsError, modeAllows, SqliteRuntimeFsBridge, walkBeneath } from './sqlite-runtime-fs-bridge.js';
-import { closeDescriptions, createDescriptorScope, Descriptors, openFlags, processView, reportLost, settleHeldAt } from './descriptors.js';
+import { closeDescriptions, closeScopeSignal, createDescriptorScope, Descriptors, openFlags, processView, reportLost, scopeSignal, settleHeldAt } from './descriptors.js';
 import { BUFFERED_WRITE_BYTES, flagsRefusal, openFollows, openMounted, reopenMounted } from '../vfs/mounted-description.js';
 import { registerDirectoryReadBridge, directoryReadHandleClosed } from './read-directory-batch.js';
 import { readLeaseCovers, SESSION_KERNEL_ROOTS } from '../_shared/read-lease-cover.js';
 function immutableCredential(cred) {
+    // One frozen whole already (a process table's: ProcessTable.credOf) is kept, not copied again.
+    if (Object.isFrozen(cred) && Object.isFrozen(cred.groups) && isVfsCred(cred))
+        return cred;
     const checked = requireVfsCred(cred, 'filesystem binding');
     return Object.freeze({ uid: checked.uid, gid: checked.gid, groups: Object.freeze([...checked.groups]), umask: checked.umask });
 }
@@ -207,14 +210,14 @@ class GuardedProcessBridge {
     writeBatch(payload, options) {
         this.guard();
         // As writeStream: closing the scope cancels the commit.
-        const linked = linkedSignal([options?.signal, this.signal, this.scope.abort.signal]);
+        const linked = linkedSignal([options?.signal, this.signal, scopeSignal(this.scope)]);
         return Promise.resolve(this.target.writeBatch(payload, { signal: linked.signal })).finally(linked.dispose);
     }
     writeStream(stream, options) {
         this.guard();
         // Closing the scope cancels the commit, so a released process cannot keep
         // publishing groups into a filesystem it no longer holds descriptors on.
-        const linked = linkedSignal([options?.signal, this.signal, this.scope.abort.signal]);
+        const linked = linkedSignal([options?.signal, this.signal, scopeSignal(this.scope)]);
         return this.target.writeStream(stream, { ...options, signal: linked.signal }).finally(linked.dispose);
     }
     acquireExclusiveMutation(path, options) {
@@ -563,8 +566,7 @@ export class ProcessFiles {
         scope.handles.clear();
         scope.held.clear();
         scope.waveDescriptions.clear();
-        scope.closed = true;
-        scope.abort.abort();
+        closeScopeSignal(scope);
         this.stopSubscriptions(scope);
         return { lost };
     }
@@ -608,8 +610,7 @@ export class ProcessFiles {
             return;
         const lost = closeDescriptions(scope);
         this.stopSubscriptions(scope);
-        scope.closed = true;
-        scope.abort.abort();
+        closeScopeSignal(scope);
         return andThen(lost, reportLost);
     }
     bridgeFor(scope, cred, signal, pid, landed = false) {
@@ -620,16 +621,27 @@ export class ProcessFiles {
         // A process's calls are made by the delegations it holds: its own lookups
         // recall none of them, on SQLite and through the namespace alike.
         const holds = pid === undefined ? undefined : () => this.delegations.holdsOf(pid);
-        const view = this.vfs.as(cred, undefined, landed ? { landed } : undefined).scoped(() => assertScopeLive(scope, signal), undefined, holds);
         const continues = pid === undefined ? undefined : () => this.continuing.has(pid);
-        const target = new SqliteRuntimeFsBridge(this.engine.as(cred, { holds, continues, ...(landed ? { landed } : {}) }), this.engine, scope, view, this.bufferedWriteBytes, this.waves);
-        const guarded = new GuardedProcessBridge(target, scope, signal, pid, this.hydrator, this.delegations, this.outputGate);
+        // The views and the bridges under the awaiting one, made at the binding's
+        // first call on the filesystem: a process that makes none (a child that
+        // runs `true`, `echo`) makes none of them. What a release, a kill or a
+        // lease ends is the scope, made now.
+        let made;
+        const parts = () => {
+            if (made !== undefined)
+                return made;
+            const namespace = this.vfs.as(cred, undefined, landed ? { landed } : undefined).scoped(() => assertScopeLive(scope, signal), undefined, holds);
+            const target = new SqliteRuntimeFsBridge(this.engine.as(cred, { holds, continues, ...(landed ? { landed } : {}) }), this.engine, scope, namespace, this.bufferedWriteBytes, this.waves);
+            made = { guarded: new GuardedProcessBridge(target, scope, signal, pid, this.hydrator, this.delegations, this.outputGate), namespace };
+            return made;
+        };
         // Every other method forwards to the guarded bridge.
         const listing = pid === undefined ? () => undefined : (create) => this.listingOf(pid, create);
         const clock = () => this.engine.revision();
-        const bridge = new AwaitingProcessBridge(guarded, view, clock, cred, new Descriptors(scope, clock), scope, listing, this.bufferedWriteBytes, signal);
+        const bridge = new AwaitingProcessBridge(parts, clock, cred, new Descriptors(scope, clock), scope, listing, this.bufferedWriteBytes, signal);
         registerDirectoryReadBridge(bridge, scope, async (path) => {
             const real = await bridge.realpath(path);
+            const view = parts().namespace;
             if (real === '/' || view.composes(real))
                 return null;
             const route = await view.route(real, { follow: true });
@@ -654,17 +666,8 @@ function underKernelMount(path) {
 function mountsBeyondSqlite(view) {
     return view.mounts().some((mount) => isEmbedderMount(mount.point));
 }
-/**
- * A process's asynchronous face (ProcessView, supervisor ops, RPC,
- * fs.promises): the guarded bridge, except that a path an asynchronous-only
- * mount refuses to a synchronous caller is answered by awaiting that mount,
- * through the namespace as the process's credential. `synchronous` (node's
- * sync fs, non-JSPI WASI, host reads that cannot wait) stays the guarded
- * bridge, where such a mount's refusal is the answer.
- */
 class AwaitingProcessBridge {
-    bridge;
-    namespace;
+    parts;
     clock;
     cred;
     descriptors;
@@ -672,11 +675,11 @@ class AwaitingProcessBridge {
     listing;
     bufferedWriteBytes;
     signal;
-    constructor(bridge, namespace, clock, cred, descriptors, scope, 
+    made;
+    constructor(parts, clock, cred, descriptors, scope, 
     /** Where this process's listings of mounts beyond SQLite stand (made when `create`); undefined for a host lease. */
     listing, bufferedWriteBytes, signal) {
-        this.bridge = bridge;
-        this.namespace = namespace;
+        this.parts = parts;
         this.clock = clock;
         this.cred = cred;
         this.descriptors = descriptors;
@@ -685,6 +688,8 @@ class AwaitingProcessBridge {
         this.bufferedWriteBytes = bufferedWriteBytes;
         this.signal = signal;
     }
+    get bridge() { return (this.made ??= this.parts()).guarded; }
+    get namespace() { return (this.made ??= this.parts()).namespace; }
     get synchronous() { return this.bridge; }
     gateLaunch(named) { return this.bridge.gateLaunch(named); }
     revision(path) { return this.bridge.revision(path); }

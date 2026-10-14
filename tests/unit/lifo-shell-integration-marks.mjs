@@ -13,7 +13,7 @@
 
 import assert from 'node:assert/strict';
 import { Shell } from '../../packages/core/src/substrate/lifo/shell/Shell.ts';
-import { ProcessRegistry } from '../../packages/core/src/substrate/lifo/shell/ProcessRegistry.ts';
+import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { createDefaultRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
 import { memoryFiles } from './lib/test-box.mjs';
 
@@ -32,7 +32,7 @@ function makeShell() {
     vfs,
     registry,
     { HOME: '/home/user', USER: 'user', HOSTNAME: 'nimbus' },
-    new ProcessRegistry(),
+    new SessionProcessSupervisor(),
   );
   return {
     shell,

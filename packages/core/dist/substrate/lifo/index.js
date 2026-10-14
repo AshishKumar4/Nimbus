@@ -15,7 +15,6 @@ export { NPM_VERSION, createNpmCommand, createNpxCommand } from './commands/syst
 // Shell
 export { Shell } from './shell/Shell.js';
 export { JobTable } from './shell/jobs.js';
-export { ProcessRegistry } from './shell/ProcessRegistry.js';
 export { lex } from './shell/lexer.js';
 export { parse, ParseError } from './shell/parser.js';
 export { TokenKind } from './shell/types.js';

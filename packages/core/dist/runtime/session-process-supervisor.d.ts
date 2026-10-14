@@ -200,6 +200,8 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
     holdWork(pid: number, stop?: (reason?: SignalAbortReason) => void, signal?: AbortSignal): HeldProcessWork & {
         readonly signal: AbortSignal;
     };
+    /** Whether `pid` runs, on work this session holds for it (holdWork, setTerminator): what a kill of it stops. */
+    runsWork(pid: number): boolean;
     /** Stop the work behind `pid`: its terminator, and every piece held for it, once each, for `reason`. */
     private terminate;
     cred(pid: number): VfsCred;

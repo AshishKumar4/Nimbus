@@ -2,13 +2,13 @@
 // `kill <pid>` reaches a hosted session's resident processes.
 //
 // The shell's `kill` builtin resolves before the command registry, and it
-// signals the shell's own process registry. A hosted session's residents
-// live in the session's process table instead — their own pid space,
-// generation-strided (1000002, …) — and their teardown (port unregister,
-// writer revocation, the capability's retirement) is the host's. Before the
-// builtin was handed that table, `kill 1000002` answered "No such process",
-// the resident stayed up, and the next server on its port looked to the app
-// layer like the original identity still starting.
+// signals the shell's own jobs itself. A hosted session's residents are
+// processes of the session's table too — generation-strided pids (1000002,
+// …) — and their teardown (port unregister, writer revocation, the
+// capability's retirement) is the host's. Before the builtin was handed that
+// table, `kill 1000002` answered "No such process", the resident stayed up,
+// and the next server on its port looked to the app layer like the original
+// identity still starting.
 //
 // Driven through composeHostedRuntime — the real Shell with
 // registerHostedCommands, the FacetManager and the SessionProcessSupervisor:
@@ -20,7 +20,10 @@
 //      an invalid signal spec is refused before any lookup;
 //   4. an unknown pid is "No such process", status 1;
 //   5. a child shell (`sh -c`) and a named programmatic shell reach residents
-//      too, and `%job` in a subshell still names the subshell's own job.
+//      too, and `%job` in a subshell still names the subshell's own job;
+//   6. the exit status is the signal's, in the table and the exit record;
+//   7. a shell's job is a process of the table: `ps` lists it, and another
+//      exec ends it by pid.
 
 import assert from 'node:assert/strict';
 
@@ -91,7 +94,6 @@ try {
   // ── 1. kill A, then B on the same port ─────────────────────────────────
   const a = await serve('node server.js', '/home/user/app');
   assert.ok(a > bundle.PID_GEN_STRIDE, `a resident pid is in the session table's pid space (${a})`);
-  assert.equal(workspace.kernel.processRegistry.get(a), undefined, 'the shell registry does not hold the resident');
   const exposed = await runtime.exposeApp(PORT, { visibility: 'scoped' });
   assert.equal(exposed.pid, a);
   const OWNER = exposed.owner;
@@ -166,6 +168,24 @@ try {
     );
   }
   console.log('  [6] TERM 143, KILL 137, INT 130, HUP 129 in the table and the exit record');
+
+  // ── 7a. kill(2)'s rule: another uid's process is neither probed nor ended ─
+  const rootd = processes.spawn('rootd', ['rootd'], '/', { cred: { uid: 0, gid: 0, groups: [0], umask: 0o022 } });
+  for (const flag of ['-0', '-TERM']) {
+    assert.deepEqual(await sh(`kill ${flag} ${rootd.pid}`), { code: 1, out: '', err: `kill: (${rootd.pid}) - Operation not permitted\n` }, `kill ${flag} of root's process`);
+  }
+  assert.equal(running(rootd.pid), true, 'root\'s process runs on');
+  processes.exit(rootd.pid, 0);
+  console.log('  [7a] another uid\'s process: kill -0 and kill are not permitted');
+
+  // ── 7. a shell's job is a process of the table ─────────────────────────
+  const jobPid = Number((await sh('sleep 30 & echo $!')).out.trim());
+  assert.equal(running(jobPid), true, `the job's pid (${jobPid}) runs in the session table`);
+  assert.deepEqual(await sh(`ps | grep -q '^ *${jobPid} ' && echo listed`), { code: 0, out: 'listed\n', err: '' }, 'ps lists the job');
+  assert.deepEqual(await sh(`kill ${jobPid}; echo rc=$?`), { code: 0, out: 'rc=0\n', err: '' }, 'another exec ends it by pid');
+  assert.equal(running(jobPid), false, 'the job ended');
+  assert.equal(processes.get(jobPid)?.exitCode, 143, 'by SIGTERM');
+  console.log('  [7] a job is a table process: ps lists it, another exec kills it');
 } finally {
   await runtime.close();
 }
