@@ -33,7 +33,7 @@ import {
   type RunnerFactory,
   type RuntimeSummary,
 } from './installed-runtimes.js';
-import type { RuntimeManifest } from './runtime-manifest.js';
+import { parseRuntimeManifest, type RuntimeManifest } from './runtime-manifest.js';
 import { linkLaunchers, prepareRuntimeStore, RUNTIME_STORE, runtimeLaunchers, unlinkLaunchers } from './runtime-store.js';
 import {
   seedRuntimePackage,
@@ -271,7 +271,9 @@ export class RuntimeManager {
       `[${name}] manifest: ${manifest.files.length} files, ${(totalBytes / 1024 / 1024).toFixed(1)} MiB`,
     );
 
-    await prepareRuntimeStore(this.vfs);
+    // A name and version that are one path name each, before either names a directory.
+    const { name: storeName, version } = parseRuntimeManifest(manifest);
+    await prepareRuntimeStore(this.vfs, storeName, version);
     const seeded = await seedRuntimePackage(this.vfs, runtimePackage, {
       force: options?.force,
       onProgress: options?.onProgress,

@@ -43,12 +43,14 @@ export function rootsOwn(entry: { type: string; uid?: number; mode?: number } | 
 export const RUNTIME_STORE_DIRS: readonly string[] = STORE_DIRS;
 
 /**
- * Make the store ready to write: each directory from `/usr` down made by
- * root if it is missing, and refused unless it is root's own real directory
- * that no one else may write.
+ * Make the store ready to write `<name>/<version>` into: each directory from
+ * `/usr` down to the runtime's own made by root if it is missing, and
+ * refused unless it is root's own real directory that no one else may write.
+ * Below a version directory that is root's only root has written, so the
+ * runtime's files are not reached through anything a user made.
  */
-export async function prepareRuntimeStore(fs: RuntimeStoreFs): Promise<void> {
-  for (const dir of STORE_DIRS) {
+export async function prepareRuntimeStore(fs: RuntimeStoreFs, name: string, version: string): Promise<void> {
+  for (const dir of [...STORE_DIRS, `${RUNTIME_STORE}/${name}`, `${RUNTIME_STORE}/${name}/${version}`]) {
     let entry = await fs.stat(dir, { follow: false });
     if (entry === null) {
       await fs.mkdir(dir, { mode: 0o755 });
@@ -108,7 +110,7 @@ export async function linkLaunchers(fs: RuntimeStoreFs, launchers: readonly Runt
   for (const launcher of launchers) {
     const { path, target } = launcher;
     const marker = await fs.stat(target, { follow: false });
-    if (marker?.type !== 'file') continue;
+    if (marker?.type !== 'file' || marker.uid !== 0) continue;
     if (((marker.mode ?? 0) & 0o111) !== 0) await fs.chmod(target, (marker.mode ?? 0) & 0o666);
     const entry = await fs.stat(path, { follow: false });
     if (entry !== null) {

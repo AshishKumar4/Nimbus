@@ -376,12 +376,11 @@ async function _pathExecutable(name: string, from: ResolveContext): Promise<stri
 async function _knownCommandPath(registry: UnixCommandRegistry, name: string, from: ResolveContext): Promise<string | null> {
   let hit: PathSearchResult = null;
   try {
-    hit = await searchPath(name, from);
+    hit = await searchPath(name, from, (path) => registry.has?.(path) === true);
   } catch (error) {
     if (!isVfsError(error)) throw error;
   }
-  if (hit?.kind === 'program' || (hit !== null && registry.has?.(hit.path) === true)) return hit.path;
-  return _CANONICAL_BIN_PATHS[name] ?? null;
+  return hit?.kind === 'program' ? hit.path : _CANONICAL_BIN_PATHS[name] ?? null;
 }
 
 /**
