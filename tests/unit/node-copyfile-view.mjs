@@ -12,7 +12,7 @@
 // the program never wrote was not whole, so its copy was unreadable; and the
 // copy's name stayed absent to sync reads until a barrier.
 import assert from 'node:assert/strict';
-import { createAuthority, facetSupervisor, launchResident, runScenarios, residentDataPlan } from './lib/resident-body.mjs';
+import { createAuthority, facetSupervisor, launchResident, runScenarios, residentDataPlan, until } from './lib/resident-body.mjs';
 
 const PROGRAM = `
 const fs = require("fs");
@@ -42,7 +42,10 @@ const A = '/home/user/app';
 
 await runScenarios(import.meta.path, {
   async 'a source a peer changes before the copy, refilled while the answer is on its way: the copy is what the session copied'() {
-    // The copy's wave reaches the session after the peer's change; its answer is held while the program reads the source again.
+    // The copy's wave reaches the session after the peer's change; while its
+    // answer is held, a barrier tells the view of the change and the program
+    // reads the source again, so the view holds the peer's bytes, dated past
+    // what the copy's answer names.
     let hold = false;
     const answered = Promise.withResolvers();
     const release = Promise.withResolvers();
@@ -63,8 +66,12 @@ await runScenarios(import.meta.path, {
     hold = true;
     const copied = fs.promises.copyFile(`${A}/src`, `${A}/dst`);
     await answered.promise;
+    const reported = box.authority.rawVfs.revision();
+    const resumed = box.probe.resume();
+    await until(() => globalThis.__nimbusVfsCursor.rev >= reported, 'the barrier applied the peer\'s change');
     assert.equal(await fs.promises.readFile(`${A}/src`, 'utf8'), 'B', 'the source refilled');
     release.resolve();
+    await resumed;
     await copied;
     assert.equal(fs.readFileSync(`${A}/dst`, 'utf8'), 'B');
   },
