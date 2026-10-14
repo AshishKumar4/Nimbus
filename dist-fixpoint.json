@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "af60e600fc3ab96379f59aae18b4e006f206c509acc0c58c42123efc7e17bdd3",
+  "fingerprint": "b33b8b54af73521c119ad5ba520472429dd18fe9abc14269fab0bc097221e360",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1229,8 +1229,8 @@
     "packages/core/dist/substrate/lifo/utils/backslash-escapes.d.ts.map": "82d0a528bc2331bbc7445fb816e3b1c00f00ad1855a76a063f4b2a5e31b0e6de",
     "packages/core/dist/substrate/lifo/utils/backslash-escapes.js": "6e98042ea7108cc2b18418c3b2615bdf1c6f01195d9b193246d3fe104c7b166d",
     "packages/core/dist/substrate/lifo/utils/bytes-io.d.ts": "af3ba84f79f3b2bb6e604be1a1e0a69cf18576f24aacd666b2aca98c0b03344d",
-    "packages/core/dist/substrate/lifo/utils/bytes-io.d.ts.map": "7532613bc65f7f246859c6cd31e74c5c46e7f927a78fb1b22914cf5980f9df13",
-    "packages/core/dist/substrate/lifo/utils/bytes-io.js": "296de0ed64de5f1f44a2a723bce0312295344f69930423b2dfe2156edf2829e5",
+    "packages/core/dist/substrate/lifo/utils/bytes-io.d.ts.map": "a357cee0c69dd01eff4590f20c0ad514dec47a397a815088bfddff7d6887c2f3",
+    "packages/core/dist/substrate/lifo/utils/bytes-io.js": "9b284938a75e01d7310b2a4e73865aa7a70fbf0ef9f2cef4380c0a5bfc342ca7",
     "packages/core/dist/substrate/lifo/utils/colors.d.ts": "d83859a861ba005b85689c4cee0ad3b957793d9aee872b3678501dfcc91c229f",
     "packages/core/dist/substrate/lifo/utils/colors.d.ts.map": "66b0c9e612587b9a1ed6af46cb3ed27ffb63d80d69f29ff8a3ee7405abdae50b",
     "packages/core/dist/substrate/lifo/utils/colors.js": "7ffa62f912b8d22b43bf88fab105c03a9b360f3e8d5e5cb057b9782a2aeeab85",
@@ -1735,7 +1735,7 @@
     "packages/core/src/substrate/lifo/utils/archive.ts": "e3fd304daaf623b570a27a668e246554e8911f9356821f259b046c0acf0a7fc0",
     "packages/core/src/substrate/lifo/utils/args.ts": "eacf1da701fc7bb08112d081e934f23a535f8d79789c499509f24b3905afb0d2",
     "packages/core/src/substrate/lifo/utils/backslash-escapes.ts": "cae96c20f7df6a82ab0ce3ca3bfb8e71319d879776646888110bf9bab53aab40",
-    "packages/core/src/substrate/lifo/utils/bytes-io.ts": "42a7321d0ac9cbdb58fd0d7f6d0d711f81daf4e10087da0892a1a1e6b35a5d41",
+    "packages/core/src/substrate/lifo/utils/bytes-io.ts": "8101bf0d421161c5267c0e655cd8e2805cb991324278779d43c77f5c00a206a0",
     "packages/core/src/substrate/lifo/utils/colors.ts": "70258c1b025d7247df4328f57138a5f6b7959ae5a420d6d515589c850bee892d",
     "packages/core/src/substrate/lifo/utils/encoding.ts": "0001b9ab0242c6a9198b5c7e1e3a0b9193718cd8da80499d145ea8cc7c05690c",
     "packages/core/src/substrate/lifo/utils/event-loop.ts": "fad000da16b5a3abd49addf85217ecc00bb3b4842c93ef28bec1815a36b77758",
