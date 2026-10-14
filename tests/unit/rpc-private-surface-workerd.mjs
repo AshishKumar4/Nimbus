@@ -27,6 +27,10 @@
 //     fields and other names answer nothing either.
 //   - NimbusAssetsRPC reads as the process the host minted it for. Red
 //     before: it read every asset as the session's user.
+//   - NimbusKVNamespace, NimbusD1Binding, NimbusR2Bucket (a wrangler-dev
+//     guest's KV, D1 and R2 bindings): each call reaches the session for the
+//     store the binding was minted for, KV and R2 as the process the host
+//     named, and they have no method but Cloudflare's API.
 //
 // "Not callable" is workerd's own refusal of a method the class does not
 // have, never an error a method that was there threw.
@@ -221,6 +225,28 @@ try {
   }
   await nothingElse('NimbusDurableObjectNamespace', COMMON);
   await nothingElse('NimbusDOStub', COMMON);
+
+  // ── The storage bindings: each call is its own store's ────────────────────
+  {
+    const target = (store) => ({ root: 'home/run-as/app', store });
+    const runAs = { uid: 1001, gid: 1001, groups: [1001], umask: 18 };
+    const kv = await asGuest('kv-intended', 'get', ['k'], 'NimbusKVNamespace');
+    assert.deepEqual(kv, { ok: true, value: 'kv answer' }, JSON.stringify(kv));
+    assert.deepEqual((await asked('kv-intended')).map((e) => [e.op, e.args, e.pid, e.cred]),
+      [['kvCall', [target('KV'), { method: 'get', key: 'k' }], undefined, runAs]], 'a KV call is its namespace\'s, as the process the host named');
+    const d1 = await asGuest('d1-intended', 'query', [{ queries: [{ sql: 'SELECT 1' }] }], 'NimbusD1Binding');
+    assert.deepEqual(d1, { ok: true, value: ['success', 'results'] }, JSON.stringify(d1));
+    assert.deepEqual((await asked('d1-intended')).map((e) => [e.op, e.args, e.pid, e.cred]),
+      [['d1Query', [target('db'), [{ sql: 'SELECT 1' }]], undefined, undefined]], 'a D1 query is its database\'s');
+    const r2 = await asGuest('r2-intended', 'head', ['k'], 'NimbusR2Bucket');
+    assert.deepEqual(r2, { ok: true, value: null }, JSON.stringify(r2));
+    assert.deepEqual((await asked('r2-intended')).map((e) => [e.op, e.args, e.pid, e.cred]),
+      [['r2Call', [target('BUCKET'), { method: 'head', key: 'k' }], undefined, runAs]], 'an R2 call is its bucket\'s, as the process the host named');
+    console.log('  ok  NimbusKVNamespace, NimbusD1Binding, NimbusR2Bucket: each call reaches the session as its own store');
+  }
+  await nothingElse('NimbusKVNamespace', [['query', [{ queries: [] }]], ['getOn', ['k', []]], ...COMMON]);
+  await nothingElse('NimbusD1Binding', [['prepare', ['SELECT 1']], ['exec', ['SELECT 1']], ['batch', [[]]], ['get', ['k']], ...COMMON]);
+  await nothingElse('NimbusR2Bucket', [['createMultipartUpload', ['k']], ['query', [{ queries: [] }]], ...COMMON]);
 
   // ── HostedSession ──────────────────────────────────────────────────────────
   {

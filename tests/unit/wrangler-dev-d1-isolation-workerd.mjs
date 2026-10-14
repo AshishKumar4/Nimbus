@@ -82,9 +82,7 @@ try {
    * `wrangler dev` until its build has ended and its migrations have told
    * how they ended (a failure, or how many applied; a run that applies none
    * and fails none says nothing, and is told by the wait running out); then
-   * stopped. Answers what it wrote. (The Worker itself does not start yet:
-   * a D1 binding cannot cross into its env, SES-M1's guest half; its
-   * migrations run either way.)
+   * stopped. Answers what it wrote.
    */
   const devOnce = async () => {
     terminal.reset();

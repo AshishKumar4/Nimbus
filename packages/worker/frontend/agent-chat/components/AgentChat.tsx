@@ -27,9 +27,9 @@ interface StatusPill {
 interface TurnError {
   message: string;
   /**
-   * Set when the failed send never reached the server (rejected before the
-   * stream opened): the retry affordance re-sends this exact text. Null
-   * means the server saw the turn, so retry uses { retry: true }.
+   * Set when the failed send was not answered (rejected before the stream
+   * opened): the retry affordance re-sends this exact text, under the same
+   * id. Null means the server saw the turn, so retry uses { retry: true }.
    */
   resendText: string | null;
 }
@@ -66,6 +66,9 @@ export function AgentChat({ onReady }: { onReady(refresh: () => void): void }) {
   // Monotonic turn counter: async reconciliation from an older turn (the
   // post-stop re-fetch) must never clobber state a newer turn owns.
   const turnSeqRef = useRef(0);
+  // The last send no answer came back for. The server may hold it anyway,
+  // so sending its text again reuses its id, which the server takes once.
+  const unansweredRef = useRef<{ id: string; text: string } | null>(null);
   const oauthPollRef = useRef<number | null>(null);
   const clearTimerRef = useRef<number | null>(null);
 
@@ -227,7 +230,7 @@ export function AgentChat({ onReady }: { onReady(refresh: () => void): void }) {
 
   const runTurn = useCallback(async (
     body: api.ChatRequestBody,
-    sendCtx?: { optimisticId: string; text: string },
+    sendCtx?: { id: string; text: string; row: StoredMessage },
   ) => {
     if (abortRef.current) return;
     const controller = new AbortController();
@@ -239,11 +242,12 @@ export function AgentChat({ onReady }: { onReady(refresh: () => void): void }) {
     setBusy(true);
     scheduleTick();
     // A resolved postChatTurn means the server accepted the turn and
-    // persisted the user message; before that, nothing exists server-side.
+    // persisted the user message; before that, the server may hold it or not.
     let accepted = false;
     try {
       const stream = await api.postChatTurn(body, controller.signal);
       accepted = true;
+      unansweredRef.current = null;
       const outcome = await readAgentStream(stream, live, {
         onMessages: setMessages,
         onLiveChange: scheduleTick,
@@ -260,9 +264,12 @@ export function AgentChat({ onReady }: { onReady(refresh: () => void): void }) {
       }
     } catch (error) {
       if (!accepted && sendCtx) {
-        // The server never saw this send: drop the phantom optimistic
-        // message and put the text back in the user's hands.
-        setMessages((current) => current.filter((message) => message.id !== sendCtx.optimisticId));
+        // No answer came back for this send: drop the optimistic message
+        // this send put up (never a row history holds under its id) and put
+        // the text back in the user's hands. Sent again, it goes under the
+        // same id, so a copy the server holds is not doubled.
+        unansweredRef.current = { id: sendCtx.id, text: sendCtx.text };
+        setMessages((current) => current.filter((message) => message !== sendCtx.row));
         setDraft((current) => current || sendCtx.text);
         if (!isAbortError(error)) {
           setTurnError({ message: errorMessage(error), resendText: sendCtx.text });
@@ -302,15 +309,12 @@ export function AgentChat({ onReady }: { onReady(refresh: () => void): void }) {
 
   const send = useCallback((text: string) => {
     if (abortRef.current) return;
-    const optimisticId = `optimistic-${crypto.randomUUID()}`;
+    const unanswered = unansweredRef.current;
+    const id = unanswered !== null && unanswered.text === text ? unanswered.id : crypto.randomUUID();
     setDraft((current) => (current.trim() === text ? '' : current));
-    setMessages((current) => [...current, {
-      id: optimisticId,
-      role: 'user',
-      content: text,
-      createdAt: Date.now(),
-    }]);
-    void runTurn({ message: text, stream: true }, { optimisticId, text });
+    const row: StoredMessage = { id, role: 'user', content: text, createdAt: Date.now() };
+    setMessages((current) => (current.some((message) => message.id === id) ? current : [...current, row]));
+    void runTurn({ message: text, id, stream: true }, { id, text, row });
   }, [runTurn]);
 
   const retryTurn = useCallback((resendText: string | null) => {

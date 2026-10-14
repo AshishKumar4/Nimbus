@@ -10,9 +10,9 @@
  * an argument ("Could not serialize object of type RpcPromise").
  *
  * So a module the inner Worker runs before any of its own code (its main
- * module's first import, `innerWorkerModules`) replaces each such binding in
- * the isolate's env, which every handler, entrypoint and Durable Object of the
- * isolate sees, with a local namespace. Ids are made locally, and `get`
+ * module's first import, inner-env.ts `innerWorkerModules`) replaces each
+ * such binding in the isolate's env, which every handler, entrypoint and
+ * Durable Object of the isolate sees, with a local namespace. Ids are made locally, and `get`
  * answers at once an RPC stub (`new RpcStub(target)`) of a local target that
  * relays each member the stub's caller reaches (a call, a read, or a path
  * through members, fetch included) to the binding's `callOn` or `getOn`,
@@ -34,7 +34,6 @@
  * and loads it again in each later request, so the child's env can carry
  * nothing made in one request, the session's own stubs included.
  */
-import { INNER_DO_ADAPTER_SOURCE } from './compiled-bodies.generated.js';
 /**
  * The id string a name gives: deterministic (FNV-style, 64-bit hex), with the
  * prefix `name:` so it never collides with a `uniq:` id. Self-contained: its
@@ -52,8 +51,6 @@ export function innerDoIdFromName(name) {
     h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
     return 'name:' + (h1 >>> 0).toString(16).padStart(8, '0') + (h2 >>> 0).toString(16).padStart(8, '0');
 }
-/** The entrypoint a build asks which Durable Object classes are missing, unless the bundle spells it. */
-const CLASSES_ENTRYPOINT = 'NimbusDurableObjectClasses';
 /**
  * The adapter, as it runs in the inner isolate: it replaces each of `names`
  * in `runtime.env` that holds the binding with a local DurableObjectNamespace,
@@ -149,37 +146,4 @@ export function innerDoAdapter(idFromName, names, main, runtime) {
             Reflect.set(runtime.env, name, new DurableObjectNamespace(remote));
     }
     return { NimbusDurableObjectClasses };
-}
-/** The inner Worker's own module, as bundled, and the adapter's. */
-const MAIN_MODULE = 'worker.js';
-const ADAPTER_MODULE = 'nimbus-do-env.js';
-/**
- * The modules an inner Worker runs with Durable Object bindings `names`: its
- * bundle as the main module, whose first import is the adapter (so the
- * adapter has run before any of the Worker's code) and which exports the
- * class check as `classesEntrypoint`, and the adapter. The import shares the
- * bundle's first line, so line numbers stay the bundle's. A Worker with no
- * such binding runs its bundle as it is, and has no class check (null).
- *
- * `classesEntrypoint` is a name the bundle never spells, so it exports no
- * such name itself (a bundler prints an ASCII name as it is).
- */
-export function innerWorkerModules(bundle, names) {
-    if (names.length === 0)
-        return { mainModule: MAIN_MODULE, modules: { [MAIN_MODULE]: bundle }, classesEntrypoint: null };
-    let classesEntrypoint = CLASSES_ENTRYPOINT;
-    for (let n = 2; bundle.includes(classesEntrypoint); n++)
-        classesEntrypoint = `${CLASSES_ENTRYPOINT}_${n}`;
-    const head = `export { ${CLASSES_ENTRYPOINT} as ${classesEntrypoint} } from './${ADAPTER_MODULE}';`;
-    // A hashbang must stay first.
-    const at = bundle.startsWith('#!') ? bundle.indexOf('\n') + 1 : 0;
-    const main = bundle.slice(0, at) + head + bundle.slice(at);
-    const adapter = [
-        "import { env, RpcStub, WorkerEntrypoint } from 'cloudflare:workers';",
-        `import * as main from './${MAIN_MODULE}';`,
-        `const { innerDoAdapter, innerDoIdFromName } = ${INNER_DO_ADAPTER_SOURCE};`,
-        `const { ${CLASSES_ENTRYPOINT} } = innerDoAdapter(innerDoIdFromName, ${JSON.stringify(names)}, main, { env, RpcStub, WorkerEntrypoint });`,
-        `export { ${CLASSES_ENTRYPOINT} };`,
-    ].join('\n');
-    return { mainModule: MAIN_MODULE, modules: { [MAIN_MODULE]: main, [ADAPTER_MODULE]: adapter }, classesEntrypoint };
 }

@@ -51,6 +51,7 @@ import type { SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-
 import { type SupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import type { HostedHttpRequest, PeerHost } from '@nimbus-sh/fabric/peer-host.js';
 import type { FanoutShardOptions } from '@nimbus-sh/fabric/fanout.js';
+import type { D1QueryResponse, D1QuerySql, KvCall, R2Call } from '@nimbus-sh/fabric/inner-storage-env.js';
 import { WebSocketRelay } from './ws-relay.js';
 import * as _portCapability from './port-capability.js';
 import { ServedReads } from '../facets/read-profile.js';
@@ -370,6 +371,22 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
     _rpcReadFileBytes(path: string, pid?: number, cred?: VfsCred): Promise<Uint8Array | null>;
     _rpcInnerDoFetch(req: any): Promise<any>;
     _rpcInnerDoCall(req: any): Promise<unknown>;
+    _rpcKvCall(target: {
+        root: string;
+        store: string;
+    }, call: KvCall, cred?: VfsCred): Promise<void | import("../bindings/kv.js").KvValue | Map<string, import("@nimbus-sh/fabric/inner-storage-env.js").KvJson> | {
+        value: import("../bindings/kv.js").KvValue;
+        metadata: import("@nimbus-sh/fabric/inner-storage-env.js").KvJson;
+        cacheStatus: null;
+    } | import("../bindings/kv.js").KvListResult>;
+    _rpcR2Call(target: {
+        root: string;
+        store: string;
+    }, call: R2Call, cred?: VfsCred): Promise<void | import("@nimbus-sh/fabric/inner-storage-env.js").R2WireObject | import("@nimbus-sh/fabric/inner-storage-env.js").R2WireGetResult | import("@nimbus-sh/fabric/inner-storage-env.js").R2WireObjects | null>;
+    _rpcD1Query(target: {
+        root: string;
+        store: string;
+    }, queries: D1QuerySql[]): Promise<D1QueryResponse>;
     _rpcWriteFile(path: string, content: string | Uint8Array, pid?: number, cred?: VfsCred): Promise<number>;
     _rpcWriteProtectedRootFile(rootPath: string, path: string, content: string | Uint8Array): Promise<void>;
     _rpcStat(path: string, pid?: number, cred?: VfsCred): Promise<SessionFileStat | null>;
@@ -819,5 +836,5 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
     /** W5: bridge _w5PersistRing → ctx.waitUntil. Delegator → ./session/ws.ts (S7). */
     _w5SafePersistRing(): void;
 }
-export { NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusDOStub, } from '@nimbus-sh/fabric/bindings.js';
+export { NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusDOStub, NimbusKVNamespace, NimbusD1Binding, NimbusR2Bucket, } from '@nimbus-sh/fabric/bindings.js';
 //# sourceMappingURL=nimbus-session.d.ts.map

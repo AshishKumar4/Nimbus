@@ -38,6 +38,9 @@ import {
   NimbusDOStub,
   CirrusHmrRPC,
   NimbusD1Database,
+  NimbusKVNamespace,
+  NimbusD1Binding,
+  NimbusR2Bucket,
   createNimbusHandler,
 } from '@nimbus-sh/sdk/worker';
 import { defineNimbusConfig } from '@nimbus-sh/config';
@@ -55,6 +58,9 @@ export {
   NimbusDOStub,
   CirrusHmrRPC,
   NimbusD1Database,
+  NimbusKVNamespace,
+  NimbusD1Binding,
+  NimbusR2Bucket,
 };
 
 const nimbusConfig = defineNimbusConfig({

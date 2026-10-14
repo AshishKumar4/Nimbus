@@ -10,9 +10,9 @@
  * an argument ("Could not serialize object of type RpcPromise").
  *
  * So a module the inner Worker runs before any of its own code (its main
- * module's first import, `innerWorkerModules`) replaces each such binding in
- * the isolate's env, which every handler, entrypoint and Durable Object of the
- * isolate sees, with a local namespace. Ids are made locally, and `get`
+ * module's first import, inner-env.ts `innerWorkerModules`) replaces each
+ * such binding in the isolate's env, which every handler, entrypoint and
+ * Durable Object of the isolate sees, with a local namespace. Ids are made locally, and `get`
  * answers at once an RPC stub (`new RpcStub(target)`) of a local target that
  * relays each member the stub's caller reaches (a call, a read, or a path
  * through members, fetch included) to the binding's `callOn` or `getOn`,
@@ -63,21 +63,5 @@ export interface InnerDoRuntime {
  */
 export declare function innerDoAdapter(idFromName: (name: string) => string, names: readonly string[], main: object, runtime: InnerDoRuntime): {
     NimbusDurableObjectClasses: unknown;
-};
-/**
- * The modules an inner Worker runs with Durable Object bindings `names`: its
- * bundle as the main module, whose first import is the adapter (so the
- * adapter has run before any of the Worker's code) and which exports the
- * class check as `classesEntrypoint`, and the adapter. The import shares the
- * bundle's first line, so line numbers stay the bundle's. A Worker with no
- * such binding runs its bundle as it is, and has no class check (null).
- *
- * `classesEntrypoint` is a name the bundle never spells, so it exports no
- * such name itself (a bundler prints an ASCII name as it is).
- */
-export declare function innerWorkerModules(bundle: string, names: readonly string[]): {
-    mainModule: string;
-    modules: Record<string, string>;
-    classesEntrypoint: string | null;
 };
 //# sourceMappingURL=inner-do-env.d.ts.map
