@@ -63,8 +63,9 @@ session._setCpRegistry(registry);
 
 // A child that prints one line, waits for the test, prints a second, and exits.
 const gates = [];
-// A child that ends at once: a parent whose own child outlives it.
-registry.register('quick', async () => 0);
+// A child that lives until the test lets it end: a parent whose own child outlives it.
+const middleGates = [];
+registry.register('middle', async () => { await new Promise((resolve) => middleGates.push(resolve)); return 0; });
 registry.register('two-lines', async (ctx) => {
   await ctx.stdout.write('one\n');
   await new Promise((resolve) => gates.push(resolve));
@@ -115,12 +116,13 @@ try {
   // after P and C have ended and been pruned, who spawned whom is still the
   // broker's record, for each.
   {
-    const middle = (await session._rpcCpSpawn({ command: 'quick', args: [], env: {}, cwd: '/home/user', stdio: ['pipe', 'pipe', 'pipe'], parentPid: parent.pid })).childPid;
+    const middle = (await session._rpcCpSpawn({ command: 'middle', args: [], env: {}, cwd: '/home/user', stdio: ['pipe', 'pipe', 'pipe'], parentPid: parent.pid })).childPid;
     const grandchild = (await session._rpcCpSpawn({ command: 'two-lines', args: [], env: {}, cwd: '/home/user', stdio: ['pipe', 'pipe', 'pipe'], parentPid: middle })).childPid;
     await session._rpcCpStdinEnd(grandchild, parent.pid);
     const first = await session._rpcCpReadOutput(grandchild, 1, 0, 1000, undefined, parent.pid);
     assert.equal(text(first), 'one\n');
     gates.shift()();
+    middleGates.shift()();
     for (let i = 0; i < 100 && [middle, grandchild].some((pid) => processes.get(pid)?.state === 'running'); i++) await settle();
     await settle();
     ahead += 61_000;
