@@ -19,24 +19,19 @@ export type WorkspaceRequestResult =
   | { kind: 'timeout' };
 
 /**
- * How a server of a port registry took a request: its response, with the end
- * still to wait for when its handler returned before ending it (the
- * _donePromise a ServerResponse attaches while the response is open); or a
- * refusal, when the handler threw.
+ * `request` handed to `handler`, a server of a port registry, synchronously,
+ * as a server takes a request: its response, with `_donePromise` still to
+ * wait for when the handler returned before ending it; null when the handler
+ * threw, which refuses the request.
  */
-export type Served =
-  | { kind: 'served'; response: VirtualResponse; end: Promise<void> | null }
-  | { kind: 'refused' };
-
-/** `request` handed to `handler`, a server of a port registry, synchronously, as a server takes a request. */
-export function serveFromPort(handler: VirtualRequestHandler, request: VirtualRequest): Served {
-  const response: VirtualResponse & { _donePromise?: Promise<void> } = { statusCode: 200, headers: {}, body: '' };
+export function serveFromPort(handler: VirtualRequestHandler, request: VirtualRequest): VirtualResponse | null {
+  const response: VirtualResponse = { statusCode: 200, headers: {}, body: '' };
   try {
     handler(request, response);
   } catch {
-    return { kind: 'refused' };
+    return null;
   }
-  return { kind: 'served', response, end: response._donePromise ?? null };
+  return response;
 }
 
 /**
