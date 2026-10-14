@@ -147,7 +147,9 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
     beginWork(pid: number): () => void;
     /**
      * `pid` awaits its child `child`'s end, as one unit of its work, until
-     * the returned function is called or either process ends.
+     * the returned function is called or either process ends. Told as a
+     * change at once: the await may be what leaves `pid` doing nothing but
+     * wait (a shell's `wait` on a job that is already running).
      */
     beginAwait(pid: number, child: number): () => void;
     /**
