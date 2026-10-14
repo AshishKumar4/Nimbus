@@ -70,6 +70,15 @@ export declare function objectId(type: string, data: Uint8Array): string;
 export declare class IndexFormatError extends Error {
 }
 /**
+ * An index file there that cannot be opened or stat'ed (EACCES, EIO): git's
+ * do_read_index dies of it, "<file>: index file open failed: <strerror>",
+ * rather than reading it as empty (only ENOENT is no index).
+ */
+export declare class IndexReadError extends Error {
+    readonly file: string;
+    constructor(file: string, cause: unknown);
+}
+/**
  * New index entries as their bytes, each encoded (encodeIndexEntry's layout)
  * as it is added, into chunks of CHUNK_BYTES: an entry costs its own size and
  * eight bytes, no object. As objects (a path and an id as strings, a stat, a

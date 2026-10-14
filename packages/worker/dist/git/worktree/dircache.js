@@ -96,6 +96,18 @@ export function objectId(type, data) {
 }
 export class IndexFormatError extends Error {
 }
+/**
+ * An index file there that cannot be opened or stat'ed (EACCES, EIO): git's
+ * do_read_index dies of it, "<file>: index file open failed: <strerror>",
+ * rather than reading it as empty (only ENOENT is no index).
+ */
+export class IndexReadError extends Error {
+    file;
+    constructor(file, cause) {
+        super(`${file}: index file open failed`, { cause });
+        this.file = file;
+    }
+}
 /** What NewEntries allocates at a time; an entry larger than this gets a chunk of its own. */
 const CHUNK_BYTES = 64 * 1024;
 /** An entry's flags word, at `at` in `bytes`. */
@@ -285,7 +297,7 @@ export class DirCache {
         catch (error) {
             if (isVfsError(error, 'ENOENT') || isVfsError(error, 'ENOTDIR'))
                 return DirCache.empty();
-            throw error;
+            throw new IndexReadError(file, error);
         }
         return DirCache.parse(bytes, Math.floor(mtime / 1000));
     }
