@@ -90,7 +90,6 @@ export function execIdField(entry: ProcessEntry | undefined): { execId?: string 
 }
 
 function immutableCred(cred: VfsCred): VfsCred {
-  // A parent's (credOf) is frozen whole already: a child's is the same one.
   if (Object.isFrozen(cred) && Object.isFrozen(cred.groups)) return cred;
   return Object.freeze({
     uid: cred.uid,
@@ -175,7 +174,8 @@ export class ProcessTable {
       exitCode: null,
       startTime: Date.now(),
       endTime: null,
-      cred: immutableCred(options.cred ?? inheritedCred),
+      // A parent's, frozen whole already, is the child's as it is.
+      cred: options.cred === undefined || options.cred === inheritedCred ? inheritedCred : immutableCred(options.cred),
       parentPid: options.parentPid,
       ...(execId === undefined ? {} : { execId }),
       ...(options.restartedFrom === undefined ? {} : { restartedFrom: { ...options.restartedFrom } }),

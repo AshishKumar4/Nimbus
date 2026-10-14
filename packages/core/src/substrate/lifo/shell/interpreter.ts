@@ -1113,8 +1113,17 @@ export class Interpreter {
    * turned into the status a process would end with.
    */
   private async runCommand(command: Command, name: string, args: string[], spec: CommandSpec): Promise<ChildExit> {
-    const abortController = new AbortController();
-    const unlinkShellSignal = linkAbortSignal(spec.signal, abortController);
+    // The command's own signal, linked to the shell's, so what it listens on
+    // goes with it rather than staying on the line's: made when it first
+    // asks, as most commands never do.
+    let own: { signal: AbortSignal; unlink: () => void } | undefined;
+    const signalOf = (): AbortSignal => {
+      if (own === undefined) {
+        const controller = new AbortController();
+        own = { signal: controller.signal, unlink: linkAbortSignal(spec.signal, controller) };
+      }
+      return own.signal;
+    };
     const { identity, terminalStdin, stderr } = spec;
     const ctx: CommandContext = {
       ...spec.commandContext,
@@ -1127,7 +1136,7 @@ export class Interpreter {
       vfsUntilExit: () => bindProcessView(this.config.filesystem, { pid: identity.pid, cred: identity.cred }),
       stdout: spec.stdout,
       stderr,
-      signal: abortController.signal,
+      get signal() { return signalOf(); },
       stdin: spec.stdin,
       terminalStdin,
       setRawMode: terminalStdin
@@ -1159,7 +1168,7 @@ export class Interpreter {
       (await stderr.write(`${name}: ${e instanceof Error ? e.message : String(e)}\n`));
       return exited(1);
     } finally {
-      unlinkShellSignal();
+      own?.unlink();
     }
   }
 
