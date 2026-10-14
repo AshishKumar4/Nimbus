@@ -346,15 +346,135 @@ export default {
 };
 `;
 
-/** What the Worker answers on Cloudflare at `step`; null until recorded. */
+/** What the Worker answers on Cloudflare at `step`. */
 export function expectedAnswer(step) {
-  return EXPECTED[step] ?? null;
+  return EXPECTED[step];
 }
 
-const EXPECTED = {};
-
 /**
- * Where Nimbus answers otherwise, and why: D1 meta's served_by names the
- * database that ran the statement, and Nimbus's is its own.
+ * What Nimbus answers where Cloudflare answers `answer`, and why it differs:
+ * a D1 result's meta.served_by names the database that ran the statement,
+ * and Nimbus's is its own (wrangler dev's says miniflare.db, Cloudflare's a
+ * D1 server's).
  */
-export const NIMBUS_DIFFERS = {};
+export function nimbusAnswer(answer) {
+  return answer.d1?.servedBy === undefined ? answer : { ...answer, d1: { ...answer.d1, servedBy: ['nimbus-d1-emu'] } };
+}
+
+const EXPECTED = {
+  1: {
+    "step": 1,
+    kv: {
+      "putGet": {"value": "alpha"},
+      "missing": {"value": null},
+      "json": {"value": [{"x": 1, "y": [true, null]}, {"x": 1, "y": [true, null]}, "{\"x\":1,\"y\":[true,null]}"]},
+      "arrayBuffer": {"value": [true, [0, 1, 255]]},
+      "stream": {"value": [true, "alpha"]},
+      "putStream": {"value": "from a stream"},
+      "putBuffer": {"value": "buffer"},
+      "metadata": {"value": {"value": "with metadata", "metadata": {"m": 1, "s": "x"}, "cacheStatus": null}},
+      "metadataJson": {"value": {"value": {"x": 1, "y": [true, null]}, "metadata": null, "cacheStatus": null}},
+      "metadataNone": {"value": {"value": "alpha", "metadata": null, "cacheStatus": null}},
+      "metadataMissing": {"value": {"value": null, "metadata": null, "cacheStatus": null}},
+      "overwrite": {"value": {"value": "w", "metadata": null, "cacheStatus": null}},
+      "ttl": {"value": ["expiring", 1, true]},
+      "list": {"value": {"keys": [{"name": "a"}, {"name": "bin"}, {"name": "buffer"}, {"name": "json"}, {"name": "meta", "expiration": 2000000000, "metadata": {"m": 1, "s": "x"}}, {"name": "meta2"}, {"name": "p/1", "metadata": {"key": "p/1"}}, {"name": "p/2", "metadata": {"key": "p/2"}}, {"name": "p/3", "metadata": {"key": "p/3"}}, {"name": "streamed"}], "list_complete": true, "cacheStatus": null}},
+      "listPages": {"value": [{"keys": [{"name": "p/1", "metadata": {"key": "p/1"}}, {"name": "p/2", "metadata": {"key": "p/2"}}], "list_complete": false, "cursor": "cC8y", "cacheStatus": null}, {"keys": [{"name": "p/3", "metadata": {"key": "p/3"}}], "list_complete": true, "cacheStatus": null}]},
+      "bulk": {"value": [true, [["a", "alpha"], ["json", "{\"x\":1,\"y\":[true,null]}"], ["missing", null]]]},
+      "bulkJson": {"value": [["json", {"x": 1, "y": [true, null]}], ["missing", null]]},
+      "bulkMetadata": {"value": [["meta", {"value": "with metadata", "metadata": {"m": 1, "s": "x"}}], ["a", {"value": "alpha", "metadata": null}]]},
+      "delete": {"value": [null, null, null]},
+      errors: {
+        "emptyKey": {"error": {"name": "TypeError", "message": "Key name cannot be empty."}},
+        "dotKey": {"error": {"name": "TypeError", "message": "\"..\" is not allowed as a key name."}},
+        "longKey": {"error": {"name": "Error", "message": "KV GET failed: 414 UTF-8 encoded length of 513 exceeds key length limit of 512."}},
+        "shortTtl": {"error": {"name": "Error", "message": "KV PUT failed: 400 Invalid expiration_ttl of 30. Expiration TTL must be at least 60."}},
+        "pastExpiration": {"error": {"name": "Error", "message": "KV PUT failed: 400 Invalid expiration of 1000. Please specify integer greater than the current number of seconds since the UNIX epoch."}},
+        "int32Expiration": {"error": {"name": "TypeError", "message": "Value out of range. Must be between -2147483648 and 2147483647 (inclusive)."}},
+        "shortCacheTtl": {"error": {"name": "Error", "message": "KV GET failed: 400 Invalid cache_ttl of 10. Cache TTL must be at least 30."}},
+        "bulkType": {"error": {"name": "Error", "message": "KV GET_BULK failed: 400 \"arrayBuffer\" is not a valid type. Use \"json\" or \"text\""}},
+        "bulkNotJson": {"error": {"name": "Error", "message": "KV GET_BULK failed: 400 At least one of the requested keys corresponds to a non-json value"}},
+        "listLimit": {"error": {"name": "Error", "message": "KV GET failed: 400 Invalid key_count_limit of 1001. Please specify an integer less than 1000."}},
+        "numberValue": {"value": "123"},
+        "objectValue": {"error": {"name": "TypeError", "message": "KV put() accepts only strings, ArrayBuffers, ArrayBufferViews, and ReadableStreams as values."}},
+        "missingBadType": {"value": null},
+        "badType": {"error": {"name": "TypeError", "message": "Unknown response type. Possible types are \"text\", \"arrayBuffer\", \"json\", and \"stream\"."}},
+        "notJson": {"error": {"name": "SyntaxError", "message": "Unexpected token 'r', \"from a stream\" is not valid JSON"}},
+      },
+    },
+    d1: {
+      "execCreate": {"value": {"count": 1, "duration": "number"}},
+      "execLines": {"value": 3},
+      "runInsert": {"value": {"success": true, "meta": {"keys": ["changed_db", "changes", "duration", "last_row_id", "rows_read", "rows_written", "served_by", "size_after"], "duration": "number", "changes": 1, "last_row_id": 1, "changed_db": true, "size_after": "number", "rows_read": 0, "rows_written": 1}, "results": []}},
+      "runInsertBuffer": {"value": {"success": true, "meta": {"keys": ["changed_db", "changes", "duration", "last_row_id", "rows_read", "rows_written", "served_by", "size_after"], "duration": "number", "changes": 1, "last_row_id": 2, "changed_db": true, "size_after": "number", "rows_read": 0, "rows_written": 1}, "results": []}},
+      "runInsertArray": {"value": {"success": true, "meta": {"keys": ["changed_db", "changes", "duration", "last_row_id", "rows_read", "rows_written", "served_by", "size_after"], "duration": "number", "changes": 1, "last_row_id": 3, "changed_db": true, "size_after": "number", "rows_read": 0, "rows_written": 1}, "results": []}},
+      "all": {"value": {"success": true, "meta": {"keys": ["changed_db", "changes", "duration", "last_row_id", "rows_read", "rows_written", "served_by", "size_after"], "duration": "number", "changes": 0, "last_row_id": 3, "changed_db": false, "size_after": "number", "rows_read": 3, "rows_written": 0}, "results": [{"id": 1, "name": "alice", "score": 1.5, "active": 1, "data": [1, 2, 3]}, {"id": 2, "name": "bob", "score": null, "active": 0, "data": [9]}, {"id": 3, "name": "carol", "score": null, "active": null, "data": [7, 8]}]}},
+      "runSelect": {"value": {"success": true, "meta": {"keys": ["changed_db", "changes", "duration", "last_row_id", "rows_read", "rows_written", "served_by", "size_after"], "duration": "number", "changes": 0, "last_row_id": 3, "changed_db": false, "size_after": "number", "rows_read": 3, "rows_written": 0}, "results": [{"name": "alice"}, {"name": "bob"}, {"name": "carol"}]}},
+      "update": {"value": {"success": true, "meta": {"keys": ["changed_db", "changes", "duration", "last_row_id", "rows_read", "rows_written", "served_by", "size_after"], "duration": "number", "changes": 1, "last_row_id": 3, "changed_db": true, "size_after": "number", "rows_read": 3, "rows_written": 1}, "results": []}},
+      "first": {"value": {"name": "alice", "score": 2.5}},
+      "firstColumn": {"value": "bob"},
+      "firstMissingColumn": {"error": {"name": "Error", "message": "D1_COLUMN_NOTFOUND: Column not found (nope)", "cause": "Column not found"}},
+      "firstNone": {"value": null},
+      "raw": {"value": [[1, "alice", [1, 2, 3]], [2, "bob", [9]], [3, "carol", [7, 8]]]},
+      "rawColumns": {"value": [["id", "name"], [1, "alice"], [2, "bob"], [3, "carol"]]},
+      "rawNone": {"value": [["id"]]},
+      "duplicateColumns": {"value": [{"x": 2}, [["x", "x"], [1, 2]]]},
+      "numbered": {"value": {"b": "y", "a": "x"}},
+      "types": {"value": {"i": "real", "r": "real", "t": "text", "n": "null", "b": "blob", "big": 9007199254740992}},
+      "batch": {"value": [{"success": true, "meta": {"keys": ["changed_db", "changes", "duration", "last_row_id", "rows_read", "rows_written", "served_by", "size_after"], "duration": "number", "changes": 1, "last_row_id": 3, "changed_db": true, "size_after": "number", "rows_read": 0, "rows_written": 1}, "results": []}, {"success": true, "meta": {"keys": ["changed_db", "changes", "duration", "last_row_id", "rows_read", "rows_written", "served_by", "size_after"], "duration": "number", "changes": 1, "last_row_id": 3, "changed_db": true, "size_after": "number", "rows_read": 3, "rows_written": 1}, "results": []}, {"success": true, "meta": {"keys": ["changed_db", "changes", "duration", "last_row_id", "rows_read", "rows_written", "served_by", "size_after"], "duration": "number", "changes": 0, "last_row_id": 3, "changed_db": false, "size_after": "number", "rows_read": 6, "rows_written": 0}, "results": [{"name": "A"}, {"name": "b"}, {"name": "c"}]}]},
+      "batchRollback": {"value": {"before": 3, "error": {"error": {"name": "Error", "message": "D1_ERROR: no such table: missing: SQLITE_ERROR", "cause": "no such table: missing: SQLITE_ERROR"}}, "after": 3}},
+      "statement": {"value": {"statement": "SELECT ?, ?", "params": [1, [4]]}},
+      "session": {"value": {"before": null, "row": {"one": 1}, "batch": [[{"two": 2}]]}},
+      errors: {
+        "noTable": {"error": {"name": "Error", "message": "D1_ERROR: no such table: missing: SQLITE_ERROR", "cause": "no such table: missing: SQLITE_ERROR"}},
+        "syntax": {"error": {"name": "Error", "message": "D1_ERROR: near \"SELEC\": syntax error at offset 0: SQLITE_ERROR", "cause": "near \"SELEC\": syntax error at offset 0: SQLITE_ERROR"}},
+        "constraint": {"error": {"name": "Error", "message": "D1_ERROR: NOT NULL constraint failed: people.name: SQLITE_CONSTRAINT (extended: SQLITE_CONSTRAINT_NOTNULL)", "cause": "NOT NULL constraint failed: people.name: SQLITE_CONSTRAINT (extended: SQLITE_CONSTRAINT_NOTNULL)"}},
+        "rawNoTable": {"error": {"name": "Error", "message": "D1_ERROR: no such table: missing: SQLITE_ERROR", "cause": "no such table: missing: SQLITE_ERROR"}},
+        "firstNoTable": {"error": {"name": "Error", "message": "D1_ERROR: no such table: missing: SQLITE_ERROR", "cause": "no such table: missing: SQLITE_ERROR"}},
+        "bindUndefined": {"error": {"name": "Error", "message": "D1_TYPE_ERROR: Type 'undefined' not supported for value 'undefined'", "cause": "Type 'undefined' not supported for value 'undefined'"}},
+        "bindObject": {"error": {"name": "Error", "message": "D1_TYPE_ERROR: Type 'object' not supported for value '[object Object]'", "cause": "Type 'object' not supported for value '[object Object]'"}},
+        "bindBigint": {"error": {"name": "Error", "message": "D1_TYPE_ERROR: Type 'bigint' not supported for value '1'", "cause": "Type 'bigint' not supported for value '1'"}},
+        "empty": {"error": {"name": "Error", "message": "D1_ERROR: No SQL statements detected.", "cause": "No SQL statements detected."}},
+        "comment": {"error": {"name": "Error", "message": "D1_ERROR: No SQL statements detected.", "cause": "No SQL statements detected."}},
+        "twoStatements": {"value": {"success": true, "meta": {"keys": ["changed_db", "changes", "duration", "last_row_id", "rows_read", "rows_written", "served_by", "size_after"], "duration": "number", "changes": 0, "last_row_id": 4, "changed_db": false, "size_after": "number", "rows_read": 0, "rows_written": 0}, "results": [{"2": 2}]}},
+        "exec": {"error": {"name": "Error", "message": "D1_EXEC_ERROR: Error in line 1: SELECT * FROM missing: no such table: missing: SQLITE_ERROR", "cause": "Error in line 1: SELECT * FROM missing: no such table: missing: SQLITE_ERROR"}},
+        "execSecondLine": {"error": {"name": "Error", "message": "D1_EXEC_ERROR: Error in line 1: INSERT INTO tags VALUES ('e'): no such table: missing: SQLITE_ERROR", "cause": "Error in line 1: INSERT INTO tags VALUES ('e'): no such table: missing: SQLITE_ERROR"}},
+        "execMultiline": {"error": {"name": "Error", "message": "D1_EXEC_ERROR: Error in line 1: CREATE TABLE broken (: incomplete input: SQLITE_ERROR", "cause": "Error in line 1: CREATE TABLE broken (: incomplete input: SQLITE_ERROR"}},
+        "query": {"error": {"name": "Error", "message": "D1_ERROR: D1Database.query() requires the d1_binding_jsrpc compatibility flag. Enable d1_binding_jsrpc before calling query()."}},
+      },
+      "afterErrors": {"value": 0},
+      "servedBy": ["miniflare.db"],
+    },
+    r2: {
+      "put": {"value": {"class": "HeadResult", "keys": ["ssecKeyMd5", "storageClass", "range", "customMetadata", "httpMetadata", "uploaded", "checksums", "httpEtag", "etag", "size", "version", "key"], "key": "hello.txt", "size": 9, "etag": "06b9a4a9751dc35d9f0d94b3a6cfea99", "httpEtag": "\"06b9a4a9751dc35d9f0d94b3a6cfea99\"", "version": true, "uploaded": true, "httpMetadata": {"contentType": "text/plain", "cacheControl": "no-cache"}, "customMetadata": {"owner": "test"}, "checksums": {"md5": "06b9a4a9751dc35d9f0d94b3a6cfea99"}, "md5": "06b9a4a9751dc35d9f0d94b3a6cfea99", "storageClass": "", "body": false, "writeHttpMetadata": "function"}},
+      "head": {"value": {"class": "HeadResult", "keys": ["ssecKeyMd5", "storageClass", "range", "customMetadata", "httpMetadata", "uploaded", "checksums", "httpEtag", "etag", "size", "version", "key"], "key": "hello.txt", "size": 9, "etag": "06b9a4a9751dc35d9f0d94b3a6cfea99", "httpEtag": "\"06b9a4a9751dc35d9f0d94b3a6cfea99\"", "version": true, "uploaded": true, "httpMetadata": {"contentType": "text/plain", "cacheControl": "no-cache"}, "customMetadata": {"owner": "test"}, "range": {"offset": 0, "length": 9}, "checksums": {"md5": "06b9a4a9751dc35d9f0d94b3a6cfea99"}, "md5": "06b9a4a9751dc35d9f0d94b3a6cfea99", "storageClass": "", "body": false, "writeHttpMetadata": "function"}},
+      "headMissing": {"value": null},
+      "get": {"value": {"class": "GetResult", "keys": ["ssecKeyMd5", "storageClass", "range", "customMetadata", "httpMetadata", "uploaded", "checksums", "httpEtag", "etag", "size", "version", "key"], "key": "hello.txt", "size": 9, "etag": "06b9a4a9751dc35d9f0d94b3a6cfea99", "httpEtag": "\"06b9a4a9751dc35d9f0d94b3a6cfea99\"", "version": true, "uploaded": true, "httpMetadata": {"contentType": "text/plain", "cacheControl": "no-cache"}, "customMetadata": {"owner": "test"}, "range": {"offset": 0, "length": 9}, "checksums": {"md5": "06b9a4a9751dc35d9f0d94b3a6cfea99"}, "md5": "06b9a4a9751dc35d9f0d94b3a6cfea99", "storageClass": "", "body": true, "writeHttpMetadata": "function", "before": false, "stream": true, "text": "Hello, R2", "after": true}},
+      "getMissing": {"value": null},
+      "bodies": {"value": {"json": {"a": [1, 2]}, "arrayBuffer": [123, 34, 97, 34, 58, 91, 49, 44, 50, 93, 125], "bytes": [true, 11], "blob": [true, 11, "{\"a\":[1,2]}"], "stream": "{\"a\":[1,2]}", "twice": {"error": {"name": "TypeError", "message": "Body has already been used. It can only be used once. Use tee() first if you need to read it twice."}}}},
+      "writeHttpMetadata": {"value": [["cache-control", "no-cache"], ["content-type", "text/plain"]]},
+      "ranges": {"value": {"offsetLength": [{"offset": 1, "length": 4}, "ello"], "offset": [{"offset": 7, "length": 2}, "R2"], "length": [{"offset": 0, "length": 5}, "Hello"], "suffix": [{"offset": 7, "length": 2}, "R2"], "longSuffix": [{"offset": 0, "length": 9}, "Hello, R2"], "header": [{"offset": 0, "length": 5}, "Hello"]}},
+      "rangeErrors": {"negative": {"error": {"name": "RangeError", "message": "Invalid range. Starting offset (-1) must be greater than or equal to 0."}}, "fraction": {"error": {"name": "RangeError", "message": "Invalid range. Starting offset (1.5) must be an integer, not floating point."}}, "suffixAndOffset": {"error": {"name": "TypeError", "message": "Suffix is incompatible with offset."}}, "beyond": {"error": {"name": "Error", "message": "get: The requested range is not satisfiable (10039)"}}},
+      "conditionals": {"value": {"matches": {"class": "GetResult", "body": true, "range": {"offset": 0, "length": 9}}, "doesNotMatch": {"class": "HeadResult", "body": false, "range": {"offset": 0, "length": 9}}, "wrongMatch": {"class": "HeadResult", "body": false, "range": {"offset": 0, "length": 9}}, "wildcard": {"class": "GetResult", "body": true, "range": {"offset": 0, "length": 9}}, "uploadedBefore": {"class": "HeadResult", "body": false, "range": {"offset": 0, "length": 9}}, "uploadedAfter": {"class": "GetResult", "body": true, "range": {"offset": 0, "length": 9}}, "headers": {"class": "HeadResult", "body": false, "range": {"offset": 0, "length": 9}}, "quoted": {"error": {"name": "TypeError", "message": "Conditional ETag should not be wrapped in quotes (\"06b9a4a9751dc35d9f0d94b3a6cfea99\")."}}, "putFails": null, "putIfAbsent": {"class": "HeadResult", "keys": ["ssecKeyMd5", "storageClass", "range", "customMetadata", "httpMetadata", "uploaded", "checksums", "httpEtag", "etag", "size", "version", "key"], "key": "new.txt", "size": 3, "etag": "22af645d1859cb5ca6da0c484f1f37ea", "httpEtag": "\"22af645d1859cb5ca6da0c484f1f37ea\"", "version": true, "uploaded": true, "httpMetadata": {}, "customMetadata": {}, "checksums": {"md5": "22af645d1859cb5ca6da0c484f1f37ea"}, "md5": "22af645d1859cb5ca6da0c484f1f37ea", "storageClass": "", "body": false, "writeHttpMetadata": "function"}, "putIfAbsentAgain": null, "unchanged": "Hello, R2"}},
+      "checksums": {"value": {"md5": {"class": "HeadResult", "keys": ["ssecKeyMd5", "storageClass", "range", "customMetadata", "httpMetadata", "uploaded", "checksums", "httpEtag", "etag", "size", "version", "key"], "key": "checked", "size": 7, "etag": "3793ea52a7be2d7deafd858fda50775c", "httpEtag": "\"3793ea52a7be2d7deafd858fda50775c\"", "version": true, "uploaded": true, "httpMetadata": {}, "customMetadata": {}, "checksums": {"md5": "3793ea52a7be2d7deafd858fda50775c"}, "md5": "3793ea52a7be2d7deafd858fda50775c", "storageClass": "", "body": false, "writeHttpMetadata": "function"}, "md5Hex": {"class": "HeadResult", "keys": ["ssecKeyMd5", "storageClass", "range", "customMetadata", "httpMetadata", "uploaded", "checksums", "httpEtag", "etag", "size", "version", "key"], "key": "checked", "size": 7, "etag": "3793ea52a7be2d7deafd858fda50775c", "httpEtag": "\"3793ea52a7be2d7deafd858fda50775c\"", "version": true, "uploaded": true, "httpMetadata": {}, "customMetadata": {}, "checksums": {"md5": "3793ea52a7be2d7deafd858fda50775c"}, "md5": "3793ea52a7be2d7deafd858fda50775c", "storageClass": "", "body": false, "writeHttpMetadata": "function"}, "sha256": {"class": "HeadResult", "keys": ["ssecKeyMd5", "storageClass", "range", "customMetadata", "httpMetadata", "uploaded", "checksums", "httpEtag", "etag", "size", "version", "key"], "key": "checked", "size": 7, "etag": "3793ea52a7be2d7deafd858fda50775c", "httpEtag": "\"3793ea52a7be2d7deafd858fda50775c\"", "version": true, "uploaded": true, "httpMetadata": {}, "customMetadata": {}, "checksums": {"md5": "3793ea52a7be2d7deafd858fda50775c", "sha256": "e61a3d78c65133c7260c43e719d97c46e16bd50c64ee7800536cf14c6407a617"}, "md5": "3793ea52a7be2d7deafd858fda50775c", "storageClass": "", "body": false, "writeHttpMetadata": "function"}, "wrong": {"error": {"name": "Error", "message": "put: The MD5 checksum you specified did not match what we received.\nYou provided a MD5 checksum with value: 00000000000000000000000000000000\nActual MD5 was: 3793ea52a7be2d7deafd858fda50775c (10037)"}}}},
+      "values": {"value": [[6, "string"], [6, "buffer"], [4, "view"], [4, "blob"], [0, ""]]},
+      "putStream": {"value": "stream"},
+      "httpHeaders": {"value": {"class": "HeadResult", "keys": ["ssecKeyMd5", "storageClass", "range", "customMetadata", "httpMetadata", "uploaded", "checksums", "httpEtag", "etag", "size", "version", "key"], "key": "headers.txt", "size": 1, "etag": "2510c39011c5be704182423e3a695e91", "httpEtag": "\"2510c39011c5be704182423e3a695e91\"", "version": true, "uploaded": true, "httpMetadata": {"contentType": "text/html", "contentLanguage": "en", "cacheControl": "max-age=60"}, "customMetadata": {}, "checksums": {"md5": "2510c39011c5be704182423e3a695e91"}, "md5": "2510c39011c5be704182423e3a695e91", "storageClass": "", "body": false, "writeHttpMetadata": "function"}},
+      "list": {"value": {"objects": ["checked", "data.json", "headers.txt", "hello.txt", "new.txt", "v/blob", "v/buffer", "v/null", "v/stream", "v/string", "v/view"], "truncated": false, "delimitedPrefixes": []}},
+      "listObjects": {"value": {"objects": [{"class": "HeadResult", "keys": ["ssecKeyMd5", "storageClass", "range", "customMetadata", "httpMetadata", "uploaded", "checksums", "httpEtag", "etag", "size", "version", "key"], "key": "hello.txt", "size": 9, "etag": "06b9a4a9751dc35d9f0d94b3a6cfea99", "httpEtag": "\"06b9a4a9751dc35d9f0d94b3a6cfea99\"", "version": true, "uploaded": true, "httpMetadata": {}, "customMetadata": {}, "checksums": {"md5": "06b9a4a9751dc35d9f0d94b3a6cfea99"}, "md5": "06b9a4a9751dc35d9f0d94b3a6cfea99", "storageClass": "", "body": false, "writeHttpMetadata": "function"}], "truncated": false, "delimitedPrefixes": []}},
+      "listInclude": {"value": [{"class": "HeadResult", "keys": ["ssecKeyMd5", "storageClass", "range", "customMetadata", "httpMetadata", "uploaded", "checksums", "httpEtag", "etag", "size", "version", "key"], "key": "hello.txt", "size": 9, "etag": "06b9a4a9751dc35d9f0d94b3a6cfea99", "httpEtag": "\"06b9a4a9751dc35d9f0d94b3a6cfea99\"", "version": true, "uploaded": true, "httpMetadata": {"contentType": "text/plain", "cacheControl": "no-cache"}, "customMetadata": {"owner": "test"}, "checksums": {"md5": "06b9a4a9751dc35d9f0d94b3a6cfea99"}, "md5": "06b9a4a9751dc35d9f0d94b3a6cfea99", "storageClass": "", "body": false, "writeHttpMetadata": "function"}]},
+      "listDelimiter": {"value": {"objects": ["dir/a", "dir/z"], "truncated": false, "delimitedPrefixes": ["dir/sub/"]}},
+      "listPages": {"value": [{"objects": ["v/blob", "v/buffer"], "truncated": true, "delimitedPrefixes": [], "cursor": "di9idWZmZXI="}, {"objects": ["v/null", "v/stream"], "truncated": true, "delimitedPrefixes": [], "cursor": "di9zdHJlYW0="}]},
+      "listStartAfter": {"value": ["v/null", "v/stream", "v/string", "v/view"]},
+      "listLimit": {"error": {"name": "Error", "message": "list: MaxKeys params must be positive integer <= 1000. (10022)"}},
+      "delete": {"value": [null, null, null, ["v/blob", "v/null", "v/stream", "v/view"]]},
+      "longKey": {"error": {"name": "Error", "message": "put: The specified object name is not valid. (10020)"}},
+    },
+  },
+  2: {
+    "step": 2,
+    "kv": {"value": [{"x": 1, "y": [true, null]}, ["bin", "buffer", "json", "meta", "meta2", "p/1", "p/2", "p/3", "streamed", "t"]]},
+    "d1": {"value": [["alice"], ["bob"], ["carol"]]},
+    "r2": {"value": ["{\"a\":[1,2]}", ["checked", "data.json", "dir/a", "dir/sub/b", "dir/sub/c", "dir/z", "headers.txt", "new.txt", "v/blob", "v/null", "v/stream", "v/view"]]},
+  },
+};

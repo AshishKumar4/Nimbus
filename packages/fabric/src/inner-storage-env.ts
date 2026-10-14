@@ -248,9 +248,9 @@ interface D1Result {
 const D1_SESSION_CONSTRAINT_FIRST_PRIMARY = 'first-primary';
 const D1_SESSION_CONSTRAINT_FIRST_UNCONSTRAINED = 'first-unconstrained';
 
-/** Thrown as d1-api throws: `<code>: <message>`, the bare message its cause. */
-function d1Error(code: string, message: string): Error {
-  return new Error(`${code}: ${message}`, { cause: new Error(message) });
+/** Thrown as d1-api throws: `<code>: <message>`, its cause the bare message unless it names another. */
+function d1Error(code: string, message: string, cause = message): Error {
+  return new Error(`${code}: ${message}`, { cause: new Error(cause) });
 }
 
 /** d1-api toArrayOfObjects: each row an object of its columns, a later column of a name winning. */
@@ -349,7 +349,7 @@ class D1PreparedStatement {
     const row = rowsAsObjects(answer).results[0];
     if (row === undefined) return null;
     if (column === undefined) return row;
-    if (row[column] === undefined) throw d1Error('D1_COLUMN_NOTFOUND', `Column not found (${column})`);
+    if (row[column] === undefined) throw d1Error('D1_COLUMN_NOTFOUND', `Column not found (${column})`, 'Column not found');
     return row[column];
   }
 
@@ -756,13 +756,13 @@ class R2Bucket {
 
   async list(options?: R2WireListOptions): Promise<{ objects: HeadResult[]; truncated: boolean; cursor?: string; delimitedPrefixes: string[] }> {
     const listed = await this.#remote.list({ ...options });
-    const out: { objects: HeadResult[]; truncated: boolean; cursor?: string; delimitedPrefixes: string[] } = {
+    // In the order of workerd's R2Objects struct.
+    return {
       objects: listed.objects.map((object) => new HeadResult(object)),
       truncated: listed.truncated,
+      ...(listed.cursor === undefined ? {} : { cursor: listed.cursor }),
       delimitedPrefixes: listed.delimitedPrefixes,
     };
-    if (listed.cursor !== undefined) out.cursor = listed.cursor;
-    return out;
   }
 
   async createMultipartUpload(): Promise<never> {

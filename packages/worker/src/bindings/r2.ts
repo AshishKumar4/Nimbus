@@ -24,6 +24,7 @@
  * checksums: its etag stands for its version, and it has no checksums.
  */
 
+import { createHash } from 'node:crypto';
 import { z } from 'zod/v4';
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type {
@@ -66,13 +67,13 @@ const MAX_LIST_KEYS = 1000;
 /** The most objects a listing answers that includes metadata. */
 const MAX_LIST_KEYS_WITH_METADATA = 100;
 
-/** The digest each algorithm is, as R2 names it in a checksum error. */
-const HASHES: readonly { name: R2HashName; label: string; algorithm: string }[] = [
-  { name: 'md5', label: 'MD5', algorithm: 'MD5' },
-  { name: 'sha1', label: 'SHA-1', algorithm: 'SHA-1' },
-  { name: 'sha256', label: 'SHA-256', algorithm: 'SHA-256' },
-  { name: 'sha384', label: 'SHA-384', algorithm: 'SHA-384' },
-  { name: 'sha512', label: 'SHA-512', algorithm: 'SHA-512' },
+/** Each digest an object can carry, as R2 names it in a checksum error. */
+const HASHES: readonly { name: R2HashName; label: string }[] = [
+  { name: 'md5', label: 'MD5' },
+  { name: 'sha1', label: 'SHA-1' },
+  { name: 'sha256', label: 'SHA-256' },
+  { name: 'sha384', label: 'SHA-384' },
+  { name: 'sha512', label: 'SHA-512' },
 ];
 
 /** An error of R2's, as workerd's R2 client throws it: the action, the message, R2's code. */
@@ -82,10 +83,6 @@ function r2Error(action: string, message: string, code: number): Error {
 
 function validateKey(action: string, key: string): void {
   if (new TextEncoder().encode(key).byteLength > MAX_KEY_BYTES) throw r2Error(action, 'The specified object name is not valid.', 10020);
-}
-
-async function hexDigest(algorithm: string, body: Uint8Array): Promise<string> {
-  return Array.from(new Uint8Array(await crypto.subtle.digest(algorithm, body)), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 function includesEtag(conditions: readonly R2EtagCondition[], etag: string, comparison: 'strong' | 'weak'): boolean {
@@ -188,11 +185,11 @@ export class R2Emulator {
 
   async put(key: string, value: R2PutBody, options: R2WirePutOptions): Promise<R2WireObject | null> {
     const body = await coerceBindingBody(value);
-    const checksums: R2WireChecksums = { md5: await hexDigest('MD5', body) };
-    for (const { name, label, algorithm } of HASHES) {
+    const checksums: R2WireChecksums = { md5: createHash('md5').update(body).digest('hex') };
+    for (const { name, label } of HASHES) {
       const provided = options.checksums?.[name];
       if (provided === undefined) continue;
-      const computed = name === 'md5' ? checksums.md5 : await hexDigest(algorithm, body);
+      const computed = createHash(name).update(body).digest('hex');
       if (provided !== computed) {
         throw r2Error('put', [
           `The ${label} checksum you specified did not match what we received.`,

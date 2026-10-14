@@ -8,7 +8,7 @@
 // Cloudflare's local stores) and under Nimbus on the real workerd
 // (lib/workerd-probe.mjs: apps/probe, its session Durable Object, the LOADER
 // that makes the inner Worker), and both must answer exactly what the shared
-// file records, but for the difference it names (NIMBUS_DIFFERS). Covered:
+// file records, but for the difference it names (nimbusAnswer). Covered:
 // KV get (each type, bulk), put (each value, metadata, expiry), delete, list
 // (pages) and getWithMetadata; D1 prepare, bind (each type), first, all,
 // run, raw, batch (and its rollback), exec, withSession, the statement's
@@ -32,7 +32,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { startLocalProbe } from './lib/workerd-probe.mjs';
-import { NIMBUS_DIFFERS, WORKER, WRANGLER_CONFIG, expectedAnswer } from '../behavioral/wrangler/new/_storage-bindings-worker.mjs';
+import { WORKER, WRANGLER_CONFIG, expectedAnswer, nimbusAnswer } from '../behavioral/wrangler/new/_storage-bindings-worker.mjs';
 
 const STEPS = [1, 2];
 
@@ -86,9 +86,8 @@ try {
 
 // Cloudflare's answers: the shared file records them.
 const local = await withLocalBindings();
-console.log(`wrangler-dev-storage-bindings-workerd: local bindings answer\n${JSON.stringify(local)}`);
 for (const [index, step] of STEPS.entries()) {
-  if (expectedAnswer(step) !== null) assert.deepEqual(local[index], expectedAnswer(step), `local bindings answer step ${step} as the shared file records`);
+  assert.deepEqual(local[index], expectedAnswer(step), `local bindings answer step ${step} as the shared file records\n${JSON.stringify(local[index])}`);
 }
 
 console.log('wrangler-dev-storage-bindings-workerd: starting local workerd');
@@ -122,7 +121,7 @@ try {
     const body = await response.text();
     assert.equal(response.status, 200, body.slice(0, 1500));
     const answer = JSON.parse(body);
-    assert.deepEqual(answer, { ...local[step - 1], ...NIMBUS_DIFFERS }, `Nimbus answers step ${step} as local bindings do\n${body}`);
+    assert.deepEqual(answer, nimbusAnswer(expectedAnswer(step)), `Nimbus answers step ${step} as Cloudflare does\n${body}`);
   }
   terminal.send('\x03');
   await terminal.waitForPrompt(30_000);

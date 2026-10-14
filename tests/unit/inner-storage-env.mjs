@@ -59,7 +59,7 @@ for (const [value, type] of [[undefined, 'undefined'], [{}, 'object'], [1n, 'big
 }
 assert.deepEqual(await DB.prepare('SELECT 1').first(), { x: 2, y: 'a' }, 'a later column of a name wins');
 assert.equal(await DB.prepare('SELECT 1').first('y'), 'a');
-await assert.rejects(DB.prepare('SELECT 1').first('z'), { message: 'D1_COLUMN_NOTFOUND: Column not found (z)' });
+await assert.rejects(DB.prepare('SELECT 1').first('z'), (error) => error.message === 'D1_COLUMN_NOTFOUND: Column not found (z)' && error.cause.message === 'Column not found');
 assert.deepEqual(await DB.prepare('SELECT 1').all(), { success: true, meta, results: [{ x: 2, y: 'a' }, { x: 4, y: 'b' }] });
 assert.deepEqual(await DB.prepare('SELECT 1').run(), { success: true, meta, results: [{ x: 2, y: 'a' }, { x: 4, y: 'b' }] });
 assert.deepEqual(await DB.prepare('SELECT 1').raw(), [[1, 'a', 2], [3, 'b', 4]]);
