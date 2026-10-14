@@ -1,7 +1,8 @@
 // agent/new/agent-chat-ui — the built agent-chat island: mount, seeded
 // history rendering (markdown + syntax highlighting + tool cards + copy
-// button), streaming send/stop, pin-to-bottom, error card + retry, and the
-// unified markdown pipeline. Rendering fidelity is driven with intercepted
+// button), streaming send/stop, pin-to-bottom, error card + retry, a send
+// whose response is lost sent again under its id, and the unified markdown
+// pipeline. Rendering fidelity is driven with intercepted
 // agent APIs (no Workers AI spend); the live-send path honors the
 // model-auth boundary honestly: with no connected credential it asserts
 // the connect-gate UX instead of faking a turn.
@@ -47,17 +48,21 @@ try {
   await applyProbeCookies(page);
   await exchangeAttachCookie(page, sid);
   const runtimeErrors = [];
+  // The POSTs this probe fails on purpose, whose network errors Chrome logs.
+  let lostPosts = 0;
   page.on('pageerror', (err) => runtimeErrors.push(err.message || String(err)));
   page.on('console', (msg) => {
     const location = msg.location?.() || {};
-    if (msg.type() === 'error' && !String(location.url || '').endsWith('/favicon.ico')) {
+    const url = String(location.url || '');
+    const lostPost = lostPosts > 0 && url.endsWith('/api/agent/messages') && msg.text().includes('net::ERR_FAILED');
+    if (msg.type() === 'error' && !url.endsWith('/favicon.ico') && !lostPost) {
       runtimeErrors.push(msg.text());
     }
   });
 
   // ── Phase 1: rendering fidelity with intercepted agent APIs ─────────
   let interceptAgentApis = true;
-  let postMode = 'stream'; // 'stream' | 'error' | 'eof'
+  let postMode = 'stream'; // 'stream' | 'error' | 'eof' | 'lost'
   const postBodies = [];
   let mockMessages = structuredClone(seededMessages);
   await page.setRequestInterception(true);
@@ -96,9 +101,18 @@ try {
       if (requestBody.retry === true) {
         if (history.at(-1)?.role === 'assistant') history.pop();
         user = history.at(-1);
+      } else if (history.some((message) => message.id === requestBody.id)) {
+        // A send the session holds and answered, sent again: as the session
+        // does, store nothing and answer with the conversation as it is.
+        request.respond({
+          status: 200,
+          contentType: 'application/x-ndjson',
+          body: ndjsonBody([{ type: 'start', messages: history }]),
+        });
+        return;
       } else {
         user = {
-          id: `u-live-${postBodies.length}`,
+          id: requestBody.id,
           role: 'user',
           content: requestBody.message,
           createdAt: Date.now(),
@@ -136,6 +150,13 @@ try {
       } else if (postMode === 'eof') {
         mockMessages = [...history, interrupted];
         events = [...base, { type: 'text-delta', delta: 'Recovered partial text.' }];
+      } else if (postMode === 'lost') {
+        // The session took the send and answered; its response never
+        // reaches the browser.
+        mockMessages = [...history, complete];
+        lostPosts += 1;
+        request.abort('failed');
+        return;
       } else {
         mockMessages = [...history, complete];
         events = [...base,
@@ -266,6 +287,36 @@ try {
       && !last.querySelector('.agent-interrupted');
   }, { timeout: 15_000 });
   a.check('retry clears the error card and completes', !(await page.$('.agent-error-card')));
+
+  // A send whose response is lost: the session took it, the browser never
+  // heard. "Send again" sends it under the same id, which the session holds
+  // once.
+  postMode = 'lost';
+  await page.type('#agentInput', 'lost on the way back');
+  await page.click('#agentSend');
+  await page.waitForSelector('.agent-error-card', { timeout: 15_000 });
+  a.check('a send with no response offers Send again',
+    await page.$eval('.error-retry', (el) => el.textContent === 'Send again'));
+  postMode = 'stream';
+  const postsBeforeResend = postBodies.length;
+  await page.click('.error-retry');
+  await page.waitForFunction(() => {
+    const last = document.querySelector('.agent-thread')?.lastElementChild;
+    return !document.querySelector('.agent-error-card')
+      && document.getElementById('agentSend')?.textContent === 'Send'
+      && last?.matches('.agent-msg.assistant')
+      && last.querySelector('.agent-text')?.textContent.includes('Streamed answer.');
+  }, { timeout: 15_000 });
+  const [lostBody, resentBody] = postBodies.slice(postsBeforeResend - 1);
+  a.check('Send again sends the message under the id it was first sent with',
+    postBodies.length === postsBeforeResend + 1
+      && typeof lostBody?.id === 'string' && lostBody.id.length > 0
+      && resentBody?.id === lostBody.id && resentBody.message === lostBody.message,
+    JSON.stringify(postBodies.slice(postsBeforeResend - 1)));
+  a.check('the message the session already held is shown once, with its answer',
+    await page.$$eval('.agent-msg.user .agent-bubble', (rows) => (
+      rows.filter((row) => row.textContent === 'lost on the way back').length === 1
+    )));
 
   // Clean EOF after live parts is an interrupted turn, never a silent drop.
   postMode = 'eof';
